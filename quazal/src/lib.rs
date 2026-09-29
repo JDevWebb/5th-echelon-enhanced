@@ -87,6 +87,23 @@ pub struct ClientInfo<T = ()> {
     pub user_id: Option<u32>,
     /// Additional user-defined data.
     pub additional: T,
+    /// Recently handled sequence numbers of this client's data packets, with
+    /// the packets sent in reply, so a retransmission is answered again
+    /// instead of being handled twice.
+    pub(crate) handled: std::collections::VecDeque<(u16, Vec<Vec<u8>>)>,
+    /// Replies being collected for the packet being handled.
+    pub(crate) replying: Option<Vec<Vec<u8>>>,
+    /// Reliable packets sent to this client and not yet acknowledged, by
+    /// sequence number: resent until they are.
+    pub(crate) unacked: std::collections::BTreeMap<u16, Unacked>,
+}
+
+/// A reliable packet waiting for the client's acknowledgement.
+#[derive(Debug)]
+pub(crate) struct Unacked {
+    pub data: Vec<u8>,
+    pub sent: std::time::Instant,
+    pub tries: u32,
 }
 
 impl<T> ClientInfo<T> {
@@ -110,6 +127,9 @@ impl<T> ClientInfo<T> {
             last_seen: std::time::Instant::now(),
             last_vports: None,
             connection_id: None,
+            handled: std::collections::VecDeque::new(),
+            replying: None,
+            unacked: std::collections::BTreeMap::new(),
         }
     }
 

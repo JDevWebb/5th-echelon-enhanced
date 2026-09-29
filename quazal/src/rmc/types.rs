@@ -353,7 +353,8 @@ where
         // Looks like it's using 32bit after all?
         // let len = stream.u16()? as usize;
         let len = stream.u32()? as usize;
-        let mut res = Vec::with_capacity(len);
+        // The length comes from the network: don't trust it for the allocation.
+        let mut res = Vec::with_capacity(len.min(MAX_PREALLOC));
         for _ in 0..len {
             res.push(stream.read()?);
         }
@@ -415,7 +416,16 @@ impl FromStr for QList<Property> {
     type Err = QuazalError;
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
-        value.split(';').map(FromStr::from_str).collect()
+        // A session created without attributes is stored as "": no properties.
+        value.split(';').filter(|p| !p.trim().is_empty()).map(FromStr::from_str).collect()
+    }
+}
+
+impl QList<StationURL> {
+    /// Parses stored station URLs, skipping any that don't parse (one bad
+    /// row must not break every search that would return it).
+    pub fn parse_lossy<S: AsRef<str>>(urls: impl IntoIterator<Item = S>) -> Self {
+        Self(urls.into_iter().filter_map(|u| u.as_ref().parse().ok()).collect())
     }
 }
 
@@ -423,6 +433,29 @@ impl FromStr for QList<Property> {
 mod tests {
 
     use super::*;
+
+    #[test]
+    fn empty_attributes_are_an_empty_list() {
+        assert_eq!("".parse::<QList<Property>>().unwrap().0.len(), 0);
+        let attrs: QList<Property> = "101 => 3;102 => 1".parse().unwrap();
+        assert_eq!(attrs.0.iter().map(|p| (p.id, p.value)).collect::<Vec<_>>(), [(101, 3), (102, 1)]);
+    }
+
+    #[test]
+    fn bad_station_urls_are_skipped() {
+        let urls = QList::<StationURL>::parse_lossy(["prudp:/address=10.8.0.2;port=3074;type=2", "garbage"]);
+        assert_eq!(urls.0.len(), 1);
+        assert_eq!(urls.0[0].address, "10.8.0.2");
+    }
+
+    #[test]
+    fn huge_list_length_is_an_error_not_an_allocation() {
+        // A peer claims 4 billion entries and sends none.
+        let mut stream = crate::rmc::basic::ReadStream::from_bytes([0xffu8, 0xff, 0xff, 0xff]);
+        assert!(stream.read::<QList<u32>>().is_err());
+        let mut stream = crate::rmc::basic::ReadStream::from_bytes([0xffu8, 0xff, 0xff, 0xff]);
+        assert!(stream.read::<Vec<u64>>().is_err());
+    }
 
     #[test]
     fn parse_stationurl() {
@@ -467,3 +500,6 @@ mod tests {
         assert!(matches!(inst, Err(Error::ParsingFailed(FromStreamError::IO(e))) if e.kind() == std::io::ErrorKind::UnexpectedEof));
     }
 }
+
+/// Upper bound for pre-allocating a list whose length a peer sent us.
+const MAX_PREALLOC: usize = 256;

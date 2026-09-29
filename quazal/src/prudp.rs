@@ -33,6 +33,24 @@ use crate::Signature;
 
 const MAX_PAYLOAD_SIZE: usize = 1000;
 const SESSION_TIMEOUT: Duration = Duration::from_secs(60);
+/// How often unacknowledged packets are checked for resending.
+const RESEND_TICK: Duration = Duration::from_millis(200);
+/// First resend after this; each further one waits twice as long.
+const RESEND_AFTER: Duration = Duration::from_millis(500);
+/// Resends before giving up on a packet (0.5 + 1 + 2 + 4 s).
+const RESEND_TRIES: u32 = 4;
+/// How many handled sequence numbers are remembered per client.
+const HANDLED_MEMORY: usize = 64;
+/// Most unacknowledged packets kept per client.
+const UNACKED_MAX: usize = 256;
+
+/// Records that a client's packet with this sequence number is being handled.
+fn remember_handled<T>(ci: &mut ClientInfo<T>, sequence: u16) {
+    if ci.handled.len() >= HANDLED_MEMORY {
+        ci.handled.pop_front();
+    }
+    ci.handled.push_back((sequence, vec![]));
+}
 
 /// A registry for clients.
 #[derive(Default)]
@@ -42,20 +60,24 @@ pub struct ClientRegistry<T> {
 }
 
 impl<T> ClientRegistry<T> {
+    /// Forgets a client that is gone. Returns whether its user's per-user
+    /// state may be cleaned up: not if the same user has another live
+    /// connection (they reconnected before the old one expired), whose station
+    /// URLs and lobby would otherwise be wiped.
+    fn forget(&mut self, ci: &ClientInfo<T>) -> bool {
+        if let Some(conn_id) = ci.connection_id {
+            self.connection_id_session_ids.remove(&conn_id);
+        }
+        match ci.user_id {
+            Some(uid) => !self.clients.values().any(|c| c.try_borrow().map_or(true, |c| c.user_id == Some(uid))),
+            None => true,
+        }
+    }
+
     /// Returns a client by its connection ID.
     #[must_use]
     pub fn client_by_connection_id(&self, conn_id: ConnectionID) -> Option<&RefCell<ClientInfo<T>>> {
         self.connection_id_session_ids.get(&conn_id).and_then(|sig| self.clients.get(&sig.0))
-    }
-
-    /// Whether the given user still holds a live connection in this registry.
-    ///
-    /// A restarting client registers its new connection before the old one is torn down, so
-    /// for a while the same user owns two of them. Callers use this to tell a genuine goodbye
-    /// from the tail end of a reconnect.
-    #[must_use]
-    fn has_live_connection_for(&self, user_id: Option<u32>) -> bool {
-        user_id.is_some() && self.clients.values().any(|other| other.try_borrow().is_ok_and(|o| o.user_id == user_id))
     }
 
     /// Finds a logged-in client by its player id.
@@ -145,14 +167,27 @@ where
     /// Starts the server's main loop.
     pub fn serve(mut self) {
         let socket = self.socket.as_ref().expect("UDP socket required").try_clone().expect("Couldn't clone socket");
-        socket.set_read_timeout(Some(Duration::from_secs(1))).expect("error setting read timeout");
+        socket.set_read_timeout(Some(RESEND_TICK)).expect("error setting read timeout");
         let mut buf = vec![0u8; 1024];
+        let mut last_sweep = Instant::now();
+        let mut last_resend = Instant::now();
         'outer: loop {
+            if last_resend.elapsed() >= RESEND_TICK {
+                self.resend_unacked();
+                last_resend = Instant::now();
+            }
+            // Expire dead clients at least once a second. Upstream only did it
+            // after a second without any packet, so on a busy server they
+            // never expired.
+            if last_sweep.elapsed() >= Duration::from_secs(1) {
+                self.clear_clients();
+                last_sweep = Instant::now();
+            }
             let (nread, client) = match socket.recv_from(&mut buf) {
                 Ok(x) => x,
                 Err(e) => {
                     if e.kind() == std::io::ErrorKind::TimedOut || e.kind() == std::io::ErrorKind::WouldBlock {
-                        self.clear_clients();
+                        // Nothing to do: the sweep above runs on the next pass.
                     } else {
                         error!(self.logger, "recv_from failed: {}", e);
                     }
@@ -180,7 +215,13 @@ where
                     continue;
                 }
 
-                self.handle_packet(&logger.new(o!("seq" => packet.sequence, "session" => packet.session_id)), packet, client);
+                let logger = logger.new(o!("seq" => packet.sequence, "session" => packet.session_id));
+                // A bug reachable from one client's packet must not take down
+                // the service for everyone (the panic hook has logged it).
+                let handled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.handle_packet(&logger, packet, client)));
+                if handled.is_err() {
+                    error!(logger, "packet handler panicked; packet dropped");
+                }
             }
         }
     }
@@ -190,6 +231,14 @@ where
         debug!(logger, "packet: {:?}", packet);
         if packet.flags.contains(PacketFlag::Ack) {
             debug!(logger, "Received ACK"; "sequence" => packet.sequence);
+            // The client has our reliable packet: stop resending it.
+            if packet.packet_type == PacketType::Data {
+                if let Some(ci) = self.client_registry.clients.get(&packet.signature) {
+                    if let Ok(mut ci) = ci.try_borrow_mut() {
+                        ci.unacked.remove(&packet.sequence);
+                    }
+                }
+            }
             return;
         }
         match packet.packet_type {
@@ -204,15 +253,10 @@ where
                 if self.send_ack(logger, &client, &packet, &ci.borrow(), false).is_err() {
                     // ignore
                 }
-                // Only say goodbye if this was the user's last connection. A restarting
-                // client sends `Disconnect` for its old connection *after* registering the new
-                // one, and tearing down that user's sessions at this point would wipe out the
-                // rooms of the login that just succeeded.
                 let ci = ci.into_inner();
-                if self.client_registry.has_live_connection_for(ci.user_id) {
-                    return;
-                }
-                if let Some(handler) = self.disconnect_handler.as_mut() {
+                if !self.client_registry.forget(&ci) {
+                    info!(logger, "User {:?} is still connected; keeping their state", ci.user_id);
+                } else if let Some(handler) = self.disconnect_handler.as_mut() {
                     (handler)(ci);
                 }
             }
@@ -232,8 +276,9 @@ where
                     (self.user_handler.as_ref().unwrap())(logger, packet, client, self.socket.as_ref().unwrap());
                 }
             }
-            PacketType::Route => todo!(),
-            PacketType::Raw => todo!(),
+            PacketType::Route | PacketType::Raw => {
+                warn!(logger, "unsupported packet type {:?}", packet.packet_type);
+            }
         }
     }
 
@@ -254,6 +299,18 @@ where
         } else {
             debug!(logger, "Send ack");
         }
+        // A retransmission (our acknowledgement was lost): answer it again, but
+        // don't handle it twice (a repeated CreateSession made a second lobby).
+        if let Some((_, replies)) = ci.handled.iter().find(|(seq, _)| *seq == packet.sequence) {
+            info!(logger, "Duplicate packet {}; resending {} replies", packet.sequence, replies.len());
+            for data in replies.clone() {
+                if let Err(e) = self.socket.as_ref().unwrap().send_to(&data, client) {
+                    error!(logger, "Error resending reply"; "error" => %e);
+                }
+            }
+            return;
+        }
+        remember_handled(ci, packet.sequence);
         let payload = if let Some(fid) = packet.fragment_id {
             if fid != 0 {
                 info!(logger, "Caching fragment {}", fid);
@@ -281,6 +338,7 @@ where
         } else {
             packet.payload
         };
+        ci.replying = Some(vec![]);
         let resp = self
             .registry
             .handle_packet(&logger, self.ctx, ci, &packet.destination, &payload, &self.client_registry, self.socket.as_ref().unwrap());
@@ -309,6 +367,41 @@ where
             }
             Some(Err(_)) => {
                 error!(logger, "Handler failed");
+            }
+        }
+        // Keep the replies for this sequence number, for a retransmission.
+        let replies = ci.replying.take().unwrap_or_default();
+        if let Some(entry) = ci.handled.iter_mut().find(|(seq, _)| *seq == packet.sequence) {
+            entry.1 = replies;
+        }
+    }
+
+    /// Resends reliable packets clients haven't acknowledged, with backoff,
+    /// and gives up after a few tries (a lost "come in" push used to leave a
+    /// player waiting for good).
+    fn resend_unacked(&mut self) {
+        let now = Instant::now();
+        let socket = self.socket.as_ref().unwrap();
+        for ci in self.client_registry.clients.values() {
+            let Ok(mut ci) = ci.try_borrow_mut() else { continue };
+            let addr = *ci.address();
+            let mut give_up = vec![];
+            for (seq, p) in &mut ci.unacked {
+                if now.duration_since(p.sent) < RESEND_AFTER * 2u32.pow(p.tries) {
+                    continue;
+                }
+                if p.tries >= RESEND_TRIES {
+                    give_up.push(*seq);
+                    continue;
+                }
+                p.tries += 1;
+                p.sent = now;
+                debug!(self.logger, "Resending unacknowledged packet {seq} to {addr} (try {})", p.tries);
+                let _ = socket.send_to(&p.data, addr);
+            }
+            for seq in give_up {
+                warn!(self.logger, "Client {addr} never acknowledged packet {seq}; giving up");
+                ci.unacked.remove(&seq);
             }
         }
     }
@@ -442,26 +535,20 @@ where
     /// the creator rather than on the connection.
     fn clear_clients(&mut self) {
         let now = Instant::now();
+        // Handshakes that never completed (a SYN without a CONNECT): these
+        // used to stay forever, one per SYN from anyone.
+        self.new_clients.retain(|_, ci| now - ci.last_seen <= SESSION_TIMEOUT);
         let expired: Vec<_> = self
             .client_registry
             .clients
             .extract_if(|_k, v| v.try_borrow().map(|ci| (now - ci.last_seen) > SESSION_TIMEOUT).unwrap_or(false))
+            .map(|(_, ci)| ci.into_inner())
             .collect();
-
-        for (_, ci) in expired {
-            let ci = ci.into_inner();
-            if let Some(conn_id) = ci.connection_id {
-                self.client_registry.connection_id_session_ids.remove(&conn_id);
-            }
-
-            // `extract_if` has already taken the expired entries out, so the registry now
-            // holds live connections only.
-            if self.client_registry.has_live_connection_for(ci.user_id) {
-                continue;
-            }
-
-            if let Some(handler) = self.expired_client_handler.as_mut() {
-                (handler)(ci);
+        for ci in expired {
+            if self.client_registry.forget(&ci) {
+                if let Some(handler) = self.expired_client_handler.as_mut() {
+                    (handler)(ci);
+                }
             }
         }
     }
@@ -483,7 +570,27 @@ pub fn send_response<T>(
     resp.flags.insert(PacketFlag::Reliable);
     resp.signature = ci.client_signature.unwrap_or_default();
     resp.session_id = ci.server_session;
-    send_packet(logger, ctx, src, socket, resp)
+    let sequence = resp.sequence;
+    let data = encode_packet(logger, ctx, resp);
+    let sz = socket.send_to(&data, src)?;
+    // Reliable: resent until acknowledged, and kept as a reply to the packet
+    // being handled (for answering a retransmission of it).
+    if ci.unacked.len() >= UNACKED_MAX {
+        let oldest = *ci.unacked.keys().next().expect("not empty");
+        ci.unacked.remove(&oldest);
+    }
+    ci.unacked.insert(
+        sequence,
+        crate::Unacked {
+            data: data.clone(),
+            sent: Instant::now(),
+            tries: 0,
+        },
+    );
+    if let Some(replies) = ci.replying.as_mut() {
+        replies.push(data);
+    }
+    Ok(sz)
 }
 
 /// Sends a request to a client.
@@ -506,7 +613,15 @@ pub fn send_request<T>(
 }
 
 /// Sends a packet to a client.
-pub fn send_packet(logger: &Logger, ctx: &Context, src: &SocketAddr, socket: &UdpSocket, mut resp: QPacket) -> Result<usize, Box<dyn std::error::Error>> {
+pub fn send_packet(logger: &Logger, ctx: &Context, src: &SocketAddr, socket: &UdpSocket, resp: QPacket) -> Result<usize, Box<dyn std::error::Error>> {
+    let data = encode_packet(logger, ctx, resp);
+    let sz = socket.send_to(&data, src)?;
+    assert_eq!(sz, data.len());
+    Ok(sz)
+}
+
+/// Encodes a packet the server sends.
+fn encode_packet(logger: &Logger, ctx: &Context, mut resp: QPacket) -> Vec<u8> {
     if matches!(resp.packet_type, PacketType::Data) {
         resp.use_compression = true;
         if resp.fragment_id.is_none() {
@@ -515,9 +630,34 @@ pub fn send_packet(logger: &Logger, ctx: &Context, src: &SocketAddr, socket: &Ud
     }
     resp.flags.insert(PacketFlag::HasSize);
     trace!(logger, "<- {:?}", resp);
-    let data = &resp.to_bytes(ctx);
+    let data = resp.to_bytes(ctx);
     trace!(logger, "<- {:02x?}", data);
-    let sz = socket.send_to(data, src)?;
-    assert_eq!(sz, data.len());
-    Ok(sz)
+    data
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn client(user_id: Option<u32>, port: u16) -> ClientInfo<()> {
+        let mut ci = ClientInfo::new(SocketAddr::from(([10, 77, 0, 2], port)));
+        ci.user_id = user_id;
+        ci
+    }
+
+    #[test]
+    fn cleanup_waits_for_the_users_last_connection() {
+        let mut registry = ClientRegistry::<()> {
+            clients: HashMap::new(),
+            connection_id_session_ids: HashMap::new(),
+        };
+        let old = client(Some(1001), 3074);
+        registry.clients.insert(1, RefCell::new(client(Some(1001), 3075)));
+        registry.clients.insert(2, RefCell::new(client(Some(1002), 3076)));
+        assert!(!registry.forget(&old), "the user reconnected: their state must stay");
+
+        registry.clients.remove(&1);
+        assert!(registry.forget(&old), "no connection left: clean up");
+        assert!(registry.forget(&client(None, 3077)), "never logged in: nothing to keep");
+    }
 }

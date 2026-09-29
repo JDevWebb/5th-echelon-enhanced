@@ -467,7 +467,8 @@ where
         R: ReadBytesExt,
     {
         let len = stream.u32()? as usize;
-        let mut res = Vec::with_capacity(len);
+        // The length comes from the network: don't trust it for the allocation.
+        let mut res = Vec::with_capacity(len.min(MAX_PREALLOC));
         for _ in 0..len {
             res.push(stream.read()?);
         }
@@ -546,3 +547,6 @@ where
         Ok(m)
     }
 }
+
+/// Upper bound for pre-allocating a list whose length a peer sent us.
+const MAX_PREALLOC: usize = 256;

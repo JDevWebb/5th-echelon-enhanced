@@ -185,13 +185,13 @@ pub enum PacketType {
 #[derive(Debug, Copy, Clone)]
 pub enum PacketFlag {
     /// Acknowledgment flag.
-    Ack = 0b0001,      // 1
+    Ack = 0b0001, // 1
     /// Reliable delivery flag.
     Reliable = 0b0010, // 2
     /// Acknowledgment is required.
-    NeedAck = 0b0100,  // 4
+    NeedAck = 0b0100, // 4
     /// The packet has a size field.
-    HasSize = 0b1000,  // 8
+    HasSize = 0b1000, // 8
 }
 
 /// Represents a PRUDP packet.
@@ -265,9 +265,14 @@ impl QPacket {
         let payload_size = if flags.contains(PacketFlag::HasSize) {
             rdr.read_u16::<LittleEndian>()? as usize
         } else {
-            let l = rdr.stream_len();
-            let p = rdr.stream_position();
-            l.and_then(|l| p.map(|p| l - p - 1)).expect("getting length and position from buffer should never fail") as usize
+            // Everything up to the trailing checksum byte. A packet too short
+            // to have one is malformed (this used to underflow into a huge
+            // allocation).
+            let l = rdr.stream_len()?;
+            let p = rdr.stream_position()?;
+            l.checked_sub(p)
+                .and_then(|rest| rest.checked_sub(1))
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::UnexpectedEof))? as usize
         };
 
         let mut payload = vec![0u8; payload_size];
@@ -440,7 +445,7 @@ fn crypt(ctx: &Context, data: &[u8]) -> Vec<u8> {
 /// Crypts the given data using the provided key.
 /// This function applies the RC4 cipher to the data using the given key.
 #[must_use]
-pub(crate) fn crypt_key(key: &[u8], data: &[u8]) -> Vec<u8> {
+pub fn crypt_key(key: &[u8], data: &[u8]) -> Vec<u8> {
     let rc4 = Rc4::new(key);
     rc4.zip(data).map(|(a, b)| a ^ b).collect()
 }
@@ -591,5 +596,15 @@ mod tests {
         assert!(pkt.validate(ctx, &data[..l as usize]).is_ok());
 
         assert!(parse(ctx, &mut Cursor::new(data)).is_ok());
+    }
+
+    #[test]
+    fn truncated_packet_is_an_error_not_a_panic() {
+        let ctx = &Context::splinter_cell_blacklist();
+        // A ping header without the size flag and without the trailing
+        // checksum byte: the payload size used to underflow.
+        let data = [0x31, 0x3f, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        assert!(QPacket::from_bytes(ctx, &data).is_err());
+        assert!(QPacket::from_bytes(ctx, &data[..3]).is_err());
     }
 }

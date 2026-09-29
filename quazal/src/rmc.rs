@@ -20,6 +20,7 @@ use crate::Context;
 pub mod basic;
 pub mod result;
 pub mod types;
+pub mod unhandled;
 
 /// An error that can occur during RMC operations.
 #[derive(Debug, Display, DeriveError, From)]
@@ -503,9 +504,19 @@ impl<T> StreamHandler<T> for RVSecHandler<T> {
         let maybe_protocol = if let Some(protocol) = protocol {
             info!(logger, "Calling {}.{}", protocol.name(), protocol.method_name(rmc_packet.method_id).unwrap_or_default(),);
 
-            protocol.handle(&logger, ctx, ci, &rmc_packet, client_registry, socket)
+            let result = protocol.handle(&logger, ctx, ci, &rmc_packet, client_registry, socket);
+            let kind = match result {
+                Err(Error::UnknownMethod) => Some(unhandled::Kind::UnknownMethod),
+                Err(Error::UnimplementedMethod) => Some(unhandled::Kind::Unimplemented),
+                _ => None,
+            };
+            if let Some(kind) = kind {
+                let method = protocol.method_name(rmc_packet.method_id);
+                unhandled::record(&logger, rmc_packet.protocol_id, rmc_packet.method_id, Some(protocol.name()), method, kind);
+            }
+            result
         } else {
-            warn!(logger, "no handler available");
+            unhandled::record(&logger, rmc_packet.protocol_id, rmc_packet.method_id, None, None, unhandled::Kind::UnknownProtocol);
             Err(Error::UnknownProtocol)
         };
 
