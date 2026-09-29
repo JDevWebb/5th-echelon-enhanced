@@ -17,7 +17,11 @@ impl SaveGameExt for Save {
     fn get_savegames_path(&self) -> PathBuf {
         const SAVE_GAME_FOLDER: &str = "5th-Echelon\\Saves";
         match self.save_dir {
-            SaveDir::InstallLocation => todo!(),
+            // Next to the game (upstream left this unimplemented and crashed).
+            SaveDir::InstallLocation => std::env::current_exe()
+                .ok()
+                .and_then(|exe| exe.parent().map(|dir| dir.join("5th-Echelon-Saves")))
+                .unwrap_or_else(|| PathBuf::from("5th-Echelon-Saves")),
             SaveDir::Roaming => known_folder_roaming_app_data().expect("Couldn't find roaming directory").join(SAVE_GAME_FOLDER),
             SaveDir::Custom(ref p) => PathBuf::from(p),
         }

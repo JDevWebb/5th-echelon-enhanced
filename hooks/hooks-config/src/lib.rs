@@ -154,8 +154,6 @@ enum_gui! {
         StormPackets,
         #[label="Log RMC messages"]
         RMCMessages,
-        #[label="Report a network location (Wine has no NLA namespace)"]
-        NetworkLocation,
         #[cfg(feature = "modding")]
         #[label="Override packaged files"]
         OverridePackaged,
@@ -230,6 +228,10 @@ pub struct Config {
     pub enable_all_hooks: bool,
     #[serde(default = "default_overlay")]
     pub enable_overlay: bool,
+    /// Shows the overlay's developer window (send test invite events). Off for
+    /// players.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub overlay_debug: bool,
     pub config_server: Option<String>,
     pub api_server: url::Url,
     #[serde(default)]
@@ -259,6 +261,11 @@ pub struct Config {
     /// [`PidField`].
     #[serde(default)]
     pub pid_field: PidField,
+
+    /// Set when another tool manages this install (from the override file's
+    /// `[Managed]`); never read from or written to `uplay.toml`.
+    #[serde(skip)]
+    pub managed: Option<Managed>,
 }
 
 const fn default_share_session_data() -> bool {
@@ -342,13 +349,94 @@ pub struct SaveGame {
 pub struct Networking {
     pub ip_address: Option<std::net::Ipv4Addr>,
     pub adapter: Option<String>,
+    /// Refuse to start unless `adapter` exists and has an address, instead of
+    /// quietly advertising another network (the home LAN, Radmin, ...) to
+    /// other players, which makes their joins fail.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_adapter: bool,
 }
 
 impl Networking {
     pub fn is_default(&self) -> bool {
-        self.ip_address.is_none() && self.adapter.is_none()
+        self.ip_address.is_none() && self.adapter.is_none() && !self.require_adapter
     }
 }
+
+/// Does the Windows adapter `friendly_name` match the configured `wanted`?
+///
+/// Case-insensitive, and tolerant of the "<name> - <ip>" form that upstream's
+/// launcher saved from its adapter picker, which never matched any adapter
+/// (so the pin silently did nothing).
+pub fn adapter_name_matches(friendly_name: &str, wanted: &str) -> bool {
+    let wanted = match wanted.rsplit_once(" - ") {
+        Some((name, ip)) if ip.trim().parse::<std::net::IpAddr>().is_ok() => name,
+        _ => wanted,
+    };
+    friendly_name.trim().eq_ignore_ascii_case(wanted.trim())
+}
+
+/// Settings managed by another tool (an installer, a VPN client, a
+/// community's own app), read from `uplay.override.toml` next to
+/// `uplay.toml`. They take precedence over `uplay.toml`, which the launcher
+/// rewrites whenever it launches the game; the launcher never touches this
+/// file.
+///
+/// With this file present the game also starts without the launcher ever
+/// having run (see `_get_or_load`), so a tool can install and set up the
+/// game on its own.
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
+#[serde(rename_all = "PascalCase")]
+pub struct Overrides {
+    pub config_server: Option<String>,
+    pub api_server: Option<url::Url>,
+    pub user: Option<User>,
+    pub networking: Option<Networking>,
+    pub managed: Option<Managed>,
+}
+
+/// The tool that manages this install. The launcher shows its settings as
+/// read-only and leaves updates to that tool; the overlay points players to
+/// it when something needs fixing.
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
+#[serde(rename_all = "PascalCase")]
+pub struct Managed {
+    /// The tool's name, e.g. "Community Hub".
+    pub by: String,
+    /// What to tell players when the server can't be reached or the account
+    /// is refused, e.g. "Open Community Hub and check the server is online."
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub help_text: Option<String>,
+}
+
+impl Overrides {
+    /// Applies the overrides to `cfg`.
+    pub fn apply(self, cfg: &mut Config) {
+        if let Some(server) = self.config_server {
+            cfg.config_server = Some(server);
+        }
+        if let Some(api) = self.api_server {
+            cfg.api_server = api;
+        }
+        if let Some(user) = self.user {
+            // Keep CD keys from uplay.toml unless the overrides set their own.
+            let cd_keys = if user.cd_keys.is_empty() {
+                std::mem::take(&mut cfg.user.cd_keys)
+            } else {
+                user.cd_keys.clone()
+            };
+            cfg.user = User { cd_keys, ..user };
+        }
+        if let Some(networking) = self.networking {
+            cfg.networking = networking;
+        }
+        if let Some(managed) = self.managed {
+            cfg.managed = Some(managed);
+        }
+    }
+}
+
+/// File name of the overrides, next to `uplay.toml`.
+pub const OVERRIDES_FILE: &str = "uplay.override.toml";
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, PartialOrd, Eq, Ord, Copy)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -469,7 +557,6 @@ fn get_adapter_addresses<T>(f: impl Fn(*mut windows::Win32::NetworkManagement::I
     use windows::Win32::NetworkManagement::IpHelper::GAA_FLAG_SKIP_ANYCAST;
     use windows::Win32::NetworkManagement::IpHelper::GAA_FLAG_SKIP_DNS_SERVER;
     use windows::Win32::NetworkManagement::IpHelper::GAA_FLAG_SKIP_MULTICAST;
-    use windows::Win32::NetworkManagement::IpHelper::GAA_FLAG_SKIP_UNICAST;
     use windows::Win32::NetworkManagement::IpHelper::IP_ADAPTER_ADDRESSES_LH;
     use windows::Win32::Networking::WinSock::AF_INET;
     use windows::Win32::System::Diagnostics::Debug::FormatMessageW;
@@ -480,7 +567,7 @@ fn get_adapter_addresses<T>(f: impl Fn(*mut windows::Win32::NetworkManagement::I
     let mut res = WIN32_ERROR(unsafe {
         GetAdaptersAddresses(
             AF_INET.0 as u32,
-            GAA_FLAG_SKIP_UNICAST | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
+            GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER,
             None,
             Some(adapter_addresses.as_mut_ptr().cast()),
             &mut size,
@@ -537,7 +624,7 @@ fn find_ipaddress_for_adapter(target_adapter: &str) -> anyhow::Result<Option<std
             while let Some(current_adapter) = unsafe { next_adapter.as_ref() } {
                 let adapter_name = CStr::from_bytes_until_nul(&current_adapter.Description)?;
                 debug!("{adapter_name:?} == {target_adapter:?}");
-                if adapter_name.to_str()? == target_adapter {
+                if adapter_name_matches(adapter_name.to_str()?, target_adapter) {
                     result = Some(CStr::from_bytes_until_nul(&current_adapter.IpAddressList.IpAddress.String)?.to_str()?.parse()?);
                     break;
                 }
@@ -555,7 +642,7 @@ fn find_ipaddress_for_adapter(target_adapter: &str) -> anyhow::Result<Option<std
             while let Some(current_adapter) = unsafe { next_adapter.as_ref() } {
                 let adapter_name = unsafe { current_adapter.FriendlyName.to_string()? };
                 debug!("{adapter_name:?} == {target_adapter:?}");
-                if adapter_name.as_str() == target_adapter {
+                if adapter_name_matches(&adapter_name, target_adapter) {
                     if let Some(ip) = unsafe { current_adapter.FirstUnicastAddress.as_ref() } {
                         #[allow(clippy::cast_ptr_alignment)]
                         let sockaddr = unsafe { ip.Address.lpSockaddr.cast::<SOCKADDR_IN>().as_ref().unwrap() };
@@ -581,6 +668,20 @@ fn find_ipaddress_for_adapter(target_adapter: &str) -> anyhow::Result<Option<std
     }
 }
 
+/// Whether the game runs under Wine or Proton (ntdll exports
+/// `wine_get_version` there, never on Windows).
+pub fn running_under_wine() -> bool {
+    #[cfg(target_os = "windows")]
+    unsafe {
+        use windows::core::s;
+        use windows::Win32::System::LibraryLoader::GetModuleHandleA;
+        use windows::Win32::System::LibraryLoader::GetProcAddress;
+        GetModuleHandleA(s!("ntdll.dll")).is_ok_and(|ntdll| GetProcAddress(ntdll, s!("wine_get_version")).is_some())
+    }
+    #[cfg(not(target_os = "windows"))]
+    false
+}
+
 pub fn get_or_load(path: impl AsRef<Path>) -> anyhow::Result<&'static Config> {
     _get_or_load(path.as_ref())
 }
@@ -590,8 +691,16 @@ fn _get_or_load(path: &Path) -> anyhow::Result<&'static Config> {
     if let Some(cfg) = get() {
         return Ok(cfg);
     }
+    let overrides_path = path.with_file_name(OVERRIDES_FILE);
+    let overrides: Option<Overrides> = match fs::read_to_string(&overrides_path) {
+        Ok(content) => Some(toml::from_str(&content).map_err(|e| anyhow::anyhow!("{}: {e}", overrides_path.display()))?),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+        Err(err) => return Err(err.into()),
+    };
     let content = match fs::read_to_string(path) {
         Ok(content) => content,
+        // Set up by another tool; the launcher never ran.
+        Err(ref err) if err.kind() == std::io::ErrorKind::NotFound && overrides.is_some() => DEFAULT_CONFIG.to_string(),
         #[cfg(target_os = "windows")]
         Err(ref err) if err.kind() == std::io::ErrorKind::NotFound && msgbox::show_msgbox_ok_cancel("Configuration not found, generate and exit?", "Configuration not found") => {
             fs::write(path, DEFAULT_CONFIG)?;
@@ -601,19 +710,45 @@ fn _get_or_load(path: &Path) -> anyhow::Result<&'static Config> {
         Err(err) => return Err(err.into()),
     };
     let mut cfg: Config = toml::from_str(&content)?;
+    if let Some(overrides) = overrides {
+        info!("Applying {}", overrides_path.display());
+        overrides.apply(&mut cfg);
+    }
     if cfg.user.cd_keys.is_empty() {
-        info!("Passing startup to original dll");
-        cfg.forward_calls.push("UPLAY_Startup".into());
-        cfg.forward_calls.push("UPLAY_Quit".into());
+        // Without a CD key, startup goes to Ubisoft's own DLL, which starts
+        // Ubisoft Connect. Under Wine/Proton there usually is none, and the
+        // game hangs waiting for it; run without it there.
+        if running_under_wine() {
+            info!("Wine detected: running without Ubisoft Connect");
+        } else {
+            info!("Passing startup to original dll");
+            cfg.forward_calls.push("UPLAY_Startup".into());
+            cfg.forward_calls.push("UPLAY_Quit".into());
+        }
         //        cfg.forward_calls.push("UPLAY_USER_GetCdKeys".into());
         cfg.user.cd_keys.push("ABCD-EFGH-IJKL-MNOP".into());
     }
 
+    // A pinned adapter wins over a stored IpAddress, which goes stale (upstream
+    // preferred the IP and never looked at the adapter when one was set). The
+    // IP stays the fallback when the adapter isn't there.
     #[cfg(target_os = "windows")]
-    if cfg.networking.ip_address.is_none() && cfg.networking.adapter.is_some() {
-        let target_adapter = cfg.networking.adapter.as_ref().unwrap();
+    if let Some(target_adapter) = cfg.networking.adapter.clone() {
         info!("Getting IP address of adapter {target_adapter:?}");
-        cfg.networking.ip_address = find_ipaddress_for_adapter(target_adapter)?;
+        match find_ipaddress_for_adapter(&target_adapter) {
+            Ok(Some(ip)) => {
+                if cfg.networking.ip_address.is_some_and(|stored| stored != ip) {
+                    tracing::warn!("IpAddress {:?} is stale; using {ip} from adapter {target_adapter:?}", cfg.networking.ip_address);
+                }
+                cfg.networking.ip_address = Some(ip);
+            }
+            Ok(None) if cfg.networking.require_adapter => {
+                anyhow::bail!("The network adapter \"{target_adapter}\" isn't connected. Connect it (e.g. turn your VPN on) and start the game again.");
+            }
+            Ok(None) => tracing::warn!("Adapter {target_adapter:?} not found; other players may not be able to join you"),
+            Err(e) if cfg.networking.require_adapter => anyhow::bail!("Couldn't check network adapter \"{target_adapter}\": {e}"),
+            Err(e) => tracing::warn!("Couldn't check adapter {target_adapter:?}: {e}"),
+        }
     }
 
     if let Some(ip) = &cfg.networking.ip_address {
@@ -639,6 +774,72 @@ pub fn default() -> Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn adapter_names_match_like_windows_would() {
+        assert!(adapter_name_matches("Game VPN", "Game VPN"));
+        assert!(adapter_name_matches("Game VPN", "game vpn"));
+        assert!(adapter_name_matches("Game VPN", "Game VPN - 10.8.1.2"), "upstream launcher's picker format");
+        assert!(adapter_name_matches("Ethernet - Virtual", "Ethernet - Virtual"), "only an IP suffix is stripped");
+        assert!(!adapter_name_matches("Radmin VPN", "Game VPN"));
+        assert!(!adapter_name_matches("Game VPN 2", "Game VPN"));
+    }
+
+    #[test]
+    fn overrides_win_over_uplay_toml() {
+        let mut cfg: Config = toml::from_str(DEFAULT_CONFIG).unwrap();
+        cfg.user.cd_keys.push("KEEP-ME".into());
+        let overrides: Overrides = toml::from_str(
+            r#"
+ConfigServer = "10.8.0.10"
+ApiServer = "http://10.8.0.10:50051"
+[User]
+Username = "Kiwi"
+Password = "secret"
+[Networking]
+Adapter = "Game VPN"
+RequireAdapter = true
+[Managed]
+By = "Community Hub"
+HelpText = "Open Community Hub and check the server is online."
+"#,
+        )
+        .unwrap();
+        overrides.apply(&mut cfg);
+        assert_eq!(cfg.config_server.as_deref(), Some("10.8.0.10"));
+        assert_eq!(cfg.api_server.as_str(), "http://10.8.0.10:50051/");
+        assert_eq!(cfg.user.username, "Kiwi");
+        assert_eq!(cfg.user.cd_keys, ["KEEP-ME"], "CD keys from uplay.toml survive");
+        assert_eq!(cfg.networking.adapter.as_deref(), Some("Game VPN"));
+        assert!(cfg.networking.require_adapter);
+        let managed = cfg.managed.clone().unwrap();
+        assert_eq!(managed.by, "Community Hub");
+        assert_eq!(managed.help_text.as_deref(), Some("Open Community Hub and check the server is online."));
+        assert!(!toml::to_string(&cfg).unwrap().contains("Community Hub"), "never written to uplay.toml");
+
+        // An empty override file changes nothing.
+        let before = cfg.clone();
+        toml::from_str::<Overrides>("").unwrap().apply(&mut cfg);
+        assert_eq!(cfg, before);
+    }
+
+    #[test]
+    fn upstream_configs_still_parse() {
+        let cfg: Config = toml::from_str(
+            r#"
+ApiServer = "http://10.8.0.10:50051"
+[User]
+Username = "Nexus"
+Password = "pw"
+[Networking]
+IpAddress = "10.8.1.2"
+Adapter = "Game VPN - 10.8.1.2"
+"#,
+        )
+        .unwrap();
+        assert!(!cfg.networking.require_adapter);
+        assert!(!toml::to_string(&cfg).unwrap().contains("RequireAdapter"), "not written unless set");
+    }
 
     #[test]
     pub fn test_default_config() {

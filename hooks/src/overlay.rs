@@ -1,97 +1,162 @@
+//! The in-game overlay: "5th Echelon Enhanced" in its dark Echelon theme.
+//!
+//! - A toast when the game starts (how to open the overlay), one for each
+//!   invite, and a banner when the server can't be reached.
+//! - F5 opens a panel (F5 or Esc closes it) with Players, Invites, Match (the
+//!   lobby's player counts) and Server.
+//!
+//! Sizes are designed for 1080p and scale with the screen height. Fonts are
+//! rasterised at twice that size so they stay sharp up to 4K.
+
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
 use hudhook::ImguiRenderLoop;
-use imgui::Style;
+use imgui::Condition;
+use imgui::FontId;
 use imgui::StyleColor;
+use imgui::StyleVar;
+use imgui::Ui;
 use server_api::misc::InviteEvent;
 use server_api::users::User;
 use tracing::info;
 use windows::core::PCSTR;
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
+use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_F5;
 use windows::Win32::UI::WindowsAndMessaging::DefWindowProcA;
 
+use crate::community;
 use crate::uplay_r1_loader::Event;
 use crate::uplay_r1_loader::EVENTS;
 
+/// Our name and release, from release.toml.
+const PRODUCT: &str = env!("FE_PRODUCT");
+const RELEASE: &str = env!("FE_RELEASE");
+
 static NOTIFICATION_TIMEOUT: Duration = Duration::from_secs(30);
 static INITIAL_POPUP_DURATION: Duration = Duration::from_secs(10);
+static NOTICE_DURATION: Duration = Duration::from_secs(5);
+/// How often the player list refreshes while the panel is open (it's every
+/// 15 s otherwise), so friends starting their game show up quickly.
+static PANEL_REFRESH: Duration = Duration::from_secs(5);
 
-// TODO: move to separate crate
-fn sc_style(style: &mut Style) {
-    style.colors[StyleColor::Text as usize] = [1.00, 1.00, 1.00, 1.00];
-    style.colors[StyleColor::TextDisabled as usize] = [0.50, 0.50, 0.50, 1.00];
-    style.colors[StyleColor::WindowBg as usize] = [0.03, 0.07, 0.04, 0.94];
-    style.colors[StyleColor::ChildBg as usize] = [0.00, 0.00, 0.00, 0.00];
-    style.colors[StyleColor::PopupBg as usize] = [0.08, 0.08, 0.08, 0.94];
-    style.colors[StyleColor::Border as usize] = [0.38, 1.00, 0.00, 0.50];
-    style.colors[StyleColor::BorderShadow as usize] = [0.01, 0.13, 0.00, 0.63];
-    style.colors[StyleColor::FrameBg as usize] = [0.17, 0.48, 0.16, 0.54];
-    style.colors[StyleColor::FrameBgHovered as usize] = [0.26, 0.98, 0.32, 0.40];
-    style.colors[StyleColor::FrameBgActive as usize] = [0.26, 0.98, 0.28, 0.67];
-    style.colors[StyleColor::TitleBg as usize] = [0.01, 0.07, 0.01, 1.00];
-    style.colors[StyleColor::TitleBgActive as usize] = [0.0, 0.56, 0.29, 1.0];
-    style.colors[StyleColor::TitleBgCollapsed as usize] = [0.00, 0.56, 0.09, 0.51];
-    style.colors[StyleColor::MenuBarBg as usize] = [0.0, 0.56, 0.29, 1.0];
-    // style.colors[StyleColor::TitleBg as usize] = [0.01, 0.07, 0.01, 1.00];
-    // style.colors[StyleColor::TitleBgActive as usize] = [0.0, 0.29, 0.68, 1.0];
-    // style.colors[StyleColor::TitleBgCollapsed as usize] = [0.00, 0.56, 0.09, 0.51];
-    // style.colors[StyleColor::MenuBarBg as usize] = [0.0, 0.29, 0.68, 1.0];
-    style.colors[StyleColor::ScrollbarBg as usize] = [0.00, 0.15, 0.00, 0.53];
-    style.colors[StyleColor::ScrollbarGrab as usize] = [0.10, 0.41, 0.06, 1.00];
-    style.colors[StyleColor::ScrollbarGrabHovered as usize] = [0.00, 0.66, 0.04, 1.00];
-    style.colors[StyleColor::ScrollbarGrabActive as usize] = [0.04, 0.87, 0.00, 1.00];
-    style.colors[StyleColor::CheckMark as usize] = [0.26, 0.98, 0.40, 1.00];
-    style.colors[StyleColor::SliderGrab as usize] = [0.21, 0.61, 0.00, 1.00];
-    style.colors[StyleColor::SliderGrabActive as usize] = [0.36, 0.87, 0.22, 1.00];
-    style.colors[StyleColor::Button as usize] = [0.00, 0.60, 0.05, 0.40];
-    style.colors[StyleColor::ButtonHovered as usize] = [0.20, 0.78, 0.32, 1.00];
-    style.colors[StyleColor::ButtonActive as usize] = [0.00, 0.57, 0.07, 1.00];
-    style.colors[StyleColor::Header as usize] = [0.12, 0.82, 0.28, 0.31];
-    style.colors[StyleColor::HeaderHovered as usize] = [0.00, 0.74, 0.11, 0.80];
-    style.colors[StyleColor::HeaderActive as usize] = [0.09, 0.69, 0.04, 1.00];
-    style.colors[StyleColor::Separator as usize] = [0.09, 0.67, 0.01, 0.50];
-    style.colors[StyleColor::SeparatorHovered as usize] = [0.32, 0.75, 0.10, 0.78];
-    style.colors[StyleColor::SeparatorActive as usize] = [0.10, 0.75, 0.11, 1.00];
-    style.colors[StyleColor::ResizeGrip as usize] = [0.32, 0.98, 0.26, 0.20];
-    style.colors[StyleColor::ResizeGripHovered as usize] = [0.26, 0.98, 0.28, 0.67];
-    style.colors[StyleColor::ResizeGripActive as usize] = [0.22, 0.69, 0.06, 0.95];
-    style.colors[StyleColor::Tab as usize] = [0.18, 0.58, 0.18, 0.86];
-    style.colors[StyleColor::TabHovered as usize] = [0.26, 0.98, 0.28, 0.80];
-    style.colors[StyleColor::TabActive as usize] = [0.20, 0.68, 0.24, 1.00];
-    style.colors[StyleColor::TabUnfocused as usize] = [0.07, 0.15, 0.08, 0.97];
-    style.colors[StyleColor::TabUnfocusedActive as usize] = [0.14, 0.42, 0.19, 1.00];
-    style.colors[StyleColor::PlotLines as usize] = [0.61, 0.61, 0.61, 1.00];
-    style.colors[StyleColor::PlotLinesHovered as usize] = [1.00, 0.43, 0.35, 1.00];
-    style.colors[StyleColor::PlotHistogram as usize] = [0.90, 0.70, 0.00, 1.00];
-    style.colors[StyleColor::PlotHistogramHovered as usize] = [1.00, 0.60, 0.00, 1.00];
-    style.colors[StyleColor::TableHeaderBg as usize] = [0.19, 0.19, 0.20, 1.00];
-    style.colors[StyleColor::TableBorderStrong as usize] = [0.31, 0.31, 0.35, 1.00];
-    style.colors[StyleColor::TableBorderLight as usize] = [0.23, 0.23, 0.25, 1.00];
-    style.colors[StyleColor::TableRowBg as usize] = [0.00, 0.00, 0.00, 0.00];
-    style.colors[StyleColor::TableRowBgAlt as usize] = [1.00, 1.00, 1.00, 0.06];
-    style.colors[StyleColor::TextSelectedBg as usize] = [0.00, 0.89, 0.20, 0.35];
-    style.colors[StyleColor::DragDropTarget as usize] = [1.00, 1.00, 0.00, 0.90];
-    style.colors[StyleColor::NavHighlight as usize] = [0.26, 0.98, 0.35, 1.00];
-    style.colors[StyleColor::NavWindowingHighlight as usize] = [1.00, 1.00, 1.00, 0.70];
-    style.colors[StyleColor::NavWindowingDimBg as usize] = [0.80, 0.80, 0.80, 0.20];
-    style.colors[StyleColor::ModalWindowDimBg as usize] = [0.80, 0.80, 0.80, 0.35];
+/// The screen height the sizes below are designed for.
+const DESIGN_HEIGHT: f32 = 1080.0;
+/// Fonts are rasterised at this multiple of their 1080p size.
+const FONT_OVERSAMPLE: f32 = 2.0;
+const BODY_PX: f32 = 17.0;
+const HEADING_PX: f32 = 22.0;
+
+// Echelon, dark: slate greys with night-vision green as the accent.
+const BG: [f32; 4] = rgba(0x0f1518, 0.94);
+const SURFACE: [f32; 4] = rgba(0x1c252a, 1.0);
+const SURFACE_HOVER: [f32; 4] = rgba(0x273238, 1.0);
+const LINE: [f32; 4] = [1.0, 1.0, 1.0, 0.09];
+const ROW: [f32; 4] = [1.0, 1.0, 1.0, 0.03];
+const FG: [f32; 4] = rgba(0xe6edf0, 1.0);
+const MUTED: [f32; 4] = rgba(0x93a4ad, 1.0);
+const OFFLINE: [f32; 4] = rgba(0x93a4ad, 0.5);
+const ACCENT: [f32; 4] = rgba(0x8fd14f, 1.0);
+const ACCENT_HOVER: [f32; 4] = rgba(0xa7e070, 1.0);
+const ACCENT_SOFT: [f32; 4] = rgba(0x8fd14f, 0.16);
+const ON_ACCENT: [f32; 4] = rgba(0x0b1405, 1.0);
+const OK: [f32; 4] = rgba(0x3ecf9e, 1.0);
+const BAD: [f32; 4] = rgba(0xff6b6b, 1.0);
+const DIM: [f32; 4] = [0.0, 0.02, 0.03, 0.55];
+
+#[allow(clippy::cast_precision_loss)]
+const fn rgba(hex: u32, alpha: f32) -> [f32; 4] {
+    [((hex >> 16) & 0xff) as f32 / 255.0, ((hex >> 8) & 0xff) as f32 / 255.0, (hex & 0xff) as f32 / 255.0, alpha]
 }
 
-fn setup_fonts(imgui: &mut imgui::Context) {
-    let font_size = 13.0;
-    imgui.fonts().add_font(&[imgui::FontSource::TtfData {
-        data: include_bytes!("../../launcher/fonts/static/Orbitron-Regular.ttf"),
-        size_pixels: font_size,
-        config: Some(imgui::FontConfig {
-            name: Some(String::from("Orbitron")),
-            ..imgui::FontConfig::default()
-        }),
-    }]);
+fn theme_colors(style: &mut imgui::Style) {
+    let c = &mut style.colors;
+    c[StyleColor::Text as usize] = FG;
+    c[StyleColor::TextDisabled as usize] = MUTED;
+    c[StyleColor::WindowBg as usize] = BG;
+    c[StyleColor::ChildBg as usize] = [0.0, 0.0, 0.0, 0.0];
+    c[StyleColor::PopupBg as usize] = BG;
+    c[StyleColor::Border as usize] = LINE;
+    c[StyleColor::BorderShadow as usize] = [0.0, 0.0, 0.0, 0.0];
+    c[StyleColor::FrameBg as usize] = SURFACE;
+    c[StyleColor::FrameBgHovered as usize] = SURFACE_HOVER;
+    c[StyleColor::FrameBgActive as usize] = SURFACE_HOVER;
+    c[StyleColor::TitleBg as usize] = BG;
+    c[StyleColor::TitleBgActive as usize] = BG;
+    c[StyleColor::TitleBgCollapsed as usize] = BG;
+    c[StyleColor::ScrollbarBg as usize] = [0.0, 0.0, 0.0, 0.0];
+    c[StyleColor::ScrollbarGrab as usize] = SURFACE;
+    c[StyleColor::ScrollbarGrabHovered as usize] = SURFACE_HOVER;
+    c[StyleColor::ScrollbarGrabActive as usize] = SURFACE_HOVER;
+    c[StyleColor::CheckMark as usize] = ACCENT;
+    c[StyleColor::SliderGrab as usize] = ACCENT;
+    c[StyleColor::SliderGrabActive as usize] = ACCENT_HOVER;
+    c[StyleColor::Button as usize] = SURFACE;
+    c[StyleColor::ButtonHovered as usize] = SURFACE_HOVER;
+    c[StyleColor::ButtonActive as usize] = SURFACE_HOVER;
+    c[StyleColor::Header as usize] = ACCENT_SOFT;
+    c[StyleColor::HeaderHovered as usize] = ACCENT_SOFT;
+    c[StyleColor::HeaderActive as usize] = ACCENT_SOFT;
+    c[StyleColor::Separator as usize] = LINE;
+    c[StyleColor::SeparatorHovered as usize] = LINE;
+    c[StyleColor::SeparatorActive as usize] = LINE;
+    c[StyleColor::ResizeGrip as usize] = [0.0, 0.0, 0.0, 0.0];
+    c[StyleColor::ResizeGripHovered as usize] = [0.0, 0.0, 0.0, 0.0];
+    c[StyleColor::ResizeGripActive as usize] = [0.0, 0.0, 0.0, 0.0];
+    c[StyleColor::TextSelectedBg as usize] = ACCENT_SOFT;
+    c[StyleColor::NavHighlight as usize] = ACCENT;
+}
+
+/// Sizes at 1080p, multiplied by `s` for the current screen.
+fn theme_sizes(style: &mut imgui::Style, s: f32) {
+    style.window_rounding = 10.0 * s;
+    style.child_rounding = 8.0 * s;
+    style.frame_rounding = 7.0 * s;
+    style.popup_rounding = 8.0 * s;
+    style.grab_rounding = 7.0 * s;
+    style.scrollbar_rounding = 7.0 * s;
+    style.window_border_size = 1.0;
+    style.child_border_size = 0.0;
+    style.frame_border_size = 0.0;
+    style.window_padding = [18.0 * s, 16.0 * s];
+    style.frame_padding = [14.0 * s, 9.0 * s];
+    style.item_spacing = [10.0 * s, 10.0 * s];
+    style.item_inner_spacing = [8.0 * s, 6.0 * s];
+    style.scrollbar_size = 10.0 * s;
+}
+
+struct Fonts {
+    strong: FontId,
+    heading: FontId,
+}
+
+// SAFETY: a FontId is a pointer into the font atlas, which the imgui context
+// owns for as long as the overlay lives. The ids are only used on the render
+// thread (in `render`), never dereferenced elsewhere; hudhook merely requires
+// the render loop to be Send + Sync.
+unsafe impl Send for Fonts {}
+unsafe impl Sync for Fonts {}
+
+fn add_fonts(ctx: &mut imgui::Context) -> Fonts {
+    let mut add = |data: &'static [u8], px: f32, name: &str| {
+        ctx.fonts().add_font(&[imgui::FontSource::TtfData {
+            data,
+            size_pixels: px * FONT_OVERSAMPLE,
+            config: Some(imgui::FontConfig {
+                name: Some(String::from(name)),
+                ..imgui::FontConfig::default()
+            }),
+        }])
+    };
+    // The first font added is imgui's default: body text.
+    add(include_bytes!("../fonts/IBMPlexSans-Regular.ttf"), BODY_PX, "IBM Plex Sans");
+    let strong = add(include_bytes!("../fonts/IBMPlexSans-SemiBold.ttf"), BODY_PX, "IBM Plex Sans SemiBold");
+    let heading = add(include_bytes!("../fonts/IBMPlexSans-SemiBold.ttf"), HEADING_PX, "IBM Plex Sans SemiBold (heading)");
+    Fonts { strong, heading }
 }
 
 #[allow(dead_code)]
@@ -113,28 +178,69 @@ impl Engine {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 enum UiState {
     Show,
     #[default]
     Hide,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+enum Tab {
+    #[default]
+    Players,
+    Invites,
+    Match,
+    Server,
+}
+
+impl Tab {
+    const ALL: [Tab; 4] = [Tab::Players, Tab::Invites, Tab::Match, Tab::Server];
+
+    fn label(self) -> &'static str {
+        match self {
+            Tab::Players => "Players",
+            Tab::Invites => "Invites",
+            Tab::Match => "Match",
+            Tab::Server => "Server",
+        }
+    }
+}
+
 struct Invite {
     event: InviteEvent,
     clicked: bool,
+    received: Instant,
+}
+
+/// A short result message of our own (signing in again).
+struct LocalNotice {
+    text: String,
+    error: bool,
+    at: Instant,
 }
 
 struct MyRenderLoop {
     tx: mpsc::Sender<Event>,
+    /// For the developer window (OverlayDebug).
     username: String,
     ui_state: UiState,
-    debounce: bool,
+    tab: Tab,
+    f5_down: bool,
+    esc_down: bool,
     invite_notification: Option<(Instant, String)>,
     new_invites: crossbeam_channel::Receiver<Result<Option<InviteEvent>, crate::api::Error>>,
     active_invites: Vec<Invite>,
     connection_error: Option<crate::api::Error>,
     initial_popup: Instant,
+    fonts: Option<Fonts>,
+    /// Screen scale for this frame (1.0 at 1080p).
+    s: f32,
+    data: community::Snapshot,
+    local_notice: Option<LocalNotice>,
+    relogin: Option<std::thread::JoinHandle<bool>>,
+    /// When the panel last asked for fresh data.
+    last_refresh: Instant,
 }
 
 /// Builds the Uplay event that hands an accepted invitation to the game.
@@ -148,14 +254,56 @@ fn invite_accept_event(user_id: String) -> Event {
     }
 }
 
+/// Where the player fixes their setup: the tool that manages this install
+/// (the override file's `[Managed]`), or the launcher.
+fn setup_tool() -> String {
+    hooks_config::get()
+        .and_then(|cfg| cfg.managed.as_ref())
+        .map_or_else(|| String::from("the 5th Echelon launcher"), |m| m.by.clone())
+}
+
+/// What to do when the server can't be reached: the managing tool's own
+/// advice if it gave some.
+fn server_fix_hint() -> String {
+    hooks_config::get()
+        .and_then(|cfg| cfg.managed.as_ref())
+        .and_then(|m| m.help_text.clone())
+        .unwrap_or_else(|| format!("If this lasts, open {} and check that the server shows as online.", setup_tool()))
+}
+
+/// What a connection error means for the player, and what to do about it.
+fn describe_error(err: &crate::api::Error) -> (&'static str, String) {
+    let fix = server_fix_hint();
+    let tool = setup_tool();
+    match err {
+        crate::api::Error::MissingUrl => ("5th Echelon isn't set up", format!("No server is set for the game. Open {tool} and set up a server.")),
+        crate::api::Error::LoginFailure | crate::api::Error::InvalidToken(_) => (
+            "Couldn't sign in to the server",
+            format!("Your account or password was refused. Open {tool} and sign in again."),
+        ),
+        // Calls sign in again on their own; this is what's left when that failed too.
+        crate::api::Error::GRPCStatus(e) if e.code() == tonic::Code::Unauthenticated => (
+            "Signed out by the server",
+            format!("Signing in again didn't work. Open {tool} and sign in again."),
+        ),
+        _ => ("Lost the 5th Echelon server", format!("Reconnecting now. Invites are paused until it's back. {fix}")),
+    }
+}
+
 impl MyRenderLoop {
-    fn render_show(&mut self, ui: &imgui::Ui) {
-        self.show_debug(ui);
-        self.show_advanced(ui);
+    fn s(&self, v: f32) -> f32 {
+        v * self.s
     }
 
-    #[allow(clippy::unused_self, unused_variables, clippy::needless_pass_by_ref_mut)]
-    fn render_hide(&mut self, ui: &mut imgui::Ui) {}
+    fn with_font<R>(&self, ui: &Ui, pick: impl FnOnce(&Fonts) -> FontId, f: impl FnOnce() -> R) -> R {
+        match &self.fonts {
+            Some(fonts) => {
+                let _t = ui.push_font(pick(fonts));
+                f()
+            }
+            None => f(),
+        }
+    }
 
     fn join_session(&self, sender: &User) {
         let event = invite_accept_event(sender.id.clone());
@@ -163,159 +311,619 @@ impl MyRenderLoop {
         self.tx.send(event).unwrap();
     }
 
-    fn show_invites(&mut self, ui: &imgui::Ui) {
-        if let Some((expires, user)) = self.invite_notification.as_ref() {
-            if expires.elapsed() > NOTIFICATION_TIMEOUT {
-                self.invite_notification.take();
-            } else {
-                let win_size = ui.io().display_size;
-                ui.window("Invite")
-                    .bg_alpha(0.45)
-                    .no_decoration()
-                    .no_inputs()
-                    .no_nav()
-                    .movable(false)
-                    .menu_bar(false)
-                    .always_auto_resize(true)
-                    .position([win_size[0] - 10.0, 10.0], imgui::Condition::Always)
-                    .position_pivot([1.0, 0.0])
-                    .build(|| {
-                        ui.text("Invitation from ");
-                        ui.same_line();
-                        ui.text_colored([1.0, 0.0, 0.0, 1.0], user);
-                        let diff = NOTIFICATION_TIMEOUT - expires.elapsed();
-                        ui.text(format!("{}s", diff.as_secs()));
-                    });
+    fn toggle(&mut self) {
+        self.ui_state = match self.ui_state {
+            UiState::Show => UiState::Hide,
+            UiState::Hide => {
+                community::refresh();
+                self.last_refresh = Instant::now();
+                // Open where there's something to act on.
+                if !self.active_invites.is_empty() {
+                    self.tab = Tab::Invites;
+                }
+                UiState::Show
             }
+        };
+    }
+
+    fn poll_keys(&mut self) {
+        #[allow(clippy::cast_possible_wrap)]
+        let down = |vk: u16| unsafe { GetAsyncKeyState(vk.into()) & 0x8000u16 as i16 != 0 };
+        let f5 = down(VK_F5.0);
+        if f5 && !self.f5_down {
+            self.toggle();
+        }
+        self.f5_down = f5;
+        let esc = down(VK_ESCAPE.0);
+        if esc && !self.esc_down && self.ui_state == UiState::Show {
+            self.ui_state = UiState::Hide;
+        }
+        self.esc_down = esc;
+    }
+
+    fn poll_invites(&mut self) {
+        if let Ok(evt) = self.new_invites.try_recv() {
+            match evt {
+                Err(e) => self.connection_error = Some(e),
+                Ok(evt) => {
+                    self.connection_error = None;
+                    if let Some(evt) = evt {
+                        if let Some(ref sender) = evt.sender {
+                            self.invite_notification.replace((Instant::now(), sender.username.clone()));
+                        }
+                        let force_join = evt.force_join;
+                        if evt.sender.is_some() && (force_join || hooks_config::get().unwrap().auto_join_invite) {
+                            self.join_session(&evt.sender.unwrap());
+                        } else {
+                            self.active_invites.push(Invite {
+                                event: evt,
+                                clicked: force_join,
+                                received: Instant::now(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+        // Answered invites go; unanswered ones expire with their notification.
+        self.active_invites.retain(|i| !i.clicked && i.received.elapsed() < NOTIFICATION_TIMEOUT);
+    }
+
+    fn poll_relogin(&mut self) {
+        if self.relogin.as_ref().is_some_and(std::thread::JoinHandle::is_finished) {
+            let ok = self.relogin.take().and_then(|h| h.join().ok()).unwrap_or(false);
+            self.local_notice = Some(LocalNotice {
+                text: if ok {
+                    String::from("Signed in again")
+                } else {
+                    format!("Couldn't sign in. {}", server_fix_hint())
+                },
+                error: !ok,
+                at: Instant::now(),
+            });
+            community::refresh();
         }
     }
 
-    fn show_initial_info(&self, ui: &imgui::Ui) {
-        if let Some(dur) = self.initial_popup.checked_duration_since(Instant::now()) {
-            let win_size = ui.io().display_size;
-            ui.window("Overlay loaded.")
-                .bg_alpha(0.45)
-                .no_decoration()
-                .no_inputs()
-                .no_nav()
-                .title_bar(true)
-                .movable(false)
-                .menu_bar(false)
-                .always_auto_resize(true)
-                .position([win_size[0] - 10.0, 10.0], imgui::Condition::Always)
-                .position_pivot([1.0, 0.0])
-                .build(|| {
-                    ui.text("Press");
-                    ui.same_line();
-                    ui.text_colored([1.0, 0.0, 0.0, 1.0], "F5");
-                    ui.same_line();
-                    ui.text("to open it.");
+    // ---------- Toasts and banners ----------
 
-                    // TODO: draw decreasing bar (doesn't work right now)
-                    let ws = ui.window_size();
-                    let draw_list = ui.get_window_draw_list();
-                    draw_list
-                        .add_line(
-                            [0., ws[1]],
-                            [ws[0] * (dur.as_secs_f32() / INITIAL_POPUP_DURATION.as_secs_f32()), ws[1]],
-                            [1.0, 0.0, 0.0, 1.0],
-                        )
+    /// A small window in the top-right corner. `progress` (1 down to 0) draws
+    /// the draining bar along its bottom edge.
+    fn toast(&self, ui: &Ui, id: &str, progress: Option<f32>, body: impl FnOnce()) {
+        let win = ui.io().display_size;
+        let margin = self.s(20.0);
+        let _p = ui.push_style_var(StyleVar::WindowPadding([self.s(18.0), self.s(14.0)]));
+        ui.window(id)
+            .no_decoration()
+            .no_inputs()
+            .no_nav()
+            .movable(false)
+            .focus_on_appearing(false)
+            .always_auto_resize(true)
+            .size([self.s(400.0), 0.0], Condition::Always)
+            .position([win[0] - margin, margin], Condition::Always)
+            .position_pivot([1.0, 0.0])
+            .build(|| {
+                body();
+                if let Some(p) = progress {
+                    let pos = ui.window_pos();
+                    let size = ui.window_size();
+                    let h = self.s(3.0);
+                    ui.get_window_draw_list()
+                        .add_rect([pos[0], pos[1] + size[1] - h], [pos[0] + size[0] * p.clamp(0.0, 1.0), pos[1] + size[1]], ACCENT)
+                        .filled(true)
                         .build();
-                });
-        }
+                }
+            });
     }
 
-    fn show_errors(&mut self, ui: &imgui::Ui) {
-        if let Some(err) = &self.connection_error {
-            let win_size = ui.io().display_size;
-            ui.window("Error")
-                .bg_alpha(0.45)
-                .no_decoration()
-                .no_inputs()
-                .no_nav()
-                .movable(false)
-                .menu_bar(false)
-                .always_auto_resize(true)
-                .position([win_size[0] - 10.0, 10.0], imgui::Condition::Always)
-                .position_pivot([1.0, 0.0])
-                .build(|| {
-                    ui.text_colored([1.0, 0.0, 0.0, 1.0], "SERVER ERROR");
-                    let msg = match err {
-                        crate::api::Error::IO(e) => format!("{e}"),
-                        crate::api::Error::MissingUrl => "API server not configured".into(),
-                        crate::api::Error::Transport(e) => format!("{e}"),
-                        crate::api::Error::GRPCStatus(e) => match e.code() {
-                            tonic::Code::Ok => unreachable!(),
-                            tonic::Code::DeadlineExceeded => "Connection lost".into(),
-                            tonic::Code::Unauthenticated => "Unauthenticated. Relogin required".into(),
-                            _ => format!("{}", e.code()),
-                        },
-                        crate::api::Error::LoginFailure => "Login failed".into(),
-                        crate::api::Error::InvalidToken(_) => "Relogin required".into(),
-                        crate::api::Error::NotConnected => "Not connected".into(),
-                    };
-                    ui.text_colored([1.0, 0.0, 0.0, 1.0], msg);
-                });
-        }
+    fn heading(&self, ui: &Ui, text: &str) {
+        self.with_font(ui, |f| f.heading, || ui.text(text));
     }
 
-    #[allow(clippy::unused_self)]
-    fn show_advanced(&mut self, ui: &imgui::Ui) {
-        ui.window("Advanced").always_auto_resize(true).resizable(false).build(|| {
-            let mut has_fields = false;
-            if let Some(mpv) = unsafe { get_min_players_var().as_mut() } {
-                ui.input_int("Min Number of Players", mpv).build();
-                has_fields = true;
-            }
-            if let Some(mpv) = unsafe { get_max_players_var().as_mut() } {
-                ui.input_int("Max Number of Players", mpv).build();
-                has_fields = true;
-            }
+    /// A key cap, e.g. F5, inline with the text.
+    fn key(&self, ui: &Ui, key: &str) {
+        let pad = [self.s(6.0), self.s(2.0)];
+        let size = ui.calc_text_size(key);
+        let pos = ui.cursor_screen_pos();
+        let dl = ui.get_window_draw_list();
+        dl.add_rect(pos, [pos[0] + size[0] + pad[0] * 2.0, pos[1] + size[1] + pad[1] * 2.0], ACCENT)
+            .filled(true)
+            .rounding(self.s(4.0))
+            .build();
+        dl.add_text([pos[0] + pad[0], pos[1] + pad[1]], ON_ACCENT, key);
+        ui.dummy([size[0] + pad[0] * 2.0, size[1] + pad[1] * 2.0]);
+    }
 
-            if !has_fields {
-                ui.text_colored([1.0, 1.0, 0.0, 0.0], "No advanced settings available!");
+    fn show_initial_info(&self, ui: &Ui) {
+        let Some(left) = self.initial_popup.checked_duration_since(Instant::now()) else {
+            return;
+        };
+        if self.ui_state == UiState::Show || self.invite_notification.is_some() {
+            return;
+        }
+        let progress = left.as_secs_f32() / INITIAL_POPUP_DURATION.as_secs_f32();
+        self.toast(ui, "##fe-start", Some(progress), || {
+            self.heading(ui, PRODUCT);
+            let who = crate::api::username().map_or_else(|| String::from("Connecting"), |u| format!("Signed in as {u}"));
+            let sub = if self.data.loaded {
+                match self.data.online_count() {
+                    0 => format!("{who}. No friends online yet."),
+                    1 => format!("{who}. 1 friend online."),
+                    n => format!("{who}. {n} friends online."),
+                }
+            } else {
+                who
+            };
+            ui.text_colored(MUTED, sub);
+            ui.text_colored(MUTED, "Press");
+            ui.same_line();
+            self.key(ui, "F5");
+            ui.same_line();
+            ui.text_colored(MUTED, "for players, invites and match settings");
+        });
+    }
+
+    fn show_invite_toast(&mut self, ui: &Ui) {
+        let Some((received, user)) = self.invite_notification.clone() else {
+            return;
+        };
+        let elapsed = received.elapsed();
+        if elapsed > NOTIFICATION_TIMEOUT {
+            self.invite_notification = None;
+            return;
+        }
+        if self.ui_state == UiState::Show {
+            return;
+        }
+        let left = NOTIFICATION_TIMEOUT - elapsed;
+        let activity = self.data.activity_of(&user).map(String::from);
+        let pending = self.active_invites.iter().any(|i| i.event.sender.as_ref().is_some_and(|s| s.username == user));
+        self.toast(ui, "##fe-invite", Some(left.as_secs_f32() / NOTIFICATION_TIMEOUT.as_secs_f32()), || {
+            self.heading(ui, &format!("{user} invited you"));
+            if let Some(activity) = &activity {
+                ui.text_colored(MUTED, activity);
+            }
+            if pending {
+                self.key(ui, "F5");
+                ui.same_line();
+                ui.text_colored(MUTED, format!("accept or decline  ·  {} s", left.as_secs()));
+            } else {
+                ui.text_colored(MUTED, "Joining their match...");
             }
         });
     }
 
-    fn show_debug(&mut self, ui: &imgui::Ui) {
-        let win_size = ui.io().display_size;
-        ui.window("Debug")
-            .position([win_size[0] - 10.0, 10.0], imgui::Condition::FirstUseEver)
-            .position_pivot([1.0, 0.0])
+    fn show_error_banner(&self, ui: &Ui) {
+        let Some(err) = &self.connection_error else {
+            return;
+        };
+        let (title, detail) = describe_error(err);
+        let win = ui.io().display_size;
+        let _p = ui.push_style_var(StyleVar::WindowPadding([self.s(22.0), self.s(14.0)]));
+        ui.window("##fe-error")
+            .no_decoration()
+            .no_inputs()
+            .no_nav()
+            .movable(false)
+            .focus_on_appearing(false)
             .always_auto_resize(true)
+            .size([self.s(620.0), 0.0], Condition::Always)
+            .position([win[0] / 2.0, self.s(20.0)], Condition::Always)
+            .position_pivot([0.5, 0.0])
             .build(|| {
-                ui.input_text("username", &mut self.username).build();
-                if ui.button("Friend Accepted Invite") {
-                    info!("Send friend invite accept for {}", self.username);
-                    self.tx.send(Event::FriendsGameInviteAccepted(self.username.clone())).unwrap();
-                }
-                ui.same_line();
-                if ui.button("Party Accepted Invite") {
-                    info!("Send party invite accept for {}", self.username);
-                    self.tx.send(Event::PartyGameInviteAccepted(self.username.clone())).unwrap();
-                }
+                let pos = ui.window_pos();
+                let size = ui.window_size();
+                ui.get_window_draw_list().add_rect(pos, [pos[0] + self.s(4.0), pos[1] + size[1]], BAD).filled(true).build();
+                self.with_font(ui, |f| f.heading, || ui.text_colored(BAD, title));
+                let _c = ui.push_style_color(StyleColor::Text, MUTED);
+                ui.text_wrapped(detail);
             });
+    }
 
-        if !self.active_invites.is_empty() {
-            ui.window("Invites").position_pivot([0.5, 0.5]).build(|| {
-                for invite in &mut self.active_invites {
-                    if let Some(ref sender) = invite.event.sender {
-                        ui.text(sender.username.as_str());
-                        ui.disabled(invite.clicked, || {
-                            if ui.button("Accept") {
-                                self.tx.send(invite_accept_event(sender.id.clone())).unwrap();
-                                self.ui_state = UiState::Hide;
-                                invite.clicked = true;
-                            }
+    /// Short results (invite sent, signed in again) at the bottom centre.
+    fn show_notice(&self, ui: &Ui) {
+        let shared = self.data.notice.as_ref().map(|n| (n.text.as_str(), n.error, n.at));
+        let local = self.local_notice.as_ref().map(|n| (n.text.as_str(), n.error, n.at));
+        let latest = [shared, local]
+            .into_iter()
+            .flatten()
+            .filter(|(_, _, at)| at.elapsed() < NOTICE_DURATION)
+            .max_by_key(|(_, _, at)| *at);
+        let Some((text, error, _)) = latest else {
+            return;
+        };
+        let win = ui.io().display_size;
+        ui.window("##fe-notice")
+            .no_decoration()
+            .no_inputs()
+            .no_nav()
+            .movable(false)
+            .focus_on_appearing(false)
+            .always_auto_resize(true)
+            .position([win[0] / 2.0, win[1] - self.s(48.0)], Condition::Always)
+            .position_pivot([0.5, 1.0])
+            .build(|| {
+                ui.text_colored(if error { BAD } else { FG }, text);
+            });
+    }
+
+    // ---------- The panel ----------
+
+    fn show_panel(&mut self, ui: &Ui) {
+        let win = ui.io().display_size;
+        ui.get_background_draw_list().add_rect([0.0, 0.0], win, DIM).filled(true).build();
+
+        let size = [self.s(900.0).min(win[0] - self.s(40.0)), self.s(620.0).min(win[1] - self.s(40.0))];
+        let _p = ui.push_style_var(StyleVar::WindowPadding([0.0, 0.0]));
+        let _r = ui.push_style_var(StyleVar::WindowRounding(self.s(12.0)));
+        ui.window("5th Echelon Enhanced##fe-panel")
+            .no_decoration()
+            .movable(false)
+            .resizable(false)
+            .size(size, Condition::Always)
+            .position([win[0] / 2.0, win[1] / 2.0], Condition::Always)
+            .position_pivot([0.5, 0.5])
+            .build(|| {
+                let header_h = self.s(64.0);
+                let footer_h = self.s(46.0);
+                self.panel_header(ui, size[0], header_h);
+                let body_h = size[1] - header_h - footer_h;
+                ui.set_cursor_pos([0.0, header_h]);
+                ui.child_window("##fe-nav").size([self.s(200.0), body_h]).build(|| self.panel_nav(ui));
+                ui.same_line_with_spacing(0.0, 0.0);
+                {
+                    let _cp = ui.push_style_var(StyleVar::WindowPadding([self.s(26.0), self.s(20.0)]));
+                    ui.child_window("##fe-content")
+                        .size([0.0, body_h])
+                        .always_use_window_padding(true)
+                        .build(|| match self.tab {
+                            Tab::Players => self.pane_players(ui),
+                            Tab::Invites => self.pane_invites(ui),
+                            Tab::Match => self.pane_match(ui),
+                            Tab::Server => self.pane_server(ui),
                         });
-                    }
+                }
+                self.panel_footer(ui, size, footer_h);
+            });
+    }
+
+    fn panel_header(&self, ui: &Ui, width: f32, h: f32) {
+        let pos = ui.window_pos();
+        ui.get_window_draw_list().add_line([pos[0], pos[1] + h], [pos[0] + width, pos[1] + h], LINE).build();
+        let pad = self.s(24.0);
+
+        // Name and release on the left.
+        let title_h = self.with_font(ui, |f| f.heading, || ui.calc_text_size(PRODUCT))[1];
+        ui.set_cursor_pos([pad, (h - title_h) / 2.0]);
+        self.heading(ui, PRODUCT);
+        ui.same_line();
+        let body_h = ui.text_line_height();
+        ui.set_cursor_pos([ui.cursor_pos()[0], (h - body_h) / 2.0]);
+        ui.text_colored(MUTED, RELEASE);
+
+        // Connection on the right.
+        let (dot, status) = if self.connection_error.is_some() {
+            (BAD, String::from("Not connected"))
+        } else {
+            let ms = self.data.response_time.map(|d| format!("{} ms", d.as_millis()));
+            let parts: Vec<String> = [Some(String::from("Connected")), ms, crate::api::username()].into_iter().flatten().collect();
+            (OK, parts.join("  ·  "))
+        };
+        let text_w = ui.calc_text_size(&status)[0];
+        let x = width - pad - text_w;
+        let r = self.s(4.5);
+        ui.get_window_draw_list().add_circle([pos[0] + x - r * 3.0, pos[1] + h / 2.0], r, dot).filled(true).build();
+        ui.set_cursor_pos([x, (h - body_h) / 2.0]);
+        ui.text_colored(MUTED, status);
+    }
+
+    fn panel_nav(&mut self, ui: &Ui) {
+        let pos = ui.window_pos();
+        let size = ui.window_size();
+        ui.get_window_draw_list()
+            .add_line([pos[0] + size[0] - 1.0, pos[1]], [pos[0] + size[0] - 1.0, pos[1] + size[1]], LINE)
+            .build();
+        let pad = self.s(12.0);
+        let item_h = self.s(44.0);
+        let pending = self.active_invites.len();
+        #[allow(clippy::cast_precision_loss)]
+        for (i, tab) in Tab::ALL.into_iter().enumerate() {
+            let top = pad + i as f32 * (item_h + self.s(4.0));
+            ui.set_cursor_pos([pad, top]);
+            let p = ui.cursor_screen_pos();
+            let w = size[0] - pad * 2.0;
+            if ui.invisible_button(format!("##fe-tab-{i}"), [w, item_h]) {
+                self.tab = tab;
+            }
+            let hovered = ui.is_item_hovered();
+            let selected = self.tab == tab;
+            let dl = ui.get_window_draw_list();
+            if selected || hovered {
+                dl.add_rect(p, [p[0] + w, p[1] + item_h], if selected { ACCENT_SOFT } else { ROW })
+                    .filled(true)
+                    .rounding(self.s(7.0))
+                    .build();
+            }
+            if selected {
+                dl.add_rect(p, [p[0] + self.s(3.0), p[1] + item_h], ACCENT).filled(true).build();
+            }
+            let label = tab.label();
+            // Through the same `dl`: imgui-rs allows one window draw list at a
+            // time, and a second get_window_draw_list() here panics.
+            self.with_font(
+                ui,
+                |f| f.strong,
+                || {
+                    let th = ui.calc_text_size(label)[1];
+                    dl.add_text([p[0] + self.s(16.0), p[1] + (item_h - th) / 2.0], if selected { FG } else { MUTED }, label);
+                },
+            );
+            if tab == Tab::Invites && pending > 0 {
+                let n = pending.to_string();
+                let ts = ui.calc_text_size(&n);
+                let bw = ts[0] + self.s(12.0);
+                let bh = ts[1] + self.s(4.0);
+                let bx = p[0] + w - bw - self.s(10.0);
+                let by = p[1] + (item_h - bh) / 2.0;
+                dl.add_rect([bx, by], [bx + bw, by + bh], ACCENT).filled(true).rounding(bh / 2.0).build();
+                dl.add_text([bx + self.s(6.0), by + self.s(2.0)], ON_ACCENT, &n);
+            }
+        }
+    }
+
+    fn panel_footer(&self, ui: &Ui, size: [f32; 2], h: f32) {
+        let pos = ui.window_pos();
+        let top = size[1] - h;
+        ui.get_window_draw_list().add_line([pos[0], pos[1] + top], [pos[0] + size[0], pos[1] + top], LINE).build();
+        let line_h = ui.text_line_height() + self.s(4.0);
+        ui.set_cursor_pos([self.s(24.0), top + (h - line_h) / 2.0]);
+        self.key(ui, "F5");
+        ui.same_line();
+        ui.text_colored(MUTED, "or");
+        ui.same_line();
+        self.key(ui, "Esc");
+        ui.same_line();
+        ui.text_colored(MUTED, "closes.   The game gets no mouse or keys while this is open.");
+    }
+
+    fn pane_title(&self, ui: &Ui, title: &str, note: &str) {
+        self.heading(ui, title);
+        if !note.is_empty() {
+            let _c = ui.push_style_color(StyleColor::Text, MUTED);
+            ui.text_wrapped(note);
+        }
+        ui.dummy([0.0, self.s(4.0)]);
+    }
+
+    /// A striped row with a title and a muted detail line on the left, and
+    /// `action` (buttons `action_w` wide) on the right.
+    #[allow(clippy::too_many_arguments)]
+    fn row(&self, ui: &Ui, i: usize, dot: Option<[f32; 4]>, title: &str, detail: &str, action_w: f32, action: impl FnOnce()) {
+        let avail = ui.content_region_avail()[0];
+        let start = ui.cursor_screen_pos();
+        let local = ui.cursor_pos();
+        let pad = self.s(12.0);
+        let line = ui.text_line_height();
+        let h = line * 2.0 + self.s(22.0);
+        // Scoped: `action` may draw too, and only one window draw list can
+        // be held at a time.
+        let text_x = {
+            let dl = ui.get_window_draw_list();
+            if i % 2 == 0 {
+                dl.add_rect(start, [start[0] + avail, start[1] + h], ROW).filled(true).rounding(self.s(7.0)).build();
+            }
+            if let Some(color) = dot {
+                let r = self.s(4.5);
+                dl.add_circle([start[0] + pad + r, start[1] + h / 2.0], r, color).filled(true).build();
+                pad + r * 2.0 + self.s(12.0)
+            } else {
+                pad
+            }
+        };
+        ui.set_cursor_pos([local[0] + text_x, local[1] + self.s(10.0)]);
+        self.with_font(ui, |f| f.strong, || ui.text(title));
+        ui.set_cursor_pos([local[0] + text_x, local[1] + self.s(12.0) + line]);
+        ui.text_colored(MUTED, detail);
+        if action_w > 0.0 {
+            let button_h = line + self.s(18.0);
+            ui.set_cursor_pos([local[0] + avail - pad - action_w, local[1] + (h - button_h) / 2.0]);
+            action();
+        }
+        ui.set_cursor_pos([local[0], local[1] + h + self.s(2.0)]);
+        ui.dummy([0.0, 0.0]);
+    }
+
+    fn button(&self, ui: &Ui, label: &str, primary: bool) -> bool {
+        let _colors = primary.then(|| {
+            (
+                ui.push_style_color(StyleColor::Button, ACCENT),
+                ui.push_style_color(StyleColor::ButtonHovered, ACCENT_HOVER),
+                ui.push_style_color(StyleColor::ButtonActive, ACCENT_HOVER),
+                ui.push_style_color(StyleColor::Text, ON_ACCENT),
+            )
+        });
+        self.with_font(ui, |f| f.strong, || ui.button(label))
+    }
+
+    fn button_width(&self, ui: &Ui, label: &str) -> f32 {
+        let visible = label.split("##").next().unwrap_or(label);
+        self.with_font(ui, |f| f.strong, || ui.calc_text_size(visible))[0] + self.s(14.0) * 2.0
+    }
+
+    fn pane_players(&self, ui: &Ui) {
+        self.pane_title(ui, "Players", "Everyone with an account on this server. Invite anyone who's online.");
+        if !self.data.loaded {
+            ui.text_colored(MUTED, "Loading players...");
+            return;
+        }
+        if self.data.players.is_empty() {
+            ui.text_colored(MUTED, "No one else has an account on this server yet.");
+            return;
+        }
+        for (i, p) in self.data.players.iter().enumerate() {
+            let detail = if p.online {
+                p.activity.clone().unwrap_or_else(|| String::from("Online, in the menus"))
+            } else {
+                String::from("Offline")
+            };
+            let label = format!("Invite##fe-inv-{}", p.id);
+            let w = if p.online { self.button_width(ui, &label) } else { 0.0 };
+            self.row(ui, i, Some(if p.online { OK } else { OFFLINE }), &p.name, &detail, w, || {
+                if self.button(ui, &label, false) {
+                    community::invite(p.id.clone(), p.name.clone());
                 }
             });
         }
+    }
 
-        let color = [0.0, 0.0, 0.0, 0.5];
-        ui.get_background_draw_list().add_rect([0.0, 0.0], win_size, color).filled(true).build();
+    fn pane_invites(&mut self, ui: &Ui) {
+        self.pane_title(ui, "Invites", "Accepting takes you straight into their match.");
+        if self.active_invites.is_empty() {
+            let _c = ui.push_style_color(StyleColor::Text, MUTED);
+            ui.text_wrapped("No invites right now. When someone invites you, it shows up here and in the corner of the screen.");
+        }
+        let mut accept = None;
+        let mut decline = None;
+        for (i, invite) in self.active_invites.iter().enumerate() {
+            let Some(sender) = invite.event.sender.as_ref() else {
+                continue;
+            };
+            let left = NOTIFICATION_TIMEOUT.saturating_sub(invite.received.elapsed()).as_secs();
+            let detail = match self.data.activity_of(&sender.username) {
+                Some(a) => format!("{a}  ·  {left} s left"),
+                None => format!("{left} s left"),
+            };
+            let accept_label = format!("Accept##fe-acc-{i}");
+            let decline_label = format!("Decline##fe-dec-{i}");
+            let w = self.button_width(ui, &accept_label) + self.button_width(ui, &decline_label) + self.s(10.0);
+            self.row(ui, i, Some(OK), &sender.username, &detail, w, || {
+                if self.button(ui, &decline_label, false) {
+                    decline = Some(i);
+                }
+                ui.same_line();
+                if self.button(ui, &accept_label, true) {
+                    accept = Some(i);
+                }
+            });
+        }
+        if let Some(i) = accept {
+            if let Some(sender) = self.active_invites[i].event.sender.clone() {
+                self.tx.send(invite_accept_event(sender.id)).unwrap();
+            }
+            self.active_invites[i].clicked = true;
+            self.invite_notification = None;
+            self.ui_state = UiState::Hide;
+        } else if let Some(i) = decline {
+            self.active_invites.remove(i);
+            self.invite_notification = None;
+        }
+        ui.dummy([0.0, self.s(8.0)]);
+        let auto = hooks_config::get().is_some_and(|c| c.auto_join_invite);
+        ui.text_colored(
+            MUTED,
+            if auto {
+                "Joining invites automatically is on (AutoJoinInvite in uplay.toml)."
+            } else {
+                "Joining invites automatically is off (AutoJoinInvite in uplay.toml)."
+            },
+        );
+    }
+
+    /// The lobby's player counts, which the game only has while you're in a
+    /// lobby (the fields live in its game session).
+    fn pane_match(&self, ui: &Ui) {
+        let min = unsafe { get_min_players_var().as_mut() };
+        let max = unsafe { get_max_players_var().as_mut() };
+        let (Some(min), Some(max)) = (min, max) else {
+            self.pane_title(ui, "Match", "Host or join a lobby to change these.");
+            let _c = ui.push_style_color(StyleColor::Text, MUTED);
+            ui.text_wrapped("While you're in a lobby: the players needed to start the match, and the most players allowed in it.");
+            return;
+        };
+        self.pane_title(ui, "Match", "Settings for the lobby you're in. Change them before the match starts.");
+        let most = *max;
+        self.stepper(ui, 0, "Players needed to start", "The match waits for this many players", min, 1, most.max(1));
+        let least = (*min).max(1);
+        self.stepper(ui, 1, "Most players", "Spies vs Mercs classic is 2 against 2, co-op is 2", max, least, 99);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn stepper(&self, ui: &Ui, i: usize, title: &str, detail: &str, value: &mut i32, lo: i32, hi: i32) {
+        let minus = format!("-##fe-step-{i}-dn");
+        let plus = format!("+##fe-step-{i}-up");
+        let num_w = self.s(44.0);
+        let bw = self.button_width(ui, &plus);
+        let w = bw * 2.0 + num_w + self.s(20.0);
+        self.row(ui, i, None, title, detail, w, || {
+            if self.button(ui, &minus, false) && *value > lo {
+                *value -= 1;
+            }
+            ui.same_line();
+            let text = value.to_string();
+            let tw = self.with_font(ui, |f| f.strong, || ui.calc_text_size(&text))[0];
+            let cur = ui.cursor_pos();
+            ui.set_cursor_pos([cur[0] + (num_w - tw) / 2.0, cur[1] + self.s(9.0)]);
+            self.with_font(ui, |f| f.strong, || ui.text(&text));
+            ui.set_cursor_pos([cur[0] + num_w + self.s(10.0), cur[1]]);
+            if self.button(ui, &plus, false) && *value < hi {
+                *value += 1;
+            }
+        });
+    }
+
+    fn pane_server(&mut self, ui: &Ui) {
+        self.pane_title(ui, "Server", "");
+        let host = hooks_config::get().and_then(|c| c.api_server.host_str().map(String::from)).unwrap_or_default();
+        let server = match &self.data.server {
+            Some(info) if !info.revision.is_empty() => format!("{} {} ({})", info.name, info.version, info.revision),
+            Some(info) => format!("{} {}", info.name, info.version),
+            None => String::from("Not reported"),
+        };
+        let rows = [
+            ("Address", host),
+            ("Signed in as", crate::api::username().unwrap_or_else(|| String::from("Not signed in"))),
+            (
+                "Response time",
+                self.data.response_time.map_or_else(|| String::from("No answer"), |d| format!("{} ms", d.as_millis())),
+            ),
+            ("Server", server),
+            ("Game add-on", format!("{PRODUCT} {RELEASE}")),
+        ];
+        let x = ui.cursor_pos()[0];
+        let label_w = self.s(170.0);
+        for (label, value) in rows {
+            ui.text_colored(MUTED, label);
+            ui.same_line_with_pos(x + label_w);
+            ui.text(value);
+        }
+        ui.dummy([0.0, self.s(10.0)]);
+        let busy = self.relogin.is_some();
+        let label = if busy { "Signing in...##fe-relogin" } else { "Sign in again##fe-relogin" };
+        let mut clicked = false;
+        ui.disabled(busy, || clicked = self.button(ui, label, false));
+        if clicked && !busy {
+            self.relogin = std::thread::Builder::new()
+                .name(String::from("overlay-relogin"))
+                .spawn(|| crate::api::runtime().map(|rt| rt.block_on(crate::api::relogin())).unwrap_or(false))
+                .ok();
+        }
+    }
+
+    /// The developer window (OverlayDebug = true in uplay.toml).
+    fn show_debug(&mut self, ui: &Ui) {
+        ui.window("Developer").always_auto_resize(true).build(|| {
+            ui.input_text("username", &mut self.username).build();
+            if ui.button("Friend Accepted Invite") {
+                info!("Send friend invite accept for {}", self.username);
+                self.tx.send(Event::FriendsGameInviteAccepted(self.username.clone())).unwrap();
+            }
+            ui.same_line();
+            if ui.button("Party Accepted Invite") {
+                info!("Send party invite accept for {}", self.username);
+                self.tx.send(Event::PartyGameInviteAccepted(self.username.clone())).unwrap();
+            }
+        });
     }
 }
 
@@ -362,53 +970,39 @@ fn get_min_players_var() -> *mut i32 {
 
 impl ImguiRenderLoop for MyRenderLoop {
     fn initialize(&mut self, ctx: &mut imgui::Context, _render_context: &mut dyn hudhook::RenderContext) {
-        sc_style(ctx.style_mut());
-        setup_fonts(ctx);
-        ctx.io_mut().font_global_scale = 2.0;
+        theme_colors(ctx.style_mut());
+        self.fonts = Some(add_fonts(ctx));
+        // Nothing to remember between games; don't write imgui.ini.
+        ctx.set_ini_filename(None::<std::path::PathBuf>);
+    }
+
+    fn before_render(&mut self, ctx: &mut imgui::Context, _render_context: &mut dyn hudhook::RenderContext) {
+        let height = ctx.io().display_size[1];
+        self.s = if height > 0.0 { (height / DESIGN_HEIGHT).clamp(0.6, 3.0) } else { 1.0 };
+        ctx.io_mut().font_global_scale = self.s / FONT_OVERSAMPLE;
+        theme_sizes(ctx.style_mut(), self.s);
     }
 
     fn render(&mut self, ui: &mut imgui::Ui) {
-        #[allow(clippy::cast_possible_wrap)]
-        let f5 = unsafe { GetAsyncKeyState(VK_F5.0.into()) & 0x8000u16 as i16 != 0 };
-        if f5 {
-            if !self.debounce {
-                self.debounce = true;
-                self.ui_state = match self.ui_state {
-                    UiState::Show => UiState::Hide,
-                    UiState::Hide => UiState::Show,
-                };
-            }
-        } else {
-            self.debounce = false;
-        }
-        match self.ui_state {
-            UiState::Show => self.render_show(ui),
-            UiState::Hide => self.render_hide(ui),
-        }
+        self.poll_keys();
+        self.poll_invites();
+        self.poll_relogin();
+        self.data = community::snapshot();
 
-        if let Ok(evt) = self.new_invites.try_recv() {
-            match evt {
-                Err(e) => self.connection_error = Some(e),
-                Ok(evt) => {
-                    self.connection_error = None;
-                    if let Some(evt) = evt {
-                        if let Some(ref sender) = evt.sender {
-                            self.invite_notification.replace((Instant::now(), sender.username.clone()));
-                        }
-                        let force_join = evt.force_join;
-                        if evt.sender.is_some() && (force_join || hooks_config::get().unwrap().auto_join_invite) {
-                            self.join_session(&evt.sender.unwrap());
-                        } else {
-                            self.active_invites.push(Invite { event: evt, clicked: force_join });
-                        }
-                    }
-                }
+        if self.ui_state == UiState::Show {
+            if self.last_refresh.elapsed() >= PANEL_REFRESH {
+                community::refresh();
+                self.last_refresh = Instant::now();
+            }
+            self.show_panel(ui);
+            if hooks_config::get().is_some_and(|c| c.overlay_debug) {
+                self.show_debug(ui);
             }
         }
-
-        self.show_errors(ui);
-        self.show_invites(ui);
+        self.show_error_banner(ui);
+        self.show_invite_toast(ui);
         self.show_initial_info(ui);
+        self.show_notice(ui);
     }
 
     fn message_filter(&self, _io: &imgui::Io) -> hudhook::MessageFilter {
@@ -432,17 +1026,26 @@ impl ImguiRenderLoop for MyRenderLoop {
 fn init_hudhook<T: hudhook::Hooks + 'static>(invites: crossbeam_channel::Receiver<Result<Option<InviteEvent>, crate::api::Error>>) -> anyhow::Result<()> {
     let (tx, rx) = mpsc::channel();
     EVENTS.get_or_init(|| Mutex::new(rx));
+    community::start();
     hudhook::Hudhook::builder()
         .with::<T>(MyRenderLoop {
             tx,
             username: String::from("ABCD"),
             ui_state: UiState::default(),
-            debounce: false,
+            tab: Tab::default(),
+            f5_down: false,
+            esc_down: false,
             invite_notification: None,
             new_invites: invites,
             active_invites: Vec::new(),
             connection_error: None,
             initial_popup: Instant::now() + INITIAL_POPUP_DURATION,
+            fonts: None,
+            s: 1.0,
+            data: community::Snapshot::default(),
+            local_notice: None,
+            relogin: None,
+            last_refresh: Instant::now(),
         })
         .with_hmodule(unsafe { GetModuleHandleA(PCSTR::null())?.into() })
         .build()

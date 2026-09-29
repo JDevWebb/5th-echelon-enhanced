@@ -2,7 +2,7 @@ cargo-features = ["per-package-target"]
 
 [package]
 name = "hooks"
-version = "0.2.5"
+version = "0.3.0"
 edition = "2021"
 forced-target = "i686-pc-windows-msvc"
 
@@ -28,6 +28,7 @@ hooks-proc = { path = "hooks-proc" }
 imgui = { workspace = true }
 region = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
 server_api = { path = "../api", package = "api" }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
@@ -68,8 +69,9 @@ features = [
 winres = { workspace = true }
 
 [package.metadata.winres]
-ProductName = "UPlay R1 Loader for 5th Echelon"
-FileDescription = "Library from https://github.com/unixoide/5th-echelon"
+# ProductName and FileDescription are set by build.rs from release.toml.
+# CompanyName must stay "5th Echelon": the hook refuses an "original" DLL
+# that carries it (lib.rs, check_orig_library).
 OriginalFilename = "uplay_r1_loader.dll"
 InternalName = "hooks"
 CompanyName = "5th Echelon"

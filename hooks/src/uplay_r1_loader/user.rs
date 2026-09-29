@@ -13,9 +13,7 @@ use crate::config::get;
 unsafe extern "cdecl" fn UPLAY_USER_ClearGameSession() -> bool {
     // Counterpart to UPLAY_USER_SetGameSession: the player left their session and should no
     // longer show up as joinable in anybody's friend list.
-    if let Err(e) = crate::api::set_game_session(None, false, &[]) {
-        error!("Withdrawing the announced session failed: {e:?}");
-    }
+    crate::api::announce_game_session(None, false, &[]);
     true
 }
 
@@ -138,14 +136,18 @@ unsafe extern "cdecl" fn UPLAY_USER_SetGameSession(game_session_identifier: *mut
     // lookup, but the other side then opens a session of its own instead of joining. The
     // block is passed through byte for byte - nothing in it needs interpreting, and `size`
     // comes from the game itself (496 bytes).
-    let payload = std::slice::from_raw_parts(std::ptr::from_ref(session_data.data).cast::<u8>(), session_data.size as usize);
-
-    if let Err(e) = crate::api::set_game_session(Some(session_id), invite_only, payload) {
-        // Not fatal: announcing failed, the session itself is fine. Invitations into it will
-        // not work, everything else keeps running.
-        error!("Announcing session {session_id} failed: {e:?}");
+    // Guard against a bogus size before reading that much memory.
+    const MAX_SESSION_DATA: usize = 4096;
+    let size = session_data.size as usize;
+    let payload = if size <= MAX_SESSION_DATA && !std::ptr::from_ref(session_data.data).is_null() {
+        std::slice::from_raw_parts(std::ptr::from_ref(session_data.data).cast::<u8>(), size)
     } else {
-        info!("Session {session_id} announced (invite_only={invite_only})");
-    }
+        error!("Ignoring session data of implausible size {size}");
+        &[]
+    };
+
+    // On a background thread: this is the game's thread.
+    info!("Announcing session {session_id} (invite_only={invite_only})");
+    crate::api::announce_game_session(Some(session_id), invite_only, payload);
     true
 }

@@ -99,7 +99,10 @@ pub fn runtime() -> Result<&'static tokio::runtime::Runtime, Error> {
     if let Some(rt) = RUNTIME.get() {
         return Ok(rt);
     }
-    let _ = RUNTIME.set(tokio::runtime::Runtime::new()?);
+    // Two workers are plenty for a handful of API calls. A runtime sized to
+    // the CPU gave the game dozens of extra threads (31 on a 32-thread CPU,
+    // as seen under Wine), next to its own five.
+    let _ = RUNTIME.set(tokio::runtime::Builder::new_multi_thread().worker_threads(2).thread_name("fe-api").enable_all().build()?);
     Ok(RUNTIME.get().unwrap())
 }
 
@@ -107,19 +110,47 @@ fn run<T>(func: impl Future<Output = Result<T, Error>>) -> Result<T, Error> {
     runtime()?.block_on(func)
 }
 
+/// Whether the server refused a call because our token is no longer good
+/// (e.g. the server's key changed, or the account was signed in elsewhere).
+fn is_signed_out(e: &Error) -> bool {
+    matches!(e, Error::GRPCStatus(s) if s.code() == tonic::Code::Unauthenticated)
+}
+
+/// Runs `call`; if the server says we're signed out, signs in again with the
+/// saved credentials and tries once more. Players only see an error when
+/// signing in again fails too (upstream showed "Relogin required" and left
+/// it to them).
+async fn signed_in<T, F, Fut>(call: F) -> Result<T, Error>
+where
+    F: Fn() -> Fut,
+    Fut: Future<Output = Result<T, Error>>,
+{
+    match call().await {
+        Err(e) if is_signed_out(&e) => {
+            info!("Signed out by the server; signing in again");
+            if relogin().await {
+                call().await
+            } else {
+                Err(e)
+            }
+        }
+        result => result,
+    }
+}
+
 pub fn invite_friend(id: &str) -> Result<(), Error> {
-    run(async {
+    run(signed_in(|| async {
         let mut client = connect!(FriendsClient);
 
         let request = tonic::Request::new(InviteRequest { id: id.into() });
 
         client.invite(request).await?;
         Ok(())
-    })
+    }))
 }
 
 pub fn list_friends() -> Result<Vec<Friend>, Error> {
-    run(async {
+    run(signed_in(|| async {
         let mut client = connect!(FriendsClient);
 
         let request = tonic::Request::new(ListRequest {});
@@ -138,7 +169,36 @@ pub fn list_friends() -> Result<Vec<Friend>, Error> {
                 pid: f.pid,
             })
             .collect())
-    })
+    }))
+}
+
+/// A session announcement for [`announce_game_session`].
+type Announcement = (Option<u32>, bool, Vec<u8>);
+
+/// Queues a session announcement (see [`set_game_session`]) for a background
+/// thread, in order, so the game thread that calls `UPLAY_USER_SetGameSession`
+/// never waits on the network.
+pub fn announce_game_session(session_id: Option<u32>, invite_only: bool, session_data: &[u8]) {
+    static QUEUE: OnceLock<std::sync::Mutex<std::sync::mpsc::Sender<Announcement>>> = OnceLock::new();
+    let queue = QUEUE.get_or_init(|| {
+        let (tx, rx) = std::sync::mpsc::channel::<Announcement>();
+        let spawned = std::thread::Builder::new().name("session-announcer".into()).spawn(move || {
+            for (session_id, invite_only, data) in rx {
+                match set_game_session(session_id, invite_only, &data) {
+                    Ok(()) => tracing::info!("Session {session_id:?} announced (invite_only={invite_only})"),
+                    // Not fatal: invitations into this session won't work, the rest does.
+                    Err(e) => tracing::error!("Announcing session {session_id:?} failed: {e:?}"),
+                }
+            }
+        });
+        if let Err(e) = spawned {
+            tracing::error!("Couldn't start the session announcer: {e}");
+        }
+        std::sync::Mutex::new(tx)
+    });
+    if let Ok(tx) = queue.lock() {
+        let _ = tx.send((session_id, invite_only, session_data.to_vec()));
+    }
 }
 
 /// Publishes the session this player is in, so it reaches their friends' friend lists.
@@ -146,19 +206,18 @@ pub fn list_friends() -> Result<Vec<Friend>, Error> {
 /// `session_id` of `None` clears the advertisement. Called from
 /// `UPLAY_USER_SetGameSession` / `UPLAY_USER_ClearGameSession`.
 pub fn set_game_session(session_id: Option<u32>, invite_only: bool, session_data: &[u8]) -> Result<(), Error> {
-    let session_data = session_data.to_vec();
-    run(async {
+    run(signed_in(|| async {
         let mut client = connect!(FriendsClient);
 
         let request = tonic::Request::new(SetSessionRequest {
             session_id: session_id.unwrap_or(0),
             invite_only,
-            session_data,
+            session_data: session_data.to_vec(),
         });
 
         client.set_session(request).await?;
         Ok(())
-    })
+    }))
 }
 
 async fn login_async(username: &str, password: &str) -> Result<(), Error> {
@@ -189,6 +248,11 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
     Ok(())
 }
 
+/// The name we signed in with, once login has been attempted.
+pub fn username() -> Option<String> {
+    CREDS.lock().unwrap().as_ref().map(|(username, _)| username.clone())
+}
+
 #[instrument(skip(password))]
 pub fn login(username: &str, password: &str) -> Result<(), Error> {
     run(login_async(username, password))
@@ -196,11 +260,14 @@ pub fn login(username: &str, password: &str) -> Result<(), Error> {
 
 #[instrument]
 pub async fn event() -> Result<EventResponse, Error> {
-    let mut client = connect!(MiscClient);
+    signed_in(|| async {
+        let mut client = connect!(MiscClient);
 
-    let request = tonic::Request::new(EventRequest {});
+        let request = tonic::Request::new(EventRequest {});
 
-    Ok(client.event(request).await?.into_inner())
+        Ok(client.event(request).await?.into_inner())
+    })
+    .await
 }
 
 #[instrument]

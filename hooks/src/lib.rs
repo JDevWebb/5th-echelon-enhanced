@@ -1,4 +1,3 @@
-#![recursion_limit = "512"] // one more static_detour! exceeds the default
 #![feature(unboxed_closures, tuple_trait, c_variadic, once_cell_try, mapped_lock_guards)]
 #![deny(clippy::pedantic)]
 
@@ -33,6 +32,7 @@ use windows::Win32::UI::WindowsAndMessaging::MB_OK;
 
 mod addresses;
 mod api;
+mod community;
 mod dll_utils;
 mod hooks;
 mod macros;
@@ -149,7 +149,7 @@ fn init(hmodule: Option<HMODULE>) {
     if let Some(cmdline) = get_arguments() {
         info!("Cmdline: {}", cmdline);
     }
-    let path = config::get_config_path(dir.clone());
+    let path = config::get_config_path(dir);
     info!("Config path={:?}", path);
     let config = match config::get_or_load(path) {
         Err(e) => {
@@ -195,7 +195,6 @@ fn init(hmodule: Option<HMODULE>) {
         enable_debug_print(&addr);
     }
 
-
     // needs to be done in a separate thread, otherwise it'll block indefinitely
     std::thread::Builder::new()
         .name(String::from("login-thread"))
@@ -225,10 +224,15 @@ fn deinit(hmodule: Option<HMODULE>) {
 struct FileWriter(PathBuf);
 
 impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for FileWriter {
-    type Writer = File;
+    type Writer = Box<dyn std::io::Write>;
 
     fn make_writer(&'a self) -> Self::Writer {
-        File::options().create(true).append(true).open(&self.0).unwrap()
+        // A log that can't be written (read-only game folder) must not crash
+        // the game.
+        match File::options().create(true).append(true).open(&self.0) {
+            Ok(f) => Box::new(f),
+            Err(_) => Box::new(std::io::sink()),
+        }
     }
 }
 
@@ -292,7 +296,8 @@ type ReconfigurableLogger = tracing_subscriber::reload::Handle<
 
 fn init_log(target_dir: &Path) -> ReconfigurableLogger {
     let path = target_dir.join("bl-tracing.log");
-    let _ = std::fs::remove_file(&path);
+    // Keep the previous run's log: that's usually the one with the problem.
+    let _ = std::fs::rename(&path, target_dir.join("bl-tracing.prev.log"));
     let subscriber_builder = tracing_subscriber::FmtSubscriber::builder()
         .with_writer(FileWriter(path))
         .with_ansi(false)

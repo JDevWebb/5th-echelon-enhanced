@@ -30,7 +30,6 @@ unsafe extern "cdecl" fn UPLAY_FRIENDS_GetFriendList(friend_list_filter: *mut c_
     let list = uplay_r1_loader::UplayList::Friends(
         friends
             .into_iter()
-            .into_iter()
             .map(|f| uplay_r1_loader::UplayFriend {
                 id: f.id,
                 username: f.username,
@@ -60,10 +59,7 @@ unsafe extern "cdecl" fn UPLAY_FRIENDS_InviteToGame(account_id_utf8: *const c_ch
     // contract in return: `true` means "request accepted". This used to return `false`
     // unconditionally, so the game reported every invitation as failed - even though the
     // server had already stored it and the recipient's client picked it up.
-    let Some(account_id) = (!account_id_utf8.is_null())
-        .then(|| std::ffi::CStr::from_ptr(account_id_utf8).to_str().ok())
-        .flatten()
-    else {
+    let Some(account_id) = (!account_id_utf8.is_null()).then(|| std::ffi::CStr::from_ptr(account_id_utf8).to_str().ok()).flatten() else {
         error!("UPLAY_FRIENDS_InviteToGame called without a usable account id");
         return false;
     };

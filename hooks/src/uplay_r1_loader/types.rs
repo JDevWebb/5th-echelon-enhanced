@@ -261,11 +261,11 @@ impl From<UplayList> for List {
             }
             UplayList::Friends(friends) => {
                 let cfg = crate::config::get();
-                let feld = cfg.map(|c| c.session_field).unwrap_or_default();
+                let session_field = cfg.map(|c| c.session_field).unwrap_or_default();
                 // Passing the payload along can be switched off separately, so that a
                 // counter-test does not need a rebuild.
-                let daten = cfg.is_none_or(|c| c.share_session_data);
-                let pid_feld = cfg.map(|c| c.pid_field).unwrap_or_default();
+                let share_data = cfg.is_none_or(|c| c.share_session_data);
+                let pid_field = cfg.map(|c| c.pid_field).unwrap_or_default();
                 let friends = friends
                     .into_iter()
                     .map(|f| {
@@ -279,24 +279,24 @@ impl From<UplayList> for List {
                         Ok::<Friend, std::ffi::NulError>(Friend {
                             id: CString::new(f.id)?.into_raw(),
                             username: CString::new(f.username)?.into_raw(),
-                            unknown1: if feld == SessionField::FriendUnknown1 { session } else { 0 },
-                            unknown2: if feld == SessionField::FriendUnknown2 {
+                            unknown1: if session_field == SessionField::FriendUnknown1 { session } else { 0 },
+                            unknown2: if session_field == SessionField::FriendUnknown2 {
                                 session
-                            } else if pid_feld == PidField::FriendUnknown2 {
+                            } else if pid_field == PidField::FriendUnknown2 {
                                 pid
                             } else {
                                 0
                             },
                             details: Box::into_raw(Box::new(FriendDetails {
                                 unknown1: if f.is_online { 0 } else { 2 }, // >1 is offline?
-                                unknown2: if feld == SessionField::DetailsUnknown2Str && session != 0 {
+                                unknown2: if session_field == SessionField::DetailsUnknown2Str && session != 0 {
                                     CString::new(session.to_string())?.into_raw()
                                 } else {
                                     null_mut() // another string?
                                 },
-                                unknown3: if feld == SessionField::DetailsUnknown3 {
+                                unknown3: if session_field == SessionField::DetailsUnknown3 {
                                     session
-                                } else if pid_feld == PidField::DetailsUnknown3 {
+                                } else if pid_field == PidField::DetailsUnknown3 {
                                     pid
                                 } else {
                                     0
@@ -307,15 +307,15 @@ impl From<UplayList> for List {
                                 // joining - the id alone is not enough to enter one.
                                 // Deliberately leaked: the game keeps the pointer beyond this
                                 // call, exactly like the strings above.
-                                unknown4: if daten && !f.session_data.is_empty() {
+                                unknown4: if share_data && !f.session_data.is_empty() {
                                     Box::into_raw(f.session_data.clone().into_boxed_slice()).cast::<c_void>()
                                 } else {
                                     null_mut() // only used when fetching, but not after??
                                 },
                             })),
-                            unknown3: if feld == SessionField::FriendUnknown3 {
+                            unknown3: if session_field == SessionField::FriendUnknown3 {
                                 session
-                            } else if pid_feld == PidField::FriendUnknown3 {
+                            } else if pid_field == PidField::FriendUnknown3 {
                                 pid
                             } else {
                                 0 // must be 0?
