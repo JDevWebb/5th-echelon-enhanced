@@ -15,8 +15,8 @@ use tokio::net::UdpSocket;
 use tonic::transport::Channel;
 
 use super::Error;
-use crate::config::QUAZAL_DEFAULT_LOCAL_PORT;
-use crate::config::QUAZAL_DEFAULT_PORT;
+use super::QUAZAL_DEFAULT_LOCAL_PORT;
+use super::QUAZAL_DEFAULT_PORT;
 
 /// Tests the Quazal login process against a server.
 ///

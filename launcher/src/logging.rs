@@ -4,25 +4,32 @@
 //! sets a custom panic hook to display panic information in a message box,
 //! ensuring that users are notified of critical errors.
 
-use std::ffi::CString;
-
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
-use windows::core::PCSTR;
-use windows::Win32::UI::WindowsAndMessaging::MessageBoxA;
-use windows::Win32::UI::WindowsAndMessaging::MB_OK;
 
 /// Shows a Windows message box with the specified message and caption.
+#[cfg(target_os = "windows")]
 fn show_msgbox(msg: &str, caption: &str) {
-    let msg = CString::new(msg).unwrap();
-    let caption = CString::new(caption).unwrap();
+    use std::ffi::CString;
+
+    use windows::core::PCSTR;
+    use windows::Win32::UI::WindowsAndMessaging::MessageBoxA;
+    use windows::Win32::UI::WindowsAndMessaging::MB_OK;
+
+    let msg = CString::new(msg).unwrap_or_default();
+    let caption = CString::new(caption).unwrap_or_default();
     unsafe {
         MessageBoxA(None, PCSTR(msg.as_ptr().cast::<u8>()), PCSTR(caption.as_ptr().cast::<u8>()), MB_OK);
     }
 }
 
+/// Elsewhere (development builds), stderr is enough.
+#[cfg(not(target_os = "windows"))]
+fn show_msgbox(_msg: &str, _caption: &str) {}
+
 /// Attaches the process to the parent console, enabling console output.
 fn enable_console() {
+    #[cfg(target_os = "windows")]
     unsafe {
         // This allows the launcher to print to the console when run from a terminal.
         let _ = windows::Win32::System::Console::AttachConsole(windows::Win32::System::Console::ATTACH_PARENT_PROCESS);

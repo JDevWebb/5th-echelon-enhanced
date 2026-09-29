@@ -27,7 +27,19 @@ fn root_manifest_dir() -> PathBuf {
 
 #[cfg(feature = "embed-dll")]
 fn embed_dll() {
-    use brotli::enc::BrotliEncoderParams;
+    // A prebuilt hooks DLL, e.g. from a cross-compile (cargo-xwin), where the
+    // nested plain `cargo build` below can't link for MSVC.
+    println!("cargo:rerun-if-env-changed=HOOKS_DLL");
+    let dll_path = match env::var_os("HOOKS_DLL") {
+        Some(path) => PathBuf::from(path),
+        None => build_hooks_dll(),
+    };
+    println!("cargo:rerun-if-changed={}", dll_path.display());
+    embed(&dll_path);
+}
+
+#[cfg(feature = "embed-dll")]
+fn build_hooks_dll() -> PathBuf {
     use jzon::JsonValue;
 
     let is_release = env::var("PROFILE").unwrap() == "release";
@@ -91,11 +103,16 @@ fn embed_dll() {
 
     assert_eq!(artifacts.len(), 1);
 
-    let dll_path: PathBuf = artifacts.into_iter().next().unwrap();
+    artifacts.into_iter().next().unwrap()
+}
+
+#[cfg(feature = "embed-dll")]
+fn embed(dll_path: &Path) {
+    use brotli::enc::BrotliEncoderParams;
 
     println!("cargo:warning=Dll path: {dll_path:?}");
 
-    let data = fs::read(&dll_path).unwrap();
+    let data = fs::read(dll_path).unwrap();
     let dll = dll::parse(&data).unwrap();
 
     println!("cargo:warning=Dll version: {}", dll.version);
@@ -118,7 +135,11 @@ mod version {
     include!("src/version.rs");
 }
 
+include!("../build/release.rs");
+
 fn main() {
+    let (name, version) = release();
+
     #[cfg(feature = "embed-dll")]
     {
         let dir = root_manifest_dir();
@@ -127,9 +148,13 @@ fn main() {
         embed_dll();
     }
 
-    #[cfg(target_os = "windows")]
-    {
+    // Decided by the target, not the build host, so cross-builds get the icon,
+    // manifest and version info too.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         winres::WindowsResource::new()
+            // Task Manager and Explorer show the description. The product name
+            // stays "5th Echelon Launcher": tools find launchers by it.
+            .set("FileDescription", &format!("{name} {version}"))
             .set_icon("logo.ico")
             .set_manifest(
                 r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
@@ -160,13 +185,12 @@ fn main() {
         println!("cargo:rerun-if-changed=logo.ico");
     }
 
+    // The window icon and header logo, as raw RGBA plus its size.
     let img = image::open("../docs/logo.png").unwrap();
+    let rgba = img.as_rgba8().unwrap();
     let mut f = fs::File::create(PathBuf::from(env::var("OUT_DIR").unwrap()).join("logo.dat")).unwrap();
-    f.write_all(img.as_rgba8().unwrap()).unwrap();
+    f.write_all(rgba).unwrap();
+    println!("cargo:rustc-env=LOGO_WIDTH={}", rgba.width());
+    println!("cargo:rustc-env=LOGO_HEIGHT={}", rgba.height());
     println!("cargo:rerun-if-changed=../docs/logo.png");
-
-    let img = image::open("../docs/old_logo.png").unwrap();
-    let mut f = fs::File::create(PathBuf::from(env::var("OUT_DIR").unwrap()).join("old_logo.dat")).unwrap();
-    f.write_all(img.as_rgba8().unwrap()).unwrap();
-    println!("cargo:rerun-if-changed=../docs/old_logo.png");
 }

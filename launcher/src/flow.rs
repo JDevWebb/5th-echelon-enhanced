@@ -1,0 +1,274 @@
+//! What the Play screen runs in the background: gathering the checklist's
+//! facts, the automatic setup, and single fixes. Each works on its own copy
+//! of the settings file; the UI reloads it afterwards.
+
+use std::net::IpAddr;
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
+use std::time::Duration;
+
+use setup::account;
+use setup::config::Config;
+use setup::config::Profile;
+use setup::diagnose::AccountFact;
+use setup::diagnose::Facts;
+use setup::game::GameVersion;
+use setup::install;
+use setup::net;
+use setup::save;
+
+use crate::services::Accounts;
+
+/// Whether the hook knows the game executable (it needs the addresses of
+/// the functions it patches, per game build).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Support {
+    Supported,
+    Unsupported(String),
+    Unknown(String),
+}
+
+pub fn support(game_dir: &Path, version: GameVersion) -> Support {
+    match hooks_addresses::get_from_path(&version.full_path(game_dir)) {
+        Ok(_) => Support::Supported,
+        Err(e @ hooks_addresses::Error::BinaryMismatch(..)) => Support::Unsupported(e.to_string()),
+        Err(e) => Support::Unknown(e.to_string()),
+    }
+}
+
+/// Looks for the addresses in an unsupported executable and saves them next
+/// to the game (`5th-echelon-addresses.json`), keeping any found before.
+pub fn identify(game_dir: &Path, version: GameVersion) -> anyhow::Result<()> {
+    let exe = version.full_path(game_dir);
+    let addresses = hooks_addresses::search_patterns(&exe)?;
+    let hash = hooks_addresses::hash_file(&exe)?;
+    let mut custom = hooks_addresses::load_custom_addresses(game_dir);
+    let mut dx9 = custom.remove("blacklist_game.exe").unwrap_or_default();
+    let mut dx11 = custom.remove("blacklist_dx11_game.exe").unwrap_or_default();
+    match version {
+        GameVersion::SplinterCellBlacklistDx9 => dx9.insert(hash, addresses),
+        GameVersion::SplinterCellBlacklistDx11 => dx11.insert(hash, addresses),
+    };
+    hooks_addresses::save_addresses(game_dir, dx9, dx11);
+    Ok(())
+}
+
+/// Everything the checklist needs, gathered off the UI thread.
+pub fn gather(game_dir: &Path, cfg: &Config, bundled: Option<&[u8]>) -> (Facts, Support) {
+    let mut facts = Facts {
+        game_dir: Some(game_dir.to_path_buf()),
+        client: bundled.map(|dll| install::client_state(game_dir, dll)),
+        ..Facts::default()
+    };
+    if let Some(profile) = cfg.current_profile().filter(|p| !p.server.is_empty()) {
+        let ip = net::resolve(&profile.server);
+        facts.server = Some((profile.server.clone(), ip));
+        if let Some(ip) = ip {
+            let t = Duration::from_secs(2);
+            facts.server_ports = Some((net::port_open(ip, setup::API_PORT, t), net::port_open(ip, setup::CONFIG_PORT, t)));
+            facts.account = Some(if !profile.has_account() {
+                AccountFact::None
+            } else {
+                let accounts = Accounts {
+                    api: profile.api_server_url().to_string(),
+                };
+                match account::AccountService::login(&accounts, &profile.user.username, &profile.user.password) {
+                    Ok(()) => AccountFact::Ok(profile.user.username.clone()),
+                    Err(e @ (account::AccountError::WrongPassword | account::AccountError::NotFound)) => AccountFact::Refused(e.to_string()),
+                    Err(e) => AccountFact::Unknown(e.to_string()),
+                }
+            });
+            let adapters = net::adapters();
+            facts.route_adapter = net::adapter_for_server(ip, &adapters);
+            facts.pinned = cfg.hook_config.networking.adapter.clone();
+            facts.pinned_ip = facts.pinned.as_deref().and_then(|p| net::adapter_ip(p, &adapters));
+        }
+    }
+    facts.save = save::save_path(&cfg.hook_config.save, game_dir).map(|p| save::check(&p));
+    facts.log = setup::diagnose::read_log(game_dir);
+    facts.wine = wine_facts(game_dir);
+    let version = setup::game::pick_version(game_dir, cfg.default_game).unwrap_or(cfg.default_game);
+    (facts, support(game_dir, version))
+}
+
+/// What the player asked the setup for.
+#[derive(Debug, Clone)]
+pub struct Plan {
+    pub game_dir: PathBuf,
+    /// The server, as typed.
+    pub server: String,
+    /// Sign in with these; None makes a one-click account named after `nick`.
+    pub credentials: Option<(String, String)>,
+    pub nick: String,
+}
+
+/// Progress lines for the UI.
+pub type Log = Arc<Mutex<Vec<String>>>;
+
+fn say(log: &Log, line: impl Into<String>) {
+    log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(line.into());
+}
+
+/// The automatic setup: install the client, check the server, set up the
+/// account, pin the adapter, make a save, and save it all as the player's
+/// profile. Stops at the first step that fails, saying why.
+pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<(), String> {
+    let dir = &plan.game_dir;
+
+    if let Some(dll) = bundled {
+        if install::client_state(dir, dll) != install::ClientState::Installed {
+            say(log, "Installing the 5th Echelon client…");
+            if setup::game::game_running() {
+                return Err("Close Splinter Cell: Blacklist first; the client can't be installed while it runs.".into());
+            }
+            install::install(dir, dll).map_err(|e| e.to_string())?;
+        }
+    }
+
+    say(log, format!("Looking up {}…", plan.server));
+    let ip = net::resolve(&plan.server).ok_or_else(|| format!("\"{}\" isn't an address this PC can find.", plan.server))?;
+    if !net::port_open(ip, setup::API_PORT, Duration::from_secs(4)) {
+        return Err(format!("{ip} doesn't answer on port {}. Check the server is running and you're connected to its network.", setup::API_PORT));
+    }
+
+    let mut profile = Config::load(dir)
+        .profiles
+        .iter()
+        .find(|p| p.server == plan.server)
+        .cloned()
+        .unwrap_or_else(|| Profile {
+            name: plan.server.clone(),
+            server: plan.server.clone(),
+            ..Default::default()
+        });
+
+    say(log, "Setting up your account…");
+    let accounts = Accounts {
+        api: profile.api_server_url().to_string(),
+    };
+    let saved = plan
+        .credentials
+        .as_ref()
+        .map(|(u, p)| (u.as_str(), p.as_str()))
+        .or_else(|| profile.has_account().then(|| (profile.user.username.as_str(), profile.user.password.as_str())));
+    let (username, password, how) = match (&plan.credentials, saved) {
+        // Credentials the player typed must sign in as they are.
+        (Some((u, p)), _) => {
+            account::AccountService::login(&accounts, u, p).map_err(|e| format!("Couldn't sign in as {u}: {e}."))?;
+            (u.clone(), p.clone(), account::Outcome::Existing)
+        }
+        (None, saved) => account::ensure_account(&accounts, saved, &plan.nick).map_err(|e| format!("Couldn't set up an account: {e}."))?,
+    };
+    say(
+        log,
+        match how {
+            account::Outcome::Existing => format!("Signed in as {username}."),
+            account::Outcome::Registered => format!("Registered {username} on this server."),
+            account::Outcome::Created => format!("Created the account {username}."),
+        },
+    );
+    profile.user = hooks_config::User {
+        username: username.clone(),
+        password,
+        cd_keys: profile.user.cd_keys.clone(),
+        account_id: username,
+    };
+
+    let adapters = net::adapters();
+    profile.adapter = net::adapter_for_server(ip, &adapters);
+    match &profile.adapter {
+        Some(a) => say(log, format!("Playing over \"{a}\".")),
+        None => say(log, "No network adapter to pin."),
+    }
+
+    let cfg = Config::load(dir);
+    if let Some(path) = save::save_path(&cfg.hook_config.save, dir) {
+        match save::check(&path) {
+            save::SaveState::Missing => {
+                save::create_rank5(&path).map_err(|e| format!("Couldn't create a save: {e}"))?;
+                say(log, "Created a rank 5 save.");
+            }
+            s if s.below_rank5() => {
+                save::raise_to_rank5(&path).map_err(|e| format!("Couldn't raise the save to rank 5: {e}"))?;
+                say(log, "Raised your save to rank 5 (the old one is backed up).");
+            }
+            _ => {}
+        }
+    }
+
+    let mut cfg = cfg;
+    cfg.update(|c| {
+        c.upsert_profile(profile.clone());
+        c.apply_profile(&profile);
+    })
+    .map_err(|e| format!("Couldn't save the settings: {e}"))?;
+    say(log, "Ready.");
+    Ok(())
+}
+
+/// Pins the adapter the current server is reached through.
+pub fn pin_adapter(game_dir: &Path) -> Result<String, String> {
+    let mut cfg = Config::load(game_dir);
+    let profile = cfg.current_profile().cloned().ok_or("Choose a server first.")?;
+    let ip: IpAddr = net::resolve(&profile.server).ok_or("The server's address can't be found.")?;
+    let adapter = net::adapter_for_server(ip, &net::adapters()).ok_or("No adapter on this PC reaches the server.")?;
+    cfg.update(|c| {
+        let p = Profile {
+            adapter: Some(adapter.clone()),
+            ..profile
+        };
+        c.upsert_profile(p.clone());
+        c.apply_profile(&p);
+    })
+    .map_err(|e| e.to_string())?;
+    Ok(format!("Pinned \"{adapter}\"."))
+}
+
+/// Creates or raises the save to rank 5.
+pub fn fix_save(game_dir: &Path) -> Result<String, String> {
+    let cfg = Config::load(game_dir);
+    let path = save::save_path(&cfg.hook_config.save, game_dir).ok_or("The save folder can't be found.")?;
+    match save::check(&path) {
+        save::SaveState::Missing => save::create_rank5(&path).map(|_| "Created a rank 5 save.".to_string()),
+        _ => save::raise_to_rank5(&path).map(|_| "Raised the save to rank 5; the old one is backed up.".to_string()),
+    }
+    .map_err(|e| e.to_string())
+}
+
+/// Installs (or updates) the client.
+pub fn install_client(game_dir: &Path, bundled: Option<&[u8]>) -> Result<String, String> {
+    let dll = bundled.ok_or("This build doesn't carry the client.")?;
+    install::install(game_dir, dll).map_err(|e| e.to_string())?;
+    Ok("5th Echelon is installed.".into())
+}
+
+/// The player's user name, as a default account name.
+pub fn windows_user() -> String {
+    std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_default()
+}
+
+/// The Wine or Proton side of the checklist, when there is one.
+pub fn wine_facts(game_dir: &Path) -> Option<setup::diagnose::WineFacts> {
+    if cfg!(target_os = "windows") {
+        // A Windows launcher under Wine starts the game itself, in its own
+        // prefix, and sets the CPU topology when needed.
+        return hooks_config::running_under_wine().then_some(setup::diagnose::WineFacts {
+            steam: false,
+            prefix_ready: true,
+            launch_options: None,
+        });
+    }
+    setup::wine::prefix_for(game_dir).map(|p| setup::diagnose::WineFacts {
+        steam: p.steam,
+        prefix_ready: p.ready(),
+        launch_options: if p.steam { setup::wine::steam_launch_options() } else { None },
+    })
+}
+
+/// Opens a folder in the file manager.
+pub fn open_folder(dir: &Path) {
+    let program = if cfg!(target_os = "windows") { "explorer" } else { "xdg-open" };
+    let _ = std::process::Command::new(program).arg(dir).spawn();
+}

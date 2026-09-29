@@ -1,6 +1,6 @@
 [package]
 name = "launcher"
-version = "0.2.5"
+version = "0.3.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -12,41 +12,40 @@ GetAdapterInfos = []
 [dependencies]
 anyhow = { workspace = true }
 brotli = { workspace = true, optional = true }
-bytes = "1.10.1"
 dedicated_server_config = { path = "../dedicated_server/config" }
-glow = { workspace = true }
-glutin = { workspace = true }
-glutin-winit = { workspace = true }
-futures = "0.3.31"
-hooks-addresses = { path = "../hooks/hooks-addresses" }
-hooks-config = { path = "../hooks/hooks-config" }
-imgui = { workspace = true, features = ["tables-api", "docking"] }
-imgui-glow-renderer = { workspace = true }
-imgui-winit-support = { workspace = true }
-itertools = { workspace = true }
-libc = { workspace = true }
-raw-window-handle = { workspace = true }
-toml = { workspace = true }
-jzon = { workspace = true }
-server_api = { path = "../api", package = "api" }
-tracing = { workspace = true }
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
-tokio = { workspace = true, features = ["rt"] }
-tonic = { workspace = true }
+eframe = { version = "0.33", default-features = false, features = ["glow", "default_fonts"] }
 goblin = { workspace = true, default-features = false, features = [
     "pe32",
     "pe64",
     "std",
 ] }
-mint = "0.5.9"
+hooks-addresses = { path = "../hooks/hooks-addresses" }
+hooks-config = { path = "../hooks/hooks-config" }
+quazal = { path = "../quazal" }
 rand = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
+sc_bl_protocols = { path = "../dedicated_server/sc_bl_protocols" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+server_api = { path = "../api", package = "api" }
+setup = { path = "../setup" }
+sha2 = { workspace = true }
 thiserror = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "time", "net", "macros"] }
+tonic = { workspace = true }
+toml = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url = { workspace = true }
-quazal = { path = "../quazal" }
-sc_bl_protocols = { path = "../dedicated_server/sc_bl_protocols" }
-reqwest = { version = "0.12", features = ["stream"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+rfd = "0.15"
+
+# Linux (and Steam Deck): X11 (XWayland on Wayland desktops), and the
+# desktop's own file picker through its portal, so GTK isn't needed.
+[target.'cfg(target_os = "linux")'.dependencies]
+eframe = { version = "0.33", default-features = false, features = ["glow", "default_fonts", "x11"] }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
 
 [target.'cfg(target_os = "windows")'.dependencies.windows]
 version = "0.54.0" # hudhook
@@ -80,7 +79,8 @@ goblin = { workspace = true, default-features = false, features = [
 ] }
 
 [package.metadata.winres]
+# Tools that install or update the client find launchers by this product
+# name; keep "5th Echelon Launcher" in it. FileDescription is set by build.rs from release.toml.
 ProductName = "5th Echelon Launcher"
-FileDescription = "https://github.com/unixoide/5th-echelon"
 OriginalFilename = "launcher.exe"
 InternalName = "launcher"
