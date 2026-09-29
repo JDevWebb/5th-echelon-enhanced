@@ -10,3 +10,4 @@ generated/
 deps
 service*.toml
 /cross
+dist/
