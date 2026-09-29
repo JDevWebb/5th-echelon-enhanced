@@ -1,0 +1,57 @@
+# Tests and builds every push to main and every pull request.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  linux:
+    name: Tests, test players and Linux builds
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install protoc
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler
+      - name: Install the toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Tests
+        run: cargo test --locked --workspace --exclude hooks --exclude launcher --exclude umd_browser
+      - name: Test players against a fresh server
+        run: |
+          cargo build --locked -p dedicated_server -p testbot
+          scripts/bots.sh target/debug
+      - name: The Linux launcher builds
+        run: cargo build --locked -p launcher
+
+  windows:
+    name: Windows builds
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: arduino/setup-protoc@v3
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install the toolchain (rust-toolchain.toml)
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@v2
+      - name: Client DLL
+        run: cargo build --locked -p hooks --target i686-pc-windows-msvc
+      - name: Launcher with the client inside, server and test players
+        shell: bash
+        run: |
+          HOOKS_DLL="$PWD/target/i686-pc-windows-msvc/debug/hooks.dll" cargo build --locked -p launcher --features embed-dll
+          cargo build --locked -p dedicated_server -p testbot

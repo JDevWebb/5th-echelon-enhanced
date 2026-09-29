@@ -61,24 +61,7 @@ case "${1:-test}" in
     ;;
   bots)
     shift
-    run "$IMAGE" bash -c '
-      set -e
-      cargo build -q -p dedicated_server -p testbot
-      dir=$(mktemp -d) && cd "$dir"
-      cp /target/native/debug/dedicated_server .
-      # First start writes the default service.toml; stop it once written.
-      ./dedicated_server >gen.log 2>&1 & gen=$!
-      for i in $(seq 100); do [ -s service.toml ] && break; sleep 0.1; done
-      sleep 0.3; kill $gen 2>/dev/null; wait $gen 2>/dev/null || true
-      # The bots connect from 127.0.0.1: trust it, as a server trusts its VPN.
-      sed -i -E "s|^(storage_host = \".*\")$|\1\ntrusted_subnet = \"127.0.0.0/8\"|" service.toml
-      RUST_LOG=info ./dedicated_server >server.log 2>&1 & srv=$!
-      for i in $(seq 100); do (echo >/dev/tcp/127.0.0.1/50051) 2>/dev/null && break; sleep 0.1; done
-      rc=0; /target/native/debug/testbot "$@" || rc=$?
-      kill $srv 2>/dev/null; wait $srv 2>/dev/null || true
-      if [ $rc -ne 0 ]; then echo "--- server log (last 60 lines)"; tail -60 server.log; fi
-      exit $rc
-    ' bots "$@"
+    run "$IMAGE" bash -c 'cargo build -q -p dedicated_server -p testbot && scripts/bots.sh /target/native/debug "$@"' bots "$@"
     ;;
   linux)
     # The launcher for Linux and Steam Deck (x86_64), with the client DLL

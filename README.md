@@ -277,7 +277,17 @@ The server exits if one of its services stops, so systemd's `Restart=always` bri
 
 ### With Docker
 
-From a clone of this repository:
+Every release publishes the server's image to GitHub's container registry:
+
+```sh
+docker run -d --name 5th-echelon --restart unless-stopped \
+  -e FE_PUBLIC_ADDRESS=203.0.113.10 \
+  -p 80:80 -p 8000:8000 -p 21126:21126/udp -p 21127:21127/udp -p 50051:50051 \
+  -v 5th-echelon:/srv/5th-echelon \
+  ghcr.io/jdevwebb/5th-echelon-server:latest
+```
+
+Or build it yourself with Compose, from a clone of this repository:
 
 ```sh
 FE_PUBLIC_ADDRESS=203.0.113.10 docker compose -f docker/compose.yaml up -d
@@ -384,6 +394,24 @@ cargo build --release -p dedicated_server                      # the server, for
 cargo build --release -p launcher --features embed-dll         # on Windows: builds the client DLL and embeds it
 ```
 
+### Releases and CI
+
+GitHub Actions tests and builds every push and pull request (Linux tests, the test players, and the Windows and Linux builds). Releases are published by pushing a version tag:
+
+1. Set `version` in `release.toml` (e.g. `0.3.1`) and commit it.
+2. Tag and push:
+   ```sh
+   git tag v0.3.1 && git push origin main v0.3.1
+   ```
+
+The release workflow then:
+- builds every download on Windows and Linux runners;
+- writes `SHA256SUMS`, which the launcher's updater checks against;
+- publishes the GitHub release;
+- pushes the server image to `ghcr.io`.
+
+A tag with a suffix (`v0.3.1-rc.1`) makes a pre-release, which the updater doesn't offer.
+
 ### Project layout
 
 | Folder | What |
@@ -396,6 +424,7 @@ cargo build --release -p launcher --features embed-dll         # on Windows: bui
 | `api/` | The gRPC API definitions |
 | `tools/` | Test players, the DDL parser, Wireshark dissectors, and research tools |
 | `docker/` | The server's Docker image and compose file |
+| `.github/workflows/` | CI (`ci.yml`) and releases (`release.yml`) |
 
 ### Research tools
 
@@ -421,7 +450,7 @@ Contributions of every size are welcome: bug reports with logs, testing with fri
 
 - **Bugs:** open an issue with what you did, what happened, and the game's `bl-tracing.log` (look it over for anything private before posting it). For server problems, add the server's `server.log.json` or console output.
 - **Pull requests:** keep them focused, and describe how you tested.
-  - There's no CI, so run `build/build.sh test` and, for server changes, `build/build.sh bots` (add a scenario to `tools/testbot` for new server behaviour). Format with `build/build.sh fmt`.
+  - CI builds and tests every pull request on Linux and Windows. Run `build/build.sh test` and, for server changes, `build/build.sh bots` locally first (add a scenario to `tools/testbot` for new server behaviour). Format with `build/build.sh fmt`.
   - Changes that affect the game should say whether they were tried in the game itself.
 - **Credit:** your commits keep your name, and you'll be listed under [Authors and contributors](#authors-and-contributors).
 - **Upstream:** fixes that apply to upstream 5th Echelon are offered there as well.
