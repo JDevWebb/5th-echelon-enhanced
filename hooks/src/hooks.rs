@@ -31,6 +31,7 @@ use crate::config::Hook;
 use crate::hooks::utils::SomeOrQuestionmark;
 
 mod datatypes;
+mod nla;
 mod quazal;
 mod storm;
 mod utils;
@@ -716,6 +717,7 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
     }
 
     storm::init_hooks(config, addr);
+    nla::init_hooks();
     quazal::init_hooks(config, addr);
 }
 
