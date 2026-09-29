@@ -1,0 +1,26 @@
+# The 5th Echelon server. From the repository root:
+#
+#   FE_PUBLIC_ADDRESS=203.0.113.10 docker compose -f docker/compose.yaml up -d
+#
+# FE_PUBLIC_ADDRESS is the address players connect to: your public IP (with
+# the ports below forwarded), or your address on the VPN you play over.
+services:
+  server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    image: 5th-echelon-server
+    restart: unless-stopped
+    environment:
+      FE_PUBLIC_ADDRESS: ${FE_PUBLIC_ADDRESS:?set FE_PUBLIC_ADDRESS to the address players connect to}
+    ports:
+      - "80:80/tcp"          # online config and community API (the game needs port 80)
+      - "8000:8000/tcp"      # content (multiplayer balancing)
+      - "21126:21126/udp"    # game login
+      - "21127:21127/udp"    # game service
+      - "50051:50051/tcp"    # accounts, friends, invites (launcher and overlay)
+    volumes:
+      - data:/srv/5th-echelon
+
+volumes:
+  data:

@@ -1,0 +1,8 @@
+.git
+target
+target_i686
+dist
+docs/*.webm
+docs/*.png
+docs/old_launcher
+CLAUDE.md
