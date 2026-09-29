@@ -37,6 +37,15 @@ pub struct DebugConfig {
     /// goes to private rooms.
     #[serde(default = "enabled")]
     pub push_notifications_reliable: bool,
+    /// gRPC reflection: lists every API call to anyone who asks. For
+    /// debugging with tools like grpcurl.
+    #[serde(default)]
+    pub grpc_reflection: bool,
+    /// Only a session's host and participants may change it or remove
+    /// others (anyone may add or remove themselves). Switch off only to
+    /// rule it out when a join fails.
+    #[serde(default = "enabled")]
+    pub session_owner_checks: bool,
 }
 
 const fn enabled() -> bool {
@@ -50,8 +59,85 @@ impl Default for DebugConfig {
             force_joins: false,
             push_notifications: true,
             push_notifications_reliable: true,
+            grpc_reflection: false,
+            session_owner_checks: true,
         }
     }
+}
+
+/// The community API: a small JSON API on the config server's port (80) for
+/// launchers, overlays and tools (see `community_api.rs`).
+///
+/// Only `info` is on by default. The rest shares player data or creates
+/// accounts, so an operator switches each part on for their own community.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+pub struct CommunityApiConfig {
+    /// `GET /api/info`: name, version and features of this server.
+    #[serde(default = "enabled")]
+    pub info: bool,
+    /// `GET /api/presence`: every registered player, who's online, and what
+    /// they're playing.
+    #[serde(default)]
+    pub presence: bool,
+    /// `POST /api/register` and `POST /api/login`: one-click accounts for
+    /// launchers. Both are rate-limited per address.
+    #[serde(default)]
+    pub accounts: bool,
+    /// `GET /api/unhandled`: the game's RMC calls this server couldn't answer.
+    #[serde(default)]
+    pub unhandled: bool,
+}
+
+impl Default for CommunityApiConfig {
+    fn default() -> Self {
+        Self {
+            info: true,
+            presence: false,
+            accounts: false,
+            unhandled: false,
+        }
+    }
+}
+
+/// Per-address limits on everything that checks a password or creates an
+/// account. Requests from this machine (loopback) are never limited.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+pub struct LimitsConfig {
+    /// Failed logins one address may make in ten minutes, over every login
+    /// route. Successful logins don't count.
+    #[serde(default = "default_failed_logins")]
+    pub failed_logins_per_10_minutes: usize,
+    /// Accounts one address may create in an hour. Players sharing one
+    /// address (a LAN party, a household) count together.
+    #[serde(default = "default_registrations")]
+    pub registrations_per_hour: usize,
+}
+
+const fn default_failed_logins() -> usize {
+    30
+}
+
+const fn default_registrations() -> usize {
+    20
+}
+
+impl Default for LimitsConfig {
+    fn default() -> Self {
+        Self {
+            failed_logins_per_10_minutes: default_failed_logins(),
+            registrations_per_hour: default_registrations(),
+        }
+    }
+}
+
+/// The admin API (accounts and games, on the gRPC port), for managing the
+/// server from the launcher. Always on when started by the launcher
+/// (`--launcher`); `enabled` turns it on otherwise. Its key is written to
+/// `admin-key.txt` next to the database.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AdminConfig {
+    #[serde(default)]
+    pub enabled: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -60,6 +146,12 @@ pub struct Config {
     pub quazal: quazal::Config,
     pub api_server: SocketAddr,
     pub debug: DebugConfig,
+    #[serde(default)]
+    pub community_api: CommunityApiConfig,
+    #[serde(default)]
+    pub admin: AdminConfig,
+    #[serde(default)]
+    pub limits: LimitsConfig,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -73,6 +165,32 @@ pub enum Error {
 }
 
 impl Config {
+    /// Listens on `listen` (0.0.0.0 for every address) and tells players to
+    /// connect to `public`: the address they reach this server on. They
+    /// differ behind NAT or in a container. Every service's address and the
+    /// online config the game downloads are updated.
+    pub fn set_addresses(&mut self, listen: std::net::IpAddr, public: std::net::IpAddr) {
+        self.api_server.set_ip(listen);
+        for svc in self.quazal.service.values_mut() {
+            match svc {
+                Service::Authentication(ctx) | Service::Secure(ctx) => {
+                    ctx.listen.set_ip(listen);
+                    if let Some(addr) = ctx.secure_server_addr.as_mut() {
+                        addr.set_ip(public);
+                    }
+                    if let Some(host) = ctx.settings.get_mut("storage_host") {
+                        if let Ok(mut addr) = host.parse::<SocketAddr>() {
+                            addr.set_ip(public);
+                            *host = addr.to_string();
+                        }
+                    }
+                }
+                Service::Config(online) => online.set_ips(listen, public),
+                Service::Content(content) => content.listen.set_ip(listen),
+            }
+        }
+    }
+
     pub fn load_from_file<P: AsRef<std::path::Path>>(path: P) -> Result<Self, Error> {
         let data = std::fs::read_to_string(path)?;
         let w: Config = toml::from_str(&data)?;
@@ -146,6 +264,27 @@ impl Default for Config {
             api_server: "0.0.0.0:50051".parse().unwrap(),
             quazal: quazal_config,
             debug: DebugConfig::default(),
+            community_api: CommunityApiConfig::default(),
+            admin: AdminConfig::default(),
+            limits: LimitsConfig::default(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_addresses_points_every_service_at_the_public_address() {
+        let mut cfg = Config::default();
+        let (listen, public) = ("0.0.0.0".parse().unwrap(), "203.0.113.10".parse().unwrap());
+        cfg.set_addresses(listen, public);
+        let text = toml::to_string(&cfg).unwrap();
+        assert!(!text.contains("127.0.0.1"), "nothing still points at localhost:\n{text}");
+        assert!(text.contains("203.0.113.10:21127"), "secure server");
+        assert!(text.contains("203.0.113.10:8000"), "content (storage_host)");
+        assert!(text.contains("prudp:/address=203.0.113.10;port=21126"), "online config");
+        assert_eq!(cfg.api_server.ip(), listen);
     }
 }

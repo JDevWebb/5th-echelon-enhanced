@@ -78,6 +78,19 @@ impl TicketGrantingProtocolServerImpl {
     }
 }
 
+/// How long a ticket lets its holder connect to the secure service. The
+/// server checks it only when the game connects (right after login), so it
+/// never cuts off a game in progress; it just stops a copied ticket working
+/// forever (upstream's never expired).
+const TICKET_LIFETIME: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
+fn ticket_expiry() -> u64 {
+    (std::time::SystemTime::now() + TICKET_LIFETIME)
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(u64::MAX)
+}
+
 /// Creates the `RVConnectionData` for a client.
 fn get_connection_data(ctx: &Context, pid: u32) -> RVConnectionData {
     ctx.secure_server_addr.map_or_else(
@@ -122,10 +135,16 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
             warn!(logger, "user {} not found", request.str_user_name);
             return Err(quazal::rmc::Error::AccessDenied);
         };
-        let password = self.get_password_by_username(logger, &request.str_user_name)?.or_else(|| {
-            warn!(logger, "user {} has no plaintext password", request.str_user_name);
-            None
-        });
+        // Plain Login proves nothing by itself: the ticket is sealed with the
+        // user's stored plaintext password, so only its owner can use it.
+        // Accounts registered through the launcher keep only a hash, and
+        // sealing theirs with the well-known dummy password let anyone who
+        // knew a username log in as them. They must use LoginEx.
+        let Some(password) = self.get_password_by_username(logger, &request.str_user_name)? else {
+            warn!(logger, "plain login refused for {}: no plaintext password (use LoginEx)", request.str_user_name);
+            return Err(quazal::rmc::Error::AccessDenied);
+        };
+        let password = Some(password);
         ci.user_id = Some(user_id);
         let session_key = self.get_session_key(logger, user_id);
         let ticket = KerberosTicket {
@@ -133,7 +152,7 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
             pid: SERVER_PID,
             internal: KerberosTicketInternal {
                 principle_id: user_id,
-                valid_until: u64::MAX,
+                valid_until: ticket_expiry(),
                 session_key,
             },
         };
@@ -171,8 +190,14 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
         };
 
         info!(logger, "LoginEx attempt by {} ({})", ubi_username, username);
+        let peer = Some(ci.address().ip());
+        if crate::rate_limit::logins().blocked(peer) {
+            warn!(logger, "too many failed logins from {}; refused", ci.address().ip());
+            return Err(quazal::rmc::Error::AccessDenied);
+        }
 
         let Some(user_id) = self.login(logger, ubi_username, password)? else {
+            crate::rate_limit::logins().record(peer);
             warn!(logger, "login failed for {}", ubi_username);
             return Err(quazal::rmc::Error::AccessDenied);
         };
@@ -185,7 +210,7 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
             pid: SERVER_PID,
             internal: KerberosTicketInternal {
                 principle_id: user_id,
-                valid_until: u64::MAX,
+                valid_until: ticket_expiry(),
                 session_key,
             },
         };
@@ -219,7 +244,7 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
             pid: server_id,
             internal: KerberosTicketInternal {
                 principle_id: user_id,
-                valid_until: u64::MAX,
+                valid_until: ticket_expiry(),
                 session_key,
             },
         };

@@ -44,6 +44,33 @@ struct GetChallengesResponse {
     challenges: Vec<Challenge>,
 }
 
+/// Challenge progress the game reports (method 5). The client serialises a
+/// `u32` challenge id and a `map<String, Variant>` (`overlord::ChallengeClient::
+/// reportChallenge` → proxy `FUN_022ee720` in the PC build).
+#[derive(Debug, ToStream, FromStream)]
+struct ReportChallengeRequest {
+    challenge_id: u32,
+    data: HashMap<String, Variant>,
+}
+
+/// The client's result for a report is a `map<String, Variant>` too (its
+/// holder only owns a tree); an empty map is a valid answer.
+#[derive(Debug, ToStream, FromStream)]
+struct ReportChallengeResponse {
+    data: HashMap<String, Variant>,
+}
+
+/// Method ids, from the client proxy (`FUN_022ee290`..`FUN_022ee850`, each
+/// sets its id) and the job that calls each one.
+const METHODS: [&str; 6] = [
+    "request_challenges",
+    "start_challenge",
+    "join_challenge",
+    "quit_challenge",
+    "report_challenge",
+    "request_records",
+];
+
 #[allow(clippy::module_name_repetitions)]
 pub struct OverlordChallengeProtocol;
 
@@ -120,20 +147,24 @@ Category=\"OnlineChallengeGoneDarkHeader\">\
                 }]);
                 Ok(GetChallengesResponse { challenges }.to_bytes())
             }
-            2..=6 => {
-                error!(logger, "not implemented yet");
-                Err(quazal::rmc::Error::UnknownMethod)
+            5 => {
+                // Accept the report so the game doesn't see an error; the
+                // progress isn't stored yet, only logged.
+                match ReportChallengeRequest::from_bytes(&request.parameters) {
+                    Ok(report) => info!(logger, "Challenge report"; "challenge" => report.challenge_id, "data" => ?report.data),
+                    Err(e) => warn!(logger, "Challenge report not in the expected layout"; "error" => %e, "bytes" => request.parameters.len()),
+                }
+                Ok(ReportChallengeResponse { data: HashMap::default() }.to_bytes())
             }
+            // Same error as before, so the game sees nothing new for these.
+            2..=4 | 6 => Err(quazal::rmc::Error::UnknownMethod),
             _ => Err(quazal::rmc::Error::UnknownMethod),
         }
     }
 
     fn method_name(&self, method_id: u32) -> Option<String> {
-        if method_id == 1 {
-            Some("get_challenges".into())
-        } else {
-            None
-        }
+        let i = usize::try_from(method_id).ok()?.checked_sub(1)?;
+        METHODS.get(i).map(|m| (*m).to_string())
     }
 }
 
@@ -146,6 +177,30 @@ mod tests {
     use quazal::rmc::basic::FromStream;
 
     use super::*;
+
+    #[test]
+    fn report_round_trips_and_answers_with_an_empty_map() {
+        let report = ReportChallengeRequest {
+            challenge_id: 20_000,
+            data: HashMap::from([(String::from("p"), Variant::I64(3))]),
+        };
+        let parsed = ReportChallengeRequest::from_bytes(&report.to_bytes()).unwrap();
+        assert_eq!(parsed.challenge_id, 20_000);
+        assert!(matches!(parsed.data.get("p"), Some(Variant::I64(3))));
+        let answer = ReportChallengeResponse { data: HashMap::default() }.to_bytes();
+        assert_eq!(answer, vec![0, 0, 0, 0], "an empty map is just its u32 count");
+    }
+
+    #[test]
+    fn methods_are_named() {
+        let p = OverlordChallengeProtocol;
+        let name = |id| <OverlordChallengeProtocol as Protocol<()>>::method_name(&p, id);
+        assert_eq!(name(1).as_deref(), Some("request_challenges"));
+        assert_eq!(name(5).as_deref(), Some("report_challenge"));
+        assert_eq!(name(6).as_deref(), Some("request_records"));
+        assert_eq!(name(0), None);
+        assert_eq!(name(7), None);
+    }
 
     #[allow(clippy::too_many_lines)]
     #[test]

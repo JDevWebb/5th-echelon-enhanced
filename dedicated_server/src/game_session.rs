@@ -3,6 +3,8 @@
 use std::sync::Arc;
 
 use quazal::prudp::ClientRegistry;
+use quazal::rmc::basic::ToStream as _;
+use quazal::rmc::types::DateTime;
 use quazal::rmc::Error;
 use quazal::rmc::Protocol;
 use quazal::ClientInfo;
@@ -13,25 +15,24 @@ use sc_bl_protocols::game_session_service::game_session_protocol::RemoveParticip
 use sc_bl_protocols::game_session_service::game_session_protocol::RemoveParticipantsResponse;
 use slog::Logger;
 
+use crate::config::DebugConfig;
 use crate::login_required;
-use quazal::rmc::types::DateTime;
-
 use crate::protocols::game_session_service::game_session_protocol::AbandonSessionRequest;
 use crate::protocols::game_session_service::game_session_protocol::AbandonSessionResponse;
+use crate::protocols::game_session_service::game_session_protocol::AcceptInvitationRequest;
+use crate::protocols::game_session_service::game_session_protocol::AcceptInvitationResponse;
 use crate::protocols::game_session_service::game_session_protocol::AddParticipantsRequest;
 use crate::protocols::game_session_service::game_session_protocol::AddParticipantsResponse;
+use crate::protocols::game_session_service::game_session_protocol::CancelInvitationRequest;
+use crate::protocols::game_session_service::game_session_protocol::CancelInvitationResponse;
 use crate::protocols::game_session_service::game_session_protocol::CreateSessionRequest;
 use crate::protocols::game_session_service::game_session_protocol::CreateSessionResponse;
+use crate::protocols::game_session_service::game_session_protocol::DeclineInvitationRequest;
+use crate::protocols::game_session_service::game_session_protocol::DeclineInvitationResponse;
 use crate::protocols::game_session_service::game_session_protocol::DeleteSessionRequest;
 use crate::protocols::game_session_service::game_session_protocol::DeleteSessionResponse;
 use crate::protocols::game_session_service::game_session_protocol::GameSessionProtocolServer;
 use crate::protocols::game_session_service::game_session_protocol::GameSessionProtocolServerTrait;
-use crate::protocols::game_session_service::game_session_protocol::AcceptInvitationRequest;
-use crate::protocols::game_session_service::game_session_protocol::AcceptInvitationResponse;
-use crate::protocols::game_session_service::game_session_protocol::CancelInvitationRequest;
-use crate::protocols::game_session_service::game_session_protocol::CancelInvitationResponse;
-use crate::protocols::game_session_service::game_session_protocol::DeclineInvitationRequest;
-use crate::protocols::game_session_service::game_session_protocol::DeclineInvitationResponse;
 use crate::protocols::game_session_service::game_session_protocol::GetInvitationReceivedCountRequest;
 use crate::protocols::game_session_service::game_session_protocol::GetInvitationReceivedCountResponse;
 use crate::protocols::game_session_service::game_session_protocol::GetInvitationSentCountRequest;
@@ -44,14 +45,14 @@ use crate::protocols::game_session_service::game_session_protocol::LeaveSessionR
 use crate::protocols::game_session_service::game_session_protocol::LeaveSessionResponse;
 use crate::protocols::game_session_service::game_session_protocol::RegisterUrLsRequest;
 use crate::protocols::game_session_service::game_session_protocol::RegisterUrLsResponse;
+use crate::protocols::game_session_service::game_session_protocol::ReportUnsuccessfulJoinSessionsRequest;
+use crate::protocols::game_session_service::game_session_protocol::ReportUnsuccessfulJoinSessionsResponse;
 use crate::protocols::game_session_service::game_session_protocol::SearchSessionsRequest;
 use crate::protocols::game_session_service::game_session_protocol::SearchSessionsResponse;
 use crate::protocols::game_session_service::game_session_protocol::SearchSessionsWithParticipantsRequest;
-use crate::protocols::game_session_service::game_session_protocol::ReportUnsuccessfulJoinSessionsRequest;
-use crate::protocols::game_session_service::game_session_protocol::ReportUnsuccessfulJoinSessionsResponse;
+use crate::protocols::game_session_service::game_session_protocol::SearchSessionsWithParticipantsResponse;
 use crate::protocols::game_session_service::game_session_protocol::SendInvitationRequest;
 use crate::protocols::game_session_service::game_session_protocol::SendInvitationResponse;
-use crate::protocols::game_session_service::game_session_protocol::SearchSessionsWithParticipantsResponse;
 use crate::protocols::game_session_service::game_session_protocol::SplitSessionRequest;
 use crate::protocols::game_session_service::game_session_protocol::SplitSessionResponse;
 use crate::protocols::game_session_service::game_session_protocol::UpdateSessionRequest;
@@ -61,8 +62,6 @@ use crate::protocols::game_session_service::types::GameSessionInvitationSent;
 use crate::protocols::game_session_service::types::GameSessionKey;
 use crate::protocols::game_session_service::types::GameSessionSearchResult;
 use crate::protocols::game_session_service::types::GameSessionSearchWithParticipantsResult;
-use crate::config::DebugConfig;
-use quazal::rmc::basic::ToStream as _;
 use crate::storage::Storage;
 
 /// Quazal's notification event, hand-written rather than generated.
@@ -119,13 +118,9 @@ const ROOM_KIND_ANTEROOM: u32 = 1;
 /// current one is the youngest, session ids being handed out in order - the same assumption
 /// `find_host_sessions` already encodes in its `ORDER BY g.id DESC`.
 fn rooms_for_friend_search<'a>(rooms: impl Iterator<Item = (u32, &'a str)>, invited_session_id: u32) -> Vec<u32> {
-    let kinds: Vec<(u32, Option<u32>)> = rooms
-        .map(|(id, attributes)| (id, attribute_value(attributes, PROPERTY_ROOM_KIND)))
-        .collect();
+    let kinds: Vec<(u32, Option<u32>)> = rooms.map(|(id, attributes)| (id, attribute_value(attributes, PROPERTY_ROOM_KIND))).collect();
 
-    let invited_is_anteroom = kinds
-        .iter()
-        .any(|(id, kind)| *id == invited_session_id && *kind == Some(ROOM_KIND_ANTEROOM));
+    let invited_is_anteroom = kinds.iter().any(|(id, kind)| *id == invited_session_id && *kind == Some(ROOM_KIND_ANTEROOM));
 
     let mut keep = vec![invited_session_id];
     if !invited_is_anteroom {
@@ -142,7 +137,7 @@ fn rooms_for_friend_search<'a>(rooms: impl Iterator<Item = (u32, &'a str)>, invi
 /// Reads one property out of an `"id => value;..."` attribute string.
 ///
 /// Returns `None` if the property is absent or unparsable; callers treat both the same way.
-fn attribute_value(attributes: &str, wanted_id: u32) -> Option<u32> {
+pub(crate) fn attribute_value(attributes: &str, wanted_id: u32) -> Option<u32> {
     attributes.split(';').find_map(|part| {
         let (id, value) = part.split_once("=>")?;
         (id.trim().parse::<u32>().ok()? == wanted_id).then(|| value.trim().parse().ok())?
@@ -160,7 +155,9 @@ pub(crate) fn advertise_private_slots_as_public(attributes: &str) -> String {
     let mut private_slots = 0u32;
     for part in attributes.split(';') {
         let Some((id, value)) = part.split_once("=>") else { continue };
-        let (Ok(id), Ok(value)) = (id.trim().parse::<u32>(), value.trim().parse::<u32>()) else { continue };
+        let (Ok(id), Ok(value)) = (id.trim().parse::<u32>(), value.trim().parse::<u32>()) else {
+            continue;
+        };
         match id {
             3 => public_slots = value,
             4 => private_slots = value,
@@ -181,30 +178,101 @@ pub(crate) fn advertise_private_slots_as_public(attributes: &str) -> String {
         .join(";")
 }
 
-/// Is this address unreachable from the outside?
-fn is_unroutable(ip: std::net::IpAddr) -> bool {
-    match ip {
-        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified(),
-        std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
+/// An IPv4 network such as `10.8.0.0/16`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Subnet {
+    network: u32,
+    mask: u32,
+}
+
+impl Subnet {
+    fn parse(s: &str) -> Option<Self> {
+        let (addr, len) = s.trim().split_once('/')?;
+        let addr: std::net::Ipv4Addr = addr.parse().ok()?;
+        let len: u32 = len.parse().ok().filter(|len| *len <= 32)?;
+        let mask = if len == 0 { 0 } else { u32::MAX << (32 - len) };
+        Some(Self {
+            network: u32::from(addr) & mask,
+            mask,
+        })
+    }
+
+    fn contains(&self, ip: std::net::IpAddr) -> bool {
+        matches!(ip, std::net::IpAddr::V4(v4) if u32::from(v4) & self.mask == self.network)
     }
 }
 
-/// Replaces an unroutable address inside a `prudp:/address=<ip>;port=<n>;...` URL.
-fn replace_url_address(url: &str, new_ip: std::net::IpAddr) -> String {
-    url.split(';')
-        .map(|part| {
-            for prefix in ["prudp:/address=", "address="] {
-                if let Some(rest) = part.strip_prefix(prefix) {
-                    if rest.parse::<std::net::IpAddr>().map(is_unroutable).unwrap_or(false) {
-                        return format!("{prefix}{new_ip}");
+/// The station URLs other players get for a client, given the address the
+/// server saw it connect from.
+///
+/// Matches run peer to peer, over the address the game registers here. The
+/// game takes it from whichever network adapter it picked, and when that is
+/// the wrong one (the home LAN, Radmin, ...), nobody can join that player.
+/// With `trusted` set (the service setting `trusted_subnet`, e.g. the VPN
+/// the community plays over, `10.8.0.0/16`), a client connecting from inside that network gets every
+/// other address in its URLs replaced by the one it connected from: the
+/// address the server itself reached it on. Without it, URLs are kept as sent
+/// (upstream behaviour).
+fn station_urls_for_peers(urls: Vec<String>, observed: std::net::IpAddr, trusted: Option<Subnet>) -> Vec<String> {
+    let Some(trusted) = trusted.filter(|t| t.contains(observed)) else {
+        return urls;
+    };
+    urls.into_iter()
+        .map(|url| {
+            url.split(';')
+                .map(|part| {
+                    for prefix in ["prudp:/address=", "prudps:/address=", "address="] {
+                        if let Some(addr) = part.strip_prefix(prefix) {
+                            let other = addr.parse::<std::net::IpAddr>().is_ok_and(|ip| ip != observed && !trusted.contains(ip));
+                            return if other { format!("{prefix}{observed}") } else { part.to_string() };
+                        }
                     }
-                    break;
-                }
-            }
-            part.to_string()
+                    part.to_string()
+                })
+                .collect::<Vec<_>>()
+                .join(";")
         })
-        .collect::<Vec<_>>()
-        .join(";")
+        .collect()
+}
+
+impl GameSessionProtocolServerImpl {
+    /// LeaveSession and AbandonSession: the player is no longer in the
+    /// session, and one nobody is left in ends. Upstream answered both
+    /// without doing anything, so players stayed listed in rooms they had
+    /// left (friend searches then found stale parties, #44) and empty
+    /// lobbies stayed on offer.
+    fn leave(&self, logger: &Logger, user_id: u32, session_id: u32, verb: &str) -> Result<(), Error> {
+        let ended = rmc_err!(self.storage.leave_game_session(user_id, session_id), logger, "error leaving session")?;
+        info!(logger, "User {user_id} {verb} session {session_id}{}", if ended { "; nobody left, it ends" } else { "" });
+        Ok(())
+    }
+}
+
+/// Whether `caller` may change a session with host `creator` and these
+/// `participants`: its host and participants may; anyone else only when the
+/// change concerns nobody but themselves (`targets`, for adding and removing
+/// participants: joining and leaving).
+fn may_change_session(caller: u32, creator: u32, participants: &[u32], targets: Option<&[u32]>) -> bool {
+    caller == creator || participants.contains(&caller) || targets.is_some_and(|t| !t.is_empty() && t.iter().all(|id| *id == caller))
+}
+
+impl GameSessionProtocolServerImpl {
+    /// Refuses a change to `session_id` by someone outside it (see
+    /// [`may_change_session`]). Sessions the server doesn't know are left to
+    /// the handler, as before.
+    fn authorise(&self, logger: &Logger, caller: u32, session_id: u32, targets: Option<&[u32]>, verb: &str) -> Result<(), Error> {
+        if !self.debug_config.session_owner_checks {
+            return Ok(());
+        }
+        let members = rmc_err!(self.storage.session_members(session_id), logger, "error reading session members")?;
+        match members {
+            Some((creator, participants)) if !may_change_session(caller, creator, &participants, targets) => {
+                warn!(logger, "User {caller} may not {verb} session {session_id} (host {creator}, participants {participants:?}); refused");
+                Err(Error::AccessDenied)
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
@@ -264,8 +332,9 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         _socket: &std::net::UdpSocket,
     ) -> Result<UpdateSessionResponse, Error> {
         // Ensure the client is logged in.
-        login_required(&*ci)?;
+        let user_id = login_required(&*ci)?;
         info!(logger, "Client updates session: {:?}", request);
+        self.authorise(logger, user_id, request.game_session_update.session_key.session_id, None, "update")?;
         let attributes = request
             .game_session_update
             .attributes
@@ -322,15 +391,16 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
     /// This function requires the client to be logged in. It currently returns an empty response.
     fn leave_session(
         &self,
-        _logger: &Logger,
+        logger: &Logger,
         _ctx: &Context,
         ci: &mut ClientInfo<CI>,
-        _request: LeaveSessionRequest,
+        request: LeaveSessionRequest,
         _client_registry: &ClientRegistry<CI>,
         _socket: &std::net::UdpSocket,
     ) -> Result<LeaveSessionResponse, Error> {
         // Ensure the client is logged in.
-        login_required(&*ci)?;
+        let user_id = login_required(&*ci)?;
+        self.leave(logger, user_id, request.game_session_key.session_id, "leaves")?;
         Ok(LeaveSessionResponse)
     }
 
@@ -349,6 +419,8 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // Ensure the client is logged in.
         let user_id = login_required(&*ci)?;
         info!(logger, "Client adds participants: {:?}", request);
+        let targets: Vec<u32> = request.private_participant_ids.0.iter().chain(request.public_participant_ids.0.iter()).copied().collect();
+        self.authorise(logger, user_id, request.game_session_key.session_id, Some(&targets), "add participants to")?;
         rmc_err!(
             self.storage.add_participants(
                 request.game_session_key.type_id,
@@ -363,11 +435,11 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // On the invitation route this call IS the join - the client never sends JoinSession
         // here (see split_session for the measurement). Retire the binding now, otherwise it
         // stays pending and misdirects the next split this player makes.
-        let per_einladung = self
+        let via_invitation = self
             .storage
             .consume_invite_for_session(user_id, request.game_session_key.type_id, request.game_session_key.session_id)
             .unwrap_or(false);
-        if per_einladung {
+        if via_invitation {
             info!(
                 logger,
                 "User {user_id} joined session {} through an invitation (via AddParticipants)", request.game_session_key.session_id
@@ -387,24 +459,19 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // Only nudge PRIVATE matches (room kind 0). Public rooms send `JoinSession` and need
         // no nudge, and a packet the client does not accept stalls the ordered PRUDP stream -
         // nudging during party setup breaks the party join that otherwise works.
-        let ist_privater_raum = self
+        let is_private_room = self
             .storage
             .game_session_attributes(request.game_session_key.type_id, request.game_session_key.session_id)
             .ok()
             .flatten()
             .is_some_and(|a| {
-                a.split(';').any(|teil| {
-                    let Some((id, wert)) = teil.split_once("=>") else { return false };
-                    id.trim() == "113" && wert.trim() == "0"
+                a.split(';').any(|part| {
+                    let Some((id, value)) = part.split_once("=>") else { return false };
+                    id.trim() == "113" && value.trim() == "0"
                 })
             });
-        if self.debug_config.push_notifications && ist_privater_raum {
-        for participant in request
-            .private_participant_ids
-            .0
-            .iter()
-            .chain(request.public_participant_ids.0.iter())
-            .copied()
+        if self.debug_config.push_notifications && is_private_room {
+            for participant in request.private_participant_ids.0.iter().chain(request.public_participant_ids.0.iter()).copied()
             // The caller is notified too, even though they added themselves.
             //
             // On the invitation route into a private match the guest is its own adder: it
@@ -412,79 +479,79 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             // caller here means nobody gets notified at all on that route, and the guest's
             // state machine never moves. The party route is unaffected - there the host adds
             // the guest and is not in the list itself.
-        {
-            let event = NotificationEvent {
-                pid_source: user_id,
-                // 7003 = category 7, subtype 3. Both halves are required:
-                //
-                // `NotificationHandler::vf01` (0x0077DA30) returns early on
-                // `ui_type / 1000 != 7` without calling any listener at all.
-                // `NetOnlineSessionServiceRdv::vf28` (0x007BDFB0) then checks
-                // `ui_type % 1000 == 3` and, on a matching `ui_param_1`, opens the
-                // `[session+0x42A]` gate that `StateJoin::vf00` waits on in a private match.
-                //
-                // A bare 3 here dies in the first filter without a trace - no listener, no
-                // error, nothing.
-                ui_type: 7003,
-                // The id of the player this is ABOUT - not the room id.
-                //
-                // `vf28` compares it against `[[service@slot_0x18]+0x40C]+8`:
-                //   0x007BDFD3  mov esi,[eax+0x18]     service from table slot 0x18
-                //   0x007BDFD7  mov ebx,[ecx+0xc]      ui_param_1
-                //   0x007BDFFA  mov esi,[esi+0x40c]
-                //   0x007BE004  cmp ebx,[esi+8]        mismatch leaves the gate shut
-                //
-                // Slot 0x18 holds the local player's object, not the room, which matches the
-                // usual meaning of a Quazal `NotificationEvent`: `pid_source` is the sender,
-                // `ui_param_1` the player concerned. Putting the room id here makes `vf28` run
-                // through without ever writing the gate.
-                ui_param_1: participant,
-                // A session id as well, not a type_id.
-                //
-                // `NotificationHandler::vf01` compares it against `[[service+0x40C]+8]` - at
-                // 0x0077DA77: `mov ecx,[esi+0x40c]` / `call 0x22b14e0` (returns `[this+8]`) /
-                // `cmp eax,[ebp+8]`. `[+0x40C]` is the GameSession object and `+8` its session
-                // id; on a mismatch the loop finds no service object and never calls `vf28`.
-                ui_param_2: request.game_session_key.session_id,
-                str_param: String::new(),
-                ui_param_3: 0,
-            };
-            info!(logger, "Notifying {participant} about session {}: {event:?}", request.game_session_key.session_id);
-            let payload = event.to_bytes();
-            let reliable = self.debug_config.push_notifications_reliable;
-            let mut notify = |target: &mut ClientInfo<CI>| {
-                if let Err(e) = quazal::rmc::call_client(
-                    logger,
-                    _ctx,
-                    _socket,
-                    target,
-                    NOTIFICATION_PROTOCOL_ID,
-                    PROCESS_NOTIFICATION_EVENT,
-                    payload.clone(),
-                    reliable,
-                ) {
-                    error!(logger, "Notification to {participant} failed: {e}");
-                }
-            };
+            {
+                let event = NotificationEvent {
+                    pid_source: user_id,
+                    // 7003 = category 7, subtype 3. Both halves are required:
+                    //
+                    // `NotificationHandler::vf01` (0x0077DA30) returns early on
+                    // `ui_type / 1000 != 7` without calling any listener at all.
+                    // `NetOnlineSessionServiceRdv::vf28` (0x007BDFB0) then checks
+                    // `ui_type % 1000 == 3` and, on a matching `ui_param_1`, opens the
+                    // `[session+0x42A]` gate that `StateJoin::vf00` waits on in a private match.
+                    //
+                    // A bare 3 here dies in the first filter without a trace - no listener, no
+                    // error, nothing.
+                    ui_type: 7003,
+                    // The id of the player this is ABOUT - not the room id.
+                    //
+                    // `vf28` compares it against `[[service@slot_0x18]+0x40C]+8`:
+                    //   0x007BDFD3  mov esi,[eax+0x18]     service from table slot 0x18
+                    //   0x007BDFD7  mov ebx,[ecx+0xc]      ui_param_1
+                    //   0x007BDFFA  mov esi,[esi+0x40c]
+                    //   0x007BE004  cmp ebx,[esi+8]        mismatch leaves the gate shut
+                    //
+                    // Slot 0x18 holds the local player's object, not the room, which matches the
+                    // usual meaning of a Quazal `NotificationEvent`: `pid_source` is the sender,
+                    // `ui_param_1` the player concerned. Putting the room id here makes `vf28` run
+                    // through without ever writing the gate.
+                    ui_param_1: participant,
+                    // A session id as well, not a type_id.
+                    //
+                    // `NotificationHandler::vf01` compares it against `[[service+0x40C]+8]` - at
+                    // 0x0077DA77: `mov ecx,[esi+0x40c]` / `call 0x22b14e0` (returns `[this+8]`) /
+                    // `cmp eax,[ebp+8]`. `[+0x40C]` is the GameSession object and `+8` its session
+                    // id; on a mismatch the loop finds no service object and never calls `vf28`.
+                    ui_param_2: request.game_session_key.session_id,
+                    str_param: String::new(),
+                    ui_param_3: 0,
+                };
+                info!(logger, "Notifying {participant} about session {}: {event:?}", request.game_session_key.session_id);
+                let payload = event.to_bytes();
+                let reliable = self.debug_config.push_notifications_reliable;
+                let mut notify = |target: &mut ClientInfo<CI>| {
+                    if let Err(e) = quazal::rmc::call_client(
+                        logger,
+                        _ctx,
+                        _socket,
+                        target,
+                        NOTIFICATION_PROTOCOL_ID,
+                        PROCESS_NOTIFICATION_EVENT,
+                        payload.clone(),
+                        reliable,
+                    ) {
+                        error!(logger, "Notification to {participant} failed: {e}");
+                    }
+                };
 
-            // Serve the caller through their own `ci` rather than through the registry.
-            //
-            // `client_by_user_id` filters with `try_borrow`, and the caller's cell is borrowed
-            // for the duration of their own request - they are never findable that way.
-            // Swapping in `borrow_mut` is no way out either; it panics the service thread.
-            if participant == user_id {
-                // Invitation route only. Otherwise the HOST notifies itself as well when it
-                // adds itself while opening the private match, opening its own `[0x42A]` gate
-                // - a join gate on the host side is pointless at best.
-                if per_einladung {
-                    notify(&mut *ci);
+                // Serve the caller through their own `ci` rather than through the registry.
+                //
+                // `client_by_user_id` filters with `try_borrow`, and the caller's cell is borrowed
+                // for the duration of their own request - they are never findable that way.
+                // Swapping in `borrow_mut` is no way out either; it panics the service thread.
+                if participant == user_id {
+                    // Invitation route only. Otherwise the HOST notifies itself as well when it
+                    // adds itself while opening the private match, opening its own `[0x42A]` gate
+                    // - a join gate on the host side is pointless at best.
+                    if via_invitation {
+                        notify(&mut *ci);
+                    }
+                } else if let Some(cell) = _client_registry.client_by_user_id(participant) {
+                    notify(&mut cell.borrow_mut());
+                } else {
+                    info!(logger, "No connected client for {participant} - no notification sent");
                 }
-            } else if let Some(cell) = _client_registry.client_by_user_id(participant) {
-                notify(&mut cell.borrow_mut());
-            } else {
-                info!(logger, "No connected client for {participant} - no notification sent");
             }
-        }
         }
 
         Ok(AddParticipantsResponse)
@@ -503,8 +570,9 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         _socket: &std::net::UdpSocket,
     ) -> Result<RemoveParticipantsResponse, Error> {
         // Ensure the client is logged in.
-        login_required(&*ci)?;
+        let user_id = login_required(&*ci)?;
         info!(logger, "Client removes participants: {:?}", request);
+        self.authorise(logger, user_id, request.game_session_key.session_id, Some(&request.participant_ids.0), "remove participants from")?;
         rmc_err!(
             self.storage
                 .remove_participants(request.game_session_key.type_id, request.game_session_key.session_id, request.participant_ids.0.clone(),),
@@ -519,15 +587,16 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
     /// This function requires the client to be logged in. It currently returns an empty response.
     fn abandon_session(
         &self,
-        _logger: &Logger,
+        logger: &Logger,
         _ctx: &Context,
         ci: &mut ClientInfo<CI>,
-        _request: AbandonSessionRequest,
+        request: AbandonSessionRequest,
         _client_registry: &ClientRegistry<CI>,
         _socket: &std::net::UdpSocket,
     ) -> Result<AbandonSessionResponse, Error> {
         // Ensure the client is logged in.
-        login_required(&*ci)?;
+        let user_id = login_required(&*ci)?;
+        self.leave(logger, user_id, request.game_session_key.session_id, "abandons")?;
         Ok(AbandonSessionResponse)
     }
 
@@ -537,7 +606,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
     fn register_urls(
         &self,
         logger: &Logger,
-        _ctx: &Context,
+        ctx: &Context,
         ci: &mut ClientInfo<CI>,
         request: RegisterUrLsRequest,
         _client_registry: &ClientRegistry<CI>,
@@ -547,46 +616,18 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         let user_id = login_required(&*ci)?;
         info!(logger, "Client registers urls: {:?}", request);
 
-        // Matches run peer to peer, so the other player must be able to reach these
-        // addresses. A client behind NAT only knows its own private address, which is
-        // useless to the other side. Substitute something reachable:
-        //   * client seen from the internet -> the address we actually observe
-        //   * client on our own network     -> the server's configured public address,
-        //     because a peer behind the same NAT as this server can never be observed
-        //     under a public address
-        let observed = ci.address().ip();
-        let reachable = if is_unroutable(observed) {
-            // The public address is configured per service. This protocol runs on the
-            // secure service, whose settings carry `storage_host`; `secure_server_addr`
-            // lives on the authentication service and is not visible here. Try both so
-            // the lookup keeps working if the layout changes.
-            ["storage_host", "secure_server_addr"]
-                .iter()
-                .find_map(|key| _ctx.settings.get(*key))
-                .and_then(|s| s.rsplit_once(':').map_or(s.as_str(), |(host, _)| host).parse::<std::net::IpAddr>().ok())
-                .filter(|ip| !is_unroutable(*ip))
-        } else {
-            Some(observed)
-        };
-
-        let urls: Vec<String> = request
-            .station_urls
-            .0
-            .into_iter()
-            .map(|su| {
-                let url = su.to_string();
-                match reachable {
-                    Some(ip) => {
-                        let rewritten = replace_url_address(&url, ip);
-                        if rewritten != url {
-                            info!(logger, "rewrote station url {} -> {}", url, rewritten);
-                        }
-                        rewritten
-                    }
-                    None => url,
-                }
-            })
-            .collect();
+        let trusted = ctx.settings.get("trusted_subnet").and_then(|s| {
+            let subnet = Subnet::parse(s);
+            if subnet.is_none() {
+                warn!(logger, "ignoring invalid trusted_subnet {s:?} (expected e.g. 10.8.0.0/16)");
+            }
+            subnet
+        });
+        let sent: Vec<String> = request.station_urls.0.into_iter().map(|su| su.to_string()).collect();
+        let urls = station_urls_for_peers(sent.clone(), ci.address().ip(), trusted);
+        if urls != sent {
+            info!(logger, "station urls {:?} -> {:?} (the address this client connected from)", sent, urls);
+        }
 
         rmc_err!(self.storage.register_urls(user_id, urls), logger, "error adding participants")?;
         Ok(RegisterUrLsResponse)
@@ -665,21 +706,12 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // what the invitation calls for.
         if let Some(invited) = invited {
             if sessions.iter().any(|session| session.session_id == invited.session_id) {
-                let keep = rooms_for_friend_search(
-                    sessions.iter().map(|session| (session.session_id, session.attributes.as_str())),
-                    invited.session_id,
-                );
+                let keep = rooms_for_friend_search(sessions.iter().map(|session| (session.session_id, session.attributes.as_str())), invited.session_id);
                 sessions.retain(|session| keep.contains(&session.session_id));
 
                 let rooms: Vec<String> = sessions
                     .iter()
-                    .map(|session| {
-                        format!(
-                            "{} (113 => {:?})",
-                            session.session_id,
-                            attribute_value(&session.attributes, PROPERTY_ROOM_KIND)
-                        )
-                    })
+                    .map(|session| format!("{} (113 => {:?})", session.session_id, attribute_value(&session.attributes, PROPERTY_ROOM_KIND)))
                     .collect();
                 info!(
                     logger,
@@ -701,20 +733,24 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         Ok(SearchSessionsWithParticipantsResponse {
             search_results: sessions
                 .into_iter()
-                .map(|session| {
-                    let host = session.participants.iter().find(|p| p.user_id == session.creator_id).unwrap();
-                    GameSessionSearchWithParticipantsResult {
+                .filter_map(|session| {
+                    // A session whose host has left has nobody to connect to.
+                    let Some(host) = session.participants.iter().find(|p| p.user_id == session.creator_id) else {
+                        warn!(logger, "skipping session {} without its host", session.session_id);
+                        return None;
+                    };
+                    Some(GameSessionSearchWithParticipantsResult {
                         game_session_search_result: GameSessionSearchResult {
                             session_key: GameSessionKey {
                                 type_id: session.session_type,
                                 session_id: session.session_id,
                             },
                             host_pid: host.user_id,
-                            host_urls: host.station_urls.clone().try_into().unwrap(),
-                            attributes: session.attributes.as_str().parse().unwrap(),
+                            host_urls: quazal::rmc::types::QList::parse_lossy(&host.station_urls),
+                            attributes: session.attributes.as_str().parse().unwrap_or_default(),
                         },
                         participant_ids: session.participants.into_iter().map(|p| p.user_id).collect(),
-                    }
+                    })
                 })
                 .collect(),
         })
@@ -743,10 +779,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         )?;
         Ok(SplitSessionResponse {
             game_session_key_migrated: match migrated {
-                Some(session_id) => GameSessionKey {
-                    type_id: key.type_id,
-                    session_id,
-                },
+                Some(session_id) => GameSessionKey { type_id: key.type_id, session_id },
                 None => key,
             },
         })
@@ -768,14 +801,14 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         _socket: &std::net::UdpSocket,
     ) -> Result<ReportUnsuccessfulJoinSessionsResponse, Error> {
         let user_id = login_required(&*ci)?;
-        for gescheitert in &request.unsuccessful_join_sessions.0 {
+        for failed in &request.unsuccessful_join_sessions.0 {
             warn!(
                 logger,
                 "Join failed: {user_id} did not get into session {} (type {}) - category {}, code {:#010x}",
-                gescheitert.session_key.session_id,
-                gescheitert.session_key.type_id,
-                gescheitert.error_category,
-                gescheitert.error_code
+                failed.session_key.session_id,
+                failed.session_key.type_id,
+                failed.error_category,
+                failed.error_code
             );
         }
         Ok(ReportUnsuccessfulJoinSessionsResponse)
@@ -872,12 +905,8 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
     ) -> Result<GetInvitationsReceivedResponse, Error> {
         let user_id = login_required(&*ci)?;
         let invites = rmc_err!(
-            self.storage.list_game_session_invites_received(
-                user_id,
-                request.game_session_type_id,
-                request.result_range.offset,
-                request.result_range.size,
-            ),
+            self.storage
+                .list_game_session_invites_received(user_id, request.game_session_type_id, request.result_range.offset, request.result_range.size,),
             logger,
             "error listing received invitations"
         )?;
@@ -966,12 +995,8 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             "error joining session after accepting invitation"
         )?;
         rmc_err!(
-            self.storage.delete_game_session_invite(
-                invitation.session_key.type_id,
-                invitation.session_key.session_id,
-                invitation.sender_pid,
-                user_id,
-            ),
+            self.storage
+                .delete_game_session_invite(invitation.session_key.type_id, invitation.session_key.session_id, invitation.sender_pid, user_id,),
             logger,
             "error clearing accepted invitation"
         )?;
@@ -994,12 +1019,8 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         let invitation = request.game_session_invitation;
         info!(logger, "User {} declines invitation: {:?}", user_id, invitation);
         rmc_err!(
-            self.storage.delete_game_session_invite(
-                invitation.session_key.type_id,
-                invitation.session_key.session_id,
-                invitation.sender_pid,
-                user_id,
-            ),
+            self.storage
+                .delete_game_session_invite(invitation.session_key.type_id, invitation.session_key.session_id, invitation.sender_pid, user_id,),
             logger,
             "error clearing declined invitation"
         )?;
@@ -1022,12 +1043,8 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         let invitation = request.game_session_invitation;
         info!(logger, "User {} cancels invitation: {:?}", user_id, invitation);
         rmc_err!(
-            self.storage.delete_game_session_invite(
-                invitation.session_key.type_id,
-                invitation.session_key.session_id,
-                user_id,
-                invitation.recipient_pid,
-            ),
+            self.storage
+                .delete_game_session_invite(invitation.session_key.type_id, invitation.session_key.session_id, user_id, invitation.recipient_pid,),
             logger,
             "error cancelling invitation"
         )?;
@@ -1126,11 +1143,14 @@ mod tests {
     use quazal::rmc::Request;
 
     use super::attribute_value;
-    use super::PROPERTY_ROOM_KIND;
+    use super::may_change_session;
     use super::rooms_for_friend_search;
+    use super::station_urls_for_peers;
     use super::NotificationEvent;
+    use super::Subnet;
     use super::NOTIFICATION_PROTOCOL_ID;
     use super::PROCESS_NOTIFICATION_EVENT;
+    use super::PROPERTY_ROOM_KIND;
 
     /// Builds the notification exactly as `add_participants` does and takes it apart again.
     ///
@@ -1203,11 +1223,7 @@ mod tests {
     /// A host can be left holding older anterooms; the current one is the youngest.
     #[test]
     fn stale_anterooms_do_not_displace_the_current_one() {
-        let rooms = [
-            (477, ANTEROOM_ATTRIBUTES),
-            (478, ANTEROOM_ATTRIBUTES),
-            (484, MATCH_ROOM_ATTRIBUTES),
-        ];
+        let rooms = [(477, ANTEROOM_ATTRIBUTES), (478, ANTEROOM_ATTRIBUTES), (484, MATCH_ROOM_ATTRIBUTES)];
 
         let keep = rooms_for_friend_search(rooms.into_iter(), 484);
 
@@ -1225,6 +1241,51 @@ mod tests {
     }
 
     /// A missing or unparsable property reads as absent rather than as a value.
+    #[test]
+    fn peers_get_the_address_a_trusted_client_connected_from() {
+        let trusted = Subnet::parse("10.8.0.0/16");
+        let vpn: std::net::IpAddr = "10.8.1.2".parse().unwrap();
+        let sent = vec![
+            "prudp:/address=192.168.1.20;port=3074;sid=15;type=2".to_string(),
+            "prudp:/address=26.144.25.254;port=3074;sid=15;type=3".to_string(),
+        ];
+        // The game picked the home LAN / Radmin adapter; peers get the VPN address.
+        assert_eq!(
+            station_urls_for_peers(sent.clone(), vpn, trusted),
+            ["prudp:/address=10.8.1.2;port=3074;sid=15;type=2", "prudp:/address=10.8.1.2;port=3074;sid=15;type=3"]
+        );
+        // Already right: unchanged.
+        let right = vec!["prudp:/address=10.8.1.2;port=3074;type=2".to_string()];
+        assert_eq!(station_urls_for_peers(right.clone(), vpn, trusted), right);
+        // Not configured, or a client from outside the trusted network: kept as sent.
+        assert_eq!(station_urls_for_peers(sent.clone(), vpn, None), sent);
+        assert_eq!(station_urls_for_peers(sent.clone(), "203.0.113.9".parse().unwrap(), trusted), sent);
+    }
+
+    #[test]
+    fn only_members_change_a_session_but_anyone_may_join_or_leave() {
+        let (host, guest, stranger) = (10, 11, 99);
+        let participants = [host, guest];
+        assert!(may_change_session(host, host, &participants, None));
+        assert!(may_change_session(guest, host, &participants, None), "participants may update");
+        assert!(!may_change_session(stranger, host, &participants, None));
+        assert!(may_change_session(stranger, host, &participants, Some(&[stranger])), "joining");
+        assert!(!may_change_session(stranger, host, &participants, Some(&[guest])), "removing someone else");
+        assert!(!may_change_session(stranger, host, &participants, Some(&[stranger, guest])));
+        assert!(!may_change_session(stranger, host, &participants, Some(&[])));
+        assert!(may_change_session(host, host, &participants, Some(&[stranger])), "the host adds anyone");
+    }
+
+    #[test]
+    fn subnets_parse() {
+        let s = Subnet::parse("10.8.0.0/16").unwrap();
+        assert!(s.contains("10.8.255.1".parse().unwrap()));
+        assert!(!s.contains("10.78.0.1".parse().unwrap()));
+        assert!(Subnet::parse("0.0.0.0/0").unwrap().contains("8.8.8.8".parse().unwrap()));
+        assert_eq!(Subnet::parse("10.8.0.0"), None);
+        assert_eq!(Subnet::parse("10.8.0.0/33"), None);
+    }
+
     #[test]
     fn attribute_value_reports_absence() {
         assert_eq!(attribute_value("113 => 0;3 => 8", PROPERTY_ROOM_KIND), Some(0));

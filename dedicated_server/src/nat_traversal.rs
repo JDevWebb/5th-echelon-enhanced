@@ -84,8 +84,13 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
             // }
             // .to_bytes();
 
-            // Get the address of the target client.
-            let addr = { *target.borrow().address() };
+            // The target may be the requesting client itself, which the caller
+            // already holds mutably borrowed.
+            let Ok(mut target) = target.try_borrow_mut() else {
+                warn!(logger, "Not probing {url}: it is the requesting client");
+                continue;
+            };
+            let addr = *target.address();
             info!(logger, "Sending probe to {url} ({addr})\n{payload:x?}");
 
             // Create a QPacket for sending the probe.
@@ -103,7 +108,9 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
                 ..Default::default()
             };
             // Send the QPacket to the target client.
-            quazal::prudp::send_request(logger, ctx, &addr, socket, qpacket, &mut *target.borrow_mut()).unwrap();
+            if let Err(e) = quazal::prudp::send_request(logger, ctx, &addr, socket, qpacket, &mut target) {
+                error!(logger, "Sending probe to {addr} failed: {e}");
+            }
         }
         Ok(RequestProbeInitiationExtResponse)
     }

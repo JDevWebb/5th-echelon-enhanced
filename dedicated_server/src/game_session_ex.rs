@@ -56,7 +56,7 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
         // room and skip the attribute comparison below.
         let session_type = request.game_session_query.type_id;
         let invited_session = if request.game_session_query.query_id == 8 {
-rmc_err!(self.storage.find_pending_invited_session(user_id, session_type), logger, "Error resolving invited room")?
+            rmc_err!(self.storage.find_pending_invited_session(user_id, session_type), logger, "Error resolving invited room")?
         } else {
             None
         };
@@ -111,7 +111,10 @@ rmc_err!(self.storage.find_pending_invited_session(user_id, session_type), logge
                 if invitation_search {
                     return true;
                 }
-                let sess_attrs: QList<Property> = session.attributes.parse().unwrap();
+                let Ok(sess_attrs) = session.attributes.parse::<QList<Property>>() else {
+                    warn!(logger, "skipping session {} with unreadable attributes {:?}", session.session_id, session.attributes);
+                    return false;
+                };
                 let sess_attrs = sess_attrs.0.into_iter().map(|p| (p.id, p.value)).collect::<HashMap<_, _>>();
                 for (id, value) in &req_attrs {
                     if *id == 112 {
@@ -138,14 +141,8 @@ rmc_err!(self.storage.find_pending_invited_session(user_id, session_type), logge
                                 type_id: session.session_type,
                             },
                             host_pid: session.creator_id,
-                            host_urls: session
-                                .participants
-                                .iter()
-                                .filter(|p| p.user_id == session.creator_id)
-                                .flat_map(|p| p.station_urls.iter())
-                                .map(|u| u.parse().unwrap())
-                                .collect(),
-                            attributes: session.attributes.parse().unwrap(),
+                            host_urls: QList::parse_lossy(session.participants.iter().filter(|p| p.user_id == session.creator_id).flat_map(|p| p.station_urls.iter())),
+                            attributes: session.attributes.parse().unwrap_or_default(),
                         },
                         participants: QList(
                             session
@@ -154,7 +151,7 @@ rmc_err!(self.storage.find_pending_invited_session(user_id, session_type), logge
                                 .map(|participant| GameSessionParticipant {
                                     pid: participant.user_id,
                                     name: participant.name,
-                                    station_urls: participant.station_urls.try_into().unwrap(),
+                                    station_urls: QList::parse_lossy(&participant.station_urls),
                                 })
                                 .collect(),
                         ),

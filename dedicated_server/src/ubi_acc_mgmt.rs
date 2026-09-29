@@ -130,9 +130,7 @@ impl<T> UbiAccountManagementProtocolServerTrait<T> for UbiAccountManagementProto
     ) -> Result<LookupUsernamesByUbiAccountIDsResponse, quazal::rmc::Error> {
         login_required(&*ci)?;
         if request.ubi_account_ids.is_empty() {
-            return Ok(LookupUsernamesByUbiAccountIDsResponse {
-                usernames: HashMap::default(),
-            });
+            return Ok(LookupUsernamesByUbiAccountIDsResponse { usernames: HashMap::default() });
         }
         let ubi_len = request.ubi_account_ids.len();
         let usernames: HashMap<_, _> = request

@@ -57,10 +57,10 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
                     player_name: "foobar".to_string(),
                     submitted_time: quazal::rmc::types::DateTime(0x1f_9635_4343),
                     stats: vec![
-                        PropertyVariant {
-                            id: 0x87, // money
-                            value: quazal::rmc::types::Variant::I64(10_000_000),
-                        },
+                        // PropertyVariant {
+                        //     id: 0x87, // money
+                        //     value: quazal::rmc::types::Variant::I64(10),
+                        // },
                         // PropertyVariant {
                         //     id: 0x84,
                         //     value: quazal::rmc::types::Variant::I64(20),

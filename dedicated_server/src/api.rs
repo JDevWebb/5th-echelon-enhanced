@@ -133,11 +133,7 @@ impl Friends for MyFriends {
         // Which session everybody is in. The game looks for a friend's session right here in
         // the friend list - it never asks separately - so an accepted invitation is dead
         // without it.
-        let sessions = self
-            .storage
-            .list_advertised_sessions_async()
-            .await
-            .map_err(|e| Status::internal(format!("{e}")))?;
+        let sessions = self.storage.list_advertised_sessions_async().await.map_err(|e| Status::internal(format!("{e}")))?;
         let friends = users
             .into_iter()
             .map(|u| {
@@ -167,12 +163,7 @@ impl Friends for MyFriends {
         debug!(self.logger, "SetSession request from {}: {:?}", user_id, request);
 
         self.storage
-            .set_advertised_session_async(
-                user_id,
-                (request.session_id != 0).then_some(request.session_id),
-                request.invite_only,
-                &request.session_data,
-            )
+            .set_advertised_session_async(user_id, (request.session_id != 0).then_some(request.session_id), request.invite_only, &request.session_data)
             .await
             .map_err(|e| Status::internal(format!("Couldn't store session: {e:?}")))?;
 
@@ -233,6 +224,10 @@ impl Users for MyUsers {
     ///
     /// Authenticates the user against the storage and generates an authorization token upon successful login.
     async fn login(&self, request: Request<users::LoginRequest>) -> Result<Response<users::LoginResponse>, Status> {
+        let peer = request.remote_addr().map(|a| a.ip());
+        if crate::rate_limit::logins().blocked(peer) {
+            return Err(Status::resource_exhausted("Too many failed logins; try again later"));
+        }
         let request = request.into_inner();
         let username = request.username;
         let password = request.password;
@@ -243,9 +238,12 @@ impl Users for MyUsers {
             .await
             .map_err(|e| Status::internal(format!("Login error: {e:?}")))?;
 
-        let user_id = maybe_user.map_err(|err| match err {
-            LoginError::InvalidPassword => Status::unauthenticated("Invalid login"),
-            LoginError::NotFound => Status::not_found("Unknown user"),
+        let user_id = maybe_user.map_err(|err| {
+            crate::rate_limit::logins().record(peer);
+            match err {
+                LoginError::InvalidPassword => Status::unauthenticated("Invalid login"),
+                LoginError::NotFound => Status::not_found("Unknown user"),
+            }
         })?;
 
         let user_id = format!("{user_id}");
@@ -267,6 +265,9 @@ impl Users for MyUsers {
     ///
     /// Registers a new user in the storage, handling potential conflicts like duplicate usernames or Ubisoft IDs.
     async fn register(&self, request: Request<users::RegisterRequest>) -> Result<Response<users::RegisterResponse>, Status> {
+        if !crate::rate_limit::registrations().check(request.remote_addr().map(|a| a.ip())) {
+            return Err(Status::resource_exhausted("Too many new accounts from this address; try again later"));
+        }
         let request = request.into_inner();
         let username = request.username;
         let password = request.password;
@@ -507,12 +508,12 @@ impl GamesAdmin for MyGamesAdmin {
                         .unwrap_or_default();
                     let attributes: HashMap<u32, u32> = attributes.0.into_iter().map(|p| (p.id, p.value)).collect();
 
-                    // just guessing that 105 gives me what I want... ¯\_(ツ)_/¯
-                    let game_type = match attributes.get(&105) {
-                        None => String::from("Lobby"),
-                        Some(&1) => String::from("SvM"),
-                        Some(&2) => String::from("Coop"),
-                        Some(v) => format!("Unknown({v})"),
+                    // 113 is the room kind (0 match, 1 lobby) and 103 is non-zero
+                    // for Spies vs Mercs (see game_session.rs).
+                    let mode = if attributes.get(&103).is_some_and(|v| *v != 0) { "SvM" } else { "Co-op" };
+                    let game_type = match attributes.get(&113) {
+                        Some(&1) => format!("{mode} lobby"),
+                        _ => format!("{mode} match"),
                     };
 
                     games::Game {
@@ -576,12 +577,21 @@ fn preshared_authentication<S>(service: S, key: String) -> tonic::service::inter
         let header_value = req.metadata().get("authorization").ok_or(Status::unauthenticated("Missing authorization"))?;
         let token = header_value.to_str().map_err(|_| Status::unauthenticated("Invalid token"))?;
 
-        if token == key {
+        if constant_time_eq(token.as_bytes(), key.as_bytes()) {
             Ok(req)
         } else {
             Err(Status::permission_denied("Invalid token"))
         }
     })
+}
+
+/// The admin key as text, for pasting into the launcher's "Manage a server".
+const ADMIN_KEY_TEXT_FILE: &str = "admin-key.txt";
+
+/// Compares two secrets without the time taken depending on where they
+/// differ, so the admin key can't be guessed a character at a time.
+fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// Encodes a byte slice into a Base32 string.
@@ -624,26 +634,37 @@ pub async fn start_server(
     server_addr: SocketAddr,
     debug_config: Arc<DebugConfig>,
     enable_admin_services: bool,
+    reflection: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let key = secretbox::gen_key();
+    // Kept across restarts, so logged-in launchers and games stay logged in.
+    let key = crate::keys::load_or_create(std::path::Path::new(crate::keys::API_KEY_FILE))?;
     info!(logger, "Listening on {server_addr}");
+    // Reflection lists every call to anyone who asks; only for debugging.
+    let (reflection_v1alpha, reflection_v1) = if reflection {
+        (
+            Some(
+                tonic_reflection::server::Builder::configure()
+                    .register_encoded_file_descriptor_set(users::FILE_DESCRIPTOR_SET)
+                    .register_encoded_file_descriptor_set(friends::FILE_DESCRIPTOR_SET)
+                    .register_encoded_file_descriptor_set(misc::FILE_DESCRIPTOR_SET)
+                    .build_v1alpha()
+                    .unwrap(),
+            ),
+            Some(
+                tonic_reflection::server::Builder::configure()
+                    .register_encoded_file_descriptor_set(users::FILE_DESCRIPTOR_SET)
+                    .register_encoded_file_descriptor_set(friends::FILE_DESCRIPTOR_SET)
+                    .register_encoded_file_descriptor_set(misc::FILE_DESCRIPTOR_SET)
+                    .build_v1()
+                    .unwrap(),
+            ),
+        )
+    } else {
+        (None, None)
+    };
     let builder = Server::builder()
-        .add_service(
-            tonic_reflection::server::Builder::configure()
-                .register_encoded_file_descriptor_set(users::FILE_DESCRIPTOR_SET)
-                .register_encoded_file_descriptor_set(friends::FILE_DESCRIPTOR_SET)
-                .register_encoded_file_descriptor_set(misc::FILE_DESCRIPTOR_SET)
-                .build_v1alpha()
-                .unwrap(),
-        )
-        .add_service(
-            tonic_reflection::server::Builder::configure()
-                .register_encoded_file_descriptor_set(users::FILE_DESCRIPTOR_SET)
-                .register_encoded_file_descriptor_set(friends::FILE_DESCRIPTOR_SET)
-                .register_encoded_file_descriptor_set(misc::FILE_DESCRIPTOR_SET)
-                .build_v1()
-                .unwrap(),
-        )
+        .add_optional_service(reflection_v1alpha)
+        .add_optional_service(reflection_v1)
         .add_service(authenticated(
             FriendsServer::new(MyFriends {
                 logger: logger.clone(),
@@ -672,8 +693,11 @@ pub async fn start_server(
 
     let builder = if enable_admin_services {
         warn!(logger, "Enabling admin services");
-        let preshared = base32(&secretbox::gen_key().0);
+        let preshared = base32(&crate::keys::load_or_create(std::path::Path::new(crate::keys::ADMIN_KEY_FILE))?.0);
+        // The launcher reads it from stdout; an operator from the file.
         println!("Admin Key: {preshared}");
+        crate::keys::write_secret_text(std::path::Path::new(ADMIN_KEY_TEXT_FILE), &preshared)?;
+        info!(logger, "Admin API on; the key is in {ADMIN_KEY_TEXT_FILE}");
         builder
             .add_service(preshared_authentication(
                 UsersAdminServer::new(MyUsersAdmin {

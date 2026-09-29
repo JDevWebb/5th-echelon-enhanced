@@ -15,11 +15,23 @@ use sqlx::Statement;
 
 type Result<T> = eyre::Result<T>;
 
+/// Runs a query from the (synchronous) game services. One runtime for all
+/// of them, so the connection pool's background work has a runtime that
+/// lives as long as the pool (upstream built a runtime per query).
 fn run<F>(future: F) -> Result<F::Output>
 where
     F: std::future::Future,
 {
-    Ok(tokio::runtime::Builder::new_current_thread().enable_time().build()?.block_on(future))
+    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
+    let rt = RT.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .thread_name("storage")
+            .enable_all()
+            .build()
+            .expect("storage runtime")
+    });
+    Ok(rt.block_on(future))
 }
 
 pub struct Storage {
@@ -34,8 +46,13 @@ pub enum LoginError {
 
 impl Storage {
     pub fn init(logger: Logger) -> Result<Self> {
+        Self::open(logger, "5th-echelon.db")
+    }
+
+    /// Opens (creating if needed) and migrates the database at `path`.
+    pub fn open(logger: Logger, path: &str) -> Result<Self> {
         let pool = run(async {
-            let pool = SqlitePool::connect("sqlite://5th-echelon.db?mode=rwc").await?;
+            let pool = SqlitePool::connect(&format!("sqlite://{path}?mode=rwc")).await?;
             // enable foreign key checks
             sqlx::query("PRAGMA foreign_keys=ON").execute(&pool).await?;
             sqlx::migrate!("src/storage/migrations").run(&pool).await?;
@@ -55,7 +72,8 @@ impl Storage {
         };
 
         let maybe_id = match (db_password, password_hash) {
-            (None, None) => Err(eyre!("neither password or password_hash set for user {}", id)),
+            // Accounts without any password (the server's own, disabled ones) can't log in.
+            (None, None) => Ok(Err(LoginError::InvalidPassword)),
             (Some(_), Some(_)) => Err(eyre!("password and password_hash set for user {}", id)),
             (Some(db_password), None) => {
                 info!(self.logger, "Verify plain password of {}", username);
@@ -76,7 +94,10 @@ impl Storage {
         }?;
 
         if let Ok(user_id) = maybe_id {
-            sqlx::query("UPDATE users SET last_login = CURRENT_TIMESTAMP AND is_online=1 WHERE id = ?")
+            // (Upstream's "SET last_login = CURRENT_TIMESTAMP AND is_online=1"
+            // stored a boolean in last_login.) Being online is set when the game
+            // opens a session (create_user_session), not by a launcher login.
+            sqlx::query("UPDATE users SET last_login = CURRENT_TIMESTAMP WHERE id = ?")
                 .bind(user_id)
                 .execute(&self.pool)
                 .await?;
@@ -215,15 +236,11 @@ impl Storage {
                 .bind(user_id)
                 .execute(&self.pool)
                 .await?;
-            sqlx::query("DELETE FROM user_sessions WHERE user_id = ?")
-                .bind(user_id)
-                .execute(&self.pool)
-                //     .await?;
-                // TODO: how to keep track of online sessions?
-                // sqlx::query("UPDATE users SET is_online=0 WHERE id=?")
-                //     .bind(user_id)
-                //     .execute(&self.pool)
-                .await
+            sqlx::query("DELETE FROM user_sessions WHERE user_id = ?").bind(user_id).execute(&self.pool).await?;
+            // They're gone: friends must no longer see a session to join.
+            sqlx::query("DELETE FROM advertised_sessions WHERE user_id = ?").bind(user_id).execute(&self.pool).await?;
+            // Only called once the user's last game connection is gone.
+            sqlx::query("UPDATE users SET is_online=0 WHERE id=?").bind(user_id).execute(&self.pool).await
         })??;
 
         Ok(())
@@ -233,9 +250,14 @@ impl Storage {
         run(async {
             sqlx::query("DELETE FROM station_urls").execute(&self.pool).await?;
             sqlx::query("DELETE FROM user_sessions").execute(&self.pool).await?;
-            sqlx::query("UPDATE game_sessions SET destroyed_at=CURRENT_TIMESTAMP WHERE destroyed_at IS NULL")
-                .execute(&self.pool)
-                .await?;
+            // Nothing survives a restart: no game session is live and every
+            // pending invite points at one that's gone. Upstream only marked
+            // sessions destroyed, so the tables grew forever.
+            sqlx::query("DELETE FROM participants").execute(&self.pool).await?;
+            sqlx::query("DELETE FROM game_session_invites").execute(&self.pool).await?;
+            sqlx::query("DELETE FROM advertised_sessions").execute(&self.pool).await?;
+            sqlx::query("DELETE FROM game_sessions").execute(&self.pool).await?;
+            sqlx::query("DELETE FROM invites").execute(&self.pool).await?;
             sqlx::query("UPDATE users SET is_online=0").execute(&self.pool).await
         })??;
 
@@ -665,12 +687,7 @@ impl Storage {
         );
         // A size of 0 means "no limit" on the wire; SQLite spells that -1.
         let limit = if size == 0 { -1i64 } else { i64::from(size) };
-        Ok(run(sqlx::query_as(&sql)
-            .bind(user_id)
-            .bind(session_type)
-            .bind(limit)
-            .bind(offset)
-            .fetch_all(&self.pool))??)
+        Ok(run(sqlx::query_as(&sql).bind(user_id).bind(session_type).bind(limit).bind(offset).fetch_all(&self.pool))??)
     }
 
     /// Counts pending invitations in one direction; `column` is `receiver` or `sender`.
@@ -695,13 +712,61 @@ impl Storage {
     /// The counterpart is identified by pid because that is all the client sends back: the
     /// recipient knows the sender, the sender knows the recipient.
     pub fn delete_game_session_invite(&self, session_type: u32, session_id: u32, sender: u32, receiver: u32) -> Result<u64> {
-        Ok(run(sqlx::query("DELETE FROM game_session_invites WHERE session_type = ? AND session_id = ? AND sender = ? AND receiver = ?")
-            .bind(session_type)
-            .bind(session_id)
-            .bind(sender)
-            .bind(receiver)
-            .execute(&self.pool))??
+        Ok(run(
+            sqlx::query("DELETE FROM game_session_invites WHERE session_type = ? AND session_id = ? AND sender = ? AND receiver = ?")
+                .bind(session_type)
+                .bind(session_id)
+                .bind(sender)
+                .bind(receiver)
+                .execute(&self.pool),
+        )??
         .rows_affected())
+    }
+
+    /// A player leaves a session (LeaveSession/AbandonSession): they're no
+    /// longer a participant, and a session nobody is left in ends. Returns
+    /// whether it ended.
+    /// A live session's host and participants, or None if there's no such
+    /// session (or it has ended).
+    pub fn session_members(&self, session_id: u32) -> Result<Option<(u32, Vec<u32>)>> {
+        run(async {
+            let Some(creator): Option<u32> = sqlx::query_scalar("SELECT creator_id FROM game_sessions WHERE id = ? AND destroyed_at IS NULL")
+                .bind(session_id)
+                .fetch_optional(&self.pool)
+                .await?
+            else {
+                return Ok::<_, eyre::Error>(None);
+            };
+            let participants: Vec<u32> = sqlx::query_scalar("SELECT user_id FROM participants WHERE game_id = ?")
+                .bind(session_id)
+                .fetch_all(&self.pool)
+                .await?;
+            Ok(Some((creator, participants)))
+        })?
+    }
+
+    pub fn leave_game_session(&self, user_id: u32, session_id: u32) -> Result<bool> {
+        run(async {
+            sqlx::query("DELETE FROM participants WHERE game_id = ? AND user_id = ?")
+                .bind(session_id)
+                .bind(user_id)
+                .execute(&self.pool)
+                .await?;
+            let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM participants WHERE game_id = ?")
+                .bind(session_id)
+                .fetch_one(&self.pool)
+                .await?;
+            if left > 0 {
+                return Ok::<_, eyre::Error>(false);
+            }
+            let ended = sqlx::query("UPDATE game_sessions SET destroyed_at = CURRENT_TIMESTAMP WHERE id = ? AND destroyed_at IS NULL")
+                .bind(session_id)
+                .execute(&self.pool)
+                .await?
+                .rows_affected()
+                > 0;
+            Ok(ended)
+        })?
     }
 
     pub fn search_sessions_with_participants(&self, type_id: u32, participant_ids: &[u32]) -> Result<Vec<GameSession>> {
@@ -885,4 +950,149 @@ pub struct Invite {
     /// the time of the invitation - the invitation is then delivered but cannot be resolved.
     pub session_type: Option<u32>,
     pub session_id: Option<u32>,
+}
+
+/// A live game session and who is in it, for the presence feed.
+#[derive(Debug, Clone)]
+pub struct LiveSession {
+    pub id: u32,
+    pub attributes: String,
+    pub players: Vec<String>,
+}
+
+impl Storage {
+    /// Registered players (name, online) and live sessions with their
+    /// players, for the community API's presence feed.
+    pub fn presence(&self) -> Result<(Vec<(String, bool)>, Vec<LiveSession>)> {
+        run(async {
+            let players: Vec<(String, bool)> = sqlx::query_as("SELECT username, is_online FROM users WHERE ubi_id IS NOT NULL ORDER BY username COLLATE NOCASE")
+                .fetch_all(&self.pool)
+                .await?;
+            let sessions: Vec<(u32, String)> = sqlx::query_as("SELECT id, attributes FROM game_sessions WHERE destroyed_at IS NULL ORDER BY id DESC")
+                .fetch_all(&self.pool)
+                .await?;
+            let members: Vec<(u32, String)> = sqlx::query_as("SELECT p.game_id, u.username FROM participants p JOIN users u ON u.id = p.user_id")
+                .fetch_all(&self.pool)
+                .await?;
+            let live = sessions
+                .into_iter()
+                .map(|(id, attributes)| LiveSession {
+                    id,
+                    attributes,
+                    players: members.iter().filter(|(g, _)| *g == id).map(|(_, name)| name.clone()).collect(),
+                })
+                .filter(|s| !s.players.is_empty())
+                .collect();
+            Ok::<_, eyre::Error>((players, live))
+        })?
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod tests {
+    use super::*;
+
+    pub(crate) fn temp_storage(name: &str) -> (Storage, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("fe-storage-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("test.db");
+        let logger = Logger::root(slog::Discard, slog::o!());
+        (Storage::open(logger, db.to_str().unwrap()).unwrap(), dir)
+    }
+
+    #[test]
+    fn sample_accounts_cannot_log_in() {
+        let (storage, dir) = temp_storage("samples");
+        for name in ["Foo", "sam_the_fisher", "Server"] {
+            let id = storage.find_user_id_by_name(name).unwrap();
+            assert!(id.is_some(), "{name} should still exist (ids are referenced)");
+            for password in ["", "password", "sam"] {
+                assert!(
+                    matches!(storage.login_user(name, password).unwrap(), Err(LoginError::InvalidPassword)),
+                    "{name} must not be able to log in"
+                );
+            }
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn presence_follows_the_game_connection() {
+        let (storage, dir) = temp_storage("presence");
+        storage.register_user("Tank", "pw", Some("TANK-UBI")).unwrap();
+        let online = |s: &Storage| s.find_user_by_ubi_id("TANK-UBI").unwrap().unwrap().is_online;
+        let id = storage.find_user_id_by_name("Tank").unwrap().unwrap();
+
+        assert!(matches!(storage.login_user("Tank", "pw").unwrap(), Ok(_)));
+        assert!(!online(&storage), "a launcher login is not being in the game");
+        let last_login: Option<String> = run(sqlx::query_scalar("SELECT CAST(last_login AS TEXT) FROM users WHERE id = ?")
+            .bind(id)
+            .fetch_one(&storage.pool))
+        .unwrap()
+        .unwrap();
+        assert!(last_login.is_some_and(|t| t.len() > 4), "last_login must be a timestamp");
+
+        storage.create_user_session(id, &[0u8; 32]).unwrap();
+        assert!(online(&storage));
+        storage.delete_user_session(id).unwrap();
+        assert!(!online(&storage));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn restart_clears_sessions_and_invites() {
+        let (storage, dir) = temp_storage("restart");
+        storage.register_user("Nexus", "pw", Some("NEXUS-UBI")).unwrap();
+        let id = storage.find_user_id_by_name("Nexus").unwrap().unwrap();
+        let game = storage.create_game_session(id, 1, "101 => 3".into()).unwrap();
+        storage.add_participants(1, game, vec![id], vec![]).unwrap();
+        let count = |table: &str| -> i64 { run(sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}")).fetch_one(&storage.pool)).unwrap().unwrap() };
+        run(storage.set_advertised_session_async(id, Some(game), true, &[1, 2, 3])).unwrap().unwrap();
+        storage.invalidate_sessions().unwrap();
+        for table in [
+            "game_sessions",
+            "participants",
+            "invites",
+            "station_urls",
+            "user_sessions",
+            "advertised_sessions",
+            "game_session_invites",
+        ] {
+            assert_eq!(count(table), 0, "{table} must be empty after a restart");
+        }
+        assert!(storage.find_user_id_by_name("Nexus").unwrap().is_some(), "accounts stay");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn leaving_removes_the_player_and_ends_empty_sessions() {
+        let (storage, dir) = temp_storage("leave");
+        storage.register_user("Host", "pw", Some("HOST")).unwrap();
+        storage.register_user("Guest", "pw", Some("GUEST")).unwrap();
+        let host = storage.find_user_id_by_name("Host").unwrap().unwrap();
+        let guest = storage.find_user_id_by_name("Guest").unwrap().unwrap();
+        let lobby = storage.create_game_session(host, 1, "113 => 1".into()).unwrap();
+        storage.add_participants(1, lobby, vec![], vec![host, guest]).unwrap();
+
+        assert!(!storage.leave_game_session(guest, lobby).unwrap(), "the host is still there");
+        assert!(storage.search_sessions_with_participants(1, &[guest]).unwrap().is_empty(), "the guest left");
+        assert_eq!(storage.search_sessions_with_participants(1, &[host]).unwrap().len(), 1);
+
+        assert!(storage.leave_game_session(host, lobby).unwrap(), "nobody left: the session ends");
+        assert!(storage.search_sessions_with_participants(1, &[host]).unwrap().is_empty());
+        assert!(!storage.leave_game_session(host, lobby).unwrap(), "leaving twice is harmless");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn registered_users_log_in_with_their_password_only() {
+        let (storage, dir) = temp_storage("register");
+        storage.register_user("Kiwi", "hunter2", Some("KIWI-UBI")).unwrap();
+        assert!(matches!(storage.login_user("Kiwi", "hunter2").unwrap(), Ok(_)));
+        assert!(matches!(storage.login_user("Kiwi", "wrong").unwrap(), Err(LoginError::InvalidPassword)));
+        let id = storage.find_user_id_by_name("Kiwi").unwrap().unwrap();
+        assert_eq!(storage.find_password_for_user(id).unwrap(), None, "new accounts keep no plaintext password");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 }
