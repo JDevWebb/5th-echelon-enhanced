@@ -47,7 +47,9 @@ Also used: [IBM Plex Sans](https://github.com/IBM/plex) (SIL Open Font License) 
 
 ### Become a collaborator
 
-Want to help run this project: review pull requests, triage issues, test releases, or work on it directly? [Open an issue](https://github.com/JDevWebb/5th-echelon-enhanced/issues/new) saying a little about yourself and what you'd like to help with. We'll gladly add you as a collaborator.
+**Already authored commits to 5th Echelon,** here or upstream (code, pull requests, fixes)? You're welcome as a collaborator: [open an issue](https://github.com/JDevWebb/5th-echelon-enhanced/issues/new) asking to be added, and I'll add you.
+
+**New to the project** but want to help run it (reviewing pull requests, triaging issues, testing releases)? Open an issue saying a little about yourself and what you'd like to help with.
 
 ---
 
