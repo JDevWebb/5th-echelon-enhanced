@@ -1,0 +1,17 @@
+[package]
+name = "testbot"
+version = "0.2.5"
+edition = "2021"
+license = "MIT"
+description = "Headless test players for 5th Echelon Enhanced: speak the game's Quazal protocol and the launcher's gRPC API, without the game"
+
+[dependencies]
+quazal = { path = "../../quazal" }
+sc_bl_protocols = { path = "../../dedicated_server/sc_bl_protocols" }
+server_api = { path = "../../api", package = "api" }
+md-5 = { workspace = true }
+rand = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
+tonic = { workspace = true }
+eyre = { workspace = true }

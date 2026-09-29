@@ -17,6 +17,7 @@ members = [
   # "tools/wireshark-dissector",
   "launcher",
   "tools/umd_browser",
+  "tools/testbot",
 ]
 
 # v2 panics with
