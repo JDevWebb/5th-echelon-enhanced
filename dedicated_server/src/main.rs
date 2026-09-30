@@ -266,7 +266,27 @@ fn address_setting(arg: Option<std::net::IpAddr>, env: &str) -> eyre::Result<Opt
     }
 }
 
+/// glibc keeps memory it has served big blocks from: after the first 19 MiB
+/// password hash is freed it raises its mmap threshold, and every later hash
+/// comes from (and stays in) one of up to 8 arenas per core. A few logins
+/// then leave hundreds of MB resident on a server that needs about 10. A
+/// fixed threshold returns big blocks to the system when freed, and fewer
+/// arenas keep the rest small.
+#[cfg(all(target_os = "linux", target_env = "gnu"))]
+fn tune_allocator() {
+    // SAFETY: mallopt only changes allocator settings; called before any
+    // other thread starts.
+    unsafe {
+        libc::mallopt(libc::M_MMAP_THRESHOLD, 1024 * 1024);
+        libc::mallopt(libc::M_ARENA_MAX, 2);
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_env = "gnu")))]
+fn tune_allocator() {}
+
 fn main() -> color_eyre::Result<()> {
+    tune_allocator();
     color_eyre::install()?;
     let args = argh::from_env::<Args>();
 

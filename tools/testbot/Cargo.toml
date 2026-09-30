@@ -14,6 +14,6 @@ nat_proto = { path = "../../nat_proto" }
 setup = { path = "../../setup" }
 rand = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
 tonic = { workspace = true }
 eyre = { workspace = true }

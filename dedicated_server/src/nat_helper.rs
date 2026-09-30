@@ -52,15 +52,20 @@ struct Peer {
     window_bytes: usize,
 }
 
+/// A registered player, by number (so relaying a packet allocates nothing).
+type Id = u64;
+
 /// Who is registered, and how to reach them. No sockets, so it can be tested.
 #[derive(Debug)]
 pub struct Table {
     cfg: NatConfig,
     relay_ip: Ipv4Addr,
-    peers: HashMap<String, Peer>,
-    by_real: HashMap<SocketAddrV4, String>,
-    by_vport: HashMap<u16, String>,
-    by_advertise: HashMap<SocketAddrV4, String>,
+    next_id: Id,
+    peers: HashMap<Id, Peer>,
+    by_name: HashMap<String, Id>,
+    by_real: HashMap<SocketAddrV4, Id>,
+    by_vport: HashMap<u16, Id>,
+    by_advertise: HashMap<SocketAddrV4, Id>,
 }
 
 impl Table {
@@ -68,7 +73,9 @@ impl Table {
         Self {
             cfg,
             relay_ip,
+            next_id: 0,
             peers: HashMap::new(),
+            by_name: HashMap::new(),
             by_real: HashMap::new(),
             by_vport: HashMap::new(),
             by_advertise: HashMap::new(),
@@ -98,34 +105,52 @@ impl Table {
         (first..=last).find(|p| !self.by_vport.contains_key(p))
     }
 
+    /// Takes a player out of the table, indexes and all.
+    fn take(&mut self, id: Id) -> Option<Peer> {
+        let p = self.peers.remove(&id)?;
+        self.by_name.remove(&p.name);
+        if self.by_real.get(&p.real) == Some(&id) {
+            self.by_real.remove(&p.real);
+        }
+        if self.by_advertise.get(&p.advertise) == Some(&id) {
+            self.by_advertise.remove(&p.advertise);
+        }
+        if let Some(v) = p.vport {
+            self.by_vport.remove(&v);
+        }
+        Some(p)
+    }
+
     /// Registers (or refreshes) the player behind `src` and answers its probe.
     pub fn probe(&mut self, src: SocketAddrV4, flags: u8, nonce: u32, mapping: Option<SocketAddrV4>, name: &str, now: Instant) -> Message {
         let key = if name.is_empty() { format!("@{src}") } else { name.to_lowercase() };
-        let relayed = self.wants_relay(src, flags, mapping);
-        let old = self.peers.remove(&key);
-        if let Some(old) = &old {
-            self.by_real.remove(&old.real);
-            self.by_advertise.remove(&old.advertise);
-            if let Some(v) = old.vport {
-                self.by_vport.remove(&v);
-            }
-        }
+        let old = self.by_name.get(&key).copied().and_then(|id| self.take(id).map(|p| (id, p)));
         // Someone else registered from this address before (a restarted game
         // with another account): that registration is stale.
-        if let Some(other) = self.by_real.remove(&src) {
-            self.remove(&other);
+        if let Some(other) = self.by_real.get(&src).copied() {
+            self.take(other);
         }
-        let vport = if relayed {
-            old.as_ref().and_then(|o| o.vport).or_else(|| self.free_vport())
-        } else {
-            None
-        };
+        // The game already told other players the address it got, so a
+        // registration keeps it: a relayed player stays relayed (on the same
+        // relay port), and a direct one keeps its address unless its NAT
+        // gave it a new one. A direct player can still move to the relay
+        // (the hook asks before it tells the game anything).
+        let relayed = old.as_ref().is_some_and(|(_, o)| o.relayed) || self.wants_relay(src, flags, mapping);
+        let vport = if relayed { old.as_ref().and_then(|(_, o)| o.vport).or_else(|| self.free_vport()) } else { None };
         let relayed = relayed && vport.is_some();
-        let advertise = match (vport, mapping) {
-            (Some(v), _) => SocketAddrV4::new(self.relay_ip, v),
-            (None, Some(m)) if !nat_proto::is_private(*m.ip()) => m,
+        let advertise = match (vport, mapping, &old) {
+            (Some(v), _, _) => SocketAddrV4::new(self.relay_ip, v),
+            (None, _, Some((_, o))) if !o.relayed && o.real == src => o.advertise,
+            (None, Some(m), _) if !nat_proto::is_private(*m.ip()) => m,
             _ => src,
         };
+        let id = old.as_ref().map_or_else(
+            || {
+                self.next_id += 1;
+                self.next_id
+            },
+            |(id, _)| *id,
+        );
         let peer = Peer {
             name: key.clone(),
             real: src,
@@ -133,15 +158,16 @@ impl Table {
             relayed,
             vport,
             last_seen: now,
-            window_start: old.as_ref().map_or(now, |o| o.window_start),
-            window_bytes: old.as_ref().map_or(0, |o| o.window_bytes),
+            window_start: old.as_ref().map_or(now, |(_, o)| o.window_start),
+            window_bytes: old.as_ref().map_or(0, |(_, o)| o.window_bytes),
         };
-        self.by_real.insert(src, key.clone());
-        self.by_advertise.insert(advertise, key.clone());
+        self.by_name.insert(key, id);
+        self.by_real.insert(src, id);
+        self.by_advertise.insert(advertise, id);
         if let Some(v) = vport {
-            self.by_vport.insert(v, key.clone());
+            self.by_vport.insert(v, id);
         }
-        self.peers.insert(key, peer);
+        self.peers.insert(id, peer);
         Message::ProbeReply {
             nonce,
             observed: src,
@@ -152,33 +178,23 @@ impl Table {
         }
     }
 
-    fn remove(&mut self, key: &str) {
-        if let Some(p) = self.peers.remove(key) {
-            self.by_real.remove(&p.real);
-            self.by_advertise.remove(&p.advertise);
-            if let Some(v) = p.vport {
-                self.by_vport.remove(&v);
-            }
-        }
-    }
-
     /// Where a relayed packet from `src` to `to` goes: the receiver's real
     /// address, and the sender address its game should see. `None` drops it
     /// (unknown sender or receiver, or the sender is over its rate).
     pub fn route(&mut self, src: SocketAddrV4, to: SocketAddrV4, len: usize, now: Instant) -> Option<(SocketAddrV4, SocketAddrV4)> {
-        let sender_key = self.by_real.get(&src)?.clone();
+        let sender_id = *self.by_real.get(&src)?;
         let (first, last) = self.cfg.relay_ports;
-        let target_key = if *to.ip() == self.relay_ip && (first..=last).contains(&to.port()) {
+        let target_id = *if *to.ip() == self.relay_ip && (first..=last).contains(&to.port()) {
             self.by_vport.get(&to.port())
         } else {
             self.by_advertise.get(&to).or_else(|| self.by_real.get(&to))
-        }?
-        .clone();
-        if target_key == sender_key {
+        }?;
+        if target_id == sender_id {
             return None;
         }
+        let target = self.peers.get(&target_id)?.real;
         let limit = self.cfg.relay_kbps_per_player as usize * 1024;
-        let sender = self.peers.get_mut(&sender_key)?;
+        let sender = self.peers.get_mut(&sender_id)?;
         sender.last_seen = now;
         if now.duration_since(sender.window_start) >= Duration::from_secs(1) {
             sender.window_start = now;
@@ -188,24 +204,19 @@ impl Table {
         if sender.window_bytes > limit {
             return None;
         }
-        let from = sender.advertise;
-        let target = self.peers.get(&target_key)?;
-        Some((target.real, from))
+        Some((target, sender.advertise))
     }
 
     /// Forgets players not heard from in [`EXPIRY`].
     pub fn expire(&mut self, now: Instant) -> Vec<String> {
-        let stale: Vec<String> = self.peers.values().filter(|p| now.duration_since(p.last_seen) > EXPIRY).map(|p| p.name.clone()).collect();
-        for key in &stale {
-            self.remove(key);
-        }
-        stale
+        let stale: Vec<Id> = self.peers.iter().filter(|(_, p)| now.duration_since(p.last_seen) > EXPIRY).map(|(id, _)| *id).collect();
+        stale.into_iter().filter_map(|id| self.take(id).map(|p| p.name)).collect()
     }
 
     /// The address `name`'s game should advertise, if it probed from `ip`
     /// (the address its matchmaking connection comes from).
     pub fn advertised_for(&self, name: &str, ip: IpAddr) -> Option<SocketAddrV4> {
-        let p = self.peers.get(&name.to_lowercase())?;
+        let p = self.peers.get(self.by_name.get(&name.to_lowercase())?)?;
         (IpAddr::V4(*p.real.ip()) == ip).then_some(p.advertise)
     }
 
@@ -280,11 +291,38 @@ fn v4(addr: SocketAddr) -> Option<SocketAddrV4> {
     }
 }
 
+/// How much a relay socket may queue: game traffic comes in bursts (every
+/// player sends at once, 30 times a second), and a burst that doesn't fit is
+/// lost before the relay sees it.
+const SOCKET_BUFFER: usize = 4 * 1024 * 1024;
+
+/// A UDP socket with large buffers. Linux caps them at `net.core.rmem_max`
+/// and `wmem_max` (about 208 KB by default; the installer raises them), so
+/// what it got is logged.
+fn bind_with_buffers(logger: &Logger, addr: SocketAddr) -> std::io::Result<UdpSocket> {
+    let socket = socket2::Socket::new(socket2::Domain::for_address(addr), socket2::Type::DGRAM, Some(socket2::Protocol::UDP))?;
+    let _ = socket.set_recv_buffer_size(SOCKET_BUFFER);
+    let _ = socket.set_send_buffer_size(SOCKET_BUFFER);
+    socket.bind(&addr.into())?;
+    let (recv, send) = (socket.recv_buffer_size().unwrap_or(0), socket.send_buffer_size().unwrap_or(0));
+    if recv < SOCKET_BUFFER {
+        warn!(
+            logger,
+            "NAT relay: the receive buffer is {} KB, not {} KB, so bursts of relayed traffic may be lost. Raise it with: sysctl -w net.core.rmem_max={SOCKET_BUFFER} net.core.wmem_max={SOCKET_BUFFER}",
+            recv / 1024,
+            SOCKET_BUFFER / 1024
+        );
+    } else {
+        info!(logger, "NAT relay: buffers {} KB in, {} KB out", recv / 1024, send / 1024);
+    }
+    Ok(socket.into())
+}
+
 /// Starts the helper's threads: the main port (probes and relay) and the
 /// port after it (probes only, to spot NATs that change ports per
 /// destination).
 pub fn start(logger: &Logger, cfg: NatConfig, relay_ip: Ipv4Addr) -> std::io::Result<Vec<std::thread::JoinHandle<()>>> {
-    let socket = UdpSocket::bind(cfg.listen)?;
+    let socket = bind_with_buffers(logger, cfg.listen)?;
     socket.set_read_timeout(Some(Duration::from_secs(5)))?;
     let table = Arc::clone(TABLE.get_or_init(|| Arc::new(Mutex::new(Table::new(cfg, relay_ip)))));
     info!(
@@ -338,14 +376,25 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
     let mut buf = vec![0u8; 2048];
     let mut out = Vec::with_capacity(2048);
     let mut last_expiry = Instant::now();
+    // Relayed packets since the last report: forwarded, and dropped.
+    let (mut forwarded, mut dropped, mut failed) = (0u64, 0u64, 0u64);
     loop {
         let now = Instant::now();
         if now.duration_since(last_expiry) > Duration::from_secs(10) {
+            let secs = now.duration_since(last_expiry).as_secs_f64();
             last_expiry = now;
-            let gone = table.lock().map(|mut t| t.expire(now)).unwrap_or_default();
+            let (gone, players, relayed) = table.lock().map(|mut t| (t.expire(now), t.len(), t.relayed())).unwrap_or_default();
             for name in gone {
                 info!(logger, "NAT helper: {name} is gone");
             }
+            if forwarded + dropped + failed > 0 {
+                info!(
+                    logger,
+                    "NAT relay: {:.0} packets/s forwarded, {dropped} dropped (unknown player or over the rate), {failed} failed to send; {players} players, {relayed} relayed",
+                    forwarded as f64 / secs
+                );
+            }
+            (forwarded, dropped, failed) = (0, 0, 0);
         }
         let (len, src) = match socket.recv_from(&mut buf) {
             Ok(r) => r,
@@ -366,9 +415,15 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
             let route = table.lock().ok().and_then(|mut t| t.route(src, to, len - offset, now));
             if let Some((target, from)) = route {
                 nat_proto::encode_data_from(&mut out, from, &data[offset..]);
-                if let Err(e) = socket.send_to(&out, target) {
-                    debug!(logger, "NAT relay to {target} failed: {e}");
+                match socket.send_to(&out, target) {
+                    Ok(_) => forwarded += 1,
+                    Err(e) => {
+                        failed += 1;
+                        debug!(logger, "NAT relay to {target} failed: {e}");
+                    }
                 }
+            } else {
+                dropped += 1;
             }
             continue;
         }
@@ -475,6 +530,25 @@ mod tests {
         assert_eq!(t.route(a("203.0.113.99:1"), sym_adv, 100, now), None);
         assert_eq!(t.route(a("203.0.113.4:13000"), a("192.0.2.1:40500"), 100, now), None);
         assert_eq!(t.route(a("198.51.100.7:50001"), sym_adv, 100, now), None);
+    }
+
+    #[test]
+    fn keepalives_never_move_an_address_the_game_already_advertises() {
+        let now = Instant::now();
+        let mut t = table(RelayMode::Auto);
+        // Relayed, then a keepalive without the relay flag: still relayed.
+        let (relay, _) = advertise(&t.probe(a("198.51.100.7:1"), probe_flags::WANT_RELAY, 1, None, "r", now));
+        assert_eq!(advertise(&t.probe(a("198.51.100.7:1"), 0, 2, None, "r", now)), (relay, true));
+        // Direct, then the router maps a port: the advertised address stays.
+        let (direct, _) = advertise(&t.probe(a("203.0.113.4:61000"), 0, 1, None, "d", now));
+        let later = t.probe(a("203.0.113.4:61000"), probe_flags::HAS_MAPPING, 2, Some(a("203.0.113.4:13000")), "d", now);
+        assert_eq!(advertise(&later), (direct, false));
+        // Its NAT gave it a new mapping: that's where it's reachable now.
+        assert_eq!(advertise(&t.probe(a("203.0.113.4:61555"), 0, 3, None, "d", now)), (a("203.0.113.4:61555"), false));
+        // Direct can still become relayed (before the game is told).
+        assert!(advertise(&t.probe(a("203.0.113.4:61555"), probe_flags::SYMMETRIC, 4, None, "d", now)).1);
+        // Packets keep flowing to the relayed player through all of this.
+        assert!(t.route(a("203.0.113.4:61555"), relay, 10, now).is_some());
     }
 
     #[test]

@@ -432,6 +432,8 @@ The simplest way needs only Docker, on Windows, macOS or Linux:
 ```sh
 build/build.sh test       # workspace tests
 build/build.sh bots       # test players against a fresh local server
+build/build.sh proxy-test # the test players against a server behind Caddy
+build/build.sh load --players 500 --relayed 20   # a load test (see docs/load-testing.md)
 build/build.sh server     # dist/dedicated_server-linux-x86_64
 build/build.sh windows    # dist/launcher.exe (client DLL inside), uplay_r1_loader.dll, dedicated_server.exe
 build/build.sh linux      # dist/launcher-linux-x86_64 (client DLL inside), dedicated_server-linux-x86_64

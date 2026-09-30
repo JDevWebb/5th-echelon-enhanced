@@ -411,6 +411,10 @@ async fn main() -> Result<()> {
             nat: ports.nat.ok_or_else(|| eyre!("the NAT helper is off"))?,
         });
     }
+    if args.first().map(String::as_str) == Some("load") {
+        let options = testbot::load::Options::parse(&args[1..])?;
+        return testbot::load::run(server, options).await;
+    }
     let names: Vec<&str> = if args.is_empty() { SCENARIOS.to_vec() } else { args.iter().map(String::as_str).collect() };
     let mut ctx = Ctx { server, run: rand::random::<u16>().into(), n: 0 };
     let mut failed = 0;

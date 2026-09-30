@@ -16,6 +16,7 @@ color-eyre = { workspace = true }
 dedicated_server_config = { path = "./config" }
 eyre = { workspace = true }
 hmac = { workspace = true }
+libc = { workspace = true }
 md-5 = { workspace = true }
 nat_proto = { path = "../nat_proto" }
 num_enum = { workspace = true }
@@ -27,6 +28,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 server_api = { path = "../api", package = "api" }
 slog = { workspace = true, features = ["max_level_trace"] }
+socket2 = "0.6"
 sloggers = { workspace = true, features = ["json"] }
 sodiumoxide = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }

@@ -15,6 +15,17 @@ use sqlx::Statement;
 
 type Result<T> = eyre::Result<T>;
 
+/// Runs password hashing (Argon2: about 19 MiB of memory and tens of
+/// milliseconds of CPU each) on the blocking pool, a few at a time. A burst
+/// of logins (a server restart, everyone joining at once) then neither
+/// stalls the async API workers nor needs 19 MiB for every login waiting.
+async fn hashing<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T> {
+    static LIMIT: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    let limit = LIMIT.get_or_init(|| tokio::sync::Semaphore::new(std::thread::available_parallelism().map_or(2, |n| n.get()).clamp(2, 4)));
+    let _permit = limit.acquire().await.map_err(|e| eyre!("{e}"))?;
+    tokio::task::spawn_blocking(f).await.map_err(|e| eyre!("password hashing failed: {e}"))
+}
+
 /// Runs a query from the (synchronous) game services. One runtime for all
 /// of them, so the connection pool's background work has a runtime that
 /// lives as long as the pool (upstream built a runtime per query).
@@ -85,11 +96,13 @@ impl Storage {
             }
             (None, Some(password_hash)) => {
                 info!(self.logger, "Verify password hash of {}", username);
-                let parsed_hash = PasswordHash::new(&password_hash).map_err(|_| eyre!("password hash parsing failed"))?;
-                Ok(Argon2::default()
-                    .verify_password(password.as_bytes(), &parsed_hash)
-                    .map_err(|_| LoginError::InvalidPassword)
-                    .and(Ok(id)))
+                PasswordHash::new(&password_hash).map_err(|_| eyre!("password hash parsing failed"))?;
+                let password = password.to_owned();
+                let ok = hashing(move || {
+                    PasswordHash::new(&password_hash).is_ok_and(|parsed| Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok())
+                })
+                .await?;
+                Ok(if ok { Ok(id) } else { Err(LoginError::InvalidPassword) })
             }
         }?;
 
@@ -115,11 +128,13 @@ impl Storage {
     }
 
     pub async fn register_user_async(&self, username: &str, password: &str, ubi_id: Option<&str>) -> Result<()> {
-        let salt = SaltString::try_from_rng(&mut OsRng).unwrap();
-        let password_hash = Argon2::default()
-            .hash_password(password.as_bytes(), salt.as_salt())
-            .map_err(|_| eyre!("password hashing failed"))?
-            .to_string();
+        let password = password.to_owned();
+        let password_hash = hashing(move || {
+            let salt = SaltString::try_from_rng(&mut OsRng).unwrap();
+            Argon2::default().hash_password(password.as_bytes(), salt.as_salt()).map(|h| h.to_string())
+        })
+        .await?
+        .map_err(|_| eyre!("password hashing failed"))?;
         Ok(self.register_user_unsafe_async(username, &password_hash, ubi_id).await?)
     }
 

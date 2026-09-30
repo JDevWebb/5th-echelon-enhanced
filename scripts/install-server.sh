@@ -47,6 +47,7 @@ CADDY_SITE="/etc/caddy/5th-echelon.caddy"
 BEGIN_MARK="# >>> 5th Echelon (managed by install-server.sh; keep other sites outside this block)"
 END_MARK="# <<< 5th Echelon"
 UDP_PORTS="21126-21129"
+SYSCTL_FILE="/etc/sysctl.d/90-5th-echelon.conf"
 
 domain="" no_caddy=0 public_address="" version="latest" binary="" relay=""
 firewall=1 yes=0 force=0 uninstall=0 purge=0 use_systemd=1
@@ -196,6 +197,7 @@ if [ "$uninstall" -eq 1 ]; then
     say "Removed the server's Caddy site (Caddy itself stays installed)."
   fi
   rm -rf "$PROGRAM_DIR"
+  rm -f "$SYSCTL_FILE"
   if [ "$purge" -eq 1 ]; then
     rm -rf "$STATE_DIR"
     userdel "$USER_NAME" 2>/dev/null || true
@@ -389,6 +391,19 @@ else
   toml_set 'service\.content' listen '"0.0.0.0:8000"'
 fi
 chown "$USER_NAME:$USER_NAME" "$CONFIG"
+
+# The relay queues bursts of game traffic in 4 MB socket buffers; Linux
+# caps them at about 208 KB unless allowed more.
+cat > "$SYSCTL_FILE" <<'SYSCTL'
+# 5th Echelon: room for bursts of relayed game traffic (UDP).
+net.core.rmem_max = 4194304
+net.core.wmem_max = 4194304
+SYSCTL
+if command -v sysctl >/dev/null && sysctl -q -p "$SYSCTL_FILE" >/dev/null 2>&1; then
+  say "Allowed 4 MB UDP buffers for the relay"
+else
+  warn "couldn't raise the UDP buffer limits now (a container?); $SYSCTL_FILE applies them at the next boot"
+fi
 
 if [ "$use_systemd" -eq 1 ]; then
   say "Installing the systemd service $SERVICE"

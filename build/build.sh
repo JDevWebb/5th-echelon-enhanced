@@ -8,6 +8,9 @@
 #   build/build.sh windows   launcher.exe (DLL embedded), uplay_r1_loader.dll, dedicated_server.exe, testbot.exe -> dist/
 #   build/build.sh bots [scenario ...]
 #                            test players against a fresh local server (tools/testbot)
+#   build/build.sh load [options]
+#                            a load test against a server limited to CPUS (1)
+#                            and MEMORY (1g), e.g. --players 200 --relayed 20
 #   build/build.sh proxy-test
 #                            the test players against a server behind Caddy
 #                            (docs/reverse-proxy.md), by host name only
@@ -65,6 +68,11 @@ case "${1:-test}" in
   bots)
     shift
     run "$IMAGE" bash -c 'cargo build -q -p dedicated_server -p testbot && scripts/bots.sh /target/native/debug "$@"' bots "$@"
+    ;;
+  load)
+    shift
+    run "$IMAGE" cargo build -q --release -p dedicated_server -p testbot
+    IMAGE="$IMAGE" scripts/load-test.sh /target/native/release "$@"
     ;;
   proxy-test)
     run "$IMAGE" cargo build -q -p dedicated_server -p testbot
