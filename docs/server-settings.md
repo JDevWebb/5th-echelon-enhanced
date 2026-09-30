@@ -1,6 +1,6 @@
 # Server settings added by this fork
 
-These go in the server's `service.toml`, next to upstream's settings. Both are off, or at their safest, unless you set them.
+These go in the server's `service.toml`, next to upstream's settings. Each is off, or at its safest, unless you set it; the NAT helper for internet play is on.
 
 ## `[community_api]`: the JSON API on port 80
 
@@ -36,6 +36,38 @@ trusted_subnet = "10.8.0.0/16"
 ```
 
 A player connecting from inside that subnet then has every other address it advertises replaced by the one the server saw it connect from. Players from outside the subnet, or servers without the setting, keep upstream's behaviour.
+
+## `[nat]`: internet play without a VPN
+
+On by default. Players need UDP `21128` and `21129` to reach the server (the port in `listen` and the one after it).
+
+```toml
+[nat]
+enabled = true
+listen = "0.0.0.0:21128"
+relay = "auto"               # "auto", "all" or "off"
+relay_ports = [40000, 40999]
+relay_kbps_per_player = 2048
+# public_address = "203.0.113.10"   (written by --public-address)
+```
+
+How it works:
+- The client in each game probes the helper **from the game's match port** (UDP 13000). The helper answers with the address it saw, and the client tells the game to advertise it. The game's own NAT probing, which this server already forwards, then gets through most routers.
+- Probing the second port shows whether a router gives each destination its own port (symmetric NAT, common with carrier-grade NAT). Direct connections fail with those.
+- If the game still registers its local address, the server replaces it with the one the helper saw, keeping the local one for players on the same network.
+
+**`relay`** decides who plays through the server:
+- **`auto`:** players whose router can't be reached directly: symmetric NAT, a player who chose **Always through the server**, or a player on the server's own network without a router port mapping. Everyone else connects directly.
+- **`all`:** every player. The most reliable, but every match goes through the server.
+- **`off`:** nobody; those players can't join others over the internet.
+
+Relayed players advertise an address on this server with a port from **`relay_ports`**. Nothing listens on those ports: the client wraps the packets for the helper's port. So they need no firewall rule, but they must not overlap other services' ports. Each relayed player uses roughly 20–60 KB/s in each direction during a match. **`relay_kbps_per_player`** caps it, and packets over the cap are dropped.
+
+The helper only relays between players who probed it, so it can't be used to send traffic elsewhere. Probes are padded so an answer is never bigger than the question.
+
+**`public_address`** is the address relay addresses use. It's written by `--public-address` / `FE_PUBLIC_ADDRESS`; without it, the secure service's address is used.
+
+In Docker, the helper needs to see players' real addresses: Docker on Linux keeps them; Docker Desktop doesn't.
 
 ## `[limits]`: rate limits on accounts and logins
 

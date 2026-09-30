@@ -79,7 +79,19 @@ You need **Splinter Cell: Blacklist on PC** (Steam or Ubisoft Connect) and **Win
 The **checklist** keeps an eye on all of this. Anything that goes wrong later (a VPN that's off, an update) shows up there with a button that fixes it.
 
 > [!TIP]
-> **Playing over a VPN** (Radmin VPN, ZeroTier, Tailscale, …)? Connect to it before pressing Set up. The launcher then pins the VPN adapter, so friends can join your matches. **Settings › Network › Don't start the game without this adapter** stops the game quietly using the wrong network when the VPN is off.
+> **No VPN needed.** The server tells your game its public address, so friends anywhere can join your matches; when a router can't be reached directly, the match goes through the server instead. See [Playing over the internet](#playing-over-the-internet).
+>
+> **Playing over a VPN** anyway (Radmin VPN, ZeroTier, Tailscale, …)? Connect to it before pressing Set up. The launcher then pins the VPN adapter, and **Settings › Network › Don't start the game without this adapter** stops the game quietly using the wrong network when the VPN is off.
+
+### Playing over the internet
+
+Matches run peer to peer: your game talks straight to the other players' games. By itself, the game only knows its local address (`192.168.x.x`), so upstream needed everyone on one LAN or VPN. Now:
+
+1. When a match starts, the client asks the server's **NAT helper** for your public address, from the game's own match port, and tells the game to advertise that address instead. The game's own NAT probing then gets through most home routers.
+2. The client also asks your router to **forward the match port** (UDP 13000) while the game runs, with UPnP or NAT-PMP, when the router allows it.
+3. When neither works (mobile hotspots, some ISPs' carrier-grade NAT, strict routers), the match goes **through the server's relay**. It adds a little delay; the rest of the match is unchanged.
+
+**Settings › Network › Internet play** chooses how: **Automatic** (the default), **Always through the server**, or **LAN or VPN only** (the game's own behaviour). The overlay's **Server** pane shows which one you got. The server needs UDP 21128–21129 open; see [Host a server](#host-a-server).
 
 ### In the game
 
@@ -87,14 +99,14 @@ Press <kbd>F5</kbd> for the overlay:
 - **Players:** everyone on the server and who's online, with invite buttons. It also shows what they're playing, on servers that share it.
 - **Invites:** accept one and you go straight into that match.
 - **Match:** change the lobby's minimum and maximum players. For example, co-op with more than two, or Spies vs Mercs with fewer than four.
-- **Server:** which server you're on, and **Sign in again**.
+- **Server:** which server you're on, how other players reach you (directly, through a router port, or through the server's relay), and **Sign in again**.
 
 Invites also pop up as notifications.
 
 ### When something doesn't work
 
 1. **Look at the checklist** on the Play screen and press the button next to anything red.
-2. **Run Settings › Connection test.** It checks each part in turn: the server's config (port 80), its API (50051), signing in to the game service (21126), and whether the server can reach your PC directly.
+2. **Run Settings › Connection test.** It checks each part in turn: the server's config (port 80), its API (50051), signing in to the game service (21126), whether the server can reach your PC directly, and the server's internet play helper (21128).
 3. **The game's log** is `bl-tracing.log` in the game folder; the previous game's is `bl-tracing.prev.log`. Include it when you ask for help.
 
 <p align="center">
@@ -157,6 +169,7 @@ Everything the launcher does can be done by hand:
   - matchmaking through Find Teammate and Quick Match;
   - lobby invites;
   - **invites into private matches**.
+- **Internet play without a VPN:** public addresses from the server, router port forwarding (UPnP / NAT-PMP), and a relay through the server when a router can't be reached.
 - **An automatic setup:** game detection, client install, one-click accounts, network adapter pinning and a rank 5 save, then a checklist with a fix for each problem.
 - **An in-game overlay** (<kbd>F5</kbd>): players and who's online, invites, lobby player limits, and server status.
 - **Save games:**
@@ -184,6 +197,7 @@ Everything the launcher does can be done by hand:
   - only a match's own players can change it;
   - a protected admin API;
   - a malformed packet can't crash it.
+- **Internet play for everyone:** a NAT helper tells each game its public address, and relays matches for players whose routers can't be reached directly.
 - **Fixes joins over VPNs:** `trusted_subnet` corrects players who advertise the wrong network adapter.
 - **A community API** on port 80, each part opt-in: server info, who's online, one-click accounts.
 
@@ -199,9 +213,10 @@ Players need to reach these ports on the server:
 | 8000 | TCP | Content (multiplayer balancing) |
 | 21126 | UDP | Game login |
 | 21127 | UDP | Game service |
+| 21128–21129 | UDP | Internet play: players' public addresses, and the relay |
 | 50051 | TCP | Accounts, friends and invites (the launcher and overlay) |
 
-Matches themselves run **peer to peer** between players, not through the server.
+Matches run **peer to peer** between players. The server's NAT helper (21128–21129) lets them reach each other over the internet, and relays matches for players whose routers can't be reached directly. Relayed matches use roughly 20–60 KB/s per player on the server; see [`[nat]`](docs/server-settings.md#nat-internet-play-without-a-vpn) to limit or switch it off.
 
 **The public address** is the one thing every server needs set: the address players connect to. Without it, the server tells players to connect to `127.0.0.1`. Use:
 - your **public IP**, with the ports above forwarded to the server;
@@ -227,7 +242,7 @@ For a server that keeps running without the launcher (e.g. as a scheduled task o
 2. Allow the ports through Windows Firewall, from an administrator PowerShell:
    ```powershell
    New-NetFirewallRule -DisplayName "5th Echelon (TCP)" -Direction Inbound -Protocol TCP -LocalPort 80,8000,50051 -Action Allow
-   New-NetFirewallRule -DisplayName "5th Echelon (UDP)" -Direction Inbound -Protocol UDP -LocalPort 21126,21127 -Action Allow
+   New-NetFirewallRule -DisplayName "5th Echelon (UDP)" -Direction Inbound -Protocol UDP -LocalPort 21126-21129 -Action Allow
    ```
 3. Start it from that folder with the address players connect to:
    ```powershell
@@ -272,7 +287,7 @@ The first start writes `service.toml` (the settings) and creates the database, k
    ```
 5. Open the ports in your firewall, e.g. with ufw:
    ```sh
-   sudo ufw allow 80,8000,50051/tcp && sudo ufw allow 21126,21127/udp
+   sudo ufw allow 80,8000,50051/tcp && sudo ufw allow 21126:21129/udp
    ```
 
 The server exits if one of its services stops, so systemd's `Restart=always` brings it straight back.
@@ -284,7 +299,7 @@ Every release publishes the server's image to GitHub's container registry:
 ```sh
 docker run -d --name 5th-echelon --restart unless-stopped \
   -e FE_PUBLIC_ADDRESS=203.0.113.10 \
-  -p 80:80 -p 8000:8000 -p 21126:21126/udp -p 21127:21127/udp -p 50051:50051 \
+  -p 80:80 -p 8000:8000 -p 21126-21129:21126-21129/udp -p 50051:50051 \
   -v 5th-echelon:/srv/5th-echelon \
   ghcr.io/jdevwebb/5th-echelon-server:latest
 ```
@@ -298,6 +313,7 @@ docker compose -f docker/compose.yaml logs -f
 
 - It builds the server from source, publishes the ports above, and keeps everything it writes in the `data` volume: the database, keys, `service.toml` and `data/`. Nothing is lost when the container is rebuilt.
 - The image has a health check on the API port.
+- The NAT helper needs to see players' real addresses. Docker on Linux keeps them; **Docker Desktop** (Windows, macOS) replaces them with its own, so run the server directly there, or use host networking.
 - `FE_LISTEN` (default: every address) chooses the address to listen on.
 
 To edit the settings, change `service.toml` in the volume and restart:
@@ -315,6 +331,7 @@ The server reads `service.toml` from its working folder, writing the defaults on
 - **`trusted_subnet`:** fixes joins when players' games advertise the wrong network adapter (e.g. everyone on one VPN).
 - **`[limits]`:** failed logins and new accounts per address.
 - **`[admin]`:** the admin API for the launcher's **Manage a server**. Its key is written to `admin-key.txt`.
+- **`[nat]`:** internet play: the NAT helper's port, and who is relayed (`auto`, `all` or `off`) and how fast.
 
 Command-line options: `--public-address <ip>`, `--listen <ip>`, and `-c <file>` for another settings file. The first two are also the `FE_PUBLIC_ADDRESS` and `FE_LISTEN` environment variables. The address options rewrite `service.toml` on every start, so the addresses always match.
 
@@ -331,6 +348,14 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
 - Server management, and verified updates from this fork's releases.
 - Settings are never silently reset: an unreadable file is kept as `uplay.toml.broken`, and outside changes are merged rather than overwritten.
 - No sample accounts; DirectX 11 by default.
+
+**Internet play**
+- Players no longer need a LAN or VPN:
+  - the client answers the game's own "what's my public address?" request with the address the server's NAT helper sees, so the game advertises it and punches through NAT itself;
+  - it asks the router to forward the match port (UPnP, then NAT-PMP);
+  - the server relays matches for players behind symmetric or carrier-grade NAT;
+  - the server corrects the address a game registers, if the game didn't take the public one.
+- The findings behind it are in [docs/research/nat-traversal.md](docs/research/nat-traversal.md).
 
 **Invites and matches**
 - Invites into private matches, from [#123](https://github.com/unixoide/5th-echelon/pull/123) by Matthias Walther, with follow-up fixes:
@@ -420,6 +445,7 @@ A tag with a suffix (`v0.3.1-rc.1`) makes a pre-release, which the updater doesn
 |---|---|
 | `dedicated_server/` | The server: Quazal services, the game's protocols, the gRPC API and the community API |
 | `quazal/` | The PRUDP/RMC network stack |
+| `nat_proto/` | The NAT helper protocol between the server and the client (internet play) |
 | `hooks/` | The game client (`uplay_r1_loader.dll`): Uplay emulation, network fixes and the overlay |
 | `setup/` | The launcher's logic: finding the game, installing, accounts, saves and checks |
 | `launcher/` | The launcher's egui interface (Windows and Linux) |

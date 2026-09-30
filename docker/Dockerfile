@@ -24,8 +24,9 @@ COPY docker/entrypoint.sh /app/entrypoint.sh
 # in the volume.
 WORKDIR /srv/5th-echelon
 VOLUME /srv/5th-echelon
-# 80 config + community API, 8000 content, 21126/21127 game (UDP), 50051 API.
-EXPOSE 80/tcp 8000/tcp 21126/udp 21127/udp 50051/tcp
+# 80 config + community API, 8000 content, 21126/21127 game (UDP),
+# 21128/21129 internet play (UDP), 50051 API.
+EXPOSE 80/tcp 8000/tcp 21126/udp 21127/udp 21128/udp 21129/udp 50051/tcp
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s \
   CMD bash -c 'exec 3<>/dev/tcp/127.0.0.1/50051' || exit 1
 ENTRYPOINT ["/app/entrypoint.sh"]

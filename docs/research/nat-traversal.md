@@ -44,27 +44,29 @@ Nothing here has been tested in the game yet.
   - When detection fails, the game stores "moderate".
   - Its protocol is simple and unauthenticated; see the detection section below.
 
-## Plan
+## What's built
 
-In order; each step is useful on its own.
+1. **The NAT echo, answered in the client** (`hooks/src/hooks/nat.rs`).
+   - The client hooks `bind` to find Storm's socket, and probes the server's NAT helper from it (`nat_proto`, UDP 21128). The helper sees that socket's public mapping.
+   - When the game sends its NAT echo (`FUN_02199c60`, `thiscall`, ECX = the NAT engine), the client calls the game's own reply parser (`FUN_0219f810`, `thiscall(engine, sender, data, len)`) with `02 "prudp:/address=IP;port=PORT" 00`.
+   - The game then advertises that address, as it would have with Ubisoft's servers.
+   - Why the client does it rather than the server: the echo travels inside Storm's bit-packed framing, which is only partly known.
+   - DX9 addresses (`0x02172770` / `0x02178320`) were found by byte pattern; unknown builds are searched with the same patterns.
+2. **Fallback at registration** (`dedicated_server/src/nat_helper.rs`, `urls_with_public_address`).
+   - If the game still registers a private address, the server replaces it with the helper's address and keeps the original as the local URL.
+3. **Router port mapping** (`hooks/src/hooks/portmap.rs`): UPnP, then NAT-PMP, for UDP 13000, renewed while the game runs.
+4. **Relay** (`nat_helper.rs`, `nat.rs`).
+   - Relayed players advertise `server:4xxxx`, a virtual address.
+   - The client wraps packets for relay addresses, and every packet of a relayed player, in `DataTo`. The helper forwards them as `DataFrom`, carrying the sender's advertised address. The client unwraps them and shows the game that address as the sender.
+   - Mixed direct and relayed players work, because every packet is presented from the address its sender advertises.
+   - Who is relayed: symmetric NAT (the mapping differs between 21128 and 21129), a player's choice, or a player on the server's own network without a port mapping. Or everyone, with `relay = "all"`.
+5. **NAT-type detection server:** not built; it would only label sessions.
 
-1. **Answer NAT echo (native fix).**
-   - Reply to stream-7 packets with a station URL built from the address the packet came from. That is the Storm socket's real public ip:port.
-   - The game then advertises public A plus local B, and its own probing does the hole punching through the forwarding the server already does.
-   - Needs: the echo packet framing (from a capture, or `FUN_02199c60` / `FUN_0219f810`), and which server port it targets (`*(*(NAT+0x74))+0xc`, probably the secure service).
-2. **Fallback without the echo: rewrite at registration.**
-   - For clients outside `trusted_subnet`, rewrite the `type=2` URL's address to the observed public IP, and keep the original as a local URL.
-   - The port is only right with forwarding, UPnP or port-preserving NAT.
-3. **Client hook alternative.**
-   - Hook `GetPublicAddress` (0x01fcae30) to return an address our server tells us.
-   - Only if step 1 can't be done natively.
-4. **Router port mapping.** The launcher maps UDP 13000 (and 3074) with UPnP or NAT-PMP, for NATs that punching can't beat.
-5. **Relay (later).** For symmetric NAT and CGNAT. Hard, because addresses are embedded in Storm packets.
-6. **Optional: NAT-type detection server** (`punch_DetectUrls`), for correct NAT labels in session attributes.
-   - Request, 13 bytes: `u16be len=13`, `u16be cmd` (1, 2 or 3), seq, then garbage.
-   - Reply, 19 bytes: `u16be len`, `u16be kind` (1 = reply, 2 = next port, 3 = next server), bytes 13–16 the mapped IPv4 with its octets reversed, bytes 17–18 the port big-endian.
-   - It uses its own ephemeral socket. Details are in the RE notes.
+## To check in the game
 
-## First runtime check
-
-Log PeerManager `+0x208` / `+0x20c` in `FUN_0204a120`, to confirm the retail game runs the Quazal-NAT mode (the NATEcho path). Then capture one NAT echo packet.
+- `bl-tracing.log` should show:
+  1. `NAT: Storm socket bound`;
+  2. `NAT: the game asks for its public address`;
+  3. `NAT: told the game to advertise …`.
+- If the second line never appears, the retail game doesn't use the Quazal-NAT mode. The registration fallback still applies, and the next step is hooking `0x0204a610`.
+- A co-op join between two different networks (one on a phone hotspot), with **Automatic**, and again with **Always through the server**.

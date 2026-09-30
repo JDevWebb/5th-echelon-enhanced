@@ -18,6 +18,7 @@ services:
       - "8000:8000/tcp"      # content (multiplayer balancing)
       - "21126:21126/udp"    # game login
       - "21127:21127/udp"    # game service
+      - "21128-21129:21128-21129/udp" # internet play: public addresses and the relay
       - "50051:50051/tcp"    # accounts, friends, invites (launcher and overlay)
     volumes:
       - data:/srv/5th-echelon
