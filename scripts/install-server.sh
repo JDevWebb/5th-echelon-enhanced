@@ -947,7 +947,14 @@ install_caddy() {
       install_packages gnupg debian-keyring debian-archive-keyring apt-transport-https 2>/dev/null || install_packages gnupg
       "${CURL[@]}" -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
       "${CURL[@]}" -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt > /etc/apt/sources.list.d/caddy-stable.list
-      install_packages caddy ;;
+      if ! install_packages caddy; then
+        # A repository apt can't verify (its key expired, say) would break every
+        # later apt update on this machine: take it away again.
+        warn "Caddy's package repository didn't work; removing it, and using Caddy's own build instead"
+        rm -f /etc/apt/sources.list.d/caddy-stable.list /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+        DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+        return 1
+      fi ;;
     fedora)
       if [ "$rhel_like" -eq 1 ]; then
         install_packages 'dnf-command(copr)' && dnf copr enable -y -q @caddy/caddy >/dev/null
@@ -1141,6 +1148,11 @@ if [ "$no_caddy" -eq 0 ]; then
       if [ "$tls_ok" -eq 1 ]; then
         sed -i '/^\[public\]$/,/^\[/ { /^api_tls = /d; s/^content = 80$/content = 80\napi_tls = 443/ }' "$CONFIG"
         systemctl restart "$SERVICE"
+        # Back up before anything below talks to it.
+        for _ in $(seq 40); do
+          if (exec 3<>/dev/tcp/127.0.0.1/50051) 2>/dev/null; then break; fi
+          sleep 0.5
+        done
         say "The launcher's API is served over HTTPS too (https://$domain)"
       else
         journalctl -u caddy -n 20 --no-pager >&2 || true
@@ -1148,8 +1160,13 @@ if [ "$no_caddy" -eq 0 ]; then
       fi
     fi
     # The launcher's API: gRPC over plain HTTP/2 (h2c) through Caddy.
-    if ! curl -fsS --max-time 3 --http2-prior-knowledge -o /dev/null -X POST -H "Host: $domain" -H "Content-Type: application/grpc" \
-      http://127.0.0.1/users.Users/Login 2>/dev/null; then
+    grpc_ok=0
+    for _ in $(seq 10); do
+      if curl -fsS --max-time 3 --http2-prior-knowledge -o /dev/null -X POST -H "Host: $domain" -H "Content-Type: application/grpc" \
+        http://127.0.0.1/users.Users/Login 2>/dev/null; then grpc_ok=1; break; fi
+      sleep 1
+    done
+    if [ "$grpc_ok" -eq 0 ]; then
       notes+=("Caddy doesn't pass the launcher's API (gRPC without TLS) through. Add this to the global options block (the { } at the top) of $CADDYFILE, then run 'systemctl reload caddy':
       servers :80 {
           protocols h1 h2 h2c
