@@ -254,6 +254,23 @@ The first start writes `service.toml` (the settings) and creates the database, k
 
 ### On Linux
 
+**The quick way:** one script installs the server as a systemd service on a fresh VPS. It detects Debian, Ubuntu, Fedora, Rocky/Alma or Arch, and can put Caddy in front on a domain name:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/JDevWebb/5th-echelon-enhanced/main/scripts/install-server.sh
+sudo bash install-server.sh
+```
+
+- **It asks for a domain name**, e.g. `blacklist.example.com`, with an A record pointing at the server. With one, Caddy serves the game's web parts on port 80, so only TCP 80 and UDP 21126–21129 need to be open. Leave it empty to skip Caddy.
+- **It then:**
+  - downloads the latest release and checks its checksum;
+  - creates a system user and a sandboxed service;
+  - opens the ports in ufw or firewalld, if either is active;
+  - lists the ports to open on your provider's firewall.
+- **Running it again updates the server**, keeping accounts and settings. `--uninstall` removes it, and `--help` lists the rest (`--domain`, `--no-caddy`, `--relay`, `--version`, …).
+
+**By hand:**
+
 1. Download `dedicated_server-linux-x86_64` from the [release](https://github.com/JDevWebb/5th-echelon-enhanced/releases/latest), or [build it](#build-from-source).
 2. Give it a folder and a user of its own:
    ```sh

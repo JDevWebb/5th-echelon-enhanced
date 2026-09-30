@@ -4,6 +4,8 @@ For a machine that already runs other services on the usual ports: everything TC
 
 The full example, tested by `build/build.sh proxy-test`, is [`reverse-proxy/Caddyfile`](reverse-proxy/Caddyfile).
 
+On a Linux server, [`scripts/install-server.sh`](../scripts/install-server.sh) does all of this for you: it installs Caddy, and writes both the site and the server's settings. The steps below are for doing it by hand, or for an existing Caddy.
+
 ## What goes where
 
 | What | Protocol | Through Caddy? |
