@@ -125,6 +125,50 @@ jobs:
       - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
         with:
           subject-path: "dist/*"
+      # How to check a download, with each file's VirusTotal results. The scan
+      # needs the VT_API_KEY secret (a free VirusTotal account's key); without
+      # it, the notes link each file's report by its hash instead.
+      - name: Scan with VirusTotal
+        id: vt
+        continue-on-error: true
+        env:
+          VT_API_KEY: ${{ secrets.VT_API_KEY }}
+        run: |
+          if [ -z "$VT_API_KEY" ]; then echo "No VT_API_KEY secret; skipping the scan"; exit 1; fi
+          scripts/virustotal.sh dist/launcher.exe dist/uplay_r1_loader.dll dist/dedicated_server.exe \
+            dist/launcher-linux-x86_64 dist/dedicated_server-linux-x86_64 dist/coordinator-linux-x86_64 > vt.md
+          cat vt.md
+      - name: Write the release notes
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          {
+            echo "## Verify your download"
+            echo
+            echo "Every file is checked by the launcher's updater and the Linux installer before it's used. To check one yourself:"
+            echo
+            echo "- **Checksum:** compare with \`SHA256SUMS\` (\`Get-FileHash launcher.exe\` in PowerShell, \`sha256sum\` on Linux)."
+            echo "- **Signature:** \`SHA256SUMS.sig\` is the release key's signature of \`SHA256SUMS\`; the launcher and installer check it."
+            echo "- **Build provenance:** \`gh attestation verify <file> --repo ${{ github.repository }}\` shows it was built by this repository's release workflow, from tag \`v$VERSION\`."
+            echo
+            echo "### VirusTotal"
+            echo
+            if [ -s vt.md ]; then
+              cat vt.md
+              echo
+              echo "Scanned when this release was built; the links show the current results."
+            else
+              echo "| File | Report |"
+              echo "|---|---|"
+              for f in launcher.exe uplay_r1_loader.dll dedicated_server.exe launcher-linux-x86_64 dedicated_server-linux-x86_64 coordinator-linux-x86_64; do
+                sha="$(sha256sum "dist/$f" | cut -d' ' -f1)"
+                echo "| \`$f\` | [VirusTotal](https://www.virustotal.com/gui/file/$sha) |"
+              done
+            fi
+            echo
+            echo "Some antivirus programs flag new, unsigned game tools by their behaviour (a launcher that installs a DLL into a game). If yours does, see [Antivirus warnings](https://github.com/${{ github.repository }}#antivirus-warnings)."
+          } > notes.md
+          cat notes.md
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -133,7 +177,8 @@ jobs:
         run: |
           # A draft: scripts/sign-release.sh signs SHA256SUMS with the offline
           # release key and publishes it. Launchers ignore unsigned releases.
-          flags=(--draft --generate-notes --title "v$VERSION")
+          # The generated changelog follows the verification notes.
+          flags=(--draft --generate-notes --notes-file notes.md --title "v$VERSION")
           if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
           gh release create "v$VERSION" "${flags[@]}" dist/*
 

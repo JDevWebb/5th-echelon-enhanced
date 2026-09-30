@@ -160,6 +160,30 @@ Invites and friend requests also pop up as notifications. Friend lists, blocking
   <img src="./docs/screenshots/launcher-connection-test.png" width="560" alt="The connection test: config server, API, game service and direct connection all passing">
 </p>
 
+### Antivirus warnings
+
+Some antivirus programs, Microsoft Defender included, may flag `launcher.exe` or `uplay_r1_loader.dll`, with names like `Trojan:Win32/Wacatac.H!ml` or `Behaviour:Win32/DefenceEvasion.A!ml`. **These are false positives.**
+- **Why it happens:** the launcher installs a DLL into the game, and that DLL hooks the game to talk to community servers instead of Ubisoft's. Cheats and malware do the same kinds of things. The files are also new and not yet code-signed.
+- **What the names mean:** a name ending in `!ml` is a machine-learning guess, and one starting with `Behaviour:` is a judgement on what the program did. Neither matched known malware. [VirusTotal](https://www.virustotal.com) scans of every release are linked in its release notes.
+
+**Check your download is genuine** before trusting it:
+1. Get it only from this repository's [releases](https://github.com/JDevWebb/5th-echelon-enhanced/releases).
+2. Compare its checksum with the release's `SHA256SUMS`. In PowerShell: `Get-FileHash .\launcher.exe`.
+3. Optionally, check it was built by this repository's release workflow: `gh attestation verify launcher.exe --repo JDevWebb/5th-echelon-enhanced`.
+
+**If your antivirus quarantined it:**
+1. **Restore it:** Windows Security › Virus & threat protection › **Protection history**. Open the detection, then **Actions › Restore** (or **Allow on device**).
+2. **Exclude just these two folders**, so it isn't removed again: the folder with `launcher.exe`, and the game's `src\SYSTEM` folder (where `uplay_r1_loader.dll` lives). Use Windows Security › Virus & threat protection › Manage settings › **Exclusions**, or an administrator PowerShell:
+   ```powershell
+   Add-MpPreference -ExclusionPath "C:\Games\5th-Echelon"
+   Add-MpPreference -ExclusionPath "C:\Program Files (x86)\Steam\steamapps\common\Splinter Cell Blacklist\src\SYSTEM"
+   ```
+   Use your own paths. **Settings › Client** in the launcher shows the game folder.
+3. **Run Set up again** if the DLL was removed; it reinstalls it.
+4. **Report the false positive** to your antivirus: [Microsoft](https://www.microsoft.com/wdsi/filesubmission), [Avast/AVG](https://www.avast.com/false-positive-file-form.php), [Bitdefender](https://www.bitdefender.com/submit/), [Kaspersky](https://opentip.kaspersky.com/), [ESET](https://support.eset.com/en/kb141), [Norton](https://submit.norton.com/). Reports clear the detection for everyone, usually within days.
+
+Don't turn your antivirus off; the two exclusions are all it needs. We report every release to Microsoft, and are working on code-signing the Windows files, which stops most of these warnings.
+
 ---
 
 ## Linux and Steam Deck
@@ -230,7 +254,7 @@ Everything the launcher does can be done by hand:
 - **Staying signed in:**
   - the client signs in again on its own if the server restarts or your sign-in lapses;
   - logins survive server restarts.
-- **Updates:** the launcher updates itself from this project's releases. It checks every download against the published SHA-256 checksums, and the checksums against the release key's signature, so a changed release is never installed.
+- **Updates:** the launcher updates itself from this project's releases (each one's notes carry checksums, build provenance and [VirusTotal](#antivirus-warnings) results). It checks every download against the published SHA-256 checksums, and the checksums against the release key's signature, so a changed release is never installed.
 - **Your details stay yours:**
   - the launcher and overlay use HTTPS where the server offers it, so passwords and sign-ins never travel unencrypted;
   - linking your identity to a server is your choice, and **Unlink** undoes it;
