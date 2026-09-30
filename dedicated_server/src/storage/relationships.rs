@@ -435,6 +435,12 @@ impl Storage {
         Ok(())
     }
 
+    /// Flags (or clears) a name clash for account `user`.
+    pub async fn set_name_conflict_by_id(&self, user: u32, conflict: bool) -> Result<()> {
+        sqlx::query("UPDATE users SET name_conflict = ? WHERE id = ?").bind(i32::from(conflict)).bind(user).execute(&self.pool).await?;
+        Ok(())
+    }
+
     /// Gives `user` a new name; its account id stays, so friends and
     /// invites carry on. Clears a name clash.
     pub async fn rename_user(&self, user: u32, new_name: &str) -> Result<std::result::Result<(), RenameError>> {
@@ -475,7 +481,8 @@ impl Storage {
         .await?
         .map_err(|_| eyre!("password hashing failed"))?;
         sqlx::query("UPDATE users SET password = NULL, password_hash = ? WHERE id = ?").bind(hash).bind(user).execute(&self.pool).await?;
-        Ok(())
+        // Whoever signed in with the old password is signed out.
+        self.new_token_epoch(user).await
     }
 
     // ---------- Federation outbox ----------
@@ -658,6 +665,18 @@ mod tests {
         assert!(id.starts_with("Before.") && id.len() > 7, "{id}");
         assert_eq!(run(s.free_ubi_id("Fresh")).unwrap().unwrap(), "Fresh");
         let _ = b;
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_new_password_ends_old_tokens() {
+        let (s, dir) = temp_storage("friends-epoch");
+        let me = user(&s, "Epoch");
+        let before = run(s.token_epoch(me)).unwrap().unwrap();
+        assert_ne!(before, 0, "every account has one");
+        run(s.set_password(me, "another-password")).unwrap().unwrap();
+        assert_ne!(run(s.token_epoch(me)).unwrap().unwrap(), before);
+        assert_eq!(run(s.token_epoch(99_999)).unwrap().unwrap(), 0, "no account, no epoch");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

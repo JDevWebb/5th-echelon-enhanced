@@ -82,14 +82,17 @@ pub fn routes(storage: Arc<Storage>, cfg: CommunityApiConfig) -> Routes {
                 false => too_many(),
             },
             ("POST", "/api/login") if cfg.accounts => {
-                if rate_limit::logins().blocked(req.peer) {
-                    too_many()
-                } else {
+                let name = credentials(&req.body).map(|(u, _)| u).unwrap_or_default();
+                if rate_limit::begin_login(req.peer, &name) {
                     let response = login(&storage, &req.body);
                     if response.status_is("401 Unauthorized") {
-                        rate_limit::logins().record(req.peer);
+                        rate_limit::login_failed(&name);
+                    } else {
+                        rate_limit::login_succeeded(req.peer);
                     }
                     response
+                } else {
+                    too_many()
                 }
             }
             _ => Response::status("404 Not Found"),
@@ -216,6 +219,12 @@ fn register(storage: &Storage, body: &[u8]) -> Response {
     if let Err(why) = crate::api::check_username(&username) {
         return bad(why);
     }
+    if !crate::rate_limit::registration_open() {
+        return Response::json("403 Forbidden", &json!({ "error": "this server doesn't take new accounts" }));
+    }
+    if password.len() > crate::api::MAX_PASSWORD {
+        return bad("password must be 8-63 characters (the game's limit)");
+    }
     // On servers sharing friends, a name another player holds there is theirs.
     if crate::storage::run(crate::federation::name_holder(&username)).ok() == Some(crate::federation::NameCheck::Taken) {
         return Response::json("409 Conflict", &json!({ "error": "that name belongs to another player on the servers sharing friends" }));
@@ -240,6 +249,10 @@ fn login(storage: &Storage, body: &[u8]) -> Response {
         Err(r) => return r,
     };
     match storage.login_user(&username, &password) {
+        // The server's own accounts don't sign in here.
+        Ok(Ok(id)) if !crate::storage::run(storage.is_player_account(id)).ok().and_then(Result::ok).unwrap_or(false) => {
+            Response::json("401 Unauthorized", &json!({ "error": "wrong username or password" }))
+        }
         Ok(Ok(_)) => Response::json("200 OK", &json!({ "ok": true })),
         // One answer for unknown user and wrong password.
         Ok(Err(LoginError::NotFound | LoginError::InvalidPassword)) => Response::json("401 Unauthorized", &json!({ "error": "wrong username or password" })),

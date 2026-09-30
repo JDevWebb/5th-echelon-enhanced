@@ -78,7 +78,9 @@ async fn block(ctx: &mut Ctx) -> Result<()> {
     let b = ctx.player("Pest").await?;
     ensure!(a.friend_change("block", &b.name).await? == Relation::Blocked, "blocking failed");
     ensure!(!b.friends().await?.iter().any(|(n, _)| *n == a.name), "the blocker is still on the pest's game friend list");
-    ensure!(b.try_invite(&a.name).await.is_err(), "the pest could still invite");
+    // An invite looks sent (nobody learns they're blocked) but never arrives.
+    b.try_invite(&a.name).await.map_err(|e| eyre!("a blocked invite should look sent: {e}"))?;
+    ensure!(a.poll_invite(Duration::from_millis(800)).await?.is_none(), "the pest's invite arrived");
     ensure!(b.search(&a.name).await?.is_empty(), "the pest can find the blocker");
     ensure!(b.friend_change("request", &a.name).await? == Relation::RequestSent, "a blocked request should look sent");
     ensure!(a.relationships().await?.requests_received.is_empty(), "but must not arrive");

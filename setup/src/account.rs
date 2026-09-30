@@ -42,15 +42,16 @@ pub enum Outcome {
 }
 
 /// A username for a new account from `nick` (the player's chosen name, or
-/// their Windows user name): letters, digits, `_`, `-` and `.`, spaces as
-/// `_`, at most 24 characters, "Agent" if nothing is left.
+/// their Windows user name): letters A-Z, digits, `_`, `-` and `.` (what
+/// servers accept), spaces as `_`, at most 24 characters, "Agent" if nothing
+/// is left.
 pub fn account_name(nick: &str) -> String {
     let name: String = nick
         .trim()
         .chars()
         .filter_map(|c| match c {
             ' ' => Some('_'),
-            c if c.is_alphanumeric() || matches!(c, '_' | '-' | '.') => Some(c),
+            c if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') => Some(c),
             _ => None,
         })
         .take(24)
@@ -173,6 +174,7 @@ mod tests {
     fn names() {
         assert_eq!(account_name("  Sam Fisher! "), "Sam_Fisher");
         assert_eq!(account_name("???"), "Agent");
+        assert_eq!(account_name("Zoë Kiwi"), "Zo_Kiwi", "ASCII only");
         assert_eq!(account_name(&"x".repeat(40)).len(), 24);
         let pw = new_password();
         assert_eq!(pw.len(), 24);

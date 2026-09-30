@@ -191,16 +191,17 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
 
         info!(logger, "LoginEx attempt by {} ({})", ubi_username, username);
         let peer = Some(ci.address().ip());
-        if crate::rate_limit::logins().blocked(peer) {
-            warn!(logger, "too many failed logins from {}; refused", ci.address().ip());
+        if !crate::rate_limit::begin_login(peer, ubi_username) {
+            warn!(logger, "too many failed logins from {} or for {ubi_username}; refused", ci.address().ip());
             return Err(quazal::rmc::Error::AccessDenied);
         }
 
         let Some(user_id) = self.login(logger, ubi_username, password)? else {
-            crate::rate_limit::logins().record(peer);
+            crate::rate_limit::login_failed(ubi_username);
             warn!(logger, "login failed for {}", ubi_username);
             return Err(quazal::rmc::Error::AccessDenied);
         };
+        crate::rate_limit::login_succeeded(peer);
         info!(logger, "login successful for {}", ubi_username);
 
         ci.user_id = Some(user_id);

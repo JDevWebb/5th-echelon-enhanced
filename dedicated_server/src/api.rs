@@ -47,6 +47,13 @@ use crate::storage::Person;
 use crate::storage::Relation;
 use crate::storage::Storage;
 
+/// The longest password a new one may be: the game hands the password over
+/// in a 64-byte buffer.
+pub const MAX_PASSWORD: usize = 63;
+
+/// The session payload the game announces and reads back (bytes).
+const SESSION_DATA_SIZE: usize = 496;
+
 /// How long a sign-in token is good for. The game and the overlay sign in
 /// again on their own when one runs out.
 const TOKEN_LIFETIME_SECS: i64 = 30 * 24 * 60 * 60;
@@ -61,14 +68,16 @@ fn caller<T>(request: &Request<T>) -> Result<u32, Status> {
         .ok_or_else(|| Status::unauthenticated("Not signed in"))
 }
 
+/// An internal error: the details go to the log, never to the client.
 fn internal(e: impl std::fmt::Display) -> Status {
-    Status::internal(e.to_string())
+    eprintln!("API internal error: {e}");
+    Status::internal("internal error")
 }
 
-/// A new sign-in token for `user_id`: the id and the time, sealed with the
-/// server's key.
-fn issue_token(key: &Key, user_id: u32) -> String {
-    let plain = format!("{user_id}:{}", identity::now());
+/// A new sign-in token for `user_id`: the id, the account's token epoch and
+/// the time, sealed with the server's key.
+fn issue_token(key: &Key, user_id: u32, epoch: i64) -> String {
+    let plain = format!("{user_id}:{epoch}:{}", identity::now());
     let n = secretbox::gen_nonce();
     let c = secretbox::seal(plain.as_bytes(), &n, key);
     format!(
@@ -85,11 +94,24 @@ pub fn check_username(name: &str) -> Result<(), &'static str> {
     if n == 0 || n > 32 {
         return Err("names are 1 to 32 characters");
     }
-    if !name.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.')) {
-        return Err("names can have letters, digits, _, - and . only");
+    // ASCII only: other scripts have letters that look like Latin ones ("Kiwi" with a
+    // Cyrillic "і"), which would let anyone pose as someone else.
+    if !name.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.')) {
+        return Err("names can have letters A-Z, digits, _, - and . only");
+    }
+    let key: String = identity::name_key(name).chars().filter(char::is_ascii_alphanumeric).collect();
+    if RESERVED_NAMES.contains(&key.as_str()) {
+        return Err("that name is reserved");
     }
     Ok(())
 }
+
+/// Names no player may take (compared without case or punctuation): they'd
+/// look like the server or its operators speaking.
+const RESERVED_NAMES: &[&str] = &[
+    "admin", "administrator", "server", "system", "moderator", "mod", "operator", "owner", "support", "staff", "root", "tracking",
+    "ubisoft", "5thechelon", "fifthechelon", "anonymous", "nobody",
+];
 
 fn relation_proto(r: Relation) -> friends::Relation {
     match r {
@@ -157,8 +179,16 @@ impl MyFriends {
     }
 
     fn player(&self, person: Person, relation: Relation, sessions: Option<&[crate::storage::LiveSession]>) -> friends::Player {
+        // What someone is doing (and with whom) is for their friends; in the "mutual" mode,
+        // so is whether they're online.
+        let friend = relation == Relation::Friend;
+        let online_shown = friend || self.mode == FriendsMode::Everyone;
+        let person = Person {
+            is_online: person.is_online && online_shown,
+            ..person
+        };
         let activity = sessions
-            .filter(|_| person.is_online)
+            .filter(|_| person.is_online && friend)
             .and_then(|s| crate::community_api::activity_of(&person.username, s))
             .map(|a| friends::Activity {
                 mode: a.mode.into(),
@@ -233,7 +263,10 @@ impl Friends for MyFriends {
         };
 
         match self.storage.relation(sender, receiver_id).await.map_err(internal)? {
-            Relation::Blocked | Relation::BlockedBy => return Err(Status::permission_denied("You can't invite this player")),
+            Relation::Blocked => return Err(Status::permission_denied("You blocked this player")),
+            // Someone who blocked the sender: it looks sent and goes nowhere (nobody learns
+            // they were blocked).
+            Relation::BlockedBy => return Ok(Response::new(friends::InviteResponse {})),
             Relation::Friend => {}
             _ if self.mode == FriendsMode::Mutual => return Err(Status::permission_denied("Only friends can invite each other on this server")),
             _ => {}
@@ -281,6 +314,9 @@ impl Friends for MyFriends {
     async fn list(&self, request: Request<friends::ListRequest>) -> Result<Response<friends::ListResponse>, Status> {
         let me = caller(&request)?;
         debug!(self.logger, "Friendlist request from {me}");
+        if !crate::rate_limit::polls().check(me) {
+            return Err(Status::resource_exhausted("Too many requests; slow down"));
+        }
         let mut people = match self.mode {
             FriendsMode::Everyone => self.storage.everyone_for(me).await.map_err(internal)?,
             FriendsMode::Mutual => self.storage.friends_of(me).await.map_err(internal)?,
@@ -291,10 +327,16 @@ impl Friends for MyFriends {
         // the friend list - it never asks separately - so an accepted invitation is dead
         // without it.
         let sessions = self.storage.list_advertised_sessions_async().await.map_err(internal)?;
+        let friend_ids: std::collections::HashSet<u32> = self.storage.friends_of(me).await.map_err(internal)?.into_iter().map(|p| p.id).collect();
+        let inviters: std::collections::HashSet<u32> = self.storage.pending_inviters(me).await.map_err(internal)?.into_iter().collect();
         let friends = people
             .into_iter()
             .map(|u| {
                 let (session_id, invite_only, session_data) = sessions.get(&u.id).cloned().unwrap_or_default();
+                // A private session's details only go to friends, and to whoever this player
+                // invited (the game needs them to join); public ones to anyone.
+                let shared = !invite_only || u.id == me || friend_ids.contains(&u.id) || inviters.contains(&u.id);
+                let (session_id, session_data) = if shared { (session_id, session_data) } else { (0, Vec::new()) };
                 Friend {
                     pid: u.id,
                     id: u.ubi_id,
@@ -317,6 +359,17 @@ impl Friends for MyFriends {
         let user_id = caller(&request)?;
         let request = request.into_inner();
         debug!(self.logger, "SetSession request from {}: {:?}", user_id, request);
+        if !crate::rate_limit::polls().check(user_id) {
+            return Err(Status::resource_exhausted("Too many requests; slow down"));
+        }
+        // The game's payload is 496 bytes, for a session its player is in: nothing else is
+        // stored and handed to others.
+        if !(request.session_data.is_empty() || request.session_data.len() == SESSION_DATA_SIZE) {
+            return Err(Status::invalid_argument("Session data is 496 bytes"));
+        }
+        if request.session_id != 0 && !self.storage.is_in_session(user_id, request.session_id).await.map_err(internal)? {
+            return Err(Status::permission_denied("Not a session you're in"));
+        }
 
         self.storage
             .set_advertised_session_async(user_id, (request.session_id != 0).then_some(request.session_id), request.invite_only, &request.session_data)
@@ -328,6 +381,9 @@ impl Friends for MyFriends {
 
     async fn relationships(&self, request: Request<friends::RelationshipsRequest>) -> Result<Response<friends::RelationshipsResponse>, Status> {
         let me = caller(&request)?;
+        if !crate::rate_limit::polls().check(me) {
+            return Err(Status::resource_exhausted("Too many requests; slow down"));
+        }
         federation::pull_now_and_then(me);
         let sessions = self.storage.presence_async().await.map_err(internal)?.1;
         let list = |people: Vec<Person>, relation: Relation| -> Vec<friends::Player> {
@@ -477,6 +533,10 @@ impl Friends for MyFriends {
                 return Err(Status::already_exists("Another player here has that name"));
             }
         }
+        // Nor another account's id (renamed accounts keep theirs): one name, one player.
+        if self.storage.find_person_by_ubi_id(&new_name).await.map_err(internal)?.is_some_and(|p| p.id != me) {
+            return Err(Status::already_exists("Another player here has that name"));
+        }
         // A linked account signs its new name; across the group it must be free or theirs.
         let link = match &person.global_id {
             Some(global_id) => {
@@ -537,12 +597,25 @@ async fn check_token<T>(logger: &Logger, key: &Key, storage: &Arc<Storage>, mut 
     let plain = secretbox::open(&c, &Nonce::from_slice(&n).ok_or(Status::unauthenticated("Invalid token"))?, key).map_err(|()| Status::unauthenticated("Invalid token"))?;
 
     let plain = std::str::from_utf8(&plain).map_err(|_| Status::unauthenticated("Invalid user"))?;
-    // "<user id>:<issued>"; tokens from before they had a time are refused, so their
-    // holders sign in again (the game and the overlay do that on their own).
-    let (user_id, issued) = plain.split_once(':').ok_or(Status::unauthenticated("Token expired"))?;
+    // "<user id>:<epoch>:<issued>"; older tokens are refused, so their holders sign in
+    // again (the game and the overlay do that on their own).
+    let mut parts = plain.split(':');
+    let (Some(user_id), Some(epoch), Some(issued), None) = (parts.next(), parts.next(), parts.next(), parts.next()) else {
+        return Err(Status::unauthenticated("Token expired"));
+    };
     let issued: i64 = issued.parse().map_err(|_| Status::unauthenticated("Invalid token"))?;
+    let epoch: i64 = epoch.parse().map_err(|_| Status::unauthenticated("Invalid token"))?;
     if identity::now() - issued > TOKEN_LIFETIME_SECS {
         return Err(Status::unauthenticated("Token expired"));
+    }
+    let id: u32 = user_id.parse().map_err(|_| Status::unauthenticated("Invalid user"))?;
+    // A new password (or a deleted and reused account) ends the tokens issued before; the
+    // server's own accounts never have one.
+    if epoch == 0 || storage.token_epoch(id).await.map_err(|_| Status::unauthenticated("Invalid token"))? != epoch {
+        return Err(Status::unauthenticated("Signed out"));
+    }
+    if !storage.is_player_account(id).await.map_err(|_| Status::unauthenticated("Invalid token"))? {
+        return Err(Status::unauthenticated("Invalid user"));
     }
 
     debug!(logger, "Looking for user {user_id}");
@@ -584,26 +657,35 @@ impl Users for MyUsers {
     /// Authenticates the user against the storage and generates an authorization token upon successful login.
     async fn login(&self, request: Request<users::LoginRequest>) -> Result<Response<users::LoginResponse>, Status> {
         let peer = client_addr(&request);
-        if crate::rate_limit::logins().blocked(peer) {
-            return Err(Status::resource_exhausted("Too many failed logins; try again later"));
-        }
         let request = request.into_inner();
         let username = request.username;
         let password = request.password;
+        // Nothing costly for what can't be an account.
+        if username.chars().count() > 32 || password.len() > 128 {
+            return Err(Status::unauthenticated("Invalid login"));
+        }
+        if !crate::rate_limit::begin_login(peer, &username) {
+            return Err(Status::resource_exhausted("Too many failed logins; try again later"));
+        }
 
-        let maybe_user = self
-            .storage
-            .login_user_async(&username, &password)
-            .await
-            .map_err(|e| Status::internal(format!("Login error: {e:?}")))?;
+        let maybe_user = self.storage.login_user_async(&username, &password).await.map_err(internal)?;
 
         let user_id = maybe_user.map_err(|err| {
-            crate::rate_limit::logins().record(peer);
+            crate::rate_limit::login_failed(&username);
             match err {
                 LoginError::InvalidPassword => Status::unauthenticated("Invalid login"),
+                // The launcher needs to know a saved account is gone (to make a new one);
+                // names can be looked up by anyone signed in anyway.
                 LoginError::NotFound => Status::not_found("Unknown user"),
             }
         })?;
+        // The server's own accounts (Tracking's password is the game's, so public) never get
+        // an API session.
+        if !self.storage.is_player_account(user_id).await.map_err(internal)? {
+            crate::rate_limit::login_failed(&username);
+            return Err(Status::unauthenticated("Invalid login"));
+        }
+        crate::rate_limit::login_succeeded(peer);
 
         info!(self.logger, "Login successful for {username}");
         self.signed_in(user_id).await
@@ -620,13 +702,13 @@ impl Users for MyUsers {
         let username = request.username.trim().to_string();
         let password = request.password;
         check_username(&username).map_err(Status::invalid_argument)?;
-        if password.len() < 8 || password.len() > 128 {
-            return Err(Status::invalid_argument("Passwords are 8 to 128 characters"));
+        if password.len() < 8 || password.len() > MAX_PASSWORD {
+            return Err(Status::invalid_argument("Passwords are 8 to 63 characters (the game's limit)"));
         }
-        // The account id is set here, so a client can't claim someone else's: the name, unless
-        // a renamed account still has it.
-        let ubi_id = self.storage.free_ubi_id(&username).await.map_err(internal)?;
-        // With an identity: link at once, and reserve the name across servers sharing friends.
+        if !crate::rate_limit::registration_open() {
+            return Err(Status::permission_denied("This server doesn't take new accounts"));
+        }
+        // With an identity, its signature must hold before anything is made.
         let identity_link = if request.global_id.is_empty() {
             if federation::name_holder(&username).await == federation::NameCheck::Taken {
                 return Err(Status::already_exists(NAME_HELD_ELSEWHERE));
@@ -642,38 +724,51 @@ impl Users for MyUsers {
             if self.storage.find_person_by_global_id(&request.global_id).await.map_err(internal)?.is_some() {
                 return Err(Status::already_exists("This identity already has an account here"));
             }
-            if federation::claim_name(&request.global_id, &username, request.time, &request.signature).await == federation::NameCheck::Taken {
-                return Err(Status::already_exists(NAME_HELD_ELSEWHERE));
-            }
             Some((request.global_id.clone(), request.time, request.signature.clone()))
         };
+        // Taken here. If the one holding it has no identity and the name is this identity's
+        // across the group, that account is told to rename.
+        if let Some(holder) = self.storage.find_person_by_name(&username).await.map_err(internal)? {
+            if let (None, Some((global_id, time, signature))) = (&holder.global_id, &identity_link) {
+                if federation::claim_name(global_id, &username, *time, signature).await == federation::NameCheck::Ours {
+                    self.storage.set_name_conflict_by_id(holder.id, true).await.map_err(internal)?;
+                    info!(self.logger, "{username} here has no identity, and the name is someone else's across the group: flagged");
+                }
+            }
+            return Err(Status::already_exists("Username already taken"));
+        }
+        // The account id is set here, so a client can't claim someone else's: the name, unless
+        // a renamed account still has it.
+        let ubi_id = self.storage.free_ubi_id(&username).await.map_err(internal)?;
 
         let error = if let Err(err) = self.storage.register_user_async(&username, &password, Some(&ubi_id)).await {
             match err.downcast::<sqlx::Error>() {
-                Ok(sqlx::Error::Database(db_err)) => {
-                    if db_err.is_unique_violation() {
-                        return Err(Status::already_exists(String::from("Username already taken or Ubisoft ID already registered")));
-                    }
-                    return Err(Status::internal(db_err.to_string()));
-                }
-                Ok(err) => return Err(Status::internal(err.to_string())),
-                Err(err) => err.to_string(),
+                Ok(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => return Err(Status::already_exists("Username already taken")),
+                Ok(err) => return Err(internal(err)),
+                Err(err) => return Err(internal(err)),
             }
         } else {
             String::new()
         };
         info!(self.logger, "New user {username} registered");
-        if let Some((global_id, time, signature)) = identity_link.filter(|_| error.is_empty()) {
-            if let Some(person) = self.storage.find_person_by_name(&username).await.map_err(internal)? {
-                self.storage.link_global_id(person.id, &global_id).await.map_err(internal)?;
-                let link = federation::Change::Link {
-                    global_id,
-                    username: username.clone(),
-                    time,
-                    signature,
-                };
-                federation::linked(&self.logger, &self.storage, person.id, link).await;
+        if let Some((global_id, time, signature)) = identity_link {
+            let Some(person) = self.storage.find_person_by_name(&username).await.map_err(internal)? else {
+                return Err(Status::internal("internal error"));
+            };
+            // Claimed only now the account exists: a registration that fails leaves no claim
+            // behind. Held by someone else across the group: the account goes again.
+            if federation::claim_name(&global_id, &username, time, &signature).await == federation::NameCheck::Taken {
+                self.storage.delete_user_async(person.id).await.map_err(internal)?;
+                return Err(Status::already_exists(NAME_HELD_ELSEWHERE));
             }
+            self.storage.link_global_id(person.id, &global_id).await.map_err(internal)?;
+            let link = federation::Change::Link {
+                global_id,
+                username: username.clone(),
+                time,
+                signature,
+            };
+            federation::linked(&self.logger, &self.storage, person.id, link).await;
         }
         Ok(Response::new(users::RegisterResponse {
             error,
@@ -688,13 +783,15 @@ impl Users for MyUsers {
     /// Signs in with the identity key the account is linked to (see `identity`).
     async fn key_login(&self, request: Request<users::KeyLoginRequest>) -> Result<Response<users::LoginResponse>, Status> {
         let peer = client_addr(&request);
-        if crate::rate_limit::logins().blocked(peer) {
+        let request = request.into_inner();
+        if request.username.chars().count() > 32 || !crate::rate_limit::begin_login(peer, &request.username) {
             return Err(Status::resource_exhausted("Too many failed logins; try again later"));
         }
-        let request = request.into_inner();
-        let refused = |why: &str| {
-            crate::rate_limit::logins().record(peer);
-            Status::unauthenticated(why.to_string())
+        // One answer for every failure: which accounts are linked to which identity isn't
+        // anyone's business.
+        let refused = |_why: &str| {
+            crate::rate_limit::login_failed(&request.username);
+            Status::unauthenticated("Signing in with this identity didn't work")
         };
         let person = self
             .storage
@@ -716,12 +813,13 @@ impl Users for MyUsers {
             return Err(refused("That signature was already used"));
         }
         if !request.new_password.is_empty() {
-            if request.new_password.len() < 8 || request.new_password.len() > 128 {
-                return Err(Status::invalid_argument("Passwords are 8 to 128 characters"));
+            if request.new_password.len() < 8 || request.new_password.len() > MAX_PASSWORD {
+                return Err(Status::invalid_argument("Passwords are 8 to 63 characters (the game's limit)"));
             }
             self.storage.set_password(person.id, &request.new_password).await.map_err(internal)?;
             info!(self.logger, "{} set a new password with their identity key", person.username);
         }
+        crate::rate_limit::login_succeeded(peer);
         info!(self.logger, "Key login successful for {}", person.username);
         self.signed_in(person.id).await
     }
@@ -732,11 +830,12 @@ impl MyUsers {
     /// account id the game should use).
     async fn signed_in(&self, user_id: u32) -> Result<Response<users::LoginResponse>, Status> {
         let person = self.storage.find_person(user_id).await.map_err(internal)?;
+        let epoch = self.storage.token_epoch(user_id).await.map_err(internal)?;
         let nat_ticket = person.as_ref().and_then(|p| crate::nat_helper::ticket_for(&p.username)).map(Vec::from).unwrap_or_default();
         Ok(Response::new(users::LoginResponse {
             nat_ticket,
             error: String::new(),
-            token: issue_token(&self.key, user_id),
+            token: issue_token(&self.key, user_id, epoch),
             user: person.map(|p| User {
                 id: p.ubi_id,
                 username: p.username,
@@ -758,10 +857,13 @@ impl Misc for MyMisc {
     /// Handles event requests, primarily for retrieving pending friend invites.
     async fn event(&self, request: Request<misc::EventRequest>) -> Result<Response<misc::EventResponse>, Status> {
         let user_id = caller(&request)?;
+        if !crate::rate_limit::polls().check(user_id) {
+            return Err(Status::resource_exhausted("Too many requests; slow down"));
+        }
 
         let Some(invite) = self.storage.take_invite_async(user_id).await.map_err(|e| {
             error!(self.logger, "Error getting latest invite for user: {e}");
-            Status::internal(format!("{e:?}"))
+            Status::internal("internal error")
         })?
         else {
             // No invitation: a friend request or an accepted one, if any.
@@ -785,7 +887,7 @@ impl Misc for MyMisc {
 
         let Some(sender) = self.storage.find_user_by_id_async(invite.sender).await.map_err(|e| {
             error!(self.logger, "Error getting ubi id for user: {e}");
-            Status::internal(format!("{e:?}"))
+            Status::internal("internal error")
         })?
         else {
             return Err(Status::not_found(""));
@@ -822,6 +924,9 @@ impl Misc for MyMisc {
     ///
     /// Attempts to establish a UDP connection with the client and exchanges a challenge.
     async fn test_p2p(&self, request: Request<misc::TestP2pRequest>) -> Result<Response<misc::TestP2pResponse>, Status> {
+        if !crate::rate_limit::game_requests().check(caller(&request)?) {
+            return Err(Status::resource_exhausted("Too many requests; slow down"));
+        }
         let mut client_addr = request.remote_addr().ok_or(Status::failed_precondition("no client address"))?;
         client_addr.set_port(13_000);
         let request = request.into_inner();
@@ -993,7 +1098,7 @@ impl GamesAdmin for MyGamesAdmin {
 
                     games::Game {
                         id: s.session_id,
-                        creator: s.participants.iter().find(|p| p.user_id == s.creator_id).unwrap().name.clone(),
+                        creator: s.participants.iter().find(|p| p.user_id == s.creator_id).map(|p| p.name.clone()).unwrap_or_default(),
                         participants: s.participants.into_iter().filter(|p| p.user_id != s.creator_id).map(|p| p.name).collect(),
                         game_type,
                     }
@@ -1111,6 +1216,7 @@ pub async fn start_server(
     enable_admin_services: bool,
     reflection: bool,
     friends_mode: FriendsMode,
+    print_admin_key: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Kept across restarts, so logged-in launchers and games stay logged in.
     let key = crate::keys::load_or_create(std::path::Path::new(crate::keys::API_KEY_FILE))?;
@@ -1171,8 +1277,11 @@ pub async fn start_server(
     let builder = if enable_admin_services {
         warn!(logger, "Enabling admin services");
         let preshared = base32(&crate::keys::load_or_create(std::path::Path::new(crate::keys::ADMIN_KEY_FILE))?.0);
-        // The launcher reads it from stdout; an operator from the file.
-        println!("Admin Key: {preshared}");
+        // The launcher (which started this server) reads it from stdout; anyone else reads
+        // the file, so it doesn't end up in service logs.
+        if print_admin_key {
+            println!("Admin Key: {preshared}");
+        }
         crate::keys::write_secret_text(std::path::Path::new(ADMIN_KEY_TEXT_FILE), &preshared)?;
         info!(logger, "Admin API on; the key is in {ADMIN_KEY_TEXT_FILE}");
         builder

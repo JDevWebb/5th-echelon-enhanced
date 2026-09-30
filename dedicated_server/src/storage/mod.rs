@@ -92,7 +92,33 @@ impl Storage {
         })??;
         let storage = Self { logger, pool };
         run(storage.refresh_name_keys())??;
+        run(storage.fill_token_epochs())??;
         Ok(storage)
+    }
+
+    /// Gives every account without one its random token epoch.
+    async fn fill_token_epochs(&self) -> Result<()> {
+        let ids: Vec<u32> = sqlx::query_scalar("SELECT id FROM users WHERE token_epoch = 0").fetch_all(&self.pool).await?;
+        for id in ids {
+            self.new_token_epoch(id).await?;
+        }
+        Ok(())
+    }
+
+    /// The account's current token epoch (0: no such account).
+    pub async fn token_epoch(&self, user_id: u32) -> Result<i64> {
+        Ok(sqlx::query_scalar("SELECT token_epoch FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .unwrap_or(0))
+    }
+
+    /// Replaces the account's token epoch: every token issued before stops working.
+    pub async fn new_token_epoch(&self, user_id: u32) -> Result<()> {
+        let epoch = (rand::random::<i64>() & i64::MAX).max(1);
+        sqlx::query("UPDATE users SET token_epoch = ? WHERE id = ?").bind(epoch).bind(user_id).execute(&self.pool).await?;
+        Ok(())
     }
 
     /// Recomputes every `name_key` with full Unicode case folding (the
@@ -182,11 +208,12 @@ impl Storage {
     }
 
     async fn register_user_unsafe_async(&self, username: &str, password: &str, ubi_id: Option<&str>) -> sqlx::Result<()> {
-        sqlx::query("INSERT INTO users (username, password_hash, ubi_id, name_key) VALUES (?, ?, ?, ?)")
+        sqlx::query("INSERT INTO users (username, password_hash, ubi_id, name_key, token_epoch) VALUES (?, ?, ?, ?, ?)")
             .bind(username)
             .bind(password)
             .bind(ubi_id)
             .bind(name_key(username))
+            .bind((rand::random::<i64>() & i64::MAX).max(1))
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -608,10 +635,16 @@ impl Storage {
     /// on delivery - as this used to do - is precisely what left those searches unanswered.
     /// The row disappears once the join succeeds, or after five minutes.
     pub async fn take_invite_async(&self, user_id: u32) -> Result<Option<Invite>> {
-        let mut transaction = self.pool.begin().await?;
-        sqlx::query("DELETE FROM invites WHERE consumed_at IS NOT NULL OR expires_at IS NULL OR expires_at <= CURRENT_TIMESTAMP")
-            .execute(&mut *transaction)
+        // Polled every second by every game: a read unless there's something to hand out
+        // (expired invitations are purged every few minutes, not here).
+        let waiting: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM invites WHERE receiver = ? AND delivered_at IS NULL AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP")
+            .bind(user_id)
+            .fetch_one(&self.pool)
             .await?;
+        if waiting == 0 {
+            return Ok(None);
+        }
+        let mut transaction = self.pool.begin().await?;
         let invite: Option<Invite> = sqlx::query_as(
             r"
             SELECT id, sender, receiver, session_type, session_id
@@ -913,6 +946,16 @@ impl Storage {
         Ok(sessions)
     }
 
+    /// Whether `user_id` is a player's account (not the server's own, which
+    /// have no account id).
+    pub async fn is_player_account(&self, user_id: u32) -> Result<bool> {
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM users WHERE id = ? AND ubi_id IS NOT NULL AND ubi_id != ''")
+            .bind(user_id)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(n > 0)
+    }
+
     /// How many live sessions `user_id` hosts.
     pub fn count_live_sessions(&self, user_id: u32) -> Result<u32> {
         let n: i64 = run(sqlx::query_scalar("SELECT COUNT(*) FROM game_sessions WHERE creator_id = ? AND destroyed_at IS NULL")
@@ -933,6 +976,28 @@ impl Storage {
         .bind(b)
         .bind(b)
         .fetch_one(&self.pool))??;
+        Ok(n > 0)
+    }
+
+    /// Players with an invitation for `user_id` waiting (not consumed, not expired).
+    pub async fn pending_inviters(&self, user_id: u32) -> Result<Vec<u32>> {
+        Ok(sqlx::query_scalar("SELECT DISTINCT sender FROM invites WHERE receiver = ? AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP")
+            .bind(user_id)
+            .fetch_all(&self.pool)
+            .await?)
+    }
+
+    /// Whether `user_id` hosts or takes part in live session `session_id`.
+    pub async fn is_in_session(&self, user_id: u32, session_id: u32) -> Result<bool> {
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM game_sessions g WHERE g.id = ? AND g.destroyed_at IS NULL
+               AND (g.creator_id = ? OR EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?))",
+        )
+        .bind(session_id)
+        .bind(user_id)
+        .bind(user_id)
+        .fetch_one(&self.pool)
+        .await?;
         Ok(n > 0)
     }
 

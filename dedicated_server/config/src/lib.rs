@@ -111,6 +111,10 @@ pub struct LimitsConfig {
     /// address (a LAN party, a household) count together.
     #[serde(default = "default_registrations")]
     pub registrations_per_hour: usize,
+    /// Whether anyone may make an account (the launcher, `/api/register`).
+    /// Off: only accounts that exist can sign in.
+    #[serde(default = "enabled")]
+    pub open_registration: bool,
 }
 
 const fn default_failed_logins() -> usize {
@@ -126,6 +130,7 @@ impl Default for LimitsConfig {
         Self {
             failed_logins_per_10_minutes: default_failed_logins(),
             registrations_per_hour: default_registrations(),
+            open_registration: true,
         }
     }
 }

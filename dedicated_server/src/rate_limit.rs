@@ -89,6 +89,29 @@ pub fn logins() -> &'static RateLimit {
     LIMIT.get_or_init(|| RateLimit::new((limits().failed_logins_per_10_minutes, Duration::from_secs(10 * 60))))
 }
 
+/// Whether new accounts may be made (`[limits] open_registration`).
+pub fn registration_open() -> bool {
+    limits().open_registration
+}
+
+/// Starts a sign-in for `name` from `peer`. It counts now, before the
+/// password is checked, so a burst of guesses can't all get through before the
+/// first failure is recorded; false when the address or the account is over
+/// its limit.
+pub fn begin_login(peer: Option<IpAddr>, name: &str) -> bool {
+    !accounts().blocked(name) && logins().check(peer)
+}
+
+/// The sign-in worked: its count is given back (only failures count).
+pub fn login_succeeded(peer: Option<IpAddr>) {
+    logins().refund(peer);
+}
+
+/// The sign-in failed: it counts against the account too.
+pub fn login_failed(name: &str) {
+    accounts().record(name);
+}
+
 /// The server's one limiter for new accounts.
 pub fn registrations() -> &'static RateLimit {
     static LIMIT: std::sync::OnceLock<RateLimit> = std::sync::OnceLock::new();
@@ -158,10 +181,72 @@ pub fn game_requests() -> &'static PlayerLimit {
     LIMIT.get_or_init(|| PlayerLimit::new(120, Duration::from_secs(60)))
 }
 
+/// Requests the overlay and the game poll (friend lists, events, session
+/// announcements): 240 a minute, well above what they need.
+pub fn polls() -> &'static PlayerLimit {
+    static LIMIT: std::sync::OnceLock<PlayerLimit> = std::sync::OnceLock::new();
+    LIMIT.get_or_init(|| PlayerLimit::new(240, Duration::from_secs(60)))
+}
+
 /// Player searches: 60 a minute.
 pub fn searches() -> &'static PlayerLimit {
     static LIMIT: std::sync::OnceLock<PlayerLimit> = std::sync::OnceLock::new();
     LIMIT.get_or_init(|| PlayerLimit::new(60, Duration::from_secs(60)))
+}
+
+/// The budget an address counts against: itself, or for IPv6 its /64 (one
+/// home or server has a whole /64, so single addresses cost nothing to change).
+fn bucket(peer: Option<IpAddr>) -> IpAddr {
+    match peer {
+        Some(IpAddr::V6(v6)) if v6.to_ipv4_mapped().is_none() => {
+            let bits = u128::from(v6) & (u128::MAX << 64);
+            IpAddr::V6(bits.into())
+        }
+        Some(IpAddr::V6(v6)) => IpAddr::V4(v6.to_ipv4_mapped().unwrap_or(std::net::Ipv4Addr::UNSPECIFIED)),
+        Some(ip) => ip,
+        None => IpAddr::from([0, 0, 0, 0]),
+    }
+}
+
+/// Failed sign-ins per account: 10 in 10 minutes, from anywhere, so guesses
+/// spread over many addresses still stop.
+pub struct AccountLimit {
+    seen: Mutex<HashMap<String, VecDeque<Instant>>>,
+}
+
+pub fn accounts() -> &'static AccountLimit {
+    static LIMIT: std::sync::OnceLock<AccountLimit> = std::sync::OnceLock::new();
+    LIMIT.get_or_init(|| AccountLimit { seen: Mutex::new(HashMap::new()) })
+}
+
+impl AccountLimit {
+    const MAX: usize = 10;
+    const WINDOW: Duration = Duration::from_secs(10 * 60);
+
+    fn key(name: &str) -> String {
+        identity::name_key(name)
+    }
+
+    /// Whether `name` has had too many failed sign-ins lately.
+    pub fn blocked(&self, name: &str) -> bool {
+        let now = Instant::now();
+        let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let Some(times) = seen.get_mut(&Self::key(name)) else { return false };
+        while times.front().is_some_and(|t| now.duration_since(*t) >= Self::WINDOW) {
+            times.pop_front();
+        }
+        times.len() >= Self::MAX
+    }
+
+    /// Counts a failed sign-in for `name`.
+    pub fn record(&self, name: &str) {
+        let now = Instant::now();
+        let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if seen.len() > 100_000 {
+            seen.retain(|_, times| times.back().is_some_and(|t| now.duration_since(*t) < Self::WINDOW));
+        }
+        seen.entry(Self::key(name)).or_default().push_back(now);
+    }
 }
 
 /// At most `max` requests per address in any `window`.
@@ -186,6 +271,15 @@ impl RateLimit {
         self.check_at(peer, Instant::now())
     }
 
+    /// Gives back the latest count for `peer`: an attempt counted by
+    /// [`RateLimit::check`] that turned out fine (a sign-in that worked).
+    pub fn refund(&self, peer: Option<IpAddr>) {
+        let key = bucket(peer);
+        if let Some(times) = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_mut(&key) {
+            times.pop_back();
+        }
+    }
+
     /// Whether `peer` has used up its budget, without counting anything.
     pub fn blocked(&self, peer: Option<IpAddr>) -> bool {
         self.blocked_at(peer, Instant::now())
@@ -200,7 +294,7 @@ impl RateLimit {
         if peer.is_some_and(|p| p.is_loopback()) {
             return false;
         }
-        let key = peer.unwrap_or(IpAddr::from([0, 0, 0, 0]));
+        let key = bucket(peer);
         let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let Some(times) = seen.get_mut(&key) else { return false };
         while times.front().is_some_and(|t| now.duration_since(*t) >= self.window) {
@@ -213,7 +307,7 @@ impl RateLimit {
         if peer.is_some_and(|p| p.is_loopback()) {
             return;
         }
-        let key = peer.unwrap_or(IpAddr::from([0, 0, 0, 0]));
+        let key = bucket(peer);
         let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         seen.retain(|_, times| times.back().is_some_and(|t| now.duration_since(*t) < self.window));
         seen.entry(key).or_default().push_back(now);
@@ -224,7 +318,7 @@ impl RateLimit {
         if peer.is_some_and(|p| p.is_loopback()) {
             return true;
         }
-        let key = peer.unwrap_or(IpAddr::from([0, 0, 0, 0]));
+        let key = bucket(peer);
         let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         // Forget addresses whose requests have all expired, so the map stays small.
         seen.retain(|_, times| times.back().is_some_and(|t| now.duration_since(*t) < self.window));
@@ -281,6 +375,37 @@ mod tests {
         assert!(limit.blocked_at(peer, t0 + Duration::from_secs(2)));
         assert!(!limit.blocked_at(Some(IpAddr::from([192, 0, 2, 8])), t0), "per address");
         assert!(!limit.blocked_at(peer, t0 + Duration::from_secs(61)), "failures expire");
+    }
+
+    #[test]
+    fn ipv6_addresses_share_their_64() {
+        let limit = RateLimit::new((2, Duration::from_secs(60)));
+        let t0 = Instant::now();
+        assert!(limit.check_at(Some("2001:db8:1:2::1".parse().unwrap()), t0));
+        assert!(limit.check_at(Some("2001:db8:1:2::ffff".parse().unwrap()), t0));
+        assert!(!limit.check_at(Some("2001:db8:1:2:abcd::9".parse().unwrap()), t0), "same /64");
+        assert!(limit.check_at(Some("2001:db8:1:3::1".parse().unwrap()), t0), "another /64");
+    }
+
+    #[test]
+    fn a_refunded_attempt_frees_its_place() {
+        let limit = RateLimit::new((1, Duration::from_secs(60)));
+        let peer = Some(IpAddr::from([192, 0, 2, 3]));
+        assert!(limit.check(peer));
+        limit.refund(peer);
+        assert!(limit.check(peer), "the first attempt succeeded and was given back");
+        assert!(!limit.check(peer));
+    }
+
+    #[test]
+    fn failures_are_counted_per_account_too() {
+        let limit = AccountLimit { seen: Mutex::new(HashMap::new()) };
+        for _ in 0..AccountLimit::MAX {
+            assert!(!limit.blocked("Kiwi"));
+            limit.record("kiwi");
+        }
+        assert!(limit.blocked("KIWI"), "any case");
+        assert!(!limit.blocked("Tank"));
     }
 
     #[test]

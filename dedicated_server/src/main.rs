@@ -471,6 +471,7 @@ fn main() -> color_eyre::Result<()> {
                     admin_api,
                     config.debug.grpc_reflection,
                     friends_mode,
+                    args.launcher,
                 )) {
                     crit!(logger, "Error running api server: {e:?}");
                 }
