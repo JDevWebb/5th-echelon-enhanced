@@ -5,6 +5,10 @@
 #   curl -fsSLO https://raw.githubusercontent.com/JDevWebb/5th-echelon-enhanced/main/scripts/install-server.sh
 #   sudo bash install-server.sh
 #
+# Run interactively, it asks for what it needs: the domain name, and whether
+# this server shares friends with others (runs a coordinator, or joins one).
+# The full guide is docs/deploying.md.
+#
 # Works on Debian, Ubuntu, Fedora, RHEL-likes (Rocky, Alma, CentOS Stream),
 # Arch and Manjaro, on x86_64 with systemd. Run it again to
 # update: settings, accounts and keys are kept.
@@ -31,9 +35,17 @@
 #   --relay auto|all|off  who plays through the server's relay (default: auto)
 #   --friends mutual|everyone
 #                         who is on a player's friend list: only friends,
-#                         who alone can invite (mutual, the default: a public
-#                         server), or every player (everyone: a group that
-#                         all know each other)
+#                         who alone can invite (mutual, the default for a new
+#                         install: a public server), or every player
+#                         (everyone: a group that all know each other)
+#   --alias NAME          another name (or IP) players reach this server by;
+#                         repeat for more. Caddy serves it too, and identity
+#                         signatures made for it are accepted
+#   --admin, --no-admin   turn the admin API on or off (manage the server
+#                         through an SSH tunnel; see docs/deploying.md)
+#   --closed-registration, --open-registration
+#                         stop or allow new accounts (existing ones still
+#                         sign in)
 #   --server-name NAME    the server's name in a server directory (default:
 #                         the domain)
 #   --region NAME         where the server is, for the directory, e.g. Sydney
@@ -43,10 +55,13 @@
 #                         (visible to other users in ps; prefer the file)
 #   --join-token-file FILE
 #                         read the join token from FILE
+#   --unlisted, --listed  stay out of (or appear in) the server directory
 #   --coordinator-domain NAME
 #                         also run a coordinator here, at https://NAME (an A
 #                         record for this server, TCP 443 open); this server
 #                         joins it, and other servers can too
+#   --coordinator-only    with --coordinator-domain: only the coordinator
+#                         (and Caddy), no game server on this machine
 #   --coordinator-binary FILE
 #                         install this coordinator-linux-x86_64 instead of
 #                         downloading one
@@ -57,6 +72,10 @@
 #   --yes                 don't ask; go on past warnings (e.g. DNS not
 #                         pointing here yet)
 #   --force               install even though a port is already in use
+#   --status              show what's installed and whether it's working
+#   --show-join-token     print this machine's coordinator join token
+#   --rotate-join-token   make a new join token (servers that joined keep
+#                         working)
 #   --uninstall           remove the service and program (keeps the data)
 #   --purge               with --uninstall: also delete the data
 #   --no-systemd          only install files (containers, testing)
@@ -97,8 +116,9 @@ CADDY_SHA512_arm64="d5a7c423853c24a799765e0e8210d5c7c22a8f56ed37a3cae2fb9f58be13
 
 domain="" no_caddy=0 public_address="" version="latest" binary="" relay=""
 firewall=1 yes=0 force=0 uninstall=0 purge=0 use_systemd=1
-friends="mutual" server_name="" region="" coordinator="" join_token="" coord_domain="" coord_binary=""
-https_api=1 allow_unsigned=0
+friends="" server_name="" region="" coordinator="" join_token="" coord_domain="" coord_binary=""
+https_api=1 allow_unsigned=0 coord_only=0 admin="" registration="" listed="" command=""
+aliases=()
 # Only HTTPS, and TLS 1.2 or newer, for every download.
 CURL=(curl --proto '=https' --tlsv1.2)
 
@@ -111,6 +131,17 @@ ask() {
   local answer=""
   if [ "$yes" -eq 0 ] && [ -r /dev/tty ] && { : </dev/tty; } 2>/dev/null; then
     read -r -p "$1" answer </dev/tty || true
+  fi
+  printf '%s' "$answer"
+}
+# Whether there's someone to ask.
+interactive() { [ "$yes" -eq 0 ] && [ -r /dev/tty ] && { : </dev/tty; } 2>/dev/null; }
+# A question whose answer isn't shown (a join token).
+ask_secret() {
+  local answer=""
+  if interactive; then
+    read -r -s -p "$1" answer </dev/tty || true
+    echo >/dev/tty
   fi
   printf '%s' "$answer"
 }
@@ -137,6 +168,17 @@ while [ $# -gt 0 ]; do
     --allow-unsigned) allow_unsigned=1 ;;
     --coordinator-domain) coord_domain="${2:?}"; shift ;;
     --coordinator-binary) coord_binary="${2:?}"; shift ;;
+    --coordinator-only) coord_only=1 ;;
+    --alias) aliases+=("${2:?}"); shift ;;
+    --admin) admin=true ;;
+    --no-admin) admin=false ;;
+    --closed-registration) registration=false ;;
+    --open-registration) registration=true ;;
+    --unlisted) listed=false ;;
+    --listed) listed=true ;;
+    --status) command=status ;;
+    --show-join-token) command=show-token ;;
+    --rotate-join-token) command=rotate-token ;;
     --no-firewall) firewall=0 ;;
     --yes|-y) yes=1 ;;
     --force) force=1 ;;
@@ -150,9 +192,65 @@ while [ $# -gt 0 ]; do
 done
 
 [ "$(id -u)" -eq 0 ] || die "run as root (sudo bash $0)"
+
+# --- Commands that only look (or rotate the token) -------------------------
+
+# A value from service.toml: `value section key` (quotes stripped).
+value() { sed -n "/^\\[$1\\]\$/,/^\\[/ s/^$2 = \"\\{0,1\\}\\([^\"]*\\)\"\\{0,1\\}\$/\\1/p" "$CONFIG" 2>/dev/null | head -1; }
+
+if [ "$command" = status ]; then
+  printf '%-30s %s\n' "Service" "State"
+  for s in "$SERVICE" "$COORD_SERVICE" caddy; do
+    if systemctl cat "$s" >/dev/null 2>&1; then printf '%-30s %s\n' "$s" "$(systemctl is-active "$s" 2>/dev/null || true)"; fi
+  done
+  if [ -f "$CONFIG" ]; then
+    host="$(value public host)"
+    echo
+    info="$(curl -fsS --max-time 3 ${host:+-H "Host: $host"} http://127.0.0.1/api/info 2>/dev/null || true)"
+    if [ -n "$info" ]; then
+      echo "Server:        $(printf '%s' "$info" | grep -o '"version":"[^"]*"' | cut -d'"' -f4)${host:+ at $host}"
+      case "$info" in *'"api_tls":443'*) echo "API:           HTTPS (https://$host) and plain" ;; *) echo "API:           plain only (no api_tls)" ;; esac
+    else
+      echo "Server:        doesn't answer /api/info on this machine"
+    fi
+    echo "Friend lists:  $(value friends mode)"
+    echo "Accounts:      $( [ "$(value limits open_registration)" = false ] && echo "closed to new players" || echo "open")"
+    echo "Admin API:     $( [ "$(value admin enabled)" = true ] && echo "on (SSH tunnel to 127.0.0.1:50051; key in $STATE_DIR/admin-key.txt)" || echo "off")"
+    coord="$(value federation coordinator)"
+    if [ -n "$coord" ]; then
+      echo "Shares friends: through $coord$( [ -s "$STATE_DIR/federation.key" ] && echo " (joined)" || echo " (not joined yet)")"
+      journalctl -u "$SERVICE" --since "-1h" --no-pager 2>/dev/null | grep -o 'Federation:.*' | tail -1 | sed 's/^/                /' || true
+    else
+      echo "Shares friends: no"
+    fi
+  fi
+  if [ -s "$ETC_DIR/coordinator-domain" ]; then
+    echo
+    cinfo="$(curl -fsS --max-time 3 http://127.0.0.1:8700/v1/info 2>/dev/null || true)"
+    echo "Coordinator:   https://$(cat "$ETC_DIR/coordinator-domain") ${cinfo:+($cinfo)}"
+    listed_now="$(curl -fsS --max-time 3 http://127.0.0.1:8700/v1/servers 2>/dev/null | grep -o '"id":' | wc -l || true)"
+    echo "Directory:     ${listed_now:-0} server(s) seen in the last 2 minutes"
+  fi
+  exit 0
+fi
+if [ "$command" = show-token ] || [ "$command" = rotate-token ]; then
+  [ -f "$COORD_DIR/join-token.txt" ] || die "no coordinator is installed here"
+  [ ! -L "$COORD_DIR/join-token.txt" ] || die "$COORD_DIR/join-token.txt isn't a plain file"
+  if [ "$command" = rotate-token ]; then
+    runuser -u "$USER_NAME" -- "$PROGRAM_DIR/coordinator" --data "$COORD_DIR" new-token >/dev/null
+    systemctl restart "$COORD_SERVICE" 2>/dev/null || true
+    say "Made a new join token; servers that already joined keep working."
+  fi
+  echo "Join token (keep it private; give it to the operators of servers joining):"
+  cat "$COORD_DIR/join-token.txt"
+  exit 0
+fi
+
+# An earlier install that runs only a coordinator stays that way.
+if [ "$uninstall" -eq 0 ] && [ -f "$ETC_DIR/coordinator-only" ] && [ -z "$domain" ]; then coord_only=1; fi
 case "$relay" in ""|auto|all|off) ;; *) die "--relay is auto, all or off" ;; esac
 [ -z "$domain" ] || [ "$no_caddy" -eq 0 ] || die "--domain and --no-caddy don't go together"
-case "$friends" in mutual|everyone) ;; *) die "--friends is mutual or everyone" ;; esac
+case "$friends" in ""|mutual|everyone) ;; *) die "--friends is mutual or everyone" ;; esac
 # Updating a machine that runs a coordinator keeps it (and its Caddy site).
 if [ -z "$coord_domain" ] && [ -z "$coordinator" ]; then
   if [ -s "$ETC_DIR/coordinator-domain" ]; then
@@ -162,15 +260,19 @@ if [ -z "$coord_domain" ] && [ -z "$coordinator" ]; then
     coord_domain="$(head -c 256 "$COORD_DIR/domain" | tr -d '[:space:]')"
   fi
 fi
+if [ "$coord_only" -eq 1 ]; then
+  [ -n "$coord_domain" ] || die "--coordinator-only needs --coordinator-domain"
+  [ -z "$domain" ] && [ "$no_caddy" -eq 0 ] && [ -z "$coordinator" ] || die "--coordinator-only runs no game server: leave out --domain, --no-caddy and --coordinator"
+fi
 [ -z "$coord_domain" ] || [ "$no_caddy" -eq 0 ] || die "--coordinator-domain needs Caddy (for HTTPS); leave out --no-caddy"
 [ -z "$coord_domain" ] || [ -z "$coordinator" ] || die "--coordinator-domain runs a coordinator here; leave out --coordinator"
 [ -z "$coordinator" ] || [ -n "$join_token" ] || [ -f "$STATE_DIR/federation.key" ] || die "--coordinator needs --join-token (from the coordinator's operator)"
 # Everything that goes into service.toml or a URL is checked first: no
 # quotes, newlines or anything else that could change what's written.
 DOMAIN_RE='^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$'
+COORD_RE='^https://([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(:[0-9]{1,5})?$'
 if [ -n "$coordinator" ]; then
   coordinator="${coordinator%/}"
-  COORD_RE='^https://([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(:[0-9]{1,5})?$'
   [[ "$coordinator" =~ $COORD_RE ]] \
     || die "--coordinator is an https:// address with no path, e.g. https://coordinator.example.com"
 fi
@@ -181,6 +283,11 @@ NAME_RE="^[A-Za-z0-9][A-Za-z0-9 ._(),'-]{0,63}\$"
 [ "$version" = latest ] || [[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]] || die "--version is a release number, e.g. 0.4.0"
 coord_domain="${coord_domain,,}"
 [ -z "$coord_domain" ] || [[ "$coord_domain" =~ $DOMAIN_RE ]] || die "\"$coord_domain\" isn't a domain name"
+IPV4_RE='^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
+for i in "${!aliases[@]}"; do
+  aliases[i]="${aliases[i],,}"
+  [[ "${aliases[i]}" =~ $DOMAIN_RE ]] || [[ "${aliases[i]}" =~ $IPV4_RE ]] || die "--alias ${aliases[i]} isn't a domain name or IPv4 address"
+done
 
 # --- The system ---------------------------------------------------------
 
@@ -328,7 +435,7 @@ need=()
 command -v curl >/dev/null || need+=(curl)
 [ -e /etc/ssl/certs/ca-certificates.crt ] || [ -e /etc/pki/tls/certs/ca-bundle.crt ] || [ -e /etc/ssl/ca-bundle.pem ] || need+=(ca-certificates)
 command -v sha256sum >/dev/null || need+=(coreutils)
-if [ -z "$binary" ] || { [ -n "$coord_domain" ] && [ -z "$coord_binary" ]; }; then
+if { [ "$coord_only" -eq 0 ] && [ -z "$binary" ]; } || { [ -n "$coord_domain" ] && [ -z "$coord_binary" ]; }; then
   command -v openssl >/dev/null || need+=(openssl)
 fi
 command -v ss >/dev/null || case "$family" in debian|arch) need+=(iproute2) ;; fedora) need+=(iproute) ;; esac
@@ -336,6 +443,101 @@ command -v useradd >/dev/null || case "$family" in debian) need+=(passwd) ;; fed
 command -v runuser >/dev/null || need+=(util-linux)
 command -v getent >/dev/null || case "$family" in debian) need+=(libc-bin) ;; *) need+=(glibc) ;; esac
 [ "${#need[@]}" -eq 0 ] || install_packages "${need[@]}"
+
+# --- Public address -----------------------------------------------------
+
+if [ -z "$public_address" ]; then
+  for url in https://api.ipify.org https://ipv4.icanhazip.com https://ifconfig.me/ip; do
+    public_address="$("${CURL[@]}" -4 -fsS --max-time 5 "$url" 2>/dev/null | tr -d '[:space:]')" || true
+    [[ "$public_address" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && break
+    public_address=""
+  done
+  [ -n "$public_address" ] || die "couldn't find this machine's public address; pass --public-address"
+  say "Public address: $public_address (detected; --public-address overrides it)"
+fi
+[[ "$public_address" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--public-address must be an IPv4 address"
+
+# --- Domain name (Caddy) ------------------------------------------------
+
+# Checks that NAME points at this server (IPv4), and that no IPv6 record
+# sends certificate checks or players elsewhere.
+check_dns() {
+  local name="$1" resolved v6
+  resolved="$(getent ahostsv4 "$name" 2>/dev/null | cut -d' ' -f1 | sort -u | tr '\n' ' ' || true)"
+  if [ -z "$resolved" ]; then
+    warn "$name doesn't resolve yet. Add an A record for it pointing at $public_address."
+    confirm "Go on anyway?" || die "stopped; run this again once $name points here"
+  elif [[ " $resolved" != *" $public_address "* ]]; then
+    warn "$name points at ${resolved% }, not at this server ($public_address)."
+    echo "  On Cloudflare, set the record to \"DNS only\" (grey cloud): the game's UDP traffic and"
+    echo "  its plain HTTP on port 80 can't go through Cloudflare's proxy." >&2
+    confirm "Go on anyway?" || die "stopped; fix the A record, or pass --public-address if $public_address is wrong"
+  else
+    say "$name points here"
+  fi
+  v6="$(getent ahostsv6 "$name" 2>/dev/null | cut -d' ' -f1 | grep -v '^::ffff:' | sort -u | tr '\n' ' ' || true)"
+  if [ -n "$v6" ]; then
+    warn "$name also has an IPv6 (AAAA) record (${v6% }). The server and launcher use IPv4, and Caddy's certificate check may try IPv6: remove the AAAA record unless it's this server."
+  fi
+}
+
+if [ "$coord_only" -eq 0 ]; then
+
+# A domain from an earlier install is kept unless told otherwise.
+if [ -z "$domain" ] && [ "$no_caddy" -eq 0 ] && [ -f "$CONFIG" ]; then
+  domain="$(sed -n '/^\[public\]$/,/^\[/ s/^host = "\(.*\)"$/\1/p' "$CONFIG" | head -1)"
+  if [ -n "$domain" ]; then say "Domain name: $domain (from the earlier install)"; fi
+fi
+if [ -z "$domain" ] && [ "$no_caddy" -eq 0 ] && [ "$yes" -eq 0 ]; then
+  echo
+  echo "Players can reach the server by a domain name through Caddy, which then"
+  echo "serves the game's web parts on port 80 (shared with any other sites)."
+  echo "Point an A record at $public_address first."
+  domain="$(ask "Domain name for this server (empty: no domain, no Caddy): ")"
+  domain="${domain,,}"
+fi
+[ -n "$domain" ] || no_caddy=1
+if [ "$no_caddy" -eq 0 ]; then
+  [[ "$domain" =~ $DOMAIN_RE ]] || die "\"$domain\" isn't a domain name"
+  check_dns "$domain"
+fi
+fi
+
+# --- Sharing friends (asked on a first install) --------------------------
+
+if [ "$coord_only" -eq 0 ] && [ "$no_caddy" -eq 0 ] && [ -z "$coordinator" ] && [ -z "$coord_domain" ] \
+  && ! grep -q '^coordinator = ' "$CONFIG" 2>/dev/null && interactive; then
+  echo
+  echo "Servers can share friends through a coordinator: friends follow players"
+  echo "between them, and they're listed together in a server directory."
+  echo "  1) not now: this server on its own"
+  echo "  2) run a coordinator here too (the first server of a group)"
+  echo "  3) join a group's coordinator (you need its address and join token)"
+  case "$(ask "Choose 1, 2 or 3 [1]: ")" in
+    2)
+      echo "The coordinator needs its own name, e.g. coord.${domain#*.}, with an A record pointing at $public_address."
+      coord_domain="$(ask "Coordinator's domain name: ")"
+      coord_domain="${coord_domain,,}"
+      [[ "$coord_domain" =~ $DOMAIN_RE ]] || die "\"$coord_domain\" isn't a domain name"
+      check_dns "$coord_domain"
+      coord_dns_checked=1
+      ;;
+    3)
+      coordinator="$(ask "Coordinator's address (https://...): ")"
+      coordinator="${coordinator%/}"
+      [[ "$coordinator" =~ $COORD_RE ]] || die "that isn't an https:// address with no path"
+      join_token="$(ask_secret "Join token (from the coordinator's operator; not shown): " | tr -d '[:space:]')"
+      [[ "$join_token" =~ ^[A-Z2-7]{16,128}$ ]] || die "that isn't a join token (letters A-Z and digits 2-7)"
+      ;;
+  esac
+  if [ -n "$coordinator$coord_domain" ]; then
+    [ -n "$server_name" ] || server_name="$(ask "Name in the server directory [$domain]: ")"
+    [ -z "$server_name" ] || [[ "$server_name" =~ $NAME_RE ]] || die "the name is up to 64 letters, digits, spaces and . _ ( ) , ' -"
+    [ -n "$region" ] || region="$(ask "Region, e.g. Sydney (optional): ")"
+    [ -z "$region" ] || [[ "$region" =~ $NAME_RE ]] || die "the region is up to 64 letters, digits, spaces and . _ ( ) , ' -"
+  fi
+fi
+if [ -n "$coord_domain" ] && [ "${coord_dns_checked:-0}" -eq 0 ]; then check_dns "$coord_domain"; fi
 
 # --- The program --------------------------------------------------------
 
@@ -369,7 +571,9 @@ verify_release() {
   fi
 }
 
-if [ -n "$binary" ]; then
+if [ "$coord_only" -eq 1 ]; then
+  :
+elif [ -n "$binary" ]; then
   [ -f "$binary" ] || die "$binary doesn't exist"
   cp "$binary" "$work/$ASSET"
   say "Using $binary"
@@ -387,7 +591,7 @@ else
   (cd "$work" && grep " $ASSET\$" SHA256SUMS | sha256sum -c --quiet -) || die "the download doesn't match the release's checksum"
   say "Checksum verified"
 fi
-chmod 755 "$work/$ASSET"
+[ "$coord_only" -eq 1 ] || chmod 755 "$work/$ASSET"
 chmod 711 "$work"
 if [ -n "$coord_domain" ]; then
   if [ -n "$coord_binary" ]; then
@@ -410,7 +614,9 @@ if [ -n "$coord_domain" ]; then
 fi
 # Whether it runs here at all (a C library too old for it, say).
 # As nobody: nothing new runs as root.
-if ! out="$(cd / && runuser -u nobody -- "$work/$ASSET" --help 2>&1)"; then
+probe="$work/$ASSET"
+[ "$coord_only" -eq 0 ] || probe="$work/$COORD_ASSET"
+if ! out="$(cd / && runuser -u nobody -- "$probe" --help 2>&1)"; then
   case "$out" in
     *GLIBC*) die "$os_name's C library is too old for the server (it needs glibc 2.34: Ubuntu 22.04+, Debian 12+, RHEL/Rocky/Alma 9+, Fedora 35+). Use a newer system, or the Docker image.
 $out" ;;
@@ -419,52 +625,10 @@ $out" ;;
   esac
 fi
 
-# --- Public address -----------------------------------------------------
-
-if [ -z "$public_address" ]; then
-  for url in https://api.ipify.org https://ipv4.icanhazip.com https://ifconfig.me/ip; do
-    public_address="$("${CURL[@]}" -4 -fsS --max-time 5 "$url" 2>/dev/null | tr -d '[:space:]')" || true
-    [[ "$public_address" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && break
-    public_address=""
-  done
-  [ -n "$public_address" ] || die "couldn't find this machine's public address; pass --public-address"
-  say "Public address: $public_address (detected; --public-address overrides it)"
-fi
-[[ "$public_address" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "--public-address must be an IPv4 address"
-
-# --- Domain name (Caddy) ------------------------------------------------
-
-# A domain from an earlier install is kept unless told otherwise.
-if [ -z "$domain" ] && [ "$no_caddy" -eq 0 ] && [ -f "$CONFIG" ]; then
-  domain="$(sed -n '/^\[public\]$/,/^\[/ s/^host = "\(.*\)"$/\1/p' "$CONFIG" | head -1)"
-  if [ -n "$domain" ]; then say "Domain name: $domain (from the earlier install)"; fi
-fi
-if [ -z "$domain" ] && [ "$no_caddy" -eq 0 ] && [ "$yes" -eq 0 ]; then
-  echo
-  echo "Players can reach the server by a domain name through Caddy, which then"
-  echo "serves the game's web parts on port 80 (shared with any other sites)."
-  echo "Point an A record at $public_address first."
-  domain="$(ask "Domain name for this server (empty: no domain, no Caddy): ")"
-  domain="${domain,,}"
-fi
-[ -n "$domain" ] || no_caddy=1
-if [ "$no_caddy" -eq 0 ]; then
-  [[ "$domain" =~ $DOMAIN_RE ]] || die "\"$domain\" isn't a domain name"
-  resolved="$(getent ahostsv4 "$domain" 2>/dev/null | cut -d' ' -f1 | sort -u | tr '\n' ' ' || true)"
-  if [ -z "$resolved" ]; then
-    warn "$domain doesn't resolve yet. Add an A record for it pointing at $public_address."
-    confirm "Go on anyway?" || die "stopped; run this again once $domain points here"
-  elif [[ " $resolved" != *" $public_address "* ]]; then
-    warn "$domain points at ${resolved% }, not at this server ($public_address)."
-    confirm "Go on anyway?" || die "stopped; fix the A record, or pass --public-address if $public_address is wrong"
-  else
-    say "$domain points here"
-  fi
-fi
-
 # --- Ports --------------------------------------------------------------
 
 updating=0
+if [ -f "$COORD_UNIT" ] && [ "$coord_only" -eq 1 ]; then updating=1; fi
 if [ "$use_systemd" -eq 1 ] && [ -f "$UNIT" ]; then
   updating=1
   say "Stopping the installed server"
@@ -474,7 +638,12 @@ stop_strays
 
 port_owner() { ss -Hlnp "$1" "sport = :$2" 2>/dev/null | grep -o 'users:(("[^"]*"' | head -1 | cut -d'"' -f2 || true; }
 busy=()
-if [ "$no_caddy" -eq 1 ]; then
+if [ "$coord_only" -eq 1 ]; then
+  tcp_check=()
+  [ -f "$COORD_UNIT" ] || tcp_check=(8700)
+  owner="$(port_owner -t 80)"
+  if [ -n "$owner" ] && [ "$owner" != caddy ]; then busy+=("80/tcp (held by $owner; Caddy needs it)"); fi
+elif [ "$no_caddy" -eq 1 ]; then
   tcp_check=(80 8000 50051)
 else
   tcp_check=(8000 8080 50051)
@@ -487,7 +656,9 @@ for p in "${tcp_check[@]}"; do
   owner="$(port_owner -t "$p")"
   if [ -n "$owner" ]; then busy+=("$p/tcp ($owner)"); fi
 done
-for p in 21126 21127 21128 21129; do
+game_udp=(21126 21127 21128 21129)
+[ "$coord_only" -eq 0 ] || game_udp=()
+for p in "${game_udp[@]}"; do
   owner="$(port_owner -u "$p")"
   if [ -n "$owner" ]; then busy+=("$p/udp ($owner)"); fi
 done
@@ -507,10 +678,17 @@ fi
 say "Installing to $PROGRAM_DIR (program) and $STATE_DIR (settings, accounts, keys)"
 install -d -m 755 "$PROGRAM_DIR"
 install -d -m 755 "$ETC_DIR"
-install -m 755 "$work/$ASSET" "$PROGRAM_DIR/dedicated_server"
-# The server keeps data/ next to its program.
-install -d -m 750 -o "$USER_NAME" -g "$USER_NAME" "$PROGRAM_DIR/data" "$STATE_DIR"
-chmod 750 "$PROGRAM_DIR/data" "$STATE_DIR"
+install -d -m 750 -o "$USER_NAME" -g "$USER_NAME" "$STATE_DIR"
+chmod 750 "$STATE_DIR"
+if [ "$coord_only" -eq 1 ]; then
+  touch "$ETC_DIR/coordinator-only"
+else
+  rm -f "$ETC_DIR/coordinator-only"
+  install -m 755 "$work/$ASSET" "$PROGRAM_DIR/dedicated_server"
+  # The server keeps data/ next to its program.
+  install -d -m 750 -o "$USER_NAME" -g "$USER_NAME" "$PROGRAM_DIR/data"
+  chmod 750 "$PROGRAM_DIR/data"
+fi
 # The service owns its folder, so what's in it could be a link planted to
 # make this script (as root) write elsewhere: refuse that.
 for f in "$CONFIG" "$STATE_DIR/federation.key"; do
@@ -518,8 +696,13 @@ for f in "$CONFIG" "$STATE_DIR/federation.key"; do
 done
 if command -v restorecon >/dev/null; then restorecon -R "$PROGRAM_DIR" "$STATE_DIR" 2>/dev/null || true; fi
 
+# --- The game server's settings --------------------------------------------
+
+if [ "$coord_only" -eq 0 ]; then
+first_install=0
 # The first start writes the default settings.
 if [ ! -f "$CONFIG" ]; then
+  first_install=1
   say "Writing the default settings"
   cd "$STATE_DIR"
   runuser -u "$USER_NAME" -- sh -c 'umask 077; exec "$0" "$@"' "$PROGRAM_DIR/dedicated_server" --public-address "$public_address" >/dev/null 2>&1 &
@@ -541,7 +724,16 @@ if [ -n "$relay" ]; then
   toml_set nat relay "\"$relay\""
   say "Relay: $relay"
 fi
-# [public] (the host name and ports players use) is rewritten below.
+# [public] (the host name and ports players use) is rewritten below; its
+# aliases stay unless new ones are given.
+if [ "${#aliases[@]}" -gt 0 ]; then
+  aliases_line="[$(printf '"%s", ' "${aliases[@]}" | sed 's/, $//')]"
+else
+  aliases_line="$(sed -n '/^\[public\]$/,/^\[/ s/^aliases = \(\[.*\]\)$/\1/p' "$CONFIG" | head -1)"
+  # Only names and addresses, as --alias checks them.
+  [[ "$aliases_line" =~ ^\[(\"[a-z0-9.-]+\"(,\ )?)*\]$ ]] || aliases_line=""
+  mapfile -t aliases < <(printf '%s' "$aliases_line" | grep -o '"[^"]*"' | tr -d '"')
+fi
 sed -i '/^\[public\]$/,/^\[/{/^\[public\]$/d;/^\[/!d}' "$CONFIG"
 if [ "$no_caddy" -eq 0 ]; then
   say "Settings for Caddy: the web parts and API on this machine only; players use $domain"
@@ -549,18 +741,29 @@ if [ "$no_caddy" -eq 0 ]; then
   toml_set 'service\.onlineconfig' listen '"127.0.0.1:8080"'
   toml_set 'service\.content' listen '"127.0.0.1:8000"'
   printf '\n[public]\nhost = "%s"\napi = 80\ncontent = 80\n' "$domain" >> "$CONFIG"
+  [ -z "$aliases_line" ] || printf 'aliases = %s\n' "$aliases_line" >> "$CONFIG"
 else
   sed -i -E 's|^api_server = "127\.0\.0\.1:|api_server = "0.0.0.0:|' "$CONFIG"
   toml_set 'service\.onlineconfig' listen '"0.0.0.0:80"'
   toml_set 'service\.content' listen '"0.0.0.0:8000"'
+  [ -z "$aliases_line" ] || printf '\n[public]\naliases = %s\n' "$aliases_line" >> "$CONFIG"
 fi
-# Friend lists: only friends on a public server, unless asked otherwise.
+[ -z "$aliases_line" ] || say "Also reached as: ${aliases[*]}"
+# Friend lists: only friends on a new (public) server; an update keeps the setting.
+if [ -z "$friends" ]; then
+  if [ "$first_install" -eq 1 ]; then friends=mutual; else friends="$(value friends mode)"; friends="${friends:-mutual}"; fi
+fi
 if grep -q '^\[friends\]$' "$CONFIG"; then
   toml_set friends mode "\"$friends\""
 else
   printf '\n[friends]\nmode = "%s"\n' "$friends" >> "$CONFIG"
 fi
 say "Friend lists: $friends"
+if [ -n "$admin" ]; then toml_set admin enabled "$admin"; fi
+if [ -n "$registration" ]; then toml_set limits open_registration "$registration"; fi
+say "Admin API: $( [ "$(value admin enabled)" = true ] && echo "on (through an SSH tunnel only)" || echo off)"
+say "New accounts: $( [ "$(value limits open_registration)" = false ] && echo closed || echo open)"
+fi
 
 # A coordinator on this machine: its own service, behind Caddy on HTTPS.
 if [ -n "$coord_domain" ]; then
@@ -628,20 +831,25 @@ UNIT
   [[ "$join_token" =~ ^[A-Z2-7]{16,128}$ ]] || die "the coordinator's join token isn't one"
 fi
 
+if [ "$coord_only" -eq 0 ]; then
 # [federation]: rewritten when a coordinator is given, kept otherwise.
 if [ -n "$coordinator" ]; then
   # A name or region set before (by hand, or an earlier run) stays unless given again.
   old_value() { sed -n "/^\\[federation\\]\$/,/^\\[/ s/^$1 = \"\\(.*\\)\"\$/\\1/p" "$CONFIG" | head -1; }
   server_name="${server_name:-$(old_value name)}"
   region="${region:-$(old_value region)}"
+  if [ -z "$listed" ]; then listed="$(value federation listed)"; fi
   sed -i '/^\[federation\]$/,/^\[/{/^\[federation\]$/d;/^\[/!d}' "$CONFIG"
   {
     printf '\n[federation]\ncoordinator = "%s"\n' "$coordinator"
     [ -z "$join_token" ] || printf 'join_token = "%s"\n' "$join_token"
     printf 'name = "%s"\n' "${server_name:-${domain:-$public_address}}"
     [ -z "$region" ] || printf 'region = "%s"\n' "$region"
+    [ "$listed" != false ] || printf 'listed = false\n'
   } >> "$CONFIG"
-  say "Sharing friends through $coordinator"
+  say "Sharing friends through $coordinator$( [ "$listed" = false ] && echo ", not listed in the directory")"
+elif [ "$listed" = false ] || [ "$listed" = true ]; then
+  warn "--listed and --unlisted only matter with a coordinator; ignored"
 fi
 chown -h "$USER_NAME:$USER_NAME" "$CONFIG"
 # It can hold the join token.
@@ -727,6 +935,7 @@ UNIT
   fi
   say "The server is running"
 fi
+fi # the game server
 
 # --- Caddy --------------------------------------------------------------
 
@@ -815,19 +1024,26 @@ SITE
 }
 
 site_block() {
-  echo "# 5th Echelon: the game's online config and community API, its content,"
-  echo "# and the launcher's API (gRPC). http:// on purpose: the game can only"
-  echo "# speak plain HTTP on port 80, so this name must never redirect to HTTPS."
-  echo "http://$domain {"
-  site_routes
-  echo "}"
-  if [ "$https_api" -eq 1 ]; then
-    echo
-    echo "# The same over HTTPS (Caddy gets the certificate): launchers that"
-    echo "# see api_tls in /api/info use this, so nothing travels readable."
-    echo "https://$domain {"
+  if [ -n "$domain" ]; then
+    # The domain, and any aliases that are names (an IP can't have a certificate).
+    local names=("$domain") a http_sites https_sites
+    for a in "${aliases[@]}"; do [[ "$a" =~ $IPV4_RE ]] || names+=("$a"); done
+    http_sites="$(printf 'http://%s, ' "${names[@]}" | sed 's/, $//')"
+    https_sites="$(printf 'https://%s, ' "${names[@]}" | sed 's/, $//')"
+    echo "# 5th Echelon: the game's online config and community API, its content,"
+    echo "# and the launcher's API (gRPC). http:// on purpose: the game can only"
+    echo "# speak plain HTTP on port 80, so this name must never redirect to HTTPS."
+    echo "$http_sites {"
     site_routes
     echo "}"
+    if [ "$https_api" -eq 1 ]; then
+      echo
+      echo "# The same over HTTPS (Caddy gets the certificate): launchers that"
+      echo "# see api_tls in /api/info use this, so nothing travels readable."
+      echo "$https_sites {"
+      site_routes
+      echo "}"
+    fi
   fi
   if [ -n "$coord_domain" ]; then
     cat <<SITE
@@ -841,7 +1057,7 @@ SITE
   fi
 }
 
-caddy_note=""
+notes=()
 if [ "$no_caddy" -eq 0 ]; then
   install_caddy || true
   command -v caddy >/dev/null || install_caddy_static
@@ -891,6 +1107,20 @@ if [ "$no_caddy" -eq 0 ]; then
   if [ "$use_systemd" -eq 1 ]; then
     systemctl enable caddy >/dev/null 2>&1
     systemctl reload-or-restart caddy
+  fi
+  if [ "$use_systemd" -eq 1 ] && [ -n "$coord_domain" ]; then
+    coord_ok=0
+    for _ in $(seq 60); do
+      if curl -fsS --max-time 3 --resolve "$coord_domain:443:127.0.0.1" "https://$coord_domain/v1/info" >/dev/null 2>&1; then coord_ok=1; break; fi
+      sleep 1
+    done
+    if [ "$coord_ok" -eq 1 ]; then
+      say "The coordinator answers at https://$coord_domain"
+    else
+      notes+=("Caddy has no certificate for $coord_domain yet, so other servers can't reach the coordinator. Check its A record (DNS only, not proxied) and that TCP 80 and 443 are open, then run this script again.")
+    fi
+  fi
+  if [ "$use_systemd" -eq 1 ] && [ -n "$domain" ]; then
     ok=0
     for _ in $(seq 30); do
       if curl -fsS --max-time 2 -H "Host: $domain" http://127.0.0.1/api/info 2>/dev/null | grep -q '"api":80'; then ok=1; break; fi
@@ -914,23 +1144,23 @@ if [ "$no_caddy" -eq 0 ]; then
         say "The launcher's API is served over HTTPS too (https://$domain)"
       else
         journalctl -u caddy -n 20 --no-pager >&2 || true
-        caddy_note="Caddy has no certificate for $domain yet (its log is above), so launchers keep using the unencrypted API. Check the A record and that TCP 80 and 443 are open, then run this script again."
+        notes+=("Caddy has no certificate for $domain yet (its log is above), so launchers keep using the unencrypted API. Check the A record and that TCP 80 and 443 are open, then run this script again.")
       fi
     fi
     # The launcher's API: gRPC over plain HTTP/2 (h2c) through Caddy.
     if ! curl -fsS --max-time 3 --http2-prior-knowledge -o /dev/null -X POST -H "Host: $domain" -H "Content-Type: application/grpc" \
       http://127.0.0.1/users.Users/Login 2>/dev/null; then
-      caddy_note="Caddy doesn't pass the launcher's API (gRPC without TLS) through. Add this to the global options block (the { } at the top) of $CADDYFILE, then run 'systemctl reload caddy':
+      notes+=("Caddy doesn't pass the launcher's API (gRPC without TLS) through. Add this to the global options block (the { } at the top) of $CADDYFILE, then run 'systemctl reload caddy':
       servers :80 {
           protocols h1 h2 h2c
-      }"
+      }")
     fi
   fi
 fi
 
 # --- Firewall -----------------------------------------------------------
 
-if [ "$no_caddy" -eq 0 ]; then tcp_ports=(80); else tcp_ports=(80 8000 50051); fi
+if [ "$coord_only" -eq 1 ]; then tcp_ports=(80); elif [ "$no_caddy" -eq 0 ]; then tcp_ports=(80); else tcp_ports=(80 8000 50051); fi
 if [ -n "$coord_domain" ] || { [ "$no_caddy" -eq 0 ] && [ "$https_api" -eq 1 ]; }; then tcp_ports+=(443); fi
 opened=""
 if [ "$firewall" -eq 1 ]; then
@@ -938,19 +1168,44 @@ if [ "$firewall" -eq 1 ]; then
   record_rule() { grep -qxF "$1 $2" "$FIREWALL_RECORD" 2>/dev/null || echo "$1 $2" >> "$FIREWALL_RECORD"; }
   if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
     for p in "${tcp_ports[@]}"; do ufw allow "$p/tcp" >/dev/null; record_rule ufw "$p/tcp"; done
-    ufw allow "${UDP_PORTS/-/:}/udp" >/dev/null
-    record_rule ufw "${UDP_PORTS/-/:}/udp"
+    if [ "$coord_only" -eq 0 ]; then
+      ufw allow "${UDP_PORTS/-/:}/udp" >/dev/null
+      record_rule ufw "${UDP_PORTS/-/:}/udp"
+    fi
     opened="ufw"
   elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
     for p in "${tcp_ports[@]}"; do firewall-cmd --permanent --add-port="$p/tcp" >/dev/null; record_rule firewalld "$p/tcp"; done
-    firewall-cmd --permanent --add-port="$UDP_PORTS/udp" >/dev/null
-    record_rule firewalld "$UDP_PORTS/udp"
+    if [ "$coord_only" -eq 0 ]; then
+      firewall-cmd --permanent --add-port="$UDP_PORTS/udp" >/dev/null
+      record_rule firewalld "$UDP_PORTS/udp"
+    fi
     firewall-cmd --reload >/dev/null
     opened="firewalld"
   fi
 fi
 
 # --- Summary ------------------------------------------------------------
+
+if [ "$coord_only" -eq 1 ]; then
+  echo
+  echo "$( [ "$updating" -eq 1 ] && echo Updated || echo Installed ) the 5th Echelon coordinator (no game server on this machine)."
+  echo
+  echo "  Coordinator:    https://$coord_domain   (log: journalctl -u $COORD_SERVICE -f)"
+  echo "  Status:         $0 --status"
+  echo "  Join token:     $0 --show-join-token   (new one: --rotate-join-token)"
+  echo "  Update:         run this script again.   Remove: $0 --uninstall"
+  echo
+  echo "  Open TCP 80 and 443 on every firewall in front of it (and keep SSH, TCP 22)."
+  if [ -n "$opened" ]; then echo "  This machine's $opened now allows them."; fi
+  echo
+  echo "  Servers join it with:"
+  echo "    --coordinator https://$coord_domain --join-token-file token.txt"
+  for note in "${notes[@]}"; do
+    echo
+    warn "$note"
+  done
+  exit 0
+fi
 
 info_host=()
 if [ -n "$domain" ]; then info_host=(-H "Host: $domain"); fi
@@ -966,6 +1221,7 @@ echo "  Players join:   $address   (launcher: Join a server)"
 echo "  Settings:       $CONFIG   (then: systemctl restart $SERVICE)"
 echo "  Server log:     journalctl -u $SERVICE -f"
 if [ "$no_caddy" -eq 0 ]; then echo "  Caddy:          $CADDYFILE   (log: journalctl -u caddy -f)"; fi
+echo "  Status:         $0 --status"
 echo "  Update:         run this script again.   Remove: $0 --uninstall"
 echo
 echo "  Open these on every firewall in front of this server (your VPS"
@@ -1001,13 +1257,13 @@ if [ -n "$coord_domain" ]; then
   echo
   echo "  Coordinator:    https://$coord_domain   (log: journalctl -u $COORD_SERVICE -f)"
   echo "  Other servers join it with its join token (keep it private):"
-  echo "    sudo cat $COORD_DIR/join-token.txt     # copy it to the other server as token.txt, then there:"
+  echo "    sudo bash $0 --show-join-token     # copy it to the other server as token.txt, then there:"
   echo "    --coordinator https://$coord_domain --join-token-file token.txt"
 elif [ -n "$coordinator" ]; then
   echo
   echo "  Friends are shared through $coordinator (log: journalctl -u $SERVICE | grep Federation)"
 fi
-if [ -n "$caddy_note" ]; then
+for note in "${notes[@]}"; do
   echo
-  warn "$caddy_note"
-fi
+  warn "$note"
+done

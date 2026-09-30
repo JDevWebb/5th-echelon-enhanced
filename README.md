@@ -10,14 +10,58 @@
 </p>
 
 <p align="center">
+  <a href="#the-community-server"><b>Community server</b></a> ·
   <a href="#play-in-five-minutes">Play</a> ·
   <a href="#linux-and-steam-deck">Linux &amp; Steam Deck</a> ·
   <a href="#host-a-server">Host a server</a> ·
+  <a href="#grow-the-network">Grow the network</a> ·
   <a href="#features">Features</a> ·
   <a href="#whats-new-in-this-fork">What's new</a> ·
   <a href="#contributing">Contribute</a> ·
   <a href="#community">Community</a>
 </p>
+
+---
+
+## The community server
+
+**There's a public 5th Echelon server that anyone can play on, for free.** Get the launcher, type the address, press Set up.
+
+<table>
+<tr><td><b>Server</b></td><td><code>play.scbl.jdevwebb.net</code></td></tr>
+<tr><td><b>Server directory</b></td><td><code>https://coord.scbl.jdevwebb.net</code> (the launcher offers it after you join)</td></tr>
+<tr><td><b>Modes</b></td><td>Co-op and Spies vs Mercs: Find Teammate, Quick Match, lobby and private-match invites</td></tr>
+<tr><td><b>Friends</b></td><td>Friends-only lists and invites, blocking, player search; your friends follow you to every server in the community network</td></tr>
+<tr><td><b>Internet play</b></td><td>No VPN or port forwarding: the server tells your game its public address, and relays matches when a router can't be reached</td></tr>
+<tr><td><b>Security</b></td><td>Your password and sign-in never travel unencrypted; each server gets its own random password; signed updates</td></tr>
+<tr><td><b>Hardware</b></td><td>2 vCPUs, 4 GB of memory and 20 TB of traffic a month: tested with 1,000 players signed in at once</td></tr>
+</table>
+
+**To play:**
+1. Download **`launcher.exe`** (Windows) or **`launcher-linux-x86_64`** (Linux, Steam Deck) from the [latest release](https://github.com/JDevWebb/5th-echelon-enhanced/releases/latest).
+2. Run it, and under **Join a server** type **`play.scbl.jdevwebb.net`**.
+3. Pick a name, press **Set up**, then **Play**. Press <kbd>F5</kbd> in the game to add friends.
+
+When the launcher asks whether to use the server directory, say yes: **Browse servers** then lists every server in the community network, with your ping to each.
+
+### Grow the network
+
+The community server is the first of many, and the more servers there are, the closer one is to you. **Run your own**, on any small Linux VPS, with one script:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/JDevWebb/5th-echelon-enhanced/main/scripts/install-server.sh
+sudo bash install-server.sh
+```
+
+Then choose how it fits in:
+
+- **Join the community network.** [Open an issue](https://github.com/JDevWebb/5th-echelon-enhanced/issues/new?template=add-server.yml) (or a pull request adding it to [docs/community-servers.md](docs/community-servers.md)). Once it's checked, you get a join token privately, and your server shows up in every player's **Browse servers**, sharing friends and names with the rest.
+- **Start a network of your own.** Run your own coordinator: on the same machine as your server (choose "run a coordinator here too"), or on a machine of its own (`--coordinator-only`). Your community gets its own directory and its own friends, completely independent of ours. Pass the join token to the servers you trust.
+- **Or keep it to yourselves:** a server on its own, for a group of friends or a LAN.
+
+The step-by-step guide, with DNS (Cloudflare included), firewalls, sizing and troubleshooting: **[docs/deploying.md](docs/deploying.md)**.
+
+Tell us how it goes: bugs, ideas and questions are all welcome as [issues](https://github.com/JDevWebb/5th-echelon-enhanced/issues), and the [Discords below](#community) are the place to find players.
 
 ---
 
@@ -37,7 +81,7 @@
 | **[Michał Kapała (michal-kapala)](https://github.com/michal-kapala)** | Contributions to upstream 5th Echelon, and co-author of [GROBackendWV](https://github.com/zeroKilo/GROBackendWV) |
 | **[Askorbinovaya Kislota](https://github.com/askorbinovaya-kislota)** | Contributions to upstream 5th Echelon |
 | **[zeroKilo](https://github.com/zeroKilo)** | [GROBackendWV](https://github.com/zeroKilo/GROBackendWV), which shares parts of the protocol and helped get 5th Echelon started |
-| **[JDevWebb](https://github.com/JDevWebb)** | This fork: the new launcher, automatic setup, server hardening and the community API |
+| **[JDevWebb](https://github.com/JDevWebb)** | This fork: the new launcher, automatic setup, internet play without a VPN, friends and the coordinator, server hardening and the security audit, the community API, and the community server |
 
 Every upstream commit keeps its original author in this repository's history, and merged pull requests keep their authors' commits. The [changelog](#whats-new-in-this-fork) lists what this fork changed and where each change came from.
 
@@ -60,7 +104,7 @@ You need **Splinter Cell: Blacklist on PC** (Steam or Ubisoft Connect) and **Win
 1. **Download `launcher.exe`** from the [latest release](https://github.com/JDevWebb/5th-echelon-enhanced/releases/latest). It's one file; put it anywhere.
 2. **Run it.** It finds the game on its own: Steam libraries, Ubisoft Connect, and the usual folders on every drive. If it can't, choose the folder with `Blacklist_game.exe`; it remembers it.
 3. **Join a server.**
-   - Enter the address your community gave you, or press **Find on my network**.
+   - Enter **`play.scbl.jdevwebb.net`** for the [community server](#the-community-server), the address your own community gave you, or press **Find on my network**.
    - Pick a name, or tick **I already have an account on this server**.
    - Press **Set up**.
 4. **Press Play.**
@@ -72,7 +116,8 @@ You need **Splinter Cell: Blacklist on PC** (Steam or Ubisoft Connect) and **Win
 **What Set up does for you:**
 - installs the 5th Echelon client into the game, keeping the game's own file so you can undo it;
 - checks the server answers;
-- creates your account, or signs you in;
+- creates your account, or signs you in, with a random password for that server only;
+- links the account to your identity, if you leave **Link to my identity** ticked, so friends follow you between servers;
 - picks the network adapter other players can reach you on;
 - makes a rank 5 save so co-op and Spies vs Mercs are unlocked.
 
@@ -187,23 +232,30 @@ Everything the launcher does can be done by hand:
   - the client signs in again on its own if the server restarts or your sign-in lapses;
   - logins survive server restarts.
 - **Updates:** the launcher updates itself from this project's releases. It checks every download against the published SHA-256 checksums, and the checksums against the release key's signature, so a changed release is never installed.
+- **Your details stay yours:**
+  - the launcher and overlay use HTTPS where the server offers it, so passwords and sign-ins never travel unencrypted;
+  - linking your identity to a server is your choice, and **Unlink** undoes it;
+  - a server can suggest a server directory, but the launcher asks before using it;
+  - on Windows, saved passwords and your identity key are encrypted for your Windows user.
 - **Linux and Steam Deck:** a native Linux launcher, Proton and Wine support in the client, and the many-core CPU fix.
 - **Unusual game builds:** unknown game executables can be identified from the launcher, which covers most mods.
 
 ### For server operators
 - **One server for everything:** accounts, matchmaking, invites, friends and presence, news, challenges, and the game's configuration and content.
 - **Friend lists for public servers:** friends-only lists and invites (`[friends] mode = "mutual"`), blocking, and rate limits on invites and friend requests.
-- **Friends across servers:** a **coordinator** shares friendships and blocks between servers, and lists them in a server directory. The Linux installer can run one next to your server.
+- **Friends across servers:** a **coordinator** shares friendships and blocks between servers, reserves each player's name across them, and lists them in a server directory. The Linux installer runs one next to your server, or on a machine of its own. Join the [community network](#grow-the-network), or start your own.
+- **A one-script Linux install:** Caddy with automatic certificates, the API over HTTPS, a sandboxed systemd service, firewall rules, a guided setup for sharing friends, `--status`, and updates that check the release's signature. See [docs/deploying.md](docs/deploying.md).
 - **Runs anywhere:**
   - Windows, from the launcher's **Server** screen or on its own;
   - Linux;
   - Docker.
-- **A management screen** in the launcher: see and remove players and games, and read the log. It works for the server on your PC or any server with its admin key.
-- **Built for the public internet:**
-  - rate limits on logins and new accounts;
-  - login tickets that expire;
-  - only a match's own players can change it;
-  - a protected admin API;
+- **A management screen** in the launcher: see and remove players and games, and read the log. It works for the server on your PC, or for a remote server through an SSH tunnel with its admin key.
+- **Built for the public internet**, and [audited](#whats-new-in-this-fork):
+  - rate limits on logins (per address and per account), new accounts, invites, searches and friend requests;
+  - login tickets that expire, and API tokens that end when the password changes;
+  - private matches need an invite, and only a match's own players can change it;
+  - caps on packets, fragments, connections per address, sessions and lookups;
+  - the admin API never reachable from the internet;
   - a malformed packet can't crash it.
 - **Internet play for everyone:** a NAT helper tells each game its public address, and relays matches for players whose routers can't be reached directly.
 - **Fixes joins over VPNs:** `trusted_subnet` corrects players who advertise the wrong network adapter.
@@ -218,11 +270,12 @@ Players need to reach these ports on the server:
 | Port | Protocol | What |
 |---|---|---|
 | 80 | TCP | The game's online configuration, and the community API. **The game always uses port 80.** |
+| 443 | TCP | The launcher's API over HTTPS, and a coordinator (with the Linux installer's Caddy) |
 | 8000 | TCP | Content (multiplayer balancing) |
 | 21126 | UDP | Game login |
 | 21127 | UDP | Game service |
 | 21128–21129 | UDP | Internet play: players' public addresses, and the relay |
-| 50051 | TCP | Accounts, friends and invites (the launcher and overlay) |
+| 50051 | TCP | Accounts, friends and invites (the launcher and overlay); behind Caddy it's served on 80 and 443 instead |
 
 Matches run **peer to peer** between players. The server's NAT helper (21128–21129) lets them reach each other over the internet, and relays matches for players whose routers can't be reached directly. Relayed matches use roughly 20–60 KB/s per player on the server; see [`[nat]`](docs/server-settings.md#nat-internet-play-without-a-vpn) to limit or switch it off.
 
@@ -262,22 +315,25 @@ The first start writes `service.toml` (the settings) and creates the database, k
 
 ### On Linux
 
-**The quick way:** one script installs the server as a systemd service on a fresh VPS. It detects Debian, Ubuntu, Fedora, Rocky/Alma or Arch, and can put Caddy in front on a domain name:
+**The quick way:** one script installs the server as a systemd service on a fresh VPS. It detects Debian, Ubuntu, Fedora, Rocky/Alma or Arch, and can put Caddy in front on a domain name. The full guide is **[docs/deploying.md](docs/deploying.md)**.
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/JDevWebb/5th-echelon-enhanced/main/scripts/install-server.sh
 sudo bash install-server.sh
 ```
 
-- **It asks for a domain name**, e.g. `blacklist.example.com`, with an A record pointing at the server. With one, Caddy serves the game's web parts on port 80, so only TCP 80 and UDP 21126–21129 need to be open. Leave it empty to skip Caddy.
+- **It asks for a domain name**, e.g. `blacklist.example.com`, with an A record pointing at the server (on Cloudflare: DNS only, not proxied). With one, Caddy serves the game's web parts on port 80 and the launcher's API over HTTPS on 443, so only TCP 80 and 443 and UDP 21126–21129 need to be open. Leave it empty to skip Caddy.
+- **It asks whether to share friends:** keep the server on its own, run a coordinator here too, or join a group's coordinator (the [community network](#grow-the-network), say).
 - **It then:**
-  - downloads the latest release and checks its checksum;
+  - downloads the latest release, and checks its checksum and the release key's signature;
   - creates a system user and a sandboxed service;
+  - gets certificates, and switches the launcher's API to HTTPS once they work;
   - opens the ports in ufw or firewalld, if either is active;
   - lists the ports to open on your provider's firewall.
-- **Friend lists are friends-only** (`--friends mutual`) unless you choose `--friends everyone`.
-- **To share friends with other servers**, join a coordinator with `--coordinator URL --join-token TOKEN`, or run one here with `--coordinator-domain NAME` (see [docs/friends.md](docs/friends.md)).
-- **Running it again updates the server**, keeping accounts and settings. `--uninstall` removes it, and `--help` lists the rest (`--domain`, `--no-caddy`, `--relay`, `--version`, `--region`, …).
+- **Friend lists are friends-only** on a new install (`--friends mutual`) unless you choose `--friends everyone`.
+- **Without questions:** `--domain`, `--coordinator-domain` (run a coordinator here), `--coordinator` and `--join-token-file` (join one), `--coordinator-only` (a coordinator and no game server), `--server-name`, `--region`, `--alias`, `--admin`, `--closed-registration`, `--unlisted` and `--yes`.
+- **Looking after it:** `--status` shows what's running and whether it has joined its coordinator; `--show-join-token` and `--rotate-join-token` manage a coordinator's token.
+- **Running it again updates the server**, keeping accounts and settings (anything not given again stays as it was). `--uninstall` removes it and the firewall rules it added, and `--help` lists the rest.
 
 **By hand:**
 
@@ -339,7 +395,7 @@ docker compose -f docker/compose.yaml logs -f
 ```
 
 - It builds the server from source, publishes the ports above, and keeps everything it writes in the `data` volume: the database, keys, `service.toml` and `data/`. Nothing is lost when the container is rebuilt.
-- The image has a health check on the API port.
+- The image has a health check on the API port, and the server runs as a user of its own with only the right to bind port 80. The compose file also makes the image read-only and drops every other privilege.
 - The NAT helper needs to see players' real addresses. Docker on Linux keeps them; **Docker Desktop** (Windows, macOS) replaces them with its own, so run the server directly there, or use host networking.
 - `FE_LISTEN` (default: every address) chooses the address to listen on.
 
@@ -398,9 +454,23 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
   - requests, blocking and player search in the overlay;
   - friends-only lists and invites for public servers.
 - An identity per player that links their accounts across servers, and signs them in on a new PC.
-- A coordinator that shares friends between servers and keeps a server directory; the launcher browses it and suggests a server.
+- A coordinator that shares friends between servers, reserves names across them, and keeps a server directory; the launcher browses it and suggests a server.
+- Linking an account to your identity is a choice on the join form, and **Unlink** in Settings undoes it; the launcher asks before using a directory a server suggests.
+- Renaming, with the account id kept, and warnings in the overlay about players using a friend's name on another server.
 - Each server gets its own random password (upstream reused one everywhere); on Windows it's saved encrypted.
 - See [docs/friends.md](docs/friends.md).
+
+**Security**
+- A security audit of the server, the client, the launcher, the coordinator and the installer, and every finding fixed:
+  - **client:** the strings and friend data a server sends can no longer overflow the game's memory; the friend list no longer blocks or leaks; a server can't join you to a match without your click (`AllowForceJoin`, off);
+  - **game protocol:** decompression, fragment and connection caps; replies go only to a connection's own address; the login proof is checked before anything else; private matches need an invite; the game's own invites follow friends-only mode and blocks;
+  - **accounts and API:** login limits per account and per IPv6 /64, tokens that end when the password changes, the same answer for unknown users and wrong passwords, blocks that stay invisible, activity shown to friends only, reserved names;
+  - **identity:** signatures name the server you actually connected to, and a key login signs the password it sets, so a malicious server can't replay them elsewhere;
+  - **NAT helper:** registrations need a ticket from your login, replies carry a cookie, relayed packets a tag, with caps per address and a packet rate limit;
+  - **coordinator:** a server can't take over another's place, typed and checked listings, rate limits, `remove-server` and `new-token`.
+- **The launcher's API over HTTPS** where the server has a domain; the admin API is never reachable from the internet, and the launcher warns before sending an admin key unencrypted.
+- **Signed releases:** the launcher and the installer install only releases whose checksums carry the release key's signature; downloads are size-capped; CI pins its actions and attests every download's provenance.
+- **Installer and Docker:** inputs checked, the join token never printed, sandboxed services, Caddy pinned by checksum, the server image without root.
 
 **Invites and matches**
 - Invites into private matches, from [#123](https://github.com/unixoide/5th-echelon/pull/123) by Matthias Walther, with follow-up fixes:
@@ -433,7 +503,9 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
 
 **Tooling**
 - Docker builds for Linux and Windows (`build/build.sh`), and a Docker image for the server.
-- Headless test players (`tools/testbot`) that play through logins, lobby and private-match invites, and packet loss against a real server.
+- A Linux installer for servers and coordinators (`scripts/install-server.sh`), and a [deployment guide](docs/deploying.md).
+- Load tests (`build/build.sh load`, [results](docs/load-testing.md)): 1,000 players on two cores.
+- Headless test players (`tools/testbot`) that play through logins, lobby and private-match invites, internet play and the relay, friends, blocks, identities and renames, and packet loss against a real server; `proxy-test` runs them behind Caddy, and `federation-test` runs two servers sharing friends through a coordinator.
 
 ### Setting up the game from another tool
 
@@ -541,12 +613,16 @@ Contributions of every size are welcome: bug reports with logs, testing with fri
 - **Credit:** your commits keep your name, and you'll be listed under [Authors and contributors](#authors-and-contributors).
 - **Upstream:** fixes that apply to upstream 5th Echelon are offered there as well.
 - **Collaborators:** see [Become a collaborator](#become-a-collaborator).
+- **Servers:** running one is one of the best ways to help. [Add it to the community network](https://github.com/JDevWebb/5th-echelon-enhanced/issues/new?template=add-server.yml), or list your own network in [docs/community-servers.md](docs/community-servers.md).
+- **Security:** found a weakness? Please don't post the details in a public issue; open one asking for a private contact, and we'll take it from there.
 
 Never commit game files or anything extracted from them. Facts learned from the game (IDs, names, protocol layouts) are fine.
 
 ---
 
 ## Community
+
+**Play on the [community server](#the-community-server)** at `play.scbl.jdevwebb.net`, and [grow the network](#grow-the-network) with a server of your own. Every server in the community network is listed in [docs/community-servers.md](docs/community-servers.md) and in the launcher's **Browse servers**.
 
 Find other players, active servers and help:
 

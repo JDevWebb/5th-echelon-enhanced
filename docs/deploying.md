@@ -1,0 +1,176 @@
+# Deploying servers and a coordinator
+
+How to put 5th Echelon servers on the internet with the Linux installer: one server on its own, a group of servers sharing friends through a coordinator, or a coordinator on a machine of its own.
+
+The examples use `play.example.com` for a game server and `coord.example.com` for a coordinator. The [community server](../README.md#the-community-server) runs this exact setup at `play.scbl.jdevwebb.net` and `coord.scbl.jdevwebb.net`.
+
+## Choose a shape
+
+| Shape | Machines | For |
+|---|---|---|
+| **One server** | 1 | A group that plays on one server |
+| **Server and coordinator together** | 1 | The first server of a group; others can join later |
+| **Join a group** | 1 per server | A new server in an existing group, e.g. the community network |
+| **Coordinator on its own** | 1, plus the servers | A group of servers with no "main" one |
+
+A coordinator shares friends and blocks between its servers, reserves each player's name across them, and lists them in the server directory the launcher browses. See [friends.md](friends.md) for what it knows and trusts.
+
+## What a server needs
+
+**The machine:**
+- Linux on x86_64 with systemd: Debian 12+, Ubuntu 22.04+, Fedora, Rocky/Alma 9+, or Arch.
+- **2 vCPUs and 2–4 GB of memory** are plenty for a busy server. By the [load test](load-testing.md), 1,000 players need under 100 MB; one core handles 500, two handle 1,000.
+- **Bandwidth is the real cost.** Matches run peer to peer, but players whose routers can't be reached are relayed through the server: about 7 MB/s each way at 1,000 players with 20% relayed, 3 MB/s at 500. Real servers are busy a few hours a day. A plan with 20 TB a month covers 1,000 players in matches around the clock if only outgoing traffic is counted, or half that if both directions are.
+
+The community server runs on 2 vCPUs, 4 GB of memory and 20 TB of traffic a month.
+
+**DNS:** an A record for each name, pointing at the machine's IPv4 address.
+- On **Cloudflare**, set each record to **DNS only** (grey cloud), not proxied. The game's UDP traffic and its plain HTTP on port 80 can't go through Cloudflare's proxy, and its free certificate doesn't cover names two levels deep like `play.scbl.example.com`. Caddy on the server gets its own certificates.
+- Don't add an AAAA (IPv6) record unless it points at the same machine.
+
+**Your provider's firewall** (security group), for every server:
+
+| Port | For |
+|---|---|
+| TCP 22 | SSH |
+| TCP 80 | The game's config and content, and the launcher's API without encryption |
+| TCP 443 | The launcher's API over HTTPS, and a coordinator |
+| UDP 21126 | Game login |
+| UDP 21127 | Game service |
+| UDP 21128–21129 | Internet play: public addresses and the relay |
+
+A machine that only runs a coordinator needs TCP 22, 80 and 443.
+
+## Get the installer
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/JDevWebb/5th-echelon-enhanced/main/scripts/install-server.sh
+```
+
+It downloads the latest release and checks it against the release's `SHA256SUMS` and the release key's signature. To install a build of your own instead, copy it next to the script and add `--binary ./dedicated_server-linux-x86_64` (and `--coordinator-binary ./coordinator-linux-x86_64` for a coordinator).
+
+## One server, or a server with a coordinator
+
+Run it and answer the questions:
+
+```sh
+sudo bash install-server.sh
+```
+
+1. **Domain name:** `play.example.com`. Caddy then serves the game's web parts and the launcher's API on it, over HTTP for the game and HTTPS for the launcher.
+2. **Sharing friends:**
+   - `1` keeps the server on its own;
+   - `2` runs a coordinator here too, at a second name (`coord.example.com`);
+   - `3` joins a group's coordinator (see below).
+3. **Name and region** for the server directory, e.g. `Kiwi Ops` and `Sydney`.
+
+The same without questions:
+
+```sh
+sudo bash install-server.sh --yes \
+  --domain play.example.com \
+  --coordinator-domain coord.example.com \
+  --server-name "Kiwi Ops" --region Sydney
+```
+
+The installer:
+- installs the server and the coordinator as sandboxed systemd services, running as their own user;
+- installs Caddy, which gets a certificate for each name;
+- serves the launcher's API over HTTPS once the certificate works, and tells launchers to use it;
+- joins the server to its coordinator;
+- opens the ports in ufw or firewalld, if either is active, and lists the ones to open in your provider's firewall.
+
+**Check it:**
+
+```sh
+sudo bash install-server.sh --status
+curl http://play.example.com/api/info       # "ports" includes "api_tls":443
+curl https://coord.example.com/v1/servers   # the directory: your server within a minute or two
+```
+
+## Join a group
+
+You need the coordinator's address and its **join token**, from whoever runs it. To join the community network, [open an issue](https://github.com/JDevWebb/5th-echelon-enhanced/issues/new?template=add-server.yml).
+
+Put the token in a file only you can read, then:
+
+```sh
+sudo bash install-server.sh --yes \
+  --domain other.example.com \
+  --coordinator https://coord.example.com \
+  --join-token-file token.txt \
+  --server-name "Other" --region Perth
+shred -u token.txt
+```
+
+Or run it without `--yes` and choose `3`; it asks for the token without showing it. The token is only needed once; the server then keeps its own credentials in `federation.key`. `--status` shows whether it has joined.
+
+## A coordinator on its own
+
+For a group with no main server:
+
+```sh
+sudo bash install-server.sh --yes --coordinator-only --coordinator-domain coord.example.com
+```
+
+It installs the coordinator and Caddy, and no game server. Servers then join it as above.
+
+## The join token
+
+On the coordinator's machine:
+
+```sh
+sudo bash install-server.sh --show-join-token     # print it, to pass on privately
+sudo bash install-server.sh --rotate-join-token   # a new one; servers that joined keep working
+```
+
+Anyone with the token can add a server to the group, and a member server can make friendships and blocks between players linked on it. Give it only to people you trust, over a private channel, never in a public issue or chat. To remove a server:
+
+```sh
+sudo -u echelon /opt/5th-echelon/coordinator --data /var/lib/5th-echelon/coordinator remove-server <id>
+```
+
+Its id is in the directory (`/v1/servers`) and in that server's `server-id.txt`. Rotate the token afterwards if it could join again.
+
+## Settings
+
+The installer's options for the usual settings. Each is kept on later runs unless given again.
+
+| Option | Setting |
+|---|---|
+| `--friends mutual` or `everyone` | Only friends on the game's friend list, and only friends invite (`mutual`, the default); or every player |
+| `--closed-registration`, `--open-registration` | Stop or allow new accounts |
+| `--admin`, `--no-admin` | The admin API, for managing players and games (see below) |
+| `--unlisted`, `--listed` | Stay out of the server directory, or appear in it |
+| `--alias NAME` | Another name (or IP) players reach the server by; repeat for more |
+| `--relay auto`, `all` or `off` | Who plays through the server's relay |
+| `--no-https-api` | Don't serve the launcher's API over HTTPS |
+
+Everything else is in `/var/lib/5th-echelon/service.toml` (see [server-settings.md](server-settings.md)); restart with `systemctl restart 5th-echelon` after changing it.
+
+## Managing players and games
+
+The admin API is never reachable from the internet; Caddy refuses it. Use an SSH tunnel:
+
+1. `sudo bash install-server.sh --admin`
+2. `sudo cat /var/lib/5th-echelon/admin-key.txt`
+3. From your PC: `ssh -L 50051:127.0.0.1:50051 you@play.example.com`
+4. In the launcher: **Server › Manage a server**, address `localhost`, and the key.
+
+## Updating
+
+Run the installer again. It keeps the settings, accounts and keys, and updates the server, the coordinator and the Caddy site. A release that isn't signed by the release key is refused.
+
+`--uninstall` removes the services, programs, Caddy site and the firewall rules the installer added, and keeps the data; add `--purge` to delete that too.
+
+## When something's wrong
+
+| What you see | What to do |
+|---|---|
+| "doesn't resolve yet", or "points at … not at this server" | Fix the A record. On Cloudflare, switch it to DNS only |
+| "Caddy has no certificate for …" | The A record must point here, and TCP 80 and 443 must be open in your provider's firewall. Run the installer again once they are |
+| `--status` says "not joined yet" | The coordinator must answer at its `https://` address, and the token must be current. The line under it shows the last error |
+| "ports already in use" | Another program holds a port; stop it, or add `--force` |
+| "this release isn't signed" | An older release; `--allow-unsigned` installs it on its checksum alone |
+
+Logs: `journalctl -u 5th-echelon -f`, `journalctl -u 5th-echelon-coordinator -f`, `journalctl -u caddy -f`.

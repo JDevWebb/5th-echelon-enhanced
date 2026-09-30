@@ -1,0 +1,68 @@
+name: Add my server to the community network
+description: Join your 5th Echelon server to the community coordinator, so friends follow players to it and it's listed in the launcher's server directory.
+title: "Add server: "
+labels: ["community server"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for running a server! Servers in the community network share friends through `coord.scbl.jdevwebb.net` and show up under **Browse servers** in every launcher.
+
+        **Never post a join token here.** Once we've checked your server, we'll send the token privately.
+
+        Prefer to run your own network? You can: see [Deploying](https://github.com/JDevWebb/5th-echelon-enhanced/blob/main/docs/deploying.md#a-coordinator-on-its-own).
+  - type: input
+    id: domain
+    attributes:
+      label: Server address
+      description: The domain players type, with an A record pointing at the server (DNS only, not proxied).
+      placeholder: play.example.com
+    validations:
+      required: true
+  - type: input
+    id: name
+    attributes:
+      label: Name in the server directory
+      placeholder: Kiwi Ops
+    validations:
+      required: true
+  - type: input
+    id: region
+    attributes:
+      label: Region
+      placeholder: Sydney, Australia
+    validations:
+      required: true
+  - type: dropdown
+    id: friends
+    attributes:
+      label: Friend lists
+      options:
+        - mutual (only friends; recommended for public servers)
+        - everyone
+    validations:
+      required: true
+  - type: textarea
+    id: about
+    attributes:
+      label: About the server
+      description: Who runs it, who it's for, and how players can reach you (a Discord, say). Anything that helps us check it's a real, maintained server.
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: Output of `sudo bash install-server.sh --status`
+      description: Leave out anything private.
+      render: text
+  - type: checkboxes
+    id: promises
+    attributes:
+      label: Running a member server
+      options:
+        - label: The server was installed with `install-server.sh` (or is set up the same way, with HTTPS for the API) and runs a current release.
+          required: true
+        - label: I'll keep it updated, and open an issue before it goes away for good.
+          required: true
+        - label: I'll keep the join token private, and I understand a server that misuses its place in the network is removed.
+          required: true

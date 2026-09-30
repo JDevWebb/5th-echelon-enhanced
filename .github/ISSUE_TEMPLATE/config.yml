@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Deploying a server
+    url: https://github.com/JDevWebb/5th-echelon-enhanced/blob/main/docs/deploying.md
+    about: How to run your own server, or your own network of servers with a coordinator.
