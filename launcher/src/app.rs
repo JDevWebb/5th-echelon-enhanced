@@ -92,6 +92,21 @@ impl Prefs {
         prefs.save();
     }
 
+    /// The server directory, re-read from disk at most every few seconds
+    /// (screens ask every frame).
+    pub fn directory() -> Option<String> {
+        static CACHE: std::sync::Mutex<Option<(Instant, Option<String>)>> = std::sync::Mutex::new(None);
+        let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match cache.as_ref() {
+            Some((at, url)) if at.elapsed() < Duration::from_secs(3) => url.clone(),
+            _ => {
+                let url = Self::load().directory;
+                *cache = Some((Instant::now(), url.clone()));
+                url
+            }
+        }
+    }
+
     /// Sets (or with None, clears) the server directory.
     pub fn set_directory(url: Option<String>) {
         let mut prefs = Self::load();

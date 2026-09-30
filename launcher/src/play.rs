@@ -241,7 +241,7 @@ fn join_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut egu
                     ui.add(egui::TextEdit::singleline(&mut play.server).hint_text("e.g. 10.8.0.10 or play.example.org").desired_width(260.0));
                     if play.looking.running() || play.browsing.running() {
                         ui.spinner();
-                    } else if let Some(url) = crate::app::Prefs::load().directory.filter(|_| ui.button("Browse servers").clicked()) {
+                    } else if let Some(url) = crate::app::Prefs::directory().filter(|_| ui.button("Browse servers").clicked()) {
                         play.browsing.start(ctx, move || crate::services::rt().block_on(crate::network::server_directory(&url)));
                     } else if ui.button("Find on my network").clicked() {
                         play.looking.start(ctx, || {

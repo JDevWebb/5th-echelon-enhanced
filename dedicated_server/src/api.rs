@@ -263,15 +263,12 @@ impl Friends for MyFriends {
     async fn list(&self, request: Request<friends::ListRequest>) -> Result<Response<friends::ListResponse>, Status> {
         let me = caller(&request)?;
         debug!(self.logger, "Friendlist request from {me}");
-        let people = match self.mode {
-            FriendsMode::Everyone => {
-                let mut people = self.storage.everyone_for(me).await.map_err(internal)?;
-                // The list always had the player themselves in it; kept, as the game got it.
-                people.extend(self.storage.find_person(me).await.map_err(internal)?.filter(|p| !p.ubi_id.is_empty()));
-                people
-            }
+        let mut people = match self.mode {
+            FriendsMode::Everyone => self.storage.everyone_for(me).await.map_err(internal)?,
             FriendsMode::Mutual => self.storage.friends_of(me).await.map_err(internal)?,
         };
+        // The list always had the player themselves in it; kept, as the game has always had it.
+        people.extend(self.storage.find_person(me).await.map_err(internal)?.filter(|p| !p.ubi_id.is_empty()));
         // Which session everybody is in. The game looks for a friend's session right here in
         // the friend list - it never asks separately - so an accepted invitation is dead
         // without it.

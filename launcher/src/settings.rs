@@ -31,6 +31,9 @@ pub struct Settings {
     identity_import: String,
     /// The server directory field, while it's being edited.
     directory: Option<String>,
+    /// The identity as shown: its short id and export text, read once (it's
+    /// decrypted from disk) and again after an import.
+    identity: Option<Result<Option<(String, String)>, String>>,
 }
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
@@ -354,13 +357,18 @@ fn identity_section(settings: &mut Settings, notices: &mut Notices, ui: &mut egu
          It also signs you in to your accounts on a new PC.",
     ));
     ui.add_space(4.0);
-    match setup::player_identity::load() {
-        Ok(Some(identity)) => {
+    let shown = settings.identity.get_or_insert_with(|| {
+        setup::player_identity::load()
+            .map(|id| id.map(|id| (identity::short(&id.global_id()), setup::player_identity::export(&id))))
+            .map_err(|e| e.to_string())
+    });
+    match shown {
+        Ok(Some((short, export))) => {
             ui.horizontal(|ui| {
                 ui.label("Your identity");
-                ui.label(RichText::new(identity::short(&identity.global_id())).strong());
+                ui.label(RichText::new(short.as_str()).strong());
                 if ui.button("Copy to move it to another PC").clicked() {
-                    ui.ctx().copy_text(setup::player_identity::export(&identity));
+                    ui.ctx().copy_text(export.clone());
                     notices.info("Copied. Anyone with it can sign in as you: keep it private.");
                 }
             });
@@ -380,13 +388,14 @@ fn identity_section(settings: &mut Settings, notices: &mut Notices, ui: &mut egu
                 Ok(identity) => {
                     notices.info(format!("This PC now uses the identity {}. Set up each server again to sign in with it.", identity::short(&identity.global_id())));
                     settings.identity_import.clear();
+                    settings.identity = None;
                 }
                 Err(e) => notices.error(e.to_string()),
             }
         }
     });
     ui.add_space(8.0);
-    let saved = crate::app::Prefs::load().directory.unwrap_or_default();
+    let saved = crate::app::Prefs::directory().unwrap_or_default();
     let editing = settings.directory.get_or_insert(saved.clone());
     ui.horizontal(|ui| {
         ui.label("Server directory");
