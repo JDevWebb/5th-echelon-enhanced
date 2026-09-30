@@ -23,6 +23,7 @@ use serde_json::json;
 use serde_json::Value;
 
 use crate::config::CommunityApiConfig;
+use crate::config::PublicPorts;
 use crate::game_session::attribute_value;
 use crate::rate_limit;
 use crate::simple_http::Request;
@@ -44,6 +45,15 @@ const FEATURES: &[&str] = &["invites", "private-matches", "trusted-subnet", "per
 const ATTR_MAP: u32 = 101;
 const ATTR_SVM: u32 = 103;
 const ATTR_ROOM_KIND: u32 = 113;
+
+/// The ports (and host) players connect to, for `/api/info`; set at start.
+static PUBLIC: std::sync::OnceLock<(PublicPorts, Option<String>)> = std::sync::OnceLock::new();
+
+/// Publishes the ports players use in `/api/info`, so the launcher can set
+/// players up for a server behind a proxy or with remapped ports.
+pub fn publish(ports: PublicPorts, host: Option<String>) {
+    let _ = PUBLIC.set((ports, host));
+}
 
 pub fn routes(storage: Arc<Storage>, cfg: CommunityApiConfig) -> Routes {
     Arc::new(move |req: &Request| {
@@ -86,12 +96,19 @@ fn info(cfg: CommunityApiConfig) -> Value {
     if cfg.accounts {
         features.push("accounts");
     }
-    json!({
+    let mut info = json!({
         "name": env!("FE_PRODUCT"),
         "version": RELEASE,
         "revision": env!("FE_REVISION"),
         "features": features,
-    })
+    });
+    if let Some((ports, host)) = PUBLIC.get() {
+        info["ports"] = json!(ports);
+        if let Some(host) = host {
+            info["host"] = json!(host);
+        }
+    }
+    info
 }
 
 /// Each registered player, online or not, and for online players what
@@ -214,6 +231,26 @@ mod tests {
         let text = String::from_utf8(bytes).unwrap();
         let (head, body) = text.split_once("\r\n\r\n").unwrap();
         (head.lines().next().unwrap().to_string(), serde_json::from_str(body).unwrap_or(Value::Null))
+    }
+
+    #[test]
+    fn info_reports_the_ports_players_use() {
+        let (storage, dir) = temp_storage("api-ports");
+        publish(
+            PublicPorts {
+                api: 80,
+                login: 31126,
+                secure: 31127,
+                content: 80,
+                nat: Some(31128),
+            },
+            Some("blacklist.example.com".into()),
+        );
+        let routes = routes(Arc::new(storage), CommunityApiConfig::default());
+        let (_, v) = call(&routes, req("GET", "/api/info", ""));
+        assert_eq!(v["ports"], json!({ "api": 80, "login": 31126, "secure": 31127, "content": 80, "nat": 31128 }));
+        assert_eq!(v["host"], "blacklist.example.com");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

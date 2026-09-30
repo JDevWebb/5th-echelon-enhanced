@@ -354,7 +354,7 @@ fn connection_test(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui
             ui.spinner();
             ui.label("Testing…");
         } else if ui.button("Run the test").clicked() {
-            let nat_port = game.cfg.hook_config.networking.nat_port;
+            let nat_port = profile.nat_port.or(game.cfg.hook_config.networking.nat_port);
             settings.tests.start(ctx, move || run_tests(&profile, nat_port));
         }
     });
@@ -387,8 +387,8 @@ fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>) -> Te
         }
     };
     let mut results: TestResults = vec![("Config server (port 80)", run(Box::pin(network::test_cfg_server(&profile.server))))];
-    results.push(("API and account (port 50051)", run(Box::pin(network::test_login(api.clone(), user, pass)))));
-    results.push(("Game service sign-in (port 21126)", run(Box::pin(network::test_quazal_login(&profile.server, user, pass)))));
+    results.push(("API and account", run(Box::pin(network::test_login(api.clone(), user, pass)))));
+    results.push(("Game service sign-in", run(Box::pin(network::test_quazal_login(&profile.server, profile.login_port(), user, pass)))));
     results.push(("Direct connection to this PC", run(Box::pin(network::test_p2p(api, user, pass)))));
     let nat_port = game_nat_port.unwrap_or(nat_proto::DEFAULT_PORT);
     let nat = match rt.block_on(async { tokio::time::timeout(t, network::test_nat_helper(&profile.server, nat_port)).await }) {
@@ -402,7 +402,7 @@ fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>) -> Te
         Ok(Err(e)) => Err(format!("{e} (UDP {nat_port}-{}): only LAN or VPN play works", nat_port + 1)),
         Err(_) => Err(format!("no answer (UDP {nat_port}-{}): only LAN or VPN play works", nat_port + 1)),
     };
-    results.push(("Internet play helper (port 21128)", nat));
+    results.push(("Internet play helper", nat));
     results
 }
 

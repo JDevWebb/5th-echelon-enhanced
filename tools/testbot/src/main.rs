@@ -270,7 +270,7 @@ fn nat_probe(sock: &UdpSocket, server: IpAddr, flags: u8, name: &str) -> Result<
         mapping: None,
         name: name.into(),
     };
-    match nat_ask(sock, server, nat_proto::DEFAULT_PORT, &probe)? {
+    match nat_ask(sock, server, testbot::bot::target(server).nat, &probe)? {
         nat_proto::Message::ProbeReply {
             nonce: 7,
             observed,
@@ -284,7 +284,7 @@ fn nat_probe(sock: &UdpSocket, server: IpAddr, flags: u8, name: &str) -> Result<
 
 /// The NAT helper tells a player the address it sees, on both of its ports.
 async fn nat_probe_scenario(ctx: &mut Ctx) -> Result<()> {
-    let sock = UdpSocket::bind("127.0.0.1:0")?;
+    let sock = UdpSocket::bind("0.0.0.0:0")?;
     let local = sock.local_addr()?;
     let (observed, advertise, relayed) = nat_probe(&sock, ctx.server, 0, "prober")?;
     ensure!(observed.port() == local.port(), "observed {observed}, but the socket is {local}");
@@ -295,7 +295,7 @@ async fn nat_probe_scenario(ctx: &mut Ctx) -> Result<()> {
         mapping: None,
         name: String::new(),
     };
-    match nat_ask(&sock, ctx.server, nat_proto::DEFAULT_PORT + 1, &second)? {
+    match nat_ask(&sock, ctx.server, testbot::bot::target(ctx.server).nat + 1, &second)? {
         nat_proto::Message::ProbeReply { observed: o2, .. } => ensure!(o2 == observed, "the second port saw {o2}, the first {observed}"),
         other => return Err(eyre!("unexpected answer {other:?}")),
     }
@@ -306,9 +306,9 @@ async fn nat_probe_scenario(ctx: &mut Ctx) -> Result<()> {
 /// each seeing the other at its advertised address; strangers can't use it.
 async fn nat_relay(ctx: &mut Ctx) -> Result<()> {
     use nat_proto::Message;
-    let a = UdpSocket::bind("127.0.0.1:0")?;
-    let b = UdpSocket::bind("127.0.0.1:0")?;
-    let stranger = UdpSocket::bind("127.0.0.1:0")?;
+    let a = UdpSocket::bind("0.0.0.0:0")?;
+    let b = UdpSocket::bind("0.0.0.0:0")?;
+    let stranger = UdpSocket::bind("0.0.0.0:0")?;
     let run = ctx.run;
     let (_, a_adv, a_relayed) = nat_probe(&a, ctx.server, nat_proto::probe_flags::WANT_RELAY, &format!("relayed{run}"))?;
     let (_, b_adv, b_relayed) = nat_probe(&b, ctx.server, 0, &format!("direct{run}"))?;
@@ -316,7 +316,7 @@ async fn nat_relay(ctx: &mut Ctx) -> Result<()> {
     ensure!(a_adv.port() >= 40000, "a relay address was expected, got {a_adv}");
 
     let to = |sock: &UdpSocket, to, payload: &[u8]| -> Result<()> {
-        sock.send_to(&Message::DataTo { to, payload: payload.to_vec() }.encode(), (ctx.server, nat_proto::DEFAULT_PORT))?;
+        sock.send_to(&Message::DataTo { to, payload: payload.to_vec() }.encode(), (ctx.server, testbot::bot::target(ctx.server).nat))?;
         Ok(())
     };
     to(&b, a_adv, b"to the relayed player")?;
@@ -341,7 +341,7 @@ async fn nat_relay(ctx: &mut Ctx) -> Result<()> {
 async fn nat_public_address(ctx: &mut Ctx) -> Result<()> {
     let mut a = ctx.player("Host").await?;
     let mut b = ctx.player("Guest").await?;
-    let storm = UdpSocket::bind("127.0.0.1:0")?;
+    let storm = UdpSocket::bind("0.0.0.0:0")?;
     let (_, advertise, _) = nat_probe(&storm, ctx.server, 0, &a.name)?;
     // 127.0.0.1 is what the trusted_subnet rule would give too, so only the
     // NAT helper changes the port.
@@ -388,10 +388,28 @@ const SCENARIOS: &[&str] = &[
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    let mut server: IpAddr = "127.0.0.1".parse()?;
+    let mut host = String::from("127.0.0.1");
     if let Some(i) = args.iter().position(|a| a == "--server") {
-        server = args.get(i + 1).ok_or_else(|| eyre!("--server needs an address"))?.parse()?;
+        host = args.get(i + 1).ok_or_else(|| eyre!("--server needs an address"))?.clone();
         args.drain(i..=i + 1);
+    }
+    let server: IpAddr = match host.parse() {
+        Ok(ip) => ip,
+        Err(_) => setup::net::resolve(&host).ok_or_else(|| eyre!("can't resolve {host}"))?,
+    };
+    // --info: take the ports from the server's /api/info, as the launcher
+    // does (a server behind a reverse proxy or with remapped ports).
+    if let Some(i) = args.iter().position(|a| a == "--info") {
+        args.remove(i);
+        let info = setup::server_info::fetch(&host, Duration::from_secs(5)).ok_or_else(|| eyre!("no /api/info from {host}"))?;
+        let ports = info.ports.ok_or_else(|| eyre!("{host}'s /api/info has no ports"))?;
+        println!("{host}: API {}, login {}, NAT {:?}", ports.api, ports.login, ports.nat);
+        testbot::bot::set_target(testbot::bot::Target {
+            host: host.clone(),
+            api: ports.api,
+            auth: ports.login,
+            nat: ports.nat.ok_or_else(|| eyre!("the NAT helper is off"))?,
+        });
     }
     let names: Vec<&str> = if args.is_empty() { SCENARIOS.to_vec() } else { args.iter().map(String::as_str).collect() };
     let mut ctx = Ctx { server, run: rand::random::<u16>().into(), n: 0 };

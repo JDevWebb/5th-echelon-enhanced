@@ -5361,6 +5361,7 @@ dependencies = [
  "rand 0.9.2",
  "sc_bl_protocols",
  "serde_json",
+ "setup",
  "tokio",
  "tonic",
 ]

@@ -69,8 +69,10 @@ pub struct Facts {
     pub client: Option<ClientState>,
     /// The chosen server, as typed, and what it resolved to.
     pub server: Option<(String, Option<IpAddr>)>,
-    /// Whether the server's API (50051) and config (80) ports answered.
+    /// Whether the server's API and config (80) ports answered.
     pub server_ports: Option<(bool, bool)>,
+    /// The server's API port (50051 unless the server says otherwise).
+    pub api_port: Option<u16>,
     pub account: Option<AccountFact>,
     /// The pinned adapter, its current address, and the adapter the server
     /// is routed through.
@@ -195,7 +197,8 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
             checks.push(match f.server_ports {
                 Some((true, true)) | None => Check::new("server", Status::Ok, format!("Server {name}"), "", None),
                 Some((api, config)) => {
-                    let down: Vec<&str> = [(!api).then_some("50051"), (!config).then_some("80")].into_iter().flatten().collect();
+                    let api_port = f.api_port.unwrap_or(crate::API_PORT).to_string();
+                    let down: Vec<&str> = [(!api).then_some(api_port.as_str()), (!config).then_some("80")].into_iter().flatten().collect();
                     Check::new(
                         "server",
                         Status::Fail,
@@ -327,6 +330,7 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
             client: Some(ClientState::Installed),
             server: Some(("10.8.0.10".into(), Some(IpAddr::from([10, 8, 0, 10])))),
             server_ports: Some((true, true)),
+            api_port: None,
             account: Some(AccountFact::Ok("Kiwi".into())),
             pinned: Some("Game VPN".into()),
             pinned_ip: Some(IpAddr::from([10, 8, 1, 2])),
@@ -370,6 +374,17 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
             ..ready_facts()
         };
         assert!(ready(&checklist(&f)), "a server on this PC needs no pin");
+    }
+
+    #[test]
+    fn a_moved_api_port_is_named() {
+        let f = Facts {
+            server_ports: Some((false, true)),
+            api_port: Some(8443),
+            ..ready_facts()
+        };
+        let server = checklist(&f).into_iter().find(|c| c.id == "server").unwrap();
+        assert!(server.detail.contains("port 8443"), "{}", server.detail);
     }
 
     #[test]

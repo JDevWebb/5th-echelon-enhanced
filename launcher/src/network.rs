@@ -9,7 +9,6 @@ mod quazal;
 mod rpc;
 
 /// The game's Quazal port on the server, and the local port the game uses.
-pub const QUAZAL_DEFAULT_PORT: u16 = setup::QUAZAL_PORT;
 pub const QUAZAL_DEFAULT_LOCAL_PORT: u16 = 3074;
 
 // Re-export public functions from submodules.

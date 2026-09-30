@@ -218,13 +218,20 @@ pub struct MyUsers {
     storage: Arc<Storage>,
 }
 
+/// The client behind a request, through a trusted reverse proxy's
+/// `X-Forwarded-For` (see `rate_limit::client_ip`).
+fn client_addr<T>(request: &Request<T>) -> Option<std::net::IpAddr> {
+    let forwarded = request.metadata().get("x-forwarded-for").and_then(|v| v.to_str().ok());
+    crate::rate_limit::client_ip(request.remote_addr().map(|a| a.ip()), forwarded)
+}
+
 #[tonic::async_trait]
 impl Users for MyUsers {
     /// Handles user login requests.
     ///
     /// Authenticates the user against the storage and generates an authorization token upon successful login.
     async fn login(&self, request: Request<users::LoginRequest>) -> Result<Response<users::LoginResponse>, Status> {
-        let peer = request.remote_addr().map(|a| a.ip());
+        let peer = client_addr(&request);
         if crate::rate_limit::logins().blocked(peer) {
             return Err(Status::resource_exhausted("Too many failed logins; try again later"));
         }
@@ -265,7 +272,7 @@ impl Users for MyUsers {
     ///
     /// Registers a new user in the storage, handling potential conflicts like duplicate usernames or Ubisoft IDs.
     async fn register(&self, request: Request<users::RegisterRequest>) -> Result<Response<users::RegisterResponse>, Status> {
-        if !crate::rate_limit::registrations().check(request.remote_addr().map(|a| a.ip())) {
+        if !crate::rate_limit::registrations().check(client_addr(&request)) {
             return Err(Status::resource_exhausted("Too many new accounts from this address; try again later"));
         }
         let request = request.into_inner();

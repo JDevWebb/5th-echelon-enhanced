@@ -36,6 +36,37 @@ use crate::conn::Conn;
 /// Default ports of a 5th Echelon server.
 pub const AUTH_PORT: u16 = 21126;
 pub const API_PORT: u16 = 50051;
+
+/// Where the server is, and on which ports: the defaults, or what its
+/// `/api/info` reports (a server behind a reverse proxy).
+#[derive(Debug, Clone)]
+pub struct Target {
+    /// The name the API is reached by (a proxy routes by it).
+    pub host: String,
+    pub api: u16,
+    pub auth: u16,
+    pub nat: u16,
+}
+
+static TARGET: std::sync::OnceLock<Target> = std::sync::OnceLock::new();
+
+pub fn set_target(target: Target) {
+    let _ = TARGET.set(target);
+}
+
+pub fn target(server: IpAddr) -> Target {
+    TARGET.get().cloned().unwrap_or_else(|| Target {
+        host: server.to_string(),
+        api: API_PORT,
+        auth: AUTH_PORT,
+        nat: nat_proto::DEFAULT_PORT,
+    })
+}
+
+fn api_url(server: IpAddr) -> String {
+    let t = target(server);
+    format!("http://{}:{}", t.host, t.api)
+}
 /// The secure server's principal id (tickets are issued for it).
 const SERVER_PID: u32 = 0x1000;
 /// Notification protocol and its one method (server -> client).
@@ -79,7 +110,7 @@ pub fn properties(attrs: &str) -> QList<Property> {
 impl Bot {
     /// Creates an account through the gRPC API (as the launcher's Register).
     pub async fn register(server: IpAddr, name: &str, password: &str) -> Result<()> {
-        let channel = Channel::from_shared(format!("http://{}", SocketAddr::new(server, API_PORT)))?.connect().await?;
+        let channel = Channel::from_shared(api_url(server))?.connect().await?;
         UsersClient::new(channel)
             .register(server_api::users::RegisterRequest { username: name.into(), password: password.into(), ubi_id: name.into() })
             .await?;
@@ -90,7 +121,7 @@ impl Bot {
     /// ticket for the secure server, the secure connection, and the gRPC API.
     pub async fn login(server: IpAddr, name: &str, password: &str) -> Result<Bot> {
         // Auth server: LoginEx and a ticket for the secure server.
-        let (mut auth, _) = Conn::connect(SocketAddr::new(server, AUTH_PORT), vec![]).await?;
+        let (mut auth, _) = Conn::connect(SocketAddr::new(server, target(server).auth), vec![]).await?;
         let login = tg::LoginExRequest {
             str_user_name: name.into(),
             o_extra_data: Any::new(
@@ -144,7 +175,7 @@ impl Bot {
         }
 
         // The DLL's gRPC session.
-        let api = Channel::from_shared(format!("http://{}", SocketAddr::new(server, API_PORT)))?.connect().await?;
+        let api = Channel::from_shared(api_url(server))?.connect().await?;
         let token = UsersClient::new(api.clone())
             .login(server_api::users::LoginRequest { username: name.into(), password: password.into() })
             .await?

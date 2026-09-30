@@ -8,6 +8,9 @@
 #   build/build.sh windows   launcher.exe (DLL embedded), uplay_r1_loader.dll, dedicated_server.exe, testbot.exe -> dist/
 #   build/build.sh bots [scenario ...]
 #                            test players against a fresh local server (tools/testbot)
+#   build/build.sh proxy-test
+#                            the test players against a server behind Caddy
+#                            (docs/reverse-proxy.md), by host name only
 #   build/build.sh fmt       cargo fmt (the crates this fork changes)
 #   build/build.sh shell     interactive shell in the build container
 #
@@ -62,6 +65,10 @@ case "${1:-test}" in
   bots)
     shift
     run "$IMAGE" bash -c 'cargo build -q -p dedicated_server -p testbot && scripts/bots.sh /target/native/debug "$@"' bots "$@"
+    ;;
+  proxy-test)
+    run "$IMAGE" cargo build -q -p dedicated_server -p testbot
+    IMAGE="$IMAGE" scripts/proxy-test.sh /target/native/debug
     ;;
   linux)
     # The launcher for Linux and Steam Deck (x86_64), with the client DLL

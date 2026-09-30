@@ -33,6 +33,18 @@ pub struct Profile {
     pub user: hooks_config::User,
     /// The network adapter to play on, by friendly name. None: any.
     pub adapter: Option<String>,
+    /// The server's game login port, when it isn't the usual 21126 (a
+    /// server behind a proxy reports its ports; see `server_info`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login_port: Option<u16>,
+    /// The server's NAT helper port, when it isn't the usual 21128.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nat_port: Option<u16>,
+}
+
+/// The NAT helper's usual port (`nat_proto::DEFAULT_PORT`).
+const fn nat_proto_default() -> u16 {
+    21128
 }
 
 impl Profile {
@@ -42,6 +54,25 @@ impl Profile {
             let host = if self.server.is_empty() { "localhost" } else { &self.server };
             format!("http://{host}:{}", crate::API_PORT).parse().expect("valid URL")
         })
+    }
+
+    /// The game login port on the server.
+    pub fn login_port(&self) -> u16 {
+        self.login_port.unwrap_or(crate::QUAZAL_PORT)
+    }
+
+    /// The API port on the server.
+    pub fn api_port(&self) -> u16 {
+        self.api_server_url().port_or_known_default().unwrap_or(crate::API_PORT)
+    }
+
+    /// Takes the ports the server reports: its API URL, login and NAT
+    /// helper ports. Defaults are left unset, so the file stays as before.
+    pub fn use_ports(&mut self, ports: &crate::server_info::Ports) {
+        let host = if self.server.is_empty() { "localhost" } else { self.server.trim() };
+        self.api_server_url = (ports.api != crate::API_PORT).then(|| format!("http://{host}:{}", ports.api).parse().ok()).flatten();
+        self.login_port = (ports.login != crate::QUAZAL_PORT).then_some(ports.login);
+        self.nat_port = ports.nat.filter(|p| *p != nat_proto_default());
     }
 
     /// Whether the profile has an account to sign in with.
@@ -113,6 +144,7 @@ impl Config {
             ..profile.user.clone()
         };
         hook.networking.adapter = profile.adapter.clone();
+        hook.networking.nat_port = profile.nat_port;
         self.default_profile = profile.name.clone();
     }
 
@@ -213,6 +245,24 @@ impl Deref for ConfigMut {
 mod tests {
     use super::*;
     use crate::testutil::temp_dir;
+
+    #[test]
+    fn ports_a_server_reports_are_used_and_defaults_stay_unset() {
+        let mut p = Profile {
+            server: "blacklist.example.com".into(),
+            ..Default::default()
+        };
+        p.use_ports(&crate::server_info::Ports { api: 80, login: 31126, nat: Some(31128) });
+        assert_eq!(p.api_server_url().as_str(), "http://blacklist.example.com/");
+        assert_eq!((p.api_port(), p.login_port(), p.nat_port), (80, 31126, Some(31128)));
+        let mut cfg = Config::default();
+        cfg.apply_profile(&p);
+        assert_eq!(cfg.hook_config.networking.nat_port, Some(31128));
+
+        p.use_ports(&crate::server_info::Ports { api: 50051, login: 21126, nat: Some(21128) });
+        assert_eq!((p.api_server_url.clone(), p.login_port, p.nat_port), (None, None, None));
+        assert_eq!(p.api_server_url().as_str(), "http://blacklist.example.com:50051/");
+    }
 
     #[test]
     fn upstream_launcher_files_still_load() {

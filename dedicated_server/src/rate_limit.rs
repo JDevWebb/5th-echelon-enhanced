@@ -19,6 +19,68 @@ fn limits() -> crate::config::LimitsConfig {
     LIMITS.get().copied().unwrap_or_default()
 }
 
+/// Reverse proxies whose `X-Forwarded-For` is trusted (`[public] proxies`).
+static PROXIES: std::sync::OnceLock<Vec<Proxy>> = std::sync::OnceLock::new();
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Proxy {
+    net: IpAddr,
+    prefix: u8,
+}
+
+impl Proxy {
+    fn parse(s: &str) -> Option<Self> {
+        let (addr, prefix) = s.trim().split_once('/').map_or((s.trim(), None), |(a, p)| (a, Some(p)));
+        let net: IpAddr = addr.parse().ok()?;
+        let max = if net.is_ipv4() { 32 } else { 128 };
+        let prefix = prefix.map_or(Some(max), |p| p.parse().ok().filter(|p| *p <= max))?;
+        Some(Self { net, prefix })
+    }
+
+    fn contains(self, ip: IpAddr) -> bool {
+        let bits = |ip: IpAddr| -> u128 {
+            match ip {
+                IpAddr::V4(v4) => u128::from(u32::from(v4)) << 96,
+                IpAddr::V6(v6) => u128::from(v6),
+            }
+        };
+        if self.net.is_ipv4() != ip.is_ipv4() {
+            return false;
+        }
+        // IPv4 addresses sit in the top 32 bits, so one prefix length works for both.
+        let len = u32::from(self.prefix);
+        let mask = if len == 0 { 0 } else { u128::MAX << (128 - len) };
+        bits(self.net) & mask == bits(ip) & mask
+    }
+}
+
+/// Trusts `X-Forwarded-For` from these proxies (addresses or subnets);
+/// invalid entries are returned.
+pub fn trust_proxies(list: &[String]) -> Vec<String> {
+    let (ok, bad): (Vec<_>, Vec<_>) = list.iter().map(|s| (s, Proxy::parse(s))).partition(|(_, p)| p.is_some());
+    let _ = PROXIES.set(ok.into_iter().filter_map(|(_, p)| p).collect());
+    bad.into_iter().map(|(s, _)| s.clone()).collect()
+}
+
+fn is_proxy(ip: IpAddr) -> bool {
+    ip.is_loopback() || PROXIES.get().is_some_and(|list| list.iter().any(|p| p.contains(ip)))
+}
+
+/// The client a request comes from: the peer, or, when the peer is a
+/// trusted reverse proxy, the last address in `X-Forwarded-For` that isn't
+/// one (proxies append the address they saw).
+pub fn client_ip(peer: Option<IpAddr>, forwarded_for: Option<&str>) -> Option<IpAddr> {
+    let peer = peer?;
+    if !is_proxy(peer) {
+        return Some(peer);
+    }
+    let Some(list) = forwarded_for else {
+        return Some(peer);
+    };
+    let hops: Vec<IpAddr> = list.split(',').filter_map(|a| a.trim().parse().ok()).collect();
+    Some(hops.iter().rev().copied().find(|ip| !is_proxy(*ip)).or(hops.first().copied()).unwrap_or(peer))
+}
+
 /// The server's one limiter for failed password checks, shared by every
 /// login route: check [`RateLimit::blocked`] first, [`RateLimit::record`]
 /// each failure.
@@ -150,5 +212,24 @@ mod tests {
         assert!(limit.check_at(local, t0) && limit.check_at(local, t0));
         limit.record_at(local, t0);
         assert!(!limit.blocked_at(local, t0));
+    }
+
+    #[test]
+    fn forwarded_for_is_believed_only_from_proxies() {
+        let client: IpAddr = "198.51.100.7".parse().unwrap();
+        let local: IpAddr = "127.0.0.1".parse().unwrap();
+        // A proxy on this machine (e.g. Caddy) names the client.
+        assert_eq!(client_ip(Some(local), Some("198.51.100.7")), Some(client));
+        // A spoofed header added by the client itself is skipped.
+        assert_eq!(client_ip(Some(local), Some("10.9.9.9, 198.51.100.7")), Some(client));
+        // A local request without the header is local.
+        assert_eq!(client_ip(Some(local), None), Some(local));
+        // Anyone else can't claim another address.
+        assert_eq!(client_ip(Some(client), Some("203.0.113.1")), Some(client));
+
+        let docker = Proxy::parse("172.17.0.0/16").unwrap();
+        assert!(docker.contains("172.17.3.4".parse().unwrap()) && !docker.contains("172.18.0.1".parse().unwrap()));
+        assert!(Proxy::parse("10.0.0.1").unwrap().contains("10.0.0.1".parse().unwrap()));
+        assert!(Proxy::parse("10.0.0.0/33").is_none() && Proxy::parse("proxy").is_none());
     }
 }

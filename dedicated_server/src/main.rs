@@ -299,6 +299,14 @@ fn main() -> color_eyre::Result<()> {
         config.save_to_file(&config_filename)?;
     }
 
+    // Behind a proxy or remapped ports: hand out the ports players use.
+    let public_ports = config.public_ports();
+    if !config.public.is_default() {
+        info!(logger, "Players connect to {:?} on {public_ports:?}", config.public.host);
+    }
+    config.apply_public();
+    community_api::publish(public_ports, config.public.host.clone());
+
     ensure_data_dir()?;
 
     warn!(logger, "Clearing stale sessions");
@@ -307,6 +315,9 @@ fn main() -> color_eyre::Result<()> {
     let debug_config = Arc::new(config.debug);
     let admin_api = args.launcher || config.admin.enabled;
     rate_limit::configure(config.limits);
+    for bad in rate_limit::trust_proxies(&config.public.proxies) {
+        warn!(logger, "Ignoring [public] proxies entry {bad:?} (expected an address or a subnet like 172.17.0.0/16)");
+    }
     let community_api = config.community_api;
     let nat = config.nat;
     // Relay addresses use the address players reach this server on.

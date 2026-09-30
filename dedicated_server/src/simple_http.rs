@@ -197,6 +197,9 @@ fn handle(logger: &slog::Logger, mut stream: TcpStream, handler: &dyn Fn(&Reques
                 if name.trim().eq_ignore_ascii_case("content-length") {
                     length = value.trim().parse().unwrap_or(usize::MAX);
                 }
+                if name.trim().eq_ignore_ascii_case("x-forwarded-for") {
+                    req.peer = crate::rate_limit::client_ip(req.peer, Some(value.trim()));
+                }
             }
         }
         if length > MAX_BODY {

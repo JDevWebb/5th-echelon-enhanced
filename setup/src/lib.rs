@@ -16,6 +16,7 @@ pub mod launch;
 pub mod net;
 pub mod overrides;
 pub mod save;
+pub mod server_info;
 pub mod update;
 pub mod wine;
 mod sys;

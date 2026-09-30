@@ -16,17 +16,16 @@ use tonic::transport::Channel;
 
 use super::Error;
 use super::QUAZAL_DEFAULT_LOCAL_PORT;
-use super::QUAZAL_DEFAULT_PORT;
 
 /// Tests the Quazal login process against a server.
 ///
 /// This function simulates a full Quazal login, including the SYN/ACK handshake,
 /// connection setup, and RMC login call. It will time out after 5 seconds.
-pub async fn test_quazal_login(server: &str, username: &str, password: &str) -> Result<(), Error> {
+pub async fn test_quazal_login(server: &str, port: u16, username: &str, password: &str) -> Result<(), Error> {
     let ctx = quazal::Context::splinter_cell_blacklist();
 
     let Ok(res) = tokio::time::timeout(Duration::from_secs(5), async {
-        let socket = quazal_setup(server).await?;
+        let socket = quazal_setup(server, port).await?;
         let mut quazal = Quazal {
             ctx,
             socket,
@@ -56,9 +55,9 @@ struct Quazal {
 }
 
 /// Sets up a UDP socket for Quazal communication.
-async fn quazal_setup(server: &str) -> std::io::Result<UdpSocket> {
+async fn quazal_setup(server: &str, port: u16) -> std::io::Result<UdpSocket> {
     let socket = tokio::net::UdpSocket::bind(format!("0.0.0.0:{QUAZAL_DEFAULT_LOCAL_PORT}")).await?;
-    socket.connect(format!("{server}:{QUAZAL_DEFAULT_PORT}")).await?;
+    socket.connect(format!("{server}:{port}")).await?;
     Ok(socket)
 }
 

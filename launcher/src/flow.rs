@@ -67,7 +67,8 @@ pub fn gather(game_dir: &Path, cfg: &Config, bundled: Option<&[u8]>) -> (Facts, 
         facts.server = Some((profile.server.clone(), ip));
         if let Some(ip) = ip {
             let t = Duration::from_secs(2);
-            facts.server_ports = Some((net::port_open(ip, setup::API_PORT, t), net::port_open(ip, setup::CONFIG_PORT, t)));
+            facts.api_port = Some(profile.api_port());
+            facts.server_ports = Some((net::port_open(ip, profile.api_port(), t), net::port_open(ip, setup::CONFIG_PORT, t)));
             facts.account = Some(if !profile.has_account() {
                 AccountFact::None
             } else {
@@ -129,9 +130,6 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<(), S
 
     say(log, format!("Looking up {}…", plan.server));
     let ip = net::resolve(&plan.server).ok_or_else(|| format!("\"{}\" isn't an address this PC can find.", plan.server))?;
-    if !net::port_open(ip, setup::API_PORT, Duration::from_secs(4)) {
-        return Err(format!("{ip} doesn't answer on port {}. Check the server is running and you're connected to its network.", setup::API_PORT));
-    }
 
     let mut profile = Config::load(dir)
         .profiles
@@ -143,6 +141,17 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<(), S
             server: plan.server.clone(),
             ..Default::default()
         });
+    // A server behind a proxy, or with remapped ports, says which it uses.
+    if let Some(ports) = setup::server_info::fetch(&plan.server, Duration::from_secs(4)).and_then(|i| i.ports) {
+        profile.use_ports(&ports);
+        if profile.api_server_url.is_some() || profile.login_port.is_some() || profile.nat_port.is_some() {
+            say(log, format!("The server uses API port {}, game port {}.", ports.api, ports.login));
+        }
+    }
+    let api_port = profile.api_port();
+    if !net::port_open(ip, api_port, Duration::from_secs(4)) {
+        return Err(format!("{ip} doesn't answer on port {api_port}. Check the server is running and you're connected to its network."));
+    }
 
     say(log, "Setting up your account…");
     let accounts = Accounts {

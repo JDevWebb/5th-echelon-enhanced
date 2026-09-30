@@ -212,6 +212,57 @@ impl Default for NatConfig {
     }
 }
 
+/// What players connect to, when it isn't what the services listen on: the
+/// server behind a reverse proxy, or with ports forwarded to other numbers.
+/// Each port defaults to the one its service listens on. Every address the
+/// server hands out uses these, and `/api/info` reports them so the launcher
+/// sets players up with them.
+#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
+pub struct PublicConfig {
+    /// The host name players use. Content downloads are addressed to it, so
+    /// a proxy can route them by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// The API (gRPC) port.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api: Option<u16>,
+    /// Game login (UDP).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub login: Option<u16>,
+    /// Game service (UDP).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub secure: Option<u16>,
+    /// Content (HTTP).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<u16>,
+    /// The NAT helper (UDP); the port after it must lead to the helper's
+    /// second port.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nat: Option<u16>,
+    /// Reverse proxies whose `X-Forwarded-For` names the real client (for
+    /// the rate limits), as addresses or subnets, e.g. "172.17.0.0/16".
+    /// A proxy on this machine (loopback) is always trusted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub proxies: Vec<String>,
+}
+
+impl PublicConfig {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
+/// The ports players use, as `/api/info` reports them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct PublicPorts {
+    pub api: u16,
+    pub login: u16,
+    pub secure: u16,
+    pub content: u16,
+    /// None when the NAT helper is off.
+    pub nat: Option<u16>,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
     #[serde(flatten)]
@@ -226,6 +277,8 @@ pub struct Config {
     pub limits: LimitsConfig,
     #[serde(default)]
     pub nat: NatConfig,
+    #[serde(default, skip_serializing_if = "PublicConfig::is_default")]
+    pub public: PublicConfig,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -263,6 +316,63 @@ impl Config {
                 }
                 Service::Config(online) => online.set_ips(listen, public),
                 Service::Content(content) => content.listen.set_ip(listen),
+            }
+        }
+    }
+
+    fn listen_ports(&self) -> (Option<u16>, Option<u16>, Option<u16>) {
+        let (mut login, mut secure, mut content) = (None, None, None);
+        for svc in self.quazal.service.values() {
+            match svc {
+                Service::Authentication(ctx) => login = Some(ctx.listen.port()),
+                Service::Secure(ctx) => secure = Some(ctx.listen.port()),
+                Service::Content(c) => content = Some(c.listen.port()),
+                Service::Config(_) => {}
+            }
+        }
+        (login, secure, content)
+    }
+
+    /// The ports players use: `[public]`, or else the ones the services
+    /// listen on.
+    pub fn public_ports(&self) -> PublicPorts {
+        let (login, secure, content) = self.listen_ports();
+        PublicPorts {
+            api: self.public.api.unwrap_or(self.api_server.port()),
+            login: self.public.login.or(login).unwrap_or(21126),
+            secure: self.public.secure.or(secure).unwrap_or(21127),
+            content: self.public.content.or(content).unwrap_or(8000),
+            nat: self.nat.enabled.then(|| self.public.nat.unwrap_or(self.nat.listen.port())),
+        }
+    }
+
+    /// With `[public]` set, hands out the ports players use instead of the
+    /// ones in the service settings: the login port in the online config,
+    /// the game service's port in tickets, and the content address (by
+    /// `host`, when set). Each is `[public]`'s, or else the port its
+    /// service listens on, so moving a listening port is enough. Only in
+    /// memory; without `[public]`, nothing changes.
+    pub fn apply_public(&mut self) {
+        if self.public.is_default() {
+            return;
+        }
+        let ports = self.public_ports();
+        let host = self.public.host.clone();
+        for svc in self.quazal.service.values_mut() {
+            match svc {
+                Service::Authentication(ctx) => {
+                    if let Some(addr) = ctx.secure_server_addr.as_mut() {
+                        addr.set_port(ports.secure);
+                    }
+                }
+                Service::Secure(ctx) => {
+                    if let Some(storage) = ctx.settings.get_mut("storage_host") {
+                        let old_host = storage.rsplit_once(':').map_or(storage.as_str(), |(h, _)| h).to_string();
+                        *storage = format!("{}:{}", host.clone().unwrap_or(old_host), ports.content);
+                    }
+                }
+                Service::Config(online) => online.set_login_port(ports.login),
+                Service::Content(_) => {}
             }
         }
     }
@@ -344,6 +454,7 @@ impl Default for Config {
             admin: AdminConfig::default(),
             limits: LimitsConfig::default(),
             nat: NatConfig::default(),
+            public: PublicConfig::default(),
         }
     }
 }
@@ -364,6 +475,65 @@ mod tests {
         assert!(text.contains("prudp:/address=203.0.113.10;port=21126"), "online config");
         assert_eq!(cfg.api_server.ip(), listen);
         assert_eq!(cfg.nat.public_address, Some(public));
+    }
+
+    #[test]
+    fn public_ports_replace_the_listening_ones_in_what_players_get() {
+        let mut cfg = Config::default();
+        cfg.set_addresses("0.0.0.0".parse().unwrap(), "203.0.113.10".parse().unwrap());
+        assert_eq!(
+            cfg.public_ports(),
+            PublicPorts {
+                api: 50051,
+                login: 21126,
+                secure: 21127,
+                content: 8000,
+                nat: Some(21128)
+            }
+        );
+        cfg.public = PublicConfig {
+            host: Some("blacklist.example.com".into()),
+            api: Some(80),
+            login: Some(31126),
+            secure: Some(31127),
+            content: Some(80),
+            nat: Some(31128),
+            proxies: vec![],
+        };
+        cfg.apply_public();
+        let text = toml::to_string(&cfg).unwrap();
+        assert!(text.contains("prudp:/address=203.0.113.10;port=31126"), "login in the online config:\n{text}");
+        assert!(text.contains("203.0.113.10:31126"), "SandboxUrlWS");
+        assert!(text.contains("203.0.113.10:31127"), "the game service in tickets");
+        assert!(text.contains("storage_host = \"blacklist.example.com:80\""), "content by host name");
+        assert!(text.contains("0.0.0.0:21126") && text.contains("0.0.0.0:21127"), "still listening on the old ports");
+        assert_eq!(cfg.public_ports().nat, Some(31128));
+
+        assert_eq!(cfg.public_ports().api, 80);
+        cfg.nat.enabled = false;
+        assert_eq!(cfg.public_ports().nat, None);
+        // Only moved listening ports, and a host: those ports are handed out.
+        let mut cfg = Config::default();
+        cfg.set_addresses("0.0.0.0".parse().unwrap(), "203.0.113.10".parse().unwrap());
+        for svc in cfg.quazal.service.values_mut() {
+            match svc {
+                Service::Authentication(ctx) => ctx.listen.set_port(41126),
+                Service::Secure(ctx) => ctx.listen.set_port(41127),
+                _ => {}
+            }
+        }
+        cfg.public.host = Some("blacklist.example.com".into());
+        cfg.apply_public();
+        let text = toml::to_string(&cfg).unwrap();
+        assert!(text.contains("prudp:/address=203.0.113.10;port=41126"), "login:\n{text}");
+        assert!(text.contains("203.0.113.10:41127"), "the game service");
+        assert!(text.contains("storage_host = \"blacklist.example.com:8000\""), "content");
+
+        // Without [public], hand-made settings are left alone.
+        let mut cfg = Config::default();
+        let before = toml::to_string(&cfg).unwrap();
+        cfg.apply_public();
+        assert_eq!(toml::to_string(&cfg).unwrap(), before);
     }
 
     #[test]

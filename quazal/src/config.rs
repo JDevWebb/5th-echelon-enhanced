@@ -220,6 +220,46 @@ impl Default for OnlineConfig {
 }
 
 impl OnlineConfig {
+    /// Sets the port players log in on (the port in `SandboxUrl` and
+    /// `SandboxUrlWS`), when it differs from the one the service listens on
+    /// (behind port forwarding or a proxy).
+    pub fn set_login_port(&mut self, port: u16) {
+        let set = |items: &mut Vec<OnlineConfigItem>| {
+            for item in items.iter_mut() {
+                match item.name.as_str() {
+                    "SandboxUrl" => {
+                        for value in &mut item.values {
+                            *value = value
+                                .split(';')
+                                .map(|part| if part.starts_with("port=") { format!("port={port}") } else { part.to_string() })
+                                .collect::<Vec<_>>()
+                                .join(";");
+                        }
+                    }
+                    "SandboxUrlWS" => {
+                        for value in &mut item.values {
+                            if let Some((host, _)) = value.rsplit_once(':') {
+                                *value = format!("{host}:{port}");
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        };
+        match &mut self.content {
+            OnlineConfigContent::Typed(items) => set(items),
+            OnlineConfigContent::Raw(raw) => {
+                if let Ok(mut items) = serde_json::from_str::<Vec<OnlineConfigItem>>(raw) {
+                    set(&mut items);
+                    if let Ok(text) = serde_json::to_string(&items) {
+                        *raw = text;
+                    }
+                }
+            }
+        }
+    }
+
     /// Returns the content of the online configuration as a string.
     #[must_use]
     pub fn content(&self) -> String {
