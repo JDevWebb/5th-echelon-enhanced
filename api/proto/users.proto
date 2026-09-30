@@ -6,6 +6,9 @@ service Users {
   rpc Login(LoginRequest) returns (LoginResponse);
   //  rpc Me(MeRequest) returns (MeResponse);
   rpc Register(RegisterRequest) returns (RegisterResponse);
+  // Signs in with the identity key an account is linked to, instead of its password: for a
+  // new PC, or an account whose password is lost. Optionally sets a new password.
+  rpc KeyLogin(KeyLoginRequest) returns (LoginResponse);
 }
 
 service UsersAdmin {
@@ -64,7 +67,20 @@ message LoginResponse {
 message RegisterRequest {
   string username = 1;
   string password = 2;
+  // Ignored: the server sets the account id (the username), so no one can take another's.
   string ubi_id = 3;
+}
+
+message KeyLoginRequest {
+  string username = 1;
+  // The identity's public key (base32), as linked to the account.
+  string global_id = 2;
+  // Unix seconds the launcher signed at; must be within 5 minutes and newer than the last.
+  int64 time = 3;
+  // Signature (base32) of "5th-echelon/login/v1\n<server id>\n<username>\n<time>".
+  string signature = 4;
+  // Replaces the account's password when set.
+  string new_password = 5;
 }
 
 message RegisterResponse {

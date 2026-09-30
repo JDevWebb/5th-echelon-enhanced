@@ -37,9 +37,79 @@ use tonic::Response;
 use tonic::Status;
 
 use crate::config::DebugConfig;
+use crate::config::FriendsMode;
+use crate::federation;
+use crate::storage::FriendError;
+use crate::storage::FriendEventKind;
 use crate::storage::GameSession;
 use crate::storage::LoginError;
+use crate::storage::Person;
+use crate::storage::Relation;
 use crate::storage::Storage;
+
+/// How long a sign-in token is good for. The game and the overlay sign in
+/// again on their own when one runs out.
+const TOKEN_LIFETIME_SECS: i64 = 30 * 24 * 60 * 60;
+
+/// The caller's user id, put there by [`check_token`].
+fn caller<T>(request: &Request<T>) -> Result<u32, Status> {
+    request
+        .metadata()
+        .get("user_id")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok())
+        .ok_or_else(|| Status::unauthenticated("Not signed in"))
+}
+
+fn internal(e: impl std::fmt::Display) -> Status {
+    Status::internal(e.to_string())
+}
+
+/// A new sign-in token for `user_id`: the id and the time, sealed with the
+/// server's key.
+fn issue_token(key: &Key, user_id: u32) -> String {
+    let plain = format!("{user_id}:{}", identity::now());
+    let n = secretbox::gen_nonce();
+    let c = secretbox::seal(plain.as_bytes(), &n, key);
+    format!(
+        "{}.{}",
+        base64::encode(c, base64::Variant::UrlSafeNoPadding),
+        base64::encode(n, base64::Variant::UrlSafeNoPadding)
+    )
+}
+
+/// Whether a new account name is acceptable: 1 to 32 letters, digits, `_`,
+/// `-` and `.` (what the launcher's one-click names are made of).
+pub fn check_username(name: &str) -> Result<(), &'static str> {
+    let n = name.chars().count();
+    if n == 0 || n > 32 {
+        return Err("names are 1 to 32 characters");
+    }
+    if !name.chars().all(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.')) {
+        return Err("names can have letters, digits, _, - and . only");
+    }
+    Ok(())
+}
+
+fn relation_proto(r: Relation) -> friends::Relation {
+    match r {
+        Relation::Friend => friends::Relation::Friend,
+        Relation::RequestSent => friends::Relation::RequestSent,
+        Relation::RequestReceived => friends::Relation::RequestReceived,
+        Relation::Blocked => friends::Relation::Blocked,
+        // Nobody learns that they were blocked.
+        Relation::None | Relation::BlockedBy => friends::Relation::None,
+    }
+}
+
+fn friend_error(e: FriendError) -> Status {
+    match e {
+        FriendError::NotFound => Status::not_found(e.to_string()),
+        FriendError::Yourself | FriendError::NoRequest => Status::invalid_argument(e.to_string()),
+        FriendError::YouBlocked => Status::failed_precondition(e.to_string()),
+        FriendError::TooManyRequests => Status::resource_exhausted(e.to_string()),
+    }
+}
 
 /// Property 113 tells a private room (0) from an ordinary lobby session (1).
 ///
@@ -58,16 +128,78 @@ pub struct MyFriends {
     logger: Logger,
     storage: Arc<Storage>,
     debug_config: Arc<DebugConfig>,
+    mode: FriendsMode,
+}
+
+impl MyFriends {
+    /// The player a request names, by account id or else by name.
+    async fn target(&self, request: &friends::TargetRequest) -> Result<Person, Status> {
+        let person = if request.id.is_empty() {
+            self.storage.find_person_by_name(&request.username).await
+        } else {
+            self.storage.find_person_by_ubi_id(&request.id).await
+        };
+        person.map_err(internal)?.filter(|p| !p.ubi_id.is_empty()).ok_or_else(|| friend_error(FriendError::NotFound))
+    }
+
+    fn player(&self, person: Person, relation: Relation, sessions: Option<&[crate::storage::LiveSession]>) -> friends::Player {
+        let activity = sessions
+            .filter(|_| person.is_online)
+            .and_then(|s| crate::community_api::activity_of(&person.username, s))
+            .map(|a| friends::Activity {
+                mode: a.mode.into(),
+                room: a.room.into(),
+                with: a.with,
+                map: a.map.unwrap_or_default(),
+            });
+        let mut p = friends::Player {
+            id: person.ubi_id,
+            username: person.username,
+            is_online: person.is_online || self.debug_config.mark_all_as_online,
+            relation: 0,
+            activity,
+        };
+        p.set_relation(relation_proto(relation));
+        p
+    }
+
+    /// Runs a friend change for the caller, with its rate limit, and answers
+    /// with where the two stand afterwards.
+    async fn change<F, Fut>(&self, request: Request<friends::TargetRequest>, what: &str, f: F) -> Result<Response<friends::ChangeResponse>, Status>
+    where
+        F: FnOnce(u32, Person) -> Fut,
+        Fut: Future<Output = Result<(), Status>>,
+    {
+        let me = caller(&request)?;
+        if !crate::rate_limit::friend_changes().check(me) {
+            return Err(Status::resource_exhausted("Too many friend changes; try again in a minute"));
+        }
+        let other = self.target(request.get_ref()).await?;
+        if other.id == me {
+            return Err(friend_error(FriendError::Yourself));
+        }
+        info!(self.logger, "{what}: {me} -> {} ({})", other.username, other.id);
+        let other_id = other.id;
+        f(me, other).await?;
+        let relation = self.storage.relation(me, other_id).await.map_err(internal)?;
+        let mut resp = friends::ChangeResponse { relation: 0 };
+        resp.set_relation(relation_proto(relation));
+        Ok(Response::new(resp))
+    }
 }
 
 #[tonic::async_trait]
 impl Friends for MyFriends {
     /// Handles friend invitation requests.
     ///
-    /// Extracts sender and receiver IDs, adds the invite to storage, and returns a response.
+    /// Only friends may invite in the "mutual" mode, and never across a block; a player can
+    /// send 20 a minute, and have five waiting (see `add_invite_async`).
     async fn invite(&self, request: Request<friends::InviteRequest>) -> Result<Response<friends::InviteResponse>, Status> {
-        let sender: u32 = request.metadata().get("user_id").unwrap().to_str().unwrap().parse().unwrap();
+        let sender = caller(&request)?;
         debug!(self.logger, "Invite request: {:?} from {}", request, sender);
+        if !crate::rate_limit::invites().check(sender) {
+            return Err(Status::resource_exhausted("Too many invitations; try again in a minute"));
+        }
 
         let receiver = request.into_inner().id;
 
@@ -79,6 +211,13 @@ impl Friends for MyFriends {
         else {
             return Err(Status::not_found("User not found"));
         };
+
+        match self.storage.relation(sender, receiver_id).await.map_err(internal)? {
+            Relation::Blocked | Relation::BlockedBy => return Err(Status::permission_denied("You can't invite this player")),
+            Relation::Friend => {}
+            _ if self.mode == FriendsMode::Mutual => return Err(Status::permission_denied("Only friends can invite each other on this server")),
+            _ => {}
+        }
 
         // Bind the invitation to the room the sender is actually in. The event the game
         // receives carries only the sender, so without this the invited client has no way to
@@ -112,29 +251,30 @@ impl Friends for MyFriends {
         self.storage
             .add_invite_async(sender, receiver_id, room.map(|r| r.session_type), room.map(|r| r.session_id))
             .await
-            .map_err(|e| Status::internal(format!("Couldn't add invite: {e:?}")))?;
+            .map_err(|e| Status::resource_exhausted(format!("Couldn't add invite: {e}")))?;
 
-        let reply = friends::InviteResponse {};
-
-        Ok(Response::new(reply)) // Send back our formatted greeting
+        Ok(Response::new(friends::InviteResponse {}))
     }
 
-    /// Handles requests to list friends.
-    ///
-    /// Retrieves all users from storage and marks them as online based on debug configuration.
+    /// The game's friend list: every player in the "everyone" mode (as before friend lists
+    /// existed), only friends in the "mutual" mode; never anyone blocked either way.
     async fn list(&self, request: Request<friends::ListRequest>) -> Result<Response<friends::ListResponse>, Status> {
-        debug!(
-            self.logger,
-            "Friendlist request: {:?} from {}",
-            request,
-            request.metadata().get("user_id").unwrap().to_str().unwrap()
-        );
-        let users = self.storage.list_users_async().await.map_err(|e| Status::internal(format!("{e}")))?;
+        let me = caller(&request)?;
+        debug!(self.logger, "Friendlist request from {me}");
+        let people = match self.mode {
+            FriendsMode::Everyone => {
+                let mut people = self.storage.everyone_for(me).await.map_err(internal)?;
+                // The list always had the player themselves in it; kept, as the game got it.
+                people.extend(self.storage.find_person(me).await.map_err(internal)?.filter(|p| !p.ubi_id.is_empty()));
+                people
+            }
+            FriendsMode::Mutual => self.storage.friends_of(me).await.map_err(internal)?,
+        };
         // Which session everybody is in. The game looks for a friend's session right here in
         // the friend list - it never asks separately - so an accepted invitation is dead
         // without it.
-        let sessions = self.storage.list_advertised_sessions_async().await.map_err(|e| Status::internal(format!("{e}")))?;
-        let friends = users
+        let sessions = self.storage.list_advertised_sessions_async().await.map_err(internal)?;
+        let friends = people
             .into_iter()
             .map(|u| {
                 let (session_id, invite_only, session_data) = sessions.get(&u.id).cloned().unwrap_or_default();
@@ -149,8 +289,7 @@ impl Friends for MyFriends {
                 }
             })
             .collect();
-        let resp = friends::ListResponse { friends };
-        Ok(Response::new(resp))
+        Ok(Response::new(friends::ListResponse { friends }))
     }
 
     /// Publishes the caller's current game session so their friends can join it.
@@ -158,7 +297,7 @@ impl Friends for MyFriends {
     /// A `session_id` of 0 clears the advertisement; that is what the game's
     /// `UPLAY_USER_ClearGameSession` boils down to.
     async fn set_session(&self, request: Request<friends::SetSessionRequest>) -> Result<Response<friends::SetSessionResponse>, Status> {
-        let user_id: u32 = request.metadata().get("user_id").unwrap().to_str().unwrap().parse().unwrap();
+        let user_id = caller(&request)?;
         let request = request.into_inner();
         debug!(self.logger, "SetSession request from {}: {:?}", user_id, request);
 
@@ -168,6 +307,136 @@ impl Friends for MyFriends {
             .map_err(|e| Status::internal(format!("Couldn't store session: {e:?}")))?;
 
         Ok(Response::new(friends::SetSessionResponse {}))
+    }
+
+    async fn relationships(&self, request: Request<friends::RelationshipsRequest>) -> Result<Response<friends::RelationshipsResponse>, Status> {
+        let me = caller(&request)?;
+        let sessions = self.storage.presence_async().await.map_err(internal)?.1;
+        let list = |people: Vec<Person>, relation: Relation| -> Vec<friends::Player> {
+            people.into_iter().map(|p| self.player(p, relation, Some(&sessions))).collect()
+        };
+        Ok(Response::new(friends::RelationshipsResponse {
+            friends: list(self.storage.friends_of(me).await.map_err(internal)?, Relation::Friend),
+            requests_received: list(self.storage.friend_requests(me, true).await.map_err(internal)?, Relation::RequestReceived),
+            requests_sent: list(self.storage.friend_requests(me, false).await.map_err(internal)?, Relation::RequestSent),
+            blocked: list(self.storage.blocked_by(me).await.map_err(internal)?, Relation::Blocked),
+            mode: match self.mode {
+                FriendsMode::Everyone => "everyone",
+                FriendsMode::Mutual => "mutual",
+            }
+            .into(),
+        }))
+    }
+
+    async fn search(&self, request: Request<friends::SearchRequest>) -> Result<Response<friends::SearchResponse>, Status> {
+        let me = caller(&request)?;
+        if !crate::rate_limit::searches().check(me) {
+            return Err(Status::resource_exhausted("Too many searches; try again in a minute"));
+        }
+        let query = request.into_inner().query;
+        if query.chars().count() > 32 {
+            return Err(Status::invalid_argument("Search for at most 32 characters"));
+        }
+        let found = self.storage.search_players(me, query.trim(), 25).await.map_err(internal)?;
+        let sessions = self.storage.presence_async().await.map_err(internal)?.1;
+        Ok(Response::new(friends::SearchResponse {
+            players: found.into_iter().map(|(p, r)| self.player(p, r, Some(&sessions))).collect(),
+        }))
+    }
+
+    async fn request(&self, request: Request<friends::TargetRequest>) -> Result<Response<friends::ChangeResponse>, Status> {
+        self.change(request, "Friend request", |me, other| async move {
+            let before = self.storage.relation(me, other.id).await.map_err(internal)?;
+            let now = self.storage.request_friend(me, other.id).await.map_err(internal)?.map_err(friend_error)?;
+            if now == Relation::Friend && before != Relation::Friend {
+                federation::record_friends(&self.logger, &self.storage, me, other.id, true).await;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    async fn accept(&self, request: Request<friends::TargetRequest>) -> Result<Response<friends::ChangeResponse>, Status> {
+        self.change(request, "Friend accepted", |me, other| async move {
+            self.storage.accept_friend(me, other.id).await.map_err(internal)?.map_err(friend_error)?;
+            federation::record_friends(&self.logger, &self.storage, me, other.id, true).await;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn decline(&self, request: Request<friends::TargetRequest>) -> Result<Response<friends::ChangeResponse>, Status> {
+        self.change(request, "Friend request declined", |me, other| async move {
+            match self.storage.relation(me, other.id).await.map_err(internal)? {
+                Relation::RequestReceived | Relation::RequestSent => {
+                    self.storage.remove_friend(me, other.id).await.map_err(internal)?;
+                    Ok(())
+                }
+                _ => Err(friend_error(FriendError::NoRequest)),
+            }
+        })
+        .await
+    }
+
+    async fn remove(&self, request: Request<friends::TargetRequest>) -> Result<Response<friends::ChangeResponse>, Status> {
+        self.change(request, "Friend removed", |me, other| async move {
+            if self.storage.remove_friend(me, other.id).await.map_err(internal)? {
+                federation::record_friends(&self.logger, &self.storage, me, other.id, false).await;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    async fn block(&self, request: Request<friends::TargetRequest>) -> Result<Response<friends::ChangeResponse>, Status> {
+        self.change(request, "Blocked", |me, other| async move {
+            self.storage.block(me, other.id).await.map_err(internal)?.map_err(friend_error)?;
+            federation::record_block(&self.logger, &self.storage, me, other.id, true).await;
+            Ok(())
+        })
+        .await
+    }
+
+    async fn unblock(&self, request: Request<friends::TargetRequest>) -> Result<Response<friends::ChangeResponse>, Status> {
+        self.change(request, "Unblocked", |me, other| async move {
+            if self.storage.unblock(me, other.id).await.map_err(internal)? {
+                federation::record_block(&self.logger, &self.storage, me, other.id, false).await;
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    async fn link_identity(&self, request: Request<friends::LinkIdentityRequest>) -> Result<Response<friends::LinkIdentityResponse>, Status> {
+        let me = caller(&request)?;
+        let request = request.into_inner();
+        let person = self.storage.find_person(me).await.map_err(internal)?.ok_or_else(|| Status::unauthenticated("Unknown user"))?;
+        if !identity::is_global_id(&request.global_id) {
+            return Err(Status::invalid_argument("Not an identity"));
+        }
+        if !identity::fresh(request.time, identity::now()) {
+            return Err(Status::invalid_argument("The signature's time is off; check this PC's clock"));
+        }
+        let message = identity::link_message(federation::server_id(), &person.username, request.time);
+        if !identity::verify(&request.global_id, &message, &request.signature) {
+            return Err(Status::permission_denied("The signature doesn't match"));
+        }
+        if person.global_id.as_deref() == Some(request.global_id.as_str()) {
+            return Ok(Response::new(friends::LinkIdentityResponse {}));
+        }
+        if person.global_id.is_some() {
+            return Err(Status::already_exists("This account is linked to another identity"));
+        }
+        self.storage.link_global_id(me, &request.global_id).await.map_err(|e| Status::already_exists(e.to_string()))?;
+        info!(self.logger, "{} ({me}) linked to identity {}", person.username, identity::short(&request.global_id));
+        let link = federation::Change::Link {
+            global_id: request.global_id,
+            username: person.username,
+            time: request.time,
+            signature: request.signature,
+        };
+        federation::linked(&self.logger, &self.storage, me, link).await;
+        Ok(Response::new(friends::LinkIdentityResponse {}))
     }
 }
 
@@ -189,9 +458,16 @@ async fn check_token<T>(logger: &Logger, key: &Key, storage: &Arc<Storage>, mut 
     let c = base64::decode(c, base64::Variant::UrlSafeNoPadding).map_err(|()| Status::unauthenticated("Invalid token"))?;
     let n = base64::decode(n, base64::Variant::UrlSafeNoPadding).map_err(|()| Status::unauthenticated("Invalid token"))?;
 
-    let user_id = secretbox::open(&c, &Nonce::from_slice(&n).ok_or(Status::unauthenticated("Invalid token"))?, key).map_err(|()| Status::unauthenticated("Invalid token"))?;
+    let plain = secretbox::open(&c, &Nonce::from_slice(&n).ok_or(Status::unauthenticated("Invalid token"))?, key).map_err(|()| Status::unauthenticated("Invalid token"))?;
 
-    let user_id = std::str::from_utf8(&user_id).map_err(|_| Status::unauthenticated("Invalid user"))?;
+    let plain = std::str::from_utf8(&plain).map_err(|_| Status::unauthenticated("Invalid user"))?;
+    // "<user id>:<issued>"; tokens from before they had a time are refused, so their
+    // holders sign in again (the game and the overlay do that on their own).
+    let (user_id, issued) = plain.split_once(':').ok_or(Status::unauthenticated("Token expired"))?;
+    let issued: i64 = issued.parse().map_err(|_| Status::unauthenticated("Invalid token"))?;
+    if identity::now() - issued > TOKEN_LIFETIME_SECS {
+        return Err(Status::unauthenticated("Token expired"));
+    }
 
     debug!(logger, "Looking for user {user_id}");
 
@@ -253,19 +529,8 @@ impl Users for MyUsers {
             }
         })?;
 
-        let user_id = format!("{user_id}");
-        let n = secretbox::gen_nonce();
-        let c = secretbox::seal(user_id.as_bytes(), &n, &self.key);
-
-        let c = base64::encode(c, base64::Variant::UrlSafeNoPadding);
-        let n = base64::encode(n, base64::Variant::UrlSafeNoPadding);
-
         info!(self.logger, "Login successful for {username}");
-        Ok(Response::new(users::LoginResponse {
-            error: String::new(),
-            token: format!("{c}.{n}"),
-            user: None,
-        }))
+        self.signed_in(user_id).await
     }
 
     /// Handles user registration requests.
@@ -276,9 +541,14 @@ impl Users for MyUsers {
             return Err(Status::resource_exhausted("Too many new accounts from this address; try again later"));
         }
         let request = request.into_inner();
-        let username = request.username;
+        let username = request.username.trim().to_string();
         let password = request.password;
-        let ubi_id = request.ubi_id;
+        check_username(&username).map_err(Status::invalid_argument)?;
+        if password.len() < 8 || password.len() > 128 {
+            return Err(Status::invalid_argument("Passwords are 8 to 128 characters"));
+        }
+        // The account id is the name, set here: a client can't claim someone else's.
+        let ubi_id = username.clone();
 
         let error = if let Err(err) = self.storage.register_user_async(&username, &password, Some(&ubi_id)).await {
             match err.downcast::<sqlx::Error>() {
@@ -294,8 +564,73 @@ impl Users for MyUsers {
         } else {
             String::new()
         };
-        info!(self.logger, "New user {username} ({ubi_id}) registered");
-        Ok(Response::new(users::RegisterResponse { error, user: None }))
+        info!(self.logger, "New user {username} registered");
+        Ok(Response::new(users::RegisterResponse {
+            error,
+            user: Some(User {
+                id: ubi_id,
+                username,
+                ips: vec![],
+            }),
+        }))
+    }
+
+    /// Signs in with the identity key the account is linked to (see `identity`).
+    async fn key_login(&self, request: Request<users::KeyLoginRequest>) -> Result<Response<users::LoginResponse>, Status> {
+        let peer = client_addr(&request);
+        if crate::rate_limit::logins().blocked(peer) {
+            return Err(Status::resource_exhausted("Too many failed logins; try again later"));
+        }
+        let request = request.into_inner();
+        let refused = |why: &str| {
+            crate::rate_limit::logins().record(peer);
+            Status::unauthenticated(why.to_string())
+        };
+        let person = self
+            .storage
+            .find_person_by_name(&request.username)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| refused("Unknown user"))?;
+        if person.global_id.as_deref() != Some(request.global_id.as_str()) {
+            return Err(refused("This account isn't linked to that identity"));
+        }
+        if !identity::fresh(request.time, identity::now()) {
+            return Err(Status::invalid_argument("The signature's time is off; check this PC's clock"));
+        }
+        let message = identity::login_message(federation::server_id(), &person.username, request.time);
+        if !identity::verify(&request.global_id, &message, &request.signature) {
+            return Err(refused("The signature doesn't match"));
+        }
+        if !self.storage.use_key_login(person.id, request.time).await.map_err(internal)? {
+            return Err(refused("That signature was already used"));
+        }
+        if !request.new_password.is_empty() {
+            if request.new_password.len() < 8 || request.new_password.len() > 128 {
+                return Err(Status::invalid_argument("Passwords are 8 to 128 characters"));
+            }
+            self.storage.set_password(person.id, &request.new_password).await.map_err(internal)?;
+            info!(self.logger, "{} set a new password with their identity key", person.username);
+        }
+        info!(self.logger, "Key login successful for {}", person.username);
+        self.signed_in(person.id).await
+    }
+}
+
+impl MyUsers {
+    /// The answer to a successful sign-in: a token, and who they are (the
+    /// account id the game should use).
+    async fn signed_in(&self, user_id: u32) -> Result<Response<users::LoginResponse>, Status> {
+        let person = self.storage.find_person(user_id).await.map_err(internal)?;
+        Ok(Response::new(users::LoginResponse {
+            error: String::new(),
+            token: issue_token(&self.key, user_id),
+            user: person.map(|p| User {
+                id: p.ubi_id,
+                username: p.username,
+                ips: vec![],
+            }),
+        }))
     }
 }
 
@@ -310,14 +645,30 @@ pub struct MyMisc {
 impl Misc for MyMisc {
     /// Handles event requests, primarily for retrieving pending friend invites.
     async fn event(&self, request: Request<misc::EventRequest>) -> Result<Response<misc::EventResponse>, Status> {
-        let user_id: u32 = request.metadata().get("user_id").unwrap().to_str().unwrap().parse().unwrap();
+        let user_id = caller(&request)?;
 
         let Some(invite) = self.storage.take_invite_async(user_id).await.map_err(|e| {
             error!(self.logger, "Error getting latest invite for user: {e}");
             Status::internal(format!("{e:?}"))
         })?
         else {
-            return Ok(Response::new(misc::EventResponse { invite: None }));
+            // No invitation: a friend request or an accepted one, if any.
+            let friend = self.storage.take_friend_event(user_id).await.map_err(internal)?.map(|(kind, from)| {
+                let mut event = misc::FriendEvent {
+                    kind: 0,
+                    from: Some(User {
+                        id: from.ubi_id,
+                        username: from.username,
+                        ips: vec![],
+                    }),
+                };
+                event.set_kind(match kind {
+                    FriendEventKind::Request => misc::friend_event::Kind::Request,
+                    FriendEventKind::Accepted => misc::friend_event::Kind::Accepted,
+                });
+                event
+            });
+            return Ok(Response::new(misc::EventResponse { invite: None, friend }));
         };
 
         let Some(sender) = self.storage.find_user_by_id_async(invite.sender).await.map_err(|e| {
@@ -351,6 +702,7 @@ impl Misc for MyMisc {
                 }),
                 force_join: self.debug_config.force_joins,
             }),
+            friend: None,
         }))
     }
 
@@ -474,9 +826,13 @@ impl UsersAdmin for MyUsersAdmin {
         else {
             return Err(Status::not_found("User not found"));
         };
+        let global_id = self.storage.find_person(user.id).await.ok().flatten().and_then(|p| p.global_id);
         match self.storage.delete_user_async(user.id).await {
             Ok(()) => {
                 warn!(self.logger, "Deleted user {user:?}");
+                if let Some(global_id) = global_id {
+                    federation::record(&self.logger, &self.storage, federation::Change::Unlink { global_id }).await;
+                }
                 Ok(Response::new(users::DeleteResponse {}))
             }
             Err(e) => Err(Status::internal(format!("{e:?}"))),
@@ -642,6 +998,7 @@ pub async fn start_server(
     debug_config: Arc<DebugConfig>,
     enable_admin_services: bool,
     reflection: bool,
+    friends_mode: FriendsMode,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Kept across restarts, so logged-in launchers and games stay logged in.
     let key = crate::keys::load_or_create(std::path::Path::new(crate::keys::API_KEY_FILE))?;
@@ -677,6 +1034,7 @@ pub async fn start_server(
                 logger: logger.clone(),
                 storage: Arc::clone(&storage),
                 debug_config: Arc::clone(&debug_config),
+                mode: friends_mode,
             }),
             logger.clone(),
             key.clone(),

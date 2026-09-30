@@ -11,7 +11,93 @@ service Friends {
     // without this, an accepted invitation has no destination and the game gives up with
     // "Failed to find party session for invite."
     rpc SetSession (SetSessionRequest) returns (SetSessionResponse);
+
+    // The caller's friends, friend requests both ways and blocks, for the overlay.
+    rpc Relationships (RelationshipsRequest) returns (RelationshipsResponse);
+    // Players by part of their name, or who's online for an empty query.
+    rpc Search (SearchRequest) returns (SearchResponse);
+    // Asks a player to be friends (accepts, if they had asked the caller).
+    rpc Request (TargetRequest) returns (ChangeResponse);
+    rpc Accept (TargetRequest) returns (ChangeResponse);
+    // Declines a request to the caller, or withdraws the caller's own.
+    rpc Decline (TargetRequest) returns (ChangeResponse);
+    rpc Remove (TargetRequest) returns (ChangeResponse);
+    rpc Block (TargetRequest) returns (ChangeResponse);
+    rpc Unblock (TargetRequest) returns (ChangeResponse);
+    // Links the caller's account to their identity across servers: a public key, proved
+    // with a signature (see docs/friends.md). Friends then follow them to other servers
+    // that share a coordinator.
+    rpc LinkIdentity (LinkIdentityRequest) returns (LinkIdentityResponse);
 }
+
+// How a player stands to the caller.
+enum Relation {
+    NONE = 0;
+    FRIEND = 1;
+    REQUEST_SENT = 2;
+    REQUEST_RECEIVED = 3;
+    BLOCKED = 4;
+}
+
+// What an online player is doing, when the server knows.
+message Activity {
+    // "svm" or "coop".
+    string mode = 1;
+    // "match" or "lobby".
+    string room = 2;
+    repeated string with = 3;
+    uint32 map = 4;
+}
+
+message Player {
+    // The account id (as in Friend.id); what the other calls take.
+    string id = 1;
+    string username = 2;
+    bool is_online = 3;
+    Relation relation = 4;
+    Activity activity = 5;
+}
+
+message RelationshipsRequest {}
+
+message RelationshipsResponse {
+    repeated Player friends = 1;
+    repeated Player requests_received = 2;
+    repeated Player requests_sent = 3;
+    repeated Player blocked = 4;
+    // "everyone": every player is on the game's friend list; "mutual": only friends.
+    string mode = 5;
+}
+
+message SearchRequest {
+    string query = 1;
+}
+
+message SearchResponse {
+    repeated Player players = 1;
+}
+
+// A player, by account id or else by name.
+message TargetRequest {
+    string id = 1;
+    string username = 2;
+}
+
+message ChangeResponse {
+    // How the player stands to the caller now.
+    Relation relation = 1;
+}
+
+message LinkIdentityRequest {
+    // The identity's public key (Ed25519, base32).
+    string global_id = 1;
+    // Unix seconds the launcher signed at.
+    int64 time = 2;
+    // Signature (base32) of "5th-echelon/link/v1\n<server id>\n<username>\n<time>".
+    string signature = 3;
+}
+
+message LinkIdentityResponse {}
 
 message Friend {
     string id = 1;

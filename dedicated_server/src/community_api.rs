@@ -38,7 +38,7 @@ pub const RELEASE: &str = env!("FE_RELEASE");
 
 /// What every server of this release supports, for clients to check. The
 /// switchable API parts are added when they're on.
-const FEATURES: &[&str] = &["invites", "private-matches", "trusted-subnet", "persistent-logins"];
+const FEATURES: &[&str] = &["invites", "private-matches", "trusted-subnet", "persistent-logins", "friends", "identity"];
 
 /// Session attributes (see game_session.rs): 101 map, 102 mode, 103 non-zero
 /// for Spies vs Mercs, 113 room kind (0 match, 1 lobby).
@@ -53,6 +53,15 @@ static PUBLIC: std::sync::OnceLock<(PublicPorts, Option<String>)> = std::sync::O
 /// players up for a server behind a proxy or with remapped ports.
 pub fn publish(ports: PublicPorts, host: Option<String>) {
     let _ = PUBLIC.set((ports, host));
+}
+
+/// What `/api/info` says about friends: this server's id (players sign it
+/// into identity links and key logins), the friend list mode, and the
+/// coordinator it shares friends with, if any.
+static FRIENDS: std::sync::OnceLock<(String, crate::config::FriendsMode, Option<String>)> = std::sync::OnceLock::new();
+
+pub fn publish_friends(server_id: String, mode: crate::config::FriendsMode, coordinator: Option<String>) {
+    let _ = FRIENDS.set((server_id, mode, coordinator));
 }
 
 pub fn routes(storage: Arc<Storage>, cfg: CommunityApiConfig) -> Routes {
@@ -102,6 +111,13 @@ fn info(cfg: CommunityApiConfig) -> Value {
         "revision": env!("FE_REVISION"),
         "features": features,
     });
+    if let Some((id, mode, coordinator)) = FRIENDS.get() {
+        info["id"] = json!(id);
+        info["friends_mode"] = json!(mode);
+        if let Some(coordinator) = coordinator {
+            info["coordinator"] = json!(coordinator);
+        }
+    }
     if let Some((ports, host)) = PUBLIC.get() {
         info["ports"] = json!(ports);
         if let Some(host) = host {
@@ -129,7 +145,20 @@ fn presence(players: &[(String, bool)], sessions: &[LiveSession]) -> Value {
     json!({ "players": players })
 }
 
-fn activity(name: &str, sessions: &[LiveSession]) -> Option<Value> {
+/// What an online player is doing, from the live sessions.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Activity {
+    /// "svm" or "coop".
+    pub mode: &'static str,
+    /// "match" or "lobby".
+    pub room: &'static str,
+    /// The others in it.
+    pub with: Vec<String>,
+    pub map: Option<u32>,
+}
+
+/// `name`'s activity: the match they're in (preferred) or their lobby.
+pub(crate) fn activity_of(name: &str, sessions: &[LiveSession]) -> Option<Activity> {
     // sessions are newest first; a match wins over the lobby around it.
     let mine = sessions.iter().filter(|s| s.players.iter().any(|p| p == name));
     let best = mine.min_by_key(|s| match attribute_value(&s.attributes, ATTR_ROOM_KIND) {
@@ -137,17 +166,24 @@ fn activity(name: &str, sessions: &[LiveSession]) -> Option<Value> {
         Some(1) => 1,
         _ => 2,
     })?;
-    let mode = if attribute_value(&best.attributes, ATTR_SVM).unwrap_or(0) != 0 { "svm" } else { "coop" };
-    let room = match attribute_value(&best.attributes, ATTR_ROOM_KIND) {
-        Some(0) => "match",
-        _ => "lobby",
-    };
-    let with: Vec<&String> = best.players.iter().filter(|p| *p != name).collect();
-    let mut a = json!({ "mode": mode, "room": room, "with": with });
-    if let Some(map) = attribute_value(&best.attributes, ATTR_MAP) {
-        a["map"] = json!(map);
+    Some(Activity {
+        mode: if attribute_value(&best.attributes, ATTR_SVM).unwrap_or(0) != 0 { "svm" } else { "coop" },
+        room: match attribute_value(&best.attributes, ATTR_ROOM_KIND) {
+            Some(0) => "match",
+            _ => "lobby",
+        },
+        with: best.players.iter().filter(|p| *p != name).cloned().collect(),
+        map: attribute_value(&best.attributes, ATTR_MAP),
+    })
+}
+
+fn activity(name: &str, sessions: &[LiveSession]) -> Option<Value> {
+    let a = activity_of(name, sessions)?;
+    let mut v = json!({ "mode": a.mode, "room": a.room, "with": a.with });
+    if let Some(map) = a.map {
+        v["map"] = json!(map);
     }
-    Some(a)
+    Some(v)
 }
 
 /// Username and password from a JSON body.
@@ -177,6 +213,9 @@ fn register(storage: &Storage, body: &[u8]) -> Response {
         Ok(c) => c,
         Err(r) => return r,
     };
+    if let Err(why) = crate::api::check_username(&username) {
+        return bad(why);
+    }
     // The launcher registers with the username as the Ubisoft id, and the game
     // uses it as the account id; one-click accounts do the same.
     match storage.register_user(&username, &password, Some(&username)) {

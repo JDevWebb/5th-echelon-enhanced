@@ -95,6 +95,62 @@ pub fn registrations() -> &'static RateLimit {
     LIMIT.get_or_init(|| RateLimit::new((limits().registrations_per_hour, Duration::from_secs(60 * 60))))
 }
 
+/// At most `max` actions per player in any `window`: invites, friend
+/// requests and searches, which a signed-in player could otherwise repeat
+/// without end.
+pub struct PlayerLimit {
+    max: usize,
+    window: Duration,
+    seen: Mutex<HashMap<u32, VecDeque<Instant>>>,
+}
+
+impl PlayerLimit {
+    pub fn new(max: usize, window: Duration) -> Self {
+        Self {
+            max,
+            window,
+            seen: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Counts an action by `player` and says whether it's allowed.
+    pub fn check(&self, player: u32) -> bool {
+        self.check_at(player, Instant::now())
+    }
+
+    fn check_at(&self, player: u32, now: Instant) -> bool {
+        let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        seen.retain(|_, times| times.back().is_some_and(|t| now.duration_since(*t) < self.window));
+        let times = seen.entry(player).or_default();
+        while times.front().is_some_and(|t| now.duration_since(*t) >= self.window) {
+            times.pop_front();
+        }
+        if times.len() >= self.max {
+            return false;
+        }
+        times.push_back(now);
+        true
+    }
+}
+
+/// Invites a player may send: 20 a minute.
+pub fn invites() -> &'static PlayerLimit {
+    static LIMIT: std::sync::OnceLock<PlayerLimit> = std::sync::OnceLock::new();
+    LIMIT.get_or_init(|| PlayerLimit::new(20, Duration::from_secs(60)))
+}
+
+/// Friend requests, blocks and other friend changes: 30 a minute.
+pub fn friend_changes() -> &'static PlayerLimit {
+    static LIMIT: std::sync::OnceLock<PlayerLimit> = std::sync::OnceLock::new();
+    LIMIT.get_or_init(|| PlayerLimit::new(30, Duration::from_secs(60)))
+}
+
+/// Player searches: 60 a minute.
+pub fn searches() -> &'static PlayerLimit {
+    static LIMIT: std::sync::OnceLock<PlayerLimit> = std::sync::OnceLock::new();
+    LIMIT.get_or_init(|| PlayerLimit::new(60, Duration::from_secs(60)))
+}
+
 /// At most `max` requests per address in any `window`.
 pub struct RateLimit {
     pub(crate) max: usize,
@@ -174,6 +230,16 @@ impl RateLimit {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn player_limits_are_per_player() {
+        let limit = PlayerLimit::new(2, Duration::from_secs(60));
+        let t0 = Instant::now();
+        assert!(limit.check_at(1, t0) && limit.check_at(1, t0));
+        assert!(!limit.check_at(1, t0), "third within the window");
+        assert!(limit.check_at(2, t0), "another player has their own budget");
+        assert!(limit.check_at(1, t0 + Duration::from_secs(61)));
+    }
 
     #[test]
     fn rate_limit_window_slides() {

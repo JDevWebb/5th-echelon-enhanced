@@ -659,7 +659,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
 
         // Resolved before the search, because the answer depends on it.
         let invited = rmc_err!(
-            self.storage.find_pending_invited_session(user_id, request.game_session_type_id),
+            self.storage.find_pending_invited_session(user_id, request.game_session_type_id, request.participant_ids.0.as_slice()),
             logger,
             "error resolving invited room"
         )?;

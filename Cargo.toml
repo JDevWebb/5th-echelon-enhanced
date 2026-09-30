@@ -17,6 +17,8 @@ members = [
   # "tools/wireshark-dissector",
   "launcher",
   "nat_proto",
+  "identity",
+  "coordinator",
   "setup",
   "tools/umd_browser",
   "tools/testbot",

@@ -13,7 +13,23 @@ use sqlx::Execute;
 use sqlx::Executor;
 use sqlx::Statement;
 
+mod relationships;
+
+pub use relationships::FriendError;
+pub use relationships::FriendEventKind;
+pub use relationships::Person;
+pub use relationships::Relation;
+
 type Result<T> = eyre::Result<T>;
+
+/// Invitations one player can have waiting at once (one per sender).
+const MAX_PENDING_INVITES: i64 = 5;
+
+/// The key that makes names unique whatever their case ("Kiwi" and "kiwi"
+/// are one name).
+pub fn name_key(username: &str) -> String {
+    username.trim().to_lowercase()
+}
 
 /// Runs password hashing (Argon2: about 19 MiB of memory and tens of
 /// milliseconds of CPU each) on the blocking pool, a few at a time. A burst
@@ -29,7 +45,7 @@ async fn hashing<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> R
 /// Runs a query from the (synchronous) game services. One runtime for all
 /// of them, so the connection pool's background work has a runtime that
 /// lives as long as the pool (upstream built a runtime per query).
-fn run<F>(future: F) -> Result<F::Output>
+pub(crate) fn run<F>(future: F) -> Result<F::Output>
 where
     F: std::future::Future,
 {
@@ -69,7 +85,26 @@ impl Storage {
             sqlx::migrate!("src/storage/migrations").run(&pool).await?;
             Ok::<_, eyre::Error>(pool)
         })??;
-        Ok(Self { logger, pool })
+        let storage = Self { logger, pool };
+        run(storage.refresh_name_keys())??;
+        Ok(storage)
+    }
+
+    /// Recomputes every `name_key` with full Unicode case folding (the
+    /// migration could only lower-case ASCII). A name that now clashes with
+    /// another keeps its old key, and is logged.
+    async fn refresh_name_keys(&self) -> Result<()> {
+        let rows: Vec<(u32, String, Option<String>)> = sqlx::query_as("SELECT id, username, name_key FROM users").fetch_all(&self.pool).await?;
+        for (id, username, key) in rows {
+            let wanted = name_key(&username);
+            if key.as_deref() == Some(wanted.as_str()) {
+                continue;
+            }
+            if let Err(e) = sqlx::query("UPDATE users SET name_key = ? WHERE id = ?").bind(&wanted).bind(id).execute(&self.pool).await {
+                warn!(self.logger, "Account {username} ({id}) differs only in case from another; rename one of them"; "error" => %e);
+            }
+        }
+        Ok(())
     }
 
     pub async fn login_user_async(&self, username: &str, password: &str) -> Result<std::result::Result<u32, LoginError>> {
@@ -139,10 +174,11 @@ impl Storage {
     }
 
     async fn register_user_unsafe_async(&self, username: &str, password: &str, ubi_id: Option<&str>) -> sqlx::Result<()> {
-        sqlx::query("INSERT INTO users (username, password_hash, ubi_id) VALUES (?, ?, ?)")
+        sqlx::query("INSERT INTO users (username, password_hash, ubi_id, name_key) VALUES (?, ?, ?, ?)")
             .bind(username)
             .bind(password)
             .bind(ubi_id)
+            .bind(name_key(username))
             .execute(&self.pool)
             .await?;
         Ok(())
@@ -512,10 +548,12 @@ impl Storage {
 
     /// Records one pending invitation, optionally bound to an exact room.
     ///
-    /// Only a single unconsumed invitation is kept per receiver: the event handed to the game
-    /// carries a sender but no session key, so a second pending invitation could not be told
-    /// apart from the first. Passing `None` for the room keeps the invitation unbound, which
-    /// behaves exactly like it did before rooms were tracked.
+    /// A receiver keeps one invitation per sender (a new one from the same sender replaces
+    /// theirs) and at most [`MAX_PENDING_INVITES`], so one player can't push everyone else's
+    /// invitations out. Answering tells them apart by sender: the game searches for the
+    /// inviter's session (see [`Self::find_pending_invited_session`]). Passing `None` for the
+    /// room keeps the invitation unbound, which behaves exactly like it did before rooms were
+    /// tracked.
     pub async fn add_invite_async(&self, sender_id: u32, receiver_id: u32, session_type: Option<u32>, session_id: Option<u32>) -> Result<i64> {
         match (session_type, session_id) {
             (Some(type_id), Some(id)) => info!(self.logger, "sending invite from {sender_id} to {receiver_id}, bound to session {id} (type {type_id})"),
@@ -523,10 +561,18 @@ impl Storage {
         }
 
         let mut transaction = self.pool.begin().await?;
-        sqlx::query("DELETE FROM invites WHERE receiver = ? OR consumed_at IS NOT NULL OR expires_at IS NULL OR expires_at <= CURRENT_TIMESTAMP")
+        sqlx::query("DELETE FROM invites WHERE (receiver = ? AND sender = ?) OR consumed_at IS NOT NULL OR expires_at IS NULL OR expires_at <= CURRENT_TIMESTAMP")
             .bind(receiver_id)
+            .bind(sender_id)
             .execute(&mut *transaction)
             .await?;
+        let pending: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM invites WHERE receiver = ?")
+            .bind(receiver_id)
+            .fetch_one(&mut *transaction)
+            .await?;
+        if pending >= MAX_PENDING_INVITES {
+            return Err(eyre!("{receiver_id} already has {pending} invitations waiting"));
+        }
         let id = sqlx::query("INSERT INTO invites (sender, receiver, session_type, session_id, expires_at) VALUES (?, ?, ?, ?, datetime('now', '+5 minutes'))")
             .bind(sender_id)
             .bind(receiver_id)
@@ -552,10 +598,10 @@ impl Storage {
             .await?;
         let invite: Option<Invite> = sqlx::query_as(
             r"
-            SELECT rowid AS id, sender, receiver, session_type, session_id
+            SELECT id, sender, receiver, session_type, session_id
             FROM invites
             WHERE receiver = ? AND delivered_at IS NULL AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP
-            ORDER BY created DESC, rowid DESC
+            ORDER BY created, id
             LIMIT 1
             ",
         )
@@ -563,7 +609,7 @@ impl Storage {
         .fetch_optional(&mut *transaction)
         .await?;
         if let Some(invite) = invite {
-            sqlx::query("UPDATE invites SET delivered_at = CURRENT_TIMESTAMP WHERE rowid = ?")
+            sqlx::query("UPDATE invites SET delivered_at = CURRENT_TIMESTAMP WHERE id = ?")
                 .bind(invite.id)
                 .execute(&mut *transaction)
                 .await?;
@@ -577,12 +623,16 @@ impl Storage {
     /// This deliberately ignores the matchmaking attributes the client sent along: a private
     /// room carries property 103 = 0 and would never match an ordinary search query. That
     /// filter is the whole reason invited players could not join.
-    pub fn find_pending_invited_session(&self, receiver_id: u32, session_type: u32) -> Result<Option<GameSession>> {
-        run(self.find_pending_invited_session_async(receiver_id, session_type))?
+    ///
+    /// With invitations from several players waiting, the one from a player in `hosts` (the
+    /// participants the game is searching for: the inviter it accepted) wins; otherwise the
+    /// newest.
+    pub fn find_pending_invited_session(&self, receiver_id: u32, session_type: u32, hosts: &[u32]) -> Result<Option<GameSession>> {
+        run(self.find_pending_invited_session_async(receiver_id, session_type, hosts))?
     }
 
-    pub async fn find_pending_invited_session_async(&self, receiver_id: u32, session_type: u32) -> Result<Option<GameSession>> {
-        let mut session: Option<GameSession> = sqlx::query_as(
+    pub async fn find_pending_invited_session_async(&self, receiver_id: u32, session_type: u32, hosts: &[u32]) -> Result<Option<GameSession>> {
+        let mut candidates: Vec<GameSession> = sqlx::query_as(
             r"
             SELECT g.type_id AS session_type, g.id AS session_id, g.creator_id, g.attributes
             FROM invites i
@@ -594,14 +644,15 @@ impl Storage {
               AND i.expires_at > CURRENT_TIMESTAMP
               AND g.creator_id = i.sender
               AND g.destroyed_at IS NULL
-            ORDER BY i.created DESC, i.rowid DESC
-            LIMIT 1
+            ORDER BY i.created DESC, i.id DESC
             ",
         )
         .bind(receiver_id)
         .bind(session_type)
-        .fetch_optional(&self.pool)
+        .fetch_all(&self.pool)
         .await?;
+        let pick = candidates.iter().position(|s| hosts.contains(&s.creator_id)).unwrap_or(0);
+        let mut session = (!candidates.is_empty()).then(|| candidates.swap_remove(pick));
 
         {
             let Some(session) = session.as_mut() else {
@@ -979,27 +1030,29 @@ impl Storage {
     /// Registered players (name, online) and live sessions with their
     /// players, for the community API's presence feed.
     pub fn presence(&self) -> Result<(Vec<(String, bool)>, Vec<LiveSession>)> {
-        run(async {
-            let players: Vec<(String, bool)> = sqlx::query_as("SELECT username, is_online FROM users WHERE ubi_id IS NOT NULL ORDER BY username COLLATE NOCASE")
-                .fetch_all(&self.pool)
-                .await?;
-            let sessions: Vec<(u32, String)> = sqlx::query_as("SELECT id, attributes FROM game_sessions WHERE destroyed_at IS NULL ORDER BY id DESC")
-                .fetch_all(&self.pool)
-                .await?;
-            let members: Vec<(u32, String)> = sqlx::query_as("SELECT p.game_id, u.username FROM participants p JOIN users u ON u.id = p.user_id")
-                .fetch_all(&self.pool)
-                .await?;
-            let live = sessions
-                .into_iter()
-                .map(|(id, attributes)| LiveSession {
-                    id,
-                    attributes,
-                    players: members.iter().filter(|(g, _)| *g == id).map(|(_, name)| name.clone()).collect(),
-                })
-                .filter(|s| !s.players.is_empty())
-                .collect();
-            Ok::<_, eyre::Error>((players, live))
-        })?
+        run(self.presence_async())?
+    }
+
+    pub async fn presence_async(&self) -> Result<(Vec<(String, bool)>, Vec<LiveSession>)> {
+        let players: Vec<(String, bool)> = sqlx::query_as("SELECT username, is_online FROM users WHERE ubi_id IS NOT NULL ORDER BY username COLLATE NOCASE")
+            .fetch_all(&self.pool)
+            .await?;
+        let sessions: Vec<(u32, String)> = sqlx::query_as("SELECT id, attributes FROM game_sessions WHERE destroyed_at IS NULL ORDER BY id DESC")
+            .fetch_all(&self.pool)
+            .await?;
+        let members: Vec<(u32, String)> = sqlx::query_as("SELECT p.game_id, u.username FROM participants p JOIN users u ON u.id = p.user_id")
+            .fetch_all(&self.pool)
+            .await?;
+        let live = sessions
+            .into_iter()
+            .map(|(id, attributes)| LiveSession {
+                id,
+                attributes,
+                players: members.iter().filter(|(g, _)| *g == id).map(|(_, name)| name.clone()).collect(),
+            })
+            .filter(|s| !s.players.is_empty())
+            .collect();
+        Ok((players, live))
     }
 }
 

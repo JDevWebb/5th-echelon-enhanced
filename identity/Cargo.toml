@@ -1,0 +1,9 @@
+[package]
+name = "identity"
+version = "0.3.0"
+edition = "2021"
+description = "A player's identity across servers: an Ed25519 key, and the messages it signs"
+
+[dependencies]
+ed25519-dalek = { version = "2.1", default-features = false, features = ["std", "zeroize"] }
+rand = { workspace = true }

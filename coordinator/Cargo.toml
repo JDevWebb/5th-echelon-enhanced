@@ -1,0 +1,23 @@
+[package]
+name = "coordinator"
+version = "0.3.0"
+edition = "2021"
+description = "Shares friends between 5th Echelon servers, and lists them in a server directory"
+
+[dependencies]
+argh = { workspace = true }
+axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query"] }
+eyre = { workspace = true }
+identity = { path = "../identity" }
+rand = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "net", "signal"] }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"

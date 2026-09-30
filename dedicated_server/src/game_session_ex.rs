@@ -56,7 +56,7 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
         // room and skip the attribute comparison below.
         let session_type = request.game_session_query.type_id;
         let invited_session = if request.game_session_query.query_id == 8 {
-            rmc_err!(self.storage.find_pending_invited_session(user_id, session_type), logger, "Error resolving invited room")?
+            rmc_err!(self.storage.find_pending_invited_session(user_id, session_type, &[]), logger, "Error resolving invited room")?
         } else {
             None
         };

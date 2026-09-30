@@ -12,6 +12,18 @@ service Misc {
 message EventRequest {}
 message EventResponse {
     InviteEvent invite = 1;
+    FriendEvent friend = 2;
+}
+
+message FriendEvent {
+    enum Kind {
+        // They asked the player to be friends.
+        REQUEST = 0;
+        // They accepted the player's request.
+        ACCEPTED = 1;
+    }
+    Kind kind = 1;
+    users.User from = 2;
 }
 
 message InviteEvent {

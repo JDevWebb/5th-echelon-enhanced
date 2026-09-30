@@ -130,6 +130,70 @@ impl Default for LimitsConfig {
     }
 }
 
+/// Who is on a player's friend list.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum FriendsMode {
+    /// Every player on the server, as before friend lists existed: right for
+    /// a LAN or a group that all know each other. Friend requests still
+    /// work (friends sort first), and blocks still hide people.
+    #[default]
+    Everyone,
+    /// Only friends (a request, then accepted), and only friends can invite.
+    /// For public servers.
+    Mutual,
+}
+
+/// Friend lists (`[friends]`).
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+pub struct FriendsConfig {
+    #[serde(default)]
+    pub mode: FriendsMode,
+}
+
+/// A coordination server shared with other community servers
+/// (`[federation]`): friends follow players between them, and this server
+/// is listed in the coordinator's server directory. Off until
+/// `coordinator` is set.
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
+pub struct FederationConfig {
+    /// The coordinator's URL, e.g. "https://coordinator.example.com".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub coordinator: String,
+    /// The coordinator's join token, from its operator. Only needed until
+    /// this server has joined (its credentials are then kept in
+    /// `federation.key`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub join_token: String,
+    /// The name players see in the server directory.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub name: String,
+    /// Where the server is, e.g. "Sydney" or "EU West", for the directory.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub region: String,
+    /// Whether to appear in the server directory (friends sync either way).
+    #[serde(default = "enabled")]
+    pub listed: bool,
+}
+
+impl Default for FederationConfig {
+    fn default() -> Self {
+        Self {
+            coordinator: String::new(),
+            join_token: String::new(),
+            name: String::new(),
+            region: String::new(),
+            listed: true,
+        }
+    }
+}
+
+impl FederationConfig {
+    pub fn enabled(&self) -> bool {
+        !self.coordinator.trim().is_empty()
+    }
+}
+
 /// The admin API (accounts and games, on the gRPC port), for managing the
 /// server from the launcher. Always on when started by the launcher
 /// (`--launcher`); `enabled` turns it on otherwise. Its key is written to
@@ -279,6 +343,16 @@ pub struct Config {
     pub nat: NatConfig,
     #[serde(default, skip_serializing_if = "PublicConfig::is_default")]
     pub public: PublicConfig,
+    #[serde(default)]
+    pub friends: FriendsConfig,
+    #[serde(default, skip_serializing_if = "FederationConfig::is_off")]
+    pub federation: FederationConfig,
+}
+
+impl FederationConfig {
+    fn is_off(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -469,6 +543,8 @@ impl Default for Config {
             limits: LimitsConfig::default(),
             nat: NatConfig::default(),
             public: PublicConfig::default(),
+            friends: FriendsConfig::default(),
+            federation: FederationConfig::default(),
         }
     }
 }

@@ -49,6 +49,7 @@ mod challenge;
 mod clan;
 mod community_api;
 mod config;
+mod federation;
 mod game_session;
 mod game_session_ex;
 mod keys;
@@ -339,6 +340,11 @@ fn main() -> color_eyre::Result<()> {
         warn!(logger, "Ignoring [public] proxies entry {bad:?} (expected an address or a subnet like 172.17.0.0/16)");
     }
     let community_api = config.community_api;
+    let friends_mode = config.friends.mode;
+    let federation_config = config.federation.clone();
+    let server_id = federation::load_or_create_server_id(Path::new(federation::SERVER_ID_FILE))?;
+    federation::init(server_id.clone(), federation_config.enabled());
+    community_api::publish_friends(server_id, friends_mode, federation_config.enabled().then(|| federation_config.coordinator.trim().to_string()));
     let nat = config.nat;
     // Relay addresses use the address players reach this server on.
     let relay_ip = nat
@@ -399,15 +405,41 @@ fn main() -> color_eyre::Result<()> {
         threads.push(handle.unwrap());
     }
 
+    // What the coordinator's server directory shows about this server.
+    let listing = {
+        let host = config.public.host.clone().unwrap_or_else(|| relay_ip.to_string());
+        let federation_config = federation_config.clone();
+        move || federation::Listing {
+            name: if federation_config.name.is_empty() { host.clone() } else { federation_config.name.clone() },
+            region: federation_config.region.clone(),
+            listed: federation_config.listed,
+            host: host.clone(),
+            ports: public_ports,
+            version: community_api::RELEASE.to_string(),
+            players_online: 0,
+            players_total: 0,
+            friends_mode,
+        }
+    };
+
     threads.push(
         std::thread::Builder::new()
             .name(String::from("api"))
             .spawn(move || {
                 let logger = logger.new(o!("service" => "api"));
-                if let Err(e) = tokio::runtime::Runtime::new()
-                    .unwrap()
-                    .block_on(api::start_server(logger.clone(), storage, config.api_server, debug_config, admin_api, config.debug.grpc_reflection))
-                {
+                let rt = tokio::runtime::Runtime::new().unwrap();
+                if federation_config.enabled() {
+                    rt.spawn(federation::run(logger.new(o!("service" => "federation")), Arc::clone(&storage), federation_config, listing));
+                }
+                if let Err(e) = rt.block_on(api::start_server(
+                    logger.clone(),
+                    storage,
+                    config.api_server,
+                    debug_config,
+                    admin_api,
+                    config.debug.grpc_reflection,
+                    friends_mode,
+                )) {
                     crit!(logger, "Error running api server: {e:?}");
                 }
             })

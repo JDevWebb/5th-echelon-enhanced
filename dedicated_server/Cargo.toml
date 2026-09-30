@@ -16,6 +16,7 @@ color-eyre = { workspace = true }
 dedicated_server_config = { path = "./config" }
 eyre = { workspace = true }
 hmac = { workspace = true }
+identity = { path = "../identity" }
 libc = { workspace = true }
 md-5 = { workspace = true }
 nat_proto = { path = "../nat_proto" }
@@ -23,6 +24,7 @@ num_enum = { workspace = true }
 quazal = { path = "../quazal" }
 quazal-macros = { path = "../quazal/quazal-macros" }
 rand = { workspace = true }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 sc_bl_protocols = { path = "./sc_bl_protocols" }
 serde = { workspace = true }
 serde_json = { workspace = true }
