@@ -23,6 +23,10 @@ pub use relationships::RenameError;
 
 type Result<T> = eyre::Result<T>;
 
+/// An Argon2 hash of nothing in particular, checked against for unknown
+/// users so their logins take as long as real ones.
+const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$ak/934K3+OsQ71Dogbr+Iw$Fy3aLbg2bQFXrnucys2gsBqiy2Jgv9QMBWWiPzS7VTk";
+
 /// Invitations one player can have waiting at once (one per sender).
 const MAX_PENDING_INVITES: i64 = 5;
 
@@ -114,7 +118,10 @@ impl Storage {
             .fetch_optional(&self.pool)
             .await?
         else {
-            warn!(self.logger, "User {} not found", username);
+            warn!(self.logger, "User {} not found", username.chars().take(32).collect::<String>());
+            // As long as a real check, so the time taken doesn't tell which names exist.
+            let password = password.to_owned();
+            let _ = hashing(move || Argon2::default().verify_password(password.as_bytes(), &PasswordHash::new(DUMMY_HASH).expect("valid dummy hash"))).await;
             return Ok(Err(LoginError::NotFound));
         };
 
@@ -269,6 +276,14 @@ impl Storage {
             write!(&mut s, "{c:02X}")?;
         }
         run(async {
+            // Each ticket request adds one; keep the newest few, not one per request forever.
+            sqlx::query(
+                "DELETE FROM user_sessions WHERE user_id = ? AND id NOT IN (SELECT id FROM user_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 3)",
+            )
+            .bind(user_id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
             sqlx::query("INSERT INTO user_sessions (id, user_id) VALUES (?, ?)")
                 .bind(s)
                 .bind(user_id)
@@ -896,6 +911,73 @@ impl Storage {
             }
         }
         Ok(sessions)
+    }
+
+    /// How many live sessions `user_id` hosts.
+    pub fn count_live_sessions(&self, user_id: u32) -> Result<u32> {
+        let n: i64 = run(sqlx::query_scalar("SELECT COUNT(*) FROM game_sessions WHERE creator_id = ? AND destroyed_at IS NULL")
+            .bind(user_id)
+            .fetch_one(&self.pool))??;
+        Ok(u32::try_from(n).unwrap_or(u32::MAX))
+    }
+
+    /// Whether two players are in a live session together (either hosting).
+    pub fn share_session(&self, a: u32, b: u32) -> Result<bool> {
+        let n: i64 = run(sqlx::query_scalar(
+            "SELECT COUNT(*) FROM game_sessions g WHERE g.destroyed_at IS NULL
+               AND (g.creator_id = ? OR EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?))
+               AND (g.creator_id = ? OR EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?))",
+        )
+        .bind(a)
+        .bind(a)
+        .bind(b)
+        .bind(b)
+        .fetch_one(&self.pool))??;
+        Ok(n > 0)
+    }
+
+    /// Whether a host announced `session_id` as invite-only.
+    pub fn is_invite_only_session(&self, session_id: u32) -> Result<bool> {
+        let n: i64 = run(sqlx::query_scalar("SELECT COUNT(*) FROM advertised_sessions WHERE session_id = ? AND invite_only = 1")
+            .bind(session_id)
+            .fetch_one(&self.pool))??;
+        Ok(n > 0)
+    }
+
+    /// Whether `user_id` has a pending invitation into `session_id`: the API's
+    /// (not consumed, not expired) or the game's own.
+    pub fn is_invited(&self, user_id: u32, session_id: u32) -> Result<bool> {
+        let n: i64 = run(sqlx::query_scalar(
+            "SELECT (SELECT COUNT(*) FROM invites WHERE receiver = ? AND session_id = ? AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP)
+                  + (SELECT COUNT(*) FROM game_session_invites WHERE receiver = ? AND session_id = ?)",
+        )
+        .bind(user_id)
+        .bind(session_id)
+        .bind(user_id)
+        .bind(session_id)
+        .fetch_one(&self.pool))??;
+        Ok(n > 0)
+    }
+
+    /// Whether `sender` invited `receiver` into `session_id` (the game's invitations).
+    pub fn game_session_invite_exists(&self, session_id: u32, sender: u32, receiver: u32) -> Result<bool> {
+        let n: i64 = run(sqlx::query_scalar("SELECT COUNT(*) FROM game_session_invites WHERE session_id = ? AND sender = ? AND receiver = ?")
+            .bind(session_id)
+            .bind(sender)
+            .bind(receiver)
+            .fetch_one(&self.pool))??;
+        Ok(n > 0)
+    }
+
+    /// Deletes what's left of ended sessions and old invitations, which used
+    /// to stay until a restart. Called every few minutes.
+    pub async fn purge_stale_async(&self) -> Result<()> {
+        sqlx::query("DELETE FROM game_sessions WHERE destroyed_at IS NOT NULL AND destroyed_at < datetime('now', '-10 minutes')")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM game_session_invites WHERE created_at < datetime('now', '-30 minutes')").execute(&self.pool).await?;
+        sqlx::query("DELETE FROM invites WHERE consumed_at IS NOT NULL OR expires_at <= CURRENT_TIMESTAMP").execute(&self.pool).await?;
+        Ok(())
     }
 
     pub async fn delete_user_async(&self, user_id: u32) -> Result<()> {

@@ -2,7 +2,7 @@ use quazal::prudp::ClientRegistry;
 use quazal::rmc::types::QResult;
 use quazal::rmc::Protocol;
 
-use crate::login_required;
+use crate::login_or_service_required as login_required;
 use crate::protocols::secure_connection_service::secure_connection_protocol::RegisterExRequest;
 use crate::protocols::secure_connection_service::secure_connection_protocol::RegisterExResponse;
 use crate::protocols::secure_connection_service::secure_connection_protocol::RegisterRequest;

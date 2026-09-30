@@ -22,7 +22,7 @@ docker network create "$net" >/dev/null
 
 # The server: default settings, but every test player comes from one
 # address, so the per-address limits on accounts and logins are lifted.
-docker run -d --name fes-load-srv --network "$net" --cpus "$cpus" --memory "$memory" \
+docker run -d --name fes-load-srv --network "$net" --cpus "$cpus" --memory "$memory" -e FE_MAX_CONNECTIONS_PER_IP=100000 \
   --ulimit nofile=65536:65536 -v fes-target:/target:ro "$image" bash -c "
   set -e; mkdir -p /srv/fe && cd /srv/fe && cp $bin/dedicated_server .
   ./dedicated_server >gen.log 2>&1 & gen=\$!

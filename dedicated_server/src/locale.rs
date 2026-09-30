@@ -7,7 +7,7 @@ use quazal::ClientInfo;
 use quazal::Context;
 use slog::Logger;
 
-use crate::login_required;
+use crate::login_or_service_required as login_required;
 use crate::protocols::localization_service::localization_protocol::LocalizationProtocolServer;
 use crate::protocols::localization_service::localization_protocol::LocalizationProtocolServerTrait;
 use crate::protocols::localization_service::localization_protocol::SetLocaleCodeRequest;

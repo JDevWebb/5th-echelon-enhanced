@@ -86,6 +86,7 @@ macro_rules! connect {
     }};
 }
 
+#[derive(Clone)]
 pub struct Friend {
     pub id: String,
     pub username: String,
@@ -156,8 +157,17 @@ pub fn invite_friend(id: &str) -> Result<(), Error> {
     }))
 }
 
+/// The friend list, giving up after `limit` (the game waits on it).
+pub fn list_friends_within(limit: std::time::Duration) -> Result<Vec<Friend>, Error> {
+    runtime()?.block_on(async { tokio::time::timeout(limit, async { list_friends_async().await }).await.map_err(|_| Error::NotConnected)? })
+}
+
 pub fn list_friends() -> Result<Vec<Friend>, Error> {
-    run(signed_in(|| async {
+    run(list_friends_async())
+}
+
+async fn list_friends_async() -> Result<Vec<Friend>, Error> {
+    signed_in(|| async {
         let mut client = connect!(FriendsClient);
 
         let request = tonic::Request::new(ListRequest {});
@@ -176,7 +186,8 @@ pub fn list_friends() -> Result<Vec<Friend>, Error> {
                 pid: f.pid,
             })
             .collect())
-    }))
+    })
+    .await
 }
 
 /// A session announcement for [`announce_game_session`].
@@ -251,11 +262,20 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
             let mut guard = TOKEN.lock().unwrap();
             *guard = Some(response.token.parse()?);
         }
-        if let Some(user) = response.user.filter(|u| !u.id.is_empty()) {
-            *ACCOUNT_ID.lock().unwrap() = Some(user.id);
+        // The game copies it into a 64-byte buffer: only a short, plain id is taken.
+        match response.user.map(|u| u.id).filter(|id| !id.is_empty()) {
+            Some(id) if is_plain_id(&id) => *ACCOUNT_ID.lock().unwrap() = Some(id),
+            Some(_) => error!("The server sent an account id the game can't take; keeping the one from the settings"),
+            None => {}
         }
     }
     Ok(())
+}
+
+/// Whether `id` is safe to hand to the game as an account id: at most 63
+/// bytes of letters, digits and `_-.`.
+pub fn is_plain_id(id: &str) -> bool {
+    (1..64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
 }
 
 /// The account id the server knows us by, once signed in. The game should

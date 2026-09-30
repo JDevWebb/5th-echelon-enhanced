@@ -1,5 +1,3 @@
-use std::ffi::CString;
-
 use hooks_proc::forwardable_export;
 use tracing::error;
 use tracing::info;
@@ -8,6 +6,28 @@ use super::List;
 use super::UplayList;
 use super::UplayOverlapped;
 use crate::config::get;
+
+/// The game's buffers for these strings, NUL included (from its one caller of all
+/// three: 256, 64 and 64 bytes on the stack). Nothing may write more.
+const USERNAME_BUFFER: usize = 256;
+const PASSWORD_BUFFER: usize = 64;
+const ACCOUNT_ID_BUFFER: usize = 64;
+
+/// Copies `value` and its NUL into the game's `buffer` of `capacity` bytes.
+/// A value that doesn't fit whole, or has a NUL inside, is refused (a cut
+/// password or id would only fail later, less clearly).
+unsafe fn copy_c_string(buffer: *mut u8, value: &str, capacity: usize, what: &str) -> bool {
+    if buffer.is_null() {
+        return false;
+    }
+    if value.len() >= capacity || value.bytes().any(|b| b == 0) {
+        error!("The {what} doesn't fit the game's {capacity}-byte buffer; refusing it");
+        return false;
+    }
+    buffer.copy_from_nonoverlapping(value.as_ptr(), value.len());
+    *buffer.add(value.len()) = 0;
+    true
+}
 
 #[forwardable_export]
 unsafe extern "cdecl" fn UPLAY_USER_ClearGameSession() -> bool {
@@ -22,22 +42,13 @@ unsafe extern "cdecl" fn UPLAY_USER_GetAccountId(buffer: *mut u8) -> bool {
     // The server's word for who we are, once signed in; the settings file's
     // until then (they're the same for accounts the launcher made).
     let account_id = crate::api::account_id().unwrap_or_else(|| cfg.user.account_id.clone());
-    let account_id = match CString::new(account_id) {
-        Ok(account_id) => account_id,
-        Err(e) => {
-            error!("Couldn't convert account_id: {}!", e);
-            return false;
-        }
-    };
-    let account_id = account_id.as_bytes_with_nul();
-    buffer.copy_from_nonoverlapping(account_id.as_ptr(), account_id.len());
-    true
+    copy_c_string(buffer, &account_id, ACCOUNT_ID_BUFFER, "account id")
 }
 
 #[forwardable_export]
 unsafe extern "cdecl" fn UPLAY_USER_GetCdKeys(cd_keys_list: *mut *mut List, overlapped: *mut UplayOverlapped) -> bool {
     let list = UplayList::CdKeys(cfg.user.cd_keys.clone());
-    *cd_keys_list = Box::into_raw(Box::new(list.into()));
+    *cd_keys_list = super::types::into_game(list);
 
     if !overlapped.is_null() {
         (*overlapped).unk = 0;
@@ -58,30 +69,12 @@ unsafe extern "cdecl" fn UPLAY_USER_GetPassword(buffer: *mut u8) -> bool {
         error!("Config not loaded!");
         return false;
     };
-    let password = match CString::new(cfg.user.secret().unwrap_or_default()) {
-        Ok(password) => password,
-        Err(e) => {
-            error!("Couldn't convert password: {}!", e);
-            return false;
-        }
-    };
-    let password = password.as_bytes_with_nul();
-    buffer.copy_from_nonoverlapping(password.as_ptr(), password.len());
-    true
+    copy_c_string(buffer, &cfg.user.secret().unwrap_or_default(), PASSWORD_BUFFER, "password")
 }
 
 #[forwardable_export]
 unsafe extern "cdecl" fn UPLAY_USER_GetUsername(buffer: *mut u8) -> bool {
-    let username = match CString::new(cfg.user.username.clone()) {
-        Ok(username) => username,
-        Err(e) => {
-            error!("Couldn't convert username: {}!", e);
-            return false;
-        }
-    };
-    let username = username.as_bytes_with_nul();
-    buffer.copy_from_nonoverlapping(username.as_ptr(), username.len());
-    true
+    copy_c_string(buffer, &cfg.user.username, USERNAME_BUFFER, "username")
 }
 
 #[forwardable_export]

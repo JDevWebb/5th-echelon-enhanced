@@ -231,6 +231,11 @@ impl Table {
 
 static TABLE: OnceLock<Arc<Mutex<Table>>> = OnceLock::new();
 
+/// The address relayed players are given (this server's), once the helper runs.
+pub fn relay_ip() -> Option<Ipv4Addr> {
+    TABLE.get().map(|t| t.lock().unwrap_or_else(std::sync::PoisonError::into_inner).relay_ip)
+}
+
 /// The address `name` should advertise, when the NAT helper runs and that
 /// player probed it from `ip`.
 pub fn advertised_for(name: &str, ip: IpAddr) -> Option<SocketAddrV4> {

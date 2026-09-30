@@ -109,11 +109,22 @@ unsafe fn into_friend_invite_accepted(event: *mut UplayEvent, ubi_name: String) 
     static mut FRIEND_ACCEPTED: FriendAccepted = FriendAccepted { foo: std::ptr::addr_of!(FOO) };
 
     (*event).event_type = UplayEventType::FriendsGameInviteAccepted;
-    let mut ub = ubi_name.into_bytes();
-    ub.push(0);
-    let l = if ub.len() > BAR.username.len() { BAR.username.len() } else { ub.len() };
-    BAR.username[..l].copy_from_slice(&ub[..l]);
+    copy_terminated(&mut *std::ptr::addr_of_mut!(BAR.username), &ubi_name);
     (*event).unknown = std::ptr::addr_of!(FRIEND_ACCEPTED) as usize;
+}
+
+/// Copies `text` into `buf` with its NUL, cut to fit (at most `buf.len() - 1`
+/// bytes, never inside a character). Returns the bytes written, NUL included.
+fn copy_terminated(buf: &mut [u8], text: &str) -> usize {
+    let mut len = text.len().min(buf.len().saturating_sub(1));
+    while !text.is_char_boundary(len) {
+        len -= 1;
+    }
+    let text = &text.as_bytes()[..len];
+    let len = text.iter().position(|&b| b == 0).unwrap_or(len);
+    buf[..len].copy_from_slice(&text[..len]);
+    buf[len] = 0;
+    len + 1
 }
 
 unsafe fn into_party_invite_accepted(event: *mut UplayEvent, ubi_name: String) {
@@ -146,12 +157,7 @@ unsafe fn into_party_invite_accepted(event: *mut UplayEvent, ubi_name: String) {
     };
 
     (*event).event_type = UplayEventType::PartyGameInviteAccepted;
-    let mut ub = ubi_name.into_bytes();
-    ub.push(0);
-    let l = if ub.len() > BAR.len() { BAR.len() } else { ub.len() };
-    BAR[..l].copy_from_slice(&ub[..l]);
-    BAR[l] = 0;
-    FOO.length = l + 1;
+    FOO.length = copy_terminated(&mut *std::ptr::addr_of_mut!(BAR), &ubi_name);
     warn!(
         "&PARTY_ACCEPTED = {:?} &FOO = {:?} &BAR = {:?}",
         std::ptr::addr_of!(PARTY_ACCEPTED),
@@ -222,15 +228,17 @@ unsafe extern "cdecl" fn UPLAY_HasOverlappedOperationCompleted(overlapped: *mut 
 
 #[forwardable_export]
 unsafe extern "cdecl" fn UPLAY_Quit() -> bool {
+    // The game is exiting normally: take down the router's port mapping now, not while the
+    // DLL unloads.
+    crate::hooks::remove_port_mapping();
     false
 }
 
 #[forwardable_export]
 unsafe extern "cdecl" fn UPLAY_Release(ptr: *mut List) -> bool {
+    // Only lists this DLL made are freed: the friend list, for one, is the game's own struct.
     if !ptr.is_null() {
-        let list = *Box::from_raw(ptr);
-        let list: UplayList = list.try_into().unwrap();
-        drop(list);
+        types::release(ptr);
     }
     true
 }
@@ -284,10 +292,12 @@ unsafe extern "cdecl" fn UPLAY_Startup(uplay_id: usize, game_version: usize, lan
                                     failures = 0;
                                 }
                                 let invite = invite.map(Some);
-                                tx.send(invite).unwrap();
+                                if tx.send(invite).is_err() {
+                                    return;
+                                }
                                 if failures > 0 && failures % 10 == 0 && crate::api::relogin().await {
                                     // signal successful relogin
-                                    tx.send(Ok(None)).unwrap();
+                                    let _ = tx.send(Ok(None));
                                 }
                             }
                         }
@@ -306,4 +316,18 @@ unsafe extern "cdecl" fn UPLAY_Startup(uplay_id: usize, game_version: usize, lan
 #[forwardable_export(log = false)]
 unsafe extern "cdecl" fn UPLAY_Update() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn invite_names_always_fit_and_end() {
+        let mut buf = [0xffu8; 8];
+        assert_eq!(super::copy_terminated(&mut buf, "abc"), 4);
+        assert_eq!(&buf[..4], b"abc\0");
+        assert_eq!(super::copy_terminated(&mut buf, "much too long"), 8);
+        assert_eq!(buf[7], 0);
+        assert_eq!(super::copy_terminated(&mut buf, "a\0b"), 2, "stops at a NUL");
+        assert_eq!(super::copy_terminated(&mut [0u8; 3], "éé"), 3, "not inside a character");
+    }
 }

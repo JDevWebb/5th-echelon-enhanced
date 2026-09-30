@@ -5,7 +5,7 @@ use quazal::ClientInfo;
 use quazal::Context;
 use slog::Logger;
 
-use crate::login_required;
+use crate::login_or_service_required as login_required;
 use crate::protocols::trackingextension::tracking_extension_protocol::GetTrackingUserGroupRequest;
 use crate::protocols::trackingextension::tracking_extension_protocol::GetTrackingUserGroupResponse;
 use crate::protocols::trackingextension::tracking_extension_protocol::GetTrackingUserGroupTagsRequest;

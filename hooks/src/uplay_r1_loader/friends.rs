@@ -26,7 +26,22 @@ unsafe extern "cdecl" fn UPLAY_FRIENDS_EnableFriendMenuItem() -> isize {
 
 #[forwardable_export]
 unsafe extern "cdecl" fn UPLAY_FRIENDS_GetFriendList(friend_list_filter: *mut c_void, out_friend_list: *mut uplay_r1_loader::List) -> bool {
-    let friends = crate::api::list_friends().unwrap_or_default();
+    if out_friend_list.is_null() {
+        return false;
+    }
+    // This is the game's thread: a slow or hostile server mustn't hold it. After a few
+    // seconds the last list is used.
+    static LAST: std::sync::Mutex<Vec<crate::api::Friend>> = std::sync::Mutex::new(Vec::new());
+    let friends = match crate::api::list_friends_within(std::time::Duration::from_secs(3)) {
+        Ok(friends) => {
+            *LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = friends.clone();
+            friends
+        }
+        Err(e) => {
+            error!("Couldn't fetch the friend list ({e}); using the last one");
+            LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+        }
+    };
     let list = uplay_r1_loader::UplayList::Friends(
         friends
             .into_iter()

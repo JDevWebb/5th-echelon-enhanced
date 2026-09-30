@@ -171,7 +171,8 @@ impl<V, K: ToString> Any<V, K> {
         match class_list.instantiate(&self.type_name.to_string(), &self.data) {
             Ok(ptr) => Ok(ptr),
             Err(Error::ParsingFailed(parse_error)) => Err(parse_error),
-            Err(e) => panic!("{e:?}"),
+            // An unknown class name comes from the client: an error, not a crash.
+            Err(e) => Err(FromStreamError::IO(io::Error::new(io::ErrorKind::InvalidData, format!("{e:?}")))),
         }
     }
 }

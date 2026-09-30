@@ -82,7 +82,7 @@ unsafe extern "cdecl" fn UPLAY_SAVE_GetSavegames(out_games_list: *mut *mut List,
     info!("Savegames: {saves:?}");
 
     let list = UplayList::Saves(saves);
-    *out_games_list = Box::into_raw(Box::new(list.into()));
+    *out_games_list = super::types::into_game(list);
 
     if !overlapped.is_null() {
         (*overlapped).set_success();

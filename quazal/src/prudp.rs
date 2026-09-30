@@ -43,6 +43,23 @@ const RESEND_TRIES: u32 = 4;
 const HANDLED_MEMORY: usize = 64;
 /// Most unacknowledged packets kept per client.
 const UNACKED_MAX: usize = 256;
+/// Fragments of one message a client may send, and their total size.
+const MAX_FRAGMENTS: usize = 32;
+const MAX_REASSEMBLED: usize = 64 * 1024;
+/// Handshakes in progress and connections, per address and in all.
+const MAX_PENDING_PER_IP: usize = 64;
+const MAX_PENDING: usize = 4096;
+const MAX_CONNECTIONS: usize = 16384;
+/// The address echo (user packets): its largest payload, and how often per address.
+const MAX_ECHO_PAYLOAD: usize = 64;
+const ECHOES_PER_SECOND: u32 = 5;
+
+/// Connections one address may hold: 256 (a LAN party behind one router), or
+/// `FE_MAX_CONNECTIONS_PER_IP` (the load test's players all share one).
+fn max_connections_per_ip() -> usize {
+    static MAX: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *MAX.get_or_init(|| std::env::var("FE_MAX_CONNECTIONS_PER_IP").ok().and_then(|v| v.parse().ok()).unwrap_or(256))
+}
 
 /// Records that a client's packet with this sequence number is being handled.
 fn remember_handled<T>(ci: &mut ClientInfo<T>, sequence: u16) {
@@ -123,6 +140,8 @@ where
     /// A handler for disconnected clients.
     pub disconnect_handler: Option<DH>,
     next_conn_id: AtomicU32,
+    /// Address echoes answered per source this second.
+    echoes: HashMap<std::net::IpAddr, (Instant, u32)>,
 }
 
 impl<ECH, DH, T> Server<'_, ECH, DH, T>
@@ -144,6 +163,7 @@ where
             socket: None,
             ctx,
             new_clients: HashMap::default(),
+            echoes: HashMap::default(),
             client_registry,
             user_handler: None,
             expired_client_handler: None,
@@ -229,6 +249,17 @@ where
     /// Handles a received packet.
     fn handle_packet(&mut self, logger: &Logger, packet: QPacket, client: SocketAddr) {
         debug!(logger, "packet: {:?}", packet);
+        // An established connection only answers its own address: the signature alone is
+        // no proof of who sent a packet (UDP sources can be forged), and replies go to the
+        // source.
+        if !matches!(packet.packet_type, PacketType::Syn | PacketType::Connect) {
+            if let Some(ci) = self.client_registry.clients.get(&packet.signature) {
+                if ci.try_borrow().is_ok_and(|ci| *ci.address() != client) {
+                    debug!(logger, "Packet for connection {:x} from another address; dropped", packet.signature);
+                    return;
+                }
+            }
+        }
         if packet.flags.contains(PacketFlag::Ack) {
             debug!(logger, "Received ACK"; "sequence" => packet.sequence);
             // The client has our reliable packet: stop resending it.
@@ -270,6 +301,12 @@ where
                 }
             }
             PacketType::User => {
+                // The address echo answers whatever source a packet claims, so it's kept
+                // small and slow: short payloads only, a few a second per address.
+                if packet.payload.len() > MAX_ECHO_PAYLOAD || !self.echo_allowed(client.ip()) {
+                    debug!(logger, "User packet dropped (too large or too many)");
+                    return;
+                }
                 if self.user_handler.is_none() {
                     error!(logger, "unsupported user packet");
                 } else {
@@ -280,6 +317,22 @@ where
                 warn!(logger, "unsupported packet type {:?}", packet.packet_type);
             }
         }
+    }
+
+    /// Whether `ip` may have another address echo now (at most
+    /// [`ECHOES_PER_SECOND`]).
+    fn echo_allowed(&mut self, ip: std::net::IpAddr) -> bool {
+        let now = Instant::now();
+        if self.echoes.len() > 10_000 {
+            self.echoes.retain(|_, (since, _)| now.duration_since(*since) < Duration::from_secs(1));
+        }
+        let (since, count) = self.echoes.entry(ip).or_insert((now, 0));
+        if now.duration_since(*since) >= Duration::from_secs(1) {
+            *since = now;
+            *count = 0;
+        }
+        *count += 1;
+        *count <= ECHOES_PER_SECOND
     }
 
     /// Handles a data packet.
@@ -313,7 +366,14 @@ where
         remember_handled(ci, packet.sequence);
         let payload = if let Some(fid) = packet.fragment_id {
             if fid != 0 {
-                info!(logger, "Caching fragment {}", fid);
+                // Bounded per connection: fragments are kept until the last one comes.
+                let cached: usize = ci.packet_fragments.values().map(Vec::len).sum();
+                if ci.packet_fragments.len() >= MAX_FRAGMENTS || cached + packet.payload.len() > MAX_REASSEMBLED {
+                    warn!(logger, "Too many or too large fragments; dropping them");
+                    ci.packet_fragments.clear();
+                    return;
+                }
+                debug!(logger, "Caching fragment {}", fid);
                 ci.packet_fragments.insert(fid, packet.payload);
                 return;
             }
@@ -409,6 +469,18 @@ where
     /// Handles a SYN packet.
     fn handle_syn(&mut self, logger: &Logger, mut packet: QPacket, client: SocketAddr) {
         debug!(logger, "Handling syn packet");
+        // Bounded handshakes and connections, per address and in all.
+        let pending_here = self.new_clients.values().filter(|c| c.address().ip() == client.ip()).count();
+        let open_here = self
+            .client_registry
+            .clients
+            .values()
+            .filter(|c| c.try_borrow().is_ok_and(|c| c.address().ip() == client.ip()))
+            .count();
+        if pending_here >= MAX_PENDING_PER_IP || open_here >= max_connections_per_ip() || self.new_clients.len() >= MAX_PENDING || self.client_registry.clients.len() >= MAX_CONNECTIONS {
+            warn!(logger, "Refusing a handshake from {client}: too many connections");
+            return;
+        }
         let ci: ClientInfo<T> = ClientInfo::new(client);
         let sig = ci.server_signature;
         self.new_clients.insert(sig, ci);
@@ -465,23 +537,30 @@ where
                 {
                     return Ok(vec![]);
                 }
-                let id = next_conn_id.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
-                ci.borrow_mut().user_id.replace(ti.principle_id);
-                ci.borrow_mut().connection_id.replace(ConnectionID(id));
-                cids.insert(ci.borrow().connection_id.unwrap(), Signature(packet.signature));
+                // The ticket alone proves nothing: it travels readably, and anyone who saw one
+                // could replay it. The client proves it has the session key inside by
+                // encrypting its own pid with it; only then is it that user.
                 let data = crypt_key(ti.session_key.as_ref(), &request_data);
 
                 #[allow(clippy::items_after_statements)]
                 #[derive(FromStream, Debug)]
                 struct ConnectData {
-                    _user_pid: u32,
+                    user_pid: u32,
                     _connection_id: u32,
                     challenge: u32,
                 }
 
                 let cd: ConnectData = ReadStream::from_bytes(&data).read()?;
+                if cd.user_pid != ti.principle_id {
+                    // Not signed in: the connection stays anonymous and can do nothing.
+                    return Ok(vec![]);
+                }
+                let id = next_conn_id.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+                ci.borrow_mut().user_id.replace(ti.principle_id);
+                ci.borrow_mut().connection_id.replace(ConnectionID(id));
+                cids.insert(ci.borrow().connection_id.unwrap(), Signature(packet.signature));
 
-                let resp = cd.challenge + 1;
+                let resp = cd.challenge.wrapping_add(1);
                 let resp = resp.to_bytes();
 
                 Ok(resp.to_bytes())

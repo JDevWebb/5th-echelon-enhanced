@@ -145,6 +145,19 @@ pub fn friend_changes() -> &'static PlayerLimit {
     LIMIT.get_or_init(|| PlayerLimit::new(30, Duration::from_secs(60)))
 }
 
+/// Game sessions a player may create: 30 a minute.
+pub fn sessions() -> &'static PlayerLimit {
+    static LIMIT: std::sync::OnceLock<PlayerLimit> = std::sync::OnceLock::new();
+    LIMIT.get_or_init(|| PlayerLimit::new(30, Duration::from_secs(60)))
+}
+
+/// Game-protocol requests that make the server work or send to others
+/// (session searches, lookups, probes): 120 a minute.
+pub fn game_requests() -> &'static PlayerLimit {
+    static LIMIT: std::sync::OnceLock<PlayerLimit> = std::sync::OnceLock::new();
+    LIMIT.get_or_init(|| PlayerLimit::new(120, Duration::from_secs(60)))
+}
+
 /// Player searches: 60 a minute.
 pub fn searches() -> &'static PlayerLimit {
     static LIMIT: std::sync::OnceLock<PlayerLimit> = std::sync::OnceLock::new();

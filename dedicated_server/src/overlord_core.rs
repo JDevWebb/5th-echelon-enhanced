@@ -7,7 +7,7 @@ use quazal::rmc::types::Variant;
 use quazal::rmc::Protocol;
 use quazal::Context;
 
-use crate::login_required;
+use crate::login_or_service_required as login_required;
 
 #[allow(clippy::module_name_repetitions)]
 /// Implements the `Protocol` trait for the Overlord Core protocol.

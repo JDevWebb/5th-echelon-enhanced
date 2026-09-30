@@ -242,6 +242,10 @@ pub struct Config {
     pub logging: Logging,
     #[serde(default)]
     pub auto_join_invite: bool,
+    /// Let the server join you to a match without your click (its `force_join`).
+    /// Off: a server shouldn't be able to put you into a match by itself.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_force_join: bool,
     /// Which Uplay event an accepted invitation raises. See [`InviteAcceptEvent`]; switching
     /// costs a game restart rather than a rebuild.
     #[serde(default)]
@@ -295,7 +299,7 @@ pub enum PidField {
     DetailsUnknown3,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[derive(Default, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub struct User {
     #[serde(default = "default_username")]
@@ -313,6 +317,20 @@ pub struct User {
     pub cd_keys: Vec<String>,
     #[serde(default = "default_account_id")]
     pub account_id: String,
+}
+
+/// Never prints the password: configs end up in logs and error messages.
+impl std::fmt::Debug for User {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let hidden = |s: &str| if s.is_empty() { "" } else { "<hidden>" };
+        f.debug_struct("User")
+            .field("username", &self.username)
+            .field("password", &hidden(&self.password))
+            .field("protected_password", &hidden(&self.protected_password))
+            .field("cd_keys", &self.cd_keys.len())
+            .field("account_id", &self.account_id)
+            .finish()
+    }
 }
 
 impl User {

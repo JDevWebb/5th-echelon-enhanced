@@ -153,6 +153,7 @@ where
     H: Fn(&Request) -> Response + Send + Sync + 'static,
 {
     let handler = Arc::new(handler);
+    let open = Arc::new(Open::default());
     loop {
         let stream = match listener.accept() {
             Ok((stream, _addr)) => stream,
@@ -163,9 +164,17 @@ where
                 continue;
             }
         };
+        // Bounded: a thread per connection, so a limit on them, in all and per address
+        // (a client holding connections open can't take them all).
+        let ip = stream.peer_addr().map(|a| a.ip()).ok();
+        let Some(slot) = open.take(ip) else {
+            debug!(logger, "simple_http: too many connections; refusing one");
+            continue;
+        };
         let logger = logger.clone();
         let handler = Arc::clone(&handler);
         std::thread::spawn(move || {
+            let _slot = slot;
             if let Err(e) = handle(&logger, stream, &*handler) {
                 debug!(logger, "simple_http: {e}");
             }
@@ -173,10 +182,79 @@ where
     }
 }
 
+/// Connections open now, in all and per address.
+#[derive(Default)]
+struct Open {
+    all: std::sync::Mutex<(usize, std::collections::HashMap<std::net::IpAddr, usize>)>,
+}
+
+/// Most connections at once, and from one address.
+const MAX_OPEN: usize = 256;
+const MAX_OPEN_PER_IP: usize = 16;
+/// How long one request may take in all (each read has its own timeout too).
+const REQUEST_DEADLINE: Duration = Duration::from_secs(15);
+
+impl Open {
+    fn take(self: &Arc<Self>, ip: Option<std::net::IpAddr>) -> Option<Slot> {
+        let mut guard = self.all.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (total, per_ip) = &mut *guard;
+        let mine = ip.map_or(0, |ip| per_ip.get(&ip).copied().unwrap_or(0));
+        if *total >= MAX_OPEN || mine >= MAX_OPEN_PER_IP {
+            return None;
+        }
+        *total += 1;
+        if let Some(ip) = ip {
+            *per_ip.entry(ip).or_default() += 1;
+        }
+        Some(Slot { open: Arc::clone(self), ip })
+    }
+}
+
+/// One connection's place, given back when it ends.
+struct Slot {
+    open: Arc<Open>,
+    ip: Option<std::net::IpAddr>,
+}
+
+impl Drop for Slot {
+    fn drop(&mut self) {
+        let mut guard = self.open.all.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let (total, per_ip) = &mut *guard;
+        *total = total.saturating_sub(1);
+        if let Some(ip) = self.ip {
+            if let Some(n) = per_ip.get_mut(&ip) {
+                *n -= 1;
+                if *n == 0 {
+                    per_ip.remove(&ip);
+                }
+            }
+        }
+    }
+}
+
+/// A reader that gives up once a deadline passes, so a client sending a
+/// byte now and then can't keep a connection for hours.
+struct Deadline<R> {
+    inner: R,
+    until: std::time::Instant,
+}
+
+impl<R: Read> Read for Deadline<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        if std::time::Instant::now() >= self.until {
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "request took too long"));
+        }
+        self.inner.read(buf)
+    }
+}
+
 fn handle(logger: &slog::Logger, mut stream: TcpStream, handler: &dyn Fn(&Request) -> Response) -> std::io::Result<()> {
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
-    let mut rdr = std::io::BufReader::new(&stream);
+    let mut rdr = std::io::BufReader::new(Deadline {
+        inner: &stream,
+        until: std::time::Instant::now() + REQUEST_DEADLINE,
+    });
     let mut line = String::new();
     (&mut rdr).take(MAX_REQUEST_LINE).read_line(&mut line)?;
     debug!(logger, "Request: {}", line);

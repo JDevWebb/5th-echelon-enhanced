@@ -40,7 +40,23 @@ macro_rules! rmc_err {
 /// Checks if a client is logged in and returns their user ID.
 ///
 /// Returns an `AccessDenied` error if the client is not logged in.
+/// The server's own accounts: `Server` (1) and `Tracking` (105), the game's
+/// telemetry login, whose password is the game's and so public. They may
+/// connect and send telemetry, nothing else.
+const SERVICE_ACCOUNTS: [u32; 2] = [1, 105];
+
+/// The signed-in player: refuses anonymous connections and the service
+/// accounts.
 fn login_required<T>(ci: &ClientInfo<T>) -> quazal::rmc::Result<u32> {
+    match ci.user_id {
+        Some(id) if !SERVICE_ACCOUNTS.contains(&id) => Ok(id),
+        _ => Err(quazal::rmc::Error::AccessDenied),
+    }
+}
+
+/// Any signed-in connection, service accounts included: for the connection
+/// itself and telemetry.
+fn login_or_service_required<T>(ci: &ClientInfo<T>) -> quazal::rmc::Result<u32> {
     ci.user_id.ok_or(quazal::rmc::Error::AccessDenied)
 }
 
@@ -50,6 +66,7 @@ mod clan;
 mod community_api;
 mod config;
 mod federation;
+mod friends_policy;
 mod game_session;
 mod game_session_ex;
 mod keys;
@@ -96,7 +113,7 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
         handler.register_protocol(game_session::new_protocol(Arc::clone(storage), Arc::clone(debug_config)));
         handler.register_protocol(ladder::new_protocol());
         handler.register_protocol(locale::new_protocol());
-        handler.register_protocol(nat_traversal::new_protocol());
+        handler.register_protocol(nat_traversal::new_protocol(Arc::clone(storage)));
         handler.register_protocol(overlord_challenge::new_protocol());
         handler.register_protocol(overlord_core::new_protocol());
         handler.register_protocol(overlord_news::new_protocol());
@@ -178,7 +195,8 @@ fn severity_from_env(var: &str) -> sloggers::types::Severity {
         "error" => sloggers::types::Severity::Error,
         "critical" => sloggers::types::Severity::Critical,
         "warning" => sloggers::types::Severity::Warning,
-        _ => sloggers::types::Severity::Trace,
+        // Not trace: trace logs raw packets, logins included.
+        _ => sloggers::types::Severity::Info,
     }
 }
 
@@ -341,6 +359,7 @@ fn main() -> color_eyre::Result<()> {
     }
     let community_api = config.community_api;
     let friends_mode = config.friends.mode;
+    friends_policy::set_mode(friends_mode);
     let federation_config = config.federation.clone();
     let server_id = federation::load_or_create_server_id(Path::new(federation::SERVER_ID_FILE))?;
     federation::init(server_id.clone(), federation_config.enabled());
@@ -428,6 +447,19 @@ fn main() -> color_eyre::Result<()> {
             .spawn(move || {
                 let logger = logger.new(o!("service" => "api"));
                 let rt = tokio::runtime::Runtime::new().unwrap();
+                // Ended sessions and old invitations go every few minutes, not only at a restart.
+                {
+                    let storage = Arc::clone(&storage);
+                    let logger = logger.clone();
+                    rt.spawn(async move {
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                            if let Err(e) = storage.purge_stale_async().await {
+                                warn!(logger, "Purging old sessions failed: {e}");
+                            }
+                        }
+                    });
+                }
                 if federation_config.enabled() {
                     rt.spawn(federation::run(logger.new(o!("service" => "federation")), Arc::clone(&storage), federation_config, listing));
                 }

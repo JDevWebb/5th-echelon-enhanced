@@ -47,6 +47,30 @@ unsafe fn writemem(ptr: *mut u8, data: &[u8]) {
     }
 }
 
+/// Overwrites the C string at `ptr` with `new`, but only if it fits the space
+/// the old one had: its bytes plus the zero padding after it. The game's own
+/// name is `onlineconfigservice.ubi.com` (27 characters); anything longer would
+/// run into whatever follows it.
+unsafe fn write_c_string_in_place(ptr: *mut u8, new: &CString) -> bool {
+    const MAX_SCAN: usize = 256;
+    let mut len = 0;
+    while len < MAX_SCAN && *ptr.add(len) != 0 {
+        len += 1;
+    }
+    let mut room = len;
+    while room < len + 64 && *ptr.add(room) == 0 {
+        room += 1;
+    }
+    // `room` counts the old string and the zeros after it; the new one needs its NUL too.
+    let needed = new.as_bytes_with_nul().len();
+    if needed > room {
+        error!("The server address {new:?} is too long for the game: at most {} characters here", room.saturating_sub(1));
+        return false;
+    }
+    writemem(ptr, new.as_bytes_with_nul());
+    true
+}
+
 unsafe fn patch_url(new_server: &str, addrs: &Addresses) {
     let Ok(new_server_cstr) = CString::new(new_server) else {
         fatal_error!("Invalid config_server");
@@ -62,7 +86,9 @@ unsafe fn patch_url(new_server: &str, addrs: &Addresses) {
     info!("Global onlineconfig client: {:?}", g_cfg_client);
     if g_cfg_client.is_null() {
         info!("Patching rodata with {}", new_server);
-        writemem(addrs.onlineconfig_url as *mut u8, new_server_cstr.as_bytes_with_nul());
+        if !write_c_string_in_place(addrs.onlineconfig_url as *mut u8, &new_server_cstr) {
+            fatal_error!("The server address is too long for the game; use its IP address or a shorter name (at most 27 characters)");
+        }
         return;
     }
     let hostname_ptr = g_cfg_client.add(0x24);
@@ -82,7 +108,9 @@ unsafe fn patch_url(new_server: &str, addrs: &Addresses) {
         );
     }
     info!("Patching heap with {}", new_server);
-    writemem(hostname_ptr, new_server_cstr.as_bytes_with_nul());
+    if !write_c_string_in_place(hostname_ptr, &new_server_cstr) {
+        fatal_error!("The server address is too long for the game; use its IP address or a shorter name (at most 27 characters)");
+    }
 }
 
 extern "C" {

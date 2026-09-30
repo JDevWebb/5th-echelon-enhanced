@@ -87,11 +87,18 @@ fn now() -> u64 {
 }
 
 /// Counts an unanswered call and logs it (see the module docs for when).
+/// The most distinct calls remembered.
+const MAX_KINDS: usize = 512;
+
 pub fn record(logger: &Logger, protocol_id: u16, method_id: u32, protocol: Option<String>, method: Option<String>, kind: Kind) {
     let protocol = protocol.or_else(|| protocol_name(protocol_id).map(String::from));
     let count = {
         let mut calls = CALLS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let t = now();
+        // Bounded: ids come from anyone who connects, and there are 2^48 of them.
+        if calls.len() >= MAX_KINDS && !calls.contains_key(&(protocol_id, method_id)) {
+            return;
+        }
         let call = calls.entry((protocol_id, method_id)).or_insert_with(|| UnhandledCall {
             protocol_id,
             method_id,

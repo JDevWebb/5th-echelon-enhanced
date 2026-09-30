@@ -167,6 +167,8 @@ struct Known {
 /// `uplay.toml`: how the overlay tells a friend from someone who only took
 /// their name on another server.
 const KNOWN_FILE: &str = "5th-echelon-known-friends.json";
+/// The most names remembered.
+const MAX_KNOWN: usize = 2000;
 
 static FOLDER: OnceLock<std::path::PathBuf> = OnceLock::new();
 
@@ -207,12 +209,21 @@ fn remember(known: &mut std::collections::HashMap<String, Vec<Known>>, friends: 
         if !list.contains(&entry) {
             list.retain(|k| k.server != server);
             list.push(entry);
+            list.truncate(8);
             changed = true;
         }
     }
+    // Bounded, whatever a server sends.
+    while known.len() > MAX_KNOWN {
+        let Some(key) = known.keys().next().cloned() else { break };
+        known.remove(&key);
+        changed = true;
+    }
     if changed {
         if let (Some(dir), Ok(json)) = (FOLDER.get(), serde_json::to_vec_pretty(known)) {
-            if let Err(e) = std::fs::write(dir.join(KNOWN_FILE), json) {
+            // Through a temporary file, so a crash never leaves half a file.
+            let tmp = dir.join(format!("{KNOWN_FILE}.tmp"));
+            if let Err(e) = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, dir.join(KNOWN_FILE))) {
                 warn!("Couldn't save {KNOWN_FILE}: {e}");
             }
         }
@@ -488,8 +499,13 @@ fn http_get(host: &str, path: &str) -> std::io::Result<Vec<u8>> {
     write!(stream, "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
+    // A server dripping bytes mustn't hold this thread: 3 s per read, 8 s in all.
+    let deadline = Instant::now() + Duration::from_secs(8);
     // The server answers HTTP/1.0 with a Content-Length; read up to it.
     loop {
+        if Instant::now() >= deadline {
+            return Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "the server took too long"));
+        }
         let n = stream.read(&mut chunk)?;
         if n == 0 {
             break;

@@ -209,6 +209,15 @@ impl Tab {
     }
 }
 
+/// A stable number for a server-given id, for ImGui labels.
+fn ui_id(id: &str) -> u64 {
+    use std::hash::Hash as _;
+    use std::hash::Hasher as _;
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    id.hash(&mut h);
+    h.finish()
+}
+
 /// A row button and what it does to the player on that row.
 #[derive(Clone, Copy)]
 enum RowAction {
@@ -321,7 +330,7 @@ impl MyRenderLoop {
     fn join_session(&self, sender: &User) {
         let event = invite_accept_event(sender.id.clone());
         info!("Invitation accepted, event: {event:?}");
-        self.tx.send(event).unwrap();
+        let _ = self.tx.send(event);
     }
 
     fn toggle(&mut self) {
@@ -367,8 +376,10 @@ impl MyRenderLoop {
                         if let Some(ref sender) = evt.sender {
                             self.invite_notification.replace((Instant::now(), sender.username.clone()));
                         }
-                        let force_join = evt.force_join;
-                        if evt.sender.is_some() && (force_join || hooks_config::get().unwrap().auto_join_invite) {
+                        // The server may ask to join without a click only if the player allowed it.
+                        let cfg = hooks_config::get();
+                        let force_join = evt.force_join && cfg.is_some_and(|c| c.allow_force_join);
+                        if evt.sender.is_some() && (force_join || cfg.is_some_and(|c| c.auto_join_invite)) {
                             self.join_session(&evt.sender.unwrap());
                         } else {
                             self.active_invites.push(Invite {
@@ -792,7 +803,9 @@ impl MyRenderLoop {
                     RowAction::Invite => "Invite",
                     RowAction::Change(_, text) => text,
                 };
-                (format!("{text}##fe-{section}-{}-{text}", p.id), *a)
+                // Ids come from the server: hashed, so none can collide with ImGui's own
+                // `##`/`###` markers or another button.
+                (format!("{text}##fe-{section}-{:016x}-{text}", ui_id(&p.id)), *a)
             })
             .collect();
         let gap = self.s(8.0);
@@ -988,7 +1001,7 @@ impl MyRenderLoop {
         }
         if let Some(i) = accept {
             if let Some(sender) = self.active_invites[i].event.sender.clone() {
-                self.tx.send(invite_accept_event(sender.id)).unwrap();
+                let _ = self.tx.send(invite_accept_event(sender.id));
             }
             self.active_invites[i].clicked = true;
             self.invite_notification = None;
@@ -1100,12 +1113,12 @@ impl MyRenderLoop {
             ui.input_text("username", &mut self.username).build();
             if ui.button("Friend Accepted Invite") {
                 info!("Send friend invite accept for {}", self.username);
-                self.tx.send(Event::FriendsGameInviteAccepted(self.username.clone())).unwrap();
+                let _ = self.tx.send(Event::FriendsGameInviteAccepted(self.username.clone()));
             }
             ui.same_line();
             if ui.button("Party Accepted Invite") {
                 info!("Send party invite accept for {}", self.username);
-                self.tx.send(Event::PartyGameInviteAccepted(self.username.clone())).unwrap();
+                let _ = self.tx.send(Event::PartyGameInviteAccepted(self.username.clone()));
             }
         });
     }

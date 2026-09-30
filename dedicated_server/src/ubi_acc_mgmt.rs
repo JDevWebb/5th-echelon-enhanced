@@ -18,6 +18,9 @@ use crate::protocols::ubi_account_management_service::ubi_account_management_pro
 use crate::storage::Storage;
 
 /// Implementation of the `UbiAccountManagementProtocolServerTrait` for handling Ubisoft account management requests.
+/// The most ids one lookup may ask for.
+const MAX_LOOKUP: usize = 100;
+
 struct UbiAccountManagementProtocolServerImpl {
     storage: Arc<Storage>,
 }
@@ -36,6 +39,10 @@ impl<T> UbiAccountManagementProtocolServerTrait<T> for UbiAccountManagementProto
         _socket: &std::net::UdpSocket,
     ) -> Result<LookupPrincipalIdsResponse, quazal::rmc::Error> {
         login_required(&*ci)?;
+        // Bounded: each id is a query, on the game service's one thread.
+        if request.ubi_account_ids.len() > MAX_LOOKUP || !crate::rate_limit::game_requests().check(ci.user_id.unwrap_or_default()) {
+            return Err(quazal::rmc::Error::AccessDenied);
+        }
         if request.ubi_account_ids.is_empty() {
             return Ok(LookupPrincipalIdsResponse { pids: HashMap::default() });
         }
@@ -54,11 +61,9 @@ impl<T> UbiAccountManagementProtocolServerTrait<T> for UbiAccountManagementProto
             .collect();
         info!(
             logger,
-            "Lookup requested for {} ubi ids ({:?}). Found {} ({:?})",
+            "Lookup requested for {} ubi ids. Found {}",
             ubi_len,
-            request.ubi_account_ids,
             pids.len(),
-            pids,
         );
 
         Ok(LookupPrincipalIdsResponse { pids })
@@ -77,6 +82,10 @@ impl<T> UbiAccountManagementProtocolServerTrait<T> for UbiAccountManagementProto
         _socket: &std::net::UdpSocket,
     ) -> Result<LookupUbiAccountIDsByPidsResponse, quazal::rmc::Error> {
         login_required(&*ci)?;
+        // Bounded: each id is a query, on the game service's one thread.
+        if request.pids.len() > MAX_LOOKUP || !crate::rate_limit::game_requests().check(ci.user_id.unwrap_or_default()) {
+            return Err(quazal::rmc::Error::AccessDenied);
+        }
         if request.pids.is_empty() {
             return Ok(LookupUbiAccountIDsByPidsResponse {
                 ubiaccount_ids: HashMap::default(),
@@ -96,14 +105,6 @@ impl<T> UbiAccountManagementProtocolServerTrait<T> for UbiAccountManagementProto
             })
             .collect();
         info!(logger, "Lookup requested for {} pids. Found {}", pid_len, ubiaccount_ids.len(),);
-        info!(
-            logger,
-            "Lookup requested for {} ({:?}) pids. Found {} ({:?})",
-            pid_len,
-            request.pids,
-            ubiaccount_ids.len(),
-            ubiaccount_ids,
-        );
         Ok(LookupUbiAccountIDsByPidsResponse { ubiaccount_ids })
     }
 
@@ -129,6 +130,10 @@ impl<T> UbiAccountManagementProtocolServerTrait<T> for UbiAccountManagementProto
         _socket: &std::net::UdpSocket,
     ) -> Result<LookupUsernamesByUbiAccountIDsResponse, quazal::rmc::Error> {
         login_required(&*ci)?;
+        // Bounded: each id is a query, on the game service's one thread.
+        if request.ubi_account_ids.len() > MAX_LOOKUP || !crate::rate_limit::game_requests().check(ci.user_id.unwrap_or_default()) {
+            return Err(quazal::rmc::Error::AccessDenied);
+        }
         if request.ubi_account_ids.is_empty() {
             return Ok(LookupUsernamesByUbiAccountIDsResponse { usernames: HashMap::default() });
         }
@@ -147,11 +152,9 @@ impl<T> UbiAccountManagementProtocolServerTrait<T> for UbiAccountManagementProto
             .collect();
         info!(
             logger,
-            "Username lookup requested for {} ubi ids ({:?}). Found {} ({:?})",
+            "Username lookup requested for {} ubi ids. Found {}",
             ubi_len,
-            request.ubi_account_ids,
             usernames.len(),
-            usernames,
         );
 
         Ok(LookupUsernamesByUbiAccountIDsResponse { usernames })

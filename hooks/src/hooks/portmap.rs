@@ -69,8 +69,15 @@ pub fn start(pinned: Option<Ipv4Addr>) {
     });
 }
 
-/// Removes the mapping (the game is exiting).
+/// Stops renewing the mapping. Safe while the DLL unloads (no network).
 pub fn stop() {
+    STOP.store(true, Ordering::Relaxed);
+}
+
+/// Removes the mapping from the router: from `UPLAY_Quit`, while the game
+/// exits normally. Never from the DLL's unload, which holds the loader lock
+/// (network calls there can hang the exit).
+pub fn remove_mapping() {
     STOP.store(true, Ordering::Relaxed);
     let Some(mapped) = MAPPED.lock().ok().and_then(|mut m| m.take()) else {
         return;
@@ -110,8 +117,13 @@ fn local_ip_towards(to: Ipv4Addr) -> Option<Ipv4Addr> {
 }
 
 fn upnp(pinned: Option<Ipv4Addr>) -> Result<(SocketAddrV4, &'static str, Mapped), String> {
+    // Only the router this PC routes through: the search goes to it alone (not to the
+    // whole network), and an answer naming any other host is ignored, so another machine
+    // on the LAN can't pose as the router.
+    let router = default_gateway().ok_or("no default gateway")?;
     let gateway = igd_next::search_gateway(SearchOptions {
         timeout: Some(Duration::from_secs(3)),
+        broadcast_address: SocketAddr::V4(SocketAddrV4::new(router, 1900)),
         ..Default::default()
     })
     .map_err(|e| e.to_string())?;
@@ -119,11 +131,15 @@ fn upnp(pinned: Option<Ipv4Addr>) -> Result<(SocketAddrV4, &'static str, Mapped)
         SocketAddr::V4(a) => *a.ip(),
         SocketAddr::V6(_) => return Err("IPv6 gateway".into()),
     };
+    if gw_ip != router {
+        return Err(format!("{gw_ip} answered, but the router is {router}; ignored"));
+    }
     let local = pinned.or_else(|| local_ip_towards(gw_ip)).ok_or("no local address towards the router")?;
     let external = match gateway.get_external_ip().map_err(|e| e.to_string())? {
         std::net::IpAddr::V4(ip) => ip,
         std::net::IpAddr::V6(_) => return Err("IPv6 external address".into()),
     };
+    usable_external(external)?;
     let internal = SocketAddr::V4(SocketAddrV4::new(local, PORT));
     let port = match gateway.add_port(PortMappingProtocol::UDP, PORT, internal, LEASE, DESCRIPTION) {
         Ok(()) => PORT,
@@ -134,6 +150,18 @@ fn upnp(pinned: Option<Ipv4Addr>) -> Result<(SocketAddrV4, &'static str, Mapped)
         }
     };
     Ok((SocketAddrV4::new(external, port), "UPnP", Mapped::Upnp { gateway, port }))
+}
+
+/// Whether the router's "external" address could be one the internet reaches.
+/// A private or shared (carrier-grade NAT) one means the mapping is no use,
+/// and a made-up one would send other players somewhere else.
+fn usable_external(ip: Ipv4Addr) -> Result<(), String> {
+    let [a, b, ..] = ip.octets();
+    let shared = a == 100 && (64..128).contains(&b);
+    if ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() || ip.is_broadcast() || ip.is_multicast() || shared || a == 0 || a >= 240 {
+        return Err(format!("the router's external address {ip} isn't a public one"));
+    }
+    Ok(())
 }
 
 /// The default gateway: the next hop towards the internet.
@@ -186,6 +214,7 @@ fn pmp(pinned: Option<Ipv4Addr>) -> Result<(SocketAddrV4, &'static str, Mapped),
     let local = pinned.or_else(|| local_ip_towards(gateway)).ok_or("no local address towards the router")?;
     let reply = pmp_request(gateway, local, &[0, 0], 12)?;
     let external = Ipv4Addr::new(reply[8], reply[9], reply[10], reply[11]);
+    usable_external(external)?;
     let port = pmp_map(gateway, local, LEASE)?;
     Ok((SocketAddrV4::new(external, port), "NAT-PMP", Mapped::Pmp { gateway, local }))
 }

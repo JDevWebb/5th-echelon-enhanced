@@ -183,24 +183,21 @@ impl List {
             .collect()
     }
 
+    /// Reads a friend list back. The entries are shared (see `interned_friend`),
+    /// so only the array is freed, never the entries.
     fn into_friends(self) -> anyhow::Result<Vec<UplayFriend>> {
-        self.into_vec::<Friend>()?
+        valid_ptr!(self.list);
+        let array = unsafe { Vec::from_raw_parts(self.list.cast::<*mut Friend>(), self.count, self.count) };
+        array
             .into_iter()
             .map(|item| {
+                valid_ptr!(item);
+                let item = unsafe { &*item };
                 valid_ptr!(item.id);
                 valid_ptr!(item.username);
-
-                let is_online = if item.details.is_null() {
-                    true
-                } else {
-                    let details = unsafe { Box::from_raw(item.details) };
-                    details.unknown1 < 2
-                };
-
-                let id = unsafe { CString::from_raw(item.id) };
-                let username = unsafe { CString::from_raw(item.username) };
-                let id = id.into_string().map_err(anyhow::Error::from)?;
-                let username = username.into_string().map_err(anyhow::Error::from)?;
+                let is_online = item.details.is_null() || unsafe { (*item.details).unknown1 } < 2;
+                let id = unsafe { std::ffi::CStr::from_ptr(item.id) }.to_str()?.to_string();
+                let username = unsafe { std::ffi::CStr::from_ptr(item.username) }.to_str()?.to_string();
                 // Reverse direction: a list coming back from the game. Which field would hold
                 // a session is exactly what is being determined here, so nothing is read out
                 // of it - this path only needs id, name and online state.
@@ -228,14 +225,159 @@ impl List {
     }
 }
 
+/// The most friends handed to the game at once.
+pub const MAX_FRIENDS: usize = 500;
+/// The size of the session payload the game reads from `FriendDetails.unknown4`.
+pub const SESSION_DATA_SIZE: usize = 496;
+/// Longest id and username passed on (the game's own buffers are 64 and 256 bytes).
+const MAX_ID: usize = 63;
+const MAX_NAME: usize = 255;
+
+impl UplayFriend {
+    /// Whether the game can take this entry as it is.
+    fn is_well_formed(&self) -> bool {
+        let text = |s: &str, max: usize| !s.is_empty() && s.len() <= max && !s.bytes().any(|b| b == 0);
+        let ok = text(&self.id, MAX_ID) && text(&self.username, MAX_NAME);
+        if !ok {
+            warn!("Leaving out a friend entry the game can't take ({} and {} bytes)", self.id.len(), self.username.len());
+        }
+        ok
+    }
+}
+
+/// Where the friend fields go (see [`SessionField`] and [`PidField`]).
+#[derive(Debug, Clone, Copy)]
+struct FriendLayout {
+    session_field: SessionField,
+    share_data: bool,
+    pid_field: PidField,
+}
+
+/// Friend entries handed to the game, by content. The game keeps the pointers
+/// beyond the call, so they can't be freed; an unchanged friend reuses its
+/// entry instead of leaking a new one on every fetch.
+static FRIEND_ENTRIES: std::sync::Mutex<Option<std::collections::HashMap<String, usize>>> = std::sync::Mutex::new(None);
+/// Entries kept before the table starts over (the old ones stay allocated).
+const MAX_FRIEND_ENTRIES: usize = 4096;
+
+fn interned_friend(f: &UplayFriend, layout: &FriendLayout) -> *mut Friend {
+    let key = format!("{f:?}{layout:?}");
+    let mut guard = FRIEND_ENTRIES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let table = guard.get_or_insert_with(std::collections::HashMap::new);
+    if let Some(&ptr) = table.get(&key) {
+        return ptr as *mut Friend;
+    }
+    if table.len() >= MAX_FRIEND_ENTRIES {
+        table.clear();
+    }
+    let ptr = Box::into_raw(Box::new(new_friend(f, layout)));
+    table.insert(key, ptr as usize);
+    ptr
+}
+
+fn new_friend(f: &UplayFriend, layout: &FriendLayout) -> Friend {
+    // Where the friend's session goes is decided at runtime, see [`SessionField`].
+    // Everything not selected keeps its previous value, so a wrong guess behaves exactly
+    // like before.
+    let session = f.session_id as usize;
+    // The friend's principal id - without it the game has nothing to look their session
+    // up by.
+    let pid = f.pid as usize;
+    let (session_field, pid_field) = (layout.session_field, layout.pid_field);
+    // Checked by `is_well_formed`: no NUL inside.
+    let c = |s: &str| CString::new(s).unwrap_or_default().into_raw();
+    Friend {
+        id: c(&f.id),
+        username: c(&f.username),
+        unknown1: if session_field == SessionField::FriendUnknown1 { session } else { 0 },
+        unknown2: if session_field == SessionField::FriendUnknown2 {
+            session
+        } else if pid_field == PidField::FriendUnknown2 {
+            pid
+        } else {
+            0
+        },
+        details: Box::into_raw(Box::new(FriendDetails {
+            unknown1: if f.is_online { 0 } else { 2 }, // >1 is offline?
+            unknown2: if session_field == SessionField::DetailsUnknown2Str && session != 0 {
+                c(&session.to_string())
+            } else {
+                null_mut() // another string?
+            },
+            unknown3: if session_field == SessionField::DetailsUnknown3 {
+                session
+            } else if pid_field == PidField::DetailsUnknown3 {
+                pid
+            } else {
+                0
+            },
+            // The session payload of that friend, byte for byte as their game handed it
+            // over. Without it the other side does get past the lookup, but opens a session
+            // of its own instead of joining - the id alone is not enough to enter one. The
+            // game reads exactly 496 bytes from it: anything else is left out, or it would
+            // read past the end.
+            unknown4: if layout.share_data && f.session_data.len() == SESSION_DATA_SIZE {
+                Box::into_raw(f.session_data.clone().into_boxed_slice()).cast::<c_void>()
+            } else {
+                null_mut() // only used when fetching, but not after??
+            },
+        })),
+        unknown3: if session_field == SessionField::FriendUnknown3 {
+            session
+        } else if pid_field == PidField::FriendUnknown3 {
+            pid
+        } else {
+            0 // must be 0?
+        },
+    }
+}
+
+/// Lists this DLL allocated and handed to the game (by address), the only
+/// ones [`release`] may free.
+static OWNED_LISTS: std::sync::Mutex<Option<std::collections::HashSet<usize>>> = std::sync::Mutex::new(None);
+
+/// Hands `list` to the game as a pointer it later gives back to `UPLAY_Release`.
+pub fn into_game(list: UplayList) -> *mut List {
+    let ptr = Box::into_raw(Box::new(List::from(list)));
+    OWNED_LISTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get_or_insert_with(std::collections::HashSet::new)
+        .insert(ptr as usize);
+    ptr
+}
+
+/// Frees a list from [`into_game`]. Anything else (a list struct of the
+/// game's own, like the friend list's) is left alone.
+///
+/// # Safety
+/// `ptr` must come from the game's `UPLAY_Release` call.
+pub unsafe fn release(ptr: *mut List) -> bool {
+    let owned = OWNED_LISTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_mut()
+        .is_some_and(|set| set.remove(&(ptr as usize)));
+    if !owned {
+        tracing::debug!("UPLAY_Release of a list this DLL didn't allocate; left alone");
+        return false;
+    }
+    let list = *Box::from_raw(ptr);
+    match UplayList::try_from(list) {
+        Ok(list) => drop(list),
+        Err(e) => warn!("Couldn't release a list: {e}"),
+    }
+    true
+}
+
 impl From<UplayList> for List {
     fn from(value: UplayList) -> Self {
         match value {
             UplayList::CdKeys(keys) => {
+                // A key with a NUL inside can't be handed over; it's skipped, not a crash.
                 let keys = keys
                     .into_iter()
-                    .map(CString::new)
-                    .map(std::result::Result::unwrap)
+                    .filter_map(|k| CString::new(k).ok())
                     .map(CString::into_raw)
                     .map(|cd_key| UplayKey { cd_key })
                     .map(Box::new)
@@ -246,14 +388,13 @@ impl From<UplayList> for List {
             UplayList::Saves(saves) => {
                 let saves = saves
                     .into_iter()
-                    .map(|s| {
-                        Ok::<Save, std::ffi::NulError>(Save {
+                    .filter_map(|s| {
+                        Some(Save {
                             slot_id: s.slot_id,
-                            name: CString::new(s.name)?.into_raw(),
+                            name: CString::new(s.name).ok()?.into_raw(),
                             size: s.size,
                         })
                     })
-                    .map(std::result::Result::unwrap)
                     .map(Box::new)
                     .map(Box::into_raw)
                     .collect::<Vec<*mut Save>>();
@@ -261,70 +402,21 @@ impl From<UplayList> for List {
             }
             UplayList::Friends(friends) => {
                 let cfg = crate::config::get();
-                let session_field = cfg.map(|c| c.session_field).unwrap_or_default();
-                // Passing the payload along can be switched off separately, so that a
-                // counter-test does not need a rebuild.
-                let share_data = cfg.is_none_or(|c| c.share_session_data);
-                let pid_field = cfg.map(|c| c.pid_field).unwrap_or_default();
+                let layout = FriendLayout {
+                    session_field: cfg.map(|c| c.session_field).unwrap_or_default(),
+                    // Passing the payload along can be switched off separately, so that a
+                    // counter-test does not need a rebuild.
+                    share_data: cfg.is_none_or(|c| c.share_session_data),
+                    pid_field: cfg.map(|c| c.pid_field).unwrap_or_default(),
+                };
+                // Whatever the server sends, the game gets a bounded list of well-formed
+                // entries: no NUL inside a string (it would end it early), no overlong
+                // strings, and session data exactly the 496 bytes the game reads, or none.
                 let friends = friends
                     .into_iter()
-                    .map(|f| {
-                        // Where the friend's session goes is decided at runtime, see
-                        // [`SessionField`]. Everything not selected keeps its previous value,
-                        // so a wrong guess behaves exactly like before.
-                        let session = f.session_id as usize;
-                        // The friend's principal id - without it the game has nothing to look
-                        // their session up by.
-                        let pid = f.pid as usize;
-                        Ok::<Friend, std::ffi::NulError>(Friend {
-                            id: CString::new(f.id)?.into_raw(),
-                            username: CString::new(f.username)?.into_raw(),
-                            unknown1: if session_field == SessionField::FriendUnknown1 { session } else { 0 },
-                            unknown2: if session_field == SessionField::FriendUnknown2 {
-                                session
-                            } else if pid_field == PidField::FriendUnknown2 {
-                                pid
-                            } else {
-                                0
-                            },
-                            details: Box::into_raw(Box::new(FriendDetails {
-                                unknown1: if f.is_online { 0 } else { 2 }, // >1 is offline?
-                                unknown2: if session_field == SessionField::DetailsUnknown2Str && session != 0 {
-                                    CString::new(session.to_string())?.into_raw()
-                                } else {
-                                    null_mut() // another string?
-                                },
-                                unknown3: if session_field == SessionField::DetailsUnknown3 {
-                                    session
-                                } else if pid_field == PidField::DetailsUnknown3 {
-                                    pid
-                                } else {
-                                    0
-                                },
-                                // The session payload of that friend, byte for byte as their
-                                // game handed it over. Without it the other side does get past
-                                // the lookup, but opens a session of its own instead of
-                                // joining - the id alone is not enough to enter one.
-                                // Deliberately leaked: the game keeps the pointer beyond this
-                                // call, exactly like the strings above.
-                                unknown4: if share_data && !f.session_data.is_empty() {
-                                    Box::into_raw(f.session_data.clone().into_boxed_slice()).cast::<c_void>()
-                                } else {
-                                    null_mut() // only used when fetching, but not after??
-                                },
-                            })),
-                            unknown3: if session_field == SessionField::FriendUnknown3 {
-                                session
-                            } else if pid_field == PidField::FriendUnknown3 {
-                                pid
-                            } else {
-                                0 // must be 0?
-                            },
-                        })
-                    })
-                    .map(std::result::Result::unwrap)
-                    .map(Box::new)
-                    .map(Box::into_raw)
+                    .filter(UplayFriend::is_well_formed)
+                    .take(MAX_FRIENDS)
+                    .map(|f| interned_friend(&f, &layout))
                     .collect::<Vec<*mut Friend>>();
                 List::from_vec(friends, ListType::Friends)
             }
@@ -400,14 +492,20 @@ mod tests {
     fn friends_are_same_after_conversion() {
         let expected = UplayList::Friends(vec![
             UplayFriend {
-                id: "ID 1".into(),
+                id: "ID1".into(),
                 username: "User 1".into(),
                 is_online: true,
+                session_id: 0,
+                session_data: Vec::new(),
+                pid: 0,
             },
             UplayFriend {
-                id: "ID 2".into(),
+                id: "ID2".into(),
                 username: "User 2".into(),
                 is_online: false,
+                session_id: 0,
+                session_data: Vec::new(),
+                pid: 0,
             },
         ]);
 
@@ -417,5 +515,42 @@ mod tests {
 
         let converted_back: UplayList = converted.try_into().unwrap();
         assert_eq!(converted_back, expected);
+    }
+
+    #[test]
+    fn friends_the_game_cant_take_are_left_out() {
+        let friend = |id: &str, name: &str, data: usize| UplayFriend {
+            id: id.into(),
+            username: name.into(),
+            is_online: true,
+            session_id: 7,
+            session_data: vec![1; data],
+            pid: 9,
+        };
+        let list = UplayList::Friends(vec![
+            friend("ok", "Fine", 496),
+            friend("nul\0inside", "Bad", 0),
+            friend(&"x".repeat(64), "LongId", 0),
+            friend("short", "ShortData", 3),
+        ]);
+        let converted: List = list.into();
+        assert_eq!(converted.count, 3, "the NUL and the overlong id are left out");
+        let array = unsafe { std::slice::from_raw_parts(converted.list.cast::<*mut Friend>(), converted.count) };
+        let data = |i: usize| unsafe { (*(*array[i]).details).unknown4 };
+        assert!(!data(0).is_null(), "496 bytes are passed on");
+        assert!(data(2).is_null(), "a short payload isn't: the game would read past it");
+        // The same friend again reuses its entry.
+        let again: List = UplayList::Friends(vec![friend("ok", "Fine", 496)]).into();
+        let again = unsafe { std::slice::from_raw_parts(again.list.cast::<*mut Friend>(), 1) };
+        assert_eq!(again[0], array[0]);
+    }
+
+    #[test]
+    fn only_our_own_lists_are_released() {
+        let ptr = into_game(UplayList::CdKeys(vec!["A".into()]));
+        assert!(unsafe { release(ptr) });
+        assert!(!unsafe { release(ptr) }, "twice is a no-op");
+        let mut foreign = List::from_vec(Vec::<*mut Friend>::new(), ListType::Friends);
+        assert!(!unsafe { release(&raw mut foreign) });
     }
 }

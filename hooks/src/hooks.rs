@@ -34,6 +34,11 @@ mod datatypes;
 pub(crate) mod nat;
 mod nla;
 mod portmap;
+
+/// Removes the router port mapping (the game is exiting normally).
+pub fn remove_port_mapping() {
+    portmap::remove_mapping();
+}
 mod quazal;
 mod storm;
 mod utils;

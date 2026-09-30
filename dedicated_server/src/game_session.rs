@@ -235,7 +235,60 @@ fn station_urls_for_peers(urls: Vec<String>, observed: std::net::IpAddr, trusted
         .collect()
 }
 
+/// Limits on what one player can put into sessions.
+const MAX_ATTRIBUTES: usize = 64;
+const MAX_LIVE_SESSIONS: u32 = 16;
+const MAX_URLS: usize = 8;
+const MAX_URL_LEN: usize = 256;
+const MAX_RECIPIENTS: usize = 16;
+const MAX_SEARCH_RESULTS: usize = 50;
+const MAX_SEARCH_PIDS: usize = 32;
+
+/// Whether an address could be on the internet (not a LAN, loopback, link-local
+/// or carrier-grade NAT address).
+fn is_public(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            !(v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified() || v4.is_broadcast() || v4.is_multicast() || (a == 100 && (64..128).contains(&b)))
+        }
+        std::net::IpAddr::V6(v6) => !(v6.is_loopback() || v6.is_unspecified() || v6.is_multicast()),
+    }
+}
+
+/// Station URLs other players may be sent to: a public address in them must be
+/// the one this client connected from (or the relay's). Anything else would
+/// have other players' games send traffic wherever a client said. LAN
+/// addresses stay, for players on one network.
+pub(crate) fn only_reachable_addresses(urls: Vec<String>, observed: std::net::IpAddr, relay: Option<std::net::Ipv4Addr>) -> Vec<String> {
+    urls.into_iter()
+        .map(|url| {
+            url.split(';')
+                .map(|part| {
+                    for prefix in ["prudp:/address=", "prudps:/address=", "address="] {
+                        if let Some(addr) = part.strip_prefix(prefix) {
+                            let foreign = addr.parse::<std::net::IpAddr>().is_ok_and(|ip| {
+                                is_public(ip) && ip != observed && !matches!((ip, relay), (std::net::IpAddr::V4(v4), Some(r)) if v4 == r)
+                            });
+                            return if foreign { format!("{prefix}{observed}") } else { part.to_string() };
+                        }
+                    }
+                    part.to_string()
+                })
+                .collect::<Vec<_>>()
+                .join(";")
+        })
+        .collect()
+}
+
 impl GameSessionProtocolServerImpl {
+    /// Whether a session is invite-only: its host's game said so when it
+    /// announced it (`UPLAY_USER_SetGameSession`). Public matches share the
+    /// room kind of private ones, so the kind alone can't tell.
+    fn is_private_room(&self, _type_id: u32, session_id: u32) -> bool {
+        self.storage.is_invite_only_session(session_id).unwrap_or(false)
+    }
+
     /// LeaveSession and AbandonSession: the player is no longer in the
     /// session, and one nobody is left in ends. Upstream answered both
     /// without doing anything, so players stayed listed in rooms they had
@@ -292,6 +345,14 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         info!(logger, "Client creates session: {:?}", request);
         // Ensure the client is logged in.
         let user_id = login_required(&*ci)?;
+        if !crate::rate_limit::sessions().check(user_id) || request.game_session.attributes.0.len() > MAX_ATTRIBUTES {
+            warn!(logger, "User {user_id} creates sessions too fast or too large; refused");
+            return Err(Error::AccessDenied);
+        }
+        if rmc_err!(self.storage.count_live_sessions(user_id), logger, "error counting sessions")? >= MAX_LIVE_SESSIONS {
+            warn!(logger, "User {user_id} already hosts {MAX_LIVE_SESSIONS} sessions; refused");
+            return Err(Error::AccessDenied);
+        }
 
         let attributes = request
             .game_session
@@ -420,7 +481,27 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         let user_id = login_required(&*ci)?;
         info!(logger, "Client adds participants: {:?}", request);
         let targets: Vec<u32> = request.private_participant_ids.0.iter().chain(request.public_participant_ids.0.iter()).copied().collect();
+        if targets.len() > MAX_RECIPIENTS {
+            return Err(Error::AccessDenied);
+        }
         self.authorise(logger, user_id, request.game_session_key.session_id, Some(&targets), "add participants to")?;
+        let session_id = request.game_session_key.session_id;
+        let members = rmc_err!(self.storage.session_members(session_id), logger, "error reading session members")?;
+        let is_member = members.as_ref().is_some_and(|(creator, participants)| *creator == user_id || participants.contains(&user_id));
+        // Nobody walks into a private match uninvited (the ids are small numbers anyone could
+        // try); members, and anyone invited, may.
+        if targets == [user_id] && !is_member && self.is_private_room(request.game_session_key.type_id, session_id) {
+            let invited = rmc_err!(self.storage.is_invited(user_id, session_id), logger, "error checking invitations")?;
+            if !invited {
+                warn!(logger, "User {user_id} tried to join private room {session_id} without an invitation; refused");
+                return Err(Error::AccessDenied);
+            }
+        }
+        // Adding someone else is an invitation: the same rules (friends only, no blocks).
+        if let Some(other) = targets.iter().find(|&&t| t != user_id && !crate::friends_policy::may_invite_blocking(&self.storage, user_id, t)) {
+            warn!(logger, "User {user_id} may not add {other} to session {session_id}; refused");
+            return Err(Error::AccessDenied);
+        }
         rmc_err!(
             self.storage.add_participants(
                 request.game_session_key.type_id,
@@ -573,6 +654,14 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         let user_id = login_required(&*ci)?;
         info!(logger, "Client removes participants: {:?}", request);
         self.authorise(logger, user_id, request.game_session_key.session_id, Some(&request.participant_ids.0), "remove participants from")?;
+        // Removing anyone but yourself is the host's call alone.
+        if request.participant_ids.0.iter().any(|&t| t != user_id) {
+            let members = rmc_err!(self.storage.session_members(request.game_session_key.session_id), logger, "error reading session members")?;
+            if members.is_some_and(|(creator, _)| creator != user_id) && self.debug_config.session_owner_checks {
+                warn!(logger, "User {user_id} isn't the host of {}; may not remove others", request.game_session_key.session_id);
+                return Err(Error::AccessDenied);
+            }
+        }
         rmc_err!(
             self.storage
                 .remove_participants(request.game_session_key.type_id, request.game_session_key.session_id, request.participant_ids.0.clone(),),
@@ -624,6 +713,10 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             subnet
         });
         let sent: Vec<String> = request.station_urls.0.into_iter().map(|su| su.to_string()).collect();
+        if sent.len() > MAX_URLS || sent.iter().any(|u| u.len() > MAX_URL_LEN) {
+            warn!(logger, "User {user_id} registers too many or too long station URLs; refused");
+            return Err(Error::AccessDenied);
+        }
         let mut urls = station_urls_for_peers(sent.clone(), ci.address().ip(), trusted);
         // Outside the trusted network: the public address the NAT helper
         // found, if the game still registered its local one.
@@ -633,6 +726,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 urls = crate::nat_helper::urls_with_public_address(urls, advertise);
             }
         }
+        let urls = only_reachable_addresses(urls, ci.address().ip(), crate::nat_helper::relay_ip());
         if urls != sent {
             info!(logger, "station urls {:?} -> {:?} (the address this client connected from)", sent, urls);
         }
@@ -656,6 +750,9 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // Ensure the client is logged in.
         let user_id = login_required(&*ci)?;
         info!(logger, "Searches for sessions with {request:?}");
+        if request.participant_ids.0.len() > MAX_SEARCH_PIDS || !crate::rate_limit::game_requests().check(user_id) {
+            return Err(Error::AccessDenied);
+        }
 
         // Resolved before the search, because the answer depends on it.
         let invited = rmc_err!(
@@ -841,6 +938,20 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         let user_id = login_required(&*ci)?;
         info!(logger, "Client invites into session: {:?}", request);
         let invitation = request.invitation;
+        // Only from inside the session, to a few players at once, within the invite rules.
+        let recipients = &invitation.recipient_pids.0;
+        if recipients.len() > MAX_RECIPIENTS || !crate::rate_limit::invites().check(user_id) {
+            return Err(Error::AccessDenied);
+        }
+        let members = rmc_err!(self.storage.session_members(invitation.session_key.session_id), logger, "error reading session members")?;
+        if !members.is_some_and(|(creator, participants)| creator == user_id || participants.contains(&user_id)) {
+            warn!(logger, "User {user_id} invites into session {} they aren't in; refused", invitation.session_key.session_id);
+            return Err(Error::AccessDenied);
+        }
+        if let Some(other) = recipients.iter().find(|&&r| !crate::friends_policy::may_invite_blocking(&self.storage, user_id, r)) {
+            warn!(logger, "User {user_id} may not invite {other}; refused");
+            return Err(Error::AccessDenied);
+        }
         rmc_err!(
             self.storage.add_game_session_invites(
                 invitation.session_key.type_id,
@@ -995,6 +1106,15 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         let user_id = login_required(&*ci)?;
         let invitation = request.game_session_invitation;
         info!(logger, "User {} accepts invitation: {:?}", user_id, invitation);
+        let exists = rmc_err!(
+            self.storage.game_session_invite_exists(invitation.session_key.session_id, invitation.sender_pid, user_id),
+            logger,
+            "error reading invitations"
+        )?;
+        if !exists {
+            warn!(logger, "User {user_id} accepts an invitation that doesn't exist; refused");
+            return Err(Error::AccessDenied);
+        }
 
         rmc_err!(
             self.storage
@@ -1077,17 +1197,21 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
     ) -> Result<SearchSessionsResponse, Error> {
         let user_id = login_required(&*ci)?;
         info!(logger, "Client searches for sessions: {:?}", request);
+        if !crate::rate_limit::game_requests().check(user_id) {
+            return Err(Error::AccessDenied);
+        }
 
         let sessions = rmc_err!(
             self.storage.search_sessions(request.game_session_query.type_id, Some(user_id)),
             logger,
             "error searching game sessions"
         )?;
-        info!(logger, "Found sessions: {sessions:#?}");
+        info!(logger, "Found {} sessions", sessions.len());
 
         Ok(SearchSessionsResponse {
             search_results: sessions
                 .into_iter()
+                .take(MAX_SEARCH_RESULTS)
                 .filter_map(|session| {
                     // A session whose creator is not among its own participants has not
                     // registered its host URLs yet; there is nothing a client could connect to,

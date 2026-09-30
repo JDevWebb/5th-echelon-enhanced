@@ -10,7 +10,7 @@ use quazal::Context;
 use sc_bl_protocols::privileges_service::types::Privilege;
 use slog::Logger;
 
-use crate::login_required;
+use crate::login_or_service_required as login_required;
 use crate::protocols::privileges_service::privileges_protocol::GetPrivilegesRequest;
 use crate::protocols::privileges_service::privileges_protocol::GetPrivilegesResponse;
 use crate::protocols::privileges_service::privileges_protocol::PrivilegesProtocolServer;

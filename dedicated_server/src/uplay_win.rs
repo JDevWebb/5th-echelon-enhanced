@@ -6,7 +6,7 @@ use quazal::ClientInfo;
 use quazal::Context;
 use slog::Logger;
 
-use crate::login_required;
+use crate::login_or_service_required as login_required;
 use crate::protocols::uplay_win_service::uplay_win_protocol::GetActionsCompletedRequest;
 use crate::protocols::uplay_win_service::uplay_win_protocol::GetActionsCompletedResponse;
 use crate::protocols::uplay_win_service::uplay_win_protocol::GetRewardsPurchasedRequest;

@@ -24,7 +24,12 @@ use crate::protocols::nat_traversal::nat_traversal_protocol::RequestProbeInitiat
 use crate::protocols::nat_traversal::nat_traversal_protocol::NAT_TRAVERSAL_PROTOCOL_ID;
 
 /// Implementation of the `NatTraversalProtocolServerTrait` for NAT traversal operations.
-struct NatTraversalProtocolServerImpl;
+struct NatTraversalProtocolServerImpl {
+    storage: std::sync::Arc<crate::storage::Storage>,
+}
+
+/// The most players one probe request may reach.
+const MAX_PROBE_TARGETS: usize = 8;
 
 impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
     /// Handles the `RequestProbeInitiationExt` request.
@@ -40,8 +45,18 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
         socket: &std::net::UdpSocket,
     ) -> Result<RequestProbeInitiationExtResponse, Error> {
         // Ensure the client is logged in.
-        let _user_id = login_required(&*ci)?;
+        let user_id = login_required(&*ci)?;
         info!(logger, "Probe initiation requested: {request:?}");
+        // A probe makes another player's game send to an address: only to players in a
+        // session with the caller, a few at a time, and only to the caller's own address.
+        if request.url_target_list.len() > MAX_PROBE_TARGETS || !crate::rate_limit::game_requests().check(user_id) {
+            return Err(Error::AccessDenied);
+        }
+        let own = std::iter::once(request.url_station_to_probe.to_string()).collect::<Vec<_>>();
+        if crate::game_session::only_reachable_addresses(own.clone(), ci.address().ip(), crate::nat_helper::relay_ip()) != own {
+            warn!(logger, "User {user_id} asked for probes to an address not their own; refused");
+            return Err(Error::AccessDenied);
+        }
 
         // Iterate over each target URL provided in the request.
         for url in request.url_target_list.iter() {
@@ -91,6 +106,13 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
                 continue;
             };
             let addr = *target.address();
+            let shares_session = target
+                .user_id
+                .is_some_and(|other| self.storage.share_session(user_id, other).unwrap_or(false));
+            if !shares_session {
+                warn!(logger, "Not probing {url}: not in a session with {user_id}");
+                continue;
+            }
             info!(logger, "Sending probe to {url} ({addr})\n{payload:x?}");
 
             // Create a QPacket for sending the probe.
@@ -120,6 +142,6 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
 ///
 /// This function is typically used to register the NAT traversal protocol
 /// with the server's protocol dispatcher.
-pub fn new_protocol<T: 'static>() -> Box<dyn Protocol<T>> {
-    Box::new(NatTraversalProtocolServer::new(NatTraversalProtocolServerImpl))
+pub fn new_protocol<T: 'static>(storage: std::sync::Arc<crate::storage::Storage>) -> Box<dyn Protocol<T>> {
+    Box::new(NatTraversalProtocolServer::new(NatTraversalProtocolServerImpl { storage }))
 }

@@ -7,7 +7,7 @@ use quazal::rmc::Protocol;
 use quazal::Context;
 use serde::Deserialize;
 
-use crate::login_required;
+use crate::login_or_service_required as login_required;
 
 /// Represents a single news item.
 #[derive(Debug, ToStream, FromStream, Default, Deserialize)]

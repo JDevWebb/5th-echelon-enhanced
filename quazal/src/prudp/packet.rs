@@ -19,8 +19,11 @@ use hmac::Mac;
 use md5::Digest;
 use md5::Md5;
 use miniz_oxide::deflate::compress_to_vec_zlib;
-use miniz_oxide::inflate::decompress_to_vec_zlib;
+use miniz_oxide::inflate::decompress_to_vec_zlib_with_limit;
 use miniz_oxide::inflate::DecompressError;
+
+/// The most one packet's payload may inflate to.
+pub const MAX_DECOMPRESSED: usize = 32 * 1024;
 use num_enum::IntoPrimitive;
 use num_enum::TryFromPrimitive;
 use slog::Logger;
@@ -284,7 +287,9 @@ impl QPacket {
             let use_compression = !payload.is_empty() && payload[0] != 0;
             if use_compression {
                 // Decompress the payload if the first byte indicates compression
-                payload = decompress_to_vec_zlib(&payload.as_slice()[1..]).map_err(Error::DecompressFailed)?;
+                // Bounded: a small packet mustn't inflate to megabytes (the key is public, so
+                // anyone can make one). Real payloads are a few KB at most.
+                payload = decompress_to_vec_zlib_with_limit(&payload.as_slice()[1..], MAX_DECOMPRESSED).map_err(Error::DecompressFailed)?;
             } else if !payload.is_empty() {
                 // If not compressed, remove the first byte (which was the compression flag)
                 payload.remove(0);
