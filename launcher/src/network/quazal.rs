@@ -292,9 +292,10 @@ impl Quazal {
 /// sends the challenge back to the server to confirm connectivity.
 pub async fn test_p2p(api_url: String, username: &str, password: &str) -> Result<(), Error> {
     // Log in to the API server to get an authentication token.
-    let Ok(mut client) = UsersClient::connect(api_url.clone()).await else {
+    let Ok(channel) = super::endpoint(&api_url)?.connect().await else {
         return Err(Error::ConnectionFailed);
     };
+    let mut client = UsersClient::new(channel);
 
     let resp = match client
         .login(LoginRequest {

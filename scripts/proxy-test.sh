@@ -55,9 +55,11 @@ client sh -c "
   curl -sf http://$host/api/info; echo
   curl -sf http://$host/OnlineConfigService.svc/GetOnlineConfig | grep -q 'port=31126' && echo 'online config: login on 31126'
   curl -sf http://$host/mp_balancing.ini | head -c 40 | grep -q . && echo 'content: served'
+  code=\$(curl -s -o /dev/null -w '%{http_code}' --http2-prior-knowledge -X POST -H 'Content-Type: application/grpc' http://$host/users.UsersAdmin/List)
+  [ \"\$code\" = 403 ] && echo 'admin API: refused (403)' || { echo \"admin API answered \$code, not 403\"; exit 1; }
 " || rc=1
 echo "--- test players (host name only)"
-client "$bin/testbot" --server "$host" --info login lobby-invite private-match-invite cleanup leave-session abandon-empty duplicate-request lost-push nat-probe nat-relay nat-public-address || rc=1
+client "$bin/testbot" --server "$host" --info login lobby-invite private-match-invite cleanup leave-session abandon-empty duplicate-request lost-push nat-probe nat-relay nat-public-address direct-test || rc=1
 if [ $rc -ne 0 ]; then
   echo "--- server log"; docker exec fes-proxy-srv tail -40 /srv/fe/server.log || true
   echo "--- caddy log"; docker logs --tail 40 fes-proxy-caddy || true

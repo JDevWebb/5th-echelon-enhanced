@@ -17,7 +17,8 @@ use crate::flow;
 use crate::task::Slot;
 use crate::theme;
 
-type TestResults = Vec<(&'static str, Result<(), String>)>;
+/// Each check's name, how it went, and what to say about it.
+type TestResults = Vec<(&'static str, setup::diagnose::Status, Option<String>)>;
 
 #[derive(Default)]
 pub struct Settings {
@@ -498,16 +499,16 @@ fn connection_test(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui
             settings.tests.start(ctx, move || run_tests(&profile, nat_port));
         }
     });
-    for (name, result) in &settings.test_results {
-        ui.horizontal(|ui| {
-            theme::status_marker(ui, if result.is_ok() { setup::diagnose::Status::Ok } else { setup::diagnose::Status::Fail });
+    for (name, status, note) in &settings.test_results {
+        ui.horizontal_wrapped(|ui| {
+            theme::status_marker(ui, *status);
             ui.label(*name);
-            if let Err(e) = result {
-                ui.label(theme::muted(e.as_str()).small());
+            if let Some(note) = note {
+                ui.label(theme::muted(note.as_str()).small());
             }
         });
     }
-    if settings.test_results.iter().any(|(_, r)| r.is_err()) && setup::game::game_running() {
+    if settings.test_results.iter().any(|(_, s, _)| *s != setup::diagnose::Status::Ok) && setup::game::game_running() {
         ui.label(theme::muted("The game is running and holds the ports some tests need; close it and test again."));
     }
 }
@@ -527,26 +528,49 @@ fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>) -> Te
             Err(_) => Err("no answer in time".into()),
         }
     };
-    let mut results: TestResults = vec![("Config server (port 80)", run(Box::pin(network::test_cfg_server(&profile.server))))];
-    results.push(("API and account", run(Box::pin(network::test_login(api.clone(), user, pass)))));
-    results.push((
+    use setup::diagnose::Status;
+    let pass_fail = |r: Result<(), String>| match r {
+        Ok(()) => (Status::Ok, None),
+        Err(e) => (Status::Fail, Some(e)),
+    };
+    let mut results: TestResults = Vec::new();
+    let mut add = |name, (status, note): (Status, Option<String>)| results.push((name, status, note));
+    add("Config server (port 80)", pass_fail(run(Box::pin(network::test_cfg_server(&profile.server)))));
+    add("API and account", pass_fail(run(Box::pin(network::test_login(api.clone(), user, pass)))));
+    add(
         "Game service sign-in",
-        run(Box::pin(network::test_quazal_login(&profile.server, profile.login_port(), user, pass))),
-    ));
-    results.push(("Direct connection to this PC", run(Box::pin(network::test_p2p(api, user, pass)))));
+        pass_fail(run(Box::pin(network::test_quazal_login(&profile.server, profile.login_port(), user, pass)))),
+    );
+    // Only a router that forwards UDP 13000 (or no router) lets the server's packet in
+    // unasked. Most don't, and internet play doesn't need them to: the NAT helper, the
+    // router's port mapping while the game runs, or the relay cover it.
+    add(
+        "Direct connection to this PC",
+        match run(Box::pin(network::test_p2p(api, user, pass))) {
+            Ok(()) => (Status::Ok, None),
+            Err(e) if e.contains("in time") || e.contains("Deadline") => (
+                Status::Warn,
+                Some("not reachable directly, which is normal behind a home router: matches use your router's port mapping while the game runs, or the server's relay".into()),
+            ),
+            Err(e) => (Status::Fail, Some(e)),
+        },
+    );
     let nat_port = game_nat_port.unwrap_or(nat_proto::DEFAULT_PORT);
     let nat = match rt.block_on(async { tokio::time::timeout(t, network::test_nat_helper(&profile.server, nat_port)).await }) {
         Ok(Ok(check)) => match check.symmetric {
-            Some(true) => Err(format!(
-                "reachable; this PC is {} to the server, and the router changes ports per destination, so matches go through the server's relay",
-                check.observed
-            )),
-            _ => Ok(()),
+            Some(true) => (
+                Status::Warn,
+                Some(format!(
+                    "reachable; this PC is {} to the server, and the router changes ports per destination, so matches go through the server's relay",
+                    check.observed
+                )),
+            ),
+            _ => (Status::Ok, None),
         },
-        Ok(Err(e)) => Err(format!("{e} (UDP {nat_port}-{}): only LAN or VPN play works", nat_port + 1)),
-        Err(_) => Err(format!("no answer (UDP {nat_port}-{}): only LAN or VPN play works", nat_port + 1)),
+        Ok(Err(e)) => (Status::Fail, Some(format!("{e} (UDP {nat_port}-{}): only LAN or VPN play works", nat_port + 1))),
+        Err(_) => (Status::Fail, Some(format!("no answer (UDP {nat_port}-{}): only LAN or VPN play works", nat_port + 1))),
     };
-    results.push(("Internet play helper", nat));
+    add("Internet play helper", nat);
     results
 }
 

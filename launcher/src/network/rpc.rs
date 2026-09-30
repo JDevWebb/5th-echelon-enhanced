@@ -21,7 +21,7 @@ use super::Error;
 ///
 /// An `Ok(())` if the login is successful, or an `Error` otherwise.
 pub async fn test_login(api_url: String, username: &str, password: &str) -> Result<(), Error> {
-    let Ok(mut client) = UsersClient::connect(api_url).await else {
+    let Ok(mut client) = super::endpoint(&api_url)?.connect().await.map(UsersClient::new) else {
         return Err(Error::ConnectionFailed);
     };
 
@@ -70,7 +70,7 @@ pub async fn test_login(api_url: String, username: &str, password: &str) -> Resu
 /// the account is linked at once and its name reserved across servers
 /// sharing friends.
 pub async fn register(api_url: String, username: &str, password: &str, identity: Option<(&identity::Identity, &str)>) -> Result<(), Error> {
-    let Ok(mut client) = UsersClient::connect(api_url).await else {
+    let Ok(mut client) = super::endpoint(&api_url)?.connect().await.map(UsersClient::new) else {
         return Err(Error::ConnectionFailed);
     };
     let time = identity::now();
@@ -110,7 +110,7 @@ pub async fn register(api_url: String, username: &str, password: &str, identity:
 
 /// The account id the server gave `username` (the game's "Ubisoft id").
 pub async fn account_id(api_url: String, username: &str, password: &str) -> Result<String, Error> {
-    let Ok(mut client) = UsersClient::connect(api_url).await else {
+    let Ok(mut client) = super::endpoint(&api_url)?.connect().await.map(UsersClient::new) else {
         return Err(Error::ConnectionFailed);
     };
     let resp = client
@@ -158,7 +158,7 @@ pub async fn rename(api_url: String, username: &str, password: &str, new_name: &
 /// Signs in to `username` with the player's identity key (signed for `host`,
 /// the server as the player reached it), setting `new_password`.
 pub async fn key_login(api_url: String, identity: &identity::Identity, host: &str, username: &str, new_password: &str) -> Result<(), Error> {
-    let Ok(mut client) = UsersClient::connect(api_url).await else {
+    let Ok(mut client) = super::endpoint(&api_url)?.connect().await.map(UsersClient::new) else {
         return Err(Error::ConnectionFailed);
     };
     let time = identity::now();

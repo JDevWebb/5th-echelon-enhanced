@@ -998,8 +998,10 @@ impl Misc for MyMisc {
         if !crate::rate_limit::game_requests().check(caller(&request)?) {
             return Err(Status::resource_exhausted("Too many requests; slow down"));
         }
-        let mut client_addr = request.remote_addr().ok_or(Status::failed_precondition("no client address"))?;
-        client_addr.set_port(13_000);
+        // The player's own address: behind a reverse proxy, the one it forwards
+        // (trusted from listed proxies and this machine only), not the proxy's.
+        let ip = client_addr(&request).ok_or(Status::failed_precondition("no client address"))?;
+        let client_addr = std::net::SocketAddr::new(ip, 13_000);
         let request = request.into_inner();
         let mut resp_data = b"P2P Test - ".to_vec();
         resp_data.extend(request.challenge);

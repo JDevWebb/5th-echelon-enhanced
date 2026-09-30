@@ -510,6 +510,17 @@ impl Bot {
         Ok(())
     }
 
+    /// The launcher's direct-connection test: the server sends `challenge` to
+    /// this machine's UDP 13000, from wherever it sees this player, and
+    /// returns what came back.
+    pub async fn test_direct(&self, challenge: Vec<u8>) -> std::result::Result<Vec<u8>, tonic::Status> {
+        Ok(MiscClient::new(self.api.clone())
+            .test_p2p(self.authed(server_api::misc::TestP2pRequest { challenge }))
+            .await?
+            .into_inner()
+            .challenge)
+    }
+
     /// Unlinks this account from its identity.
     pub async fn unlink(&self) -> std::result::Result<(), tonic::Status> {
         FriendsClient::new(self.api.clone()).unlink_identity(self.authed(server_api::friends::UnlinkIdentityRequest {})).await?;

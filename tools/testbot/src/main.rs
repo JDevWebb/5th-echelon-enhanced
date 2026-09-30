@@ -157,6 +157,25 @@ async fn identity_login(ctx: &mut Ctx) -> Result<()> {
     a.disconnect().await
 }
 
+/// The launcher's direct-connection test reaches this machine: behind a
+/// reverse proxy too, where the server must use the forwarded address.
+async fn direct_test(ctx: &mut Ctx) -> Result<()> {
+    let a = ctx.player("Direct").await?;
+    let socket = tokio::net::UdpSocket::bind("0.0.0.0:13000").await?;
+    let answer = tokio::spawn(async move {
+        let mut buf = [0u8; 256];
+        let (n, from) = socket.recv_from(&mut buf).await?;
+        let challenge = buf[..n].strip_prefix(b"P2P Test - ").ok_or_else(|| eyre!("not a challenge"))?.to_vec();
+        socket.send_to(&challenge, from).await?;
+        Ok::<_, eyre::Report>(challenge)
+    });
+    let challenge: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
+    let back = a.test_direct(challenge.clone()).await.map_err(|e| eyre!("the server couldn't reach this machine: {}", e.message()))?;
+    ensure!(back == challenge, "the challenge came back changed");
+    ensure!(tokio::time::timeout(std::time::Duration::from_secs(2), answer).await??? == challenge, "a different challenge arrived");
+    a.disconnect().await
+}
+
 /// Renaming keeps the account (friends, id) and frees the old name.
 async fn rename(ctx: &mut Ctx) -> Result<()> {
     let a = ctx.player("Named").await?;
@@ -648,6 +667,7 @@ const SCENARIOS: &[&str] = &[
     "invite-queue",
     "identity-login",
     "rename",
+    "direct-test",
 ];
 
 #[tokio::main]
@@ -711,6 +731,7 @@ async fn main() -> Result<()> {
                 "invite-queue" => invite_queue(&mut ctx).await,
                 "identity-login" => identity_login(&mut ctx).await,
                 "rename" => rename(&mut ctx).await,
+                "direct-test" => direct_test(&mut ctx).await,
                 // Not in the default list: a server in the "mutual" mode, and two servers.
                 "friends-mutual" => friends_mutual(&mut ctx).await,
                 "federation" => match other {
