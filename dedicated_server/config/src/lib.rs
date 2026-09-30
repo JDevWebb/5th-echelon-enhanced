@@ -296,14 +296,22 @@ impl Config {
     /// connect to `public`: the address they reach this server on. They
     /// differ behind NAT or in a container. Every service's address and the
     /// online config the game downloads are updated.
+    ///
+    /// A service listening on loopback stays there: it's meant to be
+    /// reached through a reverse proxy on this machine.
     pub fn set_addresses(&mut self, listen: std::net::IpAddr, public: std::net::IpAddr) {
-        self.api_server.set_ip(listen);
+        let set = |addr: &mut SocketAddr| {
+            if !addr.ip().is_loopback() {
+                addr.set_ip(listen);
+            }
+        };
+        set(&mut self.api_server);
         self.nat.listen.set_ip(listen);
         self.nat.public_address = Some(public);
         for svc in self.quazal.service.values_mut() {
             match svc {
                 Service::Authentication(ctx) | Service::Secure(ctx) => {
-                    ctx.listen.set_ip(listen);
+                    set(&mut ctx.listen);
                     if let Some(addr) = ctx.secure_server_addr.as_mut() {
                         addr.set_ip(public);
                     }
@@ -314,8 +322,14 @@ impl Config {
                         }
                     }
                 }
-                Service::Config(online) => online.set_ips(listen, public),
-                Service::Content(content) => content.listen.set_ip(listen),
+                Service::Config(online) => {
+                    let keep = online.listen;
+                    online.set_ips(listen, public);
+                    if keep.ip().is_loopback() {
+                        online.listen = keep;
+                    }
+                }
+                Service::Content(content) => set(&mut content.listen),
             }
         }
     }
@@ -534,6 +548,26 @@ mod tests {
         let before = toml::to_string(&cfg).unwrap();
         cfg.apply_public();
         assert_eq!(toml::to_string(&cfg).unwrap(), before);
+    }
+
+    #[test]
+    fn services_behind_a_local_proxy_stay_on_loopback() {
+        let mut cfg = Config::default();
+        cfg.api_server = "127.0.0.1:50051".parse().unwrap();
+        for svc in cfg.quazal.service.values_mut() {
+            match svc {
+                Service::Config(online) => online.listen = "127.0.0.1:8080".parse().unwrap(),
+                Service::Content(content) => content.listen = "127.0.0.1:8000".parse().unwrap(),
+                _ => {}
+            }
+        }
+        cfg.set_addresses("0.0.0.0".parse().unwrap(), "203.0.113.10".parse().unwrap());
+        let text = toml::to_string(&cfg).unwrap();
+        for local in ["127.0.0.1:50051", "127.0.0.1:8080", "127.0.0.1:8000"] {
+            assert!(text.contains(local), "{local} moved:\n{text}");
+        }
+        assert!(text.contains("0.0.0.0:21126") && text.contains("203.0.113.10:21127"), "UDP still public");
+        assert!(text.contains("prudp:/address=203.0.113.10;port=21126"));
     }
 
     #[test]
