@@ -323,6 +323,12 @@ docker compose -f docker/compose.yaml exec server sh -c 'cat service.toml'
 docker compose -f docker/compose.yaml restart
 ```
 
+### Behind a reverse proxy
+
+Running other services on the same machine? Everything TCP (the game's config on port 80, content and the API) can share port 80 with your other sites through **Caddy**, by host name. The UDP ports move to any free numbers. Set `[public]` in `service.toml` to what players connect to. The launcher reads it from the server, so players still only type the host name.
+
+The guide, with a tested Caddyfile: **[docs/reverse-proxy.md](docs/reverse-proxy.md)**.
+
 ### Settings
 
 The server reads `service.toml` from its working folder, writing the defaults on the first start. The settings this fork adds are in **[docs/server-settings.md](docs/server-settings.md)**:
@@ -332,6 +338,7 @@ The server reads `service.toml` from its working folder, writing the defaults on
 - **`[limits]`:** failed logins and new accounts per address.
 - **`[admin]`:** the admin API for the launcher's **Manage a server**. Its key is written to `admin-key.txt`.
 - **`[nat]`:** internet play: the NAT helper's port, and who is relayed (`auto`, `all` or `off`) and how fast.
+- **`[public]`:** the host name and ports players connect to, when they differ from what the server listens on (a reverse proxy, remapped ports), and which proxies' `X-Forwarded-For` to trust.
 
 Command-line options: `--public-address <ip>`, `--listen <ip>`, and `-c <file>` for another settings file. The first two are also the `FE_PUBLIC_ADDRESS` and `FE_LISTEN` environment variables. The address options rewrite `service.toml` on every start, so the addresses always match.
 

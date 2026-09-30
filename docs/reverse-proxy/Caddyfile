@@ -1,0 +1,41 @@
+# 5th Echelon behind Caddy: everything TCP shares port 80 with your other
+# sites, by host name. See docs/reverse-proxy.md.
+#
+# The server (service.toml):
+#   [service.onlineconfig] listen = "127.0.0.1:8080"
+#   [service.content]      listen = "127.0.0.1:8000"
+#   api_server = "127.0.0.1:50051"
+#   [public] host = "blacklist.example.com", api = 80, content = 80
+#
+# UDP (game login and service, the NAT helper) can't go through Caddy:
+# forward those ports straight to the server.
+
+{
+	# The launcher and the in-game overlay speak gRPC without TLS (h2c).
+	servers :80 {
+		protocols h1 h2c
+	}
+}
+
+# http:// keeps Caddy from redirecting to HTTPS: the game only speaks
+# plain HTTP on port 80.
+http://blacklist.example.com {
+	# Accounts, friends and invites (gRPC).
+	@grpc header Content-Type application/grpc*
+	handle @grpc {
+		reverse_proxy h2c://127.0.0.1:50051 {
+			# Invites arrive on a stream that stays open.
+			flush_interval -1
+		}
+	}
+
+	# What the game downloads (multiplayer balancing).
+	handle /mp_balancing.ini {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	# The game's online config, and the community API (/api/...).
+	handle {
+		reverse_proxy 127.0.0.1:8080
+	}
+}

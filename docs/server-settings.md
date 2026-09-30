@@ -69,6 +69,26 @@ The helper only relays between players who probed it, so it can't be used to sen
 
 In Docker, the helper needs to see players' real addresses: Docker on Linux keeps them; Docker Desktop doesn't.
 
+## `[public]`: what players connect to
+
+For a server behind a reverse proxy, or with its ports forwarded to other numbers. The full guide, with a Caddy example, is [reverse-proxy.md](reverse-proxy.md).
+
+```toml
+[public]
+host = "blacklist.example.com"   # content downloads are addressed to it
+api = 80                         # the gRPC API, e.g. through Caddy
+content = 80
+# login = 21126                  # game login (UDP)
+# secure = 21127                 # game service (UDP)
+# nat = 21128                    # NAT helper (UDP; the next port too)
+proxies = ["172.17.0.0/16"]      # proxies whose X-Forwarded-For is believed
+```
+
+Without this section, nothing changes. With it:
+- the server hands out these ports, and for any left unset, the port its service listens on: the login port in the online config, the game service in tickets, content downloads, and relay addresses;
+- `GET /api/info` reports them as `ports` (and `host`), and the launcher's **Set up** stores them for the player;
+- `X-Forwarded-For` is believed from the listed proxies (and always from a proxy on this machine), so the rate limits count each player, not the proxy.
+
 ## `[limits]`: rate limits on accounts and logins
 
 ```toml
