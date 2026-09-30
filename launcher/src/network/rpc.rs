@@ -66,27 +66,34 @@ pub async fn test_login(api_url: String, username: &str, password: &str) -> Resu
 /// # Returns
 ///
 /// An `Ok(())` if the registration is successful, or an `Error` otherwise.
-pub async fn register(api_url: String, username: &str, password: &str, ubi_id: &str) -> Result<(), Error> {
+/// With `identity` (the player's, and the server's id), the account is
+/// linked at once and its name reserved across servers sharing friends.
+pub async fn register(api_url: String, username: &str, password: &str, identity: Option<(&identity::Identity, &str)>) -> Result<(), Error> {
     let Ok(mut client) = UsersClient::connect(api_url).await else {
         return Err(Error::ConnectionFailed);
     };
+    let time = identity::now();
+    let (global_id, signature) = identity.map_or_else(Default::default, |(id, server_id)| (id.global_id(), id.sign_link(server_id, username, time)));
 
     let resp = match client
         .register(RegisterRequest {
             username: username.to_string(),
             password: password.to_string(),
-            ubi_id: ubi_id.to_string(),
+            ubi_id: String::new(),
+            global_id,
+            time,
+            signature,
         })
         .await
     {
         Ok(resp) => resp,
         Err(status) => {
             // Handle different gRPC status codes.
+            // The server's reason (a name it won't take, say) is worth showing.
             if matches!(status.code(), tonic::Code::AlreadyExists) {
                 return Err(Error::UsernameAlreadyTaken);
-            } else {
-                return Err(Error::SendingRequestFailed);
             }
+            return Err(Error::Rpc(status));
         }
     };
 
@@ -96,6 +103,51 @@ pub async fn register(api_url: String, username: &str, password: &str, ubi_id: &
     } else {
         Err(Error::ServerFailure(resp.error))
     }
+}
+
+/// The account id the server gave `username` (the game's "Ubisoft id").
+pub async fn account_id(api_url: String, username: &str, password: &str) -> Result<String, Error> {
+    let Ok(mut client) = UsersClient::connect(api_url).await else {
+        return Err(Error::ConnectionFailed);
+    };
+    let resp = client
+        .login(LoginRequest {
+            username: username.to_string(),
+            password: password.to_string(),
+        })
+        .await?
+        .into_inner();
+    Ok(resp.user.map(|u| u.id).filter(|id| !id.is_empty()).unwrap_or_else(|| username.to_string()))
+}
+
+/// Renames the account (signed with `identity` for server `server_id` when
+/// it's linked). Answers the new name.
+pub async fn rename(api_url: String, username: &str, password: &str, new_name: &str, identity: Option<(&identity::Identity, &str)>) -> Result<String, Error> {
+    let channel = tonic::transport::Endpoint::from_shared(api_url).map_err(|_| Error::ConnectionFailed)?.connect().await.map_err(|_| Error::ConnectionFailed)?;
+    let token = UsersClient::new(channel.clone())
+        .login(LoginRequest {
+            username: username.to_string(),
+            password: password.to_string(),
+        })
+        .await?
+        .into_inner()
+        .token;
+    let token: tonic::metadata::MetadataValue<_> = token.parse().map_err(|_| Error::ServerFailure("bad token".into()))?;
+    let mut client = server_api::friends::friends_client::FriendsClient::with_interceptor(channel, move |mut req: tonic::Request<()>| {
+        req.metadata_mut().insert("authorization", token.clone());
+        Ok(req)
+    });
+    let time = identity::now();
+    let signature = identity.map(|(id, server_id)| id.sign_link(server_id, new_name, time)).unwrap_or_default();
+    let resp = client
+        .rename(server_api::friends::RenameRequest {
+            new_name: new_name.to_string(),
+            time,
+            signature,
+        })
+        .await?
+        .into_inner();
+    Ok(resp.username)
 }
 
 /// Signs in to `username` with the player's identity key (signed for server

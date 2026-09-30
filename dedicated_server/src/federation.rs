@@ -97,6 +97,9 @@ struct State {
     /// When each player's friends were last asked for on their behalf
     /// ([`pull_now_and_then`]).
     asked: Mutex<std::collections::HashMap<u32, Instant>>,
+    /// The coordinator's URL and this server's secret, once joined: for the
+    /// calls made while a player waits (names).
+    joined: Mutex<Option<(String, String)>>,
 }
 
 static STATE: OnceLock<State> = OnceLock::new();
@@ -110,6 +113,7 @@ pub fn init(server_id: String, enabled: bool) {
         wake: tokio::sync::Notify::new(),
         pulls: Mutex::new(HashSet::new()),
         asked: Mutex::new(std::collections::HashMap::new()),
+        joined: Mutex::new(None),
     });
 }
 
@@ -118,7 +122,8 @@ pub fn server_id() -> &'static str {
     STATE.get().map_or("local", |s| s.server_id.as_str())
 }
 
-fn enabled() -> bool {
+/// Whether this server shares friends through a coordinator.
+pub fn enabled() -> bool {
     STATE.get().is_some_and(|s| s.enabled)
 }
 
@@ -223,6 +228,71 @@ pub fn pull_now_and_then(user: u32) {
     pull_soon(user);
 }
 
+/// What the coordinator says about a name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NameCheck {
+    /// No coordinator, or it didn't answer: the name is only checked here.
+    Unknown,
+    /// Nobody holds it across the group.
+    Free,
+    /// It's (now) this player's across the group.
+    Ours,
+    /// Another player holds it across the group.
+    Taken,
+}
+
+/// How long a player waits on the coordinator when making an account.
+const NAME_TIMEOUT: Duration = Duration::from_secs(4);
+
+fn joined() -> Option<(String, String)> {
+    STATE.get().filter(|s| s.enabled)?.joined.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+}
+
+/// Reserves `name` for `global_id` across the group (signed with the
+/// player's link signature for this server).
+pub async fn claim_name(global_id: &str, name: &str, time: i64, signature: &str) -> NameCheck {
+    let Some((base, secret)) = joined() else {
+        return NameCheck::Unknown;
+    };
+    let body = serde_json::json!({ "name": name, "global_id": global_id, "time": time, "signature": signature });
+    let sent = reqwest::Client::new().post(format!("{base}/v1/names/claim")).bearer_auth(secret).timeout(NAME_TIMEOUT).json(&body).send().await;
+    match sent.map(|r| r.status()) {
+        Ok(s) if s.is_success() => NameCheck::Ours,
+        Ok(reqwest::StatusCode::CONFLICT) => NameCheck::Taken,
+        _ => NameCheck::Unknown,
+    }
+}
+
+/// Whether anyone holds `name` across the group (for an account made
+/// without an identity: it may take a name nobody has reserved).
+pub async fn name_holder(name: &str) -> NameCheck {
+    let Some((base, secret)) = joined() else {
+        return NameCheck::Unknown;
+    };
+    let url = format!("{base}/v1/names/{}", urlencode(name));
+    let answer = async {
+        let resp = reqwest::Client::new().get(url).bearer_auth(secret).timeout(NAME_TIMEOUT).send().await.ok()?;
+        resp.status().is_success().then_some(())?;
+        resp.json::<serde_json::Value>().await.ok()
+    }
+    .await;
+    match answer.and_then(|v| v["claimed"].as_bool()) {
+        Some(true) => NameCheck::Taken,
+        Some(false) => NameCheck::Free,
+        None => NameCheck::Unknown,
+    }
+}
+
+/// Percent-encodes a path segment.
+fn urlencode(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => char::from(b).to_string(),
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
 /// Applies a pulled friend list for local player `user` (linked as `me`):
 /// friendships and blocks with others who are linked here too. Pairs the
 /// coordinator doesn't know are left alone.
@@ -284,6 +354,7 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
             }
         }
         if let Some(secret) = secret.as_deref() {
+            *state.joined.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((base.clone(), secret.to_string()));
             let client = Coordinator {
                 http: &http,
                 base: &base,
@@ -400,8 +471,16 @@ async fn flush(logger: &Logger, storage: &Storage, client: &Coordinator<'_>) -> 
         let answer = client.post("/v1/changes", &serde_json::json!({ "changes": changes })).await?;
         let results = answer["results"].as_array().cloned().unwrap_or_default();
         for (i, (id, body)) in batch.iter().enumerate() {
-            if let Some(err) = results.get(i).and_then(|r| r["error"].as_str()) {
+            let result = results.get(i).cloned().unwrap_or_default();
+            if let Some(err) = result["error"].as_str() {
                 warn!(logger, "Federation: the coordinator refused {body}: {err}");
+            }
+            // A link says whether its name is someone else's across the group.
+            if let (Some(conflict), Ok(Change::Link { global_id, username, .. })) = (result["conflict"].as_bool(), serde_json::from_str::<Change>(body)) {
+                if conflict {
+                    warn!(logger, "Federation: {username}'s name belongs to another player on the servers sharing friends; they'll be asked to rename");
+                }
+                storage.set_name_conflict(&global_id, conflict).await?;
             }
             storage.outbox_remove(*id).await?;
         }

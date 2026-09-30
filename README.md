@@ -176,6 +176,7 @@ Everything the launcher does can be done by hand:
 - **An automatic setup:** game detection, client install, one-click accounts, network adapter pinning and a rank 5 save, then a checklist with a fix for each problem.
 - **An in-game overlay** (<kbd>F5</kbd>): friends and what they're playing, friend requests, player search and blocking, invites, lobby player limits, and server status.
 - **Friends that follow you:** your identity links your accounts on servers that share a coordinator, so friends made on one show up on the others. It also signs you in to your accounts on a new PC.
+- **Your name is yours:** servers that share a coordinator reserve each name for one player. Elsewhere, the overlay warns when someone has a friend's name but isn't them. You can rename your account from the launcher.
 - **A server directory:** browse the servers that share a coordinator, with your ping to each and how many are online, and join the one suggested.
 - **Save games:**
   - a rank 5 save for new players;

@@ -39,6 +39,20 @@ pub enum Relation {
     Blocked,
 }
 
+/// How far a player's name is known to be theirs (see the server's `NameStatus`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum NameStatus {
+    /// No identity: the name is only this server's.
+    #[default]
+    Unlinked,
+    /// An identity, on a server that doesn't share friends.
+    Linked,
+    /// Theirs on every server sharing friends.
+    Reserved,
+    /// Someone else holds this name on the servers sharing friends.
+    Conflict,
+}
+
 /// Another player, as the overlay lists them.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Player {
@@ -49,6 +63,12 @@ pub struct Player {
     /// What they're doing, e.g. "Spies vs Mercs · in a match with Tank".
     pub activity: Option<String>,
     pub relation: Relation,
+    /// Short form of their identity ("K7QF-2M9D"), empty if not linked.
+    pub identity: String,
+    pub name_status: NameStatus,
+    /// Set when they share a name with a friend of ours from another server
+    /// but aren't that friend: the server that friend is on.
+    pub lookalike: Option<String>,
 }
 
 /// What the server says about itself (`/api/info`).
@@ -90,11 +110,32 @@ pub struct Snapshot {
     /// Set once the lists have loaded at least once.
     pub loaded: bool,
     pub notice: Option<Notice>,
+    /// Our own name belongs to another player on the servers sharing
+    /// friends: we should rename.
+    pub my_name_conflict: bool,
+    /// Our identity's short form, empty if not linked.
+    pub my_identity: String,
+    /// Friends we know from other servers, by name key.
+    known: std::collections::HashMap<String, Vec<Known>>,
 }
 
 impl Snapshot {
     pub fn online_count(&self) -> usize {
         self.friends.iter().filter(|p| p.online).count()
+    }
+
+    /// Where a player called `name` who isn't our friend here shares a name
+    /// with a friend of ours on another server: that server. For an invite,
+    /// whose sender we may know nothing else about.
+    pub fn lookalike_of(&self, name: &str) -> Option<String> {
+        if self.friends.iter().any(|f| f.name == name) {
+            return None;
+        }
+        let listed = self.search.iter().flat_map(|(_, found)| found.iter()).chain(self.requests_in.iter()).find(|p| p.name == name);
+        match listed {
+            Some(p) => p.lookalike.clone(),
+            None => self.known.get(&name_key(name)).and_then(|k| k.iter().find(|k| k.server != server_name()).map(|k| k.server.clone())),
+        }
     }
 
     /// The activity of the named player, if they're online and doing something.
@@ -112,6 +153,81 @@ enum Action {
     Invite { id: String, name: String },
     Search(String),
     Change { change: FriendChange, id: String, name: String },
+}
+
+/// A friend we know from some server: their identity there.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, Deserialize)]
+struct Known {
+    name: String,
+    identity: String,
+    server: String,
+}
+
+/// Friends from every server this game has played on, kept next to
+/// `uplay.toml`: how the overlay tells a friend from someone who only took
+/// their name on another server.
+const KNOWN_FILE: &str = "5th-echelon-known-friends.json";
+
+static FOLDER: OnceLock<std::path::PathBuf> = OnceLock::new();
+
+/// Where the game (and `uplay.toml`) is; set at start.
+pub fn set_folder(dir: std::path::PathBuf) {
+    let _ = FOLDER.set(dir);
+}
+
+fn name_key(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
+/// The server we're on, as the known-friends file names it.
+fn server_name() -> String {
+    crate::config::get().and_then(|c| c.api_server.host_str().map(String::from)).unwrap_or_default()
+}
+
+fn load_known() -> std::collections::HashMap<String, Vec<Known>> {
+    FOLDER
+        .get()
+        .and_then(|d| std::fs::read(d.join(KNOWN_FILE)).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+/// Adds this server's friends (the linked ones) to what we know, saving it
+/// when it changed.
+fn remember(known: &mut std::collections::HashMap<String, Vec<Known>>, friends: &[Player]) {
+    let server = server_name();
+    let mut changed = false;
+    for f in friends.iter().filter(|f| !f.identity.is_empty()) {
+        let entry = Known {
+            name: f.name.clone(),
+            identity: f.identity.clone(),
+            server: server.clone(),
+        };
+        let list = known.entry(name_key(&f.name)).or_default();
+        if !list.contains(&entry) {
+            list.retain(|k| k.server != server);
+            list.push(entry);
+            changed = true;
+        }
+    }
+    if changed {
+        if let (Some(dir), Ok(json)) = (FOLDER.get(), serde_json::to_vec_pretty(known)) {
+            if let Err(e) = std::fs::write(dir.join(KNOWN_FILE), json) {
+                warn!("Couldn't save {KNOWN_FILE}: {e}");
+            }
+        }
+    }
+}
+
+/// Marks `players` who share a name with a friend from another server but
+/// have a different identity (or none).
+fn mark_lookalikes(players: &mut [Player], known: &std::collections::HashMap<String, Vec<Known>>) {
+    let server = server_name();
+    for p in players.iter_mut().filter(|p| p.relation != Relation::Friend) {
+        let Some(list) = known.get(&name_key(&p.name)) else { continue };
+        let same_person = list.iter().any(|k| !p.identity.is_empty() && k.identity == p.identity);
+        p.lookalike = if same_person { None } else { list.iter().find(|k| k.server != server).map(|k| k.server.clone()) };
+    }
 }
 
 static SNAPSHOT: Mutex<Option<Snapshot>> = Mutex::new(None);
@@ -233,7 +349,11 @@ fn invite_now(id: &str, name: &str) {
 
 fn search_now(query: &str) {
     match crate::api::search_players(query) {
-        Ok(found) => update(|s| s.search = Some((query.to_string(), found.into_iter().map(player).collect()))),
+        Ok(found) => update(|s| {
+            let mut found: Vec<Player> = found.into_iter().map(player).collect();
+            mark_lookalikes(&mut found, &s.known);
+            s.search = Some((query.to_string(), found));
+        }),
         Err(e) => {
             warn!("Search for {query:?} failed: {e}");
             say(reason(&e).unwrap_or_else(|| String::from("Couldn't search right now.")), true);
@@ -269,8 +389,17 @@ fn refresh_now() {
     update(|s| {
         match lists {
             Ok(lists) => {
+                if s.known.is_empty() {
+                    s.known = load_known();
+                }
+                s.my_name_conflict = lists.my_name() == friends::NameStatus::Conflict;
+                s.my_identity = lists.my_identity.clone();
                 s.friends = sorted(lists.friends.into_iter().map(player).collect());
+                let friends = s.friends.clone();
+                remember(&mut s.known, &friends);
                 s.requests_in = lists.requests_received.into_iter().map(player).collect();
+                let known = s.known.clone();
+                mark_lookalikes(&mut s.requests_in, &known);
                 s.requests_out = lists.requests_sent.into_iter().map(player).collect();
                 s.blocked = lists.blocked.into_iter().map(player).collect();
                 s.everyone_mode = lists.mode != "mutual";
@@ -302,12 +431,21 @@ fn player(p: friends::Player) -> Player {
         friends::Relation::Blocked => Relation::Blocked,
         friends::Relation::None => Relation::None,
     };
+    let name_status = match p.name() {
+        friends::NameStatus::Unlinked => NameStatus::Unlinked,
+        friends::NameStatus::Linked => NameStatus::Linked,
+        friends::NameStatus::Reserved => NameStatus::Reserved,
+        friends::NameStatus::Conflict => NameStatus::Conflict,
+    };
     Player {
         activity: if p.is_online { p.activity.as_ref().map(describe) } else { None },
         id: p.id,
         name: p.username,
         online: p.is_online,
         relation,
+        identity: p.identity,
+        name_status,
+        lookalike: None,
     }
 }
 
@@ -396,6 +534,41 @@ fn content_length(head: &str) -> Option<usize> {
 mod tests {
     use super::*;
 
+    fn test_player(name: &str, online: bool) -> Player {
+        Player {
+            id: name.into(),
+            name: name.into(),
+            online,
+            activity: None,
+            relation: Relation::Friend,
+            identity: String::new(),
+            name_status: NameStatus::Unlinked,
+            lookalike: None,
+        }
+    }
+
+    #[test]
+    fn a_name_twin_from_another_server_is_marked() {
+        let mut known = std::collections::HashMap::new();
+        known.insert(
+            String::from("kiwi"),
+            vec![Known {
+                name: "Kiwi".into(),
+                identity: "AAAA-BBBB".into(),
+                server: "other.example.com".into(),
+            }],
+        );
+        let mut stranger = test_player("KIWI", true);
+        stranger.relation = Relation::None;
+        let mut same = stranger.clone();
+        same.identity = String::from("AAAA-BBBB");
+        let mut players = vec![stranger, same, test_player("Kiwi", true)];
+        mark_lookalikes(&mut players, &known);
+        assert_eq!(players[0].lookalike.as_deref(), Some("other.example.com"), "another identity, or none");
+        assert_eq!(players[1].lookalike, None, "the same identity is the same friend");
+        assert_eq!(players[2].lookalike, None, "a friend here isn't questioned");
+    }
+
     #[test]
     fn players_read_their_relation_and_activity() {
         let mut p = friends::Player {
@@ -403,6 +576,8 @@ mod tests {
             username: "Wingduck".into(),
             is_online: true,
             relation: 0,
+            identity: String::new(),
+            name: 0,
             activity: Some(friends::Activity {
                 mode: "svm".into(),
                 room: "match".into(),
@@ -417,9 +592,9 @@ mod tests {
         p.is_online = false;
         assert_eq!(player(p).activity, None, "no activity while offline");
         let list = sorted(vec![
-            Player { id: "a".into(), name: "zed".into(), online: false, activity: None, relation: Relation::Friend },
-            Player { id: "b".into(), name: "Mjewbear".into(), online: true, activity: None, relation: Relation::Friend },
-            Player { id: "c".into(), name: "anna".into(), online: true, activity: None, relation: Relation::Friend },
+            test_player("zed", false),
+            test_player("Mjewbear", true),
+            test_player("anna", true),
         ]);
         let names: Vec<_> = list.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["anna", "Mjewbear", "zed"], "online first, then by name");

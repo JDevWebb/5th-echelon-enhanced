@@ -67,8 +67,14 @@ message LoginResponse {
 message RegisterRequest {
   string username = 1;
   string password = 2;
-  // Ignored: the server sets the account id (the username), so no one can take another's.
+  // Ignored: the server sets the account id, so no one can take another's.
   string ubi_id = 3;
+  // The player's identity, to link the new account to at once. On servers sharing friends,
+  // it also reserves the name across them (a name another identity holds is refused).
+  string global_id = 4;
+  int64 time = 5;
+  // Link signature (see friends.LinkIdentityRequest) for this server and username.
+  string signature = 6;
 }
 
 message KeyLoginRequest {

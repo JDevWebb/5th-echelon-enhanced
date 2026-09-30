@@ -9,6 +9,7 @@
 set -euo pipefail
 bin=$(cd "$1" && pwd); shift
 dir=$(mktemp -d) && cd "$dir"
+trap 'rm -rf "$dir"' EXIT
 cp "$bin/dedicated_server" .
 # The first start writes the default service.toml; stop it once written.
 ./dedicated_server >gen.log 2>&1 & gen=$!

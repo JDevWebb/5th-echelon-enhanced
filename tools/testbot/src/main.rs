@@ -132,6 +132,25 @@ async fn identity_login(ctx: &mut Ctx) -> Result<()> {
     Bot::login(ctx.server, &name, "a-new-password-1").await?.disconnect().await
 }
 
+/// Renaming keeps the account (friends, id) and frees the old name.
+async fn rename(ctx: &mut Ctx) -> Result<()> {
+    let a = ctx.player("Named").await?;
+    let b = ctx.player("Other").await?;
+    a.friend_change("request", &b.name).await?;
+    b.friend_change("accept", &a.name).await?;
+    ensure!(a.rename(&b.name.to_uppercase(), None).await.is_err(), "took another player's name");
+    let new = format!("{}x", a.name);
+    ensure!(a.rename(&new, None).await? == new, "renaming failed");
+    ensure!(names(&b.relationships().await?.friends) == [new.as_str()], "the friend sees the old name");
+    let old = a.name.clone();
+    a.disconnect().await?;
+    Bot::login(ctx.server, &new, PASSWORD).await?.disconnect().await?;
+    // The old name is free again.
+    Bot::register(ctx.server, &old, PASSWORD).await?;
+    Bot::login(ctx.server, &old, PASSWORD).await?.disconnect().await?;
+    b.disconnect().await
+}
+
 /// In the "mutual" mode: only friends are listed, and only friends invite.
 async fn friends_mutual(ctx: &mut Ctx) -> Result<()> {
     let a = ctx.player("Host").await?;
@@ -177,6 +196,36 @@ async fn federation(ctx: &mut Ctx, other: IpAddr) -> Result<()> {
         ensure!(tokio::time::Instant::now() < deadline, "the friendship didn't reach the second server");
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+    // Names are reserved across the two servers: someone else can't be Kiwi on the second.
+    let impostor = identity::Identity::generate();
+    ensure!(
+        Bot::register_as(other, &kiwi.name.to_lowercase(), PASSWORD, Some((&impostor, &id_b))).await.is_err(),
+        "another identity took a reserved name"
+    );
+    ensure!(Bot::register(other, &kiwi.name, PASSWORD).await.is_err(), "an account without an identity took a reserved name");
+    // Kiwi can take their own name there (renaming their account on the second server).
+    kiwi_b.rename(&kiwi.name, Some((&kiwi_key, &id_b))).await.map_err(|e| eyre!("Kiwi couldn't take their own name: {e}"))?;
+    // An account made on the second server before someone reserved its name elsewhere is
+    // flagged when it links, and renaming clears it.
+    let clash = format!("Clash{}", ctx.run);
+    Bot::register(other, &clash, PASSWORD).await?;
+    Bot::register_as(ctx.server, &clash, PASSWORD, Some((&identity::Identity::generate(), &id_a))).await?;
+    let late_key = identity::Identity::generate();
+    let late = Bot::login(other, &clash, PASSWORD).await?;
+    late.link(&late_key, &id_b, identity::now()).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while late.relationships().await?.my_name() != server_api::friends::NameStatus::Conflict {
+        ensure!(tokio::time::Instant::now() < deadline, "the name clash wasn't flagged");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    late.rename(&format!("{clash}b"), Some((&late_key, &id_b))).await.map_err(|e| eyre!("renaming: {e}"))?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    while late.relationships().await?.my_name() != server_api::friends::NameStatus::Reserved {
+        ensure!(tokio::time::Instant::now() < deadline, "renaming didn't clear the clash");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    late.disconnect().await?;
+
     // A block on the second server reaches the first.
     kiwi_b.friend_change("block", &on_b(&tank.name)).await?;
     let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
@@ -544,6 +593,7 @@ const SCENARIOS: &[&str] = &[
     "block",
     "invite-queue",
     "identity-login",
+    "rename",
 ];
 
 #[tokio::main]
@@ -606,6 +656,7 @@ async fn main() -> Result<()> {
                 "block" => block(&mut ctx).await,
                 "invite-queue" => invite_queue(&mut ctx).await,
                 "identity-login" => identity_login(&mut ctx).await,
+                "rename" => rename(&mut ctx).await,
                 // Not in the default list: a server in the "mutual" mode, and two servers.
                 "friends-mutual" => friends_mutual(&mut ctx).await,
                 "federation" => match other {

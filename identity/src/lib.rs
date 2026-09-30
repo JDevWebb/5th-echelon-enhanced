@@ -88,6 +88,13 @@ pub fn verify(global_id: &str, message: &str, signature: &str) -> bool {
     key.verify(message.as_bytes(), &ed25519_dalek::Signature::from_bytes(&sig)).is_ok()
 }
 
+/// The form of a player name that decides whether two names are the same:
+/// "Kiwi" and "kiwi" are one name, on a server and across servers that
+/// share friends.
+pub fn name_key(name: &str) -> String {
+    name.trim().to_lowercase()
+}
+
 /// Whether a signed `time` is close enough to `now` (both Unix seconds).
 pub fn fresh(time: i64, now: i64) -> bool {
     (now - time).abs() <= MAX_CLOCK_SKEW

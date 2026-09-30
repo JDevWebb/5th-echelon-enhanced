@@ -13,6 +13,10 @@
 //! * `GET /v1/relations/<identity>`: a linked player's friends and blocks,
 //!   for the server they're on.
 //!
+//! * `POST /v1/names/claim`, `GET /v1/names/<name>`: names are reserved
+//!   across the group, one identity each, so "Kiwi" is the same player on
+//!   every member server.
+//!
 //! A server may only act for players linked on it, and a link needs the
 //! player's signature, so no server can speak for someone who never used it.
 
@@ -39,6 +43,9 @@ use sqlx::sqlite::SqlitePool;
 pub const LISTED_FOR: Duration = Duration::from_secs(120);
 /// The most changes one request may carry.
 const MAX_CHANGES: usize = 200;
+/// A name claimed for an account that's still being made isn't released for
+/// this long, even though no link uses it yet.
+const CLAIM_GRACE_SECS: i64 = 60 * 60;
 
 pub struct Coordinator {
     pool: SqlitePool,
@@ -67,7 +74,51 @@ impl Coordinator {
         let options = SqliteConnectOptions::new().filename(path).create_if_missing(true).foreign_keys(true);
         let pool = SqlitePool::connect_with(options).await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
-        Ok(Self { pool, join_token })
+        let c = Self { pool, join_token };
+        c.claim_linked_names().await?;
+        Ok(c)
+    }
+
+    /// Reserves the names of accounts linked before names were reserved,
+    /// oldest link first. Harmless to repeat.
+    async fn claim_linked_names(&self) -> sqlx::Result<()> {
+        let links: Vec<(String, String, i64)> = sqlx::query_as("SELECT global_id, username, linked_at FROM links ORDER BY linked_at").fetch_all(&self.pool).await?;
+        for (global_id, username, at) in links {
+            self.claim(&global_id, &username, at).await?;
+        }
+        Ok(())
+    }
+
+    /// Claims `name` for `global_id` unless someone else has it. Returns
+    /// whether it's theirs now.
+    async fn claim(&self, global_id: &str, name: &str, now: i64) -> sqlx::Result<bool> {
+        let key = identity::name_key(name);
+        sqlx::query("INSERT OR IGNORE INTO names (name_key, name, global_id, claimed_at) VALUES (?, ?, ?, ?)")
+            .bind(&key)
+            .bind(name.trim())
+            .bind(global_id)
+            .bind(now)
+            .execute(&self.pool)
+            .await?;
+        Ok(self.owner(&key).await?.as_deref() == Some(global_id))
+    }
+
+    async fn owner(&self, key: &str) -> sqlx::Result<Option<String>> {
+        sqlx::query_scalar("SELECT global_id FROM names WHERE name_key = ?").bind(key).fetch_optional(&self.pool).await
+    }
+
+    /// Releases `global_id`'s names that none of its accounts use any more
+    /// (after a rename or an unlink), past the grace for new accounts.
+    async fn release_unused(&self, global_id: &str, now: i64) -> sqlx::Result<()> {
+        let used: Vec<String> = sqlx::query_scalar("SELECT username FROM links WHERE global_id = ?").bind(global_id).fetch_all(&self.pool).await?;
+        let used: Vec<String> = used.iter().map(|u| identity::name_key(u)).collect();
+        let owned: Vec<(String, i64)> = sqlx::query_as("SELECT name_key, claimed_at FROM names WHERE global_id = ?").bind(global_id).fetch_all(&self.pool).await?;
+        for (key, claimed_at) in owned {
+            if !used.contains(&key) && now - claimed_at >= CLAIM_GRACE_SECS {
+                sqlx::query("DELETE FROM names WHERE name_key = ? AND global_id = ?").bind(&key).bind(global_id).execute(&self.pool).await?;
+            }
+        }
+        Ok(())
     }
 
     /// The HTTP API.
@@ -79,6 +130,8 @@ impl Coordinator {
             .route("/v1/servers", get(servers))
             .route("/v1/changes", post(changes))
             .route("/v1/relations/{global_id}", get(relations))
+            .route("/v1/names/claim", post(claim_name))
+            .route("/v1/names/{name}", get(name_owner))
             .with_state(self)
     }
 
@@ -107,10 +160,11 @@ impl Coordinator {
     }
 
     /// Applies one change from `server`; the error is for that change alone.
-    async fn apply(&self, server: &str, change: &Value) -> Result<(), String> {
+    /// A link answers whether its name clashes with another player's.
+    async fn apply(&self, server: &str, change: &Value) -> Result<Value, String> {
         let text = |k: &str| change[k].as_str().unwrap_or_default().to_string();
         let now = identity::now();
-        let result: Result<(), String> = match change["op"].as_str().unwrap_or_default() {
+        let result: Result<Value, String> = match change["op"].as_str().unwrap_or_default() {
             "link" => {
                 let (global_id, username, signature) = (text("global_id"), text("username"), text("signature"));
                 let time = change["time"].as_i64().unwrap_or_default();
@@ -139,15 +193,23 @@ impl Coordinator {
                     .execute(&mut *tx)
                     .await
                     .map_err(|e| e.to_string())?;
-                tx.commit().await.map_err(|e| e.to_string())
+                tx.commit().await.map_err(|e| e.to_string())?;
+                // The name comes with the link: the player's own, or someone else's already.
+                let ours = self.claim(&global_id, &username, now).await.map_err(|e| e.to_string())?;
+                self.release_unused(&global_id, now).await.map_err(|e| e.to_string())?;
+                Ok(json!({ "conflict": !ours }))
             }
-            "unlink" => sqlx::query("DELETE FROM links WHERE server_id = ? AND global_id = ?")
-                .bind(server)
-                .bind(text("global_id"))
-                .execute(&self.pool)
-                .await
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
+            "unlink" => {
+                let global_id = text("global_id");
+                sqlx::query("DELETE FROM links WHERE server_id = ? AND global_id = ?")
+                    .bind(server)
+                    .bind(&global_id)
+                    .execute(&self.pool)
+                    .await
+                    .map_err(|e| e.to_string())?;
+                self.release_unused(&global_id, now).await.map_err(|e| e.to_string())?;
+                Ok(json!({}))
+            }
             "friends" => {
                 let (a, b) = (text("a"), text("b"));
                 self.require_linked(server, &[&a, &b]).await?;
@@ -159,7 +221,7 @@ impl Coordinator {
                 if friends && self.blocked_either_way(&a, &b).await.map_err(|e| e.to_string())? {
                     return Err("one of them blocked the other".into());
                 }
-                self.set_friends(&a, &b, friends, now).await.map_err(|e| e.to_string())
+                self.set_friends(&a, &b, friends, now).await.map(|()| json!({})).map_err(|e| e.to_string())
             }
             "block" => {
                 let (from, to) = (text("from"), text("to"));
@@ -179,7 +241,7 @@ impl Coordinator {
                 if blocked {
                     self.set_friends(&from, &to, false, now).await.map_err(|e| e.to_string())?;
                 }
-                Ok(())
+                Ok(json!({}))
             }
             other => Err(format!("unknown change {other:?}")),
         };
@@ -338,7 +400,7 @@ async fn changes(State(c): State<Shared>, headers: HeaderMap, Json(body): Json<V
     let mut results = Vec::with_capacity(list.len());
     for change in &list {
         results.push(match c.apply(&server, change).await {
-            Ok(()) => json!({}),
+            Ok(result) => result,
             Err(e) => {
                 tracing::warn!("server {server}: refused {change}: {e}");
                 json!({ "error": e })
@@ -387,6 +449,43 @@ async fn relations(State(c): State<Shared>, headers: HeaderMap, Path(global_id):
         relation(&mut others, &other)[key] = json!(blocked != 0);
     }
     ok(json!({ "relations": others.into_values().collect::<Vec<_>>() }))
+}
+
+#[derive(Deserialize)]
+struct ClaimRequest {
+    name: String,
+    global_id: String,
+    time: i64,
+    /// The player's link signature for this name on the calling server.
+    signature: String,
+}
+
+/// Reserves a name for a player about to make (or rename) an account on the
+/// calling server. 409 when it's another player's.
+async fn claim_name(State(c): State<Shared>, headers: HeaderMap, Json(req): Json<ClaimRequest>) -> Answer {
+    let server = match c.server(&headers).await {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    if !identity::is_global_id(&req.global_id) || !identity::verify(&req.global_id, &identity::link_message(&server, &req.name, req.time), &req.signature) {
+        return fail(StatusCode::FORBIDDEN, "the player's signature doesn't match");
+    }
+    match c.claim(&req.global_id, &req.name, identity::now()).await {
+        Ok(true) => ok(json!({})),
+        Ok(false) => fail(StatusCode::CONFLICT, "that name belongs to another player on the servers sharing friends"),
+        Err(e) => internal(e),
+    }
+}
+
+/// Whether a name is reserved, and by whom (for an account made without an identity).
+async fn name_owner(State(c): State<Shared>, headers: HeaderMap, Path(name): Path<String>) -> Answer {
+    if let Err(e) = c.server(&headers).await {
+        return e;
+    }
+    match c.owner(&identity::name_key(&name)).await {
+        Ok(owner) => ok(json!({ "claimed": owner.is_some(), "global_id": owner })),
+        Err(e) => internal(e),
+    }
 }
 
 /// The entry for `other` in a relations answer, made on first use.

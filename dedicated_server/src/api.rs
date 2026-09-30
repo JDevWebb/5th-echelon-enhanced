@@ -102,6 +102,20 @@ fn relation_proto(r: Relation) -> friends::Relation {
     }
 }
 
+/// How far a player's name is known to be theirs.
+fn name_status(person: &Person) -> friends::NameStatus {
+    match (&person.global_id, person.name_conflict, federation::enabled()) {
+        (None, _, _) => friends::NameStatus::Unlinked,
+        (Some(_), true, _) => friends::NameStatus::Conflict,
+        (Some(_), false, true) => friends::NameStatus::Reserved,
+        (Some(_), false, false) => friends::NameStatus::Linked,
+    }
+}
+
+/// What a player is told when the name they want is someone else's across
+/// the servers sharing friends.
+const NAME_HELD_ELSEWHERE: &str = "That name belongs to another player on the servers sharing friends";
+
 fn friend_error(e: FriendError) -> Status {
     match e {
         FriendError::NotFound => Status::not_found(e.to_string()),
@@ -152,14 +166,18 @@ impl MyFriends {
                 with: a.with,
                 map: a.map.unwrap_or_default(),
             });
+        let status = name_status(&person);
         let mut p = friends::Player {
+            identity: person.global_id.as_deref().map(identity::short).unwrap_or_default(),
             id: person.ubi_id,
             username: person.username,
             is_online: person.is_online || self.debug_config.mark_all_as_online,
             relation: 0,
             activity,
+            name: 0,
         };
         p.set_relation(relation_proto(relation));
+        p.set_name(status);
         p
     }
 
@@ -315,7 +333,10 @@ impl Friends for MyFriends {
         let list = |people: Vec<Person>, relation: Relation| -> Vec<friends::Player> {
             people.into_iter().map(|p| self.player(p, relation, Some(&sessions))).collect()
         };
-        Ok(Response::new(friends::RelationshipsResponse {
+        let me_person = self.storage.find_person(me).await.map_err(internal)?.ok_or_else(|| Status::unauthenticated("Unknown user"))?;
+        let mut resp = friends::RelationshipsResponse {
+            my_name: 0,
+            my_identity: me_person.global_id.as_deref().map(identity::short).unwrap_or_default(),
             friends: list(self.storage.friends_of(me).await.map_err(internal)?, Relation::Friend),
             requests_received: list(self.storage.friend_requests(me, true).await.map_err(internal)?, Relation::RequestReceived),
             requests_sent: list(self.storage.friend_requests(me, false).await.map_err(internal)?, Relation::RequestSent),
@@ -325,7 +346,9 @@ impl Friends for MyFriends {
                 FriendsMode::Mutual => "mutual",
             }
             .into(),
-        }))
+        };
+        resp.set_my_name(name_status(&me_person));
+        Ok(Response::new(resp))
     }
 
     async fn search(&self, request: Request<friends::SearchRequest>) -> Result<Response<friends::SearchResponse>, Status> {
@@ -439,6 +462,58 @@ impl Friends for MyFriends {
         federation::linked(&self.logger, &self.storage, me, link).await;
         Ok(Response::new(friends::LinkIdentityResponse {}))
     }
+
+    async fn rename(&self, request: Request<friends::RenameRequest>) -> Result<Response<friends::RenameResponse>, Status> {
+        let me = caller(&request)?;
+        if !crate::rate_limit::friend_changes().check(me) {
+            return Err(Status::resource_exhausted("Too many changes; try again in a minute"));
+        }
+        let request = request.into_inner();
+        let new_name = request.new_name.trim().to_string();
+        check_username(&new_name).map_err(Status::invalid_argument)?;
+        let person = self.storage.find_person(me).await.map_err(internal)?.ok_or_else(|| Status::unauthenticated("Unknown user"))?;
+        if let Some(owner) = self.storage.find_person_by_name(&new_name).await.map_err(internal)? {
+            if owner.id != me {
+                return Err(Status::already_exists("Another player here has that name"));
+            }
+        }
+        // A linked account signs its new name; across the group it must be free or theirs.
+        let link = match &person.global_id {
+            Some(global_id) => {
+                if !identity::fresh(request.time, identity::now()) {
+                    return Err(Status::invalid_argument("The signature's time is off; check this PC's clock"));
+                }
+                if !identity::verify(global_id, &identity::link_message(federation::server_id(), &new_name, request.time), &request.signature) {
+                    return Err(Status::permission_denied("Sign the new name with the identity this account is linked to"));
+                }
+                if federation::claim_name(global_id, &new_name, request.time, &request.signature).await == federation::NameCheck::Taken {
+                    return Err(Status::already_exists(NAME_HELD_ELSEWHERE));
+                }
+                Some(federation::Change::Link {
+                    global_id: global_id.clone(),
+                    username: new_name.clone(),
+                    time: request.time,
+                    signature: request.signature.clone(),
+                })
+            }
+            None => {
+                if federation::name_holder(&new_name).await == federation::NameCheck::Taken {
+                    return Err(Status::already_exists(NAME_HELD_ELSEWHERE));
+                }
+                None
+            }
+        };
+        match self.storage.rename_user(me, &new_name).await.map_err(internal)? {
+            Ok(()) => {}
+            Err(crate::storage::RenameError::Taken) => return Err(Status::already_exists("Another player here has that name")),
+        }
+        info!(self.logger, "{} ({me}) is now {new_name}", person.username);
+        // The coordinator moves the link to the new name, and frees the old one.
+        if let Some(link) = link {
+            federation::record(&self.logger, &self.storage, link).await;
+        }
+        Ok(Response::new(friends::RenameResponse { username: new_name }))
+    }
 }
 
 /// Authenticates a gRPC request by validating the provided authorization token.
@@ -548,8 +623,30 @@ impl Users for MyUsers {
         if password.len() < 8 || password.len() > 128 {
             return Err(Status::invalid_argument("Passwords are 8 to 128 characters"));
         }
-        // The account id is the name, set here: a client can't claim someone else's.
-        let ubi_id = username.clone();
+        // The account id is set here, so a client can't claim someone else's: the name, unless
+        // a renamed account still has it.
+        let ubi_id = self.storage.free_ubi_id(&username).await.map_err(internal)?;
+        // With an identity: link at once, and reserve the name across servers sharing friends.
+        let identity_link = if request.global_id.is_empty() {
+            if federation::name_holder(&username).await == federation::NameCheck::Taken {
+                return Err(Status::already_exists(NAME_HELD_ELSEWHERE));
+            }
+            None
+        } else {
+            if !identity::is_global_id(&request.global_id) || !identity::fresh(request.time, identity::now()) {
+                return Err(Status::invalid_argument("Not a valid identity signature; check this PC's clock"));
+            }
+            if !identity::verify(&request.global_id, &identity::link_message(federation::server_id(), &username, request.time), &request.signature) {
+                return Err(Status::permission_denied("The identity's signature doesn't match"));
+            }
+            if self.storage.find_person_by_global_id(&request.global_id).await.map_err(internal)?.is_some() {
+                return Err(Status::already_exists("This identity already has an account here"));
+            }
+            if federation::claim_name(&request.global_id, &username, request.time, &request.signature).await == federation::NameCheck::Taken {
+                return Err(Status::already_exists(NAME_HELD_ELSEWHERE));
+            }
+            Some((request.global_id.clone(), request.time, request.signature.clone()))
+        };
 
         let error = if let Err(err) = self.storage.register_user_async(&username, &password, Some(&ubi_id)).await {
             match err.downcast::<sqlx::Error>() {
@@ -566,6 +663,18 @@ impl Users for MyUsers {
             String::new()
         };
         info!(self.logger, "New user {username} registered");
+        if let Some((global_id, time, signature)) = identity_link.filter(|_| error.is_empty()) {
+            if let Some(person) = self.storage.find_person_by_name(&username).await.map_err(internal)? {
+                self.storage.link_global_id(person.id, &global_id).await.map_err(internal)?;
+                let link = federation::Change::Link {
+                    global_id,
+                    username: username.clone(),
+                    time,
+                    signature,
+                };
+                federation::linked(&self.logger, &self.storage, person.id, link).await;
+            }
+        }
         Ok(Response::new(users::RegisterResponse {
             error,
             user: Some(User {

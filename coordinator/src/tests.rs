@@ -136,3 +136,52 @@ async fn links_need_the_players_signature_for_that_server() {
     let (status, _) = t.relations(&a, &kiwi.global_id()).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "unlinked");
 }
+
+#[tokio::test]
+async fn names_belong_to_one_player_across_the_group() {
+    let t = start("names").await;
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    let (kiwi, other) = (identity::Identity::generate(), identity::Identity::generate());
+    let claim = |who: &identity::Identity, server: &str, name: &str| {
+        json!({ "name": name, "global_id": who.global_id(), "time": 5, "signature": who.sign_link(server, name, 5) })
+    };
+
+    // Kiwi takes the name on A; nobody else gets it on B, whatever the case; Kiwi does.
+    let (status, _) = t.call("POST", "/v1/names/claim", Some(&a), Some(claim(&kiwi, "server-a", "Kiwi"))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, _) = t.call("POST", "/v1/names/claim", Some(&b), Some(claim(&other, "server-b", "KIWI"))).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    let (status, _) = t.call("POST", "/v1/names/claim", Some(&b), Some(claim(&kiwi, "server-b", "kiwi"))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, v) = t.call("GET", "/v1/names/kIwI", Some(&b), None).await;
+    assert_eq!(v["global_id"], kiwi.global_id());
+
+    // A claim signed for another server doesn't count.
+    let (status, _) = t.call("POST", "/v1/names/claim", Some(&b), Some(claim(&other, "server-a", "Fresh"))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+
+    // Linking an account whose name someone else holds: linked, but flagged.
+    let r = t.changes(&b, json!([link(&other, "server-b", "Kiwi")])).await;
+    assert_eq!(r[0]["conflict"], true);
+    let r = t.changes(&a, json!([link(&kiwi, "server-a", "Kiwi")])).await;
+    assert_eq!(r[0]["conflict"], false);
+}
+
+#[tokio::test]
+async fn links_made_before_names_existed_reserve_theirs() {
+    let dir = std::env::temp_dir().join(format!("fe-coord-backfill-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("c.db").to_string_lossy().to_string();
+    let first = identity::Identity::generate();
+    {
+        let c = Coordinator::open(&db, "T".into()).await.unwrap();
+        sqlx::query("INSERT INTO servers (id, secret_hash, joined_at) VALUES ('s', 'h', 0)").execute(&c.pool).await.unwrap();
+        sqlx::query("INSERT INTO links VALUES (?, 's', 'Old', 1)").bind(first.global_id()).execute(&c.pool).await.unwrap();
+        sqlx::query("INSERT INTO links VALUES ('ZZZ', 's', 'old', 2)").execute(&c.pool).await.unwrap();
+        sqlx::query("DELETE FROM names").execute(&c.pool).await.unwrap();
+    }
+    let c = Coordinator::open(&db, "T".into()).await.unwrap();
+    assert_eq!(c.owner("old").await.unwrap(), Some(first.global_id()), "the older link keeps it");
+    let _ = std::fs::remove_dir_all(dir);
+}

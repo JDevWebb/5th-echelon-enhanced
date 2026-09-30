@@ -129,9 +129,28 @@ pub fn properties(attrs: &str) -> QList<Property> {
 impl Bot {
     /// Creates an account through the gRPC API (as the launcher's Register).
     pub async fn register(server: IpAddr, name: &str, password: &str) -> Result<()> {
-        let channel = Channel::from_shared(api_url(server))?.connect().await?;
+        Ok(Self::register_as(server, name, password, None).await?)
+    }
+
+    /// Creates an account, linked to `identity` (signed for the server with
+    /// id `server_id`) when given, as the launcher does.
+    pub async fn register_as(server: IpAddr, name: &str, password: &str, identity: Option<(&identity::Identity, &str)>) -> std::result::Result<(), tonic::Status> {
+        let channel = Channel::from_shared(api_url(server))
+            .map_err(|e| tonic::Status::internal(e.to_string()))?
+            .connect()
+            .await
+            .map_err(|e| tonic::Status::unavailable(e.to_string()))?;
+        let time = identity::now();
+        let (global_id, signature) = identity.map_or_else(Default::default, |(id, server_id)| (id.global_id(), id.sign_link(server_id, name, time)));
         UsersClient::new(channel)
-            .register(server_api::users::RegisterRequest { username: name.into(), password: password.into(), ubi_id: name.into() })
+            .register(server_api::users::RegisterRequest {
+                username: name.into(),
+                password: password.into(),
+                ubi_id: String::new(),
+                global_id,
+                time,
+                signature,
+            })
             .await?;
         Ok(())
     }
@@ -371,6 +390,20 @@ impl Bot {
             other => return Err(tonic::Status::invalid_argument(format!("no change {other}"))),
         };
         Ok(resp.into_inner().relation())
+    }
+
+    /// Renames this account (signed with `identity` for `server_id` if linked).
+    pub async fn rename(&self, new_name: &str, identity: Option<(&identity::Identity, &str)>) -> std::result::Result<String, tonic::Status> {
+        let time = identity::now();
+        let signature = identity.map(|(id, server_id)| id.sign_link(server_id, new_name, time)).unwrap_or_default();
+        let resp = FriendsClient::new(self.api.clone())
+            .rename(self.authed(server_api::friends::RenameRequest {
+                new_name: new_name.into(),
+                time,
+                signature,
+            }))
+            .await?;
+        Ok(resp.into_inner().username)
     }
 
     /// Friends, requests both ways and blocks.

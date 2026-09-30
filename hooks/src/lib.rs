@@ -144,6 +144,7 @@ fn check_orig_library(hmodule: Option<HMODULE>) {
 #[instrument(skip_all)]
 fn init(hmodule: Option<HMODULE>) {
     let dir = get_target_dir(hmodule);
+    community::set_folder(dir.clone());
     let reload_handle = init_log(&dir);
     check_orig_library(hmodule);
     if let Some(cmdline) = get_arguments() {

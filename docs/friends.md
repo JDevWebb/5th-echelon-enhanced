@@ -44,6 +44,7 @@ The blocked player isn't told. Their friend requests look sent, but never arrive
 
 - **Names are unique whatever the case:** "Kiwi" and "kiwi" are one name. When a server updates, any accounts whose names differ only in case keep the oldest name, and the others get `-<id>` added.
 - **The server sets each account's id** (the game's "Ubisoft id"), so no one can register with someone else's.
+- **Renaming:** **Settings › Servers and accounts › Rename** in the launcher. The account id stays, so friends, blocks and invites carry on, and the old name is free again.
 - **New names** are 1 to 32 letters, digits, `_`, `-` and `.`.
 - **Sign-in tokens** for the launcher and the overlay expire after 30 days. The game signs in again on its own.
 
@@ -75,10 +76,30 @@ Servers can share friends through a **coordinator**: a small service that one pe
 
 When two players are friends on one server, have both linked their identities, and then both play on another server of the same group, they're friends there too, without asking again. Blocks travel the same way. Each server keeps its own accounts; only the links between them and your identity are shared.
 
+### One name per player across the group
+
+Names are unique on each server, so two strangers could both be "Kiwi" on different servers. Within a group of servers that share a coordinator, that can't happen:
+
+- **The coordinator reserves names.**
+  - A name belongs to the identity that first used it, on any server in the group, whatever the case.
+  - The launcher makes each account with your identity's signature, so the server claims the name for you before making the account.
+  - On another server of the group, a name someone else holds is refused ("That name belongs to another player on the servers sharing friends"). The launcher then picks the next free one (`Kiwi2`), as it does for a name taken on that server.
+- **Accounts made without an identity** (an older launcher, the community API) can only take names nobody has reserved.
+- **Clashes from before** (two servers that had a "Kiwi" each, then joined one coordinator): the first to link keeps the name. The other account keeps working, but is flagged. Its owner sees a note in the overlay's Friends tab asking them to rename, and anyone looking them up sees "another player has this name on other servers". Renaming clears it.
+- **A rename claims the new name first**, and the old one is released once nothing of yours uses it.
+- **If the coordinator is down**, new accounts are still made, and their names are claimed when their links go through. A clash found then is flagged, as above.
+
+Servers outside the group can reuse any name; friends don't travel there. The overlay still warns you:
+
+- It remembers your friends' identities from every server you play on, in `5th-echelon-known-friends.json` next to `uplay.toml`.
+- Anyone with a friend's name who isn't that friend (another identity, or none) shows as **Not your friend Kiwi from play.example.org**: in search results, friend requests, invites and invite notifications.
+- Find players shows each player's identity (e.g. `ID K7QF-2M9D`, "name reserved"), or "no identity".
+
 ### What the coordinator knows
 
 - The member servers: each server's id, its secret (only a hash is kept), and its directory entry.
 - For each linked account: your identity's public key, the server, and your name there.
+- Which identity holds each name.
 - Friendships and blocks between identities.
 
 It never sees passwords, invites, matches, or who is online.
@@ -147,14 +168,18 @@ The server keeps its credentials in `federation.key` once it has joined. Its log
 | `GET /v1/servers` | anyone | the directory: servers seen in the last 2 minutes |
 | `POST /v1/changes` `{changes: [...]}` | a member | links, unlinks, friendships and blocks, in order; one result each |
 | `GET /v1/relations/<identity>` | a member | a player's friends and blocks, for a player linked on that server |
+| `POST /v1/names/claim` `{name, global_id, time, signature}` | a member | reserves a name for a player (their link signature for that server); `409` if someone else has it |
+| `GET /v1/names/<name>` | a member | whether a name is reserved, and by whom |
 | `GET /v1/info` | anyone | name, version, number of servers |
 
 ## Testing
 
 - **`build/build.sh bots`:**
-  - on a default server: the `friends`, `block`, `invite-queue` and `identity-login` scenarios;
+  - on a default server: the `friends`, `block`, `invite-queue`, `identity-login` and `rename` scenarios;
   - on a server in `mutual` mode: `friends-mutual`.
 - **`build/build.sh federation-test`:** a coordinator and two servers in containers.
   - Both servers must appear in the directory.
   - A friendship made on the first server must reach the second.
+  - A name reserved on the first is refused to anyone else on the second.
+  - An older account with that name is flagged, and renaming clears the flag.
   - A block on the second must reach the first.

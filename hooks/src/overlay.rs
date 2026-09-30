@@ -494,9 +494,13 @@ impl MyRenderLoop {
         }
         let left = NOTIFICATION_TIMEOUT - elapsed;
         let activity = self.data.activity_of(&user).map(String::from);
+        let lookalike = self.data.lookalike_of(&user);
         let pending = self.active_invites.iter().any(|i| i.event.sender.as_ref().is_some_and(|s| s.username == user));
         self.toast(ui, "##fe-invite", Some(left.as_secs_f32() / NOTIFICATION_TIMEOUT.as_secs_f32()), || {
             self.heading(ui, &format!("{user} invited you"));
+            if let Some(server) = &lookalike {
+                ui.text_colored(BAD, format!("Not your friend {user} from {server}"));
+            }
             if let Some(activity) = &activity {
                 ui.text_colored(MUTED, activity);
             }
@@ -722,6 +726,12 @@ impl MyRenderLoop {
     /// `action` (buttons `action_w` wide) on the right.
     #[allow(clippy::too_many_arguments)]
     fn row(&self, ui: &Ui, i: usize, dot: Option<[f32; 4]>, title: &str, detail: &str, action_w: f32, action: impl FnOnce()) {
+        self.row_colored(ui, i, dot, title, detail, MUTED, action_w, action);
+    }
+
+    /// [`Self::row`] with the detail line in `detail_color` (a warning).
+    #[allow(clippy::too_many_arguments)]
+    fn row_colored(&self, ui: &Ui, i: usize, dot: Option<[f32; 4]>, title: &str, detail: &str, detail_color: [f32; 4], action_w: f32, action: impl FnOnce()) {
         let avail = ui.content_region_avail()[0];
         let start = ui.cursor_screen_pos();
         let local = ui.cursor_pos();
@@ -746,7 +756,7 @@ impl MyRenderLoop {
         ui.set_cursor_pos([local[0] + text_x, local[1] + self.s(10.0)]);
         self.with_font(ui, |f| f.strong, || ui.text(title));
         ui.set_cursor_pos([local[0] + text_x, local[1] + self.s(12.0) + line]);
-        ui.text_colored(MUTED, detail);
+        ui.text_colored(detail_color, detail);
         if action_w > 0.0 {
             let button_h = line + self.s(18.0);
             ui.set_cursor_pos([local[0] + avail - pad - action_w, local[1] + (h - button_h) / 2.0]);
@@ -789,7 +799,13 @@ impl MyRenderLoop {
         #[allow(clippy::cast_precision_loss)]
         let w = labels.iter().map(|(l, _)| self.button_width(ui, l)).sum::<f32>() + gap * labels.len().saturating_sub(1) as f32;
         let dot = if p.online { OK } else { OFFLINE };
-        self.row(ui, i, Some(dot), &p.name, detail, w, || {
+        // Someone with a friend's name from another server, who isn't them.
+        let (detail, color) = match (&p.lookalike, p.name_status) {
+            (Some(server), _) => (format!("Not your friend {} from {server}  ·  {detail}", p.name), BAD),
+            (None, community::NameStatus::Conflict) => (format!("{detail}  ·  another player has this name on other servers"), BAD),
+            _ => (detail.to_string(), MUTED),
+        };
+        self.row_colored(ui, i, Some(dot), &p.name, &detail, color, w, || {
             for (n, (label, action)) in labels.iter().enumerate() {
                 if n > 0 {
                     ui.same_line_with_spacing(0.0, gap);
@@ -830,6 +846,14 @@ impl MyRenderLoop {
         if !self.data.loaded {
             ui.text_colored(MUTED, "Loading friends...");
             return;
+        }
+        if self.data.my_name_conflict {
+            let _c = ui.push_style_color(StyleColor::Text, BAD);
+            ui.text_wrapped(format!(
+                "Another player has your name on the servers that share friends with this one. Give yourself a new one in {} (Settings, Servers and accounts, Rename).",
+                setup_tool()
+            ));
+            ui.dummy([0.0, self.s(4.0)]);
         }
         let mut row = 0;
         if !self.data.requests_in.is_empty() {
@@ -915,6 +939,11 @@ impl MyRenderLoop {
                 community::Relation::Blocked => (String::from("Blocked"), vec![RowAction::Change(C::Unblock, "Unblock")]),
                 community::Relation::None => (Self::status(p), vec![RowAction::Change(C::Block, "Block"), RowAction::Change(C::Request, "Add friend")]),
             };
+            let detail = match (p.identity.is_empty(), p.name_status) {
+                (true, _) => format!("{detail}  ·  no identity"),
+                (false, community::NameStatus::Reserved) => format!("{detail}  ·  ID {} (name reserved)", p.identity),
+                (false, _) => format!("{detail}  ·  ID {}", p.identity),
+            };
             let can_invite = p.online && (p.relation == community::Relation::Friend || (self.data.everyone_mode && p.relation == community::Relation::None));
             if can_invite {
                 actions.push(RowAction::Invite);
@@ -939,6 +968,10 @@ impl MyRenderLoop {
             let detail = match self.data.activity_of(&sender.username) {
                 Some(a) => format!("{a}  ·  {left} s left"),
                 None => format!("{left} s left"),
+            };
+            let detail = match self.data.lookalike_of(&sender.username) {
+                Some(server) => format!("Not your friend {} from {server}  ·  {detail}", sender.username),
+                None => detail,
             };
             let accept_label = format!("Accept##fe-acc-{i}");
             let decline_label = format!("Decline##fe-dec-{i}");
@@ -1035,6 +1068,10 @@ impl MyRenderLoop {
             ),
             ("Server", server),
             ("Other players reach you", crate::hooks::nat::status().unwrap_or_else(|| String::from("Not started yet"))),
+            (
+                "Your identity",
+                if self.data.my_identity.is_empty() { String::from("Not linked") } else { self.data.my_identity.clone() },
+            ),
             ("Game add-on", format!("{PRODUCT} {RELEASE}")),
         ];
         let x = ui.cursor_pos()[0];

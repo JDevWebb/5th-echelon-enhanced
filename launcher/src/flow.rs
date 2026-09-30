@@ -219,12 +219,25 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<(), S
             Err(_) => say(log, "Couldn't link your identity: no answer in time."),
         }
     }
+    // The account id the server gave the account (the name, unless a renamed account still
+    // had it); the game uses it until it has signed in.
+    let account_id = crate::services::rt()
+        .block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(6),
+                crate::network::account_id(profile.api_server_url().to_string(), &username, &password),
+            )
+            .await
+        })
+        .ok()
+        .and_then(Result::ok)
+        .unwrap_or_else(|| username.clone());
     let mut user = hooks_config::User {
         username: username.clone(),
         password: String::new(),
         protected_password: String::new(),
         cd_keys: profile.user.cd_keys.clone(),
-        account_id: username,
+        account_id,
     };
     user.set_secret(&password);
     profile.user = user;
@@ -259,6 +272,51 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<(), S
     .map_err(|e| format!("Couldn't save the settings: {e}"))?;
     say(log, "Ready.");
     Ok(())
+}
+
+/// Renames the account on the profile named `profile_name`: signed with the
+/// player's identity when the server has one, reserved across servers
+/// sharing friends. Updates the profile (and the game's settings, if it's
+/// the current one).
+pub fn rename(game_dir: &Path, profile_name: &str, new_name: &str) -> Result<String, String> {
+    let mut cfg = Config::load(game_dir);
+    let profile = cfg.profile(profile_name).cloned().ok_or("That server isn't set up any more.")?;
+    let password = profile.user.secret().ok_or("The saved password can't be read here; set up the server again.")?;
+    let new_name = new_name.trim().to_string();
+    let info = setup::server_info::fetch(&profile.server, Duration::from_secs(4));
+    let server_id = info.filter(|i| i.features.iter().any(|f| f == "rename")).and_then(|i| i.id).ok_or("This server can't rename accounts.")?;
+    let identity = setup::player_identity::load().ok().flatten();
+    let renamed = crate::services::rt()
+        .block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                crate::network::rename(
+                    profile.api_server_url().to_string(),
+                    &profile.user.username,
+                    &password,
+                    &new_name,
+                    identity.as_ref().map(|i| (i, server_id.as_str())),
+                ),
+            )
+            .await
+        })
+        .map_err(|_| "The server didn't answer in time.".to_string())?
+        .map_err(|e| match e {
+            crate::network::Error::Rpc(status) => status.message().to_string(),
+            e => e.to_string(),
+        })?;
+    let current = cfg.current_profile().is_some_and(|p| p.name == profile.name);
+    cfg.update(|c| {
+        let mut p = profile.clone();
+        // The account id stays: only the name changes.
+        p.user.username = renamed.clone();
+        c.upsert_profile(p.clone());
+        if current {
+            c.apply_profile(&p);
+        }
+    })
+    .map_err(|e| format!("Renamed to {renamed}, but the settings couldn't be saved: {e}"))?;
+    Ok(format!("You're {renamed} now. Restart the game if it's running."))
 }
 
 /// Pins the adapter the current server is reached through.

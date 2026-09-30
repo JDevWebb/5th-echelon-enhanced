@@ -50,9 +50,18 @@ pub struct Person {
     pub ubi_id: String,
     pub is_online: bool,
     pub global_id: Option<String>,
+    /// Another player holds this name on the servers sharing friends.
+    pub name_conflict: bool,
 }
 
-const PERSON: &str = "u.id, u.username, u.ubi_id, u.is_online, u.global_id";
+const PERSON: &str = "u.id, u.username, u.ubi_id, u.is_online, u.global_id, u.name_conflict";
+
+/// Why a rename was refused.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RenameError {
+    /// Another account here has that name (whatever the case).
+    Taken,
+}
 
 /// What happened, for [`Storage::take_friend_event`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -420,6 +429,39 @@ impl Storage {
         Ok(done.rows_affected() > 0)
     }
 
+    /// Flags (or clears) a name clash for the account linked to `global_id`.
+    pub async fn set_name_conflict(&self, global_id: &str, conflict: bool) -> Result<()> {
+        sqlx::query("UPDATE users SET name_conflict = ? WHERE global_id = ?").bind(i32::from(conflict)).bind(global_id).execute(&self.pool).await?;
+        Ok(())
+    }
+
+    /// Gives `user` a new name; its account id stays, so friends and
+    /// invites carry on. Clears a name clash.
+    pub async fn rename_user(&self, user: u32, new_name: &str) -> Result<std::result::Result<(), RenameError>> {
+        let done = sqlx::query("UPDATE users SET username = ?, name_key = ?, name_conflict = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+            .bind(new_name.trim())
+            .bind(name_key(new_name))
+            .bind(user)
+            .execute(&self.pool)
+            .await;
+        match done {
+            Ok(_) => Ok(Ok(())),
+            Err(sqlx::Error::Database(e)) if e.is_unique_violation() => Ok(Err(RenameError::Taken)),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// An account id for a new account named `username`: the name itself,
+    /// unless a renamed account still has it as its id.
+    pub async fn free_ubi_id(&self, username: &str) -> Result<String> {
+        if self.find_person_by_ubi_id(username).await?.is_none() {
+            return Ok(username.to_string());
+        }
+        let mut bytes = [0u8; 4];
+        rand::RngCore::fill_bytes(&mut rand::rng(), &mut bytes);
+        Ok(format!("{username}.{}", identity::base32_encode(&bytes).to_lowercase()))
+    }
+
     /// Replaces `user`'s password.
     pub async fn set_password(&self, user: u32, password: &str) -> Result<()> {
         let password = password.to_owned();
@@ -599,6 +641,23 @@ mod tests {
         }
         got.sort_unstable();
         assert_eq!(got, senders[..5], "nobody's invite pushed out another's");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn renaming_keeps_the_account_id_and_frees_the_name() {
+        let (s, dir) = temp_storage("friends-rename");
+        let (a, b) = (user(&s, "Before"), user(&s, "Taken1"));
+        assert_eq!(run(s.rename_user(a, "TAKEN1")).unwrap().unwrap(), Err(RenameError::Taken));
+        run(s.rename_user(a, "After")).unwrap().unwrap().unwrap();
+        let p = run(s.find_person(a)).unwrap().unwrap().unwrap();
+        assert_eq!((p.username.as_str(), p.ubi_id.as_str()), ("After", "Before"), "the account id stays");
+        assert!(matches!(s.login_user("After", "password1").unwrap(), Ok(_)));
+        // The old name is free again, but its account id isn't: the new account gets another.
+        let id = run(s.free_ubi_id("Before")).unwrap().unwrap();
+        assert!(id.starts_with("Before.") && id.len() > 7, "{id}");
+        assert_eq!(run(s.free_ubi_id("Fresh")).unwrap().unwrap(), "Fresh");
+        let _ = b;
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -19,6 +19,7 @@ pub use relationships::FriendError;
 pub use relationships::FriendEventKind;
 pub use relationships::Person;
 pub use relationships::Relation;
+pub use relationships::RenameError;
 
 type Result<T> = eyre::Result<T>;
 
@@ -28,7 +29,7 @@ const MAX_PENDING_INVITES: i64 = 5;
 /// The key that makes names unique whatever their case ("Kiwi" and "kiwi"
 /// are one name).
 pub fn name_key(username: &str) -> String {
-    username.trim().to_lowercase()
+    identity::name_key(username)
 }
 
 /// Runs password hashing (Argon2: about 19 MiB of memory and tens of

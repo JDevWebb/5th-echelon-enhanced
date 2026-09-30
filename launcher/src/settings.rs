@@ -34,6 +34,8 @@ pub struct Settings {
     /// The identity as shown: its short id and export text, read once (it's
     /// decrypted from disk) and again after an import.
     identity: Option<Result<Option<(String, String)>, String>>,
+    /// The profile being renamed, and the new name typed so far.
+    renaming: Option<(String, String)>,
 }
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
@@ -46,6 +48,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             Ok(msg) => notices.info(msg),
             Err(e) => notices.error(e),
         }
+        // The work may have changed uplay.toml (a rename, a pinned adapter).
+        game.reload();
     }
     if let Some(results) = settings.tests.poll() {
         settings.test_results = results;
@@ -59,7 +63,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     section(ui, "Network", |ui| network(game, notices, locked, &ctx, settings, ui));
     section(ui, "Game", |ui| game_options(game, notices, ui));
     section(ui, "Save game", |ui| save_game(settings, game, &ctx, ui));
-    section(ui, "Servers and accounts", |ui| servers(settings, game, notices, locked, ui));
+    section(ui, "Servers and accounts", |ui| servers(settings, game, notices, locked, &ctx, ui));
     section(ui, "Identity and friends", |ui| identity_section(settings, notices, ui));
     section(ui, "Connection test", |ui| connection_test(settings, game, &ctx, ui));
     section(ui, "5th Echelon client", |ui| client(settings, game, &ctx, ui));
@@ -312,7 +316,7 @@ fn save_game(settings: &mut Settings, game: &mut Game, ctx: &egui::Context, ui: 
     });
 }
 
-fn servers(settings: &mut Settings, game: &mut Game, notices: &mut Notices, locked: bool, ui: &mut egui::Ui) {
+fn servers(settings: &mut Settings, game: &mut Game, notices: &mut Notices, locked: bool, ctx: &egui::Context, ui: &mut egui::Ui) {
     let profiles = game.cfg.profiles.clone();
     if profiles.is_empty() {
         ui.label(theme::muted("None yet. Join one on the Play screen."));
@@ -325,9 +329,32 @@ fn servers(settings: &mut Settings, game: &mut Game, notices: &mut Notices, lock
             for p in &profiles {
                 let is_current = current.as_deref() == Some(p.name.as_str());
                 ui.label(if is_current { RichText::new(&p.server).color(theme::ACCENT) } else { RichText::new(&p.server) });
-                ui.label(&p.user.username);
+                let renaming_this = settings.renaming.as_ref().is_some_and(|(name, _)| *name == p.name);
+                if renaming_this {
+                    if let Some((_, new_name)) = settings.renaming.as_mut() {
+                        ui.add(egui::TextEdit::singleline(new_name).hint_text("new name").desired_width(140.0));
+                    }
+                } else {
+                    ui.label(&p.user.username);
+                }
                 ui.label(if settings.show_passwords { p.user.secret().unwrap_or_else(|| String::from("(not readable here)")) } else { "••••••••".into() });
                 ui.horizontal(|ui| {
+                    if renaming_this {
+                        let busy = settings.working.running();
+                        if ui.add_enabled(!busy, egui::Button::new("Save name")).clicked() {
+                            if let Some((profile, new_name)) = settings.renaming.take() {
+                                let dir = game.dir.clone();
+                                settings.working.start(ctx, move || flow::rename(&dir, &profile, &new_name));
+                            }
+                        }
+                        if ui.button("Cancel").clicked() {
+                            settings.renaming = None;
+                        }
+                        return;
+                    }
+                    if ui.button("Rename").on_hover_text("A new name on this server; friends and invites carry on").clicked() {
+                        settings.renaming = Some((p.name.clone(), p.user.username.clone()));
+                    }
                     if !is_current && ui.button("Use").clicked() {
                         game.update(notices, |c| {
                             c.upsert_profile(p.clone());

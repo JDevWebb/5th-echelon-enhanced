@@ -57,9 +57,10 @@ impl AccountService for Accounts {
     }
 
     fn register(&self, username: &str, password: &str) -> Result<(), AccountError> {
-        // The game uses the account id (the "Ubisoft id") as the player's
-        // identity; like the upstream launcher, it's the username.
-        let r = rt().block_on(async { tokio::time::timeout(TIMEOUT, network::register(self.api.clone(), username, password, username)).await });
+        // With the player's identity, the account is linked at once and its name reserved
+        // across servers sharing friends. The server sets the account id.
+        let identity = self.identity.as_ref().map(|(id, server_id)| (id.as_ref(), server_id.as_str()));
+        let r = rt().block_on(async { tokio::time::timeout(TIMEOUT, network::register(self.api.clone(), username, password, identity)).await });
         match r {
             Err(_) => Err(AccountError::Other("the server didn't answer in time".into())),
             Ok(Ok(())) => Ok(()),

@@ -38,7 +38,7 @@ pub const RELEASE: &str = env!("FE_RELEASE");
 
 /// What every server of this release supports, for clients to check. The
 /// switchable API parts are added when they're on.
-const FEATURES: &[&str] = &["invites", "private-matches", "trusted-subnet", "persistent-logins", "friends", "identity"];
+const FEATURES: &[&str] = &["invites", "private-matches", "trusted-subnet", "persistent-logins", "friends", "identity", "rename"];
 
 /// Session attributes (see game_session.rs): 101 map, 102 mode, 103 non-zero
 /// for Spies vs Mercs, 113 room kind (0 match, 1 lobby).
@@ -216,9 +216,16 @@ fn register(storage: &Storage, body: &[u8]) -> Response {
     if let Err(why) = crate::api::check_username(&username) {
         return bad(why);
     }
-    // The launcher registers with the username as the Ubisoft id, and the game
-    // uses it as the account id; one-click accounts do the same.
-    match storage.register_user(&username, &password, Some(&username)) {
+    // On servers sharing friends, a name another player holds there is theirs.
+    if crate::storage::run(crate::federation::name_holder(&username)).ok() == Some(crate::federation::NameCheck::Taken) {
+        return Response::json("409 Conflict", &json!({ "error": "that name belongs to another player on the servers sharing friends" }));
+    }
+    // The account id is the name, unless a renamed account still has it.
+    let ubi_id = match crate::storage::run(storage.free_ubi_id(&username)) {
+        Ok(Ok(id)) => id,
+        Ok(Err(e)) | Err(e) => return Response::json("500 Internal Server Error", &json!({ "error": e.to_string() })),
+    };
+    match storage.register_user(&username, &password, Some(&ubi_id)) {
         Ok(()) => Response::json("200 OK", &json!({ "ok": true })),
         Err(e) if e.downcast_ref::<sqlx::Error>().and_then(|e| e.as_database_error()).is_some_and(|e| e.is_unique_violation()) => {
             Response::json("409 Conflict", &json!({ "error": "username taken" }))
