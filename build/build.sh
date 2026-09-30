@@ -92,7 +92,7 @@ case "${1:-test}" in
   sums)
     # The checksums a release publishes; the launcher verifies every
     # download against them.
-    run "$IMAGE" sh -c 'cd dist && rm -f SHA256SUMS && sha256sum $(ls | grep -v SHA256SUMS) > SHA256SUMS && cat SHA256SUMS'
+    run "$IMAGE" sh -c 'cd dist && rm -f SHA256SUMS && find . -maxdepth 1 -type f ! -name SHA256SUMS | sed "s|^\./||" | sort | xargs sha256sum > SHA256SUMS && cat SHA256SUMS'
     ;;
   fmt)
     run "$IMAGE" cargo fmt -p dedicated_server -p quazal -p launcher -p hooks -p hooks-config
