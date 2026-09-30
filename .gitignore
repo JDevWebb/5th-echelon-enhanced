@@ -11,3 +11,4 @@ deps
 service*.toml
 /cross
 dist/
+.DS_Store

@@ -16,16 +16,20 @@ Everything in these files and folders is under MIT:
 
 | Path | What |
 |---|---|
-| `setup/`, except the files listed in section 3 | The launcher's logic library |
-| `launcher/src/app.rs`, `flow.rs`, `play.rs`, `settings.rs`, `services.rs`, `task.rs`, `theme.rs`, `updater.rs`, `main.rs` | The launcher's interface (`updater.rs` and `main.rs` were rewritten from scratch) |
-| `dedicated_server/src/community_api.rs`, `keys.rs`, `rate_limit.rs` | Community API, persistent keys, rate limits |
-| `dedicated_server/src/storage/migrations/20260928000000_disable_sample_users.sql` | Disabling the sample accounts |
+| `identity/` | A player's identity across servers (Ed25519 keys and the messages they sign), and `release-sign`, which signs releases |
+| `coordinator/` | The coordinator: friends shared between servers, name reservations, and the server directory |
+| `nat_proto/` | The NAT helper's protocol between the server and the client (internet play) |
+| `setup/`, except the files listed in section 3 | The launcher's logic library: finding the game, installing, accounts, saves, checks, the server directory |
+| `launcher/src/app.rs`, `flow.rs`, `play.rs`, `server.rs` (except its log view; see section 3), `settings.rs`, `services.rs`, `task.rs`, `theme.rs`, `updater.rs`, `main.rs`, `network/nat.rs` | The launcher's interface, signed updates, and internet play checks (`updater.rs` and `main.rs` were rewritten from scratch) |
+| `dedicated_server/src/community_api.rs`, `federation.rs`, `friends_policy.rs`, `keys.rs`, `nat_helper.rs`, `rate_limit.rs`, `storage/relationships.rs` | The community API, sharing friends with a coordinator, friend-list rules, persistent keys, the NAT helper and relay, rate limits, and friends, blocks and identities in the database |
+| `dedicated_server/src/storage/migrations/` dated 2026-09-28 and 2026-10-01 | Disabling the sample accounts; friends, name conflicts and token epochs |
 | `quazal/src/rmc/unhandled.rs` | Counting calls the server can't answer |
-| `hooks/src/community.rs` | The overlay's player list and invites |
-| `tools/testbot/` | Headless test players |
-| `build/`, `docker/`, `release.toml`, `.dockerignore` | Builds, the server image and release numbering |
-| `scripts/check-clean.sh`, `scripts/install-hooks.sh` | Repository checks |
-| `docs/server-settings.md` | Server settings documentation |
+| `hooks/src/community.rs`, `hooks/src/hooks/nat.rs`, `hooks/src/hooks/portmap.rs` | The overlay's friends, player search and invites; internet play in the client (the NAT helper, the relay, UPnP and NAT-PMP) |
+| `tools/testbot/` | Headless test players and the load test |
+| `build/`, `docker/`, `release.toml`, `.dockerignore`, `.github/` | Builds, the server image, release numbering, CI and release workflows, issue forms |
+| `scripts/install-server.sh`, `sign-release.sh`, `bots.sh`, `load-test.sh`, `proxy-test.sh`, `federation-test.sh`, `check-clean.sh`, `install-hooks.sh` | The Linux installer, release signing, test runners and repository checks |
+| `docs/deploying.md`, `community-servers.md`, `friends.md`, `server-settings.md`, `reverse-proxy.md`, `reverse-proxy/`, `load-testing.md`, `research/nat-traversal.md` | This fork's documentation |
+| `LICENSE.md` | This file |
 
 ### 2. This fork's changes to other files
 
@@ -47,7 +51,10 @@ The same applies to this fork's follow-up changes to code merged from pull reque
 | `docs/logo.png`, `docs/demo.webm`, `docs/demo_thumb.png`, `docs/overlay_*.png`, `launcher/logo.ico` | Upstream 5th Echelon |
 | `docs/screenshots/` | This fork's screenshots, but they show the upstream logo |
 | `setup/data/base_savegame.xml` | Upstream 5th Echelon's generated save |
+| `docs/research/`, except `nat-traversal.md` | Upstream's research notes |
 | The README | Partly written by this fork, and partly upstream's (community links, research tools) |
+
+**The community server** and its coordinator (`play.scbl.jdevwebb.net`, `coord.scbl.jdevwebb.net`) are a service JDevWebb runs with this software. The licence covers the code, not the service or access to it; the release signing key and the community coordinator's join token aren't part of it either.
 
 Third-party libraries used by the build (egui, hudhook, Dear ImGui, tokio, tonic and others) keep their own licences. They're fetched by Cargo and aren't part of this repository.
 

@@ -634,11 +634,16 @@ Find other players, active servers and help:
 
 **This fork's own work is under the MIT licence; upstream's code isn't licensed yet.** [LICENSE.md](LICENSE.md) says exactly what's covered:
 
-- **MIT:** files this fork created (such as `setup/`, the new launcher screens, the community API, rate limits, the test players, builds and Docker), and this fork's changes to every other file.
+- **MIT:**
+  - the crates this fork created: `identity/` (player identities and release signing), `coordinator/` (friends across servers and the server directory), `nat_proto/` (internet play) and `setup/` (the launcher's logic);
+  - the files it added elsewhere: the new launcher screens and updater, the NAT helper and relay, friends, federation, rate limits and the community API in the server, internet play and the friends overlay in the client;
+  - the test players and load test, the Linux installer and release signing, builds, Docker, CI, and this fork's docs;
+  - this fork's changes to every other file, line by line as the git history records them.
 - **Not MIT:**
   - upstream 5th Echelon's code, which has no licence yet ([unixoide/5th-echelon#129](https://github.com/unixoide/5th-echelon/issues/129)) and remains its authors';
-  - code merged from others' pull requests, which stays theirs;
-  - the fonts (SIL Open Font License), and upstream's logo and images.
+  - code merged from others' pull requests, which stays theirs: [#123](https://github.com/unixoide/5th-echelon/pull/123) and [#124](https://github.com/unixoide/5th-echelon/pull/124) by Matthias Walther, [#128](https://github.com/unixoide/5th-echelon/pull/128) by Thiago;
+  - the fonts (SIL Open Font License), and upstream's logo, images, generated save and research notes.
+- **Not software:** the [community server](#the-community-server) is a service run with this code; the licence doesn't cover it or access to it.
 
 Contributions are accepted under MIT unless a pull request says otherwise.
 
