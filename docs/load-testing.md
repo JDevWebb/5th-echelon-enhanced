@@ -35,19 +35,21 @@ Only traffic that touches the relay is sent. Players who connect directly never 
 
 ## Results
 
-Measured on a MacBook (Docker Desktop, 10 cores shared by the server and the test players), with the defaults above: 20% of players relayed, matches of 4, 30 packets/s of 200 bytes per link, 60 s of play.
+Measured on a MacBook (Docker Desktop, 10 cores shared by the server and the test players), with the defaults above: 20% of players relayed, matches of 4, 30 packets/s of 200 bytes per link, 60 s of play. The 1,000-player runs had the UDP buffer limit the Linux installer sets (4 MB); the smaller ones didn't need it and ran with Linux's default.
 
 | Players | Server CPUs | Sign-ins | Relay in | Relay loss | Relay p99 | Searches failed | CPU in play | Memory in play (peak) |
 |---|---|---|---|---|---|---|---|---|
 | 100 | 1 | 18/s | 3.4k pkt/s | 0% | 1.3 ms | 0 | 5% | 15 MB (32) |
 | 500 | 1 | 19/s | 15k pkt/s | 0.15% | 3.5 ms | 9 of 1,900 | 32% | 32 MB (63) |
-| 1,000 | 1 | 18/s | 35k pkt/s | 14.6% | 25 ms | 317 of 3,700 | 63% | 53 MB (79) |
-| 1,000 | 2 | 26/s | 34k pkt/s | 29% | 1.5 ms | 44 of 3,700 | 70% | 54 MB (70) |
+| 1,000 | 1 | 19/s | 31k pkt/s | 0% | 15.5 ms | 302 of 3,700 | 63% | 53 MB (75) |
+| 1,000 | 2 | 28/s | 33k pkt/s | 0% | 1.9 ms | 59 of 3,800 | 70% | 57 MB (81) |
 
 - **Sign-ins are the peak.** Each costs one Argon2 hash, about 50 ms of one core, so a server signs in about 18 players a second per core. A burst after a restart takes a minute for 1,000 players on one core.
 - **Memory is small.** Under 100 MB at 1,000 players.
 - **Up to 500 players, one core is plenty.** The relay forwards 15,000 packets a second with no loss worth noting, at a third of a core.
-- **At 1,000 players the numbers are the test machine's, not the server's.** Docker Desktop caps UDP socket buffers at 208 KB, and the server couldn't use the 4 MB it asks for, so bursts overflowed before the server read them (the server itself reported 0 dropped). The server wasn't short of CPU either (63% of its one core). With two cores the loss went up, not down: the test players, sharing the same laptop, had less CPU to receive with. The Linux installer raises the limit (`net.core.rmem_max`); a rerun with it raised is still to do.
+- **At 1,000 players, use two cores.** One core relays everything, but it runs near its limit: the relay's p99 latency rises to 15 ms, and about 8% of friend and lobby searches time out. With two, searches failing drop to under 2% and the relay's p99 is back under 2 ms.
+- **The UDP buffer limit matters.** With Linux's default (208 KB) instead of 4 MB, 1,000 players lost 15–29% of relayed packets in bursts, although the server had CPU to spare. The Linux installer raises it (`net.core.rmem_max`); elsewhere the server logs a warning with the command.
+- **Bandwidth is the real cost.** The relay sends out what it takes in: about 7 MB/s (roughly 60 Mbit/s) each way at 1,000 players with 20% relayed, 3 MB/s at 500.
 
 ## What the test found and fixed
 
