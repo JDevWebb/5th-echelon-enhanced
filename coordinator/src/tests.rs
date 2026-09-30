@@ -22,7 +22,7 @@ async fn start(name: &str) -> Test {
     std::fs::create_dir_all(&dir).unwrap();
     let c = Coordinator::open(&dir.join("c.db").to_string_lossy(), "TOKEN".into()).await.unwrap();
     Test {
-        router: Arc::new(c).router(),
+        router: Arc::new(c).router().layer(axum::extract::connect_info::MockConnectInfo(std::net::SocketAddr::from(([192, 0, 2, 1], 1)))),
         dir,
     }
 }
@@ -40,10 +40,16 @@ impl Test {
         (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
     }
 
+    /// Joins as `server_id`, going by the host name `server_id` too.
     async fn join(&self, server_id: &str) -> String {
         let (status, v) = self.call("POST", "/v1/join", None, Some(json!({ "token": "TOKEN", "server_id": server_id }))).await;
         assert_eq!(status, StatusCode::OK, "{v}");
-        v["secret"].as_str().unwrap().to_string()
+        let secret = v["secret"].as_str().unwrap().to_string();
+        let (status, v) = self
+            .call("POST", "/v1/heartbeat", Some(&secret), Some(json!({ "name": server_id, "host": server_id, "names": [server_id], "listed": false })))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        secret
     }
 
     async fn changes(&self, secret: &str, changes: Value) -> Vec<Value> {
@@ -57,8 +63,8 @@ impl Test {
     }
 }
 
-fn link(who: &identity::Identity, server: &str, username: &str) -> Value {
-    json!({ "op": "link", "global_id": who.global_id(), "username": username, "time": 1000, "signature": who.sign_link(server, username, 1000) })
+fn link(who: &identity::Identity, host: &str, username: &str) -> Value {
+    json!({ "op": "link", "global_id": who.global_id(), "username": username, "host": host, "time": 1000, "signature": who.sign_link(host, username, 1000) })
 }
 
 #[tokio::test]
@@ -66,11 +72,42 @@ async fn joining_needs_the_token() {
     let t = start("join").await;
     let (status, _) = t.call("POST", "/v1/join", None, Some(json!({ "token": "WRONG", "server_id": "a" }))).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
-    let (status, _) = t.call("POST", "/v1/heartbeat", Some("nope"), Some(json!({}))).await;
+    let (status, _) = t.call("POST", "/v1/heartbeat", Some("nope"), Some(json!({ "name": "A", "host": "a.example" }))).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let secret = t.join("server-a").await;
-    let (status, _) = t.call("POST", "/v1/heartbeat", Some(&secret), Some(json!({ "name": "A", "listed": true }))).await;
+    let (status, _) = t.call("POST", "/v1/heartbeat", Some(&secret), Some(json!({ "name": "A", "host": "server-a", "listed": true }))).await;
     assert_eq!(status, StatusCode::OK);
+    // Joining again as an existing server needs its current secret.
+    let (status, _) = t.call("POST", "/v1/join", None, Some(json!({ "token": "TOKEN", "server_id": "server-a" }))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "anyone with the token could take a member over");
+    let (status, v) = t.call("POST", "/v1/join", Some(&secret), Some(json!({ "token": "TOKEN", "server_id": "server-a" }))).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+}
+
+#[tokio::test]
+async fn listings_are_checked() {
+    let t = start("listing").await;
+    let secret = t.join("server-a").await;
+    for bad in [json!([]), json!("x"), json!({ "name": "A\u{7}", "host": "a.example" }), json!({ "name": "A", "host": "a b" }), json!({ "name": "A", "host": "a.example", "ports": { "api": 0, "login": 1 } })] {
+        let (status, _) = t.call("POST", "/v1/heartbeat", Some(&secret), Some(bad.clone())).await;
+        assert!(status.is_client_error(), "{bad} was taken ({status})");
+    }
+    let (status, _) = t.call("GET", "/v1/servers", None, None).await;
+    assert_eq!(status, StatusCode::OK, "the directory still answers");
+}
+
+#[tokio::test]
+async fn a_server_only_uses_its_own_names() {
+    let t = start("names-own").await;
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    // B says it's server-a too: ignored, the name is A's.
+    t.call("POST", "/v1/heartbeat", Some(&b), Some(json!({ "name": "B", "host": "server-b", "names": ["server-a"] }))).await;
+    let kiwi = identity::Identity::generate();
+    // A signature players made for A (server-a), brought by B.
+    let r = t.changes(&b, json!([link(&kiwi, "server-a", "Kiwi")])).await;
+    assert!(r[0]["error"].as_str().unwrap().contains("isn't one of this server's names"), "{r:?}");
+    let r = t.changes(&a, json!([link(&kiwi, "server-a", "Kiwi")])).await;
+    assert!(r[0].get("error").is_none(), "{r:?}");
 }
 
 #[tokio::test]
@@ -78,7 +115,7 @@ async fn directory_lists_live_listed_servers_busiest_first() {
     let t = start("directory").await;
     for (id, players, listed) in [("quiet", 1, true), ("busy", 40, true), ("hidden", 99, false)] {
         let secret = t.join(id).await;
-        t.call("POST", "/v1/heartbeat", Some(&secret), Some(json!({ "name": id, "listed": listed, "players_online": players }))).await;
+        t.call("POST", "/v1/heartbeat", Some(&secret), Some(json!({ "name": id, "host": id, "listed": listed, "players_online": players }))).await;
     }
     t.join("never-heard-from").await;
     let (_, v) = t.call("GET", "/v1/servers", None, None).await;
@@ -123,9 +160,9 @@ async fn links_need_the_players_signature_for_that_server() {
     let t = start("links").await;
     let (a, b) = (t.join("server-a").await, t.join("server-b").await);
     let kiwi = identity::Identity::generate();
-    // A link signed for server A, replayed by server B.
+    // A link signed for server A, replayed by server B: not B's host.
     let r = t.changes(&b, json!([link(&kiwi, "server-a", "Kiwi")])).await;
-    assert!(r[0]["error"].as_str().unwrap().contains("signature"));
+    assert!(r[0]["error"].as_str().unwrap().contains("isn't one of this server's names"), "{r:?}");
     // Someone else's key can't be claimed for another name either.
     let mut forged = link(&kiwi, "server-a", "Kiwi");
     forged["username"] = json!("Impostor");
@@ -142,8 +179,8 @@ async fn names_belong_to_one_player_across_the_group() {
     let t = start("names").await;
     let (a, b) = (t.join("server-a").await, t.join("server-b").await);
     let (kiwi, other) = (identity::Identity::generate(), identity::Identity::generate());
-    let claim = |who: &identity::Identity, server: &str, name: &str| {
-        json!({ "name": name, "global_id": who.global_id(), "time": 5, "signature": who.sign_link(server, name, 5) })
+    let claim = |who: &identity::Identity, host: &str, name: &str| {
+        json!({ "name": name, "global_id": who.global_id(), "host": host, "time": 5, "signature": who.sign_link(host, name, 5) })
     };
 
     // Kiwi takes the name on A; nobody else gets it on B, whatever the case; Kiwi does.
@@ -154,11 +191,14 @@ async fn names_belong_to_one_player_across_the_group() {
     let (status, _) = t.call("POST", "/v1/names/claim", Some(&b), Some(claim(&kiwi, "server-b", "kiwi"))).await;
     assert_eq!(status, StatusCode::OK);
     let (_, v) = t.call("GET", "/v1/names/kIwI", Some(&b), None).await;
-    assert_eq!(v["global_id"], kiwi.global_id());
+    assert_eq!(v, json!({ "claimed": true }), "taken, but whose isn't said");
 
     // A claim signed for another server doesn't count.
     let (status, _) = t.call("POST", "/v1/names/claim", Some(&b), Some(claim(&other, "server-a", "Fresh"))).await;
     assert_eq!(status, StatusCode::FORBIDDEN);
+    // Names follow the players' rules.
+    let (status, _) = t.call("POST", "/v1/names/claim", Some(&b), Some(claim(&other, "server-b", "bad name"))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
 
     // Linking an account whose name someone else holds: linked, but flagged.
     let r = t.changes(&b, json!([link(&other, "server-b", "Kiwi")])).await;

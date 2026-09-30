@@ -104,8 +104,9 @@ fn ticket_key(pid: u32, password: &str) -> Vec<u8> {
     key
 }
 
-/// Signs in to `name` with its identity key, optionally setting a new password.
-pub async fn key_login(server: IpAddr, identity: &identity::Identity, server_id: &str, name: &str, time: i64, new_password: &str) -> std::result::Result<(), tonic::Status> {
+/// Signs in to `name` with its identity key (signed for `host`), optionally
+/// setting a new password.
+pub async fn key_login(server: IpAddr, identity: &identity::Identity, host: &str, name: &str, time: i64, new_password: &str) -> std::result::Result<(), tonic::Status> {
     let channel = Channel::from_shared(api_url(server))
         .map_err(|e| tonic::Status::internal(e.to_string()))?
         .connect()
@@ -116,8 +117,9 @@ pub async fn key_login(server: IpAddr, identity: &identity::Identity, server_id:
             username: name.into(),
             global_id: identity.global_id(),
             time,
-            signature: identity.sign_login(server_id, name, time),
+            signature: identity.sign_login(host, name, time, new_password),
             new_password: new_password.into(),
+            host: host.into(),
         })
         .await?;
     Ok(())
@@ -201,7 +203,8 @@ impl Bot {
             .await
             .map_err(|e| tonic::Status::unavailable(e.to_string()))?;
         let time = identity::now();
-        let (global_id, signature) = identity.map_or_else(Default::default, |(id, server_id)| (id.global_id(), id.sign_link(server_id, name, time)));
+        let (global_id, signature) = identity.map_or_else(Default::default, |(id, host)| (id.global_id(), id.sign_link(host, name, time)));
+        let host = identity.map(|(_, host)| host.to_string()).unwrap_or_default();
         UsersClient::new(channel)
             .register(server_api::users::RegisterRequest {
                 username: name.into(),
@@ -210,6 +213,7 @@ impl Bot {
                 global_id,
                 time,
                 signature,
+                host,
             })
             .await?;
         Ok(())
@@ -462,12 +466,14 @@ impl Bot {
     /// Renames this account (signed with `identity` for `server_id` if linked).
     pub async fn rename(&self, new_name: &str, identity: Option<(&identity::Identity, &str)>) -> std::result::Result<String, tonic::Status> {
         let time = identity::now();
-        let signature = identity.map(|(id, server_id)| id.sign_link(server_id, new_name, time)).unwrap_or_default();
+        let signature = identity.map(|(id, host)| id.sign_link(host, new_name, time)).unwrap_or_default();
+        let host = identity.map(|(_, host)| host.to_string()).unwrap_or_default();
         let resp = FriendsClient::new(self.api.clone())
             .rename(self.authed(server_api::friends::RenameRequest {
                 new_name: new_name.into(),
                 time,
                 signature,
+                host,
             }))
             .await?;
         Ok(resp.into_inner().username)
@@ -491,13 +497,14 @@ impl Bot {
         Ok(found.into_iter().map(|p| (p.username.clone(), p.relation())).collect())
     }
 
-    /// Links this account to `identity`, signed for the server with id `server_id`.
-    pub async fn link(&self, identity: &identity::Identity, server_id: &str, time: i64) -> std::result::Result<(), tonic::Status> {
+    /// Links this account to `identity`, signed for `host` (the server as reached).
+    pub async fn link(&self, identity: &identity::Identity, host: &str, time: i64) -> std::result::Result<(), tonic::Status> {
         FriendsClient::new(self.api.clone())
             .link_identity(self.authed(server_api::friends::LinkIdentityRequest {
                 global_id: identity.global_id(),
                 time,
-                signature: identity.sign_link(server_id, &self.name, time),
+                signature: identity.sign_link(host, &self.name, time),
+                host: host.into(),
             }))
             .await?;
         Ok(())

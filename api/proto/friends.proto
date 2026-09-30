@@ -51,6 +51,7 @@ message RenameRequest {
     // For a linked account: the link signature for the new name.
     int64 time = 2;
     string signature = 3;
+    string host = 4;
 }
 
 message RenameResponse {
@@ -126,8 +127,11 @@ message LinkIdentityRequest {
     string global_id = 1;
     // Unix seconds the launcher signed at.
     int64 time = 2;
-    // Signature (base32) of "5th-echelon/link/v1\n<server id>\n<username>\n<time>".
+    // Signature (base32) of identity::link_message(host, username, time).
     string signature = 3;
+    // The host the player reached this server by, as signed (never what the server says
+    // about itself: that's what stops a server replaying signatures made for it).
+    string host = 4;
 }
 
 message LinkIdentityResponse {}

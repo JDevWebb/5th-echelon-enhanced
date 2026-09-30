@@ -39,11 +39,9 @@ impl Ctx {
 use server_api::friends::Relation;
 use server_api::misc::friend_event::Kind;
 
-/// The server's id from its `/api/info` (players sign it into identity links).
+/// The host players sign: the server as they reached it.
 fn server_id(server: IpAddr) -> Result<String> {
-    setup::server_info::fetch(&server.to_string(), Duration::from_secs(5))
-        .and_then(|i| i.id)
-        .ok_or_else(|| eyre!("the server's /api/info has no id"))
+    Ok(server.to_string())
 }
 
 fn names(players: &[server_api::friends::Player]) -> Vec<&str> {
@@ -116,7 +114,7 @@ async fn identity_login(ctx: &mut Ctx) -> Result<()> {
     let me = identity::Identity::generate();
     let a = ctx.player("Keyed").await?;
     let now = identity::now();
-    ensure!(a.link(&identity::Identity::generate(), "another-server", now).await.is_err(), "a link signed for another server was taken");
+    ensure!(a.link(&me, "another-server.example", now).await.is_err(), "a link signed for another server was taken");
     a.link(&me, &id, now).await.map_err(|e| eyre!("linking: {e}"))?;
     let name = a.name.clone();
     a.disconnect().await?;
@@ -130,6 +128,24 @@ async fn identity_login(ctx: &mut Ctx) -> Result<()> {
         testbot::bot::key_login(ctx.server, &identity::Identity::generate(), &id, &name, now + 2, "stolen-password").await.is_err(),
         "another key signed in"
     );
+    // A server that got a key login signed for it can't reuse it here (another host), nor
+    // change the password it sets.
+    let for_elsewhere = me.sign_login("rogue.example", &name, now + 3, "a-new-password-1");
+    let replayed = async {
+        let channel = tonic::transport::Channel::from_shared(format!("http://{}:{}", ctx.server, testbot::bot::target(ctx.server).api))?.connect().await?;
+        server_api::users::users_client::UsersClient::new(channel)
+            .key_login(server_api::users::KeyLoginRequest {
+                username: name.clone(),
+                global_id: me.global_id(),
+                time: now + 3,
+                signature: for_elsewhere,
+                new_password: "attackers-password".into(),
+                host: "rogue.example".into(),
+            })
+            .await?;
+        Ok::<(), eyre::Report>(())
+    };
+    ensure!(replayed.await.is_err(), "a key login signed for another host was taken");
     ensure!(Bot::login(ctx.server, &name, PASSWORD).await.is_err(), "the old password still works");
     Bot::login(ctx.server, &name, "a-new-password-1").await?.disconnect().await
 }

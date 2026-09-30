@@ -52,7 +52,14 @@ const JOIN_RETRY: Duration = Duration::from_secs(60);
 pub enum Change {
     /// A player linked their account here to their identity (with their
     /// signature, which the coordinator checks too).
-    Link { global_id: String, username: String, time: i64, signature: String },
+    Link {
+        global_id: String,
+        username: String,
+        /// The host the player signed (one of this server's names).
+        host: String,
+        time: i64,
+        signature: String,
+    },
     /// The account is gone.
     Unlink { global_id: String },
     /// Two players became friends, or stopped being.
@@ -78,6 +85,9 @@ pub struct PulledRelation {
 /// What the directory shows about this server.
 #[derive(Debug, Clone, Serialize)]
 pub struct Listing {
+    /// Every name players reach this server by (its host, address and
+    /// aliases): the coordinator only accepts links signed for these.
+    pub names: Vec<String>,
     pub name: String,
     pub region: String,
     pub listed: bool,
@@ -115,6 +125,27 @@ pub fn init(server_id: String, enabled: bool) {
         asked: Mutex::new(std::collections::HashMap::new()),
         joined: Mutex::new(None),
     });
+}
+
+/// The names players reach this server by (see `[public] aliases`), as
+/// [`identity::host_key`] writes them.
+static OWN_NAMES: OnceLock<Vec<String>> = OnceLock::new();
+
+/// Sets this server's names, once at start.
+pub fn set_own_names(names: impl IntoIterator<Item = String>) {
+    let mut names: Vec<String> = names.into_iter().map(|n| identity::host_key(&n)).filter(|n| identity::valid_field(n)).collect();
+    names.sort();
+    names.dedup();
+    let _ = OWN_NAMES.set(names);
+}
+
+pub fn own_names() -> Vec<String> {
+    OWN_NAMES.get().cloned().unwrap_or_else(|| vec![String::from("127.0.0.1"), String::from("localhost")])
+}
+
+/// Whether players reach this server as `host` (what their signatures name).
+pub fn is_own_host(host: &str) -> bool {
+    identity::valid_field(host) && own_names().contains(&identity::host_key(host))
 }
 
 /// This server's id; "local" until [`init`] (tests).
@@ -243,19 +274,57 @@ pub enum NameCheck {
 
 /// How long a player waits on the coordinator when making an account.
 const NAME_TIMEOUT: Duration = Duration::from_secs(4);
+/// The largest answer read from the coordinator.
+const MAX_ANSWER: usize = 1024 * 1024;
+
+/// The one HTTP client for the coordinator: no redirects (the secret goes
+/// only where configured), a timeout.
+fn http() -> &'static reqwest::Client {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(10))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("an HTTP client")
+    })
+}
+
+/// Reads an answer as JSON, at most [`MAX_ANSWER`] bytes.
+async fn read_json(mut resp: reqwest::Response) -> eyre::Result<serde_json::Value> {
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        body.extend_from_slice(&chunk);
+        if body.len() > MAX_ANSWER {
+            return Err(eyre::eyre!("the coordinator's answer is too large"));
+        }
+    }
+    Ok(serde_json::from_slice(&body).unwrap_or_default())
+}
+
+/// Whether `url` may carry this server's secret: HTTPS, or plain HTTP to
+/// this machine only.
+fn safe_coordinator_url(url: &str) -> bool {
+    let Ok(parsed) = reqwest::Url::parse(url) else { return false };
+    match parsed.scheme() {
+        "https" => true,
+        "http" => matches!(parsed.host_str(), Some("localhost" | "127.0.0.1" | "[::1]")),
+        _ => false,
+    }
+}
 
 fn joined() -> Option<(String, String)> {
     STATE.get().filter(|s| s.enabled)?.joined.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
 }
 
 /// Reserves `name` for `global_id` across the group (signed with the
-/// player's link signature for this server).
-pub async fn claim_name(global_id: &str, name: &str, time: i64, signature: &str) -> NameCheck {
+/// player's link signature for this server, reached as `host`).
+pub async fn claim_name(global_id: &str, name: &str, host: &str, time: i64, signature: &str) -> NameCheck {
     let Some((base, secret)) = joined() else {
         return NameCheck::Unknown;
     };
-    let body = serde_json::json!({ "name": name, "global_id": global_id, "time": time, "signature": signature });
-    let sent = reqwest::Client::new().post(format!("{base}/v1/names/claim")).bearer_auth(secret).timeout(NAME_TIMEOUT).json(&body).send().await;
+    let body = serde_json::json!({ "name": name, "global_id": global_id, "host": identity::host_key(host), "time": time, "signature": signature });
+    let sent = http().post(format!("{base}/v1/names/claim")).bearer_auth(secret).timeout(NAME_TIMEOUT).json(&body).send().await;
     match sent.map(|r| r.status()) {
         Ok(s) if s.is_success() => NameCheck::Ours,
         Ok(reqwest::StatusCode::CONFLICT) => NameCheck::Taken,
@@ -271,9 +340,9 @@ pub async fn name_holder(name: &str) -> NameCheck {
     };
     let url = format!("{base}/v1/names/{}", urlencode(name));
     let answer = async {
-        let resp = reqwest::Client::new().get(url).bearer_auth(secret).timeout(NAME_TIMEOUT).send().await.ok()?;
+        let resp = http().get(url).bearer_auth(secret).timeout(NAME_TIMEOUT).send().await.ok()?;
         resp.status().is_success().then_some(())?;
-        resp.json::<serde_json::Value>().await.ok()
+        read_json(resp).await.ok()
     }
     .await;
     match answer.and_then(|v| v["claimed"].as_bool()) {
@@ -334,10 +403,10 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
         return;
     };
     let base = cfg.coordinator.trim().trim_end_matches('/').to_string();
-    let http = match reqwest::Client::builder().timeout(Duration::from_secs(10)).build() {
-        Ok(c) => c,
-        Err(e) => return crit!(logger, "Federation: no HTTP client: {e}"),
-    };
+    if !safe_coordinator_url(&base) && !cfg.allow_http {
+        return crit!(logger, "Federation: {base} isn't https:// (plain http only to this machine); not connecting, the secret would travel readable");
+    }
+    let http = http().clone();
     info!(logger, "Federation: coordinator {base}, server id {}", state.server_id);
     let mut secret: Option<String> = None;
     let mut last_heartbeat: Option<Instant> = None;
@@ -401,7 +470,7 @@ impl Coordinator<'_> {
     async fn post<T: Serialize + ?Sized>(&self, path: &str, body: &T) -> eyre::Result<serde_json::Value> {
         let resp = self.http.post(format!("{}{path}", self.base)).bearer_auth(self.secret).json(body).send().await?;
         let status = resp.status();
-        let value = resp.json::<serde_json::Value>().await.unwrap_or_default();
+        let value = read_json(resp).await?;
         if !status.is_success() {
             return Err(eyre::eyre!("{status}: {}", value["error"].as_str().unwrap_or_default()));
         }
@@ -411,7 +480,7 @@ impl Coordinator<'_> {
     async fn get(&self, path: &str) -> eyre::Result<serde_json::Value> {
         let resp = self.http.get(format!("{}{path}", self.base)).bearer_auth(self.secret).send().await?;
         let status = resp.status();
-        let value = resp.json::<serde_json::Value>().await.unwrap_or_default();
+        let value = read_json(resp).await?;
         if !status.is_success() {
             return Err(eyre::eyre!("{status}: {}", value["error"].as_str().unwrap_or_default()));
         }
@@ -436,7 +505,7 @@ async fn join(logger: &Logger, http: &reqwest::Client, base: &str, cfg: &Federat
     let result = async {
         let resp = http.post(format!("{base}/v1/join")).json(&body).send().await?;
         let status = resp.status();
-        let value = resp.json::<serde_json::Value>().await.unwrap_or_default();
+        let value = read_json(resp).await?;
         if !status.is_success() {
             return Err(eyre::eyre!("{status}: {}", value["error"].as_str().unwrap_or_default()));
         }

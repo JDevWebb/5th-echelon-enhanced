@@ -74,8 +74,8 @@ pub fn new_password() -> String {
 ///
 /// * `saved`: the account saved for this server. Kept if it signs in; if its
 ///   password is refused, the identity key may still sign in to it.
-/// * `names`: the player's names on other servers, tried with the identity
-///   key (their account here from another PC), and used to name a new one.
+/// * `names`: the player's names on other servers, used to name a new one.
+///   The identity key is tried with the saved name and `nick` only.
 ///
 /// Otherwise a new account with a random password, named after the player's
 /// usual name or `nick`. A password is only ever sent to the server it was
@@ -97,8 +97,10 @@ pub fn ensure_account(service: &dyn AccountService, saved: Option<(&str, &str)>,
             Err(e) => return Err(e),
         }
     }
+    // Only this server's saved name and the one typed now: trying the names from other
+    // servers would tell this server which accounts the player has elsewhere.
     let mut tried: Vec<String> = Vec::new();
-    for name in saved.map(|(u, _)| u).into_iter().chain(names.iter().copied()).chain([nick]) {
+    for name in saved.map(|(u, _)| u).into_iter().chain([nick]) {
         let name = name.trim();
         if name.is_empty() || tried.iter().any(|t| t.eq_ignore_ascii_case(name)) || tried.len() >= 5 {
             continue;
@@ -212,10 +214,14 @@ mod tests {
         };
         server.register("Kiwi", "made-on-another-pc").unwrap();
 
-        // A new PC with the identity imported, and the player's usual name.
-        let (u, p, how) = ensure_account(&server, None, &["Kiwi"], "Someone").unwrap();
+        // A new PC with the identity imported, and the player's usual name typed.
+        let (u, p, how) = ensure_account(&server, None, &[], "Kiwi").unwrap();
         assert_eq!((u.as_str(), how), ("Kiwi", Outcome::Recovered));
         assert!(server.login("Kiwi", &p).is_ok(), "the account has the new password");
+
+        // Names from other servers aren't tried: they'd tell this one about them.
+        let (u, _, how) = ensure_account(&server, None, &["Kiwi"], "Someone").unwrap();
+        assert_eq!((u.as_str(), how), ("Kiwi2", Outcome::Created), "a new account, named after the usual name");
 
         // A saved password that stopped working.
         let (_, _, how) = ensure_account(&server, Some(("Kiwi", "old")), &[], "Kiwi").unwrap();

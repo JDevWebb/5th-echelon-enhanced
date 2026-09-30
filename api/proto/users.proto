@@ -78,6 +78,8 @@ message RegisterRequest {
   int64 time = 5;
   // Link signature (see friends.LinkIdentityRequest) for this server and username.
   string signature = 6;
+  // The host the player reached this server by, as signed.
+  string host = 7;
 }
 
 message KeyLoginRequest {
@@ -86,10 +88,12 @@ message KeyLoginRequest {
   string global_id = 2;
   // Unix seconds the launcher signed at; must be within 5 minutes and newer than the last.
   int64 time = 3;
-  // Signature (base32) of "5th-echelon/login/v1\n<server id>\n<username>\n<time>".
+  // Signature (base32) of identity::login_message(host, username, time, new_password).
   string signature = 4;
   // Replaces the account's password when set.
   string new_password = 5;
+  // The host the player reached this server by, as signed.
+  string host = 6;
 }
 
 message RegisterResponse {

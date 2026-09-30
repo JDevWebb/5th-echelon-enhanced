@@ -8,11 +8,12 @@
 //! * signing in to an account without its password ([`login_message`]), on a
 //!   new PC or when the password is lost.
 //!
-//! Each message names the server (its id from `/api/info`) and a time, so a
-//! signature is good for one server, once, for a few minutes.
+//! Each message names the server by the host the player connected to (as
+//! they typed it, never what a server says about itself) and a time, so a
+//! signature is good for one server, once, for a few minutes: a server that
+//! claims to be another can't use what players sign for it anywhere else.
 
 use ed25519_dalek::Signer as _;
-use ed25519_dalek::Verifier as _;
 use rand::RngCore as _;
 
 /// How far a signed time may be from the server's clock, in seconds.
@@ -54,24 +55,51 @@ impl Identity {
     }
 
     /// Everything a server needs to link an account to this identity.
-    pub fn sign_link(&self, server_id: &str, username: &str, time: i64) -> String {
-        self.sign(&link_message(server_id, username, time))
+    pub fn sign_link(&self, host: &str, username: &str, time: i64) -> String {
+        self.sign(&link_message(host, username, time))
     }
 
-    /// Everything a server needs to sign this player in with the key.
-    pub fn sign_login(&self, server_id: &str, username: &str, time: i64) -> String {
-        self.sign(&login_message(server_id, username, time))
+    /// Everything a server needs to sign this player in with the key (and
+    /// set `new_password`, empty for none).
+    pub fn sign_login(&self, host: &str, username: &str, time: i64, new_password: &str) -> String {
+        self.sign(&login_message(host, username, time, new_password))
     }
 }
 
-/// What a player signs to link `username` on `server_id` to their identity.
-pub fn link_message(server_id: &str, username: &str, time: i64) -> String {
-    format!("5th-echelon/link/v1\n{server_id}\n{username}\n{time}")
+/// The form of a server's host name that is signed: trimmed, lower-cased,
+/// without a port.
+pub fn host_key(host: &str) -> String {
+    let host = host.trim().to_lowercase();
+    // "name:port" (not an IPv6 address, which has more than one colon).
+    match host.rsplit_once(':') {
+        Some((name, port)) if !name.contains(':') && port.chars().all(|c| c.is_ascii_digit()) => name.to_string(),
+        _ => host,
+    }
 }
 
-/// What a player signs to sign in to `username` on `server_id` with the key.
-pub fn login_message(server_id: &str, username: &str, time: i64) -> String {
-    format!("5th-echelon/login/v1\n{server_id}\n{username}\n{time}")
+/// Whether a field may go into a signed message: printable ASCII, no
+/// separators, so no two messages read the same.
+pub fn valid_field(s: &str) -> bool {
+    !s.is_empty() && s.len() <= 253 && s.bytes().all(|b| b.is_ascii_graphic())
+}
+
+/// What a player signs to link `username` on the server they reached as
+/// `host` to their identity.
+pub fn link_message(host: &str, username: &str, time: i64) -> String {
+    format!("5th-echelon/link/v2\n{}\n{username}\n{time}", host_key(host))
+}
+
+/// What a player signs to sign in to `username` on `host` with the key, and
+/// set `new_password` (a hash of it: the signature then can't be reused to set
+/// another).
+pub fn login_message(host: &str, username: &str, time: i64, new_password: &str) -> String {
+    let password = if new_password.is_empty() { String::from("-") } else { base32_encode(&sha256(new_password.as_bytes())) };
+    format!("5th-echelon/login/v2\n{}\n{username}\n{time}\n{password}", host_key(host))
+}
+
+fn sha256(data: &[u8]) -> [u8; 32] {
+    use sha2::Digest as _;
+    sha2::Sha256::digest(data).into()
 }
 
 /// Whether `signature` (base32) is `global_id`'s signature of `message`.
@@ -85,7 +113,8 @@ pub fn verify(global_id: &str, message: &str, signature: &str) -> bool {
     let Ok(key) = ed25519_dalek::VerifyingKey::from_bytes(&key) else {
         return false;
     };
-    key.verify(message.as_bytes(), &ed25519_dalek::Signature::from_bytes(&sig)).is_ok()
+    // Strict: no weak (small-order) keys, and no signatures that aren't canonical.
+    !key.is_weak() && key.verify_strict(message.as_bytes(), &ed25519_dalek::Signature::from_bytes(&sig)).is_ok()
 }
 
 /// The form of a player name that decides whether two names are the same:
@@ -100,9 +129,16 @@ pub fn fresh(time: i64, now: i64) -> bool {
     (now - time).abs() <= MAX_CLOCK_SKEW
 }
 
-/// Whether `s` looks like a global id (52 base32 characters, 32 bytes).
+/// Whether `s` is a global id: 52 upper-case base32 characters (one spelling
+/// per key), a valid key that isn't a weak one.
 pub fn is_global_id(s: &str) -> bool {
-    s.len() == 52 && base32_decode(s).is_some_and(|b| b.len() == 32)
+    if s.len() != 52 || s.bytes().any(|b| b.is_ascii_lowercase()) {
+        return false;
+    }
+    let Some(Ok(bytes)) = base32_decode(s).map(<[u8; 32]>::try_from) else {
+        return false;
+    };
+    ed25519_dalek::VerifyingKey::from_bytes(&bytes).is_ok_and(|k| !k.is_weak())
 }
 
 /// A short form of a global id for people to compare, e.g. "K7QF-2M9D".
@@ -177,15 +213,34 @@ mod tests {
         let me = Identity::generate();
         let id = me.global_id();
         assert!(is_global_id(&id));
+        assert!(!is_global_id(&id.to_lowercase()), "one spelling per key");
         let sig = me.sign_link("server-a", "Kiwi", 1000);
         assert!(verify(&id, &link_message("server-a", "Kiwi", 1000), &sig));
+        assert!(verify(&id, &link_message("SERVER-A:80", "Kiwi", 1000), &sig), "the same host however it's written");
         assert!(!verify(&id, &link_message("server-b", "Kiwi", 1000), &sig), "another server");
         assert!(!verify(&id, &link_message("server-a", "Tank", 1000), &sig), "another account");
         assert!(!verify(&id, &link_message("server-a", "Kiwi", 1001), &sig), "another time");
-        assert!(!verify(&id, &login_message("server-a", "Kiwi", 1000), &sig), "a link isn't a login");
+        assert!(!verify(&id, &login_message("server-a", "Kiwi", 1000, ""), &sig), "a link isn't a login");
         let other = Identity::generate();
         assert!(!verify(&other.global_id(), &link_message("server-a", "Kiwi", 1000), &sig));
         assert!(!verify("garbage", "x", &sig));
+    }
+
+    #[test]
+    fn a_key_login_signs_the_new_password() {
+        let me = Identity::generate();
+        let sig = me.sign_login("server-a", "Kiwi", 5, "mine-12345");
+        assert!(verify(&me.global_id(), &login_message("server-a", "Kiwi", 5, "mine-12345"), &sig));
+        assert!(!verify(&me.global_id(), &login_message("server-a", "Kiwi", 5, "attackers"), &sig), "another password");
+        assert!(!verify(&me.global_id(), &login_message("server-a", "Kiwi", 5, ""), &sig));
+    }
+
+    #[test]
+    fn hosts_and_fields() {
+        assert_eq!(host_key(" Play.Example.org:80 "), "play.example.org");
+        assert_eq!(host_key("203.0.113.5"), "203.0.113.5");
+        assert_eq!(host_key("2001:db8::1"), "2001:db8::1", "IPv6 keeps its colons");
+        assert!(valid_field("Kiwi") && !valid_field("a\nb") && !valid_field("") && !valid_field("a b"));
     }
 
     #[test]

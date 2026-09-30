@@ -162,10 +162,12 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<(), S
     say(log, "Setting up your account…");
     // The player's identity, on servers that support it: signs in to their account here
     // from another PC, and carries friends between servers.
-    let server_id = info.as_ref().filter(|i| i.features.iter().any(|f| f == "identity")).and_then(|i| i.id.clone());
-    let identity = match server_id {
-        Some(id) => match setup::player_identity::load_or_create() {
-            Ok(identity) => Some((Arc::new(identity), id)),
+    // Signatures name the server as the player typed it, never what the server says it is:
+    // a server claiming to be another can't reuse them there.
+    let supports_identity = info.as_ref().is_some_and(|i| i.features.iter().any(|f| f == "identity"));
+    let identity = match supports_identity.then(|| identity::host_key(&plan.server)) {
+        Some(host) => match setup::player_identity::load_or_create() {
+            Ok(identity) => Some((Arc::new(identity), host)),
             Err(e) => {
                 say(log, format!("Your identity couldn't be loaded ({e}); friends won't follow you to other servers."));
                 None
@@ -205,11 +207,11 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<(), S
             account::Outcome::Created => format!("Created the account {username}."),
         },
     );
-    if let Some((identity, server_id)) = &identity {
+    if let Some((identity, host)) = &identity {
         let linked = crate::services::rt().block_on(async {
             tokio::time::timeout(
                 Duration::from_secs(8),
-                crate::network::link_identity(profile.api_server_url().to_string(), identity, server_id, &username, &password),
+                crate::network::link_identity(profile.api_server_url().to_string(), identity, host, &username, &password),
             )
             .await
         });
@@ -284,7 +286,10 @@ pub fn rename(game_dir: &Path, profile_name: &str, new_name: &str) -> Result<Str
     let password = profile.user.secret().ok_or("The saved password can't be read here; set up the server again.")?;
     let new_name = new_name.trim().to_string();
     let info = setup::server_info::fetch(&profile.server, Duration::from_secs(4));
-    let server_id = info.filter(|i| i.features.iter().any(|f| f == "rename")).and_then(|i| i.id).ok_or("This server can't rename accounts.")?;
+    if !info.is_some_and(|i| i.features.iter().any(|f| f == "rename")) {
+        return Err("This server can't rename accounts.".into());
+    }
+    let host = identity::host_key(&profile.server);
     let identity = setup::player_identity::load().ok().flatten();
     let renamed = crate::services::rt()
         .block_on(async {
@@ -295,7 +300,7 @@ pub fn rename(game_dir: &Path, profile_name: &str, new_name: &str) -> Result<Str
                     &profile.user.username,
                     &password,
                     &new_name,
-                    identity.as_ref().map(|i| (i, server_id.as_str())),
+                    identity.as_ref().map(|i| (i, host.as_str())),
                 ),
             )
             .await

@@ -134,6 +134,19 @@ fn name_status(person: &Person) -> friends::NameStatus {
     }
 }
 
+/// Refuses a signature made for a host this server doesn't go by: what
+/// stops a server that claims to be this one from bringing signatures
+/// players made for it.
+fn signed_host(host: &str) -> Result<(), Status> {
+    if federation::is_own_host(host) {
+        Ok(())
+    } else {
+        Err(Status::invalid_argument(format!(
+            "This server doesn't go by {host:?}; its operator can add the name to [public] aliases"
+        )))
+    }
+}
+
 /// What a player is told when the name they want is someone else's across
 /// the servers sharing friends.
 const NAME_HELD_ELSEWHERE: &str = "That name belongs to another player on the servers sharing friends";
@@ -497,7 +510,8 @@ impl Friends for MyFriends {
         if !identity::fresh(request.time, identity::now()) {
             return Err(Status::invalid_argument("The signature's time is off; check this PC's clock"));
         }
-        let message = identity::link_message(federation::server_id(), &person.username, request.time);
+        signed_host(&request.host)?;
+        let message = identity::link_message(&request.host, &person.username, request.time);
         if !identity::verify(&request.global_id, &message, &request.signature) {
             return Err(Status::permission_denied("The signature doesn't match"));
         }
@@ -512,6 +526,7 @@ impl Friends for MyFriends {
         let link = federation::Change::Link {
             global_id: request.global_id,
             username: person.username,
+            host: identity::host_key(&request.host),
             time: request.time,
             signature: request.signature,
         };
@@ -543,15 +558,17 @@ impl Friends for MyFriends {
                 if !identity::fresh(request.time, identity::now()) {
                     return Err(Status::invalid_argument("The signature's time is off; check this PC's clock"));
                 }
-                if !identity::verify(global_id, &identity::link_message(federation::server_id(), &new_name, request.time), &request.signature) {
+                signed_host(&request.host)?;
+                if !identity::verify(global_id, &identity::link_message(&request.host, &new_name, request.time), &request.signature) {
                     return Err(Status::permission_denied("Sign the new name with the identity this account is linked to"));
                 }
-                if federation::claim_name(global_id, &new_name, request.time, &request.signature).await == federation::NameCheck::Taken {
+                if federation::claim_name(global_id, &new_name, &request.host, request.time, &request.signature).await == federation::NameCheck::Taken {
                     return Err(Status::already_exists(NAME_HELD_ELSEWHERE));
                 }
                 Some(federation::Change::Link {
                     global_id: global_id.clone(),
                     username: new_name.clone(),
+                    host: identity::host_key(&request.host),
                     time: request.time,
                     signature: request.signature.clone(),
                 })
@@ -718,19 +735,20 @@ impl Users for MyUsers {
             if !identity::is_global_id(&request.global_id) || !identity::fresh(request.time, identity::now()) {
                 return Err(Status::invalid_argument("Not a valid identity signature; check this PC's clock"));
             }
-            if !identity::verify(&request.global_id, &identity::link_message(federation::server_id(), &username, request.time), &request.signature) {
+            signed_host(&request.host)?;
+            if !identity::verify(&request.global_id, &identity::link_message(&request.host, &username, request.time), &request.signature) {
                 return Err(Status::permission_denied("The identity's signature doesn't match"));
             }
             if self.storage.find_person_by_global_id(&request.global_id).await.map_err(internal)?.is_some() {
                 return Err(Status::already_exists("This identity already has an account here"));
             }
-            Some((request.global_id.clone(), request.time, request.signature.clone()))
+            Some((request.global_id.clone(), request.time, request.signature.clone(), identity::host_key(&request.host)))
         };
         // Taken here. If the one holding it has no identity and the name is this identity's
         // across the group, that account is told to rename.
         if let Some(holder) = self.storage.find_person_by_name(&username).await.map_err(internal)? {
-            if let (None, Some((global_id, time, signature))) = (&holder.global_id, &identity_link) {
-                if federation::claim_name(global_id, &username, *time, signature).await == federation::NameCheck::Ours {
+            if let (None, Some((global_id, time, signature, host))) = (&holder.global_id, &identity_link) {
+                if federation::claim_name(global_id, &username, host, *time, signature).await == federation::NameCheck::Ours {
                     self.storage.set_name_conflict_by_id(holder.id, true).await.map_err(internal)?;
                     info!(self.logger, "{username} here has no identity, and the name is someone else's across the group: flagged");
                 }
@@ -751,13 +769,13 @@ impl Users for MyUsers {
             String::new()
         };
         info!(self.logger, "New user {username} registered");
-        if let Some((global_id, time, signature)) = identity_link {
+        if let Some((global_id, time, signature, host)) = identity_link {
             let Some(person) = self.storage.find_person_by_name(&username).await.map_err(internal)? else {
                 return Err(Status::internal("internal error"));
             };
             // Claimed only now the account exists: a registration that fails leaves no claim
             // behind. Held by someone else across the group: the account goes again.
-            if federation::claim_name(&global_id, &username, time, &signature).await == federation::NameCheck::Taken {
+            if federation::claim_name(&global_id, &username, &host, time, &signature).await == federation::NameCheck::Taken {
                 self.storage.delete_user_async(person.id).await.map_err(internal)?;
                 return Err(Status::already_exists(NAME_HELD_ELSEWHERE));
             }
@@ -765,6 +783,7 @@ impl Users for MyUsers {
             let link = federation::Change::Link {
                 global_id,
                 username: username.clone(),
+                host,
                 time,
                 signature,
             };
@@ -805,7 +824,8 @@ impl Users for MyUsers {
         if !identity::fresh(request.time, identity::now()) {
             return Err(Status::invalid_argument("The signature's time is off; check this PC's clock"));
         }
-        let message = identity::login_message(federation::server_id(), &person.username, request.time);
+        signed_host(&request.host)?;
+        let message = identity::login_message(&request.host, &person.username, request.time, &request.new_password);
         if !identity::verify(&request.global_id, &message, &request.signature) {
             return Err(refused("The signature doesn't match"));
         }

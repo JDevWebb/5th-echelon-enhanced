@@ -32,8 +32,8 @@ pub fn block_on<T>(f: impl Future<Output = anyhow::Result<T>>) -> anyhow::Result
 /// A server's account calls, for [`setup::account`].
 pub struct Accounts {
     pub api: String,
-    /// The player's identity and the server's id, when the server supports
-    /// identities: for signing in with the key.
+    /// The player's identity and the host the player reached the server by
+    /// (what signatures name), when the server supports identities.
     pub identity: Option<(std::sync::Arc<setup::player_identity::Identity>, String)>,
 }
 
@@ -59,7 +59,7 @@ impl AccountService for Accounts {
     fn register(&self, username: &str, password: &str) -> Result<(), AccountError> {
         // With the player's identity, the account is linked at once and its name reserved
         // across servers sharing friends. The server sets the account id.
-        let identity = self.identity.as_ref().map(|(id, server_id)| (id.as_ref(), server_id.as_str()));
+        let identity = self.identity.as_ref().map(|(id, host)| (id.as_ref(), host.as_str()));
         let r = rt().block_on(async { tokio::time::timeout(TIMEOUT, network::register(self.api.clone(), username, password, identity)).await });
         match r {
             Err(_) => Err(AccountError::Other("the server didn't answer in time".into())),
@@ -71,10 +71,10 @@ impl AccountService for Accounts {
     }
 
     fn key_login(&self, username: &str, new_password: &str) -> Result<(), AccountError> {
-        let Some((identity, server_id)) = self.identity.as_ref() else {
+        let Some((identity, host)) = self.identity.as_ref() else {
             return Err(AccountError::NotFound);
         };
-        let r = rt().block_on(async { tokio::time::timeout(TIMEOUT, network::key_login(self.api.clone(), identity, server_id, username, new_password)).await });
+        let r = rt().block_on(async { tokio::time::timeout(TIMEOUT, network::key_login(self.api.clone(), identity, host, username, new_password)).await });
         match r {
             Ok(Ok(())) => Ok(()),
             Ok(Err(network::Error::UserNotFound)) => Err(AccountError::NotFound),

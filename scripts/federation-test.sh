@@ -27,7 +27,7 @@ server() { # server <name> <label>
     ./dedicated_server >gen.log 2>&1 & gen=\$!
     for _ in \$(seq 100); do [ -s service.toml ] && break; sleep 0.1; done
     sleep 0.3; kill \$gen 2>/dev/null || true; wait \$gen 2>/dev/null || true
-    printf '\n[federation]\ncoordinator = \"http://$coord:8700\"\njoin_token = \"$token\"\nname = \"$2\"\nregion = \"Test\"\n' >> service.toml
+    printf '\n[federation]\ncoordinator = \"http://$coord:8700\"\njoin_token = \"$token\"\nname = \"$2\"\nregion = \"Test\"\nallow_http = true\n' >> service.toml
     exec ./dedicated_server --public-address \$(hostname -i | cut -d' ' -f1) >server.log 2>&1
   " >/dev/null
 }

@@ -14,11 +14,43 @@ struct Args {
     /// folder for the database and the join token (default: the current one)
     #[argh(option, default = "PathBuf::from(\".\")")]
     data: PathBuf,
+    #[argh(subcommand)]
+    command: Option<Command>,
 }
 
+#[derive(argh::FromArgs)]
+#[argh(subcommand)]
+enum Command {
+    RemoveServer(RemoveServer),
+    NewToken(NewToken),
+}
+
+#[derive(argh::FromArgs)]
+#[argh(subcommand, name = "remove-server")]
+/// remove a member server: its links, and the names only it used
+struct RemoveServer {
+    /// the server's id (in the directory and its server-id.txt)
+    #[argh(positional)]
+    id: String,
+}
+
+#[derive(argh::FromArgs)]
+#[argh(subcommand, name = "new-token")]
+/// make a new join token (servers that joined keep working); restart the
+/// coordinator afterwards
+struct NewToken {}
+
 /// The file with the join token that servers need to join. Made on the first
-/// start; delete it to make a new one (servers that joined keep working).
+/// start; `new-token` replaces it (servers that joined keep working).
 const JOIN_TOKEN_FILE: &str = "join-token.txt";
+
+fn new_token(path: &std::path::Path) -> eyre::Result<String> {
+    let mut bytes = [0u8; 20];
+    rand::RngCore::fill_bytes(&mut rand::rng(), &mut bytes);
+    let token = identity::base32_encode(&bytes);
+    write_private(path, &format!("{token}\n"))?;
+    Ok(token)
+}
 
 fn join_token(dir: &std::path::Path) -> eyre::Result<String> {
     let path = dir.join(JOIN_TOKEN_FILE);
@@ -27,11 +59,7 @@ fn join_token(dir: &std::path::Path) -> eyre::Result<String> {
             return Ok(text.trim().to_string());
         }
     }
-    let mut bytes = [0u8; 20];
-    rand::RngCore::fill_bytes(&mut rand::rng(), &mut bytes);
-    let token = identity::base32_encode(&bytes);
-    write_private(&path, &format!("{token}\n"))?;
-    Ok(token)
+    new_token(&path)
 }
 
 #[cfg(unix)]
@@ -54,16 +82,47 @@ async fn main() -> eyre::Result<()> {
         .init();
     let args: Args = argh::from_env();
     std::fs::create_dir_all(&args.data)?;
-    let token = join_token(&args.data)?;
     let db = args.data.join("coordinator.db");
+    match args.command {
+        Some(Command::NewToken(_)) => {
+            new_token(&args.data.join(JOIN_TOKEN_FILE))?;
+            println!("A new join token is in {}; restart the coordinator to use it.", args.data.join(JOIN_TOKEN_FILE).display());
+            return Ok(());
+        }
+        Some(Command::RemoveServer(r)) => {
+            let c = coordinator::Coordinator::open(&db.to_string_lossy(), String::new()).await?;
+            if c.remove_server(&r.id).await? {
+                println!("Removed server {} with its links. Rotate the join token (new-token) if it could join again.", r.id);
+            } else {
+                println!("No server {}.", r.id);
+            }
+            return Ok(());
+        }
+        None => {}
+    }
+    let token = join_token(&args.data)?;
     let coordinator = Arc::new(coordinator::Coordinator::open(&db.to_string_lossy(), token).await?);
+    // Names claimed for accounts that never linked go after an hour.
+    {
+        let coordinator = Arc::clone(&coordinator);
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(600)).await;
+                match coordinator.sweep().await {
+                    Ok(n) if n > 0 => tracing::info!("released {n} names nobody uses"),
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("sweeping names failed: {e}"),
+                }
+            }
+        });
+    }
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
     tracing::info!(
         "Listening on {}; servers join with the token in {}",
         args.listen,
         args.data.join(JOIN_TOKEN_FILE).display()
     );
-    axum::serve(listener, coordinator.router())
+    axum::serve(listener, Arc::clone(&coordinator).router().into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;
         })

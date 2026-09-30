@@ -24,6 +24,8 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::extract::ConnectInfo;
+use axum::extract::DefaultBodyLimit;
 use axum::extract::Path;
 use axum::extract::State;
 use axum::http::HeaderMap;
@@ -33,6 +35,7 @@ use axum::routing::post;
 use axum::Json;
 use axum::Router;
 use serde::Deserialize;
+use serde::Serialize;
 use serde_json::json;
 use serde_json::Value;
 use sha2::Digest as _;
@@ -46,10 +49,147 @@ const MAX_CHANGES: usize = 200;
 /// A name claimed for an account that's still being made isn't released for
 /// this long, even though no link uses it yet.
 const CLAIM_GRACE_SECS: i64 = 60 * 60;
+/// Names one server may claim in an hour that no link uses (yet).
+const MAX_UNLINKED_CLAIMS_PER_HOUR: i64 = 200;
+/// The largest request body.
+const MAX_BODY: usize = 256 * 1024;
+
+/// A request's source address: the peer, or, from a proxy on this machine,
+/// the last address in `X-Forwarded-For`.
+fn client_ip(peer: std::net::SocketAddr, headers: &HeaderMap) -> std::net::IpAddr {
+    if peer.ip().is_loopback() {
+        if let Some(ip) = headers
+            .get("x-forwarded-for")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.rsplit(',').next())
+            .and_then(|v| v.trim().parse().ok())
+        {
+            return ip;
+        }
+    }
+    peer.ip()
+}
+
+/// At most `max` requests per key in a minute.
+struct Limit {
+    max: usize,
+    seen: std::sync::Mutex<std::collections::HashMap<String, std::collections::VecDeque<std::time::Instant>>>,
+}
+
+impl Limit {
+    fn new(max: usize) -> Self {
+        Self {
+            max,
+            seen: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    fn check(&self, key: &str) -> bool {
+        let now = std::time::Instant::now();
+        let window = Duration::from_secs(60);
+        let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if seen.len() > 50_000 {
+            seen.retain(|_, t| t.back().is_some_and(|t| now.duration_since(*t) < window));
+        }
+        let times = seen.entry(key.to_string()).or_default();
+        while times.front().is_some_and(|t| now.duration_since(*t) >= window) {
+            times.pop_front();
+        }
+        if times.len() >= self.max {
+            return false;
+        }
+        times.push_back(now);
+        true
+    }
+}
+
+/// Whether `name` may be a player's name (as servers accept new ones).
+fn valid_name(name: &str) -> bool {
+    (1..=32).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+}
+
+/// Whether `host` may be a server's host name or address.
+fn valid_host(host: &str) -> bool {
+    (1..=253).contains(&host.len()) && host.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'[' | b']'))
+}
+
+/// Printable text of at most `max` characters.
+fn valid_text(text: &str, max: usize) -> bool {
+    text.chars().count() <= max && !text.chars().any(char::is_control)
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct Ports {
+    api: u16,
+    login: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    secure: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    content: Option<u16>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    nat: Option<u16>,
+}
+
+/// A server's directory entry, as it sends it (and nothing else is stored).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct Listing {
+    /// The names players reach it by (for links; not listed).
+    #[serde(default, skip_serializing)]
+    names: Vec<String>,
+    name: String,
+    #[serde(default)]
+    region: String,
+    #[serde(default = "yes")]
+    listed: bool,
+    host: String,
+    #[serde(default)]
+    ports: Option<Ports>,
+    #[serde(default)]
+    version: String,
+    #[serde(default)]
+    players_online: u32,
+    #[serde(default)]
+    players_total: u32,
+    #[serde(default)]
+    friends_mode: String,
+}
+
+fn yes() -> bool {
+    true
+}
+
+impl Listing {
+    fn check(&self) -> Result<(), &'static str> {
+        if self.name.trim().is_empty() || !valid_text(&self.name, 48) {
+            return Err("the name is 1-48 printable characters");
+        }
+        if !valid_text(&self.region, 32) || !valid_text(&self.version, 32) {
+            return Err("region and version are at most 32 printable characters");
+        }
+        if !valid_host(&self.host) {
+            return Err("the host isn't a host name or address");
+        }
+        if let Some(p) = &self.ports {
+            if [Some(p.api), Some(p.login), p.secure, p.content, p.nat].into_iter().flatten().any(|port| port == 0) {
+                return Err("port 0");
+            }
+        }
+        if !matches!(self.friends_mode.as_str(), "" | "everyone" | "mutual") {
+            return Err("friends_mode is everyone or mutual");
+        }
+        if self.names.len() > 16 || !self.names.iter().all(|n| valid_host(n)) {
+            return Err("at most 16 names, each a host name or address");
+        }
+        Ok(())
+    }
+}
 
 pub struct Coordinator {
     pool: SqlitePool,
     join_token: String,
+    joins: Limit,
+    reads: Limit,
+    changes: Limit,
 }
 
 type Shared = Arc<Coordinator>;
@@ -74,9 +214,47 @@ impl Coordinator {
         let options = SqliteConnectOptions::new().filename(path).create_if_missing(true).foreign_keys(true);
         let pool = SqlitePool::connect_with(options).await?;
         sqlx::migrate!("./migrations").run(&pool).await?;
-        let c = Self { pool, join_token };
+        let c = Self {
+            pool,
+            join_token,
+            // Per address: joins (the token is guessed at nowhere near this rate) and the
+            // public reads; per server: changes.
+            joins: Limit::new(10),
+            reads: Limit::new(600),
+            changes: Limit::new(2000),
+        };
         c.claim_linked_names().await?;
         Ok(c)
+    }
+
+    /// Releases names claimed for accounts that never linked (a registration
+    /// that failed, or someone claiming names they don't use). Run now and then.
+    pub async fn sweep(&self) -> sqlx::Result<u64> {
+        let done = sqlx::query(
+            "DELETE FROM names WHERE claimed_at < ?
+               AND NOT EXISTS (SELECT 1 FROM links l WHERE l.global_id = names.global_id AND lower(l.username) = names.name_key)",
+        )
+        .bind(identity::now() - CLAIM_GRACE_SECS)
+        .execute(&self.pool)
+        .await?;
+        Ok(done.rows_affected())
+    }
+
+    /// Removes a member server: its links, and names only it used. For the
+    /// operator (`coordinator remove-server`).
+    pub async fn remove_server(&self, server_id: &str) -> sqlx::Result<bool> {
+        let done = sqlx::query("DELETE FROM servers WHERE id = ?").bind(server_id).execute(&self.pool).await?;
+        self.sweep().await?;
+        Ok(done.rows_affected() > 0)
+    }
+
+    /// Whether `host` is one of `server`'s names.
+    async fn owns_host(&self, server: &str, host: &str) -> sqlx::Result<bool> {
+        let owner: Option<String> = sqlx::query_scalar("SELECT server_id FROM server_names WHERE name = ?")
+            .bind(identity::host_key(host))
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(owner.as_deref() == Some(server))
     }
 
     /// Reserves the names of accounts linked before names were reserved,
@@ -92,12 +270,17 @@ impl Coordinator {
     /// Claims `name` for `global_id` unless someone else has it. Returns
     /// whether it's theirs now.
     async fn claim(&self, global_id: &str, name: &str, now: i64) -> sqlx::Result<bool> {
+        self.claim_for(global_id, name, now, None).await
+    }
+
+    async fn claim_for(&self, global_id: &str, name: &str, now: i64, server: Option<&str>) -> sqlx::Result<bool> {
         let key = identity::name_key(name);
-        sqlx::query("INSERT OR IGNORE INTO names (name_key, name, global_id, claimed_at) VALUES (?, ?, ?, ?)")
+        sqlx::query("INSERT OR IGNORE INTO names (name_key, name, global_id, claimed_at, server_id) VALUES (?, ?, ?, ?, ?)")
             .bind(&key)
             .bind(name.trim())
             .bind(global_id)
             .bind(now)
+            .bind(server)
             .execute(&self.pool)
             .await?;
         Ok(self.owner(&key).await?.as_deref() == Some(global_id))
@@ -132,6 +315,7 @@ impl Coordinator {
             .route("/v1/relations/{global_id}", get(relations))
             .route("/v1/names/claim", post(claim_name))
             .route("/v1/names/{name}", get(name_owner))
+            .layer(DefaultBodyLimit::max(MAX_BODY))
             .with_state(self)
     }
 
@@ -166,14 +350,18 @@ impl Coordinator {
         let now = identity::now();
         let result: Result<Value, String> = match change["op"].as_str().unwrap_or_default() {
             "link" => {
-                let (global_id, username, signature) = (text("global_id"), text("username"), text("signature"));
+                let (global_id, username, signature, host) = (text("global_id"), text("username"), text("signature"), text("host"));
                 let time = change["time"].as_i64().unwrap_or_default();
-                if !identity::is_global_id(&global_id) {
-                    return Err("not an identity".into());
+                if !identity::is_global_id(&global_id) || !valid_name(&username) {
+                    return Err("not an identity, or not a name".into());
+                }
+                // Signed for a host this server goes by: not for another server's.
+                if !self.owns_host(server, &host).await.map_err(|e| e.to_string())? {
+                    return Err(format!("{host} isn't one of this server's names"));
                 }
                 // The server checked the time when the player linked; a change may arrive
                 // hours later, after an outage, so only the signature is checked here.
-                if !identity::verify(&global_id, &identity::link_message(server, &username, time), &signature) {
+                if !identity::verify(&global_id, &identity::link_message(&host, &username, time), &signature) {
                     return Err("the player's signature doesn't match".into());
                 }
                 let mut tx = self.pool.begin().await.map_err(|e| e.to_string())?;
@@ -307,13 +495,26 @@ struct JoinRequest {
     server_id: String,
 }
 
-async fn join(State(c): State<Shared>, Json(req): Json<JoinRequest>) -> Answer {
+async fn join(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap, Json(req): Json<JoinRequest>) -> Answer {
+    if !c.joins.check(&client_ip(peer, &headers).to_string()) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "too many attempts; try again in a minute");
+    }
     if c.join_token.is_empty() || !same_secret(req.token.trim(), &c.join_token) {
         return fail(StatusCode::FORBIDDEN, "wrong join token");
     }
     let id = req.server_id.trim();
     if id.is_empty() || id.len() > 64 || !id.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '-') {
         return fail(StatusCode::BAD_REQUEST, "server ids are up to 64 letters, digits and -");
+    }
+    // An id that already joined is that server's: a new secret for it needs its current one
+    // (the token alone would let any holder take over any member, whose ids are public).
+    let exists: Option<String> = match sqlx::query_scalar("SELECT id FROM servers WHERE id = ?").bind(id).fetch_optional(&c.pool).await {
+        Ok(r) => r,
+        Err(e) => return internal(e),
+    };
+    if exists.is_some() && c.server(&headers).await.ok().as_deref() != Some(id) {
+        tracing::warn!("refused a join as the existing server {id}");
+        return fail(StatusCode::CONFLICT, "that server id has joined already; joining again needs its current secret (or the operator removes it)");
     }
     let mut bytes = [0u8; 32];
     rand::RngCore::fill_bytes(&mut rand::rng(), &mut bytes);
@@ -338,15 +539,32 @@ async fn join(State(c): State<Shared>, Json(req): Json<JoinRequest>) -> Answer {
     }
 }
 
-async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, Json(listing): Json<Value>) -> Answer {
+async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, Json(listing): Json<Listing>) -> Answer {
     let server = match c.server(&headers).await {
         Ok(s) => s,
         Err(e) => return e,
     };
-    let text = listing.to_string();
-    if text.len() > 4096 {
-        return fail(StatusCode::PAYLOAD_TOO_LARGE, "listing too large");
+    if let Err(why) = listing.check() {
+        return fail(StatusCode::BAD_REQUEST, why);
     }
+    // Its names, first come, first served: a name another server has stays theirs.
+    for name in listing.names.iter().chain([&listing.host]) {
+        let key = identity::host_key(name);
+        let owner: Result<Option<String>, _> = async {
+            sqlx::query("INSERT OR IGNORE INTO server_names (name, server_id) VALUES (?, ?)").bind(&key).bind(&server).execute(&c.pool).await?;
+            sqlx::query_scalar("SELECT server_id FROM server_names WHERE name = ?").bind(&key).fetch_optional(&c.pool).await
+        }
+        .await;
+        match owner {
+            Ok(Some(owner)) if owner != server => tracing::warn!("server {server} says it's {key}, which is {owner}'s; ignored"),
+            Ok(_) => {}
+            Err(e) => return internal(e),
+        }
+    }
+    let text = match serde_json::to_string(&listing) {
+        Ok(t) => t,
+        Err(e) => return internal(e),
+    };
     match sqlx::query("UPDATE servers SET listing = ?, last_seen = ? WHERE id = ?")
         .bind(text)
         .bind(identity::now())
@@ -361,7 +579,10 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, Json(listing): J
 
 /// The directory: servers that are listed and have sent a heartbeat lately,
 /// most players online first.
-async fn servers(State(c): State<Shared>) -> Answer {
+async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap) -> Answer {
+    if !c.reads.check(&client_ip(peer, &headers).to_string()) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "too many requests");
+    }
     let since = identity::now() - i64::try_from(LISTED_FOR.as_secs()).unwrap_or(120);
     let rows: Vec<(String, Option<String>, Option<i64>)> = match sqlx::query_as("SELECT id, listing, last_seen FROM servers WHERE last_seen >= ?")
         .bind(since)
@@ -376,7 +597,7 @@ async fn servers(State(c): State<Shared>) -> Answer {
         .into_iter()
         .filter_map(|(id, listing, last_seen)| {
             let mut v: Value = serde_json::from_str(&listing?).ok()?;
-            if !v["listed"].as_bool().unwrap_or(true) {
+            if !v.is_object() || !v["listed"].as_bool().unwrap_or(true) {
                 return None;
             }
             v["id"] = json!(id);
@@ -396,6 +617,9 @@ async fn changes(State(c): State<Shared>, headers: HeaderMap, Json(body): Json<V
     let list = body["changes"].as_array().cloned().unwrap_or_default();
     if list.len() > MAX_CHANGES {
         return fail(StatusCode::PAYLOAD_TOO_LARGE, "too many changes at once");
+    }
+    if !(0..list.len()).all(|_| c.changes.check(&server)) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "too many changes; slow down");
     }
     let mut results = Vec::with_capacity(list.len());
     for change in &list {
@@ -455,6 +679,9 @@ async fn relations(State(c): State<Shared>, headers: HeaderMap, Path(global_id):
 struct ClaimRequest {
     name: String,
     global_id: String,
+    /// The host the player signed (one of the calling server's names).
+    #[serde(default)]
+    host: String,
     time: i64,
     /// The player's link signature for this name on the calling server.
     signature: String,
@@ -467,10 +694,34 @@ async fn claim_name(State(c): State<Shared>, headers: HeaderMap, Json(req): Json
         Ok(s) => s,
         Err(e) => return e,
     };
-    if !identity::is_global_id(&req.global_id) || !identity::verify(&req.global_id, &identity::link_message(&server, &req.name, req.time), &req.signature) {
+    if !valid_name(&req.name) {
+        return fail(StatusCode::BAD_REQUEST, "not a name");
+    }
+    match c.owns_host(&server, &req.host).await {
+        Ok(true) => {}
+        Ok(false) => return fail(StatusCode::FORBIDDEN, "that host isn't one of this server's names"),
+        Err(e) => return internal(e),
+    }
+    if !identity::is_global_id(&req.global_id) || !identity::verify(&req.global_id, &identity::link_message(&req.host, &req.name, req.time), &req.signature) {
         return fail(StatusCode::FORBIDDEN, "the player's signature doesn't match");
     }
-    match c.claim(&req.global_id, &req.name, identity::now()).await {
+    // A server can't reserve names by the thousand for identities that never link.
+    let unlinked: i64 = match sqlx::query_scalar(
+        "SELECT COUNT(*) FROM names n WHERE n.server_id = ? AND n.claimed_at > ?
+           AND NOT EXISTS (SELECT 1 FROM links l WHERE l.global_id = n.global_id AND lower(l.username) = n.name_key)",
+    )
+    .bind(&server)
+    .bind(identity::now() - 3600)
+    .fetch_one(&c.pool)
+    .await
+    {
+        Ok(n) => n,
+        Err(e) => return internal(e),
+    };
+    if unlinked >= MAX_UNLINKED_CLAIMS_PER_HOUR {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "too many names claimed and not used; try later");
+    }
+    match c.claim_for(&req.global_id, &req.name, identity::now(), Some(&server)).await {
         Ok(true) => ok(json!({})),
         Ok(false) => fail(StatusCode::CONFLICT, "that name belongs to another player on the servers sharing friends"),
         Err(e) => internal(e),
@@ -483,7 +734,8 @@ async fn name_owner(State(c): State<Shared>, headers: HeaderMap, Path(name): Pat
         return e;
     }
     match c.owner(&identity::name_key(&name)).await {
-        Ok(owner) => ok(json!({ "claimed": owner.is_some(), "global_id": owner })),
+        // Whether it's taken; whose, no member needs to know.
+        Ok(owner) => ok(json!({ "claimed": owner.is_some() })),
         Err(e) => internal(e),
     }
 }

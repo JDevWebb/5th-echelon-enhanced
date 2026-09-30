@@ -424,11 +424,22 @@ fn main() -> color_eyre::Result<()> {
         threads.push(handle.unwrap());
     }
 
+    // The names players reach this server by: what their identity signatures must name.
+    federation::set_own_names(
+        config
+            .public
+            .host
+            .iter()
+            .cloned()
+            .chain([relay_ip.to_string(), String::from("127.0.0.1"), String::from("localhost")])
+            .chain(config.public.aliases.iter().cloned()),
+    );
     // What the coordinator's server directory shows about this server.
     let listing = {
         let host = config.public.host.clone().unwrap_or_else(|| relay_ip.to_string());
         let federation_config = federation_config.clone();
         move || federation::Listing {
+            names: federation::own_names().into_iter().filter(|n| n != "127.0.0.1" && n != "localhost").collect(),
             name: if federation_config.name.is_empty() { host.clone() } else { federation_config.name.clone() },
             region: federation_config.region.clone(),
             listed: federation_config.listed,

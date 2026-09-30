@@ -179,6 +179,10 @@ pub struct FederationConfig {
     /// Whether to appear in the server directory (friends sync either way).
     #[serde(default = "enabled")]
     pub listed: bool,
+    /// Allow a plain `http://` coordinator on another machine. Only for
+    /// tests on a private network: the server's secret travels readable.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_http: bool,
 }
 
 impl Default for FederationConfig {
@@ -189,6 +193,7 @@ impl Default for FederationConfig {
             name: String::new(),
             region: String::new(),
             listed: true,
+            allow_http: false,
         }
     }
 }
@@ -313,6 +318,12 @@ pub struct PublicConfig {
     /// A proxy on this machine (loopback) is always trusted.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub proxies: Vec<String>,
+    /// Other names or addresses players reach this server by (a LAN
+    /// address, a second domain). Players' identity signatures name the
+    /// host they typed; the server accepts its `host`, its public address
+    /// and these.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub aliases: Vec<String>,
 }
 
 impl PublicConfig {
@@ -594,6 +605,7 @@ mod tests {
             content: Some(80),
             nat: Some(31128),
             proxies: vec![],
+            aliases: vec![],
         };
         cfg.apply_public();
         let text = toml::to_string(&cfg).unwrap();
