@@ -16,6 +16,7 @@ members = [
   "tools/storm_parser",
   # "tools/wireshark-dissector",
   "launcher",
+  "nat_proto",
   "setup",
   "tools/umd_browser",
   "tools/testbot",

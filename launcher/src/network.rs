@@ -4,6 +4,7 @@
 //! and defines a common `Error` enum for all network operations.
 
 mod discover;
+mod nat;
 mod quazal;
 mod rpc;
 
@@ -13,6 +14,7 @@ pub const QUAZAL_DEFAULT_LOCAL_PORT: u16 = 3074;
 
 // Re-export public functions from submodules.
 pub use discover::try_locate_server;
+pub use nat::test_nat_helper;
 pub use quazal::test_p2p;
 pub use quazal::test_quazal_login;
 pub use rpc::register;

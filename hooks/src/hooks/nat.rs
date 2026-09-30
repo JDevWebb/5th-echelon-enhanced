@@ -1,0 +1,526 @@
+//! Playing over the internet without a VPN.
+//!
+//! Matches run peer to peer on Storm's socket (UDP 13000), and the game
+//! advertises its local address, which only works on a LAN. To learn its
+//! public address, the game sends a Quazal NAT echo that the server never
+//! answered, so it gave up and stayed local.
+//!
+//! This module:
+//! - probes the server's NAT helper **from Storm's socket** (so the helper
+//!   sees that socket's public mapping), keeps probing as a keepalive, and
+//!   compares the mapping seen on a second port to spot symmetric NATs;
+//! - answers the game's NAT echo itself, by handing the game's own reply
+//!   parser the address to advertise, so the game advertises it everywhere
+//!   (its station URLs, its peer ids and its NAT probes);
+//! - wraps game packets for relay addresses (and all of them, for a relayed
+//!   player) for the helper, and unwraps relayed packets so the game sees
+//!   them coming from the sender's advertised address;
+//! - asks the router to forward the port (`portmap`).
+//!
+//! The protocol is in the `nat_proto` crate; the server side is
+//! `dedicated_server/src/nat_helper.rs`.
+
+use std::cell::RefCell;
+use std::ffi::c_void;
+use std::net::Ipv4Addr;
+use std::net::SocketAddrV4;
+use std::net::ToSocketAddrs;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::sync::Mutex;
+use std::sync::OnceLock;
+use std::time::Duration;
+use std::time::Instant;
+
+use nat_proto::probe_flags;
+use nat_proto::reply_flags;
+use nat_proto::Message;
+use retour::static_detour;
+use tracing::info;
+use tracing::warn;
+use windows::core::s;
+use windows::Win32::System::LibraryLoader::GetProcAddress;
+use windows::Win32::System::LibraryLoader::LoadLibraryA;
+
+use crate::addresses::Addresses;
+use crate::config::Config;
+use crate::config::Hook;
+use crate::config::NatMode;
+
+static_detour! {
+    static BindHook: unsafe extern "system" fn(usize, *const u8, i32) -> i32;
+    static SendToHook: unsafe extern "system" fn(usize, *const u8, i32, i32, *const u8, i32) -> i32;
+    static RecvFromHook: unsafe extern "system" fn(usize, *mut u8, i32, i32, *mut u8, *mut i32) -> i32;
+    static EchoSendHook: unsafe extern "thiscall" fn(*mut c_void);
+}
+
+/// The game's NAT reply parser: `this` = the NAT engine, the sender's
+/// address object, the message, its length.
+type ParseFn = unsafe extern "thiscall" fn(*mut c_void, *mut c_void, *const u8, u32);
+
+const AF_INET: u16 = 2;
+const PROBE_INTERVAL: Duration = Duration::from_millis(500);
+const KEEPALIVE: Duration = Duration::from_secs(20);
+/// How long to wait for the second port's answer before trusting the first.
+const DETECT_WAIT: Duration = Duration::from_millis(1500);
+
+/// No socket yet.
+const NO_SOCKET: usize = usize::MAX;
+static STORM_SOCKET: AtomicUsize = AtomicUsize::new(NO_SOCKET);
+static LOG_PACKETS: AtomicBool = AtomicBool::new(false);
+static PARSE: OnceLock<usize> = OnceLock::new();
+
+#[derive(Debug, Clone, Copy)]
+struct Reply {
+    observed: SocketAddrV4,
+    advertise: SocketAddrV4,
+    relayed: bool,
+    relay_ip: Ipv4Addr,
+    relay_ports: (u16, u16),
+}
+
+#[derive(Debug, Default)]
+struct State {
+    mode: Option<NatMode>,
+    name: String,
+    server: Option<SocketAddrV4>,
+    second: Option<SocketAddrV4>,
+    reply: Option<Reply>,
+    first_reply_at: Option<Instant>,
+    second_observed: Option<SocketAddrV4>,
+    symmetric: bool,
+    mapping: Option<SocketAddrV4>,
+    last_probe: Option<Instant>,
+    nonce: u32,
+    told_game: Option<SocketAddrV4>,
+    echo_requests: u32,
+}
+
+static STATE: Mutex<State> = Mutex::new(State {
+    mode: None,
+    name: String::new(),
+    server: None,
+    second: None,
+    reply: None,
+    first_reply_at: None,
+    second_observed: None,
+    symmetric: false,
+    mapping: None,
+    last_probe: None,
+    nonce: 0,
+    told_game: None,
+    echo_requests: 0,
+});
+
+fn state() -> std::sync::MutexGuard<'static, State> {
+    STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// One line for the overlay: how other players reach this PC.
+pub fn status() -> Option<String> {
+    let st = state();
+    let mode = st.mode?;
+    if mode == NatMode::Off {
+        return Some("Local address only (NAT traversal is off)".into());
+    }
+    let Some(r) = st.reply else {
+        return Some(
+            if st.server.is_some() {
+                "Asking the server for this PC's public address..."
+            } else {
+                "The server's NAT helper isn't known"
+            }
+            .into(),
+        );
+    };
+    Some(if r.relayed {
+        format!("Through the server's relay ({})", r.advertise)
+    } else if st.mapping.is_some_and(|m| m == r.advertise) {
+        format!("Direct, router port opened ({})", r.advertise)
+    } else {
+        format!("Direct ({}){}", r.advertise, if st.symmetric { ", strict NAT" } else { "" })
+    })
+}
+
+/// The router's port mapping for the Storm port, from `portmap`.
+pub(crate) fn set_mapping(mapping: Option<SocketAddrV4>) {
+    let mut st = state();
+    if st.mapping != mapping {
+        st.mapping = mapping;
+        // Tell the helper straight away.
+        st.last_probe = None;
+    }
+}
+
+fn read_addr(sa: *const u8) -> Option<SocketAddrV4> {
+    if sa.is_null() {
+        return None;
+    }
+    // SOCKADDR_IN: family (u16, native), port (big-endian), address, zero.
+    let bytes = unsafe { std::slice::from_raw_parts(sa, 8) };
+    if u16::from_ne_bytes([bytes[0], bytes[1]]) != AF_INET {
+        return None;
+    }
+    Some(SocketAddrV4::new(
+        Ipv4Addr::new(bytes[4], bytes[5], bytes[6], bytes[7]),
+        u16::from_be_bytes([bytes[2], bytes[3]]),
+    ))
+}
+
+fn sockaddr(addr: SocketAddrV4) -> [u8; 16] {
+    let mut sa = [0u8; 16];
+    sa[0..2].copy_from_slice(&AF_INET.to_ne_bytes());
+    sa[2..4].copy_from_slice(&addr.port().to_be_bytes());
+    sa[4..8].copy_from_slice(&addr.ip().octets());
+    sa
+}
+
+fn send_raw(socket: usize, data: &[u8], to: SocketAddrV4) -> i32 {
+    let sa = sockaddr(to);
+    unsafe { SendToHook.call(socket, data.as_ptr(), data.len() as i32, 0, sa.as_ptr(), sa.len() as i32) }
+}
+
+fn is_relay_address(r: &Reply, addr: SocketAddrV4) -> bool {
+    *addr.ip() == r.relay_ip && (r.relay_ports.0..=r.relay_ports.1).contains(&addr.port())
+}
+
+fn to_hex(data: &[u8]) -> String {
+    data.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+thread_local! {
+    static WRAP: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(2048));
+}
+
+fn bind(s: usize, name: *const u8, namelen: i32) -> i32 {
+    let res = unsafe { BindHook.call(s, name, namelen) };
+    if res == 0 {
+        if let Some(addr) = read_addr(name) {
+            if addr.port() == nat_proto::STORM_PORT {
+                let old = STORM_SOCKET.swap(s, Ordering::SeqCst);
+                if old != s {
+                    info!("NAT: Storm socket bound on {addr}");
+                    let mut st = state();
+                    st.reply = None;
+                    st.first_reply_at = None;
+                    st.second_observed = None;
+                    st.symmetric = false;
+                    st.last_probe = None;
+                }
+            }
+        }
+    }
+    res
+}
+
+fn sendto(s: usize, buf: *const u8, len: i32, flags: i32, to: *const u8, tolen: i32) -> i32 {
+    if s == STORM_SOCKET.load(Ordering::Relaxed) && !buf.is_null() && len > 0 {
+        let data = unsafe { std::slice::from_raw_parts(buf, len as usize) };
+        let dest = read_addr(to);
+        if LOG_PACKETS.load(Ordering::Relaxed) {
+            info!("sendto {dest:?}: {}", to_hex(data));
+        }
+        if let Some(dest) = dest {
+            let relay = {
+                let st = state();
+                match (st.reply, st.server) {
+                    (Some(r), Some(server)) if dest != server && (r.relayed || is_relay_address(&r, dest)) => Some(server),
+                    _ => None,
+                }
+            };
+            if let Some(server) = relay {
+                if data.len() > nat_proto::MAX_PAYLOAD {
+                    warn!("NAT: a {}-byte game packet is too big for the relay", data.len());
+                } else {
+                    let res = WRAP.with(|w| {
+                        let mut w = w.borrow_mut();
+                        nat_proto::encode_data_to(&mut w, dest, data);
+                        send_raw(s, &w, server)
+                    });
+                    return if res < 0 { res } else { len };
+                }
+            }
+        }
+    }
+    unsafe { SendToHook.call(s, buf, len, flags, to, tolen) }
+}
+
+fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen: *mut i32) -> i32 {
+    // A peek leaves the packet queued; consuming NAT messages then would
+    // loop on the same one.
+    const MSG_PEEK: i32 = 2;
+    if s != STORM_SOCKET.load(Ordering::Relaxed) || buf.is_null() || flags & MSG_PEEK != 0 {
+        return unsafe { RecvFromHook.call(s, buf, len, flags, from, fromlen) };
+    }
+    // The sender is needed to trust NAT messages, even if the game doesn't
+    // ask for it.
+    let mut own_from = [0u8; 16];
+    let mut own_len = own_from.len() as i32;
+    let (from_ptr, len_ptr) = if from.is_null() || fromlen.is_null() {
+        (own_from.as_mut_ptr(), &mut own_len as *mut i32)
+    } else {
+        (from, fromlen)
+    };
+    loop {
+        let n = unsafe { RecvFromHook.call(s, buf, len, flags, from_ptr, len_ptr) };
+        if n <= 0 {
+            return n;
+        }
+        let data = unsafe { std::slice::from_raw_parts_mut(buf, n as usize) };
+        let sender = read_addr(from_ptr);
+        if !nat_proto::is_nat_message(data) {
+            if LOG_PACKETS.load(Ordering::Relaxed) {
+                info!("recvfrom {sender:?}: {}", to_hex(data));
+            }
+            return n;
+        }
+        let (server, second) = {
+            let st = state();
+            (st.server, st.second)
+        };
+        if sender.is_none() || (sender != server && sender != second) {
+            // Not from our server: never let it reach the game.
+            continue;
+        }
+        if let Some((relayed_from, offset)) = nat_proto::data_from(data) {
+            if sender != server {
+                continue;
+            }
+            let payload = data.len() - offset;
+            data.copy_within(offset.., 0);
+            if !from.is_null() && !fromlen.is_null() {
+                let sa = sockaddr(relayed_from);
+                unsafe {
+                    std::ptr::copy_nonoverlapping(sa.as_ptr(), from, sa.len().min(*fromlen as usize));
+                    *fromlen = sa.len() as i32;
+                }
+            }
+            if LOG_PACKETS.load(Ordering::Relaxed) {
+                info!("recvfrom {relayed_from} (relayed): {}", to_hex(&data[..payload]));
+            }
+            return payload as i32;
+        }
+        if let Some(Message::ProbeReply {
+            observed,
+            advertise,
+            flags,
+            relay_ip,
+            relay_ports,
+            ..
+        }) = Message::decode(data)
+        {
+            on_reply(sender == second, observed, advertise, flags, relay_ip, relay_ports);
+        }
+    }
+}
+
+fn on_reply(from_second: bool, observed: SocketAddrV4, advertise: SocketAddrV4, flags: u8, relay_ip: Ipv4Addr, relay_ports: (u16, u16)) {
+    let mut st = state();
+    if from_second {
+        if st.second_observed.is_none() {
+            st.second_observed = Some(observed);
+            if let Some(r) = st.reply {
+                if r.observed.port() != observed.port() && !st.symmetric {
+                    info!("NAT: the router gives each destination its own port ({} vs {observed}): asking for the relay", r.observed);
+                    st.symmetric = true;
+                    st.last_probe = None;
+                }
+            }
+        }
+        return;
+    }
+    let reply = Reply {
+        observed,
+        advertise,
+        relayed: flags & reply_flags::RELAYED != 0,
+        relay_ip,
+        relay_ports,
+    };
+    let changed = st.reply.is_none_or(|r| r.advertise != reply.advertise || r.relayed != reply.relayed);
+    if st.first_reply_at.is_none() {
+        st.first_reply_at = Some(Instant::now());
+    }
+    if let (Some(second), false) = (st.second_observed, st.symmetric) {
+        if second.port() != observed.port() {
+            st.symmetric = true;
+            st.last_probe = None;
+        }
+    }
+    st.reply = Some(reply);
+    if changed {
+        info!(
+            "NAT: this PC is {observed} to the server; advertising {advertise}{}",
+            if reply.relayed { " (through the server's relay)" } else { "" }
+        );
+        if st.told_game.is_some_and(|t| t != advertise) {
+            warn!("NAT: the game already advertises {:?}; the server corrects it where it can", st.told_game);
+        }
+    }
+}
+
+/// The address to give the game, once the helper answered and the check
+/// for a symmetric NAT is done (or took too long).
+fn ready_address(st: &State) -> Option<SocketAddrV4> {
+    let r = st.reply?;
+    let detect_done = st.second_observed.is_some() || st.symmetric || st.first_reply_at.is_some_and(|t| t.elapsed() > DETECT_WAIT);
+    // A symmetric NAT waits for the relay address.
+    if st.symmetric && !r.relayed && st.mode != Some(NatMode::Off) && st.last_probe.is_none_or(|t| t.elapsed() < Duration::from_secs(3)) {
+        return None;
+    }
+    detect_done.then_some(r.advertise)
+}
+
+fn echo_send(engine: *mut c_void) {
+    let (address, first) = {
+        let mut st = state();
+        st.echo_requests += 1;
+        (ready_address(&st), st.echo_requests == 1)
+    };
+    if first {
+        info!("NAT: the game asks for its public address");
+    }
+    let (Some(address), Some(&parse)) = (address, PARSE.get()) else {
+        // Not known (yet): let the game try; it retries every 250 ms.
+        unsafe { EchoSendHook.call(engine) };
+        return;
+    };
+    // The reply the game's NAT echo expects: type 2, then the station URL.
+    let mut msg = vec![2u8];
+    msg.extend_from_slice(nat_proto::station_url(address).as_bytes());
+    msg.push(0);
+    // The sender's address object; only read for other message types.
+    let mut sender = [0u8; 0x100];
+    unsafe {
+        let parse: ParseFn = std::mem::transmute(parse);
+        parse(engine, sender.as_mut_ptr().cast(), msg.as_ptr(), msg.len() as u32);
+    }
+    let mut st = state();
+    if st.told_game != Some(address) {
+        info!("NAT: told the game to advertise {address}");
+        st.told_game = Some(address);
+    }
+}
+
+fn resolve(host: &str, port: u16) -> Option<SocketAddrV4> {
+    (host, port).to_socket_addrs().ok()?.find_map(|a| match a {
+        std::net::SocketAddr::V4(v4) => Some(v4),
+        std::net::SocketAddr::V6(_) => None,
+    })
+}
+
+/// Probes the helper while Storm's socket is open: every 500 ms until it
+/// answers, then every 20 s to keep the router's mapping (and the relay)
+/// alive.
+fn worker(host: String, port: u16) {
+    let mut last_resolve: Option<Instant> = None;
+    loop {
+        std::thread::sleep(Duration::from_millis(100));
+        let socket = STORM_SOCKET.load(Ordering::Relaxed);
+        if socket == NO_SOCKET {
+            continue;
+        }
+        let needs_resolve = state().server.is_none();
+        if needs_resolve {
+            if last_resolve.is_some_and(|t| t.elapsed() < Duration::from_secs(10)) {
+                continue;
+            }
+            last_resolve = Some(Instant::now());
+            match resolve(&host, port) {
+                Some(server) => {
+                    info!("NAT: the server's NAT helper is {server}");
+                    let mut st = state();
+                    st.server = Some(server);
+                    st.second = Some(SocketAddrV4::new(*server.ip(), port.wrapping_add(1)));
+                }
+                None => {
+                    warn!("NAT: can't resolve {host}");
+                    continue;
+                }
+            }
+        }
+        let probes = {
+            let mut st = state();
+            let interval = if st.reply.is_some() { KEEPALIVE } else { PROBE_INTERVAL };
+            if st.last_probe.is_some_and(|t| t.elapsed() < interval) {
+                continue;
+            }
+            st.last_probe = Some(Instant::now());
+            st.nonce = st.nonce.wrapping_add(1);
+            let mut flags = 0;
+            if st.mode == Some(NatMode::Relay) {
+                flags |= probe_flags::WANT_RELAY;
+            }
+            if st.symmetric {
+                flags |= probe_flags::SYMMETRIC;
+            }
+            if st.mapping.is_some() {
+                flags |= probe_flags::HAS_MAPPING;
+            }
+            let probe = |flags| {
+                Message::Probe {
+                    flags,
+                    nonce: st.nonce,
+                    mapping: st.mapping,
+                    name: st.name.clone(),
+                }
+                .encode()
+            };
+            let mut probes = vec![(probe(flags), st.server)];
+            if st.second_observed.is_none() {
+                probes.push((probe(flags | probe_flags::SECOND_PORT), st.second));
+            }
+            probes
+        };
+        for (data, to) in probes {
+            if let Some(to) = to {
+                send_raw(socket, &data, to);
+            }
+        }
+    }
+}
+
+pub unsafe fn init_hooks(config: &Config, addr: &Addresses) {
+    LOG_PACKETS.store(config.enable_all_hooks || config.enable_hooks.contains(&Hook::StormPackets), Ordering::Relaxed);
+    let mode = config.networking.nat;
+    {
+        let mut st = state();
+        st.mode = Some(mode);
+        st.name = config.user.username.clone();
+    }
+
+    if let Ok(lib) = LoadLibraryA(s!("ws2_32.dll")) {
+        super::hook!(BindHook, GetProcAddress(lib, s!("bind")), bind);
+        super::hook!(SendToHook, GetProcAddress(lib, s!("sendto")), sendto);
+        super::hook!(RecvFromHook, GetProcAddress(lib, s!("recvfrom")), recvfrom);
+    }
+
+    if mode == NatMode::Off {
+        info!("NAT: off; the game advertises its local address");
+        return;
+    }
+    let Some(host) = config.config_server.clone() else {
+        warn!("NAT: no server configured");
+        return;
+    };
+    match (addr.func_nat_echo_send, addr.func_nat_packet_parse) {
+        (Some(send), Some(parse)) => {
+            let _ = PARSE.set(parse);
+            super::hook!(EchoSendHook, Some(send), echo_send);
+        }
+        _ => warn!("NAT: this game version's NAT functions weren't found; the server corrects the address where it can"),
+    }
+    let port = config.networking.nat_port.unwrap_or(nat_proto::DEFAULT_PORT);
+    let _ = std::thread::Builder::new().name("fe-nat".into()).spawn(move || worker(host, port));
+    if config.networking.port_mapping {
+        super::portmap::start(config.networking.ip_address);
+    }
+}
+
+pub unsafe fn deinit_hooks() {
+    let _ = EchoSendHook.disable();
+    let _ = RecvFromHook.disable();
+    let _ = SendToHook.disable();
+    let _ = BindHook.disable();
+    super::portmap::stop();
+}

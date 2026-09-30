@@ -31,7 +31,9 @@ use crate::config::Hook;
 use crate::hooks::utils::SomeOrQuestionmark;
 
 mod datatypes;
+pub(crate) mod nat;
 mod nla;
+mod portmap;
 mod quazal;
 mod storm;
 mod utils;
@@ -716,6 +718,7 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
         hook!(GetAddrinfoHook, addr, getaddrinfo);
     }
 
+    nat::init_hooks(config, addr);
     storm::init_hooks(config, addr);
     nla::init_hooks();
     quazal::init_hooks(config, addr);
@@ -759,6 +762,7 @@ pub unsafe fn deinit(config: &Config) {
     disable_configurable_hook!(config, Hook::Thread, ThreadStarterHook);
     #[cfg(feature = "modding")]
     disable_configurable_hook!(config, Hook::OverridePackaged, ArcOpenFileHook);
+    nat::deinit_hooks();
     storm::deinit_hooks(config);
     quazal::deinit_hooks(config);
 }

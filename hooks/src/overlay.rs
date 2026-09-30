@@ -888,6 +888,7 @@ impl MyRenderLoop {
                 self.data.response_time.map_or_else(|| String::from("No answer"), |d| format!("{} ms", d.as_millis())),
             ),
             ("Server", server),
+            ("Other players reach you", crate::hooks::nat::status().unwrap_or_else(|| String::from("Not started yet"))),
             ("Game add-on", format!("{PRODUCT} {RELEASE}")),
         ];
         let x = ui.cursor_pos()[0];

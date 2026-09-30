@@ -1,0 +1,7 @@
+[package]
+name = "nat_proto"
+version = "0.3.0"
+edition = "2021"
+description = "The NAT helper protocol between the server and the game's hook"
+
+[dependencies]

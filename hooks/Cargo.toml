@@ -25,7 +25,9 @@ goblin = { workspace = true }
 hooks-addresses = { path = "hooks-addresses" }
 hooks-config = { path = "hooks-config" }
 hooks-proc = { path = "hooks-proc" }
+igd-next = "0.16"
 imgui = { workspace = true }
+nat_proto = { path = "../nat_proto" }
 region = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

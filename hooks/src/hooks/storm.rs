@@ -1,18 +1,10 @@
 use std::ffi::c_char;
-use std::ffi::c_int;
 use std::ffi::c_void;
 use std::ffi::CStr;
 
-use dll_syringe::function::FunctionPtr;
 use retour::static_detour;
 use tracing::info;
 use tracing::instrument;
-use windows::core::s;
-use windows::Win32::Foundation::FreeLibrary;
-use windows::Win32::Networking::WinSock::AF_INET;
-use windows::Win32::Networking::WinSock::SOCKADDR;
-use windows::Win32::System::LibraryLoader::GetProcAddress;
-use windows::Win32::System::LibraryLoader::LoadLibraryA;
 
 use crate::addresses::Addresses;
 use crate::config::Config;
@@ -21,18 +13,8 @@ use crate::config::Hook;
 static_detour! {
     static SomeEventHook: unsafe extern "thiscall" fn(*mut c_void, *mut c_void, *mut c_void) -> *mut c_void;
     static SomeEvent2Hook: unsafe extern "thiscall" fn(*mut c_void, *mut c_void, *mut c_void, *mut c_void, *mut c_void, *mut c_void) -> *mut c_void;
-    static SendToHook: unsafe extern "stdcall" fn(usize, *const c_char, c_int, c_int, *const SOCKADDR, c_int) -> c_int;
-    static RecvFromHook: unsafe extern "stdcall" fn(usize, *const c_char, c_int, c_int, *const SOCKADDR, *mut c_int) -> c_int;
     static EventMaybeQueuePopHook: unsafe extern "thiscall" fn(usize) -> *const  *const *const c_void;
     static EventHandlerHook: unsafe extern "thiscall" fn(*mut c_void,*mut c_void,*mut c_void,*mut c_void,*mut c_void,*mut c_void) -> usize;
-}
-
-fn to_hex_stream(data: &[u8]) -> String {
-    data.iter().fold(String::new(), |mut output, b| {
-        use std::fmt::Write;
-        let _ = write!(output, "{b:02x}");
-        output
-    })
 }
 
 fn deref_addr<'a, T>(addr: *const T) -> Option<&'a T> {
@@ -85,35 +67,6 @@ fn some_event2(this: *mut c_void, arg1: *mut c_void, arg2: *mut c_void, arg3: *m
     unsafe { SomeEvent2Hook.call(this, arg1, arg2, arg3, arg4, arg5) }
 }
 
-#[instrument(skip_all)]
-fn sendto(s: usize, buf: *const c_char, len: c_int, flag: c_int, to: *const SOCKADDR, tolen: c_int) -> c_int {
-    if let Some(to_ref) = unsafe { to.as_ref() } {
-        let port = 13000u16;
-        #[allow(clippy::cast_possible_truncation)]
-        if !buf.is_null() && to_ref.sa_family == AF_INET && to_ref.sa_data[0] == (port >> 8) as i8 && to_ref.sa_data[1] == port as i8 {
-            #[allow(clippy::cast_sign_loss)]
-            let data = unsafe { std::slice::from_raw_parts(buf.cast::<u8>(), len as usize) };
-            info!("sendto: {}", to_hex_stream(data));
-        }
-    }
-    unsafe { SendToHook.call(s, buf, len, flag, to, tolen) }
-}
-
-#[instrument(skip_all)]
-fn recvfrom(s: usize, buf: *const c_char, len: c_int, flag: c_int, from: *const SOCKADDR, fromlen: *mut c_int) -> c_int {
-    let outlen = unsafe { RecvFromHook.call(s, buf, len, flag, from, fromlen) };
-    if let Some(from_ref) = unsafe { from.as_ref() } {
-        let port = 13000u16;
-        #[allow(clippy::cast_possible_truncation)]
-        if !buf.is_null() && outlen > 0 && from_ref.sa_family == AF_INET && from_ref.sa_data[0] == (port >> 8) as i8 && from_ref.sa_data[1] == port as i8 {
-            #[allow(clippy::cast_sign_loss)]
-            let data = unsafe { std::slice::from_raw_parts(buf.cast::<u8>(), outlen as usize) };
-            info!("recvfrom: {}", to_hex_stream(data));
-        }
-    }
-    outlen
-}
-
 #[instrument]
 fn event_queue_pop(this: usize) -> *const *const *const c_void {
     let res = unsafe { EventMaybeQueuePopHook.call(this) };
@@ -141,15 +94,6 @@ pub unsafe fn init_hooks(config: &Config, addr: &Addresses) {
     super::configurable_hook!(config, Hook::StormEventDispatcher, SomeEvent2Hook; addr.func_storm_event_dispatch2 => some_event2);
     super::configurable_hook!(config, Hook::StormEventDispatcher, EventMaybeQueuePopHook; addr.func_storm_event_maybe_queue_pop => event_queue_pop);
     super::configurable_hook!(config, Hook::StormEventDispatcher, EventHandlerHook; addr.func_storm_event_handler => event_handler);
-    if let Ok(lib) = LoadLibraryA(s!("ws2_32.dll")) {
-        if let Some(sendto_addr) = GetProcAddress(lib, s!("sendto")) {
-            super::configurable_hook!(config, Hook::StormPackets, SendToHook; Some(sendto_addr.as_ptr())  => sendto);
-        }
-        if let Some(recvfrom_addr) = GetProcAddress(lib, s!("recvfrom")) {
-            super::configurable_hook!(config, Hook::StormPackets, RecvFromHook; Some(recvfrom_addr.as_ptr())  => recvfrom);
-        }
-        let _ = FreeLibrary(lib);
-    }
 }
 
 pub unsafe fn deinit_hooks(config: &Config) {
@@ -157,8 +101,6 @@ pub unsafe fn deinit_hooks(config: &Config) {
     super::disable_configurable_hook!(config, Hook::StormEventDispatcher, SomeEvent2Hook);
     super::disable_configurable_hook!(config, Hook::StormEventDispatcher, EventHandlerHook);
     super::disable_configurable_hook!(config, Hook::StormEventDispatcher, EventMaybeQueuePopHook);
-    super::disable_configurable_hook!(config, Hook::StormPackets, SendToHook);
-    super::disable_configurable_hook!(config, Hook::StormPackets, RecvFromHook);
 }
 
 #[cfg(test)]

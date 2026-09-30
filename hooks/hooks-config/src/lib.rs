@@ -344,7 +344,7 @@ pub struct SaveGame {
     pub name: String,
 }
 
-#[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub struct Networking {
     pub ip_address: Option<std::net::Ipv4Addr>,
@@ -354,11 +354,66 @@ pub struct Networking {
     /// other players, which makes their joins fail.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub require_adapter: bool,
+    /// Playing over the internet without a VPN; see [`NatMode`].
+    #[serde(default, skip_serializing_if = "NatMode::is_default")]
+    pub nat: NatMode,
+    /// Ask the router (UPnP, then NAT-PMP) to forward the game's
+    /// peer-to-peer port while the game runs.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub port_mapping: bool,
+    /// The server's NAT helper port (UDP, 21128 unless the server changed it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nat_port: Option<u16>,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+const fn is_true(b: &bool) -> bool {
+    *b
+}
+
+impl Default for Networking {
+    fn default() -> Self {
+        Self {
+            ip_address: None,
+            adapter: None,
+            require_adapter: false,
+            nat: NatMode::default(),
+            port_mapping: true,
+            nat_port: None,
+        }
+    }
 }
 
 impl Networking {
     pub fn is_default(&self) -> bool {
-        self.ip_address.is_none() && self.adapter.is_none() && !self.require_adapter
+        *self == Self::default()
+    }
+}
+
+/// How the game gets through the players' routers (NAT) to reach the others.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "PascalCase")]
+pub enum NatMode {
+    /// Ask the server's NAT helper for this PC's public address and advertise
+    /// it, so players can connect directly; go through the server's relay
+    /// when the router can't be punched through.
+    #[default]
+    Auto,
+    /// Always go through the server's relay. For routers direct connections
+    /// don't work with; adds a little latency.
+    Relay,
+    /// Advertise the local address only (the game's own behaviour): for LAN
+    /// and VPN play.
+    Off,
+}
+
+impl NatMode {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
     }
 }
 
@@ -821,6 +876,21 @@ HelpText = "Open Community Hub and check the server is online."
         let before = cfg.clone();
         toml::from_str::<Overrides>("").unwrap().apply(&mut cfg);
         assert_eq!(cfg, before);
+    }
+
+    #[test]
+    fn nat_settings_default_to_automatic_and_stay_out_of_the_file() {
+        let mut cfg = super::default();
+        assert_eq!(cfg.networking.nat, super::NatMode::Auto);
+        assert!(cfg.networking.port_mapping);
+        assert!(!toml::to_string(&cfg).unwrap().contains("Nat"), "defaults aren't written");
+        cfg.networking.nat = super::NatMode::Relay;
+        cfg.networking.port_mapping = false;
+        let text = toml::to_string(&cfg).unwrap();
+        let back: super::Config = toml::from_str(&text).unwrap();
+        assert_eq!((back.networking.nat, back.networking.port_mapping), (super::NatMode::Relay, false));
+        let old: super::Networking = toml::from_str("Adapter = \"Ethernet\"").unwrap();
+        assert_eq!((old.nat, old.port_mapping), (super::NatMode::Auto, true));
     }
 
     #[test]

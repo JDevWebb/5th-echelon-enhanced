@@ -21,6 +21,7 @@ goblin = { workspace = true, default-features = false, features = [
 ] }
 hooks-addresses = { path = "../hooks/hooks-addresses" }
 hooks-config = { path = "../hooks/hooks-config" }
+nat_proto = { path = "../nat_proto" }
 quazal = { path = "../quazal" }
 rand = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }

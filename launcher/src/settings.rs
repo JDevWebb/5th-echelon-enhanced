@@ -131,7 +131,7 @@ fn network(game: &mut Game, notices: &mut Notices, locked: bool, ctx: &egui::Con
     let adapters = setup::net::adapters();
     let pinned = game.cfg.hook_config.networking.adapter.clone();
     ui.label(theme::muted(
-        "Other players join you over the adapter the game uses. The setup pins the one your server is reached through.",
+        "The game uses one network adapter for matches. The setup pins the one your server is reached through.",
     ));
     ui.add_enabled_ui(!locked, |ui| {
         ui.horizontal(|ui| {
@@ -173,7 +173,44 @@ fn network(game: &mut Game, notices: &mut Notices, locked: bool, ctx: &egui::Con
         {
             game.update(notices, |c| c.hook_config.networking.require_adapter = require);
         }
+        ui.add_space(8.0);
+        internet_play(game, notices, ui);
     });
+}
+
+/// How other players reach this PC over the internet (NAT traversal).
+fn internet_play(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
+    use hooks_config::NatMode;
+    let networking = &game.cfg.hook_config.networking;
+    let (mut mode, mut port_mapping) = (networking.nat, networking.port_mapping);
+    let label = |m: NatMode| match m {
+        NatMode::Auto => "Automatic (recommended)",
+        NatMode::Relay => "Always through the server",
+        NatMode::Off => "LAN or VPN only",
+    };
+    ui.horizontal(|ui| {
+        ui.label("Internet play");
+        egui::ComboBox::from_id_salt("nat").selected_text(label(mode)).width(260.0).show_ui(ui, |ui| {
+            for m in [NatMode::Auto, NatMode::Relay, NatMode::Off] {
+                ui.selectable_value(&mut mode, m, label(m));
+            }
+        });
+    });
+    ui.label(theme::muted(match mode {
+        NatMode::Auto => "The server tells the game this PC's public address, so players connect directly; when your router can't be reached, play goes through the server.",
+        NatMode::Relay => "All match traffic goes through the server. Use it when direct connections fail; it adds a little delay.",
+        NatMode::Off => "The game advertises this PC's local address, as it always did: other players must be on your network or VPN.",
+    }));
+    ui.add_enabled_ui(mode != NatMode::Off, |ui| {
+        ui.checkbox(&mut port_mapping, "Open the game's port on the router (UPnP / NAT-PMP)")
+            .on_hover_text("Asks the router to forward UDP 13000 to this PC while the game runs, so other players can always reach you directly.");
+    });
+    if (mode, port_mapping) != (networking.nat, networking.port_mapping) {
+        game.update(notices, |c| {
+            c.hook_config.networking.nat = mode;
+            c.hook_config.networking.port_mapping = port_mapping;
+        });
+    }
 }
 
 fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
@@ -310,14 +347,15 @@ fn connection_test(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui
         return;
     };
     ui.label(theme::muted(
-        "Checks each part of the connection in turn: the server's config, its API, signing in to the game service, and whether the server can reach this PC directly.",
+        "Checks each part of the connection in turn: the server's config, its API, signing in to the game service, whether the server can reach this PC directly, and the server's helper for playing over the internet.",
     ));
     ui.horizontal(|ui| {
         if settings.tests.running() {
             ui.spinner();
             ui.label("Testing…");
         } else if ui.button("Run the test").clicked() {
-            settings.tests.start(ctx, move || run_tests(&profile));
+            let nat_port = game.cfg.hook_config.networking.nat_port;
+            settings.tests.start(ctx, move || run_tests(&profile, nat_port));
         }
     });
     for (name, result) in &settings.test_results {
@@ -334,7 +372,7 @@ fn connection_test(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui
     }
 }
 
-fn run_tests(profile: &setup::config::Profile) -> TestResults {
+fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>) -> TestResults {
     use crate::network;
     let rt = crate::services::rt();
     let api = profile.api_server_url().to_string();
@@ -352,6 +390,19 @@ fn run_tests(profile: &setup::config::Profile) -> TestResults {
     results.push(("API and account (port 50051)", run(Box::pin(network::test_login(api.clone(), user, pass)))));
     results.push(("Game service sign-in (port 21126)", run(Box::pin(network::test_quazal_login(&profile.server, user, pass)))));
     results.push(("Direct connection to this PC", run(Box::pin(network::test_p2p(api, user, pass)))));
+    let nat_port = game_nat_port.unwrap_or(nat_proto::DEFAULT_PORT);
+    let nat = match rt.block_on(async { tokio::time::timeout(t, network::test_nat_helper(&profile.server, nat_port)).await }) {
+        Ok(Ok(check)) => match check.symmetric {
+            Some(true) => Err(format!(
+                "reachable; this PC is {} to the server, and the router changes ports per destination, so matches go through the server's relay",
+                check.observed
+            )),
+            _ => Ok(()),
+        },
+        Ok(Err(e)) => Err(format!("{e} (UDP {nat_port}-{}): only LAN or VPN play works", nat_port + 1)),
+        Err(_) => Err(format!("no answer (UDP {nat_port}-{}): only LAN or VPN play works", nat_port + 1)),
+    };
+    results.push(("Internet play helper (port 21128)", nat));
     results
 }
 

@@ -77,6 +77,14 @@ pub struct Addresses {
     pub func_storm_event_handler: Option<Address>,
     pub func_another_gear_str_destructor: Option<Address>,
     pub func_open_file_from_archive: Option<Address>,
+
+    // NAT traversal (always on; not a configurable hook). The game's
+    // "what is my public address?" NAT echo send (thiscall, ECX = the NAT
+    // engine) and the NAT reply parser (thiscall: engine, sender, data, len).
+    #[serde(default)]
+    pub func_nat_echo_send: Option<Address>,
+    #[serde(default)]
+    pub func_nat_packet_parse: Option<Address>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -219,6 +227,8 @@ fn dx9_addresses() -> HashMap<[u8; 32], Addresses> {
         func_storm_event_handler: Some(0x020ca850),
         func_another_gear_str_destructor: Some(0x004c58a0),
         func_open_file_from_archive: Some(0x070_9040),
+        func_nat_echo_send: Some(0x02172770),
+        func_nat_packet_parse: Some(0x02178320),
     };
 
     let dx9_hashes = [
@@ -468,6 +478,8 @@ fn dx11_addresses() -> HashMap<[u8; 32], Addresses> {
         func_storm_event_handler: Some(0x20f1d40),
         func_another_gear_str_destructor: Some(0x41F630),
         func_open_file_from_archive: Some(0x45ab20),
+        func_nat_echo_send: Some(0x02199c60),
+        func_nat_packet_parse: Some(0x0219f810),
     };
     HashMap::from(dx11_hashes.map(|h| (h, dx11_addrs.clone())))
 }
@@ -679,6 +691,14 @@ static CMDLINE_PATTERN: LazyLock<Pattern> = LazyLock::new(|| {
     Pattern::from_str("68 ?? ?? ?? ?? E8 ?? ?? ?? ?? 83 C4 ?? A3 ?? ?? ?? ?? 3B FB 0F 85 ?? ?? ?? ?? 68 ?? ?? ?? ?? 8D 9? ?? ?? ?? ?? 53 52 C6 8? ?? ?? ?? ?? ??").unwrap()
 });
 
+static NAT_ECHO_SEND_PATTERN: LazyLock<Pattern> = LazyLock::new(|| {
+    Pattern::from_str("55 8B EC 83 EC 78 56 57 8B F1 33 FF 89 75 E8 ?? ?? ?? ?? 84 C7 01 00 00 8B 46 74 8B 08 8B 51 0C 53 8D 4D 88 89 55 EC E8").unwrap()
+});
+
+static NAT_PACKET_PARSE_PATTERN: LazyLock<Pattern> = LazyLock::new(|| {
+    Pattern::from_str("55 8B EC ?? ?? ?? ?? 00 00 56 57 89 4D E0 E8 ?? ?? ?? ?? 33 F6 3B C6 74 08 8B 48 ?? ?? ?? ?? 7D 05 89 75 E4 EB 06 8B 50").unwrap()
+});
+
 static HOOK_PATTERNS: LazyLock<Vec<(Hook, Vec<Pattern>)>> = LazyLock::new(|| {
     vec![
         (
@@ -863,6 +883,8 @@ pub fn search_patterns(filepath: &Path) -> Result<Addresses, Error> {
         func_storm_event_handler: None,
         func_another_gear_str_destructor: None,
         func_open_file_from_archive: None,
+        func_nat_echo_send: NAT_ECHO_SEND_PATTERN.search(&text_content).map(|idx| text_section.virtual_address as usize + image_base + idx),
+        func_nat_packet_parse: NAT_PACKET_PARSE_PATTERN.search(&text_content).map(|idx| text_section.virtual_address as usize + image_base + idx),
     };
 
     for (hook, patterns) in HOOK_PATTERNS.iter() {

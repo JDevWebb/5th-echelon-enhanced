@@ -624,7 +624,15 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             subnet
         });
         let sent: Vec<String> = request.station_urls.0.into_iter().map(|su| su.to_string()).collect();
-        let urls = station_urls_for_peers(sent.clone(), ci.address().ip(), trusted);
+        let mut urls = station_urls_for_peers(sent.clone(), ci.address().ip(), trusted);
+        // Outside the trusted network: the public address the NAT helper
+        // found, if the game still registered its local one.
+        if urls == sent {
+            let name = self.storage.find_username_by_user_id(user_id).ok().flatten();
+            if let Some(advertise) = name.and_then(|name| crate::nat_helper::advertised_for(&name, ci.address().ip())) {
+                urls = crate::nat_helper::urls_with_public_address(urls, advertise);
+            }
+        }
         if urls != sent {
             info!(logger, "station urls {:?} -> {:?} (the address this client connected from)", sent, urls);
         }

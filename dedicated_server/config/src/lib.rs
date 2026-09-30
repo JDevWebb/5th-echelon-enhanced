@@ -140,6 +140,78 @@ pub struct AdminConfig {
     pub enabled: bool,
 }
 
+/// How the NAT helper relays match traffic.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum RelayMode {
+    /// Never; players whose NAT can't be punched through can't join others.
+    Off,
+    /// Only players who need it: a NAT that changes ports per destination
+    /// (symmetric, most carrier-grade NAT), a player on this server's own
+    /// network without a router port mapping, or one who asked for it.
+    #[default]
+    Auto,
+    /// Every player. The most reliable, but all match traffic then goes
+    /// through this server (roughly 20-60 KB/s per player).
+    All,
+}
+
+/// The NAT helper: lets players join each other over the internet without a
+/// VPN. The game's hook asks it (from the game's peer-to-peer socket) for
+/// its public address, and it relays match traffic for players whose NAT
+/// can't be punched through. Players need UDP `listen`'s port and the one
+/// after it (21128-21129) to reach this server.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+pub struct NatConfig {
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default = "default_nat_listen")]
+    pub listen: SocketAddr,
+    #[serde(default)]
+    pub relay: RelayMode,
+    /// Relay addresses are this server's address with a port from this range.
+    /// They're virtual (the hook wraps packets for them), so nothing listens
+    /// on them and no firewall rule is needed.
+    #[serde(default = "default_relay_ports")]
+    pub relay_ports: (u16, u16),
+    /// The most one player may send through the relay, in KB/s.
+    #[serde(default = "default_relay_kbps")]
+    pub relay_kbps_per_player: u32,
+    /// The address players reach this server on; set with --public-address.
+    /// Without it, the secure service's address is used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub public_address: Option<std::net::IpAddr>,
+}
+
+const fn default_true() -> bool {
+    true
+}
+
+fn default_nat_listen() -> SocketAddr {
+    SocketAddr::from(([0, 0, 0, 0], 21128))
+}
+
+const fn default_relay_ports() -> (u16, u16) {
+    (40000, 40999)
+}
+
+const fn default_relay_kbps() -> u32 {
+    2048
+}
+
+impl Default for NatConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            listen: default_nat_listen(),
+            relay: RelayMode::default(),
+            relay_ports: default_relay_ports(),
+            relay_kbps_per_player: default_relay_kbps(),
+            public_address: None,
+        }
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct Config {
     #[serde(flatten)]
@@ -152,6 +224,8 @@ pub struct Config {
     pub admin: AdminConfig,
     #[serde(default)]
     pub limits: LimitsConfig,
+    #[serde(default)]
+    pub nat: NatConfig,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -171,6 +245,8 @@ impl Config {
     /// online config the game downloads are updated.
     pub fn set_addresses(&mut self, listen: std::net::IpAddr, public: std::net::IpAddr) {
         self.api_server.set_ip(listen);
+        self.nat.listen.set_ip(listen);
+        self.nat.public_address = Some(public);
         for svc in self.quazal.service.values_mut() {
             match svc {
                 Service::Authentication(ctx) | Service::Secure(ctx) => {
@@ -267,6 +343,7 @@ impl Default for Config {
             community_api: CommunityApiConfig::default(),
             admin: AdminConfig::default(),
             limits: LimitsConfig::default(),
+            nat: NatConfig::default(),
         }
     }
 }
@@ -286,5 +363,28 @@ mod tests {
         assert!(text.contains("203.0.113.10:8000"), "content (storage_host)");
         assert!(text.contains("prudp:/address=203.0.113.10;port=21126"), "online config");
         assert_eq!(cfg.api_server.ip(), listen);
+        assert_eq!(cfg.nat.public_address, Some(public));
+    }
+
+    #[test]
+    fn old_service_files_get_the_nat_helper() {
+        // The file as written before the NAT helper existed: no [nat] table.
+        let text = toml::to_string(&Config::default()).unwrap();
+        let mut in_nat = false;
+        let old: String = text
+            .lines()
+            .filter(|line| {
+                if line.starts_with('[') {
+                    in_nat = *line == "[nat]";
+                }
+                !in_nat
+            })
+            .map(|line| format!("{line}\n"))
+            .collect();
+        assert!(!old.contains("relay_ports"));
+        let cfg: Config = toml::from_str(&old).unwrap();
+        assert_eq!(cfg.nat, NatConfig::default());
+        assert!(cfg.nat.enabled);
+        assert_eq!(cfg.nat.listen.port(), 21128);
     }
 }

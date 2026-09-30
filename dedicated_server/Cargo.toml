@@ -17,6 +17,7 @@ dedicated_server_config = { path = "./config" }
 eyre = { workspace = true }
 hmac = { workspace = true }
 md-5 = { workspace = true }
+nat_proto = { path = "../nat_proto" }
 num_enum = { workspace = true }
 quazal = { path = "../quazal" }
 quazal-macros = { path = "../quazal/quazal-macros" }

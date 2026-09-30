@@ -54,6 +54,7 @@ mod game_session_ex;
 mod keys;
 mod ladder;
 mod locale;
+mod nat_helper;
 mod nat_traversal;
 mod overlord_challenge;
 mod overlord_core;
@@ -307,8 +308,29 @@ fn main() -> color_eyre::Result<()> {
     let admin_api = args.launcher || config.admin.enabled;
     rate_limit::configure(config.limits);
     let community_api = config.community_api;
+    let nat = config.nat;
+    // Relay addresses use the address players reach this server on.
+    let relay_ip = nat
+        .public_address
+        .or_else(|| {
+            config.quazal.service.values().find_map(|svc| match svc {
+                quazal::Service::Authentication(ctx) => ctx.secure_server_addr.map(|a| a.ip()),
+                _ => None,
+            })
+        })
+        .and_then(|ip| match ip {
+            std::net::IpAddr::V4(v4) => Some(v4),
+            std::net::IpAddr::V6(_) => None,
+        })
+        .unwrap_or(std::net::Ipv4Addr::LOCALHOST);
 
     let mut threads = vec![];
+    if nat.enabled {
+        match nat_helper::start(&logger.new(o!("service" => "nat")), nat, relay_ip) {
+            Ok(t) => threads.extend(t),
+            Err(e) => crit!(logger, "Couldn't start the NAT helper on UDP {}: {e}", nat.listen),
+        }
+    }
     for (name, svc) in config.quazal.into_services()? {
         let logger = logger.new(o!("service" => name.clone()));
         info!(logger, "Loaded service {:#?}", svc);

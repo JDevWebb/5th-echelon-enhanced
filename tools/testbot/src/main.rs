@@ -249,6 +249,126 @@ async fn lost_push(ctx: &mut Ctx) -> Result<()> {
     b.disconnect().await
 }
 
+/// Sends `msg` from `sock` to the NAT helper's port `port` and waits for a
+/// NAT message back.
+fn nat_ask(sock: &UdpSocket, server: IpAddr, port: u16, msg: &nat_proto::Message) -> Result<nat_proto::Message> {
+    sock.send_to(&msg.encode(), (server, port))?;
+    nat_wait(sock)
+}
+
+fn nat_wait(sock: &UdpSocket) -> Result<nat_proto::Message> {
+    sock.set_read_timeout(Some(Duration::from_secs(2)))?;
+    let mut buf = [0u8; 2048];
+    let (n, _) = sock.recv_from(&mut buf)?;
+    nat_proto::Message::decode(&buf[..n]).ok_or_else(|| eyre!("not a NAT message: {:x?}", &buf[..n]))
+}
+
+fn nat_probe(sock: &UdpSocket, server: IpAddr, flags: u8, name: &str) -> Result<(std::net::SocketAddrV4, std::net::SocketAddrV4, bool)> {
+    let probe = nat_proto::Message::Probe {
+        flags,
+        nonce: 7,
+        mapping: None,
+        name: name.into(),
+    };
+    match nat_ask(sock, server, nat_proto::DEFAULT_PORT, &probe)? {
+        nat_proto::Message::ProbeReply {
+            nonce: 7,
+            observed,
+            advertise,
+            flags,
+            ..
+        } => Ok((observed, advertise, flags & nat_proto::reply_flags::RELAYED != 0)),
+        other => Err(eyre!("unexpected answer {other:?}")),
+    }
+}
+
+/// The NAT helper tells a player the address it sees, on both of its ports.
+async fn nat_probe_scenario(ctx: &mut Ctx) -> Result<()> {
+    let sock = UdpSocket::bind("127.0.0.1:0")?;
+    let local = sock.local_addr()?;
+    let (observed, advertise, relayed) = nat_probe(&sock, ctx.server, 0, "prober")?;
+    ensure!(observed.port() == local.port(), "observed {observed}, but the socket is {local}");
+    ensure!(advertise == observed && !relayed, "a local player is advertised as {advertise} (relayed: {relayed})");
+    let second = nat_proto::Message::Probe {
+        flags: nat_proto::probe_flags::SECOND_PORT,
+        nonce: 8,
+        mapping: None,
+        name: String::new(),
+    };
+    match nat_ask(&sock, ctx.server, nat_proto::DEFAULT_PORT + 1, &second)? {
+        nat_proto::Message::ProbeReply { observed: o2, .. } => ensure!(o2 == observed, "the second port saw {o2}, the first {observed}"),
+        other => return Err(eyre!("unexpected answer {other:?}")),
+    }
+    Ok(())
+}
+
+/// Two players, one relayed: packets reach each other through the relay,
+/// each seeing the other at its advertised address; strangers can't use it.
+async fn nat_relay(ctx: &mut Ctx) -> Result<()> {
+    use nat_proto::Message;
+    let a = UdpSocket::bind("127.0.0.1:0")?;
+    let b = UdpSocket::bind("127.0.0.1:0")?;
+    let stranger = UdpSocket::bind("127.0.0.1:0")?;
+    let run = ctx.run;
+    let (_, a_adv, a_relayed) = nat_probe(&a, ctx.server, nat_proto::probe_flags::WANT_RELAY, &format!("relayed{run}"))?;
+    let (_, b_adv, b_relayed) = nat_probe(&b, ctx.server, 0, &format!("direct{run}"))?;
+    ensure!(a_relayed && !b_relayed, "relayed: a {a_relayed}, b {b_relayed}");
+    ensure!(a_adv.port() >= 40000, "a relay address was expected, got {a_adv}");
+
+    let to = |sock: &UdpSocket, to, payload: &[u8]| -> Result<()> {
+        sock.send_to(&Message::DataTo { to, payload: payload.to_vec() }.encode(), (ctx.server, nat_proto::DEFAULT_PORT))?;
+        Ok(())
+    };
+    to(&b, a_adv, b"to the relayed player")?;
+    ensure!(
+        nat_wait(&a)? == Message::DataFrom { from: b_adv, payload: b"to the relayed player".to_vec() },
+        "the relayed player got something else"
+    );
+    to(&a, b_adv, b"and back")?;
+    ensure!(
+        nat_wait(&b)? == Message::DataFrom { from: a_adv, payload: b"and back".to_vec() },
+        "the direct player got something else"
+    );
+    to(&stranger, a_adv, b"spam")?;
+    a.set_read_timeout(Some(Duration::from_millis(300)))?;
+    let mut buf = [0u8; 64];
+    ensure!(a.recv_from(&mut buf).is_err(), "a stranger's packet was relayed");
+    Ok(())
+}
+
+/// A game that still registers its local address gets the public one the
+/// NAT helper found (with the local one kept for players on its network).
+async fn nat_public_address(ctx: &mut Ctx) -> Result<()> {
+    let mut a = ctx.player("Host").await?;
+    let mut b = ctx.player("Guest").await?;
+    let storm = UdpSocket::bind("127.0.0.1:0")?;
+    let (_, advertise, _) = nat_probe(&storm, ctx.server, 0, &a.name)?;
+    // 127.0.0.1 is what the trusted_subnet rule would give too, so only the
+    // NAT helper changes the port.
+    a.register_urls(&["prudp:/address=127.0.0.1;port=13000;RVCID=5;hdrType=0;type=2"]).await?;
+    let lobby = a.create_session(LOBBY).await?;
+    a.add_participants(lobby, &[a.pid], &[]).await?;
+    let found = b.search_with_participants(&[a.pid]).await?;
+    let room = found
+        .iter()
+        .find(|r| r.game_session_search_result.session_key.session_id == lobby)
+        .ok_or_else(|| eyre!("lobby not found"))?;
+    let urls: Vec<(String, u16, Option<String>)> = room
+        .game_session_search_result
+        .host_urls
+        .0
+        .iter()
+        .map(|u| (u.address.clone(), u.port, u.params.get("type").cloned()))
+        .collect();
+    ensure!(
+        urls.contains(&(advertise.ip().to_string(), advertise.port(), Some("2".into()))),
+        "the public address {advertise} isn't advertised: {urls:?}"
+    );
+    ensure!(urls.contains(&("127.0.0.1".into(), 13000, None)), "the local address wasn't kept: {urls:?}");
+    a.disconnect().await?;
+    b.disconnect().await
+}
+
 const SCENARIOS: &[&str] = &[
     "login",
     "lobby-invite",
@@ -260,6 +380,9 @@ const SCENARIOS: &[&str] = &[
     "abandon-empty",
     "duplicate-request",
     "lost-push",
+    "nat-probe",
+    "nat-relay",
+    "nat-public-address",
 ];
 
 #[tokio::main]
@@ -286,6 +409,9 @@ async fn main() -> Result<()> {
                 "abandon-empty" => abandon_empty(&mut ctx).await,
                 "duplicate-request" => duplicate_request(&mut ctx).await,
                 "lost-push" => lost_push(&mut ctx).await,
+                "nat-probe" => nat_probe_scenario(&mut ctx).await,
+                "nat-relay" => nat_relay(&mut ctx).await,
+                "nat-public-address" => nat_public_address(&mut ctx).await,
                 other => Err(eyre!("unknown scenario {other:?} (known: {})", SCENARIOS.join(", "))),
             }
         })
