@@ -27,6 +27,10 @@ pub struct Settings {
     confirm_new_save: bool,
     confirm_uninstall: bool,
     show_passwords: bool,
+    /// What's typed in Identity › Import.
+    identity_import: String,
+    /// The server directory field, while it's being edited.
+    directory: Option<String>,
 }
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
@@ -53,6 +57,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     section(ui, "Game", |ui| game_options(game, notices, ui));
     section(ui, "Save game", |ui| save_game(settings, game, &ctx, ui));
     section(ui, "Servers and accounts", |ui| servers(settings, game, notices, locked, ui));
+    section(ui, "Identity and friends", |ui| identity_section(settings, notices, ui));
     section(ui, "Connection test", |ui| connection_test(settings, game, &ctx, ui));
     section(ui, "5th Echelon client", |ui| client(settings, game, &ctx, ui));
     egui::CollapsingHeader::new(theme::heading("Hooks (advanced)")).default_open(false).show(ui, |ui| hooks(game, notices, ui));
@@ -318,7 +323,7 @@ fn servers(settings: &mut Settings, game: &mut Game, notices: &mut Notices, lock
                 let is_current = current.as_deref() == Some(p.name.as_str());
                 ui.label(if is_current { RichText::new(&p.server).color(theme::ACCENT) } else { RichText::new(&p.server) });
                 ui.label(&p.user.username);
-                ui.label(if settings.show_passwords { p.user.password.clone() } else { "••••••••".into() });
+                ui.label(if settings.show_passwords { p.user.secret().unwrap_or_else(|| String::from("(not readable here)")) } else { "••••••••".into() });
                 ui.horizontal(|ui| {
                     if !is_current && ui.button("Use").clicked() {
                         game.update(notices, |c| {
@@ -339,6 +344,59 @@ fn servers(settings: &mut Settings, game: &mut Game, notices: &mut Notices, lock
             }
         });
     });
+}
+
+/// The player's identity across servers (see `setup::player_identity`), and
+/// the server directory.
+fn identity_section(settings: &mut Settings, notices: &mut Notices, ui: &mut egui::Ui) {
+    ui.label(theme::muted(
+        "Your identity follows you between servers that share friends: friends you make on one show up on the others. \
+         It also signs you in to your accounts on a new PC.",
+    ));
+    ui.add_space(4.0);
+    match setup::player_identity::load() {
+        Ok(Some(identity)) => {
+            ui.horizontal(|ui| {
+                ui.label("Your identity");
+                ui.label(RichText::new(identity::short(&identity.global_id())).strong());
+                if ui.button("Copy to move it to another PC").clicked() {
+                    ui.ctx().copy_text(setup::player_identity::export(&identity));
+                    notices.info("Copied. Anyone with it can sign in as you: keep it private.");
+                }
+            });
+        }
+        Ok(None) => {
+            ui.label(theme::muted("None yet: it's made when you join a server that supports it."));
+        }
+        Err(e) => {
+            ui.label(RichText::new(format!("Your identity can't be read: {e}")).color(theme::BAD));
+        }
+    }
+    ui.horizontal(|ui| {
+        ui.label("Import");
+        ui.add(egui::TextEdit::singleline(&mut settings.identity_import).hint_text("5th-echelon-identity:v1:…").password(true).desired_width(260.0));
+        if ui.add_enabled(!settings.identity_import.trim().is_empty(), egui::Button::new("Use this identity")).clicked() {
+            match setup::player_identity::import(&settings.identity_import).and_then(|identity| setup::player_identity::save(&identity).map(|()| identity)) {
+                Ok(identity) => {
+                    notices.info(format!("This PC now uses the identity {}. Set up each server again to sign in with it.", identity::short(&identity.global_id())));
+                    settings.identity_import.clear();
+                }
+                Err(e) => notices.error(e.to_string()),
+            }
+        }
+    });
+    ui.add_space(8.0);
+    let saved = crate::app::Prefs::load().directory.unwrap_or_default();
+    let editing = settings.directory.get_or_insert(saved.clone());
+    ui.horizontal(|ui| {
+        ui.label("Server directory");
+        ui.add(egui::TextEdit::singleline(editing).hint_text("https://coordinator.example.com").desired_width(260.0));
+        if *editing != saved && ui.button("Save").clicked() {
+            crate::app::Prefs::set_directory(Some(editing.clone()));
+            notices.info("Saved. Browse servers on the Play screen.");
+        }
+    });
+    ui.label(theme::muted("Filled in by the first server you join that shares friends; lists servers to choose from."));
 }
 
 fn connection_test(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui: &mut egui::Ui) {
@@ -376,7 +434,8 @@ fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>) -> Te
     use crate::network;
     let rt = crate::services::rt();
     let api = profile.api_server_url().to_string();
-    let (user, pass) = (profile.user.username.as_str(), profile.user.password.as_str());
+    let secret = profile.user.secret().unwrap_or_default();
+    let (user, pass) = (profile.user.username.as_str(), secret.as_str());
     let t = Duration::from_secs(8);
     let run = |f: std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), network::Error>> + Send + '_>>| -> Result<(), String> {
         // The timer must be made inside the runtime.

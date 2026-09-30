@@ -96,12 +96,15 @@ Matches run peer to peer: your game talks straight to the other players' games. 
 ### In the game
 
 Press <kbd>F5</kbd> for the overlay:
-- **Players:** everyone on the server and who's online, with invite buttons. It also shows what they're playing, on servers that share it.
+- **Friends:**
+  - your friends and what they're playing, with invite buttons;
+  - friend requests to answer, and who you've blocked.
+- **Find players:** search by name or see who's online, then add a friend, block someone or invite them.
 - **Invites:** accept one and you go straight into that match.
 - **Match:** change the lobby's minimum and maximum players. For example, co-op with more than two, or Spies vs Mercs with fewer than four.
 - **Server:** which server you're on, how other players reach you (directly, through a router port, or through the server's relay), and **Sign in again**.
 
-Invites also pop up as notifications.
+Invites and friend requests also pop up as notifications. Friend lists, blocking and sharing friends between servers are in **[docs/friends.md](docs/friends.md)**.
 
 ### When something doesn't work
 
@@ -171,7 +174,9 @@ Everything the launcher does can be done by hand:
   - **invites into private matches**.
 - **Internet play without a VPN:** public addresses from the server, router port forwarding (UPnP / NAT-PMP), and a relay through the server when a router can't be reached.
 - **An automatic setup:** game detection, client install, one-click accounts, network adapter pinning and a rank 5 save, then a checklist with a fix for each problem.
-- **An in-game overlay** (<kbd>F5</kbd>): players and who's online, invites, lobby player limits, and server status.
+- **An in-game overlay** (<kbd>F5</kbd>): friends and what they're playing, friend requests, player search and blocking, invites, lobby player limits, and server status.
+- **Friends that follow you:** your identity links your accounts on servers that share a coordinator, so friends made on one show up on the others. It also signs you in to your accounts on a new PC.
+- **A server directory:** browse the servers that share a coordinator, with your ping to each and how many are online, and join the one suggested.
 - **Save games:**
   - a rank 5 save for new players;
   - raising an existing save to rank 5 (with a backup first);
@@ -186,6 +191,8 @@ Everything the launcher does can be done by hand:
 
 ### For server operators
 - **One server for everything:** accounts, matchmaking, invites, friends and presence, news, challenges, and the game's configuration and content.
+- **Friend lists for public servers:** friends-only lists and invites (`[friends] mode = "mutual"`), blocking, and rate limits on invites and friend requests.
+- **Friends across servers:** a **coordinator** shares friendships and blocks between servers, and lists them in a server directory. The Linux installer can run one next to your server.
 - **Runs anywhere:**
   - Windows, from the launcher's **Server** screen or on its own;
   - Linux;
@@ -267,7 +274,9 @@ sudo bash install-server.sh
   - creates a system user and a sandboxed service;
   - opens the ports in ufw or firewalld, if either is active;
   - lists the ports to open on your provider's firewall.
-- **Running it again updates the server**, keeping accounts and settings. `--uninstall` removes it, and `--help` lists the rest (`--domain`, `--no-caddy`, `--relay`, `--version`, …).
+- **Friend lists are friends-only** (`--friends mutual`) unless you choose `--friends everyone`.
+- **To share friends with other servers**, join a coordinator with `--coordinator URL --join-token TOKEN`, or run one here with `--coordinator-domain NAME` (see [docs/friends.md](docs/friends.md)).
+- **Running it again updates the server**, keeping accounts and settings. `--uninstall` removes it, and `--help` lists the rest (`--domain`, `--no-caddy`, `--relay`, `--version`, `--region`, …).
 
 **By hand:**
 
@@ -356,6 +365,8 @@ The server reads `service.toml` from its working folder, writing the defaults on
 - **`[admin]`:** the admin API for the launcher's **Manage a server**. Its key is written to `admin-key.txt`.
 - **`[nat]`:** internet play: the NAT helper's port, and who is relayed (`auto`, `all` or `off`) and how fast.
 - **`[public]`:** the host name and ports players connect to, when they differ from what the server listens on (a reverse proxy, remapped ports), and which proxies' `X-Forwarded-For` to trust.
+- **`[friends]`:** every player on the friend list (`everyone`, the default) or only friends (`mutual`).
+- **`[federation]`:** a coordinator to share friends with other servers, and this server's name and region in its directory.
 
 Command-line options: `--public-address <ip>`, `--listen <ip>`, and `-c <file>` for another settings file. The first two are also the `FE_PUBLIC_ADDRESS` and `FE_LISTEN` environment variables. The address options rewrite `service.toml` on every start, so the addresses always match.
 
@@ -381,6 +392,15 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
   - the server corrects the address a game registers, if the game didn't take the public one.
 - The findings behind it are in [docs/research/nat-traversal.md](docs/research/nat-traversal.md).
 
+**Friends**
+- Real friend lists instead of "everyone on the server":
+  - requests, blocking and player search in the overlay;
+  - friends-only lists and invites for public servers.
+- An identity per player that links their accounts across servers, and signs them in on a new PC.
+- A coordinator that shares friends between servers and keeps a server directory; the launcher browses it and suggests a server.
+- Each server gets its own random password (upstream reused one everywhere); on Windows it's saved encrypted.
+- See [docs/friends.md](docs/friends.md).
+
 **Invites and matches**
 - Invites into private matches, from [#123](https://github.com/unixoide/5th-echelon/pull/123) by Matthias Walther, with follow-up fixes:
   - pushes are resent until acknowledged;
@@ -394,7 +414,8 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
   - a failed service restarts the process instead of leaving it half-alive;
   - matchmaking no longer panics on odd data.
 - Logins survive restarts (the token keys are kept).
-- Plain logins can no longer sign in as someone else; sample accounts are disabled.
+- Plain logins can no longer sign in as someone else; sample accounts are disabled (including the third one upstream left with its sample password).
+- Names are unique whatever their case, the server sets account ids, API tokens expire after 30 days, and deleting an account with a pending invite works.
 - Presence works; memory no longer grows without bound; the HTTP servers handle connections in parallel, with timeouts.
 - Rate limits, expiring tickets, session owner checks, and a constant-time admin key check.
 - An opt-in admin API setting, and gRPC reflection off by default.
@@ -433,10 +454,11 @@ The simplest way needs only Docker, on Windows, macOS or Linux:
 build/build.sh test       # workspace tests
 build/build.sh bots       # test players against a fresh local server
 build/build.sh proxy-test # the test players against a server behind Caddy
+build/build.sh federation-test   # two servers sharing friends through a coordinator
 build/build.sh load --players 500 --relayed 20   # a load test (see docs/load-testing.md)
-build/build.sh server     # dist/dedicated_server-linux-x86_64
+build/build.sh server     # dist/dedicated_server-linux-x86_64, coordinator-linux-x86_64
 build/build.sh windows    # dist/launcher.exe (client DLL inside), uplay_r1_loader.dll, dedicated_server.exe
-build/build.sh linux      # dist/launcher-linux-x86_64 (client DLL inside), dedicated_server-linux-x86_64
+build/build.sh linux      # dist/launcher-linux-x86_64 (client DLL inside), dedicated_server-linux-x86_64, coordinator-linux-x86_64
 build/build.sh sums       # dist/SHA256SUMS, for a release
 ```
 
@@ -472,6 +494,8 @@ A tag with a suffix (`v0.3.1-rc.1`) makes a pre-release, which the updater doesn
 | `dedicated_server/` | The server: Quazal services, the game's protocols, the gRPC API and the community API |
 | `quazal/` | The PRUDP/RMC network stack |
 | `nat_proto/` | The NAT helper protocol between the server and the client (internet play) |
+| `identity/` | A player's identity across servers: the key, and the messages it signs |
+| `coordinator/` | Shares friends between servers, and keeps the server directory |
 | `hooks/` | The game client (`uplay_r1_loader.dll`): Uplay emulation, network fixes and the overlay |
 | `setup/` | The launcher's logic: finding the game, installing, accounts, saves and checks |
 | `launcher/` | The launcher's egui interface (Windows and Linux) |

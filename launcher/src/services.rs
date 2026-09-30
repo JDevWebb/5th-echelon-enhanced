@@ -32,6 +32,15 @@ pub fn block_on<T>(f: impl Future<Output = anyhow::Result<T>>) -> anyhow::Result
 /// A server's account calls, for [`setup::account`].
 pub struct Accounts {
     pub api: String,
+    /// The player's identity and the server's id, when the server supports
+    /// identities: for signing in with the key.
+    pub identity: Option<(std::sync::Arc<setup::player_identity::Identity>, String)>,
+}
+
+impl Accounts {
+    pub fn new(api: String) -> Self {
+        Self { api, identity: None }
+    }
 }
 
 impl AccountService for Accounts {
@@ -56,6 +65,19 @@ impl AccountService for Accounts {
             Ok(Ok(())) => Ok(()),
             Ok(Err(network::Error::UsernameAlreadyTaken)) => Err(AccountError::Taken),
             Ok(Err(network::Error::ConnectionFailed)) => Err(AccountError::Other("couldn't connect to the server".into())),
+            Ok(Err(e)) => Err(AccountError::Other(e.to_string())),
+        }
+    }
+
+    fn key_login(&self, username: &str, new_password: &str) -> Result<(), AccountError> {
+        let Some((identity, server_id)) = self.identity.as_ref() else {
+            return Err(AccountError::NotFound);
+        };
+        let r = rt().block_on(async { tokio::time::timeout(TIMEOUT, network::key_login(self.api.clone(), identity, server_id, username, new_password)).await });
+        match r {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(network::Error::UserNotFound)) => Err(AccountError::NotFound),
+            Err(_) => Err(AccountError::Other("the server didn't answer in time".into())),
             Ok(Err(e)) => Err(AccountError::Other(e.to_string())),
         }
     }

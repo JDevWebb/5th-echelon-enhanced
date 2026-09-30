@@ -16,6 +16,8 @@ pub use discover::try_locate_server;
 pub use nat::test_nat_helper;
 pub use quazal::test_p2p;
 pub use quazal::test_quazal_login;
+pub use rpc::key_login;
+pub use rpc::link_identity;
 pub use rpc::register;
 pub use rpc::test_login;
 
@@ -64,3 +66,46 @@ pub enum Error {
     #[error("Config server: {0}")]
     ConfigServer(#[from] reqwest::Error),
 }
+
+/// The servers in a coordinator's directory, each with this PC's ping to it
+/// (None: no answer), measured in parallel.
+pub async fn server_directory(coordinator: &str) -> Result<Vec<(setup::directory::Listing, Option<u32>)>, String> {
+    let body = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(8))
+        .build()
+        .map_err(|e| e.to_string())?
+        .get(setup::directory::url(coordinator))
+        .send()
+        .await
+        .map_err(|e| format!("the directory didn't answer: {e}"))?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .text()
+        .await
+        .map_err(|e| e.to_string())?;
+    let servers = setup::directory::parse(&body).map_err(|e| format!("the directory's answer isn't one: {e}"))?;
+    // All at once: a server that doesn't answer costs two seconds, not two each.
+    let handles: Vec<_> = servers.iter().map(|s| tokio::spawn(ping(s.host.clone(), s.ports.and_then(|p| p.nat)))).collect();
+    let mut pings = Vec::with_capacity(handles.len());
+    for handle in handles {
+        pings.push(handle.await.ok().flatten());
+    }
+    Ok(servers.into_iter().zip(pings).collect())
+}
+
+/// The round trip to a server: its NAT helper's answer (the path game
+/// traffic takes), or else the time to open its port 80.
+async fn ping(host: String, nat_port: Option<u16>) -> Option<u32> {
+    let started = std::time::Instant::now();
+    let ms = |t: std::time::Instant| u32::try_from(t.elapsed().as_millis()).unwrap_or(u32::MAX);
+    if let Some(port) = nat_port {
+        if tokio::time::timeout(std::time::Duration::from_secs(2), nat::probe_once(&host, port)).await.is_ok_and(|r| r.is_ok()) {
+            return Some(ms(started));
+        }
+    }
+    let started = std::time::Instant::now();
+    let addr = tokio::net::lookup_host((host.as_str(), setup::CONFIG_PORT)).await.ok()?.find(std::net::SocketAddr::is_ipv4)?;
+    tokio::time::timeout(std::time::Duration::from_secs(2), tokio::net::TcpStream::connect(addr)).await.ok()?.ok()?;
+    Some(ms(started))
+}
+

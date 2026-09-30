@@ -44,6 +44,7 @@ pub const CREDENTIALS_FILE: &str = "federation.key";
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(30);
 const PULL_ONLINE_EVERY: Duration = Duration::from_secs(60);
 const OUTBOX_BATCH: u32 = 50;
+const JOIN_RETRY: Duration = Duration::from_secs(60);
 
 /// One change for the coordinator, as stored in the outbox and sent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,6 +94,9 @@ struct State {
     enabled: bool,
     wake: tokio::sync::Notify,
     pulls: Mutex<HashSet<u32>>,
+    /// When each player's friends were last asked for on their behalf
+    /// ([`pull_now_and_then`]).
+    asked: Mutex<std::collections::HashMap<u32, Instant>>,
 }
 
 static STATE: OnceLock<State> = OnceLock::new();
@@ -105,6 +109,7 @@ pub fn init(server_id: String, enabled: bool) {
         enabled,
         wake: tokio::sync::Notify::new(),
         pulls: Mutex::new(HashSet::new()),
+        asked: Mutex::new(std::collections::HashMap::new()),
     });
 }
 
@@ -200,6 +205,24 @@ pub fn pull_soon(user: u32) {
     }
 }
 
+/// Asks for `user`'s friends from other servers, at most once a minute: when
+/// they look at their friends (the overlay), whether or not the game is
+/// connected right now.
+pub fn pull_now_and_then(user: u32) {
+    let Some(state) = STATE.get().filter(|s| s.enabled) else {
+        return;
+    };
+    {
+        let mut asked = state.asked.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        asked.retain(|_, t| t.elapsed() < PULL_ONLINE_EVERY);
+        if asked.contains_key(&user) {
+            return;
+        }
+        asked.insert(user, Instant::now());
+    }
+    pull_soon(user);
+}
+
 /// Applies a pulled friend list for local player `user` (linked as `me`):
 /// friendships and blocks with others who are linked here too. Pairs the
 /// coordinator doesn't know are left alone.
@@ -249,12 +272,16 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
     let mut secret: Option<String> = None;
     let mut last_heartbeat: Option<Instant> = None;
     let mut last_online_pull: Option<Instant> = None;
+    let mut last_join: Option<Instant> = None;
     loop {
         if secret.is_none() {
-            secret = match credentials(&base) {
-                Some(saved) => Some(saved),
-                None => join(&logger, &http, &base, &cfg, &state.server_id).await,
-            };
+            secret = credentials(&base);
+            // Joining again only now and then: a coordinator that's down, or still getting
+            // its certificate, shouldn't fill the log.
+            if secret.is_none() && last_join.is_none_or(|t| t.elapsed() >= JOIN_RETRY) {
+                last_join = Some(Instant::now());
+                secret = join(&logger, &http, &base, &cfg, &state.server_id).await;
+            }
         }
         if let Some(secret) = secret.as_deref() {
             let client = Coordinator {
@@ -269,11 +296,11 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                 }
                 match client.post("/v1/heartbeat", &listing).await {
                     Ok(_) => last_heartbeat = Some(Instant::now()),
-                    Err(e) => warn!(logger, "Federation: heartbeat failed: {e}"),
+                    Err(e) => warn!(logger, "Federation: heartbeat failed: {e:#}"),
                 }
             }
             if let Err(e) = flush(&logger, &storage, &client).await {
-                warn!(logger, "Federation: sending changes failed (will retry): {e}");
+                warn!(logger, "Federation: sending changes failed (will retry): {e:#}");
             } else {
                 if last_online_pull.is_none_or(|t| t.elapsed() >= PULL_ONLINE_EVERY) {
                     last_online_pull = Some(Instant::now());
@@ -284,7 +311,7 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                 let users: Vec<u32> = state.pulls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).drain().collect();
                 for user in users {
                     if let Err(e) = pull(&logger, &storage, &client, user).await {
-                        warn!(logger, "Federation: pulling friends of {user} failed: {e}");
+                        warn!(logger, "Federation: pulling friends of {user} failed: {e:#}");
                     }
                 }
             }
@@ -354,7 +381,7 @@ async fn join(logger: &Logger, http: &reqwest::Client, base: &str, cfg: &Federat
             Some(secret)
         }
         Err(e) => {
-            error!(logger, "Federation: joining {base} failed: {e}");
+            error!(logger, "Federation: joining {base} failed (retrying in {} s): {e:#}", JOIN_RETRY.as_secs());
             None
         }
     }

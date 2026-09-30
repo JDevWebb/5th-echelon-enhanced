@@ -24,6 +24,24 @@
 #   --binary FILE         install this dedicated_server-linux-x86_64 instead
 #                         of downloading one
 #   --relay auto|all|off  who plays through the server's relay (default: auto)
+#   --friends mutual|everyone
+#                         who is on a player's friend list: only friends,
+#                         who alone can invite (mutual, the default: a public
+#                         server), or every player (everyone: a group that
+#                         all know each other)
+#   --server-name NAME    the server's name in a server directory (default:
+#                         the domain)
+#   --region NAME         where the server is, for the directory, e.g. Sydney
+#   --coordinator URL     share friends with other servers through this
+#                         coordinator, and appear in its server directory
+#   --join-token TOKEN    the coordinator's join token, from its operator
+#   --coordinator-domain NAME
+#                         also run a coordinator here, at https://NAME (an A
+#                         record for this server, TCP 443 open); this server
+#                         joins it, and other servers can too
+#   --coordinator-binary FILE
+#                         install this coordinator-linux-x86_64 instead of
+#                         downloading one
 #   --no-firewall         don't open ports in ufw or firewalld
 #   --yes                 don't ask; go on past warnings (e.g. DNS not
 #                         pointing here yet)
@@ -48,9 +66,14 @@ BEGIN_MARK="# >>> 5th Echelon (managed by install-server.sh; keep other sites ou
 END_MARK="# <<< 5th Echelon"
 UDP_PORTS="21126-21129"
 SYSCTL_FILE="/etc/sysctl.d/90-5th-echelon.conf"
+COORD_SERVICE="5th-echelon-coordinator"
+COORD_UNIT="/etc/systemd/system/${COORD_SERVICE}.service"
+COORD_ASSET="coordinator-linux-x86_64"
+COORD_DIR="$STATE_DIR/coordinator"
 
 domain="" no_caddy=0 public_address="" version="latest" binary="" relay=""
 firewall=1 yes=0 force=0 uninstall=0 purge=0 use_systemd=1
+friends="mutual" server_name="" region="" coordinator="" join_token="" coord_domain="" coord_binary=""
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
@@ -77,6 +100,13 @@ while [ $# -gt 0 ]; do
     --version) version="${2:?}"; shift ;;
     --binary) binary="${2:?}"; shift ;;
     --relay) relay="${2:?}"; shift ;;
+    --friends) friends="${2:?}"; shift ;;
+    --server-name) server_name="${2:?}"; shift ;;
+    --region) region="${2:?}"; shift ;;
+    --coordinator) coordinator="${2:?}"; shift ;;
+    --join-token) join_token="${2:?}"; shift ;;
+    --coordinator-domain) coord_domain="${2:?}"; shift ;;
+    --coordinator-binary) coord_binary="${2:?}"; shift ;;
     --no-firewall) firewall=0 ;;
     --yes|-y) yes=1 ;;
     --force) force=1 ;;
@@ -92,6 +122,15 @@ done
 [ "$(id -u)" -eq 0 ] || die "run as root (sudo bash $0)"
 case "$relay" in ""|auto|all|off) ;; *) die "--relay is auto, all or off" ;; esac
 [ -z "$domain" ] || [ "$no_caddy" -eq 0 ] || die "--domain and --no-caddy don't go together"
+case "$friends" in mutual|everyone) ;; *) die "--friends is mutual or everyone" ;; esac
+# Updating a machine that runs a coordinator keeps it (and its Caddy site).
+if [ -z "$coord_domain" ] && [ -z "$coordinator" ] && [ -s "$COORD_DIR/domain" ]; then
+  coord_domain="$(tr -d '[:space:]' < "$COORD_DIR/domain")"
+fi
+[ -z "$coord_domain" ] || [ "$no_caddy" -eq 0 ] || die "--coordinator-domain needs Caddy (for HTTPS); leave out --no-caddy"
+[ -z "$coord_domain" ] || [ -z "$coordinator" ] || die "--coordinator-domain runs a coordinator here; leave out --coordinator"
+[ -z "$coordinator" ] || [ -n "$join_token" ] || [ -f "$STATE_DIR/federation.key" ] || die "--coordinator needs --join-token (from the coordinator's operator)"
+case "$coordinator" in ""|http://*|https://*) ;; *) die "--coordinator is a URL, e.g. https://coordinator.example.com" ;; esac
 
 # --- The system ---------------------------------------------------------
 
@@ -179,7 +218,8 @@ replace_managed() {
 if [ "$uninstall" -eq 1 ]; then
   if [ "$use_systemd" -eq 1 ]; then
     systemctl disable --now "$SERVICE" 2>/dev/null || true
-    rm -f "$UNIT"
+    systemctl disable --now "$COORD_SERVICE" 2>/dev/null || true
+    rm -f "$UNIT" "$COORD_UNIT"
     systemctl daemon-reload
   fi
   stop_strays
@@ -252,6 +292,20 @@ else
   say "Checksum verified"
 fi
 chmod 755 "$work/$ASSET"
+if [ -n "$coord_domain" ]; then
+  if [ -n "$coord_binary" ]; then
+    [ -f "$coord_binary" ] || die "$coord_binary doesn't exist"
+    cp "$coord_binary" "$work/$COORD_ASSET"
+    say "Using $coord_binary"
+  elif [ -n "$binary" ]; then
+    die "with --binary, also give --coordinator-binary (the coordinator of the same build)"
+  else
+    say "Downloading the coordinator ($version)"
+    curl -fsSL --retry 3 -o "$work/$COORD_ASSET" "$base/$COORD_ASSET" || die "couldn't download $base/$COORD_ASSET"
+    (cd "$work" && grep " $COORD_ASSET\$" SHA256SUMS | sha256sum -c --quiet -) || die "the coordinator doesn't match the release's checksum"
+  fi
+  chmod 755 "$work/$COORD_ASSET"
+fi
 # Whether it runs here at all (a C library too old for it, say).
 if ! out="$("$work/$ASSET" --help 2>&1)"; then
   case "$out" in
@@ -389,6 +443,77 @@ else
   sed -i -E 's|^api_server = "127\.0\.0\.1:|api_server = "0.0.0.0:|' "$CONFIG"
   toml_set 'service\.onlineconfig' listen '"0.0.0.0:80"'
   toml_set 'service\.content' listen '"0.0.0.0:8000"'
+fi
+# Friend lists: only friends on a public server, unless asked otherwise.
+if grep -q '^\[friends\]$' "$CONFIG"; then
+  toml_set friends mode "\"$friends\""
+else
+  printf '\n[friends]\nmode = "%s"\n' "$friends" >> "$CONFIG"
+fi
+say "Friend lists: $friends"
+
+# A coordinator on this machine: its own service, behind Caddy on HTTPS.
+if [ -n "$coord_domain" ]; then
+  say "Installing the coordinator for https://$coord_domain"
+  install -m 755 "$work/$COORD_ASSET" "$PROGRAM_DIR/coordinator"
+  install -d -m 700 -o "$USER_NAME" -g "$USER_NAME" "$COORD_DIR"
+  echo "$coord_domain" > "$COORD_DIR/domain"
+  if [ "$use_systemd" -eq 1 ]; then
+    cat > "$COORD_UNIT" <<UNIT
+[Unit]
+Description=5th Echelon coordinator (friends across servers, server directory)
+Documentation=https://github.com/$REPO
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=$USER_NAME
+Group=$USER_NAME
+WorkingDirectory=$COORD_DIR
+ExecStart=$PROGRAM_DIR/coordinator --listen 127.0.0.1:8700 --data $COORD_DIR
+Restart=always
+RestartSec=3
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=$COORD_DIR
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+    systemctl daemon-reload
+    systemctl enable "$COORD_SERVICE" >/dev/null 2>&1
+    systemctl restart "$COORD_SERVICE"
+    for _ in $(seq 40); do [ -s "$COORD_DIR/join-token.txt" ] && break; sleep 0.25; done
+    [ -s "$COORD_DIR/join-token.txt" ] || { journalctl -u "$COORD_SERVICE" -n 20 --no-pager >&2 || true; die "the coordinator didn't start (its log is above)"; }
+  else
+    ( cd "$COORD_DIR" && runuser -u "$USER_NAME" -- "$PROGRAM_DIR/coordinator" --listen 127.0.0.1:8700 --data "$COORD_DIR" >/dev/null 2>&1 & sleep 1; kill $! 2>/dev/null || true )
+  fi
+  coordinator="https://$coord_domain"
+  join_token="$(tr -d '[:space:]' < "$COORD_DIR/join-token.txt")"
+fi
+
+# [federation]: rewritten when a coordinator is given, kept otherwise.
+if [ -n "$coordinator" ]; then
+  # A name or region set before (by hand, or an earlier run) stays unless given again.
+  old_value() { sed -n "/^\\[federation\\]\$/,/^\\[/ s/^$1 = \"\\(.*\\)\"\$/\\1/p" "$CONFIG" | head -1; }
+  server_name="${server_name:-$(old_value name)}"
+  region="${region:-$(old_value region)}"
+  sed -i '/^\[federation\]$/,/^\[/{/^\[federation\]$/d;/^\[/!d}' "$CONFIG"
+  {
+    printf '\n[federation]\ncoordinator = "%s"\n' "$coordinator"
+    [ -z "$join_token" ] || printf 'join_token = "%s"\n' "$join_token"
+    printf 'name = "%s"\n' "${server_name:-${domain:-$public_address}}"
+    [ -z "$region" ] || printf 'region = "%s"\n' "$region"
+  } >> "$CONFIG"
+  say "Sharing friends through $coordinator"
 fi
 chown "$USER_NAME:$USER_NAME" "$CONFIG"
 
@@ -536,6 +661,16 @@ http://$domain {
 	}
 }
 SITE
+  if [ -n "$coord_domain" ]; then
+    cat <<SITE
+
+# The 5th Echelon coordinator: friends across servers and the server
+# directory, over HTTPS (Caddy gets the certificate).
+$coord_domain {
+	reverse_proxy 127.0.0.1:8700
+}
+SITE
+  fi
 }
 
 caddy_note=""
@@ -612,6 +747,7 @@ fi
 # --- Firewall -----------------------------------------------------------
 
 if [ "$no_caddy" -eq 0 ]; then tcp_ports=(80); else tcp_ports=(80 8000 50051); fi
+if [ -n "$coord_domain" ]; then tcp_ports+=(443); fi
 opened=""
 if [ "$firewall" -eq 1 ]; then
   if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
@@ -654,6 +790,7 @@ else
   echo "    TCP 8000         content (multiplayer balancing)"
   echo "    TCP 50051        accounts, friends and invites (launcher and overlay)"
 fi
+if [ -n "$coord_domain" ]; then echo "    TCP 443          the coordinator (HTTPS)"; fi
 echo "    UDP 21126        game login"
 echo "    UDP 21127        game service"
 echo "    UDP 21128-21129  internet play (public addresses and the relay)"
@@ -667,6 +804,16 @@ fi
 if [ "$no_caddy" -eq 0 ]; then
   echo
   echo "  Check from your own PC:  curl http://$domain/api/info"
+fi
+if [ -n "$coord_domain" ]; then
+  echo
+  echo "  Coordinator:    https://$coord_domain   (log: journalctl -u $COORD_SERVICE -f)"
+  echo "  Other servers join it with:"
+  echo "    --coordinator https://$coord_domain --join-token $(tr -d '[:space:]' < "$COORD_DIR/join-token.txt")"
+  echo "  Keep the token private; $COORD_DIR/join-token.txt has it."
+elif [ -n "$coordinator" ]; then
+  echo
+  echo "  Friends are shared through $coordinator (log: journalctl -u $SERVICE | grep Federation)"
 fi
 if [ -n "$caddy_note" ]; then
   echo

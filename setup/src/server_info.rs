@@ -31,6 +31,18 @@ pub struct ServerInfo {
     /// Missing on servers before this was added: they use the default ports.
     #[serde(default)]
     pub ports: Option<Ports>,
+    /// The server's id, which players sign into identity links (servers
+    /// with friend lists).
+    #[serde(default)]
+    pub id: Option<String>,
+    /// "everyone" or "mutual" (see the server's `[friends]`).
+    #[serde(default)]
+    pub friends_mode: Option<String>,
+    /// The coordinator the server shares friends with.
+    #[serde(default)]
+    pub coordinator: Option<String>,
+    #[serde(default)]
+    pub features: Vec<String>,
 }
 
 /// Asks `server` (an IP or host name, as typed) for `/api/info`. None when

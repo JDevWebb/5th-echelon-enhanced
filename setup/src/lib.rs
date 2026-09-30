@@ -10,11 +10,13 @@
 pub mod account;
 pub mod config;
 pub mod diagnose;
+pub mod directory;
 pub mod game;
 pub mod install;
 pub mod launch;
 pub mod net;
 pub mod overrides;
+pub mod player_identity;
 pub mod save;
 pub mod server_info;
 pub mod update;
@@ -42,6 +44,25 @@ pub(crate) fn write_atomic(path: &std::path::Path, data: &[u8]) -> std::io::Resu
     tmp.push(".tmp");
     let tmp = std::path::PathBuf::from(tmp);
     std::fs::write(&tmp, data)?;
+    std::fs::rename(&tmp, path)
+}
+
+/// Like [`write_atomic`], for secrets: on Linux only the user can read the
+/// file (0600).
+pub(crate) fn write_private(path: &std::path::Path, data: &[u8]) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = std::path::PathBuf::from(tmp);
+    {
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        #[cfg(unix)]
+        std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+        let mut f = options.open(&tmp)?;
+        std::io::Write::write_all(&mut f, data)?;
+    }
+    #[cfg(unix)]
+    std::fs::set_permissions(&tmp, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
     std::fs::rename(&tmp, path)
 }
 

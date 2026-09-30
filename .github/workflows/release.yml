@@ -89,10 +89,11 @@ jobs:
       - name: Build
         run: |
           HOOKS_DLL="$PWD/windows/uplay_r1_loader.dll" cargo build --locked --release -p launcher --features embed-dll
-          cargo build --locked --release -p dedicated_server
+          cargo build --locked --release -p dedicated_server -p coordinator
           mkdir dist
           cp target/release/launcher dist/launcher-linux-x86_64
           cp target/release/dedicated_server dist/dedicated_server-linux-x86_64
+          cp target/release/coordinator dist/coordinator-linux-x86_64
       - uses: actions/upload-artifact@v4
         with:
           name: linux

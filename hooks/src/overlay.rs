@@ -188,6 +188,7 @@ enum UiState {
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 enum Tab {
     #[default]
+    Friends,
     Players,
     Invites,
     Match,
@@ -195,16 +196,24 @@ enum Tab {
 }
 
 impl Tab {
-    const ALL: [Tab; 4] = [Tab::Players, Tab::Invites, Tab::Match, Tab::Server];
+    const ALL: [Tab; 5] = [Tab::Friends, Tab::Players, Tab::Invites, Tab::Match, Tab::Server];
 
     fn label(self) -> &'static str {
         match self {
-            Tab::Players => "Players",
+            Tab::Friends => "Friends",
+            Tab::Players => "Find players",
             Tab::Invites => "Invites",
             Tab::Match => "Match",
             Tab::Server => "Server",
         }
     }
+}
+
+/// A row button and what it does to the player on that row.
+#[derive(Clone, Copy)]
+enum RowAction {
+    Invite,
+    Change(community::FriendChange, &'static str),
 }
 
 struct Invite {
@@ -241,6 +250,10 @@ struct MyRenderLoop {
     relogin: Option<std::thread::JoinHandle<bool>>,
     /// When the panel last asked for fresh data.
     last_refresh: Instant,
+    /// What's typed in Find players.
+    search_text: String,
+    /// Whether Find players has searched since the panel opened.
+    searched: bool,
 }
 
 /// Builds the Uplay event that hands an accepted invitation to the game.
@@ -320,7 +333,10 @@ impl MyRenderLoop {
                 // Open where there's something to act on.
                 if !self.active_invites.is_empty() {
                     self.tab = Tab::Invites;
+                } else if !self.data.requests_in.is_empty() {
+                    self.tab = Tab::Friends;
                 }
+                self.searched = false;
                 UiState::Show
             }
         };
@@ -460,7 +476,7 @@ impl MyRenderLoop {
             ui.same_line();
             self.key(ui, "F5");
             ui.same_line();
-            ui.text_colored(MUTED, "for players, invites and match settings");
+            ui.text_colored(MUTED, "for friends, invites and match settings");
         });
     }
 
@@ -578,6 +594,7 @@ impl MyRenderLoop {
                         .size([0.0, body_h])
                         .always_use_window_padding(true)
                         .build(|| match self.tab {
+                            Tab::Friends => self.pane_friends(ui),
                             Tab::Players => self.pane_players(ui),
                             Tab::Invites => self.pane_invites(ui),
                             Tab::Match => self.pane_match(ui),
@@ -659,8 +676,13 @@ impl MyRenderLoop {
                     dl.add_text([p[0] + self.s(16.0), p[1] + (item_h - th) / 2.0], if selected { FG } else { MUTED }, label);
                 },
             );
-            if tab == Tab::Invites && pending > 0 {
-                let n = pending.to_string();
+            let badge = match tab {
+                Tab::Invites => pending,
+                Tab::Friends => self.data.requests_in.len(),
+                _ => 0,
+            };
+            if badge > 0 {
+                let n = badge.to_string();
                 let ts = ui.calc_text_size(&n);
                 let bw = ts[0] + self.s(12.0);
                 let bh = ts[1] + self.s(4.0);
@@ -751,29 +773,153 @@ impl MyRenderLoop {
         self.with_font(ui, |f| f.strong, || ui.calc_text_size(visible))[0] + self.s(14.0) * 2.0
     }
 
-    fn pane_players(&self, ui: &Ui) {
-        self.pane_title(ui, "Players", "Everyone with an account on this server. Invite anyone who's online.");
-        if !self.data.loaded {
-            ui.text_colored(MUTED, "Loading players...");
-            return;
-        }
-        if self.data.players.is_empty() {
-            ui.text_colored(MUTED, "No one else has an account on this server yet.");
-            return;
-        }
-        for (i, p) in self.data.players.iter().enumerate() {
-            let detail = if p.online {
-                p.activity.clone().unwrap_or_else(|| String::from("Online, in the menus"))
-            } else {
-                String::from("Offline")
-            };
-            let label = format!("Invite##fe-inv-{}", p.id);
-            let w = if p.online { self.button_width(ui, &label) } else { 0.0 };
-            self.row(ui, i, Some(if p.online { OK } else { OFFLINE }), &p.name, &detail, w, || {
-                if self.button(ui, &label, false) {
-                    community::invite(p.id.clone(), p.name.clone());
+    /// Buttons on a player's row, right-aligned; runs what was clicked.
+    fn player_row(&self, ui: &Ui, i: usize, section: &str, p: &community::Player, detail: &str, actions: &[RowAction]) {
+        let labels: Vec<(String, RowAction)> = actions
+            .iter()
+            .map(|a| {
+                let text = match a {
+                    RowAction::Invite => "Invite",
+                    RowAction::Change(_, text) => text,
+                };
+                (format!("{text}##fe-{section}-{}-{text}", p.id), *a)
+            })
+            .collect();
+        let gap = self.s(8.0);
+        #[allow(clippy::cast_precision_loss)]
+        let w = labels.iter().map(|(l, _)| self.button_width(ui, l)).sum::<f32>() + gap * labels.len().saturating_sub(1) as f32;
+        let dot = if p.online { OK } else { OFFLINE };
+        self.row(ui, i, Some(dot), &p.name, detail, w, || {
+            for (n, (label, action)) in labels.iter().enumerate() {
+                if n > 0 {
+                    ui.same_line_with_spacing(0.0, gap);
                 }
+                let primary = matches!(action, RowAction::Change(community::FriendChange::Accept, _));
+                if self.button(ui, label, primary) {
+                    match action {
+                        RowAction::Invite => community::invite(p.id.clone(), p.name.clone()),
+                        RowAction::Change(change, _) => community::change(*change, p.id.clone(), p.name.clone()),
+                    }
+                }
+            }
+        });
+    }
+
+    fn status(p: &community::Player) -> String {
+        if p.online {
+            p.activity.clone().unwrap_or_else(|| String::from("Online, in the menus"))
+        } else {
+            String::from("Offline")
+        }
+    }
+
+    fn section(&self, ui: &Ui, title: &str) {
+        ui.dummy([0.0, self.s(6.0)]);
+        self.with_font(ui, |f| f.strong, || ui.text_colored(MUTED, title));
+        ui.dummy([0.0, self.s(2.0)]);
+    }
+
+    fn pane_friends(&self, ui: &Ui) {
+        use community::FriendChange as C;
+        let note = if self.data.everyone_mode {
+            "Everyone on this server can invite you. Find players to add friends."
+        } else {
+            "Only friends can invite you on this server. Find players to add friends."
+        };
+        self.pane_title(ui, "Friends", note);
+        if !self.data.loaded {
+            ui.text_colored(MUTED, "Loading friends...");
+            return;
+        }
+        let mut row = 0;
+        if !self.data.requests_in.is_empty() {
+            self.section(ui, "Want to be your friend");
+            for p in &self.data.requests_in {
+                self.player_row(ui, row, "in", p, &Self::status(p), &[
+                    RowAction::Change(C::Block, "Block"),
+                    RowAction::Change(C::Decline, "Decline"),
+                    RowAction::Change(C::Accept, "Accept"),
+                ]);
+                row += 1;
+            }
+        }
+        if self.data.friends.is_empty() {
+            self.section(ui, "Your friends");
+            let _c = ui.push_style_color(StyleColor::Text, MUTED);
+            ui.text_wrapped("No friends yet. Open Find players, search for someone and add them.");
+        } else {
+            self.section(ui, "Your friends");
+            for p in &self.data.friends {
+                let mut actions = vec![RowAction::Change(C::Block, "Block"), RowAction::Change(C::Remove, "Remove")];
+                if p.online {
+                    actions.push(RowAction::Invite);
+                }
+                self.player_row(ui, row, "friend", p, &Self::status(p), &actions);
+                row += 1;
+            }
+        }
+        if !self.data.requests_out.is_empty() {
+            self.section(ui, "Waiting for an answer");
+            for p in &self.data.requests_out {
+                self.player_row(ui, row, "out", p, "Friend request sent", &[RowAction::Change(C::Decline, "Cancel")]);
+                row += 1;
+            }
+        }
+        if !self.data.blocked.is_empty() {
+            self.section(ui, "Blocked");
+            for p in &self.data.blocked {
+                self.player_row(ui, row, "blocked", p, "Can't see you or invite you", &[RowAction::Change(C::Unblock, "Unblock")]);
+                row += 1;
+            }
+        }
+    }
+
+    fn pane_players(&mut self, ui: &Ui) {
+        use community::FriendChange as C;
+        self.pane_title(ui, "Find players", "Search by name, or see who's online. Add friends, or block someone.");
+        if !self.searched {
+            self.searched = true;
+            community::search(self.search_text.trim().to_string());
+        }
+        let mut text = std::mem::take(&mut self.search_text);
+        let search_label = "Search##fe-search-go";
+        let field_w = ui.content_region_avail()[0] - self.button_width(ui, search_label) - self.s(10.0);
+        ui.set_next_item_width(field_w);
+        let entered = ui.input_text("##fe-search", &mut text).hint("Name, or empty for everyone online").enter_returns_true(true).build();
+        ui.same_line();
+        if self.button(ui, search_label, true) || entered {
+            community::search(text.trim().to_string());
+        }
+        text.truncate(32);
+        self.search_text = text;
+        ui.dummy([0.0, self.s(6.0)]);
+
+        let Some((query, found)) = self.data.search.as_ref() else {
+            ui.text_colored(MUTED, "Searching...");
+            return;
+        };
+        if found.is_empty() {
+            let _c = ui.push_style_color(StyleColor::Text, MUTED);
+            ui.text_wrapped(if query.is_empty() {
+                String::from("No one else is online right now.")
+            } else {
+                format!("No one called \"{query}\".")
             });
+            return;
+        }
+        for (i, p) in found.iter().enumerate() {
+            let (detail, mut actions) = match p.relation {
+                community::Relation::Friend => (format!("Friend · {}", Self::status(p)), vec![]),
+                community::Relation::RequestSent => (String::from("Friend request sent"), vec![RowAction::Change(C::Decline, "Cancel")]),
+                community::Relation::RequestReceived => (String::from("Wants to be your friend"), vec![RowAction::Change(C::Accept, "Accept")]),
+                community::Relation::Blocked => (String::from("Blocked"), vec![RowAction::Change(C::Unblock, "Unblock")]),
+                community::Relation::None => (Self::status(p), vec![RowAction::Change(C::Block, "Block"), RowAction::Change(C::Request, "Add friend")]),
+            };
+            let can_invite = p.online && (p.relation == community::Relation::Friend || (self.data.everyone_mode && p.relation == community::Relation::None));
+            if can_invite {
+                actions.push(RowAction::Invite);
+            }
+            self.player_row(ui, i, "found", p, &detail, &actions);
         }
     }
 
@@ -1047,6 +1193,8 @@ fn init_hudhook<T: hudhook::Hooks + 'static>(invites: crossbeam_channel::Receive
             local_notice: None,
             relogin: None,
             last_refresh: Instant::now(),
+            search_text: String::new(),
+            searched: false,
         })
         .with_hmodule(unsafe { GetModuleHandleA(PCSTR::null())?.into() })
         .build()

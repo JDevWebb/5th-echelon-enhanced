@@ -97,3 +97,54 @@ pub async fn register(api_url: String, username: &str, password: &str, ubi_id: &
         Err(Error::ServerFailure(resp.error))
     }
 }
+
+/// Signs in to `username` with the player's identity key (signed for server
+/// `server_id`), setting `new_password`.
+pub async fn key_login(api_url: String, identity: &identity::Identity, server_id: &str, username: &str, new_password: &str) -> Result<(), Error> {
+    let Ok(mut client) = UsersClient::connect(api_url).await else {
+        return Err(Error::ConnectionFailed);
+    };
+    let time = identity::now();
+    let request = server_api::users::KeyLoginRequest {
+        username: username.to_string(),
+        global_id: identity.global_id(),
+        time,
+        signature: identity.sign_login(server_id, username, time),
+        new_password: new_password.to_string(),
+    };
+    match client.key_login(request).await {
+        Ok(_) => Ok(()),
+        Err(status) if matches!(status.code(), tonic::Code::Unauthenticated | tonic::Code::NotFound) => Err(Error::UserNotFound),
+        Err(status) => Err(Error::Rpc(status)),
+    }
+}
+
+/// Signs in as `username` and links the account to the player's identity,
+/// so friends follow them to other servers sharing a coordinator.
+pub async fn link_identity(api_url: String, identity: &identity::Identity, server_id: &str, username: &str, password: &str) -> Result<(), Error> {
+    let Ok(channel) = tonic::transport::Endpoint::from_shared(api_url).map_err(|_| Error::ConnectionFailed)?.connect().await else {
+        return Err(Error::ConnectionFailed);
+    };
+    let token = UsersClient::new(channel.clone())
+        .login(LoginRequest {
+            username: username.to_string(),
+            password: password.to_string(),
+        })
+        .await?
+        .into_inner()
+        .token;
+    let token: tonic::metadata::MetadataValue<_> = token.parse().map_err(|_| Error::ServerFailure("bad token".into()))?;
+    let mut client = server_api::friends::friends_client::FriendsClient::with_interceptor(channel, move |mut req: tonic::Request<()>| {
+        req.metadata_mut().insert("authorization", token.clone());
+        Ok(req)
+    });
+    let time = identity::now();
+    client
+        .link_identity(server_api::friends::LinkIdentityRequest {
+            global_id: identity.global_id(),
+            time,
+            signature: identity.sign_link(server_id, username, time),
+        })
+        .await?;
+    Ok(())
+}

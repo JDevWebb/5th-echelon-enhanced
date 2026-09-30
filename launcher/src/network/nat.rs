@@ -51,3 +51,10 @@ pub async fn test_nat_helper(server: &str, port: u16) -> Result<NatCheck, Error>
     let symmetric = probe(&socket, second, true).await.ok().map(|o| o.port() != observed.port());
     Ok(NatCheck { observed, symmetric })
 }
+
+/// One probe to the helper on `server`: answered or not.
+pub async fn probe_once(server: &str, port: u16) -> Result<SocketAddr, Error> {
+    let to = tokio::net::lookup_host((server, port)).await?.find(SocketAddr::is_ipv4).ok_or(Error::ConnectionFailed)?;
+    let socket = UdpSocket::bind("0.0.0.0:0").await?;
+    probe(&socket, to, false).await
+}

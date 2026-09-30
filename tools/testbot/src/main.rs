@@ -36,6 +36,163 @@ impl Ctx {
     }
 }
 
+use server_api::friends::Relation;
+use server_api::misc::friend_event::Kind;
+
+/// The server's id from its `/api/info` (players sign it into identity links).
+fn server_id(server: IpAddr) -> Result<String> {
+    setup::server_info::fetch(&server.to_string(), Duration::from_secs(5))
+        .and_then(|i| i.id)
+        .ok_or_else(|| eyre!("the server's /api/info has no id"))
+}
+
+fn names(players: &[server_api::friends::Player]) -> Vec<&str> {
+    players.iter().map(|p| p.username.as_str()).collect()
+}
+
+/// A friend request, its notice, accepting it, and removing the friend.
+async fn friends(ctx: &mut Ctx) -> Result<()> {
+    let a = ctx.player("Kiwi").await?;
+    let b = ctx.player("Tank").await?;
+    ensure!(a.friend_change("request", &b.name).await? == Relation::RequestSent, "the request wasn't sent");
+    ensure!(
+        b.poll_friend_event(Duration::from_secs(3)).await? == Some((Kind::Request, a.name.clone())),
+        "no request notice for the other player"
+    );
+    ensure!(names(&b.relationships().await?.requests_received) == [a.name.as_str()], "the request isn't waiting");
+    // By any case of the name.
+    ensure!(b.friend_change("accept", &a.name.to_uppercase()).await? == Relation::Friend, "accepting didn't make friends");
+    ensure!(a.poll_friend_event(Duration::from_secs(3)).await? == Some((Kind::Accepted, b.name.clone())), "no accepted notice");
+    ensure!(names(&a.relationships().await?.friends) == [b.name.as_str()], "not in the friend list");
+    let part = &b.name[..b.name.len() - 1];
+    ensure!(a.search(part).await?.contains(&(b.name.clone(), Relation::Friend)), "search doesn't show the friend");
+    ensure!(a.friend_change("remove", &b.name).await? == Relation::None, "removing failed");
+    ensure!(b.relationships().await?.friends.is_empty(), "still friends on the other side");
+    a.disconnect().await?;
+    b.disconnect().await
+}
+
+/// A block hides both players from each other and stops invites.
+async fn block(ctx: &mut Ctx) -> Result<()> {
+    let a = ctx.player("Blocker").await?;
+    let b = ctx.player("Pest").await?;
+    ensure!(a.friend_change("block", &b.name).await? == Relation::Blocked, "blocking failed");
+    ensure!(!b.friends().await?.iter().any(|(n, _)| *n == a.name), "the blocker is still on the pest's game friend list");
+    ensure!(b.try_invite(&a.name).await.is_err(), "the pest could still invite");
+    ensure!(b.search(&a.name).await?.is_empty(), "the pest can find the blocker");
+    ensure!(b.friend_change("request", &a.name).await? == Relation::RequestSent, "a blocked request should look sent");
+    ensure!(a.relationships().await?.requests_received.is_empty(), "but must not arrive");
+    ensure!(a.friend_change("unblock", &b.name).await? == Relation::None, "unblocking failed");
+    ensure!(b.friends().await?.iter().any(|(n, _)| *n == a.name), "unblocked, but still hidden");
+    a.disconnect().await?;
+    b.disconnect().await
+}
+
+/// Invitations from two players both arrive (one no longer replaces the other).
+async fn invite_queue(ctx: &mut Ctx) -> Result<()> {
+    let host1 = ctx.player("Host").await?;
+    let host2 = ctx.player("Host").await?;
+    let guest = ctx.player("Guest").await?;
+    host1.invite(&guest.name).await?;
+    host2.invite(&guest.name).await?;
+    let mut got = vec![
+        guest.poll_invite(Duration::from_secs(3)).await?.unwrap_or_default(),
+        guest.poll_invite(Duration::from_secs(3)).await?.unwrap_or_default(),
+    ];
+    got.sort();
+    let mut want = vec![host1.name.clone(), host2.name.clone()];
+    want.sort();
+    ensure!(got == want, "invitations lost: got {got:?}");
+    host1.disconnect().await?;
+    host2.disconnect().await?;
+    guest.disconnect().await
+}
+
+/// An identity links to an account, and signs in to it with a new password.
+async fn identity_login(ctx: &mut Ctx) -> Result<()> {
+    let id = server_id(ctx.server)?;
+    let me = identity::Identity::generate();
+    let a = ctx.player("Keyed").await?;
+    let now = identity::now();
+    ensure!(a.link(&identity::Identity::generate(), "another-server", now).await.is_err(), "a link signed for another server was taken");
+    a.link(&me, &id, now).await.map_err(|e| eyre!("linking: {e}"))?;
+    let name = a.name.clone();
+    a.disconnect().await?;
+    // A new PC: sign in with the key, set a new password.
+    testbot::bot::key_login(ctx.server, &me, &id, &name, now + 1, "a-new-password-1").await.map_err(|e| eyre!("key login: {e}"))?;
+    ensure!(
+        testbot::bot::key_login(ctx.server, &me, &id, &name, now + 1, "").await.is_err(),
+        "the same signature worked twice"
+    );
+    ensure!(
+        testbot::bot::key_login(ctx.server, &identity::Identity::generate(), &id, &name, now + 2, "stolen-password").await.is_err(),
+        "another key signed in"
+    );
+    ensure!(Bot::login(ctx.server, &name, PASSWORD).await.is_err(), "the old password still works");
+    Bot::login(ctx.server, &name, "a-new-password-1").await?.disconnect().await
+}
+
+/// In the "mutual" mode: only friends are listed, and only friends invite.
+async fn friends_mutual(ctx: &mut Ctx) -> Result<()> {
+    let a = ctx.player("Host").await?;
+    let b = ctx.player("Guest").await?;
+    ensure!(a.relationships().await?.mode == "mutual", "the server isn't in the mutual mode");
+    ensure!(!b.friends().await?.iter().any(|(n, _)| *n == a.name), "a stranger is on the game's friend list");
+    ensure!(a.try_invite(&b.name).await.is_err(), "a stranger could invite");
+    a.friend_change("request", &b.name).await?;
+    b.friend_change("accept", &a.name).await?;
+    ensure!(b.friends().await?.iter().any(|(n, _)| *n == a.name), "a friend is missing from the game's friend list");
+    a.try_invite(&b.name).await.map_err(|e| eyre!("a friend couldn't invite: {e}"))?;
+    ensure!(b.poll_invite(Duration::from_secs(3)).await?.as_deref() == Some(a.name.as_str()), "the invite didn't arrive");
+    a.disconnect().await?;
+    b.disconnect().await
+}
+
+/// Two servers sharing a coordinator (`--other` is the second): friends made
+/// on one show up on the other once both players link there too.
+async fn federation(ctx: &mut Ctx, other: IpAddr) -> Result<()> {
+    let (id_a, id_b) = (server_id(ctx.server)?, server_id(other)?);
+    let (kiwi_key, tank_key) = (identity::Identity::generate(), identity::Identity::generate());
+    let kiwi = ctx.player("Kiwi").await?;
+    let tank = ctx.player("Tank").await?;
+    kiwi.link(&kiwi_key, &id_a, identity::now()).await?;
+    tank.link(&tank_key, &id_a, identity::now()).await?;
+    kiwi.friend_change("request", &tank.name).await?;
+    tank.friend_change("accept", &kiwi.name).await?;
+
+    // The same people on the second server, with accounts of their own.
+    let on_b = |name: &str| format!("{name}B");
+    for (bot, key) in [(&kiwi, &kiwi_key), (&tank, &tank_key)] {
+        Bot::register(other, &on_b(&bot.name), PASSWORD).await?;
+        let there = Bot::login(other, &on_b(&bot.name), PASSWORD).await?;
+        there.link(key, &id_b, identity::now()).await?;
+        there.disconnect().await?;
+    }
+    let kiwi_b = Bot::login(other, &on_b(&kiwi.name), PASSWORD).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    loop {
+        if names(&kiwi_b.relationships().await?.friends) == [on_b(&tank.name).as_str()] {
+            break;
+        }
+        ensure!(tokio::time::Instant::now() < deadline, "the friendship didn't reach the second server");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    // A block on the second server reaches the first.
+    kiwi_b.friend_change("block", &on_b(&tank.name)).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(90);
+    loop {
+        let r = kiwi.relationships().await?;
+        if r.friends.is_empty() && names(&r.blocked) == [tank.name.as_str()] {
+            break;
+        }
+        ensure!(tokio::time::Instant::now() < deadline, "the block didn't reach the first server");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    kiwi_b.disconnect().await?;
+    kiwi.disconnect().await?;
+    tank.disconnect().await
+}
+
 fn attr(attrs: &[Property], id: u32) -> Option<u32> {
     attrs.iter().find(|p| p.id == id).map(|p| p.value)
 }
@@ -383,6 +540,10 @@ const SCENARIOS: &[&str] = &[
     "nat-probe",
     "nat-relay",
     "nat-public-address",
+    "friends",
+    "block",
+    "invite-queue",
+    "identity-login",
 ];
 
 #[tokio::main]
@@ -391,6 +552,12 @@ async fn main() -> Result<()> {
     let mut host = String::from("127.0.0.1");
     if let Some(i) = args.iter().position(|a| a == "--server") {
         host = args.get(i + 1).ok_or_else(|| eyre!("--server needs an address"))?.clone();
+        args.drain(i..=i + 1);
+    }
+    let mut other: Option<IpAddr> = None;
+    if let Some(i) = args.iter().position(|a| a == "--other") {
+        let o = args.get(i + 1).ok_or_else(|| eyre!("--other needs an address"))?.clone();
+        other = Some(o.parse().ok().or_else(|| setup::net::resolve(&o)).ok_or_else(|| eyre!("can't resolve {o}"))?);
         args.drain(i..=i + 1);
     }
     let server: IpAddr = match host.parse() {
@@ -419,7 +586,8 @@ async fn main() -> Result<()> {
     let mut ctx = Ctx { server, run: rand::random::<u16>().into(), n: 0 };
     let mut failed = 0;
     for name in names {
-        let result = tokio::time::timeout(Duration::from_secs(30), async {
+        let limit = if name == "federation" { 150 } else { 30 };
+        let result = tokio::time::timeout(Duration::from_secs(limit), async {
             match name {
                 "login" => login(&mut ctx).await,
                 "lobby-invite" => lobby_invite(&mut ctx).await,
@@ -434,6 +602,16 @@ async fn main() -> Result<()> {
                 "nat-probe" => nat_probe_scenario(&mut ctx).await,
                 "nat-relay" => nat_relay(&mut ctx).await,
                 "nat-public-address" => nat_public_address(&mut ctx).await,
+                "friends" => friends(&mut ctx).await,
+                "block" => block(&mut ctx).await,
+                "invite-queue" => invite_queue(&mut ctx).await,
+                "identity-login" => identity_login(&mut ctx).await,
+                // Not in the default list: a server in the "mutual" mode, and two servers.
+                "friends-mutual" => friends_mutual(&mut ctx).await,
+                "federation" => match other {
+                    Some(other) => federation(&mut ctx, other).await,
+                    None => Err(eyre!("federation needs --other <second server>")),
+                },
                 other => Err(eyre!("unknown scenario {other:?} (known: {})", SCENARIOS.join(", "))),
             }
         })

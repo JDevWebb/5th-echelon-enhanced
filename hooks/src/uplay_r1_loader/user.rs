@@ -19,7 +19,10 @@ unsafe extern "cdecl" fn UPLAY_USER_ClearGameSession() -> bool {
 
 #[forwardable_export]
 unsafe extern "cdecl" fn UPLAY_USER_GetAccountId(buffer: *mut u8) -> bool {
-    let account_id = match CString::new(cfg.user.account_id.clone()) {
+    // The server's word for who we are, once signed in; the settings file's
+    // until then (they're the same for accounts the launcher made).
+    let account_id = crate::api::account_id().unwrap_or_else(|| cfg.user.account_id.clone());
+    let account_id = match CString::new(account_id) {
         Ok(account_id) => account_id,
         Err(e) => {
             error!("Couldn't convert account_id: {}!", e);
@@ -55,7 +58,7 @@ unsafe extern "cdecl" fn UPLAY_USER_GetPassword(buffer: *mut u8) -> bool {
         error!("Config not loaded!");
         return false;
     };
-    let password = match CString::new(cfg.user.password.clone()) {
+    let password = match CString::new(cfg.user.secret().unwrap_or_default()) {
         Ok(password) => password,
         Err(e) => {
             error!("Couldn't convert password: {}!", e);

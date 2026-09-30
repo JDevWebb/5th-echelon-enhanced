@@ -200,7 +200,13 @@ fn init(hmodule: Option<HMODULE>) {
         .name(String::from("login-thread"))
         .spawn(move || {
             // try to login once. relogins are attempted by the update thread later on
-            let _ = api::login(&config.user.username, &config.user.password);
+            match config.user.secret() {
+                Some(password) => {
+                    let _ = api::login(&config.user.username, &password);
+                }
+                // Encrypted for another Windows user or PC (a copied game folder).
+                None => tracing::error!("The saved password can't be read here; set up the server again in the launcher"),
+            }
         })
         .unwrap();
 }

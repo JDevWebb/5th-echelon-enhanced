@@ -164,11 +164,11 @@ impl MyFriends {
     }
 
     /// Runs a friend change for the caller, with its rate limit, and answers
-    /// with where the two stand afterwards.
+    /// with where the two stand afterwards (or what `f` says they seem to).
     async fn change<F, Fut>(&self, request: Request<friends::TargetRequest>, what: &str, f: F) -> Result<Response<friends::ChangeResponse>, Status>
     where
         F: FnOnce(u32, Person) -> Fut,
-        Fut: Future<Output = Result<(), Status>>,
+        Fut: Future<Output = Result<Option<Relation>, Status>>,
     {
         let me = caller(&request)?;
         if !crate::rate_limit::friend_changes().check(me) {
@@ -180,8 +180,10 @@ impl MyFriends {
         }
         info!(self.logger, "{what}: {me} -> {} ({})", other.username, other.id);
         let other_id = other.id;
-        f(me, other).await?;
-        let relation = self.storage.relation(me, other_id).await.map_err(internal)?;
+        let relation = match f(me, other).await? {
+            Some(seems) => seems,
+            None => self.storage.relation(me, other_id).await.map_err(internal)?,
+        };
         let mut resp = friends::ChangeResponse { relation: 0 };
         resp.set_relation(relation_proto(relation));
         Ok(Response::new(resp))
@@ -311,6 +313,7 @@ impl Friends for MyFriends {
 
     async fn relationships(&self, request: Request<friends::RelationshipsRequest>) -> Result<Response<friends::RelationshipsResponse>, Status> {
         let me = caller(&request)?;
+        federation::pull_now_and_then(me);
         let sessions = self.storage.presence_async().await.map_err(internal)?.1;
         let list = |people: Vec<Person>, relation: Relation| -> Vec<friends::Player> {
             people.into_iter().map(|p| self.player(p, relation, Some(&sessions))).collect()
@@ -351,7 +354,8 @@ impl Friends for MyFriends {
             if now == Relation::Friend && before != Relation::Friend {
                 federation::record_friends(&self.logger, &self.storage, me, other.id, true).await;
             }
-            Ok(())
+            // A request to someone who blocked the caller looks sent, like any other.
+            Ok(Some(now))
         })
         .await
     }
@@ -360,7 +364,7 @@ impl Friends for MyFriends {
         self.change(request, "Friend accepted", |me, other| async move {
             self.storage.accept_friend(me, other.id).await.map_err(internal)?.map_err(friend_error)?;
             federation::record_friends(&self.logger, &self.storage, me, other.id, true).await;
-            Ok(())
+            Ok(None)
         })
         .await
     }
@@ -370,7 +374,7 @@ impl Friends for MyFriends {
             match self.storage.relation(me, other.id).await.map_err(internal)? {
                 Relation::RequestReceived | Relation::RequestSent => {
                     self.storage.remove_friend(me, other.id).await.map_err(internal)?;
-                    Ok(())
+                    Ok(None)
                 }
                 _ => Err(friend_error(FriendError::NoRequest)),
             }
@@ -383,7 +387,7 @@ impl Friends for MyFriends {
             if self.storage.remove_friend(me, other.id).await.map_err(internal)? {
                 federation::record_friends(&self.logger, &self.storage, me, other.id, false).await;
             }
-            Ok(())
+            Ok(None)
         })
         .await
     }
@@ -392,7 +396,7 @@ impl Friends for MyFriends {
         self.change(request, "Blocked", |me, other| async move {
             self.storage.block(me, other.id).await.map_err(internal)?.map_err(friend_error)?;
             federation::record_block(&self.logger, &self.storage, me, other.id, true).await;
-            Ok(())
+            Ok(None)
         })
         .await
     }
@@ -402,7 +406,7 @@ impl Friends for MyFriends {
             if self.storage.unblock(me, other.id).await.map_err(internal)? {
                 federation::record_block(&self.logger, &self.storage, me, other.id, false).await;
             }
-            Ok(())
+            Ok(None)
         })
         .await
     }

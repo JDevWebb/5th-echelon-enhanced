@@ -40,6 +40,9 @@ pub struct Play {
     username: String,
     password: String,
     looking: Slot<Result<IpAddr, String>>,
+    /// The coordinator's server directory, with this PC's ping to each.
+    browsing: Slot<Result<Vec<(setup::directory::Listing, Option<u32>)>, String>>,
+    directory: Option<Vec<(setup::directory::Listing, Option<u32>)>>,
 
     setup: Slot<Result<(), String>>,
     log: flow::Log,
@@ -214,6 +217,18 @@ fn join_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut egu
             Err(e) => play.setup_error = Some(e),
         }
     }
+    if let Some(found) = play.browsing.poll() {
+        match found {
+            Ok(servers) => {
+                // Suggest the best one straight away.
+                if let Some(best) = setup::directory::best(&servers) {
+                    play.server = servers[best].0.host.clone();
+                }
+                play.directory = Some(servers);
+            }
+            Err(e) => play.setup_error = Some(e),
+        }
+    }
     theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(theme::heading("Join a server"));
@@ -224,8 +239,10 @@ fn join_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut egu
                 ui.label("Server");
                 ui.horizontal(|ui| {
                     ui.add(egui::TextEdit::singleline(&mut play.server).hint_text("e.g. 10.8.0.10 or play.example.org").desired_width(260.0));
-                    if play.looking.running() {
+                    if play.looking.running() || play.browsing.running() {
                         ui.spinner();
+                    } else if let Some(url) = crate::app::Prefs::load().directory.filter(|_| ui.button("Browse servers").clicked()) {
+                        play.browsing.start(ctx, move || crate::services::rt().block_on(crate::network::server_directory(&url)));
                     } else if ui.button("Find on my network").clicked() {
                         play.looking.start(ctx, || {
                             let adapters = setup::net::adapters();
@@ -255,6 +272,7 @@ fn join_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut egu
                 ui.end_row();
             });
         });
+        directory_list(play, ui);
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             let ready = !play.server.trim().is_empty() && if play.have_account { !play.username.is_empty() && !play.password.is_empty() } else { !play.nick.trim().is_empty() };
@@ -270,6 +288,42 @@ fn join_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut egu
         });
         setup_progress(play, ui);
     });
+}
+
+/// The directory's servers: nearest and busiest first is suggested, any can
+/// be picked.
+fn directory_list(play: &mut Play, ui: &mut egui::Ui) {
+    let Some(servers) = play.directory.as_ref() else {
+        return;
+    };
+    ui.add_space(8.0);
+    if servers.is_empty() {
+        ui.label(theme::muted("The directory lists no servers right now."));
+        return;
+    }
+    let best = setup::directory::best(servers);
+    let mut pick = None;
+    egui::Grid::new("directory").num_columns(5).striped(true).spacing([14.0, 6.0]).show(ui, |ui| {
+        for (i, (s, ping)) in servers.iter().enumerate() {
+            let chosen = play.server.trim() == s.host;
+            let name = if s.region.is_empty() { s.name.clone() } else { format!("{} ({})", s.name, s.region) };
+            ui.label(if chosen { RichText::new(name).color(theme::ACCENT) } else { RichText::new(name) });
+            ui.label(format!("{} online", s.players_online));
+            ui.label(ping.map_or_else(|| String::from("no answer"), |ms| format!("{ms} ms")));
+            ui.label(theme::muted(match (best == Some(i), s.friends_mode.as_str()) {
+                (true, _) => "best for you",
+                (_, "mutual") => "friends only",
+                _ => "",
+            }));
+            if !chosen && ui.button("Choose").clicked() {
+                pick = Some(s.host.clone());
+            }
+            ui.end_row();
+        }
+    });
+    if let Some(host) = pick {
+        play.server = host;
+    }
 }
 
 fn start_setup(play: &mut Play, game: &Game, ctx: &egui::Context) {

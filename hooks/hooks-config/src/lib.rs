@@ -300,12 +300,138 @@ pub enum PidField {
 pub struct User {
     #[serde(default = "default_username")]
     pub username: String,
+    /// The password in plain text. Empty when it's kept in
+    /// `ProtectedPassword` instead.
     #[serde(default = "default_password")]
     pub password: String,
+    /// The password, encrypted for this Windows user (DPAPI, hex). Written
+    /// by the launcher on Windows; only this Windows account on this PC can
+    /// read it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub protected_password: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub cd_keys: Vec<String>,
     #[serde(default = "default_account_id")]
     pub account_id: String,
+}
+
+impl User {
+    /// The password to sign in with: decrypted from `ProtectedPassword`, or
+    /// `Password`. None when the protected one can't be read here (another
+    /// PC or Windows account).
+    pub fn secret(&self) -> Option<String> {
+        if self.protected_password.is_empty() {
+            Some(self.password.clone())
+        } else {
+            protect::unprotect(&self.protected_password)
+        }
+    }
+
+    /// Stores `password`, encrypted where this system can (DPAPI on Windows,
+    /// but not under Wine, whose prefixes don't share keys); in plain text
+    /// otherwise.
+    pub fn set_secret(&mut self, password: &str) {
+        match protect::protect(password) {
+            Some(blob) => {
+                self.protected_password = blob;
+                self.password = String::new();
+            }
+            None => {
+                self.protected_password = String::new();
+                self.password = password.to_string();
+            }
+        }
+    }
+}
+
+/// Encrypting the saved password for the Windows user (DPAPI).
+pub mod protect {
+    /// `secret` encrypted and hex-encoded; None where DPAPI isn't usable.
+    pub fn protect(secret: &str) -> Option<String> {
+        #[cfg(target_os = "windows")]
+        {
+            if crate::running_under_wine() {
+                return None;
+            }
+            imp::run(secret.as_bytes(), true).map(|b| hex(&b))
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = secret;
+            None
+        }
+    }
+
+    /// Decrypts [`protect`]'s output; None if this user can't.
+    pub fn unprotect(blob: &str) -> Option<String> {
+        #[cfg(target_os = "windows")]
+        {
+            let bytes = unhex(blob)?;
+            imp::run(&bytes, false).and_then(|b| String::from_utf8(b).ok())
+        }
+        #[cfg(not(target_os = "windows"))]
+        {
+            let _ = blob;
+            None
+        }
+    }
+
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    fn unhex(text: &str) -> Option<Vec<u8>> {
+        let text = text.trim();
+        if text.len() % 2 != 0 {
+            return None;
+        }
+        (0..text.len()).step_by(2).map(|i| u8::from_str_radix(text.get(i..i + 2)?, 16).ok()).collect()
+    }
+
+    #[cfg(target_os = "windows")]
+    mod imp {
+        use windows::Win32::Foundation::LocalFree;
+        use windows::Win32::Foundation::HLOCAL;
+        use windows::Win32::Security::Cryptography::CryptProtectData;
+        use windows::Win32::Security::Cryptography::CryptUnprotectData;
+        use windows::Win32::Security::Cryptography::CRYPTPROTECT_UI_FORBIDDEN;
+        use windows::Win32::Security::Cryptography::CRYPT_INTEGER_BLOB;
+
+        /// Encrypts (`protect`) or decrypts `data` for the current user.
+        pub fn run(data: &[u8], protect: bool) -> Option<Vec<u8>> {
+            let input = CRYPT_INTEGER_BLOB {
+                cbData: u32::try_from(data.len()).ok()?,
+                pbData: data.as_ptr().cast_mut(),
+            };
+            let mut output = CRYPT_INTEGER_BLOB::default();
+            // SAFETY: the input blob points at `data`, which outlives the call; the output is
+            // allocated by Windows and freed with LocalFree below.
+            unsafe {
+                let done = if protect {
+                    CryptProtectData(&input, windows::core::PCWSTR::null(), None, None, None, CRYPTPROTECT_UI_FORBIDDEN, &mut output)
+                } else {
+                    CryptUnprotectData(&input, None, None, None, None, CRYPTPROTECT_UI_FORBIDDEN, &mut output)
+                };
+                done.ok()?;
+                let bytes = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
+                let _ = LocalFree(HLOCAL(output.pbData.cast()));
+                Some(bytes)
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        #[test]
+        fn hex_round_trips() {
+            let bytes = [0u8, 1, 0xab, 0xff];
+            assert_eq!(super::unhex(&super::hex(&bytes)).unwrap(), bytes);
+            assert!(super::unhex("abc").is_none());
+            assert!(super::unhex("zz").is_none());
+        }
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]

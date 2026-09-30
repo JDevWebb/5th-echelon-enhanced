@@ -102,6 +102,25 @@ fn ticket_key(pid: u32, password: &str) -> Vec<u8> {
     key
 }
 
+/// Signs in to `name` with its identity key, optionally setting a new password.
+pub async fn key_login(server: IpAddr, identity: &identity::Identity, server_id: &str, name: &str, time: i64, new_password: &str) -> std::result::Result<(), tonic::Status> {
+    let channel = Channel::from_shared(api_url(server))
+        .map_err(|e| tonic::Status::internal(e.to_string()))?
+        .connect()
+        .await
+        .map_err(|e| tonic::Status::unavailable(e.to_string()))?;
+    UsersClient::new(channel)
+        .key_login(server_api::users::KeyLoginRequest {
+            username: name.into(),
+            global_id: identity.global_id(),
+            time,
+            signature: identity.sign_login(server_id, name, time),
+            new_password: new_password.into(),
+        })
+        .await?;
+    Ok(())
+}
+
 /// Parses `a => b;c => d` into session properties.
 pub fn properties(attrs: &str) -> QList<Property> {
     attrs.parse().expect("valid attributes")
@@ -327,6 +346,78 @@ impl Bot {
     pub async fn friends(&self) -> Result<Vec<(String, bool)>> {
         let resp = FriendsClient::new(self.api.clone()).list(self.authed(server_api::friends::ListRequest {})).await?.into_inner();
         Ok(resp.friends.into_iter().map(|f| (f.username, f.is_online)).collect())
+    }
+
+    /// Tries to invite a player, returning the server's refusal if any.
+    pub async fn try_invite(&self, friend: &str) -> std::result::Result<(), tonic::Status> {
+        FriendsClient::new(self.api.clone()).invite(self.authed(server_api::friends::InviteRequest { id: friend.into() })).await?;
+        Ok(())
+    }
+
+    /// A friend change towards the player called `name`, as the overlay makes it.
+    pub async fn friend_change(&self, change: &str, name: &str) -> std::result::Result<server_api::friends::Relation, tonic::Status> {
+        let mut c = FriendsClient::new(self.api.clone());
+        let req = self.authed(server_api::friends::TargetRequest {
+            id: String::new(),
+            username: name.into(),
+        });
+        let resp = match change {
+            "request" => c.request(req).await?,
+            "accept" => c.accept(req).await?,
+            "decline" => c.decline(req).await?,
+            "remove" => c.remove(req).await?,
+            "block" => c.block(req).await?,
+            "unblock" => c.unblock(req).await?,
+            other => return Err(tonic::Status::invalid_argument(format!("no change {other}"))),
+        };
+        Ok(resp.into_inner().relation())
+    }
+
+    /// Friends, requests both ways and blocks.
+    pub async fn relationships(&self) -> Result<server_api::friends::RelationshipsResponse> {
+        Ok(FriendsClient::new(self.api.clone())
+            .relationships(self.authed(server_api::friends::RelationshipsRequest {}))
+            .await?
+            .into_inner())
+    }
+
+    /// Player search: names and how they stand to us.
+    pub async fn search(&self, query: &str) -> Result<Vec<(String, server_api::friends::Relation)>> {
+        let found = FriendsClient::new(self.api.clone())
+            .search(self.authed(server_api::friends::SearchRequest { query: query.into() }))
+            .await?
+            .into_inner()
+            .players;
+        Ok(found.into_iter().map(|p| (p.username.clone(), p.relation())).collect())
+    }
+
+    /// Links this account to `identity`, signed for the server with id `server_id`.
+    pub async fn link(&self, identity: &identity::Identity, server_id: &str, time: i64) -> std::result::Result<(), tonic::Status> {
+        FriendsClient::new(self.api.clone())
+            .link_identity(self.authed(server_api::friends::LinkIdentityRequest {
+                global_id: identity.global_id(),
+                time,
+                signature: identity.sign_link(server_id, &self.name, time),
+            }))
+            .await?;
+        Ok(())
+    }
+
+    /// Waits for a friend event (a request or an accepted one): its kind
+    /// and who from.
+    pub async fn poll_friend_event(&self, wait: Duration) -> Result<Option<(server_api::misc::friend_event::Kind, String)>> {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let resp = MiscClient::new(self.api.clone()).event(self.authed(server_api::misc::EventRequest {})).await?.into_inner();
+            if let Some(event) = resp.friend {
+                let from = event.from.as_ref().map(|u| u.username.clone()).unwrap_or_default();
+                return Ok(Some((event.kind(), from)));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
     }
 
     /// Waits for a notification the server pushes to this player.

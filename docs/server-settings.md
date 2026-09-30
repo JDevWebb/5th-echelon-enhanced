@@ -114,6 +114,37 @@ enabled = true
 - The key is written to `admin-key.txt` next to the database, readable only by the server's user. Paste it into the launcher's "Manage a server".
 - Anyone with the key can delete accounts: keep it private, and don't expose port 50051 more widely than you need to.
 
+## `[friends]`: who is on a player's friend list
+
+```toml
+[friends]
+mode = "everyone"   # or "mutual"
+```
+
+- **everyone** (the default): every player on the server is on the game's friend list, and anyone can invite anyone they haven't blocked. This is how it worked before friend lists; it suits a LAN or a group that all know each other.
+- **mutual**: only friends are on it, and only friends can invite. The Linux installer sets this, for public servers.
+
+Friend requests, blocks and player search work in both modes, in the overlay. See [friends.md](friends.md).
+
+## `[federation]`: sharing friends with other servers
+
+```toml
+[federation]
+coordinator = "https://coordinator.example.com"
+join_token = "..."   # from the coordinator's operator; only needed until joined
+name = "Kiwi Ops"    # in the server directory (default: the public host)
+region = "Sydney"
+listed = true        # false: share friends, but stay out of the directory
+```
+
+Off until `coordinator` is set. The server then:
+- joins with the token, and keeps its credentials in `federation.key`;
+- sends friendships and blocks between players who linked their identity;
+- pulls their friends from other servers;
+- lists itself in the coordinator's server directory.
+
+`server-id.txt` holds this server's id, which players sign into their identity links; don't change it. See [friends.md](friends.md) for what is shared and how to run a coordinator.
+
 ## `[debug]` switches
 
 ```toml
@@ -128,3 +159,5 @@ session_owner_checks = true   # only a session's host and participants may chang
 ## Login tickets
 
 Tickets from the game's login are valid for 24 hours. The server checks this only when the game connects, right after login, so it never ends a game in progress.
+
+The launcher's and overlay's sign-in tokens (the gRPC API) are valid for 30 days; the game and the overlay sign in again on their own.

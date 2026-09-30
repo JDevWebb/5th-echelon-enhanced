@@ -2,7 +2,7 @@
 # Builds and tests 5th Echelon Enhanced locally in Docker (no CI).
 #
 #   build/build.sh test      workspace tests (all but the Windows-only hooks DLL and launcher)
-#   build/build.sh server    Linux x86_64 dedicated_server -> dist/
+#   build/build.sh server    Linux x86_64 dedicated_server and coordinator -> dist/
 #   build/build.sh linux     launcher-linux-x86_64 (DLL embedded) + dedicated_server-linux-x86_64 -> dist/
 #   build/build.sh sums      dist/SHA256SUMS for a release
 #   build/build.sh windows   launcher.exe (DLL embedded), uplay_r1_loader.dll, dedicated_server.exe, testbot.exe -> dist/
@@ -14,6 +14,9 @@
 #   build/build.sh proxy-test
 #                            the test players against a server behind Caddy
 #                            (docs/reverse-proxy.md), by host name only
+#   build/build.sh federation-test
+#                            two servers sharing friends through a coordinator
+#                            (docs/friends.md)
 #   build/build.sh fmt       cargo fmt (the crates this fork changes)
 #   build/build.sh shell     interactive shell in the build container
 #
@@ -44,7 +47,9 @@ case "${1:-test}" in
   server)
     # The node runs on x86_64; cross-compile for it from any host.
     run -e CARGO_TARGET_DIR=/target/amd64 "$IMAGE" \
-      sh -c 'cargo build -p dedicated_server --release --target x86_64-unknown-linux-gnu && cp /target/amd64/x86_64-unknown-linux-gnu/release/dedicated_server dist/dedicated_server-linux-x86_64'
+      sh -c 'cargo build -p dedicated_server -p coordinator --release --target x86_64-unknown-linux-gnu &&
+        cp /target/amd64/x86_64-unknown-linux-gnu/release/dedicated_server dist/dedicated_server-linux-x86_64 &&
+        cp /target/amd64/x86_64-unknown-linux-gnu/release/coordinator dist/coordinator-linux-x86_64'
     ;;
   windows)
     run -e CARGO_TARGET_DIR=/target/win "$IMAGE" sh -c '
@@ -67,7 +72,14 @@ case "${1:-test}" in
     ;;
   bots)
     shift
-    run "$IMAGE" bash -c 'cargo build -q -p dedicated_server -p testbot && scripts/bots.sh /target/native/debug "$@"' bots "$@"
+    # Every scenario on a default server, then the friends-only one on a
+    # server in the "mutual" mode.
+    run "$IMAGE" bash -c 'cargo build -q -p dedicated_server -p testbot && scripts/bots.sh /target/native/debug "$@" &&
+      if [ $# -eq 0 ]; then FRIENDS_MODE=mutual scripts/bots.sh /target/native/debug friends-mutual; fi' bots "$@"
+    ;;
+  federation-test)
+    run "$IMAGE" cargo build -q -p dedicated_server -p testbot -p coordinator
+    IMAGE="$IMAGE" scripts/federation-test.sh /target/native/debug
     ;;
   load)
     shift
@@ -86,8 +98,9 @@ case "${1:-test}" in
       set -e
       cargo build -p launcher --release --features embed-dll --target x86_64-unknown-linux-gnu
       cp /target/amd64/x86_64-unknown-linux-gnu/release/launcher dist/launcher-linux-x86_64
-      cargo build -p dedicated_server --release --target x86_64-unknown-linux-gnu
-      cp /target/amd64/x86_64-unknown-linux-gnu/release/dedicated_server dist/dedicated_server-linux-x86_64'
+      cargo build -p dedicated_server -p coordinator --release --target x86_64-unknown-linux-gnu
+      cp /target/amd64/x86_64-unknown-linux-gnu/release/dedicated_server dist/dedicated_server-linux-x86_64
+      cp /target/amd64/x86_64-unknown-linux-gnu/release/coordinator dist/coordinator-linux-x86_64'
     ;;
   sums)
     # The checksums a release publishes; the launcher verifies every

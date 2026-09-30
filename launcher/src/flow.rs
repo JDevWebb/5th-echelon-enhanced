@@ -72,10 +72,8 @@ pub fn gather(game_dir: &Path, cfg: &Config, bundled: Option<&[u8]>) -> (Facts, 
             facts.account = Some(if !profile.has_account() {
                 AccountFact::None
             } else {
-                let accounts = Accounts {
-                    api: profile.api_server_url().to_string(),
-                };
-                match account::AccountService::login(&accounts, &profile.user.username, &profile.user.password) {
+                let accounts = Accounts::new(profile.api_server_url().to_string());
+                match account::AccountService::login(&accounts, &profile.user.username, &profile.user.secret().unwrap_or_default()) {
                     Ok(()) => AccountFact::Ok(profile.user.username.clone()),
                     Err(e @ (account::AccountError::WrongPassword | account::AccountError::NotFound)) => AccountFact::Refused(e.to_string()),
                     Err(e) => AccountFact::Unknown(e.to_string()),
@@ -142,7 +140,8 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<(), S
             ..Default::default()
         });
     // A server behind a proxy, or with remapped ports, says which it uses.
-    if let Some(ports) = setup::server_info::fetch(&plan.server, Duration::from_secs(4)).and_then(|i| i.ports) {
+    let info = setup::server_info::fetch(&plan.server, Duration::from_secs(4));
+    if let Some(ports) = info.as_ref().and_then(|i| i.ports) {
         profile.use_ports(&ports);
         if profile.api_server_url.is_some() || profile.login_port.is_some() || profile.nat_port.is_some() {
             say(log, format!("The server uses API port {}, game port {}.", ports.api, ports.login));
@@ -153,37 +152,82 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<(), S
         return Err(format!("{ip} doesn't answer on port {api_port}. Check the server is running and you're connected to its network."));
     }
 
+    // A server that shares friends through a coordinator also has its server directory.
+    if let Some(coordinator) = info.as_ref().and_then(|i| i.coordinator.clone()) {
+        if crate::app::Prefs::load().directory.is_none() {
+            crate::app::Prefs::set_directory(Some(coordinator));
+        }
+    }
+
     say(log, "Setting up your account…");
+    // The player's identity, on servers that support it: signs in to their account here
+    // from another PC, and carries friends between servers.
+    let server_id = info.as_ref().filter(|i| i.features.iter().any(|f| f == "identity")).and_then(|i| i.id.clone());
+    let identity = match server_id {
+        Some(id) => match setup::player_identity::load_or_create() {
+            Ok(identity) => Some((Arc::new(identity), id)),
+            Err(e) => {
+                say(log, format!("Your identity couldn't be loaded ({e}); friends won't follow you to other servers."));
+                None
+            }
+        },
+        None => None,
+    };
     let accounts = Accounts {
         api: profile.api_server_url().to_string(),
+        identity: identity.clone(),
     };
-    let saved = plan
-        .credentials
-        .as_ref()
-        .map(|(u, p)| (u.as_str(), p.as_str()))
-        .or_else(|| profile.has_account().then(|| (profile.user.username.as_str(), profile.user.password.as_str())));
-    let (username, password, how) = match (&plan.credentials, saved) {
+    // Only this server's own password is ever sent to it; names from other servers are
+    // only tried with the identity key, and name a new account.
+    let saved_secret = profile.user.secret();
+    let saved = saved_secret.as_deref().filter(|_| profile.has_account()).map(|p| (profile.user.username.as_str(), p));
+    let cfg_now = Config::load(dir);
+    let other_names: Vec<String> = cfg_now
+        .profiles
+        .iter()
+        .filter(|p| p.server != plan.server && !p.user.username.is_empty())
+        .map(|p| p.user.username.clone())
+        .collect();
+    let names: Vec<&str> = other_names.iter().map(String::as_str).collect();
+    let (username, password, how) = match &plan.credentials {
         // Credentials the player typed must sign in as they are.
-        (Some((u, p)), _) => {
+        Some((u, p)) => {
             account::AccountService::login(&accounts, u, p).map_err(|e| format!("Couldn't sign in as {u}: {e}."))?;
             (u.clone(), p.clone(), account::Outcome::Existing)
         }
-        (None, saved) => account::ensure_account(&accounts, saved, &plan.nick).map_err(|e| format!("Couldn't set up an account: {e}."))?,
+        None => account::ensure_account(&accounts, saved, &names, &plan.nick).map_err(|e| format!("Couldn't set up an account: {e}."))?,
     };
     say(
         log,
         match how {
             account::Outcome::Existing => format!("Signed in as {username}."),
-            account::Outcome::Registered => format!("Registered {username} on this server."),
+            account::Outcome::Recovered => format!("Signed in to your account {username} with your identity, and gave it a new password."),
             account::Outcome::Created => format!("Created the account {username}."),
         },
     );
-    profile.user = hooks_config::User {
+    if let Some((identity, server_id)) = &identity {
+        let linked = crate::services::rt().block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(8),
+                crate::network::link_identity(profile.api_server_url().to_string(), identity, server_id, &username, &password),
+            )
+            .await
+        });
+        match linked {
+            Ok(Ok(())) => say(log, format!("Linked to your identity ({}).", identity::short(&identity.global_id()))),
+            Ok(Err(e)) => say(log, format!("Couldn't link your identity: {e}. Friends won't follow you from other servers.")),
+            Err(_) => say(log, "Couldn't link your identity: no answer in time."),
+        }
+    }
+    let mut user = hooks_config::User {
         username: username.clone(),
-        password,
+        password: String::new(),
+        protected_password: String::new(),
         cd_keys: profile.user.cd_keys.clone(),
         account_id: username,
     };
+    user.set_secret(&password);
+    profile.user = user;
 
     let adapters = net::adapters();
     profile.adapter = net::adapter_for_server(ip, &adapters);

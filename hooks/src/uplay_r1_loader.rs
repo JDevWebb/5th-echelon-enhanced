@@ -267,7 +267,16 @@ unsafe extern "cdecl" fn UPLAY_Startup(uplay_id: usize, game_version: usize, lan
                         let mut failures = 0;
                         loop {
                             tokio::time::sleep(Duration::from_secs(1)).await;
-                            let event: Option<std::result::Result<_, _>> = crate::api::event().await.map(|resp| resp.invite).transpose();
+                            let event: Option<std::result::Result<_, _>> = crate::api::event()
+                                .await
+                                .map(|resp| {
+                                    // A friend request or an accepted one: a notice in the overlay.
+                                    if let Some(friend) = resp.friend.as_ref() {
+                                        crate::community::friend_event(friend);
+                                    }
+                                    resp.invite
+                                })
+                                .transpose();
                             if let Some(invite) = event {
                                 if invite.is_err() {
                                     failures += 1;

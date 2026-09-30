@@ -5,7 +5,12 @@ use std::sync::OnceLock;
 use server_api::friends::friends_client::FriendsClient;
 use server_api::friends::InviteRequest;
 use server_api::friends::ListRequest;
+use server_api::friends::Player;
+use server_api::friends::RelationshipsRequest;
+use server_api::friends::RelationshipsResponse;
+use server_api::friends::SearchRequest;
 use server_api::friends::SetSessionRequest;
+use server_api::friends::TargetRequest;
 use server_api::misc::misc_client::MiscClient;
 use server_api::misc::EventRequest;
 use server_api::misc::EventResponse;
@@ -20,6 +25,8 @@ use tracing::instrument;
 
 static TOKEN: Mutex<Option<MetadataValue<Ascii>>> = Mutex::new(None);
 static CREDS: Mutex<Option<(String, String)>> = Mutex::new(None);
+/// The account id the server gave us at sign-in (the game's "Ubisoft id").
+static ACCOUNT_ID: Mutex<Option<String>> = Mutex::new(None);
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -244,8 +251,65 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
             let mut guard = TOKEN.lock().unwrap();
             *guard = Some(response.token.parse()?);
         }
+        if let Some(user) = response.user.filter(|u| !u.id.is_empty()) {
+            *ACCOUNT_ID.lock().unwrap() = Some(user.id);
+        }
     }
     Ok(())
+}
+
+/// The account id the server knows us by, once signed in. The game should
+/// use this, not whatever the settings file says.
+pub fn account_id() -> Option<String> {
+    ACCOUNT_ID.lock().unwrap().clone()
+}
+
+/// A change to how we stand to another player.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FriendChange {
+    Request,
+    Accept,
+    Decline,
+    Remove,
+    Block,
+    Unblock,
+}
+
+/// Our friends, friend requests both ways and blocks.
+pub fn relationships() -> Result<RelationshipsResponse, Error> {
+    run(signed_in(|| async {
+        let mut client = connect!(FriendsClient);
+        Ok(client.relationships(tonic::Request::new(RelationshipsRequest {})).await?.into_inner())
+    }))
+}
+
+/// Players whose name contains `query`, or who's online for an empty one.
+pub fn search_players(query: &str) -> Result<Vec<Player>, Error> {
+    run(signed_in(|| async {
+        let mut client = connect!(FriendsClient);
+        let request = tonic::Request::new(SearchRequest { query: query.into() });
+        Ok(client.search(request).await?.into_inner().players)
+    }))
+}
+
+/// Changes how we stand to the player with account id `id`.
+pub fn change_friend(change: FriendChange, id: &str) -> Result<(), Error> {
+    run(signed_in(|| async {
+        let mut client = connect!(FriendsClient);
+        let request = tonic::Request::new(TargetRequest {
+            id: id.into(),
+            username: String::new(),
+        });
+        match change {
+            FriendChange::Request => client.request(request).await?,
+            FriendChange::Accept => client.accept(request).await?,
+            FriendChange::Decline => client.decline(request).await?,
+            FriendChange::Remove => client.remove(request).await?,
+            FriendChange::Block => client.block(request).await?,
+            FriendChange::Unblock => client.unblock(request).await?,
+        };
+        Ok(())
+    }))
 }
 
 /// The name we signed in with, once login has been attempted.

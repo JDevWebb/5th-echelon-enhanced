@@ -77,7 +77,7 @@ impl Profile {
 
     /// Whether the profile has an account to sign in with.
     pub fn has_account(&self) -> bool {
-        !self.user.username.is_empty() && !self.user.password.is_empty()
+        !self.user.username.is_empty() && (!self.user.password.is_empty() || !self.user.protected_password.is_empty())
     }
 }
 
@@ -199,7 +199,8 @@ impl ConfigMut {
     }
 
     fn save(&mut self) -> anyhow::Result<()> {
-        crate::write_atomic(&self.path, toml::to_string_pretty(&self.inner)?.as_bytes())?;
+        // It holds the account passwords: readable by this user only on Linux.
+        crate::write_private(&self.path, toml::to_string_pretty(&self.inner)?.as_bytes())?;
         self.loaded = modified(&self.path);
         Ok(())
     }
@@ -301,6 +302,7 @@ Password = "pw12345678"
                 user: hooks_config::User {
                     username: "Kiwi".into(),
                     password: "pw12345678".into(),
+                    protected_password: String::new(),
                     cd_keys: vec![],
                     account_id: String::new(),
                 },

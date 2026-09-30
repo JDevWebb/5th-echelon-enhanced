@@ -58,10 +58,15 @@ impl Game {
 }
 
 /// The launcher's own settings (`%APPDATA%\5th-Echelon\launcher.toml`):
-/// where the game is, for a launcher that isn't in the game folder.
+/// where the game is, for a launcher that isn't in the game folder, and the
+/// server directory to browse.
 #[derive(Debug, Default, Serialize, Deserialize)]
-struct Prefs {
+pub struct Prefs {
     game_dir: Option<PathBuf>,
+    /// A coordinator's URL, for its server directory. Learnt from the first
+    /// server that reports one, or set in Settings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory: Option<String>,
 }
 
 impl Prefs {
@@ -69,19 +74,29 @@ impl Prefs {
         setup::app_data_dir().map(|d| d.join("launcher.toml"))
     }
 
-    fn load() -> Self {
+    pub fn load() -> Self {
         Self::path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| toml::from_str(&s).ok()).unwrap_or_default()
     }
 
-    fn remember(dir: &Path) {
+    fn save(&self) {
         let Some(path) = Self::path() else { return };
-        let prefs = Prefs {
-            game_dir: Some(dir.to_path_buf()),
-        };
         let _ = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
-        if let Ok(s) = toml::to_string(&prefs) {
+        if let Ok(s) = toml::to_string(self) {
             let _ = std::fs::write(path, s);
         }
+    }
+
+    fn remember(dir: &Path) {
+        let mut prefs = Self::load();
+        prefs.game_dir = Some(dir.to_path_buf());
+        prefs.save();
+    }
+
+    /// Sets (or with None, clears) the server directory.
+    pub fn set_directory(url: Option<String>) {
+        let mut prefs = Self::load();
+        prefs.directory = url.map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
+        prefs.save();
     }
 }
 
