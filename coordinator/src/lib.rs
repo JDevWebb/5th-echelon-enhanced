@@ -128,6 +128,9 @@ struct Ports {
     content: Option<u16>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     nat: Option<u16>,
+    /// The API over HTTPS, when the server has it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    api_tls: Option<u16>,
 }
 
 /// A server's directory entry, as it sends it (and nothing else is stored).

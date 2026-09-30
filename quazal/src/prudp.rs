@@ -139,6 +139,9 @@ where
     pub expired_client_handler: Option<ECH>,
     /// A handler for disconnected clients.
     pub disconnect_handler: Option<DH>,
+    /// Called with the user id once a connection has proved its ticket: the
+    /// user is signed in here (until their last connection closes or expires).
+    pub login_handler: Option<Box<dyn FnMut(u32) + 'a>>,
     next_conn_id: AtomicU32,
     /// Address echoes answered per source this second.
     echoes: HashMap<std::net::IpAddr, (Instant, u32)>,
@@ -168,6 +171,7 @@ where
             user_handler: None,
             expired_client_handler: None,
             disconnect_handler: None,
+            login_handler: None,
             next_conn_id: AtomicU32::new(0x3AAA_AAAA),
         }
     }
@@ -582,6 +586,10 @@ where
             error!(logger, "Error sending syn ack packet"; "error" => %e);
         }
         info!(logger, "New client connected"; "signature" => packet.signature, "session" => packet.session_id);
+        let signed_in = ci.borrow().user_id;
+        if let (Some(user_id), Some(handler)) = (signed_in, self.login_handler.as_mut()) {
+            handler(user_id);
+        }
     }
 
     /// Sends a response to a client.

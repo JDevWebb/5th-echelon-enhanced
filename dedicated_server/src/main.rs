@@ -163,6 +163,13 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
     }
     if is_secure {
         server.user_handler = Some(handle_user_packet);
+        // Online means a signed-in connection here, not just a ticket from the auth server.
+        let (storage, logger) = (Arc::clone(storage), logger.clone());
+        server.login_handler = Some(Box::new(move |user_id| {
+            if let Err(e) = storage.set_online(user_id) {
+                error!(logger, "marking user {user_id} online failed: {e}");
+            }
+        }));
     }
     server.bind(ctx.listen)?;
     server.serve();

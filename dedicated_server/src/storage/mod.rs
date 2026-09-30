@@ -314,11 +314,18 @@ impl Storage {
                 .bind(s)
                 .bind(user_id)
                 .execute(&self.pool)
-                .await?;
-
-            sqlx::query("UPDATE users SET is_online=1 WHERE id=?").bind(user_id).execute(&self.pool).await
+                .await
         })??;
 
+        Ok(())
+    }
+
+    /// Marks `user_id` online: they have a signed-in connection to the game
+    /// service. A ticket alone (the launcher's connection test, a sign-in that
+    /// went no further) doesn't count; the connection closing or expiring ends it
+    /// (`delete_user_session`).
+    pub fn set_online(&self, user_id: u32) -> Result<()> {
+        run(async { sqlx::query("UPDATE users SET is_online=1 WHERE id=?").bind(user_id).execute(&self.pool).await })??;
         Ok(())
     }
 
@@ -1258,6 +1265,8 @@ pub(crate) mod tests {
         assert!(last_login.is_some_and(|t| t.len() > 4), "last_login must be a timestamp");
 
         storage.create_user_session(id, &[0u8; 32]).unwrap();
+        assert!(!online(&storage), "a ticket alone (the launcher's connection test) is not being in the game");
+        storage.set_online(id).unwrap();
         assert!(online(&storage));
         storage.delete_user_session(id).unwrap();
         assert!(!online(&storage));

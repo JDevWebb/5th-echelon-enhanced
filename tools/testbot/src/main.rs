@@ -176,6 +176,28 @@ async fn direct_test(ctx: &mut Ctx) -> Result<()> {
     a.disconnect().await
 }
 
+/// Online means signed in to the game service: a ticket alone (the launcher's
+/// connection test) isn't, and leaving ends it.
+async fn presence(ctx: &mut Ctx) -> Result<()> {
+    let seer = ctx.player("Seer").await?;
+    let seen = ctx.player("Seen").await?;
+    let online = |list: Vec<(String, bool)>, name: &str| list.into_iter().any(|(n, on)| n == name && on);
+    ensure!(online(seer.search_online(&seen.name).await?, &seen.name), "a signed-in player isn't online");
+    ctx.n += 1;
+    let tested = format!("Tested{}_{}", ctx.run, ctx.n);
+    Bot::register(ctx.server, &tested, PASSWORD).await?;
+    Bot::ticket_only(ctx.server, &tested, PASSWORD).await?;
+    ensure!(!online(seer.search_online(&tested).await?, &tested), "a ticket without a game connection counts as online");
+    let name = seen.name.clone();
+    seen.disconnect().await?;
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    while online(seer.search_online(&name).await?, &name) {
+        ensure!(tokio::time::Instant::now() < deadline, "still online after leaving");
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    seer.disconnect().await
+}
+
 /// Renaming keeps the account (friends, id) and frees the old name.
 async fn rename(ctx: &mut Ctx) -> Result<()> {
     let a = ctx.player("Named").await?;
@@ -668,6 +690,7 @@ const SCENARIOS: &[&str] = &[
     "identity-login",
     "rename",
     "direct-test",
+    "presence",
 ];
 
 #[tokio::main]
@@ -732,6 +755,7 @@ async fn main() -> Result<()> {
                 "identity-login" => identity_login(&mut ctx).await,
                 "rename" => rename(&mut ctx).await,
                 "direct-test" => direct_test(&mut ctx).await,
+                "presence" => presence(&mut ctx).await,
                 // Not in the default list: a server in the "mutual" mode, and two servers.
                 "friends-mutual" => friends_mutual(&mut ctx).await,
                 "federation" => match other {

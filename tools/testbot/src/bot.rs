@@ -188,6 +188,42 @@ pub fn properties(attrs: &str) -> QList<Property> {
     attrs.parse().expect("valid attributes")
 }
 
+/// The auth server's part of signing in: LoginEx and a ticket for the secure
+/// server. Returns the player's pid, the secure server's address and the ticket.
+async fn request_ticket(server: IpAddr, name: &str, password: &str) -> Result<(u32, SocketAddr, tg::RequestTicketResponse)> {
+    // Auth server: LoginEx and a ticket for the secure server.
+    let (mut auth, _) = Conn::connect(SocketAddr::new(server, target(server).auth), vec![]).await?;
+    let login = tg::LoginExRequest {
+        str_user_name: name.into(),
+        o_extra_data: Any::new(
+            "UbiAuthenticationLoginCustomData".into(),
+            UbiAuthenticationLoginCustomData {
+                data: quazal::rmc::types::Data,
+                user_name: name.into(),
+                online_key: "AAAA-BBBB-CCCC".into(),
+                password: password.into(),
+            }
+            .to_bytes(),
+        ),
+    };
+    let resp: tg::LoginExResponse =
+        decode(&auth.call(tg::TICKET_GRANTING_PROTOCOL_ID, tg::TicketGrantingProtocolMethod::LoginEx as u32, login.to_bytes()).await?)?;
+    let pid = resp.pid_principal;
+    let url = &resp.p_connection_data.url_regular_protocols;
+    let secure_addr = SocketAddr::new(if url.address == "0.0.0.0" { server } else { url.address.parse()? }, url.port);
+    let ticket: tg::RequestTicketResponse = decode(
+        &auth
+            .call(
+                tg::TICKET_GRANTING_PROTOCOL_ID,
+                tg::TicketGrantingProtocolMethod::RequestTicket as u32,
+                tg::RequestTicketRequest { id_source: pid, id_target: SERVER_PID }.to_bytes(),
+            )
+            .await?,
+    )?;
+    auth.disconnect().await?;
+    Ok((pid, secure_addr, ticket))
+}
+
 impl Bot {
     /// Creates an account through the gRPC API (as the launcher's Register).
     pub async fn register(server: IpAddr, name: &str, password: &str) -> Result<()> {
@@ -222,36 +258,17 @@ impl Bot {
     /// Logs in like the game and its DLL: LoginEx on the auth server, a
     /// ticket for the secure server, the secure connection, and the gRPC API.
     pub async fn login(server: IpAddr, name: &str, password: &str) -> Result<Bot> {
-        // Auth server: LoginEx and a ticket for the secure server.
-        let (mut auth, _) = Conn::connect(SocketAddr::new(server, target(server).auth), vec![]).await?;
-        let login = tg::LoginExRequest {
-            str_user_name: name.into(),
-            o_extra_data: Any::new(
-                "UbiAuthenticationLoginCustomData".into(),
-                UbiAuthenticationLoginCustomData {
-                    data: quazal::rmc::types::Data,
-                    user_name: name.into(),
-                    online_key: "AAAA-BBBB-CCCC".into(),
-                    password: password.into(),
-                }
-                .to_bytes(),
-            ),
-        };
-        let resp: tg::LoginExResponse =
-            decode(&auth.call(tg::TICKET_GRANTING_PROTOCOL_ID, tg::TicketGrantingProtocolMethod::LoginEx as u32, login.to_bytes()).await?)?;
-        let pid = resp.pid_principal;
-        let url = &resp.p_connection_data.url_regular_protocols;
-        let secure_addr = SocketAddr::new(if url.address == "0.0.0.0" { server } else { url.address.parse()? }, url.port);
-        let ticket: tg::RequestTicketResponse = decode(
-            &auth
-                .call(
-                    tg::TICKET_GRANTING_PROTOCOL_ID,
-                    tg::TicketGrantingProtocolMethod::RequestTicket as u32,
-                    tg::RequestTicketRequest { id_source: pid, id_target: SERVER_PID }.to_bytes(),
-                )
-                .await?,
-        )?;
-        auth.disconnect().await?;
+        let (pid, secure_addr, ticket) = request_ticket(server, name, password).await?;
+        Self::connect_secure(server, name, password, pid, secure_addr, ticket).await
+    }
+
+    /// Signs in to the auth server and takes a ticket for the secure server,
+    /// then stops there, as the launcher's connection test does.
+    pub async fn ticket_only(server: IpAddr, name: &str, password: &str) -> Result<()> {
+        request_ticket(server, name, password).await.map(|_| ())
+    }
+
+    async fn connect_secure(server: IpAddr, name: &str, password: &str, pid: u32, secure_addr: SocketAddr, ticket: tg::RequestTicketResponse) -> Result<Bot> {
 
         // The ticket: RC4 under the account's key (the dummy password for
         // accounts with only a hash), then an HMAC we don't need to check.
@@ -485,6 +502,16 @@ impl Bot {
             .relationships(self.authed(server_api::friends::RelationshipsRequest {}))
             .await?
             .into_inner())
+    }
+
+    /// Player search: names and whether each is online.
+    pub async fn search_online(&self, query: &str) -> Result<Vec<(String, bool)>> {
+        let found = FriendsClient::new(self.api.clone())
+            .search(self.authed(server_api::friends::SearchRequest { query: query.into() }))
+            .await?
+            .into_inner()
+            .players;
+        Ok(found.into_iter().map(|p| (p.username, p.is_online)).collect())
     }
 
     /// Player search: names and how they stand to us.
