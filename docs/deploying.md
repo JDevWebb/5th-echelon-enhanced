@@ -22,8 +22,6 @@ A coordinator shares friends and blocks between its servers, reserves each playe
 - **2 vCPUs and 2–4 GB of memory** are plenty for a busy server. By the [load test](load-testing.md), 1,000 players need under 100 MB; one core handles 500, two handle 1,000.
 - **Bandwidth is the real cost.** Matches run peer to peer, but players whose routers can't be reached are relayed through the server: about 7 MB/s each way at 1,000 players with 20% relayed, 3 MB/s at 500. Real servers are busy a few hours a day. A plan with 20 TB a month covers 1,000 players in matches around the clock if only outgoing traffic is counted, or half that if both directions are.
 
-The community server runs on 2 vCPUs, 4 GB of memory and 20 TB of traffic a month.
-
 **DNS:** an A record for each name, pointing at the machine's IPv4 address.
 - On **Cloudflare**, set each record to **DNS only** (grey cloud), not proxied. The game's UDP traffic and its plain HTTP on port 80 can't go through Cloudflare's proxy, and its free certificate doesn't cover names two levels deep like `play.scbl.example.com`. Caddy on the server gets its own certificates.
 - Don't add an AAAA (IPv6) record unless it points at the same machine.

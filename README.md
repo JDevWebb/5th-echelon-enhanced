@@ -34,7 +34,6 @@
 <tr><td><b>Friends</b></td><td>Friends-only lists and invites, blocking, player search; your friends follow you to every server in the community network</td></tr>
 <tr><td><b>Internet play</b></td><td>No VPN or port forwarding: the server tells your game its public address, and relays matches when a router can't be reached</td></tr>
 <tr><td><b>Security</b></td><td>Your password and sign-in never travel unencrypted; each server gets its own random password; signed updates</td></tr>
-<tr><td><b>Hardware</b></td><td>2 vCPUs, 4 GB of memory and 20 TB of traffic a month: tested with 1,000 players signed in at once</td></tr>
 </table>
 
 **To play:**
