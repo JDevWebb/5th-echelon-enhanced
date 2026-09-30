@@ -22,9 +22,11 @@ async fn probe(socket: &UdpSocket, to: SocketAddr, second: bool) -> Result<Socke
     let flags = if second { nat_proto::probe_flags::SECOND_PORT } else { 0 };
     let probe = Message::Probe {
         flags,
-        nonce: rand::random(),
+        nonce: rand::random::<u32>() | 1,
         mapping: None,
         name: String::new(),
+        ticket: [0; 16],
+        cookie: [0; 16],
     }
     .encode();
     let mut buf = [0u8; 256];

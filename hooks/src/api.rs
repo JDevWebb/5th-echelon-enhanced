@@ -262,6 +262,8 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
             let mut guard = TOKEN.lock().unwrap();
             *guard = Some(response.token.parse()?);
         }
+        // The NAT helper registers this game under our name only with this ticket.
+        crate::hooks::set_nat_ticket(&response.nat_ticket);
         // The game copies it into a 64-byte buffer: only a short, plain id is taken.
         match response.user.map(|u| u.id).filter(|id| !id.is_empty()) {
             Some(id) if is_plain_id(&id) => *ACCOUNT_ID.lock().unwrap() = Some(id),

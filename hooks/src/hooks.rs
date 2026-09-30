@@ -35,6 +35,11 @@ pub(crate) mod nat;
 mod nla;
 mod portmap;
 
+/// Takes the NAT helper ticket the server gave at sign-in.
+pub fn set_nat_ticket(ticket: &[u8]) {
+    nat::set_ticket(ticket);
+}
+
 /// Removes the router port mapping (the game is exiting normally).
 pub fn remove_port_mapping() {
     portmap::remove_mapping();

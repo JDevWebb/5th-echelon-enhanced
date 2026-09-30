@@ -28,6 +28,7 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 sc_bl_protocols = { path = "./sc_bl_protocols" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = { workspace = true }
 server_api = { path = "../api", package = "api" }
 slog = { workspace = true, features = ["max_level_trace"] }
 socket2 = "0.6"

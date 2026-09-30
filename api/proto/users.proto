@@ -62,6 +62,9 @@ message LoginResponse {
   string error = 1;
   string token = 2;
   User user = 3;
+  // Lets the game register with the server's NAT helper under this account's name
+  // (nat_proto's Ticket); empty when the helper is off.
+  bytes nat_ticket = 4;
 }
 
 message RegisterRequest {

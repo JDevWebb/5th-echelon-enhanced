@@ -732,7 +732,9 @@ impl MyUsers {
     /// account id the game should use).
     async fn signed_in(&self, user_id: u32) -> Result<Response<users::LoginResponse>, Status> {
         let person = self.storage.find_person(user_id).await.map_err(internal)?;
+        let nat_ticket = person.as_ref().and_then(|p| crate::nat_helper::ticket_for(&p.username)).map(Vec::from).unwrap_or_default();
         Ok(Response::new(users::LoginResponse {
+            nat_ticket,
             error: String::new(),
             token: issue_token(&self.key, user_id),
             user: person.map(|p| User {

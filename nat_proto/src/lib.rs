@@ -17,6 +17,15 @@
 //!
 //! Every message starts with [`MAGIC`] and a version byte; everything is
 //! big-endian. IPv4 only, like the game.
+//!
+//! Nothing here trusts a UDP source address alone:
+//! - a probe carries the player's [`Ticket`] (from signing in), so no one can
+//!   register under another player's name;
+//! - a registration only takes effect once a probe echoes the [`Cookie`] from
+//!   the server's reply, so an address that can't receive can't be registered
+//!   (no spoofed registrations);
+//! - relayed data carries the registration's [`Tag`], checked both ways, so
+//!   nobody can inject packets posing as the server or as a player.
 
 use std::net::Ipv4Addr;
 use std::net::SocketAddrV4;
@@ -24,14 +33,14 @@ use std::net::SocketAddrV4;
 /// Starts every message. Never the start of a Storm or PRUDP packet.
 pub const MAGIC: [u8; 4] = [0x5e, 0xc4, b'N', b'T'];
 /// The protocol version.
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 /// The server's default port. The next port (21129) answers probes too, to
 /// tell a NAT that changes ports per destination (symmetric) from one that
 /// doesn't.
 pub const DEFAULT_PORT: u16 = 21128;
 /// Probes are padded to this size, so a reply is never bigger than the
 /// request that caused it (the helper can't be used to amplify traffic).
-pub const PROBE_SIZE: usize = 64;
+pub const PROBE_SIZE: usize = 96;
 /// The longest account name a probe carries.
 pub const MAX_NAME: usize = 32;
 /// The largest game packet the relay carries.
@@ -41,6 +50,15 @@ pub const STORM_PORT: u16 = 13000;
 
 const HEADER: usize = MAGIC.len() + 2;
 const ADDR: usize = 6;
+
+/// Proves a probe's name: the server's MAC of it, handed to the player when
+/// they sign in.
+pub type Ticket = [u8; 16];
+/// Proves a probe's source can receive: the server's reply carries it, the
+/// next probe echoes it.
+pub type Cookie = [u8; 16];
+/// A registration's secret, carried by relayed data both ways.
+pub type Tag = [u8; 8];
 
 /// [`Message::Probe`] flags.
 pub mod probe_flags {
@@ -72,6 +90,10 @@ pub enum Message {
         /// The account name, to tie this Storm socket to the player's
         /// matchmaking connection.
         name: String,
+        /// The player's ticket for `name` (zeros: none, only asks for the address).
+        ticket: Ticket,
+        /// The cookie from the last reply (zeros: none yet).
+        cookie: Cookie,
     },
     /// Server → hook.
     ProbeReply {
@@ -85,12 +107,17 @@ pub enum Message {
         /// packets to them must be wrapped in [`Message::DataTo`].
         relay_ip: Ipv4Addr,
         relay_ports: (u16, u16),
+        /// To echo in the next probe.
+        cookie: Cookie,
+        /// The registration's tag; zeros until it's registered (the next
+        /// probe, with the cookie, registers it).
+        tag: Tag,
     },
     /// Hook → server: a game packet for `to`, through the relay.
-    DataTo { to: SocketAddrV4, payload: Vec<u8> },
+    DataTo { tag: Tag, to: SocketAddrV4, payload: Vec<u8> },
     /// Server → hook: a game packet relayed from `from`, the sender's
     /// advertised address.
-    DataFrom { from: SocketAddrV4, payload: Vec<u8> },
+    DataFrom { tag: Tag, from: SocketAddrV4, payload: Vec<u8> },
 }
 
 const OP_PROBE: u8 = 1;
@@ -118,11 +145,20 @@ impl Message {
         out.extend_from_slice(&MAGIC);
         out.push(VERSION);
         match self {
-            Message::Probe { flags, nonce, mapping, name } => {
+            Message::Probe {
+                flags,
+                nonce,
+                mapping,
+                name,
+                ticket,
+                cookie,
+            } => {
                 out.push(OP_PROBE);
                 out.push(*flags);
                 out.extend_from_slice(&nonce.to_be_bytes());
                 put_addr(&mut out, mapping.unwrap_or(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)));
+                out.extend_from_slice(ticket);
+                out.extend_from_slice(cookie);
                 let name = truncate(name, MAX_NAME);
                 out.push(name.len() as u8);
                 out.extend_from_slice(name.as_bytes());
@@ -135,6 +171,8 @@ impl Message {
                 flags,
                 relay_ip,
                 relay_ports,
+                cookie,
+                tag,
             } => {
                 out.push(OP_PROBE_REPLY);
                 out.extend_from_slice(&nonce.to_be_bytes());
@@ -144,17 +182,11 @@ impl Message {
                 out.extend_from_slice(&relay_ip.octets());
                 out.extend_from_slice(&relay_ports.0.to_be_bytes());
                 out.extend_from_slice(&relay_ports.1.to_be_bytes());
+                out.extend_from_slice(cookie);
+                out.extend_from_slice(tag);
             }
-            Message::DataTo { to: a, payload } => {
-                out.push(OP_DATA_TO);
-                put_addr(&mut out, *a);
-                out.extend_from_slice(payload);
-            }
-            Message::DataFrom { from: a, payload } => {
-                out.push(OP_DATA_FROM);
-                put_addr(&mut out, *a);
-                out.extend_from_slice(payload);
-            }
+            Message::DataTo { tag, to, payload } => encode_data_to(&mut out, *tag, *to, payload),
+            Message::DataFrom { tag, from, payload } => encode_data_from(&mut out, *tag, *from, payload),
         }
         out
     }
@@ -166,24 +198,28 @@ impl Message {
         let body = &data[HEADER..];
         match data[5] {
             OP_PROBE => {
-                let fixed = 1 + 4 + ADDR + 1;
+                let fixed = 1 + 4 + ADDR + 16 + 16 + 1;
                 if data.len() < PROBE_SIZE || body.len() < fixed {
                     return None;
                 }
                 let flags = body[0];
                 let nonce = u32::from_be_bytes(body[1..5].try_into().ok()?);
                 let mapping = Some(addr(&body[5..11])).filter(|a| !a.ip().is_unspecified() && a.port() != 0);
-                let len = usize::from(body[11]).min(MAX_NAME);
+                let ticket: Ticket = body[11..27].try_into().ok()?;
+                let cookie: Cookie = body[27..43].try_into().ok()?;
+                let len = usize::from(body[43]).min(MAX_NAME);
                 let name = body.get(fixed..fixed + len)?;
                 Some(Message::Probe {
                     flags,
                     nonce,
                     mapping,
                     name: String::from_utf8_lossy(name).into_owned(),
+                    ticket,
+                    cookie,
                 })
             }
             OP_PROBE_REPLY => {
-                if body.len() < 4 + ADDR * 2 + 1 + 4 + 4 {
+                if body.len() < 4 + ADDR * 2 + 1 + 4 + 4 + 16 + 8 {
                     return None;
                 }
                 Some(Message::ProbeReply {
@@ -193,64 +229,64 @@ impl Message {
                     flags: body[16],
                     relay_ip: Ipv4Addr::new(body[17], body[18], body[19], body[20]),
                     relay_ports: (u16::from_be_bytes([body[21], body[22]]), u16::from_be_bytes([body[23], body[24]])),
+                    cookie: body[25..41].try_into().ok()?,
+                    tag: body[41..49].try_into().ok()?,
                 })
             }
             OP_DATA_TO | OP_DATA_FROM => {
-                if body.len() < ADDR || body.len() - ADDR > MAX_PAYLOAD {
-                    return None;
-                }
-                let a = addr(&body[..ADDR]);
-                let payload = body[ADDR..].to_vec();
-                Some(if data[5] == OP_DATA_TO { Message::DataTo { to: a, payload } } else { Message::DataFrom { from: a, payload } })
+                let (tag, a, offset) = data_header(data)?;
+                let payload = data[offset..].to_vec();
+                Some(if data[5] == OP_DATA_TO { Message::DataTo { tag, to: a, payload } } else { Message::DataFrom { tag, from: a, payload } })
             }
             _ => None,
         }
     }
 }
 
-/// Writes a [`Message::DataTo`] into `out` without allocating per packet.
-pub fn encode_data_to(out: &mut Vec<u8>, to: SocketAddrV4, payload: &[u8]) {
+/// A data message's tag, address and payload offset, if it is one.
+fn data_header(data: &[u8]) -> Option<(Tag, SocketAddrV4, usize)> {
+    if !is_nat_message(data) || data.len() < DATA_OVERHEAD || data.len() - DATA_OVERHEAD > MAX_PAYLOAD {
+        return None;
+    }
+    let tag: Tag = data[HEADER..HEADER + 8].try_into().ok()?;
+    Some((tag, addr(&data[HEADER + 8..DATA_OVERHEAD]), DATA_OVERHEAD))
+}
+
+fn encode_data(out: &mut Vec<u8>, op: u8, tag: Tag, addr: SocketAddrV4, payload: &[u8]) {
     out.clear();
     out.extend_from_slice(&MAGIC);
     out.push(VERSION);
-    out.push(OP_DATA_TO);
-    put_addr(out, to);
+    out.push(op);
+    out.extend_from_slice(&tag);
+    put_addr(out, addr);
     out.extend_from_slice(payload);
 }
 
-/// If `data` is a [`Message::DataFrom`], its sender and the offset of the
-/// game packet in `data`.
-pub fn data_from(data: &[u8]) -> Option<(SocketAddrV4, usize)> {
-    if is_nat_message(data) && data[5] == OP_DATA_FROM && data.len() >= HEADER + ADDR {
-        Some((addr(&data[HEADER..HEADER + ADDR]), HEADER + ADDR))
-    } else {
-        None
-    }
-}
-
-/// If `data` is a [`Message::DataTo`], its destination and the offset of
-/// the game packet in `data`.
-pub fn data_to(data: &[u8]) -> Option<(SocketAddrV4, usize)> {
-    if is_nat_message(data) && data[5] == OP_DATA_TO && data.len() >= HEADER + ADDR && data.len() - HEADER - ADDR <= MAX_PAYLOAD {
-        Some((addr(&data[HEADER..HEADER + ADDR]), HEADER + ADDR))
-    } else {
-        None
-    }
+/// Writes a [`Message::DataTo`] into `out` without allocating per packet.
+pub fn encode_data_to(out: &mut Vec<u8>, tag: Tag, to: SocketAddrV4, payload: &[u8]) {
+    encode_data(out, OP_DATA_TO, tag, to, payload);
 }
 
 /// Writes a [`Message::DataFrom`] into `out`.
-pub fn encode_data_from(out: &mut Vec<u8>, from: SocketAddrV4, payload: &[u8]) {
-    out.clear();
-    out.extend_from_slice(&MAGIC);
-    out.push(VERSION);
-    out.push(OP_DATA_FROM);
-    put_addr(out, from);
-    out.extend_from_slice(payload);
+pub fn encode_data_from(out: &mut Vec<u8>, tag: Tag, from: SocketAddrV4, payload: &[u8]) {
+    encode_data(out, OP_DATA_FROM, tag, from, payload);
+}
+
+/// If `data` is a [`Message::DataFrom`]: its tag, sender and the offset of
+/// the game packet in `data`.
+pub fn data_from(data: &[u8]) -> Option<(Tag, SocketAddrV4, usize)> {
+    data_header(data).filter(|_| data[5] == OP_DATA_FROM)
+}
+
+/// If `data` is a [`Message::DataTo`]: its tag, destination and the offset
+/// of the game packet in `data`.
+pub fn data_to(data: &[u8]) -> Option<(Tag, SocketAddrV4, usize)> {
+    data_header(data).filter(|_| data[5] == OP_DATA_TO)
 }
 
 /// The overhead [`Message::DataTo`] and [`Message::DataFrom`] add to a game
 /// packet.
-pub const DATA_OVERHEAD: usize = HEADER + ADDR;
+pub const DATA_OVERHEAD: usize = HEADER + 8 + ADDR;
 
 fn truncate(s: &str, max: usize) -> &str {
     if s.len() <= max {
@@ -284,6 +320,19 @@ mod tests {
         s.parse().unwrap()
     }
 
+    fn reply(nonce: u32) -> Message {
+        Message::ProbeReply {
+            nonce,
+            observed: a("198.51.100.2:61001"),
+            advertise: a("192.0.2.1:40001"),
+            flags: reply_flags::RELAYED,
+            relay_ip: Ipv4Addr::new(192, 0, 2, 1),
+            relay_ports: (40000, 40999),
+            cookie: [7; 16],
+            tag: [9; 8],
+        }
+    }
+
     #[test]
     fn messages_round_trip() {
         let messages = [
@@ -292,26 +341,25 @@ mod tests {
                 nonce: 0xdead_beef,
                 mapping: Some(a("203.0.113.7:13000")),
                 name: "sam".into(),
+                ticket: [1; 16],
+                cookie: [2; 16],
             },
             Message::Probe {
                 flags: 0,
                 nonce: 1,
                 mapping: None,
                 name: String::new(),
+                ticket: [0; 16],
+                cookie: [0; 16],
             },
-            Message::ProbeReply {
-                nonce: 7,
-                observed: a("198.51.100.2:61001"),
-                advertise: a("192.0.2.1:40001"),
-                flags: reply_flags::RELAYED,
-                relay_ip: Ipv4Addr::new(192, 0, 2, 1),
-                relay_ports: (40000, 40999),
-            },
+            reply(7),
             Message::DataTo {
+                tag: [3; 8],
                 to: a("192.0.2.1:40002"),
                 payload: vec![1, 5, 0x33, 0],
             },
             Message::DataFrom {
+                tag: [4; 8],
                 from: a("198.51.100.9:13000"),
                 payload: vec![],
             },
@@ -328,19 +376,12 @@ mod tests {
             nonce: 0,
             mapping: None,
             name: "x".repeat(200),
-        }
-        .encode();
-        let reply = Message::ProbeReply {
-            nonce: 0,
-            observed: a("1.2.3.4:5"),
-            advertise: a("1.2.3.4:5"),
-            flags: 0,
-            relay_ip: Ipv4Addr::LOCALHOST,
-            relay_ports: (0, 0),
+            ticket: [0; 16],
+            cookie: [0; 16],
         }
         .encode();
         assert_eq!(probe.len(), PROBE_SIZE);
-        assert!(reply.len() <= probe.len());
+        assert!(reply(0).encode().len() <= probe.len());
         // A short probe (someone trying to get a bigger reply) is refused.
         assert_eq!(Message::decode(&probe[..40]), None);
     }
@@ -356,23 +397,18 @@ mod tests {
     #[test]
     fn data_is_wrapped_and_unwrapped_in_place() {
         let mut buf = Vec::new();
-        encode_data_to(&mut buf, a("192.0.2.1:40003"), b"game");
-        assert_eq!(
-            Message::decode(&buf),
-            Some(Message::DataTo {
-                to: a("192.0.2.1:40003"),
-                payload: b"game".to_vec()
-            })
-        );
+        encode_data_to(&mut buf, [5; 8], a("192.0.2.1:40003"), b"game");
+        assert_eq!(data_to(&buf), Some(([5; 8], a("192.0.2.1:40003"), DATA_OVERHEAD)));
+        assert!(data_from(&buf).is_none());
         let from = Message::DataFrom {
+            tag: [6; 8],
             from: a("198.51.100.9:13000"),
             payload: b"game".to_vec(),
         }
         .encode();
-        let (sender, offset) = data_from(&from).unwrap();
-        assert_eq!((sender, &from[offset..]), (a("198.51.100.9:13000"), &b"game"[..]));
+        let (tag, sender, offset) = data_from(&from).unwrap();
+        assert_eq!((tag, sender, &from[offset..]), ([6; 8], a("198.51.100.9:13000"), &b"game"[..]));
         assert_eq!(from.len() - b"game".len(), DATA_OVERHEAD);
-        assert!(data_from(&buf).is_none());
     }
 
     #[test]

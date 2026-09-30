@@ -37,6 +37,60 @@ use slog::Logger;
 /// A player is forgotten after this long without a probe or relayed packet
 /// (the hook probes every 20 s).
 const EXPIRY: Duration = Duration::from_secs(90);
+/// Players registered at once, and from one address (a LAN party shares one).
+const MAX_PEERS: usize = 20_000;
+const MAX_PEERS_PER_IP: usize = 64;
+/// Relayed packets one player may send a second (a match is ~30 per peer).
+const MAX_PACKETS_PER_SECOND: u32 = 600;
+
+/// The helper's secrets: the ticket key (kept in [`KEY_FILE`], so tickets
+/// survive a restart) and the cookie key (new at every start).
+struct Keys {
+    ticket: [u8; 32],
+    cookie: [u8; 32],
+}
+
+/// Next to the database.
+pub const KEY_FILE: &str = "nat.key";
+
+static KEYS: OnceLock<Keys> = OnceLock::new();
+
+fn mac(key: &[u8; 32], parts: &[&[u8]]) -> [u8; 32] {
+    use hmac::Mac as _;
+    let mut m = hmac::Hmac::<sha2::Sha256>::new_from_slice(key).expect("any key length");
+    for p in parts {
+        m.update(&(p.len() as u32).to_be_bytes());
+        m.update(p);
+    }
+    m.finalize().into_bytes().into()
+}
+
+/// The ticket that lets `name`'s game register with the helper: handed out at
+/// sign-in (`Users.Login`). None when the helper isn't running.
+pub fn ticket_for(name: &str) -> Option<nat_proto::Ticket> {
+    let keys = KEYS.get()?;
+    let full = mac(&keys.ticket, &[b"fes-nat-ticket", identity::name_key(name).as_bytes()]);
+    full[..16].try_into().ok()
+}
+
+/// The cookie for a probe from `src` for `name`, in time bucket `bucket`
+/// (minutes).
+fn cookie_for(keys: &Keys, src: SocketAddrV4, name: &str, bucket: u64) -> nat_proto::Cookie {
+    let full = mac(
+        &keys.cookie,
+        &[&src.ip().octets(), &src.port().to_be_bytes(), identity::name_key(name).as_bytes(), &bucket.to_be_bytes()],
+    );
+    full[..16].try_into().expect("16 of 32 bytes")
+}
+
+fn minute() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() / 60)
+}
+
+/// Compares secrets in time that doesn't depend on where they differ.
+fn same(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
 
 #[derive(Debug, Clone)]
 struct Peer {
@@ -50,6 +104,9 @@ struct Peer {
     last_seen: Instant,
     window_start: Instant,
     window_bytes: usize,
+    window_packets: u32,
+    /// The registration's secret: relayed data must carry it, both ways.
+    tag: nat_proto::Tag,
 }
 
 /// A registered player, by number (so relaying a packet allocates nothing).
@@ -121,6 +178,16 @@ impl Table {
         Some(p)
     }
 
+    /// Whether a probe from `src` for `name` may register: the table and
+    /// each address have a limit (a refresh of an existing one always may).
+    pub fn admits(&self, src: SocketAddrV4, name: &str) -> bool {
+        if self.by_name.contains_key(&name.to_lowercase()) {
+            return true;
+        }
+        let here = self.peers.values().filter(|p| p.real.ip() == src.ip()).count();
+        self.peers.len() < MAX_PEERS && here < MAX_PEERS_PER_IP
+    }
+
     /// Registers (or refreshes) the player behind `src` and answers its probe.
     pub fn probe(&mut self, src: SocketAddrV4, flags: u8, nonce: u32, mapping: Option<SocketAddrV4>, name: &str, now: Instant) -> Message {
         let key = if name.is_empty() { format!("@{src}") } else { name.to_lowercase() };
@@ -160,7 +227,11 @@ impl Table {
             last_seen: now,
             window_start: old.as_ref().map_or(now, |(_, o)| o.window_start),
             window_bytes: old.as_ref().map_or(0, |(_, o)| o.window_bytes),
+            window_packets: old.as_ref().map_or(0, |(_, o)| o.window_packets),
+            // Kept while the registration lives: the game already relays with it.
+            tag: old.as_ref().map_or_else(rand::random, |(_, o)| o.tag),
         };
+        let tag = peer.tag;
         self.by_name.insert(key, id);
         self.by_real.insert(src, id);
         self.by_advertise.insert(advertise, id);
@@ -175,7 +246,20 @@ impl Table {
             flags: if relayed { reply_flags::RELAYED } else { 0 },
             relay_ip: self.relay_ip,
             relay_ports: self.cfg.relay_ports,
+            cookie: [0; 16],
+            tag,
         }
+    }
+
+    /// [`Self::route`], for a packet that must carry its sender's `tag`.
+    pub fn route_tagged(&mut self, src: SocketAddrV4, tag: nat_proto::Tag, to: SocketAddrV4, len: usize, now: Instant) -> Option<(SocketAddrV4, SocketAddrV4, nat_proto::Tag)> {
+        let sender = self.peers.get(self.by_real.get(&src)?)?;
+        if !same(&sender.tag, &tag) {
+            return None;
+        }
+        let (target, from) = self.route(src, to, len, now)?;
+        let target_tag = self.peers.get(self.by_real.get(&target)?)?.tag;
+        Some((target, from, target_tag))
     }
 
     /// Where a relayed packet from `src` to `to` goes: the receiver's real
@@ -199,9 +283,12 @@ impl Table {
         if now.duration_since(sender.window_start) >= Duration::from_secs(1) {
             sender.window_start = now;
             sender.window_bytes = 0;
+            sender.window_packets = 0;
         }
-        sender.window_bytes += len;
-        if sender.window_bytes > limit {
+        // Headers count too, and packets: empty payloads must not slip past the byte limit.
+        sender.window_bytes += len + nat_proto::DATA_OVERHEAD;
+        sender.window_packets += 1;
+        if sender.window_bytes > limit || sender.window_packets > MAX_PACKETS_PER_SECOND {
             return None;
         }
         Some((target, sender.advertise))
@@ -327,6 +414,11 @@ fn bind_with_buffers(logger: &Logger, addr: SocketAddr) -> std::io::Result<UdpSo
 /// port after it (probes only, to spot NATs that change ports per
 /// destination).
 pub fn start(logger: &Logger, cfg: NatConfig, relay_ip: Ipv4Addr) -> std::io::Result<Vec<std::thread::JoinHandle<()>>> {
+    let ticket = crate::keys::load_or_create(std::path::Path::new(KEY_FILE)).map_err(|e| std::io::Error::other(e.to_string()))?;
+    let _ = KEYS.set(Keys {
+        ticket: ticket.0,
+        cookie: rand::random(),
+    });
     let socket = bind_with_buffers(logger, cfg.listen)?;
     socket.set_read_timeout(Some(Duration::from_secs(5)))?;
     let table = Arc::clone(TABLE.get_or_init(|| Arc::new(Mutex::new(Table::new(cfg, relay_ip)))));
@@ -363,17 +455,25 @@ fn detect_loop(logger: &Logger, socket: &UdpSocket) {
         let (Some(src), Some(Message::Probe { nonce, .. })) = (v4(src), Message::decode(&buf[..len])) else {
             continue;
         };
-        let reply = Message::ProbeReply {
-            nonce,
-            observed: src,
-            advertise: src,
-            flags: 0,
-            relay_ip: Ipv4Addr::UNSPECIFIED,
-            relay_ports: (0, 0),
-        };
-        if let Err(e) = socket.send_to(&reply.encode(), src) {
+        if let Err(e) = socket.send_to(&address_only(nonce, src, [0; 16]).encode(), src) {
             debug!(logger, "NAT detect reply to {src} failed: {e}");
         }
+    }
+}
+
+/// A reply that only tells the sender its address (and a cookie to come back
+/// with), registering nothing: no bigger than the probe, so it amplifies
+/// nothing.
+fn address_only(nonce: u32, src: SocketAddrV4, cookie: nat_proto::Cookie) -> Message {
+    Message::ProbeReply {
+        nonce,
+        observed: src,
+        advertise: src,
+        flags: 0,
+        relay_ip: Ipv4Addr::UNSPECIFIED,
+        relay_ports: (0, 0),
+        cookie,
+        tag: [0; 8],
     }
 }
 
@@ -416,10 +516,10 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
         let Some(src) = v4(src) else { continue };
         let data = &buf[..len];
 
-        if let Some((to, offset)) = nat_proto::data_to(data) {
-            let route = table.lock().ok().and_then(|mut t| t.route(src, to, len - offset, now));
-            if let Some((target, from)) = route {
-                nat_proto::encode_data_from(&mut out, from, &data[offset..]);
+        if let Some((tag, to, offset)) = nat_proto::data_to(data) {
+            let route = table.lock().ok().and_then(|mut t| t.route_tagged(src, tag, to, len - offset, now));
+            if let Some((target, from, target_tag)) = route {
+                nat_proto::encode_data_from(&mut out, target_tag, from, &data[offset..]);
                 match socket.send_to(&out, target) {
                     Ok(_) => forwarded += 1,
                     Err(e) => {
@@ -433,14 +533,42 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
             continue;
         }
 
-        if let Some(Message::Probe { flags, nonce, mapping, name }) = Message::decode(data) {
+        if let Some(Message::Probe {
+            flags,
+            nonce,
+            mapping,
+            name,
+            ticket,
+            cookie,
+        }) = Message::decode(data)
+        {
             if flags & probe_flags::SECOND_PORT != 0 {
+                continue;
+            }
+            let Some(keys) = KEYS.get() else { continue };
+            // No ticket for this name: it only learns its address (the launcher's test).
+            if name.is_empty() || !ticket_for(&name).is_some_and(|t| same(&t, &ticket)) {
+                let _ = socket.send_to(&address_only(nonce, src, [0; 16]).encode(), src);
+                continue;
+            }
+            // Not yet proved it receives at this address: a cookie to come back with.
+            let bucket = minute();
+            let proved = [bucket, bucket.saturating_sub(1)].iter().any(|b| same(&cookie_for(keys, src, &name, *b), &cookie));
+            if !proved {
+                let _ = socket.send_to(&address_only(nonce, src, cookie_for(keys, src, &name, bucket)).encode(), src);
                 continue;
             }
             let (reply, count, relayed, new) = {
                 let Ok(mut t) = table.lock() else { continue };
+                if !t.admits(src, &name) {
+                    debug!(logger, "NAT helper: table full (or too many from {}); {name} not registered", src.ip());
+                    continue;
+                }
                 let new = t.advertised_for(&name, IpAddr::V4(*src.ip())).is_none();
-                let reply = t.probe(src, flags, nonce, mapping, &name, now);
+                let mut reply = t.probe(src, flags, nonce, mapping, &name, now);
+                if let Message::ProbeReply { cookie: c, .. } = &mut reply {
+                    *c = cookie_for(keys, src, &name, bucket);
+                }
                 (reply, t.len(), t.relayed(), new)
             };
             if new {
@@ -571,6 +699,67 @@ mod tests {
         assert!(t.route(a("198.51.100.8:1"), x, 1000, now).is_some());
         assert!(t.route(a("198.51.100.8:1"), x, 1000, now).is_none(), "over 1 KB in a second");
         assert!(t.route(a("198.51.100.8:1"), x, 1000, now + Duration::from_secs(1)).is_some(), "a new second");
+    }
+
+    fn tag(m: &Message) -> nat_proto::Tag {
+        match m {
+            Message::ProbeReply { tag, .. } => *tag,
+            _ => panic!("{m:?}"),
+        }
+    }
+
+    #[test]
+    fn relayed_data_needs_the_senders_tag() {
+        let now = Instant::now();
+        let mut t = table(RelayMode::All);
+        let a_reply = t.probe(a("198.51.100.7:1"), 0, 1, None, "a", now);
+        let b_reply = t.probe(a("198.51.100.8:1"), 0, 1, None, "b", now);
+        let (b_adv, _) = advertise(&b_reply);
+        assert_eq!(t.route_tagged(a("198.51.100.7:1"), [0; 8], b_adv, 10, now), None, "no tag");
+        assert_eq!(t.route_tagged(a("198.51.100.7:1"), tag(&b_reply), b_adv, 10, now), None, "someone else's tag");
+        let (target, _, target_tag) = t.route_tagged(a("198.51.100.7:1"), tag(&a_reply), b_adv, 10, now).unwrap();
+        assert_eq!((target, target_tag), (a("198.51.100.8:1"), tag(&b_reply)), "delivered with the receiver's tag");
+        // A refresh keeps the tag (the game relays with it).
+        assert_eq!(tag(&t.probe(a("198.51.100.7:1"), 0, 2, None, "a", now)), tag(&a_reply));
+    }
+
+    #[test]
+    fn registrations_are_capped_per_address() {
+        let now = Instant::now();
+        let mut t = table(RelayMode::Off);
+        for i in 0..MAX_PEERS_PER_IP {
+            let port = u16::try_from(i + 1).unwrap();
+            assert!(t.admits(SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 7), port), &format!("p{i}")));
+            t.probe(SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 7), port), 0, 1, None, &format!("p{i}"), now);
+        }
+        assert!(!t.admits(a("198.51.100.7:9999"), "one-more"), "the address is full");
+        assert!(t.admits(a("198.51.100.7:9999"), "p0"), "a refresh always may");
+        assert!(t.admits(a("198.51.100.8:1"), "elsewhere"));
+    }
+
+    #[test]
+    fn packets_count_against_the_rate_even_when_empty() {
+        let now = Instant::now();
+        let mut t = table(RelayMode::All);
+        t.probe(a("198.51.100.7:1"), 0, 1, None, "a", now);
+        let (b_adv, _) = advertise(&t.probe(a("198.51.100.8:1"), 0, 1, None, "b", now));
+        let sent = (0..2000).filter(|_| t.route(a("198.51.100.7:1"), b_adv, 0, now).is_some()).count();
+        assert!(sent <= MAX_PACKETS_PER_SECOND as usize, "{sent} empty packets in a second");
+    }
+
+    #[test]
+    fn tickets_name_one_account_and_cookies_one_address() {
+        let _ = KEYS.set(Keys {
+            ticket: [1; 32],
+            cookie: [2; 32],
+        });
+        assert_eq!(ticket_for("Kiwi"), ticket_for("kiwi"), "any case");
+        assert_ne!(ticket_for("Kiwi"), ticket_for("Tank"));
+        let keys = KEYS.get().unwrap();
+        let c = cookie_for(keys, a("198.51.100.7:1"), "kiwi", 5);
+        assert_ne!(c, cookie_for(keys, a("198.51.100.7:2"), "kiwi", 5), "another address");
+        assert_ne!(c, cookie_for(keys, a("198.51.100.7:1"), "tank", 5), "another name");
+        assert_ne!(c, cookie_for(keys, a("198.51.100.7:1"), "kiwi", 6), "another minute");
     }
 
     #[test]

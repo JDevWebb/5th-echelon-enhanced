@@ -95,6 +95,14 @@ struct State {
     nonce: u32,
     told_game: Option<SocketAddrV4>,
     echo_requests: u32,
+    /// The ticket for our name, from signing in (zeros: none yet).
+    ticket: nat_proto::Ticket,
+    /// The last cookie the server gave us, echoed in the next probe.
+    cookie: nat_proto::Cookie,
+    /// Our registration's tag: relayed data carries it both ways.
+    tag: nat_proto::Tag,
+    /// Nonces of recent probes: only replies to these are believed.
+    sent: [u32; 4],
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -111,7 +119,23 @@ static STATE: Mutex<State> = Mutex::new(State {
     nonce: 0,
     told_game: None,
     echo_requests: 0,
+    ticket: [0; 16],
+    cookie: [0; 16],
+    tag: [0; 8],
+    sent: [0; 4],
 });
+
+/// Takes the ticket the server gave at sign-in (it names this account).
+pub fn set_ticket(ticket: &[u8]) {
+    if let Ok(ticket) = <nat_proto::Ticket>::try_from(ticket) {
+        let mut st = state();
+        if st.ticket != ticket {
+            st.ticket = ticket;
+            // Register again with it.
+            st.last_probe = None;
+        }
+    }
+}
 
 fn state() -> std::sync::MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -225,21 +249,23 @@ fn sendto(s: usize, buf: *const u8, len: i32, flags: i32, to: *const u8, tolen: 
             let relay = {
                 let st = state();
                 match (st.reply, st.server) {
-                    (Some(r), Some(server)) if dest != server && (r.relayed || is_relay_address(&r, dest)) => Some(server),
+                    (Some(r), Some(server)) if dest != server && (r.relayed || is_relay_address(&r, dest)) => Some((server, st.tag)),
                     _ => None,
                 }
             };
-            if let Some(server) = relay {
+            if let Some((server, tag)) = relay {
                 if data.len() > nat_proto::MAX_PAYLOAD {
-                    warn!("NAT: a {}-byte game packet is too big for the relay", data.len());
-                } else {
-                    let res = WRAP.with(|w| {
-                        let mut w = w.borrow_mut();
-                        nat_proto::encode_data_to(&mut w, dest, data);
-                        send_raw(s, &w, server)
-                    });
-                    return if res < 0 { res } else { len };
+                    // Dropped, not sent directly: that would give away the address the relay
+                    // hides.
+                    warn!("NAT: a {}-byte game packet is too big for the relay; dropped", data.len());
+                    return len;
                 }
+                let res = WRAP.with(|w| {
+                    let mut w = w.borrow_mut();
+                    nat_proto::encode_data_to(&mut w, tag, dest, data);
+                    send_raw(s, &w, server)
+                });
+                return if res < 0 { res } else { len };
             }
         }
     }
@@ -283,8 +309,10 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
             // Not from our server: never let it reach the game.
             continue;
         }
-        if let Some((relayed_from, offset)) = nat_proto::data_from(data) {
-            if sender != server {
+        if let Some((tag, relayed_from, offset)) = nat_proto::data_from(data) {
+            // Only from the server, with our registration's tag: anyone can forge a source
+            // address, not the tag.
+            if sender != server || state().tag != tag || tag == [0; 8] {
                 continue;
             }
             let payload = data.len() - offset;
@@ -302,14 +330,35 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
             return payload as i32;
         }
         if let Some(Message::ProbeReply {
+            nonce,
             observed,
             advertise,
             flags,
             relay_ip,
             relay_ports,
-            ..
+            cookie,
+            tag,
         }) = Message::decode(data)
         {
+            {
+                let mut st = state();
+                // Only answers to our own recent probes.
+                if nonce == 0 || !st.sent.contains(&nonce) {
+                    continue;
+                }
+                if sender != second {
+                    if tag == [0; 8] {
+                        // Not registered yet: come back at once with the cookie.
+                        if cookie != [0; 16] && st.ticket != [0; 16] {
+                            st.cookie = cookie;
+                            st.last_probe = None;
+                        }
+                        continue;
+                    }
+                    st.cookie = cookie;
+                    st.tag = tag;
+                }
+            }
             on_reply(sender == second, observed, advertise, flags, relay_ip, relay_ports);
         }
     }
@@ -446,7 +495,10 @@ fn worker(host: String, port: u16) {
                 continue;
             }
             st.last_probe = Some(Instant::now());
-            st.nonce = st.nonce.wrapping_add(1);
+            st.nonce = st.nonce.wrapping_add(1).max(1);
+            let nonce = st.nonce;
+            st.sent.rotate_right(1);
+            st.sent[0] = nonce;
             let mut flags = 0;
             if st.mode == Some(NatMode::Relay) {
                 flags |= probe_flags::WANT_RELAY;
@@ -463,6 +515,8 @@ fn worker(host: String, port: u16) {
                     nonce: st.nonce,
                     mapping: st.mapping,
                     name: st.name.clone(),
+                    ticket: st.ticket,
+                    cookie: st.cookie,
                 }
                 .encode()
             };

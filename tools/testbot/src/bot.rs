@@ -83,6 +83,8 @@ pub const SESSION_TYPE: u32 = 1;
 pub struct Bot {
     pub name: String,
     pub pid: u32,
+    /// The NAT helper ticket from signing in.
+    pub nat_ticket: nat_proto::Ticket,
     token: String,
     api: Channel,
     secure: Conn,
@@ -119,6 +121,64 @@ pub async fn key_login(server: IpAddr, identity: &identity::Identity, server_id:
         })
         .await?;
     Ok(())
+}
+
+/// A registration with the NAT helper, as the hook makes it.
+#[derive(Debug, Clone, Copy)]
+pub struct NatRegistration {
+    pub observed: std::net::SocketAddrV4,
+    pub advertise: std::net::SocketAddrV4,
+    pub relayed: bool,
+    pub tag: nat_proto::Tag,
+    pub cookie: nat_proto::Cookie,
+}
+
+/// Registers `name` (with its `ticket`) from `socket` at the NAT helper
+/// `nat`: a probe for the cookie, then one with it.
+pub async fn nat_register(socket: &tokio::net::UdpSocket, nat: std::net::SocketAddrV4, flags: u8, name: &str, ticket: nat_proto::Ticket) -> Result<NatRegistration> {
+    use nat_proto::Message;
+    let mut cookie = [0u8; 16];
+    let mut buf = [0u8; 256];
+    for _ in 0..10 {
+        let nonce: u32 = rand::random::<u32>() | 1;
+        let msg = Message::Probe {
+            flags,
+            nonce,
+            mapping: None,
+            name: name.into(),
+            ticket,
+            cookie,
+        }
+        .encode();
+        socket.send_to(&msg, nat).await?;
+        if let Ok(Ok((n, _))) = tokio::time::timeout(Duration::from_millis(500), socket.recv_from(&mut buf)).await {
+            if let Some(Message::ProbeReply {
+                nonce: got,
+                observed,
+                advertise,
+                flags,
+                cookie: c,
+                tag,
+                ..
+            }) = Message::decode(&buf[..n])
+            {
+                if got != nonce {
+                    continue;
+                }
+                cookie = c;
+                if tag != [0; 8] {
+                    return Ok(NatRegistration {
+                        observed,
+                        advertise,
+                        relayed: flags & nat_proto::reply_flags::RELAYED != 0,
+                        tag,
+                        cookie,
+                    });
+                }
+            }
+        }
+    }
+    bail!("the NAT helper didn't register {name}")
 }
 
 /// Parses `a => b;c => d` into session properties.
@@ -214,12 +274,19 @@ impl Bot {
 
         // The DLL's gRPC session.
         let api = Channel::from_shared(api_url(server))?.connect().await?;
-        let token = UsersClient::new(api.clone())
+        let login = UsersClient::new(api.clone())
             .login(server_api::users::LoginRequest { username: name.into(), password: password.into() })
             .await?
-            .into_inner()
-            .token;
-        Ok(Bot { name: name.into(), pid, token, api, secure })
+            .into_inner();
+        let nat_ticket = login.nat_ticket.as_slice().try_into().unwrap_or([0; 16]);
+        Ok(Bot {
+            name: name.into(),
+            pid,
+            nat_ticket,
+            token: login.token,
+            api,
+            secure,
+        })
     }
 
     fn authed<T>(&self, msg: T) -> tonic::Request<T> {

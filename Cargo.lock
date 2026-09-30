@@ -1233,6 +1233,7 @@ dependencies = [
  "sc_bl_protocols",
  "serde",
  "serde_json",
+ "sha2",
  "slog",
  "sloggers",
  "socket2",

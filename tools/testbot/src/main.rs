@@ -455,91 +455,120 @@ async fn lost_push(ctx: &mut Ctx) -> Result<()> {
     b.disconnect().await
 }
 
-/// Sends `msg` from `sock` to the NAT helper's port `port` and waits for a
-/// NAT message back.
-fn nat_ask(sock: &UdpSocket, server: IpAddr, port: u16, msg: &nat_proto::Message) -> Result<nat_proto::Message> {
-    sock.send_to(&msg.encode(), (server, port))?;
-    nat_wait(sock)
+/// The NAT helper's address.
+fn nat_addr(server: IpAddr, second: bool) -> Result<std::net::SocketAddrV4> {
+    let IpAddr::V4(ip) = server else { return Err(eyre!("the NAT helper needs IPv4")) };
+    let port = testbot::bot::target(server).nat;
+    Ok(std::net::SocketAddrV4::new(ip, if second { port + 1 } else { port }))
 }
 
-fn nat_wait(sock: &UdpSocket) -> Result<nat_proto::Message> {
-    sock.set_read_timeout(Some(Duration::from_secs(2)))?;
+async fn nat_wait(sock: &tokio::net::UdpSocket, wait: Duration) -> Option<nat_proto::Message> {
     let mut buf = [0u8; 2048];
-    let (n, _) = sock.recv_from(&mut buf)?;
-    nat_proto::Message::decode(&buf[..n]).ok_or_else(|| eyre!("not a NAT message: {:x?}", &buf[..n]))
+    let (n, _) = tokio::time::timeout(wait, sock.recv_from(&mut buf)).await.ok()?.ok()?;
+    nat_proto::Message::decode(&buf[..n])
 }
 
-fn nat_probe(sock: &UdpSocket, server: IpAddr, flags: u8, name: &str) -> Result<(std::net::SocketAddrV4, std::net::SocketAddrV4, bool)> {
-    let probe = nat_proto::Message::Probe {
-        flags,
-        nonce: 7,
-        mapping: None,
-        name: name.into(),
-    };
-    match nat_ask(sock, server, testbot::bot::target(server).nat, &probe)? {
-        nat_proto::Message::ProbeReply {
-            nonce: 7,
-            observed,
-            advertise,
-            flags,
-            ..
-        } => Ok((observed, advertise, flags & nat_proto::reply_flags::RELAYED != 0)),
-        other => Err(eyre!("unexpected answer {other:?}")),
+/// The next relayed packet, skipping late answers to earlier probes.
+async fn nat_wait_data(sock: &tokio::net::UdpSocket, wait: Duration) -> Option<nat_proto::Message> {
+    let until = tokio::time::Instant::now() + wait;
+    loop {
+        let left = until.checked_duration_since(tokio::time::Instant::now())?;
+        match nat_wait(sock, left).await? {
+            nat_proto::Message::ProbeReply { .. } => continue,
+            other => return Some(other),
+        }
     }
 }
 
-/// The NAT helper tells a player the address it sees, on both of its ports.
+/// The NAT helper tells anyone the address it sees, on both of its ports, but
+/// registers only a player with their ticket who proved the address.
 async fn nat_probe_scenario(ctx: &mut Ctx) -> Result<()> {
-    let sock = UdpSocket::bind("0.0.0.0:0")?;
+    use nat_proto::Message;
+    let sock = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
     let local = sock.local_addr()?;
-    let (observed, advertise, relayed) = nat_probe(&sock, ctx.server, 0, "prober")?;
-    ensure!(observed.port() == local.port(), "observed {observed}, but the socket is {local}");
-    ensure!(advertise == observed && !relayed, "a local player is advertised as {advertise} (relayed: {relayed})");
-    let second = nat_proto::Message::Probe {
-        flags: nat_proto::probe_flags::SECOND_PORT,
-        nonce: 8,
-        mapping: None,
-        name: String::new(),
+    let probe = |flags, nonce| {
+        Message::Probe {
+            flags,
+            nonce,
+            mapping: None,
+            name: String::new(),
+            ticket: [0; 16],
+            cookie: [0; 16],
+        }
+        .encode()
     };
-    match nat_ask(&sock, ctx.server, testbot::bot::target(ctx.server).nat + 1, &second)? {
-        nat_proto::Message::ProbeReply { observed: o2, .. } => ensure!(o2 == observed, "the second port saw {o2}, the first {observed}"),
+    sock.send_to(&probe(0, 7), nat_addr(ctx.server, false)?).await?;
+    let Some(Message::ProbeReply { observed, tag, .. }) = nat_wait(&sock, Duration::from_secs(2)).await else {
+        return Err(eyre!("no answer to a plain probe"));
+    };
+    ensure!(observed.port() == local.port(), "observed {observed}, but the socket is {local}");
+    ensure!(tag == [0; 8], "a probe without a ticket was registered");
+    sock.send_to(&probe(nat_proto::probe_flags::SECOND_PORT, 8), nat_addr(ctx.server, true)?).await?;
+    match nat_wait(&sock, Duration::from_secs(2)).await {
+        Some(Message::ProbeReply { observed: o2, .. }) => ensure!(o2 == observed, "the second port saw {o2}, the first {observed}"),
         other => return Err(eyre!("unexpected answer {other:?}")),
     }
-    Ok(())
+
+    let player = ctx.player("Prober").await?;
+    let r = testbot::bot::nat_register(&sock, nat_addr(ctx.server, false)?, 0, &player.name, player.nat_ticket).await?;
+    ensure!(r.advertise == r.observed && !r.relayed, "a local player is advertised as {} (relayed: {})", r.advertise, r.relayed);
+    // Someone else's name, without its ticket, gets nowhere.
+    let other = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+    ensure!(
+        testbot::bot::nat_register(&other, nat_addr(ctx.server, false)?, 0, &player.name, [9; 16]).await.is_err(),
+        "a probe with a forged ticket registered"
+    );
+    player.disconnect().await
 }
 
 /// Two players, one relayed: packets reach each other through the relay,
-/// each seeing the other at its advertised address; strangers can't use it.
+/// each seeing the other at its advertised address; strangers, and packets
+/// without the right tag, get nowhere.
 async fn nat_relay(ctx: &mut Ctx) -> Result<()> {
     use nat_proto::Message;
-    let a = UdpSocket::bind("0.0.0.0:0")?;
-    let b = UdpSocket::bind("0.0.0.0:0")?;
-    let stranger = UdpSocket::bind("0.0.0.0:0")?;
-    let run = ctx.run;
-    let (_, a_adv, a_relayed) = nat_probe(&a, ctx.server, nat_proto::probe_flags::WANT_RELAY, &format!("relayed{run}"))?;
-    let (_, b_adv, b_relayed) = nat_probe(&b, ctx.server, 0, &format!("direct{run}"))?;
-    ensure!(a_relayed && !b_relayed, "relayed: a {a_relayed}, b {b_relayed}");
-    ensure!(a_adv.port() >= 40000, "a relay address was expected, got {a_adv}");
+    let nat = nat_addr(ctx.server, false)?;
+    let (pa, pb) = (ctx.player("Relayed").await?, ctx.player("Direct").await?);
+    let a = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+    let b = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+    let stranger = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+    let ra = testbot::bot::nat_register(&a, nat, nat_proto::probe_flags::WANT_RELAY, &pa.name, pa.nat_ticket).await?;
+    let rb = testbot::bot::nat_register(&b, nat, 0, &pb.name, pb.nat_ticket).await?;
+    ensure!(ra.relayed && !rb.relayed, "relayed: a {}, b {}", ra.relayed, rb.relayed);
+    ensure!(ra.advertise.port() >= 40000, "a relay address was expected, got {}", ra.advertise);
 
-    let to = |sock: &UdpSocket, to, payload: &[u8]| -> Result<()> {
-        sock.send_to(&Message::DataTo { to, payload: payload.to_vec() }.encode(), (ctx.server, testbot::bot::target(ctx.server).nat))?;
-        Ok(())
+    let send = |tag, to, payload: &[u8]| {
+        Message::DataTo {
+            tag,
+            to,
+            payload: payload.to_vec(),
+        }
+        .encode()
     };
-    to(&b, a_adv, b"to the relayed player")?;
+    b.send_to(&send(rb.tag, ra.advertise, b"to the relayed player"), nat).await?;
     ensure!(
-        nat_wait(&a)? == Message::DataFrom { from: b_adv, payload: b"to the relayed player".to_vec() },
+        nat_wait_data(&a, Duration::from_secs(2)).await
+            == Some(Message::DataFrom {
+                tag: ra.tag,
+                from: rb.advertise,
+                payload: b"to the relayed player".to_vec()
+            }),
         "the relayed player got something else"
     );
-    to(&a, b_adv, b"and back")?;
+    a.send_to(&send(ra.tag, rb.advertise, b"and back"), nat).await?;
     ensure!(
-        nat_wait(&b)? == Message::DataFrom { from: a_adv, payload: b"and back".to_vec() },
+        nat_wait_data(&b, Duration::from_secs(2)).await
+            == Some(Message::DataFrom {
+                tag: rb.tag,
+                from: ra.advertise,
+                payload: b"and back".to_vec()
+            }),
         "the direct player got something else"
     );
-    to(&stranger, a_adv, b"spam")?;
-    a.set_read_timeout(Some(Duration::from_millis(300)))?;
-    let mut buf = [0u8; 64];
-    ensure!(a.recv_from(&mut buf).is_err(), "a stranger's packet was relayed");
-    Ok(())
+    stranger.send_to(&send(rb.tag, ra.advertise, b"spam"), nat).await?;
+    b.send_to(&send([1; 8], ra.advertise, b"wrong tag"), nat).await?;
+    ensure!(nat_wait_data(&a, Duration::from_millis(400)).await.is_none(), "a stranger's or an untagged packet was relayed");
+    pa.disconnect().await?;
+    pb.disconnect().await
 }
 
 /// A game that still registers its local address gets the public one the
@@ -547,8 +576,8 @@ async fn nat_relay(ctx: &mut Ctx) -> Result<()> {
 async fn nat_public_address(ctx: &mut Ctx) -> Result<()> {
     let mut a = ctx.player("Host").await?;
     let mut b = ctx.player("Guest").await?;
-    let storm = UdpSocket::bind("0.0.0.0:0")?;
-    let (_, advertise, _) = nat_probe(&storm, ctx.server, 0, &a.name)?;
+    let storm = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+    let advertise = testbot::bot::nat_register(&storm, nat_addr(ctx.server, false)?, 0, &a.name, a.nat_ticket).await?.advertise;
     // 127.0.0.1 is what the trusted_subnet rule would give too, so only the
     // NAT helper changes the port.
     a.register_urls(&["prudp:/address=127.0.0.1;port=13000;RVCID=5;hdrType=0;type=2"]).await?;

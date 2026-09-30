@@ -142,6 +142,8 @@ struct Peer {
     advertise: SocketAddrV4,
     relayed: bool,
     name: String,
+    ticket: nat_proto::Ticket,
+    registration: crate::bot::NatRegistration,
 }
 
 const MAGIC: u32 = 0x5e10_ad00;
@@ -152,27 +154,6 @@ fn packet(size: usize, seq: u32, epoch: Instant) -> Vec<u8> {
     p[4..8].copy_from_slice(&seq.to_be_bytes());
     p[8..16].copy_from_slice(&(epoch.elapsed().as_micros() as u64).to_be_bytes());
     p
-}
-
-async fn probe(socket: &UdpSocket, nat: SocketAddrV4, name: &str, relay: bool) -> Result<(SocketAddrV4, bool)> {
-    let flags = if relay { nat_proto::probe_flags::WANT_RELAY } else { 0 };
-    let msg = Message::Probe {
-        flags,
-        nonce: rand::random(),
-        mapping: None,
-        name: name.into(),
-    }
-    .encode();
-    let mut buf = [0u8; 256];
-    for _ in 0..10 {
-        socket.send_to(&msg, nat).await?;
-        if let Ok(Ok((n, _))) = tokio::time::timeout(Duration::from_millis(500), socket.recv_from(&mut buf)).await {
-            if let Some(Message::ProbeReply { advertise, flags, .. }) = Message::decode(&buf[..n]) {
-                return Ok((advertise, flags & nat_proto::reply_flags::RELAYED != 0));
-            }
-        }
-    }
-    Err(eyre!("the NAT helper didn't answer {name}"))
 }
 
 pub async fn run(server: IpAddr, o: Options) -> Result<()> {
@@ -244,12 +225,15 @@ pub async fn run(server: IpAddr, o: Options) -> Result<()> {
     for bot in &bots {
         let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
         let relay = rand::random::<u32>() % 100 < o.relayed;
-        let (advertise, relayed) = probe(&socket, nat, &bot.name, relay).await?;
+        let flags = if relay { nat_proto::probe_flags::WANT_RELAY } else { 0 };
+        let r = crate::bot::nat_register(&socket, nat, flags, &bot.name, bot.nat_ticket).await?;
         peers.push(Peer {
             socket,
-            advertise,
-            relayed,
+            advertise: r.advertise,
+            relayed: r.relayed,
             name: bot.name.clone(),
+            ticket: bot.nat_ticket,
+            registration: r,
         });
     }
     let relayed_players = peers.iter().filter(|p| p.relayed).count();
@@ -262,13 +246,29 @@ pub async fn run(server: IpAddr, o: Options) -> Result<()> {
         for (me, peer) in group.iter().enumerate() {
             // Receiver: relayed packets (DataFrom) with our timestamp.
             let (socket, stats2) = (Arc::clone(&peer.socket), Arc::clone(&stats));
+            let (name, ticket, flags) = (peer.name.clone(), peer.ticket, if peer.relayed { nat_proto::probe_flags::WANT_RELAY } else { 0 });
             tasks.push(tokio::spawn(async move {
                 let mut buf = vec![0u8; 2048];
                 while Instant::now() < deadline + Duration::from_secs(2) {
                     let Ok(Ok((n, _))) = tokio::time::timeout(Duration::from_millis(500), socket.recv_from(&mut buf)).await else {
                         continue;
                     };
-                    let Some((_, offset)) = nat_proto::data_from(&buf[..n]) else { continue };
+                    // A keepalive whose cookie ran out: come back with the new one, as the hook does.
+                    if let Some(Message::ProbeReply { cookie, tag, nonce, .. }) = Message::decode(&buf[..n]) {
+                        if tag == [0; 8] && cookie != [0; 16] {
+                            let again = Message::Probe {
+                                flags,
+                                nonce,
+                                mapping: None,
+                                name: name.clone(),
+                                ticket,
+                                cookie,
+                            };
+                            let _ = socket.send_to(&again.encode(), nat).await;
+                        }
+                        continue;
+                    }
+                    let Some((_, _, offset)) = nat_proto::data_from(&buf[..n]) else { continue };
                     let p = &buf[offset..n];
                     if p.len() >= 16 && p[..4] == MAGIC.to_be_bytes() {
                         stats2.received.fetch_add(1, Ordering::Relaxed);
@@ -292,6 +292,7 @@ pub async fn run(server: IpAddr, o: Options) -> Result<()> {
             }
             links += targets.len();
             let (socket, stats2, o2, name, relayed) = (Arc::clone(&peer.socket), Arc::clone(&stats), o.clone(), peer.name.clone(), peer.relayed);
+            let (ticket, reg) = (peer.ticket, peer.registration);
             tasks.push(tokio::spawn(async move {
                 let mut tick = tokio::time::interval(Duration::from_secs_f64(1.0 / f64::from(o2.pps)));
                 tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -302,7 +303,7 @@ pub async fn run(server: IpAddr, o: Options) -> Result<()> {
                     tick.tick().await;
                     for to in &targets {
                         seq = seq.wrapping_add(1);
-                        nat_proto::encode_data_to(&mut wrapped, *to, &packet(o2.bytes, seq, epoch));
+                        nat_proto::encode_data_to(&mut wrapped, reg.tag, *to, &packet(o2.bytes, seq, epoch));
                         if socket.send_to(&wrapped, nat).await.is_ok() {
                             stats2.sent.fetch_add(1, Ordering::Relaxed);
                             stats2.bytes_sent.fetch_add(wrapped.len() as u64, Ordering::Relaxed);
@@ -313,9 +314,11 @@ pub async fn run(server: IpAddr, o: Options) -> Result<()> {
                         last_probe = Instant::now();
                         let msg = Message::Probe {
                             flags: if relayed { nat_proto::probe_flags::WANT_RELAY } else { 0 },
-                            nonce: seq,
+                            nonce: seq | 1,
                             mapping: None,
                             name: name.clone(),
+                            ticket,
+                            cookie: reg.cookie,
                         };
                         let _ = socket.send_to(&msg.encode(), nat).await;
                     }
