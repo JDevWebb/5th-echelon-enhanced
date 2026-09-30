@@ -267,9 +267,9 @@ pub(crate) fn only_reachable_addresses(urls: Vec<String>, observed: std::net::Ip
                 .map(|part| {
                     for prefix in ["prudp:/address=", "prudps:/address=", "address="] {
                         if let Some(addr) = part.strip_prefix(prefix) {
-                            let foreign = addr.parse::<std::net::IpAddr>().is_ok_and(|ip| {
-                                is_public(ip) && ip != observed && !matches!((ip, relay), (std::net::IpAddr::V4(v4), Some(r)) if v4 == r)
-                            });
+                            let foreign = addr
+                                .parse::<std::net::IpAddr>()
+                                .is_ok_and(|ip| is_public(ip) && ip != observed && !matches!((ip, relay), (std::net::IpAddr::V4(v4), Some(r)) if v4 == r));
                             return if foreign { format!("{prefix}{observed}") } else { part.to_string() };
                         }
                     }
@@ -320,7 +320,10 @@ impl GameSessionProtocolServerImpl {
         let members = rmc_err!(self.storage.session_members(session_id), logger, "error reading session members")?;
         match members {
             Some((creator, participants)) if !may_change_session(caller, creator, &participants, targets) => {
-                warn!(logger, "User {caller} may not {verb} session {session_id} (host {creator}, participants {participants:?}); refused");
+                warn!(
+                    logger,
+                    "User {caller} may not {verb} session {session_id} (host {creator}, participants {participants:?}); refused"
+                );
                 Err(Error::AccessDenied)
             }
             _ => Ok(()),
@@ -487,7 +490,9 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         self.authorise(logger, user_id, request.game_session_key.session_id, Some(&targets), "add participants to")?;
         let session_id = request.game_session_key.session_id;
         let members = rmc_err!(self.storage.session_members(session_id), logger, "error reading session members")?;
-        let is_member = members.as_ref().is_some_and(|(creator, participants)| *creator == user_id || participants.contains(&user_id));
+        let is_member = members
+            .as_ref()
+            .is_some_and(|(creator, participants)| *creator == user_id || participants.contains(&user_id));
         // Nobody walks into a private match uninvited (the ids are small numbers anyone could
         // try); members, and anyone invited, may.
         if targets == [user_id] && !is_member && self.is_private_room(request.game_session_key.type_id, session_id) {
@@ -498,7 +503,10 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             }
         }
         // Adding someone else is an invitation: the same rules (friends only, no blocks).
-        if let Some(other) = targets.iter().find(|&&t| t != user_id && !crate::friends_policy::may_invite_blocking(&self.storage, user_id, t)) {
+        if let Some(other) = targets
+            .iter()
+            .find(|&&t| t != user_id && !crate::friends_policy::may_invite_blocking(&self.storage, user_id, t))
+        {
             warn!(logger, "User {user_id} may not add {other} to session {session_id}; refused");
             return Err(Error::AccessDenied);
         }
@@ -653,7 +661,13 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // Ensure the client is logged in.
         let user_id = login_required(&*ci)?;
         info!(logger, "Client removes participants: {:?}", request);
-        self.authorise(logger, user_id, request.game_session_key.session_id, Some(&request.participant_ids.0), "remove participants from")?;
+        self.authorise(
+            logger,
+            user_id,
+            request.game_session_key.session_id,
+            Some(&request.participant_ids.0),
+            "remove participants from",
+        )?;
         // Removing anyone but yourself is the host's call alone.
         if request.participant_ids.0.iter().any(|&t| t != user_id) {
             let members = rmc_err!(self.storage.session_members(request.game_session_key.session_id), logger, "error reading session members")?;
@@ -756,7 +770,8 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
 
         // Resolved before the search, because the answer depends on it.
         let invited = rmc_err!(
-            self.storage.find_pending_invited_session(user_id, request.game_session_type_id, request.participant_ids.0.as_slice()),
+            self.storage
+                .find_pending_invited_session(user_id, request.game_session_type_id, request.participant_ids.0.as_slice()),
             logger,
             "error resolving invited room"
         )?;

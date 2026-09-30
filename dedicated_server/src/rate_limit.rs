@@ -363,7 +363,6 @@ mod tests {
         assert_eq!(limit.seen.lock().unwrap().len(), 1);
     }
 
-
     #[test]
     fn only_recorded_failures_block() {
         let limit = RateLimit::new((2, Duration::from_secs(60)));

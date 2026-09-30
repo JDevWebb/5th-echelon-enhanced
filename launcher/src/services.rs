@@ -12,7 +12,6 @@ use setup::account::AccountError;
 use setup::account::AccountService;
 use tonic::service::interceptor::InterceptedService;
 use tonic::transport::Channel;
-use tonic::transport::Endpoint;
 
 use crate::network;
 
@@ -96,7 +95,11 @@ type Authed = InterceptedService<Channel, Box<dyn FnMut(tonic::Request<()>) -> R
 
 impl Admin {
     async fn channel(&self) -> anyhow::Result<Authed> {
-        let channel = Endpoint::from_shared(self.api.clone())?.connect_timeout(Duration::from_secs(4)).connect().await?;
+        let channel = crate::network::endpoint(&self.api)
+            .map_err(|e| anyhow::anyhow!("{e}"))?
+            .connect_timeout(Duration::from_secs(4))
+            .connect()
+            .await?;
         let key: tonic::metadata::MetadataValue<_> = self.key.trim().parse()?;
         let auth: Box<dyn FnMut(tonic::Request<()>) -> Result<tonic::Request<()>, tonic::Status> + Send + Sync> = Box::new(move |mut req| {
             req.metadata_mut().insert("authorization", key.clone());

@@ -49,6 +49,10 @@ pub struct Server {
     admin: Option<Admin>,
     remote_api: String,
     remote_key: String,
+    /// A plain-HTTP admin address waiting for the player to agree to send
+    /// the key unencrypted, and whether they have.
+    plain: Option<(String, bool)>,
+    connect_error: Option<String>,
     tab: Tab,
     players: Slot<anyhow::Result<Vec<server_api::users::User>>>,
     player_list: Vec<server_api::users::User>,
@@ -77,7 +81,11 @@ impl Server {
         self.exe = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(SERVER_EXE))).filter(|p| p.is_file());
         let Some(exe) = &self.exe else { return };
         let path = exe.with_file_name("service.toml");
-        let cfg = if path.exists() { ServerConfig::load_from_file(&path) } else { Ok(ServerConfig::default()) };
+        let cfg = if path.exists() {
+            ServerConfig::load_from_file(&path)
+        } else {
+            Ok(ServerConfig::default())
+        };
         match cfg {
             Ok(cfg) => {
                 self.listen = Some(cfg.api_server.ip()).filter(|ip| !ip.is_unspecified());
@@ -272,8 +280,12 @@ fn local_server(server: &mut Server, notices: &mut Notices, ctx: &egui::Context,
                 ui.add(egui::TextEdit::singleline(&mut server.public_ip).hint_text("only behind NAT").desired_width(260.0));
                 ui.end_row();
                 ui.label("Trusted subnet");
-                ui.add(egui::TextEdit::singleline(&mut server.trusted_subnet).hint_text("e.g. 10.8.0.0/16, the VPN players use").desired_width(260.0))
-                    .on_hover_text("Players connecting from this subnet always advertise the address the server sees, fixing joins when the game picks the wrong adapter.");
+                ui.add(
+                    egui::TextEdit::singleline(&mut server.trusted_subnet)
+                        .hint_text("e.g. 10.8.0.0/16, the VPN players use")
+                        .desired_width(260.0),
+                )
+                .on_hover_text("Players connecting from this subnet always advertise the address the server sees, fixing joins when the game picks the wrong adapter.");
                 ui.end_row();
             });
             if let Some(cfg) = server.cfg.as_mut() {
@@ -282,8 +294,10 @@ fn local_server(server: &mut Server, notices: &mut Notices, ctx: &egui::Context,
                 ui.horizontal_wrapped(|ui| {
                     let api = &mut cfg.community_api;
                     ui.checkbox(&mut api.info, "Server info");
-                    ui.checkbox(&mut api.presence, "Who's online").on_hover_text("Shares every username and what online players are doing.");
-                    ui.checkbox(&mut api.accounts, "One-click accounts").on_hover_text("Anyone who can reach port 80 can create an account (rate-limited).");
+                    ui.checkbox(&mut api.presence, "Who's online")
+                        .on_hover_text("Shares every username and what online players are doing.");
+                    ui.checkbox(&mut api.accounts, "One-click accounts")
+                        .on_hover_text("Anyone who can reach port 80 can create an account (rate-limited).");
                     ui.checkbox(&mut api.unhandled, "Unhandled calls (development)");
                 });
             }
@@ -311,6 +325,29 @@ fn local_server(server: &mut Server, notices: &mut Notices, ctx: &egui::Context,
     });
 }
 
+/// The admin API's URL for what the player typed (`host`, `host:port` or a
+/// URL), and whether it's plain HTTP to another machine that isn't on a
+/// private network.
+fn admin_url(typed: &str) -> Result<(String, bool), String> {
+    let typed = typed.trim();
+    let with_scheme = if typed.starts_with("http://") || typed.starts_with("https://") {
+        typed.to_string()
+    } else {
+        format!("http://{typed}")
+    };
+    let mut url = url::Url::parse(&with_scheme).map_err(|_| format!("\"{typed}\" isn't a server address."))?;
+    let host = url.host_str().unwrap_or_default().trim_start_matches('[').trim_end_matches(']').to_string();
+    if !setup::net::valid_host(&host) || !url.username().is_empty() || url.password().is_some() || url.query().is_some() {
+        return Err(format!("\"{typed}\" isn't a server address."));
+    }
+    if url.port().is_none() && url.scheme() == "http" && !typed.starts_with("http://") {
+        let _ = url.set_port(Some(setup::API_PORT));
+    }
+    let local = host == "localhost" || host.parse::<std::net::IpAddr>().is_ok_and(|ip| !setup::net::is_public(ip));
+    let plain = url.scheme() == "http" && !local;
+    Ok((url.as_str().trim_end_matches('/').to_string(), plain))
+}
+
 fn manage(server: &mut Server, ctx: &egui::Context, ui: &mut egui::Ui) {
     theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -321,17 +358,47 @@ fn manage(server: &mut Server, ctx: &egui::Context, ui: &mut egui::Ui) {
             ));
             ui.horizontal(|ui| {
                 ui.add(egui::TextEdit::singleline(&mut server.remote_api).hint_text("server address").desired_width(180.0));
-                ui.add(egui::TextEdit::singleline(&mut server.remote_key).hint_text("admin key").password(true).desired_width(220.0));
-                if ui.add_enabled(!server.remote_api.is_empty() && !server.remote_key.is_empty(), egui::Button::new("Connect")).clicked() {
-                    let api = server.remote_api.trim();
-                    let api = if api.starts_with("http") { api.to_string() } else if api.contains(':') { format!("http://{api}") } else { format!("http://{api}:{}", setup::API_PORT) };
-                    server.admin = Some(Admin {
-                        api,
-                        key: server.remote_key.trim().to_string(),
-                    });
-                    server.reload_lists(ctx);
+                ui.add(
+                    egui::TextEdit::singleline(&mut server.remote_key)
+                        .hint_text("admin key")
+                        .password(true)
+                        .desired_width(220.0),
+                );
+                if ui
+                    .add_enabled(!server.remote_api.is_empty() && !server.remote_key.is_empty(), egui::Button::new("Connect"))
+                    .clicked()
+                {
+                    server.connect_error = None;
+                    match admin_url(&server.remote_api) {
+                        Ok((api, plain)) if !plain || server.plain.as_ref().is_some_and(|(a, ok)| *ok && *a == api) => {
+                            server.admin = Some(Admin {
+                                api,
+                                key: server.remote_key.trim().to_string(),
+                            });
+                            server.plain = None;
+                            server.reload_lists(ctx);
+                        }
+                        Ok((api, _)) => server.plain = Some((api, false)),
+                        Err(e) => server.connect_error = Some(e),
+                    }
                 }
             });
+            if let Some((api, ok)) = server.plain.as_mut().filter(|(_, ok)| !*ok) {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(
+                        RichText::new(format!(
+                            "{api} isn't encrypted: anyone on the way can read the admin key. Use https:// if the server has it."
+                        ))
+                        .color(theme::WARN),
+                    );
+                    if ui.button("Allow, then Connect").clicked() {
+                        *ok = true;
+                    }
+                });
+            }
+            if let Some(e) = &server.connect_error {
+                ui.label(RichText::new(e).color(theme::BAD));
+            }
             logs(server, ui);
             return;
         }
@@ -395,7 +462,11 @@ fn manage(server: &mut Server, ctx: &egui::Context, ui: &mut egui::Ui) {
 fn confirm_delete(server: &mut Server, ctx: &egui::Context, ui: &mut egui::Ui) {
     let Some((tab, id, name)) = server.confirm.clone() else { return };
     ui.horizontal(|ui| {
-        let what = if tab == Tab::Players { format!("Delete the account {name}? It can't be undone.") } else { format!("End {name}?") };
+        let what = if tab == Tab::Players {
+            format!("Delete the account {name}? It can't be undone.")
+        } else {
+            format!("End {name}?")
+        };
         ui.label(RichText::new(what).color(theme::WARN));
         if ui.button("Yes").clicked() {
             if let Some(admin) = server.admin.clone() {
@@ -441,18 +512,26 @@ struct LogItem {
 
 /// The last lines of this PC's server log (`server.log.json`).
 fn logs(server: &mut Server, ui: &mut egui::Ui) {
-    let Some(path) = server.exe.as_ref().map(|e| e.with_file_name("server.log.json")) else { return };
+    let Some(path) = server.exe.as_ref().map(|e| e.with_file_name("server.log.json")) else {
+        return;
+    };
     let Ok(text) = std::fs::read_to_string(&path) else { return };
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.label(theme::heading("Log"));
-        egui::ComboBox::from_id_salt("level").selected_text(format!("{:?} and above", server.min_level)).show_ui(ui, |ui| {
-            for level in [LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error] {
-                ui.selectable_value(&mut server.min_level, level, format!("{level:?}"));
-            }
-        });
+        egui::ComboBox::from_id_salt("level")
+            .selected_text(format!("{:?} and above", server.min_level))
+            .show_ui(ui, |ui| {
+                for level in [LogLevel::Debug, LogLevel::Info, LogLevel::Warn, LogLevel::Error] {
+                    ui.selectable_value(&mut server.min_level, level, format!("{level:?}"));
+                }
+            });
     });
-    let items: Vec<LogItem> = text.lines().filter_map(|l| serde_json::from_str::<LogItem>(l).ok()).filter(|i| i.level >= server.min_level).collect();
+    let items: Vec<LogItem> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<LogItem>(l).ok())
+        .filter(|i| i.level >= server.min_level)
+        .collect();
     egui::ScrollArea::vertical().max_height(260.0).stick_to_bottom(true).show(ui, |ui| {
         for item in items.iter().skip(items.len().saturating_sub(300)) {
             let color = match item.level {
@@ -466,4 +545,23 @@ fn logs(server: &mut Server, ui: &mut egui::Ui) {
             });
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::admin_url;
+
+    #[test]
+    fn admin_addresses() {
+        assert_eq!(admin_url("10.8.0.10").unwrap(), ("http://10.8.0.10:50051".to_string(), false));
+        assert_eq!(
+            admin_url("play.example.org:9000").unwrap(),
+            ("http://play.example.org:9000".to_string(), true),
+            "plain over the internet"
+        );
+        assert_eq!(admin_url("https://play.example.org").unwrap(), ("https://play.example.org".to_string(), false));
+        assert!(admin_url("localhost").is_ok_and(|(_, plain)| !plain));
+        assert!(admin_url("http://user:pw@play.example.org").is_err());
+        assert!(admin_url("a b").is_err());
+    }
 }

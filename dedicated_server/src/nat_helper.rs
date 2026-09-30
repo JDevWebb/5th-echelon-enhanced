@@ -203,7 +203,11 @@ impl Table {
         // gave it a new one. A direct player can still move to the relay
         // (the hook asks before it tells the game anything).
         let relayed = old.as_ref().is_some_and(|(_, o)| o.relayed) || self.wants_relay(src, flags, mapping);
-        let vport = if relayed { old.as_ref().and_then(|(_, o)| o.vport).or_else(|| self.free_vport()) } else { None };
+        let vport = if relayed {
+            old.as_ref().and_then(|(_, o)| o.vport).or_else(|| self.free_vport())
+        } else {
+            None
+        };
         let relayed = relayed && vport.is_some();
         let advertise = match (vport, mapping, &old) {
             (Some(v), _, _) => SocketAddrV4::new(self.relay_ip, v),
@@ -749,10 +753,7 @@ mod tests {
 
     #[test]
     fn tickets_name_one_account_and_cookies_one_address() {
-        let _ = KEYS.set(Keys {
-            ticket: [1; 32],
-            cookie: [2; 32],
-        });
+        let _ = KEYS.set(Keys { ticket: [1; 32], cookie: [2; 32] });
         assert_eq!(ticket_for("Kiwi"), ticket_for("kiwi"), "any case");
         assert_ne!(ticket_for("Kiwi"), ticket_for("Tank"));
         let keys = KEYS.get().unwrap();

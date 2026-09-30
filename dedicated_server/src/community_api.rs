@@ -302,6 +302,7 @@ mod tests {
                 secure: 31127,
                 content: 80,
                 nat: Some(31128),
+                api_tls: None,
             },
             Some("blacklist.example.com".into()),
         );
@@ -337,7 +338,12 @@ mod tests {
         let features = v["features"].as_array().unwrap();
         assert!(!features.iter().any(|f| f == "presence" || f == "accounts"), "switched-off parts aren't advertised");
         let creds = r#"{"username":"Kiwi","password":"correct horse battery"}"#;
-        for (method, path, body) in [("GET", "/api/presence", ""), ("GET", "/api/unhandled", ""), ("POST", "/api/register", creds), ("POST", "/api/login", creds)] {
+        for (method, path, body) in [
+            ("GET", "/api/presence", ""),
+            ("GET", "/api/unhandled", ""),
+            ("POST", "/api/register", creds),
+            ("POST", "/api/login", creds),
+        ] {
             assert!(call(&routes, req(method, path, body)).0.contains("404"), "{path} is off by default");
         }
         std::fs::remove_dir_all(dir).unwrap();

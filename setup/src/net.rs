@@ -16,9 +16,38 @@ use std::time::Duration;
 
 pub use crate::sys::adapters;
 
+/// Whether `host` is a server address: an IP address, or a host name of
+/// letters, digits, `-` and `.` (no port, path or spaces). Anything else
+/// could smuggle text into the requests made to it.
+pub fn valid_host(host: &str) -> bool {
+    if host.parse::<IpAddr>().is_ok() {
+        return true;
+    }
+    let label = |l: &str| !l.is_empty() && l.len() <= 63 && !l.starts_with('-') && !l.ends_with('-') && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    !host.is_empty() && host.len() <= 253 && host.split('.').all(label)
+}
+
+/// Whether `ip` is on the public internet: not loopback, private, shared
+/// (100.64/10), link-local, multicast, broadcast or unspecified.
+pub fn is_public(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            !(v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_multicast() || v4.is_broadcast() || v4.is_unspecified() || a == 0 || (a == 100 && (64..128).contains(&b)) || a >= 240)
+        }
+        IpAddr::V6(v6) => {
+            let first = v6.segments()[0];
+            !(v6.is_loopback() || v6.is_multicast() || v6.is_unspecified() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80 || v6.to_ipv4_mapped().is_some_and(|v4| !is_public(IpAddr::V4(v4))))
+        }
+    }
+}
+
 /// Resolves a server address typed by a player (an IP or a host name).
 pub fn resolve(server: &str) -> Option<IpAddr> {
     let server = server.trim();
+    if !valid_host(server) {
+        return None;
+    }
     if let Ok(ip) = server.parse() {
         return Some(ip);
     }
@@ -73,6 +102,20 @@ mod tests {
         assert_eq!(adapter_ip("game vpn", &adapters), Some(IpAddr::from([10, 8, 1, 2])));
         assert_eq!(adapter_for_server(IpAddr::from([127, 0, 0, 1]), &adapters), None, "no pin for a server on this PC");
         assert_eq!(local_ip_towards(IpAddr::from([127, 0, 0, 1])), Some(IpAddr::from([127, 0, 0, 1])));
+    }
+
+    #[test]
+    fn checks_hosts() {
+        for ok in ["10.8.0.10", "play.example.org", "localhost", "a-b.c1", "::1"] {
+            assert!(valid_host(ok), "{ok}");
+        }
+        for bad in ["", "play.example.org:80", "a b", "host\r\nX: y", "-a.b", "a..b", "a/b", "é.com"] {
+            assert!(!valid_host(bad), "{bad:?}");
+        }
+        assert!(is_public(IpAddr::from([203, 0, 114, 5])));
+        for private in [[10, 0, 0, 1], [192, 168, 1, 1], [127, 0, 0, 1], [100, 64, 0, 1], [169, 254, 1, 1], [0, 0, 0, 0], [255, 255, 255, 255]] {
+            assert!(!is_public(IpAddr::from(private)), "{private:?}");
+        }
     }
 
     #[test]

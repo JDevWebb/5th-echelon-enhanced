@@ -2,9 +2,11 @@
 #
 #   1. set `version` in release.toml (e.g. "0.3.1") and commit;
 #   2. git tag v0.3.1 && git push origin main v0.3.1
+#   3. scripts/sign-release.sh v0.3.1 (signs with the offline release key,
+#      then publishes the draft).
 #
 # Builds every download the README and the launcher's updater expect,
-# writes SHA256SUMS, publishes the GitHub release, and pushes the server's
+# writes SHA256SUMS, makes a draft GitHub release, and pushes the server's
 # Docker image to ghcr.io. A tag with a suffix (v0.3.1-rc.1) makes a
 # pre-release, which the launcher's updater doesn't offer.
 name: Release
@@ -122,7 +124,9 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
           PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
-          flags=(--generate-notes --title "v$VERSION")
+          # A draft: scripts/sign-release.sh signs SHA256SUMS with the offline
+          # release key and publishes it. Launchers ignore unsigned releases.
+          flags=(--draft --generate-notes --title "v$VERSION")
           if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
           gh release create "v$VERSION" "${flags[@]}" dist/*
 

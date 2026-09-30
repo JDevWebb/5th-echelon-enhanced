@@ -223,7 +223,10 @@ impl Storage {
     }
 
     pub async fn find_person(&self, id: u32) -> Result<Option<Person>> {
-        Ok(sqlx::query_as(&format!("SELECT {PERSON} FROM users u WHERE u.id = ?")).bind(id).fetch_optional(&self.pool).await?)
+        Ok(sqlx::query_as(&format!("SELECT {PERSON} FROM users u WHERE u.id = ?"))
+            .bind(id)
+            .fetch_optional(&self.pool)
+            .await?)
     }
 
     /// `me` asks `other` to be friends. If `other` had asked `me`, they're
@@ -278,15 +281,13 @@ impl Storage {
     /// (never a block: a blocked pair stays blocked).
     pub async fn make_friends(&self, a: u32, b: u32) -> Result<bool> {
         let mut tx = self.pool.begin().await?;
-        let blocked: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM relationships WHERE kind = 'block' AND ((user_id = ? AND other_id = ?) OR (user_id = ? AND other_id = ?))",
-        )
-        .bind(a)
-        .bind(b)
-        .bind(b)
-        .bind(a)
-        .fetch_one(&mut *tx)
-        .await?;
+        let blocked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM relationships WHERE kind = 'block' AND ((user_id = ? AND other_id = ?) OR (user_id = ? AND other_id = ?))")
+            .bind(a)
+            .bind(b)
+            .bind(b)
+            .bind(a)
+            .fetch_one(&mut *tx)
+            .await?;
         if blocked > 0 || a == b {
             return Ok(false);
         }
@@ -406,8 +407,21 @@ impl Storage {
             }
             return Ok(());
         }
-        sqlx::query("UPDATE users SET global_id = ? WHERE id = ?").bind(global_id).bind(user).execute(&self.pool).await?;
+        sqlx::query("UPDATE users SET global_id = ? WHERE id = ?")
+            .bind(global_id)
+            .bind(user)
+            .execute(&self.pool)
+            .await?;
         Ok(())
+    }
+
+    /// Unlinks `user` from their identity; says whether they had one.
+    pub async fn unlink_global_id(&self, user: u32) -> Result<bool> {
+        let done = sqlx::query("UPDATE users SET global_id = NULL WHERE id = ? AND global_id IS NOT NULL")
+            .bind(user)
+            .execute(&self.pool)
+            .await?;
+        Ok(done.rows_affected() > 0)
     }
 
     pub async fn find_person_by_global_id(&self, global_id: &str) -> Result<Option<Person>> {
@@ -431,13 +445,21 @@ impl Storage {
 
     /// Flags (or clears) a name clash for the account linked to `global_id`.
     pub async fn set_name_conflict(&self, global_id: &str, conflict: bool) -> Result<()> {
-        sqlx::query("UPDATE users SET name_conflict = ? WHERE global_id = ?").bind(i32::from(conflict)).bind(global_id).execute(&self.pool).await?;
+        sqlx::query("UPDATE users SET name_conflict = ? WHERE global_id = ?")
+            .bind(i32::from(conflict))
+            .bind(global_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
     /// Flags (or clears) a name clash for account `user`.
     pub async fn set_name_conflict_by_id(&self, user: u32, conflict: bool) -> Result<()> {
-        sqlx::query("UPDATE users SET name_conflict = ? WHERE id = ?").bind(i32::from(conflict)).bind(user).execute(&self.pool).await?;
+        sqlx::query("UPDATE users SET name_conflict = ? WHERE id = ?")
+            .bind(i32::from(conflict))
+            .bind(user)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -480,7 +502,11 @@ impl Storage {
         })
         .await?
         .map_err(|_| eyre!("password hashing failed"))?;
-        sqlx::query("UPDATE users SET password = NULL, password_hash = ? WHERE id = ?").bind(hash).bind(user).execute(&self.pool).await?;
+        sqlx::query("UPDATE users SET password = NULL, password_hash = ? WHERE id = ?")
+            .bind(hash)
+            .bind(user)
+            .execute(&self.pool)
+            .await?;
         // Whoever signed in with the old password is signed out.
         self.new_token_epoch(user).await
     }
@@ -494,7 +520,10 @@ impl Storage {
 
     /// The oldest waiting messages, at most `limit`.
     pub async fn outbox_peek(&self, limit: u32) -> Result<Vec<(i64, String)>> {
-        Ok(sqlx::query_as("SELECT id, body FROM federation_outbox ORDER BY id LIMIT ?").bind(limit).fetch_all(&self.pool).await?)
+        Ok(sqlx::query_as("SELECT id, body FROM federation_outbox ORDER BY id LIMIT ?")
+            .bind(limit)
+            .fetch_all(&self.pool)
+            .await?)
     }
 
     pub async fn outbox_remove(&self, id: i64) -> Result<()> {
@@ -504,12 +533,9 @@ impl Storage {
 
     /// How many players are online, and how many accounts there are.
     pub async fn player_counts(&self) -> Result<(u32, u32)> {
-        let (online, total): (i64, i64) = sqlx::query_as(&format!(
-            "SELECT COALESCE(SUM(u.is_online), 0), COUNT(*) FROM users u WHERE {}",
-            Self::players()
-        ))
-        .fetch_one(&self.pool)
-        .await?;
+        let (online, total): (i64, i64) = sqlx::query_as(&format!("SELECT COALESCE(SUM(u.is_online), 0), COUNT(*) FROM users u WHERE {}", Self::players()))
+            .fetch_one(&self.pool)
+            .await?;
         Ok((u32::try_from(online).unwrap_or(0), u32::try_from(total).unwrap_or(0)))
     }
 
@@ -525,8 +551,8 @@ impl Storage {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::storage::tests::temp_storage;
     use crate::storage::run;
+    use crate::storage::tests::temp_storage;
 
     fn user(storage: &Storage, name: &str) -> u32 {
         storage.register_user(name, "password1", Some(name)).unwrap();

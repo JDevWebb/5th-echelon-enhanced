@@ -109,8 +109,23 @@ pub fn check_username(name: &str) -> Result<(), &'static str> {
 /// Names no player may take (compared without case or punctuation): they'd
 /// look like the server or its operators speaking.
 const RESERVED_NAMES: &[&str] = &[
-    "admin", "administrator", "server", "system", "moderator", "mod", "operator", "owner", "support", "staff", "root", "tracking",
-    "ubisoft", "5thechelon", "fifthechelon", "anonymous", "nobody",
+    "admin",
+    "administrator",
+    "server",
+    "system",
+    "moderator",
+    "mod",
+    "operator",
+    "owner",
+    "support",
+    "staff",
+    "root",
+    "tracking",
+    "ubisoft",
+    "5thechelon",
+    "fifthechelon",
+    "anonymous",
+    "nobody",
 ];
 
 fn relation_proto(r: Relation) -> friends::Relation {
@@ -188,7 +203,10 @@ impl MyFriends {
         } else {
             self.storage.find_person_by_ubi_id(&request.id).await
         };
-        person.map_err(internal)?.filter(|p| !p.ubi_id.is_empty()).ok_or_else(|| friend_error(FriendError::NotFound))
+        person
+            .map_err(internal)?
+            .filter(|p| !p.ubi_id.is_empty())
+            .ok_or_else(|| friend_error(FriendError::NotFound))
     }
 
     fn player(&self, person: Person, relation: Relation, sessions: Option<&[crate::storage::LiveSession]>) -> friends::Player {
@@ -399,10 +417,13 @@ impl Friends for MyFriends {
         }
         federation::pull_now_and_then(me);
         let sessions = self.storage.presence_async().await.map_err(internal)?.1;
-        let list = |people: Vec<Person>, relation: Relation| -> Vec<friends::Player> {
-            people.into_iter().map(|p| self.player(p, relation, Some(&sessions))).collect()
-        };
-        let me_person = self.storage.find_person(me).await.map_err(internal)?.ok_or_else(|| Status::unauthenticated("Unknown user"))?;
+        let list = |people: Vec<Person>, relation: Relation| -> Vec<friends::Player> { people.into_iter().map(|p| self.player(p, relation, Some(&sessions))).collect() };
+        let me_person = self
+            .storage
+            .find_person(me)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| Status::unauthenticated("Unknown user"))?;
         let mut resp = friends::RelationshipsResponse {
             my_name: 0,
             my_identity: me_person.global_id.as_deref().map(identity::short).unwrap_or_default(),
@@ -503,7 +524,12 @@ impl Friends for MyFriends {
     async fn link_identity(&self, request: Request<friends::LinkIdentityRequest>) -> Result<Response<friends::LinkIdentityResponse>, Status> {
         let me = caller(&request)?;
         let request = request.into_inner();
-        let person = self.storage.find_person(me).await.map_err(internal)?.ok_or_else(|| Status::unauthenticated("Unknown user"))?;
+        let person = self
+            .storage
+            .find_person(me)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| Status::unauthenticated("Unknown user"))?;
         if !identity::is_global_id(&request.global_id) {
             return Err(Status::invalid_argument("Not an identity"));
         }
@@ -521,7 +547,10 @@ impl Friends for MyFriends {
         if person.global_id.is_some() {
             return Err(Status::already_exists("This account is linked to another identity"));
         }
-        self.storage.link_global_id(me, &request.global_id).await.map_err(|e| Status::already_exists(e.to_string()))?;
+        self.storage
+            .link_global_id(me, &request.global_id)
+            .await
+            .map_err(|e| Status::already_exists(e.to_string()))?;
         info!(self.logger, "{} ({me}) linked to identity {}", person.username, identity::short(&request.global_id));
         let link = federation::Change::Link {
             global_id: request.global_id,
@@ -534,6 +563,23 @@ impl Friends for MyFriends {
         Ok(Response::new(friends::LinkIdentityResponse {}))
     }
 
+    async fn unlink_identity(&self, request: Request<friends::UnlinkIdentityRequest>) -> Result<Response<friends::UnlinkIdentityResponse>, Status> {
+        let me = caller(&request)?;
+        let person = self
+            .storage
+            .find_person(me)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| Status::unauthenticated("Unknown user"))?;
+        if let Some(global_id) = person.global_id {
+            if self.storage.unlink_global_id(me).await.map_err(internal)? {
+                info!(self.logger, "{} ({me}) unlinked from identity {}", person.username, identity::short(&global_id));
+                federation::record(&self.logger, &self.storage, federation::Change::Unlink { global_id }).await;
+            }
+        }
+        Ok(Response::new(friends::UnlinkIdentityResponse {}))
+    }
+
     async fn rename(&self, request: Request<friends::RenameRequest>) -> Result<Response<friends::RenameResponse>, Status> {
         let me = caller(&request)?;
         if !crate::rate_limit::friend_changes().check(me) {
@@ -542,7 +588,12 @@ impl Friends for MyFriends {
         let request = request.into_inner();
         let new_name = request.new_name.trim().to_string();
         check_username(&new_name).map_err(Status::invalid_argument)?;
-        let person = self.storage.find_person(me).await.map_err(internal)?.ok_or_else(|| Status::unauthenticated("Unknown user"))?;
+        let person = self
+            .storage
+            .find_person(me)
+            .await
+            .map_err(internal)?
+            .ok_or_else(|| Status::unauthenticated("Unknown user"))?;
         if let Some(owner) = self.storage.find_person_by_name(&new_name).await.map_err(internal)? {
             if owner.id != me {
                 return Err(Status::already_exists("Another player here has that name"));

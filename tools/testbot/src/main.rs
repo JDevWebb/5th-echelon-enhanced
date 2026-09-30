@@ -147,7 +147,14 @@ async fn identity_login(ctx: &mut Ctx) -> Result<()> {
     };
     ensure!(replayed.await.is_err(), "a key login signed for another host was taken");
     ensure!(Bot::login(ctx.server, &name, PASSWORD).await.is_err(), "the old password still works");
-    Bot::login(ctx.server, &name, "a-new-password-1").await?.disconnect().await
+    // Unlinked, the key no longer signs in.
+    let a = Bot::login(ctx.server, &name, "a-new-password-1").await?;
+    a.unlink().await.map_err(|e| eyre!("unlinking: {e}"))?;
+    ensure!(
+        testbot::bot::key_login(ctx.server, &me, &id, &name, now + 4, "").await.is_err(),
+        "the key signed in to an unlinked account"
+    );
+    a.disconnect().await
 }
 
 /// Renaming keeps the account (friends, id) and frees the old name.

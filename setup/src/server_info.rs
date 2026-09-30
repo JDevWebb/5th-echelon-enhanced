@@ -22,6 +22,10 @@ pub struct Ports {
     /// None when the server has no NAT helper (LAN or VPN play only).
     #[serde(default)]
     pub nat: Option<u16>,
+    /// The API over HTTPS, when the server has it (a domain behind the
+    /// installer's Caddy): used instead of `api`, so nothing travels readable.
+    #[serde(default)]
+    pub api_tls: Option<u16>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -53,6 +57,9 @@ pub fn fetch(server: &str, timeout: Duration) -> Option<ServerInfo> {
 
 fn fetch_on(server: &str, port: u16, timeout: Duration) -> Option<ServerInfo> {
     let host = server.trim();
+    if !crate::net::valid_host(host) {
+        return None;
+    }
     let addr: SocketAddr = (host, port).to_socket_addrs().ok()?.find(SocketAddr::is_ipv4)?;
     let mut stream = TcpStream::connect_timeout(&addr, timeout).ok()?;
     stream.set_read_timeout(Some(timeout)).ok()?;
@@ -103,7 +110,7 @@ mod tests {
         let body = r#"{"name":"5th Echelon Enhanced","version":"0.3.0","features":[],"ports":{"api":80,"login":31126,"secure":31127,"content":80,"nat":31128}}"#;
         let plain = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len());
         let info = parse_response(plain.as_bytes()).unwrap();
-        assert_eq!(info.ports, Some(Ports { api: 80, login: 31126, nat: Some(31128) }));
+        assert_eq!(info.ports, Some(Ports { api: 80, login: 31126, nat: Some(31128), api_tls: None }));
 
         let (a, b) = body.split_at(20);
         let chunked = format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{a}\r\n{:x}\r\n{b}\r\n0\r\n\r\n", a.len(), b.len());

@@ -363,7 +363,11 @@ fn main() -> color_eyre::Result<()> {
     let federation_config = config.federation.clone();
     let server_id = federation::load_or_create_server_id(Path::new(federation::SERVER_ID_FILE))?;
     federation::init(server_id.clone(), federation_config.enabled());
-    community_api::publish_friends(server_id, friends_mode, federation_config.enabled().then(|| federation_config.coordinator.trim().to_string()));
+    community_api::publish_friends(
+        server_id,
+        friends_mode,
+        federation_config.enabled().then(|| federation_config.coordinator.trim().to_string()),
+    );
     let nat = config.nat;
     // Relay addresses use the address players reach this server on.
     let relay_ip = nat
@@ -440,7 +444,11 @@ fn main() -> color_eyre::Result<()> {
         let federation_config = federation_config.clone();
         move || federation::Listing {
             names: federation::own_names().into_iter().filter(|n| n != "127.0.0.1" && n != "localhost").collect(),
-            name: if federation_config.name.is_empty() { host.clone() } else { federation_config.name.clone() },
+            name: if federation_config.name.is_empty() {
+                host.clone()
+            } else {
+                federation_config.name.clone()
+            },
             region: federation_config.region.clone(),
             listed: federation_config.listed,
             host: host.clone(),

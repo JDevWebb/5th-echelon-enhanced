@@ -510,6 +510,12 @@ impl Bot {
         Ok(())
     }
 
+    /// Unlinks this account from its identity.
+    pub async fn unlink(&self) -> std::result::Result<(), tonic::Status> {
+        FriendsClient::new(self.api.clone()).unlink_identity(self.authed(server_api::friends::UnlinkIdentityRequest {})).await?;
+        Ok(())
+    }
+
     /// Waits for a friend event (a request or an accepted one): its kind
     /// and who from.
     pub async fn poll_friend_event(&self, wait: Duration) -> Result<Option<(server_api::misc::friend_event::Kind, String)>> {

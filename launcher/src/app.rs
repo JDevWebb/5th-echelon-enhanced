@@ -57,6 +57,10 @@ impl Game {
     }
 }
 
+/// The directory and the suggested one, as last read from disk.
+type DirectoryPrefs = (Option<String>, Option<(String, String)>);
+static DIRECTORY_CACHE: std::sync::Mutex<Option<(Instant, DirectoryPrefs)>> = std::sync::Mutex::new(None);
+
 /// The launcher's own settings (`%APPDATA%\5th-Echelon\launcher.toml`):
 /// where the game is, for a launcher that isn't in the game folder, and the
 /// server directory to browse.
@@ -67,6 +71,10 @@ pub struct Prefs {
     /// server that reports one, or set in Settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directory: Option<String>,
+    /// A directory a server suggested, waiting for the player to accept it:
+    /// (the server, the coordinator's URL). A server can't set one by itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggested_directory: Option<(String, String)>,
 }
 
 impl Prefs {
@@ -75,7 +83,10 @@ impl Prefs {
     }
 
     pub fn load() -> Self {
-        Self::path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| toml::from_str(&s).ok()).unwrap_or_default()
+        Self::path()
+            .and_then(|p| std::fs::read_to_string(p).ok())
+            .and_then(|s| toml::from_str(&s).ok())
+            .unwrap_or_default()
     }
 
     fn save(&self) {
@@ -95,14 +106,24 @@ impl Prefs {
     /// The server directory, re-read from disk at most every few seconds
     /// (screens ask every frame).
     pub fn directory() -> Option<String> {
-        static CACHE: std::sync::Mutex<Option<(Instant, Option<String>)>> = std::sync::Mutex::new(None);
-        let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self::directory_prefs().0
+    }
+
+    /// The directory a server suggested, if the player hasn't answered yet:
+    /// (the server, the URL).
+    pub fn suggested_directory() -> Option<(String, String)> {
+        Self::directory_prefs().1
+    }
+
+    fn directory_prefs() -> DirectoryPrefs {
+        let mut cache = DIRECTORY_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         match cache.as_ref() {
-            Some((at, url)) if at.elapsed() < Duration::from_secs(3) => url.clone(),
+            Some((at, prefs)) if at.elapsed() < Duration::from_secs(3) => prefs.clone(),
             _ => {
-                let url = Self::load().directory;
-                *cache = Some((Instant::now(), url.clone()));
-                url
+                let loaded = Self::load();
+                let prefs = (loaded.directory, loaded.suggested_directory);
+                *cache = Some((Instant::now(), prefs.clone()));
+                prefs
             }
         }
     }
@@ -111,7 +132,32 @@ impl Prefs {
     pub fn set_directory(url: Option<String>) {
         let mut prefs = Self::load();
         prefs.directory = url.map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
+        prefs.suggested_directory = None;
         prefs.save();
+        Self::forget_cached_directory();
+    }
+
+    /// Remembers a directory `server` suggests, for the player to accept or
+    /// not, when none is set yet. Only `https://` ones.
+    pub fn suggest_directory(server: &str, url: &str) {
+        let mut prefs = Self::load();
+        if prefs.directory.is_none() && prefs.suggested_directory.is_none() && setup::directory::valid_coordinator(url) {
+            prefs.suggested_directory = Some((server.to_string(), url.trim().to_string()));
+            prefs.save();
+            Self::forget_cached_directory();
+        }
+    }
+
+    /// Declines the suggested directory.
+    pub fn decline_directory() {
+        let mut prefs = Self::load();
+        prefs.suggested_directory = None;
+        prefs.save();
+        Self::forget_cached_directory();
+    }
+
+    fn forget_cached_directory() {
+        *DIRECTORY_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 }
 
@@ -129,16 +175,19 @@ impl Notices {
     }
 
     fn show(&mut self, ctx: &egui::Context) {
-        self.0.retain(|(_, error, at)| at.elapsed() < if *error { Duration::from_secs(12) } else { Duration::from_secs(5) });
+        self.0
+            .retain(|(_, error, at)| at.elapsed() < if *error { Duration::from_secs(12) } else { Duration::from_secs(5) });
         if self.0.is_empty() {
             return;
         }
         ctx.request_repaint_after(Duration::from_millis(500));
-        egui::TopBottomPanel::bottom("notices").frame(egui::Frame::new().fill(theme::SURFACE).inner_margin(egui::Margin::symmetric(16, 8))).show(ctx, |ui| {
-            for (text, error, _) in &self.0 {
-                ui.label(egui::RichText::new(text).color(if *error { theme::BAD } else { theme::FG }));
-            }
-        });
+        egui::TopBottomPanel::bottom("notices")
+            .frame(egui::Frame::new().fill(theme::SURFACE).inner_margin(egui::Margin::symmetric(16, 8)))
+            .show(ctx, |ui| {
+                for (text, error, _) in &self.0 {
+                    ui.label(egui::RichText::new(text).color(if *error { theme::BAD } else { theme::FG }));
+                }
+            });
     }
 }
 
@@ -224,7 +273,9 @@ impl App {
     /// (it updates the launcher too).
     fn update_banner(&mut self, ctx: &egui::Context) {
         let managed = self.game.as_ref().is_some_and(|g| g.managed.is_some());
-        let Some(latest) = self.latest.clone().filter(|l| l.newer() && !managed && !self.update_later) else { return };
+        let Some(latest) = self.latest.clone().filter(|l| l.newer() && !managed && !self.update_later) else {
+            return;
+        };
         egui::TopBottomPanel::top("update")
             .frame(egui::Frame::new().fill(theme::ACCENT.linear_multiply(0.14)).inner_margin(egui::Margin::symmetric(20, 8)))
             .show(ctx, |ui| {
@@ -248,7 +299,12 @@ impl App {
 
     fn header(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("header")
-            .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin { left: 20, right: 20, top: 14, bottom: 10 }))
+            .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin {
+                left: 20,
+                right: 20,
+                top: 14,
+                bottom: 10,
+            }))
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
                     ui.add(egui::Image::new(&self.logo).fit_to_exact_size(egui::vec2(40.0, 40.0)));
@@ -299,7 +355,12 @@ impl eframe::App for App {
         self.update_banner(ctx);
         self.notices.show(ctx);
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin { left: 20, right: 20, top: 8, bottom: 16 }))
+            .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin {
+                left: 20,
+                right: 20,
+                top: 8,
+                bottom: 16,
+            }))
             .show(ctx, |ui| {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match self.view {
                     View::Play => crate::play::show(self, ui),

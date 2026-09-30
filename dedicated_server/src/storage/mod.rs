@@ -117,7 +117,11 @@ impl Storage {
     /// Replaces the account's token epoch: every token issued before stops working.
     pub async fn new_token_epoch(&self, user_id: u32) -> Result<()> {
         let epoch = (rand::random::<i64>() & i64::MAX).max(1);
-        sqlx::query("UPDATE users SET token_epoch = ? WHERE id = ?").bind(epoch).bind(user_id).execute(&self.pool).await?;
+        sqlx::query("UPDATE users SET token_epoch = ? WHERE id = ?")
+            .bind(epoch)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 
@@ -167,10 +171,7 @@ impl Storage {
                 info!(self.logger, "Verify password hash of {}", username);
                 PasswordHash::new(&password_hash).map_err(|_| eyre!("password hash parsing failed"))?;
                 let password = password.to_owned();
-                let ok = hashing(move || {
-                    PasswordHash::new(&password_hash).is_ok_and(|parsed| Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok())
-                })
-                .await?;
+                let ok = hashing(move || PasswordHash::new(&password_hash).is_ok_and(|parsed| Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok())).await?;
                 Ok(if ok { Ok(id) } else { Err(LoginError::InvalidPassword) })
             }
         }?;
@@ -304,13 +305,11 @@ impl Storage {
         }
         run(async {
             // Each ticket request adds one; keep the newest few, not one per request forever.
-            sqlx::query(
-                "DELETE FROM user_sessions WHERE user_id = ? AND id NOT IN (SELECT id FROM user_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 3)",
-            )
-            .bind(user_id)
-            .bind(user_id)
-            .execute(&self.pool)
-            .await?;
+            sqlx::query("DELETE FROM user_sessions WHERE user_id = ? AND id NOT IN (SELECT id FROM user_sessions WHERE user_id = ? ORDER BY created_at DESC LIMIT 3)")
+                .bind(user_id)
+                .bind(user_id)
+                .execute(&self.pool)
+                .await?;
             sqlx::query("INSERT INTO user_sessions (id, user_id) VALUES (?, ?)")
                 .bind(s)
                 .bind(user_id)
@@ -637,10 +636,11 @@ impl Storage {
     pub async fn take_invite_async(&self, user_id: u32) -> Result<Option<Invite>> {
         // Polled every second by every game: a read unless there's something to hand out
         // (expired invitations are purged every few minutes, not here).
-        let waiting: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM invites WHERE receiver = ? AND delivered_at IS NULL AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP")
-            .bind(user_id)
-            .fetch_one(&self.pool)
-            .await?;
+        let waiting: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM invites WHERE receiver = ? AND delivered_at IS NULL AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP")
+                .bind(user_id)
+                .fetch_one(&self.pool)
+                .await?;
         if waiting == 0 {
             return Ok(None);
         }
@@ -981,10 +981,12 @@ impl Storage {
 
     /// Players with an invitation for `user_id` waiting (not consumed, not expired).
     pub async fn pending_inviters(&self, user_id: u32) -> Result<Vec<u32>> {
-        Ok(sqlx::query_scalar("SELECT DISTINCT sender FROM invites WHERE receiver = ? AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP")
-            .bind(user_id)
-            .fetch_all(&self.pool)
-            .await?)
+        Ok(
+            sqlx::query_scalar("SELECT DISTINCT sender FROM invites WHERE receiver = ? AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP")
+                .bind(user_id)
+                .fetch_all(&self.pool)
+                .await?,
+        )
     }
 
     /// Whether `user_id` hosts or takes part in live session `session_id`.
@@ -1026,11 +1028,13 @@ impl Storage {
 
     /// Whether `sender` invited `receiver` into `session_id` (the game's invitations).
     pub fn game_session_invite_exists(&self, session_id: u32, sender: u32, receiver: u32) -> Result<bool> {
-        let n: i64 = run(sqlx::query_scalar("SELECT COUNT(*) FROM game_session_invites WHERE session_id = ? AND sender = ? AND receiver = ?")
-            .bind(session_id)
-            .bind(sender)
-            .bind(receiver)
-            .fetch_one(&self.pool))??;
+        let n: i64 = run(
+            sqlx::query_scalar("SELECT COUNT(*) FROM game_session_invites WHERE session_id = ? AND sender = ? AND receiver = ?")
+                .bind(session_id)
+                .bind(sender)
+                .bind(receiver)
+                .fetch_one(&self.pool),
+        )??;
         Ok(n > 0)
     }
 
@@ -1040,8 +1044,12 @@ impl Storage {
         sqlx::query("DELETE FROM game_sessions WHERE destroyed_at IS NOT NULL AND destroyed_at < datetime('now', '-10 minutes')")
             .execute(&self.pool)
             .await?;
-        sqlx::query("DELETE FROM game_session_invites WHERE created_at < datetime('now', '-30 minutes')").execute(&self.pool).await?;
-        sqlx::query("DELETE FROM invites WHERE consumed_at IS NOT NULL OR expires_at <= CURRENT_TIMESTAMP").execute(&self.pool).await?;
+        sqlx::query("DELETE FROM game_session_invites WHERE created_at < datetime('now', '-30 minutes')")
+            .execute(&self.pool)
+            .await?;
+        sqlx::query("DELETE FROM invites WHERE consumed_at IS NOT NULL OR expires_at <= CURRENT_TIMESTAMP")
+            .execute(&self.pool)
+            .await?;
         Ok(())
     }
 

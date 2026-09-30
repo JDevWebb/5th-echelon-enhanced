@@ -131,10 +131,18 @@ impl Snapshot {
         if self.friends.iter().any(|f| f.name == name) {
             return None;
         }
-        let listed = self.search.iter().flat_map(|(_, found)| found.iter()).chain(self.requests_in.iter()).find(|p| p.name == name);
+        let listed = self
+            .search
+            .iter()
+            .flat_map(|(_, found)| found.iter())
+            .chain(self.requests_in.iter())
+            .find(|p| p.name == name);
         match listed {
             Some(p) => p.lookalike.clone(),
-            None => self.known.get(&name_key(name)).and_then(|k| k.iter().find(|k| k.server != server_name()).map(|k| k.server.clone())),
+            None => self
+                .known
+                .get(&name_key(name))
+                .and_then(|k| k.iter().find(|k| k.server != server_name()).map(|k| k.server.clone())),
         }
     }
 
@@ -237,7 +245,11 @@ fn mark_lookalikes(players: &mut [Player], known: &std::collections::HashMap<Str
     for p in players.iter_mut().filter(|p| p.relation != Relation::Friend) {
         let Some(list) = known.get(&name_key(&p.name)) else { continue };
         let same_person = list.iter().any(|k| !p.identity.is_empty() && k.identity == p.identity);
-        p.lookalike = if same_person { None } else { list.iter().find(|k| k.server != server).map(|k| k.server.clone()) };
+        p.lookalike = if same_person {
+            None
+        } else {
+            list.iter().find(|k| k.server != server).map(|k| k.server.clone())
+        };
     }
 }
 
@@ -262,11 +274,7 @@ fn send(action: Action) {
 
 fn say(text: String, error: bool) {
     update(|s| {
-        s.notice = Some(Notice {
-            text,
-            error,
-            at: Instant::now(),
-        });
+        s.notice = Some(Notice { text, error, at: Instant::now() });
     });
 }
 
@@ -340,9 +348,7 @@ pub fn start() {
 /// The server's reason, when it gave one people can read.
 fn reason(e: &crate::api::Error) -> Option<String> {
     match e {
-        crate::api::Error::GRPCStatus(s) if !s.message().is_empty() && s.code() != tonic::Code::Internal && s.code() != tonic::Code::Unavailable => {
-            Some(s.message().to_string())
-        }
+        crate::api::Error::GRPCStatus(s) if !s.message().is_empty() && s.code() != tonic::Code::Internal && s.code() != tonic::Code::Unavailable => Some(s.message().to_string()),
         _ => None,
     }
 }
@@ -607,11 +613,7 @@ mod tests {
         assert_eq!(got.activity.as_deref(), Some("Spies vs Mercs · in a match with Tank"));
         p.is_online = false;
         assert_eq!(player(p).activity, None, "no activity while offline");
-        let list = sorted(vec![
-            test_player("zed", false),
-            test_player("Mjewbear", true),
-            test_player("anna", true),
-        ]);
+        let list = sorted(vec![test_player("zed", false), test_player("Mjewbear", true), test_player("anna", true)]);
         let names: Vec<_> = list.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(names, ["anna", "Mjewbear", "zed"], "online first, then by name");
     }

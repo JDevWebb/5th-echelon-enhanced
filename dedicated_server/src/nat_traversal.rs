@@ -106,9 +106,7 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
                 continue;
             };
             let addr = *target.address();
-            let shares_session = target
-                .user_id
-                .is_some_and(|other| self.storage.share_session(user_id, other).unwrap_or(false));
+            let shares_session = target.user_id.is_some_and(|other| self.storage.share_session(user_id, other).unwrap_or(false));
             if !shares_session {
                 warn!(logger, "Not probing {url}: not in a session with {user_id}");
                 continue;

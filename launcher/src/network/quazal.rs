@@ -12,7 +12,6 @@ use server_api::misc::TestP2pRequest;
 use server_api::users::users_client::UsersClient;
 use server_api::users::LoginRequest;
 use tokio::net::UdpSocket;
-use tonic::transport::Channel;
 
 use super::Error;
 use super::QUAZAL_DEFAULT_LOCAL_PORT;
@@ -319,7 +318,7 @@ pub async fn test_p2p(api_url: String, username: &str, password: &str) -> Result
         return Err(Error::ServerFailure(resp.error));
     }
     let token: tonic::metadata::MetadataValue<tonic::metadata::Ascii> = resp.token.parse().unwrap();
-    let Ok(channel) = Channel::from_shared(api_url).unwrap().connect().await else {
+    let Ok(channel) = super::endpoint(&api_url)?.connect().await else {
         return Err(Error::ConnectionFailed);
     };
     let mut client = MiscClient::with_interceptor(channel, move |mut req: tonic::Request<_>| {

@@ -29,6 +29,8 @@ pub const API_PORT: u16 = 50051;
 pub const CONFIG_PORT: u16 = 80;
 /// The game's Quazal (PRUDP) port on the server.
 pub const QUAZAL_PORT: u16 = 21126;
+/// The server's NAT helper port.
+pub const NAT_PORT: u16 = 21128;
 
 /// The launcher's own folder: `%APPDATA%\5th-Echelon` on Windows,
 /// `~/.config/5th-Echelon` on Linux. (The game's saves are in the game's own

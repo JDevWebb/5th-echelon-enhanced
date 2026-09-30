@@ -39,7 +39,12 @@ pub struct Play {
     have_account: bool,
     username: String,
     password: String,
-    looking: Slot<Result<IpAddr, String>>,
+    /// Don't link the account to the player's identity (see `flow::Plan`);
+    /// linking is ticked unless the player unticks it.
+    dont_link: bool,
+    looking: Slot<Result<Vec<IpAddr>, String>>,
+    /// The servers that answered on this network, when more than one did.
+    found: Vec<IpAddr>,
     /// The coordinator's server directory, with this PC's ping to each.
     browsing: Slot<Result<Vec<(setup::directory::Listing, Option<u32>)>, String>>,
     directory: Option<Vec<(setup::directory::Listing, Option<u32>)>>,
@@ -96,7 +101,11 @@ impl Play {
             }
             changed = true;
         }
-        if let Some(result) = self.fixing.poll().or_else(|| self.identifying.poll().map(|r| r.map(|()| "The game version is now supported.".to_string()))) {
+        if let Some(result) = self
+            .fixing
+            .poll()
+            .or_else(|| self.identifying.poll().map(|r| r.map(|()| "The game version is now supported.".to_string())))
+        {
             match result {
                 Ok(msg) => notices.info(msg),
                 Err(e) => notices.error(e),
@@ -134,13 +143,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         theme::card().fill(theme::ACCENT.linear_multiply(0.12)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(theme::heading(&format!("Managed by {}", managed.by)));
-            ui.label(theme::muted(format!("{} sets up this install. Change the server or account there; you can still play from here.", managed.by)));
+            ui.label(theme::muted(format!(
+                "{} sets up this install. Change the server or account there; you can still play from here.",
+                managed.by
+            )));
         });
         ui.add_space(10.0);
     }
 
     game_card(play, game, notices, ui);
     ui.add_space(10.0);
+    directory_offer(ui);
 
     let has_server = game.cfg.current_profile().is_some_and(|p| !p.server.is_empty());
     if game.managed.is_none() && (!has_server || play.editing) {
@@ -166,7 +179,9 @@ fn no_game(app: &mut App, ui: &mut egui::Ui) {
             return;
         }
         ui.label(theme::heading("Splinter Cell: Blacklist not found"));
-        ui.label(theme::muted("It wasn't in Steam, Ubisoft Connect or the usual folders. Choose the folder you installed it to."));
+        ui.label(theme::muted(
+            "It wasn't in Steam, Ubisoft Connect or the usual folders. Choose the folder you installed it to.",
+        ));
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             if ui.add(theme::primary("Choose folder…")).clicked() {
@@ -213,7 +228,11 @@ fn join_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut egu
     }
     if let Some(found) = play.looking.poll() {
         match found {
-            Ok(ip) => play.server = ip.to_string(),
+            Ok(ips) if ips.len() == 1 => {
+                play.server = ips[0].to_string();
+                play.found.clear();
+            }
+            Ok(ips) => play.found = ips,
             Err(e) => play.setup_error = Some(e),
         }
     }
@@ -270,8 +289,16 @@ fn join_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut egu
                 ui.label("");
                 ui.checkbox(&mut play.have_account, "I already have an account on this server");
                 ui.end_row();
+                ui.label("");
+                let mut link = !play.dont_link;
+                ui.checkbox(&mut link, "Link to my identity").on_hover_text(
+                    "Friends follow you to this server from others that share friends with it, and your identity can sign you in here from another PC. Only link servers you trust: a server you link can change your friends on servers that share friends with it.",
+                );
+                play.dont_link = !link;
+                ui.end_row();
             });
         });
+        found_list(play, ui);
         directory_list(play, ui);
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -292,6 +319,49 @@ fn join_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut egu
 
 /// The directory's servers: nearest and busiest first is suggested, any can
 /// be picked.
+/// The servers that answered on this network, when several did: the player
+/// picks the one they meant.
+fn found_list(play: &mut Play, ui: &mut egui::Ui) {
+    if play.found.is_empty() {
+        return;
+    }
+    ui.add_space(8.0);
+    ui.label(theme::muted("Several servers answered on this network. Choose the one you want:"));
+    let mut pick = None;
+    ui.horizontal_wrapped(|ui| {
+        for ip in &play.found {
+            if ui.button(ip.to_string()).clicked() {
+                pick = Some(*ip);
+            }
+        }
+    });
+    if let Some(ip) = pick {
+        play.server = ip.to_string();
+        play.found.clear();
+    }
+}
+
+/// Asks whether to use the server directory a server suggested.
+fn directory_offer(ui: &mut egui::Ui) {
+    let Some((server, url)) = crate::app::Prefs::suggested_directory() else { return };
+    theme::card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(theme::heading("Browse more servers?"));
+        ui.label(theme::muted(format!(
+            "{server} suggests the server directory at {url}. It lists the servers that share friends with it, and you can choose one from Browse servers."
+        )));
+        ui.horizontal(|ui| {
+            if ui.button("Use this directory").clicked() {
+                crate::app::Prefs::set_directory(Some(url.clone()));
+            }
+            if ui.button("No thanks").clicked() {
+                crate::app::Prefs::decline_directory();
+            }
+        });
+    });
+    ui.add_space(10.0);
+}
+
 fn directory_list(play: &mut Play, ui: &mut egui::Ui) {
     let Some(servers) = play.directory.as_ref() else {
         return;
@@ -303,11 +373,12 @@ fn directory_list(play: &mut Play, ui: &mut egui::Ui) {
     }
     let best = setup::directory::best(servers);
     let mut pick = None;
-    egui::Grid::new("directory").num_columns(5).striped(true).spacing([14.0, 6.0]).show(ui, |ui| {
+    egui::Grid::new("directory").num_columns(6).striped(true).spacing([14.0, 6.0]).show(ui, |ui| {
         for (i, (s, ping)) in servers.iter().enumerate() {
             let chosen = play.server.trim() == s.host;
             let name = if s.region.is_empty() { s.name.clone() } else { format!("{} ({})", s.name, s.region) };
             ui.label(if chosen { RichText::new(name).color(theme::ACCENT) } else { RichText::new(name) });
+            ui.label(theme::muted(s.host.as_str()));
             ui.label(format!("{} online", s.players_online));
             ui.label(ping.map_or_else(|| String::from("no answer"), |ms| format!("{ms} ms")));
             ui.label(theme::muted(match (best == Some(i), s.friends_mode.as_str()) {
@@ -332,6 +403,7 @@ fn start_setup(play: &mut Play, game: &Game, ctx: &egui::Context) {
         server: play.server.trim().to_string(),
         credentials: play.have_account.then(|| (play.username.trim().to_string(), play.password.clone())),
         nick: play.nick.trim().to_string(),
+        link_identity: !play.dont_link,
     };
     play.setup_error = None;
     play.log = Arc::default();
@@ -356,7 +428,11 @@ fn server_card(play: &mut Play, game: &mut Game, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.label(theme::heading(&format!("Server {}", profile.server)));
-                let who = if profile.user.username.is_empty() { "no account yet".to_string() } else { format!("as {}", profile.user.username) };
+                let who = if profile.user.username.is_empty() {
+                    "no account yet".to_string()
+                } else {
+                    format!("as {}", profile.user.username)
+                };
                 let over = profile.adapter.as_deref().map(|a| format!(" · over \"{a}\"")).unwrap_or_default();
                 ui.label(theme::muted(format!("{who}{over}")));
             });
@@ -399,7 +475,11 @@ fn checklist_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mu
                     let profile = game.cfg.current_profile().cloned().unwrap_or_default();
                     play.server = profile.server;
                     play.have_account = false;
-                    play.nick = if profile.user.username.is_empty() { flow::windows_user() } else { profile.user.username };
+                    play.nick = if profile.user.username.is_empty() {
+                        flow::windows_user()
+                    } else {
+                        profile.user.username
+                    };
                     start_setup(play, game, ctx);
                 }
             });
@@ -479,7 +559,8 @@ fn support_row(play: &mut Play, game: &Game, ctx: &egui::Context, ui: &mut egui:
                 } else if ui.add_enabled(!play.busy(), egui::Button::new("Try to identify")).clicked() {
                     let dir = game.dir.clone();
                     let version = setup::game::pick_version(&dir, game.cfg.default_game).unwrap_or(GameVersion::SplinterCellBlacklistDx11);
-                    play.identifying.start(ctx, move || flow::identify(&dir, version).map_err(|e| format!("Couldn't identify it: {e}")));
+                    play.identifying
+                        .start(ctx, move || flow::identify(&dir, version).map_err(|e| format!("Couldn't identify it: {e}")));
                 }
             });
         }

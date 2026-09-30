@@ -304,10 +304,9 @@ fn describe_error(err: &crate::api::Error) -> (&'static str, String) {
             format!("Your account or password was refused. Open {tool} and sign in again."),
         ),
         // Calls sign in again on their own; this is what's left when that failed too.
-        crate::api::Error::GRPCStatus(e) if e.code() == tonic::Code::Unauthenticated => (
-            "Signed out by the server",
-            format!("Signing in again didn't work. Open {tool} and sign in again."),
-        ),
+        crate::api::Error::GRPCStatus(e) if e.code() == tonic::Code::Unauthenticated => {
+            ("Signed out by the server", format!("Signing in again didn't work. Open {tool} and sign in again."))
+        }
         _ => ("Lost the 5th Echelon server", format!("Reconnecting now. Invites are paused until it's back. {fix}")),
     }
 }
@@ -872,11 +871,18 @@ impl MyRenderLoop {
         if !self.data.requests_in.is_empty() {
             self.section(ui, "Want to be your friend");
             for p in &self.data.requests_in {
-                self.player_row(ui, row, "in", p, &Self::status(p), &[
-                    RowAction::Change(C::Block, "Block"),
-                    RowAction::Change(C::Decline, "Decline"),
-                    RowAction::Change(C::Accept, "Accept"),
-                ]);
+                self.player_row(
+                    ui,
+                    row,
+                    "in",
+                    p,
+                    &Self::status(p),
+                    &[
+                        RowAction::Change(C::Block, "Block"),
+                        RowAction::Change(C::Decline, "Decline"),
+                        RowAction::Change(C::Accept, "Accept"),
+                    ],
+                );
                 row += 1;
             }
         }
@@ -922,7 +928,11 @@ impl MyRenderLoop {
         let search_label = "Search##fe-search-go";
         let field_w = ui.content_region_avail()[0] - self.button_width(ui, search_label) - self.s(10.0);
         ui.set_next_item_width(field_w);
-        let entered = ui.input_text("##fe-search", &mut text).hint("Name, or empty for everyone online").enter_returns_true(true).build();
+        let entered = ui
+            .input_text("##fe-search", &mut text)
+            .hint("Name, or empty for everyone online")
+            .enter_returns_true(true)
+            .build();
         ui.same_line();
         if self.button(ui, search_label, true) || entered {
             community::search(text.trim().to_string());
@@ -1083,7 +1093,11 @@ impl MyRenderLoop {
             ("Other players reach you", crate::hooks::nat::status().unwrap_or_else(|| String::from("Not started yet"))),
             (
                 "Your identity",
-                if self.data.my_identity.is_empty() { String::from("Not linked") } else { self.data.my_identity.clone() },
+                if self.data.my_identity.is_empty() {
+                    String::from("Not linked")
+                } else {
+                    self.data.my_identity.clone()
+                },
             ),
             ("Game add-on", format!("{PRODUCT} {RELEASE}")),
         ];

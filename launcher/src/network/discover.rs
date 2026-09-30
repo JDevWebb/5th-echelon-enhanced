@@ -17,50 +17,58 @@ use tracing::info;
 
 use super::Error;
 
-/// Tries to locate a server on the local network.
-///
-/// This function will time out after 5 seconds if no server is found.
-pub async fn try_locate_server(adapter: Option<(&str, IpAddr)>, adapters: &[(&str, IpAddr)]) -> Result<IpAddr, Error> {
-    tokio::time::timeout(Duration::from_secs(5), try_locate_server_inner(adapter, adapters))
-        .await
-        .map_err(|_| Error::TimedOut)?
-}
+/// How long discovery listens for answers.
+const LISTEN_FOR: Duration = Duration::from_secs(2);
+/// The most servers discovery reports.
+const MAX_FOUND: usize = 16;
 
-/// The inner logic for locating a server.
-///
-/// If a specific network adapter is provided, it will only try to discover the
-/// server on that adapter. Otherwise, it will try all available adapters.
-async fn try_locate_server_inner(adapter: Option<(&str, IpAddr)>, adapters: &[(&str, IpAddr)]) -> Result<IpAddr, Error> {
-    if let Some((name, ip)) = adapter {
-        info!("Trying to locate server through adapter {name} ({ip})");
-        try_locate_server_from_ip(ip).await
-    } else {
-        info!("Trying to locate server on all interfaces");
-        let mut set = JoinSet::new();
-
-        for (name, ip) in adapters {
-            info!("Trying to locate server through adapter {name} ({ip})");
-            let ip = *ip;
-            set.spawn(async move { try_locate_server_from_ip(ip).await });
+/// Finds the servers on the local network: every one that answers within
+/// two seconds, so a stray or hostile answer can't silently take the place
+/// of the real server. Errors when none does.
+pub async fn try_locate_server(adapter: Option<(&str, IpAddr)>, adapters: &[(&str, IpAddr)]) -> Result<Vec<IpAddr>, Error> {
+    let from: Vec<IpAddr> = match adapter {
+        Some((name, ip)) => {
+            info!("Trying to locate servers through adapter {name} ({ip})");
+            vec![ip]
         }
-        let mut res = Err(Error::ConnectionFailed);
-        while let Some(Ok(r)) = set.join_next().await {
-            if r.is_ok() {
-                return r;
-            }
-            res = r;
+        None => {
+            info!("Trying to locate servers on all interfaces");
+            adapters.iter().map(|(_, ip)| *ip).collect()
         }
-        res
+    };
+    let mut set = JoinSet::new();
+    for ip in from {
+        set.spawn(async move { locate_from_ip(ip).await });
     }
+    let mut found = Vec::new();
+    let mut error = Error::ConnectionFailed;
+    while let Some(Ok(r)) = set.join_next().await {
+        match r {
+            Ok(ips) => {
+                for ip in ips {
+                    if !found.contains(&ip) && found.len() < MAX_FOUND {
+                        found.push(ip);
+                    }
+                }
+            }
+            Err(e) => error = e,
+        }
+    }
+    if found.is_empty() {
+        return Err(error);
+    }
+    found.sort();
+    Ok(found)
 }
 
-/// Tries to locate a server from a specific IP address by sending a broadcast packet.
-async fn try_locate_server_from_ip(ip: IpAddr) -> Result<IpAddr, Error> {
+/// Broadcasts a discovery packet from `ip` and collects who answers.
+async fn locate_from_ip(ip: IpAddr) -> Result<Vec<IpAddr>, Error> {
     let ctx = quazal::Context::splinter_cell_blacklist();
     let socket = UdpSocket::bind(format!("{}:0", ip)).await?;
     socket.set_broadcast(true)?;
 
     // Create a Quazal SYN packet to initiate discovery.
+    let session_id = rand::random();
     let syn_pkt = QPacket {
         source: VPort {
             port: 15,
@@ -73,7 +81,7 @@ async fn try_locate_server_from_ip(ip: IpAddr) -> Result<IpAddr, Error> {
         packet_type: PacketType::Syn,
         flags: PacketFlag::NeedAck.into(),
         conn_signature: Some(0),
-        session_id: rand::random(),
+        session_id,
         ..Default::default()
     };
     let buf = syn_pkt.to_bytes(&ctx);
@@ -81,14 +89,18 @@ async fn try_locate_server_from_ip(ip: IpAddr) -> Result<IpAddr, Error> {
     // Broadcast the packet to the local network.
     socket.send_to(&buf, "255.255.255.255:21126").await?;
     let mut buf = vec![0u8; 4096];
-
-    // Wait for a response from a server.
-    let (n, peer) = socket.recv_from(&mut buf).await?;
-    let (syn_ack_pkt, _size) = QPacket::from_bytes(&ctx, &buf[..n]).map_err(|e| std::io::Error::other(e.to_string()))?;
-
-    // Check if the response is a valid SYN-ACK packet.
-    if syn_ack_pkt.packet_type != PacketType::Syn || !syn_ack_pkt.flags.contains(PacketFlag::Ack) {
-        return Err(Error::IO(std::io::Error::other("invalid syn ack")));
+    let mut found = Vec::new();
+    let deadline = tokio::time::Instant::now() + LISTEN_FOR;
+    while let Ok(received) = tokio::time::timeout_at(deadline, socket.recv_from(&mut buf)).await {
+        let Ok((n, peer)) = received else { continue };
+        // Only SYN-ACKs from the game port.
+        if peer.port() != setup::QUAZAL_PORT {
+            continue;
+        }
+        let Ok((syn_ack_pkt, _size)) = QPacket::from_bytes(&ctx, &buf[..n]) else { continue };
+        if syn_ack_pkt.packet_type == PacketType::Syn && syn_ack_pkt.flags.contains(PacketFlag::Ack) && !found.contains(&peer.ip()) && found.len() < MAX_FOUND {
+            found.push(peer.ip());
+        }
     }
-    Ok(peer.ip())
+    Ok(found)
 }

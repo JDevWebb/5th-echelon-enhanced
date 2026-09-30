@@ -477,7 +477,11 @@ where
             .values()
             .filter(|c| c.try_borrow().is_ok_and(|c| c.address().ip() == client.ip()))
             .count();
-        if pending_here >= MAX_PENDING_PER_IP || open_here >= max_connections_per_ip() || self.new_clients.len() >= MAX_PENDING || self.client_registry.clients.len() >= MAX_CONNECTIONS {
+        if pending_here >= MAX_PENDING_PER_IP
+            || open_here >= max_connections_per_ip()
+            || self.new_clients.len() >= MAX_PENDING
+            || self.client_registry.clients.len() >= MAX_CONNECTIONS
+        {
             warn!(logger, "Refusing a handshake from {client}: too many connections");
             return;
         }

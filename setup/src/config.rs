@@ -70,7 +70,12 @@ impl Profile {
     /// helper ports. Defaults are left unset, so the file stays as before.
     pub fn use_ports(&mut self, ports: &crate::server_info::Ports) {
         let host = if self.server.is_empty() { "localhost" } else { self.server.trim() };
-        self.api_server_url = (ports.api != crate::API_PORT).then(|| format!("http://{host}:{}", ports.api).parse().ok()).flatten();
+        self.api_server_url = match ports.api_tls {
+            // HTTPS when the server offers it: passwords and tokens never travel readable.
+            Some(443) => format!("https://{host}").parse().ok(),
+            Some(port) => format!("https://{host}:{port}").parse().ok(),
+            None => (ports.api != crate::API_PORT).then(|| format!("http://{host}:{}", ports.api).parse().ok()).flatten(),
+        };
         self.login_port = (ports.login != crate::QUAZAL_PORT).then_some(ports.login);
         self.nat_port = ports.nat.filter(|p| *p != nat_proto_default());
     }
@@ -253,16 +258,20 @@ mod tests {
             server: "blacklist.example.com".into(),
             ..Default::default()
         };
-        p.use_ports(&crate::server_info::Ports { api: 80, login: 31126, nat: Some(31128) });
+        p.use_ports(&crate::server_info::Ports { api: 80, login: 31126, nat: Some(31128), api_tls: None });
         assert_eq!(p.api_server_url().as_str(), "http://blacklist.example.com/");
         assert_eq!((p.api_port(), p.login_port(), p.nat_port), (80, 31126, Some(31128)));
         let mut cfg = Config::default();
         cfg.apply_profile(&p);
         assert_eq!(cfg.hook_config.networking.nat_port, Some(31128));
 
-        p.use_ports(&crate::server_info::Ports { api: 50051, login: 21126, nat: Some(21128) });
+        p.use_ports(&crate::server_info::Ports { api: 50051, login: 21126, nat: Some(21128), api_tls: None });
         assert_eq!((p.api_server_url.clone(), p.login_port, p.nat_port), (None, None, None));
         assert_eq!(p.api_server_url().as_str(), "http://blacklist.example.com:50051/");
+
+        // HTTPS offered: used.
+        p.use_ports(&crate::server_info::Ports { api: 80, login: 21126, nat: None, api_tls: Some(443) });
+        assert_eq!(p.api_server_url().as_str(), "https://blacklist.example.com/");
     }
 
     #[test]

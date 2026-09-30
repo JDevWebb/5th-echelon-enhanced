@@ -127,7 +127,7 @@ pub async fn account_id(api_url: String, username: &str, password: &str) -> Resu
 /// it's linked). Answers the new name.
 pub async fn rename(api_url: String, username: &str, password: &str, new_name: &str, identity: Option<(&identity::Identity, &str)>) -> Result<String, Error> {
     let host = identity.map(|(_, host)| identity::host_key(host)).unwrap_or_default();
-    let channel = tonic::transport::Endpoint::from_shared(api_url).map_err(|_| Error::ConnectionFailed)?.connect().await.map_err(|_| Error::ConnectionFailed)?;
+    let channel = super::endpoint(&api_url)?.connect().await.map_err(|_| Error::ConnectionFailed)?;
     let token = UsersClient::new(channel.clone())
         .login(LoginRequest {
             username: username.to_string(),
@@ -177,10 +177,33 @@ pub async fn key_login(api_url: String, identity: &identity::Identity, host: &st
     }
 }
 
+/// Signs in as `username` and unlinks the account from the player's
+/// identity: friends stop following them there.
+pub async fn unlink_identity(api_url: String, username: &str, password: &str) -> Result<(), Error> {
+    let Ok(channel) = super::endpoint(&api_url)?.connect().await else {
+        return Err(Error::ConnectionFailed);
+    };
+    let token = UsersClient::new(channel.clone())
+        .login(LoginRequest {
+            username: username.to_string(),
+            password: password.to_string(),
+        })
+        .await?
+        .into_inner()
+        .token;
+    let token: tonic::metadata::MetadataValue<_> = token.parse().map_err(|_| Error::ServerFailure("bad token".into()))?;
+    let mut client = server_api::friends::friends_client::FriendsClient::with_interceptor(channel, move |mut req: tonic::Request<()>| {
+        req.metadata_mut().insert("authorization", token.clone());
+        Ok(req)
+    });
+    client.unlink_identity(server_api::friends::UnlinkIdentityRequest {}).await?;
+    Ok(())
+}
+
 /// Signs in as `username` and links the account to the player's identity,
 /// so friends follow them to other servers sharing a coordinator.
 pub async fn link_identity(api_url: String, identity: &identity::Identity, host: &str, username: &str, password: &str) -> Result<(), Error> {
-    let Ok(channel) = tonic::transport::Endpoint::from_shared(api_url).map_err(|_| Error::ConnectionFailed)?.connect().await else {
+    let Ok(channel) = super::endpoint(&api_url)?.connect().await else {
         return Err(Error::ConnectionFailed);
     };
     let token = UsersClient::new(channel.clone())

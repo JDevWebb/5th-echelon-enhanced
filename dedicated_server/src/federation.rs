@@ -324,7 +324,13 @@ pub async fn claim_name(global_id: &str, name: &str, host: &str, time: i64, sign
         return NameCheck::Unknown;
     };
     let body = serde_json::json!({ "name": name, "global_id": global_id, "host": identity::host_key(host), "time": time, "signature": signature });
-    let sent = http().post(format!("{base}/v1/names/claim")).bearer_auth(secret).timeout(NAME_TIMEOUT).json(&body).send().await;
+    let sent = http()
+        .post(format!("{base}/v1/names/claim"))
+        .bearer_auth(secret)
+        .timeout(NAME_TIMEOUT)
+        .json(&body)
+        .send()
+        .await;
     match sent.map(|r| r.status()) {
         Ok(s) if s.is_success() => NameCheck::Ours,
         Ok(reqwest::StatusCode::CONFLICT) => NameCheck::Taken,
@@ -390,7 +396,13 @@ pub async fn apply(logger: &Logger, storage: &Storage, user: u32, relations: &[P
             changed |= storage.remove_friend(user, other.id).await?;
         }
         if changed {
-            info!(logger, "Federation: {user} and {} ({}) now {:?}", other.username, other.id, storage.relation(user, other.id).await?);
+            info!(
+                logger,
+                "Federation: {user} and {} ({}) now {:?}",
+                other.username,
+                other.id,
+                storage.relation(user, other.id).await?
+            );
         }
     }
     Ok(())
@@ -404,7 +416,10 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
     };
     let base = cfg.coordinator.trim().trim_end_matches('/').to_string();
     if !safe_coordinator_url(&base) && !cfg.allow_http {
-        return crit!(logger, "Federation: {base} isn't https:// (plain http only to this machine); not connecting, the secret would travel readable");
+        return crit!(
+            logger,
+            "Federation: {base} isn't https:// (plain http only to this machine); not connecting, the secret would travel readable"
+        );
     }
     let http = http().clone();
     info!(logger, "Federation: coordinator {base}, server id {}", state.server_id);
@@ -424,11 +439,7 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
         }
         if let Some(secret) = secret.as_deref() {
             *state.joined.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((base.clone(), secret.to_string()));
-            let client = Coordinator {
-                http: &http,
-                base: &base,
-                secret,
-            };
+            let client = Coordinator { http: &http, base: &base, secret };
             if last_heartbeat.is_none_or(|t| t.elapsed() >= HEARTBEAT_EVERY) {
                 let mut listing = listing();
                 if let Ok((online, total)) = storage.player_counts().await {
@@ -445,7 +456,11 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                 if last_online_pull.is_none_or(|t| t.elapsed() >= PULL_ONLINE_EVERY) {
                     last_online_pull = Some(Instant::now());
                     if let Ok(online) = storage.online_linked().await {
-                        state.pulls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).extend(online.into_iter().map(|p| p.id));
+                        state
+                            .pulls
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .extend(online.into_iter().map(|p| p.id));
                     }
                 }
                 let users: Vec<u32> = state.pulls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).drain().collect();
@@ -498,7 +513,10 @@ fn credentials(base: &str) -> Option<String> {
 /// Joins the coordinator with the join token and saves the credentials.
 async fn join(logger: &Logger, http: &reqwest::Client, base: &str, cfg: &FederationConfig, server_id: &str) -> Option<String> {
     if cfg.join_token.trim().is_empty() {
-        error!(logger, "Federation: not joined yet, and [federation] join_token is empty; ask the coordinator's operator for one");
+        error!(
+            logger,
+            "Federation: not joined yet, and [federation] join_token is empty; ask the coordinator's operator for one"
+        );
         return None;
     }
     let body = serde_json::json!({ "token": cfg.join_token.trim(), "server_id": server_id });
@@ -547,7 +565,10 @@ async fn flush(logger: &Logger, storage: &Storage, client: &Coordinator<'_>) -> 
             // A link says whether its name is someone else's across the group.
             if let (Some(conflict), Ok(Change::Link { global_id, username, .. })) = (result["conflict"].as_bool(), serde_json::from_str::<Change>(body)) {
                 if conflict {
-                    warn!(logger, "Federation: {username}'s name belongs to another player on the servers sharing friends; they'll be asked to rename");
+                    warn!(
+                        logger,
+                        "Federation: {username}'s name belongs to another player on the servers sharing friends; they'll be asked to rename"
+                    );
                 }
                 storage.set_name_conflict(&global_id, conflict).await?;
             }
@@ -601,7 +622,9 @@ mod tests {
         let log = logger();
 
         // Friends elsewhere: friends here, without asking again.
-        block_on(apply(&log, &s, kiwi, &[pulled(&tank_gid, true, false, false), pulled("GID-NotHere", true, false, false)])).unwrap().unwrap();
+        block_on(apply(&log, &s, kiwi, &[pulled(&tank_gid, true, false, false), pulled("GID-NotHere", true, false, false)]))
+            .unwrap()
+            .unwrap();
         assert_eq!(block_on(s.relation(kiwi, tank)).unwrap().unwrap(), Relation::Friend);
 
         // A block elsewhere hides them here too, and wins over friendship.
@@ -609,7 +632,9 @@ mod tests {
         assert_eq!(block_on(s.relation(kiwi, pest)).unwrap().unwrap(), Relation::BlockedBy);
 
         // Unfriended and unblocked elsewhere.
-        block_on(apply(&log, &s, kiwi, &[pulled(&tank_gid, false, false, false), pulled(&pest_gid, false, false, false)])).unwrap().unwrap();
+        block_on(apply(&log, &s, kiwi, &[pulled(&tank_gid, false, false, false), pulled(&pest_gid, false, false, false)]))
+            .unwrap()
+            .unwrap();
         assert_eq!(block_on(s.relation(kiwi, tank)).unwrap().unwrap(), Relation::None);
         assert_eq!(block_on(s.relation(kiwi, pest)).unwrap().unwrap(), Relation::None);
         std::fs::remove_dir_all(dir).unwrap();
@@ -622,6 +647,9 @@ mod tests {
             to: "B".into(),
             blocked: true,
         };
-        assert_eq!(serde_json::to_value(&c).unwrap(), serde_json::json!({ "op": "block", "from": "A", "to": "B", "blocked": true }));
+        assert_eq!(
+            serde_json::to_value(&c).unwrap(),
+            serde_json::json!({ "op": "block", "from": "A", "to": "B", "blocked": true })
+        );
     }
 }

@@ -28,6 +28,9 @@ service Friends {
     // with a signature (see docs/friends.md). Friends then follow them to other servers
     // that share a coordinator.
     rpc LinkIdentity (LinkIdentityRequest) returns (LinkIdentityResponse);
+    // Unlinks the caller's account from their identity: friends stop following them here,
+    // and the identity can no longer sign in to it.
+    rpc UnlinkIdentity (UnlinkIdentityRequest) returns (UnlinkIdentityResponse);
     // Gives the caller's account a new name. The account id stays, so friends and invites
     // carry on. A linked account signs the new name, which is reserved across servers
     // sharing friends.
@@ -135,6 +138,10 @@ message LinkIdentityRequest {
 }
 
 message LinkIdentityResponse {}
+
+message UnlinkIdentityRequest {}
+
+message UnlinkIdentityResponse {}
 
 message Friend {
     string id = 1;

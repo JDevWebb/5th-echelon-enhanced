@@ -1,5 +1,8 @@
 //! Updates from this fork's GitHub releases. Every download is checked
-//! against the `SHA256SUMS` published with the release before it's used.
+//! against the `SHA256SUMS` published with the release before it's used,
+//! and `SHA256SUMS` must carry the release key's signature
+//! (`SHA256SUMS.sig`, made offline with `scripts/sign-release.sh`): someone
+//! who can change the release on GitHub still can't ship an update.
 //!
 //! The launcher replaces itself by renaming: Windows lets a running exe be
 //! renamed, so the new one takes its name, starts, and the old one (kept as
@@ -31,10 +34,21 @@ pub const SERVER_FILE: &str = "dedicated_server.exe";
 #[cfg(not(target_os = "windows"))]
 pub const SERVER_FILE: &str = "dedicated_server";
 const SUMS_ASSET: &str = "SHA256SUMS";
+const SIG_ASSET: &str = "SHA256SUMS.sig";
+/// The release keys' public halves (`identity` global ids). An update is
+/// installed only when one of them signed its `SHA256SUMS`.
+const RELEASE_KEYS: &[&str] = &["GV7WV5QTTXHFGYKWKSHRFWNDEW3N2JZDUS2GQEEQ7Q4HVHMKBCZA"];
+/// The largest download: a launcher or server binary.
+const MAX_DOWNLOAD: usize = 128 * 1024 * 1024;
+/// The largest release listing, checksum file or signature.
+const MAX_SMALL: usize = 1024 * 1024;
 
 /// This build's release.
 pub fn current() -> Release {
-    Release::parse(env!("FE_RELEASE")).unwrap_or(Release { numbers: (0, 0, 0), pre: Some("unknown".into()) })
+    Release::parse(env!("FE_RELEASE")).unwrap_or(Release {
+        numbers: (0, 0, 0),
+        pre: Some("unknown".into()),
+    })
 }
 
 /// A development build: it doesn't look for updates on its own.
@@ -85,15 +99,35 @@ fn client() -> reqwest::Client {
         .expect("HTTP client")
 }
 
-async fn get(url: &str, timeout: Duration) -> anyhow::Result<Vec<u8>> {
-    let resp = tokio::time::timeout(timeout, client().get(url).send()).await.map_err(|_| anyhow::anyhow!("GitHub didn't answer in time"))??;
-    let resp = resp.error_for_status()?;
-    Ok(tokio::time::timeout(timeout, resp.bytes()).await.map_err(|_| anyhow::anyhow!("the download stalled"))??.to_vec())
+/// Downloads `url`, at most `max` bytes, within `timeout` in all.
+async fn get(url: &str, timeout: Duration, max: usize) -> anyhow::Result<Vec<u8>> {
+    tokio::time::timeout(timeout, async {
+        let mut resp = client().get(url).send().await?.error_for_status()?;
+        if resp.content_length().is_some_and(|n| n > max as u64) {
+            anyhow::bail!("the download is larger than expected");
+        }
+        let mut data = Vec::new();
+        while let Some(chunk) = resp.chunk().await? {
+            if data.len() + chunk.len() > max {
+                anyhow::bail!("the download is larger than expected");
+            }
+            data.extend_from_slice(&chunk);
+        }
+        Ok(data)
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("GitHub didn't answer in time, or the download stalled"))?
+}
+
+/// Whether one of the release keys signed `sums`.
+fn signed(sums: &str, signature: &str) -> bool {
+    let message = identity::release_message(sums);
+    RELEASE_KEYS.iter().any(|key| identity::verify(key, &message, signature.trim()))
 }
 
 /// Asks GitHub for the latest release.
 pub fn latest() -> anyhow::Result<Latest> {
-    let body = crate::services::rt().block_on(get(&format!("https://api.github.com/repos/{REPO}/releases/latest"), Duration::from_secs(15)))?;
+    let body = crate::services::rt().block_on(get(&format!("https://api.github.com/repos/{REPO}/releases/latest"), Duration::from_secs(15), MAX_SMALL))?;
     let r: GhRelease = serde_json::from_slice(&body)?;
     Ok(Latest {
         version: r.tag_name.trim_start_matches('v').to_string(),
@@ -106,9 +140,16 @@ pub fn latest() -> anyhow::Result<Latest> {
 /// temporary file, so a failed download leaves nothing behind).
 pub fn download(latest: &Latest, name: &str, to: &Path) -> anyhow::Result<()> {
     let rt = crate::services::rt();
-    let sums = String::from_utf8(rt.block_on(get(latest.url(SUMS_ASSET)?, Duration::from_secs(30)))?)?;
+    let sums = String::from_utf8(rt.block_on(get(latest.url(SUMS_ASSET)?, Duration::from_secs(30), MAX_SMALL))?)?;
+    let sig = latest
+        .url(SIG_ASSET)
+        .map_err(|_| anyhow::anyhow!("release {} isn't signed yet; try again later", latest.version))?;
+    let sig = String::from_utf8(rt.block_on(get(sig, Duration::from_secs(30), MAX_SMALL))?)?;
+    if !signed(&sums, &sig) {
+        anyhow::bail!("release {} isn't signed by this fork's release key; not installed", latest.version);
+    }
     let want = setup::update::checksum_for(&sums, name).ok_or_else(|| anyhow::anyhow!("{SUMS_ASSET} doesn't list {name}"))?;
-    let data = rt.block_on(get(latest.url(name)?, Duration::from_secs(300)))?;
+    let data = rt.block_on(get(latest.url(name)?, Duration::from_secs(300), MAX_DOWNLOAD))?;
     let got: [u8; 32] = sha2::Sha256::digest(&data).into();
     if got != want {
         anyhow::bail!("{name} doesn't match its published checksum; not installed");
@@ -164,5 +205,19 @@ pub fn clean_up() {
                 std::thread::sleep(Duration::from_millis(250));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn only_release_key_signatures_count() {
+        let sums = "abc  launcher.exe\n";
+        let other = identity::Identity::generate();
+        assert!(!signed(sums, &other.sign(&identity::release_message(sums))), "another key");
+        assert!(!signed(sums, "not a signature"));
+        assert!(RELEASE_KEYS.iter().all(|k| identity::is_global_id(k)));
     }
 }

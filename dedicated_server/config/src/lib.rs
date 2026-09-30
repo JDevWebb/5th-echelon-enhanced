@@ -300,6 +300,11 @@ pub struct PublicConfig {
     /// The API (gRPC) port.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api: Option<u16>,
+    /// The API's HTTPS port, when a proxy serves it with TLS (the installer's
+    /// Caddy: 443). Launchers then use it, so passwords and tokens are never
+    /// sent readable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub api_tls: Option<u16>,
     /// Game login (UDP).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub login: Option<u16>,
@@ -341,6 +346,9 @@ pub struct PublicPorts {
     pub content: u16,
     /// None when the NAT helper is off.
     pub nat: Option<u16>,
+    /// The API over HTTPS, when there is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub api_tls: Option<u16>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -447,6 +455,7 @@ impl Config {
             secure: self.public.secure.or(secure).unwrap_or(21127),
             content: self.public.content.or(content).unwrap_or(8000),
             nat: self.nat.enabled.then(|| self.public.nat.unwrap_or(self.nat.listen.port())),
+            api_tls: self.public.api_tls,
         }
     }
 
@@ -594,12 +603,14 @@ mod tests {
                 login: 21126,
                 secure: 21127,
                 content: 8000,
-                nat: Some(21128)
+                nat: Some(21128),
+                api_tls: None,
             }
         );
         cfg.public = PublicConfig {
             host: Some("blacklist.example.com".into()),
             api: Some(80),
+            api_tls: None,
             login: Some(31126),
             secure: Some(31127),
             content: Some(80),

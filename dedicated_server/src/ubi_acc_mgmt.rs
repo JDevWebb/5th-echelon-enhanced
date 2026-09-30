@@ -59,12 +59,7 @@ impl<T> UbiAccountManagementProtocolServerTrait<T> for UbiAccountManagementProto
                     .map(|uid| (ubi_id.clone(), uid))
             })
             .collect();
-        info!(
-            logger,
-            "Lookup requested for {} ubi ids. Found {}",
-            ubi_len,
-            pids.len(),
-        );
+        info!(logger, "Lookup requested for {} ubi ids. Found {}", ubi_len, pids.len(),);
 
         Ok(LookupPrincipalIdsResponse { pids })
     }
@@ -150,12 +145,7 @@ impl<T> UbiAccountManagementProtocolServerTrait<T> for UbiAccountManagementProto
                     .map(|user| (ubi_id.clone(), user.username))
             })
             .collect();
-        info!(
-            logger,
-            "Username lookup requested for {} ubi ids. Found {}",
-            ubi_len,
-            usernames.len(),
-        );
+        info!(logger, "Username lookup requested for {} ubi ids. Found {}", ubi_len, usernames.len(),);
 
         Ok(LookupUsernamesByUbiAccountIDsResponse { usernames })
     }

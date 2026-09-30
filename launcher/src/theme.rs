@@ -32,12 +32,14 @@ pub fn strong() -> FontFamily {
 
 pub fn apply(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
-    fonts
-        .font_data
-        .insert("plex".into(), Arc::new(egui::FontData::from_static(include_bytes!("../../hooks/fonts/IBMPlexSans-Regular.ttf"))));
-    fonts
-        .font_data
-        .insert("plex-semibold".into(), Arc::new(egui::FontData::from_static(include_bytes!("../../hooks/fonts/IBMPlexSans-SemiBold.ttf"))));
+    fonts.font_data.insert(
+        "plex".into(),
+        Arc::new(egui::FontData::from_static(include_bytes!("../../hooks/fonts/IBMPlexSans-Regular.ttf"))),
+    );
+    fonts.font_data.insert(
+        "plex-semibold".into(),
+        Arc::new(egui::FontData::from_static(include_bytes!("../../hooks/fonts/IBMPlexSans-SemiBold.ttf"))),
+    );
     fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "plex".into());
     let mut strong = vec!["plex-semibold".to_string()];
     strong.extend(fonts.families[&FontFamily::Proportional].iter().cloned());
@@ -113,7 +115,11 @@ pub fn status_marker(ui: &mut egui::Ui, status: setup::diagnose::Status) {
 
 /// A card: a raised surface for one part of the screen.
 pub fn card() -> egui::Frame {
-    egui::Frame::new().fill(SURFACE).stroke(Stroke::new(1.0, LINE)).corner_radius(10).inner_margin(egui::Margin::same(16))
+    egui::Frame::new()
+        .fill(SURFACE)
+        .stroke(Stroke::new(1.0, LINE))
+        .corner_radius(10)
+        .inner_margin(egui::Margin::same(16))
 }
 
 /// The one main action on a screen.

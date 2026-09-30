@@ -12,17 +12,17 @@ use crate::login_or_service_required as login_required;
 /// Represents a single news item.
 #[derive(Debug, ToStream, FromStream, Default, Deserialize)]
 struct NewsItem {
-    maybe_id: u32, // Likely a unique identifier for the news item.
-    unk2: u32,     // Unknown purpose.
-    unk3: u32,     // Unknown purpose.
-    unk4: u32,     // Unknown purpose.
-    unk5: String,  // Unknown purpose, possibly a category or source.
-    unk6: DateTime,// Unknown purpose, possibly creation or start date.
-    unk7: DateTime,// Unknown purpose, possibly an end date or last modified date.
+    maybe_id: u32,             // Likely a unique identifier for the news item.
+    unk2: u32,                 // Unknown purpose.
+    unk3: u32,                 // Unknown purpose.
+    unk4: u32,                 // Unknown purpose.
+    unk5: String,              // Unknown purpose, possibly a category or source.
+    unk6: DateTime,            // Unknown purpose, possibly creation or start date.
+    unk7: DateTime,            // Unknown purpose, possibly an end date or last modified date.
     expiration_time: DateTime, // The time when this news item expires.
-    title: String,       // The title of the news item.
-    link: String,        // A URL associated with the news item.
-    description: String, // The main content or description of the news item.
+    title: String,             // The title of the news item.
+    link: String,              // A URL associated with the news item.
+    description: String,       // The main content or description of the news item.
 }
 
 #[allow(clippy::module_name_repetitions)]

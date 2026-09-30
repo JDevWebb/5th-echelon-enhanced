@@ -59,8 +59,12 @@ async fn create_channel() -> std::result::Result<tonic::transport::Channel, Erro
         return Err(Error::MissingUrl);
     };
     tracing::debug!("Connecting to {url}");
-    let channel = tonic::transport::Channel::from_shared(url.as_str())
-        .unwrap() // this should not fail (ideally) as url is a url::Url which gets converted to an Uri
+    let mut endpoint = tonic::transport::Channel::from_shared(url.as_str()).unwrap(); // this should not fail (ideally) as url is a url::Url which gets converted to an Uri
+                                                                                      // HTTPS when the server has it (the launcher sets the URL from what the server reports).
+    if url.scheme() == "https" {
+        endpoint = endpoint.tls_config(tonic::transport::ClientTlsConfig::new().with_webpki_roots())?;
+    }
+    let channel = endpoint
         .connect_timeout(std::time::Duration::from_secs(1))
         .timeout(std::time::Duration::from_secs(10))
         .connect()

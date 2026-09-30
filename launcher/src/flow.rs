@@ -101,6 +101,10 @@ pub struct Plan {
     /// Sign in with these; None makes a one-click account named after `nick`.
     pub credentials: Option<(String, String)>,
     pub nick: String,
+    /// Link the account to the player's identity (friends follow them there,
+    /// and the identity can sign in to it). Off: the identity isn't shown to
+    /// this server at all.
+    pub link_identity: bool,
 }
 
 /// Progress lines for the UI.
@@ -126,19 +130,17 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<(), S
         }
     }
 
+    if !net::valid_host(&plan.server) {
+        return Err(format!("\"{}\" isn't a server address. Type a host name or IP address, without a port.", plan.server));
+    }
     say(log, format!("Looking up {}…", plan.server));
     let ip = net::resolve(&plan.server).ok_or_else(|| format!("\"{}\" isn't an address this PC can find.", plan.server))?;
 
-    let mut profile = Config::load(dir)
-        .profiles
-        .iter()
-        .find(|p| p.server == plan.server)
-        .cloned()
-        .unwrap_or_else(|| Profile {
-            name: plan.server.clone(),
-            server: plan.server.clone(),
-            ..Default::default()
-        });
+    let mut profile = Config::load(dir).profiles.iter().find(|p| p.server == plan.server).cloned().unwrap_or_else(|| Profile {
+        name: plan.server.clone(),
+        server: plan.server.clone(),
+        ..Default::default()
+    });
     // A server behind a proxy, or with remapped ports, says which it uses.
     let info = setup::server_info::fetch(&plan.server, Duration::from_secs(4));
     if let Some(ports) = info.as_ref().and_then(|i| i.ports) {
@@ -149,14 +151,15 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<(), S
     }
     let api_port = profile.api_port();
     if !net::port_open(ip, api_port, Duration::from_secs(4)) {
-        return Err(format!("{ip} doesn't answer on port {api_port}. Check the server is running and you're connected to its network."));
+        return Err(format!(
+            "{ip} doesn't answer on port {api_port}. Check the server is running and you're connected to its network."
+        ));
     }
 
     // A server that shares friends through a coordinator also has its server directory.
+    // The player decides whether to use it (the Play screen asks).
     if let Some(coordinator) = info.as_ref().and_then(|i| i.coordinator.clone()) {
-        if crate::app::Prefs::load().directory.is_none() {
-            crate::app::Prefs::set_directory(Some(coordinator));
-        }
+        crate::app::Prefs::suggest_directory(&plan.server, &coordinator);
     }
 
     say(log, "Setting up your account…");
@@ -164,7 +167,7 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<(), S
     // from another PC, and carries friends between servers.
     // Signatures name the server as the player typed it, never what the server says it is:
     // a server claiming to be another can't reuse them there.
-    let supports_identity = info.as_ref().is_some_and(|i| i.features.iter().any(|f| f == "identity"));
+    let supports_identity = plan.link_identity && info.as_ref().is_some_and(|i| i.features.iter().any(|f| f == "identity"));
     let identity = match supports_identity.then(|| identity::host_key(&plan.server)) {
         Some(host) => match setup::player_identity::load_or_create() {
             Ok(identity) => Some((Arc::new(identity), host)),
@@ -280,6 +283,28 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<(), S
 /// player's identity when the server has one, reserved across servers
 /// sharing friends. Updates the profile (and the game's settings, if it's
 /// the current one).
+/// Unlinks the account on a set-up server from the player's identity.
+pub fn unlink(game_dir: &Path, profile_name: &str) -> Result<String, String> {
+    let cfg = Config::load(game_dir);
+    let profile = cfg.profile(profile_name).cloned().ok_or("That server isn't set up any more.")?;
+    let password = profile.user.secret().ok_or("The saved password can't be read here; set up the server again.")?;
+    crate::services::rt()
+        .block_on(async {
+            tokio::time::timeout(
+                Duration::from_secs(10),
+                crate::network::unlink_identity(profile.api_server_url().to_string(), &profile.user.username, &password),
+            )
+            .await
+        })
+        .map_err(|_| "The server didn't answer in time.".to_string())?
+        .map_err(|e| match e {
+            crate::network::Error::Rpc(status) if status.code() == tonic::Code::Unimplemented => "This server can't unlink identities.".to_string(),
+            crate::network::Error::Rpc(status) => status.message().to_string(),
+            e => e.to_string(),
+        })?;
+    Ok(format!("{} on {} is no longer linked to your identity.", profile.user.username, profile.server))
+}
+
 pub fn rename(game_dir: &Path, profile_name: &str, new_name: &str) -> Result<String, String> {
     let mut cfg = Config::load(game_dir);
     let profile = cfg.profile(profile_name).cloned().ok_or("That server isn't set up any more.")?;

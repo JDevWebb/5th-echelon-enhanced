@@ -97,6 +97,11 @@ pub fn login_message(host: &str, username: &str, time: i64, new_password: &str) 
     format!("5th-echelon/login/v2\n{}\n{username}\n{time}\n{password}", host_key(host))
 }
 
+/// What the release key signs: a release's `SHA256SUMS`, as published.
+pub fn release_message(sums: &str) -> String {
+    format!("5th-echelon/release/v1\n{sums}")
+}
+
 fn sha256(data: &[u8]) -> [u8; 32] {
     use sha2::Digest as _;
     sha2::Sha256::digest(data).into()

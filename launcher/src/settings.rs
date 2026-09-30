@@ -56,7 +56,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
     let locked = game.managed.is_some();
     if let Some(m) = &game.managed {
-        ui.label(theme::muted(format!("{} manages this install: server, account and network settings are read-only here.", m.by)));
+        ui.label(theme::muted(format!(
+            "{} manages this install: server, account and network settings are read-only here.",
+            m.by
+        )));
         ui.add_space(6.0);
     }
 
@@ -67,7 +70,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     section(ui, "Identity and friends", |ui| identity_section(settings, notices, ui));
     section(ui, "Connection test", |ui| connection_test(settings, game, &ctx, ui));
     section(ui, "5th Echelon client", |ui| client(settings, game, &ctx, ui));
-    egui::CollapsingHeader::new(theme::heading("Hooks (advanced)")).default_open(false).show(ui, |ui| hooks(game, notices, ui));
+    egui::CollapsingHeader::new(theme::heading("Hooks (advanced)"))
+        .default_open(false)
+        .show(ui, |ui| hooks(game, notices, ui));
     ui.add_space(10.0);
     about(app, ui);
 }
@@ -229,7 +234,9 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     if let Some(wine) = flow::wine_facts(&game.dir).filter(|w| w.steam) {
         ui.label(theme::muted("Runs through Steam and Proton; Play asks Steam to start it."));
         if let Some(options) = wine.launch_options {
-            ui.label(format!("This CPU needs these Steam launch options (Properties › Launch options) or the game can freeze at start:"));
+            ui.label(format!(
+                "This CPU needs these Steam launch options (Properties › Launch options) or the game can freeze at start:"
+            ));
             ui.horizontal(|ui| {
                 ui.monospace(&options);
                 if ui.button("Copy").clicked() {
@@ -244,16 +251,22 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     ui.checkbox(&mut hook.auto_join_invite, "Join invites automatically");
     ui.horizontal(|ui| {
         ui.label("Client log detail");
-        egui::ComboBox::from_id_salt("loglevel").selected_text(hook.logging.level.as_ref().to_string()).show_ui(ui, |ui| {
-            for level in [LogLevel::Error, LogLevel::Warning, LogLevel::Info, LogLevel::Debug, LogLevel::Trace] {
-                let label = level.as_ref().to_string();
-                ui.selectable_value(&mut hook.logging.level, level, label);
-            }
-        });
+        egui::ComboBox::from_id_salt("loglevel")
+            .selected_text(hook.logging.level.as_ref().to_string())
+            .show_ui(ui, |ui| {
+                for level in [LogLevel::Error, LogLevel::Warning, LogLevel::Info, LogLevel::Debug, LogLevel::Trace] {
+                    let label = level.as_ref().to_string();
+                    ui.selectable_value(&mut hook.logging.level, level, label);
+                }
+            });
     });
     ui.horizontal(|ui| {
         ui.label("Extra command line");
-        ui.add(egui::TextEdit::singleline(&mut hook.internal_command_line).hint_text("Unreal Engine options").desired_width(300.0));
+        ui.add(
+            egui::TextEdit::singleline(&mut hook.internal_command_line)
+                .hint_text("Unreal Engine options")
+                .desired_width(300.0),
+        );
     });
     if hook != game.cfg.hook_config {
         game.update(notices, |c| c.hook_config = hook);
@@ -284,7 +297,9 @@ fn save_game(settings: &mut Settings, game: &mut Game, ctx: &egui::Context, ui: 
                 if ui.button("Import from Ubisoft Connect").on_hover_text(ubisoft.display().to_string()).clicked() {
                     let to = path.clone();
                     settings.working.start(ctx, move || {
-                        setup::save::import_ubisoft(&ubisoft, &to).map(|_| "Imported your Ubisoft Connect save.".to_string()).map_err(|e| e.to_string())
+                        setup::save::import_ubisoft(&ubisoft, &to)
+                            .map(|_| "Imported your Ubisoft Connect save.".to_string())
+                            .map_err(|e| e.to_string())
                     });
                 }
             }
@@ -328,7 +343,11 @@ fn servers(settings: &mut Settings, game: &mut Game, notices: &mut Notices, lock
         egui::Grid::new("profiles").num_columns(4).striped(true).spacing([16.0, 8.0]).show(ui, |ui| {
             for p in &profiles {
                 let is_current = current.as_deref() == Some(p.name.as_str());
-                ui.label(if is_current { RichText::new(&p.server).color(theme::ACCENT) } else { RichText::new(&p.server) });
+                ui.label(if is_current {
+                    RichText::new(&p.server).color(theme::ACCENT)
+                } else {
+                    RichText::new(&p.server)
+                });
                 let renaming_this = settings.renaming.as_ref().is_some_and(|(name, _)| *name == p.name);
                 if renaming_this {
                     if let Some((_, new_name)) = settings.renaming.as_mut() {
@@ -337,7 +356,11 @@ fn servers(settings: &mut Settings, game: &mut Game, notices: &mut Notices, lock
                 } else {
                     ui.label(&p.user.username);
                 }
-                ui.label(if settings.show_passwords { p.user.secret().unwrap_or_else(|| String::from("(not readable here)")) } else { "••••••••".into() });
+                ui.label(if settings.show_passwords {
+                    p.user.secret().unwrap_or_else(|| String::from("(not readable here)"))
+                } else {
+                    "••••••••".into()
+                });
                 ui.horizontal(|ui| {
                     if renaming_this {
                         let busy = settings.working.running();
@@ -354,6 +377,14 @@ fn servers(settings: &mut Settings, game: &mut Game, notices: &mut Notices, lock
                     }
                     if ui.button("Rename").on_hover_text("A new name on this server; friends and invites carry on").clicked() {
                         settings.renaming = Some((p.name.clone(), p.user.username.clone()));
+                    }
+                    if ui
+                        .button("Unlink")
+                        .on_hover_text("Stop friends following you to this account, and your identity signing in to it")
+                        .clicked()
+                    {
+                        let (dir, profile) = (game.dir.clone(), p.name.clone());
+                        settings.working.start(ctx, move || flow::unlink(&dir, &profile));
                     }
                     if !is_current && ui.button("Use").clicked() {
                         game.update(notices, |c| {
@@ -409,11 +440,22 @@ fn identity_section(settings: &mut Settings, notices: &mut Notices, ui: &mut egu
     }
     ui.horizontal(|ui| {
         ui.label("Import");
-        ui.add(egui::TextEdit::singleline(&mut settings.identity_import).hint_text("5th-echelon-identity:v1:…").password(true).desired_width(260.0));
-        if ui.add_enabled(!settings.identity_import.trim().is_empty(), egui::Button::new("Use this identity")).clicked() {
+        ui.add(
+            egui::TextEdit::singleline(&mut settings.identity_import)
+                .hint_text("5th-echelon-identity:v1:…")
+                .password(true)
+                .desired_width(260.0),
+        );
+        if ui
+            .add_enabled(!settings.identity_import.trim().is_empty(), egui::Button::new("Use this identity"))
+            .clicked()
+        {
             match setup::player_identity::import(&settings.identity_import).and_then(|identity| setup::player_identity::save(&identity).map(|()| identity)) {
                 Ok(identity) => {
-                    notices.info(format!("This PC now uses the identity {}. Set up each server again to sign in with it.", identity::short(&identity.global_id())));
+                    notices.info(format!(
+                        "This PC now uses the identity {}. Set up each server again to sign in with it.",
+                        identity::short(&identity.global_id())
+                    ));
                     settings.identity_import.clear();
                     settings.identity = None;
                 }
@@ -428,11 +470,15 @@ fn identity_section(settings: &mut Settings, notices: &mut Notices, ui: &mut egu
         ui.label("Server directory");
         ui.add(egui::TextEdit::singleline(editing).hint_text("https://coordinator.example.com").desired_width(260.0));
         if *editing != saved && ui.button("Save").clicked() {
-            crate::app::Prefs::set_directory(Some(editing.clone()));
-            notices.info("Saved. Browse servers on the Play screen.");
+            if editing.trim().is_empty() || setup::directory::valid_coordinator(editing) {
+                crate::app::Prefs::set_directory(Some(editing.clone()));
+                notices.info("Saved. Browse servers on the Play screen.");
+            } else {
+                notices.error("The server directory must be an https:// address.");
+            }
         }
     });
-    ui.label(theme::muted("Filled in by the first server you join that shares friends; lists servers to choose from."));
+    ui.label(theme::muted("Offered by the first server you join that shares friends; lists servers to choose from."));
 }
 
 fn connection_test(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui: &mut egui::Ui) {
@@ -483,7 +529,10 @@ fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>) -> Te
     };
     let mut results: TestResults = vec![("Config server (port 80)", run(Box::pin(network::test_cfg_server(&profile.server))))];
     results.push(("API and account", run(Box::pin(network::test_login(api.clone(), user, pass)))));
-    results.push(("Game service sign-in", run(Box::pin(network::test_quazal_login(&profile.server, profile.login_port(), user, pass)))));
+    results.push((
+        "Game service sign-in",
+        run(Box::pin(network::test_quazal_login(&profile.server, profile.login_port(), user, pass))),
+    ));
     results.push(("Direct connection to this PC", run(Box::pin(network::test_p2p(api, user, pass)))));
     let nat_port = game_nat_port.unwrap_or(nat_proto::DEFAULT_PORT);
     let nat = match rt.block_on(async { tokio::time::timeout(t, network::test_nat_helper(&profile.server, nat_port)).await }) {
@@ -530,7 +579,9 @@ fn client(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui: &mut eg
                     settings.confirm_uninstall = false;
                     let dir = game.dir.clone();
                     settings.working.start(ctx, move || {
-                        setup::install::uninstall(&dir).map(|()| "The game's own DLL is back.".to_string()).map_err(|e| e.to_string())
+                        setup::install::uninstall(&dir)
+                            .map(|()| "The game's own DLL is back.".to_string())
+                            .map_err(|e| e.to_string())
                     });
                 }
                 if ui.button("Cancel").clicked() {
