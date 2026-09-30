@@ -149,6 +149,13 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<(), S
             say(log, format!("The server uses API port {}, game port {}.", ports.api, ports.login));
         }
     }
+    // HTTPS that doesn't answer (the port closed on a firewall in front): the plain API.
+    if let Some(ports) = info.as_ref().and_then(|i| i.ports).filter(|p| p.api_tls.is_some()) {
+        if !net::port_open(ip, profile.api_port(), Duration::from_secs(4)) {
+            profile.use_ports(&setup::server_info::Ports { api_tls: None, ..ports });
+            say(log, "The server's HTTPS port doesn't answer; using its unencrypted API.");
+        }
+    }
     let api_port = profile.api_port();
     if !net::port_open(ip, api_port, Duration::from_secs(4)) {
         return Err(format!(

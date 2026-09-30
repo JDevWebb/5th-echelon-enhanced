@@ -2,9 +2,10 @@
 #
 #   docker compose -f docker/compose.yaml up -d      (from the repository root)
 #
-# Build context: the repository root.
+# Build context: the repository root. Base images are pinned by digest;
+# update them together (docker buildx imagetools inspect <image>).
 
-FROM rust:1-bookworm AS build
+FROM rust:1-bookworm@sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e AS build
 RUN apt-get update \
  && apt-get install -y --no-install-recommends protobuf-compiler \
  && rm -rf /var/lib/apt/lists/*
@@ -16,7 +17,11 @@ COPY . .
 RUN cargo build --release -p dedicated_server \
  && cp target/release/dedicated_server /dedicated_server
 
-FROM debian:bookworm-slim
+FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251
+# The server runs as this user; the entrypoint starts as root only to hand
+# it the volume, then drops to it keeping nothing but binding port 80.
+RUN useradd --system --uid 10001 --user-group --home-dir /srv/5th-echelon --no-create-home --shell /usr/sbin/nologin echelon \
+ && install -d -o echelon -g echelon -m 750 /srv/5th-echelon
 COPY --from=build /dedicated_server /app/dedicated_server
 COPY data /app/data
 COPY docker/entrypoint.sh /app/entrypoint.sh

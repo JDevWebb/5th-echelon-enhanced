@@ -61,6 +61,9 @@ The launcher makes you an identity the first time you join a server that support
 The launcher uses it for two things:
 
 1. **Linking.** It links each account you make to your identity by signing "this account on this server is me". The server checks the signature. That lets friends follow you between servers (see below).
+   - It's a choice: **Link to my identity** on the join form, ticked unless you untick it. Unticked, the server never sees your identity.
+   - Link only servers you trust: a server you link can change your friends on the servers that share friends with it.
+   - **Settings › Servers and accounts › Unlink** undoes it. Friends stop following you to that account, and your identity can no longer sign in to it.
 2. **Signing in without a password.** On a new PC, or when a password stops working, the launcher signs in to your linked accounts with the key and gives each a new password. Each signature names the server, the account and the time, and works once, within five minutes of when it was made.
 
 **To move to another PC:**
@@ -125,7 +128,11 @@ A dishonest member server could still make friendships or blocks between players
 
 Every member server appears in the coordinator's **server directory**, unless `listed = false`, with its name, region, address and players online. Launchers show it under **Browse servers** on the Play screen. They measure their ping to each server through its NAT helper, the path game traffic takes, and suggest the nearest, busiest one.
 
-A launcher learns the directory from the first server it joins that uses a coordinator; you can also set it in **Settings › Identity and friends**.
+The first server you join that uses a coordinator suggests its directory. The Play screen asks whether to use it, so a server can't choose which servers you're shown. You can also set it in **Settings › Identity and friends**.
+
+- Only `https://` directories are used.
+- A directory entry must be a public host name or address. Entries for private addresses (your own network) are skipped, as are more than 200 entries.
+- Each server's host is shown next to its name, so you can see where Choose takes you.
 
 ### Running a coordinator
 
@@ -137,14 +144,15 @@ sudo bash install-server.sh --domain blacklist.example.com --coordinator-domain 
 
 - It installs `coordinator` as a second service (`5th-echelon-coordinator`), behind Caddy on HTTPS. Caddy gets the certificate, so TCP 443 must be open and the domain's A record must point at the VPS.
 - The server on that VPS joins it.
-- The summary prints the join token for other servers:
+- The join token for other servers is in `/var/lib/5th-echelon/coordinator/join-token.txt` (the summary says where; it doesn't print it). Copy it to the other server as a file, then:
   ```sh
-  sudo bash install-server.sh --domain other.example.com --coordinator https://coordinator.example.com --join-token <token> --region Sydney
+  sudo bash install-server.sh --domain other.example.com --coordinator https://coordinator.example.com --join-token-file token.txt --region Sydney
   ```
 
 **By hand:**
 1. Run `coordinator --listen 127.0.0.1:8700 --data /var/lib/coordinator` behind any reverse proxy with HTTPS.
-2. The join token is in `join-token.txt` in the data folder. Delete the file to make a new one; servers that already joined keep working.
+2. The join token is in `join-token.txt` in the data folder. `coordinator --data <folder> new-token` makes a new one (restart the coordinator afterwards); servers that already joined keep working.
+3. `coordinator --data <folder> remove-server <id>` removes a member server, its links, and the names only it used. Rotate the token too if it could join again.
 
 **On a server**, `[federation]` in `service.toml` (see [server-settings.md](server-settings.md)):
 
@@ -169,7 +177,7 @@ The server keeps its credentials in `federation.key` once it has joined. Its log
 | `POST /v1/changes` `{changes: [...]}` | a member | links, unlinks, friendships and blocks, in order; one result each |
 | `GET /v1/relations/<identity>` | a member | a player's friends and blocks, for a player linked on that server |
 | `POST /v1/names/claim` `{name, global_id, time, signature}` | a member | reserves a name for a player (their link signature for that server); `409` if someone else has it |
-| `GET /v1/names/<name>` | a member | whether a name is reserved, and by whom |
+| `GET /v1/names/<name>` | a member | whether a name is reserved (`{claimed}`) |
 | `GET /v1/info` | anyone | name, version, number of servers |
 
 ## Testing

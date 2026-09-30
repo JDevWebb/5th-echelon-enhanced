@@ -186,7 +186,7 @@ Everything the launcher does can be done by hand:
 - **Staying signed in:**
   - the client signs in again on its own if the server restarts or your sign-in lapses;
   - logins survive server restarts.
-- **Updates:** the launcher updates itself from this project's releases, checking every download against the published SHA-256 checksums.
+- **Updates:** the launcher updates itself from this project's releases. It checks every download against the published SHA-256 checksums, and the checksums against the release key's signature, so a changed release is never installed.
 - **Linux and Steam Deck:** a native Linux launcher, Proton and Wine support in the client, and the many-core CPU fix.
 - **Unusual game builds:** unknown game executables can be identified from the launcher, which covers most mods.
 
@@ -479,12 +479,19 @@ GitHub Actions tests and builds every push and pull request (Linux tests, the te
    ```sh
    git tag v0.3.1 && git push origin main v0.3.1
    ```
+3. Sign and publish it, on the machine with the release key:
+   ```sh
+   scripts/sign-release.sh v0.3.1
+   ```
 
-The release workflow then:
+The release workflow:
 - builds every download on Windows and Linux runners;
-- writes `SHA256SUMS`, which the launcher's updater checks against;
-- publishes the GitHub release;
+- writes `SHA256SUMS`, which the launcher's updater and the Linux installer check against;
+- attests each download's build provenance (`gh attestation verify <file> --repo JDevWebb/5th-echelon-enhanced`);
+- makes the GitHub release as a draft;
 - pushes the server image to `ghcr.io`.
+
+`sign-release.sh` checks every download against `SHA256SUMS`, signs `SHA256SUMS` with the release key (`SHA256SUMS.sig`), uploads the signature and publishes the draft. The key stays off GitHub, in `~/.config/5th-echelon-release/`. Launchers and the installer only install releases it signed. Its public half is in `launcher/src/updater.rs` and `scripts/install-server.sh`; `cargo run -p identity --bin release-sign -- keygen <file>` makes a new one.
 
 A tag with a suffix (`v0.3.1-rc.1`) makes a pre-release, which the updater doesn't offer.
 

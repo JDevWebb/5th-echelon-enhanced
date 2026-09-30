@@ -77,17 +77,21 @@ For a server behind a reverse proxy, or with its ports forwarded to other number
 [public]
 host = "blacklist.example.com"   # content downloads are addressed to it
 api = 80                         # the gRPC API, e.g. through Caddy
+# api_tls = 443                  # the gRPC API over HTTPS (the installer sets it once Caddy has a certificate)
 content = 80
 # login = 21126                  # game login (UDP)
 # secure = 21127                 # game service (UDP)
 # nat = 21128                    # NAT helper (UDP; the next port too)
 proxies = ["172.17.0.0/16"]      # proxies whose X-Forwarded-For is believed
+# aliases = ["bl.example.com"]   # other names players reach this server by
 ```
 
 Without this section, nothing changes. With it:
 - the server hands out these ports, and for any left unset, the port its service listens on: the login port in the online config, the game service in tickets, content downloads, and relay addresses;
 - `GET /api/info` reports them as `ports` (and `host`), and the launcher's **Set up** stores them for the player;
 - `X-Forwarded-For` is believed from the listed proxies (and always from a proxy on this machine), so the rate limits count each player, not the proxy.
+- With **`api_tls`**, launchers and overlays use `https://host[:api_tls]` for the API instead, so passwords and sign-in tokens never travel readable. The launcher falls back to the plain API when that port doesn't answer.
+- Identity signatures name the host the player typed. The server accepts signatures for its `host`, its public address and its **`aliases`**, and no others, so a signature made for another server can't be replayed here.
 
 ## `[limits]`: rate limits on accounts and logins
 
@@ -95,11 +99,14 @@ Without this section, nothing changes. With it:
 [limits]
 failed_logins_per_10_minutes = 30  # per address, over every login route
 registrations_per_hour = 20        # per address
+open_registration = true           # false: no new accounts (only existing ones sign in)
 ```
 
 - The login limit covers the game's own login, the launcher's (gRPC) and the community API. Only failed logins count: players sharing one address sign in often, and only password guessing fails a lot.
 - Players behind one address (a LAN party, a household) share the registration budget, so raise it if a big group sets up at once.
 - Requests from the server's own machine (loopback) are never limited.
+- Failed logins also count per account (10 in 10 minutes), whatever the address, and IPv6 addresses count per /64.
+- `FE_MAX_CONNECTIONS_PER_IP` (environment, default 256) caps the game connections from one address.
 
 ## `[admin]`: the admin API
 
@@ -113,6 +120,8 @@ enabled = true
 - It's always on when the launcher starts the server (`--launcher`). Otherwise `enabled` turns it on.
 - The key is written to `admin-key.txt` next to the database, readable only by the server's user. Paste it into the launcher's "Manage a server".
 - Anyone with the key can delete accounts: keep it private, and don't expose port 50051 more widely than you need to.
+- The installer's Caddy never passes the admin services on (they answer 403 there). Manage such a server from the machine itself, or through an SSH tunnel: `ssh -L 50051:127.0.0.1:50051 you@server`, then connect the launcher to `localhost`.
+- The launcher warns before sending the key over plain `http://` to a machine that isn't on a private network.
 
 ## `[friends]`: who is on a player's friend list
 
@@ -135,9 +144,10 @@ join_token = "..."   # from the coordinator's operator; only needed until joined
 name = "Kiwi Ops"    # in the server directory (default: the public host)
 region = "Sydney"
 listed = true        # false: share friends, but stay out of the directory
+# allow_http = false # only for tests: allow an http:// coordinator (the server's secret travels readable)
 ```
 
-Off until `coordinator` is set. The server then:
+Off until `coordinator` is set. It must be `https://` (or on this machine) unless `allow_http` is on. The server then:
 - joins with the token, and keeps its credentials in `federation.key`;
 - sends friendships and blocks between players who linked their identity;
 - pulls their friends from other servers;

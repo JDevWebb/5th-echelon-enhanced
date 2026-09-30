@@ -72,7 +72,40 @@ fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
 
 #[cfg(not(unix))]
 fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
+    std::fs::write(path, "")?;
+    #[cfg(windows)]
+    restrict_to_owner(path);
     std::fs::write(path, text)
+}
+
+/// Windows: lets only this user, the file's owner and SYSTEM read `path`
+/// (no inherited access for other users of the PC). The owner and SYSTEM by
+/// SID, so any Windows language works; this user too, so a first run as
+/// administrator doesn't lock out a later normal one. Best effort: without
+/// icacls (Wine), the file keeps its folder's permissions.
+#[cfg(windows)]
+fn restrict_to_owner(path: &std::path::Path) {
+    use std::os::windows::process::CommandExt as _;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    let user = std::env::var("USERDOMAIN").ok().zip(std::env::var("USERNAME").ok()).map(|(domain, user)| format!("{domain}\\{user}:F"));
+    // With this user named, then (a name icacls doesn't know, e.g. a service's) without.
+    for with_user in [user, None] {
+        let mut command = std::process::Command::new("icacls");
+        command.arg(path).args(["/inheritance:r", "/grant:r", "*S-1-3-4:F", "/grant:r", "*S-1-5-18:F"]);
+        if let Some(user) = &with_user {
+            command.args(["/grant:r", user]);
+        }
+        let done = command
+            .arg("/q")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .status()
+            .is_ok_and(|s| s.success());
+        if done {
+            return;
+        }
+    }
 }
 
 #[tokio::main]

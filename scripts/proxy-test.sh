@@ -19,7 +19,8 @@ cleanup
 docker network create "$net" >/dev/null
 
 # The server: ports moved off the defaults (as when other services hold
-# them), HTTP on loopback only, reachable through Caddy.
+# them), HTTP on loopback only, reachable through Caddy. Every test player
+# comes from one address (Caddy passes it on), so new accounts get more room.
 docker run -d --name fes-proxy-srv --network "$net" -v fes-target:/target:ro "$image" bash -c "
   set -e; mkdir -p /srv/fe && cd /srv/fe && cp $bin/dedicated_server .
   ./dedicated_server >gen.log 2>&1 & gen=\$!
@@ -30,6 +31,7 @@ docker run -d --name fes-proxy-srv --network "$net" -v fes-target:/target:ro "$i
     -e 's|^listen = \"0.0.0.0:8000\"|listen = \"127.0.0.1:8000\"|' \
     -e 's|^api_server = .*|api_server = \"127.0.0.1:50051\"|' \
     -e 's|0.0.0.0:21126|0.0.0.0:31126|; s|0.0.0.0:21127|0.0.0.0:31127|; s|0.0.0.0:21128|0.0.0.0:31128|' \
+    -e 's|^registrations_per_hour = .*|registrations_per_hour = 1000|' \
     service.toml
   printf '\n[public]\nhost = \"$host\"\napi = 80\ncontent = 80\n' >> service.toml
   exec ./dedicated_server --public-address \$(hostname -i | cut -d' ' -f1) >server.log 2>&1

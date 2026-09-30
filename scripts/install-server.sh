@@ -11,7 +11,12 @@
 #
 # With a domain name (asked for, or --domain), Caddy serves the game's
 # config, content and the launcher's API on port 80 under that name, so
-# port 80 can be shared with other sites and players type the name.
+# port 80 can be shared with other sites and players type the name. It
+# also serves the launcher's API over HTTPS on port 443, so passwords and
+# sign-ins never travel readable.
+#
+# Downloads are checked against the release's SHA256SUMS, and SHA256SUMS
+# against the release key's signature (needs OpenSSL 3).
 #
 # Options:
 #   --domain NAME         serve through Caddy as NAME (an A record for this
@@ -35,6 +40,9 @@
 #   --coordinator URL     share friends with other servers through this
 #                         coordinator, and appear in its server directory
 #   --join-token TOKEN    the coordinator's join token, from its operator
+#                         (visible to other users in ps; prefer the file)
+#   --join-token-file FILE
+#                         read the join token from FILE
 #   --coordinator-domain NAME
 #                         also run a coordinator here, at https://NAME (an A
 #                         record for this server, TCP 443 open); this server
@@ -42,6 +50,9 @@
 #   --coordinator-binary FILE
 #                         install this coordinator-linux-x86_64 instead of
 #                         downloading one
+#   --no-https-api        don't serve the launcher's API over HTTPS
+#   --allow-unsigned      install a release without a valid signature
+#                         (older releases); the checksum is still checked
 #   --no-firewall         don't open ports in ufw or firewalld
 #   --yes                 don't ask; go on past warnings (e.g. DNS not
 #                         pointing here yet)
@@ -70,10 +81,26 @@ COORD_SERVICE="5th-echelon-coordinator"
 COORD_UNIT="/etc/systemd/system/${COORD_SERVICE}.service"
 COORD_ASSET="coordinator-linux-x86_64"
 COORD_DIR="$STATE_DIR/coordinator"
+# The installer's own records, owned by root and outside the folders the
+# services can write: which coordinator domain runs here, which firewall
+# rules it added.
+ETC_DIR="/etc/5th-echelon"
+FIREWALL_RECORD="$ETC_DIR/firewall-rules"
+# The release key (its public half), which signs each release's SHA256SUMS.
+RELEASE_KEY_PEM="-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEANX9q9hOdzlNhVlSPEtmjJbbdJyOktGgQkPw4ep2KCLI=
+-----END PUBLIC KEY-----"
+# Caddy's static build, when there's no package: pinned, with its SHA-512.
+CADDY_VERSION="2.11.4"
+CADDY_SHA512_amd64="8220d1f013b6f27510247b2360c9e0ca9f018feebd82515f07635318b34ff9777ccc8fd0b6e6f2486ce3a33fe389fbb7db12d05baa474f4587509fb4f5ebf1c9"
+CADDY_SHA512_arm64="d5a7c423853c24a799765e0e8210d5c7c22a8f56ed37a3cae2fb9f58be138853c02b4efd6b59d576e6d8c7c0d30b9c1592deeaa6a536ff69bcca23b8c1ea709c"
 
 domain="" no_caddy=0 public_address="" version="latest" binary="" relay=""
 firewall=1 yes=0 force=0 uninstall=0 purge=0 use_systemd=1
 friends="mutual" server_name="" region="" coordinator="" join_token="" coord_domain="" coord_binary=""
+https_api=1 allow_unsigned=0
+# Only HTTPS, and TLS 1.2 or newer, for every download.
+CURL=(curl --proto '=https' --tlsv1.2)
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
@@ -105,6 +132,9 @@ while [ $# -gt 0 ]; do
     --region) region="${2:?}"; shift ;;
     --coordinator) coordinator="${2:?}"; shift ;;
     --join-token) join_token="${2:?}"; shift ;;
+    --join-token-file) join_token="$(tr -d '[:space:]' < "${2:?}")" || die "can't read $2"; shift ;;
+    --no-https-api) https_api=0 ;;
+    --allow-unsigned) allow_unsigned=1 ;;
     --coordinator-domain) coord_domain="${2:?}"; shift ;;
     --coordinator-binary) coord_binary="${2:?}"; shift ;;
     --no-firewall) firewall=0 ;;
@@ -124,13 +154,33 @@ case "$relay" in ""|auto|all|off) ;; *) die "--relay is auto, all or off" ;; esa
 [ -z "$domain" ] || [ "$no_caddy" -eq 0 ] || die "--domain and --no-caddy don't go together"
 case "$friends" in mutual|everyone) ;; *) die "--friends is mutual or everyone" ;; esac
 # Updating a machine that runs a coordinator keeps it (and its Caddy site).
-if [ -z "$coord_domain" ] && [ -z "$coordinator" ] && [ -s "$COORD_DIR/domain" ]; then
-  coord_domain="$(tr -d '[:space:]' < "$COORD_DIR/domain")"
+if [ -z "$coord_domain" ] && [ -z "$coordinator" ]; then
+  if [ -s "$ETC_DIR/coordinator-domain" ]; then
+    coord_domain="$(tr -d '[:space:]' < "$ETC_DIR/coordinator-domain")"
+  elif [ -f "$COORD_DIR/domain" ] && [ ! -L "$COORD_DIR/domain" ]; then
+    # Where installs before 0.4 kept it (checked below like --coordinator-domain).
+    coord_domain="$(head -c 256 "$COORD_DIR/domain" | tr -d '[:space:]')"
+  fi
 fi
 [ -z "$coord_domain" ] || [ "$no_caddy" -eq 0 ] || die "--coordinator-domain needs Caddy (for HTTPS); leave out --no-caddy"
 [ -z "$coord_domain" ] || [ -z "$coordinator" ] || die "--coordinator-domain runs a coordinator here; leave out --coordinator"
 [ -z "$coordinator" ] || [ -n "$join_token" ] || [ -f "$STATE_DIR/federation.key" ] || die "--coordinator needs --join-token (from the coordinator's operator)"
-case "$coordinator" in ""|http://*|https://*) ;; *) die "--coordinator is a URL, e.g. https://coordinator.example.com" ;; esac
+# Everything that goes into service.toml or a URL is checked first: no
+# quotes, newlines or anything else that could change what's written.
+DOMAIN_RE='^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$'
+if [ -n "$coordinator" ]; then
+  coordinator="${coordinator%/}"
+  COORD_RE='^https://([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(:[0-9]{1,5})?$'
+  [[ "$coordinator" =~ $COORD_RE ]] \
+    || die "--coordinator is an https:// address with no path, e.g. https://coordinator.example.com"
+fi
+[ -z "$join_token" ] || [[ "$join_token" =~ ^[A-Z2-7]{16,128}$ ]] || die "that isn't a join token (letters A-Z and digits 2-7)"
+NAME_RE="^[A-Za-z0-9][A-Za-z0-9 ._(),'-]{0,63}\$"
+[ -z "$server_name" ] || [[ "$server_name" =~ $NAME_RE ]] || die "--server-name is up to 64 letters, digits, spaces and . _ ( ) , ' -"
+[ -z "$region" ] || [[ "$region" =~ $NAME_RE ]] || die "--region is up to 64 letters, digits, spaces and . _ ( ) , ' -"
+[ "$version" = latest ] || [[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]] || die "--version is a release number, e.g. 0.4.0"
+coord_domain="${coord_domain,,}"
+[ -z "$coord_domain" ] || [[ "$coord_domain" =~ $DOMAIN_RE ]] || die "\"$coord_domain\" isn't a domain name"
 
 # --- The system ---------------------------------------------------------
 
@@ -196,6 +246,10 @@ stop_strays() {
 # the file $2 (or nothing), keeping everything else.
 replace_managed() {
   local file="$1" with="$2" tmp line skipping=0
+  # Without the end marker, everything after the start would go: stop instead.
+  if ! sed -n "/^$(printf '%s' "$BEGIN_MARK" | sed 's/[][\\/.*^$]/\\&/g')\$/,\$p" "$file" | grep -qxF "$END_MARK"; then
+    die "$file has the line \"$BEGIN_MARK\" but not \"$END_MARK\" after it; put the end marker back after the 5th Echelon block and run this again"
+  fi
   tmp="$(mktemp)"
   while IFS= read -r line || [ -n "$line" ]; do
     if [ "$line" = "$BEGIN_MARK" ]; then
@@ -236,7 +290,18 @@ if [ "$uninstall" -eq 1 ]; then
     systemctl reload-or-restart caddy 2>/dev/null || true
     say "Removed the server's Caddy site (Caddy itself stays installed)."
   fi
-  rm -rf "$PROGRAM_DIR"
+  # The firewall rules this installer added.
+  if [ -s "$FIREWALL_RECORD" ]; then
+    while read -r tool rule; do
+      case "$tool" in
+        ufw) command -v ufw >/dev/null && ufw delete allow "$rule" >/dev/null 2>&1 || true ;;
+        firewalld) command -v firewall-cmd >/dev/null && firewall-cmd --permanent --remove-port="$rule" >/dev/null 2>&1 || true ;;
+      esac
+    done < "$FIREWALL_RECORD"
+    if command -v firewall-cmd >/dev/null && grep -q '^firewalld ' "$FIREWALL_RECORD"; then firewall-cmd --reload >/dev/null 2>&1 || true; fi
+    say "Removed the firewall rules the installer added."
+  fi
+  rm -rf "$PROGRAM_DIR" "$ETC_DIR"
   rm -f "$SYSCTL_FILE"
   if [ "$purge" -eq 1 ]; then
     rm -rf "$STATE_DIR"
@@ -263,6 +328,9 @@ need=()
 command -v curl >/dev/null || need+=(curl)
 [ -e /etc/ssl/certs/ca-certificates.crt ] || [ -e /etc/pki/tls/certs/ca-bundle.crt ] || [ -e /etc/ssl/ca-bundle.pem ] || need+=(ca-certificates)
 command -v sha256sum >/dev/null || need+=(coreutils)
+if [ -z "$binary" ] || { [ -n "$coord_domain" ] && [ -z "$coord_binary" ]; }; then
+  command -v openssl >/dev/null || need+=(openssl)
+fi
 command -v ss >/dev/null || case "$family" in debian|arch) need+=(iproute2) ;; fedora) need+=(iproute) ;; esac
 command -v useradd >/dev/null || case "$family" in debian) need+=(passwd) ;; fedora) need+=(shadow-utils) ;; arch) need+=(shadow) ;; esac
 command -v runuser >/dev/null || need+=(util-linux)
@@ -273,6 +341,33 @@ command -v getent >/dev/null || case "$family" in debian) need+=(libc-bin) ;; *)
 
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
+
+# Checks the release's SHA256SUMS against its signature (SHA256SUMS.sig,
+# base32, by the release key): whoever can change a release on GitHub
+# still can't change what this installs.
+verify_release() {
+  local base="$1"
+  if ! "${CURL[@]}" -fsSL --retry 3 -o "$work/SHA256SUMS.sig" "$base/SHA256SUMS.sig" 2>/dev/null; then
+    [ "$allow_unsigned" -eq 1 ] || die "this release isn't signed (no SHA256SUMS.sig). --allow-unsigned installs it anyway, checked by its checksum only"
+    warn "the release isn't signed; installing it on its checksum alone (--allow-unsigned)"
+    return 0
+  fi
+  printf '%s\n' "$RELEASE_KEY_PEM" > "$work/release.pem"
+  { printf '5th-echelon/release/v1\n'; cat "$work/SHA256SUMS"; } > "$work/signed"
+  # base32 without padding: pad it for coreutils.
+  local sig
+  sig="$(tr -d '[:space:]' < "$work/SHA256SUMS.sig")"
+  while [ $(( ${#sig} % 8 )) -ne 0 ]; do sig="$sig="; done
+  printf '%s' "$sig" | base32 -d > "$work/signature" 2>/dev/null || die "the release's signature is malformed"
+  if openssl pkeyutl -verify -pubin -inkey "$work/release.pem" -rawin -in "$work/signed" -sigfile "$work/signature" >/dev/null 2>&1; then
+    say "Release signature verified"
+  elif ! openssl pkeyutl -help 2>&1 | grep -q -- '-rawin'; then
+    [ "$allow_unsigned" -eq 1 ] || die "this system's OpenSSL ($(openssl version)) can't check the release's signature (it needs OpenSSL 3). --allow-unsigned installs on the checksum alone"
+    warn "OpenSSL can't check the signature here; installing on the checksum alone (--allow-unsigned)"
+  else
+    die "the release's signature doesn't match: SHA256SUMS wasn't signed by the release key. Not installing it"
+  fi
+}
 
 if [ -n "$binary" ]; then
   [ -f "$binary" ] || die "$binary doesn't exist"
@@ -285,13 +380,15 @@ else
     base="https://github.com/$REPO/releases/download/v${version#v}"
   fi
   say "Downloading the server ($version)"
-  curl -fsSL --retry 3 -o "$work/$ASSET" "$base/$ASSET" \
+  "${CURL[@]}" -fsSL --retry 3 -o "$work/$ASSET" "$base/$ASSET" \
     || die "couldn't download $base/$ASSET (is there a release yet? --binary installs a file you have)"
-  curl -fsSL --retry 3 -o "$work/SHA256SUMS" "$base/SHA256SUMS" || die "couldn't download the release's SHA256SUMS"
+  "${CURL[@]}" -fsSL --retry 3 -o "$work/SHA256SUMS" "$base/SHA256SUMS" || die "couldn't download the release's SHA256SUMS"
+  verify_release "$base"
   (cd "$work" && grep " $ASSET\$" SHA256SUMS | sha256sum -c --quiet -) || die "the download doesn't match the release's checksum"
   say "Checksum verified"
 fi
 chmod 755 "$work/$ASSET"
+chmod 711 "$work"
 if [ -n "$coord_domain" ]; then
   if [ -n "$coord_binary" ]; then
     [ -f "$coord_binary" ] || die "$coord_binary doesn't exist"
@@ -301,13 +398,19 @@ if [ -n "$coord_domain" ]; then
     die "with --binary, also give --coordinator-binary (the coordinator of the same build)"
   else
     say "Downloading the coordinator ($version)"
-    curl -fsSL --retry 3 -o "$work/$COORD_ASSET" "$base/$COORD_ASSET" || die "couldn't download $base/$COORD_ASSET"
+    if [ ! -f "$work/SHA256SUMS" ]; then
+      if [ "$version" = latest ]; then base="https://github.com/$REPO/releases/latest/download"; else base="https://github.com/$REPO/releases/download/v${version#v}"; fi
+      "${CURL[@]}" -fsSL --retry 3 -o "$work/SHA256SUMS" "$base/SHA256SUMS" || die "couldn't download the release's SHA256SUMS"
+      verify_release "$base"
+    fi
+    "${CURL[@]}" -fsSL --retry 3 -o "$work/$COORD_ASSET" "$base/$COORD_ASSET" || die "couldn't download $base/$COORD_ASSET"
     (cd "$work" && grep " $COORD_ASSET\$" SHA256SUMS | sha256sum -c --quiet -) || die "the coordinator doesn't match the release's checksum"
   fi
   chmod 755 "$work/$COORD_ASSET"
 fi
 # Whether it runs here at all (a C library too old for it, say).
-if ! out="$("$work/$ASSET" --help 2>&1)"; then
+# As nobody: nothing new runs as root.
+if ! out="$(cd / && runuser -u nobody -- "$work/$ASSET" --help 2>&1)"; then
   case "$out" in
     *GLIBC*) die "$os_name's C library is too old for the server (it needs glibc 2.34: Ubuntu 22.04+, Debian 12+, RHEL/Rocky/Alma 9+, Fedora 35+). Use a newer system, or the Docker image.
 $out" ;;
@@ -320,7 +423,7 @@ fi
 
 if [ -z "$public_address" ]; then
   for url in https://api.ipify.org https://ipv4.icanhazip.com https://ifconfig.me/ip; do
-    public_address="$(curl -4 -fsS --max-time 5 "$url" 2>/dev/null | tr -d '[:space:]')" || true
+    public_address="$("${CURL[@]}" -4 -fsS --max-time 5 "$url" 2>/dev/null | tr -d '[:space:]')" || true
     [[ "$public_address" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] && break
     public_address=""
   done
@@ -346,7 +449,7 @@ if [ -z "$domain" ] && [ "$no_caddy" -eq 0 ] && [ "$yes" -eq 0 ]; then
 fi
 [ -n "$domain" ] || no_caddy=1
 if [ "$no_caddy" -eq 0 ]; then
-  [[ "$domain" =~ ^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$ ]] || die "\"$domain\" isn't a domain name"
+  [[ "$domain" =~ $DOMAIN_RE ]] || die "\"$domain\" isn't a domain name"
   resolved="$(getent ahostsv4 "$domain" 2>/dev/null | cut -d' ' -f1 | sort -u | tr '\n' ' ' || true)"
   if [ -z "$resolved" ]; then
     warn "$domain doesn't resolve yet. Add an A record for it pointing at $public_address."
@@ -403,16 +506,23 @@ fi
 
 say "Installing to $PROGRAM_DIR (program) and $STATE_DIR (settings, accounts, keys)"
 install -d -m 755 "$PROGRAM_DIR"
+install -d -m 755 "$ETC_DIR"
 install -m 755 "$work/$ASSET" "$PROGRAM_DIR/dedicated_server"
 # The server keeps data/ next to its program.
-install -d -m 755 -o "$USER_NAME" -g "$USER_NAME" "$PROGRAM_DIR/data" "$STATE_DIR"
+install -d -m 750 -o "$USER_NAME" -g "$USER_NAME" "$PROGRAM_DIR/data" "$STATE_DIR"
+chmod 750 "$PROGRAM_DIR/data" "$STATE_DIR"
+# The service owns its folder, so what's in it could be a link planted to
+# make this script (as root) write elsewhere: refuse that.
+for f in "$CONFIG" "$STATE_DIR/federation.key"; do
+  if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then die "$f isn't a plain file; move it away and run this again"; fi
+done
 if command -v restorecon >/dev/null; then restorecon -R "$PROGRAM_DIR" "$STATE_DIR" 2>/dev/null || true; fi
 
 # The first start writes the default settings.
 if [ ! -f "$CONFIG" ]; then
   say "Writing the default settings"
   cd "$STATE_DIR"
-  runuser -u "$USER_NAME" -- "$PROGRAM_DIR/dedicated_server" --public-address "$public_address" >/dev/null 2>&1 &
+  runuser -u "$USER_NAME" -- sh -c 'umask 077; exec "$0" "$@"' "$PROGRAM_DIR/dedicated_server" --public-address "$public_address" >/dev/null 2>&1 &
   generator=$!
   for _ in $(seq 50); do [ -s "$CONFIG" ] && break; sleep 0.2; done
   sleep 0.5
@@ -457,7 +567,8 @@ if [ -n "$coord_domain" ]; then
   say "Installing the coordinator for https://$coord_domain"
   install -m 755 "$work/$COORD_ASSET" "$PROGRAM_DIR/coordinator"
   install -d -m 700 -o "$USER_NAME" -g "$USER_NAME" "$COORD_DIR"
-  echo "$coord_domain" > "$COORD_DIR/domain"
+  echo "$coord_domain" > "$ETC_DIR/coordinator-domain"
+  rm -f "$COORD_DIR/domain"
   if [ "$use_systemd" -eq 1 ]; then
     cat > "$COORD_UNIT" <<UNIT
 [Unit]
@@ -473,6 +584,7 @@ WorkingDirectory=$COORD_DIR
 ExecStart=$PROGRAM_DIR/coordinator --listen 127.0.0.1:8700 --data $COORD_DIR
 Restart=always
 RestartSec=3
+CapabilityBoundingSet=
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=$COORD_DIR
@@ -481,9 +593,23 @@ PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
 LockPersonality=yes
+RemoveIPC=yes
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
@@ -497,7 +623,9 @@ UNIT
     ( cd "$COORD_DIR" && runuser -u "$USER_NAME" -- "$PROGRAM_DIR/coordinator" --listen 127.0.0.1:8700 --data "$COORD_DIR" >/dev/null 2>&1 & sleep 1; kill $! 2>/dev/null || true )
   fi
   coordinator="https://$coord_domain"
-  join_token="$(tr -d '[:space:]' < "$COORD_DIR/join-token.txt")"
+  [ ! -L "$COORD_DIR/join-token.txt" ] || die "$COORD_DIR/join-token.txt isn't a plain file"
+  join_token="$(head -c 256 "$COORD_DIR/join-token.txt" | tr -d '[:space:]')"
+  [[ "$join_token" =~ ^[A-Z2-7]{16,128}$ ]] || die "the coordinator's join token isn't one"
 fi
 
 # [federation]: rewritten when a coordinator is given, kept otherwise.
@@ -515,7 +643,9 @@ if [ -n "$coordinator" ]; then
   } >> "$CONFIG"
   say "Sharing friends through $coordinator"
 fi
-chown "$USER_NAME:$USER_NAME" "$CONFIG"
+chown -h "$USER_NAME:$USER_NAME" "$CONFIG"
+# It can hold the join token.
+chmod 600 "$CONFIG"
 
 # The relay queues bursts of game traffic in 4 MB socket buffers; Linux
 # caps them at about 208 KB unless allowed more.
@@ -558,9 +688,23 @@ PrivateTmp=yes
 PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
+ProtectKernelLogs=yes
 ProtectControlGroups=yes
-RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
 LockPersonality=yes
+RemoveIPC=yes
+UMask=0077
 
 [Install]
 WantedBy=multi-user.target
@@ -592,8 +736,8 @@ install_caddy() {
   case "$family" in
     debian)
       install_packages gnupg debian-keyring debian-archive-keyring apt-transport-https 2>/dev/null || install_packages gnupg
-      curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-      curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt > /etc/apt/sources.list.d/caddy-stable.list
+      "${CURL[@]}" -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key | gpg --batch --yes --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+      "${CURL[@]}" -1sLf https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt > /etc/apt/sources.list.d/caddy-stable.list
       install_packages caddy ;;
     fedora)
       if [ "$rhel_like" -eq 1 ]; then
@@ -607,10 +751,15 @@ install_caddy() {
 # Caddy's own build, for systems without a package.
 install_caddy_static() {
   say "Installing Caddy (the official static build)"
-  local caddy_arch=amd64
+  local caddy_arch=amd64 want
   [ "$(uname -m)" = aarch64 ] && caddy_arch=arm64
-  curl -fsSL --retry 3 -o /usr/bin/caddy "https://caddyserver.com/api/download?os=linux&arch=$caddy_arch"
-  chmod 755 /usr/bin/caddy
+  local tarball="caddy_${CADDY_VERSION}_linux_${caddy_arch}.tar.gz"
+  "${CURL[@]}" -fsSL --retry 3 -o "$work/$tarball" "https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION/$tarball" \
+    || die "couldn't download Caddy $CADDY_VERSION"
+  if [ "$caddy_arch" = arm64 ]; then want="$CADDY_SHA512_arm64"; else want="$CADDY_SHA512_amd64"; fi
+  printf '%s  %s\n' "$want" "$work/$tarball" | sha512sum -c --quiet - || die "the Caddy download doesn't match its pinned checksum"
+  tar -xzf "$work/$tarball" -C "$work" caddy
+  install -m 755 "$work/caddy" /usr/bin/caddy
   if ! id caddy >/dev/null 2>&1; then
     useradd --system --home-dir /var/lib/caddy --create-home --shell /usr/sbin/nologin caddy 2>/dev/null \
       || useradd --system --home-dir /var/lib/caddy --create-home --shell /sbin/nologin caddy
@@ -641,12 +790,15 @@ UNIT
   if [ "$use_systemd" -eq 1 ]; then systemctl daemon-reload; fi
 }
 
-site_block() {
-  cat <<SITE
-# 5th Echelon: the game's online config and community API, its content,
-# and the launcher's API (gRPC). http:// on purpose: the game can only
-# speak plain HTTP on port 80, so this name must never redirect to HTTPS.
-http://$domain {
+# The site's routes, for http:// and https:// alike. The admin API
+# (accounts and games) is never served to the internet: manage the server
+# on the machine itself (or through an SSH tunnel to 127.0.0.1:50051).
+site_routes() {
+  cat <<'SITE'
+	@admin path /users.UsersAdmin/* /games.GamesAdmin/*
+	handle @admin {
+		respond 403
+	}
 	@grpc header Content-Type application/grpc*
 	handle @grpc {
 		reverse_proxy h2c://127.0.0.1:50051 {
@@ -659,8 +811,24 @@ http://$domain {
 	handle {
 		reverse_proxy 127.0.0.1:8080
 	}
-}
 SITE
+}
+
+site_block() {
+  echo "# 5th Echelon: the game's online config and community API, its content,"
+  echo "# and the launcher's API (gRPC). http:// on purpose: the game can only"
+  echo "# speak plain HTTP on port 80, so this name must never redirect to HTTPS."
+  echo "http://$domain {"
+  site_routes
+  echo "}"
+  if [ "$https_api" -eq 1 ]; then
+    echo
+    echo "# The same over HTTPS (Caddy gets the certificate): launchers that"
+    echo "# see api_tls in /api/info use this, so nothing travels readable."
+    echo "https://$domain {"
+    site_routes
+    echo "}"
+  fi
   if [ -n "$coord_domain" ]; then
     cat <<SITE
 
@@ -733,6 +901,22 @@ if [ "$no_caddy" -eq 0 ]; then
       die "Caddy doesn't pass requests on to the server (its log is above)"
     fi
     say "Caddy serves $domain"
+    # The API over HTTPS, once Caddy has its certificate: then launchers are told to use it.
+    if [ "$https_api" -eq 1 ]; then
+      tls_ok=0
+      for _ in $(seq 60); do
+        if curl -fsS --max-time 3 --resolve "$domain:443:127.0.0.1" "https://$domain/api/info" >/dev/null 2>&1; then tls_ok=1; break; fi
+        sleep 1
+      done
+      if [ "$tls_ok" -eq 1 ]; then
+        sed -i '/^\[public\]$/,/^\[/ { /^api_tls = /d; s/^content = 80$/content = 80\napi_tls = 443/ }' "$CONFIG"
+        systemctl restart "$SERVICE"
+        say "The launcher's API is served over HTTPS too (https://$domain)"
+      else
+        journalctl -u caddy -n 20 --no-pager >&2 || true
+        caddy_note="Caddy has no certificate for $domain yet (its log is above), so launchers keep using the unencrypted API. Check the A record and that TCP 80 and 443 are open, then run this script again."
+      fi
+    fi
     # The launcher's API: gRPC over plain HTTP/2 (h2c) through Caddy.
     if ! curl -fsS --max-time 3 --http2-prior-knowledge -o /dev/null -X POST -H "Host: $domain" -H "Content-Type: application/grpc" \
       http://127.0.0.1/users.Users/Login 2>/dev/null; then
@@ -747,16 +931,20 @@ fi
 # --- Firewall -----------------------------------------------------------
 
 if [ "$no_caddy" -eq 0 ]; then tcp_ports=(80); else tcp_ports=(80 8000 50051); fi
-if [ -n "$coord_domain" ]; then tcp_ports+=(443); fi
+if [ -n "$coord_domain" ] || { [ "$no_caddy" -eq 0 ] && [ "$https_api" -eq 1 ]; }; then tcp_ports+=(443); fi
 opened=""
 if [ "$firewall" -eq 1 ]; then
+  # Each rule is recorded, so --uninstall removes what it added (and only that).
+  record_rule() { grep -qxF "$1 $2" "$FIREWALL_RECORD" 2>/dev/null || echo "$1 $2" >> "$FIREWALL_RECORD"; }
   if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-    for p in "${tcp_ports[@]}"; do ufw allow "$p/tcp" >/dev/null; done
+    for p in "${tcp_ports[@]}"; do ufw allow "$p/tcp" >/dev/null; record_rule ufw "$p/tcp"; done
     ufw allow "${UDP_PORTS/-/:}/udp" >/dev/null
+    record_rule ufw "${UDP_PORTS/-/:}/udp"
     opened="ufw"
   elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
-    for p in "${tcp_ports[@]}"; do firewall-cmd --permanent --add-port="$p/tcp" >/dev/null; done
+    for p in "${tcp_ports[@]}"; do firewall-cmd --permanent --add-port="$p/tcp" >/dev/null; record_rule firewalld "$p/tcp"; done
     firewall-cmd --permanent --add-port="$UDP_PORTS/udp" >/dev/null
+    record_rule firewalld "$UDP_PORTS/udp"
     firewall-cmd --reload >/dev/null
     opened="firewalld"
   fi
@@ -790,7 +978,11 @@ else
   echo "    TCP 8000         content (multiplayer balancing)"
   echo "    TCP 50051        accounts, friends and invites (launcher and overlay)"
 fi
-if [ -n "$coord_domain" ]; then echo "    TCP 443          the coordinator (HTTPS)"; fi
+if [ "$no_caddy" -eq 0 ] && [ "$https_api" -eq 1 ]; then
+  echo "    TCP 443          Caddy: the launcher's API over HTTPS${coord_domain:+, and the coordinator}"
+elif [ -n "$coord_domain" ]; then
+  echo "    TCP 443          the coordinator (HTTPS)"
+fi
 echo "    UDP 21126        game login"
 echo "    UDP 21127        game service"
 echo "    UDP 21128-21129  internet play (public addresses and the relay)"
@@ -808,9 +1000,9 @@ fi
 if [ -n "$coord_domain" ]; then
   echo
   echo "  Coordinator:    https://$coord_domain   (log: journalctl -u $COORD_SERVICE -f)"
-  echo "  Other servers join it with:"
-  echo "    --coordinator https://$coord_domain --join-token $(tr -d '[:space:]' < "$COORD_DIR/join-token.txt")"
-  echo "  Keep the token private; $COORD_DIR/join-token.txt has it."
+  echo "  Other servers join it with its join token (keep it private):"
+  echo "    sudo cat $COORD_DIR/join-token.txt     # copy it to the other server as token.txt, then there:"
+  echo "    --coordinator https://$coord_domain --join-token-file token.txt"
 elif [ -n "$coordinator" ]; then
   echo
   echo "  Friends are shared through $coordinator (log: journalctl -u $SERVICE | grep Federation)"

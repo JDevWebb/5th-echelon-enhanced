@@ -20,6 +20,13 @@
 # http:// keeps Caddy from redirecting to HTTPS: the game only speaks
 # plain HTTP on port 80.
 http://blacklist.example.com {
+	# Never the admin API (accounts and games): manage the server on its
+	# own machine, or through an SSH tunnel to 127.0.0.1:50051.
+	@admin path /users.UsersAdmin/* /games.GamesAdmin/*
+	handle @admin {
+		respond 403
+	}
+
 	# Accounts, friends and invites (gRPC).
 	@grpc header Content-Type application/grpc*
 	handle @grpc {

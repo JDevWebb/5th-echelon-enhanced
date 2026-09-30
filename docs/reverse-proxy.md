@@ -70,6 +70,10 @@ Any port `[public]` leaves unset is the one its service listens on. So moving a 
 }
 
 http://blacklist.example.com {
+	@admin path /users.UsersAdmin/* /games.GamesAdmin/*
+	handle @admin {
+		respond 403
+	}
 	@grpc header Content-Type application/grpc*
 	handle @grpc {
 		reverse_proxy h2c://127.0.0.1:50051 {
@@ -85,9 +89,11 @@ http://blacklist.example.com {
 }
 ```
 
-- **`http://`** matters. The game can't follow a redirect to HTTPS, and the launcher and overlay don't use TLS. Don't put this host name behind a global HTTPS redirect.
+- **`http://`** matters. The game can't follow a redirect to HTTPS. Don't put this host name behind a global HTTPS redirect.
 - **`protocols h1 h2c`** lets the launcher and overlay speak gRPC over plain HTTP on port 80. It applies to every site on port 80, and changes nothing for the others.
+- **`@admin`** keeps the admin API (accounts and games) off the internet. Manage the server on its own machine, or through an SSH tunnel (`ssh -L 50051:127.0.0.1:50051 you@server`, then the launcher's "Manage a server" at `localhost`).
 - **`flush_interval -1`** passes invites on the moment they arrive; they come over a stream that stays open.
+- **The API over HTTPS**, so passwords and sign-in tokens never travel readable: add the same routes as an `https://blacklist.example.com { … }` site (Caddy gets the certificate; TCP 443 must be open), then set `api_tls = 443` in `[public]`. Launchers use it from then on. The Linux installer does all of this.
 - If Caddy runs in Docker, use the server's address instead of `127.0.0.1`. Also add Caddy's network to `[public] proxies` (see below).
 
 ## 3. Router and firewall

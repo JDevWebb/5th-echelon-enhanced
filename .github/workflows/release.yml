@@ -29,7 +29,7 @@ jobs:
       version: ${{ steps.v.outputs.version }}
       prerelease: ${{ steps.v.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - id: v
         run: |
           tag="${GITHUB_REF_NAME#v}"
@@ -52,8 +52,8 @@ jobs:
     needs: version
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: arduino/setup-protoc@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Install the toolchain (rust-toolchain.toml)
@@ -68,7 +68,7 @@ jobs:
           mkdir dist
           cp "$dll" dist/uplay_r1_loader.dll
           cp target/release/launcher.exe target/release/dedicated_server.exe target/release/testbot.exe dist/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: windows
           path: dist/
@@ -79,8 +79,8 @@ jobs:
     # An older glibc, so the binaries run on Debian 12, SteamOS and newer.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: windows
           path: windows
@@ -96,7 +96,7 @@ jobs:
           cp target/release/launcher dist/launcher-linux-x86_64
           cp target/release/dedicated_server dist/dedicated_server-linux-x86_64
           cp target/release/coordinator dist/coordinator-linux-x86_64
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: linux
           path: dist/
@@ -107,9 +107,11 @@ jobs:
     runs-on: ubuntu-22.04
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: artifacts
       - name: Collect and checksum
@@ -118,6 +120,11 @@ jobs:
           cp artifacts/windows/* artifacts/linux/* dist/
           chmod +x dist/*-linux-x86_64
           (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
+      # Build provenance for every download: `gh attestation verify <file>
+      # --repo JDevWebb/5th-echelon-enhanced` shows it came from this workflow.
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: "dist/*"
       - name: Create the release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -138,8 +145,8 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -148,7 +155,7 @@ jobs:
         env:
           OWNER: ${{ github.repository_owner }}
         run: echo "image=ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/5th-echelon-server" >> "$GITHUB_OUTPUT"
-      - uses: docker/build-push-action@v6
+      - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: docker/Dockerfile

@@ -22,6 +22,21 @@ services:
       - "50051:50051/tcp"    # accounts, friends, invites (launcher and overlay)
     volumes:
       - data:/srv/5th-echelon
+    # The server runs as a user of its own (see entrypoint.sh) with only
+    # the right to bind port 80, on a read-only image.
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN            # hands an older volume to the server's user
+      - SETUID
+      - SETGID
+      - SETPCAP
+      - NET_BIND_SERVICE # port 80
 
 volumes:
   data:
