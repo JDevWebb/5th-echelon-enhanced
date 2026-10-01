@@ -109,7 +109,7 @@ You need **Splinter Cell: Blacklist on PC** (Steam or Ubisoft Connect) and **Win
 4. **Press Play.**
 
 <p align="center">
-  <img src="./docs/screenshots/launcher-play.png" width="640" alt="The launcher's Play screen: the game found, the join form, and the checklist">
+  <img src="./docs/screenshots/launcher-play.png" width="640" alt="The launcher's Play screen: the game found, the join form with the community network's servers and your ping to each, and the checklist">
 </p>
 
 **What Connect does for you:**
@@ -161,7 +161,7 @@ Invites and friend requests also pop up as notifications. Friend lists, blocking
 3. **The game's log** is `bl-tracing.log` in the game folder; the previous game's is `bl-tracing.prev.log`. Include it when you ask for help.
 
 <p align="center">
-  <img src="./docs/screenshots/launcher-connection-test.png" width="560" alt="The connection test: config server, API, game service and direct connection all passing">
+  <img src="./docs/screenshots/launcher-connection-test.png" width="560" alt="The connection test: config server, API and account, game service sign-in, direct connection and the internet play helper all passing">
 </p>
 
 ### Antivirus warnings

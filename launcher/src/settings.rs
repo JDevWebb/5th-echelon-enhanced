@@ -446,7 +446,7 @@ fn identity_section(settings: &mut Settings, notices: &mut Notices, ui: &mut egu
             match setup::player_identity::import(&settings.identity_import).and_then(|identity| setup::player_identity::save(&identity).map(|()| identity)) {
                 Ok(identity) => {
                     notices.info(format!(
-                        "This PC now uses the identity {}. Set up each server again to sign in with it.",
+                        "This PC now uses the identity {}. Press Connect on each server again to sign in with it.",
                         identity::short(&identity.global_id())
                     ));
                     settings.identity_import.clear();

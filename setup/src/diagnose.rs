@@ -217,7 +217,7 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
             Some(AccountFact::Ok(name)) => Check::new("account", Status::Ok, format!("Signed in as {name}"), "", None),
             Some(AccountFact::Refused(why)) => Check::new("account", Status::Fail, "Account refused", why.clone(), Some(Fix::SetUpAccount)),
             Some(AccountFact::Unknown(why)) => Check::new("account", Status::Warn, "Couldn't check the account", why.clone(), None),
-            Some(AccountFact::None) | None => Check::new("account", Status::Fail, "Set up an account", "", Some(Fix::SetUpAccount)),
+            Some(AccountFact::None) | None => Check::new("account", Status::Fail, "No account on this server yet", "Connect finds yours, or makes one.", Some(Fix::SetUpAccount)),
         });
     }
 

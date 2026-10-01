@@ -519,10 +519,14 @@ impl Storage {
         Ok(())
     }
 
+    /// Players' accounts, for the admin list: not the server's own logins, nor
+    /// upstream's sample accounts (no credentials: nobody can sign in to them).
     pub async fn list_users_async(&self) -> Result<Vec<User>> {
-        Ok(sqlx::query_as("SELECT id, username, ubi_id, is_online FROM users WHERE ubi_id IS NOT NULL")
-            .fetch_all(&self.pool)
-            .await?)
+        Ok(
+            sqlx::query_as("SELECT id, username, ubi_id, is_online FROM users WHERE ubi_id IS NOT NULL AND (password IS NOT NULL OR password_hash IS NOT NULL)")
+                .fetch_all(&self.pool)
+                .await?,
+        )
     }
 
     /// Publishes the game session a player is currently in, or clears it when `session_id`

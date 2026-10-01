@@ -21,6 +21,7 @@ CPUS=2 MEMORY=2g build/build.sh load --players 1000 --relayed 20 --duration 120
 | `--duration` | 60 | seconds of play after everyone has signed in |
 | `--connect` | 32 | sign-ins at a time |
 | `--activity` | 10 | average seconds between a player's actions |
+| `--names` | | names for the players, in order (`Kiwi,Fisher,…`); the rest are numbered |
 | `CPUS`, `MEMORY` | 1, 1g | the server container's limits |
 
 ## What it reports

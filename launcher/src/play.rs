@@ -1,4 +1,4 @@
-//! The Play screen: join a server (one-click setup), see what's ready, fix
+//! The Play screen: join a server (Connect), see what's ready, fix
 //! what isn't, and start the game.
 
 use std::net::IpAddr;
@@ -364,12 +364,15 @@ fn directory_list(play: &mut Play, ui: &mut egui::Ui) {
     }
     let best = setup::directory::best(servers);
     let mut pick = None;
-    egui::Grid::new("directory").num_columns(6).striped(true).spacing([14.0, 6.0]).show(ui, |ui| {
+    // The address under each name, so the list fits the window's default width.
+    egui::Grid::new("directory").num_columns(5).striped(true).spacing([14.0, 6.0]).show(ui, |ui| {
         for (i, (s, ping)) in servers.iter().enumerate() {
             let chosen = play.server.trim() == s.host;
             let name = if s.region.is_empty() { s.name.clone() } else { format!("{} ({})", s.name, s.region) };
-            ui.label(if chosen { RichText::new(name).color(theme::ACCENT) } else { RichText::new(name) });
-            ui.label(theme::muted(s.host.as_str()));
+            ui.vertical(|ui| {
+                ui.add(egui::Label::new(if chosen { RichText::new(name).color(theme::ACCENT) } else { RichText::new(name) }).extend());
+                ui.add(egui::Label::new(theme::muted(s.host.as_str()).small()).extend());
+            });
             ui.label(format!("{} online", s.players_online));
             ui.label(ping.map_or_else(|| String::from("no answer"), |ms| format!("{ms} ms")));
             ui.label(theme::muted(match (best == Some(i), s.friends_mode.as_str()) {
@@ -597,7 +600,7 @@ fn fix_label(fix: Fix) -> &'static str {
         Fix::FindGame => "Find",
         Fix::InstallClient => "Install",
         Fix::ChooseServer => "Choose",
-        Fix::SetUpAccount => "Set up",
+        Fix::SetUpAccount => "Connect",
         Fix::PinAdapter => "Pin",
         Fix::CreateSave => "Create",
         Fix::RaiseSave => "Raise to rank 5",

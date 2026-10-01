@@ -110,6 +110,13 @@ impl Server {
     /// Writes the addresses and switches into `service.toml` and starts the
     /// server. It prints its admin key on start (`--launcher`).
     fn start(&mut self, ctx: &egui::Context, notices: &mut Notices) {
+        // Read again first: changes made by hand while the launcher was open stay.
+        if let Some(path) = self.exe.as_ref().map(|e| e.with_file_name("service.toml")).filter(|p| p.exists()) {
+            match ServerConfig::load_from_file(&path) {
+                Ok(fresh) => self.cfg = Some(fresh),
+                Err(e) => return notices.error(format!("{}: {e}", path.display())),
+            }
+        }
         let (Some(exe), Some(cfg)) = (self.exe.clone(), self.cfg.as_mut()) else { return };
         let ip = self.listen.unwrap_or(IpAddr::from([0, 0, 0, 0]));
         let public = match self.public_ip.trim() {
@@ -296,8 +303,8 @@ fn local_server(server: &mut Server, notices: &mut Notices, ctx: &egui::Context,
                     ui.checkbox(&mut api.info, "Server info");
                     ui.checkbox(&mut api.presence, "Who's online")
                         .on_hover_text("Shares every username and what online players are doing.");
-                    ui.checkbox(&mut api.accounts, "One-click accounts")
-                        .on_hover_text("Anyone who can reach port 80 can create an account (rate-limited).");
+                    ui.checkbox(&mut api.accounts, "Sign-up for tools")
+                        .on_hover_text("Lets tools create accounts through /api/register (rate-limited). Refused when every account needs an identity.");
                     ui.checkbox(&mut api.unhandled, "Unhandled calls (development)");
                 });
             }

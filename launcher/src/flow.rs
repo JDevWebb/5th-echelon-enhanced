@@ -349,7 +349,7 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
 pub fn rename(game_dir: &Path, profile_name: &str, new_name: &str) -> Result<String, String> {
     let mut cfg = Config::load(game_dir);
     let profile = cfg.profile(profile_name).cloned().ok_or("That server isn't set up any more.")?;
-    let password = profile.user.secret().ok_or("The saved password can't be read here; set up the server again.")?;
+    let password = profile.user.secret().ok_or("The saved password can't be read here; press Connect on the server again.")?;
     let new_name = new_name.trim().to_string();
     let info = setup::server_info::fetch(&profile.server, Duration::from_secs(4));
     if !info.is_some_and(|i| i.features.iter().any(|f| f == "rename")) {

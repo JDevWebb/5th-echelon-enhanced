@@ -53,6 +53,9 @@ pub struct Options {
     pub connect: usize,
     /// Average seconds between a player's actions.
     pub activity: f64,
+    /// Names for the players, in order (`--names Kiwi,Fisher`), e.g. for
+    /// screenshots; the rest are named Load<run>_<n>.
+    pub names: Vec<String>,
 }
 
 impl Default for Options {
@@ -66,6 +69,7 @@ impl Default for Options {
             duration: Duration::from_secs(60),
             connect: 32,
             activity: 10.0,
+            names: Vec::new(),
         }
     }
 }
@@ -86,6 +90,7 @@ impl Options {
                 "--duration" => o.duration = Duration::from_secs(n()?),
                 "--connect" => o.connect = n()?.max(1) as usize,
                 "--activity" => o.activity = value.parse().map_err(|_| eyre!("--activity: {value:?} isn't a number"))?,
+                "--names" => o.names = value.split(',').map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect(),
                 other => return Err(eyre!("unknown load option {other}")),
             }
         }
@@ -183,9 +188,9 @@ pub async fn run(server: IpAddr, o: Options) -> Result<()> {
     let mut joins = Vec::new();
     for i in 0..o.players {
         let (gate, stats) = (Arc::clone(&gate), Arc::clone(&stats));
+        let name = o.names.get(i).cloned().unwrap_or_else(|| format!("Load{run_id}_{i}"));
         joins.push(tokio::spawn(async move {
             let _permit = gate.acquire().await.ok()?;
-            let name = format!("Load{run_id}_{i}");
             let t = Instant::now();
             let result = async {
                 Bot::register(server, &name, "load-test-password").await?;
