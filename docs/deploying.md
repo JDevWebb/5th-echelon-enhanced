@@ -179,6 +179,29 @@ Turn it on with `--metrics-domain NAME` and add yourself with `--add-admin NAME`
 
 `--uninstall` removes the services, programs, Caddy site and the firewall rules the installer added, and keeps the data; add `--purge` to delete that too.
 
+## Hardening the machine
+
+The installer hardens what it installs:
+- each service runs in a systemd sandbox, Caddy included;
+- Caddy's admin API listens on a root-only socket;
+- the firewall opens only the game's ports.
+
+`scripts/harden-host.sh` does the rest of a Debian or Ubuntu host:
+- installs updates, and lets unattended upgrades reboot at a quiet hour;
+- SSH: keys only, named users, no forwarding but local tunnels, modern algorithms;
+- fail2ban for SSH;
+- kernel hardening, no core dumps, and no services a server doesn't need.
+
+```sh
+sudo bash harden-host.sh --ssh-users "you" --reboot-time 04:30
+```
+
+**Confirming the SSH change:**
+1. Log in from a new terminal to check it works.
+2. Run `sudo bash harden-host.sh --confirm-ssh` within 10 minutes.
+
+Without that, the SSH change undoes itself, so a mistake can't lock you out.
+
 ## When something's wrong
 
 | What you see | What to do |

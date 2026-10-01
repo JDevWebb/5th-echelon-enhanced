@@ -126,6 +126,7 @@ SYSCTL_FILE="/etc/sysctl.d/90-5th-echelon.conf"
 UPDATER="$PROGRAM_DIR/update.sh"
 UPDATE_PATH_UNIT="/etc/systemd/system/5th-echelon-update.path"
 UPDATE_SERVICE_UNIT="/etc/systemd/system/5th-echelon-update.service"
+CADDY_DROPIN="/etc/systemd/system/caddy.service.d/10-5th-echelon-hardening.conf"
 COORD_SERVICE="5th-echelon-coordinator"
 COORD_UNIT="/etc/systemd/system/${COORD_SERVICE}.service"
 COORD_ASSET="coordinator-linux-x86_64"
@@ -454,7 +455,7 @@ if [ "$uninstall" -eq 1 ]; then
     systemctl disable --now "$SERVICE" 2>/dev/null || true
     systemctl disable --now "$COORD_SERVICE" 2>/dev/null || true
     systemctl disable --now 5th-echelon-update.path 2>/dev/null || true
-    rm -f "$UNIT" "$COORD_UNIT" "$UPDATE_PATH_UNIT" "$UPDATE_SERVICE_UNIT"
+    rm -f "$UNIT" "$COORD_UNIT" "$UPDATE_PATH_UNIT" "$UPDATE_SERVICE_UNIT" "$CADDY_DROPIN"
     systemctl daemon-reload
   fi
   stop_strays
@@ -1405,6 +1406,58 @@ SITE
   fi
 }
 
+# Caddy in a sandbox, like the server's own units: read-only system, its own
+# data folder, no new privileges, only network system calls it needs, and the
+# admin socket in /run/caddy (root and Caddy only). The package's unit is
+# left alone; this adds to it.
+caddy_unit_changed=0
+harden_caddy() {
+  local caddy_home want
+  caddy_home="$(getent passwd caddy | cut -d: -f6)"
+  caddy_home="${caddy_home:-/var/lib/caddy}"
+  want="$(cat <<UNIT
+# Written by install-server.sh: Caddy in a sandbox.
+[Service]
+RuntimeDirectory=caddy
+RuntimeDirectoryMode=0750
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=$caddy_home
+ReadWritePaths=-/var/log/caddy
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE CAP_NET_ADMIN
+UNIT
+)"
+  if [ "$(cat "$CADDY_DROPIN" 2>/dev/null)" != "$want" ]; then
+    install -d -m 755 "$(dirname "$CADDY_DROPIN")"
+    printf '%s\n' "$want" > "$CADDY_DROPIN"
+    chmod 644 "$CADDY_DROPIN"
+    systemctl daemon-reload
+    caddy_unit_changed=1
+  fi
+  # The admin API moves to the socket: a reload can't reach it at the old address.
+  if ss -Hltn 'sport = :2019' 2>/dev/null | grep -q .; then caddy_unit_changed=1; fi
+}
+
 # Cloudflare's address ranges (fetched once per run; the list below if that fails).
 CF_FALLBACK="173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32"
 cloudflare_ranges() {
@@ -1465,6 +1518,9 @@ if [ "$no_caddy" -eq 0 ]; then
   {
     echo "$BEGIN_MARK"
     echo "{"
+    echo "	# Caddy's admin API on a socket only root and Caddy can open, not on"
+    echo "	# localhost:2019, where any local process could rewrite the config."
+    echo "	admin unix//run/caddy/admin.sock"
     echo "	# The launcher and overlay speak gRPC without TLS (h2c)."
     echo "	servers :80 {"
     echo "		protocols h1 h2 h2c"
@@ -1501,8 +1557,11 @@ if [ "$no_caddy" -eq 0 ]; then
     setsebool -P httpd_can_network_connect 1 || true
   fi
   if [ "$use_systemd" -eq 1 ]; then
+    harden_caddy
     systemctl enable caddy >/dev/null 2>&1
-    systemctl reload-or-restart caddy
+    # A reload goes through the admin API; when its address changed, or the
+    # sandbox did, Caddy needs a restart instead.
+    if [ "$caddy_unit_changed" -eq 1 ] || ! systemctl reload caddy 2>/dev/null; then systemctl restart caddy; fi
   fi
   if [ "$use_systemd" -eq 1 ] && [ -n "$coord_domain" ]; then
     coord_ok=0
