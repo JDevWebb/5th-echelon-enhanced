@@ -327,45 +327,29 @@ pub async fn test_p2p(api_url: String, username: &str, password: &str) -> Result
         Ok(req)
     });
 
-    // Spawn a task to listen for the UDP challenge from the server.
-    let udp_client_handle = tokio::spawn(async {
-        let socket = UdpSocket::bind("0.0.0.0:13000").await?;
+    // Listen before asking the server to send. Both halves run in this future, not spawned
+    // tasks: when the test times out, the socket is closed with it, and port 13000 is free for
+    // the next try (spawned, it lingered and the retry got "address in use").
+    let socket = UdpSocket::bind("0.0.0.0:13000").await?;
+    let listen = async {
         let mut buf = vec![0u8; 4096];
         let (n, addr) = socket.recv_from(&mut buf).await?;
-        let buf = &buf[..n];
-        let Some(challenge) = buf.strip_prefix(b"P2P Test - ") else {
+        let Some(challenge) = buf[..n].strip_prefix(b"P2P Test - ") else {
             return Err(Error::IO(std::io::Error::other("invalid challenge")));
         };
         socket.send_to(challenge, addr).await?;
         Ok::<_, Error>(challenge.to_vec())
-    });
-
-    // Spawn a task to make the RPC call to initiate the P2P test.
-    let rpc_client_handle = tokio::spawn(async move {
+    };
+    let ask = async {
         let challenge: [u8; 32] = rand::random();
         let resp = client.test_p2p(TestP2pRequest { challenge: challenge.to_vec() }).await?;
         Ok::<_, Error>(resp.into_inner().challenge)
-    });
-
-    // Wait for both tasks to complete and compare the challenges.
-    match tokio::try_join!(udp_client_handle, rpc_client_handle) {
-        Ok((Err(udp_err), Ok(_))) => {
-            return Err(Error::P2P(Box::new(udp_err)));
-        }
-        Ok((Ok(_), Err(rpc_err))) => {
-            return Err(Error::P2P(Box::new(rpc_err)));
-        }
-        Ok((Err(_udp_err), Err(rpc_err))) => {
-            return Err(Error::P2P(Box::new(rpc_err)));
-        }
-        Ok((Ok(udp_challenge), Ok(rpc_challenge))) => {
-            if udp_challenge != rpc_challenge {
-                return Err(Error::ChallengeMismatch);
-            }
-        }
-        Err(e) => {
-            return Err(Error::IO(std::io::Error::new(std::io::ErrorKind::Other, e.to_string())));
-        }
+    };
+    // The server's answer ends the test either way: an error from it (no reply in time) stops
+    // the listening too.
+    let (udp_challenge, rpc_challenge) = tokio::try_join!(listen, ask).map_err(|e| Error::P2P(Box::new(e)))?;
+    if udp_challenge != rpc_challenge {
+        return Err(Error::ChallengeMismatch);
     }
 
     Ok(())
