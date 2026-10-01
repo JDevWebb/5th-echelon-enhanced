@@ -23,15 +23,21 @@
 #   --ignore-ip IP        never ban this address in fail2ban (repeatable)
 #   --reboot-time HH:MM   when unattended upgrades may reboot (default 04:30,
 #                         the machine's time zone)
+#   --ssh-port N          move SSH to port N (fewer bots knocking). Port 22
+#                         stays open too until --confirm-ssh, run from a
+#                         login on the new port; kept on later runs
 #   --no-ssh              leave SSH as it is
 #   --no-updates          don't install updates now
 #   --confirm-ssh         keep the SSH change made by the last run (cancels
-#                         its undo)
+#                         its undo), and close port 22 if SSH moved
 #   -h, --help
 set -euo pipefail
 umask 022
 
-ssh_users="" ignore_ips=() reboot_time="04:30" do_ssh=1 do_updates=1 confirm=0
+ssh_users="" ignore_ips=() reboot_time="04:30" do_ssh=1 do_updates=1 confirm=0 ssh_port=""
+# The port SSH moved to (kept for later runs), and whether 22 still waits to close.
+PORT_FILE=/etc/5th-echelon/ssh-port
+PORT_PENDING=/etc/5th-echelon/ssh-port-pending
 SSH_DROPIN=/etc/ssh/sshd_config.d/01-5th-echelon-hardening.conf
 REVERT_UNIT=fes-ssh-revert
 
@@ -46,6 +52,7 @@ while [ $# -gt 0 ]; do
     --no-ssh) do_ssh=0 ;;
     --no-updates) do_updates=0 ;;
     --confirm-ssh) confirm=1 ;;
+    --ssh-port) ssh_port="${2:?}"; shift ;;
     -h|--help) sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "unknown option $1 (see --help)" ;;
   esac
@@ -54,10 +61,50 @@ done
 [ "$(id -u)" -eq 0 ] || die "run as root (sudo bash $0)"
 command -v apt-get >/dev/null || die "this script is for Debian and Ubuntu"
 
+# Applies sshd's settings: on systemd's socket (Ubuntu 22.10+), the ports
+# come from sshd_config through a generator, so the socket restarts.
+apply_sshd() {
+  if systemctl is-active --quiet ssh.socket 2>/dev/null; then
+    systemctl daemon-reload
+    systemctl restart ssh.socket
+    systemctl reload ssh 2>/dev/null || true
+  else
+    systemctl reload ssh 2>/dev/null || systemctl reload sshd
+  fi
+}
+
 if [ "$confirm" -eq 1 ]; then
   systemctl stop "$REVERT_UNIT.timer" 2>/dev/null || true
   say "Kept the SSH settings (their undo is cancelled)"
+  if [ -f "$PORT_PENDING" ]; then
+    port="$(cat "$PORT_FILE")"
+    # Only from a login on the new port: then closing 22 can't cut this one off.
+    if [ -n "${SSH_CONNECTION:-}" ] && [ "$(echo "$SSH_CONNECTION" | awk '{print $4}')" != "$port" ]; then
+      die "log in on port $port first (ssh -p $port ...), then run --confirm-ssh there: port 22 closes next"
+    fi
+    sed -i '/^Port 22$/d' "$SSH_DROPIN"
+    sshd -t || die "sshd doesn't accept the settings without port 22; nothing changed"
+    apply_sshd
+    if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then
+      ufw delete allow 22/tcp >/dev/null 2>&1 || true
+      ufw delete allow OpenSSH >/dev/null 2>&1 || true
+    fi
+    if [ -f /etc/fail2ban/jail.d/5th-echelon.local ]; then
+      sed -i "s/^port = .*/port = $port/" /etc/fail2ban/jail.d/5th-echelon.local
+      systemctl restart fail2ban
+    fi
+    rm -f "$PORT_PENDING"
+    say "SSH is on port $port only; port 22 is closed"
+  fi
   exit 0
+fi
+if [ -z "$ssh_port" ] && [ -s "$PORT_FILE" ]; then ssh_port="$(cat "$PORT_FILE")"; fi
+if [ -n "$ssh_port" ]; then
+  [[ "$ssh_port" =~ ^[0-9]+$ ]] && [ "$ssh_port" -ge 1024 ] && [ "$ssh_port" -le 65535 ] || die "--ssh-port is 1024 to 65535"
+  case "$ssh_port" in 8000|8080|8700|8701|50051|21126|21127|21128|21129|2019) die "port $ssh_port is the server's" ;; esac
+  if ss -Hltn "sport = :$ssh_port" 2>/dev/null | grep -v sshd | grep -q .; then
+    ss -Hltnp "sport = :$ssh_port" | grep -q '"sshd"\|systemd' || die "something else listens on port $ssh_port"
+  fi
 fi
 
 [[ "$reboot_time" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || die "--reboot-time is HH:MM"
@@ -152,6 +199,13 @@ for s in ModemManager udisks2 atd; do
 done
 
 # --- fail2ban -------------------------------------------------------------
+# Moving SSH: port 22 stays open alongside until --confirm-ssh.
+transition=0
+if [ -n "$ssh_port" ] && { [ -f "$PORT_PENDING" ] || [ "$(cat "$PORT_FILE" 2>/dev/null)" != "$ssh_port" ]; }; then transition=1; fi
+f2b_port=ssh
+if [ -n "$ssh_port" ]; then
+  if [ "$transition" -eq 1 ]; then f2b_port="22,$ssh_port"; else f2b_port="$ssh_port"; fi
+fi
 banaction=nftables-multiport
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then banaction=ufw; fi
 cat > /etc/fail2ban/jail.d/5th-echelon.local <<JAIL
@@ -169,6 +223,7 @@ bantime.maxtime = 1w
 
 [sshd]
 enabled = true
+port = $f2b_port
 mode = aggressive
 
 [recidive]
@@ -184,12 +239,17 @@ say "fail2ban: on for SSH ($banaction), repeat offenders banned for longer"
 
 # --- SSH ------------------------------------------------------------------
 if [ "$do_ssh" -eq 1 ]; then
+  ports=""
+  if [ -n "$ssh_port" ]; then
+    if [ "$transition" -eq 1 ]; then ports="Port 22"$'\n'"Port $ssh_port"; else ports="Port $ssh_port"; fi
+  fi
   root_login=no
   for u in $ssh_users; do [ "$u" = root ] && root_login=prohibit-password; done
   tmp="$(mktemp)"
   cat > "$tmp" <<SSHD
 # Written by harden-host.sh. Read before the other files here: the first
 # value of a setting wins.
+$ports
 PermitRootLogin $root_login
 AllowUsers $ssh_users
 PubkeyAuthentication yes
@@ -236,9 +296,16 @@ SSHD
     else
       revert="rm -f $SSH_DROPIN"
     fi
-    systemd-run --quiet --unit="$REVERT_UNIT" --on-active=10min /bin/sh -c "$revert; systemctl reload ssh || systemctl reload sshd" >/dev/null
-    systemctl reload ssh 2>/dev/null || systemctl reload sshd
-    say "SSH hardened (users: $ssh_users). Log in again from a NEW terminal now, then run:"
+    if [ -n "$ssh_port" ]; then
+      install -d -m 755 "$(dirname "$PORT_FILE")"
+      [ "$transition" -eq 0 ] || revert="$revert; rm -f $PORT_PENDING $( [ "$(cat "$PORT_FILE" 2>/dev/null)" = "$ssh_port" ] || echo "$PORT_FILE")"
+      echo "$ssh_port" > "$PORT_FILE"
+      [ "$transition" -eq 0 ] || touch "$PORT_PENDING"
+      if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then ufw allow "$ssh_port/tcp" >/dev/null; fi
+    fi
+    systemd-run --quiet --unit="$REVERT_UNIT" --on-active=10min /bin/sh -c "$revert; systemctl daemon-reload; systemctl restart ssh.socket 2>/dev/null; systemctl reload ssh 2>/dev/null || systemctl reload sshd" >/dev/null
+    apply_sshd
+    say "SSH hardened (users: $ssh_users${ssh_port:+, port $ssh_port}). Log in again from a NEW terminal${ssh_port:+ on port $ssh_port (ssh -p $ssh_port)} now, then run:"
     say "  sudo bash $0 --confirm-ssh"
     say "Without that, the change undoes itself in 10 minutes."
   else

@@ -1690,7 +1690,8 @@ echo "    UDP 21126        game login"
 echo "    UDP 21127        game service"
 echo "    UDP 21128-21129  internet play (public addresses and the relay)"
 echo
-echo "  Keep SSH (TCP 22) open as well. Nothing else is needed."
+ssh_port_now="$(sshd -T 2>/dev/null | awk '$1 == "port" {print $2}' | tail -1)"
+echo "  Keep SSH (TCP ${ssh_port_now:-22}) open as well. Nothing else is needed."
 if [ -n "$opened" ]; then
   echo "  This machine's $opened now allows them."
 else

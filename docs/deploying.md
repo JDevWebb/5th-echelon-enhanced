@@ -202,6 +202,8 @@ sudo bash harden-host.sh --ssh-users "you" --reboot-time 04:30
 
 Without that, the SSH change undoes itself, so a mistake can't lock you out.
 
+**Moving SSH to another port** (`--ssh-port 28622`, say) stops most automated scans. Key-only login and fail2ban are what keep attackers out, but it keeps the logs quiet. Port 22 stays open alongside the new one until you log in on the new port and run `--confirm-ssh` there, so you can't get cut off in between. Open the new port in your provider's firewall too, if it has one.
+
 ## When something's wrong
 
 | What you see | What to do |
