@@ -81,6 +81,9 @@
 #   --no-systemd          only install files (containers, testing)
 #   -h, --help
 set -euo pipefail
+# Files for other users (Caddy reads its config, systemd its units) must be
+# readable whatever umask this was started with; secrets set their own modes.
+umask 022
 
 REPO="JDevWebb/5th-echelon-enhanced"
 ASSET="dedicated_server-linux-x86_64"
@@ -425,7 +428,8 @@ fi
 install_packages() {
   say "Installing packages: $*"
   case "$family" in
-    debian) DEBIAN_FRONTEND=noninteractive apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq "$@" >/dev/null ;;
+    # Waits for the package lock (automatic updates on a fresh VPS) instead of failing.
+    debian) DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 update -qq && DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 install -y -qq "$@" >/dev/null ;;
     fedora) if command -v dnf >/dev/null; then dnf install -y -q "$@" >/dev/null; else yum install -y -q "$@" >/dev/null; fi ;;
     arch) pacman -Sy --noconfirm --needed "$@" >/dev/null ;;
   esac
@@ -952,7 +956,7 @@ install_caddy() {
         # later apt update on this machine: take it away again.
         warn "Caddy's package repository didn't work; removing it, and using Caddy's own build instead"
         rm -f /etc/apt/sources.list.d/caddy-stable.list /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-        DEBIAN_FRONTEND=noninteractive apt-get update -qq >/dev/null 2>&1 || true
+        DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=600 update -qq >/dev/null 2>&1 || true
         return 1
       fi ;;
     fedora)
@@ -1103,6 +1107,10 @@ if [ "$no_caddy" -eq 0 ]; then
     grep -qxF "import $CADDY_SITE" "$CADDYFILE" || printf '\nimport %s\n' "$CADDY_SITE" >> "$CADDYFILE"
     say "Added the site as $CADDY_SITE, imported by your $CADDYFILE"
   fi
+  # Caddy runs as its own user and must be able to read them (an existing file
+  # keeps its mode when rewritten).
+  chmod 644 "$CADDYFILE"
+  if [ -f "$CADDY_SITE" ]; then chmod 644 "$CADDY_SITE"; fi
   if ! caddy validate --config "$CADDYFILE" --adapter caddyfile >/dev/null 2>&1; then
     caddy validate --config "$CADDYFILE" --adapter caddyfile >&2 || true
     die "Caddy doesn't accept $CADDYFILE (the error is above)"
