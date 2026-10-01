@@ -70,23 +70,40 @@ fn local_ip_towards(to: Ipv4Addr) -> Option<Ipv4Addr> {
     }
 }
 
-fn upnp(port: u16, pinned: Option<Ipv4Addr>, lease: u32, description: &str) -> Result<Mapping, String> {
-    // The search goes to the router alone, not the whole network.
-    let router = default_gateway().ok_or("no default gateway")?;
-    let gateway = igd_next::search_gateway(SearchOptions {
-        timeout: Some(Duration::from_secs(3)),
-        broadcast_address: SocketAddr::V4(SocketAddrV4::new(router, 1900)),
-        ..Default::default()
-    })
-    .map_err(|e| e.to_string())?;
-    let gw_ip = match gateway.addr {
-        SocketAddr::V4(a) => *a.ip(),
-        SocketAddr::V6(_) => return Err("IPv6 gateway".into()),
+/// Finds the router's UPnP service: the standard search to the whole
+/// network (some routers answer nothing else), then one sent to the router
+/// alone. Either way only the router's own answer is taken, so another
+/// device on the network can't pose as it.
+fn find_router(router: Ipv4Addr, local: Ipv4Addr) -> Result<igd_next::Gateway, String> {
+    let search = |to: SocketAddrV4| {
+        igd_next::search_gateway(SearchOptions {
+            bind_addr: SocketAddr::V4(SocketAddrV4::new(local, 0)),
+            broadcast_address: SocketAddr::V4(to),
+            timeout: Some(Duration::from_secs(3)),
+            ..Default::default()
+        })
     };
-    if gw_ip != router {
-        return Err(format!("{gw_ip} answered, but the router is {router}; ignored"));
+    let is_router = |g: &igd_next::Gateway| matches!(g.addr, SocketAddr::V4(a) if *a.ip() == router);
+    let multicast = search(SocketAddrV4::new(Ipv4Addr::new(239, 255, 255, 250), 1900));
+    if let Ok(g) = &multicast {
+        if is_router(g) {
+            return multicast.map_err(|e| e.to_string());
+        }
     }
-    let local = pinned.or_else(|| local_ip_towards(gw_ip)).ok_or("no local address towards the router")?;
+    match search(SocketAddrV4::new(router, 1900)) {
+        Ok(g) if is_router(&g) => Ok(g),
+        Ok(g) => Err(format!("{} answered, but the router is {router}; ignored", g.addr.ip())),
+        Err(direct) => Err(match multicast {
+            Ok(g) => format!("{} answered, but the router is {router}; ignored", g.addr.ip()),
+            Err(e) => format!("no answer from the router ({e}; asked directly: {direct})"),
+        }),
+    }
+}
+
+fn upnp(port: u16, pinned: Option<Ipv4Addr>, lease: u32, description: &str) -> Result<Mapping, String> {
+    let router = default_gateway().ok_or("no default gateway")?;
+    let local = pinned.or_else(|| local_ip_towards(router)).ok_or("no local address towards the router")?;
+    let gateway = find_router(router, local)?;
     let external = match gateway.get_external_ip().map_err(|e| e.to_string())? {
         std::net::IpAddr::V4(ip) => ip,
         std::net::IpAddr::V6(_) => return Err("IPv6 external address".into()),
