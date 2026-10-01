@@ -10,7 +10,7 @@ The config server on port 80 also answers a small JSON API under `/api/`, for la
 [community_api]
 info = true        # GET /api/info: name, version, features (on by default)
 presence = false   # GET /api/presence: registered players, who's online, what they're playing
-accounts = false   # POST /api/register and /api/login: one-click accounts
+accounts = false   # POST /api/register and /api/login, for tools (register is refused with [limits] require_identity)
 unhandled = false  # GET /api/unhandled: game calls this server couldn't answer
 ```
 

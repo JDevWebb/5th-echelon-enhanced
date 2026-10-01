@@ -33,7 +33,8 @@
 <tr><td><b>Modes</b></td><td>Co-op and Spies vs Mercs: Find Teammate, Quick Match, lobby and private-match invites</td></tr>
 <tr><td><b>Friends</b></td><td>Friends-only lists and invites, blocking, player search; your friends follow you to every server in the community network</td></tr>
 <tr><td><b>Internet play</b></td><td>No VPN or port forwarding: the server tells your game its public address, and relays matches when a router can't be reached</td></tr>
-<tr><td><b>Security</b></td><td>Your password and sign-in never travel unencrypted; each server gets its own random password; signed updates</td></tr>
+<tr><td><b>Your account</b></td><td>No password to remember: your launcher's identity finds your account on every server, from any PC</td></tr>
+<tr><td><b>Security</b></td><td>Sign-ins never travel unencrypted; each server gets its own random password; the launcher and the servers install only releases signed with the release key, and the servers update themselves</td></tr>
 </table>
 
 **To play:**
@@ -54,8 +55,8 @@ sudo bash install-server.sh
 
 Then choose how it fits in:
 
-- **Join the community network.** [Open an issue](https://github.com/JDevWebb/5th-echelon-enhanced/issues/new?template=add-server.yml) (or a pull request adding it to [docs/community-servers.md](docs/community-servers.md)). Once it's checked, you get a join token privately, and your server shows up in every player's launcher, pinged and ranked with the rest, sharing friends and names.
-- **Start a network of your own.** Run your own coordinator: on the same machine as your server (choose "run a coordinator here too"), or on a machine of its own (`--coordinator-only`). Your community gets its own directory and its own friends, completely independent of ours. Pass the join token to the servers you trust.
+- **Join the community network.** [Open an issue](https://github.com/JDevWebb/5th-echelon-enhanced/issues/new?template=add-server.yml) (or a pull request adding it to [docs/community-servers.md](docs/community-servers.md)). Once it's checked, you get a join token privately, and your server shows up in every player's launcher, pinged and ranked with the rest, sharing friends and names. Member servers update themselves as the network rolls out each signed release, and report anonymous metrics (no names or addresses) to the network's admin UI.
+- **Start a network of your own.** Run your own coordinator: on the same machine as your server (choose "run a coordinator here too"), or on a machine of its own (`--coordinator-only`). Your community gets its own directory and its own friends, completely independent of ours. Pass the join token to the servers you trust. You get the same automatic updates for your servers, and an admin UI of your own ([docs/operations.md](docs/operations.md)).
 - **Or keep it to yourselves:** a server on its own, for a group of friends or a LAN.
 
 The step-by-step guide, with DNS (Cloudflare included), firewalls, sizing and troubleshooting: **[docs/deploying.md](docs/deploying.md)**.
@@ -80,7 +81,7 @@ Tell us how it goes: bugs, ideas and questions are all welcome as [issues](https
 | **[Michał Kapała (michal-kapala)](https://github.com/michal-kapala)** | Contributions to upstream 5th Echelon, and co-author of [GROBackendWV](https://github.com/zeroKilo/GROBackendWV) |
 | **[Askorbinovaya Kislota](https://github.com/askorbinovaya-kislota)** | Contributions to upstream 5th Echelon |
 | **[zeroKilo](https://github.com/zeroKilo)** | [GROBackendWV](https://github.com/zeroKilo/GROBackendWV), which shares parts of the protocol and helped get 5th Echelon started |
-| **[JDevWebb](https://github.com/JDevWebb)** | This fork: the new launcher, automatic setup, internet play without a VPN, friends and the coordinator, server hardening and the security audit, the community API, and the community server |
+| **[JDevWebb](https://github.com/JDevWebb)** | This fork: the new launcher, automatic setup, internet play without a VPN, friends, identities and the coordinator, the network's automatic updates and admin UI, server hardening and the security audit, the community API, and the community network |
 
 Every upstream commit keeps its original author in this repository's history, and merged pull requests keep their authors' commits. The [changelog](#whats-new-in-this-fork) lists what this fork changed and where each change came from.
 
@@ -244,9 +245,9 @@ Everything the launcher does can be done by hand:
   - lobby invites;
   - **invites into private matches**.
 - **Internet play without a VPN:** public addresses from the server, router port forwarding (UPnP / NAT-PMP), and a relay through the server when a router can't be reached.
-- **An automatic setup:** game detection, client install, one-click accounts, network adapter pinning and a rank 5 save, then a checklist with a fix for each problem.
+- **An automatic setup:** game detection, client install, your account found (or made) with your identity, network adapter pinning and a rank 5 save, then a checklist with a fix for each problem.
 - **An in-game overlay** (<kbd>F5</kbd>): friends and what they're playing, friend requests, player search and blocking, invites, lobby player limits, and server status.
-- **Friends that follow you:** your identity links your accounts on servers that share a coordinator, so friends made on one show up on the others. It also signs you in to your accounts on a new PC.
+- **One identity, every server:** the launcher makes you an identity (a key that stays on your PC) and links every account to it. It finds your account on a server by itself, with no username or password to remember, and asks for a name only the first time. Friends made on one server show up on every other server that shares a coordinator. Moving PCs? Copy your identity across in **Settings**.
 - **Your name is yours:** servers that share a coordinator reserve each name for one player. Elsewhere, the overlay warns when someone has a friend's name but isn't them. You can rename your account from the launcher.
 - **A server directory:** joining a server that shares a coordinator brings in its directory. The launcher pings every server in it, preselects the best (the lowest ping, then the busiest), and offers a one-click **Switch** to a closer one.
 - **Save games:**
@@ -284,7 +285,12 @@ Everything the launcher does can be done by hand:
     - sign-in can be limited by address and country;
     - every action is recorded in an audit log.
   - See [docs/operations.md](docs/operations.md).
-- **A one-script Linux install:** Caddy with automatic certificates, the API over HTTPS, a sandboxed systemd service, firewall rules, a guided setup for sharing friends, `--status`, and updates that check the release's signature. See [docs/deploying.md](docs/deploying.md).
+- **A one-script Linux install:** Caddy with automatic certificates, the API over HTTPS, sandboxed systemd services (Caddy included, its admin API on a root-only socket), firewall rules, a guided setup for sharing friends, `--status`, and updates that check the release's signature. See [docs/deploying.md](docs/deploying.md).
+- **A hardened host in one more script:** `scripts/harden-host.sh` does the following:
+  - installs updates, and lets unattended upgrades reboot at a quiet hour;
+  - locks SSH down to keys, named users and local tunnels, optionally on another port, with an automatic undo if you'd be locked out;
+  - adds fail2ban;
+  - hardens the kernel and turns off services a server doesn't need.
 - **Runs anywhere:**
   - Windows, from the launcher's **Server** screen or on its own;
   - Linux;
@@ -299,7 +305,7 @@ Everything the launcher does can be done by hand:
   - a malformed packet can't crash it.
 - **Internet play for everyone:** a NAT helper tells each game its public address, and relays matches for players whose routers can't be reached directly.
 - **Fixes joins over VPNs:** `trusted_subnet` corrects players who advertise the wrong network adapter.
-- **A community API** on port 80, each part opt-in: server info, who's online, one-click accounts.
+- **A community API** on port 80, each part opt-in: server info, who's online, and sign-up for tools (off where accounts need an identity).
 
 ---
 
@@ -372,8 +378,10 @@ sudo bash install-server.sh
   - lists the ports to open on your provider's firewall.
 - **Friend lists are friends-only** on a new install (`--friends mutual`) unless you choose `--friends everyone`.
 - **Without questions:** `--domain`, `--coordinator-domain` (run a coordinator here), `--coordinator` and `--join-token-file` (join one), `--coordinator-only` (a coordinator and no game server), `--server-name`, `--region`, `--alias`, `--admin`, `--closed-registration`, `--unlisted` and `--yes`.
-- **Looking after it:** `--status` shows what's running and whether it has joined its coordinator; `--show-join-token` and `--rotate-join-token` manage a coordinator's token.
-- **The admin UI:** `--metrics-domain` turns on a coordinator's admin UI (through Cloudflare), and `--add-admin` invites an admin. See [docs/operations.md](docs/operations.md).
+- **Looking after it:** `--status` shows what's running, whether it has joined its coordinator, and the updater's last result; `--show-join-token` and `--rotate-join-token` manage a coordinator's token.
+- **Updates:** in a network, the server installs the coordinator's signed releases by itself (`--no-auto-update` turns that off, and a network then delists it). Every account needs a player identity on a new install (`[limits] require_identity`).
+- **The machine:** `scripts/harden-host.sh` hardens the rest of the host. See [Hardening the machine](docs/deploying.md#hardening-the-machine).
+- **The admin UI:** `--metrics-domain` (with a Cloudflare Origin CA certificate: `--metrics-cert`, `--metrics-key`) turns on a coordinator's admin UI, served only through Cloudflare. `--add-admin` invites an admin, and `--reset-admin` gives one a new setup link. See [docs/operations.md](docs/operations.md).
 - **Running it again updates the server**, keeping accounts and settings (anything not given again stays as it was). `--uninstall` removes it and the firewall rules it added, and `--help` lists the rest.
 
 **By hand:**
@@ -457,14 +465,14 @@ The guide, with a tested Caddyfile: **[docs/reverse-proxy.md](docs/reverse-proxy
 
 The server reads `service.toml` from its working folder, writing the defaults on the first start. The settings this fork adds are in **[docs/server-settings.md](docs/server-settings.md)**:
 
-- **`[community_api]`:** server info, who's online, one-click accounts, unhandled calls. Only server info is on by default.
+- **`[community_api]`:** server info, who's online, sign-up for tools, unhandled calls. Only server info is on by default.
 - **`trusted_subnet`:** fixes joins when players' games advertise the wrong network adapter (e.g. everyone on one VPN).
-- **`[limits]`:** failed logins and new accounts per address.
+- **`[limits]`:** failed logins and new accounts per address, whether new accounts are allowed, and whether every account needs a player identity (`require_identity`).
 - **`[admin]`:** the admin API for the launcher's **Manage a server**. Its key is written to `admin-key.txt`.
 - **`[nat]`:** internet play: the NAT helper's port, and who is relayed (`auto`, `all` or `off`) and how fast.
 - **`[public]`:** the host name and ports players connect to, when they differ from what the server listens on (a reverse proxy, remapped ports), and which proxies' `X-Forwarded-For` to trust.
 - **`[friends]`:** every player on the friend list (`everyone`, the default) or only friends (`mutual`).
-- **`[federation]`:** a coordinator to share friends with other servers, and this server's name and region in its directory.
+- **`[federation]`:** a coordinator to share friends with other servers, this server's name and region in its directory, and whether it installs the network's releases (`auto_update`).
 
 Command-line options: `--public-address <ip>`, `--listen <ip>`, and `-c <file>` for another settings file. The first two are also the `FE_PUBLIC_ADDRESS` and `FE_LISTEN` environment variables. The address options rewrite `service.toml` on every start, so the addresses always match.
 
@@ -476,7 +484,8 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
 
 **Launcher**
 - Rewritten in egui around a new `setup` library, for Windows and Linux (Steam, Flatpak, Steam Deck, Lutris, Heroic).
-- Automatic setup, a checklist with fixes, and one-click accounts.
+- Automatic setup and a checklist with fixes. **Connect** finds your account with your identity, and asks for a name only when you have none on that server.
+- Typing a network's address (a coordinator) sets you up on its best server by ping; **Switch** moves to another.
 - Adapter pinning that works (upstream's saved a value that never matched an adapter).
 - Server management, and verified updates from this fork's releases.
 - Settings are never silently reset: an unreadable file is kept as `uplay.toml.broken`, and outside changes are merged rather than overwritten.
@@ -501,6 +510,20 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
 - Each server gets its own random password (upstream reused one everywhere); on Windows it's saved encrypted.
 - See [docs/friends.md](docs/friends.md).
 
+**Running a network**
+- **Automatic updates:**
+  - the coordinator rolls out each release signed with the release key to its servers: one first, watched for 10 minutes, then the rest when they're quiet;
+  - each machine's root updater checks the signature again, keeps the previous binaries, and puts them back if the new release doesn't come back healthy;
+  - admins can pause, pin, halt or roll back.
+- **Membership is kept current:** servers that don't install updates, or still run an old release a day after a rollout, leave the directory.
+- **Metrics from every server:** players, cities (DB-IP, looked up on the server; no addresses sent), what's being played, sign-ins, load, bandwidth and relayed traffic. Pings come from the coordinator and from players' launchers.
+- **An admin UI:**
+  - the views: overview, servers, players and map, playlists, network, updates, security and audit log;
+  - sign-in: passkeys, an authenticator app or recovery codes;
+  - address and country restrictions;
+  - served only through Cloudflare.
+- See [docs/operations.md](docs/operations.md).
+
 **Security**
 - A security audit of the server, the client, the launcher, the coordinator and the installer, and every finding fixed:
   - **client:** the strings and friend data a server sends can no longer overflow the game's memory; the friend list no longer blocks or leaks; a server can't join you to a match without your click (`AllowForceJoin`, off);
@@ -511,7 +534,15 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
   - **coordinator:** a server can't take over another's place, typed and checked listings, rate limits, `remove-server` and `new-token`.
 - **The launcher's API over HTTPS** where the server has a domain; the admin API is never reachable from the internet, and the launcher warns before sending an admin key unencrypted.
 - **Signed releases:** the launcher and the installer install only releases whose checksums carry the release key's signature; downloads are size-capped; CI pins its actions and attests every download's provenance.
-- **Installer and Docker:** inputs checked, the join token never printed, sandboxed services, Caddy pinned by checksum, the server image without root.
+- **Installer and Docker:** inputs checked, the join token never printed, sandboxed services (Caddy too, with its admin API off the network), Caddy pinned by checksum, the server image without root.
+- **The admin UI:**
+  - passwords with Argon2id;
+  - TOTP and passkeys (WebAuthn, with user verification);
+  - single-use recovery codes, and lockouts after failed sign-ins;
+  - a fresh second factor for sensitive changes;
+  - CSP, CSRF and origin checks;
+  - an audit log.
+- **Hosts:** `harden-host.sh`, for SSH, fail2ban, the kernel, and automatic security reboots.
 
 **Invites and matches**
 - Invites into private matches, from [#123](https://github.com/unixoide/5th-echelon/pull/123) by Matthias Walther, with follow-up fixes:
@@ -544,9 +575,9 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
 
 **Tooling**
 - Docker builds for Linux and Windows (`build/build.sh`), and a Docker image for the server.
-- A Linux installer for servers and coordinators (`scripts/install-server.sh`), and a [deployment guide](docs/deploying.md).
+- A Linux installer for servers and coordinators (`scripts/install-server.sh`), a host hardening script (`scripts/harden-host.sh`), a [deployment guide](docs/deploying.md) and an [operations guide](docs/operations.md).
 - Load tests (`build/build.sh load`, [results](docs/load-testing.md)): 1,000 players on two cores.
-- Headless test players (`tools/testbot`) that play through logins, lobby and private-match invites, internet play and the relay, friends, blocks, identities and renames, and packet loss against a real server; `proxy-test` runs them behind Caddy, and `federation-test` runs two servers sharing friends through a coordinator.
+- Headless test players (`tools/testbot`) that play through logins, lobby and private-match invites, internet play and the relay, friends, blocks, identities and renames, and packet loss against a real server; `proxy-test` runs them behind Caddy, and `federation-test` runs two servers sharing friends through a coordinator, and checks their metrics reach it.
 
 ### Setting up the game from another tool
 
@@ -604,7 +635,9 @@ The release workflow:
 - makes the GitHub release as a draft;
 - pushes the server image to `ghcr.io`.
 
-`sign-release.sh` checks every download against `SHA256SUMS`, signs `SHA256SUMS` with the release key (`SHA256SUMS.sig`), uploads the signature and publishes the draft. The key stays off GitHub, in `~/.config/5th-echelon-release/`. Launchers and the installer only install releases it signed. Its public half is in `launcher/src/updater.rs` and `scripts/install-server.sh`; `cargo run -p identity --bin release-sign -- keygen <file>` makes a new one.
+`sign-release.sh` checks every download against `SHA256SUMS`, signs `SHA256SUMS` with the release key (`SHA256SUMS.sig`), uploads the signature and publishes the draft. The key stays off GitHub, in `~/.config/5th-echelon-release/`. Launchers, the installer and the servers' updater only install releases it signed, and a coordinator only rolls out signed releases. Its public half is in `identity/src/lib.rs` (`RELEASE_KEYS`) and `scripts/install-server.sh`; `cargo run -p identity --bin release-sign -- keygen <file>` makes a new one.
+
+Once a release is published, every network's coordinator finds it within 10 minutes and rolls it out to its servers.
 
 A tag with a suffix (`v0.3.1-rc.1`) makes a pre-release, which the updater doesn't offer.
 
@@ -687,7 +720,8 @@ Find other players, active servers and help:
   - upstream 5th Echelon's code, which has no licence yet ([unixoide/5th-echelon#129](https://github.com/unixoide/5th-echelon/issues/129)) and remains its authors';
   - code merged from others' pull requests, which stays theirs: [#123](https://github.com/unixoide/5th-echelon/pull/123) and [#124](https://github.com/unixoide/5th-echelon/pull/124) by Matthias Walther, [#128](https://github.com/unixoide/5th-echelon/pull/128) by Thiago;
   - the fonts (SIL Open Font License), and upstream's logo, images, generated save and research notes.
-- **Not software:** the [community server](#the-community-server) is a service run with this code; the licence doesn't cover it or access to it.
+- **Not software:** the [community network](#the-community-server) (its servers, coordinator and admin UI) is a service run with this code; the licence doesn't cover it or access to it.
+- **Data:** DB-IP's city database, downloaded at run time, is CC BY 4.0; the admin UI's world map is Natural Earth (public domain).
 
 Contributions are accepted under MIT unless a pull request says otherwise.
 

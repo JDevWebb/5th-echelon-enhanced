@@ -62,7 +62,11 @@ body:
       options:
         - label: The server was installed with `install-server.sh` (or is set up the same way, with HTTPS for the API) and runs a current release.
           required: true
-        - label: I'll keep it updated, and open an issue before it goes away for good.
+        - label: Automatic updates stay on (the installer's default), so the server installs the network's signed releases as they're rolled out. I understand a server that falls behind leaves the directory until it catches up.
+          required: true
+        - label: I understand the server reports anonymous metrics (player counts by city, what's played, load and traffic; no names or addresses) to the coordinator.
+          required: true
+        - label: I'll keep the machine itself updated, and open an issue before the server goes away for good.
           required: true
         - label: I'll keep the join token private, and I understand a server that misuses its place in the network is removed.
           required: true

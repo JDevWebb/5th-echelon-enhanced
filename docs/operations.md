@@ -102,40 +102,38 @@ The game reports maps and game modes as numbers. Name them under **Playlists** a
 
 The admin UI is served by the coordinator on its own port (127.0.0.1:8701), at a name of its own, and only through Cloudflare.
 
-1. **Add the DNS record.** In Cloudflare, add an A record for the name (e.g. `metrics.scbl.jdevwebb.net`) pointing at the coordinator's machine. Leave it **DNS only** (grey cloud) for now.
-2. **Run the installer.** On the coordinator's machine, run it again with the name:
+1. **Choose a name one level below your domain**, e.g. `scbl-metrics.example.com`. Cloudflare's free edge certificate covers `example.com` and `*.example.com` only, so a name like `metrics.scbl.example.com` fails with a TLS error (unless you pay for Advanced Certificate Manager). The community network uses `scbl-metrics.jdevwebb.net`.
+2. **Add the DNS record, proxied.** In Cloudflare, add an A record for the name pointing at the coordinator's machine, **Proxied** (orange cloud). Under **SSL/TLS**, set the mode to **Full (strict)**.
+3. **Make an Origin CA certificate.**
+   - In Cloudflare, go to **SSL/TLS › Origin Server › Create Certificate**. Keep "Generate private key and CSR with Cloudflare", add the name (or `*.example.com`), and choose PEM.
+   - Save the certificate and the private key as two files, and copy them to the server yourself (`scp origin.pem origin.key root@server:`).
+   - The key is a secret: never paste it anywhere else.
+
+   Let's Encrypt can't reliably certify a proxied name: its TLS-ALPN challenge never passes through Cloudflare. The Origin CA certificate is free, lasts up to 15 years, and is trusted by Cloudflare, the only client this site accepts.
+4. **Run the installer** on the coordinator's machine with the name and the certificate:
 
    ```sh
-   sudo bash install-server.sh --metrics-domain metrics.scbl.jdevwebb.net
+   sudo bash install-server.sh --metrics-domain scbl-metrics.example.com \
+     --metrics-cert origin.pem --metrics-key origin.key
+   rm origin.key origin.pem
    ```
 
-   Caddy gets the name a certificate from Let's Encrypt.
-
-   **If the name is proxied** (or Let's Encrypt fails), use a Cloudflare Origin CA certificate instead:
-   - In Cloudflare, go to **SSL/TLS › Origin Server › Create Certificate**.
-   - Choose RSA or ECC and add the name (or `*.yourdomain`).
-   - Save the certificate and key as PEM files on the server, then run:
-
-     ```sh
-     sudo bash install-server.sh --metrics-domain NAME --metrics-cert origin.pem --metrics-key origin.key
-     ```
-
-   The installer keeps it for later runs. Cloudflare's free certificate covers only one level of subdomain, so use a name like `scbl-metrics.example.com`, not `metrics.scbl.example.com`.
-3. **Switch on Cloudflare's protection.**
-   - Turn the record to **Proxied** (orange cloud).
-   - Set **SSL/TLS** to **Full (strict)**.
-   - Optionally, under **Security**, add WAF rules or a [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) policy in front: a second gate before the UI's own sign-in.
+   - **Checks:** that the certificate covers the name and matches the key.
+   - **What it keeps:** its own copy under `/etc/caddy`, with the key readable by Caddy only, which later runs reuse.
+5. **Optional extra gates:**
+   - **Authenticated Origin Pulls:** turn it on in Cloudflare (**SSL/TLS › Origin Server**), and run the installer with `--cloudflare-origin-pull`. Caddy then refuses any TLS connection without Cloudflare's client certificate.
+   - **Cloudflare WAF rules, or a [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) policy:** a second check before the UI's own sign-in.
 4. **Optional: Authenticated Origin Pulls.**
    - Turn it on in Cloudflare: **SSL/TLS › Origin Server**.
    - Run the installer with `--cloudflare-origin-pull`. Caddy then refuses any TLS connection without Cloudflare's client certificate.
-5. **Add yourself:**
+6. **Add yourself:**
 
    ```sh
    sudo bash install-server.sh --add-admin yourname
    ```
 
    This prints a one-time setup link. It works for 24 hours.
-6. **Set up your sign-in.** Open the link, choose a password, and add a passkey (recommended) or an authenticator app. Save the recovery codes it shows you.
+7. **Set up your sign-in.** Open the link, choose a password, and add a passkey (recommended) or an authenticator app. Save the recovery codes it shows you.
 
 **Caddy refuses requests that don't come from Cloudflare's addresses**, so the protection can't be bypassed by reaching the server directly. The client's address and country are Cloudflare's (`CF-Connecting-IP`, `CF-IPCountry`).
 
@@ -179,7 +177,10 @@ Under **Security**, limit the admin UI to address ranges (e.g. your home's addre
 |---|---|
 | Every admin locked out by the restrictions | `sudo bash install-server.sh --admin-open-access` clears them |
 | An admin lost their second factor | Another admin uses **Reset sign-in**, or on the machine: `sudo bash install-server.sh --reset-admin NAME`. Either gives a new setup link |
-| The certificate isn't issued once proxied | Switch the record to DNS only, run the installer again, then proxy it again. Or, in Cloudflare, make sure HTTP requests to `/.well-known/acme-challenge/` aren't redirected |
+| Cloudflare shows error 525 | Caddy has no certificate for the name: install an Origin CA certificate (step 3) |
+| A TLS error before Cloudflare answers | The name is two levels deep, which Cloudflare's free certificate doesn't cover: use a one-level name (step 1) |
+| `ERR_HTTP2_PROTOCOL_ERROR` right after switching the record to proxied | Your computer still has the server's own address cached, and Caddy drops anything that isn't from Cloudflare. Flush your DNS cache (macOS: `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`) |
+| "is an admin already" from `--add-admin` | They were added before: `--reset-admin NAME` gives a new setup link |
 
 ### Privacy
 

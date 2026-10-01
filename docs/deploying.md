@@ -25,21 +25,26 @@ A coordinator shares friends and blocks between its servers, reserves each playe
 - **Bandwidth is the real cost.** Matches run peer to peer, but players whose routers can't be reached are relayed through the server: about 7 MB/s each way at 1,000 players with 20% relayed, 3 MB/s at 500. Real servers are busy a few hours a day. A plan with 20 TB a month covers 1,000 players in matches around the clock if only outgoing traffic is counted, or half that if both directions are.
 
 **DNS:** an A record for each name, pointing at the machine's IPv4 address.
-- On **Cloudflare**, set each record to **DNS only** (grey cloud), not proxied. The game's UDP traffic and its plain HTTP on port 80 can't go through Cloudflare's proxy, and its free certificate doesn't cover names two levels deep like `play.scbl.example.com`. Caddy on the server gets its own certificates.
+- On **Cloudflare**, set the game server and coordinator records to **DNS only** (grey cloud), not proxied:
+  - the game's UDP traffic and its plain HTTP on port 80 can't go through Cloudflare's proxy;
+  - Cloudflare's free certificate doesn't cover names two levels deep like `play.scbl.example.com`.
+
+  Caddy on the server gets its own certificates.
+- The one exception is a coordinator's [admin UI](operations.md#the-admin-ui): its name is proxied, one level deep, with a Cloudflare Origin CA certificate.
 - Don't add an AAAA (IPv6) record unless it points at the same machine.
 
 **Your provider's firewall** (security group), for every server:
 
 | Port | For |
 |---|---|
-| TCP 22 | SSH |
+| TCP 22 | SSH (or the port you [move it to](#hardening-the-machine)) |
 | TCP 80 | The game's config and content, and the launcher's API without encryption |
 | TCP 443 | The launcher's API over HTTPS, and a coordinator |
 | UDP 21126 | Game login |
 | UDP 21127 | Game service |
 | UDP 21128–21129 | Internet play: public addresses and the relay |
 
-A machine that only runs a coordinator needs TCP 22, 80 and 443.
+A machine that only runs a coordinator needs SSH, and TCP 80 and 443.
 
 ## Get the installer
 
@@ -149,6 +154,10 @@ The installer's options for the usual settings. Each is kept on later runs unles
 | `--alias NAME` | Another name (or IP) players reach the server by; repeat for more |
 | `--relay auto`, `all` or `off` | Who plays through the server's relay |
 | `--no-https-api` | Don't serve the launcher's API over HTTPS |
+| `--no-auto-update`, `--auto-update` | Don't (or do) install the releases the coordinator rolls out. On by default; a network delists servers that don't |
+| `--metrics-domain NAME` (`--metrics-cert`, `--metrics-key`) | A coordinator's admin UI, at NAME, with a Cloudflare Origin CA certificate; see [operations.md](operations.md) |
+
+New installs also require every account to be linked to a player identity (`[limits] require_identity`): the launcher finds a player's account by their identity, so nobody types a password, and accounts can't be made without one.
 
 Everything else is in `/var/lib/5th-echelon/service.toml` (see [server-settings.md](server-settings.md)); restart with `systemctl restart 5th-echelon` after changing it.
 
@@ -158,7 +167,7 @@ The admin API is never reachable from the internet; Caddy refuses it. Use an SSH
 
 1. `sudo bash install-server.sh --admin`
 2. `sudo cat /var/lib/5th-echelon/admin-key.txt`
-3. From your PC: `ssh -L 50051:127.0.0.1:50051 you@play.example.com`
+3. From your PC: `ssh -L 50051:127.0.0.1:50051 you@play.example.com` (add `-p 28622` if you [moved SSH](#hardening-the-machine))
 4. In the launcher: **Server › Manage a server**, address `localhost`, and the key.
 
 ## Updating
@@ -166,6 +175,8 @@ The admin API is never reachable from the internet; Caddy refuses it. Use an SSH
 **Servers in a network update themselves.** Their coordinator rolls out each signed release, one server first, then the rest. The installer's updater installs it, checking the release key's signature, and puts the previous release back if the new one doesn't come back healthy. See [operations.md](operations.md). `--no-auto-update` turns this off for a server, but a coordinator then leaves it out of its directory.
 
 **To update by hand**, run the installer again. It keeps the settings, accounts and keys, and updates the server, the coordinator and the Caddy site. A release that isn't signed by the release key is refused.
+
+`--uninstall` removes the services, programs, Caddy site, updater and the firewall rules the installer added, and keeps the data; add `--purge` to delete that too.
 
 ## The admin UI
 
@@ -175,9 +186,7 @@ A coordinator has an admin web UI at a name of its own, served only through Clou
 - pings, load and bandwidth;
 - the update rollout.
 
-Turn it on with `--metrics-domain NAME` and add yourself with `--add-admin NAME`. [operations.md](operations.md) has the steps, the Cloudflare settings, and sign-in with passkeys or an authenticator app.
-
-`--uninstall` removes the services, programs, Caddy site and the firewall rules the installer added, and keeps the data; add `--purge` to delete that too.
+Turn it on with `--metrics-domain NAME` and an Origin CA certificate, and add yourself with `--add-admin NAME`. [operations.md](operations.md) has the steps, the Cloudflare settings, and sign-in with passkeys or an authenticator app.
 
 ## Hardening the machine
 
@@ -213,5 +222,7 @@ Without that, the SSH change undoes itself, so a mistake can't lock you out.
 | `--status` says "not joined yet" | The coordinator must answer at its `https://` address, and the token must be current. The line under it shows the last error |
 | "ports already in use" | Another program holds a port; stop it, or add `--force` |
 | "this release isn't signed" | An older release; `--allow-unsigned` installs it on its checksum alone |
+| `--status` shows the server delisted, or the updater failed | See **Updates** in the admin UI, or `cat /var/lib/5th-echelon/update-status.json`. The previous release is kept in `/opt/5th-echelon/previous/` |
+| SSH stopped answering after `harden-host.sh` | Wait 10 minutes (the change undoes itself unless confirmed), or use your provider's console. After moving SSH, connect with `-p` and the new port |
 
 Logs: `journalctl -u 5th-echelon -f`, `journalctl -u 5th-echelon-coordinator -f`, `journalctl -u caddy -f`.
