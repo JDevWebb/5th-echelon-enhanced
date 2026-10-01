@@ -48,6 +48,13 @@ pub struct Play {
     /// The coordinator's server directory, with this PC's ping to each.
     browsing: Slot<Result<Vec<(setup::directory::Listing, Option<u32>)>, String>>,
     directory: Option<Vec<(setup::directory::Listing, Option<u32>)>>,
+    /// The directory was browsed on its own since the last setup: once is enough.
+    browsed: bool,
+    /// The server field holds a server the launcher picked, not one typed:
+    /// a newer pick may replace it.
+    server_picked: bool,
+    /// Why the directory couldn't be read, shown quietly with the servers.
+    directory_error: Option<String>,
 
     setup: Slot<Result<(), String>>,
     log: flow::Log,
@@ -94,6 +101,9 @@ impl Play {
                 Ok(()) => {
                     notices.info("You're set up.");
                     self.editing = false;
+                    // The setup may have brought a directory: look at its servers again.
+                    self.browsed = false;
+                    self.directory = None;
                     self.setup_error = None;
                     self.password.clear();
                 }
@@ -153,13 +163,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 
     game_card(play, game, notices, ui);
     ui.add_space(10.0);
-    directory_offer(ui);
 
     let has_server = game.cfg.current_profile().is_some_and(|p| !p.server.is_empty());
     if game.managed.is_none() && (!has_server || play.editing) {
         join_card(play, game, &ctx, ui);
     } else {
-        server_card(play, game, ui);
+        server_card(play, game, &ctx, ui);
     }
     ui.add_space(10.0);
 
@@ -236,18 +245,9 @@ fn join_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut egu
             Err(e) => play.setup_error = Some(e),
         }
     }
-    if let Some(found) = play.browsing.poll() {
-        match found {
-            Ok(servers) => {
-                // Suggest the best one straight away.
-                if let Some(best) = setup::directory::best(&servers) {
-                    play.server = servers[best].0.host.clone();
-                }
-                play.directory = Some(servers);
-            }
-            Err(e) => play.setup_error = Some(e),
-        }
-    }
+    poll_directory(play);
+    // With a directory, its servers are pinged as soon as the form opens, and the best preselected.
+    auto_browse(play, ctx);
     theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(theme::heading("Join a server"));
@@ -257,10 +257,12 @@ fn join_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut egu
             egui::Grid::new("join").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
                 ui.label("Server");
                 ui.horizontal(|ui| {
-                    ui.add(egui::TextEdit::singleline(&mut play.server).hint_text("e.g. 10.8.0.10 or play.example.org").desired_width(260.0));
+                    if ui.add(egui::TextEdit::singleline(&mut play.server).hint_text("e.g. 10.8.0.10 or play.example.org").desired_width(260.0)).changed() {
+                        play.server_picked = false;
+                    }
                     if play.looking.running() || play.browsing.running() {
                         ui.spinner();
-                    } else if let Some(url) = crate::app::Prefs::directory().filter(|_| ui.button("Browse servers").clicked()) {
+                    } else if let Some(url) = crate::app::Prefs::directory().filter(|_| ui.button("Ping servers again").clicked()) {
                         play.browsing.start(ctx, move || crate::services::rt().block_on(crate::network::server_directory(&url)));
                     } else if ui.button("Find on my network").clicked() {
                         play.looking.start(ctx, || {
@@ -341,28 +343,10 @@ fn found_list(play: &mut Play, ui: &mut egui::Ui) {
     }
 }
 
-/// Asks whether to use the server directory a server suggested.
-fn directory_offer(ui: &mut egui::Ui) {
-    let Some((server, url)) = crate::app::Prefs::suggested_directory() else { return };
-    theme::card().show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        ui.label(theme::heading("Browse more servers?"));
-        ui.label(theme::muted(format!(
-            "{server} suggests the server directory at {url}. It lists the servers that share friends with it, and you can choose one from Browse servers."
-        )));
-        ui.horizontal(|ui| {
-            if ui.button("Use this directory").clicked() {
-                crate::app::Prefs::set_directory(Some(url.clone()));
-            }
-            if ui.button("No thanks").clicked() {
-                crate::app::Prefs::decline_directory();
-            }
-        });
-    });
-    ui.add_space(10.0);
-}
-
 fn directory_list(play: &mut Play, ui: &mut egui::Ui) {
+    if let Some(e) = &play.directory_error {
+        ui.label(theme::muted(e.as_str()).small());
+    }
     let Some(servers) = play.directory.as_ref() else {
         return;
     };
@@ -394,6 +378,92 @@ fn directory_list(play: &mut Play, ui: &mut egui::Ui) {
     });
     if let Some(host) = pick {
         play.server = host;
+        play.server_picked = false;
+    }
+}
+
+/// Takes the directory's servers and pings when they arrive. In the join
+/// form, the best is preselected unless the player typed a server.
+fn poll_directory(play: &mut Play) {
+    if let Some(found) = play.browsing.poll() {
+        match found {
+            Ok(servers) => {
+                if play.server.trim().is_empty() || play.server_picked {
+                    if let Some(best) = setup::directory::best(&servers) {
+                        play.server = servers[best].0.host.clone();
+                        play.server_picked = true;
+                    }
+                }
+                play.directory = Some(servers);
+                play.directory_error = None;
+            }
+            Err(e) => play.directory_error = Some(format!("The server directory couldn't be read: {e}")),
+        }
+    }
+}
+
+/// Pings the directory's servers once, when there's a directory and nothing
+/// is being browsed already.
+fn auto_browse(play: &mut Play, ctx: &egui::Context) {
+    if play.browsed || play.browsing.running() || play.setup.running() {
+        return;
+    }
+    if let Some(url) = crate::app::Prefs::directory() {
+        play.browsed = true;
+        play.browsing.start(ctx, move || crate::services::rt().block_on(crate::network::server_directory(&url)));
+    }
+}
+
+/// The servers in this network, on the server card: your ping to each, and
+/// a one-click switch to a better one (the identity signs in there, with the
+/// same name).
+fn network_list(play: &mut Play, game: &Game, current: &str, ctx: &egui::Context, ui: &mut egui::Ui) {
+    let Some(servers) = play.directory.as_ref() else {
+        if let Some(e) = &play.directory_error {
+            ui.label(theme::muted(e.as_str()).small());
+        } else if play.browsing.running() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(theme::muted("Pinging the servers in this network…"));
+            });
+        }
+        return;
+    };
+    if servers.len() < 2 && servers.iter().all(|(s, _)| s.host == current) {
+        return;
+    }
+    ui.add_space(6.0);
+    ui.label(RichText::new("Servers in this network").strong());
+    let best = setup::directory::best(servers);
+    let mut switch_to = None;
+    egui::Grid::new("network").num_columns(5).striped(true).spacing([14.0, 6.0]).show(ui, |ui| {
+        for (i, (s, ping)) in servers.iter().enumerate() {
+            let here = s.host == current;
+            let name = if s.region.is_empty() { s.name.clone() } else { format!("{} ({})", s.name, s.region) };
+            ui.label(if here { RichText::new(name).color(theme::ACCENT) } else { RichText::new(name) });
+            ui.label(format!("{} online", s.players_online));
+            ui.label(ping.map_or_else(|| String::from("no answer"), |ms| format!("{ms} ms")));
+            ui.label(theme::muted(match (here, best == Some(i)) {
+                (true, true) => "you're here; best for you",
+                (true, false) => "you're here",
+                (false, true) => "best for you",
+                _ => "",
+            }));
+            if !here && !play.setup.running() && game.managed.is_none() && ui.button("Switch").on_hover_text(s.host.as_str()).clicked() {
+                switch_to = Some(s.host.clone());
+            }
+            ui.end_row();
+        }
+    });
+    if let Some(host) = switch_to {
+        let name = game.cfg.current_profile().map(|p| p.user.username.clone()).unwrap_or_default();
+        play.server = host;
+        play.server_picked = false;
+        play.have_account = false;
+        if !name.is_empty() {
+            play.nick = name;
+        }
+        start_setup(play, game, ctx);
     }
 }
 
@@ -421,8 +491,12 @@ fn setup_progress(play: &Play, ui: &mut egui::Ui) {
     }
 }
 
-fn server_card(play: &mut Play, game: &mut Game, ui: &mut egui::Ui) {
+fn server_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut egui::Ui) {
     let Some(profile) = game.cfg.current_profile().cloned() else { return };
+    poll_directory(play);
+    if game.managed.is_none() {
+        auto_browse(play, ctx);
+    }
     theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
@@ -440,6 +514,7 @@ fn server_card(play: &mut Play, game: &mut Game, ui: &mut egui::Ui) {
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui.button("Change server").clicked() {
                         play.editing = true;
+                        play.server_picked = false;
                         play.server = profile.server.clone();
                         play.have_account = profile.has_account();
                         play.username = profile.user.username.clone();
@@ -450,6 +525,9 @@ fn server_card(play: &mut Play, game: &mut Game, ui: &mut egui::Ui) {
         });
         if play.setup.running() || play.setup_error.is_some() {
             setup_progress(play, ui);
+        }
+        if game.managed.is_none() {
+            network_list(play, game, &profile.server, ctx, ui);
         }
     });
 }

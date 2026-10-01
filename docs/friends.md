@@ -126,9 +126,12 @@ A dishonest member server could still make friendships or blocks between players
 
 ### The server directory
 
-Every member server appears in the coordinator's **server directory**, unless `listed = false`, with its name, region, address and players online. Launchers show it under **Browse servers** on the Play screen. They measure their ping to each server through its NAT helper, the path game traffic takes, and suggest the nearest, busiest one.
+Every member server appears in the coordinator's **server directory**, unless `listed = false`, with its name, region, address and players online. Launchers ping each server through its NAT helper, the path game traffic takes, and rank them: the lowest ping first, and among servers within 15 ms of it, the busiest.
 
-The first server you join that uses a coordinator suggests its directory. The Play screen asks whether to use it, so a server can't choose which servers you're shown. You can also set it in **Settings › Identity and friends**.
+The first server you join that uses a coordinator brings its directory: the launcher uses it from then on. A directory you set yourself, in **Settings › Identity and friends**, is never replaced.
+
+- **The join form** pings the directory's servers as soon as it opens, and preselects the best (unless you've typed a server).
+- **Once you've joined,** the server card lists the network's servers with your ping to each. **Switch** sets you up on another in one click: your identity signs you in there, with the same name, and your friends follow.
 
 - Only `https://` directories are used.
 - A directory entry must be a public host name or address. Entries for private addresses (your own network) are skipped, as are more than 200 entries.

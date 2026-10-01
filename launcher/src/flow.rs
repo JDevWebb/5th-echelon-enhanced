@@ -163,10 +163,12 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<(), S
         ));
     }
 
-    // A server that shares friends through a coordinator also has its server directory.
-    // The player decides whether to use it (the Play screen asks).
+    // A server that shares friends through a coordinator also has its server directory:
+    // used from now on, unless the player already chose one.
     if let Some(coordinator) = info.as_ref().and_then(|i| i.coordinator.clone()) {
-        crate::app::Prefs::suggest_directory(&plan.server, &coordinator);
+        if crate::app::Prefs::adopt_directory(&coordinator) {
+            say(log, format!("Using the server directory at {coordinator}."));
+        }
     }
 
     say(log, "Setting up your account…");

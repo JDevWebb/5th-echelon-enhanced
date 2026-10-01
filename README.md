@@ -41,7 +41,7 @@
 2. Run it, and under **Join a server** type **`play.scbl.jdevwebb.net`**.
 3. Pick a name, press **Set up**, then **Play**. Press <kbd>F5</kbd> in the game to add friends.
 
-When the launcher asks whether to use the server directory, say yes: **Browse servers** then lists every server in the community network, with your ping to each.
+The launcher then picks up the community network's server directory by itself, pings every server in it, and lists them with your ping to each. When a closer one exists, **Switch** moves you there in one click, with the same name and friends.
 
 ### Grow the network
 
@@ -54,7 +54,7 @@ sudo bash install-server.sh
 
 Then choose how it fits in:
 
-- **Join the community network.** [Open an issue](https://github.com/JDevWebb/5th-echelon-enhanced/issues/new?template=add-server.yml) (or a pull request adding it to [docs/community-servers.md](docs/community-servers.md)). Once it's checked, you get a join token privately, and your server shows up in every player's **Browse servers**, sharing friends and names with the rest.
+- **Join the community network.** [Open an issue](https://github.com/JDevWebb/5th-echelon-enhanced/issues/new?template=add-server.yml) (or a pull request adding it to [docs/community-servers.md](docs/community-servers.md)). Once it's checked, you get a join token privately, and your server shows up in every player's launcher, pinged and ranked with the rest, sharing friends and names.
 - **Start a network of your own.** Run your own coordinator: on the same machine as your server (choose "run a coordinator here too"), or on a machine of its own (`--coordinator-only`). Your community gets its own directory and its own friends, completely independent of ours. Pass the join token to the servers you trust.
 - **Or keep it to yourselves:** a server on its own, for a group of friends or a LAN.
 
@@ -249,7 +249,7 @@ Everything the launcher does can be done by hand:
 - **An in-game overlay** (<kbd>F5</kbd>): friends and what they're playing, friend requests, player search and blocking, invites, lobby player limits, and server status.
 - **Friends that follow you:** your identity links your accounts on servers that share a coordinator, so friends made on one show up on the others. It also signs you in to your accounts on a new PC.
 - **Your name is yours:** servers that share a coordinator reserve each name for one player. Elsewhere, the overlay warns when someone has a friend's name but isn't them. You can rename your account from the launcher.
-- **A server directory:** browse the servers that share a coordinator, with your ping to each and how many are online, and join the one suggested.
+- **A server directory:** joining a server that shares a coordinator brings in its directory. The launcher pings every server in it, preselects the best (the lowest ping, then the busiest), and offers a one-click **Switch** to a closer one.
 - **Save games:**
   - a rank 5 save for new players;
   - raising an existing save to rank 5 (with a backup first);
@@ -262,7 +262,7 @@ Everything the launcher does can be done by hand:
 - **Your details stay yours:**
   - the launcher and overlay use HTTPS where the server offers it, so passwords and sign-ins never travel unencrypted;
   - linking your identity to a server is your choice, and **Unlink** undoes it;
-  - a server can suggest a server directory, but the launcher asks before using it;
+  - a server directory is used only over `https://`, never replaces one you chose, and lists only public hosts, each shown by name;
   - on Windows, saved passwords and your identity key are encrypted for your Windows user.
 - **Linux and Steam Deck:** a native Linux launcher, Proton and Wine support in the client, and the many-core CPU fix.
 - **Unusual game builds:** unknown game executables can be identified from the launcher, which covers most mods.
@@ -481,8 +481,8 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
   - requests, blocking and player search in the overlay;
   - friends-only lists and invites for public servers.
 - An identity per player that links their accounts across servers, and signs them in on a new PC.
-- A coordinator that shares friends between servers, reserves names across them, and keeps a server directory; the launcher browses it and suggests a server.
-- Linking an account to your identity is a choice on the join form, and **Unlink** in Settings undoes it; the launcher asks before using a directory a server suggests.
+- A coordinator that shares friends between servers, reserves names across them, and keeps a server directory; the launcher adopts it on joining, pings every server and preselects the best.
+- Linking an account to your identity is a choice on the join form, and **Unlink** in Settings undoes it.
 - Renaming, with the account id kept, and warnings in the overlay about players using a friend's name on another server.
 - Each server gets its own random password (upstream reused one everywhere); on Windows it's saved encrypted.
 - See [docs/friends.md](docs/friends.md).
@@ -650,7 +650,7 @@ Never commit game files or anything extracted from them. Facts learned from the 
 
 ## Community
 
-**Play on the [community server](#the-community-server)** at `play.scbl.jdevwebb.net`, and [grow the network](#grow-the-network) with a server of your own. Every server in the community network is listed in [docs/community-servers.md](docs/community-servers.md) and in the launcher's **Browse servers**.
+**Play on the [community server](#the-community-server)** at `play.scbl.jdevwebb.net`, and [grow the network](#grow-the-network) with a server of your own. Every server in the community network is listed in [docs/community-servers.md](docs/community-servers.md) and in the launcher, ranked by your ping.
 
 Find other players, active servers and help:
 

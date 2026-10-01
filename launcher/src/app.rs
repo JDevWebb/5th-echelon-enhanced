@@ -57,8 +57,8 @@ impl Game {
     }
 }
 
-/// The directory and the suggested one, as last read from disk.
-type DirectoryPrefs = (Option<String>, Option<(String, String)>);
+/// The directory, as last read from disk.
+type DirectoryPrefs = Option<String>;
 static DIRECTORY_CACHE: std::sync::Mutex<Option<(Instant, DirectoryPrefs)>> = std::sync::Mutex::new(None);
 
 /// The launcher's own settings (`%APPDATA%\5th-Echelon\launcher.toml`):
@@ -71,10 +71,6 @@ pub struct Prefs {
     /// server that reports one, or set in Settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directory: Option<String>,
-    /// A directory a server suggested, waiting for the player to accept it:
-    /// (the server, the coordinator's URL). A server can't set one by itself.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub suggested_directory: Option<(String, String)>,
 }
 
 impl Prefs {
@@ -106,13 +102,7 @@ impl Prefs {
     /// The server directory, re-read from disk at most every few seconds
     /// (screens ask every frame).
     pub fn directory() -> Option<String> {
-        Self::directory_prefs().0
-    }
-
-    /// The directory a server suggested, if the player hasn't answered yet:
-    /// (the server, the URL).
-    pub fn suggested_directory() -> Option<(String, String)> {
-        Self::directory_prefs().1
+        Self::directory_prefs()
     }
 
     fn directory_prefs() -> DirectoryPrefs {
@@ -120,8 +110,7 @@ impl Prefs {
         match cache.as_ref() {
             Some((at, prefs)) if at.elapsed() < Duration::from_secs(3) => prefs.clone(),
             _ => {
-                let loaded = Self::load();
-                let prefs = (loaded.directory, loaded.suggested_directory);
+                let prefs = Self::load().directory;
                 *cache = Some((Instant::now(), prefs.clone()));
                 prefs
             }
@@ -132,28 +121,22 @@ impl Prefs {
     pub fn set_directory(url: Option<String>) {
         let mut prefs = Self::load();
         prefs.directory = url.map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
-        prefs.suggested_directory = None;
         prefs.save();
         Self::forget_cached_directory();
     }
 
-    /// Remembers a directory `server` suggests, for the player to accept or
-    /// not, when none is set yet. Only `https://` ones.
-    pub fn suggest_directory(server: &str, url: &str) {
+    /// Uses the directory a server reports, when none is set yet (one the
+    /// player chose is never replaced). Only `https://` ones. Says whether it
+    /// was adopted.
+    pub fn adopt_directory(url: &str) -> bool {
         let mut prefs = Self::load();
-        if prefs.directory.is_none() && prefs.suggested_directory.is_none() && setup::directory::valid_coordinator(url) {
-            prefs.suggested_directory = Some((server.to_string(), url.trim().to_string()));
-            prefs.save();
-            Self::forget_cached_directory();
+        if prefs.directory.is_some() || !setup::directory::valid_coordinator(url) {
+            return false;
         }
-    }
-
-    /// Declines the suggested directory.
-    pub fn decline_directory() {
-        let mut prefs = Self::load();
-        prefs.suggested_directory = None;
+        prefs.directory = Some(url.trim().to_string());
         prefs.save();
         Self::forget_cached_directory();
+        true
     }
 
     fn forget_cached_directory() {
