@@ -222,7 +222,7 @@ input.code { font: 600 22px var(--mono); letter-spacing: 0.3em; text-align: cent
 
 /* Map */
 .map { position: relative; }
-.map svg { display: block; width: 100%; height: auto; }
+.map svg { display: block; width: 100%; height: auto; overflow: hidden; }
 .map .land { fill: var(--land); stroke: var(--land-line); stroke-width: 0.25; }
 .map .graticule { stroke: var(--line); stroke-width: 0.15; fill: none; }
 .map .spot { fill: var(--accent); fill-opacity: 0.35; stroke: var(--accent); stroke-width: 0.35; }
