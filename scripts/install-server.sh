@@ -73,6 +73,11 @@
 #                         with --metrics-domain: also require Cloudflare's
 #                         client certificate (Authenticated Origin Pulls,
 #                         turned on in Cloudflare too)
+#   --metrics-cert FILE, --metrics-key FILE
+#                         with --metrics-domain: a Cloudflare Origin CA
+#                         certificate and its key (SSL/TLS > Origin Server)
+#                         instead of Let's Encrypt, which can't validate a
+#                         proxied name reliably. Kept for later runs
 #   --add-admin NAME      print a one-time setup link for a new admin of the
 #                         admin UI
 #   --reset-admin NAME    for an admin who lost their second factor: a new
@@ -143,7 +148,7 @@ domain="" no_caddy=0 public_address="" version="latest" binary="" relay=""
 firewall=1 yes=0 force=0 uninstall=0 purge=0 use_systemd=1
 friends="" server_name="" region="" coordinator="" join_token="" coord_domain="" coord_binary=""
 https_api=1 allow_unsigned=0 coord_only=0 admin="" registration="" listed="" command=""
-metrics_domain="" origin_pull=0 admin_name="" auto_update="" release_version=""
+metrics_cert="" metrics_key="" metrics_domain="" origin_pull=0 admin_name="" auto_update="" release_version=""
 aliases=()
 # Only HTTPS, and TLS 1.2 or newer, for every download.
 CURL=(curl --proto '=https' --tlsv1.2)
@@ -193,6 +198,8 @@ while [ $# -gt 0 ]; do
     --no-https-api) https_api=0 ;;
     --metrics-domain) metrics_domain="${2:?}"; shift ;;
     --cloudflare-origin-pull) origin_pull=1 ;;
+    --metrics-cert) metrics_cert="${2:?}"; shift ;;
+    --metrics-key) metrics_key="${2:?}"; shift ;;
     --add-admin) command=add-admin; admin_name="${2:?}"; shift ;;
     --reset-admin) command=reset-admin; admin_name="${2:?}"; shift ;;
     --admin-open-access) command=admin-open-access ;;
@@ -319,6 +326,10 @@ if [ -z "$metrics_domain" ] && [ -s "$ETC_DIR/metrics-domain" ]; then metrics_do
 if [ -f "$ETC_DIR/metrics-origin-pull" ]; then origin_pull=1; fi
 [ -z "$metrics_domain" ] || [ -n "$coord_domain" ] || die "--metrics-domain is the coordinator's admin UI: it needs --coordinator-domain (a coordinator on this machine)"
 [ "$origin_pull" -eq 0 ] || [ -n "$metrics_domain" ] || die "--cloudflare-origin-pull goes with --metrics-domain"
+if [ -n "$metrics_cert" ] || [ -n "$metrics_key" ]; then
+  [ -n "$metrics_cert" ] && [ -n "$metrics_key" ] || die "--metrics-cert and --metrics-key go together"
+fi
+[ -z "$metrics_cert" ] || [ -n "$metrics_domain" ] || die "--metrics-cert goes with --metrics-domain"
 if [ "$coord_only" -eq 1 ]; then
   [ -n "$coord_domain" ] || die "--coordinator-only needs --coordinator-domain"
   [ -z "$domain" ] && [ "$no_caddy" -eq 0 ] && [ -z "$coordinator" ] || die "--coordinator-only runs no game server: leave out --domain, --no-caddy and --coordinator"
@@ -1407,10 +1418,17 @@ cloudflare_ranges() {
 }
 
 # With --cloudflare-origin-pull, TLS needs Cloudflare's client certificate.
+# With an Origin CA certificate, Caddy uses it instead of asking Let's Encrypt.
 metrics_tls() {
-  [ "$origin_pull" -eq 1 ] || return 0
-  printf '\ttls {\n\t\tclient_auth {\n\t\t\tmode require_and_verify\n\t\t\ttrust_pool file %s\n\t\t}\n\t}\n' "$ORIGIN_PULL_CA"
+  [ "$origin_pull" -eq 1 ] || [ -f "$METRICS_CERT" ] || return 0
+  printf '\ttls'
+  [ ! -f "$METRICS_CERT" ] || printf ' %s %s' "$METRICS_CERT" "$METRICS_KEY"
+  printf ' {\n'
+  [ "$origin_pull" -eq 0 ] || printf '\t\tclient_auth {\n\t\t\tmode require_and_verify\n\t\t\ttrust_pool file %s\n\t\t}\n' "$ORIGIN_PULL_CA"
+  printf '\t}\n'
 }
+METRICS_CERT="/etc/caddy/5th-echelon-metrics.crt"
+METRICS_KEY="/etc/caddy/5th-echelon-metrics.key"
 ORIGIN_PULL_CA="/etc/caddy/cloudflare-origin-pull-ca.pem"
 
 notes=()
@@ -1423,6 +1441,17 @@ if [ "$no_caddy" -eq 0 ]; then
     v2.[0-5].*) die "Caddy $caddy_version is too old (2.6 or newer speaks the launcher's gRPC); update it and run this again" ;;
   esac
   install -d -m 755 /etc/caddy
+  if [ -n "$metrics_cert" ]; then
+    openssl x509 -noout -in "$metrics_cert" 2>/dev/null || die "$metrics_cert isn't a certificate (PEM)"
+    openssl pkey -noout -in "$metrics_key" 2>/dev/null || die "$metrics_key isn't a private key (PEM)"
+    [ "$(openssl x509 -noout -pubkey -in "$metrics_cert" | openssl sha256)" = "$(openssl pkey -pubout -in "$metrics_key" | openssl sha256)" ] \
+      || die "$metrics_key isn't the key of $metrics_cert"
+    openssl x509 -noout -checkhost "$metrics_domain" -in "$metrics_cert" | grep -q 'does match' || die "$metrics_cert isn't for $metrics_domain"
+    install -m 644 "$metrics_cert" "$METRICS_CERT"
+    # Caddy reads the key; nobody else may.
+    install -m 640 -o root -g "$(id -gn caddy 2>/dev/null || echo root)" "$metrics_key" "$METRICS_KEY"
+    say "Using the Origin CA certificate for $metrics_domain"
+  fi
   if [ "$origin_pull" -eq 1 ]; then
     case "$caddy_version" in v2.[6-7].*) die "--cloudflare-origin-pull needs Caddy 2.8 or newer (this is $caddy_version)" ;; esac
     "${CURL[@]}" -fsSL --retry 3 -o "$work/origin-pull-ca.pem" https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem \

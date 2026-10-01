@@ -109,7 +109,18 @@ The admin UI is served by the coordinator on its own port (127.0.0.1:8701), at a
    sudo bash install-server.sh --metrics-domain metrics.scbl.jdevwebb.net
    ```
 
-   Caddy gets the name a certificate.
+   Caddy gets the name a certificate from Let's Encrypt.
+
+   **If the name is proxied** (or Let's Encrypt fails), use a Cloudflare Origin CA certificate instead:
+   - In Cloudflare, go to **SSL/TLS › Origin Server › Create Certificate**.
+   - Choose RSA or ECC and add the name (or `*.yourdomain`).
+   - Save the certificate and key as PEM files on the server, then run:
+
+     ```sh
+     sudo bash install-server.sh --metrics-domain NAME --metrics-cert origin.pem --metrics-key origin.key
+     ```
+
+   The installer keeps it for later runs. Cloudflare's free certificate covers only one level of subdomain, so use a name like `scbl-metrics.example.com`, not `metrics.scbl.example.com`.
 3. **Switch on Cloudflare's protection.**
    - Turn the record to **Proxied** (orange cloud).
    - Set **SSL/TLS** to **Full (strict)**.
