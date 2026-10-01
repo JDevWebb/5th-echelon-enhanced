@@ -25,6 +25,8 @@ use sloggers::Build;
 use storage::Storage;
 
 const DEFAULT_MP_DATA: &str = include_str!("../../data/mp_balancing.ini");
+const DEFAULT_NEWS: &str = include_str!("../../data/news.json");
+const DEFAULT_CHALLENGES: &str = include_str!("../../data/challenges.json");
 
 const SERVER_PID: u32 = 0x1000;
 
@@ -248,15 +250,32 @@ fn build_file_logger() -> Logger {
         .unwrap()
 }
 
-/// Ensures that the necessary data directory and files exist.
-fn ensure_data_dir() -> io::Result<()> {
-    let mp_ini = std::env::current_exe()?.parent().unwrap().join("data").join("mp_balancing.ini");
-    if mp_ini.exists() {
+/// Writes the default data files the game asks for (multiplayer balancing,
+/// news, challenges) where the services read them, when they're missing:
+/// `data/` in the working folder, and the content service's own paths. A
+/// server run from another folder than its program's (the Linux installer's
+/// service runs in /var/lib/5th-echelon) used to have none there: "Could not
+/// download latest multiplayer data". Files already there are never replaced.
+fn ensure_data_dir(content_files: &[std::path::PathBuf]) -> io::Result<()> {
+    let data = std::path::Path::new("data");
+    let defaults = [("mp_balancing.ini", DEFAULT_MP_DATA), ("news.json", DEFAULT_NEWS), ("challenges.json", DEFAULT_CHALLENGES)];
+    for (name, contents) in defaults {
+        write_if_missing(&data.join(name), contents)?;
+    }
+    for path in content_files.iter().filter(|p| p.file_name().is_some_and(|n| n == "mp_balancing.ini")) {
+        write_if_missing(path, DEFAULT_MP_DATA)?;
+    }
+    Ok(())
+}
+
+fn write_if_missing(path: &std::path::Path, contents: &str) -> io::Result<()> {
+    if path.exists() {
         return Ok(());
     }
-    fs::create_dir_all(mp_ini.parent().unwrap())?;
-    fs::write(mp_ini, DEFAULT_MP_DATA)?;
-    Ok(())
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        fs::create_dir_all(dir)?;
+    }
+    fs::write(path, contents)
 }
 
 #[derive(argh::FromArgs)]
@@ -353,7 +372,17 @@ fn main() -> color_eyre::Result<()> {
     config.apply_public();
     community_api::publish(public_ports, config.public.host.clone());
 
-    ensure_data_dir()?;
+    let content_files: Vec<std::path::PathBuf> = config
+        .quazal
+        .service
+        .values()
+        .filter_map(|s| match s {
+            quazal::Service::Content(c) => Some(c.files.values().cloned().collect::<Vec<_>>()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    ensure_data_dir(&content_files)?;
 
     warn!(logger, "Clearing stale sessions");
     storage.invalidate_sessions()?;

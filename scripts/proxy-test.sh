@@ -22,8 +22,9 @@ docker network create "$net" >/dev/null
 # them), HTTP on loopback only, reachable through Caddy. Every test player
 # comes from one address (Caddy passes it on), so new accounts get more room.
 docker run -d --name fes-proxy-srv --network "$net" -v fes-target:/target:ro "$image" bash -c "
-  set -e; mkdir -p /srv/fe && cd /srv/fe && cp $bin/dedicated_server .
-  ./dedicated_server >gen.log 2>&1 & gen=\$!
+  set -e; mkdir -p /srv/fe && cd /srv/fe
+  # Run from its own folder, apart from the program, as the Linux installer's service does.
+  $bin/dedicated_server >gen.log 2>&1 & gen=\$!
   for _ in \$(seq 100); do [ -s service.toml ] && break; sleep 0.1; done
   sleep 0.3; kill \$gen 2>/dev/null || true; wait \$gen 2>/dev/null || true
   sed -i -E \
@@ -34,7 +35,7 @@ docker run -d --name fes-proxy-srv --network "$net" -v fes-target:/target:ro "$i
     -e 's|^registrations_per_hour = .*|registrations_per_hour = 1000|' \
     service.toml
   printf '\n[public]\nhost = \"$host\"\napi = 80\ncontent = 80\n' >> service.toml
-  exec ./dedicated_server --public-address \$(hostname -i | cut -d' ' -f1) >server.log 2>&1
+  exec $bin/dedicated_server --public-address \$(hostname -i | cut -d' ' -f1) >server.log 2>&1
 "
 ip=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$net\").IPAddress}}" fes-proxy-srv)
 
