@@ -379,14 +379,6 @@ fn servers(settings: &mut Settings, game: &mut Game, notices: &mut Notices, lock
                     if ui.button("Rename").on_hover_text("A new name on this server; friends and invites carry on").clicked() {
                         settings.renaming = Some((p.name.clone(), p.user.username.clone()));
                     }
-                    if ui
-                        .button("Unlink")
-                        .on_hover_text("Stop friends following you to this account, and your identity signing in to it")
-                        .clicked()
-                    {
-                        let (dir, profile) = (game.dir.clone(), p.name.clone());
-                        settings.working.start(ctx, move || flow::unlink(&dir, &profile));
-                    }
                     if !is_current && ui.button("Use").clicked() {
                         game.update(notices, |c| {
                             c.upsert_profile(p.clone());

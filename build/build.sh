@@ -73,9 +73,10 @@ case "${1:-test}" in
   bots)
     shift
     # Every scenario on a default server, then the friends-only one on a
-    # server in the "mutual" mode.
+    # server in the "mutual" mode, and one on a server requiring identities.
     run "$IMAGE" bash -c 'cargo build -q -p dedicated_server -p testbot && scripts/bots.sh /target/native/debug "$@" &&
-      if [ $# -eq 0 ]; then FRIENDS_MODE=mutual scripts/bots.sh /target/native/debug friends-mutual; fi' bots "$@"
+      if [ $# -eq 0 ]; then FRIENDS_MODE=mutual scripts/bots.sh /target/native/debug friends-mutual &&
+        REQUIRE_IDENTITY=1 scripts/bots.sh /target/native/debug identity-required; fi' bots "$@"
     ;;
   federation-test)
     run "$IMAGE" cargo build -q -p dedicated_server -p testbot -p coordinator

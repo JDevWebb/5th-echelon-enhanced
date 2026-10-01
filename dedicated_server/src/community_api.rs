@@ -38,7 +38,16 @@ pub const RELEASE: &str = env!("FE_RELEASE");
 
 /// What every server of this release supports, for clients to check. The
 /// switchable API parts are added when they're on.
-const FEATURES: &[&str] = &["invites", "private-matches", "trusted-subnet", "persistent-logins", "friends", "identity", "rename"];
+const FEATURES: &[&str] = &[
+    "invites",
+    "private-matches",
+    "trusted-subnet",
+    "persistent-logins",
+    "friends",
+    "identity",
+    "identity-login",
+    "rename",
+];
 
 /// Session attributes (see game_session.rs): 101 map, 102 mode, 103 non-zero
 /// for Spies vs Mercs, 113 room kind (0 match, 1 lobby).
@@ -105,8 +114,11 @@ fn info(cfg: CommunityApiConfig) -> Value {
     if cfg.presence {
         features.push("presence");
     }
-    if cfg.accounts {
+    if cfg.accounts && !rate_limit::identity_required() {
         features.push("accounts");
+    }
+    if rate_limit::identity_required() {
+        features.push("identity-required");
     }
     let mut info = json!({
         "name": env!("FE_PRODUCT"),
@@ -221,6 +233,10 @@ fn register(storage: &Storage, body: &[u8]) -> Response {
     }
     if !crate::rate_limit::registration_open() {
         return Response::json("403 Forbidden", &json!({ "error": "this server doesn't take new accounts" }));
+    }
+    // Accounts here are linked to an identity, which only the launcher has.
+    if crate::rate_limit::identity_required() {
+        return Response::json("403 Forbidden", &json!({ "error": "accounts on this server are made with the 5th Echelon launcher" }));
     }
     if password.len() > crate::api::MAX_PASSWORD {
         return bad("password must be 8-63 characters (the game's limit)");

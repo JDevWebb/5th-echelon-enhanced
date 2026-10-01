@@ -83,6 +83,8 @@ message RegisterRequest {
 }
 
 message KeyLoginRequest {
+  // Empty: the account here linked to this identity, whatever its name (NOT_FOUND when there's
+  // none); the signature then names an empty username.
   string username = 1;
   // The identity's public key (base32), as linked to the account.
   string global_id = 2;

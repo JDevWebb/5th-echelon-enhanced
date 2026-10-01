@@ -565,6 +565,9 @@ impl Friends for MyFriends {
 
     async fn unlink_identity(&self, request: Request<friends::UnlinkIdentityRequest>) -> Result<Response<friends::UnlinkIdentityResponse>, Status> {
         let me = caller(&request)?;
+        if crate::rate_limit::identity_required() {
+            return Err(Status::failed_precondition("Accounts on this server stay linked to their identity"));
+        }
         let person = self
             .storage
             .find_person(me)
@@ -778,6 +781,11 @@ impl Users for MyUsers {
         }
         // With an identity, its signature must hold before anything is made.
         let identity_link = if request.global_id.is_empty() {
+            if crate::rate_limit::identity_required() {
+                return Err(Status::failed_precondition(
+                    "Accounts on this server are linked to a player identity; update the 5th Echelon launcher",
+                ));
+            }
             if federation::name_holder(&username).await == federation::NameCheck::Taken {
                 return Err(Status::already_exists(NAME_HELD_ELSEWHERE));
             }
@@ -851,34 +859,63 @@ impl Users for MyUsers {
     }
 
     /// Signs in with the identity key the account is linked to (see `identity`).
+    /// Without a username: to whichever account here is linked to the identity
+    /// (the launcher finding a player's account), or `NotFound` when none is.
     async fn key_login(&self, request: Request<users::KeyLoginRequest>) -> Result<Response<users::LoginResponse>, Status> {
         let peer = client_addr(&request);
         let request = request.into_inner();
-        if request.username.chars().count() > 32 || !crate::rate_limit::begin_login(peer, &request.username) {
+        // Failures count against the account, or the identity when there's no name.
+        let limit_key = if request.username.is_empty() {
+            request.global_id.clone()
+        } else {
+            request.username.clone()
+        };
+        if request.username.chars().count() > 32 || request.global_id.len() > 64 || !crate::rate_limit::begin_login(peer, &limit_key) {
             return Err(Status::resource_exhausted("Too many failed logins; try again later"));
         }
         // One answer for every failure: which accounts are linked to which identity isn't
         // anyone's business.
         let refused = |_why: &str| {
-            crate::rate_limit::login_failed(&request.username);
+            crate::rate_limit::login_failed(&limit_key);
             Status::unauthenticated("Signing in with this identity didn't work")
         };
-        let person = self
-            .storage
-            .find_person_by_name(&request.username)
-            .await
-            .map_err(internal)?
-            .ok_or_else(|| refused("Unknown user"))?;
-        if person.global_id.as_deref() != Some(request.global_id.as_str()) {
-            return Err(refused("This account isn't linked to that identity"));
-        }
         if !identity::fresh(request.time, identity::now()) {
             return Err(Status::invalid_argument("The signature's time is off; check this PC's clock"));
         }
         signed_host(&request.host)?;
-        let message = identity::login_message(&request.host, &person.username, request.time, &request.new_password);
-        if !identity::verify(&request.global_id, &message, &request.signature) {
-            return Err(refused("The signature doesn't match"));
+        let person = if request.username.is_empty() {
+            // The signature proves the identity first: only its holder learns whether it has
+            // an account here.
+            let message = identity::login_message(&request.host, "", request.time, &request.new_password);
+            if !identity::is_global_id(&request.global_id) || !identity::verify(&request.global_id, &message, &request.signature) {
+                return Err(refused("The signature doesn't match"));
+            }
+            match self.storage.find_person_by_global_id(&request.global_id).await.map_err(internal)? {
+                Some(person) => person,
+                // Not a failed sign-in: a player new here.
+                None => {
+                    crate::rate_limit::login_succeeded(peer);
+                    return Err(Status::not_found("No account here is linked to this identity"));
+                }
+            }
+        } else {
+            let person = self
+                .storage
+                .find_person_by_name(&request.username)
+                .await
+                .map_err(internal)?
+                .ok_or_else(|| refused("Unknown user"))?;
+            if person.global_id.as_deref() != Some(request.global_id.as_str()) {
+                return Err(refused("This account isn't linked to that identity"));
+            }
+            let message = identity::login_message(&request.host, &person.username, request.time, &request.new_password);
+            if !identity::verify(&request.global_id, &message, &request.signature) {
+                return Err(refused("The signature doesn't match"));
+            }
+            person
+        };
+        if !self.storage.is_player_account(person.id).await.map_err(internal)? {
+            return Err(refused("Not a player's account"));
         }
         if !self.storage.use_key_login(person.id, request.time).await.map_err(internal)? {
             return Err(refused("That signature was already used"));

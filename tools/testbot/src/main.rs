@@ -118,6 +118,14 @@ async fn identity_login(ctx: &mut Ctx) -> Result<()> {
     a.link(&me, &id, now).await.map_err(|e| eyre!("linking: {e}"))?;
     let name = a.name.clone();
     a.disconnect().await?;
+    // A new PC that doesn't know the name: the key finds the account, as the launcher does.
+    let found = testbot::bot::key_login(ctx.server, &me, &id, "", now, "").await.map_err(|e| eyre!("key login without a name: {e}"))?;
+    ensure!(found == name, "the key found {found:?}, not {name:?}");
+    let stranger = testbot::bot::key_login(ctx.server, &identity::Identity::generate(), &id, "", now, "").await;
+    ensure!(
+        matches!(&stranger, Err(s) if s.code() == tonic::Code::NotFound),
+        "an identity with no account here: {stranger:?}"
+    );
     // A new PC: sign in with the key, set a new password.
     testbot::bot::key_login(ctx.server, &me, &id, &name, now + 1, "a-new-password-1").await.map_err(|e| eyre!("key login: {e}"))?;
     ensure!(
@@ -154,6 +162,31 @@ async fn identity_login(ctx: &mut Ctx) -> Result<()> {
         testbot::bot::key_login(ctx.server, &me, &id, &name, now + 4, "").await.is_err(),
         "the key signed in to an unlinked account"
     );
+    a.disconnect().await
+}
+
+/// A server with `[limits] require_identity`: no account without an
+/// identity, the identity finds its account, and accounts stay linked.
+async fn identity_required(ctx: &mut Ctx) -> Result<()> {
+    let id = server_id(ctx.server)?;
+    let name = format!("Plain{}", ctx.run);
+    let plain = Bot::register_as(ctx.server, &name, PASSWORD, None).await;
+    ensure!(
+        matches!(&plain, Err(s) if s.code() == tonic::Code::FailedPrecondition),
+        "an account without an identity: {plain:?}"
+    );
+    let me = identity::Identity::generate();
+    let name = format!("Keyed{}", ctx.run);
+    let now = identity::now();
+    ensure!(
+        matches!(testbot::bot::key_login(ctx.server, &me, &id, "", now, "").await, Err(s) if s.code() == tonic::Code::NotFound),
+        "an identity found an account before it had one"
+    );
+    Bot::register_as(ctx.server, &name, PASSWORD, Some((&me, &id))).await.map_err(|e| eyre!("registering with an identity: {e}"))?;
+    let found = testbot::bot::key_login(ctx.server, &me, &id, "", now + 1, "a-new-password-1").await.map_err(|e| eyre!("key login: {e}"))?;
+    ensure!(found == name, "the key found {found:?}, not {name:?}");
+    let a = Bot::login(ctx.server, &name, "a-new-password-1").await?;
+    ensure!(a.unlink().await.is_err(), "an account was unlinked");
     a.disconnect().await
 }
 
@@ -782,8 +815,10 @@ async fn main() -> Result<()> {
                 "direct-test" => direct_test(&mut ctx).await,
                 "presence" => presence(&mut ctx).await,
                 "slow-handshake" => slow_handshake(&mut ctx).await,
-                // Not in the default list: a server in the "mutual" mode, and two servers.
+                // Not in the default list: a server in the "mutual" mode, one requiring
+                // identities, and two servers.
                 "friends-mutual" => friends_mutual(&mut ctx).await,
+                "identity-required" => identity_required(&mut ctx).await,
                 "federation" => match other {
                     Some(other) => federation(&mut ctx, other).await,
                     None => Err(eyre!("federation needs --other <second server>")),

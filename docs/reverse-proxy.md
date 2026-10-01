@@ -56,7 +56,7 @@ When the server starts, it rewrites every address it hands out to use these:
 - content downloads, which are addressed to the host name so Caddy can route them;
 - relay addresses.
 
-`GET /api/info` reports the ports, and **Set up** in the launcher reads them.
+`GET /api/info` reports the ports, and **Connect** in the launcher reads them.
 
 Any port `[public]` leaves unset is the one its service listens on. So moving a listening port is enough, and with plain port forwarding to other numbers you only set the ones that differ. Without a `[public]` section, the server hands out what `service.toml` says, as before.
 

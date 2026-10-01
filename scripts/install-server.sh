@@ -218,6 +218,7 @@ if [ "$command" = status ]; then
     fi
     echo "Friend lists:  $(value friends mode)"
     echo "Accounts:      $( [ "$(value limits open_registration)" = false ] && echo "closed to new players" || echo "open")"
+    echo "Identities:    $( [ "$(value limits require_identity)" = true ] && echo "required for every account" || echo "optional (password-only accounts allowed)")"
     echo "Admin API:     $( [ "$(value admin enabled)" = true ] && echo "on (SSH tunnel to 127.0.0.1:50051; key in $STATE_DIR/admin-key.txt)" || echo "off")"
     coord="$(value federation coordinator)"
     if [ -n "$coord" ]; then
@@ -724,6 +725,16 @@ fi
 toml_set() {
   sed -i -E "/^\\[$1\\]\$/,/^\\[/ s|^$2 = .*|$2 = $3|" "$CONFIG"
 }
+# Sets a key in a plain section, adding the key or the section when missing.
+toml_put() {
+  if ! grep -q "^\\[$1\\]\$" "$CONFIG"; then
+    printf '\n[%s]\n%s = %s\n' "$1" "$2" "$3" >> "$CONFIG"
+  elif sed -n "/^\\[$1\\]\$/,/^\\[/p" "$CONFIG" | grep -q "^$2 = "; then
+    toml_set "$1" "$2" "$3"
+  else
+    sed -i "/^\\[$1\\]\$/a $2 = $3" "$CONFIG"
+  fi
+}
 if [ -n "$relay" ]; then
   toml_set nat relay "\"$relay\""
   say "Relay: $relay"
@@ -764,9 +775,13 @@ else
 fi
 say "Friend lists: $friends"
 if [ -n "$admin" ]; then toml_set admin enabled "$admin"; fi
-if [ -n "$registration" ]; then toml_set limits open_registration "$registration"; fi
+if [ -n "$registration" ]; then toml_put limits open_registration "$registration"; fi
+# Every account linked to a player identity (the launcher finds it with the player's key),
+# unless the operator turned it off.
+if [ "$first_install" -eq 1 ] || [ -z "$(value limits require_identity)" ]; then toml_put limits require_identity true; fi
 say "Admin API: $( [ "$(value admin enabled)" = true ] && echo "on (through an SSH tunnel only)" || echo off)"
 say "New accounts: $( [ "$(value limits open_registration)" = false ] && echo closed || echo open)"
+say "Accounts need a player identity: $( [ "$(value limits require_identity)" = true ] && echo yes || echo no)"
 fi
 
 # A coordinator on this machine: its own service, behind Caddy on HTTPS.

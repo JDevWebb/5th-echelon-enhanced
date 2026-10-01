@@ -98,13 +98,22 @@ pub struct Plan {
     pub game_dir: PathBuf,
     /// The server, as typed.
     pub server: String,
-    /// Sign in with these; None makes a one-click account named after `nick`.
-    pub credentials: Option<(String, String)>,
-    pub nick: String,
-    /// Link the account to the player's identity (friends follow them there,
-    /// and the identity can sign in to it). Off: the identity isn't shown to
-    /// this server at all.
-    pub link_identity: bool,
+    /// The name for a new account, used only when the player's identity has
+    /// none on this server. None: the setup stops and asks (see
+    /// [`Done::NeedsName`]).
+    pub new_name: Option<String>,
+}
+
+/// How a setup ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Done {
+    Ready,
+    /// The player has no account on `server` (the one picked, for a
+    /// network): they choose a name, and the setup runs again with it.
+    NeedsName {
+        server: String,
+        suggested: String,
+    },
 }
 
 /// Progress lines for the UI.
@@ -142,7 +151,7 @@ pub fn pick_from_network(address: &str, log: &Log) -> Result<Option<String>, Str
     Ok(Some(listing.host.clone()))
 }
 
-pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<(), String> {
+pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done, String> {
     let dir = &plan.game_dir;
 
     if let Some(dll) = bundled {
@@ -196,66 +205,78 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<(), S
         }
     }
 
-    say(log, "Setting up your account…");
-    // The player's identity, on servers that support it: signs in to their account here
-    // from another PC, and carries friends between servers.
+    say(log, "Looking for your account…");
+    // Every account is linked to the player's identity: it finds their account here, from any
+    // PC, and carries friends between servers.
     // Signatures name the server as the player typed it, never what the server says it is:
     // a server claiming to be another can't reuse them there.
-    let supports_identity = plan.link_identity && info.as_ref().is_some_and(|i| i.features.iter().any(|f| f == "identity"));
-    let identity = match supports_identity.then(|| identity::host_key(&plan.server)) {
-        Some(host) => match setup::player_identity::load_or_create() {
-            Ok(identity) => Some((Arc::new(identity), host)),
-            Err(e) => {
-                say(log, format!("Your identity couldn't be loaded ({e}); friends won't follow you to other servers."));
-                None
-            }
-        },
-        None => None,
-    };
+    if !info.as_ref().is_some_and(|i| i.features.iter().any(|f| f == "identity-login")) {
+        return Err(format!(
+            "{} can't find accounts by player identity, which this launcher needs. Ask its operator to update the server.",
+            plan.server
+        ));
+    }
+    let host = identity::host_key(&plan.server);
+    let identity = Arc::new(setup::player_identity::load_or_create().map_err(|e| format!("Your identity couldn't be loaded: {e}."))?);
     let accounts = Accounts {
         api: profile.api_server_url().to_string(),
-        identity: identity.clone(),
+        identity: Some((Arc::clone(&identity), host.clone())),
     };
-    // Only this server's own password is ever sent to it; names from other servers are
-    // only tried with the identity key, and name a new account.
+    // Only this server's own password is ever sent to it.
     let saved_secret = profile.user.secret();
     let saved = saved_secret.as_deref().filter(|_| profile.has_account()).map(|p| (profile.user.username.as_str(), p));
-    let cfg_now = Config::load(dir);
-    let other_names: Vec<String> = cfg_now
-        .profiles
-        .iter()
-        .filter(|p| p.server != plan.server && !p.user.username.is_empty())
-        .map(|p| p.user.username.clone())
-        .collect();
-    let names: Vec<&str> = other_names.iter().map(String::as_str).collect();
-    let (username, password, how) = match &plan.credentials {
-        // Credentials the player typed must sign in as they are.
-        Some((u, p)) => {
-            account::AccountService::login(&accounts, u, p).map_err(|e| format!("Couldn't sign in as {u}: {e}."))?;
-            (u.clone(), p.clone(), account::Outcome::Existing)
+    let found = account::find_account(&accounts, saved).map_err(|e| format!("Couldn't look for your account: {e}."))?;
+    let (username, password, how) = match (found, &plan.new_name) {
+        (Some(found), _) => found,
+        (None, Some(name)) => {
+            say(log, format!("Creating your account {}…", account::account_name(name)));
+            let (u, p) = account::create_account(&accounts, name).map_err(|e| match e {
+                account::AccountError::Taken => format!("Someone already has the name {}. Choose another.", account::account_name(name)),
+                e => format!("Couldn't create your account: {e}."),
+            })?;
+            (u, p, account::Outcome::Created)
         }
-        None => account::ensure_account(&accounts, saved, &names, &plan.nick).map_err(|e| format!("Couldn't set up an account: {e}."))?,
+        (None, None) => {
+            // The name the player goes by elsewhere, or on this PC.
+            let suggested = Config::load(dir)
+                .profiles
+                .iter()
+                .map(|p| p.user.username.clone())
+                .find(|u| !u.is_empty())
+                .unwrap_or_else(windows_user);
+            say(log, format!("You don't have an account on {} yet.", plan.server));
+            return Ok(Done::NeedsName {
+                server: plan.server.clone(),
+                suggested,
+            });
+        }
     };
     say(
         log,
         match how {
             account::Outcome::Existing => format!("Signed in as {username}."),
-            account::Outcome::Recovered => format!("Signed in to your account {username} with your identity, and gave it a new password."),
-            account::Outcome::Created => format!("Created the account {username}."),
+            account::Outcome::Recovered => format!("Found your account {username} with your identity."),
+            account::Outcome::Created => format!("Created your account {username}."),
         },
     );
-    if let Some((identity, host)) = &identity {
+    // An account from before identities were required: linked now (a no-op when it is).
+    if how == account::Outcome::Existing {
         let linked = crate::services::rt().block_on(async {
             tokio::time::timeout(
                 Duration::from_secs(8),
-                crate::network::link_identity(profile.api_server_url().to_string(), identity, host, &username, &password),
+                crate::network::link_identity(profile.api_server_url().to_string(), &identity, &host, &username, &password),
             )
             .await
         });
         match linked {
-            Ok(Ok(())) => say(log, format!("Linked to your identity ({}).", identity::short(&identity.global_id()))),
-            Ok(Err(e)) => say(log, format!("Couldn't link your identity: {e}. Friends won't follow you from other servers.")),
-            Err(_) => say(log, "Couldn't link your identity: no answer in time."),
+            Ok(Ok(())) => {}
+            Ok(Err(crate::network::Error::Rpc(status))) if status.code() == tonic::Code::AlreadyExists => {
+                return Err(format!(
+                    "{username} is linked to another identity. Import that identity in Settings to use this account here."
+                ))
+            }
+            Ok(Err(e)) => return Err(format!("Couldn't link {username} to your identity: {e}.")),
+            Err(_) => return Err("Couldn't link your account to your identity: the server didn't answer in time.".into()),
         }
     }
     // The account id the server gave the account (the name, unless a renamed account still
@@ -309,36 +330,22 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<(), S
         c.apply_profile(&profile);
     })
     .map_err(|e| format!("Couldn't save the settings: {e}"))?;
-    say(log, "Ready.");
-    Ok(())
+    say(
+        log,
+        format!(
+            "Ready. You're {} on {}, linked to your identity ({}).",
+            profile.user.username,
+            plan.server,
+            identity::short(&identity.global_id())
+        ),
+    );
+    Ok(Done::Ready)
 }
 
 /// Renames the account on the profile named `profile_name`: signed with the
 /// player's identity when the server has one, reserved across servers
 /// sharing friends. Updates the profile (and the game's settings, if it's
 /// the current one).
-/// Unlinks the account on a set-up server from the player's identity.
-pub fn unlink(game_dir: &Path, profile_name: &str) -> Result<String, String> {
-    let cfg = Config::load(game_dir);
-    let profile = cfg.profile(profile_name).cloned().ok_or("That server isn't set up any more.")?;
-    let password = profile.user.secret().ok_or("The saved password can't be read here; set up the server again.")?;
-    crate::services::rt()
-        .block_on(async {
-            tokio::time::timeout(
-                Duration::from_secs(10),
-                crate::network::unlink_identity(profile.api_server_url().to_string(), &profile.user.username, &password),
-            )
-            .await
-        })
-        .map_err(|_| "The server didn't answer in time.".to_string())?
-        .map_err(|e| match e {
-            crate::network::Error::Rpc(status) if status.code() == tonic::Code::Unimplemented => "This server can't unlink identities.".to_string(),
-            crate::network::Error::Rpc(status) => status.message().to_string(),
-            e => e.to_string(),
-        })?;
-    Ok(format!("{} on {} is no longer linked to your identity.", profile.user.username, profile.server))
-}
-
 pub fn rename(game_dir: &Path, profile_name: &str, new_name: &str) -> Result<String, String> {
     let mut cfg = Config::load(game_dir);
     let profile = cfg.profile(profile_name).cloned().ok_or("That server isn't set up any more.")?;

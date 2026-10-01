@@ -110,14 +110,15 @@ fn ticket_key(pid: u32, password: &str) -> Vec<u8> {
 }
 
 /// Signs in to `name` with its identity key (signed for `host`), optionally
-/// setting a new password.
-pub async fn key_login(server: IpAddr, identity: &identity::Identity, host: &str, name: &str, time: i64, new_password: &str) -> std::result::Result<(), tonic::Status> {
+/// setting a new password; an empty `name` is whichever account the identity
+/// has there. Answers the account's name.
+pub async fn key_login(server: IpAddr, identity: &identity::Identity, host: &str, name: &str, time: i64, new_password: &str) -> std::result::Result<String, tonic::Status> {
     let channel = Channel::from_shared(api_url(server))
         .map_err(|e| tonic::Status::internal(e.to_string()))?
         .connect()
         .await
         .map_err(|e| tonic::Status::unavailable(e.to_string()))?;
-    UsersClient::new(channel)
+    let answer = UsersClient::new(channel)
         .key_login(server_api::users::KeyLoginRequest {
             username: name.into(),
             global_id: identity.global_id(),
@@ -127,7 +128,7 @@ pub async fn key_login(server: IpAddr, identity: &identity::Identity, host: &str
             host: host.into(),
         })
         .await?;
-    Ok(())
+    Ok(answer.into_inner().user.map(|u| u.username).unwrap_or_default())
 }
 
 /// A registration with the NAT helper, as the hook makes it.

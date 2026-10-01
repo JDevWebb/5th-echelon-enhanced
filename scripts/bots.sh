@@ -5,7 +5,8 @@
 #   scripts/bots.sh <folder with dedicated_server and testbot> [scenario ...]
 #
 # FRIENDS_MODE=mutual runs the server with friends-only lists (for the
-# friends-mutual scenario).
+# friends-mutual scenario); REQUIRE_IDENTITY=1 with `[limits]
+# require_identity` (for identity-required).
 set -euo pipefail
 bin=$(cd "$1" && pwd); shift
 dir=$(mktemp -d) && cd "$dir"
@@ -20,6 +21,10 @@ sed -i -E "s|^(storage_host = \".*\")$|\1\ntrusted_subnet = \"127.0.0.0/8\"|" se
 if [ -n "${FRIENDS_MODE:-}" ]; then
   sed -i "/^\[friends\]/,/^\[/ s/^mode = .*/mode = \"$FRIENDS_MODE\"/" service.toml
   grep -q "^mode = \"$FRIENDS_MODE\"" service.toml || { echo "couldn't set [friends] mode"; exit 1; }
+fi
+if [ -n "${REQUIRE_IDENTITY:-}" ]; then
+  sed -i "/^\[limits\]/,/^\[/ s/^require_identity = .*/require_identity = true/" service.toml
+  grep -q "^require_identity = true" service.toml || { echo "couldn't set [limits] require_identity"; exit 1; }
 fi
 RUST_LOG=info ./dedicated_server >server.log 2>&1 & srv=$!
 for _ in $(seq 100); do (echo >/dev/tcp/127.0.0.1/50051) 2>/dev/null && break; sleep 0.1; done

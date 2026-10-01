@@ -88,7 +88,7 @@ proxies = ["172.17.0.0/16"]      # proxies whose X-Forwarded-For is believed
 
 Without this section, nothing changes. With it:
 - the server hands out these ports, and for any left unset, the port its service listens on: the login port in the online config, the game service in tickets, content downloads, and relay addresses;
-- `GET /api/info` reports them as `ports` (and `host`), and the launcher's **Set up** stores them for the player;
+- `GET /api/info` reports them as `ports` (and `host`), and the launcher's **Connect** stores them for the player;
 - `X-Forwarded-For` is believed from the listed proxies (and always from a proxy on this machine), so the rate limits count each player, not the proxy.
 - With **`api_tls`**, launchers and overlays use `https://host[:api_tls]` for the API instead, so passwords and sign-in tokens never travel readable. The launcher falls back to the plain API when that port doesn't answer.
 - Identity signatures name the host the player typed. The server accepts signatures for its `host`, its public address and its **`aliases`**, and no others, so a signature made for another server can't be replayed here.
@@ -100,7 +100,10 @@ Without this section, nothing changes. With it:
 failed_logins_per_10_minutes = 30  # per address, over every login route
 registrations_per_hour = 20        # per address
 open_registration = true           # false: no new accounts (only existing ones sign in)
+require_identity = false           # true: every account is linked to a player identity
 ```
+
+- With `require_identity = true` (the installer's default), accounts are only made through the launcher, linked to the player's identity: the launcher finds a player's account by their identity, so they never type a password, and accounts can't be unlinked. `/api/register` and password-only registrations are refused.
 
 - The login limit covers the game's own login, the launcher's (gRPC) and the community API. Only failed logins count: players sharing one address sign in often, and only password guessing fails a lot.
 - Players behind one address (a LAN party, a household) share the registration budget, so raise it if a big group sets up at once.

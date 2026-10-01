@@ -94,6 +94,11 @@ pub fn registration_open() -> bool {
     limits().open_registration
 }
 
+/// Whether every account must be linked to an identity (`[limits] require_identity`).
+pub fn identity_required() -> bool {
+    limits().require_identity
+}
+
 /// Starts a sign-in for `name` from `peer`. It counts now, before the
 /// password is checked, so a burst of guesses can't all get through before the
 /// first failure is recorded; false when the address or the account is over

@@ -35,13 +35,11 @@ pub struct Play {
     /// The join form, shown when there's no server yet or on "Change server".
     editing: bool,
     server: String,
+    /// The name for a new account, asked for when `needs_name` is set.
     nick: String,
-    have_account: bool,
-    username: String,
-    password: String,
-    /// Don't link the account to the player's identity (see `flow::Plan`);
-    /// linking is ticked unless the player unticks it.
-    dont_link: bool,
+    /// The server the player has no account on yet (their identity found
+    /// none): the form asks for a name to make one.
+    needs_name: Option<String>,
     looking: Slot<Result<Vec<IpAddr>, String>>,
     /// The servers that answered on this network, when more than one did.
     found: Vec<IpAddr>,
@@ -56,7 +54,7 @@ pub struct Play {
     /// Why the directory couldn't be read, shown quietly with the servers.
     directory_error: Option<String>,
 
-    setup: Slot<Result<(), String>>,
+    setup: Slot<Result<flow::Done, String>>,
     log: flow::Log,
     setup_error: Option<String>,
     fixing: Slot<Result<String, String>>,
@@ -98,14 +96,23 @@ impl Play {
         let mut changed = false;
         if let Some(result) = self.setup.poll() {
             match result {
-                Ok(()) => {
+                Ok(flow::Done::Ready) => {
                     notices.info("You're set up.");
                     self.editing = false;
+                    self.needs_name = None;
                     // The setup may have brought a directory: look at its servers again.
                     self.browsed = false;
                     self.directory = None;
                     self.setup_error = None;
-                    self.password.clear();
+                }
+                Ok(flow::Done::NeedsName { server, suggested }) => {
+                    // The network's best server, or the one typed: the account is made there.
+                    self.server = server.clone();
+                    self.server_picked = false;
+                    self.nick = suggested;
+                    self.needs_name = Some(server);
+                    self.editing = true;
+                    self.setup_error = None;
                 }
                 Err(e) => self.setup_error = Some(e),
             }
@@ -232,9 +239,6 @@ fn game_card(play: &mut Play, game: &mut Game, notices: &mut Notices, ui: &mut e
 }
 
 fn join_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut egui::Ui) {
-    if play.nick.is_empty() && !play.have_account {
-        play.nick = flow::windows_user();
-    }
     if let Some(found) = play.looking.poll() {
         match found {
             Ok(ips) if ips.len() == 1 => {
@@ -251,14 +255,24 @@ fn join_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut egu
     theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(theme::heading("Join a server"));
-        ui.label(theme::muted("A server's or a network's address (e.g. play.scbl.jdevwebb.net for the community), or find one on your network."));
+        ui.label(theme::muted(
+            "A server's or a network's address (e.g. play.scbl.jdevwebb.net for the community), or find one on your network.",
+        ));
         ui.add_space(4.0);
         ui.add_enabled_ui(!play.setup.running(), |ui| {
             egui::Grid::new("join").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
                 ui.label("Server");
                 ui.horizontal(|ui| {
-                    if ui.add(egui::TextEdit::singleline(&mut play.server).hint_text("e.g. 10.8.0.10 or play.example.org").desired_width(260.0)).changed() {
+                    if ui
+                        .add(
+                            egui::TextEdit::singleline(&mut play.server)
+                                .hint_text("e.g. 10.8.0.10 or play.example.org")
+                                .desired_width(260.0),
+                        )
+                        .changed()
+                    {
                         play.server_picked = false;
+                        play.needs_name = None;
                     }
                     if play.looking.running() || play.browsing.running() {
                         ui.spinner();
@@ -276,43 +290,36 @@ fn join_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut egu
                 });
                 ui.end_row();
 
-                if play.have_account {
-                    ui.label("Username");
-                    ui.add(egui::TextEdit::singleline(&mut play.username).desired_width(260.0));
-                    ui.end_row();
-                    ui.label("Password");
-                    ui.add(egui::TextEdit::singleline(&mut play.password).password(true).desired_width(260.0));
-                    ui.end_row();
-                } else {
+                if play.needs_name.is_some() {
                     ui.label("Your name");
                     ui.add(egui::TextEdit::singleline(&mut play.nick).hint_text("what other players see").desired_width(260.0));
                     ui.end_row();
                 }
-                ui.label("");
-                ui.checkbox(&mut play.have_account, "I already have an account on this server");
-                ui.end_row();
-                ui.label("");
-                let mut link = !play.dont_link;
-                ui.checkbox(&mut link, "Link to my identity").on_hover_text(
-                    "Friends follow you to this server from others that share friends with it, and your identity can sign you in here from another PC. Only link servers you trust: a server you link can change your friends on servers that share friends with it.",
-                );
-                play.dont_link = !link;
-                ui.end_row();
             });
         });
+        if let Some(server) = &play.needs_name {
+            ui.label(theme::muted(format!(
+                "You don't have an account on {server} yet. Choose the name other players will see; your identity signs you in to it from now on."
+            )));
+        } else {
+            ui.label(theme::muted("Your account is found with your identity: no username or password to remember.").small());
+        }
         found_list(play, ui);
         directory_list(play, ui);
         ui.add_space(8.0);
         ui.horizontal(|ui| {
-            let ready = !play.server.trim().is_empty() && if play.have_account { !play.username.is_empty() && !play.password.is_empty() } else { !play.nick.trim().is_empty() };
+            let naming = play.needs_name.is_some();
+            let ready = !play.server.trim().is_empty() && (!naming || !play.nick.trim().is_empty());
             if play.setup.running() {
                 ui.spinner();
-                ui.label("Setting up…");
-            } else if ui.add_enabled(ready, theme::primary("Set up")).clicked() {
-                start_setup(play, game, ctx);
+                ui.label(if naming { "Creating your account…" } else { "Connecting…" });
+            } else if ui.add_enabled(ready, theme::primary(if naming { "Create account" } else { "Connect" })).clicked() {
+                let name = naming.then(|| play.nick.trim().to_string());
+                start_setup(play, game, ctx, name);
             }
             if game.cfg.current_profile().is_some() && ui.button("Cancel").clicked() {
                 play.editing = false;
+                play.needs_name = None;
             }
         });
         setup_progress(play, ui);
@@ -456,24 +463,21 @@ fn network_list(play: &mut Play, game: &Game, current: &str, ctx: &egui::Context
         }
     });
     if let Some(host) = switch_to {
-        let name = game.cfg.current_profile().map(|p| p.user.username.clone()).unwrap_or_default();
+        // The same name on the network's other server: made there at once if need be.
+        let name = game.cfg.current_profile().map(|p| p.user.username.clone()).filter(|n| !n.is_empty());
         play.server = host;
         play.server_picked = false;
-        play.have_account = false;
-        if !name.is_empty() {
-            play.nick = name;
-        }
-        start_setup(play, game, ctx);
+        start_setup(play, game, ctx, name);
     }
 }
 
-fn start_setup(play: &mut Play, game: &Game, ctx: &egui::Context) {
+/// Runs the setup; `new_name` names the account if the player has none on
+/// the server (None: the setup asks).
+fn start_setup(play: &mut Play, game: &Game, ctx: &egui::Context, new_name: Option<String>) {
     let mut plan = flow::Plan {
         game_dir: game.dir.clone(),
         server: play.server.trim().to_string(),
-        credentials: play.have_account.then(|| (play.username.trim().to_string(), play.password.clone())),
-        nick: play.nick.trim().to_string(),
-        link_identity: !play.dont_link,
+        new_name,
     };
     play.setup_error = None;
     play.log = Arc::default();
@@ -522,9 +526,7 @@ fn server_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut e
                         play.editing = true;
                         play.server_picked = false;
                         play.server = profile.server.clone();
-                        play.have_account = profile.has_account();
-                        play.username = profile.user.username.clone();
-                        play.password.clear();
+                        play.needs_name = None;
                     }
                 });
             }
@@ -558,13 +560,8 @@ fn checklist_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mu
                 if fixable && has_server && game.managed.is_none() && !play.busy() && ui.add(theme::primary("Fix everything")).clicked() {
                     let profile = game.cfg.current_profile().cloned().unwrap_or_default();
                     play.server = profile.server;
-                    play.have_account = false;
-                    play.nick = if profile.user.username.is_empty() {
-                        flow::windows_user()
-                    } else {
-                        profile.user.username
-                    };
-                    start_setup(play, game, ctx);
+                    let name = Some(profile.user.username).filter(|n| !n.is_empty());
+                    start_setup(play, game, ctx, name);
                 }
             });
         });
@@ -614,9 +611,8 @@ fn run_fix(play: &mut Play, game: &Game, fix: Fix, ctx: &egui::Context) {
         Fix::ChooseServer | Fix::SetUpAccount => {
             let profile = game.cfg.current_profile().cloned().unwrap_or_default();
             play.editing = true;
-            play.have_account = fix == Fix::SetUpAccount && profile.has_account();
+            play.needs_name = None;
             play.server = profile.server;
-            play.username = profile.user.username;
         }
         Fix::InstallClient => play.fixing.start(ctx, move || flow::install_client(&dir, crate::dll_utils::bundled())),
         Fix::PinAdapter => play.fixing.start(ctx, move || flow::pin_adapter(&dir)),

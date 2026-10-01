@@ -115,6 +115,12 @@ pub struct LimitsConfig {
     /// Off: only accounts that exist can sign in.
     #[serde(default = "enabled")]
     pub open_registration: bool,
+    /// Whether every account must be linked to a player identity (the
+    /// launcher's key, see `identity`): new accounts need one, and accounts
+    /// can't be unlinked. Off: password-only accounts may be made (tools,
+    /// `/api/register`), as before identities.
+    #[serde(default)]
+    pub require_identity: bool,
 }
 
 const fn default_failed_logins() -> usize {
@@ -131,6 +137,7 @@ impl Default for LimitsConfig {
             failed_logins_per_10_minutes: default_failed_logins(),
             registrations_per_hour: default_registrations(),
             open_registration: true,
+            require_identity: false,
         }
     }
 }

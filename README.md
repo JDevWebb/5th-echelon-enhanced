@@ -25,7 +25,7 @@
 
 ## The community server
 
-**There are public 5th Echelon servers that anyone can play on, for free.** Get the launcher, type one address, press Set up: the launcher picks the server closest to you.
+**There are public 5th Echelon servers that anyone can play on, for free.** Get the launcher, type one address, press Connect: the launcher picks the server closest to you.
 
 <table>
 <tr><td><b>Address</b></td><td><code>play.scbl.jdevwebb.net</code>: the community network; the launcher pings every server in it and sets you up on the best</td></tr>
@@ -39,7 +39,7 @@
 **To play:**
 1. Download **`launcher.exe`** (Windows) or **`launcher-linux-x86_64`** (Linux, Steam Deck) from the [latest release](https://github.com/JDevWebb/5th-echelon-enhanced/releases/latest).
 2. Run it, and under **Join a server** type **`play.scbl.jdevwebb.net`**.
-3. Pick a name, press **Set up**, then **Play**. Press <kbd>F5</kbd> in the game to add friends.
+3. Press **Connect** (the first time, pick the name other players will see), then **Play**. Press <kbd>F5</kbd> in the game to add friends.
 
 The launcher pings every server in the network and sets you up on the one with the lowest ping (the setup log says which). Afterwards the Play screen lists them all with your ping to each, and **Switch** moves you to another in one click, with the same name and friends.
 
@@ -104,19 +104,18 @@ You need **Splinter Cell: Blacklist on PC** (Steam or Ubisoft Connect) and **Win
 2. **Run it.** It finds the game on its own: Steam libraries, Ubisoft Connect, and the usual folders on every drive. If it can't, choose the folder with `Blacklist_game.exe`; it remembers it.
 3. **Join a server.**
    - Enter **`play.scbl.jdevwebb.net`** for the [community server](#the-community-server), the address your own community gave you, or press **Find on my network**.
-   - Pick a name, or tick **I already have an account on this server**.
-   - Press **Set up**.
+   - Press **Connect**. The launcher finds your account with your identity; if you don't have one there yet, it asks for the name other players will see and makes it.
 4. **Press Play.**
 
 <p align="center">
   <img src="./docs/screenshots/launcher-play.png" width="640" alt="The launcher's Play screen: the game found, the join form, and the checklist">
 </p>
 
-**What Set up does for you:**
+**What Connect does for you:**
 - installs the 5th Echelon client into the game, keeping the game's own file so you can undo it;
 - checks the server answers;
-- creates your account, or signs you in, with a random password for that server only;
-- links the account to your identity, if you leave **Link to my identity** ticked, so friends follow you between servers;
+- finds your account with your identity (no username or password to remember), or creates one with the name you choose, with a random password for that server only;
+- keeps every account linked to your identity, so friends follow you between servers and a new PC signs straight in;
 - picks the network adapter other players can reach you on;
 - makes a rank 5 save so co-op and Spies vs Mercs are unlocked.
 
@@ -125,7 +124,7 @@ The **checklist** keeps an eye on all of this. Anything that goes wrong later (a
 > [!TIP]
 > **No VPN needed.** The server tells your game its public address, so friends anywhere can join your matches; when a router can't be reached directly, the match goes through the server instead. See [Playing over the internet](#playing-over-the-internet).
 >
-> **Playing over a VPN** anyway (Radmin VPN, ZeroTier, Tailscale, …)? Connect to it before pressing Set up. The launcher then pins the VPN adapter, and **Settings › Network › Don't start the game without this adapter** stops the game quietly using the wrong network when the VPN is off.
+> **Playing over a VPN** anyway (Radmin VPN, ZeroTier, Tailscale, …)? Turn it on before pressing Connect. The launcher then pins the VPN adapter, and **Settings › Network › Don't start the game without this adapter** stops the game quietly using the wrong network when the VPN is off.
 
 ### Playing over the internet
 
@@ -183,7 +182,7 @@ Some antivirus programs, Microsoft Defender included, may flag `launcher.exe` or
    Add-MpPreference -ExclusionPath "C:\Program Files (x86)\Steam\steamapps\common\Splinter Cell Blacklist\src\SYSTEM"
    ```
    Use your own paths. **Settings › Client** in the launcher shows the game folder.
-3. **Run Set up again** if the DLL was removed; it reinstalls it.
+3. **Press Connect again** if the DLL was removed; it reinstalls it.
 4. **Report the false positive** to your antivirus: [Microsoft](https://www.microsoft.com/wdsi/filesubmission), [Avast/AVG](https://www.avast.com/false-positive-file-form.php), [Bitdefender](https://www.bitdefender.com/submit/), [Kaspersky](https://opentip.kaspersky.com/), [ESET](https://support.eset.com/en/kb141), [Norton](https://submit.norton.com/). Reports clear the detection for everyone, usually within days.
 
 Don't turn your antivirus off; the two exclusions are all it needs. We report every release to Microsoft, and are working on code-signing the Windows files, which stops most of these warnings.
@@ -204,7 +203,7 @@ The game runs under Proton (Steam) or Wine (Lutris, Heroic, …), and 5th Echelo
    ```
    On a Steam Deck, do this in **Desktop Mode**.
 2. **If you've never started the game on this PC, start it once from Steam and quit.** Proton only creates the game's Wine files on its first run, and your save goes in there; the checklist reminds you.
-3. **Join a server and press Set up**, as on Windows. The launcher finds the game in any Steam library (native, Flatpak or Snap, SD card included), or in Lutris, Heroic and `~/.wine` prefixes. You can also choose the folder yourself.
+3. **Join a server and press Connect**, as on Windows. The launcher finds the game in any Steam library (native, Flatpak or Snap, SD card included), or in Lutris, Heroic and `~/.wine` prefixes. You can also choose the folder yourself.
 4. **Press Play.**
    - Steam games start through Steam, with Proton.
    - Other installs start with `wine` in their own prefix, or from the app you installed them with.
@@ -261,7 +260,6 @@ Everything the launcher does can be done by hand:
 - **Updates:** the launcher updates itself from this project's releases (each one's notes carry checksums, build provenance and [VirusTotal](#antivirus-warnings) results). It checks every download against the published SHA-256 checksums, and the checksums against the release key's signature, so a changed release is never installed.
 - **Your details stay yours:**
   - the launcher and overlay use HTTPS where the server offers it, so passwords and sign-ins never travel unencrypted;
-  - linking your identity to a server is your choice, and **Unlink** undoes it;
   - a server directory is used only over `https://`, never replaces one you chose, and lists only public hosts, each shown by name;
   - on Windows, saved passwords and your identity key are encrypted for your Windows user.
 - **Linux and Steam Deck:** a native Linux launcher, Proton and Wine support in the client, and the many-core CPU fix.
@@ -482,7 +480,7 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
   - friends-only lists and invites for public servers.
 - An identity per player that links their accounts across servers, and signs them in on a new PC.
 - A coordinator that shares friends between servers, reserves names across them, and keeps a server directory; the launcher adopts it on joining, pings every server and preselects the best.
-- Linking an account to your identity is a choice on the join form, and **Unlink** in Settings undoes it.
+- Every account is linked to its player's identity: the launcher finds your account on a server by itself, and asks for a name only when you have none there yet. Servers can require it (`[limits] require_identity`, on by default with the installer).
 - Renaming, with the account id kept, and warnings in the overlay about players using a friend's name on another server.
 - Each server gets its own random password (upstream reused one everywhere); on Windows it's saved encrypted.
 - See [docs/friends.md](docs/friends.md).

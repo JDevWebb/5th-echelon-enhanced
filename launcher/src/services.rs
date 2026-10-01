@@ -65,19 +65,21 @@ impl AccountService for Accounts {
             Ok(Ok(())) => Ok(()),
             Ok(Err(network::Error::UsernameAlreadyTaken)) => Err(AccountError::Taken),
             Ok(Err(network::Error::ConnectionFailed)) => Err(AccountError::Other("couldn't connect to the server".into())),
+            Ok(Err(network::Error::Rpc(status))) => Err(AccountError::Other(status.message().to_string())),
             Ok(Err(e)) => Err(AccountError::Other(e.to_string())),
         }
     }
 
-    fn key_login(&self, username: &str, new_password: &str) -> Result<(), AccountError> {
+    fn identity_login(&self, new_password: &str) -> Result<Option<String>, AccountError> {
         let Some((identity, host)) = self.identity.as_ref() else {
-            return Err(AccountError::NotFound);
+            return Ok(None);
         };
-        let r = rt().block_on(async { tokio::time::timeout(TIMEOUT, network::key_login(self.api.clone(), identity, host, username, new_password)).await });
+        let r = rt().block_on(async { tokio::time::timeout(TIMEOUT, network::identity_login(self.api.clone(), identity, host, new_password)).await });
         match r {
-            Ok(Ok(())) => Ok(()),
-            Ok(Err(network::Error::UserNotFound)) => Err(AccountError::NotFound),
+            Ok(Ok(found)) => Ok(found),
             Err(_) => Err(AccountError::Other("the server didn't answer in time".into())),
+            Ok(Err(network::Error::ConnectionFailed)) => Err(AccountError::Other("couldn't connect to the server".into())),
+            Ok(Err(network::Error::Rpc(status))) => Err(AccountError::Other(status.message().to_string())),
             Ok(Err(e)) => Err(AccountError::Other(e.to_string())),
         }
     }

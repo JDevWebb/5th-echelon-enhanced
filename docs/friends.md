@@ -56,20 +56,20 @@ The blocked player isn't told. Their friend requests look sent, but never arrive
 
 ## Your identity
 
-The launcher makes you an identity the first time you join a server that supports one. It's an Ed25519 key, kept in the launcher's folder: `%APPDATA%\5th-Echelon\identity.key` on Windows (encrypted for your Windows user), `~/.config/5th-Echelon/identity.key` on Linux (readable by you only). Its public half, shown as e.g. `K7QF-2M9D`, is your id across servers.
+The launcher makes you an identity the first time you join a server. Every account is linked to one. It's an Ed25519 key, kept in the launcher's folder: `%APPDATA%\5th-Echelon\identity.key` on Windows (encrypted for your Windows user), `~/.config/5th-Echelon/identity.key` on Linux (readable by you only). Its public half, shown as e.g. `K7QF-2M9D`, is your id across servers.
 
 The launcher uses it for two things:
 
 1. **Linking.** It links each account you make to your identity by signing "this account on this server is me". The server checks the signature. That lets friends follow you between servers (see below).
-   - It's a choice: **Link to my identity** on the join form, ticked unless you untick it. Unticked, the server never sees your identity.
-   - Link only servers you trust: a server you link can change your friends on the servers that share friends with it.
-   - **Settings › Servers and accounts › Unlink** undoes it. Friends stop following you to that account, and your identity can no longer sign in to it.
-2. **Signing in without a password.** On a new PC, or when a password stops working, the launcher signs in to your linked accounts with the key and gives each a new password. Each signature names the server, the account and the time, and works once, within five minutes of when it was made.
+   - It isn't optional: the join form has no username, password or link option. An account made before this is linked the next time you connect.
+   - A server you join can change your friends on the servers that share friends with it, so join servers you trust.
+   - Servers with `[limits] require_identity = true` (the installer's default) refuse accounts without an identity, and unlinking.
+2. **Finding your account.** When you connect, the launcher signs in with the key to whichever account on that server is linked to it, and gives it a new password. You never type a name or password for an account you have; the launcher asks for a name only when your identity has no account there yet. Each signature names the server and the time, and works once, within five minutes of when it was made. Only the identity's holder learns whether it has an account on a server.
 
 **To move to another PC:**
 1. On the old PC: **Settings › Identity and friends › Copy to move it to another PC**.
 2. On the new PC: paste it under **Import**.
-3. Join each server again with the name you had there. The launcher signs in to your existing account there.
+3. Connect to each server again. The launcher finds your existing account there by itself.
 
 Whoever has your identity can sign in as you on every server you've linked, so keep the copied text private.
 

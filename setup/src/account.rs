@@ -19,23 +19,23 @@ pub enum AccountError {
 /// The server's account calls.
 pub trait AccountService {
     fn login(&self, username: &str, password: &str) -> Result<(), AccountError>;
+    /// Makes an account, linked to the player's identity.
     fn register(&self, username: &str, password: &str) -> Result<(), AccountError>;
-    /// Signs in to `username` with the player's identity key (see
-    /// `player_identity`) and gives the account `new_password`. `NotFound`
-    /// when the account isn't linked to this identity, or the server can't.
-    fn key_login(&self, _username: &str, _new_password: &str) -> Result<(), AccountError> {
-        Err(AccountError::NotFound)
-    }
+    /// Signs in with the player's identity key (see `player_identity`) to
+    /// whichever account on this server is linked to it, giving it
+    /// `new_password`: its name, or None when the identity has no account
+    /// here.
+    fn identity_login(&self, new_password: &str) -> Result<Option<String>, AccountError>;
 }
 
-/// How [`ensure_account`] got its account.
+/// How [`find_account`] found the player's account.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
     /// The saved account signed in.
     Existing,
-    /// An account of the player's on this server (made on another PC, or
-    /// whose password was lost) signed in with their identity key, and got
-    /// a new password.
+    /// The account linked to the player's identity (made on another PC, or
+    /// whose password was lost) signed in with their identity key, and got a
+    /// new password.
     Recovered,
     /// A new account was made.
     Created,
@@ -63,72 +63,41 @@ pub fn account_name(nick: &str) -> String {
     }
 }
 
-/// A random password for a one-click account: 24 lowercase letters and digits.
+/// A random password: 24 lowercase letters and digits. Players never type
+/// it: the launcher keeps it, and their identity replaces it when lost.
 pub fn new_password() -> String {
     const ALPHABET: &[u8] = b"abcdefghijklmnopqrstuvwxyz234567";
     let mut rng = rand::rng();
     (0..24).map(|_| char::from(ALPHABET[rng.random_range(0..ALPHABET.len())])).collect()
 }
 
-/// Makes sure the player has an account on this server that signs in.
+/// The player's account on this server, without asking them: the saved one
+/// if it still signs in, else the one linked to their identity (with a new
+/// password). None when they have none here yet: they choose a name, and
+/// [`create_account`] makes it.
 ///
-/// * `saved`: the account saved for this server. Kept if it signs in; if its
-///   password is refused, the identity key may still sign in to it.
-/// * `names`: the player's names on other servers, used to name a new one.
-///   The identity key is tried with the saved name and `nick` only.
-///
-/// Otherwise a new account with a random password, named after the player's
-/// usual name or `nick`. A password is only ever sent to the server it was
-/// made for: each server gets its own.
-pub fn ensure_account(service: &dyn AccountService, saved: Option<(&str, &str)>, names: &[&str], nick: &str) -> Result<(String, String, Outcome), AccountError> {
-    let saved = saved.filter(|(u, p)| !u.is_empty() && !p.is_empty());
-    if let Some((username, password)) = saved {
+/// A password is only ever sent to the server it was made for.
+pub fn find_account(service: &dyn AccountService, saved: Option<(&str, &str)>) -> Result<Option<(String, String, Outcome)>, AccountError> {
+    if let Some((username, password)) = saved.filter(|(u, p)| !u.is_empty() && !p.is_empty()) {
         match service.login(username, password) {
-            Ok(()) => return Ok((username.into(), password.into(), Outcome::Existing)),
-            Err(AccountError::WrongPassword) => {
-                let password = new_password();
-                return match service.key_login(username, &password) {
-                    Ok(()) => Ok((username.into(), password, Outcome::Recovered)),
-                    Err(_) => Err(AccountError::WrongPassword),
-                };
-            }
-            // The account is gone from this server: make a new one below.
-            Err(AccountError::NotFound) => {}
+            Ok(()) => return Ok(Some((username.into(), password.into(), Outcome::Existing))),
+            // A password that stopped working, or an account that's gone: the identity knows.
+            Err(AccountError::WrongPassword | AccountError::NotFound) => {}
             Err(e) => return Err(e),
         }
     }
-    // Only this server's saved name and the one typed now: trying the names from other
-    // servers would tell this server which accounts the player has elsewhere.
-    let mut tried: Vec<String> = Vec::new();
-    for name in saved.map(|(u, _)| u).into_iter().chain([nick]) {
-        let name = name.trim();
-        if name.is_empty() || tried.iter().any(|t| t.eq_ignore_ascii_case(name)) || tried.len() >= 5 {
-            continue;
-        }
-        tried.push(name.to_string());
-        let password = new_password();
-        if service.key_login(name, &password).is_ok() {
-            return Ok((name.to_string(), password, Outcome::Recovered));
-        }
-    }
-    let base = saved.map(|(u, _)| u).or_else(|| names.first().copied()).filter(|n| !n.trim().is_empty()).unwrap_or(nick);
-    let (username, password) = create_account(service, base)?;
-    Ok((username, password, Outcome::Created))
+    let password = new_password();
+    Ok(service.identity_login(&password)?.map(|username| (username, password, Outcome::Recovered)))
 }
 
-/// Registers a new account named after `nick` with a random password.
-pub fn create_account(service: &dyn AccountService, nick: &str) -> Result<(String, String), AccountError> {
-    let base = account_name(nick);
+/// Makes an account named `name` (as [`account_name`] cleans it), linked to
+/// the player's identity, with a random password. `Taken` when someone has
+/// the name: the player chooses another.
+pub fn create_account(service: &dyn AccountService, name: &str) -> Result<(String, String), AccountError> {
+    let username = account_name(name);
     let password = new_password();
-    for n in 1..=20 {
-        let username = if n == 1 { base.clone() } else { format!("{base}{n}") };
-        match service.register(&username, &password) {
-            Ok(()) => return Ok((username, password)),
-            Err(AccountError::Taken) => continue,
-            Err(e) => return Err(e),
-        }
-    }
-    Err(AccountError::Taken)
+    service.register(&username, &password)?;
+    Ok((username, password))
 }
 
 #[cfg(test)]
@@ -141,8 +110,8 @@ mod tests {
     #[derive(Default)]
     struct FakeServer {
         accounts: RefCell<HashMap<String, String>>,
-        /// Accounts linked to the player's identity.
-        linked: Vec<String>,
+        /// The account linked to the player's identity, if any.
+        linked: RefCell<Option<String>>,
     }
 
     impl AccountService for FakeServer {
@@ -160,15 +129,16 @@ mod tests {
                 return Err(AccountError::Taken);
             }
             accounts.insert(username.into(), password.into());
+            *self.linked.borrow_mut() = Some(username.into());
             Ok(())
         }
 
-        fn key_login(&self, username: &str, new_password: &str) -> Result<(), AccountError> {
-            if !self.linked.iter().any(|l| l == username) {
-                return Err(AccountError::NotFound);
+        fn identity_login(&self, new_password: &str) -> Result<Option<String>, AccountError> {
+            let linked = self.linked.borrow().clone();
+            if let Some(name) = &linked {
+                self.accounts.borrow_mut().insert(name.clone(), new_password.into());
             }
-            self.accounts.borrow_mut().insert(username.into(), new_password.into());
-            Ok(())
+            Ok(linked)
         }
     }
 
@@ -184,47 +154,32 @@ mod tests {
     }
 
     #[test]
-    fn keeps_or_creates_and_never_reuses_a_password() {
+    fn a_new_player_has_no_account_until_they_name_one() {
         let server = FakeServer::default();
-        server.register("Kiwi", "kiwi-password").unwrap();
-
-        let (u, _, how) = ensure_account(&server, Some(("Kiwi", "kiwi-password")), &[], "ignored").unwrap();
-        assert_eq!((u.as_str(), how), ("Kiwi", Outcome::Existing));
-
-        // The name from another server names the new account, with a password of its own.
-        let (u, p, how) = ensure_account(&server, None, &["Tank"], "ignored").unwrap();
-        assert_eq!((u.as_str(), how), ("Tank", Outcome::Created));
-        assert_ne!(p, "tank-password");
-        assert!(server.login("Tank", &p).is_ok());
-
-        // A wrong password is reported, not papered over with a new account.
-        assert_eq!(ensure_account(&server, Some(("Kiwi", "wrong")), &[], "Kiwi"), Err(AccountError::WrongPassword));
-
-        // No saved account: a new one, with the next free name.
-        let (u, p, how) = ensure_account(&server, None, &[], "Kiwi").unwrap();
-        assert_eq!((u.as_str(), how), ("Kiwi2", Outcome::Created));
+        assert_eq!(find_account(&server, None), Ok(None));
+        let (u, p) = create_account(&server, "Sam Fisher").unwrap();
+        assert_eq!(u, "Sam_Fisher");
         assert!(server.login(&u, &p).is_ok());
+        // Someone else's name is refused, not changed behind the player's back.
+        let other = FakeServer::default();
+        other.accounts.borrow_mut().insert("Kiwi".into(), "theirs-password".into());
+        assert_eq!(create_account(&other, "Kiwi"), Err(AccountError::Taken));
     }
 
     #[test]
-    fn the_identity_key_recovers_an_account() {
-        let server = FakeServer {
-            linked: vec!["Kiwi".into()],
-            ..FakeServer::default()
-        };
-        server.register("Kiwi", "made-on-another-pc").unwrap();
+    fn the_saved_account_or_the_identity_finds_it() {
+        let server = FakeServer::default();
+        let (u, p) = create_account(&server, "Kiwi").unwrap();
+        let (found, _, how) = find_account(&server, Some((&u, &p))).unwrap().unwrap();
+        assert_eq!((found.as_str(), how), ("Kiwi", Outcome::Existing));
 
-        // A new PC with the identity imported, and the player's usual name typed.
-        let (u, p, how) = ensure_account(&server, None, &[], "Kiwi").unwrap();
-        assert_eq!((u.as_str(), how), ("Kiwi", Outcome::Recovered));
-        assert!(server.login("Kiwi", &p).is_ok(), "the account has the new password");
-
-        // Names from other servers aren't tried: they'd tell this one about them.
-        let (u, _, how) = ensure_account(&server, None, &["Kiwi"], "Someone").unwrap();
-        assert_eq!((u.as_str(), how), ("Kiwi2", Outcome::Created), "a new account, named after the usual name");
+        // A new PC with the identity imported: found without a name.
+        let (found, p2, how) = find_account(&server, None).unwrap().unwrap();
+        assert_eq!((found.as_str(), how), ("Kiwi", Outcome::Recovered));
+        assert!(server.login("Kiwi", &p2).is_ok(), "the account has the new password");
 
         // A saved password that stopped working.
-        let (_, _, how) = ensure_account(&server, Some(("Kiwi", "old")), &[], "Kiwi").unwrap();
+        let (_, _, how) = find_account(&server, Some(("Kiwi", "old-password"))).unwrap().unwrap();
         assert_eq!(how, Outcome::Recovered);
     }
 }

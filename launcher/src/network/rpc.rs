@@ -93,7 +93,7 @@ pub async fn register(api_url: String, username: &str, password: &str, identity:
         Err(status) => {
             // Handle different gRPC status codes.
             // The server's reason (a name it won't take, say) is worth showing.
-            if matches!(status.code(), tonic::Code::AlreadyExists) {
+            if status.code() == tonic::Code::AlreadyExists && !status.message().contains("identity") {
                 return Err(Error::UsernameAlreadyTaken);
             }
             return Err(Error::Rpc(status));
@@ -155,49 +155,28 @@ pub async fn rename(api_url: String, username: &str, password: &str, new_name: &
     Ok(resp.username)
 }
 
-/// Signs in to `username` with the player's identity key (signed for `host`,
-/// the server as the player reached it), setting `new_password`.
-pub async fn key_login(api_url: String, identity: &identity::Identity, host: &str, username: &str, new_password: &str) -> Result<(), Error> {
+/// Signs in with the player's identity key (signed for `host`, the server as
+/// the player reached it) to whichever account there is linked to it,
+/// setting `new_password`: its name, or None when the identity has no
+/// account there.
+pub async fn identity_login(api_url: String, identity: &identity::Identity, host: &str, new_password: &str) -> Result<Option<String>, Error> {
     let Ok(mut client) = super::endpoint(&api_url)?.connect().await.map(UsersClient::new) else {
         return Err(Error::ConnectionFailed);
     };
     let time = identity::now();
     let request = server_api::users::KeyLoginRequest {
-        username: username.to_string(),
+        username: String::new(),
         global_id: identity.global_id(),
         time,
-        signature: identity.sign_login(host, username, time, new_password),
+        signature: identity.sign_login(host, "", time, new_password),
         new_password: new_password.to_string(),
         host: identity::host_key(host),
     };
     match client.key_login(request).await {
-        Ok(_) => Ok(()),
-        Err(status) if matches!(status.code(), tonic::Code::Unauthenticated | tonic::Code::NotFound) => Err(Error::UserNotFound),
+        Ok(resp) => Ok(resp.into_inner().user.map(|u| u.username).filter(|u| !u.is_empty())),
+        Err(status) if status.code() == tonic::Code::NotFound => Ok(None),
         Err(status) => Err(Error::Rpc(status)),
     }
-}
-
-/// Signs in as `username` and unlinks the account from the player's
-/// identity: friends stop following them there.
-pub async fn unlink_identity(api_url: String, username: &str, password: &str) -> Result<(), Error> {
-    let Ok(channel) = super::endpoint(&api_url)?.connect().await else {
-        return Err(Error::ConnectionFailed);
-    };
-    let token = UsersClient::new(channel.clone())
-        .login(LoginRequest {
-            username: username.to_string(),
-            password: password.to_string(),
-        })
-        .await?
-        .into_inner()
-        .token;
-    let token: tonic::metadata::MetadataValue<_> = token.parse().map_err(|_| Error::ServerFailure("bad token".into()))?;
-    let mut client = server_api::friends::friends_client::FriendsClient::with_interceptor(channel, move |mut req: tonic::Request<()>| {
-        req.metadata_mut().insert("authorization", token.clone());
-        Ok(req)
-    });
-    client.unlink_identity(server_api::friends::UnlinkIdentityRequest {}).await?;
-    Ok(())
 }
 
 /// Signs in as `username` and links the account to the player's identity,

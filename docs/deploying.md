@@ -117,7 +117,7 @@ It installs the coordinator and Caddy, and no game server. Servers then join it 
 
 ## Renaming servers or the coordinator
 
-Run the installer again with the new names (`--domain`, `--coordinator-domain`), after their A records point at the machine. Accounts, friends and settings stay. A server whose coordinator has a new address joins it again by itself, with the secret it already has. Players set up on an old name run **Set up** again with the new one, or with the network's address.
+Run the installer again with the new names (`--domain`, `--coordinator-domain`), after their A records point at the machine. Accounts, friends and settings stay. A server whose coordinator has a new address joins it again by itself, with the secret it already has. Players set up on an old name press **Connect** again with the new one, or with the network's address.
 
 ## The join token
 

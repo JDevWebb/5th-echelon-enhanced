@@ -17,12 +17,11 @@ pub use nat::test_nat_helper;
 pub use quazal::test_p2p;
 pub use quazal::test_quazal_login;
 pub use rpc::account_id;
-pub use rpc::key_login;
+pub use rpc::identity_login;
 pub use rpc::link_identity;
 pub use rpc::register;
 pub use rpc::rename;
 pub use rpc::test_login;
-pub use rpc::unlink_identity;
 
 /// A gRPC endpoint for `url`: HTTPS (with the usual root certificates) when
 /// the URL says so.
