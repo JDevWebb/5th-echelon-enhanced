@@ -163,7 +163,19 @@ The admin API is never reachable from the internet; Caddy refuses it. Use an SSH
 
 ## Updating
 
-Run the installer again. It keeps the settings, accounts and keys, and updates the server, the coordinator and the Caddy site. A release that isn't signed by the release key is refused.
+**Servers in a network update themselves.** Their coordinator rolls out each signed release, one server first, then the rest. The installer's updater installs it, checking the release key's signature, and puts the previous release back if the new one doesn't come back healthy. See [operations.md](operations.md). `--no-auto-update` turns this off for a server, but a coordinator then leaves it out of its directory.
+
+**To update by hand**, run the installer again. It keeps the settings, accounts and keys, and updates the server, the coordinator and the Caddy site. A release that isn't signed by the release key is refused.
+
+## The admin UI
+
+A coordinator has an admin web UI at a name of its own, served only through Cloudflare. It shows:
+- the network's players and where they are;
+- what's being played;
+- pings, load and bandwidth;
+- the update rollout.
+
+Turn it on with `--metrics-domain NAME` and add yourself with `--add-admin NAME`. [operations.md](operations.md) has the steps, the Cloudflare settings, and sign-in with passkeys or an authenticator app.
 
 `--uninstall` removes the services, programs, Caddy site and the firewall rules the installer added, and keeps the data; add `--purge` to delete that too.
 

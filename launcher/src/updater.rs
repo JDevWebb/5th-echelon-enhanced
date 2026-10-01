@@ -35,9 +35,6 @@ pub const SERVER_FILE: &str = "dedicated_server.exe";
 pub const SERVER_FILE: &str = "dedicated_server";
 const SUMS_ASSET: &str = "SHA256SUMS";
 const SIG_ASSET: &str = "SHA256SUMS.sig";
-/// The release keys' public halves (`identity` global ids). An update is
-/// installed only when one of them signed its `SHA256SUMS`.
-const RELEASE_KEYS: &[&str] = &["GV7WV5QTTXHFGYKWKSHRFWNDEW3N2JZDUS2GQEEQ7Q4HVHMKBCZA"];
 /// The largest download: a launcher or server binary.
 const MAX_DOWNLOAD: usize = 128 * 1024 * 1024;
 /// The largest release listing, checksum file or signature.
@@ -121,8 +118,7 @@ async fn get(url: &str, timeout: Duration, max: usize) -> anyhow::Result<Vec<u8>
 
 /// Whether one of the release keys signed `sums`.
 fn signed(sums: &str, signature: &str) -> bool {
-    let message = identity::release_message(sums);
-    RELEASE_KEYS.iter().any(|key| identity::verify(key, &message, signature.trim()))
+    identity::release_signed(sums, signature)
 }
 
 /// Asks GitHub for the latest release.
@@ -218,6 +214,6 @@ mod tests {
         let other = identity::Identity::generate();
         assert!(!signed(sums, &other.sign(&identity::release_message(sums))), "another key");
         assert!(!signed(sums, "not a signature"));
-        assert!(RELEASE_KEYS.iter().all(|k| identity::is_global_id(k)));
+        assert!(identity::RELEASE_KEYS.iter().all(|k| identity::is_global_id(k)));
     }
 }

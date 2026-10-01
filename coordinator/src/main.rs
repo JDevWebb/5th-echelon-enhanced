@@ -14,6 +14,18 @@ struct Args {
     /// folder for the database and the join token (default: the current one)
     #[argh(option, default = "PathBuf::from(\".\")")]
     data: PathBuf,
+    /// address for the admin web UI (e.g. 127.0.0.1:8701; off without it).
+    /// Put it behind Cloudflare and Caddy, on a host name of its own
+    #[argh(option)]
+    admin_listen: Option<String>,
+    /// where admins open the web UI, e.g. https://metrics.scbl.jdevwebb.net
+    /// (passkeys are made for it, and requests must come from it)
+    #[argh(option)]
+    admin_origin: Option<String>,
+    /// the admin UI's requests come straight from browsers, not through a
+    /// proxy on this machine passing on the client's address and country
+    #[argh(switch)]
+    admin_direct: bool,
     #[argh(subcommand)]
     command: Option<Command>,
 }
@@ -23,7 +35,54 @@ struct Args {
 enum Command {
     RemoveServer(RemoveServer),
     NewToken(NewToken),
+    Admin(Admin),
 }
+
+#[derive(argh::FromArgs)]
+#[argh(subcommand, name = "admin")]
+/// manage the admins of the web UI
+struct Admin {
+    #[argh(subcommand)]
+    command: AdminCommand,
+}
+
+#[derive(argh::FromArgs)]
+#[argh(subcommand)]
+enum AdminCommand {
+    Add(AdminAdd),
+    Reset(AdminReset),
+    List(AdminList),
+    OpenAccess(AdminOpenAccess),
+}
+
+#[derive(argh::FromArgs)]
+#[argh(subcommand, name = "add")]
+/// add an admin: prints a one-time link (24 hours) to choose a password and
+/// add a passkey or authenticator app
+struct AdminAdd {
+    #[argh(positional)]
+    username: String,
+}
+
+#[derive(argh::FromArgs)]
+#[argh(subcommand, name = "reset")]
+/// for an admin who lost their second factor: clears their password,
+/// passkeys and authenticator, ends their sessions, prints a new setup link
+struct AdminReset {
+    #[argh(positional)]
+    username: String,
+}
+
+#[derive(argh::FromArgs)]
+#[argh(subcommand, name = "list")]
+/// list the admins
+struct AdminList {}
+
+#[derive(argh::FromArgs)]
+#[argh(subcommand, name = "open-access")]
+/// clear the sign-in restrictions (networks and countries), for when every
+/// admin is locked out
+struct AdminOpenAccess {}
 
 #[derive(argh::FromArgs)]
 #[argh(subcommand, name = "remove-server")]
@@ -87,7 +146,10 @@ fn write_private(path: &std::path::Path, text: &str) -> std::io::Result<()> {
 fn restrict_to_owner(path: &std::path::Path) {
     use std::os::windows::process::CommandExt as _;
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let user = std::env::var("USERDOMAIN").ok().zip(std::env::var("USERNAME").ok()).map(|(domain, user)| format!("{domain}\\{user}:F"));
+    let user = std::env::var("USERDOMAIN")
+        .ok()
+        .zip(std::env::var("USERNAME").ok())
+        .map(|(domain, user)| format!("{domain}\\{user}:F"));
     // With this user named, then (a name icacls doesn't know, e.g. a service's) without.
     for with_user in [user, None] {
         let mut command = std::process::Command::new("icacls");
@@ -108,6 +170,53 @@ fn restrict_to_owner(path: &std::path::Path) {
     }
 }
 
+/// The coordinator's background work: releases and their rollout, metrics
+/// rollups, pings to the servers, expired admin sessions.
+fn spawn_jobs(c: &Arc<coordinator::Coordinator>) {
+    let every = |period: std::time::Duration,
+                 c: &Arc<coordinator::Coordinator>,
+                 name: &'static str,
+                 job: fn(Arc<coordinator::Coordinator>) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>| {
+        let c = Arc::clone(c);
+        tokio::spawn(async move {
+            let mut ticks = tokio::time::interval(period);
+            ticks.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticks.tick().await;
+                if let Err(e) = job(Arc::clone(&c)).await {
+                    tracing::warn!("{name}: {e}");
+                }
+            }
+        });
+    };
+    every(coordinator::updates::CHECK_EVERY, c, "looking for releases", |c| {
+        Box::pin(async move {
+            let (version, page, published) = match coordinator::updates::latest_signed(&coordinator::http()).await {
+                Ok(found) => found,
+                // Nothing published yet: not worth a warning every ten minutes.
+                Err(e) if e.contains("404") => {
+                    tracing::debug!("no release on GitHub yet");
+                    return Ok(());
+                }
+                Err(e) => return Err(e),
+            };
+            c.release_found(&version, &page, &published).await.map(drop).map_err(|e| e.to_string())
+        })
+    });
+    every(std::time::Duration::from_secs(30), c, "rollout", |c| {
+        Box::pin(async move { c.tick_rollout().await.map_err(|e| e.to_string()) })
+    });
+    every(std::time::Duration::from_secs(3600), c, "metrics rollup", |c| {
+        Box::pin(async move { c.roll_up().await.map_err(|e| e.to_string()) })
+    });
+    every(std::time::Duration::from_secs(60), c, "pinging servers", |c| {
+        Box::pin(async move { c.ping_servers().await.map_err(|e| e.to_string()) })
+    });
+    every(std::time::Duration::from_secs(600), c, "admin sessions", |c| {
+        Box::pin(async move { c.sweep_admin().await.map_err(|e| e.to_string()) })
+    });
+}
+
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
     tracing_subscriber::fmt()
@@ -120,6 +229,48 @@ async fn main() -> eyre::Result<()> {
         Some(Command::NewToken(_)) => {
             new_token(&args.data.join(JOIN_TOKEN_FILE))?;
             println!("A new join token is in {}; restart the coordinator to use it.", args.data.join(JOIN_TOKEN_FILE).display());
+            return Ok(());
+        }
+        Some(Command::Admin(a)) => {
+            let c = coordinator::Coordinator::open(&db.to_string_lossy(), String::new()).await?;
+            // Where the admin UI is: as given, or as the running coordinator saved it.
+            let origin = match &args.admin_origin {
+                Some(o) => Some(o.clone()),
+                None => c.setting("admin_origin").await?,
+            };
+            if let Some(origin) = origin {
+                let _ = c.admin.set(coordinator::admin::Config::new(&origin, !args.admin_direct).map_err(|e| eyre::eyre!(e))?);
+            }
+            match a.command {
+                AdminCommand::Add(add) => {
+                    let link = c.admin_setup_link(&add.username, false).await.map_err(|e| eyre::eyre!(e))?;
+                    c.audit("console", None, "added an admin", &add.username).await;
+                    println!("{} can set up their sign-in at this link, within 24 hours (it works once):\n\n  {link}", add.username);
+                }
+                AdminCommand::Reset(reset) => {
+                    let link = c.admin_setup_link(&reset.username, true).await.map_err(|e| eyre::eyre!(e))?;
+                    c.audit("console", None, "reset admin", &reset.username).await;
+                    println!(
+                        "{} was signed out and can set up their sign-in again at this link, within 24 hours:\n\n  {link}",
+                        reset.username
+                    );
+                }
+                AdminCommand::List(_) => {
+                    for (name, disabled, totp, passkeys) in c.admin_list().await? {
+                        let factors = match (totp, passkeys) {
+                            (false, 0) => String::from("no second factor yet"),
+                            (true, 0) => String::from("authenticator app"),
+                            (t, n) => format!("{n} passkey(s){}", if t { " and an authenticator app" } else { "" }),
+                        };
+                        println!("{name}{}: {factors}", if disabled { " (disabled)" } else { "" });
+                    }
+                }
+                AdminCommand::OpenAccess(_) => {
+                    c.save_restrictions(&coordinator::admin::auth::Restrictions::default()).await?;
+                    c.audit("console", None, "cleared the sign-in restrictions", "").await;
+                    println!("Admins may sign in from anywhere again. Set restrictions again under Security.");
+                }
+            }
             return Ok(());
         }
         Some(Command::RemoveServer(r)) => {
@@ -135,6 +286,12 @@ async fn main() -> eyre::Result<()> {
     }
     let token = join_token(&args.data)?;
     let coordinator = Arc::new(coordinator::Coordinator::open(&db.to_string_lossy(), token).await?);
+    let _ = coordinator.data_dir.set(std::fs::canonicalize(&args.data).unwrap_or_else(|_| args.data.clone()));
+    // Where launchers' ping reports and admins come from: DB-IP's city database, kept current.
+    let geo = Arc::new(geo::Geo::new(args.data.join("geoip")));
+    let _ = coordinator.geo.set(Arc::clone(&geo));
+    tokio::spawn(async move { geo.keep_current(concat!("5th-echelon-coordinator/", env!("FE_RELEASE"))).await });
+    spawn_jobs(&coordinator);
     // Names claimed for accounts that never linked go after an hour.
     {
         let coordinator = Arc::clone(&coordinator);
@@ -149,12 +306,25 @@ async fn main() -> eyre::Result<()> {
             }
         });
     }
+    if let Some(listen) = &args.admin_listen {
+        let origin = args
+            .admin_origin
+            .as_deref()
+            .ok_or_else(|| eyre::eyre!("--admin-listen needs --admin-origin (where admins open it)"))?;
+        let config = coordinator::admin::Config::new(origin, !args.admin_direct).map_err(|e| eyre::eyre!(e))?;
+        coordinator.set_setting("admin_origin", &config.origin).await?;
+        let _ = coordinator.admin.set(config);
+        let admin = tokio::net::TcpListener::bind(listen).await?;
+        tracing::info!("Admin UI on {listen}, for {origin}");
+        let app = coordinator::admin::router(Arc::clone(&coordinator)).into_make_service_with_connect_info::<std::net::SocketAddr>();
+        tokio::spawn(async move {
+            if let Err(e) = axum::serve(admin, app).await {
+                tracing::error!("admin UI: {e}");
+            }
+        });
+    }
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
-    tracing::info!(
-        "Listening on {}; servers join with the token in {}",
-        args.listen,
-        args.data.join(JOIN_TOKEN_FILE).display()
-    );
+    tracing::info!("Listening on {}; servers join with the token in {}", args.listen, args.data.join(JOIN_TOKEN_FILE).display());
     axum::serve(listener, Arc::clone(&coordinator).router().into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;

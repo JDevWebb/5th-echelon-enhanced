@@ -50,6 +50,10 @@ client curl -sf "http://$coord:8700/v1/servers"; echo
 [ "${n:-0}" -eq 2 ] && echo "PASS directory lists both servers" || { echo "FAIL directory"; rc=1; }
 echo "--- test players"
 client "$bin/testbot" --server "$a" --other "$b" federation || rc=1
+echo "--- metrics"
+# Each server reports its metrics as it starts, then every minute.
+servers_reporting=$(docker exec fes-fed-coord python3 -c "import sqlite3; print(sqlite3.connect('/srv/c/coordinator.db').execute('SELECT COUNT(DISTINCT server_id) FROM samples').fetchone()[0])" 2>/dev/null || echo 0)
+[ "$servers_reporting" -eq 2 ] && echo "PASS both servers report metrics" || { echo "FAIL metrics: $servers_reporting server(s) reported"; rc=1; }
 echo "--- the coordinator moves to another address"
 # Server A is pointed at the same coordinator by another name, and restarted: it must join
 # again on its own (with its secret), not be locked out.

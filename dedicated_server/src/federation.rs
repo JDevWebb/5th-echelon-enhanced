@@ -43,6 +43,7 @@ pub const CREDENTIALS_FILE: &str = "federation.key";
 
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(30);
 const PULL_ONLINE_EVERY: Duration = Duration::from_secs(60);
+const METRICS_EVERY: Duration = Duration::from_secs(60);
 const OUTBOX_BATCH: u32 = 50;
 const JOIN_RETRY: Duration = Duration::from_secs(60);
 
@@ -97,6 +98,8 @@ pub struct Listing {
     pub players_online: u32,
     pub players_total: u32,
     pub friends_mode: FriendsMode,
+    /// Whether this server installs the releases the coordinator rolls out.
+    pub auto_update: bool,
 }
 
 struct State {
@@ -425,6 +428,7 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
     info!(logger, "Federation: coordinator {base}, server id {}", state.server_id);
     let mut secret: Option<String> = None;
     let mut last_heartbeat: Option<Instant> = None;
+    let mut last_metrics: Option<Instant> = None;
     let mut last_online_pull: Option<Instant> = None;
     let mut last_join: Option<Instant> = None;
     loop {
@@ -446,8 +450,22 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                     (listing.players_online, listing.players_total) = (online, total);
                 }
                 match client.post("/v1/heartbeat", &listing).await {
-                    Ok(_) => last_heartbeat = Some(Instant::now()),
+                    Ok(answer) => {
+                        last_heartbeat = Some(Instant::now());
+                        // The release the coordinator is rolling out to this server.
+                        if let Some(version) = answer["update"]["version"].as_str() {
+                            crate::self_update::request(&logger, version, cfg.auto_update);
+                        }
+                    }
                     Err(e) => warn!(logger, "Federation: heartbeat failed: {e:#}"),
+                }
+            }
+            if last_metrics.is_none_or(|t| t.elapsed() >= METRICS_EVERY) {
+                last_metrics = Some(Instant::now());
+                let metrics = crate::metrics::collect(&storage).await;
+                let report = serde_json::json!({ "metrics": metrics, "update": crate::self_update::status(cfg.auto_update) });
+                if let Err(e) = client.post("/v1/metrics", &report).await {
+                    debug!(logger, "Federation: sending metrics failed: {e:#}");
                 }
             }
             if let Err(e) = flush(&logger, &storage, &client).await {

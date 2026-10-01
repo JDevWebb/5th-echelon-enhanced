@@ -525,7 +525,10 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
             if let Some((target, from, target_tag)) = route {
                 nat_proto::encode_data_from(&mut out, target_tag, from, &data[offset..]);
                 match socket.send_to(&out, target) {
-                    Ok(_) => forwarded += 1,
+                    Ok(n) => {
+                        forwarded += 1;
+                        crate::metrics::relayed(n);
+                    }
                     Err(e) => {
                         failed += 1;
                         debug!(logger, "NAT relay to {target} failed: {e}");

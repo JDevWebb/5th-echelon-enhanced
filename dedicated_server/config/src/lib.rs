@@ -190,6 +190,11 @@ pub struct FederationConfig {
     /// tests on a private network: the server's secret travels readable.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_http: bool,
+    /// Install the releases the coordinator rolls out (signed with the
+    /// release key, checked by the updater the installer sets up). Off: the
+    /// coordinator delists this server once it falls behind.
+    #[serde(default = "enabled")]
+    pub auto_update: bool,
 }
 
 impl Default for FederationConfig {
@@ -201,6 +206,7 @@ impl Default for FederationConfig {
             region: String::new(),
             listed: true,
             allow_http: false,
+            auto_update: true,
         }
     }
 }

@@ -102,6 +102,18 @@ pub fn release_message(sums: &str) -> String {
     format!("5th-echelon/release/v1\n{sums}")
 }
 
+/// The public halves of the release keys: a release is installed (by the
+/// launcher, the installer and the servers' updater) only when one of them
+/// signed its `SHA256SUMS`. The private key stays offline
+/// (`scripts/sign-release.sh`); install-server.sh carries the same key.
+pub const RELEASE_KEYS: &[&str] = &["GV7WV5QTTXHFGYKWKSHRFWNDEW3N2JZDUS2GQEEQ7Q4HVHMKBCZA"];
+
+/// Whether one of the release keys signed `sums` (a release's `SHA256SUMS`).
+pub fn release_signed(sums: &str, signature: &str) -> bool {
+    let message = release_message(sums);
+    RELEASE_KEYS.iter().any(|key| verify(key, &message, signature.trim()))
+}
+
 fn sha256(data: &[u8]) -> [u8; 32] {
     use sha2::Digest as _;
     sha2::Sha256::digest(data).into()

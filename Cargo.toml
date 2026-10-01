@@ -19,6 +19,7 @@ members = [
   "nat_proto",
   "portmap",
   "identity",
+  "geo",
   "coordinator",
   "setup",
   "tools/umd_browser",

@@ -138,7 +138,33 @@ pub async fn server_directory(coordinator: &str) -> Result<Vec<(setup::directory
     for handle in handles {
         pings.push(handle.await.ok().flatten());
     }
+    report_pings(coordinator, &servers, &pings);
     Ok(servers.into_iter().zip(pings).collect())
+}
+
+/// Tells the directory's coordinator how long the round trip to each server
+/// was from here, for its operators' metrics (it notes the city this comes
+/// from, not the address). In the background; it doesn't matter if it fails.
+fn report_pings(coordinator: &str, servers: &[setup::directory::Listing], pings: &[Option<u32>]) {
+    let list: Vec<serde_json::Value> = servers
+        .iter()
+        .zip(pings)
+        .filter_map(|(s, ms)| ms.map(|ms| serde_json::json!({ "server": s.id, "ms": ms })))
+        .collect();
+    if list.is_empty() {
+        return;
+    }
+    let url = format!("{}/v1/pings", coordinator.trim_end_matches('/'));
+    tokio::spawn(async move {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(5))
+            .redirect(reqwest::redirect::Policy::none())
+            .build();
+        if let Ok(client) = client {
+            let body = serde_json::json!({ "pings": list }).to_string();
+            let _ = client.post(url).header("content-type", "application/json").body(body).send().await;
+        }
+    });
 }
 
 /// The round trip to a server: its NAT helper's answer (the path game

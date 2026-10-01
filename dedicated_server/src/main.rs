@@ -74,6 +74,7 @@ mod game_session_ex;
 mod keys;
 mod ladder;
 mod locale;
+mod metrics;
 mod nat_helper;
 mod nat_traversal;
 mod overlord_challenge;
@@ -83,6 +84,7 @@ mod player_stats;
 mod privileges;
 mod rate_limit;
 mod secure;
+mod self_update;
 mod simple_http;
 mod storage;
 mod ticket;
@@ -148,6 +150,7 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
     if is_secure {
         server.expired_client_handler = Some(|ci: ClientInfo| {
             if let Some(user_id) = ci.user_id {
+                metrics::game_logout(user_id);
                 info!(logger, "Cleaning old session of user {user_id}");
                 if let Err(e) = storage.delete_user_session(user_id) {
                     error!(logger, "session clean error: {e}");
@@ -156,6 +159,7 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
         });
         server.disconnect_handler = Some(|ci: ClientInfo| {
             if let Some(user_id) = ci.user_id {
+                metrics::game_logout(user_id);
                 info!(logger, "Cleaning closed session of user {user_id}");
                 if let Err(e) = storage.delete_user_session(user_id) {
                     error!(logger, "session clean error: {e}");
@@ -167,7 +171,8 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
         server.user_handler = Some(handle_user_packet);
         // Online means a signed-in connection here, not just a ticket from the auth server.
         let (storage, logger) = (Arc::clone(storage), logger.clone());
-        server.login_handler = Some(Box::new(move |user_id| {
+        server.login_handler = Some(Box::new(move |user_id, from: std::net::SocketAddr| {
+            metrics::game_login(user_id, from.ip());
             if let Err(e) = storage.set_online(user_id) {
                 error!(logger, "marking user {user_id} online failed: {e}");
             }
@@ -494,6 +499,7 @@ fn main() -> color_eyre::Result<()> {
             players_online: 0,
             players_total: 0,
             friends_mode,
+            auto_update: federation_config.auto_update && self_update::updater_installed(),
         }
     };
 
@@ -516,7 +522,12 @@ fn main() -> color_eyre::Result<()> {
                         }
                     });
                 }
+                // Where players are, by city, for the coordinator's metrics: looked up here, in
+                // DB-IP's database (kept in geoip/), never sent as addresses.
+                let geo = Arc::new(geo::Geo::new("geoip"));
+                metrics::start(Arc::clone(&geo));
                 if federation_config.enabled() {
+                    rt.spawn(async move { geo.keep_current(concat!("5th-echelon-server/", env!("FE_RELEASE"))).await });
                     rt.spawn(federation::run(logger.new(o!("service" => "federation")), Arc::clone(&storage), federation_config, listing));
                 }
                 if let Err(e) = rt.block_on(api::start_server(

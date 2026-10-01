@@ -65,6 +65,24 @@
 #   --coordinator-binary FILE
 #                         install this coordinator-linux-x86_64 instead of
 #                         downloading one
+#   --metrics-domain NAME the coordinator's admin web UI (metrics, servers,
+#                         updates) at https://NAME, only through Cloudflare
+#                         (the record proxied, orange cloud); needs
+#                         --coordinator-domain. Then --add-admin
+#   --cloudflare-origin-pull
+#                         with --metrics-domain: also require Cloudflare's
+#                         client certificate (Authenticated Origin Pulls,
+#                         turned on in Cloudflare too)
+#   --add-admin NAME      print a one-time setup link for a new admin of the
+#                         admin UI
+#   --reset-admin NAME    for an admin who lost their second factor: a new
+#                         setup link (their sign-in is cleared)
+#   --admin-open-access   clear the admin UI's sign-in restrictions (when
+#                         every admin is locked out)
+#   --no-auto-update, --auto-update
+#                         don't (or do) install the releases the coordinator
+#                         rolls out (on by default; a coordinator delists
+#                         servers that don't)
 #   --no-https-api        don't serve the launcher's API over HTTPS
 #   --allow-unsigned      install a release without a valid signature
 #                         (older releases); the checksum is still checked
@@ -99,6 +117,10 @@ BEGIN_MARK="# >>> 5th Echelon (managed by install-server.sh; keep other sites ou
 END_MARK="# <<< 5th Echelon"
 UDP_PORTS="21126-21129"
 SYSCTL_FILE="/etc/sysctl.d/90-5th-echelon.conf"
+# The root updater for the releases a coordinator rolls out (see install_updater).
+UPDATER="$PROGRAM_DIR/update.sh"
+UPDATE_PATH_UNIT="/etc/systemd/system/5th-echelon-update.path"
+UPDATE_SERVICE_UNIT="/etc/systemd/system/5th-echelon-update.service"
 COORD_SERVICE="5th-echelon-coordinator"
 COORD_UNIT="/etc/systemd/system/${COORD_SERVICE}.service"
 COORD_ASSET="coordinator-linux-x86_64"
@@ -121,6 +143,7 @@ domain="" no_caddy=0 public_address="" version="latest" binary="" relay=""
 firewall=1 yes=0 force=0 uninstall=0 purge=0 use_systemd=1
 friends="" server_name="" region="" coordinator="" join_token="" coord_domain="" coord_binary=""
 https_api=1 allow_unsigned=0 coord_only=0 admin="" registration="" listed="" command=""
+metrics_domain="" origin_pull=0 admin_name="" auto_update="" release_version=""
 aliases=()
 # Only HTTPS, and TLS 1.2 or newer, for every download.
 CURL=(curl --proto '=https' --tlsv1.2)
@@ -168,6 +191,13 @@ while [ $# -gt 0 ]; do
     --join-token) join_token="${2:?}"; shift ;;
     --join-token-file) join_token="$(tr -d '[:space:]' < "${2:?}")" || die "can't read $2"; shift ;;
     --no-https-api) https_api=0 ;;
+    --metrics-domain) metrics_domain="${2:?}"; shift ;;
+    --cloudflare-origin-pull) origin_pull=1 ;;
+    --add-admin) command=add-admin; admin_name="${2:?}"; shift ;;
+    --reset-admin) command=reset-admin; admin_name="${2:?}"; shift ;;
+    --admin-open-access) command=admin-open-access ;;
+    --no-auto-update) auto_update=false ;;
+    --auto-update) auto_update=true ;;
     --allow-unsigned) allow_unsigned=1 ;;
     --coordinator-domain) coord_domain="${2:?}"; shift ;;
     --coordinator-binary) coord_binary="${2:?}"; shift ;;
@@ -228,6 +258,14 @@ if [ "$command" = status ]; then
       echo "Shares friends: no"
     fi
   fi
+  if [ -f "$UPDATE_PATH_UNIT" ]; then
+    echo "Updates:       installs the coordinator's rollouts ($(systemctl is-active 5th-echelon-update.path 2>/dev/null || true)); runs $(cat "$PROGRAM_DIR/release" 2>/dev/null || echo "an unrecorded release")"
+    last="$(cat "$STATE_DIR/update-status.json" "$COORD_DIR/update-status.json" 2>/dev/null | head -1 || true)"
+    [ -z "$last" ] || echo "               last: $last"
+  else
+    echo "Updates:       by hand (no updater installed)"
+  fi
+  if [ -s "$ETC_DIR/metrics-domain" ]; then echo "Admin UI:      https://$(cat "$ETC_DIR/metrics-domain")$( [ -f "$ETC_DIR/metrics-origin-pull" ] && echo " (Cloudflare client certificate required)")"; fi
   if [ -s "$ETC_DIR/coordinator-domain" ]; then
     echo
     cinfo="$(curl -fsS --max-time 3 http://127.0.0.1:8700/v1/info 2>/dev/null || true)"
@@ -250,6 +288,18 @@ if [ "$command" = show-token ] || [ "$command" = rotate-token ]; then
   exit 0
 fi
 
+if [ "$command" = add-admin ] || [ "$command" = reset-admin ] || [ "$command" = admin-open-access ]; then
+  [ -x "$PROGRAM_DIR/coordinator" ] && [ -d "$COORD_DIR" ] || die "no coordinator is installed here"
+  [ -s "$ETC_DIR/metrics-domain" ] || warn "the admin UI isn't on yet: run this script again with --metrics-domain NAME"
+  [ -z "$admin_name" ] || [[ "$admin_name" =~ ^[A-Za-z0-9._-]{2,32}$ ]] || die "admin names are 2 to 32 letters, digits, . _ and -"
+  case "$command" in
+    add-admin) runuser -u "$USER_NAME" -- "$PROGRAM_DIR/coordinator" --data "$COORD_DIR" admin add "$admin_name" ;;
+    reset-admin) runuser -u "$USER_NAME" -- "$PROGRAM_DIR/coordinator" --data "$COORD_DIR" admin reset "$admin_name" ;;
+    admin-open-access) runuser -u "$USER_NAME" -- "$PROGRAM_DIR/coordinator" --data "$COORD_DIR" admin open-access ;;
+  esac
+  exit 0
+fi
+
 # An earlier install that runs only a coordinator stays that way.
 if [ "$uninstall" -eq 0 ] && [ -f "$ETC_DIR/coordinator-only" ] && [ -z "$domain" ]; then coord_only=1; fi
 case "$relay" in ""|auto|all|off) ;; *) die "--relay is auto, all or off" ;; esac
@@ -264,6 +314,11 @@ if [ -z "$coord_domain" ] && [ -z "$coordinator" ]; then
     coord_domain="$(head -c 256 "$COORD_DIR/domain" | tr -d '[:space:]')"
   fi
 fi
+# The admin UI stays on (and its Cloudflare client certificate required) once set up.
+if [ -z "$metrics_domain" ] && [ -s "$ETC_DIR/metrics-domain" ]; then metrics_domain="$(head -c 256 "$ETC_DIR/metrics-domain" | tr -d '[:space:]')"; fi
+if [ -f "$ETC_DIR/metrics-origin-pull" ]; then origin_pull=1; fi
+[ -z "$metrics_domain" ] || [ -n "$coord_domain" ] || die "--metrics-domain is the coordinator's admin UI: it needs --coordinator-domain (a coordinator on this machine)"
+[ "$origin_pull" -eq 0 ] || [ -n "$metrics_domain" ] || die "--cloudflare-origin-pull goes with --metrics-domain"
 if [ "$coord_only" -eq 1 ]; then
   [ -n "$coord_domain" ] || die "--coordinator-only needs --coordinator-domain"
   [ -z "$domain" ] && [ "$no_caddy" -eq 0 ] && [ -z "$coordinator" ] || die "--coordinator-only runs no game server: leave out --domain, --no-caddy and --coordinator"
@@ -287,6 +342,9 @@ NAME_RE="^[A-Za-z0-9][A-Za-z0-9 ._(),'-]{0,63}\$"
 [ "$version" = latest ] || [[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]] || die "--version is a release number, e.g. 0.4.0"
 coord_domain="${coord_domain,,}"
 [ -z "$coord_domain" ] || [[ "$coord_domain" =~ $DOMAIN_RE ]] || die "\"$coord_domain\" isn't a domain name"
+metrics_domain="${metrics_domain,,}"
+[ -z "$metrics_domain" ] || [[ "$metrics_domain" =~ $DOMAIN_RE ]] || die "\"$metrics_domain\" isn't a domain name"
+[ -z "$metrics_domain" ] || [ "$metrics_domain" != "$coord_domain" ] || die "the admin UI needs a name of its own (proxied through Cloudflare), not the coordinator's"
 IPV4_RE='^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
 for i in "${!aliases[@]}"; do
   aliases[i]="${aliases[i],,}"
@@ -384,7 +442,8 @@ if [ "$uninstall" -eq 1 ]; then
   if [ "$use_systemd" -eq 1 ]; then
     systemctl disable --now "$SERVICE" 2>/dev/null || true
     systemctl disable --now "$COORD_SERVICE" 2>/dev/null || true
-    rm -f "$UNIT" "$COORD_UNIT"
+    systemctl disable --now 5th-echelon-update.path 2>/dev/null || true
+    rm -f "$UNIT" "$COORD_UNIT" "$UPDATE_PATH_UNIT" "$UPDATE_SERVICE_UNIT"
     systemctl daemon-reload
   fi
   stop_strays
@@ -584,9 +643,15 @@ elif [ -n "$binary" ]; then
   say "Using $binary"
 else
   if [ "$version" = latest ]; then
+    # Which release that is, for the updater (it never goes back past it).
+    version="$("${CURL[@]}" -fsSL --retry 3 "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
+    version="${version:-latest}"
+  fi
+  if [ "$version" = latest ]; then
     base="https://github.com/$REPO/releases/latest/download"
   else
     base="https://github.com/$REPO/releases/download/v${version#v}"
+    release_version="${version#v}"
   fi
   say "Downloading the server ($version)"
   "${CURL[@]}" -fsSL --retry 3 -o "$work/$ASSET" "$base/$ASSET" \
@@ -790,6 +855,11 @@ if [ -n "$coord_domain" ]; then
   install -m 755 "$work/$COORD_ASSET" "$PROGRAM_DIR/coordinator"
   install -d -m 700 -o "$USER_NAME" -g "$USER_NAME" "$COORD_DIR"
   echo "$coord_domain" > "$ETC_DIR/coordinator-domain"
+  if [ -n "$metrics_domain" ]; then echo "$metrics_domain" > "$ETC_DIR/metrics-domain"; else rm -f "$ETC_DIR/metrics-domain"; fi
+  if [ "$origin_pull" -eq 1 ]; then touch "$ETC_DIR/metrics-origin-pull"; else rm -f "$ETC_DIR/metrics-origin-pull"; fi
+  coord_args="--listen 127.0.0.1:8700 --data $COORD_DIR"
+  # The admin UI on its own port, for Caddy to serve at the metrics name.
+  if [ -n "$metrics_domain" ]; then coord_args="$coord_args --admin-listen 127.0.0.1:8701 --admin-origin https://$metrics_domain"; fi
   rm -f "$COORD_DIR/domain"
   if [ "$use_systemd" -eq 1 ]; then
     cat > "$COORD_UNIT" <<UNIT
@@ -803,7 +873,7 @@ Wants=network-online.target
 User=$USER_NAME
 Group=$USER_NAME
 WorkingDirectory=$COORD_DIR
-ExecStart=$PROGRAM_DIR/coordinator --listen 127.0.0.1:8700 --data $COORD_DIR
+ExecStart=$PROGRAM_DIR/coordinator $coord_args
 Restart=always
 RestartSec=3
 CapabilityBoundingSet=
@@ -858,6 +928,7 @@ if [ -n "$coordinator" ]; then
   server_name="${server_name:-$(old_value name)}"
   region="${region:-$(old_value region)}"
   if [ -z "$listed" ]; then listed="$(value federation listed)"; fi
+  if [ -z "$auto_update" ]; then auto_update="$(value federation auto_update)"; fi
   sed -i '/^\[federation\]$/,/^\[/{/^\[federation\]$/d;/^\[/!d}' "$CONFIG"
   {
     printf '\n[federation]\ncoordinator = "%s"\n' "$coordinator"
@@ -865,11 +936,13 @@ if [ -n "$coordinator" ]; then
     printf 'name = "%s"\n' "${server_name:-${domain:-$public_address}}"
     [ -z "$region" ] || printf 'region = "%s"\n' "$region"
     [ "$listed" != false ] || printf 'listed = false\n'
+    [ "$auto_update" != false ] || printf 'auto_update = false\n'
   } >> "$CONFIG"
   say "Sharing friends through $coordinator$( [ "$listed" = false ] && echo ", not listed in the directory")"
 elif [ "$listed" = false ] || [ "$listed" = true ]; then
   warn "--listed and --unlisted only matter with a coordinator; ignored"
 fi
+if [ -z "$coordinator" ] && [ -n "$auto_update" ] && grep -q '^\[federation\]$' "$CONFIG"; then toml_put federation auto_update "$auto_update"; fi
 chown -h "$USER_NAME:$USER_NAME" "$CONFIG"
 # It can hold the join token.
 chmod 600 "$CONFIG"
@@ -955,6 +1028,199 @@ UNIT
   say "The server is running"
 fi
 fi # the game server
+
+# --- Updates ------------------------------------------------------------
+
+# The root service that installs the releases a coordinator rolls out. The
+# server and the coordinator run unprivileged and can't change their own
+# programs: they write the version they were asked for to update-request in
+# their folder, and this updater (started by a systemd path unit when one
+# appears) downloads that release from GitHub, checks SHA256SUMS against the
+# release key's signature and the binaries against SHA256SUMS, swaps them in
+# and restarts the services. If they don't come back healthy, the previous
+# binaries go back. It never installs an older release, except the one it
+# replaced (a rollback, from the copy it kept). It records what happened in
+# update-status.json, which the server reports to the coordinator.
+install_updater() {
+  {
+    echo '#!/usr/bin/env bash'
+    echo '# Written by install-server.sh: installs the release a coordinator rolls out.'
+    echo 'set -euo pipefail'
+    echo 'umask 022'
+    printf 'REPO=%q\nPROGRAM_DIR=%q\nSTATE_DIR=%q\nCOORD_DIR=%q\nSERVICE=%q\nCOORD_SERVICE=%q\nCONFIG=%q\n' \
+      "$REPO" "$PROGRAM_DIR" "$STATE_DIR" "$COORD_DIR" "$SERVICE" "$COORD_SERVICE" "$CONFIG"
+    printf 'RELEASE_KEY_PEM=%q\n' "$RELEASE_KEY_PEM"
+    cat <<'UPDATER'
+CURL=(curl --proto '=https' --tlsv1.2 -fsSL --retry 3)
+VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
+exec 9>/run/5th-echelon-update.lock
+flock -n 9 || exit 0
+work="$(mktemp -d)"
+trap 'rm -rf "$work"' EXIT
+
+# What happened, for the server (and coordinator) to report: written beside
+# the request, replacing whatever is there (never following a link).
+status() {
+  local state="$1" version="$2" error="${3:-}" dir
+  error="$(printf '%s' "$error" | tr -d '"\\\n' | head -c 300)"
+  for dir in "$STATE_DIR" "$COORD_DIR"; do
+    [ -d "$dir" ] || continue
+    printf '{"state":"%s","version":"%s","from":"%s","at":%s,"error":"%s"}\n' "$state" "$version" "$current" "$(date +%s)" "$error" > "$work/status"
+    chmod 644 "$work/status"
+    mv -fT "$work/status" "$dir/update-status.json" 2>/dev/null || true
+  done
+  echo "update: $state $version${error:+: $error}"
+}
+
+# The version asked for: one line, a release number, from a plain file.
+wanted=""
+for f in "$STATE_DIR/update-request" "$COORD_DIR/update-request"; do
+  if [ -e "$f" ] || [ -L "$f" ]; then
+    if [ -f "$f" ] && [ ! -L "$f" ]; then
+      v="$(head -c 64 "$f" | head -1 | tr -d '[:space:]')"
+      [[ "$v" =~ $VERSION_RE ]] && wanted="$v"
+    fi
+    rm -f "$f"
+  fi
+done
+[ -n "$wanted" ] || exit 0
+current="$(cat "$PROGRAM_DIR/release" 2>/dev/null || echo unknown)"
+[ "$wanted" != "$current" ] || exit 0
+
+# Release order, with pre-releases before their release (1.0.0-rc.1 < 1.0.0).
+older() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "${1/-/\~}" "${2/-/\~}" | sort -V | head -1)" = "${1/-/\~}" ]; }
+parts=()
+[ -x "$PROGRAM_DIR/dedicated_server" ] && parts+=(dedicated_server)
+[ -x "$PROGRAM_DIR/coordinator" ] && parts+=(coordinator)
+[ "${#parts[@]}" -gt 0 ] || exit 0
+asset() { case "$1" in dedicated_server) echo dedicated_server-linux-x86_64 ;; coordinator) echo coordinator-linux-x86_64 ;; esac; }
+
+rollback=0
+if [ "$current" != unknown ] && older "$wanted" "$current"; then
+  # Only back to the release this updater replaced, from the copy it kept.
+  if [ "$(cat "$PROGRAM_DIR/previous/release" 2>/dev/null)" != "$wanted" ]; then
+    status failed "$wanted" "won't install a release older than $current (only the one before, kept here)"
+    exit 0
+  fi
+  rollback=1
+fi
+status updating "$wanted"
+
+if [ "$rollback" -eq 0 ]; then
+  base="https://github.com/$REPO/releases/download/v$wanted"
+  if ! "${CURL[@]}" -o "$work/SHA256SUMS" "$base/SHA256SUMS" || ! "${CURL[@]}" -o "$work/SHA256SUMS.sig" "$base/SHA256SUMS.sig"; then
+    status failed "$wanted" "couldn't download the release's SHA256SUMS and signature"
+    exit 0
+  fi
+  printf '%s\n' "$RELEASE_KEY_PEM" > "$work/release.pem"
+  { printf '5th-echelon/release/v1\n'; cat "$work/SHA256SUMS"; } > "$work/signed"
+  sig="$(tr -d '[:space:]' < "$work/SHA256SUMS.sig")"
+  while [ $(( ${#sig} % 8 )) -ne 0 ]; do sig="$sig="; done
+  if ! printf '%s' "$sig" | base32 -d > "$work/signature" 2>/dev/null \
+    || ! openssl pkeyutl -verify -pubin -inkey "$work/release.pem" -rawin -in "$work/signed" -sigfile "$work/signature" >/dev/null 2>&1; then
+    status failed "$wanted" "the release isn't signed by the release key"
+    exit 0
+  fi
+  for p in "${parts[@]}"; do
+    a="$(asset "$p")"
+    if ! "${CURL[@]}" -o "$work/$a" "$base/$a" || ! (cd "$work" && grep " $a\$" SHA256SUMS | sha256sum -c --quiet -); then
+      status failed "$wanted" "$a didn't download, or doesn't match its checksum"
+      exit 0
+    fi
+    chmod 755 "$work/$a"
+  done
+  # Keep what runs now, for a rollback.
+  rm -rf "$PROGRAM_DIR/previous.new"
+  install -d -m 755 "$PROGRAM_DIR/previous.new"
+  for p in "${parts[@]}"; do cp -p "$PROGRAM_DIR/$p" "$PROGRAM_DIR/previous.new/$p"; done
+  echo "$current" > "$PROGRAM_DIR/previous.new/release"
+  rm -rf "$PROGRAM_DIR/previous"
+  mv "$PROGRAM_DIR/previous.new" "$PROGRAM_DIR/previous"
+  for p in "${parts[@]}"; do install -m 755 "$work/$(asset "$p")" "$PROGRAM_DIR/$p.new" && mv -f "$PROGRAM_DIR/$p.new" "$PROGRAM_DIR/$p"; done
+else
+  # Swap the kept copy and what runs now.
+  install -d -m 755 "$work/now"
+  for p in "${parts[@]}"; do
+    [ -x "$PROGRAM_DIR/previous/$p" ] || { status failed "$wanted" "the kept copy has no $p"; exit 0; }
+    cp -p "$PROGRAM_DIR/$p" "$work/now/$p"
+  done
+  for p in "${parts[@]}"; do install -m 755 "$PROGRAM_DIR/previous/$p" "$PROGRAM_DIR/$p.new" && mv -f "$PROGRAM_DIR/$p.new" "$PROGRAM_DIR/$p"; done
+  for p in "${parts[@]}"; do cp -p "$work/now/$p" "$PROGRAM_DIR/previous/$p"; done
+  echo "$current" > "$PROGRAM_DIR/previous/release"
+fi
+echo "$wanted" > "$PROGRAM_DIR/release"
+
+# Restart, and wait for each to answer with the new release.
+healthy() {
+  local host
+  for p in "${parts[@]}"; do
+    case "$p" in
+      dedicated_server)
+        systemctl is-active --quiet "$SERVICE" || return 1
+        host="$(sed -n '/^\[public\]$/,/^\[/ s/^host = "\(.*\)"$/\1/p' "$CONFIG" 2>/dev/null | head -1)"
+        curl -fsS --max-time 3 ${host:+-H "Host: $host"} http://127.0.0.1/api/info 2>/dev/null | grep -q "\"version\":\"$wanted\"" || return 1 ;;
+      coordinator)
+        systemctl is-active --quiet "$COORD_SERVICE" || return 1
+        curl -fsS --max-time 3 http://127.0.0.1:8700/v1/info 2>/dev/null | grep -q "\"version\":\"$wanted\"" || return 1 ;;
+    esac
+  done
+}
+restart_all() {
+  for p in "${parts[@]}"; do
+    case "$p" in dedicated_server) systemctl restart "$SERVICE" ;; coordinator) systemctl restart "$COORD_SERVICE" ;; esac
+  done
+}
+restart_all || true
+ok=0
+for _ in $(seq 45); do
+  sleep 2
+  if healthy; then ok=1; break; fi
+done
+if [ "$ok" -eq 1 ]; then
+  status done "$wanted"
+  exit 0
+fi
+# Not healthy: what ran before goes back (and, after a rollback, the kept copy too).
+for p in "${parts[@]}"; do
+  cp -p "$PROGRAM_DIR/$p" "$work/tried-$p"
+  install -m 755 "$PROGRAM_DIR/previous/$p" "$PROGRAM_DIR/$p.new" && mv -f "$PROGRAM_DIR/$p.new" "$PROGRAM_DIR/$p"
+  if [ "$rollback" -eq 1 ]; then cp -p "$work/tried-$p" "$PROGRAM_DIR/previous/$p"; fi
+done
+if [ "$rollback" -eq 1 ]; then echo "$wanted" > "$PROGRAM_DIR/previous/release"; fi
+echo "$current" > "$PROGRAM_DIR/release"
+restart_all || true
+status rolled-back "$wanted" "the new release didn't come back healthy within 90 seconds; $current is back"
+UPDATER
+  } > "$work/update.sh"
+  install -m 755 "$work/update.sh" "$UPDATER"
+  [ -n "$release_version" ] && echo "$release_version" > "$PROGRAM_DIR/release"
+  [ -f "$PROGRAM_DIR/release" ] || echo unknown > "$PROGRAM_DIR/release"
+  cat > "$UPDATE_SERVICE_UNIT" <<UNIT
+[Unit]
+Description=5th Echelon updater (installs the release the coordinator rolls out)
+Documentation=https://github.com/$REPO
+
+[Service]
+Type=oneshot
+ExecStart=$UPDATER
+UNIT
+  cat > "$UPDATE_PATH_UNIT" <<UNIT
+[Unit]
+Description=5th Echelon updater: watches for update requests
+
+[Path]
+PathExists=$STATE_DIR/update-request
+PathExists=$COORD_DIR/update-request
+Unit=5th-echelon-update.service
+
+[Install]
+WantedBy=paths.target
+UNIT
+  systemctl daemon-reload
+  systemctl enable --now 5th-echelon-update.path >/dev/null 2>&1
+  say "Installed the updater: the coordinator's signed releases are installed as they're rolled out$( [ "$auto_update" = false ] && echo " (off for this server: --no-auto-update)")"
+}
+if [ "$use_systemd" -eq 1 ]; then install_updater; fi
 
 # --- Firewall -----------------------------------------------------------
 
@@ -1109,7 +1375,43 @@ $coord_domain {
 }
 SITE
   fi
+  if [ -n "$metrics_domain" ]; then
+    cat <<SITE
+
+# The coordinator's admin UI, only through Cloudflare (the record proxied):
+# any other address is refused, so Cloudflare's protection can't be
+# bypassed, and the client's address and country are Cloudflare's.
+$metrics_domain {
+$(metrics_tls)
+	@direct not remote_ip $(cloudflare_ranges)
+	abort @direct
+	reverse_proxy 127.0.0.1:8701 {
+		header_up X-Admin-Client-IP {http.request.header.CF-Connecting-IP}
+		header_up X-Admin-Country {http.request.header.CF-IPCountry}
+	}
 }
+SITE
+  fi
+}
+
+# Cloudflare's address ranges (fetched once per run; the list below if that fails).
+CF_FALLBACK="173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32"
+cloudflare_ranges() {
+  if [ -z "${CF_RANGES:-}" ]; then
+    local fetched
+    fetched="$({ "${CURL[@]}" -fsSL --max-time 10 https://www.cloudflare.com/ips-v4; echo; "${CURL[@]}" -fsSL --max-time 10 https://www.cloudflare.com/ips-v6; } 2>/dev/null \
+      | grep -E '^([0-9]{1,3}(\.[0-9]{1,3}){3}|[0-9a-f:]+:[0-9a-f:]*)/[0-9]{1,3}$' | tr '\n' ' ' || true)"
+    if [ "$(printf '%s' "$fetched" | wc -w)" -ge 10 ]; then CF_RANGES="${fetched% }"; else CF_RANGES="$CF_FALLBACK"; fi
+  fi
+  printf '%s' "$CF_RANGES"
+}
+
+# With --cloudflare-origin-pull, TLS needs Cloudflare's client certificate.
+metrics_tls() {
+  [ "$origin_pull" -eq 1 ] || return 0
+  printf '\ttls {\n\t\tclient_auth {\n\t\t\tmode require_and_verify\n\t\t\ttrust_pool file %s\n\t\t}\n\t}\n' "$ORIGIN_PULL_CA"
+}
+ORIGIN_PULL_CA="/etc/caddy/cloudflare-origin-pull-ca.pem"
 
 notes=()
 if [ "$no_caddy" -eq 0 ]; then
@@ -1121,6 +1423,13 @@ if [ "$no_caddy" -eq 0 ]; then
     v2.[0-5].*) die "Caddy $caddy_version is too old (2.6 or newer speaks the launcher's gRPC); update it and run this again" ;;
   esac
   install -d -m 755 /etc/caddy
+  if [ "$origin_pull" -eq 1 ]; then
+    case "$caddy_version" in v2.[6-7].*) die "--cloudflare-origin-pull needs Caddy 2.8 or newer (this is $caddy_version)" ;; esac
+    "${CURL[@]}" -fsSL --retry 3 -o "$work/origin-pull-ca.pem" https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem \
+      || die "couldn't download Cloudflare's origin pull certificate"
+    openssl x509 -noout -in "$work/origin-pull-ca.pem" 2>/dev/null || die "Cloudflare's origin pull certificate isn't a certificate"
+    install -m 644 "$work/origin-pull-ca.pem" "$ORIGIN_PULL_CA"
+  fi
   # The installer's block: the global option for the launcher's API and
   # the site, between markers so updates leave everything else alone.
   managed="$work/managed.caddy"
@@ -1176,6 +1485,14 @@ if [ "$no_caddy" -eq 0 ]; then
       say "The coordinator answers at https://$coord_domain"
     else
       notes+=("Caddy has no certificate for $coord_domain yet, so other servers can't reach the coordinator. Check its A record (DNS only, not proxied) and that TCP 80 and 443 are open, then run this script again.")
+    fi
+  fi
+  if [ "$use_systemd" -eq 1 ] && [ -n "$metrics_domain" ]; then
+    if curl -fsS --max-time 3 -o /dev/null http://127.0.0.1:8701/ 2>/dev/null; then
+      say "The admin UI is served at https://$metrics_domain (through Cloudflare only)"
+      notes+=("In Cloudflare: make $metrics_domain's A record proxied (orange cloud) and set SSL/TLS to Full (strict). Then add yourself: $0 --add-admin YOURNAME")
+    else
+      notes+=("The coordinator's admin UI doesn't answer on 127.0.0.1:8701; see journalctl -u $COORD_SERVICE")
     fi
   fi
   if [ "$use_systemd" -eq 1 ] && [ -n "$domain" ]; then

@@ -147,6 +147,7 @@ join_token = "..."   # from the coordinator's operator; only needed until joined
 name = "Kiwi Ops"    # in the server directory (default: the public host)
 region = "Sydney"
 listed = true        # false: share friends, but stay out of the directory
+auto_update = true   # install the releases the coordinator rolls out (see operations.md)
 # allow_http = false # only for tests: allow an http:// coordinator (the server's secret travels readable)
 ```
 
@@ -154,7 +155,9 @@ Off until `coordinator` is set. It must be `https://` (or on this machine) unles
 - joins with the token, and keeps its credentials in `federation.key`;
 - sends friendships and blocks between players who linked their identity;
 - pulls their friends from other servers;
-- lists itself in the coordinator's server directory.
+- lists itself in the coordinator's server directory;
+- reports its metrics (players, cities, activity, load, traffic) every minute;
+- installs the releases the coordinator rolls out, through the installer's updater. With `auto_update = false`, or without the updater, the coordinator leaves it out of its directory once it falls behind. See [operations.md](operations.md).
 
 `server-id.txt` holds this server's id, which players sign into their identity links; don't change it. See [friends.md](friends.md) for what is shared and how to run a coordinator.
 

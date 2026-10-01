@@ -18,6 +18,7 @@ eyre = { workspace = true }
 hmac = { workspace = true }
 identity = { path = "../identity" }
 libc = { workspace = true }
+geo = { path = "../geo" }
 md-5 = { workspace = true }
 nat_proto = { path = "../nat_proto" }
 num_enum = { workspace = true }

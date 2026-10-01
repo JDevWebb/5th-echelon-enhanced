@@ -260,6 +260,7 @@ Everything the launcher does can be done by hand:
 - **Updates:** the launcher updates itself from this project's releases (each one's notes carry checksums, build provenance and [VirusTotal](#antivirus-warnings) results). It checks every download against the published SHA-256 checksums, and the checksums against the release key's signature, so a changed release is never installed.
 - **Your details stay yours:**
   - the launcher and overlay use HTTPS where the server offers it, so passwords and sign-ins never travel unencrypted;
+  - a network's admin UI sees counts and cities, never your name or address; your launcher reports its ping to each server in a directory, from which only your city is noted;
   - a server directory is used only over `https://`, never replaces one you chose, and lists only public hosts, each shown by name;
   - on Windows, saved passwords and your identity key are encrypted for your Windows user.
 - **Linux and Steam Deck:** a native Linux launcher, Proton and Wine support in the client, and the many-core CPU fix.
@@ -269,6 +270,20 @@ Everything the launcher does can be done by hand:
 - **One server for everything:** accounts, matchmaking, invites, friends and presence, news, challenges, and the game's configuration and content.
 - **Friend lists for public servers:** friends-only lists and invites (`[friends] mode = "mutual"`), blocking, and rate limits on invites and friend requests.
 - **Friends across servers:** a **coordinator** shares friendships and blocks between servers, reserves each player's name across them, and lists them in a server directory. The Linux installer runs one next to your server, or on a machine of its own. Join the [community network](#grow-the-network), or start your own.
+- **A network that updates itself:** the coordinator rolls out each signed release to its servers, one first, then the rest. Each server's updater checks the signature, and puts the previous release back if the new one doesn't come back healthy. Members keep up, or leave the directory.
+- **An admin UI for the network:**
+  - **What it shows:**
+    - players and where they are (cities, on a map);
+    - what's being played;
+    - pings from players and the coordinator;
+    - each server's CPU, memory and bandwidth;
+    - the update rollout.
+  - **How it's protected:**
+    - it's served only through Cloudflare;
+    - sign-in takes passkeys, or a password with an authenticator app;
+    - sign-in can be limited by address and country;
+    - every action is recorded in an audit log.
+  - See [docs/operations.md](docs/operations.md).
 - **A one-script Linux install:** Caddy with automatic certificates, the API over HTTPS, a sandboxed systemd service, firewall rules, a guided setup for sharing friends, `--status`, and updates that check the release's signature. See [docs/deploying.md](docs/deploying.md).
 - **Runs anywhere:**
   - Windows, from the launcher's **Server** screen or on its own;
@@ -358,6 +373,7 @@ sudo bash install-server.sh
 - **Friend lists are friends-only** on a new install (`--friends mutual`) unless you choose `--friends everyone`.
 - **Without questions:** `--domain`, `--coordinator-domain` (run a coordinator here), `--coordinator` and `--join-token-file` (join one), `--coordinator-only` (a coordinator and no game server), `--server-name`, `--region`, `--alias`, `--admin`, `--closed-registration`, `--unlisted` and `--yes`.
 - **Looking after it:** `--status` shows what's running and whether it has joined its coordinator; `--show-join-token` and `--rotate-join-token` manage a coordinator's token.
+- **The admin UI:** `--metrics-domain` turns on a coordinator's admin UI (through Cloudflare), and `--add-admin` invites an admin. See [docs/operations.md](docs/operations.md).
 - **Running it again updates the server**, keeping accounts and settings (anything not given again stays as it was). `--uninstall` removes it and the firewall rules it added, and `--help` lists the rest.
 
 **By hand:**
@@ -601,7 +617,8 @@ A tag with a suffix (`v0.3.1-rc.1`) makes a pre-release, which the updater doesn
 | `nat_proto/` | The NAT helper protocol between the server and the client (internet play) |
 | `portmap/` | Router port forwarding (UPnP, NAT-PMP), for the client and the connection test |
 | `identity/` | A player's identity across servers: the key, and the messages it signs |
-| `coordinator/` | Shares friends between servers, and keeps the server directory |
+| `geo/` | Where an address is (DB-IP's city database, kept current), for metrics |
+| `coordinator/` | Shares friends between servers, keeps the server directory, rolls out updates, and serves the admin UI |
 | `hooks/` | The game client (`uplay_r1_loader.dll`): Uplay emulation, network fixes and the overlay |
 | `setup/` | The launcher's logic: finding the game, installing, accounts, saves and checks |
 | `launcher/` | The launcher's egui interface (Windows and Linux) |
@@ -662,7 +679,7 @@ Find other players, active servers and help:
 **This fork's own work is under the MIT licence; upstream's code isn't licensed yet.** [LICENSE.md](LICENSE.md) says exactly what's covered:
 
 - **MIT:**
-  - the crates this fork created: `identity/` (player identities and release signing), `coordinator/` (friends across servers and the server directory), `nat_proto/` and `portmap/` (internet play) and `setup/` (the launcher's logic);
+  - the crates this fork created: `identity/` (player identities and release signing), `coordinator/` (friends across servers, the server directory, updates and the admin UI), `geo/` (locations for metrics), `nat_proto/` and `portmap/` (internet play) and `setup/` (the launcher's logic);
   - the files it added elsewhere: the new launcher screens and updater, the NAT helper and relay, friends, federation, rate limits and the community API in the server, internet play and the friends overlay in the client;
   - the test players and load test, the Linux installer and release signing, builds, Docker, CI, and this fork's docs;
   - this fork's changes to every other file, line by line as the git history records them.

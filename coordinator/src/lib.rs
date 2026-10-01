@@ -19,6 +19,16 @@
 //!
 //! A server may only act for players linked on it, and a link needs the
 //! player's signature, so no server can speak for someone who never used it.
+//!
+//! * `POST /v1/metrics`: a server's metrics, every minute (see [`metrics`]),
+//!   for the admin UI ([`admin`], on its own listener).
+//! * `POST /v1/pings`: a launcher's pings to the servers (no sign-in).
+//! * Heartbeat answers carry the release a server should install (see
+//!   [`updates`]); servers that don't keep up leave the directory.
+
+pub mod admin;
+pub mod metrics;
+pub mod updates;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -108,6 +118,21 @@ fn valid_name(name: &str) -> bool {
     (1..=32).contains(&name.len()) && name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
 }
 
+/// The HTTP client for GitHub.
+pub fn http() -> reqwest::Client {
+    static CLIENT: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .user_agent(concat!("5th-echelon-coordinator/", env!("FE_RELEASE")))
+                .connect_timeout(Duration::from_secs(10))
+                .timeout(Duration::from_secs(60))
+                .build()
+                .expect("HTTP client")
+        })
+        .clone()
+}
+
 /// Whether `host` may be a server's host name or address.
 fn valid_host(host: &str) -> bool {
     (1..=253).contains(&host.len()) && host.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'[' | b']'))
@@ -155,6 +180,9 @@ struct Listing {
     players_total: u32,
     #[serde(default)]
     friends_mode: String,
+    /// Whether it installs the releases rolled out (see [`updates`]).
+    #[serde(default)]
+    auto_update: bool,
 }
 
 fn yes() -> bool {
@@ -193,6 +221,13 @@ pub struct Coordinator {
     joins: Limit,
     reads: Limit,
     changes: Limit,
+    pings: Limit,
+    /// Where player addresses are (for launchers' ping reports).
+    pub geo: std::sync::OnceLock<Arc<geo::Geo>>,
+    /// The coordinator's folder (for its own update requests).
+    pub data_dir: std::sync::OnceLock<std::path::PathBuf>,
+    /// The admin UI's settings, once it's on.
+    pub admin: std::sync::OnceLock<admin::Config>,
 }
 
 type Shared = Arc<Coordinator>;
@@ -225,6 +260,11 @@ impl Coordinator {
             joins: Limit::new(10),
             reads: Limit::new(600),
             changes: Limit::new(2000),
+            // Launchers report pings when they look at the directory: a few a minute at most.
+            pings: Limit::new(6),
+            geo: std::sync::OnceLock::new(),
+            data_dir: std::sync::OnceLock::new(),
+            admin: std::sync::OnceLock::new(),
         };
         c.claim_linked_names().await?;
         Ok(c)
@@ -263,7 +303,9 @@ impl Coordinator {
     /// Reserves the names of accounts linked before names were reserved,
     /// oldest link first. Harmless to repeat.
     async fn claim_linked_names(&self) -> sqlx::Result<()> {
-        let links: Vec<(String, String, i64)> = sqlx::query_as("SELECT global_id, username, linked_at FROM links ORDER BY linked_at").fetch_all(&self.pool).await?;
+        let links: Vec<(String, String, i64)> = sqlx::query_as("SELECT global_id, username, linked_at FROM links ORDER BY linked_at")
+            .fetch_all(&self.pool)
+            .await?;
         for (global_id, username, at) in links {
             self.claim(&global_id, &username, at).await?;
         }
@@ -290,18 +332,31 @@ impl Coordinator {
     }
 
     async fn owner(&self, key: &str) -> sqlx::Result<Option<String>> {
-        sqlx::query_scalar("SELECT global_id FROM names WHERE name_key = ?").bind(key).fetch_optional(&self.pool).await
+        sqlx::query_scalar("SELECT global_id FROM names WHERE name_key = ?")
+            .bind(key)
+            .fetch_optional(&self.pool)
+            .await
     }
 
     /// Releases `global_id`'s names that none of its accounts use any more
     /// (after a rename or an unlink), past the grace for new accounts.
     async fn release_unused(&self, global_id: &str, now: i64) -> sqlx::Result<()> {
-        let used: Vec<String> = sqlx::query_scalar("SELECT username FROM links WHERE global_id = ?").bind(global_id).fetch_all(&self.pool).await?;
+        let used: Vec<String> = sqlx::query_scalar("SELECT username FROM links WHERE global_id = ?")
+            .bind(global_id)
+            .fetch_all(&self.pool)
+            .await?;
         let used: Vec<String> = used.iter().map(|u| identity::name_key(u)).collect();
-        let owned: Vec<(String, i64)> = sqlx::query_as("SELECT name_key, claimed_at FROM names WHERE global_id = ?").bind(global_id).fetch_all(&self.pool).await?;
+        let owned: Vec<(String, i64)> = sqlx::query_as("SELECT name_key, claimed_at FROM names WHERE global_id = ?")
+            .bind(global_id)
+            .fetch_all(&self.pool)
+            .await?;
         for (key, claimed_at) in owned {
             if !used.contains(&key) && now - claimed_at >= CLAIM_GRACE_SECS {
-                sqlx::query("DELETE FROM names WHERE name_key = ? AND global_id = ?").bind(&key).bind(global_id).execute(&self.pool).await?;
+                sqlx::query("DELETE FROM names WHERE name_key = ? AND global_id = ?")
+                    .bind(&key)
+                    .bind(global_id)
+                    .execute(&self.pool)
+                    .await?;
             }
         }
         Ok(())
@@ -318,6 +373,8 @@ impl Coordinator {
             .route("/v1/relations/{global_id}", get(relations))
             .route("/v1/names/claim", post(claim_name))
             .route("/v1/names/{name}", get(name_owner))
+            .route("/v1/metrics", post(metrics_report))
+            .route("/v1/pings", post(pings))
             .layer(DefaultBodyLimit::max(MAX_BODY))
             .with_state(self)
     }
@@ -449,16 +506,16 @@ impl Coordinator {
     }
 
     async fn blocked_either_way(&self, a: &str, b: &str) -> sqlx::Result<bool> {
-        Ok(sqlx::query_scalar::<_, i64>(
-            "SELECT COUNT(*) FROM blocks WHERE blocked = 1 AND ((from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?))",
+        Ok(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM blocks WHERE blocked = 1 AND ((from_id = ? AND to_id = ?) OR (from_id = ? AND to_id = ?))")
+                .bind(a)
+                .bind(b)
+                .bind(b)
+                .bind(a)
+                .fetch_one(&self.pool)
+                .await?
+                > 0,
         )
-        .bind(a)
-        .bind(b)
-        .bind(b)
-        .bind(a)
-        .fetch_one(&self.pool)
-        .await?
-            > 0)
     }
 
     async fn set_friends(&self, a: &str, b: &str, friends: bool, now: i64) -> sqlx::Result<()> {
@@ -489,7 +546,7 @@ fn same_secret(a: &str, b: &str) -> bool {
 
 async fn info(State(c): State<Shared>) -> Answer {
     let servers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM servers").fetch_one(&c.pool).await.unwrap_or(0);
-    ok(json!({ "name": "5th Echelon coordinator", "version": env!("CARGO_PKG_VERSION"), "servers": servers }))
+    ok(json!({ "name": "5th Echelon coordinator", "version": env!("FE_RELEASE"), "servers": servers }))
 }
 
 #[derive(Deserialize)]
@@ -517,7 +574,10 @@ async fn join(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::
     };
     if exists.is_some() && c.server(&headers).await.ok().as_deref() != Some(id) {
         tracing::warn!("refused a join as the existing server {id}");
-        return fail(StatusCode::CONFLICT, "that server id has joined already; joining again needs its current secret (or the operator removes it)");
+        return fail(
+            StatusCode::CONFLICT,
+            "that server id has joined already; joining again needs its current secret (or the operator removes it)",
+        );
     }
     let mut bytes = [0u8; 32];
     rand::RngCore::fill_bytes(&mut rand::rng(), &mut bytes);
@@ -554,8 +614,15 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, Json(listing): J
     for name in listing.names.iter().chain([&listing.host]) {
         let key = identity::host_key(name);
         let owner: Result<Option<String>, _> = async {
-            sqlx::query("INSERT OR IGNORE INTO server_names (name, server_id) VALUES (?, ?)").bind(&key).bind(&server).execute(&c.pool).await?;
-            sqlx::query_scalar("SELECT server_id FROM server_names WHERE name = ?").bind(&key).fetch_optional(&c.pool).await
+            sqlx::query("INSERT OR IGNORE INTO server_names (name, server_id) VALUES (?, ?)")
+                .bind(&key)
+                .bind(&server)
+                .execute(&c.pool)
+                .await?;
+            sqlx::query_scalar("SELECT server_id FROM server_names WHERE name = ?")
+                .bind(&key)
+                .fetch_optional(&c.pool)
+                .await
         }
         .await;
         match owner {
@@ -568,14 +635,47 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, Json(listing): J
         Ok(t) => t,
         Err(e) => return internal(e),
     };
-    match sqlx::query("UPDATE servers SET listing = ?, last_seen = ? WHERE id = ?")
+    if let Err(e) = sqlx::query("UPDATE servers SET listing = ?, last_seen = ? WHERE id = ?")
         .bind(text)
         .bind(identity::now())
         .bind(&server)
         .execute(&c.pool)
         .await
     {
-        Ok(_) => ok(json!({})),
+        return internal(e);
+    }
+    // The release this server should install now, if any.
+    match c.update_for(&server, &listing.version, u64::from(listing.players_online)).await {
+        Ok(Some(version)) => ok(json!({ "update": { "version": version } })),
+        Ok(None) => ok(json!({})),
+        Err(e) => internal(e),
+    }
+}
+
+/// A server's metrics report (see [`metrics`]).
+async fn metrics_report(State(c): State<Shared>, headers: HeaderMap, Json(report): Json<Value>) -> Answer {
+    let server = match c.server(&headers).await {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    if report.to_string().len() > metrics::MAX_REPORT || !report["metrics"].is_object() {
+        return fail(StatusCode::BAD_REQUEST, "not a metrics report");
+    }
+    match c.record_metrics(&server, &report).await {
+        Ok(()) => ok(json!({})),
+        Err(e) => internal(e),
+    }
+}
+
+/// A launcher's pings to the servers in the directory.
+async fn pings(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap, Json(body): Json<Value>) -> Answer {
+    let ip = client_ip(peer, &headers);
+    if !c.pings.check(&ip.to_string()) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "too many reports");
+    }
+    let list = body["pings"].as_array().cloned().unwrap_or_default();
+    match c.record_player_pings(ip, &list).await {
+        Ok(n) => ok(json!({ "recorded": n })),
         Err(e) => internal(e),
     }
 }
@@ -596,11 +696,20 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
         Err(e) => return internal(e),
     };
     let now = identity::now();
+    let rollout = match c.rollout().await {
+        Ok(r) => r,
+        Err(e) => return internal(e),
+    };
     let mut list: Vec<Value> = rows
         .into_iter()
         .filter_map(|(id, listing, last_seen)| {
             let mut v: Value = serde_json::from_str(&listing?).ok()?;
             if !v.is_object() || !v["listed"].as_bool().unwrap_or(true) {
+                return None;
+            }
+            // Members keep up with the network's releases, or leave the directory.
+            let (version, auto_update) = (v["version"].as_str().unwrap_or_default(), v["auto_update"].as_bool().unwrap_or(false));
+            if updates::delisted(&rollout, version, auto_update, now).is_some() {
                 return None;
             }
             v["id"] = json!(id);

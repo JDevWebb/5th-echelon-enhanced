@@ -109,7 +109,7 @@ case "${1:-test}" in
     run "$IMAGE" sh -c 'cd dist && rm -f SHA256SUMS && find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name ".*" | sed "s|^\./||" | sort | xargs sha256sum > SHA256SUMS && cat SHA256SUMS'
     ;;
   fmt)
-    run "$IMAGE" cargo fmt -p dedicated_server -p quazal -p launcher -p hooks -p hooks-config
+    run "$IMAGE" cargo fmt -p dedicated_server -p quazal -p launcher -p hooks -p hooks-config -p coordinator -p geo
     ;;
   shell)
     TTY=-it run "$IMAGE" bash

@@ -144,7 +144,8 @@ where
     pub disconnect_handler: Option<DH>,
     /// Called with the user id once a connection has proved its ticket: the
     /// user is signed in here (until their last connection closes or expires).
-    pub login_handler: Option<Box<dyn FnMut(u32) + 'a>>,
+    /// Also given the address the connection came from.
+    pub login_handler: Option<Box<dyn FnMut(u32, SocketAddr) + 'a>>,
     next_conn_id: AtomicU32,
     /// Address echoes answered per source this second.
     echoes: HashMap<std::net::IpAddr, (Instant, u32)>,
@@ -642,7 +643,7 @@ where
         info!(logger, "New client connected"; "signature" => packet.signature, "session" => packet.session_id);
         let signed_in = ci.borrow().user_id;
         if let (Some(user_id), Some(handler)) = (signed_in, self.login_handler.as_mut()) {
-            handler(user_id);
+            handler(user_id, client);
         }
     }
 

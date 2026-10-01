@@ -1,0 +1,16 @@
+[package]
+name = "geo"
+version = "0.3.0"
+edition = "2021"
+description = "Where an IP address is: DB-IP's free city database, downloaded and kept current"
+
+[dependencies]
+flate2 = { workspace = true }
+maxminddb = { version = "0.26", features = ["mmap"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+serde = { workspace = true }
+tokio = { workspace = true, features = ["time", "fs", "rt"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

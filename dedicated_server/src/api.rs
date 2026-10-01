@@ -743,6 +743,7 @@ impl Users for MyUsers {
 
         let user_id = maybe_user.map_err(|err| {
             crate::rate_limit::login_failed(&username);
+            crate::metrics::failed_login();
             match err {
                 LoginError::InvalidPassword => Status::unauthenticated("Invalid login"),
                 // The launcher needs to know a saved account is gone (to make a new one);
@@ -759,6 +760,7 @@ impl Users for MyUsers {
         crate::rate_limit::login_succeeded(peer);
 
         info!(self.logger, "Login successful for {username}");
+        crate::metrics::api_login();
         self.signed_in(user_id).await
     }
 
@@ -828,6 +830,7 @@ impl Users for MyUsers {
             String::new()
         };
         info!(self.logger, "New user {username} registered");
+        crate::metrics::registration();
         if let Some((global_id, time, signature, host)) = identity_link {
             let Some(person) = self.storage.find_person_by_name(&username).await.map_err(internal)? else {
                 return Err(Status::internal("internal error"));
@@ -929,6 +932,7 @@ impl Users for MyUsers {
         }
         crate::rate_limit::login_succeeded(peer);
         info!(self.logger, "Key login successful for {}", person.username);
+        crate::metrics::api_login();
         self.signed_in(person.id).await
     }
 }
