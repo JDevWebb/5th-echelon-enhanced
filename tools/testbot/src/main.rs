@@ -176,6 +176,21 @@ async fn direct_test(ctx: &mut Ctx) -> Result<()> {
     a.disconnect().await
 }
 
+/// A game far from the server (its first resend comes before the answer) sends
+/// SYN and CONNECT twice and switches to the last SYN answer's signature: it
+/// must still sign in and play.
+async fn slow_handshake(ctx: &mut Ctx) -> Result<()> {
+    testbot::conn::SLOW_HANDSHAKE.store(true, std::sync::atomic::Ordering::Relaxed);
+    let result = async {
+        let mut a = ctx.player("Far").await?;
+        a.search_sessions("113 => 1;103 => 0").await.map_err(|e| eyre!("the game service didn't answer after a repeated handshake: {e}"))?;
+        a.disconnect().await
+    }
+    .await;
+    testbot::conn::SLOW_HANDSHAKE.store(false, std::sync::atomic::Ordering::Relaxed);
+    result
+}
+
 /// Online means signed in to the game service: a ticket alone (the launcher's
 /// connection test) isn't, and leaving ends it.
 async fn presence(ctx: &mut Ctx) -> Result<()> {
@@ -691,6 +706,7 @@ const SCENARIOS: &[&str] = &[
     "rename",
     "direct-test",
     "presence",
+    "slow-handshake",
 ];
 
 #[tokio::main]
@@ -756,6 +772,7 @@ async fn main() -> Result<()> {
                 "rename" => rename(&mut ctx).await,
                 "direct-test" => direct_test(&mut ctx).await,
                 "presence" => presence(&mut ctx).await,
+                "slow-handshake" => slow_handshake(&mut ctx).await,
                 // Not in the default list: a server in the "mutual" mode, and two servers.
                 "friends-mutual" => friends_mutual(&mut ctx).await,
                 "federation" => match other {

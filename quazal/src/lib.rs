@@ -96,6 +96,9 @@ pub struct ClientInfo<T = ()> {
     /// Reliable packets sent to this client and not yet acknowledged, by
     /// sequence number: resent until they are.
     pub(crate) unacked: std::collections::BTreeMap<u16, Unacked>,
+    /// The answer to this connection's CONNECT, sent again if the CONNECT is
+    /// (the client resends it when the answer is slow, or lost).
+    pub(crate) connect_answer: Option<Vec<u8>>,
 }
 
 /// A reliable packet waiting for the client's acknowledgement.
@@ -130,6 +133,7 @@ impl<T> ClientInfo<T> {
             handled: std::collections::VecDeque::new(),
             replying: None,
             unacked: std::collections::BTreeMap::new(),
+            connect_answer: None,
         }
     }
 

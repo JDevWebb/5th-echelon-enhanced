@@ -53,6 +53,9 @@ const MAX_CONNECTIONS: usize = 16384;
 /// The address echo (user packets): its largest payload, and how often per address.
 const MAX_ECHO_PAYLOAD: usize = 64;
 const ECHOES_PER_SECOND: u32 = 5;
+/// How long after a connection's last packet a repeated SYN or CONNECT for it
+/// is still answered as a repeat.
+const REPEAT_WINDOW: Duration = Duration::from_secs(5);
 
 /// Connections one address may hold: 256 (a LAN party behind one router), or
 /// `FE_MAX_CONNECTIONS_PER_IP` (the load test's players all share one).
@@ -473,6 +476,25 @@ where
     /// Handles a SYN packet.
     fn handle_syn(&mut self, logger: &Logger, mut packet: QPacket, client: SocketAddr) {
         debug!(logger, "Handling syn packet");
+        // The same SYN again: the game sends it again when our answer takes longer than
+        // its first resend (a server ~300 ms away), and takes the signature from the last
+        // answer it gets. A new signature would leave it talking on a handshake that never
+        // finished ("client is unknown"), so it gets the one it already has.
+        if let Some(sig) = self.handshake_of(client, packet.session_id) {
+            debug!(logger, "SYN repeated; answering with the same signature");
+            packet.conn_signature = Some(sig);
+            let ack = match self.new_clients.get(&sig) {
+                Some(ci) => self.send_ack(logger, &client, &packet, ci, false),
+                None => match self.client_registry.clients.get(&sig) {
+                    Some(ci) => self.send_ack(logger, &client, &packet, &ci.borrow(), false),
+                    None => return,
+                },
+            };
+            if let Err(e) = ack {
+                error!(logger, "Error sending syn ack packet"; "error" => %e);
+            }
+            return;
+        }
         // Bounded handshakes and connections, per address and in all.
         let pending_here = self.new_clients.values().filter(|c| c.address().ip() == client.ip()).count();
         let open_here = self
@@ -489,7 +511,8 @@ where
             warn!(logger, "Refusing a handshake from {client}: too many connections");
             return;
         }
-        let ci: ClientInfo<T> = ClientInfo::new(client);
+        let mut ci: ClientInfo<T> = ClientInfo::new(client);
+        ci.client_session = packet.session_id;
         let sig = ci.server_signature;
         self.new_clients.insert(sig, ci);
 
@@ -502,6 +525,23 @@ where
         }
     }
 
+    /// The signature already given to `client`'s handshake with this session,
+    /// in progress or connected.
+    ///
+    /// A connection counts only while it's fresh (seen in the last few seconds):
+    /// a game started again could, by chance, reuse the session number of its
+    /// last connection, which lingers for a minute, and needs a handshake of its own.
+    fn handshake_of(&self, client: SocketAddr, session: u8) -> Option<u32> {
+        let ours = |ci: &ClientInfo<T>| *ci.address() == client && ci.client_session == session;
+        self.new_clients.iter().find(|(_, ci)| ours(ci)).map(|(sig, _)| *sig).or_else(|| {
+            self.client_registry
+                .clients
+                .iter()
+                .find(|(_, ci)| ci.try_borrow().is_ok_and(|ci| ours(&ci) && ci.last_seen.elapsed() < REPEAT_WINDOW))
+                .map(|(sig, _)| *sig)
+        })
+    }
+
     /// Handles a CONNECT packet.
     fn handle_connect(&mut self, logger: &Logger, mut packet: QPacket, client: SocketAddr) {
         debug!(logger, "Handling connect packet");
@@ -511,6 +551,19 @@ where
         };
 
         let Some(mut ci) = self.new_clients.remove(&packet.signature) else {
+            // The same CONNECT again (our answer was slow, or lost): answer it again.
+            if let Some(ci) = self.client_registry.clients.get(&packet.signature) {
+                let ci = ci.borrow();
+                if *ci.address() == client && ci.client_session == packet.session_id && ci.last_seen.elapsed() < REPEAT_WINDOW {
+                    packet.payload = ci.connect_answer.clone().unwrap_or_default();
+                    packet.conn_signature = Some(0);
+                    if let Err(e) = self.send_ack(logger, &client, &packet, &ci, !packet.payload.is_empty()) {
+                        error!(logger, "Error sending connect ack"; "error" => %e);
+                    }
+                    debug!(logger, "CONNECT repeated; answered again");
+                    return;
+                }
+            }
             warn!(logger, "Unknown client {:x} tried to connect. Ignoring the attempt", packet.signature);
             return;
         };
@@ -581,6 +634,7 @@ where
         }
 
         packet.conn_signature = Some(0);
+        ci.borrow_mut().connect_answer = Some(packet.payload.clone());
 
         if let Err(e) = self.send_ack(logger, &client, &packet, &ci.borrow(), !packet.payload.is_empty()) {
             error!(logger, "Error sending syn ack packet"; "error" => %e);
@@ -734,6 +788,59 @@ mod tests {
         let mut ci = ClientInfo::new(SocketAddr::from(([10, 77, 0, 2], port)));
         ci.user_id = user_id;
         ci
+    }
+
+    /// A SYN sent twice (its answer was slow) gets the same signature both
+    /// times, before and after the connection is made; another session gets
+    /// its own.
+    #[test]
+    fn a_repeated_syn_keeps_its_signature() {
+        let ctx = Context::splinter_cell_blacklist();
+        let logger = Logger::root(slog::Discard, o!());
+        let mut server: Server<'_, fn(ClientInfo<()>), fn(ClientInfo<()>), ()> = Server::new(logger.clone(), &ctx, StreamHandlerRegistry::new(logger.clone()));
+        server.bind("127.0.0.1:0").unwrap();
+        let game = UdpSocket::bind("127.0.0.1:0").unwrap();
+        game.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let from = game.local_addr().unwrap();
+        let syn = |session: u8| QPacket {
+            packet_type: PacketType::Syn,
+            flags: PacketFlag::NeedAck.into(),
+            conn_signature: Some(0),
+            session_id: session,
+            ..Default::default()
+        };
+        let answer = || {
+            let mut buf = [0u8; 1024];
+            let n = game.recv(&mut buf).unwrap();
+            QPacket::from_bytes(&ctx, &buf[..n]).unwrap().0.conn_signature.unwrap()
+        };
+
+        server.handle_syn(&logger, syn(7), from);
+        let first = answer();
+        server.handle_syn(&logger, syn(7), from);
+        assert_eq!(answer(), first, "a repeated SYN must get the same signature");
+
+        let connect = QPacket {
+            packet_type: PacketType::Connect,
+            flags: PacketFlag::NeedAck.into(),
+            signature: first,
+            conn_signature: Some(0x1234),
+            session_id: 7,
+            ..Default::default()
+        };
+        server.handle_connect(&logger, connect.clone(), from);
+        let mut buf = [0u8; 1024];
+        let _ = game.recv(&mut buf).unwrap();
+        server.handle_connect(&logger, connect, from);
+        let n = game.recv(&mut buf).expect("a repeated CONNECT must be answered again");
+        let again = QPacket::from_bytes(&ctx, &buf[..n]).unwrap().0;
+        assert!(again.flags.contains(PacketFlag::Ack) && again.packet_type == PacketType::Connect);
+        server.handle_syn(&logger, syn(7), from);
+        assert_eq!(answer(), first, "a SYN repeated after connecting must too");
+        assert!(server.client_registry.clients.contains_key(&first));
+
+        server.handle_syn(&logger, syn(8), from);
+        assert_ne!(answer(), first, "another session is another handshake");
     }
 
     #[test]

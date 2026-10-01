@@ -62,6 +62,11 @@ pub struct Conn {
     pub drop_requests: u32,
 }
 
+/// Behave like a game far from the server: its first resend comes before the
+/// server's answer, so the SYN and CONNECT go twice, and it takes the
+/// signature from the last SYN answer to arrive.
+pub static SLOW_HANDSHAKE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 impl Conn {
     /// Opens a connection (SYN, CONNECT). `connect_payload` is the ticket for
     /// the secure server, empty for the auth server. Returns the payload of
@@ -82,26 +87,61 @@ impl Conn {
             received: 0,
             drop_requests: 0,
         };
-        c.send(QPacket {
-            packet_type: PacketType::Syn,
-            flags: PacketFlag::NeedAck.into(),
-            conn_signature: Some(0),
-            ..Default::default()
-        })
+        let slow = SLOW_HANDSHAKE.load(std::sync::atomic::Ordering::Relaxed);
+        let is_syn_ack = |p: &QPacket| p.packet_type == PacketType::Syn && p.flags.contains(PacketFlag::Ack);
+        c.send_maybe_twice(
+            QPacket {
+                packet_type: PacketType::Syn,
+                flags: PacketFlag::NeedAck.into(),
+                conn_signature: Some(0),
+                ..Default::default()
+            },
+            slow,
+        )
         .await?;
-        let syn_ack = c.expect(|p| p.packet_type == PacketType::Syn && p.flags.contains(PacketFlag::Ack)).await?;
+        let syn_ack = c.expect(is_syn_ack).await?;
         c.server_signature = syn_ack.conn_signature.ok_or_else(|| eyre!("SYN ack without a connection signature"))?;
 
-        c.send(QPacket {
-            packet_type: PacketType::Connect,
-            flags: PacketFlag::NeedAck.into(),
-            conn_signature: Some(rand::random()),
-            payload: connect_payload,
-            ..Default::default()
-        })
+        c.send_maybe_twice(
+            QPacket {
+                packet_type: PacketType::Connect,
+                flags: PacketFlag::NeedAck.into(),
+                conn_signature: Some(rand::random()),
+                payload: connect_payload,
+                ..Default::default()
+            },
+            slow,
+        )
         .await?;
-        let connect_ack = c.expect(|p| p.packet_type == PacketType::Connect && p.flags.contains(PacketFlag::Ack)).await?;
-        Ok((c, connect_ack.payload))
+        let mut connect_ack = None;
+        let mut second_syn_ack = !slow;
+        while connect_ack.is_none() || !second_syn_ack {
+            let p = c.expect(|p| is_syn_ack(p) || (p.packet_type == PacketType::Connect && p.flags.contains(PacketFlag::Ack))).await?;
+            if is_syn_ack(&p) {
+                // The answer to the repeated SYN: like the game, use its signature from now on.
+                c.server_signature = p.conn_signature.ok_or_else(|| eyre!("SYN ack without a connection signature"))?;
+                second_syn_ack = true;
+            } else if connect_ack.is_none() {
+                connect_ack = Some(p);
+            }
+        }
+        Ok((c, connect_ack.map(|p| p.payload).unwrap_or_default()))
+    }
+
+    /// Sends a handshake packet, twice (the same packet, as a resend) if `twice`.
+    async fn send_maybe_twice(&mut self, mut p: QPacket, twice: bool) -> Result<()> {
+        p.source = LOCAL;
+        p.destination = REMOTE;
+        p.session_id = self.session_id;
+        p.signature = self.server_signature;
+        p.sequence = self.sequence;
+        self.sequence = self.sequence.wrapping_add(1);
+        let bytes = p.to_bytes(&self.ctx);
+        self.socket.send(&bytes).await?;
+        if twice {
+            self.socket.send(&bytes).await?;
+        }
+        Ok(())
     }
 
     async fn send(&mut self, mut p: QPacket) -> Result<()> {
