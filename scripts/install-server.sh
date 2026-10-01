@@ -941,6 +941,34 @@ UNIT
 fi
 fi # the game server
 
+# --- Firewall -----------------------------------------------------------
+
+# Before Caddy: its certificate check needs ports 80 and 443 reachable.
+
+if [ "$coord_only" -eq 1 ]; then tcp_ports=(80); elif [ "$no_caddy" -eq 0 ]; then tcp_ports=(80); else tcp_ports=(80 8000 50051); fi
+if [ -n "$coord_domain" ] || { [ "$no_caddy" -eq 0 ] && [ "$https_api" -eq 1 ]; }; then tcp_ports+=(443); fi
+opened=""
+if [ "$firewall" -eq 1 ]; then
+  # Each rule is recorded, so --uninstall removes what it added (and only that).
+  record_rule() { grep -qxF "$1 $2" "$FIREWALL_RECORD" 2>/dev/null || echo "$1 $2" >> "$FIREWALL_RECORD"; }
+  if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
+    for p in "${tcp_ports[@]}"; do ufw allow "$p/tcp" >/dev/null; record_rule ufw "$p/tcp"; done
+    if [ "$coord_only" -eq 0 ]; then
+      ufw allow "${UDP_PORTS/-/:}/udp" >/dev/null
+      record_rule ufw "${UDP_PORTS/-/:}/udp"
+    fi
+    opened="ufw"
+  elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
+    for p in "${tcp_ports[@]}"; do firewall-cmd --permanent --add-port="$p/tcp" >/dev/null; record_rule firewalld "$p/tcp"; done
+    if [ "$coord_only" -eq 0 ]; then
+      firewall-cmd --permanent --add-port="$UDP_PORTS/udp" >/dev/null
+      record_rule firewalld "$UDP_PORTS/udp"
+    fi
+    firewall-cmd --reload >/dev/null
+    opened="firewalld"
+  fi
+fi
+
 # --- Caddy --------------------------------------------------------------
 
 install_caddy() {
@@ -1180,32 +1208,6 @@ if [ "$no_caddy" -eq 0 ]; then
           protocols h1 h2 h2c
       }")
     fi
-  fi
-fi
-
-# --- Firewall -----------------------------------------------------------
-
-if [ "$coord_only" -eq 1 ]; then tcp_ports=(80); elif [ "$no_caddy" -eq 0 ]; then tcp_ports=(80); else tcp_ports=(80 8000 50051); fi
-if [ -n "$coord_domain" ] || { [ "$no_caddy" -eq 0 ] && [ "$https_api" -eq 1 ]; }; then tcp_ports+=(443); fi
-opened=""
-if [ "$firewall" -eq 1 ]; then
-  # Each rule is recorded, so --uninstall removes what it added (and only that).
-  record_rule() { grep -qxF "$1 $2" "$FIREWALL_RECORD" 2>/dev/null || echo "$1 $2" >> "$FIREWALL_RECORD"; }
-  if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q "Status: active"; then
-    for p in "${tcp_ports[@]}"; do ufw allow "$p/tcp" >/dev/null; record_rule ufw "$p/tcp"; done
-    if [ "$coord_only" -eq 0 ]; then
-      ufw allow "${UDP_PORTS/-/:}/udp" >/dev/null
-      record_rule ufw "${UDP_PORTS/-/:}/udp"
-    fi
-    opened="ufw"
-  elif command -v firewall-cmd >/dev/null && firewall-cmd --state >/dev/null 2>&1; then
-    for p in "${tcp_ports[@]}"; do firewall-cmd --permanent --add-port="$p/tcp" >/dev/null; record_rule firewalld "$p/tcp"; done
-    if [ "$coord_only" -eq 0 ]; then
-      firewall-cmd --permanent --add-port="$UDP_PORTS/udp" >/dev/null
-      record_rule firewalld "$UDP_PORTS/udp"
-    fi
-    firewall-cmd --reload >/dev/null
-    opened="firewalld"
   fi
 fi
 
