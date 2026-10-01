@@ -48,14 +48,19 @@ pub struct Target {
     pub nat: u16,
 }
 
-static TARGET: std::sync::OnceLock<Target> = std::sync::OnceLock::new();
+/// Where each server's services are, when they aren't on the default ports
+/// (`--info`: a server behind a reverse proxy).
+static TARGETS: std::sync::Mutex<Vec<(IpAddr, Target)>> = std::sync::Mutex::new(Vec::new());
 
-pub fn set_target(target: Target) {
-    let _ = TARGET.set(target);
+pub fn set_target(server: IpAddr, target: Target) {
+    let mut targets = TARGETS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    targets.retain(|(ip, _)| *ip != server);
+    targets.push((server, target));
 }
 
 pub fn target(server: IpAddr) -> Target {
-    TARGET.get().cloned().unwrap_or_else(|| Target {
+    let targets = TARGETS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    targets.iter().find(|(ip, _)| *ip == server).map(|(_, t)| t.clone()).unwrap_or_else(|| Target {
         host: server.to_string(),
         api: API_PORT,
         auth: AUTH_PORT,

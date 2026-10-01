@@ -718,9 +718,11 @@ async fn main() -> Result<()> {
         args.drain(i..=i + 1);
     }
     let mut other: Option<IpAddr> = None;
+    let mut other_host = None;
     if let Some(i) = args.iter().position(|a| a == "--other") {
         let o = args.get(i + 1).ok_or_else(|| eyre!("--other needs an address"))?.clone();
         other = Some(o.parse().ok().or_else(|| setup::net::resolve(&o)).ok_or_else(|| eyre!("can't resolve {o}"))?);
+        other_host = Some(o);
         args.drain(i..=i + 1);
     }
     let server: IpAddr = match host.parse() {
@@ -731,15 +733,22 @@ async fn main() -> Result<()> {
     // does (a server behind a reverse proxy or with remapped ports).
     if let Some(i) = args.iter().position(|a| a == "--info") {
         args.remove(i);
-        let info = setup::server_info::fetch(&host, Duration::from_secs(5)).ok_or_else(|| eyre!("no /api/info from {host}"))?;
-        let ports = info.ports.ok_or_else(|| eyre!("{host}'s /api/info has no ports"))?;
-        println!("{host}: API {}, login {}, NAT {:?}", ports.api, ports.login, ports.nat);
-        testbot::bot::set_target(testbot::bot::Target {
-            host: host.clone(),
-            api: ports.api,
-            auth: ports.login,
-            nat: ports.nat.ok_or_else(|| eyre!("the NAT helper is off"))?,
-        });
+        // Each server's own ports (the second server's too, for federation).
+        let both = [Some((server, host.clone())), other.zip(other_host.clone())];
+        for (ip, name) in both.into_iter().flatten() {
+            let info = setup::server_info::fetch(&name, Duration::from_secs(5)).ok_or_else(|| eyre!("no /api/info from {name}"))?;
+            let ports = info.ports.ok_or_else(|| eyre!("{name}'s /api/info has no ports"))?;
+            println!("{name}: API {}, login {}, NAT {:?}", ports.api, ports.login, ports.nat);
+            testbot::bot::set_target(
+                ip,
+                testbot::bot::Target {
+                    host: name.clone(),
+                    api: ports.api,
+                    auth: ports.login,
+                    nat: ports.nat.ok_or_else(|| eyre!("the NAT helper is off"))?,
+                },
+            );
+        }
     }
     if args.first().map(String::as_str) == Some("load") {
         let options = testbot::load::Options::parse(&args[1..])?;
