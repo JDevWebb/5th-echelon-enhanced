@@ -153,7 +153,11 @@ Invites and friend requests also pop up as notifications. Friend lists, blocking
 ### When something doesn't work
 
 1. **Look at the checklist** on the Play screen and press the button next to anything red.
-2. **Run Settings › Connection test.** It checks each part in turn: the server's config (port 80), its API (50051), signing in to the game service (21126), whether the server can reach your PC directly, and the server's internet play helper (21128).
+2. **Run Settings › Connection test.** It checks each part in turn:
+   - the server's config (port 80) and its API;
+   - signing in to the game service (21126);
+   - whether the server can reach your PC directly. If not, it asks your router to forward the match port (UPnP, then NAT-PMP) as the game does, tries again, and removes the mapping afterwards. An amber result here is normal for many routers: matches then use hole punching or the server's relay;
+   - the server's internet play helper (21128).
 3. **The game's log** is `bl-tracing.log` in the game folder; the previous game's is `bl-tracing.prev.log`. Include it when you ask for help.
 
 <p align="center">
@@ -597,6 +601,7 @@ A tag with a suffix (`v0.3.1-rc.1`) makes a pre-release, which the updater doesn
 | `dedicated_server/` | The server: Quazal services, the game's protocols, the gRPC API and the community API |
 | `quazal/` | The PRUDP/RMC network stack |
 | `nat_proto/` | The NAT helper protocol between the server and the client (internet play) |
+| `portmap/` | Router port forwarding (UPnP, NAT-PMP), for the client and the connection test |
 | `identity/` | A player's identity across servers: the key, and the messages it signs |
 | `coordinator/` | Shares friends between servers, and keeps the server directory |
 | `hooks/` | The game client (`uplay_r1_loader.dll`): Uplay emulation, network fixes and the overlay |
@@ -659,7 +664,7 @@ Find other players, active servers and help:
 **This fork's own work is under the MIT licence; upstream's code isn't licensed yet.** [LICENSE.md](LICENSE.md) says exactly what's covered:
 
 - **MIT:**
-  - the crates this fork created: `identity/` (player identities and release signing), `coordinator/` (friends across servers and the server directory), `nat_proto/` (internet play) and `setup/` (the launcher's logic);
+  - the crates this fork created: `identity/` (player identities and release signing), `coordinator/` (friends across servers and the server directory), `nat_proto/` and `portmap/` (internet play) and `setup/` (the launcher's logic);
   - the files it added elsewhere: the new launcher screens and updater, the NAT helper and relay, friends, federation, rate limits and the community API in the server, internet play and the friends overlay in the client;
   - the test players and load test, the Linux installer and release signing, builds, Docker, CI, and this fork's docs;
   - this fork's changes to every other file, line by line as the git history records them.

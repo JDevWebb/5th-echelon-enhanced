@@ -19,12 +19,13 @@ Everything in these files and folders is under MIT:
 | `identity/` | A player's identity across servers (Ed25519 keys and the messages they sign), and `release-sign`, which signs releases |
 | `coordinator/` | The coordinator: friends shared between servers, name reservations, and the server directory |
 | `nat_proto/` | The NAT helper's protocol between the server and the client (internet play) |
+| `portmap/` | Asking the router to forward a port (UPnP and NAT-PMP), for the client and the launcher's connection test |
 | `setup/`, except the files listed in section 3 | The launcher's logic library: finding the game, installing, accounts, saves, checks, the server directory |
 | `launcher/src/app.rs`, `flow.rs`, `play.rs`, `server.rs` (except its log view; see section 3), `settings.rs`, `services.rs`, `task.rs`, `theme.rs`, `updater.rs`, `main.rs`, `network/nat.rs` | The launcher's interface, signed updates, and internet play checks (`updater.rs` and `main.rs` were rewritten from scratch) |
 | `dedicated_server/src/community_api.rs`, `federation.rs`, `friends_policy.rs`, `keys.rs`, `nat_helper.rs`, `rate_limit.rs`, `storage/relationships.rs` | The community API, sharing friends with a coordinator, friend-list rules, persistent keys, the NAT helper and relay, rate limits, and friends, blocks and identities in the database |
 | `dedicated_server/src/storage/migrations/` dated 2026-09-28 and 2026-10-01 | Disabling the sample accounts; friends, name conflicts and token epochs |
 | `quazal/src/rmc/unhandled.rs` | Counting calls the server can't answer |
-| `hooks/src/community.rs`, `hooks/src/hooks/nat.rs`, `hooks/src/hooks/portmap.rs` | The overlay's friends, player search and invites; internet play in the client (the NAT helper, the relay, UPnP and NAT-PMP) |
+| `hooks/src/community.rs`, `hooks/src/hooks/nat.rs`, `hooks/src/hooks/portmap.rs` | The overlay's friends, player search and invites; internet play in the client (the NAT helper, the relay, keeping the router's port mapping) |
 | `tools/testbot/` | Headless test players and the load test |
 | `build/`, `docker/`, `release.toml`, `.dockerignore`, `.github/` | Builds, the server image, release numbering, CI and release workflows, issue forms |
 | `scripts/install-server.sh`, `sign-release.sh`, `bots.sh`, `load-test.sh`, `proxy-test.sh`, `federation-test.sh`, `check-clean.sh`, `install-hooks.sh` | The Linux installer, release signing, test runners and repository checks |

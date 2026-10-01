@@ -25,7 +25,7 @@ goblin = { workspace = true }
 hooks-addresses = { path = "hooks-addresses" }
 hooks-config = { path = "hooks-config" }
 hooks-proc = { path = "hooks-proc" }
-igd-next = "0.16"
+portmap = { path = "../portmap" }
 imgui = { workspace = true }
 nat_proto = { path = "../nat_proto" }
 region = { workspace = true }

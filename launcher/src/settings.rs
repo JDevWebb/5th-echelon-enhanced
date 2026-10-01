@@ -542,19 +542,58 @@ fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>) -> Te
         pass_fail(run(Box::pin(network::test_quazal_login(&profile.server, profile.login_port(), user, pass)))),
     );
     // Only a router that forwards UDP 13000 (or no router) lets the server's packet in
-    // unasked. Most don't, and internet play doesn't need them to: the NAT helper, the
-    // router's port mapping while the game runs, or the relay cover it.
-    add(
-        "Direct connection to this PC",
-        match run(Box::pin(network::test_p2p(api, user, pass))) {
-            Ok(()) => (Status::Ok, None),
-            Err(e) if e.contains("in time") || e.contains("Deadline") => (
-                Status::Warn,
-                Some("not reachable directly, which is normal behind a home router: matches use your router's port mapping while the game runs, or the server's relay".into()),
-            ),
-            Err(e) => (Status::Fail, Some(e)),
-        },
-    );
+    // unasked. If it doesn't, ask the router for the mapping the game asks for while it
+    // runs (UPnP, then NAT-PMP), try again, and take the mapping away. Internet play
+    // works either way: the NAT helper's hole punching, or the relay, cover the rest.
+    let timed_out = |e: &str| e.contains("in time") || e.contains("Deadline");
+    let direct = match run(Box::pin(network::test_p2p(api.clone(), user, pass))) {
+        Ok(()) => (Status::Ok, Some("reachable without any router set-up".into())),
+        Err(e) if timed_out(&e) => {
+            let pinned = profile
+                .adapter
+                .as_deref()
+                .and_then(|name| setup::net::adapter_ip(name, &setup::net::adapters()))
+                .and_then(|ip| match ip {
+                    std::net::IpAddr::V4(v4) => Some(v4),
+                    std::net::IpAddr::V6(_) => None,
+                });
+            match portmap::map(nat_proto::STORM_PORT, pinned, 120, "5th Echelon connection test") {
+                Err(why) => (
+                    Status::Warn,
+                    Some(format!(
+                        "not reachable directly, and the router didn't forward a port ({why}). Normal for many routers: matches use hole punching, or the server's relay"
+                    )),
+                ),
+                Ok(mapping) => {
+                    let (public, how) = (mapping.public, mapping.how);
+                    let outcome = if public.port() != nat_proto::STORM_PORT {
+                        (
+                            Status::Warn,
+                            Some(format!(
+                                "the router forwards {public} ({how}), but not port {} (another PC may have it); the game asks again while it runs",
+                                nat_proto::STORM_PORT
+                            )),
+                        )
+                    } else {
+                        match run(Box::pin(network::test_p2p(api, user, pass))) {
+                            Ok(()) => (Status::Ok, Some(format!("reachable through the router's port mapping ({how}, {public}), which the game sets up while it runs"))),
+                            Err(e) if timed_out(&e) => (
+                                Status::Warn,
+                                Some(format!(
+                                    "the router forwards {public} ({how}), but the server's packet still didn't arrive: a firewall on this PC, or another router in front. Matches use hole punching or the relay"
+                                )),
+                            ),
+                            Err(e) => (Status::Fail, Some(e)),
+                        }
+                    };
+                    mapping.remove();
+                    outcome
+                }
+            }
+        }
+        Err(e) => (Status::Fail, Some(e)),
+    };
+    add("Direct connection to this PC", direct);
     let nat_port = game_nat_port.unwrap_or(nat_proto::DEFAULT_PORT);
     let nat = match rt.block_on(async { tokio::time::timeout(t, network::test_nat_helper(&profile.server, nat_port)).await }) {
         Ok(Ok(check)) => match check.symmetric {

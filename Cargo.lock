@@ -2275,9 +2275,9 @@ dependencies = [
  "hooks-config",
  "hooks-proc",
  "hudhook",
- "igd-next",
  "imgui",
  "nat_proto",
+ "portmap",
  "region",
  "retour",
  "serde",
@@ -2913,6 +2913,7 @@ dependencies = [
  "image",
  "jzon",
  "nat_proto",
+ "portmap",
  "quazal",
  "rand 0.9.2",
  "reqwest",
@@ -3920,6 +3921,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "10ab3eb7f3becc3a1cbc4f2c6f20267996cfc1a6467a873763411b136a122715"
 dependencies = [
  "portable-atomic",
+]
+
+[[package]]
+name = "portmap"
+version = "0.3.0"
+dependencies = [
+ "igd-next",
+ "windows 0.54.0",
 ]
 
 [[package]]
