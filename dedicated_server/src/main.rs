@@ -444,7 +444,8 @@ fn main() -> color_eyre::Result<()> {
                 }
             }),
             quazal::Service::Config(cfg) => std::thread::Builder::new().name(name).spawn(move || {
-                if cfg.listen.port() != 80 {
+                // Behind a reverse proxy (listening on loopback) the proxy has port 80.
+                if cfg.listen.port() != 80 && !cfg.listen.ip().is_loopback() {
                     warn!(
                         logger,
                         "Unexpected port {} used for the config server. Clients are expecting port 80. Adjust in the service config or make sure to redirect traffic accordingly",
