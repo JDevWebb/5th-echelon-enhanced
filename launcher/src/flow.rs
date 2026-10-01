@@ -117,6 +117,31 @@ fn say(log: &Log, line: impl Into<String>) {
 /// The automatic setup: install the client, check the server, set up the
 /// account, pin the adapter, make a save, and save it all as the player's
 /// profile. Stops at the first step that fails, saying why.
+/// When `address` is a network (a coordinator's https address, e.g. the
+/// community's play.scbl.jdevwebb.net) rather than a game server: uses its
+/// directory from now on, pings its servers, and returns the best one's host.
+/// None for anything else (a server, an IP address, a LAN host).
+pub fn pick_from_network(address: &str, log: &Log) -> Result<Option<String>, String> {
+    let address = address.trim();
+    if address.parse::<std::net::IpAddr>().is_ok() || !net::valid_host(address) || !address.contains('.') {
+        return Ok(None);
+    }
+    let url = format!("https://{address}");
+    let rt = crate::services::rt();
+    if !rt.block_on(crate::network::is_coordinator(&url)) {
+        return Ok(None);
+    }
+    say(log, format!("{address} is a network of servers: finding the best one for you…"));
+    crate::app::Prefs::set_directory(Some(url.clone()));
+    let servers = rt.block_on(crate::network::server_directory(&url))?;
+    let best = setup::directory::best(&servers).ok_or_else(|| format!("{address} lists no servers right now; try again in a minute."))?;
+    let (listing, ping) = &servers[best];
+    let region = if listing.region.is_empty() { String::new() } else { format!(" ({})", listing.region) };
+    let ping = ping.map_or_else(|| "no ping".to_string(), |ms| format!("{ms} ms"));
+    say(log, format!("Best for you: {}{region}, {ping}, at {}.", listing.name, listing.host));
+    Ok(Some(listing.host.clone()))
+}
+
 pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<(), String> {
     let dir = &plan.game_dir;
 

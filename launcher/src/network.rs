@@ -82,6 +82,31 @@ pub enum Error {
     ConfigServer(#[from] reqwest::Error),
 }
 
+/// Whether `url` (https://host) is a network's coordinator: its `/v1/info`
+/// answers with the coordinator's name and how many servers it has.
+pub async fn is_coordinator(url: &str) -> bool {
+    let Ok(client) = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(4))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    else {
+        return false;
+    };
+    let Ok(resp) = client.get(format!("{}/v1/info", url.trim_end_matches('/'))).send().await else {
+        return false;
+    };
+    if !resp.status().is_success() || resp.content_length().is_some_and(|n| n > 64 * 1024) {
+        return false;
+    }
+    let Ok(body) = resp.text().await else {
+        return false;
+    };
+    let Ok(info) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return false;
+    };
+    info["servers"].is_u64() && info["name"].as_str().is_some_and(|n| n.to_ascii_lowercase().contains("coordinator"))
+}
+
 /// The servers in a coordinator's directory, each with this PC's ping to it
 /// (None: no answer), measured in parallel.
 pub async fn server_directory(coordinator: &str) -> Result<Vec<(setup::directory::Listing, Option<u32>)>, String> {

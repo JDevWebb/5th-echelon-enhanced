@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for running a server! Servers in the community network share friends through `coord.scbl.jdevwebb.net` and show up under **Browse servers** in every launcher.
+        Thanks for running a server! Servers in the community network share friends through `play.scbl.jdevwebb.net`; players who type that address are set up on the server closest to them.
 
         **Never post a join token here.** Once we've checked your server, we'll send the token privately.
 

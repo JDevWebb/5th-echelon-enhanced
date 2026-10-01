@@ -25,11 +25,11 @@
 
 ## The community server
 
-**There's a public 5th Echelon server that anyone can play on, for free.** Get the launcher, type the address, press Set up.
+**There are public 5th Echelon servers that anyone can play on, for free.** Get the launcher, type one address, press Set up: the launcher picks the server closest to you.
 
 <table>
-<tr><td><b>Server</b></td><td><code>play.scbl.jdevwebb.net</code></td></tr>
-<tr><td><b>Server directory</b></td><td><code>https://coord.scbl.jdevwebb.net</code> (the launcher offers it after you join)</td></tr>
+<tr><td><b>Address</b></td><td><code>play.scbl.jdevwebb.net</code>: the community network; the launcher pings every server in it and sets you up on the best</td></tr>
+<tr><td><b>Servers</b></td><td>Europe: <code>eu-central.scbl.jdevwebb.net</code> (Falkenstein, Germany)<br>Oceania: <code>oceania.scbl.jdevwebb.net</code> (Australia)</td></tr>
 <tr><td><b>Modes</b></td><td>Co-op and Spies vs Mercs: Find Teammate, Quick Match, lobby and private-match invites</td></tr>
 <tr><td><b>Friends</b></td><td>Friends-only lists and invites, blocking, player search; your friends follow you to every server in the community network</td></tr>
 <tr><td><b>Internet play</b></td><td>No VPN or port forwarding: the server tells your game its public address, and relays matches when a router can't be reached</td></tr>
@@ -41,7 +41,7 @@
 2. Run it, and under **Join a server** type **`play.scbl.jdevwebb.net`**.
 3. Pick a name, press **Set up**, then **Play**. Press <kbd>F5</kbd> in the game to add friends.
 
-The launcher then picks up the community network's server directory by itself, pings every server in it, and lists them with your ping to each. When a closer one exists, **Switch** moves you there in one click, with the same name and friends.
+The launcher pings every server in the network and sets you up on the one with the lowest ping (the setup log says which). Afterwards the Play screen lists them all with your ping to each, and **Switch** moves you to another in one click, with the same name and friends.
 
 ### Grow the network
 

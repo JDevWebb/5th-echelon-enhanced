@@ -505,9 +505,15 @@ impl Coordinator<'_> {
 
 /// The saved credentials, if they're for this coordinator.
 fn credentials(base: &str) -> Option<String> {
+    let (url, secret) = saved_credentials()?;
+    (url == base).then_some(secret)
+}
+
+/// The coordinator address and secret saved when this server joined.
+fn saved_credentials() -> Option<(String, String)> {
     let text = std::fs::read_to_string(CREDENTIALS_FILE).ok()?;
     let (url, secret) = text.trim().split_once('\n')?;
-    (url.trim() == base).then(|| secret.trim().to_string())
+    Some((url.trim().to_string(), secret.trim().to_string()))
 }
 
 /// Joins the coordinator with the join token and saves the credentials.
@@ -520,8 +526,18 @@ async fn join(logger: &Logger, http: &reqwest::Client, base: &str, cfg: &Federat
         return None;
     }
     let body = serde_json::json!({ "token": cfg.join_token.trim(), "server_id": server_id });
+    // Joined before, at another address (the coordinator moved): the coordinator only lets
+    // a server join again with its current secret, so it goes along.
+    let previous = saved_credentials().filter(|(url, _)| url != base);
+    if let Some((url, _)) = &previous {
+        info!(logger, "Federation: the coordinator was {url}; joining again at {base}");
+    }
     let result = async {
-        let resp = http.post(format!("{base}/v1/join")).json(&body).send().await?;
+        let mut request = http.post(format!("{base}/v1/join")).json(&body);
+        if let Some((_, secret)) = &previous {
+            request = request.bearer_auth(secret);
+        }
+        let resp = request.send().await?;
         let status = resp.status();
         let value = read_json(resp).await?;
         if !status.is_success() {

@@ -2,7 +2,7 @@
 
 How to put 5th Echelon servers on the internet with the Linux installer: one server on its own, a group of servers sharing friends through a coordinator, or a coordinator on a machine of its own.
 
-The examples use `play.example.com` for a game server and `coord.example.com` for a coordinator. The [community server](../README.md#the-community-server) runs this exact setup at `play.scbl.jdevwebb.net` and `coord.scbl.jdevwebb.net`.
+The examples use `play.example.com` for a game server and `coord.example.com` for a coordinator. The [community network](../README.md#the-community-server) runs a coordinator at `play.scbl.jdevwebb.net`, with regional servers such as `eu-central.scbl.jdevwebb.net` and `oceania.scbl.jdevwebb.net`.
 
 ## Choose a shape
 
@@ -14,6 +14,8 @@ The examples use `play.example.com` for a game server and `coord.example.com` fo
 | **Coordinator on its own** | 1, plus the servers | A group of servers with no "main" one |
 
 A coordinator shares friends and blocks between its servers, reserves each player's name across them, and lists them in the server directory the launcher browses. See [friends.md](friends.md) for what it knows and trusts.
+
+**Give a group one address.** Players can type a coordinator's address in the launcher as well as a server's: the launcher then pings every server in the directory and sets them up on the best. So a group can hand out its coordinator's name (say `play.example.com`) and give each server a regional one (`eu.example.com`, `oceania.example.com`). The community network does exactly this.
 
 ## What a server needs
 
@@ -112,6 +114,10 @@ sudo bash install-server.sh --yes --coordinator-only --coordinator-domain coord.
 ```
 
 It installs the coordinator and Caddy, and no game server. Servers then join it as above.
+
+## Renaming servers or the coordinator
+
+Run the installer again with the new names (`--domain`, `--coordinator-domain`), after their A records point at the machine. Accounts, friends and settings stay. A server whose coordinator has a new address joins it again by itself, with the secret it already has. Players set up on an old name run **Set up** again with the new one, or with the network's address.
 
 ## The join token
 

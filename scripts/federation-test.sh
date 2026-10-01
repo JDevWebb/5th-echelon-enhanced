@@ -27,7 +27,7 @@ server() { # server <name> <label>
     ./dedicated_server >gen.log 2>&1 & gen=\$!
     for _ in \$(seq 100); do [ -s service.toml ] && break; sleep 0.1; done
     sleep 0.3; kill \$gen 2>/dev/null || true; wait \$gen 2>/dev/null || true
-    printf '\n[federation]\ncoordinator = \"http://$coord:8700\"\njoin_token = \"$token\"\nname = \"$2\"\nregion = \"Test\"\nallow_http = true\n' >> service.toml
+    grep -q '^\[federation\]' service.toml || printf '\n[federation]\ncoordinator = \"http://$coord:8700\"\njoin_token = \"$token\"\nname = \"$2\"\nregion = \"Test\"\nallow_http = true\n' >> service.toml
     exec ./dedicated_server --public-address \$(hostname -i | cut -d' ' -f1) >server.log 2>&1
   " >/dev/null
 }
@@ -50,6 +50,17 @@ client curl -sf "http://$coord:8700/v1/servers"; echo
 [ "${n:-0}" -eq 2 ] && echo "PASS directory lists both servers" || { echo "FAIL directory"; rc=1; }
 echo "--- test players"
 client "$bin/testbot" --server "$a" --other "$b" federation || rc=1
+echo "--- the coordinator moves to another address"
+# Server A is pointed at the same coordinator by another name, and restarted: it must join
+# again on its own (with its secret), not be locked out.
+docker exec fes-fed-a sed -i "s#coordinator = \"http://$coord:8700\"#coordinator = \"http://fes-fed-coord:8700\"#" /srv/fe/service.toml
+docker restart fes-fed-a >/dev/null
+moved=0
+for _ in $(seq 60); do
+  if docker exec fes-fed-a grep -qh "Federation: joined http://fes-fed-coord:8700" /srv/fe/server.log /srv/fe/gen.log 2>/dev/null; then moved=1; break; fi
+  sleep 1
+done
+[ "$moved" -eq 1 ] && echo "PASS server A joined again at the new address" || { echo "FAIL server A didn't join at the new address"; rc=1; }
 if [ $rc -ne 0 ]; then
   for s in fes-fed-a fes-fed-b; do echo "--- $s"; docker exec "$s" grep -i federation /srv/fe/server.log | tail -20 || true; done
   echo "--- coordinator"; docker exec fes-fed-coord tail -30 /srv/c/log || true

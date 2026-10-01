@@ -251,7 +251,7 @@ fn join_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut egu
     theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(theme::heading("Join a server"));
-        ui.label(theme::muted("The address from whoever runs your server, or find one on your network."));
+        ui.label(theme::muted("A server's or a network's address (e.g. play.scbl.jdevwebb.net for the community), or find one on your network."));
         ui.add_space(4.0);
         ui.add_enabled_ui(!play.setup.running(), |ui| {
             egui::Grid::new("join").num_columns(2).spacing([12.0, 10.0]).show(ui, |ui| {
@@ -468,7 +468,7 @@ fn network_list(play: &mut Play, game: &Game, current: &str, ctx: &egui::Context
 }
 
 fn start_setup(play: &mut Play, game: &Game, ctx: &egui::Context) {
-    let plan = flow::Plan {
+    let mut plan = flow::Plan {
         game_dir: game.dir.clone(),
         server: play.server.trim().to_string(),
         credentials: play.have_account.then(|| (play.username.trim().to_string(), play.password.clone())),
@@ -478,7 +478,13 @@ fn start_setup(play: &mut Play, game: &Game, ctx: &egui::Context) {
     play.setup_error = None;
     play.log = Arc::default();
     let log = Arc::clone(&play.log);
-    play.setup.start(ctx, move || flow::run_setup(&plan, crate::dll_utils::bundled(), &log));
+    play.setup.start(ctx, move || {
+        // A network's address: set up on its best server.
+        if let Some(host) = flow::pick_from_network(&plan.server, &log)? {
+            plan.server = host;
+        }
+        flow::run_setup(&plan, crate::dll_utils::bundled(), &log)
+    });
 }
 
 fn setup_progress(play: &Play, ui: &mut egui::Ui) {

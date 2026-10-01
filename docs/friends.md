@@ -128,6 +128,8 @@ A dishonest member server could still make friendships or blocks between players
 
 Every member server appears in the coordinator's **server directory**, unless `listed = false`, with its name, region, address and players online. Launchers ping each server through its NAT helper, the path game traffic takes, and rank them: the lowest ping first, and among servers within 15 ms of it, the busiest.
 
+You can also type a coordinator's address where you'd type a server's (the community's is `play.scbl.jdevwebb.net`): the launcher uses its directory, pings every server, and sets you up on the best one.
+
 The first server you join that uses a coordinator brings its directory: the launcher uses it from then on. A directory you set yourself, in **Settings › Identity and friends**, is never replaced.
 
 - **The join form** pings the directory's servers as soon as it opens, and preselects the best (unless you've typed a server).
