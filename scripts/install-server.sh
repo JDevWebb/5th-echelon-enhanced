@@ -236,8 +236,32 @@ done
 
 # --- Commands that only look (or rotate the token) -------------------------
 
+# Everything that goes into service.toml, Caddy's config or a URL is
+# checked first: no quotes, newlines or anything else that could change
+# what's written.
+DOMAIN_RE='^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$'
+COORD_RE='^https://([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(:[0-9]{1,5})?$'
+IPV4_RE='^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
+NAME_RE="^[A-Za-z0-9][A-Za-z0-9 ._(),'-]{0,63}\$"
+BOOL_RE='^(true|false)$'
+
+# service.toml as it is, read without following a link: the server's user
+# can write its folder.
+config_text() { dd if="$CONFIG" iflag=nofollow status=none 2>/dev/null || true; }
 # A value from service.toml: `value section key` (quotes stripped).
-value() { sed -n "/^\\[$1\\]\$/,/^\\[/ s/^$2 = \"\\{0,1\\}\\([^\"]*\\)\"\\{0,1\\}\$/\\1/p" "$CONFIG" 2>/dev/null | head -1; }
+value() { config_text | sed -n "/^\\[$1\\]\$/,/^\\[/ s/^$2 = \"\\{0,1\\}\\([^\"]*\\)\"\\{0,1\\}\$/\\1/p" | head -1; }
+# A value from service.toml only if it matches REGEX (empty otherwise):
+# `checked_value section key regex`. The server (as its own user) can change
+# the file, so whatever this script reads back from it and uses again, in
+# the file, in Caddy's config or in a command it runs as root, is one of
+# the values it would have written itself.
+checked_value() {
+  local v
+  v="$(value "$1" "$2")"
+  if [[ "$v" =~ $3 ]]; then printf '%s' "$v"; fi
+}
+# Text for the terminal, without control characters.
+printable() { tr -d '\000-\037\177'; }
 
 if [ "$command" = status ]; then
   printf '%-30s %s\n' "Service" "State"
@@ -245,20 +269,20 @@ if [ "$command" = status ]; then
     if systemctl cat "$s" >/dev/null 2>&1; then printf '%-30s %s\n' "$s" "$(systemctl is-active "$s" 2>/dev/null || true)"; fi
   done
   if [ -f "$CONFIG" ]; then
-    host="$(value public host)"
+    host="$(checked_value public host "$DOMAIN_RE")"
     echo
     info="$(curl -fsS --max-time 3 ${host:+-H "Host: $host"} http://127.0.0.1/api/info 2>/dev/null || true)"
     if [ -n "$info" ]; then
-      echo "Server:        $(printf '%s' "$info" | grep -o '"version":"[^"]*"' | cut -d'"' -f4)${host:+ at $host}"
+      echo "Server:        $(printf '%s' "$info" | grep -o '"version":"[^"]*"' | cut -d'"' -f4 | printable)${host:+ at $host}"
       case "$info" in *'"api_tls":443'*) echo "API:           HTTPS (https://$host) and plain" ;; *) echo "API:           plain only (no api_tls)" ;; esac
     else
       echo "Server:        doesn't answer /api/info on this machine"
     fi
-    echo "Friend lists:  $(value friends mode)"
+    echo "Friend lists:  $(value friends mode | printable)"
     echo "Accounts:      $( [ "$(value limits open_registration)" = false ] && echo "closed to new players" || echo "open")"
     echo "Identities:    $( [ "$(value limits require_identity)" = true ] && echo "required for every account" || echo "optional (password-only accounts allowed)")"
     echo "Admin API:     $( [ "$(value admin enabled)" = true ] && echo "on (SSH tunnel to 127.0.0.1:50051; key in $STATE_DIR/admin-key.txt)" || echo "off")"
-    coord="$(value federation coordinator)"
+    coord="$(value federation coordinator | printable)"
     if [ -n "$coord" ]; then
       echo "Shares friends: through $coord$( [ -s "$STATE_DIR/federation.key" ] && echo " (joined)" || echo " (not joined yet)")"
       journalctl -u "$SERVICE" --since "-1h" --no-pager 2>/dev/null | grep -o 'Federation:.*' | tail -1 | sed 's/^/                /' || true
@@ -338,17 +362,13 @@ fi
 [ -z "$coord_domain" ] || [ "$no_caddy" -eq 0 ] || die "--coordinator-domain needs Caddy (for HTTPS); leave out --no-caddy"
 [ -z "$coord_domain" ] || [ -z "$coordinator" ] || die "--coordinator-domain runs a coordinator here; leave out --coordinator"
 [ -z "$coordinator" ] || [ -n "$join_token" ] || [ -f "$STATE_DIR/federation.key" ] || die "--coordinator needs --join-token (from the coordinator's operator)"
-# Everything that goes into service.toml or a URL is checked first: no
-# quotes, newlines or anything else that could change what's written.
-DOMAIN_RE='^([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}$'
-COORD_RE='^https://([a-z0-9]([a-z0-9-]*[a-z0-9])?\.)+[a-z]{2,}(:[0-9]{1,5})?$'
+# Everything from the command line is checked (the patterns are above).
 if [ -n "$coordinator" ]; then
   coordinator="${coordinator%/}"
   [[ "$coordinator" =~ $COORD_RE ]] \
     || die "--coordinator is an https:// address with no path, e.g. https://coordinator.example.com"
 fi
 [ -z "$join_token" ] || [[ "$join_token" =~ ^[A-Z2-7]{16,128}$ ]] || die "that isn't a join token (letters A-Z and digits 2-7)"
-NAME_RE="^[A-Za-z0-9][A-Za-z0-9 ._(),'-]{0,63}\$"
 [ -z "$server_name" ] || [[ "$server_name" =~ $NAME_RE ]] || die "--server-name is up to 64 letters, digits, spaces and . _ ( ) , ' -"
 [ -z "$region" ] || [[ "$region" =~ $NAME_RE ]] || die "--region is up to 64 letters, digits, spaces and . _ ( ) , ' -"
 [ "$version" = latest ] || [[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]] || die "--version is a release number, e.g. 0.4.0"
@@ -357,7 +377,6 @@ coord_domain="${coord_domain,,}"
 metrics_domain="${metrics_domain,,}"
 [ -z "$metrics_domain" ] || [[ "$metrics_domain" =~ $DOMAIN_RE ]] || die "\"$metrics_domain\" isn't a domain name"
 [ -z "$metrics_domain" ] || [ "$metrics_domain" != "$coord_domain" ] || die "the admin UI needs a name of its own (proxied through Cloudflare), not the coordinator's"
-IPV4_RE='^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
 for i in "${!aliases[@]}"; do
   aliases[i]="${aliases[i],,}"
   [[ "${aliases[i]}" =~ $DOMAIN_RE ]] || [[ "${aliases[i]}" =~ $IPV4_RE ]] || die "--alias ${aliases[i]} isn't a domain name or IPv4 address"
@@ -561,7 +580,7 @@ if [ "$coord_only" -eq 0 ]; then
 
 # A domain from an earlier install is kept unless told otherwise.
 if [ -z "$domain" ] && [ "$no_caddy" -eq 0 ] && [ -f "$CONFIG" ]; then
-  domain="$(sed -n '/^\[public\]$/,/^\[/ s/^host = "\(.*\)"$/\1/p' "$CONFIG" | head -1)"
+  domain="$(checked_value public host "$DOMAIN_RE")"
   if [ -n "$domain" ]; then say "Domain name: $domain (from the earlier install)"; fi
 fi
 if [ -z "$domain" ] && [ "$no_caddy" -eq 0 ] && [ "$yes" -eq 0 ]; then
@@ -775,7 +794,7 @@ else
 fi
 # The service owns its folder, so what's in it could be a link planted to
 # make this script (as root) write elsewhere: refuse that.
-for f in "$CONFIG" "$STATE_DIR/federation.key"; do
+for f in "$CONFIG" "$STATE_DIR/federation.key" "$STATE_DIR/admin-key.txt"; do
   if [ -L "$f" ] || { [ -e "$f" ] && [ ! -f "$f" ]; }; then die "$f isn't a plain file; move it away and run this again"; fi
 done
 if command -v restorecon >/dev/null; then restorecon -R "$PROGRAM_DIR" "$STATE_DIR" 2>/dev/null || true; fi
@@ -800,20 +819,34 @@ if [ ! -f "$CONFIG" ]; then
   [ -s "$CONFIG" ] || die "the server didn't start (run $PROGRAM_DIR/dedicated_server by hand in $STATE_DIR to see why)"
 fi
 
-# Sets `key = value` in [section] of service.toml.
-toml_set() {
-  sed -i -E "/^\\[$1\\]\$/,/^\\[/ s|^$2 = .*|$2 = $3|" "$CONFIG"
+# Refuses to go on when service.toml isn't a plain file (a link the
+# server's user planted, to have root write elsewhere).
+plain_config() {
+  if [ -L "$CONFIG" ] || [ ! -f "$CONFIG" ]; then die "$CONFIG isn't a plain file; move it away and run this again"; fi
 }
-# Sets a key in a plain section, adding the key or the section when missing.
-toml_put() {
-  if ! grep -q "^\\[$1\\]\$" "$CONFIG"; then
-    printf '\n[%s]\n%s = %s\n' "$1" "$2" "$3" >> "$CONFIG"
-  elif sed -n "/^\\[$1\\]\$/,/^\\[/p" "$CONFIG" | grep -q "^$2 = "; then
-    toml_set "$1" "$2" "$3"
-  else
-    sed -i "/^\\[$1\\]\$/a $2 = $3" "$CONFIG"
-  fi
+# Sets `key = value` in [section] of service.toml (`toml_set section key
+# value`); toml_put also adds the key (after the section's heading), or the
+# section, when missing. Values are this script's own or checked ones; they
+# reach awk through its environment, never as part of a program, and the
+# file is rewritten in place, so it stays the server's.
+toml_edit() {
+  local tmp="$work/service.toml.new"
+  plain_config
+  MODE="$1" SECTION="$2" KEY="$3" VALUE="$4" awk '
+    BEGIN { head = "[" ENVIRON["SECTION"] "]"; line = ENVIRON["KEY"] " = " ENVIRON["VALUE"]; prefix = ENVIRON["KEY"] " =" }
+    FNR == 1 { pass++; in_section = 0 }
+    /^\[/ { in_section = ($0 == head) }
+    pass == 1 { if ($0 == head) has_section = 1; if (in_section && index($0, prefix) == 1) has_key = 1; next }
+    in_section && index($0, prefix) == 1 { print line; next }
+    { print }
+    $0 == head && !has_key && ENVIRON["MODE"] == "add" { print line }
+    END { if (!has_section && ENVIRON["MODE"] == "add") printf "\n%s\n%s\n", head, line }
+  ' "$CONFIG" "$CONFIG" > "$tmp"
+  cat "$tmp" > "$CONFIG"
+  rm -f "$tmp"
 }
+toml_set() { toml_edit set "$@"; }
+toml_put() { toml_edit add "$@"; }
 if [ -n "$relay" ]; then
   toml_set nat relay "\"$relay\""
   say "Relay: $relay"
@@ -823,35 +856,42 @@ fi
 if [ "${#aliases[@]}" -gt 0 ]; then
   aliases_line="[$(printf '"%s", ' "${aliases[@]}" | sed 's/, $//')]"
 else
-  aliases_line="$(sed -n '/^\[public\]$/,/^\[/ s/^aliases = \(\[.*\]\)$/\1/p' "$CONFIG" | head -1)"
-  # Only names and addresses, as --alias checks them.
+  aliases_line="$(config_text | sed -n '/^\[public\]$/,/^\[/ s/^aliases = \(\[.*\]\)$/\1/p' | head -1)"
   [[ "$aliases_line" =~ ^\[(\"[a-z0-9.-]+\"(,\ )?)*\]$ ]] || aliases_line=""
-  mapfile -t aliases < <(printf '%s' "$aliases_line" | grep -o '"[^"]*"' | tr -d '"')
+  # Only names and addresses, checked as --alias checks them (they go into
+  # Caddy's config too).
+  kept=()
+  while IFS= read -r a; do
+    if [[ "$a" =~ $DOMAIN_RE ]] || [[ "$a" =~ $IPV4_RE ]]; then kept+=("$a"); elif [ -n "$a" ]; then warn "dropped the alias \"$a\" from $CONFIG: it isn't a domain name or IPv4 address"; fi
+  done < <(printf '%s' "$aliases_line" | grep -o '"[^"]*"' | tr -d '"')
+  aliases=("${kept[@]}")
+  aliases_line=""
+  if [ "${#aliases[@]}" -gt 0 ]; then aliases_line="[$(printf '"%s", ' "${aliases[@]}" | sed 's/, $//')]"; fi
 fi
 sed -i '/^\[public\]$/,/^\[/{/^\[public\]$/d;/^\[/!d}' "$CONFIG"
 if [ "$no_caddy" -eq 0 ]; then
   say "Settings for Caddy: the web parts and API on this machine only; players use $domain"
   sed -i -E 's|^api_server = .*|api_server = "127.0.0.1:50051"|' "$CONFIG"
-  toml_set 'service\.onlineconfig' listen '"127.0.0.1:8080"'
-  toml_set 'service\.content' listen '"127.0.0.1:8000"'
+  toml_set service.onlineconfig listen '"127.0.0.1:8080"'
+  toml_set service.content listen '"127.0.0.1:8000"'
   printf '\n[public]\nhost = "%s"\napi = 80\ncontent = 80\n' "$domain" >> "$CONFIG"
   [ -z "$aliases_line" ] || printf 'aliases = %s\n' "$aliases_line" >> "$CONFIG"
 else
   sed -i -E 's|^api_server = "127\.0\.0\.1:|api_server = "0.0.0.0:|' "$CONFIG"
-  toml_set 'service\.onlineconfig' listen '"0.0.0.0:80"'
-  toml_set 'service\.content' listen '"0.0.0.0:8000"'
+  toml_set service.onlineconfig listen '"0.0.0.0:80"'
+  toml_set service.content listen '"0.0.0.0:8000"'
   [ -z "$aliases_line" ] || printf '\n[public]\naliases = %s\n' "$aliases_line" >> "$CONFIG"
 fi
 [ -z "$aliases_line" ] || say "Also reached as: ${aliases[*]}"
 # Friend lists: only friends on a new (public) server; an update keeps the setting.
 if [ -z "$friends" ]; then
-  if [ "$first_install" -eq 1 ]; then friends=mutual; else friends="$(value friends mode)"; friends="${friends:-mutual}"; fi
+  if [ "$first_install" -eq 1 ]; then friends=mutual; else friends="$(checked_value friends mode '^(mutual|everyone)$')"; fi
+  if [ -z "$friends" ]; then
+    [ "$first_install" -eq 1 ] || [ -z "$(value friends mode)" ] || warn "[friends] mode in $CONFIG is neither mutual nor everyone; set to mutual"
+    friends=mutual
+  fi
 fi
-if grep -q '^\[friends\]$' "$CONFIG"; then
-  toml_set friends mode "\"$friends\""
-else
-  printf '\n[friends]\nmode = "%s"\n' "$friends" >> "$CONFIG"
-fi
+toml_put friends mode "\"$friends\""
 say "Friend lists: $friends"
 if [ -n "$admin" ]; then toml_set admin enabled "$admin"; fi
 if [ -n "$registration" ]; then toml_put limits open_registration "$registration"; fi
@@ -938,11 +978,10 @@ if [ "$coord_only" -eq 0 ]; then
 # [federation]: rewritten when a coordinator is given, kept otherwise.
 if [ -n "$coordinator" ]; then
   # A name or region set before (by hand, or an earlier run) stays unless given again.
-  old_value() { sed -n "/^\\[federation\\]\$/,/^\\[/ s/^$1 = \"\\(.*\\)\"\$/\\1/p" "$CONFIG" | head -1; }
-  server_name="${server_name:-$(old_value name)}"
-  region="${region:-$(old_value region)}"
-  if [ -z "$listed" ]; then listed="$(value federation listed)"; fi
-  if [ -z "$auto_update" ]; then auto_update="$(value federation auto_update)"; fi
+  server_name="${server_name:-$(checked_value federation name "$NAME_RE")}"
+  region="${region:-$(checked_value federation region "$NAME_RE")}"
+  if [ -z "$listed" ]; then listed="$(checked_value federation listed "$BOOL_RE")"; fi
+  if [ -z "$auto_update" ]; then auto_update="$(checked_value federation auto_update "$BOOL_RE")"; fi
   sed -i '/^\[federation\]$/,/^\[/{/^\[federation\]$/d;/^\[/!d}' "$CONFIG"
   {
     printf '\n[federation]\ncoordinator = "%s"\n' "$coordinator"
@@ -957,6 +996,7 @@ elif [ "$listed" = false ] || [ "$listed" = true ]; then
   warn "--listed and --unlisted only matter with a coordinator; ignored"
 fi
 if [ -z "$coordinator" ] && [ -n "$auto_update" ] && grep -q '^\[federation\]$' "$CONFIG"; then toml_put federation auto_update "$auto_update"; fi
+plain_config
 chown -h "$USER_NAME:$USER_NAME" "$CONFIG"
 # It can hold the join token.
 chmod 600 "$CONFIG"
