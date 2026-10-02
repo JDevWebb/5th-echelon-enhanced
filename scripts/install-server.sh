@@ -1005,7 +1005,8 @@ ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
 ProtectProc=invisible
-ProcSubset=pid
+# No ProcSubset=pid: the server reports the machine's memory, CPU and load to its
+# coordinator from /proc/meminfo, /proc/stat and /proc/loadavg.
 RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 RestrictNamespaces=yes
 RestrictRealtime=yes
