@@ -182,8 +182,16 @@ pub fn status() -> Option<String> {
         format!("Through the server's relay ({})", r.advertise)
     } else if st.mapping.is_some_and(|m| m == r.advertise) {
         format!("Direct, router port opened ({})", r.advertise)
+    } else if nat_proto::is_private(*r.advertise.ip()) {
+        format!("Direct, local network ({})", r.advertise)
     } else {
-        format!("Direct ({}){}", r.advertise, if st.symmetric { ", strict NAT" } else { "" })
+        // No port opened on the router: other players may not get through to this PC,
+        // which only shows when someone tries to join a match it hosts.
+        format!(
+            "Direct, no router port open ({}){}: others may not be able to join you",
+            r.advertise,
+            if st.symmetric { ", strict NAT" } else { "" }
+        )
     })
 }
 
