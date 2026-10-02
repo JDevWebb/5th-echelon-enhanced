@@ -1654,8 +1654,9 @@ SITE
     cat <<SITE
 
 # The coordinator's admin UI, only through Cloudflare (the record proxied):
-# any other address is refused, so Cloudflare's protection can't be
-# bypassed, and the client's address and country are Cloudflare's.
+# any other address is refused, and the client's address and country are
+# Cloudflare's. (Any Cloudflare account can proxy to this address, past
+# this zone's rules: the UI's own sign-in still applies.)
 $metrics_domain {
 $(metrics_tls)
 	@direct not remote_ip $(cloudflare_ranges)

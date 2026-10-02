@@ -140,7 +140,7 @@ The admin UI is served by the coordinator on its own port (127.0.0.2:8701, a loo
    This prints a one-time setup link. It works for 24 hours.
 7. **Set up your sign-in.** Open the link, choose a password, and add a passkey (recommended) or an authenticator app. Save the recovery codes it shows you.
 
-**Caddy refuses requests that don't come from Cloudflare's addresses**, so the protection can't be bypassed by reaching the server directly. The client's address and country are Cloudflare's (`CF-Connecting-IP`, `CF-IPCountry`).
+**Caddy refuses requests that don't come from Cloudflare's addresses**, so nobody reaches the UI straight from the internet. That's Cloudflare as a whole, though, not your zone: someone with a Cloudflare account of their own can point a proxied name at the server's address, and their requests come from Cloudflare's addresses too, past your zone's WAF rules and Access policy (Authenticated Origin Pulls with Cloudflare's shared certificate doesn't tell zones apart either). The UI's own sign-in (password plus a passkey or authenticator app) is what keeps them out. The client's address and country are Cloudflare's (`CF-Connecting-IP`, `CF-IPCountry`), and are only as trustworthy as that.
 
 ### Signing in
 

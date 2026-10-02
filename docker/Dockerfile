@@ -14,7 +14,7 @@ WORKDIR /src
 COPY rust-toolchain.toml .
 RUN rustup show active-toolchain || rustup toolchain install
 COPY . .
-RUN cargo build --release -p dedicated_server \
+RUN cargo build --locked --release -p dedicated_server \
  && cp target/release/dedicated_server /dedicated_server
 
 FROM debian:bookworm-slim@sha256:3783cc01769c7b2b1b83a5c5ad96c815348e28ed7da68e2e3687004faa906251

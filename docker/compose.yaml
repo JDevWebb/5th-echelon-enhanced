@@ -19,7 +19,11 @@ services:
       - "21126:21126/udp"    # game login
       - "21127:21127/udp"    # game service
       - "21128-21129:21128-21129/udp" # internet play: public addresses and the relay
-      - "50051:50051/tcp"    # accounts, friends, invites (launcher and overlay)
+      # Accounts, friends, invites (launcher and overlay): plain HTTP/2. Keep
+      # [admin] off in service.toml here (the default), or publish this as
+      # "127.0.0.1:50051:50051/tcp" and manage the server through an SSH
+      # tunnel: the admin API and its key would travel this port unencrypted.
+      - "50051:50051/tcp"
     volumes:
       - data:/srv/5th-echelon
     # The server runs as a user of its own (see entrypoint.sh) with only
