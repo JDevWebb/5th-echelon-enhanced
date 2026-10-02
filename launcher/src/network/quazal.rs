@@ -276,7 +276,11 @@ impl Quazal {
         // Parse the RMC response and check for errors.
         let resp = Packet::from_bytes(&login_resp.payload)?;
         if let Packet::Response(resp) = resp {
-            resp.result.map_err(|e| Error::Rmc(quazal::rmc::Error::from_error_code(e.error_code).unwrap()))?;
+            // A code this side doesn't know is still a refusal, not a crash.
+            resp.result.map_err(|e| match quazal::rmc::Error::from_error_code(e.error_code) {
+                Ok(e) => Error::Rmc(e),
+                Err(code) => Error::ServerFailure(format!("the server refused the login (error {code:#x})")),
+            })?;
         } else {
             return Err(Error::IO(std::io::Error::other("invalid rmc response")));
         }
@@ -318,7 +322,7 @@ pub async fn test_p2p(api_url: String, username: &str, password: &str) -> Result
     if !resp.error.is_empty() {
         return Err(Error::ServerFailure(resp.error));
     }
-    let token: tonic::metadata::MetadataValue<tonic::metadata::Ascii> = resp.token.parse().unwrap();
+    let token: tonic::metadata::MetadataValue<tonic::metadata::Ascii> = resp.token.parse().map_err(|_| Error::ServerFailure("the server's sign-in token isn't readable".into()))?;
     let Ok(channel) = super::endpoint(&api_url)?.connect().await else {
         return Err(Error::ConnectionFailed);
     };

@@ -61,6 +61,12 @@ fn catch_panics() {
         let msg = format!("{}\n{}", expl, cause);
         eprintln!("PANIC: {msg}");
 
+        // A background task's panic ends that task: the screen waiting on it shows an error.
+        if crate::task::in_task() {
+            tracing::error!("A background task panicked: {msg}");
+            return;
+        }
+
         // Show the panic information in a message box.
         show_msgbox(&msg, "PANIC");
 
