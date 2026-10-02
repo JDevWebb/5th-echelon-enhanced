@@ -20,8 +20,50 @@ use crate::theme;
 /// Each check's name, how it went, and what to say about it.
 type TestResults = Vec<(&'static str, setup::diagnose::Status, Option<String>)>;
 
+/// The parts of Settings, one shown at a time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Section {
+    #[default]
+    Game,
+    Network,
+    Servers,
+    Identity,
+    Save,
+    Client,
+    Advanced,
+    About,
+}
+
+impl Section {
+    const ALL: [Self; 8] = [
+        Self::Game,
+        Self::Network,
+        Self::Servers,
+        Self::Identity,
+        Self::Save,
+        Self::Client,
+        Self::Advanced,
+        Self::About,
+    ];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Game => "Game",
+            Self::Network => "Network",
+            Self::Servers => "Servers and accounts",
+            Self::Identity => "Identity and friends",
+            Self::Save => "Save game",
+            Self::Client => "5th Echelon client",
+            Self::Advanced => "Advanced",
+            Self::About => "About",
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct Settings {
+    /// The section shown.
+    pub section: Section,
     tests: Slot<TestResults>,
     test_results: TestResults,
     working: Slot<Result<String, String>>,
@@ -42,9 +84,57 @@ pub struct Settings {
 }
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
-    game_folder(app, ui);
+    egui::SidePanel::left("settings-nav")
+        .resizable(false)
+        .exact_width(230.0)
+        .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin { left: 16, right: 16, top: 26, bottom: 16 }))
+        .show_inside(ui, |ui| {
+            ui.label(theme::display("Settings", 26.0));
+            ui.add_space(12.0);
+            let current = app.settings_mut().0.section;
+            for section in Section::ALL {
+                let chosen = section == current;
+                let text = RichText::new(section.label()).color(if chosen { theme::FG } else { theme::SOFT });
+                let text = if chosen { text.family(theme::strong()) } else { text };
+                let button = egui::Button::new(text)
+                    .fill(if chosen { theme::SURFACE } else { egui::Color32::TRANSPARENT })
+                    .stroke(egui::Stroke::NONE)
+                    .corner_radius(8)
+                    .min_size(egui::vec2(ui.available_width(), 40.0));
+                if ui.add(button).clicked() {
+                    app.settings_mut().0.section = section;
+                }
+            }
+        });
+    egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::BG)).show_inside(ui, |ui| {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            theme::page().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                body(app, ui);
+            });
+        });
+    });
+}
+
+fn body(app: &mut App, ui: &mut egui::Ui) {
+    let current = app.settings_mut().0.section;
+    ui.label(RichText::new(current.label()).family(theme::strong()).size(22.0));
+    ui.add_space(10.0);
+    match current {
+        Section::Game => game_folder(app, ui),
+        Section::About => {
+            about(app, ui);
+            return;
+        }
+        _ => {}
+    }
     let (settings, game, notices) = app.settings_mut();
-    let Some(game) = game.as_mut() else { return };
+    let Some(game) = game.as_mut() else {
+        if current != Section::Game {
+            ui.label(theme::muted("Find the game first (Settings › Game)."));
+        }
+        return;
+    };
     let ctx = ui.ctx().clone();
     if let Some(result) = settings.working.poll() {
         match result {
@@ -66,19 +156,23 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         ui.add_space(6.0);
     }
 
-    section(ui, "Network", |ui| network(game, notices, locked, &ctx, settings, ui));
-    section(ui, "Game", |ui| game_options(game, notices, ui));
-    section(ui, "Save game", |ui| save_game(settings, game, &ctx, ui));
-    section(ui, "Servers and accounts", |ui| servers(settings, game, notices, locked, &ctx, ui));
-    let accounts = game.cfg.profiles.iter().filter(|p| p.has_account()).count();
-    section(ui, "Identity and friends", |ui| identity_section(settings, accounts, notices, ui));
-    section(ui, "Connection test", |ui| connection_test(settings, game, &ctx, ui));
-    section(ui, "5th Echelon client", |ui| client(settings, game, &ctx, ui));
-    egui::CollapsingHeader::new(theme::heading("Hooks (advanced)"))
-        .default_open(false)
-        .show(ui, |ui| hooks(game, notices, ui));
-    ui.add_space(10.0);
-    about(app, ui);
+    match current {
+        Section::Game => section(ui, "Options", |ui| game_options(game, notices, ui)),
+        Section::Network => {
+            section(ui, "Internet play", |ui| ui.add_enabled_ui(!locked, |ui| internet_play(game, notices, ui)).inner);
+            section(ui, "Connection test", |ui| connection_test(settings, game, &ctx, ui));
+            section(ui, "Network adapter", |ui| network(game, notices, locked, &ctx, settings, ui));
+        }
+        Section::Servers => section(ui, "Servers and accounts", |ui| servers(settings, game, notices, locked, &ctx, ui)),
+        Section::Identity => {
+            let accounts = game.cfg.profiles.iter().filter(|p| p.has_account()).count();
+            section(ui, "Identity and friends", |ui| identity_section(settings, accounts, notices, ui));
+        }
+        Section::Save => section(ui, "Save game", |ui| save_game(settings, game, &ctx, ui)),
+        Section::Client => section(ui, "5th Echelon client", |ui| client(settings, game, &ctx, ui)),
+        Section::Advanced => section(ui, "Hooks", |ui| hooks(game, notices, ui)),
+        Section::About => {}
+    }
 }
 
 fn about(app: &mut App, ui: &mut egui::Ui) {
@@ -194,8 +288,6 @@ fn network(game: &mut Game, notices: &mut Notices, locked: bool, ctx: &egui::Con
         {
             game.update(notices, |c| c.hook_config.networking.require_adapter = require);
         }
-        ui.add_space(8.0);
-        internet_play(game, notices, ui);
     });
 }
 
@@ -205,18 +297,12 @@ fn internet_play(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     let networking = &game.cfg.hook_config.networking;
     let (mut mode, mut port_mapping) = (networking.nat, networking.port_mapping);
     let label = |m: NatMode| match m {
-        NatMode::Auto => "Automatic (recommended)",
+        NatMode::Auto => "Automatic",
         NatMode::Relay => "Always through the server",
         NatMode::Off => "LAN or VPN only",
     };
-    ui.horizontal(|ui| {
-        ui.label("Internet play");
-        egui::ComboBox::from_id_salt("nat").selected_text(label(mode)).width(260.0).show_ui(ui, |ui| {
-            for m in [NatMode::Auto, NatMode::Relay, NatMode::Off] {
-                ui.selectable_value(&mut mode, m, label(m));
-            }
-        });
-    });
+    ui.label(theme::muted("How other players reach this PC."));
+    theme::segmented(ui, &mut mode, &[NatMode::Auto, NatMode::Relay, NatMode::Off].map(|m| (m, label(m))));
     ui.label(theme::muted(match mode {
         NatMode::Auto => "The server tells the game this PC's public address, so players connect directly; when your router can't be reached, play goes through the server.",
         NatMode::Relay => "All match traffic goes through the server. Use it when direct connections fail; it adds a little delay.",

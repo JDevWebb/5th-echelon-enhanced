@@ -24,7 +24,10 @@ const RELEASE: &str = env!("FE_RELEASE");
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Play,
+    /// The servers to play on: the network's directory, an address, the LAN.
+    Servers,
     Settings,
+    /// Hosting a server of your own.
     Server,
 }
 
@@ -181,7 +184,6 @@ pub struct App {
     pub found: Vec<PathBuf>,
     finding: Slot<Vec<PathBuf>>,
     pub notices: Notices,
-    logo: egui::TextureHandle,
     play: Play,
     settings: Settings,
     server: Server,
@@ -195,14 +197,12 @@ pub struct App {
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::apply(&cc.egui_ctx);
-        let logo = cc.egui_ctx.load_texture("logo", crate::logo(), egui::TextureOptions::LINEAR);
         let mut app = Self {
             view: View::Play,
             game: None,
             found: Vec::new(),
             finding: Slot::default(),
             notices: Notices::default(),
-            logo,
             play: Play::default(),
             settings: Settings::default(),
             server: Server::default(),
@@ -280,33 +280,48 @@ impl App {
             });
     }
 
-    fn header(&mut self, ctx: &egui::Context) {
-        egui::TopBottomPanel::top("header")
-            .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin {
-                left: 20,
-                right: 20,
-                top: 14,
-                bottom: 10,
-            }))
+    /// The side menu: the mark, the screens, and the version at the bottom.
+    fn rail(&mut self, ctx: &egui::Context) {
+        egui::SidePanel::left("rail")
+            .resizable(false)
+            .exact_width(88.0)
+            .frame(
+                egui::Frame::new()
+                    .fill(theme::RAIL)
+                    .stroke(egui::Stroke::new(1.0, theme::LINE))
+                    .inner_margin(egui::Margin::symmetric(11, 18)),
+            )
             .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    ui.add(egui::Image::new(&self.logo).fit_to_exact_size(egui::vec2(40.0, 40.0)));
-                    ui.vertical(|ui| {
-                        ui.label(egui::RichText::new(PRODUCT).family(theme::strong()).size(20.0));
-                        ui.label(theme::muted(format!("Release {RELEASE}")).small());
-                    });
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        for (view, label) in [(View::Server, "Server"), (View::Settings, "Settings"), (View::Play, "Play")].into_iter() {
-                            let selected = self.view == view;
-                            let text = egui::RichText::new(label).size(15.5).family(theme::strong());
-                            let text = if selected { text.color(theme::ACCENT) } else { text.color(theme::MUTED) };
-                            if ui.add(egui::Button::new(text).frame(false)).clicked() {
-                                self.view = view;
-                            }
+                ui.vertical_centered(|ui| {
+                    theme::mark(ui, 12.0);
+                    ui.add_space(22.0);
+                    for (view, icon, label) in [
+                        (View::Play, theme::Icon::Play, "Play"),
+                        (View::Servers, theme::Icon::Servers, "Servers"),
+                        (View::Server, theme::Icon::Host, "Host"),
+                        (View::Settings, theme::Icon::Settings, "Settings"),
+                    ] {
+                        if theme::nav_button(ui, icon, label, self.view == view).clicked() {
+                            self.view = view;
                         }
-                    });
+                        ui.add_space(2.0);
+                    }
+                });
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
+                    ui.label(egui::RichText::new(RELEASE.split('-').next().unwrap_or(RELEASE)).monospace().size(10.5).color(theme::MUTED))
+                        .on_hover_text(format!("{PRODUCT} {RELEASE}"));
                 });
             });
+    }
+
+    pub fn set_view(&mut self, view: View) {
+        self.view = view;
+    }
+
+    /// Settings › Network, where the connection test is.
+    pub fn open_network_settings(&mut self) {
+        self.settings.section = crate::settings::Section::Network;
+        self.view = View::Settings;
     }
 }
 
@@ -334,23 +349,27 @@ impl eframe::App for App {
             self.notices.error(format!("Couldn't update: {e}"));
         }
 
-        self.header(ctx);
+        self.rail(ctx);
         self.update_banner(ctx);
         self.notices.show(ctx);
-        egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin {
-                left: 20,
-                right: 20,
-                top: 8,
-                bottom: 16,
-            }))
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| match self.view {
-                    View::Play => crate::play::show(self, ui),
-                    View::Settings => crate::settings::show(self, ui),
-                    View::Server => crate::server::show(self, ui),
-                });
-            });
+        egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::BG)).show(ctx, |ui| match self.view {
+            // Each screen scrolls on its own: Settings keeps its section list in place.
+            View::Play => crate::play::show(self, ui),
+            View::Servers => crate::play::show_servers(self, ui),
+            View::Settings => crate::settings::show(self, ui),
+            View::Server => {
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        theme::page().show(ui, |ui| {
+                            ui.label(theme::display("Host", 32.0));
+                            ui.label(theme::muted("Run a server for your group on this PC, or manage one you run elsewhere."));
+                            ui.add_space(14.0);
+                            crate::server::show(self, ui);
+                        })
+                    });
+            }
+        });
         // Checks refresh on their own now and then; wake up for them.
         ctx.request_repaint_after(Duration::from_secs(1));
     }

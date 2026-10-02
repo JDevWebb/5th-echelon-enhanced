@@ -24,6 +24,12 @@ pub const ON_ACCENT: Color32 = Color32::from_rgb(0x0b, 0x14, 0x05);
 pub const OK: Color32 = Color32::from_rgb(0x3e, 0xcf, 0x9e);
 pub const WARN: Color32 = Color32::from_rgb(0xf0, 0xb4, 0x4c);
 pub const BAD: Color32 = Color32::from_rgb(0xff, 0x6b, 0x6b);
+/// The side menu, a step darker than the page.
+pub const RAIL: Color32 = Color32::from_rgb(0x0b, 0x10, 0x13);
+/// Wells inside a card (stat tiles, the launch bar), a step below it.
+pub const SUNKEN: Color32 = Color32::from_rgb(0x14, 0x1c, 0x20);
+/// Secondary text that should read more strongly than [`MUTED`].
+pub const SOFT: Color32 = Color32::from_rgb(0xb8, 0xc6, 0xcd);
 
 /// The semi-bold face, for headings and emphasis.
 pub fn strong() -> FontFamily {
@@ -118,8 +124,8 @@ pub fn card() -> egui::Frame {
     egui::Frame::new()
         .fill(SURFACE)
         .stroke(Stroke::new(1.0, LINE))
-        .corner_radius(10)
-        .inner_margin(egui::Margin::same(16))
+        .corner_radius(14)
+        .inner_margin(egui::Margin::symmetric(20, 18))
 }
 
 /// The one main action on a screen.
@@ -133,4 +139,202 @@ pub fn heading(text: &str) -> egui::RichText {
 
 pub fn muted(text: impl Into<String>) -> egui::RichText {
     egui::RichText::new(text).color(MUTED)
+}
+
+/// Big uppercase display type, for screen titles and the game's name.
+pub fn display(text: &str, size: f32) -> egui::RichText {
+    egui::RichText::new(text.to_uppercase()).family(strong()).size(size).extra_letter_spacing(size * 0.03)
+}
+
+/// A small uppercase label over a value or a group ("SERVER", "PING").
+pub fn caps(text: &str) -> egui::RichText {
+    egui::RichText::new(text.to_uppercase()).size(11.5).extra_letter_spacing(1.2).color(MUTED)
+}
+
+/// The page's own padding.
+pub fn page() -> egui::Frame {
+    egui::Frame::new().inner_margin(egui::Margin::symmetric(32, 26))
+}
+
+/// The big Play button.
+pub fn play_button(text: &str) -> egui::Button<'static> {
+    egui::Button::new(egui::RichText::new(text.to_uppercase()).color(ON_ACCENT).family(strong()).size(22.0).extra_letter_spacing(3.0))
+        .fill(ACCENT)
+        .corner_radius(12)
+        .min_size(egui::vec2(220.0, 58.0))
+}
+
+/// A quieter button, for actions beside the main one.
+pub fn secondary(text: &str) -> egui::Button<'static> {
+    egui::Button::new(text.to_string()).corner_radius(10).min_size(egui::vec2(0.0, 38.0))
+}
+
+/// The three night-vision lenses, the launcher's mark.
+pub fn mark(ui: &mut egui::Ui, height: f32) {
+    let r = height / 2.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(height * 3.0 + r, height), egui::Sense::hover());
+    for i in 0..3 {
+        let c = egui::pos2(rect.left() + r + i as f32 * (height + r / 2.0), rect.center().y);
+        ui.painter().circle_filled(c, r, ACCENT);
+    }
+}
+
+/// The faint night-vision grid behind the game's banner.
+pub fn grid_backdrop(painter: &egui::Painter, rect: egui::Rect) {
+    painter.rect_filled(rect, 0, Color32::from_rgb(0x12, 0x1a, 0x1e));
+    let line = Stroke::new(1.0, ACCENT.linear_multiply(0.06));
+    let step = 48.0;
+    let mut x = rect.left() + step;
+    while x < rect.right() {
+        painter.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], line);
+        x += step;
+    }
+    let mut y = rect.top() + step;
+    while y < rect.bottom() {
+        painter.line_segment([egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)], line);
+        y += step;
+    }
+}
+
+/// A rounded pill with a coloured dot: a status at a glance. Drawn at its
+/// own size, whatever the layout around it.
+pub fn pill(ui: &mut egui::Ui, dot: Color32, text: &str) -> egui::Response {
+    let galley = ui.painter().layout_no_wrap(text.to_string(), FontId::new(13.5, FontFamily::Proportional), FG);
+    let size = egui::vec2(14.0 + 8.0 + 8.0 + galley.size().x + 14.0, galley.size().y + 12.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let p = ui.painter();
+    p.rect(rect, 255, BG.linear_multiply(0.85), Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
+    p.circle_filled(egui::pos2(rect.left() + 18.0, rect.center().y), 4.0, dot);
+    p.galley(egui::pos2(rect.left() + 30.0, rect.center().y - galley.size().y / 2.0), galley, FG);
+    response
+}
+
+/// A small well with a label over a value ("PING / 40 ms").
+pub fn stat(ui: &mut egui::Ui, label: &str, value: &str, color: Color32) {
+    egui::Frame::new()
+        .fill(SUNKEN)
+        .corner_radius(10)
+        .inner_margin(egui::Margin::symmetric(12, 9))
+        .show(ui, |ui| {
+            ui.set_min_width(84.0);
+            ui.vertical(|ui| {
+                ui.label(caps(label));
+                ui.label(egui::RichText::new(value).monospace().size(17.0).color(color));
+            });
+        });
+}
+
+/// A row of buttons of which one is chosen (in place of a drop-down when
+/// the choices are few and worth seeing at once).
+pub fn segmented<T: PartialEq + Copy>(ui: &mut egui::Ui, value: &mut T, options: &[(T, &str)]) -> bool {
+    let mut changed = false;
+    egui::Frame::new()
+        .fill(SUNKEN)
+        .stroke(Stroke::new(1.0, LINE))
+        .corner_radius(10)
+        .inner_margin(egui::Margin::same(4))
+        .show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                for (option, label) in options {
+                    let chosen = *value == *option;
+                    let text = egui::RichText::new(*label).color(if chosen { FG } else { MUTED });
+                    let text = if chosen { text.family(strong()) } else { text };
+                    let button = egui::Button::new(text)
+                        .fill(if chosen { CONTROL } else { Color32::TRANSPARENT })
+                        .stroke(Stroke::NONE)
+                        .corner_radius(8)
+                        .min_size(egui::vec2(150.0, 38.0));
+                    if ui.add(button).clicked() && !chosen {
+                        *value = *option;
+                        changed = true;
+                    }
+                }
+            });
+        });
+    changed
+}
+
+/// The side menu's icons, drawn so they never depend on a font's glyphs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Icon {
+    Play,
+    Servers,
+    Host,
+    Settings,
+}
+
+fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: Color32) {
+    let s = Stroke::new(1.8, color);
+    let c = rect.center();
+    let u = rect.width() / 24.0;
+    let p = |x: f32, y: f32| egui::pos2(rect.left() + x * u, rect.top() + y * u);
+    match icon {
+        Icon::Play => {
+            painter.add(egui::Shape::convex_polygon(vec![p(7.0, 4.0), p(19.0, 12.0), p(7.0, 20.0)], Color32::TRANSPARENT, s));
+        }
+        Icon::Servers => {
+            for top in [4.0, 14.0] {
+                painter.rect_stroke(egui::Rect::from_min_max(p(3.0, top), p(21.0, top + 6.0)), 2, s, egui::StrokeKind::Middle);
+                painter.circle_filled(p(7.0, top + 3.0), 1.3 * u, color);
+            }
+        }
+        Icon::Host => {
+            // A broadcast: a mast with waves either side.
+            painter.circle_filled(p(12.0, 10.0), 1.8 * u, color);
+            painter.line_segment([p(12.0, 12.0), p(12.0, 21.0)], s);
+            for (r, a) in [(5.0, 0.9_f32), (9.0, 0.9)] {
+                for side in [-1.0_f32, 1.0] {
+                    let pts: Vec<egui::Pos2> = (0..=8)
+                        .map(|i| {
+                            let t = -a + 2.0 * a * i as f32 / 8.0;
+                            egui::pos2(c.x + side * r * u * t.cos(), rect.top() + 10.0 * u + r * u * t.sin())
+                        })
+                        .collect();
+                    painter.add(egui::Shape::line(pts, s));
+                }
+            }
+        }
+        Icon::Settings => {
+            painter.circle_stroke(c, 3.2 * u, s);
+            for i in 0..8 {
+                let a = i as f32 * std::f32::consts::FRAC_PI_4;
+                let (sin, cos) = a.sin_cos();
+                painter.line_segment([c + egui::vec2(cos, sin) * 6.0 * u, c + egui::vec2(cos, sin) * 9.5 * u], s);
+            }
+        }
+    }
+}
+
+/// One entry of the side menu: an icon over a small label.
+pub fn nav_button(ui: &mut egui::Ui, icon: Icon, label: &str, selected: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(66.0, 60.0), egui::Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let fill = if selected {
+        SURFACE
+    } else if response.hovered() {
+        SURFACE.linear_multiply(0.6)
+    } else {
+        Color32::TRANSPARENT
+    };
+    let color = if selected {
+        ACCENT
+    } else if response.hovered() {
+        FG
+    } else {
+        MUTED
+    };
+    let painter = ui.painter();
+    painter.rect_filled(rect, 10, fill);
+    let icon_rect = egui::Rect::from_center_size(egui::pos2(rect.center().x, rect.top() + 21.0), egui::vec2(22.0, 22.0));
+    paint_icon(painter, icon_rect, icon, color);
+    painter.text(
+        egui::pos2(rect.center().x, rect.bottom() - 13.0),
+        egui::Align2::CENTER_CENTER,
+        label.to_uppercase(),
+        FontId::new(10.5, FontFamily::Proportional),
+        color,
+    );
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, label));
+    response
 }

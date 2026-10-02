@@ -51,8 +51,8 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(concat!(env!("FE_PRODUCT"), " ", env!("FE_RELEASE")))
-            .with_inner_size([860.0, 720.0])
-            .with_min_inner_size([640.0, 520.0])
+            .with_inner_size([1120.0, 760.0])
+            .with_min_inner_size([760.0, 560.0])
             .with_icon(eframe::egui::IconData {
                 rgba: icon.pixels.iter().flat_map(|c| c.to_array()).collect(),
                 width: icon.size[0] as u32,
