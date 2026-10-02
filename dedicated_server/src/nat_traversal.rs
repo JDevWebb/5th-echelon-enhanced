@@ -31,6 +31,19 @@ struct NatTraversalProtocolServerImpl {
 /// The most players one probe request may reach.
 const MAX_PROBE_TARGETS: usize = 8;
 
+/// Whether other players may be told to probe `address` for a client connected from
+/// `observed`. Addresses that only ever mean the target's own machine or every machine
+/// around it (loopback, unspecified, broadcast, multicast, link-local) only when they are
+/// where the client connected from (a game on the server's own machine or link).
+///
+/// LAN addresses stay allowed: players on one network (or a VPN using private ranges)
+/// reach each other on them, and the server can't tell which networks two players share.
+fn probe_address_allowed(address: &str, observed: std::net::IpAddr) -> bool {
+    let Ok(ip) = address.parse::<std::net::Ipv4Addr>() else { return false };
+    let special = ip.is_loopback() || ip.is_unspecified() || ip.is_broadcast() || ip.is_multicast() || ip.is_link_local();
+    !special || std::net::IpAddr::V4(ip) == observed.to_canonical()
+}
+
 impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
     /// Handles the `RequestProbeInitiationExt` request.
     ///
@@ -53,7 +66,9 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
             return Err(Error::AccessDenied);
         }
         let own = std::iter::once(request.url_station_to_probe.to_string()).collect::<Vec<_>>();
-        if crate::game_session::only_reachable_addresses(own.clone(), ci.address().ip(), crate::nat_helper::relay_ip()) != own {
+        if crate::game_session::only_reachable_addresses(own.clone(), ci.address().ip(), crate::nat_helper::relay_ip()) != own
+            || !probe_address_allowed(&request.url_station_to_probe.address, ci.address().ip())
+        {
             warn!(logger, "User {user_id} asked for probes to an address not their own; refused");
             return Err(Error::AccessDenied);
         }
@@ -142,4 +157,20 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
 /// with the server's protocol dispatcher.
 pub fn new_protocol<T: 'static>(storage: std::sync::Arc<crate::storage::Storage>) -> Box<dyn Protocol<T>> {
     Box::new(NatTraversalProtocolServer::new(NatTraversalProtocolServerImpl { storage }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::probe_address_allowed;
+
+    #[test]
+    fn probes_only_to_addresses_that_can_mean_the_caller() {
+        let public = "203.0.113.9".parse().unwrap();
+        assert!(probe_address_allowed("203.0.113.9", public));
+        assert!(probe_address_allowed("192.168.1.20", public), "a LAN address, for players on one network");
+        for special in ["127.0.0.1", "0.0.0.0", "255.255.255.255", "224.0.0.1", "169.254.1.1", "example.com"] {
+            assert!(!probe_address_allowed(special, public), "{special}");
+        }
+        assert!(probe_address_allowed("127.0.0.1", "127.0.0.1".parse().unwrap()), "a game on the server's own machine");
+    }
 }

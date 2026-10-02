@@ -960,19 +960,31 @@ impl Storage {
         })?
     }
 
-    pub fn leave_game_session(&self, user_id: u32, session_id: u32) -> Result<bool> {
+    ///
+    /// Only for someone in it, or its host: anyone else's leaving changes nothing (`None`),
+    /// where it used to end a session its host hadn't joined yet.
+    pub fn leave_game_session(&self, user_id: u32, session_id: u32) -> Result<Option<bool>> {
         run(async {
-            sqlx::query("DELETE FROM participants WHERE game_id = ? AND user_id = ?")
+            let was_in = sqlx::query("DELETE FROM participants WHERE game_id = ? AND user_id = ?")
                 .bind(session_id)
                 .bind(user_id)
                 .execute(&self.pool)
+                .await?
+                .rows_affected()
+                > 0;
+            let host: Option<u32> = sqlx::query_scalar("SELECT creator_id FROM game_sessions WHERE id = ?")
+                .bind(session_id)
+                .fetch_optional(&self.pool)
                 .await?;
+            if !was_in && host != Some(user_id) {
+                return Ok::<_, eyre::Error>(None);
+            }
             let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM participants WHERE game_id = ?")
                 .bind(session_id)
                 .fetch_one(&self.pool)
                 .await?;
             if left > 0 {
-                return Ok::<_, eyre::Error>(false);
+                return Ok(Some(false));
             }
             let ended = sqlx::query("UPDATE game_sessions SET destroyed_at = CURRENT_TIMESTAMP WHERE id = ? AND destroyed_at IS NULL")
                 .bind(session_id)
@@ -980,7 +992,7 @@ impl Storage {
                 .await?
                 .rows_affected()
                 > 0;
-            Ok(ended)
+            Ok(Some(ended))
         })?
     }
 
@@ -1381,13 +1393,18 @@ pub(crate) mod tests {
         let lobby = storage.create_game_session(host, 1, "113 => 1".into()).unwrap();
         storage.add_participants(1, lobby, vec![], vec![host, guest]).unwrap();
 
-        assert!(!storage.leave_game_session(guest, lobby).unwrap(), "the host is still there");
+        let stranger = storage.find_user_id_by_name("Foo").unwrap().unwrap();
+        let early = storage.create_game_session(host, 1, "113 => 1".into()).unwrap();
+        assert_eq!(storage.leave_game_session(stranger, early).unwrap(), None, "a stranger leaving changes nothing");
+        assert!(storage.session_members(early).unwrap().is_some(), "the host's new session must not end");
+
+        assert_eq!(storage.leave_game_session(guest, lobby).unwrap(), Some(false), "the host is still there");
         assert!(storage.search_sessions_with_participants(1, &[guest], 50).unwrap().is_empty(), "the guest left");
         assert_eq!(storage.search_sessions_with_participants(1, &[host], 50).unwrap().len(), 1);
 
-        assert!(storage.leave_game_session(host, lobby).unwrap(), "nobody left: the session ends");
+        assert_eq!(storage.leave_game_session(host, lobby).unwrap(), Some(true), "nobody left: the session ends");
         assert!(storage.search_sessions_with_participants(1, &[host], 50).unwrap().is_empty());
-        assert!(!storage.leave_game_session(host, lobby).unwrap(), "leaving twice is harmless");
+        assert_eq!(storage.leave_game_session(host, lobby).unwrap(), Some(false), "leaving twice is harmless");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -342,7 +342,10 @@ impl GameSessionProtocolServerImpl {
     /// left (friend searches then found stale parties, #44) and empty
     /// lobbies stayed on offer.
     fn leave(&self, logger: &Logger, user_id: u32, session_id: u32, verb: &str) -> Result<(), Error> {
-        let ended = rmc_err!(self.storage.leave_game_session(user_id, session_id), logger, "error leaving session")?;
+        let Some(ended) = rmc_err!(self.storage.leave_game_session(user_id, session_id), logger, "error leaving session")? else {
+            warn!(logger, "User {user_id} {verb} session {session_id}, which they aren't in; nothing changes");
+            return Ok(());
+        };
         let mut left = self.left.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = std::time::Instant::now();
         if left.len() >= 10_000 {
