@@ -177,16 +177,18 @@ async fn list_friends_async() -> Result<Vec<Friend>, Error> {
         let request = tonic::Request::new(ListRequest {});
 
         let response = client.list(request).await?.into_inner();
+        // Kept (as the last list) and logged: bounded here, whatever the server sends.
         Ok(response
             .friends
             .into_iter()
+            .take(crate::uplay_r1_loader::MAX_FRIENDS)
             .map(|f| Friend {
                 id: f.id,
                 username: f.username,
                 is_online: f.is_online,
                 session_id: f.session_id,
                 invite_only: f.invite_only,
-                session_data: f.session_data,
+                session_data: crate::uplay_r1_loader::session_data_for_game(f.session_data),
                 pid: f.pid,
             })
             .collect())

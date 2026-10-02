@@ -91,6 +91,14 @@ struct SessionData {
     some_data_size: u32,
 }
 
+// Friends' payloads are checked against this layout before the game gets them
+// (`types::session_data_for_game`).
+const _: () = assert!(
+    std::mem::size_of::<SessionData>() == super::types::SESSION_DATA_SIZE
+        && std::mem::offset_of!(SessionData, account_id) == 8
+        && std::mem::offset_of!(SessionData, some_data_size) == 0x1ec
+);
+
 impl std::fmt::Debug for SessionData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("SessionData")

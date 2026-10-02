@@ -27,11 +27,13 @@ mod types;
 mod user;
 mod win;
 
+pub(crate) use types::session_data_for_game;
 use types::List;
 use types::UplayFriend;
 use types::UplayList;
 use types::UplayOverlapped;
 use types::UplaySave;
+pub(crate) use types::MAX_FRIENDS;
 
 use self::types::UplayEvent;
 use self::types::UplayEventType;

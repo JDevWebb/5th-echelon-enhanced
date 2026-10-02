@@ -229,11 +229,41 @@ impl List {
 pub const MAX_FRIENDS: usize = 500;
 /// The size of the session payload the game reads from `FriendDetails.unknown4`.
 pub const SESSION_DATA_SIZE: usize = 496;
+/// Where the payload's fields are (`user.rs`, `SessionData`): the account id, a C string
+/// in 0x80 bytes, and the length of the data after it, which has room for 0x164 bytes.
+const ACCOUNT_ID_FIELD: std::ops::Range<usize> = 8..0x88;
+const DATA_SIZE_FIELD: std::ops::Range<usize> = 0x1ec..0x1f0;
+const DATA_CAPACITY: u32 = 0x164;
+
+/// A friend's session payload as the game can take it: exactly [`SESSION_DATA_SIZE`]
+/// bytes, with its account id ending inside its field and a data length that fits its
+/// buffer, as the game's own payloads always have. Anything else becomes none: the friend
+/// stays listed, only without a session to join.
+pub fn session_data_for_game(data: Vec<u8>) -> Vec<u8> {
+    if data.is_empty() {
+        return data;
+    }
+    let well_formed =
+        data.len() == SESSION_DATA_SIZE && data[ACCOUNT_ID_FIELD].contains(&0) && <[u8; 4]>::try_from(&data[DATA_SIZE_FIELD]).is_ok_and(|n| u32::from_le_bytes(n) <= DATA_CAPACITY);
+    if well_formed {
+        data
+    } else {
+        warn!("Leaving out a friend's session data the game can't take ({} bytes)", data.len());
+        Vec::new()
+    }
+}
+
 /// Longest id and username passed on (the game's own buffers are 64 and 256 bytes).
 const MAX_ID: usize = 63;
 const MAX_NAME: usize = 255;
 
 impl UplayFriend {
+    /// The entry with its session data checked (see [`session_data_for_game`]).
+    fn normalised(mut self) -> Self {
+        self.session_data = session_data_for_game(self.session_data);
+        self
+    }
+
     /// Whether the game can take this entry as it is.
     fn is_well_formed(&self) -> bool {
         let text = |s: &str, max: usize| !s.is_empty() && s.len() <= max && !s.bytes().any(|b| b == 0);
@@ -253,26 +283,64 @@ struct FriendLayout {
     pid_field: PidField,
 }
 
-/// Friend entries handed to the game, by content. The game keeps the pointers
-/// beyond the call, so they can't be freed; an unchanged friend reuses its
-/// entry instead of leaking a new one on every fetch.
-static FRIEND_ENTRIES: std::sync::Mutex<Option<std::collections::HashMap<String, usize>>> = std::sync::Mutex::new(None);
+/// Friend entries handed to the game, by a hash of their content. The game keeps the
+/// pointers beyond the call, so they can't be freed; an unchanged friend reuses its entry
+/// instead of leaking a new one on every fetch.
+static FRIEND_ENTRIES: std::sync::Mutex<Option<FriendEntries>> = std::sync::Mutex::new(None);
+
+#[derive(Default)]
+struct FriendEntries {
+    table: std::collections::HashMap<[u8; 32], usize>,
+    /// Entries made so far, all still allocated.
+    made: usize,
+}
+
 /// Entries kept before the table starts over (the old ones stay allocated).
 const MAX_FRIEND_ENTRIES: usize = 4096;
+/// Entries made in all, at most: each stays allocated (under 1 KB, as strings and
+/// session data are bounded), so a server sending ever-new friends can't grow the
+/// game's memory past this. Real friend lists come nowhere near it.
+const MAX_FRIEND_ENTRIES_MADE: usize = 65536;
 
-fn interned_friend(f: &UplayFriend, layout: &FriendLayout) -> *mut Friend {
-    let key = format!("{f:?}{layout:?}");
-    let mut guard = FRIEND_ENTRIES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let table = guard.get_or_insert_with(std::collections::HashMap::new);
-    if let Some(&ptr) = table.get(&key) {
-        return ptr as *mut Friend;
+/// What makes an entry: every field the game gets, each with its length, so no two
+/// different entries share a key.
+fn friend_key(f: &UplayFriend, layout: &FriendLayout) -> [u8; 32] {
+    use sha2::Digest as _;
+    let layout = format!("{layout:?}");
+    let mut h = sha2::Sha256::new();
+    for field in [f.id.as_bytes(), f.username.as_bytes(), f.session_data.as_slice(), layout.as_bytes()] {
+        h.update((field.len() as u64).to_le_bytes());
+        h.update(field);
     }
-    if table.len() >= MAX_FRIEND_ENTRIES {
-        table.clear();
+    h.update([u8::from(f.is_online)]);
+    h.update(f.session_id.to_le_bytes());
+    h.update(f.pid.to_le_bytes());
+    h.finalize().into()
+}
+
+/// The game's entry for `f`, made once per content. None once
+/// [`MAX_FRIEND_ENTRIES_MADE`] are made: the friend is left out.
+fn interned_friend(f: &UplayFriend, layout: &FriendLayout) -> Option<*mut Friend> {
+    let key = friend_key(f, layout);
+    let mut guard = FRIEND_ENTRIES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let entries = guard.get_or_insert_with(FriendEntries::default);
+    if let Some(&ptr) = entries.table.get(&key) {
+        return Some(ptr as *mut Friend);
+    }
+    if entries.made >= MAX_FRIEND_ENTRIES_MADE {
+        if entries.made == MAX_FRIEND_ENTRIES_MADE {
+            warn!("{MAX_FRIEND_ENTRIES_MADE} friend entries made; changed friends are left out from now on");
+            entries.made += 1;
+        }
+        return None;
+    }
+    if entries.table.len() >= MAX_FRIEND_ENTRIES {
+        entries.table.clear();
     }
     let ptr = Box::into_raw(Box::new(new_friend(f, layout)));
-    table.insert(key, ptr as usize);
-    ptr
+    entries.table.insert(key, ptr as usize);
+    entries.made += 1;
+    Some(ptr)
 }
 
 fn new_friend(f: &UplayFriend, layout: &FriendLayout) -> Friend {
@@ -412,11 +480,13 @@ impl From<UplayList> for List {
                 // Whatever the server sends, the game gets a bounded list of well-formed
                 // entries: no NUL inside a string (it would end it early), no overlong
                 // strings, and session data exactly the 496 bytes the game reads, or none.
+                // The data is checked before anything is made of the entry.
                 let friends = friends
                     .into_iter()
                     .filter(UplayFriend::is_well_formed)
                     .take(MAX_FRIENDS)
-                    .map(|f| interned_friend(&f, &layout))
+                    .map(UplayFriend::normalised)
+                    .filter_map(|f| interned_friend(&f, &layout))
                     .collect::<Vec<*mut Friend>>();
                 List::from_vec(friends, ListType::Friends)
             }
@@ -519,12 +589,21 @@ mod tests {
 
     #[test]
     fn friends_the_game_cant_take_are_left_out() {
+        // A payload laid out as the game's: an account id with its NUL, a data length that fits.
+        let payload = |len: usize| {
+            let mut data = vec![0; len];
+            if len == SESSION_DATA_SIZE {
+                data[8..12].copy_from_slice(b"Kiwi");
+                data[0x1ec..0x1f0].copy_from_slice(&16u32.to_le_bytes());
+            }
+            data
+        };
         let friend = |id: &str, name: &str, data: usize| UplayFriend {
             id: id.into(),
             username: name.into(),
             is_online: true,
             session_id: 7,
-            session_data: vec![1; data],
+            session_data: payload(data),
             pid: 9,
         };
         let list = UplayList::Friends(vec![
@@ -543,6 +622,21 @@ mod tests {
         let again: List = UplayList::Friends(vec![friend("ok", "Fine", 496)]).into();
         let again = unsafe { std::slice::from_raw_parts(again.list.cast::<*mut Friend>(), 1) };
         assert_eq!(again[0], array[0]);
+    }
+
+    #[test]
+    fn session_data_is_checked_against_the_games_layout() {
+        let mut data = vec![0u8; SESSION_DATA_SIZE];
+        data[0x1ec..0x1f0].copy_from_slice(&0x164u32.to_le_bytes());
+        assert_eq!(session_data_for_game(data.clone()).len(), SESSION_DATA_SIZE);
+        let mut too_long = data.clone();
+        too_long[0x1ec..0x1f0].copy_from_slice(&0x165u32.to_le_bytes());
+        assert!(session_data_for_game(too_long).is_empty(), "a data length past its buffer");
+        let mut no_nul = data.clone();
+        no_nul[8..0x88].fill(b'A');
+        assert!(session_data_for_game(no_nul).is_empty(), "an account id without its end");
+        assert!(session_data_for_game(vec![0; 4 << 20]).is_empty(), "megabytes, dropped before keying");
+        assert!(session_data_for_game(Vec::new()).is_empty());
     }
 
     #[test]
