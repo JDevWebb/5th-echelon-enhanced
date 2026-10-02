@@ -104,6 +104,20 @@ message RelationshipsResponse {
     // The caller's own name: CONFLICT means they should rename.
     NameStatus my_name = 6;
     string my_identity = 7;
+    // Friends playing on another server sharing friends (see FriendElsewhere).
+    repeated FriendElsewhere elsewhere = 8;
+}
+
+// A friend online on another server of the group: to play together, one of you joins the
+// other's server.
+message FriendElsewhere {
+    // Their name on that server.
+    string username = 1;
+    // That server's name and region, as its directory entry shows them.
+    string server = 2;
+    string region = 3;
+    // What to connect to.
+    string host = 4;
 }
 
 message SearchRequest {

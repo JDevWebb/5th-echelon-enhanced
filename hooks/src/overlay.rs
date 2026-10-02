@@ -901,6 +901,21 @@ impl MyRenderLoop {
                 row += 1;
             }
         }
+        if !self.data.elsewhere.is_empty() {
+            self.section(ui, "On other servers");
+            {
+                let _c = ui.push_style_color(StyleColor::Text, MUTED);
+                ui.text_wrapped(format!(
+                    "To play together, one of you joins the other's server: {} lists them on its Play screen.",
+                    setup_tool()
+                ));
+            }
+            for (name, server) in &self.data.elsewhere {
+                self.with_font(ui, |f| f.strong, || ui.text(name));
+                ui.same_line();
+                ui.text_colored(MUTED, format!("on {server}"));
+            }
+        }
         if !self.data.requests_out.is_empty() {
             self.section(ui, "Waiting for an answer");
             for p in &self.data.requests_out {

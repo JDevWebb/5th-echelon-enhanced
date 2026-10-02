@@ -31,6 +31,7 @@ pub mod metrics;
 pub mod updates;
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -183,6 +184,9 @@ struct Listing {
     /// Whether it installs the releases rolled out (see [`updates`]).
     #[serde(default)]
     auto_update: bool,
+    /// The identities of its players online now (for friends on other servers; not listed).
+    #[serde(default, skip_serializing)]
+    online: Vec<String>,
 }
 
 fn yes() -> bool {
@@ -211,12 +215,22 @@ impl Listing {
         if self.names.len() > 16 || !self.names.iter().all(|n| valid_host(n)) {
             return Err("at most 16 names, each a host name or address");
         }
+        if self.online.len() > MAX_ONLINE || !self.online.iter().all(|id| identity::is_global_id(id)) {
+            return Err("online is at most 20000 identities");
+        }
         Ok(())
     }
 }
 
+/// Players one server may report online at once.
+const MAX_ONLINE: usize = 20_000;
+/// How long a player counts as online on a server after its last report (it reports every 30 s).
+const ONLINE_FOR: i64 = 90;
+
 pub struct Coordinator {
     pool: SqlitePool,
+    /// Who is online where: identity -> (server, when its server last said so).
+    presence: std::sync::Mutex<HashMap<String, (String, i64)>>,
     join_token: String,
     joins: Limit,
     reads: Limit,
@@ -255,6 +269,7 @@ impl Coordinator {
         let c = Self {
             pool,
             join_token,
+            presence: std::sync::Mutex::new(HashMap::new()),
             // Per address: joins (the token is guessed at nowhere near this rate) and the
             // public reads; per server: changes.
             joins: Limit::new(10),
@@ -392,6 +407,47 @@ impl Coordinator {
             .await
             .map_err(internal)?
             .ok_or_else(|| fail(StatusCode::UNAUTHORIZED, "unknown server; join again"))
+    }
+
+    /// Records who is online on `server` now: those of `online` linked there (a server only
+    /// speaks for its own players). Whoever it no longer lists is offline there.
+    async fn set_online(&self, server: &str, online: &[String]) -> sqlx::Result<()> {
+        let linked: std::collections::HashSet<String> = if online.is_empty() {
+            std::collections::HashSet::new()
+        } else {
+            sqlx::query_scalar("SELECT global_id FROM links WHERE server_id = ?").bind(server).fetch_all(&self.pool).await?.into_iter().collect()
+        };
+        let now = identity::now();
+        let mut presence = self.presence.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        presence.retain(|_, (on, seen)| on != server && now - *seen <= ONLINE_FOR);
+        for id in online.iter().filter(|id| linked.contains(*id)) {
+            presence.insert(id.clone(), (server.to_string(), now));
+        }
+        Ok(())
+    }
+
+    /// The server `global_id` is online on, if it's one other than `except`.
+    fn online_elsewhere(&self, global_id: &str, except: &str) -> Option<String> {
+        let presence = self.presence.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        presence
+            .get(global_id)
+            .filter(|(on, seen)| on != except && identity::now() - *seen <= ONLINE_FOR)
+            .map(|(on, _)| on.clone())
+    }
+
+    /// Where a friend is playing, as their friends' servers show it: that server's name,
+    /// region and host, and the friend's name there.
+    async fn whereabouts(&self, server: &str, global_id: &str) -> sqlx::Result<Option<Value>> {
+        let row: Option<(Option<String>, String)> = sqlx::query_as(
+            "SELECT s.listing, l.username FROM servers s JOIN links l ON l.server_id = s.id WHERE s.id = ? AND l.global_id = ?",
+        )
+        .bind(server)
+        .bind(global_id)
+        .fetch_optional(&self.pool)
+        .await?;
+        let Some((Some(listing), username)) = row else { return Ok(None) };
+        let Ok(listing) = serde_json::from_str::<Listing>(&listing) else { return Ok(None) };
+        Ok(Some(json!({ "username": username, "server": listing.name, "region": listing.region, "host": listing.host })))
     }
 
     async fn linked(&self, server: &str, global_id: &str) -> sqlx::Result<bool> {
@@ -644,6 +700,9 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, Json(listing): J
     {
         return internal(e);
     }
+    if let Err(e) = c.set_online(&server, &listing.online).await {
+        return internal(e);
+    }
     // The release this server should install now, if any.
     match c.update_for(&server, &listing.version, u64::from(listing.players_online)).await {
         Ok(Some(version)) => ok(json!({ "update": { "version": version } })),
@@ -783,6 +842,19 @@ async fn relations(State(c): State<Shared>, headers: HeaderMap, Path(global_id):
     for (from, to, blocked) in blocks {
         let (other, key) = if from == global_id { (to, "blocked") } else { (from, "blocked_by") };
         relation(&mut others, &other)[key] = json!(blocked != 0);
+    }
+    // Friends playing on another server of the group, and where: only friends, never
+    // across a block.
+    for (other, r) in &mut others {
+        if r["friends"] != json!(true) || r["blocked"] == json!(true) || r["blocked_by"] == json!(true) {
+            continue;
+        }
+        let Some(on) = c.online_elsewhere(other, &server) else { continue };
+        match c.whereabouts(&on, other).await {
+            Ok(Some(w)) => r["elsewhere"] = w,
+            Ok(None) => {}
+            Err(e) => return internal(e),
+        }
     }
     ok(json!({ "relations": others.into_values().collect::<Vec<_>>() }))
 }

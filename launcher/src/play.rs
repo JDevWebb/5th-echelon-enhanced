@@ -28,6 +28,9 @@ const REFRESH_EVERY: Duration = Duration::from_secs(30);
 #[derive(Default)]
 pub struct Play {
     facts: Slot<(setup::diagnose::Facts, Support)>,
+    /// Friends playing on other servers sharing friends, fetched with the checklist.
+    fetching_elsewhere: Slot<Result<Vec<server_api::friends::FriendElsewhere>, String>>,
+    elsewhere: Vec<server_api::friends::FriendElsewhere>,
     checks: Vec<Check>,
     support: Option<Support>,
     refreshed: Option<Instant>,
@@ -84,10 +87,18 @@ impl Play {
         }
         let dir = game.dir.clone();
         let cfg = (*game.cfg).clone();
+        if !self.fetching_elsewhere.running() && game.managed.is_none() {
+            let cfg = cfg.clone();
+            self.fetching_elsewhere.start(ctx, move || flow::friends_elsewhere(&cfg));
+        }
         self.facts.start(ctx, move || flow::gather(&dir, &cfg, crate::dll_utils::bundled()));
     }
 
     fn poll(&mut self, ctx: &egui::Context, game: &Game, notices: &mut Notices) {
+        // A failed fetch keeps the last list: it's a hint, not a check.
+        if let Some(Ok(elsewhere)) = self.fetching_elsewhere.poll() {
+            self.elsewhere = elsewhere;
+        }
         if let Some((facts, support)) = self.facts.poll() {
             self.checks = setup::diagnose::checklist(&facts);
             self.support = Some(support);
@@ -177,6 +188,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         join_card(play, game, &ctx, ui);
     } else {
         server_card(play, game, &ctx, ui);
+        if game.managed.is_none() && !play.elsewhere.is_empty() {
+            ui.add_space(10.0);
+            elsewhere_card(play, game, &ctx, ui);
+        }
     }
     ui.add_space(10.0);
 
@@ -542,6 +557,41 @@ fn server_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut e
             network_list(play, game, &profile.server, ctx, ui);
         }
     });
+}
+
+/// Friends playing on another server of the network, and a way to join them
+/// there: players on different servers can't see or invite each other.
+fn elsewhere_card(play: &mut Play, game: &Game, ctx: &egui::Context, ui: &mut egui::Ui) {
+    let playing = play.game_seen || play.running.is_some();
+    let mut switch_to = None;
+    theme::card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(theme::heading("Friends on other servers"));
+        ui.label(theme::muted(
+            "You only see and invite friends on your own server. To play together, one of you joins the other's server.",
+        ));
+        ui.add_space(4.0);
+        for friend in &play.elsewhere {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(&friend.username).strong());
+                let server = if friend.region.is_empty() { friend.server.clone() } else { format!("{} ({})", friend.server, friend.region) };
+                ui.label(theme::muted(format!("on {server}")));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let button = ui.add_enabled(!playing && !play.setup.running(), egui::Button::new("Switch to this server"));
+                    let button = if playing { button.on_disabled_hover_text("Quit the game first") } else { button };
+                    if button.clicked() {
+                        switch_to = Some(friend.host.clone());
+                    }
+                });
+            });
+        }
+    });
+    if let Some(host) = switch_to {
+        play.server = host;
+        play.server_picked = false;
+        play.needs_name = None;
+        start_setup(play, game, ctx, None);
+    }
 }
 
 fn status_dot(ui: &mut egui::Ui, status: Status) {

@@ -17,9 +17,11 @@ pub use nat::test_nat_helper;
 pub use quazal::test_p2p;
 pub use quazal::test_quazal_login;
 pub use rpc::account_id;
+pub use rpc::friends_elsewhere;
 pub use rpc::identity_login;
 pub use rpc::link_identity;
 pub use rpc::register;
+pub use rpc::sign_in;
 pub use rpc::rename;
 pub use rpc::test_login;
 

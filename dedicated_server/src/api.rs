@@ -436,6 +436,15 @@ impl Friends for MyFriends {
                 FriendsMode::Mutual => "mutual",
             }
             .into(),
+            elsewhere: federation::friends_elsewhere(me)
+                .into_iter()
+                .map(|e| friends::FriendElsewhere {
+                    username: e.username,
+                    server: e.server,
+                    region: e.region,
+                    host: e.host,
+                })
+                .collect(),
         };
         resp.set_my_name(name_status(&me_person));
         Ok(Response::new(resp))

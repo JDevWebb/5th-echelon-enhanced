@@ -209,3 +209,34 @@ pub async fn link_identity(api_url: String, identity: &identity::Identity, host:
         .await?;
     Ok(())
 }
+
+/// Signs in and answers the API token (the launcher keeps it, so it needn't
+/// sign in for every call).
+pub async fn sign_in(api_url: String, username: &str, password: &str) -> Result<String, Error> {
+    let mut client = UsersClient::new(super::endpoint(&api_url)?.connect().await.map_err(|_| Error::ConnectionFailed)?);
+    let resp = match client.login(LoginRequest { username: username.to_string(), password: password.to_string() }).await {
+        Ok(resp) => resp.into_inner(),
+        Err(status) if status.code() == tonic::Code::Unauthenticated => return Err(Error::InvalidPassword),
+        Err(status) if status.code() == tonic::Code::NotFound => return Err(Error::UserNotFound),
+        Err(status) => return Err(status.into()),
+    };
+    if !resp.error.is_empty() {
+        return Err(Error::ServerFailure(resp.error));
+    }
+    Ok(resp.token)
+}
+
+/// The signed-in player's friends playing on other servers sharing friends.
+/// A token the server no longer takes is `InvalidPassword`.
+pub async fn friends_elsewhere(api_url: String, token: &str) -> Result<Vec<server_api::friends::FriendElsewhere>, Error> {
+    let channel = super::endpoint(&api_url)?.connect().await.map_err(|_| Error::ConnectionFailed)?;
+    let mut client = server_api::friends::friends_client::FriendsClient::new(channel);
+    let mut request = tonic::Request::new(server_api::friends::RelationshipsRequest {});
+    let token = tonic::metadata::MetadataValue::try_from(token).map_err(|_| Error::InvalidPassword)?;
+    request.metadata_mut().insert("authorization", token);
+    match client.relationships(request).await {
+        Ok(resp) => Ok(resp.into_inner().elsewhere),
+        Err(status) if status.code() == tonic::Code::Unauthenticated => Err(Error::InvalidPassword),
+        Err(status) => Err(status.into()),
+    }
+}

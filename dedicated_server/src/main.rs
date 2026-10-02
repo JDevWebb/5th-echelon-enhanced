@@ -500,6 +500,7 @@ fn main() -> color_eyre::Result<()> {
             players_total: 0,
             friends_mode,
             auto_update: federation_config.auto_update && self_update::updater_installed(),
+            online: Vec::new(),
         }
     };
 

@@ -83,6 +83,15 @@ Servers can share friends through a **coordinator**: a small service that one pe
 
 When two players are friends on one server, have both linked their identities, and then both play on another server of the same group, they're friends there too, without asking again. Blocks travel the same way. Each server keeps its own accounts; only the links between them and your identity are shared.
 
+### Friends on other servers
+
+Matches, parties and invitations stay on one server: friends on different servers of the group can't see or invite each other in the game. They can see where the other is:
+
+- **In the overlay** (F5), the Friends tab lists **On other servers**: each friend online on another server of the group, by their name there, and which server.
+- **In the launcher**, the Play screen shows **Friends on other servers**, with **Switch to this server** for each. It joins that server (finding your account there by your identity, or asking for a name if you have none yet). Quit the game first.
+
+Only friends see where you play, never across a block. Each server tells the coordinator which of its players (by identity) are online every 30 seconds, and the coordinator tells a player's own server where their friends are when it asks for their friends (every minute while they're online). So a friend shows up there within about a minute and a half of starting to play, and drops off as quickly when they stop.
+
 ### One name per player across the group
 
 Names are unique on each server, so two strangers could both be "Kiwi" on different servers. Within a group of servers that share a coordinator, that can't happen:

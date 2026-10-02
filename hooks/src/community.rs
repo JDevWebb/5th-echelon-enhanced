@@ -89,6 +89,11 @@ pub struct Notice {
     pub at: Instant,
 }
 
+/// `text` cut to `max` characters, as names from servers are shown as-is.
+fn clip(text: &str, max: usize) -> String {
+    text.chars().filter(|c| !c.is_control()).take(max).collect()
+}
+
 /// The latest state for the overlay.
 #[derive(Debug, Clone, Default)]
 pub struct Snapshot {
@@ -115,6 +120,9 @@ pub struct Snapshot {
     pub my_name_conflict: bool,
     /// Our identity's short form, empty if not linked.
     pub my_identity: String,
+    /// Friends playing on another server sharing friends: their name there,
+    /// and that server's name (with its region).
+    pub elsewhere: Vec<(String, String)>,
     /// Friends we know from other servers, by name key.
     known: std::collections::HashMap<String, Vec<Known>>,
 }
@@ -420,6 +428,15 @@ fn refresh_now() {
                 s.requests_out = lists.requests_sent.into_iter().map(player).collect();
                 s.blocked = lists.blocked.into_iter().map(player).collect();
                 s.everyone_mode = lists.mode != "mutual";
+                s.elsewhere = lists
+                    .elsewhere
+                    .iter()
+                    .take(100)
+                    .map(|e| {
+                        let server = if e.region.is_empty() { e.server.clone() } else { format!("{} ({})", e.server, e.region) };
+                        (clip(&e.username, 32), clip(&server, 96))
+                    })
+                    .collect();
                 s.response_time = Some(response_time);
                 s.loaded = true;
             }

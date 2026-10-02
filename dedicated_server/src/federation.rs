@@ -81,6 +81,34 @@ pub struct PulledRelation {
     /// `other` blocked the player.
     #[serde(default)]
     pub blocked_by: bool,
+    /// A friend online on another server of the group, and where.
+    #[serde(default)]
+    pub elsewhere: Option<Elsewhere>,
+}
+
+/// Where a friend is playing, on another server sharing friends.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Elsewhere {
+    /// Their name on that server.
+    pub username: String,
+    /// The server's name, region and host (what players connect to).
+    pub server: String,
+    #[serde(default)]
+    pub region: String,
+    pub host: String,
+}
+
+/// Each player's friends online on other servers, from their last pull.
+static ELSEWHERE: OnceLock<Mutex<std::collections::HashMap<u32, Vec<Elsewhere>>>> = OnceLock::new();
+
+fn elsewhere_map() -> std::sync::MutexGuard<'static, std::collections::HashMap<u32, Vec<Elsewhere>>> {
+    ELSEWHERE.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `user`'s friends playing on other servers of the group (as of the last pull, at most
+/// a minute old while they're online).
+pub fn friends_elsewhere(user: u32) -> Vec<Elsewhere> {
+    elsewhere_map().get(&user).cloned().unwrap_or_default()
 }
 
 /// What the directory shows about this server.
@@ -100,6 +128,9 @@ pub struct Listing {
     pub friends_mode: FriendsMode,
     /// Whether this server installs the releases the coordinator rolls out.
     pub auto_update: bool,
+    /// The identities of the players online here, so their friends on other servers see
+    /// where they are.
+    pub online: Vec<String>,
 }
 
 struct State {
@@ -449,6 +480,9 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                 if let Ok((online, total)) = storage.player_counts().await {
                     (listing.players_online, listing.players_total) = (online, total);
                 }
+                if let Ok(online) = storage.online_linked().await {
+                    listing.online = online.into_iter().filter_map(|p| p.global_id).take(20_000).collect();
+                }
                 match client.post("/v1/heartbeat", &listing).await {
                     Ok(answer) => {
                         last_heartbeat = Some(Instant::now());
@@ -617,6 +651,19 @@ async fn pull(logger: &Logger, storage: &Storage, client: &Coordinator<'_>, user
     };
     let answer = client.get(&format!("/v1/relations/{global_id}")).await?;
     let relations: Vec<PulledRelation> = serde_json::from_value(answer["relations"].clone())?;
+    let elsewhere: Vec<Elsewhere> = relations
+        .iter()
+        .filter(|r| r.friends && !r.blocked && !r.blocked_by)
+        .filter_map(|r| r.elsewhere.clone())
+        .collect();
+    {
+        let mut map = elsewhere_map();
+        if elsewhere.is_empty() {
+            map.remove(&user);
+        } else {
+            map.insert(user, elsewhere);
+        }
+    }
     apply(logger, storage, user, &relations).await
 }
 
@@ -644,6 +691,7 @@ mod tests {
             friends,
             blocked,
             blocked_by,
+            elsewhere: None,
         }
     }
 

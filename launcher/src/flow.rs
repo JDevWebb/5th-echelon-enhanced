@@ -129,6 +129,49 @@ fn checked_account(url: &str, username: &str, secret: &str, check: impl FnOnce()
     fact
 }
 
+/// The API token for the current server's account, kept with the server,
+/// name and password hash it's for: the friends list below is fetched every
+/// refresh, and signing in for each would cost the server a password hash.
+static API_TOKEN: Mutex<Option<(String, String)>> = Mutex::new(None);
+
+/// Friends of the current account playing on other servers sharing friends,
+/// with the server they're on. Empty without an account.
+pub fn friends_elsewhere(cfg: &Config) -> Result<Vec<server_api::friends::FriendElsewhere>, String> {
+    use sha2::Digest as _;
+    let Some(profile) = cfg.current_profile().filter(|p| !p.server.is_empty() && p.has_account()) else {
+        return Ok(Vec::new());
+    };
+    let url = profile.api_server_url().to_string();
+    let username = profile.user.username.clone();
+    let secret = profile.user.secret().unwrap_or_default();
+    let key = format!("{url}\n{username}\n{:x}", sha2::Sha256::digest(secret.as_bytes()));
+    let kept = API_TOKEN
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .as_ref()
+        .filter(|(k, _)| *k == key)
+        .map(|(_, t)| t.clone());
+    let rt = crate::services::rt();
+    let fetch = |token: String| rt.block_on(crate::network::friends_elsewhere(url.clone(), &token));
+    let result = match kept {
+        Some(token) => match fetch(token) {
+            // Signed out (a new password elsewhere, or expired): sign in once more.
+            Err(crate::network::Error::InvalidPassword) => None,
+            other => Some(other),
+        },
+        None => None,
+    };
+    let result = match result {
+        Some(result) => result,
+        None => {
+            let token = rt.block_on(crate::network::sign_in(url.clone(), &username, &secret)).map_err(|e| e.to_string())?;
+            *API_TOKEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((key, token.clone()));
+            fetch(token)
+        }
+    };
+    result.map_err(|e| e.to_string())
+}
+
 /// What the player asked the setup for.
 #[derive(Debug, Clone)]
 pub struct Plan {

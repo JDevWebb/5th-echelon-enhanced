@@ -156,6 +156,42 @@ async fn friends_made_on_one_server_reach_another() {
 }
 
 #[tokio::test]
+async fn friends_see_which_other_server_a_friend_is_on() {
+    let t = start("presence").await;
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    let (kiwi, tank, pest) = (identity::Identity::generate(), identity::Identity::generate(), identity::Identity::generate());
+    t.changes(&a, json!([link(&kiwi, "server-a", "Kiwi"), link(&pest, "server-a", "Pest"), { "op": "friends", "a": kiwi.global_id(), "b": pest.global_id(), "friends": true }]))
+        .await;
+    // Tank plays on B only, under another name there; Kiwi and Tank are friends.
+    t.changes(&b, json!([link(&tank, "server-b", "TankB"), link(&kiwi, "server-b", "Kiwi"), { "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": true }]))
+        .await;
+    let beat = |online: Vec<String>, name: &str| json!({ "name": name, "host": name.to_lowercase(), "region": "Oceania", "online": online });
+
+    // B says Tank is online, and Pest too, who isn't B's to speak for.
+    let (status, v) = t.call("POST", "/v1/heartbeat", Some(&b), Some(beat(vec![tank.global_id(), pest.global_id()], "Server-B"))).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let (_, v) = t.relations(&a, &kiwi.global_id()).await;
+    let rel = |v: &Value, who: &identity::Identity| v["relations"].as_array().unwrap().iter().find(|r| r["other"] == json!(who.global_id())).cloned().unwrap();
+    assert_eq!(rel(&v, &tank)["elsewhere"], json!({ "username": "TankB", "server": "Server-B", "region": "Oceania", "host": "server-b" }));
+    assert!(rel(&v, &pest).get("elsewhere").is_none(), "B spoke for a player it doesn't have");
+
+    // Asked on B itself, B's own players aren't "elsewhere".
+    let (_, v) = t.relations(&b, &kiwi.global_id()).await;
+    assert!(rel(&v, &tank).get("elsewhere").is_none());
+
+    // Off B's list: offline there.
+    t.call("POST", "/v1/heartbeat", Some(&b), Some(beat(vec![], "Server-B"))).await;
+    let (_, v) = t.relations(&a, &kiwi.global_id()).await;
+    assert!(rel(&v, &tank).get("elsewhere").is_none());
+
+    // Only friends see it.
+    t.call("POST", "/v1/heartbeat", Some(&b), Some(beat(vec![tank.global_id()], "Server-B"))).await;
+    t.changes(&b, json!([{ "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": false }])).await;
+    let (_, v) = t.relations(&a, &kiwi.global_id()).await;
+    assert!(rel(&v, &tank).get("elsewhere").is_none());
+}
+
+#[tokio::test]
 async fn links_need_the_players_signature_for_that_server() {
     let t = start("links").await;
     let (a, b) = (t.join("server-a").await, t.join("server-b").await);

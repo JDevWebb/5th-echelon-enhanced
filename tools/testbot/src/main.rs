@@ -310,6 +310,16 @@ async fn federation(ctx: &mut Ctx, other: IpAddr) -> Result<()> {
         ensure!(tokio::time::Instant::now() < deadline, "the friendship didn't reach the second server");
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+    // Tank is online on the first server only: the second tells Kiwi where to find them.
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(100);
+    loop {
+        let r = kiwi_b.relationships().await?;
+        if r.elsewhere.iter().any(|e| e.username == tank.name && !e.host.is_empty()) {
+            break;
+        }
+        ensure!(tokio::time::Instant::now() < deadline, "a friend online on the first server wasn't shown on the second: {:?}", r.elsewhere);
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
     // Names are reserved across the two servers: someone else can't be Kiwi on the second.
     let impostor = identity::Identity::generate();
     ensure!(
@@ -818,7 +828,7 @@ async fn main() -> Result<()> {
     let mut ctx = Ctx { server, run: rand::random::<u16>().into(), n: 0 };
     let mut failed = 0;
     for name in names {
-        let limit = if name == "federation" { 150 } else { 30 };
+        let limit = if name == "federation" { 300 } else { 30 };
         let result = tokio::time::timeout(Duration::from_secs(limit), async {
             match name {
                 "login" => login(&mut ctx).await,
