@@ -30,6 +30,8 @@ pub struct Settings {
     show_passwords: bool,
     /// What's typed in Identity › Import.
     identity_import: String,
+    /// The import waits for a yes: it would replace this PC's own identity.
+    confirm_identity_import: bool,
     /// The server directory field, while it's being edited.
     directory: Option<String>,
     /// The identity as shown: its short id and export text, read once (it's
@@ -68,7 +70,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     section(ui, "Game", |ui| game_options(game, notices, ui));
     section(ui, "Save game", |ui| save_game(settings, game, &ctx, ui));
     section(ui, "Servers and accounts", |ui| servers(settings, game, notices, locked, &ctx, ui));
-    section(ui, "Identity and friends", |ui| identity_section(settings, notices, ui));
+    let accounts = game.cfg.profiles.iter().filter(|p| p.has_account()).count();
+    section(ui, "Identity and friends", |ui| identity_section(settings, accounts, notices, ui));
     section(ui, "Connection test", |ui| connection_test(settings, game, &ctx, ui));
     section(ui, "5th Echelon client", |ui| client(settings, game, &ctx, ui));
     egui::CollapsingHeader::new(theme::heading("Hooks (advanced)"))
@@ -400,9 +403,29 @@ fn servers(settings: &mut Settings, game: &mut Game, notices: &mut Notices, lock
     });
 }
 
+/// Makes `identity` this PC's, keeping the one it replaces.
+fn use_identity(settings: &mut Settings, identity: &setup::player_identity::Identity, notices: &mut Notices) {
+    match setup::player_identity::replace(identity) {
+        Ok(kept) => {
+            let kept = kept.map(|p| format!(" The one it replaced is kept in {}.", p.display())).unwrap_or_default();
+            notices.info(format!(
+                "This PC now uses the identity {}. Press Connect on each server again to sign in with it.{kept}",
+                identity::short(&identity.global_id())
+            ));
+            settings.identity_import.clear();
+            settings.identity = None;
+            settings.confirm_identity_import = false;
+            // The checklist signs in again with the new identity's accounts.
+            crate::flow::forget_account_check();
+        }
+        Err(e) => notices.error(e.to_string()),
+    }
+}
+
 /// The player's identity across servers (see `setup::player_identity`), and
 /// the server directory.
-fn identity_section(settings: &mut Settings, notices: &mut Notices, ui: &mut egui::Ui) {
+/// `accounts`: how many of this install's servers have an account saved.
+fn identity_section(settings: &mut Settings, accounts: usize, notices: &mut Notices, ui: &mut egui::Ui) {
     ui.label(theme::muted(
         "Your identity follows you between servers that share friends: friends you make on one show up on the others. \
          It also signs you in to your accounts on a new PC.",
@@ -431,31 +454,74 @@ fn identity_section(settings: &mut Settings, notices: &mut Notices, ui: &mut egu
             ui.label(RichText::new(format!("Your identity can't be read: {e}")).color(theme::BAD));
         }
     }
+    ui.label(theme::muted(
+        "On a new PC, import your identity before you connect to a server: connecting first makes a new identity, and a new account under another name.",
+    ));
     ui.horizontal(|ui| {
         ui.label("Import");
-        ui.add(
-            egui::TextEdit::singleline(&mut settings.identity_import)
-                .hint_text("5th-echelon-identity:v1:…")
-                .password(true)
-                .desired_width(260.0),
-        );
+        let edited = ui
+            .add(
+                egui::TextEdit::singleline(&mut settings.identity_import)
+                    .hint_text("5th-echelon-identity:v1:…")
+                    .password(true)
+                    .desired_width(260.0),
+            )
+            .changed();
+        if edited {
+            settings.confirm_identity_import = false;
+        }
         if ui
-            .add_enabled(!settings.identity_import.trim().is_empty(), egui::Button::new("Use this identity"))
+            .add_enabled(
+                !settings.identity_import.trim().is_empty() && !settings.confirm_identity_import,
+                egui::Button::new("Use this identity"),
+            )
             .clicked()
         {
-            match setup::player_identity::import(&settings.identity_import).and_then(|identity| setup::player_identity::save(&identity).map(|()| identity)) {
+            match setup::player_identity::import(&settings.identity_import) {
                 Ok(identity) => {
-                    notices.info(format!(
-                        "This PC now uses the identity {}. Press Connect on each server again to sign in with it.",
-                        identity::short(&identity.global_id())
-                    ));
-                    settings.identity_import.clear();
-                    settings.identity = None;
+                    // Replacing a different identity asks first: its accounts answer to it alone.
+                    let current = match settings.identity.as_ref() {
+                        Some(Ok(Some((short, _)))) => Some(short.clone()),
+                        _ => None,
+                    };
+                    if current.is_some_and(|short| short != identity::short(&identity.global_id())) {
+                        settings.confirm_identity_import = true;
+                    } else {
+                        use_identity(settings, &identity, notices);
+                    }
                 }
                 Err(e) => notices.error(e.to_string()),
             }
         }
     });
+    if settings.confirm_identity_import {
+        let current = match settings.identity.as_ref() {
+            Some(Ok(Some((short, _)))) => short.clone(),
+            _ => String::from("this PC's identity"),
+        };
+        theme::card().fill(theme::BAD.linear_multiply(0.10)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let used = match accounts {
+                0 => String::new(),
+                1 => " Your saved account here is linked to it.".to_string(),
+                n => format!(" Your {n} saved accounts here are linked to it."),
+            };
+            ui.label(format!(
+                "This replaces {current}.{used} Accounts made with it can only be signed in to with it: if you'll want them, copy it first. A copy of it stays in the launcher's folder."
+            ));
+            ui.horizontal(|ui| {
+                if ui.button("Replace it").clicked() {
+                    match setup::player_identity::import(&settings.identity_import) {
+                        Ok(identity) => use_identity(settings, &identity, notices),
+                        Err(e) => notices.error(e.to_string()),
+                    }
+                }
+                if ui.button("Cancel").clicked() {
+                    settings.confirm_identity_import = false;
+                }
+            });
+        });
+    }
     ui.add_space(8.0);
     let saved = crate::app::Prefs::directory().unwrap_or_default();
     let editing = settings.directory.get_or_insert(saved.clone());

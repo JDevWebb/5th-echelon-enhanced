@@ -78,6 +78,33 @@ fn save_at(path: &Path, identity: &Identity) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Saves `identity` as this PC's, first keeping a different one it replaces
+/// as `identity.<its short id>.key` beside it (encrypted as it was), so an
+/// import over the wrong PC's identity can be undone. Returns that file.
+pub fn replace(identity: &Identity) -> anyhow::Result<Option<PathBuf>> {
+    let path = path().ok_or_else(|| anyhow::anyhow!("no folder for the launcher's settings"))?;
+    let kept = keep_replaced_at(&path, identity)?;
+    save_at(&path, identity)?;
+    Ok(kept)
+}
+
+fn keep_replaced_at(path: &Path, identity: &Identity) -> anyhow::Result<Option<PathBuf>> {
+    let bytes = match std::fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    // One this PC can't read (another Windows user's) is kept as well, under a plain name.
+    let name = match load_at(path) {
+        Ok(Some(old)) if old.global_id() == identity.global_id() => return Ok(None),
+        Ok(Some(old)) => format!("identity.{}.key", identity::short(&old.global_id())),
+        _ => "identity.unreadable.key".to_string(),
+    };
+    let kept = path.with_file_name(name);
+    crate::write_private(&kept, &bytes)?;
+    Ok(Some(kept))
+}
+
 /// The identity as text to keep somewhere safe or move to another PC.
 pub fn export(identity: &Identity) -> String {
     format!("{EXPORT_PREFIX}{}", identity::base32_encode(&identity.secret()))
@@ -101,6 +128,17 @@ fn parse_secret(text: &str) -> anyhow::Result<Identity> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_replaced_identity_is_kept_beside() {
+        let dir = crate::testutil::temp_dir("identity-replace");
+        let path = dir.join(FILE);
+        assert_eq!(keep_replaced_at(&path, &Identity::generate()).unwrap(), None, "nothing to keep yet");
+        let old = load_or_create_at(&path).unwrap();
+        assert_eq!(keep_replaced_at(&path, &old).unwrap(), None, "the same identity again");
+        let kept = keep_replaced_at(&path, &Identity::generate()).unwrap().expect("a different one keeps the old");
+        assert_eq!(load_at(&kept).unwrap().unwrap().global_id(), old.global_id());
+    }
 
     #[test]
     fn made_once_then_kept() {

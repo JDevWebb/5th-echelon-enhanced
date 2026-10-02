@@ -68,8 +68,12 @@ The launcher uses it for two things:
 
 **To move to another PC:**
 1. On the old PC: **Settings › Identity and friends › Copy to move it to another PC**.
-2. On the new PC: paste it under **Import**.
-3. Connect to each server again. The launcher finds your existing account there by itself.
+2. On the new PC, **before connecting to any server**: paste it under **Import** and press **Use this identity**.
+3. Connect to each server. The launcher finds your existing account there by itself.
+
+Import first: connecting first makes the new PC an identity of its own and an account under it. Your usual name is your old identity's, so that account gets another (`Kiwi2`). Importing afterwards still brings your real accounts back, but the extra one stays on the server.
+
+**Replacing an identity:** if the PC already has a different identity, Import asks before replacing it, as accounts made with an identity can only be signed in to with it. The replaced one is kept beside the new one, as `identity.<its id>.key` in the launcher's folder (encrypted as before). To go back, copy it over `identity.key`.
 
 Whoever has your identity can sign in as you on every server you've linked, so keep the copied text private.
 
