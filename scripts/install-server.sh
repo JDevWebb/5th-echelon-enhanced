@@ -575,6 +575,8 @@ fi
 [ -n "$domain" ] || no_caddy=1
 if [ "$no_caddy" -eq 0 ]; then
   [[ "$domain" =~ $DOMAIN_RE ]] || die "\"$domain\" isn't a domain name"
+  # The game keeps its server's name where onlineconfigservice.ubi.com was: 27 characters.
+  [ "${#domain}" -le 27 ] || die "\"$domain\" is ${#domain} characters; the game takes at most 27 (e.g. eu1.example.com). Players can't start the game with a longer one"
   check_dns "$domain"
 fi
 fi

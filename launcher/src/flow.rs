@@ -56,6 +56,10 @@ pub fn identify(game_dir: &Path, version: GameVersion) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The longest server name the game takes: the length of the name it came with,
+/// `onlineconfigservice.ubi.com`.
+const MAX_SERVER_NAME: usize = 27;
+
 /// Everything the checklist needs, gathered off the UI thread.
 pub fn gather(game_dir: &Path, cfg: &Config, bundled: Option<&[u8]>) -> (Facts, Support) {
     let mut facts = Facts {
@@ -246,6 +250,15 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
 
     if !net::valid_host(&plan.server) {
         return Err(format!("\"{}\" isn't a server address. Type a host name or IP address, without a port.", plan.server));
+    }
+    // The game keeps the server's name where `onlineconfigservice.ubi.com` was, so it can't
+    // start with a longer one (see `hooks::patch_url`).
+    if plan.server.len() > MAX_SERVER_NAME {
+        return Err(format!(
+            "\"{}\" is {} characters, and the game takes at most {MAX_SERVER_NAME}. Use the server's IP address, or ask its operator for a shorter name.",
+            plan.server,
+            plan.server.len()
+        ));
     }
     say(log, format!("Looking up {}…", plan.server));
     let ip = net::resolve(&plan.server).ok_or_else(|| format!("\"{}\" isn't an address this PC can find.", plan.server))?;

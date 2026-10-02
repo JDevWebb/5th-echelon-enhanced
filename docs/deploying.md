@@ -2,7 +2,9 @@
 
 How to put 5th Echelon servers on the internet with the Linux installer: one server on its own, a group of servers sharing friends through a coordinator, or a coordinator on a machine of its own.
 
-The examples use `play.example.com` for a game server and `coord.example.com` for a coordinator. The [community network](../README.md#the-community-server) runs a coordinator at `play.scbl.jdevwebb.net`, with regional servers such as `eu-central.scbl.jdevwebb.net` and `oceania.scbl.jdevwebb.net`.
+The examples use `play.example.com` for a game server and `coord.example.com` for a coordinator. The [community network](../README.md#the-community-server) runs a coordinator at `play.scbl.jdevwebb.net`, with regional servers such as `eu1.scbl.jdevwebb.net` and `oceania.scbl.jdevwebb.net`.
+
+**A game server's name is at most 27 characters** (e.g. `eu1.example.com`). The game keeps it where its own `onlineconfigservice.ubi.com` was, so it can't start with a longer one; the installer refuses it.
 
 ## Choose a shape
 
