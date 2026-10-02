@@ -28,6 +28,10 @@ const REFRESH_EVERY: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 pub struct Play {
+    /// The server just refused this launcher as outdated: the app looks for a newer release.
+    pub(crate) refused_as_outdated: bool,
+    /// The player asked to update the launcher (the checklist's Update).
+    pub(crate) update_asked: bool,
     facts: Slot<(setup::diagnose::Facts, Support)>,
     /// Friends online here and on other servers sharing friends, fetched with the checklist.
     fetching_friends: Slot<Result<flow::Friends, String>>,
@@ -145,6 +149,11 @@ impl Play {
             self.friends = friends;
         }
         if let Some((facts, support)) = self.facts.poll() {
+            let outdated = matches!(facts.account, Some(setup::diagnose::AccountFact::Outdated(_)));
+            // Once per refusal, not on every refresh while it lasts.
+            if outdated && !self.checks.iter().any(|c| c.fix == Some(Fix::UpdateLauncher)) {
+                self.refused_as_outdated = true;
+            }
             self.checks = setup::diagnose::checklist(&facts);
             self.support = Some(support);
             self.refreshed = Some(Instant::now());
@@ -1550,6 +1559,7 @@ fn fix_label(fix: Fix) -> &'static str {
         Fix::PinAdapter => "Pin",
         Fix::CreateSave => "Create",
         Fix::RaiseSave => "Raise to rank 5",
+        Fix::UpdateLauncher => "Update",
     }
 }
 
@@ -1566,6 +1576,7 @@ fn run_fix(play: &mut Play, game: &Game, fix: Fix, ctx: &egui::Context) {
         Fix::InstallClient => play.fixing.start(ctx, move || flow::install_client(&dir, crate::dll_utils::bundled())),
         Fix::PinAdapter => play.fixing.start(ctx, move || flow::pin_adapter(&dir)),
         Fix::CreateSave | Fix::RaiseSave => play.fixing.start(ctx, move || flow::fix_save(&dir)),
+        Fix::UpdateLauncher => play.update_asked = true,
     }
 }
 

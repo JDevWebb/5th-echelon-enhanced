@@ -194,7 +194,14 @@ pub struct App {
     pub checking: Slot<anyhow::Result<crate::updater::Latest>>,
     updating: Slot<anyhow::Result<()>>,
     update_later: bool,
+    /// When the last look for a release started: release builds look again now and then.
+    checked_at: Option<std::time::Instant>,
+    /// Install the release the running check finds (the player asked to update).
+    install_found: bool,
 }
+
+/// How often a release build that stays open looks for a newer release.
+const RECHECK_EVERY: Duration = Duration::from_secs(4 * 60 * 60);
 
 impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
@@ -212,6 +219,8 @@ impl App {
             checking: Slot::default(),
             updating: Slot::default(),
             update_later: false,
+            checked_at: None,
+            install_found: false,
         };
         // Release builds look for a newer release on their own.
         if !crate::updater::is_dev_build() {
@@ -251,7 +260,48 @@ impl App {
     }
 
     pub fn check_for_update(&mut self, ctx: &egui::Context) {
+        if self.checking.running() {
+            return;
+        }
+        self.checked_at = Some(std::time::Instant::now());
         self.checking.start(ctx, crate::updater::latest);
+    }
+
+    /// Installs `latest` and restarts into it.
+    fn install_update(&mut self, ctx: &egui::Context, latest: crate::updater::Latest) {
+        if !self.updating.running() {
+            self.updating.start(ctx, move || crate::updater::update_self(&latest));
+        }
+    }
+
+    /// Looks again now and then, a server refusing this launcher as outdated looks at once
+    /// (and shows the update again even after "Later"), and the checklist's Update installs
+    /// the release, or says there isn't one yet.
+    fn keep_up_to_date(&mut self, ctx: &egui::Context) {
+        let dev = crate::updater::is_dev_build();
+        if std::mem::take(&mut self.play.refused_as_outdated) && !dev {
+            self.update_later = false;
+            self.check_for_update(ctx);
+        }
+        if std::mem::take(&mut self.play.update_asked) {
+            if dev {
+                self.notices
+                    .error("This is a development build: it doesn't update itself. Get the new one from whoever sent it.");
+            } else if let Some(latest) = self.latest.clone().filter(|l| l.newer()) {
+                self.install_update(ctx, latest);
+            } else {
+                self.install_found = true;
+                self.check_for_update(ctx);
+            }
+        }
+        if !dev {
+            let due = self.checked_at.map_or(RECHECK_EVERY, |t| RECHECK_EVERY.saturating_sub(t.elapsed()));
+            if due.is_zero() {
+                self.check_for_update(ctx);
+            } else {
+                ctx.request_repaint_after(due);
+            }
+        }
     }
 
     /// Offers a newer release, unless another tool manages this install
@@ -343,11 +393,30 @@ impl eframe::App for App {
         }
 
         if let Some(result) = self.checking.poll() {
+            let install = std::mem::take(&mut self.install_found);
             match result {
-                Ok(latest) => self.latest = Some(latest),
-                Err(e) => tracing::warn!("Couldn't check for updates: {e}"),
+                Ok(latest) if install && latest.newer() => {
+                    self.latest = Some(latest.clone());
+                    self.install_update(ctx, latest);
+                }
+                Ok(latest) => {
+                    if install {
+                        self.notices.error(format!(
+                            "No newer release yet ({} is the latest): the server needs one that hasn't been published. Try again later.",
+                            latest.version
+                        ));
+                    }
+                    self.latest = Some(latest);
+                }
+                Err(e) => {
+                    tracing::warn!("Couldn't check for updates: {e}");
+                    if install {
+                        self.notices.error(format!("Couldn't look for updates: {e}"));
+                    }
+                }
             }
         }
+        self.keep_up_to_date(ctx);
         if let Some(Err(e)) = self.updating.poll() {
             self.notices.error(format!("Couldn't update: {e}"));
         }

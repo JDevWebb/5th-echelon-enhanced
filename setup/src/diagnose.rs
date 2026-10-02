@@ -29,6 +29,8 @@ pub enum Fix {
     PinAdapter,
     CreateSave,
     RaiseSave,
+    /// The server refuses this launcher's version: update it from the releases.
+    UpdateLauncher,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,7 +232,7 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
         checks.push(match &f.account {
             Some(AccountFact::Ok(name)) => Check::new("account", Status::Ok, format!("Signed in as {name}"), "", None),
             Some(AccountFact::Refused(why)) => Check::new("account", Status::Fail, "Account refused", why.clone(), Some(Fix::SetUpAccount)),
-            Some(AccountFact::Outdated(why)) => Check::new("account", Status::Fail, "Update the launcher", why.clone(), None),
+            Some(AccountFact::Outdated(why)) => Check::new("account", Status::Fail, "Update the launcher", why.clone(), Some(Fix::UpdateLauncher)),
             Some(AccountFact::Unknown(why)) => Check::new("account", Status::Warn, "Couldn't check the account", why.clone(), None),
             Some(AccountFact::None) | None => Check::new("account", Status::Fail, "No account on this server yet", "Connect finds yours, or makes one.", Some(Fix::SetUpAccount)),
         });
@@ -375,6 +377,8 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
         assert_eq!(fix(f, "account"), None, "no account check without a server");
         let f = Facts { account: Some(AccountFact::Refused("wrong password".into())), ..ready_facts() };
         assert_eq!(fix(f, "account"), Some((Status::Fail, Some(Fix::SetUpAccount))));
+        let f = Facts { account: Some(AccountFact::Outdated("update".into())), ..ready_facts() };
+        assert_eq!(fix(f, "account"), Some((Status::Fail, Some(Fix::UpdateLauncher))));
         let f = Facts { route_adapter: Some("Ethernet".into()), ..ready_facts() };
         assert_eq!(fix(f, "network"), Some((Status::Fail, Some(Fix::PinAdapter))));
         let f = Facts { pinned: None, pinned_ip: None, ..ready_facts() };
