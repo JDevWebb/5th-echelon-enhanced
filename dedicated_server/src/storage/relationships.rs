@@ -166,9 +166,16 @@ impl Storage {
     /// Players whose name contains `query` (any case), or, for an empty
     /// query, who's online; at most `limit`. Leaves out `me` and anyone
     /// blocked either way.
-    pub async fn search_players(&self, me: u32, query: &str, limit: u32) -> Result<Vec<(Person, Relation)>> {
+    ///
+    /// Without `online_shown` (the "mutual" mode, where only friends see
+    /// who's online) an empty query lists only `me`'s online friends, and
+    /// names are in name order alone: an order with online players first
+    /// would tell anyone who's online.
+    pub async fn search_players(&self, me: u32, query: &str, limit: u32, online_shown: bool) -> Result<Vec<(Person, Relation)>> {
         let query = name_key(query);
-        let people: Vec<Person> = if query.is_empty() {
+        let people: Vec<Person> = if query.is_empty() && !online_shown {
+            self.friends_of(me).await?.into_iter().filter(|p| p.is_online).take(limit as usize * 2).collect()
+        } else if query.is_empty() {
             sqlx::query_as(&format!(
                 "SELECT {PERSON} FROM users u WHERE {} AND u.id != ? AND u.is_online = 1 ORDER BY u.name_key LIMIT ?",
                 Self::players()
@@ -181,9 +188,10 @@ impl Storage {
             // Names that start with the query first, then the rest.
             let pattern = format!("%{}%", query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
             let prefix = format!("{}%", query.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
+            let online_first = if online_shown { "u.is_online DESC, " } else { "" };
             sqlx::query_as(&format!(
                 "SELECT {PERSON} FROM users u WHERE {} AND u.id != ? AND u.name_key LIKE ? ESCAPE '\\'
-                 ORDER BY u.name_key NOT LIKE ? ESCAPE '\\', u.is_online DESC, u.name_key LIMIT ?",
+                 ORDER BY u.name_key NOT LIKE ? ESCAPE '\\', {online_first}u.name_key LIMIT ?",
                 Self::players()
             ))
             .bind(me)
@@ -608,7 +616,7 @@ mod tests {
         let names = |v: Vec<Person>| v.into_iter().map(|p| p.username).collect::<Vec<_>>();
         assert_eq!(names(run(s.everyone_for(pest)).unwrap().unwrap()), ["Other"], "I'm hidden from them");
         assert_eq!(names(run(s.everyone_for(me)).unwrap().unwrap()), ["Other"]);
-        assert!(run(s.search_players(pest, "me", 10)).unwrap().unwrap().is_empty());
+        assert!(run(s.search_players(pest, "me", 10, true)).unwrap().unwrap().is_empty());
 
         // Their request looks sent but goes nowhere; mine is refused until I unblock.
         assert_eq!(run(s.request_friend(pest, me)).unwrap().unwrap(), Ok(Relation::RequestSent));
@@ -629,10 +637,28 @@ mod tests {
         for n in ["Kiwi", "kiwifruit_x", "Tank", "BigKiwi"] {
             user(&s, n);
         }
-        let found: Vec<String> = run(s.search_players(me, "KIWI", 10)).unwrap().unwrap().into_iter().map(|(p, _)| p.username).collect();
+        let found: Vec<String> = run(s.search_players(me, "KIWI", 10, true)).unwrap().unwrap().into_iter().map(|(p, _)| p.username).collect();
         assert_eq!(found, ["Kiwi", "kiwifruit_x", "BigKiwi"], "names that start with it first");
-        assert_eq!(run(s.search_players(me, "%", 10)).unwrap().unwrap().len(), 0, "wildcards are literal");
+        assert_eq!(run(s.search_players(me, "%", 10, true)).unwrap().unwrap().len(), 0, "wildcards are literal");
         assert_eq!(run(s.find_person_by_name("tank")).unwrap().unwrap().unwrap().username, "Tank");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn mutual_search_does_not_tell_who_is_online() {
+        let (s, dir) = temp_storage("friends-search-mutual");
+        let me = user(&s, "Searcher");
+        let (pal, _offline, online) = (user(&s, "Kiwi_a"), user(&s, "Kiwi_b"), user(&s, "Kiwi_c"));
+        run(s.request_friend(me, pal)).unwrap().unwrap().unwrap();
+        run(s.accept_friend(pal, me)).unwrap().unwrap().unwrap();
+        s.set_online(pal).unwrap();
+        s.set_online(online).unwrap();
+        let names = |v: Vec<(Person, Relation)>| v.into_iter().map(|(p, _)| p.username).collect::<Vec<_>>();
+        assert_eq!(names(run(s.search_players(me, "", 10, false)).unwrap().unwrap()), ["Kiwi_a"], "online friends only");
+        assert_eq!(names(run(s.search_players(me, "", 10, true)).unwrap().unwrap()), ["Kiwi_a", "Kiwi_c"]);
+        // By name alone: the online stranger isn't put before the offline one.
+        assert_eq!(names(run(s.search_players(me, "kiwi_", 10, false)).unwrap().unwrap()), ["Kiwi_a", "Kiwi_b", "Kiwi_c"]);
+        assert_eq!(names(run(s.search_players(me, "kiwi_", 10, true)).unwrap().unwrap()), ["Kiwi_a", "Kiwi_c", "Kiwi_b"]);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -270,11 +270,15 @@ async fn friends_mutual(ctx: &mut Ctx) -> Result<()> {
     let a = ctx.player("Host").await?;
     let b = ctx.player("Guest").await?;
     ensure!(a.relationships().await?.mode == "mutual", "the server isn't in the mutual mode");
+    // Who's online is for friends: an empty search lists none of the strangers who are.
+    ensure!(!b.search_online("").await?.iter().any(|(n, _)| *n == a.name), "an empty search listed an online stranger");
+    ensure!(b.search_online(&a.name).await?.iter().all(|(_, online)| !online), "a search showed a stranger online");
     ensure!(!b.friends().await?.iter().any(|(n, _)| *n == a.name), "a stranger is on the game's friend list");
     ensure!(a.try_invite(&b.name).await.is_err(), "a stranger could invite");
     a.friend_change("request", &b.name).await?;
     b.friend_change("accept", &a.name).await?;
     ensure!(b.friends().await?.iter().any(|(n, _)| *n == a.name), "a friend is missing from the game's friend list");
+    ensure!(b.search_online("").await?.contains(&(a.name.clone(), true)), "an empty search doesn't list an online friend");
     a.try_invite(&b.name).await.map_err(|e| eyre!("a friend couldn't invite: {e}"))?;
     ensure!(b.poll_invite(Duration::from_secs(3)).await?.as_deref() == Some(a.name.as_str()), "the invite didn't arrive");
     a.disconnect().await?;

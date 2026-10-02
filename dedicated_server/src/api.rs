@@ -450,7 +450,11 @@ impl Friends for MyFriends {
         if query.chars().count() > 32 {
             return Err(Status::invalid_argument("Search for at most 32 characters"));
         }
-        let found = self.storage.search_players(me, query.trim(), 25).await.map_err(internal)?;
+        let found = self
+            .storage
+            .search_players(me, query.trim(), 25, self.mode == FriendsMode::Everyone)
+            .await
+            .map_err(internal)?;
         let sessions = self.storage.presence_async().await.map_err(internal)?.1;
         Ok(Response::new(friends::SearchResponse {
             players: found.into_iter().map(|(p, r)| self.player(p, r, Some(&sessions))).collect(),
