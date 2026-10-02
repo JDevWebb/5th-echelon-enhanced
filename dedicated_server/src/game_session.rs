@@ -884,6 +884,12 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // Any pid can be searched for, so an invite-only room is answered only to those who
         // may join it: its members (the invited player was just added), anyone invited, and
         // the host's party. Anyone else learnt its host's address from this.
+        //
+        // Invited into a host's match, the host's anteroom counts as well: the game needs both
+        // rooms in this answer (see below), and a player invited back after leaving the match
+        // is no longer in the anteroom - leaving it out stranded them in a lobby of their own
+        // until the match ended. `rooms_for_friend_search` below keeps no more than those two.
+        let invited_by = invited.as_ref().map(|room| room.creator_id);
         let private = rmc_err!(
             self.storage.invite_only_among(&sessions.iter().map(|s| s.session_id).collect::<Vec<_>>()),
             logger,
@@ -895,6 +901,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 || session.participants.iter().any(|p| p.user_id == user_id)
                 || self.storage.is_invited(user_id, session.session_id).unwrap_or(false)
                 || self.in_party_of(user_id, session.creator_id)
+                || invited_by == Some(session.creator_id)
         });
 
         // Answer with the invited room, and - if that is a match room - the host's anteroom.

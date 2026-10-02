@@ -458,6 +458,9 @@ async fn private_match_invite(ctx: &mut Ctx) -> Result<()> {
     a.add_participants(lobby, &[a.pid], &[]).await?;
     let game = a.create_session(PRIVATE_MATCH).await?;
     a.add_participants(game, &[], &[a.pid]).await?;
+    // As the game does: the host's lobby is announced invite-only, and the guest isn't in it
+    // (e.g. invited back after leaving the match). The answer must still carry it.
+    a.set_session(lobby, true).await?;
     let own = b.create_session(LOBBY).await?; // every player opens a lobby on entering multiplayer
     b.add_participants(own, &[b.pid], &[]).await?;
 
