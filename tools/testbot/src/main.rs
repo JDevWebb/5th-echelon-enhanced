@@ -630,6 +630,36 @@ async fn ticket_elsewhere(ctx: &mut Ctx) -> Result<()> {
     Bot::login(ctx.server, &name, PASSWORD).await?.disconnect().await
 }
 
+/// A flood of SYNs that never go on to CONNECT (what forged sources look like) leaves
+/// nothing behind, so it doesn't keep anyone from signing in, not even from the same address.
+async fn syn_flood(ctx: &mut Ctx) -> Result<()> {
+    use quazal::prudp::packet::PacketFlag;
+    use quazal::prudp::packet::PacketType;
+    use quazal::prudp::packet::QPacket;
+    use quazal::prudp::packet::StreamType;
+    use quazal::prudp::packet::VPort;
+    let qctx = quazal::Context::splinter_cell_blacklist();
+    let auth = (ctx.server, testbot::bot::target(ctx.server).auth);
+    for _ in 0..40 {
+        let sock = UdpSocket::bind("0.0.0.0:0")?;
+        for session in 0..50u8 {
+            let syn = QPacket {
+                source: VPort { port: 15, stream_type: StreamType::RVSec },
+                destination: VPort { port: 1, stream_type: StreamType::RVSec },
+                packet_type: PacketType::Syn,
+                flags: PacketFlag::NeedAck.into(),
+                conn_signature: Some(0),
+                session_id: session,
+                ..Default::default()
+            };
+            sock.send_to(&syn.to_bytes(&qctx), auth)?;
+        }
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    let a = ctx.player("Flooded").await?;
+    a.disconnect().await
+}
+
 /// Junk on the server's ports doesn't take it down.
 async fn bad_packets(ctx: &mut Ctx) -> Result<()> {
     let sock = UdpSocket::bind("0.0.0.0:0")?;
@@ -900,6 +930,7 @@ const SCENARIOS: &[&str] = &[
     "split-limits",
     "private-room-hidden",
     "station-url-schemes",
+    "syn-flood",
 ];
 
 #[tokio::main]
@@ -981,6 +1012,7 @@ async fn main() -> Result<()> {
                 "split-limits" => split_limits(&mut ctx).await,
                 "private-room-hidden" => private_room_hidden(&mut ctx).await,
                 "station-url-schemes" => station_url_schemes(&mut ctx).await,
+                "syn-flood" => syn_flood(&mut ctx).await,
                 // Not in the default list: a server in the "mutual" mode, one requiring
                 // identities, and two servers.
                 "friends-mutual" => friends_mutual(&mut ctx).await,
