@@ -72,7 +72,12 @@ impl Conn {
     /// the secure server, empty for the auth server. Returns the payload of
     /// the CONNECT acknowledgement.
     pub async fn connect(server: SocketAddr, connect_payload: Vec<u8>) -> Result<(Conn, Vec<u8>)> {
-        let socket = UdpSocket::bind("0.0.0.0:0").await?;
+        Self::connect_from("0.0.0.0:0".parse()?, server, connect_payload).await
+    }
+
+    /// [`Self::connect`] from a socket bound to `bind`.
+    pub async fn connect_from(bind: SocketAddr, server: SocketAddr, connect_payload: Vec<u8>) -> Result<(Conn, Vec<u8>)> {
+        let socket = UdpSocket::bind(bind).await?;
         socket.connect(server).await?;
         let mut c = Conn {
             ctx: Context::splinter_cell_blacklist(),

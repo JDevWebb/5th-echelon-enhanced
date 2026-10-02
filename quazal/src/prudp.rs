@@ -723,6 +723,13 @@ where
                 {
                     return Ok(vec![]);
                 }
+                // Only from the address that asked for it. Someone who saw the ticket and the
+                // CONNECT on the way can't use them from anywhere else (behind a NAT, the game
+                // reaches the auth and secure services from the same public address).
+                if !ti.is_for(client.ip()) {
+                    warn!(logger, "Ticket of user {} used from {client}, not the address it was issued to; not signed in", ti.principle_id);
+                    return Ok(vec![]);
+                }
                 // The ticket alone proves nothing: it travels readably, and anyone who saw one
                 // could replay it. The client proves it has the session key inside by
                 // encrypting its own pid with it; only then is it that user.

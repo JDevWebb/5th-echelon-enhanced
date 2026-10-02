@@ -154,7 +154,9 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
                 principle_id: user_id,
                 valid_until: ticket_expiry(),
                 session_key,
-            },
+                issued_to: [0; 16],
+            }
+            .for_address(ci.address().ip()),
         };
         Ok(LoginResponse {
             return_value: QResult::Ok,
@@ -213,7 +215,9 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
                 principle_id: user_id,
                 valid_until: ticket_expiry(),
                 session_key,
-            },
+                issued_to: [0; 16],
+            }
+            .for_address(ci.address().ip()),
         };
         Ok(LoginExResponse {
             return_value: QResult::Ok,
@@ -247,7 +251,9 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
                 principle_id: user_id,
                 valid_until: ticket_expiry(),
                 session_key,
-            },
+                issued_to: [0; 16],
+            }
+            .for_address(ci.address().ip()),
         };
         Ok(RequestTicketResponse {
             return_value: QResult::Ok,

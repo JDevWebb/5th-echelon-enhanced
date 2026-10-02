@@ -512,6 +512,22 @@ async fn second_sign_in(ctx: &mut Ctx) -> Result<()> {
     friend.disconnect().await
 }
 
+/// A ticket works only from the address that asked for it: someone who saw it (and the
+/// CONNECT) on the way can't sign in with it from elsewhere. Needs a server on loopback,
+/// where 127.0.0.2 is another address.
+async fn ticket_elsewhere(ctx: &mut Ctx) -> Result<()> {
+    if !ctx.server.is_loopback() {
+        println!("  (skipped: needs a server on 127.0.0.1)");
+        return Ok(());
+    }
+    ctx.n += 1;
+    let name = format!("Ticket{}_{}", ctx.run, ctx.n);
+    Bot::register(ctx.server, &name, PASSWORD).await?;
+    let stolen = Bot::login_from(ctx.server, &name, PASSWORD, "127.0.0.2".parse()?).await;
+    ensure!(stolen.is_err(), "a ticket was used from another address");
+    Bot::login(ctx.server, &name, PASSWORD).await?.disconnect().await
+}
+
 /// Junk on the server's ports doesn't take it down.
 async fn bad_packets(ctx: &mut Ctx) -> Result<()> {
     let sock = UdpSocket::bind("0.0.0.0:0")?;
@@ -777,6 +793,7 @@ const SCENARIOS: &[&str] = &[
     "presence",
     "slow-handshake",
     "second-sign-in",
+    "ticket-elsewhere",
 ];
 
 #[tokio::main]
@@ -853,6 +870,7 @@ async fn main() -> Result<()> {
                 "presence" => presence(&mut ctx).await,
                 "slow-handshake" => slow_handshake(&mut ctx).await,
                 "second-sign-in" => second_sign_in(&mut ctx).await,
+                "ticket-elsewhere" => ticket_elsewhere(&mut ctx).await,
                 // Not in the default list: a server in the "mutual" mode, one requiring
                 // identities, and two servers.
                 "friends-mutual" => friends_mutual(&mut ctx).await,

@@ -265,7 +265,14 @@ impl Bot {
     /// ticket for the secure server, the secure connection, and the gRPC API.
     pub async fn login(server: IpAddr, name: &str, password: &str) -> Result<Bot> {
         let (pid, secure_addr, ticket) = request_ticket(server, name, password).await?;
-        Self::connect_secure(server, name, password, pid, secure_addr, ticket).await
+        Self::connect_secure(server, name, password, pid, secure_addr, ticket, "0.0.0.0".parse()?).await
+    }
+
+    /// Like [`Self::login`], but the secure connection comes from `secure_from`, another
+    /// address than the one that asked for the ticket.
+    pub async fn login_from(server: IpAddr, name: &str, password: &str, secure_from: IpAddr) -> Result<Bot> {
+        let (pid, secure_addr, ticket) = request_ticket(server, name, password).await?;
+        Self::connect_secure(server, name, password, pid, secure_addr, ticket, secure_from).await
     }
 
     /// Signs in to the auth server and takes a ticket for the secure server,
@@ -274,7 +281,7 @@ impl Bot {
         request_ticket(server, name, password).await.map(|_| ())
     }
 
-    async fn connect_secure(server: IpAddr, name: &str, password: &str, pid: u32, secure_addr: SocketAddr, ticket: tg::RequestTicketResponse) -> Result<Bot> {
+    async fn connect_secure(server: IpAddr, name: &str, password: &str, pid: u32, secure_addr: SocketAddr, ticket: tg::RequestTicketResponse, from: IpAddr) -> Result<Bot> {
 
         // The ticket: RC4 under the account's key (the dummy password for
         // accounts with only a hash), then an HMAC we don't need to check.
@@ -293,7 +300,7 @@ impl Bot {
         connect_data.extend(challenge.to_bytes());
         let mut payload = sealed.to_bytes();
         payload.extend(crypt_key(&session_key, &connect_data).to_bytes());
-        let (secure, answer) = Conn::connect(secure_addr, payload).await?;
+        let (secure, answer) = Conn::connect_from(SocketAddr::new(from, 0), secure_addr, payload).await?;
         let answer: Vec<u8> = decode(&answer).map_err(|_| eyre!("the secure server rejected the ticket"))?;
         if decode::<u32>(&answer)? != challenge.wrapping_add(1) {
             bail!("the secure server answered the challenge wrongly");

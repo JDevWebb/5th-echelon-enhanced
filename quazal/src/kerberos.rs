@@ -27,9 +27,25 @@ pub struct KerberosTicketInternal {
     pub valid_until: u64,
     /// The session key.
     pub session_key: [u8; SESSION_KEY_SIZE],
+    /// The address that asked for the ticket (IPv4 as IPv4-mapped IPv6): only a connection
+    /// from there may use it.
+    pub issued_to: [u8; 16],
 }
 
 impl KerberosTicketInternal {
+    /// Records `ip` as the address the ticket is for.
+    #[must_use]
+    pub fn for_address(mut self, ip: std::net::IpAddr) -> Self {
+        self.issued_to = crate::prudp::address_bytes(ip);
+        self
+    }
+
+    /// Whether a connection from `ip` may use the ticket.
+    #[must_use]
+    pub fn is_for(&self, ip: std::net::IpAddr) -> bool {
+        self.issued_to == crate::prudp::address_bytes(ip)
+    }
+
     /// Seals the ticket using a secret key.
     fn seal(&self, key: &secretbox::Key) -> Vec<u8> {
         let n = secretbox::gen_nonce();
@@ -117,5 +133,26 @@ impl KerberosTicket {
         buf.extend(mac.finalize().into_bytes());
 
         buf
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_ticket_is_for_the_address_that_asked() {
+        let key = secretbox::gen_key();
+        let ticket = KerberosTicketInternal {
+            principle_id: 1234,
+            valid_until: 1,
+            session_key: [7; SESSION_KEY_SIZE],
+            issued_to: [0; 16],
+        }
+        .for_address("203.0.113.5".parse().unwrap());
+        let opened = KerberosTicketInternal::open(&ticket.seal(&key), &key).unwrap();
+        assert!(opened.is_for("203.0.113.5".parse().unwrap()));
+        assert!(opened.is_for("::ffff:203.0.113.5".parse().unwrap()), "either way of writing it");
+        assert!(!opened.is_for("203.0.113.6".parse().unwrap()));
     }
 }
