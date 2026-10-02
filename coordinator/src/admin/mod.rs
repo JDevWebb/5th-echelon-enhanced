@@ -269,8 +269,11 @@ fn secure_headers(mut resp: Response) -> Response {
     ] {
         h.insert(name, HeaderValue::from_static(value));
     }
+    // no-transform: Cloudflare in front leaves the pages as they are. Otherwise it injects
+    // scripts of its own (Web Analytics, bot detection), which the policy above blocks, with
+    // errors in the console.
     if !h.contains_key(header::CACHE_CONTROL) {
-        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+        h.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store, no-transform"));
     }
     resp
 }

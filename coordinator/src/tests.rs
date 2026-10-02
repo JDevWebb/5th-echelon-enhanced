@@ -536,7 +536,7 @@ async fn admin_ui_is_served_with_its_assets() {
     assert_eq!(page.status(), StatusCode::OK);
     assert!(page.headers()["content-type"].to_str().unwrap().starts_with("text/html"));
     assert!(page.headers()["content-security-policy"].to_str().unwrap().contains("script-src 'self'"));
-    assert_eq!(page.headers()["cache-control"], "no-store");
+    assert_eq!(page.headers()["cache-control"], "no-store, no-transform");
     // A built asset (when the UI was built in): cached for good, its name being its hash.
     if let Some(asset) = admin::ui_asset_paths().into_iter().find(|p| p.starts_with("/assets/")) {
         let resp = admin_get(&r, asset, &[]).await;
