@@ -9,6 +9,30 @@ use serde::Deserialize;
 
 use crate::login_or_service_required as login_required;
 
+/// An answer made from a data file, made again at most once a minute (not at
+/// every request, which any player could repeat).
+pub(crate) struct CachedAnswer(std::sync::Mutex<Option<(std::time::Instant, Vec<u8>)>>);
+
+impl CachedAnswer {
+    const FOR: std::time::Duration = std::time::Duration::from_secs(60);
+
+    pub(crate) const fn new() -> Self {
+        Self(std::sync::Mutex::new(None))
+    }
+
+    pub(crate) fn get(&self, make: impl FnOnce() -> Vec<u8>) -> Vec<u8> {
+        let mut cached = self.0.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        match &*cached {
+            Some((at, answer)) if at.elapsed() < Self::FOR => answer.clone(),
+            _ => {
+                let answer = make();
+                *cached = Some((std::time::Instant::now(), answer.clone()));
+                answer
+            }
+        }
+    }
+}
+
 /// Represents a single news item.
 #[derive(Debug, ToStream, FromStream, Default, Deserialize)]
 struct NewsItem {
@@ -60,22 +84,25 @@ impl<T> Protocol<T> for OverlordNewsProtocol {
         login_required(&*ci)?;
         match request.method_id {
             1 => {
-                let news: Vec<NewsItem> = std::fs::File::open("data/news.json")
-                    .ok()
-                    .map(serde_json::from_reader)
-                    .and_then(Result::ok)
-                    .unwrap_or(vec![NewsItem {
-                        maybe_id: 19_5389,
-                        unk2: 9,
-                        unk3: 2,
-                        unk4: 2,
-                        title: String::from("WELCOME BACK!"),
-                        description: String::from("5th Echelon is here!"),
-                        link: String::from("https://github.com/unixoide/5th-echelon"),
-                        unk5: String::from("Quazal Rendez-Vous"),
-                        ..Default::default()
-                    }]);
-                Ok(news.to_bytes())
+                static ANSWER: CachedAnswer = CachedAnswer::new();
+                Ok(ANSWER.get(|| {
+                    let news: Vec<NewsItem> = std::fs::File::open("data/news.json")
+                        .ok()
+                        .map(serde_json::from_reader)
+                        .and_then(Result::ok)
+                        .unwrap_or(vec![NewsItem {
+                            maybe_id: 19_5389,
+                            unk2: 9,
+                            unk3: 2,
+                            unk4: 2,
+                            title: String::from("WELCOME BACK!"),
+                            description: String::from("5th Echelon is here!"),
+                            link: String::from("https://github.com/unixoide/5th-echelon"),
+                            unk5: String::from("Quazal Rendez-Vous"),
+                            ..Default::default()
+                        }]);
+                    news.to_bytes()
+                }))
             }
             2 => {
                 error!(logger, "not implemented yet");

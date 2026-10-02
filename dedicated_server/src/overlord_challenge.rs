@@ -101,11 +101,13 @@ impl<T> Protocol<T> for OverlordChallengeProtocol {
             1 => {
                 let _request: GetChallengesRequest = FromStream::from_bytes(&request.parameters)?;
 
-                let challenges = std::fs::File::open("data/challenges.json")
-                    .map(serde_json::from_reader)
-                    .ok()
-                    .and_then(Result::ok)
-                    .unwrap_or(vec![Challenge {
+                static ANSWER: crate::overlord_news::CachedAnswer = crate::overlord_news::CachedAnswer::new();
+                Ok(ANSWER.get(|| {
+                    let challenges = std::fs::File::open("data/challenges.json")
+                        .map(serde_json::from_reader)
+                        .ok()
+                        .and_then(Result::ok)
+                        .unwrap_or(vec![Challenge {
                     unk1: 16_0200,
                     unk2: String::from("{}"),
                     some_xml: String::from(
@@ -145,7 +147,8 @@ Category=\"OnlineChallengeGoneDarkHeader\">\
                     unk18: DateTime(0xFFFF_FFFF_FFFF_FFFF),
                     unk19: HashMap::default(),
                 }]);
-                Ok(GetChallengesResponse { challenges }.to_bytes())
+                    GetChallengesResponse { challenges }.to_bytes()
+                }))
             }
             5 => {
                 // Accept the report so the game doesn't see an error; the
