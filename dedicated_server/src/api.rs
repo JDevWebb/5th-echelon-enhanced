@@ -284,12 +284,7 @@ impl Friends for MyFriends {
 
         let receiver = request.into_inner().id;
 
-        let Some(receiver_id) = self
-            .storage
-            .find_user_id_by_ubi_id_async(&receiver)
-            .await
-            .map_err(|e| Status::internal(format!("Couldn't add invite: {e:?}")))?
-        else {
+        let Some(receiver_id) = self.storage.find_user_id_by_ubi_id_async(&receiver).await.map_err(internal)? else {
             return Err(Status::not_found("User not found"));
         };
 
@@ -307,11 +302,7 @@ impl Friends for MyFriends {
         // receives carries only the sender, so without this the invited client has no way to
         // learn which session it is supposed to join. If the host has no joinable session at
         // all, the invitation stays unbound and behaves as it did before room tracking.
-        let host_sessions = self
-            .storage
-            .find_host_sessions_async(sender)
-            .await
-            .map_err(|e| Status::internal(format!("Couldn't resolve invite room: {e:?}")))?;
+        let host_sessions = self.storage.find_host_sessions_async(sender).await.map_err(internal)?;
         // A host who opened a private match sits in two sessions at once: the anteroom
         // every client opens on entering multiplayer (attribute 113 == 1) and the configured
         // match room itself (113 == 0). Bind the invitation to the match room, so the guest
@@ -405,7 +396,7 @@ impl Friends for MyFriends {
         self.storage
             .set_advertised_session_async(user_id, (request.session_id != 0).then_some(request.session_id), request.invite_only, &request.session_data)
             .await
-            .map_err(|e| Status::internal(format!("Couldn't store session: {e:?}")))?;
+            .map_err(internal)?;
 
         Ok(Response::new(friends::SetSessionResponse {}))
     }

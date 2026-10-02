@@ -83,7 +83,7 @@ pub fn routes(storage: Arc<Storage>, cfg: CommunityApiConfig) -> Routes {
             ("GET", "/api/info") if cfg.info => Response::json("200 OK", &info(cfg)),
             ("GET", "/api/presence") if cfg.presence => match storage.presence() {
                 Ok((players, sessions)) => Response::json("200 OK", &presence(&players, &sessions)),
-                Err(e) => Response::json("500 Internal Server Error", &json!({ "error": e.to_string() })),
+                Err(e) => internal(e),
             },
             ("GET", "/api/unhandled") if cfg.unhandled => Response::json("200 OK", &json!({ "calls": unhandled::snapshot() })),
             ("POST", "/api/register") if cfg.accounts => match rate_limit::registrations().check(req.peer) {
@@ -219,6 +219,12 @@ fn bad(msg: &str) -> Response {
     Response::json("400 Bad Request", &json!({ "error": msg }))
 }
 
+/// An internal error: the details go to the log, never to the client.
+fn internal(e: impl std::fmt::Display) -> Response {
+    eprintln!("Community API internal error: {e}");
+    Response::json("500 Internal Server Error", &json!({ "error": "internal error" }))
+}
+
 fn too_many() -> Response {
     Response::json("429 Too Many Requests", &json!({ "error": "too many attempts, try again later" }))
 }
@@ -248,14 +254,14 @@ fn register(storage: &Storage, body: &[u8]) -> Response {
     // The account id is the name, unless a renamed account still has it.
     let ubi_id = match crate::storage::run(storage.free_ubi_id(&username)) {
         Ok(Ok(id)) => id,
-        Ok(Err(e)) | Err(e) => return Response::json("500 Internal Server Error", &json!({ "error": e.to_string() })),
+        Ok(Err(e)) | Err(e) => return internal(e),
     };
     match storage.register_user(&username, &password, Some(&ubi_id)) {
         Ok(()) => Response::json("200 OK", &json!({ "ok": true })),
         Err(e) if e.downcast_ref::<sqlx::Error>().and_then(|e| e.as_database_error()).is_some_and(|e| e.is_unique_violation()) => {
             Response::json("409 Conflict", &json!({ "error": "username taken" }))
         }
-        Err(e) => Response::json("500 Internal Server Error", &json!({ "error": e.to_string() })),
+        Err(e) => internal(e),
     }
 }
 
@@ -272,7 +278,7 @@ fn login(storage: &Storage, body: &[u8]) -> Response {
         Ok(Ok(_)) => Response::json("200 OK", &json!({ "ok": true })),
         // One answer for unknown user and wrong password.
         Ok(Err(LoginError::NotFound | LoginError::InvalidPassword)) => Response::json("401 Unauthorized", &json!({ "error": "wrong username or password" })),
-        Err(e) => Response::json("500 Internal Server Error", &json!({ "error": e.to_string() })),
+        Err(e) => internal(e),
     }
 }
 
