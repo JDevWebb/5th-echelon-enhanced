@@ -426,7 +426,7 @@ The server exits if one of its services stops, so systemd's `Restart=always` bri
 
 ### With Docker
 
-Every release publishes the server's image to GitHub's container registry:
+Every signed release publishes the server's image to GitHub's container registry (`:latest`, or a release's version; `-unsigned` tags are builds nobody has signed off yet):
 
 ```sh
 docker run -d --name 5th-echelon --restart unless-stopped \
@@ -633,9 +633,15 @@ The release workflow:
 - writes `SHA256SUMS`, which the launcher's updater and the Linux installer check against;
 - attests each download's build provenance (`gh attestation verify <file> --repo JDevWebb/5th-echelon-enhanced`);
 - makes the GitHub release as a draft;
-- pushes the server image to `ghcr.io`.
+- pushes the server image to `ghcr.io`, tagged `:<version>-unsigned` only.
 
-`sign-release.sh` checks every download against `SHA256SUMS`, signs the version and `SHA256SUMS` with the release key (`SHA256SUMS.sig`; the version is signed so a release can't be published again under another tag), uploads the signature and publishes the draft. The key stays off GitHub, in `~/.config/5th-echelon-release/`. Launchers, the installer and the servers' updater only install releases it signed, and a coordinator only rolls out signed releases. Its public half is in `identity/src/lib.rs` (`RELEASE_KEYS`) and `scripts/install-server.sh`; `cargo run -p identity --bin release-sign -- keygen <file>` makes a new one.
+`sign-release.sh`:
+- checks that the tag's commit is on `main`, every download against `SHA256SUMS`, and each download's build provenance (`gh attestation verify`, when gh can), and prints the commit and hashes to compare with the workflow run;
+- builds the signer without the key, then runs only that binary, with no network and the key mounted read-only, to sign the version and `SHA256SUMS` (`SHA256SUMS.sig`; the version is signed so a release can't be published again under another tag);
+- checks the signature with OpenSSL, as the installer does, uploads it and publishes the draft;
+- tags the server image `:<version>` (and `:latest` for a release) once it has checked the `-unsigned` image was built from the tag's commit. That needs gh's token to have the `write:packages` scope (`gh auth refresh -s write:packages`); without it, it prints the commands.
+
+The key stays off GitHub, in `~/.config/5th-echelon-release/`. Launchers, the installer and the servers' updater only install releases it signed, and a coordinator only rolls out signed releases. Its public half is in `identity/src/lib.rs` (`RELEASE_KEYS`) and `scripts/install-server.sh`; `cargo run -p identity --bin release-sign -- keygen <file>` makes a new one.
 
 Once a release is published, every network's coordinator finds it within 10 minutes and rolls it out to its servers.
 
