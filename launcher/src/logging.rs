@@ -9,7 +9,7 @@ use tracing_subscriber::util::SubscriberInitExt as _;
 
 /// Shows a Windows message box with the specified message and caption.
 #[cfg(target_os = "windows")]
-fn show_msgbox(msg: &str, caption: &str) {
+pub fn show_msgbox(msg: &str, caption: &str) {
     use std::ffi::CString;
 
     use windows::core::PCSTR;
@@ -25,7 +25,7 @@ fn show_msgbox(msg: &str, caption: &str) {
 
 /// Elsewhere (development builds), stderr is enough.
 #[cfg(not(target_os = "windows"))]
-fn show_msgbox(_msg: &str, _caption: &str) {}
+pub fn show_msgbox(_msg: &str, _caption: &str) {}
 
 /// Attaches the process to the parent console, enabling console output.
 fn enable_console() {

@@ -42,6 +42,10 @@ tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
+# Direct3D 12 through wgpu as well as OpenGL: virtual machines without a GPU
+# driver only have OpenGL 1.1, but Direct3D 12 always has WARP, Windows' own
+# software renderer.
+eframe = { version = "0.33", default-features = false, features = ["glow", "wgpu", "default_fonts"] }
 rfd = "0.15"
 
 # Linux (and Steam Deck): X11 (XWayland on Wayland desktops), and the
