@@ -528,7 +528,13 @@ fn main() -> color_eyre::Result<()> {
                         cfg.listen.port()
                     );
                 }
-                if let Err(e) = simple_http::serve(&logger, cfg.listen, &cfg.content(), Some(community_api::routes(Arc::clone(&storage), community_api))) {
+                if let Err(e) = simple_http::serve(
+                    &logger,
+                    cfg.listen,
+                    &cfg.content(),
+                    Some(community_api::routes(Arc::clone(&storage), community_api)),
+                    community_api::takes_body,
+                ) {
                     crit!(logger, "Error running config server: {e:?}");
                 }
             }),

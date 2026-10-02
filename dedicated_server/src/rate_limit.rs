@@ -62,7 +62,8 @@ pub fn trust_proxies(list: &[String]) -> Vec<String> {
     bad.into_iter().map(|(s, _)| s.clone()).collect()
 }
 
-fn is_proxy(ip: IpAddr) -> bool {
+/// Whether `ip` is this machine or a trusted reverse proxy (`[public] proxies`).
+pub(crate) fn is_proxy(ip: IpAddr) -> bool {
     ip.is_loopback() || PROXIES.get().is_some_and(|list| list.iter().any(|p| p.contains(ip)))
 }
 
@@ -201,6 +202,10 @@ pub fn searches() -> &'static PlayerLimit {
 
 /// The budget an address counts against: itself, or for IPv6 its /64 (one
 /// home or server has a whole /64, so single addresses cost nothing to change).
+pub(crate) fn bucket_of(ip: IpAddr) -> IpAddr {
+    bucket(Some(ip))
+}
+
 fn bucket(peer: Option<IpAddr>) -> IpAddr {
     match peer {
         Some(IpAddr::V6(v6)) if v6.to_ipv4_mapped().is_none() => {

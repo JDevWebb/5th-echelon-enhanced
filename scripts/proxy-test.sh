@@ -59,6 +59,18 @@ client sh -c "
   code=\$(curl -s -o /dev/null -w '%{http_code}' --http2-prior-knowledge -X POST -H 'Content-Type: application/grpc' http://$host/users.UsersAdmin/List)
   [ \"\$code\" = 403 ] && echo 'admin API: refused (403)' || { echo \"admin API answered \$code, not 403\"; exit 1; }
 " || rc=1
+echo "--- slow POSTs through Caddy"
+# Everything through Caddy comes from 127.0.0.1: one client's bodies held
+# open must not use up the server's connections for everyone.
+client bash -c "
+  for i in \$(seq 40); do
+    ( exec 3<>/dev/tcp/$host/80; printf 'POST /api/login HTTP/1.1\r\nHost: $host\r\nContent-Type: application/json\r\nContent-Length: 100\r\n\r\n{' >&3; sleep 15 ) &
+  done
+  sleep 2
+  curl -sf --max-time 5 -o /dev/null http://$host/api/info && curl -sf --max-time 5 -o /dev/null http://$host/OnlineConfigService.svc/GetOnlineConfig &&
+    echo 'others still answered during 40 slow POSTs' || { echo 'slow POSTs blocked everyone'; exit 1; }
+  kill \$(jobs -p) 2>/dev/null; true
+" || rc=1
 echo "--- test players (host name only)"
 client "$bin/testbot" --server "$host" --info login lobby-invite private-match-invite cleanup leave-session abandon-empty duplicate-request lost-push nat-probe nat-relay nat-public-address direct-test || rc=1
 if [ $rc -ne 0 ]; then

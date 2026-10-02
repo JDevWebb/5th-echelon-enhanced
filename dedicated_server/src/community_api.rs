@@ -73,6 +73,11 @@ pub fn publish_friends(server_id: String, mode: crate::config::FriendsMode, coor
     let _ = FRIENDS.set((server_id, mode, coordinator));
 }
 
+/// The paths that take a POST body; POSTs anywhere else are refused before it.
+pub fn takes_body(path: &str) -> bool {
+    matches!(path, "/api/register" | "/api/login")
+}
+
 pub fn routes(storage: Arc<Storage>, cfg: CommunityApiConfig) -> Routes {
     Arc::new(move |req: &Request| {
         let path = req.path.split('?').next().unwrap_or_default();
