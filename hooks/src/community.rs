@@ -16,6 +16,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
 
+use hooks_config::text::clip;
 use serde::Deserialize;
 use server_api::friends;
 use tracing::info;
@@ -89,10 +90,10 @@ pub struct Notice {
     pub at: Instant,
 }
 
-/// `text` cut to `max` characters, as names from servers are shown as-is.
-fn clip(text: &str, max: usize) -> String {
-    text.chars().filter(|c| !c.is_control()).take(max).collect()
-}
+/// The longest player name shown (the server's own limit).
+const MAX_NAME: usize = 32;
+/// The longest server message, activity or server name shown.
+const MAX_TEXT: usize = 96;
 
 /// The latest state for the overlay.
 #[derive(Debug, Clone, Default)]
@@ -312,8 +313,8 @@ pub fn friend_event(event: &server_api::misc::FriendEvent) {
         return;
     };
     let text = match event.kind() {
-        server_api::misc::friend_event::Kind::Request => format!("{} wants to be friends. Press F5 to answer.", from.username),
-        server_api::misc::friend_event::Kind::Accepted => format!("{} accepted your friend request.", from.username),
+        server_api::misc::friend_event::Kind::Request => format!("{} wants to be friends. Press F5 to answer.", clip(&from.username, MAX_NAME)),
+        server_api::misc::friend_event::Kind::Accepted => format!("{} accepted your friend request.", clip(&from.username, MAX_NAME)),
     };
     info!("Friend event: {text}");
     say(text, false);
@@ -353,10 +354,12 @@ pub fn start() {
     }
 }
 
-/// The server's reason, when it gave one people can read.
+/// The server's reason, when it gave one people can read: one line, cut short.
 fn reason(e: &crate::api::Error) -> Option<String> {
     match e {
-        crate::api::Error::GRPCStatus(s) if !s.message().is_empty() && s.code() != tonic::Code::Internal && s.code() != tonic::Code::Unavailable => Some(s.message().to_string()),
+        crate::api::Error::GRPCStatus(s) if s.code() != tonic::Code::Internal && s.code() != tonic::Code::Unavailable => {
+            Some(clip(s.message(), MAX_TEXT)).filter(|m| !m.is_empty())
+        }
         _ => None,
     }
 }
@@ -409,7 +412,11 @@ fn refresh_now() {
     let started = Instant::now();
     let lists = crate::api::relationships();
     let response_time = started.elapsed();
-    let server = host.as_deref().and_then(|h| http_get_json::<ServerInfo>(h, "/api/info"));
+    let server = host.as_deref().and_then(|h| http_get_json::<ServerInfo>(h, "/api/info")).map(|i| ServerInfo {
+        name: clip(&i.name, MAX_TEXT),
+        version: clip(&i.version, MAX_NAME),
+        revision: clip(&i.revision, MAX_NAME),
+    });
 
     update(|s| {
         match lists {
@@ -418,7 +425,7 @@ fn refresh_now() {
                     s.known = load_known();
                 }
                 s.my_name_conflict = lists.my_name() == friends::NameStatus::Conflict;
-                s.my_identity = lists.my_identity.clone();
+                s.my_identity = clip(&lists.my_identity, MAX_NAME);
                 s.friends = sorted(lists.friends.into_iter().map(player).collect());
                 let friends = s.friends.clone();
                 remember(&mut s.known, &friends);
@@ -433,8 +440,12 @@ fn refresh_now() {
                     .iter()
                     .take(100)
                     .map(|e| {
-                        let server = if e.region.is_empty() { e.server.clone() } else { format!("{} ({})", e.server, e.region) };
-                        (clip(&e.username, 32), clip(&server, 96))
+                        let server = if e.region.is_empty() {
+                            e.server.clone()
+                        } else {
+                            format!("{} ({})", e.server, e.region)
+                        };
+                        (clip(&e.username, MAX_NAME), clip(&server, MAX_TEXT))
                     })
                     .collect();
                 s.response_time = Some(response_time);
@@ -474,29 +485,31 @@ fn player(p: friends::Player) -> Player {
     Player {
         activity: if p.is_online { p.activity.as_ref().map(describe) } else { None },
         id: p.id,
-        name: p.username,
+        name: clip(&p.username, MAX_NAME),
         online: p.is_online,
         relation,
-        identity: p.identity,
+        identity: clip(&p.identity, MAX_NAME),
         name_status,
         lookalike: None,
     }
 }
 
-/// "Spies vs Mercs · in a match with Tank".
+/// "Spies vs Mercs · in a match with Tank". Everything in it comes from the
+/// server: names cleaned, the whole cut to one line.
 fn describe(a: &friends::Activity) -> String {
     let mode = match a.mode.as_str() {
-        "svm" => "Spies vs Mercs",
-        "coop" => "Co-op",
-        other => other,
+        "svm" => String::from("Spies vs Mercs"),
+        "coop" => String::from("Co-op"),
+        other => clip(other, MAX_NAME),
     };
-    let room = match (a.room.as_str(), a.with.as_slice()) {
-        ("match", []) => String::from("in a match"),
-        ("match", with) => format!("in a match with {}", with.join(", ")),
-        (_, []) => String::from("in a lobby"),
-        (_, with) => format!("in a lobby with {}", with.join(", ")),
+    let with = a.with.iter().take(8).map(|n| clip(n, MAX_NAME)).collect::<Vec<_>>().join(", ");
+    let room = match (a.room.as_str(), with.is_empty()) {
+        ("match", true) => String::from("in a match"),
+        ("match", false) => format!("in a match with {with}"),
+        (_, true) => String::from("in a lobby"),
+        (_, false) => format!("in a lobby with {with}"),
     };
-    format!("{mode} · {room}")
+    clip(&format!("{mode} · {room}"), MAX_TEXT)
 }
 
 /// A GET to the server's HTTP API (port 80), decoded as JSON. Errors are

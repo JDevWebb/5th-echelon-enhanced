@@ -12,6 +12,7 @@ use url::Url;
 
 #[cfg(target_os = "windows")]
 mod saves;
+pub mod text;
 #[cfg(target_os = "windows")]
 pub use saves::SaveGameExt;
 

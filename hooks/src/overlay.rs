@@ -371,7 +371,11 @@ impl MyRenderLoop {
                 Err(e) => self.connection_error = Some(e),
                 Ok(evt) => {
                     self.connection_error = None;
-                    if let Some(evt) = evt {
+                    if let Some(mut evt) = evt {
+                        // The name is shown in the toast and the Invites tab: as any server text, cut and cleaned.
+                        if let Some(sender) = evt.sender.as_mut() {
+                            sender.username = hooks_config::text::clip(&sender.username, 32);
+                        }
                         if let Some(ref sender) = evt.sender {
                             self.invite_notification.replace((Instant::now(), sender.username.clone()));
                         }
