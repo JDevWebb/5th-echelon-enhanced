@@ -168,10 +168,29 @@ pub async fn server_directory(coordinator: &str) -> Result<Vec<(setup::directory
     let handles: Vec<_> = servers.iter().map(|s| tokio::spawn(ping(s.host.clone(), s.ports.and_then(|p| p.nat)))).collect();
     let mut pings = Vec::with_capacity(handles.len());
     for handle in handles {
-        pings.push(handle.await.ok().flatten());
+        pings.push(handle.await.unwrap_or(Ping::NoAnswer));
     }
+    // A name that resolves into this PC's network isn't listed: a directory can't point
+    // players at their own machines.
+    let (servers, pings): (Vec<_>, Vec<_>) = servers
+        .into_iter()
+        .zip(pings)
+        .filter_map(|(s, ping)| match ping {
+            Ping::Private => None,
+            Ping::NoAnswer => Some((s, None)),
+            Ping::Ms(ms) => Some((s, Some(ms))),
+        })
+        .unzip();
     report_pings(coordinator, &servers, &pings);
     Ok(servers.into_iter().zip(pings).collect())
+}
+
+/// How a directory's server answered [`ping`].
+enum Ping {
+    /// Its name resolves to an address that isn't on the internet.
+    Private,
+    NoAnswer,
+    Ms(u32),
 }
 
 /// Tells the directory's coordinator how long the round trip to each server
@@ -203,15 +222,17 @@ fn report_pings(coordinator: &str, servers: &[setup::directory::Listing], pings:
 /// traffic takes), or else the time to open its port 80. Only public
 /// addresses, and the NAT helper only on its usual port: a directory can't
 /// aim every launcher's packets at something else.
-async fn ping(host: String, nat_port: Option<u16>) -> Option<u32> {
+async fn ping(host: String, nat_port: Option<u16>) -> Ping {
     let ms = |t: std::time::Instant| u32::try_from(t.elapsed().as_millis()).unwrap_or(u32::MAX);
-    let ip = tokio::net::lookup_host((host.as_str(), setup::CONFIG_PORT))
+    let Some(ip) = tokio::net::lookup_host((host.as_str(), setup::CONFIG_PORT))
         .await
-        .ok()?
-        .map(|a| a.ip())
-        .find(std::net::IpAddr::is_ipv4)?;
+        .ok()
+        .and_then(|addrs| addrs.map(|a| a.ip()).find(std::net::IpAddr::is_ipv4))
+    else {
+        return Ping::NoAnswer;
+    };
     if !setup::net::is_public(ip) {
-        return None;
+        return Ping::Private;
     }
     if nat_port == Some(setup::NAT_PORT) {
         let started = std::time::Instant::now();
@@ -219,13 +240,12 @@ async fn ping(host: String, nat_port: Option<u16>) -> Option<u32> {
             .await
             .is_ok_and(|r| r.is_ok())
         {
-            return Some(ms(started));
+            return Ping::Ms(ms(started));
         }
     }
     let started = std::time::Instant::now();
-    tokio::time::timeout(std::time::Duration::from_secs(2), tokio::net::TcpStream::connect((ip, setup::CONFIG_PORT)))
-        .await
-        .ok()?
-        .ok()?;
-    Some(ms(started))
+    match tokio::time::timeout(std::time::Duration::from_secs(2), tokio::net::TcpStream::connect((ip, setup::CONFIG_PORT))).await {
+        Ok(Ok(_)) => Ping::Ms(ms(started)),
+        _ => Ping::NoAnswer,
+    }
 }

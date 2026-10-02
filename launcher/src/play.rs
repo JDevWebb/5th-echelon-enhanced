@@ -58,6 +58,8 @@ pub struct Play {
     directory_error: Option<String>,
 
     setup: Slot<Result<flow::Done, String>>,
+    /// A switch to a server another server named, waiting for the player to confirm it.
+    switching: Option<Switch>,
     log: flow::Log,
     setup_error: Option<String>,
     fixing: Slot<Result<String, String>>,
@@ -67,6 +69,22 @@ pub struct Play {
     /// seconds.
     game_seen: bool,
     game_checked: Option<Instant>,
+}
+
+/// A server to switch to, from the network's list or a friend's.
+#[derive(Debug, Clone)]
+struct Switch {
+    /// Which card asks.
+    from: SwitchFrom,
+    host: String,
+    /// The name for an account made there, if the player has none (None: the setup asks).
+    new_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SwitchFrom {
+    Network,
+    Friend,
 }
 
 impl Play {
@@ -331,7 +349,7 @@ fn join_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut egu
                 ui.label(if naming { "Creating your account…" } else { "Connecting…" });
             } else if ui.add_enabled(ready, theme::primary(if naming { "Create account" } else { "Connect" })).clicked() {
                 let name = naming.then(|| play.nick.trim().to_string());
-                start_setup(play, game, ctx, name);
+                start_setup(play, game, ctx, name, false);
             }
             if game.cfg.current_profile().is_some() && ui.button("Cancel").clicked() {
                 play.editing = false;
@@ -482,31 +500,63 @@ fn network_list(play: &mut Play, game: &Game, current: &str, ctx: &egui::Context
         }
     });
     if let Some(host) = switch_to {
-        // The same name on the network's other server: made there at once if need be.
-        let name = game.cfg.current_profile().map(|p| p.user.username.clone()).filter(|n| !n.is_empty());
-        play.server = host;
-        play.server_picked = false;
-        start_setup(play, game, ctx, name);
+        // The same name on the network's other server: made there if need be, once confirmed.
+        let new_name = game.cfg.current_profile().map(|p| p.user.username.clone()).filter(|n| !n.is_empty());
+        play.switching = Some(Switch {
+            from: SwitchFrom::Network,
+            host,
+            new_name,
+        });
     }
+    confirm_switch(play, game, SwitchFrom::Network, ctx, ui);
 }
 
 /// Runs the setup; `new_name` names the account if the player has none on
-/// the server (None: the setup asks).
-fn start_setup(play: &mut Play, game: &Game, ctx: &egui::Context, new_name: Option<String>) {
+/// the server (None: the setup asks). `public_only` when another server named
+/// it (see [`flow::Plan`]).
+fn start_setup(play: &mut Play, game: &Game, ctx: &egui::Context, new_name: Option<String>, public_only: bool) {
     let mut plan = flow::Plan {
         game_dir: game.dir.clone(),
         server: play.server.trim().to_string(),
         new_name,
+        public_only,
     };
     play.setup_error = None;
+    play.switching = None;
     play.log = Arc::default();
     let log = Arc::clone(&play.log);
     play.setup.start(ctx, move || {
-        // A network's address: set up on its best server.
+        // A network's address: set up on its best server, which its directory named.
         if let Some(host) = flow::pick_from_network(&plan.server, &log)? {
             plan.server = host;
+            plan.public_only = true;
         }
         flow::run_setup(&plan, crate::dll_utils::bundled(), &log)
+    });
+}
+
+/// Asks before switching to a server another server named: its address in full, and what
+/// happens there. Shown in the card that asked.
+fn confirm_switch(play: &mut Play, game: &Game, from: SwitchFrom, ctx: &egui::Context, ui: &mut egui::Ui) {
+    let Some(switch) = play.switching.clone().filter(|s| s.from == from) else {
+        return;
+    };
+    ui.add_space(6.0);
+    let account = match &switch.new_name {
+        Some(name) => format!("signs you in there with your identity, as {name} (an account is made there if you have none)"),
+        None => String::from("signs you in there with your identity (if you have no account there, you choose a name first)"),
+    };
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new(format!("Switch to {}? This {account}.", switch.host)).color(theme::WARN));
+        if ui.button(format!("Switch to {}", switch.host)).clicked() {
+            play.server = switch.host.clone();
+            play.server_picked = false;
+            play.needs_name = None;
+            start_setup(play, game, ctx, switch.new_name.clone(), true);
+        }
+        if ui.button("Cancel").clicked() {
+            play.switching = None;
+        }
     });
 }
 
@@ -571,26 +621,43 @@ fn elsewhere_card(play: &mut Play, game: &Game, ctx: &egui::Context, ui: &mut eg
             "You only see and invite friends on your own server. To play together, one of you joins the other's server.",
         ));
         ui.add_space(4.0);
+        // Names and servers are cut and cleaned when fetched (`flow::friends_elsewhere`).
         for friend in &play.elsewhere {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(&friend.username).strong());
-                let server = if friend.region.is_empty() { friend.server.clone() } else { format!("{} ({})", friend.server, friend.region) };
+                let server = if friend.region.is_empty() {
+                    friend.server.clone()
+                } else {
+                    format!("{} ({})", friend.server, friend.region)
+                };
                 ui.label(theme::muted(format!("on {server}")));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let button = ui.add_enabled(!playing && !play.setup.running(), egui::Button::new("Switch to this server"));
-                    let button = if playing { button.on_disabled_hover_text("Quit the game first") } else { button };
+                    // Only a server on the internet: one server can't send players into their own network.
+                    let public = setup::directory::listable_host(&friend.host);
+                    let button = ui.add_enabled(public && !playing && !play.setup.running(), egui::Button::new("Switch to this server"));
+                    let button = if !public {
+                        button.on_disabled_hover_text("Not a server address on the internet")
+                    } else if playing {
+                        button.on_disabled_hover_text("Quit the game first")
+                    } else {
+                        button
+                    };
                     if button.clicked() {
                         switch_to = Some(friend.host.clone());
                     }
+                    // The address it goes to, in full: the server's name and region are only its word.
+                    ui.label(theme::muted(hooks_config::text::clip(&friend.host, 64)).small());
                 });
             });
         }
+        confirm_switch(play, game, SwitchFrom::Friend, ctx, ui);
     });
     if let Some(host) = switch_to {
-        play.server = host;
-        play.server_picked = false;
-        play.needs_name = None;
-        start_setup(play, game, ctx, None);
+        play.switching = Some(Switch {
+            from: SwitchFrom::Friend,
+            host,
+            new_name: None,
+        });
     }
 }
 
@@ -615,7 +682,7 @@ fn checklist_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mu
                     let profile = game.cfg.current_profile().cloned().unwrap_or_default();
                     play.server = profile.server;
                     let name = Some(profile.user.username).filter(|n| !n.is_empty());
-                    start_setup(play, game, ctx, name);
+                    start_setup(play, game, ctx, name, false);
                 }
             });
         });

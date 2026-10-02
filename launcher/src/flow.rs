@@ -174,7 +174,19 @@ pub fn friends_elsewhere(cfg: &Config) -> Result<Vec<server_api::friends::Friend
             fetch(token)
         }
     };
-    result.map_err(|e| e.to_string())
+    // Shown on the Play screen: one line each, cut short, whatever the server sends.
+    let clip = hooks_config::text::clip;
+    result.map_err(|e| e.to_string()).map(|list| {
+        list.into_iter()
+            .take(100)
+            .map(|f| server_api::friends::FriendElsewhere {
+                username: clip(&f.username, 32),
+                server: clip(&f.server, 64),
+                region: clip(&f.region, 32),
+                host: f.host.trim().to_string(),
+            })
+            .collect()
+    })
 }
 
 /// What the player asked the setup for.
@@ -187,6 +199,10 @@ pub struct Plan {
     /// none on this server. None: the setup stops and asks (see
     /// [`Done::NeedsName`]).
     pub new_name: Option<String>,
+    /// The server came from another server (a friend's, or the directory's),
+    /// not from the player: it must be on the internet, never this PC or its
+    /// network.
+    pub public_only: bool,
 }
 
 /// How a setup ended.
@@ -288,6 +304,12 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
     }
     say(log, format!("Looking up {}…", plan.server));
     let ip = net::resolve(&plan.server).ok_or_else(|| format!("\"{}\" isn't an address this PC can find.", plan.server))?;
+    if plan.public_only && !net::is_public(ip) {
+        return Err(format!(
+            "{} is at {ip}, which isn't an address on the internet. Servers can only send you to public servers; type it yourself if you meant it.",
+            plan.server
+        ));
+    }
 
     let mut profile = Config::load(dir).profiles.iter().find(|p| p.server == plan.server).cloned().unwrap_or_else(|| Profile {
         name: plan.server.clone(),

@@ -56,12 +56,17 @@ pub fn parse(json: &str) -> anyhow::Result<Vec<Listing>> {
         .collect())
 }
 
-fn listable_host(host: &str) -> bool {
+/// Whether `host` may be offered to players by a server or a directory: a
+/// host name, or an address on the internet (never this PC or its network).
+/// A name that resolves into a private network is caught when it's used
+/// (the launcher checks the address it resolved to).
+pub fn listable_host(host: &str) -> bool {
     crate::net::valid_host(host) && host.parse::<std::net::IpAddr>().map_or(host != "localhost" && !host.ends_with(".localhost"), crate::net::is_public)
 }
 
+/// One line, no characters that turn the text around it (see `hooks_config::text`).
 fn clean(text: &str) -> String {
-    text.chars().filter(|c| !c.is_control()).take(MAX_TEXT).collect()
+    hooks_config::text::clip(text, MAX_TEXT)
 }
 
 /// Whether `coordinator` can be used as a directory: an `https://` address
@@ -128,7 +133,7 @@ mod tests {
             {"id":"c","name":"Here","host":"localhost"},
             {"id":"d","name":"Port","host":"bl.example.com:80"},
             {"id":"e","name":42,"host":"x.example.com"},
-            {"id":"f","name":"Public IP\u0007","host":"203.0.114.9"}]}"#;
+            {"id":"f","name":"Public IP\u0007\u202e","host":"203.0.114.9"}]}"#;
         let list = parse(json).unwrap();
         let names: Vec<_> = list.iter().map(|l| l.name.as_str()).collect();
         assert_eq!(names, ["Good", "Public IP"]);
