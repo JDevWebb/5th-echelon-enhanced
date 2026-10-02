@@ -252,19 +252,6 @@ pub fn scrim(painter: &egui::Painter, rect: egui::Rect) {
     painter.add(egui::Shape::mesh(mesh));
 }
 
-/// A rounded pill with a coloured dot: a status at a glance. Drawn at its
-/// own size, whatever the layout around it.
-pub fn pill(ui: &mut egui::Ui, dot: Color32, text: &str) -> egui::Response {
-    let galley = ui.painter().layout_no_wrap(text.to_string(), FontId::new(13.5, FontFamily::Proportional), FG);
-    let size = egui::vec2(14.0 + 8.0 + 8.0 + galley.size().x + 14.0, galley.size().y + 12.0);
-    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
-    let p = ui.painter();
-    p.rect(rect, 255, BG.linear_multiply(0.85), Stroke::new(1.0, LINE), egui::StrokeKind::Inside);
-    p.circle_filled(egui::pos2(rect.left() + 18.0, rect.center().y), 4.0, dot);
-    p.galley(egui::pos2(rect.left() + 30.0, rect.center().y - galley.size().y / 2.0), galley, FG);
-    response
-}
-
 /// A small well with a label over a value ("PING / 40 ms").
 pub fn stat(ui: &mut egui::Ui, label: &str, value: &str, color: Color32) {
     egui::Frame::new()
@@ -316,6 +303,7 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut egui::Ui, value: &mut T, options:
 pub enum Icon {
     Play,
     Servers,
+    News,
     Host,
     Settings,
 }
@@ -333,6 +321,15 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: Colo
             for top in [4.0, 14.0] {
                 painter.rect_stroke(egui::Rect::from_min_max(p(3.0, top), p(21.0, top + 6.0)), 2, s, egui::StrokeKind::Middle);
                 painter.circle_filled(p(7.0, top + 3.0), 1.3 * u, color);
+            }
+        }
+        Icon::News => {
+            // A page with a headline block and lines of text.
+            painter.rect_stroke(egui::Rect::from_min_max(p(4.0, 4.0), p(20.0, 20.0)), 2, s, egui::StrokeKind::Middle);
+            painter.rect_filled(egui::Rect::from_min_max(p(7.0, 7.0), p(12.0, 11.5)), 1, color);
+            for (y, x) in [(8.0, 17.0), (11.0, 17.0), (14.5, 17.0), (17.0, 13.0)] {
+                let from = if y < 12.0 { 13.5 } else { 7.0 };
+                painter.line_segment([p(from, y), p(x, y)], s);
             }
         }
         Icon::Host => {
@@ -360,6 +357,21 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: Colo
             }
         }
     }
+}
+
+/// A small round button with a chevron, for paging (`left` points left).
+pub fn chevron(ui: &mut egui::Ui, left: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let p = ui.painter();
+    p.circle_filled(rect.center(), 13.0, if response.hovered() { CONTROL_HOVER } else { CONTROL });
+    let c = rect.center();
+    let d = if left { -1.0 } else { 1.0 };
+    let s = Stroke::new(2.0, FG);
+    p.line_segment([c + egui::vec2(-2.5 * d, -5.0), c + egui::vec2(2.5 * d, 0.0)], s);
+    p.line_segment([c + egui::vec2(2.5 * d, 0.0), c + egui::vec2(-2.5 * d, 5.0)], s);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, if left { "Previous" } else { "Next" }));
+    response
 }
 
 /// One entry of the side menu: an icon over a small label.

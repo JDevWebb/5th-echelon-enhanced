@@ -29,9 +29,9 @@ const REFRESH_EVERY: Duration = Duration::from_secs(30);
 #[derive(Default)]
 pub struct Play {
     facts: Slot<(setup::diagnose::Facts, Support)>,
-    /// Friends playing on other servers sharing friends, fetched with the checklist.
-    fetching_elsewhere: Slot<Result<Vec<server_api::friends::FriendElsewhere>, String>>,
-    elsewhere: Vec<server_api::friends::FriendElsewhere>,
+    /// Friends online here and on other servers sharing friends, fetched with the checklist.
+    fetching_friends: Slot<Result<flow::Friends, String>>,
+    friends: flow::Friends,
     checks: Vec<Check>,
     support: Option<Support>,
     refreshed: Option<Instant>,
@@ -84,6 +84,9 @@ pub struct Play {
     fetching_news: Slot<Result<(String, Vec<setup::server_info::NewsItem>), String>>,
     news: Vec<setup::server_info::NewsItem>,
     news_from: Option<(String, Instant)>,
+    /// The news item the home card shows, and when it last turned.
+    news_index: usize,
+    news_turned: Option<Instant>,
 }
 
 /// A server to switch to, from the network's list or a friend's.
@@ -134,17 +137,17 @@ impl Play {
         }
         let dir = game.dir.clone();
         let cfg = (*game.cfg).clone();
-        if !self.fetching_elsewhere.running() && game.managed.is_none() {
+        if !self.fetching_friends.running() && game.managed.is_none() {
             let cfg = cfg.clone();
-            self.fetching_elsewhere.start(ctx, move || flow::friends_elsewhere(&cfg));
+            self.fetching_friends.start(ctx, move || flow::friends(&cfg));
         }
         self.facts.start(ctx, move || flow::gather(&dir, &cfg, crate::dll_utils::bundled()));
     }
 
     fn poll(&mut self, ctx: &egui::Context, game: &Game, notices: &mut Notices) {
         // A failed fetch keeps the last list: it's a hint, not a check.
-        if let Some(Ok(elsewhere)) = self.fetching_elsewhere.poll() {
-            self.elsewhere = elsewhere;
+        if let Some(Ok(friends)) = self.fetching_friends.poll() {
+            self.friends = friends;
         }
         if let Some((facts, support)) = self.facts.poll() {
             self.checks = setup::diagnose::checklist(&facts);
@@ -263,13 +266,13 @@ fn auto_browse(play: &mut Play, ctx: &egui::Context) {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Go {
     View(View),
-    NetworkSettings,
+    Settings(crate::settings::Section),
 }
 
 fn go(app: &mut App, to: Option<Go>) {
     match to {
         Some(Go::View(view)) => app.set_view(view),
-        Some(Go::NetworkSettings) => app.open_network_settings(),
+        Some(Go::Settings(section)) => app.open_settings(section),
         None => {}
     }
 }
@@ -637,56 +640,53 @@ fn ping_color(ms: u32) -> egui::Color32 {
 }
 
 /// A small label on a server: filled for the one to pick, outlined otherwise.
+/// Painted at its own size, so a taller row never stretches it.
 fn badge(ui: &mut egui::Ui, text: &str, strong: bool) {
-    let frame = egui::Frame::new().corner_radius(6).inner_margin(egui::Margin::symmetric(8, 2));
-    let frame = if strong { frame.fill(theme::ACCENT) } else { frame.stroke(egui::Stroke::new(1.0, theme::CONTROL_LINE)) };
-    frame.show(ui, |ui| {
-        ui.label(RichText::new(text.to_uppercase()).size(10.5).extra_letter_spacing(1.0).color(if strong { theme::ON_ACCENT } else { theme::MUTED }));
-    });
+    let color = if strong { theme::ON_ACCENT } else { theme::MUTED };
+    let mut job = egui::text::LayoutJob::single_section(
+        text.to_uppercase(),
+        egui::TextFormat { font_id: egui::FontId::proportional(10.5), color, extra_letter_spacing: 1.0, ..Default::default() },
+    );
+    job.wrap.max_rows = 1;
+    let galley = ui.fonts_mut(|f| f.layout_job(job));
+    let (rect, _) = ui.allocate_exact_size(galley.size() + egui::vec2(16.0, 8.0), egui::Sense::hover());
+    let p = ui.painter();
+    if strong {
+        p.rect_filled(rect, 6, theme::ACCENT);
+    } else {
+        p.rect_stroke(rect, 6, egui::Stroke::new(1.0, theme::CONTROL_LINE), egui::StrokeKind::Inside);
+    }
+    p.galley(rect.min + egui::vec2(8.0, 4.0), galley, color);
 }
 
-/// The home screen: the game's banner, the bar that starts it, and cards
-/// for friends, the checks and the server.
+/// The home screen: the game's banner with your profile, the bar that starts
+/// it, and three cards: status, friends and the server's news. Laid out for
+/// the launcher's fixed window.
 fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Context, ui: &mut egui::Ui) -> Option<Go> {
     let mut to = None;
+    load_art(play, game, ctx);
+    load_news(play, game, ctx);
+    // The network's servers, for the server's name, ping and players here too.
+    poll_directory(play);
+    if game.managed.is_none() {
+        auto_browse(play, ctx);
+    }
     if let Some(managed) = &game.managed {
         egui::Frame::new().fill(theme::ACCENT.linear_multiply(0.12)).inner_margin(egui::Margin::symmetric(32, 10)).show(ui, |ui| {
             ui.set_width(ui.available_width());
             ui.label(RichText::new(format!("{} sets up this install. Change the server or account there; you can still play from here.", managed.by)));
         });
     }
-    load_art(play, game, ctx);
-    load_news(play, game, ctx);
-    hero(play, ui);
+    hero(play, game, &mut to, ui);
     launch_bar(play, game, notices, &mut to, ui);
-    theme::page().show(ui, |ui| {
-        let width = ui.available_width();
-        let columns = if width >= 960.0 { 3 } else if width >= 620.0 { 2 } else { 1 };
-        let news = !play.news.is_empty();
-        ui.columns(columns, |cols| match (columns, news) {
-            (3, true) => {
-                status_card(play, game, ctx, &mut to, &mut cols[0]);
-                friends_card(play, game, ctx, &mut cols[1]);
-                server_overview(play, game, &mut to, &mut cols[1]);
-                news_card(play, &mut cols[2]);
-            }
-            (3, false) => {
-                status_card(play, game, ctx, &mut to, &mut cols[0]);
-                friends_card(play, game, ctx, &mut cols[1]);
-                server_overview(play, game, &mut to, &mut cols[2]);
-            }
-            (2, _) => {
-                status_card(play, game, ctx, &mut to, &mut cols[0]);
-                news_card(play, &mut cols[0]);
-                friends_card(play, game, ctx, &mut cols[1]);
-                server_overview(play, game, &mut to, &mut cols[1]);
-            }
-            _ => {
-                status_card(play, game, ctx, &mut to, &mut cols[0]);
-                friends_card(play, game, ctx, &mut cols[0]);
-                server_overview(play, game, &mut to, &mut cols[0]);
-                news_card(play, &mut cols[0]);
-            }
+    theme::page().inner_margin(egui::Margin::symmetric(32, 22)).show(ui, |ui| {
+        let gap = 16.0;
+        let width = ((ui.available_width() - 2.0 * gap) / 3.0).floor();
+        ui.horizontal_top(|ui| {
+            ui.spacing_mut().item_spacing.x = gap;
+            status_card(play, game, ctx, &mut to, width, ui);
+            friends_card(play, game, &mut to, width, ui);
+            news_card(play, ctx, &mut to, width, ui);
         });
         if play.setup.running() || play.setup_error.is_some() {
             ui.add_space(10.0);
@@ -718,12 +718,15 @@ fn load_art(play: &mut Play, game: &Game, ctx: &egui::Context) {
 
 /// How long the server's news is kept before it's asked again.
 const NEWS_EVERY: Duration = Duration::from_secs(15 * 60);
+/// How long each news item shows before the card moves to the next.
+const NEWS_TURN: Duration = Duration::from_secs(8);
 
 /// Fetches the server's news when the server changes, and now and then.
 fn load_news(play: &mut Play, game: &Game, ctx: &egui::Context) {
     if let Some(Ok((server, news))) = play.fetching_news.poll() {
         play.news = news;
         play.news_from = Some((server, Instant::now()));
+        play.news_index = 0;
     }
     let Some(server) = game.cfg.current_profile().map(|p| p.server.clone()).filter(|s| !s.is_empty()) else {
         play.news.clear();
@@ -744,30 +747,65 @@ fn load_news(play: &mut Play, game: &Game, ctx: &egui::Context) {
 }
 
 /// The banner: the game's name over one of its loading screens (or the
-/// night-vision grid until there is one), with how ready everything is in the
-/// corner.
-fn hero(play: &Play, ui: &mut egui::Ui) {
+/// night-vision grid until there is one), and who's playing in the corner.
+fn hero(play: &mut Play, game: &Game, to: &mut Option<Go>, ui: &mut egui::Ui) {
     let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 320.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 300.0), egui::Sense::hover());
     theme::grid_backdrop(ui.painter(), rect);
     if let Some(texture) = &play.art_texture {
         theme::cover_image(ui.painter(), rect, texture);
         theme::scrim(ui.painter(), rect);
     }
     ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, theme::LINE));
-    let inner = rect.shrink2(egui::vec2(36.0, 26.0));
+    let inner = rect.shrink2(egui::vec2(32.0, 24.0));
     let mut top = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Min)));
     top.label(theme::caps(env!("FE_PRODUCT")));
     top.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-        let (color, text) = readiness(play);
-        theme::pill(ui, color, &text);
+        if profile_card(play, game, ui).clicked() {
+            *to = Some(Go::Settings(crate::settings::Section::Identity));
+        }
     });
     let mut bottom = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::bottom_up(egui::Align::LEFT)));
     bottom.label(RichText::new("Co-op and Spies vs Mercs on community servers. No VPN, no port forwarding.").size(16.0).color(theme::SOFT));
-    bottom.add(egui::Label::new(theme::display("Splinter Cell: Blacklist", if width < 700.0 { 34.0 } else { 50.0 })).wrap());
+    bottom.label(theme::display("Splinter Cell: Blacklist", 50.0));
 }
 
-/// How ready everything is, for the banner's corner.
+/// Who's playing: name, identity and server, on the banner's corner. Opens
+/// Settings › Identity and friends.
+fn profile_card(play: &mut Play, game: &Game, ui: &mut egui::Ui) -> egui::Response {
+    let profile = game.cfg.current_profile().cloned().unwrap_or_default();
+    let identity = play.identity_short().unwrap_or_default();
+    let name = if profile.user.username.is_empty() { String::from("No account yet") } else { hooks_config::text::clip(&profile.user.username, 24) };
+    let online = play.checks.iter().any(|c| c.id == "account" && c.status == Status::Ok);
+    // Painted at a fixed size, so it sits in the corner whatever the layout around it.
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(236.0, 60.0), egui::Sense::click());
+    let p = ui.painter();
+    p.rect(rect, 14, theme::BG.gamma_multiply(0.82), egui::Stroke::new(1.0, if response.hovered() { theme::CONTROL_LINE } else { theme::LINE }), egui::StrokeKind::Inside);
+    let avatar = egui::pos2(rect.left() + 32.0, rect.center().y);
+    p.circle_filled(avatar, 20.0, theme::CONTROL);
+    p.circle_stroke(avatar, 20.0, egui::Stroke::new(1.5, theme::ACCENT.gamma_multiply(0.6)));
+    let initial = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
+    p.text(avatar, egui::Align2::CENTER_CENTER, initial, egui::FontId::new(18.0, theme::condensed()), theme::ACCENT);
+    // The presence dot on the avatar.
+    let dot = avatar + egui::vec2(14.0, 14.0);
+    p.circle_filled(dot, 6.0, theme::BG);
+    p.circle_filled(dot, 4.0, if online { theme::OK } else { theme::MUTED });
+    let x = rect.left() + 62.0;
+    let width = rect.right() - x - 12.0;
+    let line = |text: String, font: egui::FontId, color: egui::Color32| {
+        let mut job = egui::text::LayoutJob::single_section(text, egui::TextFormat::simple(font, color));
+        job.wrap = egui::text::TextWrapping::truncate_at_width(width);
+        ui.fonts_mut(|f| f.layout_job(job))
+    };
+    let title = line(name, egui::FontId::new(15.5, theme::strong()), theme::FG);
+    let sub = if identity.is_empty() { String::from("No identity yet") } else { format!("ID {identity}") };
+    let sub = line(sub, egui::FontId::monospace(11.5), theme::MUTED);
+    p.galley(egui::pos2(x, rect.center().y - title.size().y), title, theme::FG);
+    p.galley(egui::pos2(x, rect.center().y + 2.0), sub, theme::MUTED);
+    response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text("Identity and friends")
+}
+
+/// How ready everything is, for the launch bar.
 fn readiness(play: &Play) -> (egui::Color32, String) {
     if play.running.is_some() || play.game_seen {
         return (theme::OK, "Splinter Cell: Blacklist is running".into());
@@ -786,274 +824,379 @@ fn readiness(play: &Play) -> (egui::Color32, String) {
     }
 }
 
-/// The bar under the banner: the server, who you are, and Play.
+/// The bar under the banner: the server you're on, how ready you are, and Play.
 fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, to: &mut Option<Go>, ui: &mut egui::Ui) {
     let profile = game.cfg.current_profile().cloned().unwrap_or_default();
+    let listing = play.directory.as_ref().and_then(|d| d.iter().find(|(s, _)| s.host == profile.server)).cloned();
     egui::Frame::new().fill(theme::SUNKEN).inner_margin(egui::Margin::symmetric(32, 16)).show(ui, |ui| {
         ui.set_width(ui.available_width());
-        let wide = ui.available_width() >= 820.0;
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 20.0;
             // The server: click for the Servers screen.
-            let listing = play.directory.as_ref().and_then(|d| d.iter().find(|(s, _)| s.host == profile.server));
-            let name = listing.map(|(s, _)| server_name(s)).unwrap_or_else(|| profile.server.clone());
-            let chip = egui::Frame::new()
-                .fill(theme::SURFACE)
-                .stroke(egui::Stroke::new(1.0, theme::LINE))
-                .corner_radius(12)
-                .inner_margin(egui::Margin::symmetric(16, 10))
-                .show(ui, |ui| {
-                    ui.set_min_width(if wide { 260.0 } else { 200.0 });
-                    ui.horizontal(|ui| {
-                        ui.vertical(|ui| {
-                            ui.label(theme::caps("Server"));
-                            ui.label(RichText::new(hooks_config::text::clip(&name, 40)).family(theme::strong()));
-                        });
-                        if let Some(ping) = listing.and_then(|(_, p)| *p) {
-                            ui.add_space(12.0);
-                            ui.label(ping_text(Some(ping)));
-                        }
-                    });
-                });
-            if ui
-                .interact(chip.response.rect, ui.id().with("server-chip"), egui::Sense::click())
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text("Servers")
-                .clicked()
-            {
-                *to = Some(Go::View(View::Servers));
-            }
-            if wide && !profile.user.username.is_empty() {
-                let identity = play.identity_short().unwrap_or_default();
+            let chip = ui.allocate_ui_with_layout(egui::vec2(300.0, 60.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 egui::Frame::new()
                     .fill(theme::SURFACE)
                     .stroke(egui::Stroke::new(1.0, theme::LINE))
                     .corner_radius(12)
                     .inner_margin(egui::Margin::symmetric(16, 10))
                     .show(ui, |ui| {
+                        ui.set_width(300.0 - 32.0);
                         ui.horizontal(|ui| {
-                            let (rect, _) = ui.allocate_exact_size(egui::vec2(36.0, 36.0), egui::Sense::hover());
-                            ui.painter().circle_filled(rect.center(), 18.0, theme::CONTROL);
-                            let initial = profile.user.username.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_default();
-                            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initial, egui::FontId::new(16.0, theme::strong()), theme::ACCENT);
                             ui.vertical(|ui| {
-                                ui.label(RichText::new(hooks_config::text::clip(&profile.user.username, 32)).family(theme::strong()));
-                                if !identity.is_empty() {
-                                    ui.label(theme::muted(format!("Identity {identity}")).small().monospace());
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                ui.label(theme::caps("Server"));
+                                // Its region is enough here ("Sydney, Australia").
+                                let name = listing
+                                    .as_ref()
+                                    .map(|(s, _)| if s.region.is_empty() { s.name.clone() } else { s.region.clone() })
+                                    .unwrap_or_else(|| profile.server.clone());
+                                ui.label(RichText::new(hooks_config::text::clip(&name, 26)).family(theme::strong()));
+                            });
+                            ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
+                                ui.spacing_mut().item_spacing.y = 2.0;
+                                match &listing {
+                                    Some((s, ping)) => {
+                                        ui.label(ping_text(*ping));
+                                        ui.label(theme::muted(format!("{} online", s.players_online)).small());
+                                    }
+                                    None => {
+                                        ui.label(theme::muted("Change").small());
+                                    }
                                 }
                             });
                         });
                     });
+            });
+            if ui
+                .interact(chip.response.rect, ui.id().with("server-chip"), egui::Sense::click())
+                .on_hover_cursor(egui::CursorIcon::PointingHand)
+                .on_hover_text(format!("{} · Servers", profile.server))
+                .clicked()
+            {
+                *to = Some(Go::View(View::Servers));
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 play_button(play, game, notices, ui);
-                renderer(play, game, notices, ui);
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let (color, text) = readiness(play);
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                    ui.painter().circle_filled(rect.center(), 5.0, color);
+                    ui.label(RichText::new(text).size(15.0));
+                });
             });
         });
     });
 }
 
-/// DirectX 11 or 9, when both are installed.
-fn renderer(play: &mut Play, game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
-    let installed = setup::game::installed_versions(&game.dir);
-    if installed.len() < 2 {
-        return;
-    }
-    let mut version = setup::game::pick_version(&game.dir, game.cfg.default_game).unwrap_or(game.cfg.default_game);
-    egui::ComboBox::from_id_salt("version").selected_text(version.label()).width(130.0).show_ui(ui, |ui| {
-        for v in &installed {
-            ui.selectable_value(&mut version, *v, v.label());
-        }
-    });
-    if version != game.cfg.default_game {
-        game.update(notices, |c| c.default_game = version);
-        play.refreshed = None;
-    }
-}
-
-/// A card on the home screen, with a small uppercase title.
-fn home_card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
-    theme::card().show(ui, |ui| {
-        ui.set_width(ui.available_width());
-        // Left-aligned, not the columns' justified layout (which spreads words and stretches buttons).
-        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
-            ui.label(theme::caps(title));
+/// A card of the home screen's row: fixed size, a small uppercase title with
+/// an optional note on the right, the body, and a footer kept at the bottom.
+fn home_card(
+    ui: &mut egui::Ui,
+    width: f32,
+    title: &str,
+    note: Option<RichText>,
+    body: impl FnOnce(&mut egui::Ui),
+    footer: impl FnOnce(&mut egui::Ui),
+) {
+    const HEIGHT: f32 = 300.0;
+    ui.allocate_ui_with_layout(egui::vec2(width, HEIGHT), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+        theme::card().show(ui, |ui| {
+            ui.set_width(width - 40.0);
+            ui.set_height(HEIGHT - 36.0);
+            ui.horizontal(|ui| {
+                ui.label(theme::caps(title));
+                if let Some(note) = note {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(note.size(12.5));
+                    });
+                }
+            });
             ui.add_space(6.0);
-            body(ui);
+            ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                footer(ui);
+                ui.add_space(6.0);
+                ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                    egui::ScrollArea::vertical().id_salt(title).auto_shrink([false, false]).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        body(ui);
+                    });
+                });
+            });
         });
     });
-    ui.add_space(14.0);
 }
 
 /// The checks: anything that needs fixing, with its fix; when all is well,
 /// a short summary that opens into the full list.
-fn status_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, to: &mut Option<Go>, ui: &mut egui::Ui) {
-    home_card(ui, "Status", |ui| {
-        if play.checks.is_empty() {
-            ui.horizontal(|ui| {
-                ui.spinner();
-                ui.label(theme::muted("Checking…"));
-            });
-            return;
-        }
-        let issues = play.checks.iter().any(|c| c.status != Status::Ok);
-        let fixable = play.checks.iter().any(|c| c.status == Status::Fail && c.fix.is_some());
-        let has_server = game.cfg.current_profile().is_some_and(|p| !p.server.is_empty());
-        // All of them when asked; else the problems, or a few that matter when there are none.
-        const SUMMARY: [&str; 3] = ["client", "account", "save"];
-        let checks: Vec<Check> = play
-            .checks
-            .iter()
-            .filter(|c| play.show_all_checks || if issues { c.status != Status::Ok } else { SUMMARY.contains(&c.id) })
-            .cloned()
-            .collect();
-        for check in &checks {
-            ui.horizontal_top(|ui| {
-                theme::status_marker(ui, check.status);
-                ui.vertical(|ui| {
-                    ui.label(&check.title);
-                    if !check.detail.is_empty() && check.status != Status::Ok {
-                        ui.label(theme::muted(check.detail.as_str()).small());
-                    }
-                    // Under the problem, so a narrow card never has to fit it beside it.
-                    if let Some(fix) = check.fix.filter(|_| check.status != Status::Ok && game.managed.is_none()) {
-                        if ui.horizontal(|ui| ui.add_enabled(!play.busy(), theme::secondary(fix_label(fix)))).inner.clicked() {
-                            run_fix(play, game, fix, ctx);
+fn status_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, to: &mut Option<Go>, width: f32, ui: &mut egui::Ui) {
+    let issues = play.checks.iter().any(|c| c.status != Status::Ok);
+    let fixable = play.checks.iter().any(|c| c.status == Status::Fail && c.fix.is_some());
+    let has_server = game.cfg.current_profile().is_some_and(|p| !p.server.is_empty());
+    // All of them when asked; else the problems, or a few that matter when there are none.
+    const SUMMARY: [&str; 4] = ["client", "account", "network", "save"];
+    let checks: Vec<Check> = play
+        .checks
+        .iter()
+        .filter(|c| play.show_all_checks || if issues { c.status != Status::Ok } else { SUMMARY.contains(&c.id) })
+        .cloned()
+        .collect();
+    let mut fix = None;
+    let mut fix_all = false;
+    let mut toggle = false;
+    let mut again = false;
+    let busy = play.busy();
+    let checking = play.facts.running() || busy;
+    let managed = game.managed.is_some();
+    let show_all = play.show_all_checks;
+    home_card(
+        ui,
+        width,
+        "Status",
+        None,
+        |ui| {
+            if checks.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(theme::muted("Checking…"));
+                });
+            }
+            for check in &checks {
+                ui.horizontal_top(|ui| {
+                    theme::status_marker(ui, check.status);
+                    ui.vertical(|ui| {
+                        ui.spacing_mut().item_spacing.y = 3.0;
+                        ui.label(&check.title);
+                        if !check.detail.is_empty() && check.status != Status::Ok {
+                            ui.label(theme::muted(check.detail.as_str()).small());
                         }
-                    }
+                        // Under the problem, so the narrow card never has to fit it beside it.
+                        if let Some(f) = check.fix.filter(|_| check.status != Status::Ok && !managed) {
+                            if ui.horizontal(|ui| ui.add_enabled(!busy, theme::secondary(fix_label(f)))).inner.clicked() {
+                                fix = Some(f);
+                            }
+                        }
+                    });
                 });
-            });
-        }
-        support_row(play, game, ctx, ui);
-        if fixable && has_server && game.managed.is_none() && !play.busy() {
-            ui.add_space(4.0);
-            if ui.horizontal(|ui| ui.add(theme::primary("Fix everything").min_size(egui::vec2(0.0, 40.0)).corner_radius(10))).inner.clicked() {
-                let profile = game.cfg.current_profile().cloned().unwrap_or_default();
-                play.server = profile.server;
-                let name = Some(profile.user.username).filter(|n| !n.is_empty());
-                start_setup(play, game, ctx, name, false);
-            }
-        }
-        ui.add_space(4.0);
-        ui.horizontal_wrapped(|ui| {
-            if ui.link(if play.show_all_checks { "Show less" } else { "Show all checks" }).clicked() {
-                play.show_all_checks = !play.show_all_checks;
-            }
-            ui.label(theme::muted("·"));
-            if play.facts.running() || play.busy() {
-                ui.spinner();
-            } else if ui.link("Check again").clicked() {
-                play.refresh(ctx, game);
-            }
-            ui.label(theme::muted("·"));
-            if ui.link("Connection test").clicked() {
-                *to = Some(Go::NetworkSettings);
-            }
-        });
-    });
-}
-
-/// Friends playing on another server of the network, and a way to join them
-/// there: players on different servers can't see or invite each other.
-fn friends_card(play: &mut Play, game: &Game, ctx: &egui::Context, ui: &mut egui::Ui) {
-    let playing = play.game_seen || play.running.is_some();
-    let mut switch_to = None;
-    home_card(ui, "Friends", |ui| {
-        if play.elsewhere.is_empty() || game.managed.is_some() {
-            ui.label(RichText::new("Friends, friend requests and invites are in the game: press F5 for the overlay.").color(theme::SOFT));
-            return;
-        }
-        ui.label(RichText::new("On other servers. You only see and invite friends on your own server, so one of you joins the other's.").color(theme::SOFT));
-        ui.add_space(4.0);
-        // Names and servers are cut and cleaned when fetched (`flow::friends_elsewhere`).
-        for friend in &play.elsewhere {
-            ui.horizontal(|ui| {
-                let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                ui.painter().circle_filled(rect.center(), 4.0, theme::WARN);
-                ui.vertical(|ui| {
-                    ui.label(RichText::new(&friend.username).family(theme::strong()));
-                    let server = if friend.region.is_empty() { friend.server.clone() } else { format!("{} ({})", friend.server, friend.region) };
-                    // The address it goes to, in full: the server's name and region are only its word.
-                    ui.label(theme::muted(format!("on {server}")).small())
-                        .on_hover_text(hooks_config::text::clip(&friend.host, 64));
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    // Only a server on the internet: one server can't send players into their own network.
-                    let public = setup::directory::listable_host(&friend.host);
-                    let button = ui.add_enabled(public && !playing && !play.setup.running(), theme::secondary("Switch"));
-                    let button = if !public {
-                        button.on_disabled_hover_text("Not a server address on the internet")
-                    } else if playing {
-                        button.on_disabled_hover_text("Quit the game first")
-                    } else {
-                        button
-                    };
-                    if button.clicked() {
-                        switch_to = Some(friend.host.clone());
-                    }
-                });
-            });
-        }
-        confirm_switch(play, game, SwitchFrom::Friend, ctx, ui);
-    });
-    if let Some(host) = switch_to {
-        play.switching = Some(Switch { from: SwitchFrom::Friend, host, new_name: None });
-    }
-}
-
-/// The server's news: what its game news screen says too.
-fn news_card(play: &Play, ui: &mut egui::Ui) {
-    if play.news.is_empty() {
-        return;
-    }
-    home_card(ui, "Server news", |ui| {
-        for (i, item) in play.news.iter().take(4).enumerate() {
-            if i > 0 {
-                ui.add_space(4.0);
-                ui.separator();
                 ui.add_space(2.0);
             }
-            // The server's words, shown as text only.
-            ui.label(RichText::new(hooks_config::text::clip(&item.title, 80)).family(theme::strong()));
-            if !item.text.is_empty() {
-                ui.label(RichText::new(hooks_config::text::clip(&item.text, 400)).color(theme::SOFT).size(14.0));
+            support_row(play, game, ctx, ui);
+        },
+        |ui| {
+            ui.horizontal_wrapped(|ui| {
+                if ui.link(if show_all { "Show less" } else { "All checks" }).clicked() {
+                    toggle = true;
+                }
+                ui.label(theme::muted("·"));
+                if checking {
+                    ui.spinner();
+                } else if ui.link("Check again").clicked() {
+                    again = true;
+                }
+                ui.label(theme::muted("·"));
+                if ui.link("Connection test").clicked() {
+                    *to = Some(Go::Settings(crate::settings::Section::Network));
+                }
+            });
+            if fixable && has_server && !managed && !busy {
+                fix_all = ui.horizontal(|ui| ui.add(theme::primary("Fix everything").min_size(egui::vec2(0.0, 36.0)).corner_radius(10))).inner.clicked();
             }
-            // Only a web address opens, and the player sees where it goes.
-            if item.link.starts_with("https://") {
-                ui.hyperlink_to("Read more", &item.link).on_hover_text(hooks_config::text::clip(&item.link, 120));
-            }
-        }
-    });
+        },
+    );
+    if let Some(f) = fix {
+        run_fix(play, game, f, ctx);
+    }
+    if toggle {
+        play.show_all_checks = !play.show_all_checks;
+    }
+    if again {
+        play.refresh(ctx, game);
+    }
+    if fix_all {
+        let profile = game.cfg.current_profile().cloned().unwrap_or_default();
+        play.server = profile.server;
+        let name = Some(profile.user.username).filter(|n| !n.is_empty());
+        start_setup(play, game, ctx, name, false);
+    }
 }
 
-/// The server you play on: its numbers, and the way to another.
-fn server_overview(play: &mut Play, game: &Game, to: &mut Option<Go>, ui: &mut egui::Ui) {
-    let Some(profile) = game.cfg.current_profile().cloned() else { return };
-    home_card(ui, "Server", |ui| {
-        let listing = play.directory.as_ref().and_then(|d| d.iter().find(|(s, _)| s.host == profile.server)).cloned();
-        match &listing {
-            Some((s, _)) => {
-                ui.label(RichText::new(server_name(s)).family(theme::strong()).size(17.0));
+/// Friends online here and what they're playing, then friends on other
+/// servers with a way to join them.
+fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, ui: &mut egui::Ui) {
+    let playing = play.game_seen || play.running.is_some();
+    let friends = play.friends.clone();
+    let mut switch_to = None;
+    let note = (!friends.online.is_empty()).then(|| RichText::new(format!("{} online", friends.online.len())).color(theme::OK));
+    home_card(
+        ui,
+        width,
+        "Friends",
+        note,
+        |ui| {
+            if game.managed.is_some() || (friends.online.is_empty() && friends.elsewhere.is_empty()) {
+                let text = if friends.offline > 0 { "None of your friends are online right now." } else { "No friends yet. Add some in the game: press F5 for the overlay." };
+                ui.label(RichText::new(text).color(theme::SOFT));
             }
+            for friend in &friends.online {
+                friend_row(ui, theme::OK, &friend.name, friend.activity.as_deref().unwrap_or("Online"));
+            }
+            for friend in &friends.elsewhere {
+                let server = if friend.region.is_empty() { friend.server.clone() } else { friend.region.clone() };
+                ui.horizontal(|ui| {
+                    friend_row(ui, theme::WARN, &friend.username, &format!("On {server}"));
+                    // Only a server on the internet: one server can't send players into their own network.
+                    let public = setup::directory::listable_host(&friend.host);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        let button = ui.add_enabled(public && !playing && !play.setup.running(), theme::secondary("Join"));
+                        let button = if playing { button.on_disabled_hover_text("Quit the game first") } else { button.on_hover_text(friend.host.as_str()) };
+                        if button.clicked() {
+                            switch_to = Some(friend.host.clone());
+                        }
+                    });
+                });
+            }
+        },
+        // Bottom up: the hint last, any requests above it.
+        |ui| {
+            let offline = if friends.offline > 0 { format!("{} offline · ", friends.offline) } else { String::new() };
+            ui.label(theme::muted(format!("{offline}Add and invite friends in game with F5")).small());
+            if friends.requests > 0 {
+                let s = if friends.requests == 1 { "" } else { "s" };
+                ui.label(RichText::new(format!("{} friend request{s} waiting", friends.requests)).color(theme::ACCENT).size(13.0));
+            }
+        },
+    );
+    if let Some(host) = switch_to {
+        // Confirmed on the Servers screen, which says where it goes and what happens there.
+        play.switching = Some(Switch { from: SwitchFrom::Friend, host, new_name: None });
+        *to = Some(Go::View(View::Servers));
+    }
+}
+
+/// One friend: a presence dot, the name, and a line under it.
+fn friend_row(ui: &mut egui::Ui, dot: egui::Color32, name: &str, line: &str) {
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 30.0), egui::Sense::hover());
+        ui.painter().circle_filled(egui::pos2(rect.center().x, rect.top() + 9.0), 4.0, dot);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 1.0;
+            ui.label(RichText::new(name).family(theme::strong()));
+            ui.label(theme::muted(line).small());
+        });
+    });
+    ui.add_space(4.0);
+}
+
+/// The server's news, one item at a time (the newest first), turning on its
+/// own; View all opens the News screen.
+fn news_card(play: &mut Play, ctx: &egui::Context, to: &mut Option<Go>, width: f32, ui: &mut egui::Ui) {
+    let count = play.news.len();
+    if count > 1 && play.news_turned.is_none_or(|t| t.elapsed() >= NEWS_TURN) {
+        if play.news_turned.is_some() {
+            play.news_index = (play.news_index + 1) % count;
+        }
+        play.news_turned = Some(Instant::now());
+    }
+    if count > 1 {
+        ctx.request_repaint_after(NEWS_TURN);
+    }
+    let index = if count == 0 { 0 } else { play.news_index % count };
+    let item = play.news.get(index).cloned();
+    let mut step: Option<isize> = None;
+    let mut pick = None;
+    home_card(
+        ui,
+        width,
+        "Server news",
+        (count > 1).then(|| theme::muted(format!("{} of {count}", index + 1))),
+        |ui| match &item {
             None => {
-                ui.label(RichText::new(profile.server.as_str()).family(theme::strong()).size(17.0));
+                ui.label(RichText::new("No news from this server.").color(theme::SOFT));
             }
-        }
-        let who = if profile.user.username.is_empty() { "no account yet".to_string() } else { format!("as {}", profile.user.username) };
-        let over = profile.adapter.as_deref().map(|a| format!(" · over \"{a}\"")).unwrap_or_default();
-        ui.label(theme::muted(format!("{} · {who}{over}", profile.server)).small());
-        if let Some((s, ping)) = &listing {
-            ui.add_space(6.0);
+            // The server's words, shown as text only.
+            Some(item) => {
+                ui.label(RichText::new(hooks_config::text::clip(&item.title, 80)).family(theme::strong()).size(16.5));
+                ui.add_space(2.0);
+                ui.label(RichText::new(hooks_config::text::clip(&item.text, 260)).color(theme::SOFT).size(14.0));
+            }
+        },
+        |ui| {
             ui.horizontal(|ui| {
-                theme::stat(ui, "Ping", &ping.map_or_else(|| "–".into(), |ms| format!("{ms} ms")), ping.map_or(theme::MUTED, ping_color));
-                theme::stat(ui, "Online", &s.players_online.to_string(), theme::FG);
+                if count > 1 {
+                    if theme::chevron(ui, true).clicked() {
+                        step = Some(-1);
+                    }
+                    for i in 0..count.min(8) {
+                        let (rect, response) = ui.allocate_exact_size(egui::vec2(12.0, 20.0), egui::Sense::click());
+                        let color = if i == index { theme::ACCENT } else { theme::CONTROL_LINE };
+                        ui.painter().circle_filled(rect.center(), if i == index { 4.0 } else { 3.0 }, color);
+                        if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                            pick = Some(i);
+                        }
+                    }
+                    if theme::chevron(ui, false).clicked() {
+                        step = Some(1);
+                    }
+                }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if count > 0 && ui.link("View all").clicked() {
+                        *to = Some(Go::View(View::News));
+                    }
+                });
             });
+        },
+    );
+    if count > 0 {
+        if let Some(step) = step {
+            play.news_index = (index as isize + step).rem_euclid(count as isize) as usize;
+            play.news_turned = Some(Instant::now());
         }
-        if game.managed.is_none() {
-            ui.add_space(6.0);
-            if ui.horizontal(|ui| ui.add(theme::secondary("Change server"))).inner.clicked() {
-                *to = Some(Go::View(View::Servers));
+        if let Some(i) = pick {
+            play.news_index = i;
+            play.news_turned = Some(Instant::now());
+        }
+    }
+}
+
+/// The News screen: everything the server's news says, newest first.
+pub fn show_news(app: &mut App, ui: &mut egui::Ui) {
+    let ctx = ui.ctx().clone();
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        theme::page().show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.label(theme::display("News", 32.0));
+            let (play, game, _) = app.play_mut();
+            let Some(game) = game.as_mut() else {
+                ui.label(theme::muted("Find the game first (Play)."));
+                return;
+            };
+            load_news(play, game, &ctx);
+            let server = game.cfg.current_profile().map(|p| p.server.clone()).unwrap_or_default();
+            if server.is_empty() {
+                ui.label(theme::muted("Choose a server first: its news shows here."));
+                return;
             }
-        }
+            ui.label(theme::muted(format!("From {server}, as the game's news screen shows it")));
+            ui.add_space(14.0);
+            if play.news.is_empty() {
+                ui.label(RichText::new(if play.fetching_news.running() { "Fetching the news…" } else { "No news from this server." }).color(theme::SOFT));
+            }
+            for item in &play.news {
+                theme::card().show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(hooks_config::text::clip(&item.title, 80)).family(theme::strong()).size(18.0));
+                    if !item.text.is_empty() {
+                        ui.add_space(2.0);
+                        ui.label(RichText::new(hooks_config::text::clip(&item.text, 500)).color(theme::SOFT));
+                    }
+                    // Only a web address opens, and the player sees where it goes.
+                    if item.link.starts_with("https://") {
+                        ui.add_space(4.0);
+                        ui.hyperlink_to("Read more", &item.link).on_hover_text(hooks_config::text::clip(&item.link, 120));
+                    }
+                });
+                ui.add_space(12.0);
+            }
+        });
     });
 }
 
@@ -1116,12 +1259,14 @@ fn servers_page(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut 
             for (i, (s, ping)) in servers.iter().enumerate() {
                 let ui = &mut cols[i % columns];
                 let here = s.host == current;
-                let friends_here = play.elsewhere.iter().filter(|f| f.host == s.host).count();
+                let friends_here = play.friends.elsewhere.iter().filter(|f| f.host == s.host).count();
                 theme::card()
                     .stroke(egui::Stroke::new(if here { 2.0 } else { 1.0 }, if here { theme::ACCENT } else { theme::LINE }))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
+                        // One height for the badge row, button or not, so the cards line up.
                         ui.horizontal(|ui| {
+                            ui.set_min_height(38.0);
                             if best == Some(i) {
                                 badge(ui, "Best for you", true);
                             }
@@ -1180,6 +1325,8 @@ fn servers_page(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut 
             ui.label(theme::muted("Pinging the servers in this network…"));
         });
     }
+    // A friend's server, asked for on the home screen.
+    confirm_switch(play, game, SwitchFrom::Friend, ctx, ui);
     if play.setup.running() || play.setup_error.is_some() {
         setup_progress(play, ui);
     }

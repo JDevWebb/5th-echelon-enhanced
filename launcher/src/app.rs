@@ -26,6 +26,8 @@ pub enum View {
     Play,
     /// The servers to play on: the network's directory, an address, the LAN.
     Servers,
+    /// The server's news.
+    News,
     Settings,
     /// Hosting a server of your own.
     Server,
@@ -298,6 +300,7 @@ impl App {
                     for (view, icon, label) in [
                         (View::Play, theme::Icon::Play, "Play"),
                         (View::Servers, theme::Icon::Servers, "Servers"),
+                        (View::News, theme::Icon::News, "News"),
                         (View::Server, theme::Icon::Host, "Host"),
                         (View::Settings, theme::Icon::Settings, "Settings"),
                     ] {
@@ -318,9 +321,9 @@ impl App {
         self.view = view;
     }
 
-    /// Settings › Network, where the connection test is.
-    pub fn open_network_settings(&mut self) {
-        self.settings.section = crate::settings::Section::Network;
+    /// Settings, open at `section`.
+    pub fn open_settings(&mut self, section: crate::settings::Section) {
+        self.settings.section = section;
         self.view = View::Settings;
     }
 }
@@ -356,6 +359,7 @@ impl eframe::App for App {
             // Each screen scrolls on its own: Settings keeps its section list in place.
             View::Play => crate::play::show(self, ui),
             View::Servers => crate::play::show_servers(self, ui),
+            View::News => crate::play::show_news(self, ui),
             View::Settings => crate::settings::show(self, ui),
             View::Server => {
                 egui::ScrollArea::vertical()

@@ -51,8 +51,12 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(concat!(env!("FE_PRODUCT"), " ", env!("FE_RELEASE")))
+            // A fixed size: the screens are laid out for it.
             .with_inner_size([1120.0, 760.0])
-            .with_min_inner_size([760.0, 560.0])
+            .with_min_inner_size([1120.0, 760.0])
+            .with_max_inner_size([1120.0, 760.0])
+            .with_resizable(false)
+            .with_maximize_button(false)
             .with_icon(eframe::egui::IconData {
                 rgba: icon.pixels.iter().flat_map(|c| c.to_array()).collect(),
                 width: icon.size[0] as u32,
@@ -73,18 +77,14 @@ fn main() -> eframe::Result {
             eframe::Renderer::Wgpu => "glow",
             _ => "wgpu",
         };
-        let status = std::env::current_exe().and_then(|exe| {
-            std::process::Command::new(exe).args(std::env::args_os().skip(1)).env(RENDERER_VAR, other).status()
-        });
+        let status = std::env::current_exe().and_then(|exe| std::process::Command::new(exe).args(std::env::args_os().skip(1)).env(RENDERER_VAR, other).status());
         match status {
             Ok(status) => std::process::exit(status.code().unwrap_or(1)),
             Err(e) => tracing::error!("couldn't start the launcher again: {e}"),
         }
     }
     logging::show_msgbox(
-        &format!(
-            "The launcher couldn't open its window: {error}\n\nIf this is a virtual machine, turn on its 3D acceleration, or install its graphics driver."
-        ),
+        &format!("The launcher couldn't open its window: {error}\n\nIf this is a virtual machine, turn on its 3D acceleration, or install its graphics driver."),
         "5th Echelon",
     );
     Err(error)

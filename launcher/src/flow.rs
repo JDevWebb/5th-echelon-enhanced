@@ -139,12 +139,33 @@ fn checked_account(url: &str, username: &str, secret: &str, check: impl FnOnce()
 /// refresh, and signing in for each would cost the server a password hash.
 static API_TOKEN: Mutex<Option<(String, String)>> = Mutex::new(None);
 
-/// Friends of the current account playing on other servers sharing friends,
-/// with the server they're on. Empty without an account.
-pub fn friends_elsewhere(cfg: &Config) -> Result<Vec<server_api::friends::FriendElsewhere>, String> {
+/// A friend who's online on this server.
+#[derive(Debug, Clone, Default)]
+pub struct OnlineFriend {
+    pub name: String,
+    /// What they're doing ("Spies vs Mercs · in a lobby"), if the server says.
+    pub activity: Option<String>,
+}
+
+/// The current account's friends, as the home screen shows them.
+#[derive(Debug, Clone, Default)]
+pub struct Friends {
+    /// Online here, online first by name.
+    pub online: Vec<OnlineFriend>,
+    pub offline: usize,
+    /// Friend requests waiting for this player's answer.
+    pub requests: usize,
+    /// Friends playing on other servers sharing friends, with the server.
+    pub elsewhere: Vec<server_api::friends::FriendElsewhere>,
+}
+
+/// The current account's friends: who's online here and what they're
+/// playing, and who's on other servers sharing friends. Empty without an
+/// account.
+pub fn friends(cfg: &Config) -> Result<Friends, String> {
     use sha2::Digest as _;
     let Some(profile) = cfg.current_profile().filter(|p| !p.server.is_empty() && p.has_account()) else {
-        return Ok(Vec::new());
+        return Ok(Friends::default());
     };
     let url = profile.api_server_url().to_string();
     let username = profile.user.username.clone();
@@ -157,7 +178,7 @@ pub fn friends_elsewhere(cfg: &Config) -> Result<Vec<server_api::friends::Friend
         .filter(|(k, _)| *k == key)
         .map(|(_, t)| t.clone());
     let rt = crate::services::rt();
-    let fetch = |token: String| rt.block_on(crate::network::friends_elsewhere(url.clone(), &token));
+    let fetch = |token: String| rt.block_on(crate::network::relationships(url.clone(), &token));
     let result = match kept {
         Some(token) => match fetch(token) {
             // Signed out (a new password elsewhere, or expired): sign in once more.
@@ -176,8 +197,25 @@ pub fn friends_elsewhere(cfg: &Config) -> Result<Vec<server_api::friends::Friend
     };
     // Shown on the Play screen: one line each, cut short, whatever the server sends.
     let clip = hooks_config::text::clip;
-    result.map_err(|e| e.to_string()).map(|list| {
-        list.into_iter()
+    let lists = result.map_err(|e| e.to_string())?;
+    let mut online: Vec<OnlineFriend> = lists
+        .friends
+        .iter()
+        .filter(|f| f.is_online)
+        .take(100)
+        .map(|f| OnlineFriend {
+            name: clip(&f.username, 32),
+            activity: f.activity.as_ref().map(describe),
+        })
+        .collect();
+    online.sort_by_key(|f| f.name.to_lowercase());
+    Ok(Friends {
+        offline: lists.friends.iter().filter(|f| !f.is_online).count(),
+        online,
+        requests: lists.requests_received.len(),
+        elsewhere: lists
+            .elsewhere
+            .into_iter()
             .take(100)
             .map(|f| server_api::friends::FriendElsewhere {
                 username: clip(&f.username, 32),
@@ -185,8 +223,26 @@ pub fn friends_elsewhere(cfg: &Config) -> Result<Vec<server_api::friends::Friend
                 region: clip(&f.region, 32),
                 host: f.host.trim().to_string(),
             })
-            .collect()
+            .collect(),
     })
+}
+
+/// "Spies vs Mercs · in a match with Tank", as the overlay says it.
+fn describe(a: &server_api::friends::Activity) -> String {
+    let clip = hooks_config::text::clip;
+    let mode = match a.mode.as_str() {
+        "svm" => String::from("Spies vs Mercs"),
+        "coop" => String::from("Co-op"),
+        other => clip(other, 32),
+    };
+    let with = a.with.iter().take(4).map(|n| clip(n, 32)).collect::<Vec<_>>().join(", ");
+    let room = match (a.room.as_str(), with.is_empty()) {
+        ("match", true) => String::from("in a match"),
+        ("match", false) => format!("in a match with {with}"),
+        (_, true) => String::from("in a lobby"),
+        (_, false) => format!("in a lobby with {with}"),
+    };
+    clip(&format!("{mode} · {room}"), 96)
 }
 
 /// What the player asked the setup for.

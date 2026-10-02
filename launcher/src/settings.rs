@@ -321,6 +321,18 @@ fn internet_play(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
 }
 
 fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
+    // DirectX 11 unless the player picks 9 here (only offered when both are installed).
+    let installed = setup::game::installed_versions(&game.dir);
+    if installed.len() > 1 {
+        use setup::game::GameVersion;
+        ui.label("Renderer");
+        let mut version = game.cfg.default_game;
+        let options = [(GameVersion::SplinterCellBlacklistDx11, "DirectX 11 (recommended)"), (GameVersion::SplinterCellBlacklistDx9, "DirectX 9")];
+        if theme::segmented(ui, &mut version, &options) {
+            game.update(notices, |c| c.default_game = version);
+        }
+        ui.add_space(6.0);
+    }
     if let Some(wine) = flow::wine_facts(&game.dir).filter(|w| w.steam) {
         ui.label(theme::muted("Runs through Steam and Proton; Play asks Steam to start it."));
         if let Some(options) = wine.launch_options {

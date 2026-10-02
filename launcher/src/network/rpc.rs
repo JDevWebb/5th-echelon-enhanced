@@ -214,7 +214,13 @@ pub async fn link_identity(api_url: String, identity: &identity::Identity, host:
 /// sign in for every call).
 pub async fn sign_in(api_url: String, username: &str, password: &str) -> Result<String, Error> {
     let mut client = UsersClient::new(super::endpoint(&api_url)?.connect().await.map_err(|_| Error::ConnectionFailed)?);
-    let resp = match client.login(LoginRequest { username: username.to_string(), password: password.to_string() }).await {
+    let resp = match client
+        .login(LoginRequest {
+            username: username.to_string(),
+            password: password.to_string(),
+        })
+        .await
+    {
         Ok(resp) => resp.into_inner(),
         Err(status) if status.code() == tonic::Code::Unauthenticated => return Err(Error::InvalidPassword),
         Err(status) if status.code() == tonic::Code::NotFound => return Err(Error::UserNotFound),
@@ -226,16 +232,16 @@ pub async fn sign_in(api_url: String, username: &str, password: &str) -> Result<
     Ok(resp.token)
 }
 
-/// The signed-in player's friends playing on other servers sharing friends.
-/// A token the server no longer takes is `InvalidPassword`.
-pub async fn friends_elsewhere(api_url: String, token: &str) -> Result<Vec<server_api::friends::FriendElsewhere>, Error> {
+/// The signed-in player's friends, requests and friends on other servers
+/// sharing friends. A token the server no longer takes is `InvalidPassword`.
+pub async fn relationships(api_url: String, token: &str) -> Result<server_api::friends::RelationshipsResponse, Error> {
     let channel = super::endpoint(&api_url)?.connect().await.map_err(|_| Error::ConnectionFailed)?;
     let mut client = server_api::friends::friends_client::FriendsClient::new(channel);
     let mut request = tonic::Request::new(server_api::friends::RelationshipsRequest {});
     let token = tonic::metadata::MetadataValue::try_from(token).map_err(|_| Error::InvalidPassword)?;
     request.metadata_mut().insert("authorization", token);
     match client.relationships(request).await {
-        Ok(resp) => Ok(resp.into_inner().elsewhere),
+        Ok(resp) => Ok(resp.into_inner()),
         Err(status) if status.code() == tonic::Code::Unauthenticated => Err(Error::InvalidPassword),
         Err(status) => Err(status.into()),
     }
