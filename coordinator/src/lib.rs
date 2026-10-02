@@ -322,6 +322,8 @@ pub struct Coordinator {
     reads: Limit,
     changes: Limit,
     pings: Limit,
+    /// When each launcher address last reported a ping to each server.
+    ping_reporters: std::sync::Mutex<HashMap<(std::net::IpAddr, String), std::time::Instant>>,
     heartbeats: Limit,
     metrics: Limit,
     /// The release this machine's updater was last asked for, and when.
@@ -344,6 +346,9 @@ pub struct Coordinator {
 type Shared = Arc<Coordinator>;
 type Answer = (StatusCode, Json<Value>);
 
+/// How often a launcher's address adds a ping sample for a server.
+const PING_SAMPLE_EVERY: Duration = Duration::from_secs(10 * 60);
+
 fn ok(v: Value) -> Answer {
     (StatusCode::OK, Json(v))
 }
@@ -352,12 +357,38 @@ fn fail(status: StatusCode, msg: &str) -> Answer {
     (status, Json(json!({ "error": msg })))
 }
 
+/// A request body as `T`. Handlers take the raw body and parse it only once the caller is
+/// known (a server's secret checked first), and a body that doesn't parse gets one plain
+/// answer: serde's errors would tell a stranger which fields each call takes.
+fn parse<T: serde::de::DeserializeOwned>(body: &[u8]) -> Result<T, Answer> {
+    serde_json::from_slice(body).map_err(|_| fail(StatusCode::BAD_REQUEST, "not a valid request"))
+}
+
 fn internal(e: impl std::fmt::Display) -> Answer {
     tracing::error!("{e}");
     fail(StatusCode::INTERNAL_SERVER_ERROR, "internal error")
 }
 
 impl Coordinator {
+    /// Whether `ip`'s ping to `server` is the first in [`PING_SAMPLE_EVERY`] (and notes it).
+    fn first_ping_in_a_while(&self, ip: std::net::IpAddr, server: &str) -> bool {
+        let now = std::time::Instant::now();
+        let mut seen = self.ping_reporters.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if seen.len() > 50_000 {
+            seen.retain(|_, at| now.duration_since(*at) < PING_SAMPLE_EVERY);
+        }
+        if server.len() > 64 {
+            return false;
+        }
+        match seen.get(&(ip, server.to_string())) {
+            Some(at) if now.duration_since(*at) < PING_SAMPLE_EVERY => false,
+            _ => {
+                seen.insert((ip, server.to_string()), now);
+                true
+            }
+        }
+    }
+
     /// Opens (creating if needed) the database at `path`.
     pub async fn open(path: &str, join_token: String) -> eyre::Result<Self> {
         let options = SqliteConnectOptions::new().filename(path).create_if_missing(true).foreign_keys(true);
@@ -375,6 +406,7 @@ impl Coordinator {
             changes: Limit::new(2000),
             // Launchers report pings when they look at the directory: a few a minute at most.
             pings: Limit::new(6),
+            ping_reporters: std::sync::Mutex::new(HashMap::new()),
             // Per server: a heartbeat every 30 seconds and metrics every minute, with room
             // for a retry.
             heartbeats: Limit::new(6),
@@ -929,10 +961,14 @@ struct JoinRequest {
     server_id: String,
 }
 
-async fn join(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap, Json(req): Json<JoinRequest>) -> Answer {
+async fn join(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {
     if !c.joins.check(&limit_key(client_ip(peer, &headers))) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many attempts; try again in a minute");
     }
+    let req: JoinRequest = match parse(&body) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
     if c.join_token.is_empty() || !same_secret(req.token.trim(), &c.join_token) {
         return fail(StatusCode::FORBIDDEN, "wrong join token");
     }
@@ -976,9 +1012,13 @@ async fn join(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::
     }
 }
 
-async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, Json(listing): Json<Listing>) -> Answer {
+async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {
     let server = match c.server(&headers).await {
         Ok(s) => s,
+        Err(e) => return e,
+    };
+    let listing: Listing = match parse(&body) {
+        Ok(v) => v,
         Err(e) => return e,
     };
     if !c.heartbeats.check(&server) {
@@ -1024,9 +1064,13 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, Json(listing): J
 }
 
 /// A server's metrics report (see [`metrics`]).
-async fn metrics_report(State(c): State<Shared>, headers: HeaderMap, Json(report): Json<Value>) -> Answer {
+async fn metrics_report(State(c): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {
     let server = match c.server(&headers).await {
         Ok(s) => s,
+        Err(e) => return e,
+    };
+    let report: Value = match parse(&body) {
+        Ok(v) => v,
         Err(e) => return e,
     };
     if !c.metrics.check(&server) {
@@ -1045,9 +1089,13 @@ async fn metrics_report(State(c): State<Shared>, headers: HeaderMap, Json(report
 }
 
 /// A server's live numbers, every ten seconds: for the admin UI only, never stored.
-async fn pulse(State(c): State<Shared>, headers: HeaderMap, Json(p): Json<Value>) -> Answer {
+async fn pulse(State(c): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {
     let server = match c.server(&headers).await {
         Ok(s) => s,
+        Err(e) => return e,
+    };
+    let p: Value = match parse(&body) {
+        Ok(v) => v,
         Err(e) => return e,
     };
     if !c.pulse_limit.check(&server) {
@@ -1061,12 +1109,27 @@ async fn pulse(State(c): State<Shared>, headers: HeaderMap, Json(p): Json<Value>
 }
 
 /// A launcher's pings to the servers in the directory.
-async fn pings(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap, Json(body): Json<Value>) -> Answer {
+async fn pings(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {
     let ip = client_ip(peer, &headers);
     if !c.pings.check(&limit_key(ip)) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many reports");
     }
-    let list = body["pings"].as_array().cloned().unwrap_or_default();
+    let body: Value = match parse(&body) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    // One sample per address and server in a while: however often an address reports, it
+    // can't outweigh the players in its city.
+    let list: Vec<Value> = body["pings"]
+        .as_array()
+        .map(|l| {
+            l.iter()
+                .take(32)
+                .filter(|p| p["server"].as_str().is_some_and(|s| c.first_ping_in_a_while(ip, s)))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
     match c.record_player_pings(ip, &list).await {
         Ok(n) => ok(json!({ "recorded": n })),
         Err(e) => internal(e),
@@ -1114,9 +1177,13 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
     ok(json!({ "servers": list }))
 }
 
-async fn changes(State(c): State<Shared>, headers: HeaderMap, Json(body): Json<Value>) -> Answer {
+async fn changes(State(c): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {
     let server = match c.server(&headers).await {
         Ok(s) => s,
+        Err(e) => return e,
+    };
+    let body: Value = match parse(&body) {
+        Ok(v) => v,
         Err(e) => return e,
     };
     let list = body["changes"].as_array().cloned().unwrap_or_default();
@@ -1215,9 +1282,13 @@ struct ClaimRequest {
 
 /// Reserves a name for a player about to make (or rename) an account on the
 /// calling server. 409 when it's another player's.
-async fn claim_name(State(c): State<Shared>, headers: HeaderMap, Json(req): Json<ClaimRequest>) -> Answer {
+async fn claim_name(State(c): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {
     let server = match c.server(&headers).await {
         Ok(s) => s,
+        Err(e) => return e,
+    };
+    let req: ClaimRequest = match parse(&body) {
+        Ok(v) => v,
         Err(e) => return e,
     };
     if !valid_name(&req.name) {

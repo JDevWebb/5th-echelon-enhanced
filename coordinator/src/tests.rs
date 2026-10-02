@@ -600,3 +600,30 @@ async fn reports_count_anonymised_players_traffic_and_alerts() {
     assert_eq!(t.call("POST", "/v1/pulse", Some(&a), Some(json!({ "nonsense": true }))).await.0, StatusCode::BAD_REQUEST);
     assert!(t.c.pulses.lock().unwrap().contains_key("server-a"));
 }
+
+#[tokio::test]
+async fn strangers_learn_nothing_from_bad_bodies() {
+    let t = start("bad-bodies").await;
+    // Without a server's secret: refused before the body is looked at.
+    for path in ["/v1/heartbeat", "/v1/metrics", "/v1/pulse", "/v1/changes", "/v1/names/claim"] {
+        let (status, v) = t.call("POST", path, None, Some(json!({ "nonsense": 1 }))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}: {v}");
+    }
+    // A bad body gets one plain answer, naming no fields.
+    let (status, v) = t.call("POST", "/v1/join", None, Some(json!({ "nonsense": 1 }))).await;
+    assert_eq!((status, v["error"].as_str()), (StatusCode::BAD_REQUEST, Some("not a valid request")));
+    let secret = t.join("srv-a").await;
+    let (status, v) = t.call("POST", "/v1/heartbeat", Some(&secret), Some(json!({ "nonsense": 1 }))).await;
+    assert_eq!((status, v["error"].as_str()), (StatusCode::BAD_REQUEST, Some("not a valid request")));
+}
+
+#[tokio::test]
+async fn an_address_adds_one_ping_per_server_in_a_while() {
+    let t = start("ping-samples").await;
+    t.join("srv-a").await;
+    let report = json!({ "pings": [{ "server": "srv-a", "ms": 40 }, { "server": "srv-a", "ms": 41 }, { "server": "nowhere", "ms": 5 }] });
+    let (status, v) = t.call("POST", "/v1/pings", None, Some(report.clone())).await;
+    assert_eq!((status, v["recorded"].as_u64()), (StatusCode::OK, Some(1)), "{v}");
+    let (status, v) = t.call("POST", "/v1/pings", None, Some(report)).await;
+    assert_eq!((status, v["recorded"].as_u64()), (StatusCode::OK, Some(0)), "a second report counted again: {v}");
+}
