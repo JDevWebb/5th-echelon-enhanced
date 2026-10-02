@@ -249,9 +249,9 @@ pub struct AdminConfig {
 pub enum RelayMode {
     /// Never; players whose NAT can't be punched through can't join others.
     Off,
-    /// Only players who need it: a NAT that changes ports per destination
-    /// (symmetric, most carrier-grade NAT), a player on this server's own
-    /// network without a router port mapping, or one who asked for it.
+    /// Only players who need it: those whose router has no port mapping for
+    /// the game (UPnP or NAT-PMP). Nobody can start a connection to them, so
+    /// without the relay they could join others but nobody could join them.
     #[default]
     Auto,
     /// Every player. The most reliable, but all match traffic then goes

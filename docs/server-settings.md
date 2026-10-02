@@ -57,7 +57,7 @@ How it works:
 - If the game still registers its local address, the server replaces it with the one the helper saw, keeping the local one for players on the same network.
 
 **`relay`** decides who plays through the server:
-- **`auto`:** players whose router can't be reached directly: symmetric NAT, a player who chose **Always through the server**, or a player on the server's own network without a router port mapping. Everyone else connects directly.
+- **`auto`:** every player whose router has no port mapping for the game (UPnP or NAT-PMP), and anyone with symmetric NAT or who chose **Always through the server**. Without a mapping nobody can start a connection to a player, so they could join others but nobody could join them. Players with a mapping connect directly, and a LAN party with the server on the same network relays nobody.
 - **`all`:** every player. The most reliable, but every match goes through the server.
 - **`off`:** nobody; those players can't join others over the internet.
 

@@ -495,7 +495,7 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
 - Players no longer need a LAN or VPN:
   - the client answers the game's own "what's my public address?" request with the address the server's NAT helper sees, so the game advertises it and punches through NAT itself;
   - it asks the router to forward the match port (UPnP, then NAT-PMP);
-  - the server relays matches for players behind symmetric or carrier-grade NAT;
+  - the server relays matches for players whose router can't forward a port to the game (no UPnP, carrier-grade or symmetric NAT);
   - the server corrects the address a game registers, if the game didn't take the public one.
 - The findings behind it are in [docs/research/nat-traversal.md](docs/research/nat-traversal.md).
 

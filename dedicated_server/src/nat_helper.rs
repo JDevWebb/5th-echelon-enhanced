@@ -179,13 +179,20 @@ impl Table {
             RelayMode::All => true,
             RelayMode::Auto => {
                 // A router port mapping makes the player reachable as it is.
-                if public_mapping {
-                    return false;
-                }
-                flags & (probe_flags::WANT_RELAY | probe_flags::SYMMETRIC) != 0
-                    // On this server's own network: players from outside
-                    // can't reach the address this helper sees.
-                    || (nat_proto::is_private(*observed.ip()) && !nat_proto::is_private(self.relay_ip))
+                //
+                // Without one, nobody can start a connection to them: the game's own NAT
+                // probes don't get a joiner through in practice (the first community night,
+                // 2026-10-02: every host without a mapping - a router out of free ports, no
+                // UPnP, carrier-grade NAT - could invite no one, and everyone could join the
+                // hosts with one). So every player without a mapping goes through the relay,
+                // whatever their NAT; players with one stay direct.
+                //
+                // A LAN party with the server on the same network relays nobody: the players
+                // reach each other there as they are.
+                // Asking for it, or a NAT that gives every destination its own port, still
+                // always gets it.
+                let lan_server = nat_proto::is_private(*observed.ip()) && nat_proto::is_private(self.relay_ip);
+                flags & (probe_flags::WANT_RELAY | probe_flags::SYMMETRIC) != 0 || (!public_mapping && !lan_server)
             }
         }
     }
@@ -687,7 +694,7 @@ mod tests {
 
     #[test]
     fn a_player_advertises_the_address_the_helper_sees() {
-        let mut t = table(RelayMode::Auto);
+        let mut t = table(RelayMode::Off);
         let now = Instant::now();
         let reply = t.probe(a("198.51.100.7:61000"), 0, 42, None, "Sam", now);
         assert_eq!(advertise(&reply), (a("198.51.100.7:61000"), false));
@@ -698,7 +705,7 @@ mod tests {
 
     #[test]
     fn a_router_port_mapping_is_advertised_as_it_is() {
-        let mut t = table(RelayMode::Auto);
+        let mut t = table(RelayMode::Off);
         let reply = t.probe(a("198.51.100.7:61000"), probe_flags::HAS_MAPPING, 1, Some(a("198.51.100.7:13000")), "sam", Instant::now());
         assert_eq!(advertise(&reply), (a("198.51.100.7:13000"), false));
         // A mapping that is itself private (double NAT) is useless.
@@ -708,7 +715,7 @@ mod tests {
 
     #[test]
     fn a_mapping_counts_only_on_the_probes_own_address() {
-        let mut t = table(RelayMode::Auto);
+        let mut t = table(RelayMode::Off);
         let now = Instant::now();
         let (victim, _) = advertise(&t.probe(a("198.51.100.7:61000"), 0, 1, None, "victim", now));
         // A mapping on someone else's address is ignored.
@@ -729,7 +736,10 @@ mod tests {
         assert!(advertise(&t.probe(a("198.51.100.8:1"), probe_flags::WANT_RELAY, 1, None, "asked", now)).1);
         // On the server's own network, with no port mapping.
         assert!(advertise(&t.probe(a("192.168.1.20:13000"), 0, 1, None, "lan", now)).1);
-        assert!(!advertise(&t.probe(a("198.51.100.9:1"), 0, 1, None, "cone", now)).1);
+        // No port mapping at all: nobody could start a connection to them.
+        assert!(advertise(&t.probe(a("198.51.100.9:1"), 0, 1, None, "cone", now)).1);
+        // A router port mapping: reachable as it is, so direct.
+        assert!(!advertise(&t.probe(a("198.51.100.10:13000"), probe_flags::HAS_MAPPING, 1, Some(a("198.51.100.10:13000")), "mapped", now)).1);
 
         let mut t = table(RelayMode::All);
         assert!(advertise(&t.probe(a("198.51.100.9:1"), 0, 1, None, "cone", now)).1);
@@ -766,12 +776,14 @@ mod tests {
         // Relayed, then a keepalive without the relay flag: still relayed.
         let (relay, _) = advertise(&t.probe(a("198.51.100.7:1"), probe_flags::WANT_RELAY, 1, None, "r", now));
         assert_eq!(advertise(&t.probe(a("198.51.100.7:1"), 0, 2, None, "r", now)), (relay, true));
-        // Direct, then the router maps a port: the advertised address stays.
-        let (direct, _) = advertise(&t.probe(a("203.0.113.4:61000"), 0, 1, None, "d", now));
+        // Direct (a router mapping), then the router maps another port: the advertised
+        // address stays.
+        let (direct, _) = advertise(&t.probe(a("203.0.113.4:61000"), probe_flags::HAS_MAPPING, 1, Some(a("203.0.113.4:61000")), "d", now));
         let later = t.probe(a("203.0.113.4:61000"), probe_flags::HAS_MAPPING, 2, Some(a("203.0.113.4:13000")), "d", now);
         assert_eq!(advertise(&later), (direct, false));
         // Its NAT gave it a new mapping: that's where it's reachable now.
-        assert_eq!(advertise(&t.probe(a("203.0.113.4:61555"), 0, 3, None, "d", now)), (a("203.0.113.4:61555"), false));
+        let moved = t.probe(a("203.0.113.4:61555"), probe_flags::HAS_MAPPING, 3, Some(a("203.0.113.4:61555")), "d", now);
+        assert_eq!(advertise(&moved), (a("203.0.113.4:61555"), false));
         // Direct can still become relayed (before the game is told).
         assert!(advertise(&t.probe(a("203.0.113.4:61555"), probe_flags::SYMMETRIC, 4, None, "d", now)).1);
         // Packets keep flowing to the relayed player through all of this.
@@ -888,8 +900,8 @@ mod tests {
         let now = Instant::now();
         let ip = Ipv4Addr::new(198, 51, 100, 7);
         assert_eq!(t.advertised_for_ip(ip, now), None);
-        // First a direct registration: not final until it has stood a while.
-        let (direct, _) = advertise(&t.probe(a("198.51.100.7:25676"), 0, 1, None, "Solo", now));
+        // First a direct registration (a router mapping): not final until it has stood a while.
+        let (direct, _) = advertise(&t.probe(a("198.51.100.7:25676"), probe_flags::HAS_MAPPING, 1, Some(a("198.51.100.7:25676")), "Solo", now));
         assert_eq!(t.advertised_for_ip(ip, now), None, "the player may still move to the relay");
         assert_eq!(t.advertised_for_ip(ip, now + SETTLE), Some(direct));
         // Then its hook asks for the relay: final at once.
