@@ -227,10 +227,19 @@ const MAX_ONLINE: usize = 20_000;
 /// How long a player counts as online on a server after its last report (it reports every 30 s).
 const ONLINE_FOR: i64 = 90;
 
+/// One server's word that a player is online there.
+#[derive(Debug, Clone, Copy)]
+struct Seen {
+    /// Since when (without a break), and when it last said so.
+    since: i64,
+    at: i64,
+}
+
 pub struct Coordinator {
     pool: SqlitePool,
-    /// Who is online where: identity -> (server, when its server last said so).
-    presence: std::sync::Mutex<HashMap<String, (String, i64)>>,
+    /// Who is online where: identity -> server -> since when, and when that server last said
+    /// so. Each server's word is kept apart, so one can't overwrite where a player really is.
+    presence: std::sync::Mutex<HashMap<String, HashMap<String, Seen>>>,
     join_token: String,
     joins: Limit,
     reads: Limit,
@@ -410,7 +419,8 @@ impl Coordinator {
     }
 
     /// Records who is online on `server` now: those of `online` linked there (a server only
-    /// speaks for its own players). Whoever it no longer lists is offline there.
+    /// speaks for its own players). Whoever it no longer lists is offline there. Only a string
+    /// lookup per id: linked ids were checked when they linked.
     async fn set_online(&self, server: &str, online: &[String]) -> sqlx::Result<()> {
         let linked: std::collections::HashSet<String> = if online.is_empty() {
             std::collections::HashSet::new()
@@ -423,37 +433,106 @@ impl Coordinator {
                 .collect()
         };
         let now = identity::now();
-        let mut presence = self.presence.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        presence.retain(|_, (on, seen)| on != server && now - *seen <= ONLINE_FOR);
-        for id in online.iter().filter(|id| linked.contains(*id)) {
-            presence.insert(id.clone(), (server.to_string(), now));
+        let newly: Vec<String> = {
+            let mut presence = self.presence.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            // What this server said before (to keep "since"), and anything gone quiet anywhere.
+            let mut before: HashMap<String, Seen> = HashMap::new();
+            presence.retain(|id, on| {
+                if let Some(seen) = on.remove(server) {
+                    before.insert(id.clone(), seen);
+                }
+                on.retain(|_, seen| now - seen.at <= ONLINE_FOR);
+                !on.is_empty()
+            });
+            let mut newly = Vec::new();
+            for id in online.iter().filter(|id| linked.contains(*id)) {
+                let since = match before.get(id) {
+                    Some(seen) if now - seen.at <= ONLINE_FOR => seen.since,
+                    _ => {
+                        newly.push(id.clone());
+                        now
+                    }
+                };
+                presence.entry(id.clone()).or_default().insert(server.to_string(), Seen { since, at: now });
+            }
+            newly
+        };
+        // Where each player has been seen online, for vouching friendships (see `vouched`).
+        if !newly.is_empty() {
+            let mut tx = self.pool.begin().await?;
+            for id in &newly {
+                sqlx::query("INSERT OR IGNORE INTO seen_online (global_id, server_id, first_seen) VALUES (?, ?, ?)")
+                    .bind(id)
+                    .bind(server)
+                    .bind(now)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            tx.commit().await?;
         }
         Ok(())
     }
 
-    /// The server `global_id` is online on, if it's one other than `except`.
-    fn online_elsewhere(&self, global_id: &str, except: &str) -> Option<String> {
+    /// The servers other than `except` that say `global_id` is online on them now, each with
+    /// since when.
+    fn online_on(&self, global_id: &str, except: &str) -> Vec<(String, i64)> {
+        let now = identity::now();
         let presence = self.presence.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         presence
             .get(global_id)
-            .filter(|(on, seen)| on != except && identity::now() - *seen <= ONLINE_FOR)
-            .map(|(on, _)| on.clone())
+            .into_iter()
+            .flatten()
+            .filter(|(on, seen)| *on != except && now - seen.at <= ONLINE_FOR)
+            .map(|(on, seen)| (on.clone(), seen.since))
+            .collect()
     }
 
-    /// Where a friend is playing, as their friends' servers show it: that server's name,
-    /// region and host, and the friend's name there.
-    async fn whereabouts(&self, server: &str, global_id: &str) -> sqlx::Result<Option<Value>> {
-        let row: Option<(Option<String>, String)> =
-            sqlx::query_as("SELECT s.listing, l.username FROM servers s JOIN links l ON l.server_id = s.id WHERE s.id = ? AND l.global_id = ?")
-                .bind(server)
-                .bind(global_id)
-                .fetch_optional(&self.pool)
+    /// Whether a server that said `a` and `b` are friends has seen both of them online (a
+    /// friendship from before servers were recorded: any server). A member can make up a
+    /// friendship between any two players linked on it; this at least needs it to say both
+    /// played there.
+    async fn vouched(&self, a: &str, b: &str) -> sqlx::Result<bool> {
+        let (a, b) = if a < b { (a, b) } else { (b, a) };
+        let n: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM seen_online x JOIN seen_online y ON y.server_id = x.server_id
+              WHERE x.global_id = ? AND y.global_id = ?
+                AND EXISTS (SELECT 1 FROM friendship_servers f WHERE f.a = ? AND f.b = ? AND f.server_id IN (x.server_id, '*'))",
+        )
+        .bind(a)
+        .bind(b)
+        .bind(a)
+        .bind(b)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok(n > 0)
+    }
+
+    /// Where `friend` is playing, for `me`'s friend list on the server `asking` (when it's
+    /// another one): that server's name, region and host, and the friend's name there.
+    ///
+    /// A member server can say that anyone linked on it is online there. So each server's
+    /// word is kept apart, and when several say so, the one where the friend linked most
+    /// recently wins (a link needs the friend's own, recent signature), then the one they
+    /// came on last. Unlisted servers aren't given out, and only for a vouched friendship.
+    async fn elsewhere(&self, me: &str, friend: &str, asking: &str) -> sqlx::Result<Option<Value>> {
+        let on = self.online_on(friend, asking);
+        if on.is_empty() || !self.vouched(me, friend).await? {
+            return Ok(None);
+        }
+        let links: Vec<(String, Option<String>, String, i64)> =
+            sqlx::query_as("SELECT s.id, s.listing, l.username, l.linked_at FROM links l JOIN servers s ON s.id = l.server_id WHERE l.global_id = ?")
+                .bind(friend)
+                .fetch_all(&self.pool)
                 .await?;
-        let Some((Some(listing), username)) = row else { return Ok(None) };
-        let Ok(listing) = serde_json::from_str::<Listing>(&listing) else { return Ok(None) };
-        Ok(Some(
-            json!({ "username": username, "server": listing.name, "region": listing.region, "host": listing.host }),
-        ))
+        let best = links
+            .into_iter()
+            .filter_map(|(id, listing, username, linked_at)| {
+                let since = on.iter().find(|(s, _)| *s == id)?.1;
+                let listing = serde_json::from_str::<Listing>(&listing?).ok().filter(|l| l.listed)?;
+                Some(((linked_at, since), listing, username))
+            })
+            .max_by_key(|(order, ..)| *order);
+        Ok(best.map(|(_, listing, username)| json!({ "username": username, "server": listing.name, "region": listing.region, "host": listing.host })))
     }
 
     async fn linked(&self, server: &str, global_id: &str) -> sqlx::Result<bool> {
@@ -531,7 +610,7 @@ impl Coordinator {
                 if friends && self.blocked_either_way(&a, &b).await.map_err(|e| e.to_string())? {
                     return Err("one of them blocked the other".into());
                 }
-                self.set_friends(&a, &b, friends, now).await.map(|()| json!({})).map_err(|e| e.to_string())
+                self.set_friends(&a, &b, friends, now, server).await.map(|()| json!({})).map_err(|e| e.to_string())
             }
             "block" => {
                 let (from, to) = (text("from"), text("to"));
@@ -549,7 +628,7 @@ impl Coordinator {
                 .await
                 .map_err(|e| e.to_string())?;
                 if blocked {
-                    self.set_friends(&from, &to, false, now).await.map_err(|e| e.to_string())?;
+                    self.set_friends(&from, &to, false, now, server).await.map_err(|e| e.to_string())?;
                 }
                 Ok(json!({}))
             }
@@ -580,8 +659,11 @@ impl Coordinator {
         )
     }
 
-    async fn set_friends(&self, a: &str, b: &str, friends: bool, now: i64) -> sqlx::Result<()> {
+    /// Records a friendship change from `server`, and which servers said they're friends
+    /// (see `vouched`).
+    async fn set_friends(&self, a: &str, b: &str, friends: bool, now: i64, server: &str) -> sqlx::Result<()> {
         let (a, b) = if a < b { (a, b) } else { (b, a) };
+        let mut tx = self.pool.begin().await?;
         sqlx::query(
             "INSERT INTO friendships (a, b, friends, updated) VALUES (?, ?, ?, ?)
              ON CONFLICT(a, b) DO UPDATE SET friends = excluded.friends, updated = excluded.updated",
@@ -590,9 +672,18 @@ impl Coordinator {
         .bind(b)
         .bind(i64::from(friends))
         .bind(now)
-        .execute(&self.pool)
+        .execute(&mut *tx)
         .await?;
-        Ok(())
+        let sources = if friends {
+            sqlx::query("INSERT OR IGNORE INTO friendship_servers (a, b, server_id) VALUES (?, ?, ?)")
+                .bind(a)
+                .bind(b)
+                .bind(server)
+        } else {
+            sqlx::query("DELETE FROM friendship_servers WHERE a = ? AND b = ?").bind(a).bind(b)
+        };
+        sources.execute(&mut *tx).await?;
+        tx.commit().await
     }
 }
 
@@ -855,8 +946,7 @@ async fn relations(State(c): State<Shared>, headers: HeaderMap, Path(global_id):
         if r["friends"] != json!(true) || r["blocked"] == json!(true) || r["blocked_by"] == json!(true) {
             continue;
         }
-        let Some(on) = c.online_elsewhere(other, &server) else { continue };
-        match c.whereabouts(&on, other).await {
+        match c.elsewhere(&global_id, other, &server).await {
             Ok(Some(w)) => r["elsewhere"] = w,
             Ok(None) => {}
             Err(e) => return internal(e),

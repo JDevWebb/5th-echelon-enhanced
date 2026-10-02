@@ -90,7 +90,7 @@ Matches, parties and invitations stay on one server: friends on different server
 - **In the overlay** (F5), the Friends tab lists **On other servers**: each friend online on another server of the group, by their name there, and which server.
 - **In the launcher**, the Play screen shows **Friends on other servers**, with **Switch to this server** for each. It joins that server (finding your account there by your identity, or asking for a name if you have none yet). Quit the game first.
 
-Only friends see where you play, never across a block. Each server tells the coordinator which of its players (by identity) are online every 30 seconds, and the coordinator tells a player's own server where their friends are when it asks for their friends (every minute while they're online). So a friend shows up there within about a minute and a half of starting to play, and drops off as quickly when they stop.
+Only friends see where you play, never across a block, and never on a server that isn't listed in the directory. Each server tells the coordinator which of its players (by identity) are online every 30 seconds, and the coordinator tells a player's own server where their friends are when it asks for their friends (every minute while they're online). So a friend shows up there within about a minute and a half of starting to play, and drops off as quickly when they stop.
 
 ### One name per player across the group
 
@@ -116,9 +116,10 @@ Servers outside the group can reuse any name; friends don't travel there. The ov
 - The member servers: each server's id, its secret (only a hash is kept), and its directory entry.
 - For each linked account: your identity's public key, the server, and your name there.
 - Which identity holds each name.
-- Friendships and blocks between identities.
+- Friendships and blocks between identities, and which servers said so.
+- Who is online where (in memory, for friends on other servers), and which servers each identity has been online on.
 
-It never sees passwords, invites, matches, or who is online.
+It never sees passwords, invites or matches.
 
 ### What it trusts
 
@@ -127,6 +128,14 @@ It never sees passwords, invites, matches, or who is online.
 - **Changes** are applied in order, and the latest wins.
 
 A dishonest member server could still make friendships or blocks between players who are linked on it. Only give the join token to servers you trust.
+
+**Where friends play** is the part of this a dishonest server could misuse: by making two of its past visitors friends, it would learn where one plays from the other's friend list. The coordinator limits it:
+
+- A friendship shows where a friend plays only when a server that said they're friends has also reported both of them online. A server that does both is still believed: it only has to lie in its heartbeats.
+- Each server's word that a player is online is kept apart, so one can't hide where a player really is. When several say so, the one where the player linked most recently wins (a link needs the player's own signature from the last week).
+- The name shown is the friend's name on that server. Names are reserved across the group, so it's the one any member already sees.
+
+Ruling it out takes friendships signed by both players, which the game can't do: it doesn't hold the identity's key.
 
 ### How changes travel
 

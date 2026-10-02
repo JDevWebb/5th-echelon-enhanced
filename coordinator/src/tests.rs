@@ -7,6 +7,7 @@ use super::*;
 
 struct Test {
     router: Router,
+    c: Arc<Coordinator>,
     dir: std::path::PathBuf,
 }
 
@@ -20,11 +21,12 @@ async fn start(name: &str) -> Test {
     let dir = std::env::temp_dir().join(format!("fe-coord-{name}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
-    let c = Coordinator::open(&dir.join("c.db").to_string_lossy(), "TOKEN".into()).await.unwrap();
+    let c = Arc::new(Coordinator::open(&dir.join("c.db").to_string_lossy(), "TOKEN".into()).await.unwrap());
     Test {
-        router: Arc::new(c)
+        router: Arc::clone(&c)
             .router()
             .layer(axum::extract::connect_info::MockConnectInfo(std::net::SocketAddr::from(([192, 0, 2, 1], 1)))),
+        c,
         dir,
     }
 }
@@ -71,7 +73,21 @@ impl Test {
 }
 
 fn link(who: &identity::Identity, host: &str, username: &str) -> Value {
-    json!({ "op": "link", "global_id": who.global_id(), "username": username, "host": host, "time": 1000, "signature": who.sign_link(host, username, 1000) })
+    link_at(who, host, username, identity::now())
+}
+
+fn link_at(who: &identity::Identity, host: &str, username: &str, time: i64) -> Value {
+    json!({ "op": "link", "global_id": who.global_id(), "username": username, "host": host, "time": time, "signature": who.sign_link(host, username, time) })
+}
+
+/// A heartbeat for the server `name` (its host the name in lower case), with these players online.
+fn beat(name: &str, online: &[&identity::Identity]) -> Value {
+    json!({ "name": name, "host": name.to_lowercase(), "region": "Oceania", "online": online.iter().map(|p| p.global_id()).collect::<Vec<_>>() })
+}
+
+/// `who`'s entry in a relations answer.
+fn rel(v: &Value, who: &identity::Identity) -> Value {
+    v["relations"].as_array().unwrap().iter().find(|r| r["other"] == json!(who.global_id())).cloned().unwrap()
 }
 
 #[tokio::test]
@@ -201,21 +217,18 @@ async fn friends_see_which_other_server_a_friend_is_on() {
         json!([link(&kiwi, "server-a", "Kiwi"), link(&pest, "server-a", "Pest"), { "op": "friends", "a": kiwi.global_id(), "b": pest.global_id(), "friends": true }]),
     )
     .await;
-    // Tank plays on B only, under another name there; Kiwi and Tank are friends.
+    // Tank plays on B only, under another name there; Kiwi and Tank became friends there.
     t.changes(
         &b,
         json!([link(&tank, "server-b", "TankB"), link(&kiwi, "server-b", "Kiwi"), { "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": true }]),
     )
     .await;
-    let beat = |online: Vec<String>, name: &str| json!({ "name": name, "host": name.to_lowercase(), "region": "Oceania", "online": online });
+    t.call("POST", "/v1/heartbeat", Some(&b), Some(beat("Server-B", &[&kiwi, &tank]))).await;
 
     // B says Tank is online, and Pest too, who isn't B's to speak for.
-    let (status, v) = t
-        .call("POST", "/v1/heartbeat", Some(&b), Some(beat(vec![tank.global_id(), pest.global_id()], "Server-B")))
-        .await;
+    let (status, v) = t.call("POST", "/v1/heartbeat", Some(&b), Some(beat("Server-B", &[&tank, &pest]))).await;
     assert_eq!(status, StatusCode::OK, "{v}");
     let (_, v) = t.relations(&a, &kiwi.global_id()).await;
-    let rel = |v: &Value, who: &identity::Identity| v["relations"].as_array().unwrap().iter().find(|r| r["other"] == json!(who.global_id())).cloned().unwrap();
     assert_eq!(
         rel(&v, &tank)["elsewhere"],
         json!({ "username": "TankB", "server": "Server-B", "region": "Oceania", "host": "server-b" })
@@ -227,16 +240,74 @@ async fn friends_see_which_other_server_a_friend_is_on() {
     assert!(rel(&v, &tank).get("elsewhere").is_none());
 
     // Off B's list: offline there.
-    t.call("POST", "/v1/heartbeat", Some(&b), Some(beat(vec![], "Server-B"))).await;
+    t.call("POST", "/v1/heartbeat", Some(&b), Some(beat("Server-B", &[]))).await;
     let (_, v) = t.relations(&a, &kiwi.global_id()).await;
     assert!(rel(&v, &tank).get("elsewhere").is_none());
 
     // Only friends see it.
-    t.call("POST", "/v1/heartbeat", Some(&b), Some(beat(vec![tank.global_id()], "Server-B"))).await;
+    t.call("POST", "/v1/heartbeat", Some(&b), Some(beat("Server-B", &[&tank]))).await;
     t.changes(&b, json!([{ "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": false }]))
         .await;
     let (_, v) = t.relations(&a, &kiwi.global_id()).await;
     assert!(rel(&v, &tank).get("elsewhere").is_none());
+}
+
+#[tokio::test]
+async fn another_server_cant_hide_where_a_friend_plays() {
+    let t = start("presence-rogue").await;
+    let (a, b, r) = (t.join("server-a").await, t.join("server-b").await, t.join("server-r").await);
+    let (kiwi, tank) = (identity::Identity::generate(), identity::Identity::generate());
+    // Tank once visited R; plays on A, where Kiwi and Tank are friends. Kiwi is on B now.
+    t.changes(&r, json!([link(&tank, "server-r", "Tank")])).await;
+    t.changes(
+        &a,
+        json!([link(&kiwi, "server-a", "Kiwi"), link(&tank, "server-a", "Tank"), { "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": true }]),
+    )
+    .await;
+    t.changes(&b, json!([link(&kiwi, "server-b", "Kiwi")])).await;
+    sqlx::query("UPDATE links SET linked_at = linked_at - 100 WHERE server_id = 'server-r'")
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    t.call("POST", "/v1/heartbeat", Some(&a), Some(beat("Server-A", &[&kiwi, &tank]))).await;
+    // R says Tank is on R: A's word stands too, and Tank linked on A last.
+    t.call("POST", "/v1/heartbeat", Some(&r), Some(beat("Server-R", &[&tank]))).await;
+    let (_, v) = t.relations(&b, &kiwi.global_id()).await;
+    assert_eq!(rel(&v, &tank)["elsewhere"]["server"], "Server-A");
+    // Once A no longer lists Tank, R's word is all there is.
+    t.call("POST", "/v1/heartbeat", Some(&a), Some(beat("Server-A", &[&kiwi]))).await;
+    let (_, v) = t.relations(&b, &kiwi.global_id()).await;
+    assert_eq!(rel(&v, &tank)["elsewhere"]["server"], "Server-R");
+    // An unlisted server isn't given out.
+    let mut hidden = beat("Server-R", &[&tank]);
+    hidden["listed"] = json!(false);
+    t.call("POST", "/v1/heartbeat", Some(&r), Some(hidden)).await;
+    let (_, v) = t.relations(&b, &kiwi.global_id()).await;
+    assert!(rel(&v, &tank).get("elsewhere").is_none());
+}
+
+#[tokio::test]
+async fn friendships_count_where_both_were_seen_online() {
+    let t = start("presence-vouched").await;
+    let (a, b, r) = (t.join("server-a").await, t.join("server-b").await, t.join("server-r").await);
+    let (kiwi, tank) = (identity::Identity::generate(), identity::Identity::generate());
+    // Both linked on R once, so R can say they're friends.
+    t.changes(
+        &r,
+        json!([link(&kiwi, "server-r", "Kiwi"), link(&tank, "server-r", "Tank"), { "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": true }]),
+    )
+    .await;
+    t.changes(&a, json!([link(&tank, "server-a", "Tank")])).await;
+    t.changes(&b, json!([link(&kiwi, "server-b", "Kiwi")])).await;
+    t.call("POST", "/v1/heartbeat", Some(&a), Some(beat("Server-A", &[&tank]))).await;
+    let (_, v) = t.relations(&b, &kiwi.global_id()).await;
+    assert_eq!(rel(&v, &tank)["friends"], true);
+    assert!(rel(&v, &tank).get("elsewhere").is_none(), "R never had them online");
+    // R can still say they were: this only makes it say more.
+    t.call("POST", "/v1/heartbeat", Some(&r), Some(beat("Server-R", &[&kiwi, &tank]))).await;
+    t.call("POST", "/v1/heartbeat", Some(&r), Some(beat("Server-R", &[]))).await;
+    let (_, v) = t.relations(&b, &kiwi.global_id()).await;
+    assert_eq!(rel(&v, &tank)["elsewhere"]["server"], "Server-A");
 }
 
 #[tokio::test]
