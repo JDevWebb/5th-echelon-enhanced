@@ -46,6 +46,8 @@ const PULL_ONLINE_EVERY: Duration = Duration::from_secs(60);
 const METRICS_EVERY: Duration = Duration::from_secs(60);
 const OUTBOX_BATCH: u32 = 50;
 const JOIN_RETRY: Duration = Duration::from_secs(60);
+/// Changes the coordinator refused for now (429) are sent again this much later.
+const CHANGES_WAIT: Duration = Duration::from_secs(60);
 
 /// One change for the coordinator, as stored in the outbox and sent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -498,6 +500,8 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
     let mut last_join: Option<Instant> = None;
     // What the coordinator last said is wrong with this server's names (logged when it changes).
     let mut warnings: Vec<String> = Vec::new();
+    // Changes the coordinator asked to send later (too many new links at once).
+    let mut changes_wait: Option<Instant> = None;
     loop {
         if secret.is_none() {
             secret = credentials(&base);
@@ -553,9 +557,13 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                     debug!(logger, "Federation: sending metrics failed: {e:#}");
                 }
             }
-            if let Err(e) = flush(&logger, &storage, &client).await {
+            if changes_wait.is_some_and(|t| t.elapsed() < CHANGES_WAIT) {
+                // The coordinator asked for them later; friend lists wait too.
+            } else if let Err(e) = flush(&logger, &storage, &client).await {
                 warn!(logger, "Federation: sending changes failed (will retry): {e:#}");
+                changes_wait = e.to_string().starts_with("429").then(Instant::now);
             } else {
+                changes_wait = None;
                 if last_online_pull.is_none_or(|t| t.elapsed() >= PULL_ONLINE_EVERY) {
                     last_online_pull = Some(Instant::now());
                     if let Ok(online) = storage.online_linked().await {

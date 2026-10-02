@@ -34,6 +34,7 @@ struct Args {
 #[argh(subcommand)]
 enum Command {
     RemoveServer(RemoveServer),
+    PurgeNames(PurgeNames),
     NewToken(NewToken),
     Admin(Admin),
 }
@@ -88,6 +89,17 @@ struct AdminOpenAccess {}
 #[argh(subcommand, name = "remove-server")]
 /// remove a member server: its links, and the names only it used
 struct RemoveServer {
+    /// the server's id (in the directory and its server-id.txt)
+    #[argh(positional)]
+    id: String,
+}
+
+#[derive(argh::FromArgs)]
+#[argh(subcommand, name = "purge-names")]
+/// release the names a member server reserved for identities that never
+/// played: its links made over an hour ago for identities never seen online
+/// and linked on no other server
+struct PurgeNames {
     /// the server's id (in the directory and its server-id.txt)
     #[argh(positional)]
     id: String,
@@ -280,6 +292,13 @@ async fn main() -> eyre::Result<()> {
             } else {
                 println!("No server {}.", r.id);
             }
+            return Ok(());
+        }
+        Some(Command::PurgeNames(p)) => {
+            let c = coordinator::Coordinator::open(&db.to_string_lossy(), String::new()).await?;
+            let n = c.purge_unused_names(&p.id).await?;
+            c.audit("console", None, "released a server's unused names", &format!("{}: {n} links", p.id)).await;
+            println!("Removed {n} unused links of {}, and the names only they held.", p.id);
             return Ok(());
         }
         None => {}

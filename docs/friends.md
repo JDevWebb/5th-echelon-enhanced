@@ -180,6 +180,7 @@ sudo bash install-server.sh --domain blacklist.example.com --coordinator-domain 
 1. Run `coordinator --listen 127.0.0.1:8700 --data /var/lib/coordinator` behind any reverse proxy with HTTPS.
 2. The join token is in `join-token.txt` in the data folder. `coordinator --data <folder> new-token` makes a new one (restart the coordinator afterwards); servers that already joined keep working.
 3. `coordinator --data <folder> remove-server <id>` removes a member server, its links, and the names only it used. Rotate the token too if it could join again.
+4. `coordinator --data <folder> purge-names <id>` releases the names a server reserved for identities that never played: its links made over an hour ago for identities never seen online and linked on no other server. Also in the admin UI, on the server's page.
 
 **A server's host names** (the ones players' signatures name) are first come, first served, 32 per server at most. A name another server holds stays theirs; the server logs a warning, and the admin UI shows it on the Servers page. The coordinator doesn't check who controls a name (it could fetch `https://<name>/api/info` and compare the server id, but names can be plain addresses or aliases without a certificate): give the join token to servers you trust, and remove one that takes another's names.
 
@@ -203,9 +204,9 @@ The server keeps its credentials in `federation.key` once it has joined. Its log
 | `POST /v1/join` `{token, server_id}` | a new server | joins; answers `{secret}` |
 | `POST /v1/heartbeat` | a member (Bearer secret) | its directory entry, every 30 seconds (6 a minute at most); answers `{update?, warnings?}`, e.g. a name of its that another server holds |
 | `GET /v1/servers` | anyone | the directory: servers seen in the last 2 minutes |
-| `POST /v1/changes` `{changes: [...]}` | a member | links, unlinks, friendships and blocks, in order; one result each |
+| `POST /v1/changes` `{changes: [...]}` | a member | links, unlinks, friendships and blocks, in order; one result each. `429` for the whole batch past 120 new links an hour (50,000 in all): the server sends it again later |
 | `GET /v1/relations/<identity>` | a member | a player's friends and blocks, for a player linked on that server |
-| `POST /v1/names/claim` `{name, global_id, time, signature}` | a member | reserves a name for a player (their link signature for that server); `409` if someone else has it |
+| `POST /v1/names/claim` `{name, global_id, time, signature}` | a member | reserves a name for a player (their link signature for that server, from the last five minutes); `409` if someone else has it |
 | `GET /v1/names/<name>` | a member | whether a name is reserved (`{claimed}`) |
 | `GET /v1/info` | anyone | name, version, number of servers |
 

@@ -312,6 +312,53 @@ async fn friendships_count_where_both_were_seen_online() {
 }
 
 #[tokio::test]
+async fn links_are_limited_per_server() {
+    let t = start("link-limits").await;
+    let a = t.join("server-a").await;
+    // An old signature isn't taken, nor one from the future.
+    let kiwi = identity::Identity::generate();
+    let r = t.changes(&a, json!([link_at(&kiwi, "server-a", "Kiwi", identity::now() - LINK_SIGNED_FOR - 1)])).await;
+    assert!(r[0]["error"].as_str().unwrap().contains("too old"), "{r:?}");
+    let r = t.changes(&a, json!([link_at(&kiwi, "server-a", "Kiwi", identity::now() + 3600)])).await;
+    assert!(r[0]["error"].as_str().unwrap().contains("too old"), "{r:?}");
+    let first = link(&kiwi, "server-a", "Kiwi");
+    let mut many = vec![first.clone()];
+    for i in 1..MAX_NEW_LINKS_PER_HOUR {
+        many.push(link(&identity::Identity::generate(), "server-a", &format!("P{i}")));
+    }
+    let r = t.changes(&a, json!(many)).await;
+    assert!(r.iter().all(|r| r.get("error").is_none()));
+    // One more this hour: refused whole, so the server sends it again later.
+    let (status, _) = t
+        .call(
+            "POST",
+            "/v1/changes",
+            Some(&a),
+            Some(json!({ "changes": [link(&identity::Identity::generate(), "server-a", "Late")] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    // A link it has already (a retry) is no new one.
+    let r = t.changes(&a, json!([first])).await;
+    assert!(r[0].get("error").is_none(), "{r:?}");
+}
+
+#[tokio::test]
+async fn unused_names_can_be_released() {
+    let t = start("purge").await;
+    let a = t.join("server-a").await;
+    let (kiwi, squat) = (identity::Identity::generate(), identity::Identity::generate());
+    t.changes(&a, json!([link(&kiwi, "server-a", "Kiwi"), link(&squat, "server-a", "Squat")])).await;
+    t.call("POST", "/v1/heartbeat", Some(&a), Some(beat("server-a", &[&kiwi]))).await;
+    assert_eq!(t.c.purge_unused_names("server-a").await.unwrap(), 0, "only links over an hour old");
+    sqlx::query("UPDATE links SET linked_at = linked_at - 7200").execute(&t.c.pool).await.unwrap();
+    sqlx::query("UPDATE names SET claimed_at = claimed_at - 7200").execute(&t.c.pool).await.unwrap();
+    assert_eq!(t.c.purge_unused_names("server-a").await.unwrap(), 1);
+    assert_eq!(t.c.owner("squat").await.unwrap(), None, "the name is free again");
+    assert_eq!(t.c.owner("kiwi").await.unwrap(), Some(kiwi.global_id()), "a player seen online keeps theirs");
+}
+
+#[tokio::test]
 async fn heartbeats_and_metrics_are_rate_limited() {
     let t = start("rates").await;
     let a = t.join("server-a").await;
@@ -378,7 +425,10 @@ async fn names_belong_to_one_player_across_the_group() {
     let t = start("names").await;
     let (a, b) = (t.join("server-a").await, t.join("server-b").await);
     let (kiwi, other) = (identity::Identity::generate(), identity::Identity::generate());
-    let claim = |who: &identity::Identity, host: &str, name: &str| json!({ "name": name, "global_id": who.global_id(), "host": host, "time": 5, "signature": who.sign_link(host, name, 5) });
+    let claim = |who: &identity::Identity, host: &str, name: &str| {
+        let now = identity::now();
+        json!({ "name": name, "global_id": who.global_id(), "host": host, "time": now, "signature": who.sign_link(host, name, now) })
+    };
 
     // Kiwi takes the name on A; nobody else gets it on B, whatever the case; Kiwi does.
     let (status, _) = t.call("POST", "/v1/names/claim", Some(&a), Some(claim(&kiwi, "server-a", "Kiwi"))).await;
@@ -390,6 +440,12 @@ async fn names_belong_to_one_player_across_the_group() {
     let (_, v) = t.call("GET", "/v1/names/kIwI", Some(&b), None).await;
     assert_eq!(v, json!({ "claimed": true }), "taken, but whose isn't said");
 
+    // Claims are made while the player waits: an old signature isn't one.
+    let mut old = claim(&other, "server-b", "Fresh");
+    old["time"] = json!(5);
+    old["signature"] = json!(other.sign_link("server-b", "Fresh", 5));
+    let (status, _) = t.call("POST", "/v1/names/claim", Some(&b), Some(old)).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
     // A claim signed for another server doesn't count.
     let (status, _) = t.call("POST", "/v1/names/claim", Some(&b), Some(claim(&other, "server-a", "Fresh"))).await;
     assert_eq!(status, StatusCode::FORBIDDEN);

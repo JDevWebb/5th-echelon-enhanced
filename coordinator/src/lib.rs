@@ -64,6 +64,13 @@ const CLAIM_GRACE_SECS: i64 = 60 * 60;
 const MAX_UNLINKED_CLAIMS_PER_HOUR: i64 = 200;
 /// The largest request body.
 const MAX_BODY: usize = 256 * 1024;
+/// New links one server may make in an hour, and links it may have in all: a member can't
+/// reserve names by the thousand with throwaway identities.
+const MAX_NEW_LINKS_PER_HOUR: i64 = 120;
+const MAX_LINKS_PER_SERVER: i64 = 50_000;
+/// A link's signature is taken this long after it was made (a server queues links while the
+/// coordinator is down, and sends them when it's back).
+const LINK_SIGNED_FOR: i64 = 7 * 24 * 3600;
 /// Host names (and addresses) one server may hold.
 const MAX_SERVER_NAMES: i64 = 32;
 
@@ -114,6 +121,11 @@ impl Limit {
         times.push_back(now);
         true
     }
+}
+
+/// Whether a link signed at `time` may still be taken at `now`.
+fn link_signed_lately(time: i64, now: i64) -> bool {
+    time <= now + identity::MAX_CLOCK_SKEW && now - time <= LINK_SIGNED_FOR
 }
 
 /// Whether `name` may be a player's name (as servers accept new ones).
@@ -332,6 +344,29 @@ impl Coordinator {
         let done = sqlx::query("DELETE FROM servers WHERE id = ?").bind(server_id).execute(&self.pool).await?;
         self.sweep().await?;
         Ok(done.rows_affected() > 0)
+    }
+
+    /// Releases the names `server` reserved that nobody uses: its links made over an hour
+    /// ago for identities never seen online anywhere and linked on no other server (throwaway
+    /// identities, made to squat names), and the names only those links held. For the
+    /// operator (`coordinator purge-names`, or the admin UI). Answers how many links went.
+    ///
+    /// A real player is online as they link, so their server reports them within 30 seconds
+    /// (links from before this was recorded count as seen). One that left sooner, and never
+    /// came back, loses their link too. A server that also reports its throwaway identities
+    /// online isn't caught by this: remove it instead.
+    pub async fn purge_unused_names(&self, server_id: &str) -> sqlx::Result<u64> {
+        let done = sqlx::query(
+            "DELETE FROM links WHERE server_id = ? AND linked_at < ?
+               AND NOT EXISTS (SELECT 1 FROM seen_online s WHERE s.global_id = links.global_id)
+               AND NOT EXISTS (SELECT 1 FROM links o WHERE o.global_id = links.global_id AND o.server_id != links.server_id)",
+        )
+        .bind(server_id)
+        .bind(identity::now() - CLAIM_GRACE_SECS)
+        .execute(&self.pool)
+        .await?;
+        self.sweep().await?;
+        Ok(done.rows_affected())
     }
 
     /// Whether `host` is one of `server`'s names.
@@ -629,29 +664,37 @@ impl Coordinator {
                 if !self.owns_host(server, &host).await.map_err(|e| e.to_string())? {
                     return Err(format!("{host} isn't one of this server's names"));
                 }
-                // The server checked the time when the player linked; a change may arrive
-                // hours later, after an outage, so only the signature is checked here.
+                // The server checked the time when the player linked (within minutes); a change
+                // may arrive days later, after an outage, so here it's only a bound: an old
+                // signature can't be brought back.
+                if !link_signed_lately(time, now) {
+                    return Err("the player's signature is too old, or from the future".into());
+                }
                 if !identity::verify(&global_id, &identity::link_message(&host, &username, time), &signature) {
                     return Err("the player's signature doesn't match".into());
                 }
-                let mut tx = self.pool.begin().await.map_err(|e| e.to_string())?;
-                // One identity per account and one account per identity, on each server.
-                sqlx::query("DELETE FROM links WHERE server_id = ? AND (username = ? OR global_id = ?)")
-                    .bind(server)
-                    .bind(&username)
-                    .bind(&global_id)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                sqlx::query("INSERT INTO links (global_id, server_id, username, linked_at) VALUES (?, ?, ?, ?)")
-                    .bind(&global_id)
-                    .bind(server)
-                    .bind(&username)
-                    .bind(now)
-                    .execute(&mut *tx)
-                    .await
-                    .map_err(|e| e.to_string())?;
-                tx.commit().await.map_err(|e| e.to_string())?;
+                // The same link again (a retry) changes nothing: it isn't a new link, and keeps
+                // its time.
+                if !self.has_link(server, &global_id, &username).await.map_err(|e| e.to_string())? {
+                    let mut tx = self.pool.begin().await.map_err(|e| e.to_string())?;
+                    // One identity per account and one account per identity, on each server.
+                    sqlx::query("DELETE FROM links WHERE server_id = ? AND (username = ? OR global_id = ?)")
+                        .bind(server)
+                        .bind(&username)
+                        .bind(&global_id)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    sqlx::query("INSERT INTO links (global_id, server_id, username, linked_at) VALUES (?, ?, ?, ?)")
+                        .bind(&global_id)
+                        .bind(server)
+                        .bind(&username)
+                        .bind(now)
+                        .execute(&mut *tx)
+                        .await
+                        .map_err(|e| e.to_string())?;
+                    tx.commit().await.map_err(|e| e.to_string())?;
+                }
                 // The name comes with the link: the player's own, or someone else's already.
                 let ours = self.claim(&global_id, &username, now).await.map_err(|e| e.to_string())?;
                 self.release_unused(&global_id, now).await.map_err(|e| e.to_string())?;
@@ -753,6 +796,46 @@ impl Coordinator {
         };
         sources.execute(&mut *tx).await?;
         tx.commit().await
+    }
+
+    async fn has_link(&self, server: &str, global_id: &str, username: &str) -> sqlx::Result<bool> {
+        Ok(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM links WHERE server_id = ? AND global_id = ? AND username = ?")
+                .bind(server)
+                .bind(global_id)
+                .bind(username)
+                .fetch_one(&self.pool)
+                .await?
+                > 0,
+        )
+    }
+
+    /// Whether `server` may make the new links in `changes` now (within
+    /// [`MAX_NEW_LINKS_PER_HOUR`] and [`MAX_LINKS_PER_SERVER`]). Repeats of links it has
+    /// don't count.
+    async fn links_allowed(&self, server: &str, changes: &[Value]) -> sqlx::Result<Result<(), &'static str>> {
+        let mut new = 0;
+        for change in changes.iter().filter(|c| c["op"] == "link") {
+            let text = |k: &str| change[k].as_str().unwrap_or_default();
+            if !self.has_link(server, text("global_id"), text("username")).await? {
+                new += 1;
+            }
+        }
+        if new == 0 {
+            return Ok(Ok(()));
+        }
+        let (lately, all): (i64, i64) = sqlx::query_as("SELECT COALESCE(SUM(linked_at > ?), 0), COUNT(*) FROM links WHERE server_id = ?")
+            .bind(identity::now() - 3600)
+            .bind(server)
+            .fetch_one(&self.pool)
+            .await?;
+        Ok(if all + new > MAX_LINKS_PER_SERVER {
+            Err("this server has as many links as a server may have")
+        } else if lately + new > MAX_NEW_LINKS_PER_HOUR {
+            Err("too many new links this hour; send them again later")
+        } else {
+            Ok(())
+        })
     }
 }
 
@@ -954,6 +1037,15 @@ async fn changes(State(c): State<Shared>, headers: HeaderMap, Json(body): Json<V
     if !(0..list.len()).all(|_| c.changes.check(&server)) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many changes; slow down");
     }
+    // Refused whole, so the server keeps them and tries again (a refused change is dropped).
+    match c.links_allowed(&server, &list).await {
+        Ok(Ok(())) => {}
+        Ok(Err(why)) => {
+            tracing::warn!("server {server}: {why}");
+            return fail(StatusCode::TOO_MANY_REQUESTS, why);
+        }
+        Err(e) => return internal(e),
+    }
     let mut results = Vec::with_capacity(list.len());
     for change in &list {
         results.push(match c.apply(&server, change).await {
@@ -1046,6 +1138,10 @@ async fn claim_name(State(c): State<Shared>, headers: HeaderMap, Json(req): Json
         Ok(true) => {}
         Ok(false) => return fail(StatusCode::FORBIDDEN, "that host isn't one of this server's names"),
         Err(e) => return internal(e),
+    }
+    // Claimed while the player waits, so the signature is minutes old at most.
+    if !identity::fresh(req.time, identity::now()) {
+        return fail(StatusCode::FORBIDDEN, "the player's signature is too old, or from the future");
     }
     if !identity::is_global_id(&req.global_id) || !identity::verify(&req.global_id, &identity::link_message(&req.host, &req.name, req.time), &req.signature) {
         return fail(StatusCode::FORBIDDEN, "the player's signature doesn't match");

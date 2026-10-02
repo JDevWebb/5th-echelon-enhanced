@@ -192,7 +192,8 @@ pub fn router(c: Shared) -> Router {
         .route("/labels", axum::routing::put(set_label))
         .route("/updates", get(updates))
         .route("/updates/{action}", post(update_action))
-        .route("/servers/{id}", delete(remove_server));
+        .route("/servers/{id}", delete(remove_server))
+        .route("/servers/{id}/purge-names", post(purge_names));
     Router::new()
         .route("/", get(page))
         .route("/app.js", get(asset))
@@ -1563,6 +1564,22 @@ async fn remove_server(State(c): State<Shared>, Extension(client): Extension<Cli
             ok(json!({ "message": format!("Removed {id}. Make a new join token if it shouldn't join again.") }))
         }
         Ok(false) => fail(StatusCode::NOT_FOUND, "no such server"),
+        Err(e) => internal(e),
+    }
+}
+
+/// Releases the names a server reserved for identities that never played (see
+/// [`Coordinator::purge_unused_names`]).
+async fn purge_names(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    let s = match c.recent(&headers, &client).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    match c.purge_unused_names(&id).await {
+        Ok(n) => {
+            c.audit(&s.username, Some(&client), "released a server's unused names", &format!("{id}: {n} links")).await;
+            ok(json!({ "message": format!("Removed {n} unused links of {id}, and the names only they held.") }))
+        }
         Err(e) => internal(e),
     }
 }

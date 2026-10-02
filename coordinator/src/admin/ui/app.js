@@ -736,6 +736,12 @@ async function serverDetail(id) {
   return [
     top(serverName(sv), [sv.listing?.region, sv.listing?.host, `id ${sv.id}`].filter(Boolean).join(' · '),
       rangePicker('server', RANGES, 86400),
+      h('button.small', {
+        async onclick() {
+          if (!await confirmBox(`Release ${serverName(sv)}'s unused names?`, 'Its links made over an hour ago for identities never seen online, and linked nowhere else, go with the names only they held. For a server reserving names with throwaway identities.', 'Release names', true)) return;
+          try { toast((await api('POST', `/servers/${encodeURIComponent(id)}/purge-names`)).message); } catch (e) { toast(e.message, true); }
+        },
+      }, 'Release unused names'),
       h('button.danger.small', {
         async onclick() {
           if (!await confirmBox(`Remove ${serverName(sv)}?`, 'Its links and the names only it used go. It can join again with the join token unless you make a new one.', 'Remove server', true)) return;
