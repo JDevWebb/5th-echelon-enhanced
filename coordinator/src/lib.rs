@@ -321,6 +321,8 @@ pub struct Coordinator {
     pings: Limit,
     heartbeats: Limit,
     metrics: Limit,
+    /// The release this machine's updater was last asked for, and when.
+    own_update_asked: std::sync::Mutex<Option<(String, i64)>>,
     /// Where player addresses are (for launchers' ping reports).
     pub geo: std::sync::OnceLock<Arc<geo::Geo>>,
     /// The coordinator's folder (for its own update requests).
@@ -367,6 +369,7 @@ impl Coordinator {
             // for a retry.
             heartbeats: Limit::new(6),
             metrics: Limit::new(2),
+            own_update_asked: std::sync::Mutex::new(None),
             geo: std::sync::OnceLock::new(),
             data_dir: std::sync::OnceLock::new(),
             admin: std::sync::OnceLock::new(),

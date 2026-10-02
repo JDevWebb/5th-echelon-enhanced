@@ -1541,12 +1541,10 @@ async fn update_action(
             Ok((v, page, published)) => c
                 .release_found(&v, &page, &published)
                 .await
-                .map(|started| {
-                    if started {
-                        format!("{v} is new: rolling it out")
-                    } else {
-                        format!("{v} is the latest signed release")
-                    }
+                .map(|found| match found {
+                    crate::updates::Found::Started => format!("{v} is new: rolling it out"),
+                    crate::updates::Found::Kept => format!("{v} is the latest signed release"),
+                    crate::updates::Found::Held(why) => format!("{v} isn't rolled out on its own ({why})"),
                 })
                 .map_err(|e| e.to_string()),
             Err(e) => Err(e),

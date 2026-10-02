@@ -49,6 +49,10 @@ const FRESH: i64 = 180;
 pub const DELIST_AFTER: i64 = 24 * 3600;
 /// The largest release listing or checksum file.
 const MAX_SMALL: usize = 1024 * 1024;
+/// A release this machine's updater couldn't install isn't asked for again for this long.
+const OWN_UPDATE_BACKOFF: i64 = 6 * 3600;
+/// Asked for, a release has this long to be installed before it's asked for again.
+const OWN_UPDATE_WAIT: i64 = 15 * 60;
 
 /// A release number: 1.4.0, or 1.4.0-rc.1 (before 1.4.0).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -67,6 +71,12 @@ impl Version {
             return None;
         }
         Some(Self { numbers, pre })
+    }
+}
+
+impl Version {
+    pub fn major(&self) -> u64 {
+        self.numbers.0
     }
 }
 
@@ -89,6 +99,37 @@ impl Ord for Version {
             }
         })
     }
+}
+
+/// Why a signed release found on GitHub isn't rolled out on its own, if it isn't: it must be
+/// newer than the release being rolled out (or, with none yet, not older than this
+/// coordinator's), and at most one major version past it. An admin can still roll it out.
+pub fn held_back(version: &str, target: Option<&str>, running: &str) -> Option<String> {
+    let (base, must_be_newer) = match target {
+        Some(t) => (t, true),
+        None => (running, false),
+    };
+    let (Some(v), Some(b)) = (Version::parse(version), Version::parse(base)) else {
+        return None;
+    };
+    if v < b || (must_be_newer && v == b) {
+        return Some(format!("{version} isn't newer than {base}"));
+    }
+    if v.major() > b.major() + 1 {
+        return Some(format!("{version} skips a major version past {base}; roll it out by hand if it's right"));
+    }
+    None
+}
+
+/// What became of a release found on GitHub.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Found {
+    /// Rolled out from now.
+    Started,
+    /// Nothing to do: the rollout is pinned, or it's the target already.
+    Kept,
+    /// Recorded, not rolled out on its own (see [`held_back`]).
+    Held(String),
 }
 
 /// Whether `a` is a newer release than `b` (anything beats an unparsable one).
@@ -167,9 +208,9 @@ impl Coordinator {
             .collect())
     }
 
-    /// Records a signed release, and rolls it out when it's newer than the
-    /// target and the rollout isn't pinned.
-    pub async fn release_found(&self, version: &str, page: &str, published_at: &str) -> sqlx::Result<bool> {
+    /// Records a signed release, and rolls it out when the rollout isn't
+    /// pinned and nothing holds it back (see [`held_back`]).
+    pub async fn release_found(&self, version: &str, page: &str, published_at: &str) -> sqlx::Result<Found> {
         sqlx::query("INSERT OR IGNORE INTO releases (version, page, published_at, seen_at) VALUES (?, ?, ?, ?)")
             .bind(version)
             .bind(page)
@@ -178,11 +219,15 @@ impl Coordinator {
             .execute(&self.pool)
             .await?;
         let r = self.rollout().await?;
-        if r.pinned || r.target.as_deref().is_some_and(|t| !newer(version, t)) {
-            return Ok(false);
+        if r.pinned || r.target.as_deref() == Some(version) {
+            return Ok(Found::Kept);
+        }
+        if let Some(why) = held_back(version, r.target.as_deref(), env!("FE_RELEASE")) {
+            tracing::warn!("Rollout: not rolling out {version} on its own: {why}");
+            return Ok(Found::Held(why));
         }
         self.start_rollout(version, "a new signed release").await?;
-        Ok(true)
+        Ok(Found::Started)
     }
 
     /// Rolls out `version` from the start (a canary first).
@@ -317,10 +362,33 @@ impl Coordinator {
     }
 
     /// Asks this machine's updater (if the installer set one up next to the
-    /// coordinator) for `version`, as servers do.
+    /// coordinator) for `version`, as servers do: once, and not again while
+    /// it's at it, nor for hours after it couldn't install it (each try
+    /// restarts the services here).
     fn request_own_update(&self, version: &str) {
         let Some(dir) = self.data_dir.get() else { return };
         if version == env!("FE_RELEASE") || !std::path::Path::new("/etc/systemd/system/5th-echelon-update.path").exists() {
+            return;
+        }
+        let now = identity::now();
+        let mut asked = self.own_update_asked.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if asked.as_ref().is_some_and(|(v, at)| v == version && now - at < OWN_UPDATE_WAIT) {
+            return;
+        }
+        // What the updater last did (it writes this beside the request).
+        let status: Value = std::fs::File::open(dir.join("update-status.json"))
+            .ok()
+            .and_then(|f| {
+                let mut text = String::new();
+                std::io::Read::read_to_string(&mut std::io::Read::take(f, 4096), &mut text).ok()?;
+                serde_json::from_str(&text).ok()
+            })
+            .unwrap_or_default();
+        if let Some(why) = own_update_waits(version, &status, now) {
+            if asked.as_ref().is_none_or(|(v, _)| v != version) {
+                tracing::warn!("Rollout: not asking this machine's updater for {version}: {why}");
+                *asked = Some((version.to_string(), now));
+            }
             return;
         }
         let file = dir.join("update-request");
@@ -330,6 +398,7 @@ impl Coordinator {
         let tmp = dir.join("update-request.tmp");
         if std::fs::write(&tmp, format!("{version}\n")).and_then(|()| std::fs::rename(&tmp, &file)).is_ok() {
             tracing::info!("Rollout: asked this machine's updater for {version}");
+            *asked = Some((version.to_string(), now));
         }
     }
 
@@ -401,7 +470,35 @@ impl Coordinator {
     pub async fn releases(&self) -> sqlx::Result<Vec<(String, String, String, i64)>> {
         let mut list: Vec<(String, String, String, i64)> = sqlx::query_as("SELECT version, page, published_at, seen_at FROM releases").fetch_all(&self.pool).await?;
         list.sort_by(|a, b| Version::parse(&b.0).cmp(&Version::parse(&a.0)));
+        for (version, page, ..) in &mut list {
+            *page = release_page(version, page);
+        }
         Ok(list)
+    }
+}
+
+/// Why this machine's updater shouldn't be asked for `version` now, from its
+/// last status (`update-status.json`): it couldn't install it lately, or it's
+/// installing it.
+fn own_update_waits(version: &str, status: &Value, now: i64) -> Option<String> {
+    if status["version"].as_str() != Some(version) {
+        return None;
+    }
+    let ago = now - status["at"].as_i64().unwrap_or(0);
+    match status["state"].as_str().unwrap_or_default() {
+        state @ ("failed" | "rolled-back") if ago < OWN_UPDATE_BACKOFF => Some(format!("it {state} {ago} s ago; trying again {} hours after", OWN_UPDATE_BACKOFF / 3600)),
+        "updating" if ago < OWN_UPDATE_WAIT => Some("it's installing it".into()),
+        _ => None,
+    }
+}
+
+/// A release's page, for admins to open: GitHub's, or else the one made from
+/// the repository and version.
+fn release_page(version: &str, page: &str) -> String {
+    if page.starts_with("https://github.com/") && !page.contains(['"', '<', '>', ' ', '\\']) {
+        page.to_string()
+    } else {
+        format!("https://github.com/{REPO}/releases/tag/v{version}")
     }
 }
 
@@ -451,14 +548,15 @@ pub async fn latest_signed(http: &reqwest::Client) -> Result<(String, String, St
     if !identity::release_signed(&sums, &signature) {
         return Err(format!("release {version} isn't signed with the release key"));
     }
+    // TODO(version-bound signatures): once SHA256SUMS carries a signed `version` line, check
+    // here that it's this tag's `version`, and refuse the release otherwise (an old signed
+    // release republished under a new tag would verify until then; `held_back` limits what
+    // that can do to a rollout).
     if !sums.lines().any(|l| l.split_whitespace().nth(1).map(|n| n.trim_start_matches('*')) == Some(SERVER_ASSET)) {
         return Err(format!("release {version} has no {SERVER_ASSET}"));
     }
-    Ok((
-        version,
-        release["html_url"].as_str().unwrap_or_default().to_string(),
-        release["published_at"].as_str().unwrap_or_default().to_string(),
-    ))
+    let page = release_page(&version, release["html_url"].as_str().unwrap_or_default());
+    Ok((version, page, release["published_at"].as_str().unwrap_or_default().to_string()))
 }
 
 #[cfg(test)]
@@ -478,6 +576,44 @@ mod tests {
         assert!(Version::parse("1.2").is_none());
         assert!(Version::parse("1.2.3-").is_none());
         assert!(Version::parse("1.2.3-a;b").is_none());
+    }
+
+    #[test]
+    fn releases_found_are_held_back_unless_newer_and_close() {
+        assert_eq!(held_back("1.4.1", Some("1.4.0"), "1.4.0"), None);
+        assert_eq!(held_back("2.0.0", Some("1.4.0"), "1.4.0"), None, "the next major version");
+        assert!(held_back("1.4.0", Some("1.4.0"), "1.4.0").is_some(), "the target again");
+        assert!(held_back("1.3.9", Some("1.4.0"), "1.4.0").is_some(), "older than the target");
+        assert!(held_back("3.0.0", Some("1.4.0"), "1.4.0").is_some(), "skips a major version");
+        // Nothing rolled out yet: what this coordinator runs, or newer.
+        assert_eq!(held_back("1.4.0", None, "1.4.0"), None);
+        assert!(held_back("1.3.0", None, "1.4.0").is_some());
+        assert_eq!(held_back("1.4.0", None, "unknown"), None);
+    }
+
+    #[test]
+    fn own_updates_back_off_after_a_failure() {
+        let status = |state: &str, at: i64| serde_json::json!({ "state": state, "version": "1.5.0", "from": "1.4.0", "at": at, "error": "" });
+        assert!(own_update_waits("1.5.0", &status("rolled-back", 1000), 1000 + 60).is_some());
+        assert!(own_update_waits("1.5.0", &status("failed", 1000), 1000 + OWN_UPDATE_BACKOFF - 1).is_some());
+        assert_eq!(own_update_waits("1.5.0", &status("failed", 1000), 1000 + OWN_UPDATE_BACKOFF), None, "hours later");
+        assert_eq!(own_update_waits("1.5.1", &status("failed", 1000), 1000), None, "another release");
+        assert!(own_update_waits("1.5.0", &status("updating", 1000), 1010).is_some());
+        assert_eq!(own_update_waits("1.5.0", &status("done", 1000), 1010), None);
+        assert_eq!(own_update_waits("1.5.0", &Value::Null, 1010), None, "no status yet");
+    }
+
+    #[test]
+    fn release_pages_are_on_github() {
+        assert_eq!(
+            release_page("1.0.0", "https://github.com/x/y/releases/tag/v1.0.0"),
+            "https://github.com/x/y/releases/tag/v1.0.0"
+        );
+        assert_eq!(release_page("1.0.0", "javascript:alert(1)"), format!("https://github.com/{REPO}/releases/tag/v1.0.0"));
+        assert_eq!(
+            release_page("1.0.0", "https://github.com.evil.example/"),
+            format!("https://github.com/{REPO}/releases/tag/v1.0.0")
+        );
     }
 
     #[test]

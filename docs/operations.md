@@ -17,7 +17,9 @@ A coordinator does more than share friends. It keeps every server in its network
 3. **The rest follow.**
    - Each server updates when it has no players on.
    - Two hours into the stage, a server updates even with players on.
-4. **The coordinator updates itself** once the canary has proved the release, when the installer's updater is on its machine.
+4. **The coordinator updates itself** once the canary has proved the release, when the installer's updater is on its machine. If that updater fails or rolls back, the coordinator doesn't ask for that release again for 6 hours (it reads `update-status.json`), so a bad release doesn't restart its machine every 30 seconds.
+
+**What's rolled out on its own:** a release newer than the one being rolled out (with none yet, not older than the coordinator's own), and at most one major version past it. Anything else is recorded, and an admin can roll it out (Roll this out). Until signatures name the version, an old signed release published again under a new tag would verify; this keeps it from moving the rollout on its own.
 
 ### On each machine
 
@@ -71,7 +73,7 @@ A member server drops out of the server directory, and players' launchers stop o
 | Halt | Stop the rollout where it is |
 | Roll back to … | Every server returns to the release before (from its kept copy, so no download), and the rollout is pinned there |
 | Roll this out | Roll out an earlier signed release, with a canary, and pin it |
-| Check GitHub now | Look for a new release now |
+| Check GitHub now | Look for a new release now (and says why one isn't rolled out on its own) |
 
 ## Metrics
 
