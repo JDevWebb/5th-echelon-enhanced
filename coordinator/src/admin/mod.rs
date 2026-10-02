@@ -195,6 +195,12 @@ pub fn router(c: Shared) -> Router {
         .route("/updates/{action}", post(update_action))
         .route("/servers/{id}", delete(remove_server))
         .route("/servers/{id}/purge-names", post(purge_names))
+        .route("/bandwidth", get(bandwidth))
+        .route("/players-report", get(players_report))
+        .route("/allowances", axum::routing::put(set_allowance))
+        .route("/alerts", get(alerts))
+        .route("/alerts/webhook", axum::routing::put(set_webhook))
+        .route("/alerts/test", post(test_webhook))
         .route("/live", get(live::live));
     Router::new()
         .route("/", get(page))
@@ -1433,6 +1439,7 @@ impl Coordinator {
             "rollout": rollout,
             "servers": servers,
             "peak_24h": peak,
+            "alerts": self.open_alerts().await?,
             "attribution": geo::ATTRIBUTION,
         }))
     }
@@ -1517,6 +1524,136 @@ async fn set_label(State(c): State<Shared>, Extension(client): Extension<Client>
             ok(json!({}))
         }
         Err(e) => internal(e),
+    }
+}
+
+/// A report's period: a day, a week, 30 days or a year.
+fn report_range(r: i64) -> Option<i64> {
+    [86_400, 7 * 86_400, 30 * 86_400, 365 * 86_400].contains(&r).then_some(r)
+}
+
+#[derive(Deserialize)]
+struct ReportQuery {
+    #[serde(default)]
+    range: i64,
+    #[serde(default)]
+    server: Option<String>,
+}
+
+async fn bandwidth(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Query(q): Query<ReportQuery>) -> Response {
+    if let Err(r) = c.full(&headers, &client).await {
+        return r;
+    }
+    let Some(range) = report_range(q.range) else {
+        return fail(StatusCode::BAD_REQUEST, "not a range");
+    };
+    c.bandwidth(range, q.server.as_deref().filter(|s| !s.is_empty())).await.map_or_else(internal, ok)
+}
+
+async fn players_report(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Query(q): Query<ReportQuery>) -> Response {
+    if let Err(r) = c.full(&headers, &client).await {
+        return r;
+    }
+    let Some(range) = report_range(q.range) else {
+        return fail(StatusCode::BAD_REQUEST, "not a range");
+    };
+    c.players_report(range).await.map_or_else(internal, ok)
+}
+
+#[derive(Deserialize)]
+struct Allowance {
+    server: String,
+    /// Terabytes a month; 0 for none.
+    tb: f64,
+}
+
+async fn set_allowance(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Json(a): Json<Allowance>) -> Response {
+    let s = match c.full(&headers, &client).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    if !(0.0..=10_000.0).contains(&a.tb) || !a.tb.is_finite() {
+        return fail(StatusCode::BAD_REQUEST, "an allowance is 0 (none) to 10,000 TB");
+    }
+    let known: Option<String> = match sqlx::query_scalar("SELECT id FROM servers WHERE id = ?").bind(&a.server).fetch_optional(&c.pool).await {
+        Ok(k) => k,
+        Err(e) => return internal(e),
+    };
+    if known.is_none() {
+        return fail(StatusCode::NOT_FOUND, "no such server");
+    }
+    let key = format!("allowance:{}", a.server);
+    let done = if a.tb > 0.0 {
+        c.set_setting(&key, &a.tb.to_string()).await
+    } else {
+        sqlx::query("DELETE FROM settings WHERE key = ?").bind(&key).execute(&c.pool).await.map(drop)
+    };
+    match done {
+        Ok(()) => {
+            let what = if a.tb > 0.0 { format!("{} TB a month", a.tb) } else { "none".into() };
+            c.audit(&s.username, Some(&client), "set a traffic allowance", &format!("{}: {what}", a.server)).await;
+            ok(json!({}))
+        }
+        Err(e) => internal(e),
+    }
+}
+
+async fn alerts(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap) -> Response {
+    if let Err(r) = c.full(&headers, &client).await {
+        return r;
+    }
+    c.alerts().await.map_or_else(internal, ok)
+}
+
+#[derive(Deserialize)]
+struct Webhook {
+    url: String,
+}
+
+/// Sets (or, empty, removes) the alert webhook. It carries the network's alerts out, so
+/// it wants a second factor proved lately.
+async fn set_webhook(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Json(w): Json<Webhook>) -> Response {
+    let s = match c.recent(&headers, &client).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let done = if w.url.trim().is_empty() {
+        sqlx::query("DELETE FROM settings WHERE key = ?")
+            .bind(crate::alerts::WEBHOOK_SETTING)
+            .execute(&c.pool)
+            .await
+            .map(drop)
+    } else {
+        match crate::alerts::valid_webhook(&w.url) {
+            Ok(u) => c.set_setting(crate::alerts::WEBHOOK_SETTING, u.as_str()).await,
+            Err(why) => return fail(StatusCode::BAD_REQUEST, &why),
+        }
+    };
+    match done {
+        Ok(()) => {
+            let host = reqwest::Url::parse(w.url.trim())
+                .ok()
+                .and_then(|u| u.host_str().map(str::to_string))
+                .unwrap_or_else(|| "none".into());
+            c.audit(&s.username, Some(&client), "set the alert webhook", &host).await;
+            ok(json!({}))
+        }
+        Err(e) => internal(e),
+    }
+}
+
+async fn test_webhook(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap) -> Response {
+    if let Err(r) = c.full(&headers, &client).await {
+        return r;
+    }
+    let url = match c.setting(crate::alerts::WEBHOOK_SETTING).await {
+        Ok(Some(u)) => u,
+        Ok(None) => return fail(StatusCode::BAD_REQUEST, "no webhook set"),
+        Err(e) => return internal(e),
+    };
+    match crate::alerts::post_webhook(&url, "✅ Test from the SCBL Network admin UI: alerts will arrive here.").await {
+        Ok(()) => ok(json!({ "message": "Sent. Check the channel." })),
+        Err(why) => fail(StatusCode::BAD_GATEWAY, &why),
     }
 }
 

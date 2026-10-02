@@ -224,6 +224,9 @@ fn spawn_jobs(c: &Arc<coordinator::Coordinator>) {
     every(std::time::Duration::from_secs(60), c, "pinging servers", |c| {
         Box::pin(async move { c.ping_servers().await.map_err(|e| e.to_string()) })
     });
+    every(std::time::Duration::from_secs(60), c, "alerts", |c| {
+        Box::pin(async move { c.check_alerts().await.map_err(|e| e.to_string()) })
+    });
     every(std::time::Duration::from_secs(600), c, "admin sessions", |c| {
         Box::pin(async move { c.sweep_admin().await.map_err(|e| e.to_string()) })
     });

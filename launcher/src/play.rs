@@ -15,9 +15,9 @@ use setup::diagnose::Status;
 use setup::game::GameVersion;
 
 use crate::app::App;
-use crate::app::View;
 use crate::app::Game;
 use crate::app::Notices;
+use crate::app::View;
 use crate::flow;
 use crate::flow::Support;
 use crate::task::Slot;
@@ -118,12 +118,7 @@ impl Play {
     /// The identity's short form ("K7QF-2M9D"), if this PC has one.
     fn identity_short(&mut self) -> Option<String> {
         self.identity
-            .get_or_insert_with(|| {
-                setup::player_identity::load()
-                    .ok()
-                    .flatten()
-                    .map(|id| identity::short(&id.global_id()))
-            })
+            .get_or_insert_with(|| setup::player_identity::load().ok().flatten().map(|id| identity::short(&id.global_id())))
             .clone()
     }
 
@@ -336,15 +331,20 @@ fn wizard(ui: &mut egui::Ui, step: usize, body: impl FnOnce(&mut egui::Ui)) {
                                 ui.set_min_height(470.0);
                             }
                             ui.vertical(|ui| {
-                            theme::mark(ui, 12.0);
-                            ui.add_space(14.0);
-                            ui.label(theme::display("Get online in a minute", 28.0));
-                            ui.add_space(6.0);
-                            ui.label(RichText::new("The launcher sets everything up and keeps the game's original files, so you can undo it any time. You need your own copy of the game.").color(theme::SOFT));
-                            ui.add_space(16.0);
-                            for (i, name) in STEPS.iter().enumerate() {
-                                step_row(ui, i, name, step);
-                            }
+                                theme::mark(ui, 12.0);
+                                ui.add_space(14.0);
+                                ui.label(theme::display("Get online in a minute", 28.0));
+                                ui.add_space(6.0);
+                                ui.label(
+                                    RichText::new(
+                                        "The launcher sets everything up and keeps the game's original files, so you can undo it any time. You need your own copy of the game.",
+                                    )
+                                    .color(theme::SOFT),
+                                );
+                                ui.add_space(16.0);
+                                for (i, name) in STEPS.iter().enumerate() {
+                                    step_row(ui, i, name, step);
+                                }
                             });
                         })
                         .response
@@ -373,7 +373,8 @@ fn wizard(ui: &mut egui::Ui, step: usize, body: impl FnOnce(&mut egui::Ui)) {
                         side
                     });
                     let side = egui::Rect::from_min_max(row.response.rect.min, egui::pos2(row.inner.right(), row.response.rect.bottom()));
-                    ui.painter().set(fill, egui::Shape::rect_filled(side, egui::CornerRadius { nw: 18, ne: 0, sw: 18, se: 0 }, theme::SUNKEN));
+                    ui.painter()
+                        .set(fill, egui::Shape::rect_filled(side, egui::CornerRadius { nw: 18, ne: 0, sw: 18, se: 0 }, theme::SUNKEN));
                 }
             });
     });
@@ -483,33 +484,53 @@ fn setup_screen(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut 
         ui.label(RichText::new(if naming { "Pick your name" } else { "Choose a server" }).family(theme::strong()).size(24.0));
         ui.add_space(4.0);
         if let Some(server) = &play.needs_name {
-            ui.label(RichText::new(format!("You don't have an account on {server} yet. Choose the name other players will see; your identity signs you in to it from now on.")).color(theme::SOFT));
+            ui.label(
+                RichText::new(format!(
+                    "You don't have an account on {server} yet. Choose the name other players will see; your identity signs you in to it from now on."
+                ))
+                .color(theme::SOFT),
+            );
         } else {
             ui.label(RichText::new("Pick the closest server, or type a server's or a network's address. Connecting also installs the 5th Echelon client, keeping the game's original file so you can undo it.").color(theme::SOFT));
         }
         ui.add_space(14.0);
-        egui::Frame::new().fill(theme::SUNKEN).stroke(egui::Stroke::new(1.0, theme::LINE)).corner_radius(12).inner_margin(egui::Margin::symmetric(16, 12)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.horizontal(|ui| {
-                theme::status_marker(ui, Status::Ok);
-                ui.vertical(|ui| {
-                    ui.label("Splinter Cell: Blacklist found");
-                    ui.label(theme::muted(game.dir.display().to_string()).small().monospace());
+        egui::Frame::new()
+            .fill(theme::SUNKEN)
+            .stroke(egui::Stroke::new(1.0, theme::LINE))
+            .corner_radius(12)
+            .inner_margin(egui::Margin::symmetric(16, 12))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal(|ui| {
+                    theme::status_marker(ui, Status::Ok);
+                    ui.vertical(|ui| {
+                        ui.label("Splinter Cell: Blacklist found");
+                        ui.label(theme::muted(game.dir.display().to_string()).small().monospace());
+                    });
                 });
             });
-        });
         ui.add_space(14.0);
         ui.add_enabled_ui(!play.setup.running(), |ui| {
             if naming {
                 ui.label(theme::caps("Your name"));
-                ui.add(egui::TextEdit::singleline(&mut play.nick).hint_text("what other players see").desired_width(320.0).min_size(egui::vec2(0.0, 40.0)));
+                ui.add(
+                    egui::TextEdit::singleline(&mut play.nick)
+                        .hint_text("what other players see")
+                        .desired_width(320.0)
+                        .min_size(egui::vec2(0.0, 40.0)),
+                );
             } else {
                 server_choices(play, ui);
                 ui.add_space(10.0);
                 ui.label(theme::caps("Or a server's address"));
                 ui.horizontal(|ui| {
                     if ui
-                        .add(egui::TextEdit::singleline(&mut play.server).hint_text("play.example.org or 192.168.1.20").desired_width(300.0).min_size(egui::vec2(0.0, 38.0)))
+                        .add(
+                            egui::TextEdit::singleline(&mut play.server)
+                                .hint_text("play.example.org or 192.168.1.20")
+                                .desired_width(300.0)
+                                .min_size(egui::vec2(0.0, 38.0)),
+                        )
                         .changed()
                     {
                         play.server_picked = false;
@@ -539,7 +560,12 @@ fn setup_screen(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut 
                 ui.spinner();
                 ui.label(if naming { "Creating your account…" } else { "Connecting…" });
             } else if ui
-                .add_enabled(ready, theme::primary(if naming { "Create account" } else { "Connect" }).min_size(egui::vec2(170.0, 48.0)).corner_radius(12))
+                .add_enabled(
+                    ready,
+                    theme::primary(if naming { "Create account" } else { "Connect" })
+                        .min_size(egui::vec2(170.0, 48.0))
+                        .corner_radius(12),
+                )
                 .clicked()
             {
                 let name = naming.then(|| play.nick.trim().to_string());
@@ -603,7 +629,9 @@ fn server_choices(play: &mut Play, ui: &mut egui::Ui) {
                 });
             });
         });
-        let response = ui.interact(inner.response.rect, ui.id().with(("server", i)), egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+        let response = ui
+            .interact(inner.response.rect, ui.id().with(("server", i)), egui::Sense::click())
+            .on_hover_cursor(egui::CursorIcon::PointingHand);
         if response.clicked() && !chosen {
             pick = Some(s.host.clone());
         }
@@ -645,7 +673,12 @@ fn badge(ui: &mut egui::Ui, text: &str, strong: bool) {
     let color = if strong { theme::ON_ACCENT } else { theme::MUTED };
     let mut job = egui::text::LayoutJob::single_section(
         text.to_uppercase(),
-        egui::TextFormat { font_id: egui::FontId::proportional(10.5), color, extra_letter_spacing: 1.0, ..Default::default() },
+        egui::TextFormat {
+            font_id: egui::FontId::proportional(10.5),
+            color,
+            extra_letter_spacing: 1.0,
+            ..Default::default()
+        },
     );
     job.wrap.max_rows = 1;
     let galley = ui.fonts_mut(|f| f.layout_job(job));
@@ -672,10 +705,16 @@ fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Con
         auto_browse(play, ctx);
     }
     if let Some(managed) = &game.managed {
-        egui::Frame::new().fill(theme::ACCENT.linear_multiply(0.12)).inner_margin(egui::Margin::symmetric(32, 10)).show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            ui.label(RichText::new(format!("{} sets up this install. Change the server or account there; you can still play from here.", managed.by)));
-        });
+        egui::Frame::new()
+            .fill(theme::ACCENT.linear_multiply(0.12))
+            .inner_margin(egui::Margin::symmetric(32, 10))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(RichText::new(format!(
+                    "{} sets up this install. Change the server or account there; you can still play from here.",
+                    managed.by
+                )));
+            });
     }
     hero(play, game, &mut to, ui);
     launch_bar(play, game, notices, &mut to, ui);
@@ -766,7 +805,11 @@ fn hero(play: &mut Play, game: &Game, to: &mut Option<Go>, ui: &mut egui::Ui) {
         }
     });
     let mut bottom = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::bottom_up(egui::Align::LEFT)));
-    bottom.label(RichText::new("Co-op and Spies vs Mercs on community servers. No VPN, no port forwarding.").size(16.0).color(theme::SOFT));
+    bottom.label(
+        RichText::new("Co-op and Spies vs Mercs on community servers. No VPN, no port forwarding.")
+            .size(16.0)
+            .color(theme::SOFT),
+    );
     bottom.label(theme::display("Splinter Cell: Blacklist", 50.0));
 }
 
@@ -775,12 +818,22 @@ fn hero(play: &mut Play, game: &Game, to: &mut Option<Go>, ui: &mut egui::Ui) {
 fn profile_card(play: &mut Play, game: &Game, ui: &mut egui::Ui) -> egui::Response {
     let profile = game.cfg.current_profile().cloned().unwrap_or_default();
     let identity = play.identity_short().unwrap_or_default();
-    let name = if profile.user.username.is_empty() { String::from("No account yet") } else { hooks_config::text::clip(&profile.user.username, 24) };
+    let name = if profile.user.username.is_empty() {
+        String::from("No account yet")
+    } else {
+        hooks_config::text::clip(&profile.user.username, 24)
+    };
     let online = play.checks.iter().any(|c| c.id == "account" && c.status == Status::Ok);
     // Painted at a fixed size, so it sits in the corner whatever the layout around it.
     let (rect, response) = ui.allocate_exact_size(egui::vec2(236.0, 60.0), egui::Sense::click());
     let p = ui.painter();
-    p.rect(rect, 14, theme::BG.gamma_multiply(0.82), egui::Stroke::new(1.0, if response.hovered() { theme::CONTROL_LINE } else { theme::LINE }), egui::StrokeKind::Inside);
+    p.rect(
+        rect,
+        14,
+        theme::BG.gamma_multiply(0.82),
+        egui::Stroke::new(1.0, if response.hovered() { theme::CONTROL_LINE } else { theme::LINE }),
+        egui::StrokeKind::Inside,
+    );
     let avatar = egui::pos2(rect.left() + 32.0, rect.center().y);
     p.circle_filled(avatar, 20.0, theme::CONTROL);
     p.circle_stroke(avatar, 20.0, egui::Stroke::new(1.5, theme::ACCENT.gamma_multiply(0.6)));
@@ -798,7 +851,11 @@ fn profile_card(play: &mut Play, game: &Game, ui: &mut egui::Ui) -> egui::Respon
         ui.fonts_mut(|f| f.layout_job(job))
     };
     let title = line(name, egui::FontId::new(15.5, theme::strong()), theme::FG);
-    let sub = if identity.is_empty() { String::from("No identity yet") } else { format!("ID {identity}") };
+    let sub = if identity.is_empty() {
+        String::from("No identity yet")
+    } else {
+        format!("ID {identity}")
+    };
     let sub = line(sub, egui::FontId::monospace(11.5), theme::MUTED);
     p.galley(egui::pos2(x, rect.center().y - title.size().y), title, theme::FG);
     p.galley(egui::pos2(x, rect.center().y + 2.0), sub, theme::MUTED);
@@ -890,14 +947,7 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, to: &mut 
 
 /// A card of the home screen's row: fixed size, a small uppercase title with
 /// an optional note on the right, the body, and a footer kept at the bottom.
-fn home_card(
-    ui: &mut egui::Ui,
-    width: f32,
-    title: &str,
-    note: Option<RichText>,
-    body: impl FnOnce(&mut egui::Ui),
-    footer: impl FnOnce(&mut egui::Ui),
-) {
+fn home_card(ui: &mut egui::Ui, width: f32, title: &str, note: Option<RichText>, body: impl FnOnce(&mut egui::Ui), footer: impl FnOnce(&mut egui::Ui)) {
     const HEIGHT: f32 = 300.0;
     ui.allocate_ui_with_layout(egui::vec2(width, HEIGHT), egui::Layout::top_down(egui::Align::LEFT), |ui| {
         theme::card().show(ui, |ui| {
@@ -998,7 +1048,10 @@ fn status_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, to: &mut O
                 }
             });
             if fixable && has_server && !managed && !busy {
-                fix_all = ui.horizontal(|ui| ui.add(theme::primary("Fix everything").min_size(egui::vec2(0.0, 36.0)).corner_radius(10))).inner.clicked();
+                fix_all = ui
+                    .horizontal(|ui| ui.add(theme::primary("Fix everything").min_size(egui::vec2(0.0, 36.0)).corner_radius(10)))
+                    .inner
+                    .clicked();
             }
         },
     );
@@ -1033,7 +1086,11 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
         note,
         |ui| {
             if game.managed.is_some() || (friends.online.is_empty() && friends.elsewhere.is_empty()) {
-                let text = if friends.offline > 0 { "None of your friends are online right now." } else { "No friends yet. Add some in the game: press F5 for the overlay." };
+                let text = if friends.offline > 0 {
+                    "None of your friends are online right now."
+                } else {
+                    "No friends yet. Add some in the game: press F5 for the overlay."
+                };
                 ui.label(RichText::new(text).color(theme::SOFT));
             }
             for friend in &friends.online {
@@ -1047,7 +1104,11 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
                     let public = setup::directory::listable_host(&friend.host);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let button = ui.add_enabled(public && !playing && !play.setup.running(), theme::secondary("Join"));
-                        let button = if playing { button.on_disabled_hover_text("Quit the game first") } else { button.on_hover_text(friend.host.as_str()) };
+                        let button = if playing {
+                            button.on_disabled_hover_text("Quit the game first")
+                        } else {
+                            button.on_hover_text(friend.host.as_str())
+                        };
                         if button.clicked() {
                             switch_to = Some(friend.host.clone());
                         }
@@ -1057,7 +1118,11 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
         },
         // Bottom up: the hint last, any requests above it.
         |ui| {
-            let offline = if friends.offline > 0 { format!("{} offline · ", friends.offline) } else { String::new() };
+            let offline = if friends.offline > 0 {
+                format!("{} offline · ", friends.offline)
+            } else {
+                String::new()
+            };
             ui.label(theme::muted(format!("{offline}Add and invite friends in game with F5")).small());
             if friends.requests > 0 {
                 let s = if friends.requests == 1 { "" } else { "s" };
@@ -1067,7 +1132,11 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
     );
     if let Some(host) = switch_to {
         // Confirmed on the Servers screen, which says where it goes and what happens there.
-        play.switching = Some(Switch { from: SwitchFrom::Friend, host, new_name: None });
+        play.switching = Some(Switch {
+            from: SwitchFrom::Friend,
+            host,
+            new_name: None,
+        });
         *to = Some(Go::View(View::Servers));
     }
 }
@@ -1178,7 +1247,14 @@ pub fn show_news(app: &mut App, ui: &mut egui::Ui) {
             ui.label(theme::muted(format!("From {server}, as the game's news screen shows it")));
             ui.add_space(14.0);
             if play.news.is_empty() {
-                ui.label(RichText::new(if play.fetching_news.running() { "Fetching the news…" } else { "No news from this server." }).color(theme::SOFT));
+                ui.label(
+                    RichText::new(if play.fetching_news.running() {
+                        "Fetching the news…"
+                    } else {
+                        "No news from this server."
+                    })
+                    .color(theme::SOFT),
+                );
             }
             for item in &play.news {
                 theme::card().show(ui, |ui| {
@@ -1231,7 +1307,10 @@ fn servers_page(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut 
         ui.vertical(|ui| {
             ui.label(theme::display("Servers", 32.0));
             match crate::app::Prefs::directory() {
-                Some(url) => ui.label(theme::muted(format!("Network {} · your friends and identity follow you between these servers", url.trim_start_matches("https://").trim_end_matches('/')))),
+                Some(url) => ui.label(theme::muted(format!(
+                    "Network {} · your friends and identity follow you between these servers",
+                    url.trim_start_matches("https://").trim_end_matches('/')
+                ))),
                 None => ui.label(theme::muted("No server network yet: join a server by its address, or find one on your network.")),
             };
         });
@@ -1289,7 +1368,11 @@ fn servers_page(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut 
                             });
                         });
                         ui.add_space(4.0);
-                        ui.label(RichText::new(if s.region.is_empty() { s.name.clone() } else { s.region.clone() }).family(theme::strong()).size(19.0));
+                        ui.label(
+                            RichText::new(if s.region.is_empty() { s.name.clone() } else { s.region.clone() })
+                                .family(theme::strong())
+                                .size(19.0),
+                        );
                         let sub = if s.region.is_empty() { s.host.clone() } else { format!("{} · {}", s.name, s.host) };
                         ui.label(theme::muted(sub).small());
                         ui.add_space(8.0);
@@ -1315,7 +1398,11 @@ fn servers_page(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut 
             } else {
                 // The same name on the network's other server: made there if need be, once confirmed.
                 let new_name = game.cfg.current_profile().map(|p| p.user.username.clone()).filter(|n| !n.is_empty());
-                play.switching = Some(Switch { from: SwitchFrom::Network, host, new_name });
+                play.switching = Some(Switch {
+                    from: SwitchFrom::Network,
+                    host,
+                    new_name,
+                });
             }
         }
         confirm_switch(play, game, SwitchFrom::Network, ctx, ui);
@@ -1342,7 +1429,12 @@ fn servers_page(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut 
             ui.label(theme::caps("Join by address"));
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut play.address).hint_text("play.example.org or 192.168.1.20").desired_width(ui.available_width() - 110.0).min_size(egui::vec2(0.0, 38.0)));
+                ui.add(
+                    egui::TextEdit::singleline(&mut play.address)
+                        .hint_text("play.example.org or 192.168.1.20")
+                        .desired_width(ui.available_width() - 110.0)
+                        .min_size(egui::vec2(0.0, 38.0)),
+                );
                 let ready = !play.address.trim().is_empty() && !play.setup.running() && !playing;
                 if ui.add_enabled(ready, theme::primary("Connect").min_size(egui::vec2(90.0, 38.0))).clicked() {
                     play.server = play.address.trim().to_string();
@@ -1509,7 +1601,11 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, ui: &mut
         return;
     }
     let button = ui.add_enabled(!play.busy(), theme::play_button("Play"));
-    let button = if !ready && !play.checks.is_empty() { button.on_hover_text("Some checks failed; the game may not connect.") } else { button };
+    let button = if !ready && !play.checks.is_empty() {
+        button.on_hover_text("Some checks failed; the game may not connect.")
+    } else {
+        button
+    };
     if button.clicked() {
         launch(play, game, notices);
     }

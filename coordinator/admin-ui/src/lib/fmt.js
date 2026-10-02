@@ -10,6 +10,14 @@ export const fmt = {
     while (Math.abs(v) >= 1024 && i < u.length - 1) { v /= 1024; i++; }
     return `${v.toFixed(v < 10 && i ? 1 : 0)} ${u[i]}`;
   },
+  /** Data sizes the way hosts bill them: 1 GB = 1000 MB. */
+  size(v) {
+    if (v == null) return '–';
+    const u = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    let i = 0;
+    while (Math.abs(v) >= 1000 && i < u.length - 1) { v /= 1000; i++; }
+    return `${v.toFixed(v < 10 && i ? 2 : v < 100 && i ? 1 : 0)} ${u[i]}`;
+  },
   rate: v => v == null ? '–' : fmt.bits(v * 8),
   bits(v) {
     const u = ['bps', 'kbps', 'Mbps', 'Gbps'];
@@ -90,3 +98,28 @@ export function totalSeries(data, field, name = 'All servers') {
 
 export const RANGES = [[3600, '1 h'], [21600, '6 h'], [86400, '24 h'], [604800, '7 d'], [2592000, '30 d'], [31536000, '1 y']];
 export const PLACE_RANGES = [[0, 'Now'], [86400, '24 h'], [604800, '7 d'], [2592000, '30 d'], [31536000, '1 y']];
+
+/** The network's live numbers now, and over the last half hour, from the servers' pulses. */
+export function liveTotals(pulses) {
+  const now = { players: 0, in_match: 0, matches: 0, bps: 0, relayed: 0, servers: 0 };
+  const series = new Map();
+  for (const points of Object.values(pulses || {})) {
+    const last = points.at(-1);
+    if (!last || Date.now() / 1000 - last.t > 45) continue;
+    now.servers++;
+    now.players += last.players;
+    now.in_match += last.in_match;
+    now.matches += last.matches;
+    now.bps += (last.rx + last.tx) * 8;
+    now.relayed += last.relayed * 8;
+    // Points land at different seconds on each server: 10-second slots.
+    for (const p of points) {
+      const k = Math.floor(p.t / 10) * 10;
+      const e = series.get(k) || { t: k, players: 0, bps: 0 };
+      e.players += p.players;
+      e.bps += (p.rx + p.tx) * 8;
+      series.set(k, e);
+    }
+  }
+  return { now, series: [...series.values()].sort((a, b) => a.t - b.t) };
+}

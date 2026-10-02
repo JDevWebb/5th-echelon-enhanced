@@ -3,7 +3,13 @@
 //! what's being played, counters, and the machine's load and traffic.
 //!
 //! Collected every minute by `federation::run` and sent with
-//! `POST /v1/metrics`.
+//! `POST /v1/metrics`; a smaller [`Pulse`] goes every ten seconds
+//! (`POST /v1/pulse`), for the admin UI's live numbers.
+//!
+//! Who played is sent only as `active`: each online player's account id run
+//! through HMAC with a key that never leaves this server ([`ACTIVITY_KEY_FILE`]),
+//! so the coordinator can count the same player on different days without
+//! learning who they are, or matching them with another server's.
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -20,6 +26,29 @@ use crate::community_api::activity_of;
 use crate::storage::Storage;
 
 static STARTED: OnceLock<Instant> = OnceLock::new();
+
+/// The key the anonymised activity ids are made with; kept so a player is the same id
+/// from one day to the next.
+pub const ACTIVITY_KEY_FILE: &str = "metrics.key";
+
+/// The most activity ids a report carries.
+const MAX_ACTIVE: usize = 5000;
+
+/// An online player's anonymised id: HMAC-SHA256 of the account id under this server's
+/// activity key, 16 hex digits of it.
+fn activity_id(key: &[u8; 32], user_id: u32) -> String {
+    use hmac::Mac as _;
+    let mut mac = <hmac::Hmac<sha2::Sha256> as hmac::Mac>::new_from_slice(key).expect("any key length");
+    mac.update(b"5th-echelon/activity\n");
+    mac.update(&user_id.to_le_bytes());
+    mac.finalize().into_bytes()[..8].iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn activity_key() -> Option<&'static [u8; 32]> {
+    static KEY: OnceLock<Option<[u8; 32]>> = OnceLock::new();
+    KEY.get_or_init(|| crate::keys::load_or_create(std::path::Path::new(ACTIVITY_KEY_FILE)).ok().map(|k| k.0))
+        .as_ref()
+}
 
 /// Counters since the server started; the coordinator turns them into rates.
 #[derive(Default)]
@@ -97,6 +126,20 @@ pub struct Metrics {
     pub system: System,
     /// Whether a GeoIP database is loaded.
     pub geo: bool,
+    /// The players online, anonymised (see the module's notes).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub active: Vec<String>,
+}
+
+/// The live numbers, every ten seconds: players, sessions, counters and traffic.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct Pulse {
+    pub players: Players,
+    pub matches: u32,
+    pub lobbies: u32,
+    pub counters: CounterValues,
+    pub net_rx_bytes: u64,
+    pub net_tx_bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -214,17 +257,69 @@ pub async fn collect(storage: &Storage) -> Metrics {
         }
     }
     m.places = places();
+    if let (Some(key), Ok(ids)) = (activity_key(), storage.online_player_ids().await) {
+        m.active = ids.into_iter().take(MAX_ACTIVE).map(|id| activity_id(key, id)).collect();
+    }
+    m.counters = counter_values();
+    m.system = tokio::task::spawn_blocking(system).await.unwrap_or_default();
+    m
+}
+
+fn counter_values() -> CounterValues {
     let c = counters();
-    m.counters = CounterValues {
+    CounterValues {
         game_logins: c.game_logins.load(Ordering::Relaxed),
         api_logins: c.api_logins.load(Ordering::Relaxed),
         failed_logins: c.failed_logins.load(Ordering::Relaxed),
         registrations: c.registrations.load(Ordering::Relaxed),
         relayed_bytes: c.relayed_bytes.load(Ordering::Relaxed),
         relayed_packets: c.relayed_packets.load(Ordering::Relaxed),
-    };
-    m.system = tokio::task::spawn_blocking(system).await.unwrap_or_default();
-    m
+    }
+}
+
+/// The live numbers now (cheap: no CPU sampling, which the minute's report keeps).
+pub async fn pulse(storage: &Storage) -> Pulse {
+    let mut p = Pulse::default();
+    if let Ok((online, total)) = storage.player_counts().await {
+        (p.players.online, p.players.total) = (online, total);
+    }
+    if let Ok((players, sessions)) = storage.presence_async().await {
+        for s in &sessions {
+            if crate::game_session::attribute_value(&s.attributes, 113) == Some(0) {
+                p.matches += 1;
+            } else {
+                p.lobbies += 1;
+            }
+        }
+        for (name, online) in &players {
+            if !online {
+                continue;
+            }
+            match activity_of(name, &sessions).map(|a| a.room) {
+                Some("match") => p.players.in_match += 1,
+                Some(_) => p.players.in_lobby += 1,
+                None => {}
+            }
+        }
+    }
+    p.counters = counter_values();
+    (p.net_rx_bytes, p.net_tx_bytes) = tokio::task::spawn_blocking(net_bytes).await.unwrap_or_default();
+    p
+}
+
+/// Bytes received and sent on every interface but loopback, since boot (Linux; 0 elsewhere).
+fn net_bytes() -> (u64, u64) {
+    let (mut rx, mut tx) = (0, 0);
+    for line in std::fs::read_to_string("/proc/net/dev").unwrap_or_default().lines().skip(2) {
+        let Some((name, rest)) = line.split_once(':') else { continue };
+        if name.trim() == "lo" {
+            continue;
+        }
+        let v: Vec<u64> = rest.split_whitespace().filter_map(|f| f.parse().ok()).collect();
+        rx += v.first().copied().unwrap_or(0);
+        tx += v.get(8).copied().unwrap_or(0);
+    }
+    (rx, tx)
 }
 
 /// Online players per city.
@@ -303,16 +398,7 @@ fn system() -> System {
     s.mem_total = kb(&meminfo, "MemTotal:");
     s.mem_available = kb(&meminfo, "MemAvailable:");
     s.process_rss = kb(&read("/proc/self/status"), "VmRSS:");
-    // Every interface but loopback.
-    for line in read("/proc/net/dev").lines().skip(2) {
-        let Some((name, rest)) = line.split_once(':') else { continue };
-        if name.trim() == "lo" {
-            continue;
-        }
-        let v: Vec<u64> = rest.split_whitespace().filter_map(|f| f.parse().ok()).collect();
-        s.net_rx_bytes += v.first().copied().unwrap_or(0);
-        s.net_tx_bytes += v.get(8).copied().unwrap_or(0);
-    }
+    (s.net_rx_bytes, s.net_tx_bytes) = net_bytes();
     s.uptime_secs = read("/proc/uptime").split('.').next().and_then(|v| v.parse().ok()).unwrap_or(0);
     // The disk the server's files are on.
     if let Ok(path) = std::ffi::CString::new(".") {
@@ -349,6 +435,15 @@ mod tests {
         game_logout(1);
         game_logout(2);
         assert!(places().is_empty());
+    }
+
+    #[test]
+    fn activity_ids_are_stable_and_keyed() {
+        let (a, b) = ([1u8; 32], [2u8; 32]);
+        assert_eq!(activity_id(&a, 7), activity_id(&a, 7));
+        assert_ne!(activity_id(&a, 7), activity_id(&a, 8));
+        assert_ne!(activity_id(&a, 7), activity_id(&b, 7), "another server's key, another id");
+        assert_eq!(activity_id(&a, 7).len(), 16);
     }
 
     #[cfg(target_os = "linux")]

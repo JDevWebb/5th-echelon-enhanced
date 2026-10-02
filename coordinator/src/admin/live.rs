@@ -14,6 +14,15 @@
 //!   numbers, for charts to fetch their latest points.
 //! * `{"type":"audit","event":{…}}`: a new audit log entry, as `GET /api/audit`
 //!   lists them.
+//! * `{"type":"pulses","pulses":{server:[point…]},"feed":[…]}` at once: each
+//!   server's live numbers of the last half hour, and the recent events.
+//! * `{"type":"pulse","server":id,"point":{…}}`: a server's live numbers, every
+//!   ten seconds (players, in a match, matches, lobbies, bytes a second in, out
+//!   and relayed).
+//! * `{"type":"event","event":{…}}`: something that happened, made from the
+//!   pulses: players signing in, new accounts, failed sign-ins, matches starting
+//!   and ending. Counts only: the admin UI never shows who.
+//! * `{"type":"alert","alert":{…}}`: an alert raised or resolved (see `alerts`).
 //! * `{"type":"bye","reason":"…"}`: the session ended; the socket closes.
 //!
 //! Nothing the browser sends is acted on.
@@ -49,6 +58,122 @@ pub enum Event {
     Network,
     /// A new audit log entry (every admin action writes one).
     Audit(Value),
+    /// A server's live numbers: (server, point).
+    Pulse(String, Value),
+    /// Something that happened, made from the pulses.
+    Feed(Value),
+    /// An alert raised or resolved.
+    Alert(Value),
+}
+
+/// The live points kept per server: half an hour of them.
+const KEEP_POINTS: usize = 180;
+/// The recent events kept.
+const KEEP_FEED: usize = 50;
+
+/// A server's last pulse, and its points of the last half hour.
+#[derive(Debug, Default)]
+pub struct Pulses {
+    last: Option<(i64, Value)>,
+    points: std::collections::VecDeque<Value>,
+}
+
+fn num(v: &Value) -> f64 {
+    v.as_f64().unwrap_or(0.0)
+}
+
+/// How much a counter grew since `before` (none when it went back: a restart).
+fn grew(now: &Value, before: &Value) -> Option<f64> {
+    let (a, b) = (num(now), num(before));
+    (a >= b).then_some(a - b)
+}
+
+fn plural(n: f64, one: &str, many: &str) -> String {
+    format!("{n} {}", if (n - 1.0).abs() < f64::EPSILON { one } else { many })
+}
+
+/// The live point a pulse makes, given the one before it (for rates), and what
+/// happened in between.
+fn point_from(at: i64, p: &Value, last: Option<&(i64, Value)>) -> (Value, Vec<(&'static str, &'static str, String)>) {
+    let mut point = json!({
+        "t": at,
+        "players": num(&p["players"]["online"]),
+        "in_match": num(&p["players"]["in_match"]),
+        "matches": num(&p["matches"]),
+        "lobbies": num(&p["lobbies"]),
+        "rx": 0.0, "tx": 0.0, "relayed": 0.0,
+    });
+    let mut events = Vec::new();
+    if let Some((t0, before)) = last.filter(|(t0, _)| (1..=60).contains(&(at - *t0))) {
+        let secs = (at - t0) as f64;
+        let (c, c0) = (&p["counters"], &before["counters"]);
+        for (key, field) in [("rx", "net_rx_bytes"), ("tx", "net_tx_bytes")] {
+            point[key] = json!(grew(&p[field], &before[field]).unwrap_or(0.0) / secs);
+        }
+        point["relayed"] = json!(grew(&c["relayed_bytes"], &c0["relayed_bytes"]).unwrap_or(0.0) / secs);
+        if let Some(n) = grew(&c["game_logins"], &c0["game_logins"]).filter(|n| *n > 0.0) {
+            events.push(("signin", "info", format!("{} signed in", plural(n, "player", "players"))));
+        }
+        if let Some(n) = grew(&c["registrations"], &c0["registrations"]).filter(|n| *n > 0.0) {
+            events.push(("account", "info", format!("{} made", plural(n, "new account", "new accounts"))));
+        }
+        if let Some(n) = grew(&c["failed_logins"], &c0["failed_logins"]).filter(|n| *n > 0.0) {
+            events.push(("failed", "warn", format!("{} refused", plural(n, "sign-in", "sign-ins"))));
+        }
+        let (m, m0) = (num(&p["matches"]), num(&before["matches"]));
+        if m > m0 {
+            events.push(("match", "info", format!("{} started", plural(m - m0, "match", "matches"))));
+        } else if m < m0 {
+            events.push(("match", "muted", format!("{} ended", plural(m0 - m, "match", "matches"))));
+        }
+    }
+    (point, events)
+}
+
+impl Coordinator {
+    /// Takes a server's pulse: its live point, and events from what changed since the last.
+    pub(crate) fn record_pulse(&self, server: &str, p: &Value) {
+        let at = identity::now();
+        let (point, events) = {
+            let mut pulses = self.pulses.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let entry = pulses.entry(server.to_string()).or_default();
+            let (point, events) = point_from(at, p, entry.last.as_ref());
+            entry.last = Some((at, p.clone()));
+            entry.points.push_back(point.clone());
+            while entry.points.len() > KEEP_POINTS {
+                entry.points.pop_front();
+            }
+            (point, events)
+        };
+        self.publish(Event::Pulse(server.to_string(), point));
+        for (kind, level, text) in events {
+            let event = json!({ "t": at, "server": server, "kind": kind, "level": level, "text": text });
+            {
+                let mut feed = self.feed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                feed.push_front(event.clone());
+                feed.truncate(KEEP_FEED);
+            }
+            self.publish(Event::Feed(event));
+        }
+    }
+
+    /// The live points of the last half hour per server, and the recent events.
+    fn live_history(&self) -> Value {
+        let since = identity::now() - 1800;
+        let pulses = self.pulses.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let points: serde_json::Map<String, Value> = pulses
+            .iter()
+            .map(|(s, p)| {
+                (
+                    s.clone(),
+                    Value::from(p.points.iter().filter(|v| num(&v["t"]) >= since as f64).cloned().collect::<Vec<_>>()),
+                )
+            })
+            .collect();
+        drop(pulses);
+        let feed: Vec<Value> = self.feed.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().cloned().collect();
+        json!({ "type": "pulses", "pulses": points, "feed": feed })
+    }
 }
 
 impl Coordinator {
@@ -94,8 +219,11 @@ async fn serve(c: Arc<Coordinator>, mut socket: WebSocket, headers: HeaderMap, c
     let mut tick = tokio::time::interval(COALESCE);
     let mut recheck = tokio::time::interval(RECHECK);
     let mut ping = tokio::time::interval(PING);
-    // Sent at once: everything is "changed" at the start.
+    // Sent at once: everything is "changed" at the start, and the live history.
     let (mut dirty, mut metrics) = (true, true);
+    if !send(&mut socket, c.live_history()).await {
+        return;
+    }
     loop {
         tokio::select! {
             event = events.recv() => match event {
@@ -104,6 +232,22 @@ async fn serve(c: Arc<Coordinator>, mut socket: WebSocket, headers: HeaderMap, c
                 Ok(Event::Audit(entry)) => {
                     dirty = true;
                     if !send(&mut socket, json!({ "type": "audit", "event": entry })).await {
+                        return;
+                    }
+                }
+                Ok(Event::Pulse(server, point)) => {
+                    if !send(&mut socket, json!({ "type": "pulse", "server": server, "point": point })).await {
+                        return;
+                    }
+                }
+                Ok(Event::Feed(event)) => {
+                    if !send(&mut socket, json!({ "type": "event", "event": event })).await {
+                        return;
+                    }
+                }
+                Ok(Event::Alert(alert)) => {
+                    dirty = true;
+                    if !send(&mut socket, json!({ "type": "alert", "alert": alert })).await {
                         return;
                     }
                 }
@@ -151,4 +295,29 @@ async fn serve(c: Arc<Coordinator>, mut socket: WebSocket, headers: HeaderMap, c
 
 async fn send(socket: &mut WebSocket, v: Value) -> bool {
     socket.send(Message::Text(v.to_string().into())).await.is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pulses_make_rates_and_events() {
+        let p0 =
+            json!({ "players": { "online": 2 }, "matches": 1, "net_rx_bytes": 1000, "net_tx_bytes": 0, "counters": { "game_logins": 5, "failed_logins": 0, "relayed_bytes": 0 } });
+        let (first, events) = point_from(100, &p0, None);
+        assert!(events.is_empty() && first["rx"] == 0.0, "nothing to compare the first with");
+        let p1 = json!({ "players": { "online": 3 }, "matches": 2, "net_rx_bytes": 3000, "net_tx_bytes": 500, "counters": { "game_logins": 6, "failed_logins": 3, "relayed_bytes": 100 } });
+        let (point, events) = point_from(110, &p1, Some(&(100, p0.clone())));
+        assert_eq!(
+            (point["rx"].as_f64(), point["tx"].as_f64(), point["relayed"].as_f64()),
+            (Some(200.0), Some(50.0), Some(10.0))
+        );
+        let texts: Vec<&str> = events.iter().map(|e| e.2.as_str()).collect();
+        assert_eq!(texts, ["1 player signed in", "3 sign-ins refused", "1 match started"]);
+        // A restart (counters back to zero) makes no events, and no rates from a stale pulse.
+        let restarted = json!({ "players": { "online": 0 }, "matches": 2, "net_rx_bytes": 10, "counters": { "game_logins": 0 } });
+        assert!(point_from(120, &restarted, Some(&(110, p1.clone()))).1.is_empty());
+        assert_eq!(point_from(500, &p1, Some(&(100, p0))).0["rx"], 0.0);
+    }
 }

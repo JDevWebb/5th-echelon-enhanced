@@ -362,16 +362,14 @@ impl eframe::App for App {
             View::News => crate::play::show_news(self, ui),
             View::Settings => crate::settings::show(self, ui),
             View::Server => {
-                egui::ScrollArea::vertical()
-                    .auto_shrink([false, false])
-                    .show(ui, |ui| {
-                        theme::page().show(ui, |ui| {
-                            ui.label(theme::display("Host", 32.0));
-                            ui.label(theme::muted("Run a server for your group on this PC, or manage one you run elsewhere."));
-                            ui.add_space(14.0);
-                            crate::server::show(self, ui);
-                        })
-                    });
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    theme::page().show(ui, |ui| {
+                        ui.label(theme::display("Host", 32.0));
+                        ui.label(theme::muted("Run a server for your group on this PC, or manage one you run elsewhere."));
+                        ui.add_space(14.0);
+                        crate::server::show(self, ui);
+                    })
+                });
             }
         });
         // Checks refresh on their own now and then; wake up for them.

@@ -175,10 +175,16 @@ pub fn page() -> egui::Frame {
 
 /// The big Play button.
 pub fn play_button(text: &str) -> egui::Button<'static> {
-    egui::Button::new(egui::RichText::new(text.to_uppercase()).color(ON_ACCENT).family(condensed()).size(24.0).extra_letter_spacing(3.0))
-        .fill(ACCENT)
-        .corner_radius(12)
-        .min_size(egui::vec2(220.0, 58.0))
+    egui::Button::new(
+        egui::RichText::new(text.to_uppercase())
+            .color(ON_ACCENT)
+            .family(condensed())
+            .size(24.0)
+            .extra_letter_spacing(3.0),
+    )
+    .fill(ACCENT)
+    .corner_radius(12)
+    .min_size(egui::vec2(220.0, 58.0))
 }
 
 /// A quieter button, for actions beside the main one.

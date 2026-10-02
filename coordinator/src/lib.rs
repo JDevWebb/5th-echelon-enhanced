@@ -20,6 +20,8 @@
 //! A server may only act for players linked on it, and a link needs the
 //! player's signature, so no server can speak for someone who never used it.
 //!
+//! * `POST /v1/pulse`: a server's live numbers, every ten seconds (for the
+//!   admin UI, kept in memory only),
 //! * `POST /v1/metrics`: a server's metrics, every minute (see [`metrics`]),
 //!   for the admin UI ([`admin`], on its own listener).
 //! * `POST /v1/pings`: a launcher's pings to the servers (no sign-in).
@@ -27,6 +29,7 @@
 //!   [`updates`]); servers that don't keep up leave the directory.
 
 pub mod admin;
+pub mod alerts;
 pub mod metrics;
 pub mod updates;
 
@@ -331,6 +334,11 @@ pub struct Coordinator {
     pub admin: std::sync::OnceLock<admin::Config>,
     /// What the admin UI's live connections hear about (see `admin::live`).
     pub(crate) live: tokio::sync::broadcast::Sender<admin::live::Event>,
+    /// The servers' live numbers (their pulses) of the last half hour, and the recent
+    /// events made from them (see `admin::live`). Kept in memory only.
+    pub(crate) pulses: std::sync::Mutex<HashMap<String, admin::live::Pulses>>,
+    pub(crate) feed: std::sync::Mutex<std::collections::VecDeque<Value>>,
+    pulse_limit: Limit,
 }
 
 type Shared = Arc<Coordinator>;
@@ -376,6 +384,10 @@ impl Coordinator {
             data_dir: std::sync::OnceLock::new(),
             admin: std::sync::OnceLock::new(),
             live: tokio::sync::broadcast::channel(256).0,
+            pulses: std::sync::Mutex::new(HashMap::new()),
+            feed: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            // A pulse every ten seconds, with room for a retry.
+            pulse_limit: Limit::new(9),
         };
         c.claim_linked_names().await?;
         Ok(c)
@@ -508,6 +520,7 @@ impl Coordinator {
             .route("/v1/names/claim", post(claim_name))
             .route("/v1/names/{name}", get(name_owner))
             .route("/v1/metrics", post(metrics_report))
+            .route("/v1/pulse", post(pulse))
             .route("/v1/pings", post(pings))
             .layer(DefaultBodyLimit::max(MAX_BODY))
             .with_state(self)
@@ -1029,6 +1042,22 @@ async fn metrics_report(State(c): State<Shared>, headers: HeaderMap, Json(report
         }
         Err(e) => internal(e),
     }
+}
+
+/// A server's live numbers, every ten seconds: for the admin UI only, never stored.
+async fn pulse(State(c): State<Shared>, headers: HeaderMap, Json(p): Json<Value>) -> Answer {
+    let server = match c.server(&headers).await {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    if !c.pulse_limit.check(&server) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "a pulse every ten seconds is enough");
+    }
+    if p.to_string().len() > 8 * 1024 || !p["players"].is_object() {
+        return fail(StatusCode::BAD_REQUEST, "not a pulse");
+    }
+    c.record_pulse(&server, &p);
+    ok(json!({}))
 }
 
 /// A launcher's pings to the servers in the directory.

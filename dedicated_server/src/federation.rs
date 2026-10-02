@@ -44,6 +44,10 @@ pub const CREDENTIALS_FILE: &str = "federation.key";
 const HEARTBEAT_EVERY: Duration = Duration::from_secs(30);
 const PULL_ONLINE_EVERY: Duration = Duration::from_secs(60);
 const METRICS_EVERY: Duration = Duration::from_secs(60);
+/// The live numbers for the admin UI (a coordinator without them is asked again only
+/// now and then).
+const PULSE_EVERY: Duration = Duration::from_secs(10);
+const PULSE_UNSUPPORTED_WAIT: Duration = Duration::from_secs(600);
 const OUTBOX_BATCH: u32 = 50;
 const JOIN_RETRY: Duration = Duration::from_secs(60);
 /// Changes the coordinator refused for now (429) are sent again this much later.
@@ -496,6 +500,8 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
     let mut secret: Option<String> = None;
     let mut last_heartbeat: Option<Instant> = None;
     let mut last_metrics: Option<Instant> = None;
+    let mut last_pulse: Option<Instant> = None;
+    let mut pulse_wait = PULSE_EVERY;
     let mut last_online_pull: Option<Instant> = None;
     let mut last_join: Option<Instant> = None;
     // What the coordinator last said is wrong with this server's names (logged when it changes).
@@ -556,6 +562,19 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                 if let Err(e) = client.post("/v1/metrics", &report).await {
                     debug!(logger, "Federation: sending metrics failed: {e:#}");
                 }
+            }
+            if last_pulse.is_none_or(|t| t.elapsed() >= pulse_wait) {
+                last_pulse = Some(Instant::now());
+                let pulse = crate::metrics::pulse(&storage).await;
+                pulse_wait = match client.post("/v1/pulse", &pulse).await {
+                    Ok(_) => PULSE_EVERY,
+                    // An older coordinator: not every ten seconds, then.
+                    Err(e) if e.to_string().starts_with("404") => PULSE_UNSUPPORTED_WAIT,
+                    Err(e) => {
+                        debug!(logger, "Federation: sending the pulse failed: {e:#}");
+                        PULSE_EVERY
+                    }
+                };
             }
             if changes_wait.is_some_and(|t| t.elapsed() < CHANGES_WAIT) {
                 // The coordinator asked for them later; friend lists wait too.

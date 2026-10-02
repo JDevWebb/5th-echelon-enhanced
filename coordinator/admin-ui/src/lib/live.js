@@ -14,7 +14,15 @@ export const live = reactive({
   metricsTick: 0,
   /** Newest first, at most 50 since the page opened. */
   audit: [],
+  /** Each server's live points of the last half hour: { server: [{ t, players, in_match, matches, lobbies, rx, tx, relayed }] }. */
+  pulses: {},
+  /** Recent events made from the pulses (counts only), newest first. */
+  feed: [],
+  /** Goes up when an alert is raised or resolved. */
+  alertTick: 0,
 });
+
+const KEEP_POINTS = 180;
 
 let socket = null;
 let retry = 0;
@@ -38,6 +46,17 @@ export function connectLive() {
       if (msg.metrics) live.metricsTick++;
     } else if (msg.type === 'audit') {
       live.audit = [msg.event, ...live.audit].slice(0, 50);
+    } else if (msg.type === 'pulses') {
+      live.pulses = msg.pulses || {};
+      live.feed = msg.feed || [];
+    } else if (msg.type === 'pulse') {
+      const points = [...(live.pulses[msg.server] || []), msg.point].slice(-KEEP_POINTS);
+      live.pulses = { ...live.pulses, [msg.server]: points };
+    } else if (msg.type === 'event') {
+      live.feed = [{ ...msg.event, fresh: true }, ...live.feed.map(e => ({ ...e, fresh: false }))].slice(0, 50);
+    } else if (msg.type === 'alert') {
+      // The overview that follows carries the open alerts; pages listening for alerts reload.
+      live.alertTick++;
     } else if (msg.type === 'bye') {
       wanted = false;
       session.signedOut();
@@ -62,4 +81,6 @@ export function disconnectLive() {
   live.status = 'off';
   live.overview = null;
   live.audit = [];
+  live.pulses = {};
+  live.feed = [];
 }

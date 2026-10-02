@@ -547,6 +547,14 @@ impl Storage {
         Ok((u32::try_from(online).unwrap_or(0), u32::try_from(total).unwrap_or(0)))
     }
 
+    /// The account ids of the players online now (for the anonymised activity counts in
+    /// `metrics`).
+    pub async fn online_player_ids(&self) -> Result<Vec<u32>> {
+        Ok(sqlx::query_scalar(&format!("SELECT u.id FROM users u WHERE u.is_online = 1 AND {}", Self::players()))
+            .fetch_all(&self.pool)
+            .await?)
+    }
+
     /// Online players linked to a cross-server identity: whose friends to
     /// sync now and then.
     pub async fn online_linked(&self) -> Result<Vec<Person>> {

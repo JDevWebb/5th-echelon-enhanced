@@ -87,6 +87,10 @@ A member server drops out of the server directory, and players' launchers stop o
 - sign-ins, failed sign-ins, new accounts and relayed traffic;
 - the machine's CPU, memory, load, disk, network traffic, and the server process's own CPU and memory.
 
+**Every 10 seconds, a lighter pulse:** players online, in a match and in a lobby; the sign-in, account and match counters; and network traffic. It feeds the live figures and the Live events panel. Older coordinators answer 404, and the server tries again ten minutes later.
+
+**Who played:** with each minute's metrics, each server sends a short id for every player online. The id is an HMAC of the player's account number under a key only that server has (`metrics.key`, made on first start), cut to 16 hex characters: the coordinator can count distinct players, new ones and returning ones, but can't tell who they are or match them across servers.
+
 **Locations:**
 - Each server looks up its players' addresses in [DB-IP](https://db-ip.com)'s free city database, on its own machine. It downloads the database to `geoip/` and refreshes it monthly.
 - Only city counts are sent: addresses never leave the server.
@@ -97,7 +101,29 @@ A member server drops out of the server directory, and players' launchers stop o
 
 **History:**
 - Samples are kept for a week.
-- Hourly summaries are kept for 400 days, for the 30-day and one-year views.
+- Hourly summaries are kept for 400 days, for the 30-day and one-year views. They keep each hour's bytes in and out, relayed bytes, peak rate and five-minute rates, so the bandwidth report stays exact after the samples are gone.
+- Players per day (by anonymised id, with minutes played) and resolved alerts are kept for 400 days too.
+
+### Reports
+
+- **Bandwidth:** data in, out and relayed per hour, day or month; totals, the peak, and the 95th percentile of five-minute rates (what burstable plans bill); a row per day (per month over a year), and a CSV export. Set each server's monthly allowance in TB to see how far through it the month is and where it's heading.
+- **Players & map:** players per period, daily average, new and returning players, time played per player per day, the peak; sign-ins per day; a heatmap of when people play, in your time zone; median pings by city; the live map.
+
+### Alerts
+
+The coordinator checks every minute. An alert opens when its condition starts, updates while it lasts, and resolves itself when it ends:
+
+| Alert | When |
+|---|---|
+| Offline | No heartbeat for 3 minutes (servers seen in the last week) |
+| CPU | Over 90% in at least 3 samples within 5 minutes |
+| Memory | Over 90% |
+| Disk | Under 10% free |
+| Sign-ins refused | 30 or more in 10 minutes |
+| Traffic allowance | 80% or 100% of the month's allowance, or on course to pass it |
+| Update | A server's update failed or was rolled back, or a rollout halted |
+
+Open alerts show on the Overview and as a badge on **Alerts**. To have them posted to a chat, paste a Discord or Slack incoming webhook under **Alerts**: it must be https and reach a public address. Changing it asks for your second factor, and **Send a test** checks it.
 
 The game reports maps and game modes as numbers. Name them under **Playlists** as you identify them; the names apply everywhere.
 
@@ -193,6 +219,8 @@ The dashboards keep themselves current: the page holds a WebSocket to the coordi
 - **Overview and server status:** sent within a couple of seconds of a server's heartbeat (every 30 seconds) or metrics (every minute).
 - **Charts:** fetch their newest points when a server reports new numbers.
 - **Audit log and Admin activity:** new entries appear as they happen.
+- **Live figures and Live events:** players online and bandwidth now, from every server's 10-second pulse; events like "6 players signed in" or "a match started" are counts only.
+- **Alerts:** appear and resolve as the coordinator raises them.
 
 The badge at the top right says whether it's live. The connection uses the same sign-in as the rest of the admin UI: it ends when the session does, and only the admin UI's own site may open it (the browser's `Origin` is checked). Behind Caddy and Cloudflare, WebSockets pass through as they are.
 
@@ -204,6 +232,7 @@ The badge at the top right says whether it's live. The connection uses the same 
 
 **What's stored:**
 - Players' locations are city counts.
+- Who played is a per-server keyed hash of the account number, with minutes played per day. The coordinator never has the key, so it can't turn one back into a player, and someone playing on two servers counts twice.
 - Launchers' ping reports keep only the city and the round trip.
 
 IP geolocation by [DB-IP](https://db-ip.com), CC BY 4.0. The world map is [Natural Earth](https://www.naturalearthdata.com) (public domain), via [world-atlas](https://github.com/topojson/world-atlas) (ISC).

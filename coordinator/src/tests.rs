@@ -569,3 +569,34 @@ async fn live_updates_want_the_admin_site_and_a_session() {
     // Telling nobody is fine.
     t.c.publish(admin::live::Event::Metrics);
 }
+
+#[tokio::test]
+async fn reports_count_anonymised_players_traffic_and_alerts() {
+    let t = start("reports").await;
+    let a = t.join("server-a").await;
+    // Two players online, a bad id (ignored), and traffic counters.
+    let report = json!({ "metrics": {
+        "players": { "online": 2 },
+        "active": ["0123456789abcdef", "fedcba9876543210", "<script>"],
+        "system": { "net_rx_bytes": 1000, "net_tx_bytes": 500 },
+        "counters": { "failed_logins": 0 },
+    }, "update": {} });
+    assert_eq!(t.call("POST", "/v1/metrics", Some(&a), Some(report.clone())).await.0, StatusCode::OK);
+    // The same two a minute later: still two players, two minutes each.
+    assert_eq!(t.call("POST", "/v1/metrics", Some(&a), Some(report)).await.0, StatusCode::OK);
+    let r = t.c.players_report(86_400).await.unwrap();
+    assert_eq!(r["totals"]["players"], 2);
+    assert_eq!(r["totals"]["new"], 2);
+    assert_eq!(r["days"][0]["minutes"], 4);
+    // The bandwidth report and the alert check run on what's there.
+    let b = t.c.bandwidth(86_400, None).await.unwrap();
+    assert!(b["allowances"].as_array().unwrap().iter().any(|a| a["server"] == "server-a"));
+    t.c.check_alerts().await.unwrap();
+    assert!(t.c.alerts().await.unwrap()["active"].as_array().unwrap().is_empty());
+    // A pulse: kept for the live view, rate-limited like the rest.
+    let pulse = json!({ "players": { "online": 2 }, "matches": 1, "counters": {} });
+    assert_eq!(t.call("POST", "/v1/pulse", Some(&a), Some(pulse.clone())).await.0, StatusCode::OK);
+    assert_eq!(t.call("POST", "/v1/pulse", None, Some(pulse.clone())).await.0, StatusCode::UNAUTHORIZED);
+    assert_eq!(t.call("POST", "/v1/pulse", Some(&a), Some(json!({ "nonsense": true }))).await.0, StatusCode::BAD_REQUEST);
+    assert!(t.c.pulses.lock().unwrap().contains_key("server-a"));
+}

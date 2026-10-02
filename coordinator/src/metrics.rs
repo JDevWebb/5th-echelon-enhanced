@@ -169,6 +169,100 @@ fn hour_of(t: i64) -> i64 {
     t - t.rem_euclid(3600)
 }
 
+/// The UTC day (Unix seconds at its start) `t` falls in.
+pub(crate) fn day_of(t: i64) -> i64 {
+    t - t.rem_euclid(86_400)
+}
+
+/// The most anonymised player ids taken from one report.
+const MAX_ACTIVE: usize = 5000;
+
+/// (year, month 1-12, day 1-31) of a day count since 1970-01-01 (Howard Hinnant's algorithm).
+fn civil(days: i64) -> (i64, i64, i64) {
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    (yoe + era * 400 + i64::from(m <= 2), m, d)
+}
+
+/// Days since 1970-01-01 of a civil date.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y.rem_euclid(400);
+    let mp = (m + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// The UTC month `t` falls in: its start, and the next month's.
+pub(crate) fn month_of(t: i64) -> (i64, i64) {
+    let (y, m, _) = civil(t.div_euclid(86_400));
+    let start = days_from_civil(y, m, 1) * 86_400;
+    let (ny, nm) = if m == 12 { (y + 1, 1) } else { (y, m + 1) };
+    (start, days_from_civil(ny, nm, 1) * 86_400)
+}
+
+/// The value at quantile `q` (0..=1) of `v` (sorted here); 0 for none.
+fn quantile(mut v: Vec<f64>, q: f64) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    v.sort_by(f64::total_cmp);
+    v[((v.len() - 1) as f64 * q).round() as usize]
+}
+
+/// One hour of one server's traffic, from its rollup (or the hour so far).
+#[derive(Debug, Clone, Default)]
+struct HourTraffic {
+    server: String,
+    hour: i64,
+    rx: f64,
+    tx: f64,
+    relayed: f64,
+    /// The fastest (in + out) bytes a second between two samples.
+    peak: f64,
+    /// (in + out) bytes a second, for each five minutes.
+    rate5: Vec<f64>,
+    max_players: f64,
+    logins: f64,
+    failed_logins: f64,
+    registrations: f64,
+}
+
+impl HourTraffic {
+    /// From a rollup; hours rolled up before byte totals were kept are estimated from
+    /// their average rates.
+    fn from_summary(server: String, hour: i64, h: &Value) -> Self {
+        let avg = &h["avg"];
+        let exact = h["rx_bytes"].is_number();
+        let minutes = num(&h["samples"]).max(1.0);
+        let rate = num(&avg["rx"]) + num(&avg["tx"]);
+        Self {
+            server,
+            hour,
+            rx: if exact { num(&h["rx_bytes"]) } else { num(&avg["rx"]) * 3600.0 },
+            tx: if exact { num(&h["tx_bytes"]) } else { num(&avg["tx"]) * 3600.0 },
+            relayed: if exact { num(&h["relayed_bytes"]) } else { num(&avg["relayed"]) * 3600.0 },
+            peak: if exact { num(&h["peak_bps"]) } else { rate },
+            rate5: match h["rate5"].as_array() {
+                Some(r) => r.iter().map(num).collect(),
+                None => vec![rate; 12],
+            },
+            max_players: num(&h["max_players"]),
+            logins: if exact { num(&h["logins"]) } else { num(&avg["logins"]) * minutes },
+            failed_logins: if exact { num(&h["failed_logins"]) } else { num(&avg["failed_logins"]) * minutes },
+            registrations: if exact { num(&h["registrations"]) } else { num(&avg["registrations"]) * minutes },
+        }
+    }
+}
+
 impl Coordinator {
     /// Stores a server's metrics report.
     pub(crate) async fn record_metrics(&self, server: &str, report: &Value) -> sqlx::Result<()> {
@@ -184,7 +278,40 @@ impl Coordinator {
             .bind(server)
             .execute(&self.pool)
             .await?;
-        Ok(())
+        self.record_active(server, now, &report["metrics"]["active"]).await
+    }
+
+    /// Counts a minute for each player online (their anonymised ids, see the server's
+    /// `metrics`), and notes the day each was first seen.
+    async fn record_active(&self, server: &str, now: i64, active: &Value) -> sqlx::Result<()> {
+        let ids: Vec<&str> = active
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|id| id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit()))
+            .take(MAX_ACTIVE)
+            .collect();
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let day = day_of(now);
+        let mut tx = self.pool.begin().await?;
+        for id in ids {
+            sqlx::query("INSERT INTO daily_players (server_id, day, player, minutes) VALUES (?, ?, ?, 1) ON CONFLICT DO UPDATE SET minutes = minutes + 1")
+                .bind(server)
+                .bind(day)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+            sqlx::query("INSERT OR IGNORE INTO first_seen (server_id, player, day) VALUES (?, ?, ?)")
+                .bind(server)
+                .bind(id)
+                .bind(day)
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await
     }
 
     /// Rolls finished hours up, and drops what's past keeping. Run hourly.
@@ -221,6 +348,8 @@ impl Coordinator {
             ("DELETE FROM hourly WHERE hour < ?", HOURLY_FOR),
             ("DELETE FROM player_pings WHERE at < ?", PLAYER_PINGS_FOR),
             ("DELETE FROM audit WHERE at < ?", HOURLY_FOR),
+            ("DELETE FROM daily_players WHERE day < ?", HOURLY_FOR),
+            ("DELETE FROM alerts WHERE resolved_at < ?", HOURLY_FOR),
         ] {
             sqlx::query(sql).bind(now - keep).execute(&self.pool).await?;
         }
@@ -485,6 +614,259 @@ impl Coordinator {
         Ok(rows.into_iter().map(|(s, d)| (s, serde_json::from_str(&d).unwrap_or_default())).collect())
     }
 
+    /// Every server's traffic by the hour from `from` on (`server`: one only): the rollups,
+    /// and the hour so far summed up from its samples.
+    async fn traffic_since(&self, from: i64, server: Option<&str>) -> sqlx::Result<Vec<HourTraffic>> {
+        let rows: Vec<(String, i64, String)> = sqlx::query_as("SELECT server_id, hour, data FROM hourly WHERE hour >= ? AND (?2 IS NULL OR server_id = ?2) ORDER BY hour")
+            .bind(hour_of(from))
+            .bind(server)
+            .fetch_all(&self.pool)
+            .await?;
+        let mut hours: Vec<HourTraffic> = rows
+            .into_iter()
+            .map(|(s, hour, data)| HourTraffic::from_summary(s, hour, &serde_json::from_str(&data).unwrap_or_default()))
+            .collect();
+        // Hours not rolled up yet (this one, and any the hourly job hasn't reached).
+        let done: HashMap<String, i64> = hours.iter().fold(HashMap::new(), |mut m, h| {
+            let e = m.entry(h.server.clone()).or_insert(h.hour);
+            *e = (*e).max(h.hour);
+            m
+        });
+        let now = identity::now();
+        let servers: Vec<String> = sqlx::query_scalar("SELECT DISTINCT server_id FROM samples WHERE at >= ? AND (?2 IS NULL OR server_id = ?2)")
+            .bind(hour_of(now) - 3 * 3600)
+            .bind(server)
+            .fetch_all(&self.pool)
+            .await?;
+        for s in servers {
+            let start = done.get(&s).map_or(hour_of(from).max(hour_of(now) - 3 * 3600), |h| h + 3600);
+            let rows: Vec<(i64, String)> = sqlx::query_as(CHARTED).bind(&s).bind(start - 600).fetch_all(&self.pool).await?;
+            let mut hour = start;
+            while hour <= hour_of(now) {
+                let inside: Vec<(i64, String)> = rows.iter().filter(|(t, _)| *t >= hour - 600 && *t < hour + 3600).cloned().collect();
+                if let Some(h) = summarise(hour, &inside) {
+                    hours.push(HourTraffic::from_summary(s.clone(), hour, &h));
+                }
+                hour += 3600;
+            }
+        }
+        hours.retain(|h| h.hour >= hour_of(from));
+        Ok(hours)
+    }
+
+    /// The bandwidth report over the last `range` seconds (`server`: one only): data in, out
+    /// and relayed per period, the totals, the peak and 95th percentile, a row per day (or
+    /// month, over a year), and each server's month against its allowance.
+    pub async fn bandwidth(&self, range: i64, server: Option<&str>) -> sqlx::Result<Value> {
+        let now = identity::now();
+        let from = now - range;
+        let hours = self.traffic_since(from, server).await?;
+        // Where each hour goes: chart buckets, and table rows.
+        let year = range > 40 * 86_400;
+        let step = match range {
+            r if r <= 86_400 => 3600,
+            r if r <= 7 * 86_400 => 6 * 3600,
+            _ => 86_400,
+        };
+        // Days start at midnight UTC; shorter periods count from the start of the range.
+        let start = if step == 86_400 { day_of(from) } else { hour_of(from) };
+        let bucket_of = |h: i64| if year { month_of(h).0 } else { start + (h - start).div_euclid(step) * step };
+        let row_of = |h: i64| if year { month_of(h).0 } else { day_of(h) };
+        // Every period in the range, so quiet ones still show on the chart.
+        let mut buckets: BTreeMap<i64, [f64; 3]> = BTreeMap::new();
+        let mut t = bucket_of(from);
+        while t <= now {
+            buckets.insert(t, [0.0; 3]);
+            t = if year { month_of(t).1 } else { t + step };
+        }
+        let mut rows: BTreeMap<i64, Value> = BTreeMap::new();
+        let mut by_server: BTreeMap<String, [f64; 3]> = BTreeMap::new();
+        // Per hour, every server together: for peaks and the 95th percentile.
+        let mut net_hours: BTreeMap<i64, (f64, f64, Vec<f64>)> = BTreeMap::new();
+        let (mut rx, mut tx, mut relayed) = (0.0, 0.0, 0.0);
+        let mut peak = (0.0_f64, 0_i64, String::new());
+        for h in &hours {
+            rx += h.rx;
+            tx += h.tx;
+            relayed += h.relayed;
+            let b = buckets.entry(bucket_of(h.hour)).or_default();
+            b[0] += h.rx;
+            b[1] += h.tx;
+            b[2] += h.relayed;
+            let s = by_server.entry(h.server.clone()).or_default();
+            s[0] += h.rx;
+            s[1] += h.tx;
+            s[2] += h.relayed;
+            if h.peak > peak.0 {
+                peak = (h.peak, h.hour, h.server.clone());
+            }
+            let e = net_hours.entry(h.hour).or_insert_with(|| (0.0, 0.0, vec![0.0; 12]));
+            e.0 += h.peak;
+            e.1 += h.max_players;
+            for (i, r) in h.rate5.iter().enumerate().take(12) {
+                e.2[i] += r;
+            }
+            let row = rows
+                .entry(row_of(h.hour))
+                .or_insert_with(|| json!({ "t": row_of(h.hour), "rx": 0.0, "tx": 0.0, "relayed": 0.0 }));
+            for (k, v) in [("rx", h.rx), ("tx", h.tx), ("relayed", h.relayed)] {
+                row[k] = json!(num(&row[k]) + v);
+            }
+        }
+        let mut row_rates: BTreeMap<i64, Vec<f64>> = BTreeMap::new();
+        let mut all_rates = Vec::new();
+        for (hour, (peak_sum, players, rates)) in &net_hours {
+            let row = rows.entry(row_of(*hour)).or_default();
+            row["peak_bps"] = json!(num(&row["peak_bps"]).max(*peak_sum));
+            row["peak_players"] = json!(num(&row["peak_players"]).max(*players));
+            let rates: Vec<f64> = rates.iter().copied().filter(|r| *r > 0.0).collect();
+            row_rates.entry(row_of(*hour)).or_default().extend(&rates);
+            all_rates.extend(rates);
+        }
+        for (t, rates) in row_rates {
+            if let Some(row) = rows.get_mut(&t) {
+                row["p95_bps"] = json!(quantile(rates, 0.95));
+            }
+        }
+        // This month, per server, against its allowance.
+        let (month_start, month_end) = month_of(now);
+        let month = self.traffic_since(month_start, None).await?;
+        let mut used: BTreeMap<String, f64> = BTreeMap::new();
+        for h in month.iter().filter(|h| h.hour >= month_start) {
+            *used.entry(h.server.clone()).or_default() += h.rx + h.tx;
+        }
+        let ids: Vec<String> = sqlx::query_scalar("SELECT id FROM servers ORDER BY id").fetch_all(&self.pool).await?;
+        let elapsed = ((now - month_start) as f64 / (month_end - month_start) as f64).max(1.0 / 720.0);
+        let mut allowances = Vec::new();
+        for id in ids {
+            let tb: Option<f64> = self.setting(&format!("allowance:{id}")).await?.and_then(|v| v.parse().ok()).filter(|v: &f64| *v > 0.0);
+            let u = used.get(&id).copied().unwrap_or(0.0);
+            allowances.push(json!({ "server": id, "used": u, "projected": u / elapsed, "allowance": tb.map(|tb| tb * 1e12) }));
+        }
+        Ok(json!({
+            "from": from,
+            "to": now,
+            "step": if year { "month" } else if step == 86_400 { "day" } else if step == 3600 { "hour" } else { "6 hours" },
+            "rows_are": if year { "months" } else { "days" },
+            "buckets": buckets.into_iter().map(|(t, [rx, tx, relayed])| json!({ "t": t, "rx": rx, "tx": tx, "relayed": relayed })).collect::<Vec<_>>(),
+            "totals": { "rx": rx, "tx": tx, "relayed": relayed },
+            "peak": { "bps": peak.0, "t": peak.1, "server": peak.2 },
+            "p95_bps": quantile(all_rates, 0.95),
+            "by_server": by_server.into_iter().map(|(s, [rx, tx, relayed])| json!({ "server": s, "rx": rx, "tx": tx, "relayed": relayed })).collect::<Vec<_>>(),
+            "rows": rows.into_values().rev().collect::<Vec<_>>(),
+            "month": { "start": month_start, "end": month_end },
+            "allowances": allowances,
+        }))
+    }
+
+    /// The players report over the last `range` seconds: players (anonymised, counted per
+    /// server), new and returning ones, time played, when they play, sign-ins, and pings
+    /// by city.
+    pub async fn players_report(&self, range: i64) -> sqlx::Result<Value> {
+        let now = identity::now();
+        let from = day_of(now - range + 86_400);
+        let before = from - (day_of(now) + 86_400 - from);
+        let one = |sql: &'static str, a: i64, b: i64| sqlx::query_scalar::<_, i64>(sql).bind(a).bind(b).fetch_one(&self.pool);
+        let players = one(
+            "SELECT COUNT(*) FROM (SELECT DISTINCT server_id, player FROM daily_players WHERE day >= ? AND day < ?)",
+            from,
+            i64::MAX,
+        )
+        .await?;
+        let earlier = one(
+            "SELECT COUNT(*) FROM (SELECT DISTINCT server_id, player FROM daily_players WHERE day >= ? AND day < ?)",
+            before,
+            from,
+        )
+        .await?;
+        let returning = one(
+            "SELECT COUNT(*) FROM (SELECT DISTINCT a.server_id, a.player FROM daily_players a JOIN daily_players b
+               ON b.server_id = a.server_id AND b.player = a.player AND b.day >= ?2 AND b.day < ?1 WHERE a.day >= ?1)",
+            from,
+            before,
+        )
+        .await?;
+        let new_players = one("SELECT COUNT(*) FROM first_seen WHERE day >= ? AND day < ?", from, i64::MAX).await?;
+        let since: Option<i64> = sqlx::query_scalar("SELECT MIN(day) FROM first_seen").fetch_one(&self.pool).await?;
+        let days: Vec<(i64, i64, i64)> = sqlx::query_as("SELECT day, COUNT(*), SUM(minutes) FROM daily_players WHERE day >= ? GROUP BY day ORDER BY day")
+            .bind(from)
+            .fetch_all(&self.pool)
+            .await?;
+        let new_by_day: HashMap<i64, i64> = sqlx::query_as::<_, (i64, i64)>("SELECT day, COUNT(*) FROM first_seen WHERE day >= ? GROUP BY day")
+            .bind(from)
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .collect();
+        let player_days: i64 = days.iter().map(|d| d.1).sum();
+        let minutes: i64 = days.iter().map(|d| d.2).sum();
+        // Hour by hour (every server together): players on average, and the most at once.
+        let hours = self.traffic_since(now - range, None).await?;
+        let mut by_hour: BTreeMap<i64, (f64, f64)> = BTreeMap::new();
+        // Every day in the range, so quiet ones still show on the charts.
+        let every_day: Vec<i64> = (0..).map(|i| from + i * 86_400).take_while(|d| *d <= day_of(now)).collect();
+        let mut signins: BTreeMap<i64, [f64; 3]> = every_day.iter().map(|d| (*d, [0.0; 3])).collect();
+        for h in &hours {
+            let e = by_hour.entry(h.hour).or_default();
+            e.1 += h.max_players;
+            let s = signins.entry(day_of(h.hour)).or_default();
+            s[0] += h.logins;
+            s[1] += h.failed_logins;
+            s[2] += h.registrations;
+        }
+        let avg_players: Vec<(i64, f64)> = sqlx::query_as("SELECT hour, SUM(CAST(json_extract(data, '$.avg.players') AS REAL)) FROM hourly WHERE hour >= ? GROUP BY hour")
+            .bind(hour_of(now - range))
+            .fetch_all(&self.pool)
+            .await?;
+        for (hour, avg) in avg_players {
+            by_hour.entry(hour).or_default().0 = avg;
+        }
+        let peak = by_hour.values().map(|v| v.1).fold(0.0, f64::max);
+        // Players' pings by city and server: the median of what their launchers measured.
+        let rows: Vec<(String, String, String, i64)> = sqlx::query_as("SELECT server_id, country, city, ms FROM player_pings WHERE at >= ?")
+            .bind(now - range)
+            .fetch_all(&self.pool)
+            .await?;
+        let mut cities: BTreeMap<(String, String), BTreeMap<String, Vec<f64>>> = BTreeMap::new();
+        for (server, country, city, ms) in rows {
+            cities.entry((country, city)).or_default().entry(server).or_default().push(ms as f64);
+        }
+        let mut cities: Vec<Value> = cities
+            .into_iter()
+            .map(|((country, city), servers)| {
+                let reports: usize = servers.values().map(Vec::len).sum();
+                let pings: BTreeMap<String, f64> = servers.into_iter().map(|(s, ms)| (s, quantile(ms, 0.5))).collect();
+                json!({ "country": country, "city": city, "reports": reports, "median": pings })
+            })
+            .collect();
+        cities.sort_by(|a, b| num(&b["reports"]).total_cmp(&num(&a["reports"])));
+        cities.truncate(20);
+        Ok(json!({
+            "from": from,
+            "to": now,
+            "tracking_since": since,
+            "totals": {
+                "players": players,
+                "daily_average": if days.is_empty() { 0.0 } else { player_days as f64 / days.len() as f64 },
+                "new": new_players,
+                "returning": returning,
+                "earlier": earlier,
+                "minutes_per_player_day": if player_days > 0 { minutes as f64 / player_days as f64 } else { 0.0 },
+                "peak": peak,
+            },
+            "days": every_day
+                .iter()
+                .map(|day| {
+                    let (players, minutes) = days.iter().find(|d| d.0 == *day).map_or((0, 0), |d| (d.1, d.2));
+                    json!({ "t": day, "players": players, "minutes": minutes, "new": new_by_day.get(day).copied().unwrap_or(0) })
+                })
+                .collect::<Vec<_>>(),
+            "hours": by_hour.into_iter().map(|(t, (avg, max))| json!({ "t": t, "avg": avg, "max": max })).collect::<Vec<_>>(),
+            "signins": signins.into_iter().map(|(t, [ok, failed, new])| json!({ "t": t, "ok": ok, "failed": failed, "new": new })).collect::<Vec<_>>(),
+            "cities": cities,
+        }))
+    }
+
     /// Names for map and mode ids.
     pub async fn set_label(&self, kind: &str, id: i64, name: &str) -> sqlx::Result<()> {
         if name.trim().is_empty() {
@@ -511,11 +893,30 @@ fn summarise(hour: i64, rows: &[(i64, String)]) -> Option<Value> {
     let mut activity: BTreeMap<String, Value> = BTreeMap::new();
     let mut max_players: f64 = 0.0;
     let mut version = String::new();
+    // Bytes and counts over the hour, the fastest rate, and (bytes, seconds) per five minutes.
+    let (mut rx, mut tx, mut relayed, mut peak) = (0.0, 0.0, 0.0, 0.0_f64);
+    let (mut logins, mut failed_logins, mut registrations) = (0.0, 0.0, 0.0);
+    let mut slots = [(0.0_f64, 0.0_f64); 12];
     for (i, (t, m)) in samples.iter().enumerate() {
         if *t < hour {
             continue;
         }
         let prev = i.checked_sub(1).map(|j| (samples[j].0, &samples[j].1));
+        if let Some((t0, before)) = prev.filter(|(t0, _)| (1..=600).contains(&(*t - *t0))) {
+            let secs = (*t - t0) as f64;
+            let (sys, sys0, c, c0) = (&m["system"], &before["system"], &m["counters"], &before["counters"]);
+            let (r, x) = (grew(&sys["net_rx_bytes"], &sys0["net_rx_bytes"]), grew(&sys["net_tx_bytes"], &sys0["net_tx_bytes"]));
+            rx += r;
+            tx += x;
+            relayed += grew(&c["relayed_bytes"], &c0["relayed_bytes"]);
+            logins += grew(&c["game_logins"], &c0["game_logins"]);
+            failed_logins += grew(&c["failed_logins"], &c0["failed_logins"]);
+            registrations += grew(&c["registrations"], &c0["registrations"]);
+            peak = peak.max((r + x) / secs);
+            let slot = usize::try_from((*t - hour) / 300).unwrap_or(0).min(11);
+            slots[slot].0 += r + x;
+            slots[slot].1 += secs;
+        }
         // Each sample stands for the minutes since the one before (a minute at most... or five, after a gap).
         let minutes = prev.map_or(1.0, |(t0, _)| ((t - t0) as f64 / 60.0).clamp(0.0, 5.0));
         let p = point(*t, m, prev);
@@ -547,6 +948,14 @@ fn summarise(hour: i64, rows: &[(i64, String)]) -> Option<Value> {
     Some(json!({
         "samples": n,
         "avg": avg,
+        "rx_bytes": rx,
+        "tx_bytes": tx,
+        "relayed_bytes": relayed,
+        "peak_bps": peak,
+        "rate5": slots.iter().map(|(b, s)| if *s > 0.0 { b / s } else { 0.0 }).collect::<Vec<_>>(),
+        "logins": logins,
+        "failed_logins": failed_logins,
+        "registrations": registrations,
         "max_players": max_players,
         "version": version,
         "places": places.into_values().collect::<Vec<_>>(),
@@ -583,6 +992,34 @@ mod tests {
         assert_eq!(h["places"][0]["player_minutes"], 8.0);
         assert_eq!(h["activity"][0]["session_minutes"], 3.0);
         assert!(summarise(7200, &rows).is_none());
+    }
+
+    #[test]
+    fn months_and_days() {
+        // 2026-10-03 12:00 UTC.
+        let t = 1_791_028_800;
+        let (start, end) = month_of(t);
+        assert_eq!(civil(start / 86_400), (2026, 10, 1));
+        assert_eq!(civil(end / 86_400), (2026, 11, 1));
+        assert_eq!(month_of(days_from_civil(2026, 12, 31) * 86_400).1, days_from_civil(2027, 1, 1) * 86_400);
+        assert_eq!(day_of(t), days_from_civil(2026, 10, 3) * 86_400);
+        assert_eq!(quantile(vec![5.0, 1.0, 3.0, 2.0, 4.0], 0.5), 3.0);
+    }
+
+    #[test]
+    fn hourly_rollups_keep_byte_totals() {
+        let rows = vec![(3540, sample(2, 0, 0)), (3600, sample(4, 6000, 2)), (3660, sample(4, 12_000, 2))];
+        let h = summarise(3600, &rows).unwrap();
+        assert_eq!(h["rx_bytes"], 12_000.0);
+        assert_eq!(h["logins"], 2.0);
+        assert_eq!(h["peak_bps"], 100.0);
+        assert_eq!(h["rate5"][0], 100.0);
+        let t = HourTraffic::from_summary("a".into(), 3600, &h);
+        assert_eq!(t.rx, 12_000.0);
+        // An hour rolled up before byte totals: estimated from its average rate.
+        let old = json!({ "samples": 60, "avg": { "rx": 10.0, "tx": 5.0, "logins": 0.5 } });
+        let t = HourTraffic::from_summary("a".into(), 3600, &old);
+        assert_eq!((t.rx, t.tx, t.logins, t.rate5.len()), (36_000.0, 18_000.0, 30.0, 12));
     }
 
     #[test]

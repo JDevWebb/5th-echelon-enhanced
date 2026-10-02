@@ -8,6 +8,7 @@
       </g>
       <text v-for="i in 5" :key="'t' + i" class="axis" :x="x(from + span * (i - 1) / 4)" :y="height - 5" :text-anchor="i === 1 ? 'start' : i === 5 ? 'end' : 'middle'">{{ timeLabel(from + span * (i - 1) / 4) }}</text>
       <path v-for="(d, i) in paths" :key="'p' + i" :d="d" fill="none" :style="{ stroke: series[i].color }" stroke-width="1.8" stroke-linejoin="round" vector-effect="non-scaling-stroke" />
+      <circle v-for="(d, i) in dots" :key="'d' + i" :cx="d.x" :cy="d.y" r="3" :style="{ fill: d.color }" />
       <line v-if="hover" class="hover-line" :x1="x(hover.t)" :x2="x(hover.t)" :y1="T" :y2="height - B" />
     </svg>
     <div v-if="hover" class="tip" :style="{ left: `${hover.left}px`, top: '8px' }">
@@ -70,6 +71,10 @@ const paths = computed(() => {
     return d;
   });
 });
+
+// Points with nothing to join (one day of data, or a lone point between gaps) show as dots.
+const dots = computed(() => props.series.flatMap((s, i) =>
+  [...paths.value[i].matchAll(/M([\d.-]+),([\d.-]+)(?=M|$)/g)].map(m => ({ x: m[1], y: m[2], color: s.color }))));
 
 const times = computed(() => [...new Set(props.series.flatMap(s => s.points.map(p => p.t)))].sort((a, b) => a - b));
 function move(ev) {

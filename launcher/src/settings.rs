@@ -87,7 +87,12 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     egui::SidePanel::left("settings-nav")
         .resizable(false)
         .exact_width(230.0)
-        .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin { left: 16, right: 16, top: 26, bottom: 16 }))
+        .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin {
+            left: 16,
+            right: 16,
+            top: 26,
+            bottom: 16,
+        }))
         .show_inside(ui, |ui| {
             ui.label(theme::display("Settings", 26.0));
             ui.add_space(12.0);
@@ -327,7 +332,10 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
         use setup::game::GameVersion;
         ui.label("Renderer");
         let mut version = game.cfg.default_game;
-        let options = [(GameVersion::SplinterCellBlacklistDx11, "DirectX 11 (recommended)"), (GameVersion::SplinterCellBlacklistDx9, "DirectX 9")];
+        let options = [
+            (GameVersion::SplinterCellBlacklistDx11, "DirectX 11 (recommended)"),
+            (GameVersion::SplinterCellBlacklistDx9, "DirectX 9"),
+        ];
         if theme::segmented(ui, &mut version, &options) {
             game.update(notices, |c| c.default_game = version);
         }
@@ -707,11 +715,15 @@ fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>, nat_m
     let no_port = |why: String| match nat_mode {
         hooks_config::NatMode::Off => (
             Status::Warn,
-            Some(format!("Direct, no router port open ({why}): others may not be able to join you. Internet play is set to LAN or VPN only")),
+            Some(format!(
+                "Direct, no router port open ({why}): others may not be able to join you. Internet play is set to LAN or VPN only"
+            )),
         ),
         _ => (
             Status::Ok,
-            Some(format!("Through the server's relay: no router port open ({why}), so matches go through the server, which adds a little delay")),
+            Some(format!(
+                "Through the server's relay: no router port open ({why}), so matches go through the server, which adds a little delay"
+            )),
         ),
     };
     let direct = match run(Box::pin(network::test_p2p(api.clone(), user, pass))) {
