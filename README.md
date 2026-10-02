@@ -14,7 +14,7 @@
   <a href="#play-in-five-minutes">Play</a> ·
   <a href="#linux-and-steam-deck">Linux &amp; Steam Deck</a> ·
   <a href="#host-a-server">Host a server</a> ·
-  <a href="#grow-the-network">Grow the network</a> ·
+  <a href="#run-your-own-server">Run your own</a> ·
   <a href="#features">Features</a> ·
   <a href="#whats-new-in-this-fork">What's new</a> ·
   <a href="#contributing">Contribute</a> ·
@@ -44,9 +44,9 @@
 
 The launcher pings every server in the network and sets you up on the one with the lowest ping (the setup log says which). Afterwards the Play screen lists them all with your ping to each, and **Switch** moves you to another in one click, with the same name and friends.
 
-### Grow the network
+### Run your own server
 
-The community server is the first of many, and the more servers there are, the closer one is to you. **Run your own**, on any small Linux VPS, with one script:
+The community network's servers are run by its maintainers. **Run your own** for your group, on any small Linux VPS, with one script:
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/JDevWebb/5th-echelon-enhanced/main/scripts/install-server.sh
@@ -55,8 +55,7 @@ sudo bash install-server.sh
 
 Then choose how it fits in:
 
-- **Join the community network.** [Open an issue](https://github.com/JDevWebb/5th-echelon-enhanced/issues/new?template=add-server.yml) (or a pull request adding it to [docs/community-servers.md](docs/community-servers.md)). Once it's checked, you get a join token privately, and your server shows up in every player's launcher, pinged and ranked with the rest, sharing friends and names. Member servers update themselves as the network rolls out each signed release, and report anonymous metrics (no names or addresses) to the network's admin UI.
-- **Start a network of your own.** Run your own coordinator: on the same machine as your server (choose "run a coordinator here too"), or on a machine of its own (`--coordinator-only`). Your community gets its own directory and its own friends, completely independent of ours. Pass the join token to the servers you trust. You get the same automatic updates for your servers, and an admin UI of your own ([docs/operations.md](docs/operations.md)).
+- **Start a network of your own.** Run your own coordinator: on the same machine as your server (choose "run a coordinator here too"), or on a machine of its own (`--coordinator-only`). Your community gets its own directory and its own friends, completely independent of the community network. Pass the join token to the servers you trust. You get the same automatic updates for your servers, and an admin UI of your own ([docs/operations.md](docs/operations.md)).
 - **Or keep it to yourselves:** a server on its own, for a group of friends or a LAN.
 
 The step-by-step guide, with DNS (Cloudflare included), firewalls, sizing and troubleshooting: **[docs/deploying.md](docs/deploying.md)**.
@@ -277,7 +276,7 @@ Everything the launcher does can be done by hand:
 ### For server operators
 - **One server for everything:** accounts, matchmaking, invites, friends and presence, news, challenges, and the game's configuration and content.
 - **Friend lists for public servers:** friends-only lists and invites (`[friends] mode = "mutual"`), blocking, and rate limits on invites and friend requests.
-- **Friends across servers:** a **coordinator** shares friendships and blocks between servers, reserves each player's name across them, and lists them in a server directory. The Linux installer runs one next to your server, or on a machine of its own. Join the [community network](#grow-the-network), or start your own.
+- **Friends across servers:** a **coordinator** shares friendships and blocks between servers, reserves each player's name across them, and lists them in a server directory. The Linux installer runs one next to your server, or on a machine of its own, for [a network of your own](#run-your-own-server).
 - **A network that updates itself:** the coordinator rolls out each signed release to its servers, one first, then the rest. Each server's updater checks the signature, and puts the previous release back if the new one doesn't come back healthy. Members keep up, or leave the directory.
 - **An admin UI for the network:**
   - **What it shows:**
@@ -376,7 +375,7 @@ sudo bash install-server.sh
 ```
 
 - **It asks for a domain name**, e.g. `blacklist.example.com`, with an A record pointing at the server (on Cloudflare: DNS only, not proxied). With one, Caddy serves the game's web parts on port 80 and the launcher's API over HTTPS on 443, so only TCP 80 and 443 and UDP 21126–21129 need to be open. Leave it empty to skip Caddy.
-- **It asks whether to share friends:** keep the server on its own, run a coordinator here too, or join a group's coordinator (the [community network](#grow-the-network), say).
+- **It asks whether to share friends:** keep the server on its own, run a coordinator here too, or join a coordinator your group runs elsewhere.
 - **It then:**
   - downloads the latest release, and checks its checksum and the release key's signature;
   - creates a system user and a sandboxed service;
@@ -705,7 +704,7 @@ Contributions of every size are welcome: bug reports with logs, testing with fri
 - **Credit:** your commits keep your name, and you'll be listed under [Authors and contributors](#authors-and-contributors).
 - **Upstream:** fixes that apply to upstream 5th Echelon are offered there as well.
 - **Collaborators:** see [Become a collaborator](#become-a-collaborator).
-- **Servers:** running one is one of the best ways to help. [Add it to the community network](https://github.com/JDevWebb/5th-echelon-enhanced/issues/new?template=add-server.yml), or list your own network in [docs/community-servers.md](docs/community-servers.md).
+- **Servers:** running one for your group is one of the best ways to help. List a public one in [docs/community-servers.md](docs/community-servers.md).
 - **Security:** found a weakness? Please don't post the details in a public issue; open one asking for a private contact, and we'll take it from there.
 
 Never commit game files or anything extracted from them. Facts learned from the game (IDs, names, protocol layouts) are fine.
@@ -714,7 +713,7 @@ Never commit game files or anything extracted from them. Facts learned from the 
 
 ## Community
 
-**Play on the [community server](#the-community-server)** at `play.scbl.jdevwebb.net`, and [grow the network](#grow-the-network) with a server of your own. Every server in the community network is listed in [docs/community-servers.md](docs/community-servers.md) and in the launcher, ranked by your ping.
+**Play on the [community server](#the-community-server)** at `play.scbl.jdevwebb.net`, or [run your own](#run-your-own-server). The community network's servers, and public servers run by others, are listed in [docs/community-servers.md](docs/community-servers.md).
 
 Find other players, active servers and help:
 

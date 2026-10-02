@@ -12,7 +12,7 @@ The examples use `play.example.com` for a game server and `coord.example.com` fo
 |---|---|---|
 | **One server** | 1 | A group that plays on one server |
 | **Server and coordinator together** | 1 | The first server of a group; others can join later |
-| **Join a group** | 1 per server | A new server in an existing group, e.g. the community network |
+| **Join a group** | 1 per server | A new server in a group you run, or one whose coordinator you trust |
 | **Coordinator on its own** | 1, plus the servers | A group of servers with no "main" one |
 
 A coordinator shares friends and blocks between its servers, reserves each player's name across them, and lists them in the server directory the launcher browses. See [friends.md](friends.md) for what it knows and trusts.
@@ -98,7 +98,7 @@ curl https://coord.example.com/v1/servers   # the directory: your server within 
 
 ## Join a group
 
-You need the coordinator's address and its **join token**, from whoever runs it. To join the community network, [open an issue](https://github.com/JDevWebb/5th-echelon-enhanced/issues/new?template=add-server.yml).
+You need the coordinator's address and its **join token**, from whoever runs it.
 
 Put the token in a file only you can read, then:
 
