@@ -289,6 +289,20 @@ impl GameSessionProtocolServerImpl {
         self.storage.is_invite_only_session(session_id).unwrap_or(false)
     }
 
+    /// Whether `member` is in `host`'s party: the anteroom (room kind 1) the host opened and
+    /// is still in, with `member` in it too. A party follows its host into a private match
+    /// (the members add themselves, or the host adds them) without invitations of its own.
+    ///
+    /// Only that room: any other session the two share (someone else's lobby, a public
+    /// match) makes nobody a member of the host's party.
+    fn in_party_of(&self, member: u32, host: u32) -> bool {
+        member != host
+            && self
+                .storage
+                .rooms_of_host_with(host, member)
+                .is_ok_and(|rooms| rooms.iter().any(|a| attribute_value(a, PROPERTY_ROOM_KIND) == Some(ROOM_KIND_ANTEROOM)))
+    }
+
     /// LeaveSession and AbandonSession: the player is no longer in the
     /// session, and one nobody is left in ends. Upstream answered both
     /// without doing anything, so players stayed listed in rooms they had
@@ -483,10 +497,14 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // Ensure the client is logged in.
         let user_id = login_required(&*ci)?;
         info!(logger, "Client adds participants: {:?}", request);
-        let targets: Vec<u32> = request.private_participant_ids.0.iter().chain(request.public_participant_ids.0.iter()).copied().collect();
+        let mut targets: Vec<u32> = request.private_participant_ids.0.iter().chain(request.public_participant_ids.0.iter()).copied().collect();
         if targets.len() > MAX_RECIPIENTS {
             return Err(Error::AccessDenied);
         }
+        // A player named twice (once private, once public: `[me, me]`) is one player. Every
+        // check below must see `[me]` then, or joining that way slipped past them.
+        targets.sort_unstable();
+        targets.dedup();
         self.authorise(logger, user_id, request.game_session_key.session_id, Some(&targets), "add participants to")?;
         let session_id = request.game_session_key.session_id;
         let members = rmc_err!(self.storage.session_members(session_id), logger, "error reading session members")?;
@@ -495,22 +513,26 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             .is_some_and(|(creator, participants)| *creator == user_id || participants.contains(&user_id));
         // Nobody walks into a private match uninvited (the ids are small numbers anyone could
         // try); members, anyone invited, and the host's party may. A party taken into a
-        // private match follows its host without an invitation of its own.
-        if targets == [user_id] && !is_member && self.is_private_room(request.game_session_key.type_id, session_id) {
+        // private match follows its host without an invitation of its own - but not past a
+        // block.
+        if targets.contains(&user_id) && !is_member && self.is_private_room(request.game_session_key.type_id, session_id) {
             let invited = rmc_err!(self.storage.is_invited(user_id, session_id), logger, "error checking invitations")?;
-            let party_of_host = members.as_ref().is_some_and(|(creator, _)| self.storage.share_session(user_id, *creator).unwrap_or(false));
+            let party_of_host = members.as_ref().is_some_and(|(creator, _)| {
+                self.in_party_of(user_id, *creator) && !crate::friends_policy::blocked_blocking(&self.storage, user_id, *creator)
+            });
             if !invited && !party_of_host {
                 warn!(logger, "User {user_id} tried to join private room {session_id} without an invitation; refused");
                 return Err(Error::AccessDenied);
             }
         }
-        // Adding someone else is an invitation: the same rules (friends only, no blocks),
-        // except for players already in a session with the caller - a host taking their
-        // party into a match adds them all, friends or not.
+        // Adding someone else puts them into a session, and a private match nudges them in
+        // (below). Only a host taking their own party along may (friends or not, as anyone
+        // in their anteroom), or a friend - never past a block, and never a stranger, whom
+        // a public room the two once shared made no member of anything.
         if let Some(other) = targets.iter().find(|&&t| {
             t != user_id
-                && !self.storage.share_session(user_id, t).unwrap_or(false)
-                && !crate::friends_policy::may_invite_blocking(&self.storage, user_id, t)
+                && (crate::friends_policy::blocked_blocking(&self.storage, user_id, t)
+                    || !(self.in_party_of(t, user_id) || crate::friends_policy::friends_blocking(&self.storage, user_id, t)))
         }) {
             warn!(logger, "User {user_id} may not add {other} to session {session_id}; refused");
             return Err(Error::AccessDenied);
@@ -565,7 +587,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 })
             });
         if self.debug_config.push_notifications && is_private_room {
-            for participant in request.private_participant_ids.0.iter().chain(request.public_participant_ids.0.iter()).copied()
+            for participant in targets.iter().copied()
             // The caller is notified too, even though they added themselves.
             //
             // On the invitation route into a private match the guest is its own adder: it

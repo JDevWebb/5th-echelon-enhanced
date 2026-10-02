@@ -450,6 +450,44 @@ async fn private_match_invite(ctx: &mut Ctx) -> Result<()> {
     b.disconnect().await
 }
 
+/// Nobody joins a private match uninvited: not by naming themselves twice (private and
+/// public), nor for sharing some other room with the host. The host's own party follows it
+/// in, by adding itself or being added; a stranger can't be pulled in.
+async fn private_room_join(ctx: &mut Ctx) -> Result<()> {
+    let mut host = ctx.player("Host").await?;
+    let mut party = ctx.player("Party").await?;
+    let mut carried = ctx.player("Party").await?;
+    let mut stranger = ctx.player("Stranger").await?;
+    host.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
+    let lobby = host.create_session(LOBBY).await?;
+    host.add_participants(lobby, &[host.pid], &[]).await?;
+    for p in [&mut party, &mut carried] {
+        p.add_participants(lobby, &[p.pid], &[]).await?;
+        p.join_session(lobby).await?;
+    }
+    // The host also sits in the stranger's public lobby: a room the two share.
+    let public = stranger.create_session(LOBBY).await?;
+    stranger.add_participants(public, &[stranger.pid], &[]).await?;
+    host.add_participants(public, &[host.pid], &[]).await?;
+    let game = host.create_session(PRIVATE_MATCH).await?;
+    host.add_participants(game, &[], &[host.pid]).await?;
+    host.set_session(game, true).await?;
+
+    ensure!(stranger.add_participants(game, &[stranger.pid], &[stranger.pid]).await.is_err(), "[me, me] joined a private match uninvited");
+    ensure!(stranger.add_participants(game, &[], &[stranger.pid]).await.is_err(), "a stranger joined a private match uninvited");
+    ensure!(host.add_participants(game, &[], &[stranger.pid]).await.is_err(), "the host pulled a stranger into its private match");
+    ensure!(stranger.wait_notification(Duration::from_millis(500)).await?.is_none(), "the stranger was nudged into the match");
+
+    party.add_participants(game, &[], &[party.pid]).await.map_err(|e| eyre!("the host's party couldn't follow it: {e}"))?;
+    host.add_participants(game, &[], &[carried.pid]).await.map_err(|e| eyre!("the host couldn't take its party along: {e}"))?;
+    let push = carried.wait_notification(Duration::from_secs(3)).await?.ok_or_else(|| eyre!("no 'come in' push for the party"))?;
+    ensure!(push.ui_type == 7003 && push.ui_param_2 == game, "wrong push: {push:?}");
+    for p in [host, party, carried, stranger] {
+        p.disconnect().await?;
+    }
+    Ok(())
+}
+
 /// A host who quits takes their lobby with them.
 async fn cleanup(ctx: &mut Ctx) -> Result<()> {
     let mut a = ctx.player("Host").await?;
@@ -794,6 +832,7 @@ const SCENARIOS: &[&str] = &[
     "slow-handshake",
     "second-sign-in",
     "ticket-elsewhere",
+    "private-room-join",
 ];
 
 #[tokio::main]
@@ -871,6 +910,7 @@ async fn main() -> Result<()> {
                 "slow-handshake" => slow_handshake(&mut ctx).await,
                 "second-sign-in" => second_sign_in(&mut ctx).await,
                 "ticket-elsewhere" => ticket_elsewhere(&mut ctx).await,
+                "private-room-join" => private_room_join(&mut ctx).await,
                 // Not in the default list: a server in the "mutual" mode, one requiring
                 // identities, and two servers.
                 "friends-mutual" => friends_mutual(&mut ctx).await,

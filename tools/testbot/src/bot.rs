@@ -446,6 +446,19 @@ impl Bot {
         Ok(resp.game_session_key_migrated.session_id)
     }
 
+    /// Announces the session this player is in, as the game's DLL does
+    /// (`UPLAY_USER_SetGameSession`): invite-only for a private match.
+    pub async fn set_session(&self, session: u32, invite_only: bool) -> Result<()> {
+        FriendsClient::new(self.api.clone())
+            .set_session(self.authed(server_api::friends::SetSessionRequest {
+                session_id: session,
+                invite_only,
+                session_data: vec![],
+            }))
+            .await?;
+        Ok(())
+    }
+
     /// Invites a friend (by account name) as the game's DLL does.
     pub async fn invite(&self, friend: &str) -> Result<()> {
         FriendsClient::new(self.api.clone()).invite(self.authed(server_api::friends::InviteRequest { id: friend.into() })).await?;

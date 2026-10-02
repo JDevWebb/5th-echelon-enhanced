@@ -990,6 +990,20 @@ impl Storage {
         Ok(n > 0)
     }
 
+    /// The attributes of the live sessions `host` opened and is in together with `member`.
+    pub fn rooms_of_host_with(&self, host: u32, member: u32) -> Result<Vec<String>> {
+        let rows: Vec<Option<String>> = run(sqlx::query_scalar(
+            "SELECT g.attributes FROM game_sessions g WHERE g.destroyed_at IS NULL AND g.creator_id = ?
+               AND EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?)
+               AND EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?)",
+        )
+        .bind(host)
+        .bind(host)
+        .bind(member)
+        .fetch_all(&self.pool))??;
+        Ok(rows.into_iter().map(Option::unwrap_or_default).collect())
+    }
+
     /// Players with an invitation for `user_id` waiting (not consumed, not expired).
     pub async fn pending_inviters(&self, user_id: u32) -> Result<Vec<u32>> {
         Ok(
