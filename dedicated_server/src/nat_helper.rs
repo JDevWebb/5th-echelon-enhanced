@@ -333,15 +333,19 @@ pub fn advertised_for(name: &str, ip: IpAddr) -> Option<SocketAddrV4> {
     TABLE.get()?.lock().ok()?.advertised_for(name, ip)
 }
 
-/// Station URLs with `advertise` in place of a private address the game
-/// registered for itself.
+/// Station URLs with `advertise` in place of the address the game registered
+/// for itself.
 ///
 /// The game registers `prudp:/address=A;port=13000;RVCID=..;hdrType=0;type=2`
 /// (plus, when it knows one, a second address without `type`). Other players
 /// read the URL with `type` bit 2 as the address to reach it on, and the
-/// other as its local one. When A is private, it becomes `advertise`, and
-/// the original is kept as the local URL (without `type`), so players on the
-/// same network still use it.
+/// other as its local one. A becomes `advertise` when they differ: when A is
+/// private (it is then kept as the local URL, without `type`, so players on
+/// the same network still use it), and when A is public too. The game may
+/// have taken a public address from the server's view of its connection;
+/// behind a NAT that gives every destination its own port (a VPN, a mobile
+/// network) nobody else reaches it there, and `advertise` is the address this
+/// helper checked: the player's own, or the relay's.
 pub fn urls_with_public_address(urls: Vec<String>, advertise: SocketAddrV4) -> Vec<String> {
     let mut local = None;
     let has_local = urls.iter().any(|u| !u.split(';').any(|p| p.starts_with("type=")));
@@ -355,10 +359,16 @@ pub fn urls_with_public_address(urls: Vec<String>, advertise: SocketAddrV4) -> V
             let (Some(typ), true, Some(addr)) = (typ, has_hdr, addr) else {
                 return url;
             };
-            if typ & 2 == 0 || !nat_proto::is_private(addr) || local.is_some() {
+            let port = parts.iter().find_map(|p| p.strip_prefix("port=")).and_then(|p| p.parse::<u16>().ok());
+            if typ & 2 == 0 || local.is_some() || (addr == *advertise.ip() && port == Some(advertise.port())) {
                 return url;
             }
-            local = Some(parts.iter().filter(|p| !p.starts_with("type=")).copied().collect::<Vec<_>>().join(";"));
+            let private = nat_proto::is_private(addr);
+            local = Some(if private {
+                parts.iter().filter(|p| !p.starts_with("type=")).copied().collect::<Vec<_>>().join(";")
+            } else {
+                String::new()
+            });
             parts
                 .iter()
                 .map(|p| {
@@ -374,7 +384,7 @@ pub fn urls_with_public_address(urls: Vec<String>, advertise: SocketAddrV4) -> V
                 .join(";")
         })
         .collect();
-    if let (Some(local), false) = (local, has_local) {
+    if let (Some(local), false) = (local.filter(|l| !l.is_empty()), has_local) {
         out.push(local);
     }
     out
@@ -793,9 +803,26 @@ mod tests {
                 "prudp:/address=192.168.1.20;port=13000;RVCID=5;hdrType=0"
             ]
         );
-        // The game already advertises a public address, or also sent a local one.
+        // The game already advertises that address, or also sent a local one.
         let ok = vec!["prudp:/address=198.51.100.7;port=61000;RVCID=5;hdrType=0;type=2".to_string()];
         assert_eq!(urls_with_public_address(ok.clone(), public), ok);
+        // A public address the helper didn't check (a port only the server can reach, behind
+        // a VPN's NAT) gives way to the checked one - here the relay's - with no local URL
+        // made of it.
+        let relay = a("139.99.171.113:40000");
+        let vpn = vec![
+            "prudp:/address=187.15.120.80;port=29462;RVCID=5;hdrType=0;type=2".to_string(),
+            "prudp:/address=10.5.0.2;port=13000;RVCID=5;hdrType=0".to_string(),
+        ];
+        assert_eq!(
+            urls_with_public_address(vpn, relay),
+            [
+                "prudp:/address=139.99.171.113;port=40000;RVCID=5;hdrType=0;type=2",
+                "prudp:/address=10.5.0.2;port=13000;RVCID=5;hdrType=0"
+            ]
+        );
+        let alone = vec!["prudp:/address=187.15.120.80;port=29462;RVCID=5;hdrType=0;type=2".to_string()];
+        assert_eq!(urls_with_public_address(alone, relay), ["prudp:/address=139.99.171.113;port=40000;RVCID=5;hdrType=0;type=2"]);
         let both = vec![
             "prudp:/address=192.168.1.20;port=13000;RVCID=5;hdrType=0;type=2".to_string(),
             "prudp:/address=10.0.0.3;port=13000;RVCID=5;hdrType=0".to_string(),

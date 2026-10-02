@@ -737,8 +737,9 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             return Err(Error::AccessDenied);
         }
         let mut urls = station_urls_for_peers(sent.clone(), ci.address().ip(), trusted);
-        // Outside the trusted network: the public address the NAT helper
-        // found, if the game still registered its local one.
+        // Outside the trusted network: the address the NAT helper checked
+        // (the player's public one, or the relay's), in place of the one
+        // the game registered, local or public.
         if urls == sent {
             let name = self.storage.find_username_by_user_id(user_id).ok().flatten();
             if let Some(advertise) = name.and_then(|name| crate::nat_helper::advertised_for(&name, ci.address().ip())) {
