@@ -222,10 +222,7 @@ fn station_url_parts(url: &str) -> Option<(&str, Vec<(&str, &str)>)> {
     let params: Vec<(&str, &str)> = rest.split(';').map(|p| p.split_once('=')).collect::<Option<_>>()?;
     let addresses: Vec<&str> = params.iter().filter(|(k, _)| *k == "address").map(|(_, v)| *v).collect();
     let ports: Vec<&str> = params.iter().filter(|(k, _)| *k == "port").map(|(_, v)| *v).collect();
-    let valid = !addresses.is_empty()
-        && addresses.iter().all(|a| a.parse::<std::net::Ipv4Addr>().is_ok())
-        && !ports.is_empty()
-        && ports.iter().all(|p| p.parse::<u16>().is_ok());
+    let valid = !addresses.is_empty() && addresses.iter().all(|a| a.parse::<std::net::Ipv4Addr>().is_ok()) && !ports.is_empty() && ports.iter().all(|p| p.parse::<u16>().is_ok());
     valid.then_some((scheme, params))
 }
 
@@ -564,9 +561,9 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // block.
         if targets.contains(&user_id) && !is_member && self.is_private_room(request.game_session_key.type_id, session_id) {
             let invited = rmc_err!(self.storage.is_invited(user_id, session_id), logger, "error checking invitations")?;
-            let party_of_host = members.as_ref().is_some_and(|(creator, _)| {
-                self.in_party_of(user_id, *creator) && !crate::friends_policy::blocked_blocking(&self.storage, user_id, *creator)
-            });
+            let party_of_host = members
+                .as_ref()
+                .is_some_and(|(creator, _)| self.in_party_of(user_id, *creator) && !crate::friends_policy::blocked_blocking(&self.storage, user_id, *creator));
             if !invited && !party_of_host {
                 warn!(logger, "User {user_id} tried to join private room {session_id} without an invitation; refused");
                 return Err(Error::AccessDenied);
@@ -1415,8 +1412,8 @@ mod tests {
 
     use super::attribute_value;
     use super::may_change_session;
-    use super::rooms_for_friend_search;
     use super::only_reachable_addresses;
+    use super::rooms_for_friend_search;
     use super::station_urls_for_peers;
     use super::NotificationEvent;
     use super::Subnet;

@@ -891,7 +891,10 @@ mod tests {
             ]
         );
         let alone = vec!["prudp:/address=187.15.120.80;port=29462;RVCID=5;hdrType=0;type=2".to_string()];
-        assert_eq!(urls_with_public_address(alone, relay), ["prudp:/address=139.99.171.113;port=40000;RVCID=5;hdrType=0;type=2"]);
+        assert_eq!(
+            urls_with_public_address(alone, relay),
+            ["prudp:/address=139.99.171.113;port=40000;RVCID=5;hdrType=0;type=2"]
+        );
         let both = vec![
             "prudp:/address=192.168.1.20;port=13000;RVCID=5;hdrType=0;type=2".to_string(),
             "prudp:/address=10.0.0.3;port=13000;RVCID=5;hdrType=0".to_string(),

@@ -486,10 +486,7 @@ impl Storage {
             UrlsFor::Hosts => p.user_id == session.creator_id,
             UrlsFor::AllBut(user) => p.user_id != user,
         };
-        let mut users: Vec<u32> = sessions
-            .iter()
-            .flat_map(|s| s.participants.iter().filter(|p| wanted(s, p)).map(|p| p.user_id))
-            .collect();
+        let mut users: Vec<u32> = sessions.iter().flat_map(|s| s.participants.iter().filter(|p| wanted(s, p)).map(|p| p.user_id)).collect();
         users.sort_unstable();
         users.dedup();
         if users.is_empty() {
@@ -1428,12 +1425,18 @@ pub(crate) mod tests {
         let _hostless = storage.create_game_session(guest, 1, "113 => 1".into()).unwrap();
 
         let found = storage.search_sessions(1, seeker, None).unwrap();
-        assert_eq!(found.iter().map(|s| s.session_id).collect::<Vec<_>>(), [open], "not the invite-only room, nor one without its host");
+        assert_eq!(
+            found.iter().map(|s| s.session_id).collect::<Vec<_>>(),
+            [open],
+            "not the invite-only room, nor one without its host"
+        );
         assert!(storage.search_sessions(1, host, None).unwrap().is_empty(), "nor the searcher's own");
         let found = storage.with_participants(found, UrlsFor::Hosts).unwrap();
         let urls: Vec<(u32, usize)> = found[0].participants.iter().map(|p| (p.user_id, p.station_urls.len())).collect();
         assert_eq!(urls, [(host, 1), (guest, 0)], "the host's address only");
-        let found = storage.with_participants(storage.search_sessions(1, seeker, None).unwrap(), UrlsFor::AllBut(guest)).unwrap();
+        let found = storage
+            .with_participants(storage.search_sessions(1, seeker, None).unwrap(), UrlsFor::AllBut(guest))
+            .unwrap();
         assert_eq!(found[0].participants.iter().map(|p| p.station_urls.len()).collect::<Vec<_>>(), [1, 0]);
 
         let by_pid = storage.search_sessions_with_participants(1, &[guest, private], 1).unwrap();

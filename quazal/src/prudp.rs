@@ -613,7 +613,10 @@ where
         // signature while the handshake is open (the cookie is the same every time), and the
         // connection's own once it is made.
         let signatures: Vec<u32> = (0..COOKIE_GENERATIONS).map(|g| self.cookies.signature(client, packet.session_id, g)).collect();
-        if let Some(ci) = signatures.iter().find_map(|sig| self.client_registry.clients.get(sig).filter(|ci| self.is_repeat(ci, client, packet.session_id))) {
+        if let Some(ci) = signatures
+            .iter()
+            .find_map(|sig| self.client_registry.clients.get(sig).filter(|ci| self.is_repeat(ci, client, packet.session_id)))
+        {
             debug!(logger, "SYN repeated; answering with the same signature");
             let ci = ci.borrow();
             packet.conn_signature = Some(ci.server_signature);
@@ -727,7 +730,10 @@ where
                 // CONNECT on the way can't use them from anywhere else (behind a NAT, the game
                 // reaches the auth and secure services from the same public address).
                 if !ti.is_for(client.ip()) {
-                    warn!(logger, "Ticket of user {} used from {client}, not the address it was issued to; not signed in", ti.principle_id);
+                    warn!(
+                        logger,
+                        "Ticket of user {} used from {client}, not the address it was issued to; not signed in", ti.principle_id
+                    );
                     return Ok(vec![]);
                 }
                 // The ticket alone proves nothing: it travels readably, and anyone who saw one
@@ -802,7 +808,12 @@ where
             .map(|(_, c)| c.into_inner())
             .collect();
         let Some(first) = stale.first() else { return };
-        info!(logger, "User {user_id} signed in from {from}; closing their {} connection(s) from {}", stale.len(), first.address());
+        info!(
+            logger,
+            "User {user_id} signed in from {from}; closing their {} connection(s) from {}",
+            stale.len(),
+            first.address()
+        );
         for ci in &stale {
             if let Err(e) = self.send_disconnect(logger, ci) {
                 debug!(logger, "Couldn't tell {} it was disconnected: {e}", ci.address());
