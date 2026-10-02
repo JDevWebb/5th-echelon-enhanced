@@ -83,7 +83,8 @@ sudo bash install-server.sh --yes \
 The installer:
 - installs the server and the coordinator as sandboxed systemd services, each running as its own user (`echelon`, `echelon-coord`) with its own folder (`/var/lib/5th-echelon`, `/var/lib/5th-echelon-coordinator`). Earlier installs kept the coordinator in `/var/lib/5th-echelon/coordinator`, run as `echelon`; the next run moves it;
 - installs Caddy, which gets a certificate for each name;
-- serves the launcher's API over HTTPS once the certificate works, and tells launchers to use it;
+- serves the launcher's API over HTTPS once the certificate works, tells launchers to use it, and then takes passwords and sign-ins only over HTTPS (`[limits] require_tls_for_credentials`; turned off again on a run where Caddy has no certificate, so players can still sign in). The game's own plain HTTP on port 80 is unchanged;
+- has Caddy refuse request bodies over 4 MB on the game's sites, and requests whose headers or body don't arrive within 10 or 30 seconds (on ports 80 and 443, for every site there);
 - joins the server to its coordinator;
 - opens the ports in ufw or firewalld, if either is active, and lists the ones to open in your provider's firewall.
 
@@ -151,7 +152,7 @@ The installer's options for the usual settings. Each is kept on later runs unles
 |---|---|
 | `--friends mutual` or `everyone` | Only friends on the game's friend list, and only friends invite (`mutual`, the default); or every player |
 | `--closed-registration`, `--open-registration` | Stop or allow new accounts |
-| `--admin`, `--no-admin` | The admin API, for managing players and games (see below) |
+| `--admin`, `--no-admin` | The admin API, for managing players and games (see below). Needs Caddy: without a domain, the admin API would travel unencrypted on port 50051, so the installer refuses `--admin` and turns it off |
 | `--unlisted`, `--listed` | Stay out of the server directory, or appear in it |
 | `--alias NAME` | Another name (or IP) players reach the server by; repeat for more |
 | `--relay auto`, `all` or `off` | Who plays through the server's relay |

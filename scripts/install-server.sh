@@ -624,6 +624,11 @@ if [ -z "$domain" ] && [ "$no_caddy" -eq 0 ] && [ "$yes" -eq 0 ]; then
   domain="${domain,,}"
 fi
 [ -n "$domain" ] || no_caddy=1
+# Without Caddy, the server's own port 50051 (plain HTTP/2, every address)
+# would carry the admin API and its key.
+if [ "$no_caddy" -eq 1 ] && [ "$admin" = true ]; then
+  die "--admin needs Caddy (a domain name): without it, the admin API and its key would travel unencrypted on port 50051, open to every address. Use --domain, or manage accounts on the machine itself"
+fi
 if [ "$no_caddy" -eq 0 ]; then
   [[ "$domain" =~ $DOMAIN_RE ]] || die "\"$domain\" isn't a domain name"
   # The game keeps its server's name where onlineconfigservice.ubi.com was: 27 characters.
@@ -921,6 +926,14 @@ else
   aliases_line=""
   if [ "${#aliases[@]}" -gt 0 ]; then aliases_line="[$(printf '"%s", ' "${aliases[@]}" | sed 's/, $//')]"; fi
 fi
+# The API over HTTPS stays on while Caddy has its certificate for the same
+# name (checked again once Caddy runs).
+tls_kept=0
+if [ "$no_caddy" -eq 0 ] && [ "$https_api" -eq 1 ] && [ "$(checked_value public api_tls '^443$')" = 443 ] \
+  && [ "$(checked_value public host "$DOMAIN_RE")" = "$domain" ]; then
+  tls_kept=1
+fi
+plain_config
 sed -i '/^\[public\]$/,/^\[/{/^\[public\]$/d;/^\[/!d}' "$CONFIG"
 if [ "$no_caddy" -eq 0 ]; then
   say "Settings for Caddy: the web parts and API on this machine only; players use $domain"
@@ -928,7 +941,11 @@ if [ "$no_caddy" -eq 0 ]; then
   toml_set service.onlineconfig listen '"127.0.0.1:8080"'
   toml_set service.content listen '"127.0.0.1:8000"'
   printf '\n[public]\nhost = "%s"\napi = 80\ncontent = 80\n' "$domain" >> "$CONFIG"
+  [ "$tls_kept" -eq 0 ] || printf 'api_tls = 443\n' >> "$CONFIG"
   [ -z "$aliases_line" ] || printf 'aliases = %s\n' "$aliases_line" >> "$CONFIG"
+  # Passwords and sign-ins only over HTTPS while the API has it; without
+  # it, none could sign in.
+  toml_put limits require_tls_for_credentials "$( [ "$tls_kept" -eq 1 ] && echo true || echo false )"
 else
   sed -i -E 's|^api_server = "127\.0\.0\.1:|api_server = "0.0.0.0:|' "$CONFIG"
   toml_set service.onlineconfig listen '"0.0.0.0:80"'
@@ -946,7 +963,11 @@ if [ -z "$friends" ]; then
 fi
 toml_put friends mode "\"$friends\""
 say "Friend lists: $friends"
-if [ -n "$admin" ]; then toml_set admin enabled "$admin"; fi
+if [ "$no_caddy" -eq 1 ] && [ -z "$admin" ] && [ "$(value admin enabled)" = true ]; then
+  warn "turned the admin API off: without Caddy, it and its key would travel unencrypted on port 50051, open to every address"
+  admin=false
+fi
+if [ -n "$admin" ]; then toml_put admin enabled "$admin"; fi
 if [ -n "$registration" ]; then toml_put limits open_registration "$registration"; fi
 # Every account linked to a player identity (the launcher finds it with the player's key),
 # unless the operator turned it off.
@@ -1558,11 +1579,26 @@ UNIT
   if [ "$use_systemd" -eq 1 ]; then systemctl daemon-reload; fi
 }
 
+# Restarts the server after a change to its settings, and waits for it.
+restart_server() {
+  systemctl restart "$SERVICE"
+  # Back up before anything below talks to it.
+  for _ in $(seq 40); do
+    if (exec 3<>/dev/tcp/127.0.0.1/50051) 2>/dev/null; then break; fi
+    sleep 0.5
+  done
+}
+
 # The site's routes, for http:// and https:// alike. The admin API
 # (accounts and games) is never served to the internet: manage the server
 # on the machine itself (or through an SSH tunnel to 127.0.0.1:50051).
 site_routes() {
   cat <<'SITE'
+	# Nothing the game, launcher or overlay sends is near this (the API's
+	# messages are 4 MB at most).
+	request_body {
+		max_size 4MB
+	}
 	@admin path /users.UsersAdmin/* /games.GamesAdmin/*
 	handle @admin {
 		respond 403
@@ -1707,6 +1743,11 @@ metrics_tls() {
   [ "$origin_pull" -eq 0 ] || printf '\t\tclient_auth {\n\t\t\tmode require_and_verify\n\t\t\ttrust_pool file %s\n\t\t}\n' "$ORIGIN_PULL_CA"
   printf '\t}\n'
 }
+# How long Caddy waits for a request's headers and body, and keeps an idle
+# connection (for every site on the port).
+caddy_timeouts() {
+  printf '\t\ttimeouts {\n\t\t\tread_header 10s\n\t\t\tread_body 30s\n\t\t\tidle 2m\n\t\t}\n'
+}
 METRICS_CERT="/etc/caddy/5th-echelon-metrics.crt"
 METRICS_KEY="/etc/caddy/5th-echelon-metrics.key"
 ORIGIN_PULL_CA="/etc/caddy/cloudflare-origin-pull-ca.pem"
@@ -1748,10 +1789,17 @@ if [ "$no_caddy" -eq 0 ]; then
     echo "	# Caddy's admin API on a socket only root and Caddy can open, not on"
     echo "	# localhost:2019, where any local process could rewrite the config."
     echo "	admin unix//run/caddy/admin.sock"
-    echo "	# The launcher and overlay speak gRPC without TLS (h2c)."
+    echo "	# The launcher and overlay speak gRPC without TLS (h2c). Requests"
+    echo "	# must arrive in time: slow ones can't hold the server's connections."
     echo "	servers :80 {"
     echo "		protocols h1 h2 h2c"
+    caddy_timeouts
     echo "	}"
+    if [ -n "$coord_domain$metrics_domain" ] || { [ -n "$domain" ] && [ "$https_api" -eq 1 ]; }; then
+      echo "	servers :443 {"
+      caddy_timeouts
+      echo "	}"
+    fi
     echo "}"
     echo
     site_block
@@ -1828,18 +1876,22 @@ if [ "$no_caddy" -eq 0 ]; then
         if curl -fsS --max-time 3 --resolve "$domain:443:127.0.0.1" "https://$domain/api/info" >/dev/null 2>&1; then tls_ok=1; break; fi
         sleep 1
       done
-      if [ "$tls_ok" -eq 1 ]; then
+      if [ "$tls_ok" -eq 1 ] && [ "$tls_kept" -eq 0 ]; then
+        plain_config
         sed -i '/^\[public\]$/,/^\[/ { /^api_tls = /d; s/^content = 80$/content = 80\napi_tls = 443/ }' "$CONFIG"
-        systemctl restart "$SERVICE"
-        # Back up before anything below talks to it.
-        for _ in $(seq 40); do
-          if (exec 3<>/dev/tcp/127.0.0.1/50051) 2>/dev/null; then break; fi
-          sleep 0.5
-        done
-        say "The launcher's API is served over HTTPS too (https://$domain)"
+        toml_put limits require_tls_for_credentials true
+        restart_server
+      elif [ "$tls_ok" -eq 0 ] && [ "$tls_kept" -eq 1 ]; then
+        plain_config
+        sed -i '/^\[public\]$/,/^\[/ { /^api_tls = /d }' "$CONFIG"
+        toml_put limits require_tls_for_credentials false
+        restart_server
+      fi
+      if [ "$tls_ok" -eq 1 ]; then
+        say "The launcher's API is served over HTTPS too (https://$domain); passwords and sign-ins only over HTTPS"
       else
         journalctl -u caddy -n 20 --no-pager >&2 || true
-        notes+=("Caddy has no certificate for $domain yet (its log is above), so launchers keep using the unencrypted API. Check the A record and that TCP 80 and 443 are open, then run this script again.")
+        notes+=("Caddy has no certificate for $domain yet (its log is above), so launchers keep using the unencrypted API (and passwords travel readable). Check the A record and that TCP 80 and 443 are open, then run this script again.")
       fi
     fi
     # The launcher's API: gRPC over plain HTTP/2 (h2c) through Caddy.
