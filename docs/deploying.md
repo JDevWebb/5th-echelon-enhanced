@@ -200,8 +200,8 @@ The installer hardens what it installs:
 
 `scripts/harden-host.sh` does the rest of a Debian or Ubuntu host:
 - installs updates, and lets unattended upgrades reboot at a quiet hour;
-- SSH: keys only, named users, no forwarding but local tunnels, modern algorithms;
-- fail2ban for SSH;
+- SSH: keys only, named users, no forwarding but local tunnels, modern algorithms; it then checks with `sshd -T` that sshd really uses them, and warns about any that an earlier file overrides;
+- fail2ban for SSH, never banning the address you ran it from (`--ignore-ip` adds others);
 - kernel hardening, no core dumps, and no services a server doesn't need.
 
 ```sh
@@ -214,7 +214,7 @@ sudo bash harden-host.sh --ssh-users "you" --reboot-time 04:30
 
 Without that, the SSH change undoes itself, so a mistake can't lock you out.
 
-**Moving SSH to another port** (`--ssh-port 28622`, say) stops most automated scans. Key-only login and fail2ban are what keep attackers out, but it keeps the logs quiet. Port 22 stays open alongside the new one until you log in on the new port and run `--confirm-ssh` there, so you can't get cut off in between. Open the new port in your provider's firewall too, if it has one.
+**Moving SSH to another port** (`--ssh-port 28622`, say) stops most automated scans. Key-only login and fail2ban are what keep attackers out, but it keeps the logs quiet. Port 22 stays open alongside the new one until you log in on the new port and run `--confirm-ssh` there; it refuses to close 22 while no login on the new port is open, so you can't get cut off in between. Open the new port in your provider's firewall too, if it has one.
 
 ## When something's wrong
 

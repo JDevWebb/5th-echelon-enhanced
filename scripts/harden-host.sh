@@ -12,7 +12,8 @@
 #     tunnels (the admin API's), modern algorithms, tight limits. The change
 #     undoes itself after 10 minutes unless confirmed (--confirm-ssh, from a
 #     new login), so a mistake can't lock you out
-#   - fail2ban for SSH, with longer bans for repeat offenders
+#   - fail2ban for SSH, with longer bans for repeat offenders (never the
+#     address you're logged in from)
 #   - kernel settings: no redirects, logged martians, hidden kernel
 #     pointers, hardened BPF, no core dumps
 #   - turns off services a server doesn't need (ModemManager, udisks2, atd)
@@ -20,7 +21,8 @@
 # Options:
 #   --ssh-users "A B"     who may log in over SSH (default: the user running
 #                         sudo, or root)
-#   --ignore-ip IP        never ban this address in fail2ban (repeatable)
+#   --ignore-ip IP        never ban this address in fail2ban (repeatable; the
+#                         address you're logged in from is added too)
 #   --reboot-time HH:MM   when unattended upgrades may reboot (default 04:30,
 #                         the machine's time zone)
 #   --ssh-port N          move SSH to port N (fewer bots knocking). Port 22
@@ -29,12 +31,13 @@
 #   --no-ssh              leave SSH as it is
 #   --no-updates          don't install updates now
 #   --confirm-ssh         keep the SSH change made by the last run (cancels
-#                         its undo), and close port 22 if SSH moved
+#                         its undo), and close port 22 if SSH moved (only
+#                         while a login on the new port is open)
 #   -h, --help
 set -euo pipefail
 umask 022
 
-ssh_users="" ignore_ips=() reboot_time="04:30" do_ssh=1 do_updates=1 confirm=0 ssh_port=""
+ssh_users="" ignore_ips=() reboot_time="04:30" do_ssh=1 do_updates=1 confirm=0 ssh_port="" operator_ip=""
 # The port SSH moved to (kept for later runs), and whether 22 still waits to close.
 PORT_FILE=/etc/5th-echelon/ssh-port
 PORT_PENDING=/etc/5th-echelon/ssh-port-pending
@@ -42,6 +45,7 @@ SSH_DROPIN=/etc/ssh/sshd_config.d/01-5th-echelon-hardening.conf
 REVERT_UNIT=fes-ssh-revert
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
+warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
@@ -78,9 +82,11 @@ if [ "$confirm" -eq 1 ]; then
   say "Kept the SSH settings (their undo is cancelled)"
   if [ -f "$PORT_PENDING" ]; then
     port="$(cat "$PORT_FILE")"
-    # Only from a login on the new port: then closing 22 can't cut this one off.
-    if [ -n "${SSH_CONNECTION:-}" ] && [ "$(echo "$SSH_CONNECTION" | awk '{print $4}')" != "$port" ]; then
-      die "log in on port $port first (ssh -p $port ...), then run --confirm-ssh there: port 22 closes next"
+    [[ "$port" =~ ^[0-9]+$ ]] || die "$PORT_FILE doesn't hold a port"
+    # Only while a login on the new port is open, so closing 22 can't lock
+    # everyone out. Asked of the kernel: sudo drops SSH_CONNECTION.
+    if ! ss -Hnt state established "( sport = :$port )" 2>/dev/null | grep -q .; then
+      die "no SSH login on port $port is open: log in on it first (ssh -p $port ...), then run --confirm-ssh there; port 22 closes next"
     fi
     sed -i '/^Port 22$/d' "$SSH_DROPIN"
     sshd -t || die "sshd doesn't accept the settings without port 22; nothing changed"
@@ -111,6 +117,15 @@ fi
 for ip in "${ignore_ips[@]}"; do
   [[ "$ip" =~ ^[0-9a-fA-F:.]+(/[0-9]{1,3})?$ ]] || die "--ignore-ip $ip isn't an address or range"
 done
+# The address this is run from (sudo drops SSH_CONNECTION; `who -m` names
+# the login's terminal and where it came from): fail2ban never bans it, so
+# a few wrong keys can't lock out the operator.
+from="$(who -m 2>/dev/null | sed -n 's/.*(\(.*\)).*/\1/p' | head -1 || true)"
+[ -n "$from" ] || from="$(printf '%s' "${SSH_CONNECTION:-}" | awk '{print $1}')"
+if [[ "$from" =~ ^[0-9a-fA-F:.]+$ ]] && [[ "$from" == *[.:]*[.:]* ]]; then
+  case " ${ignore_ips[*]} " in *" $from "*) ;; *) ignore_ips+=("$from") ;; esac
+  operator_ip="$from"
+fi
 if [ -z "$ssh_users" ]; then ssh_users="${SUDO_USER:-root}"; fi
 for u in $ssh_users; do
   id "$u" >/dev/null 2>&1 || die "--ssh-users: there's no user $u"
@@ -183,7 +198,11 @@ fs.protected_hardlinks = 1
 fs.protected_fifos = 2
 fs.protected_regular = 2
 SYSCTL
-sysctl -q --system >/dev/null
+# Only these settings, and past any this kernel doesn't have (a container,
+# an older kernel): the rest still apply.
+if ! sysctl -q -e -p /etc/sysctl.d/80-5th-echelon-hardening.conf >/dev/null 2>&1; then
+  warn "some kernel settings couldn't be set here (a container?); the others are, and all apply at the next boot"
+fi
 install -d -m 755 /etc/systemd/coredump.conf.d
 printf '[Coredump]\nStorage=none\nProcessSizeMax=0\n' > /etc/systemd/coredump.conf.d/50-5th-echelon.conf
 printf '* hard core 0\n' > /etc/security/limits.d/50-5th-echelon-no-core.conf
@@ -235,7 +254,7 @@ findtime = 1d
 JAIL
 systemctl enable fail2ban >/dev/null 2>&1
 systemctl restart fail2ban
-say "fail2ban: on for SSH ($banaction), repeat offenders banned for longer"
+say "fail2ban: on for SSH ($banaction), repeat offenders banned for longer${operator_ip:+; never $operator_ip (this login)}"
 
 # --- SSH ------------------------------------------------------------------
 if [ "$do_ssh" -eq 1 ]; then
@@ -312,6 +331,26 @@ SSHD
     say "SSH already hardened"
   fi
   rm -f "$tmp"
+  # What sshd uses now: a file read before this one (an earlier name in
+  # sshd_config.d, or sshd_config above its Include) wins.
+  if effective="$(sshd -T 2>/dev/null)"; then
+    unmet=()
+    wants=("passwordauthentication no" "kbdinteractiveauthentication no" "pubkeyauthentication yes" "maxauthtries 3"
+      "allowtcpforwarding local" "allowagentforwarding no" "x11forwarding no" "permittunnel no")
+    [ "$root_login" = no ] && wants+=("permitrootlogin no")
+    for u in $ssh_users; do wants+=("allowusers $u"); done
+    if [ -n "$ssh_port" ]; then wants+=("port $ssh_port"); fi
+    for want in "${wants[@]}"; do
+      printf '%s\n' "$effective" | grep -qix "$want" || unmet+=("$want")
+    done
+    if [ "${#unmet[@]}" -gt 0 ]; then
+      warn "sshd doesn't use these settings, so another file sets them first: ${unmet[*]}. Look in /etc/ssh/sshd_config and /etc/ssh/sshd_config.d/ (files before $(basename "$SSH_DROPIN"))"
+    else
+      say "sshd uses the settings (sshd -T)"
+    fi
+  else
+    warn "couldn't read sshd's settings back (sshd -T)"
+  fi
 fi
 
 if [ -f /var/run/reboot-required ]; then
