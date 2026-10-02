@@ -171,7 +171,7 @@ sudo bash install-server.sh --domain blacklist.example.com --coordinator-domain 
 
 - It installs `coordinator` as a second service (`5th-echelon-coordinator`), behind Caddy on HTTPS. Caddy gets the certificate, so TCP 443 must be open and the domain's A record must point at the VPS.
 - The server on that VPS joins it.
-- The join token for other servers is in `/var/lib/5th-echelon/coordinator/join-token.txt` (the summary says where; it doesn't print it). Copy it to the other server as a file, then:
+- The join token for other servers is in `/var/lib/5th-echelon-coordinator/join-token.txt` (`sudo bash install-server.sh --show-join-token` prints it). Copy it to the other server as a file, then:
   ```sh
   sudo bash install-server.sh --domain other.example.com --coordinator https://coordinator.example.com --join-token-file token.txt --region Sydney
   ```

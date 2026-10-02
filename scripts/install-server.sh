@@ -130,7 +130,19 @@ CADDY_DROPIN="/etc/systemd/system/caddy.service.d/10-5th-echelon-hardening.conf"
 COORD_SERVICE="5th-echelon-coordinator"
 COORD_UNIT="/etc/systemd/system/${COORD_SERVICE}.service"
 COORD_ASSET="coordinator-linux-x86_64"
-COORD_DIR="$STATE_DIR/coordinator"
+# The coordinator runs as a user of its own, with its data outside the game
+# server's folder: the game server (as its user) can't read its join token,
+# admins' sign-ins or database, nor plant links for root to follow there.
+COORD_USER="echelon-coord"
+COORD_DIR="/var/lib/5th-echelon-coordinator"
+# Where earlier installs kept it (run as the game server's user); moved on
+# the next run.
+OLD_COORD_DIR="$STATE_DIR/coordinator"
+# The coordinator listens on a loopback address of its own, which the game
+# server's sandbox can't reach (IPAddressDeny), so the game server can't
+# talk to it as the local proxy would (X-Forwarded-For, the admin UI's
+# client address).
+COORD_ADDR="127.0.0.2"
 # The installer's own records, owned by root and outside the folders the
 # services can write: which coordinator domain runs here, which firewall
 # rules it added.
@@ -266,6 +278,11 @@ checked_value() {
 # Text for the terminal, without control characters.
 printable() { tr -d '\000-\037\177'; }
 
+# An earlier install's coordinator that hasn't moved yet (the next run moves it).
+if [ -n "$command" ] && [ ! -d "$COORD_DIR" ] && [ -d "$OLD_COORD_DIR" ] && [ ! -L "$OLD_COORD_DIR" ]; then
+  COORD_DIR="$OLD_COORD_DIR" COORD_USER="$USER_NAME" COORD_ADDR="127.0.0.1"
+fi
+
 if [ "$command" = status ]; then
   printf '%-30s %s\n' "Service" "State"
   for s in "$SERVICE" "$COORD_SERVICE" caddy; do
@@ -303,9 +320,9 @@ if [ "$command" = status ]; then
   if [ -s "$ETC_DIR/metrics-domain" ]; then echo "Admin UI:      https://$(cat "$ETC_DIR/metrics-domain")$( [ -f "$ETC_DIR/metrics-origin-pull" ] && echo " (Cloudflare client certificate required)")"; fi
   if [ -s "$ETC_DIR/coordinator-domain" ]; then
     echo
-    cinfo="$(curl -fsS --max-time 3 http://127.0.0.1:8700/v1/info 2>/dev/null || true)"
+    cinfo="$(curl -fsS --max-time 3 "http://$COORD_ADDR:8700/v1/info" 2>/dev/null | head -c 300 | printable || true)"
     echo "Coordinator:   https://$(cat "$ETC_DIR/coordinator-domain") ${cinfo:+($cinfo)}"
-    listed_now="$(curl -fsS --max-time 3 http://127.0.0.1:8700/v1/servers 2>/dev/null | grep -o '"id":' | wc -l || true)"
+    listed_now="$(curl -fsS --max-time 3 "http://$COORD_ADDR:8700/v1/servers" 2>/dev/null | grep -o '"id":' | wc -l || true)"
     echo "Directory:     ${listed_now:-0} server(s) seen in the last 2 minutes"
   fi
   exit 0
@@ -314,12 +331,12 @@ if [ "$command" = show-token ] || [ "$command" = rotate-token ]; then
   [ -f "$COORD_DIR/join-token.txt" ] || die "no coordinator is installed here"
   [ ! -L "$COORD_DIR/join-token.txt" ] || die "$COORD_DIR/join-token.txt isn't a plain file"
   if [ "$command" = rotate-token ]; then
-    runuser -u "$USER_NAME" -- "$PROGRAM_DIR/coordinator" --data "$COORD_DIR" new-token >/dev/null
+    runuser -u "$COORD_USER" -- "$PROGRAM_DIR/coordinator" --data "$COORD_DIR" new-token >/dev/null
     systemctl restart "$COORD_SERVICE" 2>/dev/null || true
     say "Made a new join token; servers that already joined keep working."
   fi
   echo "Join token (keep it private; give it to the operators of servers joining):"
-  cat "$COORD_DIR/join-token.txt"
+  head -c 256 "$COORD_DIR/join-token.txt" | printable; echo
   exit 0
 fi
 
@@ -328,9 +345,9 @@ if [ "$command" = add-admin ] || [ "$command" = reset-admin ] || [ "$command" = 
   [ -s "$ETC_DIR/metrics-domain" ] || warn "the admin UI isn't on yet: run this script again with --metrics-domain NAME"
   [ -z "$admin_name" ] || [[ "$admin_name" =~ ^[A-Za-z0-9._-]{2,32}$ ]] || die "admin names are 2 to 32 letters, digits, . _ and -"
   case "$command" in
-    add-admin) runuser -u "$USER_NAME" -- "$PROGRAM_DIR/coordinator" --data "$COORD_DIR" admin add "$admin_name" ;;
-    reset-admin) runuser -u "$USER_NAME" -- "$PROGRAM_DIR/coordinator" --data "$COORD_DIR" admin reset "$admin_name" ;;
-    admin-open-access) runuser -u "$USER_NAME" -- "$PROGRAM_DIR/coordinator" --data "$COORD_DIR" admin open-access ;;
+    add-admin) runuser -u "$COORD_USER" -- "$PROGRAM_DIR/coordinator" --data "$COORD_DIR" admin add "$admin_name" ;;
+    reset-admin) runuser -u "$COORD_USER" -- "$PROGRAM_DIR/coordinator" --data "$COORD_DIR" admin reset "$admin_name" ;;
+    admin-open-access) runuser -u "$COORD_USER" -- "$PROGRAM_DIR/coordinator" --data "$COORD_DIR" admin open-access ;;
   esac
   exit 0
 fi
@@ -344,9 +361,9 @@ case "$friends" in ""|mutual|everyone) ;; *) die "--friends is mutual or everyon
 if [ -z "$coord_domain" ] && [ -z "$coordinator" ]; then
   if [ -s "$ETC_DIR/coordinator-domain" ]; then
     coord_domain="$(tr -d '[:space:]' < "$ETC_DIR/coordinator-domain")"
-  elif [ -f "$COORD_DIR/domain" ] && [ ! -L "$COORD_DIR/domain" ]; then
+  elif [ -f "$OLD_COORD_DIR/domain" ] && [ ! -L "$OLD_COORD_DIR/domain" ]; then
     # Where installs before 0.4 kept it (checked below like --coordinator-domain).
-    coord_domain="$(head -c 256 "$COORD_DIR/domain" | tr -d '[:space:]')"
+    coord_domain="$(head -c 256 "$OLD_COORD_DIR/domain" | tr -d '[:space:]')"
   fi
 fi
 # The admin UI stays on (and its Cloudflare client certificate required) once set up.
@@ -445,6 +462,15 @@ stop_strays() {
   kill -9 $(server_pids) 2>/dev/null || true
 }
 
+# Stops every process of the game server's user (whatever its program).
+stop_user_processes() {
+  local uid p
+  uid="$(id -u "$USER_NAME" 2>/dev/null)" || return 0
+  for p in /proc/[0-9]*; do
+    if [ "$(stat -c %u "$p" 2>/dev/null)" = "$uid" ]; then kill -9 "${p#/proc/}" 2>/dev/null || true; fi
+  done
+}
+
 # Replaces the installer's block in a Caddyfile (between the markers) with
 # the file $2 (or nothing), keeping everything else.
 replace_managed() {
@@ -508,11 +534,12 @@ if [ "$uninstall" -eq 1 ]; then
   rm -rf "$PROGRAM_DIR" "$ETC_DIR"
   rm -f "$SYSCTL_FILE"
   if [ "$purge" -eq 1 ]; then
-    rm -rf "$STATE_DIR"
+    rm -rf "$STATE_DIR" "$COORD_DIR"
     userdel "$USER_NAME" 2>/dev/null || true
+    userdel "$COORD_USER" 2>/dev/null || true
     say "Removed the server and its data."
   else
-    say "Removed the server. Its data (accounts, settings, keys) is still in $STATE_DIR; --purge deletes it."
+    say "Removed the server. Its data (accounts, settings, keys) is still in $STATE_DIR$( [ -d "$COORD_DIR" ] && echo " and $COORD_DIR"); --purge deletes it."
   fi
   exit 0
 fi
@@ -750,6 +777,14 @@ if [ "$use_systemd" -eq 1 ] && [ -f "$UNIT" ]; then
   systemctl stop "$SERVICE" 2>/dev/null || true
 fi
 stop_strays
+# An earlier install's coordinator runs as the game server's user, from its
+# folder: it stops while it moves (below).
+if [ "$use_systemd" -eq 1 ] && [ -f "$COORD_UNIT" ] && grep -qx "User=$USER_NAME" "$COORD_UNIT"; then
+  systemctl stop "$COORD_SERVICE" 2>/dev/null || true
+fi
+# Nothing runs as the game server's user while this script (as root)
+# changes files in its folder.
+stop_user_processes
 
 port_owner() { ss -Hlnp "$1" "sport = :$2" 2>/dev/null | grep -o 'users:(("[^"]*"' | head -1 | cut -d'"' -f2 || true; }
 busy=()
@@ -784,11 +819,15 @@ fi
 
 # --- Install ------------------------------------------------------------
 
-if ! id "$USER_NAME" >/dev/null 2>&1; then
-  say "Creating the system user $USER_NAME"
-  useradd --system --home-dir "$STATE_DIR" --no-create-home --shell /usr/sbin/nologin "$USER_NAME" 2>/dev/null \
-    || useradd --system --home-dir "$STATE_DIR" --no-create-home --shell /sbin/nologin "$USER_NAME"
-fi
+# A system user for a service: `system_user NAME HOME`.
+system_user() {
+  id "$1" >/dev/null 2>&1 && return 0
+  say "Creating the system user $1"
+  useradd --system --home-dir "$2" --no-create-home --shell /usr/sbin/nologin "$1" 2>/dev/null \
+    || useradd --system --home-dir "$2" --no-create-home --shell /sbin/nologin "$1"
+}
+system_user "$USER_NAME" "$STATE_DIR"
+[ -z "$coord_domain" ] || system_user "$COORD_USER" "$COORD_DIR"
 
 say "Installing to $PROGRAM_DIR (program) and $STATE_DIR (settings, accounts, keys)"
 install -d -m 755 "$PROGRAM_DIR"
@@ -915,17 +954,39 @@ say "New accounts: $( [ "$(value limits open_registration)" = false ] && echo cl
 say "Accounts need a player identity: $( [ "$(value limits require_identity)" = true ] && echo yes || echo no)"
 fi
 
+# Earlier installs kept the coordinator's data in the game server's folder,
+# and ran it as the game server's user: it moves to a folder of its own, for
+# a user of its own (both stopped by now). Only a plain folder of plain
+# files and folders moves: the game server's user could have planted links
+# in it, for root to follow.
+migrate_coordinator() {
+  if [ ! -e "$OLD_COORD_DIR" ] && [ ! -L "$OLD_COORD_DIR" ]; then return 0; fi
+  if [ -L "$OLD_COORD_DIR" ] || [ ! -d "$OLD_COORD_DIR" ]; then die "$OLD_COORD_DIR isn't a plain folder; move it away and run this again"; fi
+  if [ -e "$COORD_DIR" ] || [ -L "$COORD_DIR" ]; then
+    die "both $OLD_COORD_DIR (an earlier install's coordinator) and $COORD_DIR exist; move away the one that isn't in use and run this again"
+  fi
+  local odd
+  odd="$(find "$OLD_COORD_DIR" -mindepth 1 \( -type l -o \( ! -type f ! -type d \) -o \( -type f -links +1 \) \) -print -quit)"
+  [ -z "$odd" ] || die "$odd isn't a plain file or folder (a link, say); move it away and run this again"
+  say "Moving the coordinator's data to $COORD_DIR (run as $COORD_USER)"
+  mv -T "$OLD_COORD_DIR" "$COORD_DIR"
+  # The old updater's files (it now keeps its status elsewhere).
+  rm -f "$COORD_DIR/update-status.json" "$COORD_DIR/update-request" "$COORD_DIR/update-request.tmp"
+  chown -R -h -P "$COORD_USER:$COORD_USER" "$COORD_DIR"
+}
+
 # A coordinator on this machine: its own service, behind Caddy on HTTPS.
 if [ -n "$coord_domain" ]; then
   say "Installing the coordinator for https://$coord_domain"
   install -m 755 "$work/$COORD_ASSET" "$PROGRAM_DIR/coordinator"
-  install -d -m 700 -o "$USER_NAME" -g "$USER_NAME" "$COORD_DIR"
+  migrate_coordinator
+  install -d -m 700 -o "$COORD_USER" -g "$COORD_USER" "$COORD_DIR"
   echo "$coord_domain" > "$ETC_DIR/coordinator-domain"
   if [ -n "$metrics_domain" ]; then echo "$metrics_domain" > "$ETC_DIR/metrics-domain"; else rm -f "$ETC_DIR/metrics-domain"; fi
   if [ "$origin_pull" -eq 1 ]; then touch "$ETC_DIR/metrics-origin-pull"; else rm -f "$ETC_DIR/metrics-origin-pull"; fi
-  coord_args="--listen 127.0.0.1:8700 --data $COORD_DIR"
+  coord_args="--listen $COORD_ADDR:8700 --data $COORD_DIR"
   # The admin UI on its own port, for Caddy to serve at the metrics name.
-  if [ -n "$metrics_domain" ]; then coord_args="$coord_args --admin-listen 127.0.0.1:8701 --admin-origin https://$metrics_domain"; fi
+  if [ -n "$metrics_domain" ]; then coord_args="$coord_args --admin-listen $COORD_ADDR:8701 --admin-origin https://$metrics_domain"; fi
   rm -f "$COORD_DIR/domain"
   if [ "$use_systemd" -eq 1 ]; then
     cat > "$COORD_UNIT" <<UNIT
@@ -936,8 +997,8 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-User=$USER_NAME
-Group=$USER_NAME
+User=$COORD_USER
+Group=$COORD_USER
 WorkingDirectory=$COORD_DIR
 ExecStart=$PROGRAM_DIR/coordinator $coord_args
 Restart=always
@@ -946,6 +1007,7 @@ CapabilityBoundingSet=
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=$COORD_DIR
+InaccessiblePaths=-$STATE_DIR
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
@@ -978,7 +1040,7 @@ UNIT
     for _ in $(seq 40); do [ -s "$COORD_DIR/join-token.txt" ] && break; sleep 0.25; done
     [ -s "$COORD_DIR/join-token.txt" ] || { journalctl -u "$COORD_SERVICE" -n 20 --no-pager >&2 || true; die "the coordinator didn't start (its log is above)"; }
   else
-    ( cd "$COORD_DIR" && runuser -u "$USER_NAME" -- "$PROGRAM_DIR/coordinator" --listen 127.0.0.1:8700 --data "$COORD_DIR" >/dev/null 2>&1 & sleep 1; kill $! 2>/dev/null || true )
+    ( cd "$COORD_DIR" && runuser -u "$COORD_USER" -- "$PROGRAM_DIR/coordinator" --listen "$COORD_ADDR:8700" --data "$COORD_DIR" >/dev/null 2>&1 & sleep 1; kill $! 2>/dev/null || true )
   fi
   coordinator="https://$coord_domain"
   [ ! -L "$COORD_DIR/join-token.txt" ] || die "$COORD_DIR/join-token.txt isn't a plain file"
@@ -1049,6 +1111,9 @@ CapabilityBoundingSet=CAP_NET_BIND_SERVICE
 NoNewPrivileges=yes
 ProtectSystem=strict
 ReadWritePaths=$STATE_DIR $PROGRAM_DIR/data
+InaccessiblePaths=-$COORD_DIR
+# Not the coordinator's loopback address: only Caddy talks to it there.
+IPAddressDeny=$COORD_ADDR
 ProtectHome=yes
 PrivateTmp=yes
 PrivateDevices=yes
@@ -1114,8 +1179,8 @@ install_updater() {
     echo '# Written by install-server.sh: installs the release a coordinator rolls out.'
     echo 'set -euo pipefail'
     echo 'umask 022'
-    printf 'REPO=%q\nPROGRAM_DIR=%q\nSTATE_DIR=%q\nCOORD_DIR=%q\nSERVICE=%q\nCOORD_SERVICE=%q\nCONFIG=%q\n' \
-      "$REPO" "$PROGRAM_DIR" "$STATE_DIR" "$COORD_DIR" "$SERVICE" "$COORD_SERVICE" "$CONFIG"
+    printf 'REPO=%q\nPROGRAM_DIR=%q\nSTATE_DIR=%q\nCOORD_DIR=%q\nCOORD_ADDR=%q\nSERVICE=%q\nCOORD_SERVICE=%q\nCONFIG=%q\n' \
+      "$REPO" "$PROGRAM_DIR" "$STATE_DIR" "$COORD_DIR" "$COORD_ADDR" "$SERVICE" "$COORD_SERVICE" "$CONFIG"
     printf 'RELEASE_KEY_PEM=%q\n' "$RELEASE_KEY_PEM"
     cat <<'UPDATER'
 CURL=(curl --proto '=https' --tlsv1.2 -fsSL --retry 3)
@@ -1228,7 +1293,7 @@ healthy() {
         curl -fsS --max-time 3 ${host:+-H "Host: $host"} http://127.0.0.1/api/info 2>/dev/null | grep -q "\"version\":\"$wanted\"" || return 1 ;;
       coordinator)
         systemctl is-active --quiet "$COORD_SERVICE" || return 1
-        curl -fsS --max-time 3 http://127.0.0.1:8700/v1/info 2>/dev/null | grep -q "\"version\":\"$wanted\"" || return 1 ;;
+        curl -fsS --max-time 3 "http://$COORD_ADDR:8700/v1/info" 2>/dev/null | grep -q "\"version\":\"$wanted\"" || return 1 ;;
     esac
   done
 }
@@ -1438,7 +1503,7 @@ site_block() {
 # The 5th Echelon coordinator: friends across servers and the server
 # directory, over HTTPS (Caddy gets the certificate).
 $coord_domain {
-	reverse_proxy 127.0.0.1:8700
+	reverse_proxy $COORD_ADDR:8700
 }
 SITE
   fi
@@ -1452,7 +1517,7 @@ $metrics_domain {
 $(metrics_tls)
 	@direct not remote_ip $(cloudflare_ranges)
 	abort @direct
-	reverse_proxy 127.0.0.1:8701 {
+	reverse_proxy $COORD_ADDR:8701 {
 		header_up X-Admin-Client-IP {http.request.header.CF-Connecting-IP}
 		header_up X-Admin-Country {http.request.header.CF-IPCountry}
 	}
@@ -1631,11 +1696,11 @@ if [ "$no_caddy" -eq 0 ]; then
     fi
   fi
   if [ "$use_systemd" -eq 1 ] && [ -n "$metrics_domain" ]; then
-    if curl -fsS --max-time 3 -o /dev/null http://127.0.0.1:8701/ 2>/dev/null; then
+    if curl -fsS --max-time 3 -o /dev/null "http://$COORD_ADDR:8701/" 2>/dev/null; then
       say "The admin UI is served at https://$metrics_domain (through Cloudflare only)"
       notes+=("In Cloudflare: make $metrics_domain's A record proxied (orange cloud) and set SSL/TLS to Full (strict). Then add yourself: $0 --add-admin YOURNAME")
     else
-      notes+=("The coordinator's admin UI doesn't answer on 127.0.0.1:8701; see journalctl -u $COORD_SERVICE")
+      notes+=("The coordinator's admin UI doesn't answer on $COORD_ADDR:8701; see journalctl -u $COORD_SERVICE")
     fi
   fi
   if [ "$use_systemd" -eq 1 ] && [ -n "$domain" ]; then

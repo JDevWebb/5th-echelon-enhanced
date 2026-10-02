@@ -102,7 +102,7 @@ The game reports maps and game modes as numbers. Name them under **Playlists** a
 
 ### Turning it on
 
-The admin UI is served by the coordinator on its own port (127.0.0.1:8701), at a name of its own, and only through Cloudflare.
+The admin UI is served by the coordinator on its own port (127.0.0.2:8701, a loopback address the game server's sandbox can't reach), at a name of its own, and only through Cloudflare.
 
 1. **Choose a name one level below your domain**, e.g. `scbl-metrics.example.com`. Cloudflare's free edge certificate covers `example.com` and `*.example.com` only, so a name like `metrics.scbl.example.com` fails with a TLS error (unless you pay for Advanced Certificate Manager). The community network uses `scbl-metrics.jdevwebb.net`.
 2. **Add the DNS record, proxied.** In Cloudflare, add an A record for the name pointing at the coordinator's machine, **Proxied** (orange cloud). Under **SSL/TLS**, set the mode to **Full (strict)**.

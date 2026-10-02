@@ -81,7 +81,7 @@ sudo bash install-server.sh --yes \
 ```
 
 The installer:
-- installs the server and the coordinator as sandboxed systemd services, running as their own user;
+- installs the server and the coordinator as sandboxed systemd services, each running as its own user (`echelon`, `echelon-coord`) with its own folder (`/var/lib/5th-echelon`, `/var/lib/5th-echelon-coordinator`). Earlier installs kept the coordinator in `/var/lib/5th-echelon/coordinator`, run as `echelon`; the next run moves it;
 - installs Caddy, which gets a certificate for each name;
 - serves the launcher's API over HTTPS once the certificate works, and tells launchers to use it;
 - joins the server to its coordinator;
@@ -138,7 +138,7 @@ sudo bash install-server.sh --rotate-join-token   # a new one; servers that join
 Anyone with the token can add a server to the group, and a member server can make friendships and blocks between players linked on it. Give it only to people you trust, over a private channel, never in a public issue or chat. To remove a server:
 
 ```sh
-sudo -u echelon /opt/5th-echelon/coordinator --data /var/lib/5th-echelon/coordinator remove-server <id>
+sudo -u echelon-coord /opt/5th-echelon/coordinator --data /var/lib/5th-echelon-coordinator remove-server <id>
 ```
 
 Its id is in the directory (`/v1/servers`) and in that server's `server-id.txt`. Rotate the token afterwards if it could join again.
