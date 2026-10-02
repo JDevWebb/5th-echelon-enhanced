@@ -46,13 +46,20 @@ const UNACKED_MAX: usize = 256;
 /// Fragments of one message a client may send, and their total size.
 const MAX_FRAGMENTS: usize = 32;
 const MAX_REASSEMBLED: usize = 64 * 1024;
-/// Handshakes in progress and connections, per address and in all.
-const MAX_PENDING_PER_IP: usize = 64;
-const MAX_PENDING: usize = 4096;
+/// Connections in all (per address: [`max_connections_per_ip`]).
 const MAX_CONNECTIONS: usize = 16384;
-/// The address echo (user packets): its largest payload, and how often per address.
+/// A connection that has neither signed in nor sent anything since its
+/// CONNECT is dropped after this long without a packet (others after
+/// [`SESSION_TIMEOUT`]): a game always says something right away.
+const SILENT_TIMEOUT: Duration = Duration::from_secs(10);
+/// How many signatures one address and session can be offered (see
+/// [`Server::handle_syn`]); they are told apart by two bits of the signature.
+const COOKIE_GENERATIONS: u32 = 4;
+/// The address echo (user packets): its largest payload, how often per address,
+/// and how many addresses are tracked at once.
 const MAX_ECHO_PAYLOAD: usize = 64;
 const ECHOES_PER_SECOND: u32 = 5;
+const MAX_ECHO_SOURCES: usize = 10_000;
 /// How long after a connection's last packet a repeated SYN or CONNECT for it
 /// is still answered as a repeat.
 const REPEAT_WINDOW: Duration = Duration::from_secs(5);
@@ -64,6 +71,15 @@ fn max_connections_per_ip() -> usize {
     *MAX.get_or_init(|| std::env::var("FE_MAX_CONNECTIONS_PER_IP").ok().and_then(|v| v.parse().ok()).unwrap_or(256))
 }
 
+/// An address as 16 bytes (IPv4 as IPv4-mapped IPv6), the same for both ways of
+/// writing an IPv4 address.
+pub(crate) fn address_bytes(ip: std::net::IpAddr) -> [u8; 16] {
+    match ip.to_canonical() {
+        std::net::IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
+        std::net::IpAddr::V6(v6) => v6.octets(),
+    }
+}
+
 /// Records that a client's packet with this sequence number is being handled.
 fn remember_handled<T>(ci: &mut ClientInfo<T>, sequence: u16) {
     if ci.handled.len() >= HANDLED_MEMORY {
@@ -72,21 +88,101 @@ fn remember_handled<T>(ci: &mut ClientInfo<T>, sequence: u16) {
     ci.handled.push_back((sequence, vec![]));
 }
 
+/// The secret behind handshake signatures (SYN cookies), new at every start.
+///
+/// A SYN keeps no state: its answer's signature is a MAC of the client's address and
+/// session, so only a CONNECT from that address can show it, and only then is a connection
+/// made. A table of half-open handshakes, one per SYN, could be filled by anyone forging
+/// source addresses, and then nobody could sign in.
+struct Cookies {
+    key: [u8; 32],
+}
+
+impl Cookies {
+    fn new() -> Self {
+        Self { key: rand::random() }
+    }
+
+    /// The signature for `client`'s handshake with this session: the session in the low
+    /// byte, the generation in the next two bits, and 22 bits of MAC above them. The
+    /// session travels in the signature itself, so checking it needs nothing from the
+    /// CONNECT but the signature it carries back.
+    fn signature(&self, client: SocketAddr, session: u8, generation: u32) -> u32 {
+        use hmac::Mac as _;
+        let mut m = hmac::Hmac::<sha2::Sha256>::new_from_slice(&self.key).expect("any key length");
+        m.update(&address_bytes(client.ip()));
+        m.update(&client.port().to_be_bytes());
+        m.update(&[session, generation as u8]);
+        let mac = m.finalize().into_bytes();
+        let mac = u32::from_be_bytes([mac[0], mac[1], mac[2], mac[3]]);
+        (mac & !0x3ff) | ((generation & 0x3) << 8) | u32::from(session)
+    }
+
+    /// Whether `signature` is one this server gave `client` in answer to a SYN.
+    fn valid(&self, client: SocketAddr, signature: u32) -> bool {
+        #[allow(clippy::cast_possible_truncation)]
+        let session = signature as u8;
+        let generation = (signature >> 8) & 0x3;
+        self.signature(client, session, generation) == signature
+    }
+}
+
+/// At most one log line a second for what anyone can cause (junk, forged or
+/// stray packets); the rest are counted and reported with the next one.
+#[derive(Default)]
+struct Throttle {
+    last: Option<Instant>,
+    skipped: u64,
+}
+
+impl Throttle {
+    /// `Some(lines skipped since the last one)` when a line may be logged now.
+    fn allow(&mut self) -> Option<u64> {
+        let now = Instant::now();
+        if self.last.is_some_and(|last| now.duration_since(last) < Duration::from_secs(1)) {
+            self.skipped += 1;
+            return None;
+        }
+        self.last = Some(now);
+        Some(std::mem::take(&mut self.skipped))
+    }
+}
+
 /// A registry for clients.
 #[derive(Default)]
 pub struct ClientRegistry<T> {
     clients: HashMap<u32, RefCell<ClientInfo<T>>>,
     connection_id_session_ids: HashMap<ConnectionID, Signature>,
+    /// Connections per address, kept with `clients` (counting them took a scan of every
+    /// connection for each SYN).
+    per_ip: HashMap<std::net::IpAddr, usize>,
 }
 
 impl<T> ClientRegistry<T> {
-    /// Forgets a client that is gone. Returns whether its user's per-user
-    /// state may be cleaned up: not if the same user has another live
-    /// connection (they reconnected before the old one expired), whose station
-    /// URLs and lobby would otherwise be wiped.
+    /// Adds a new connection under its signature.
+    fn insert(&mut self, signature: u32, ci: ClientInfo<T>) {
+        *self.per_ip.entry(ci.address().ip()).or_default() += 1;
+        self.clients.insert(signature, RefCell::new(ci));
+    }
+
+    /// Connections from `ip`.
+    fn connections_from(&self, ip: std::net::IpAddr) -> usize {
+        self.per_ip.get(&ip).copied().unwrap_or(0)
+    }
+
+    /// Forgets a client that is gone (already taken out of `clients`). Returns whether its
+    /// user's per-user state may be cleaned up: not if the same user has another live
+    /// connection (they reconnected before the old one expired), whose station URLs and
+    /// lobby would otherwise be wiped.
     fn forget(&mut self, ci: &ClientInfo<T>) -> bool {
         if let Some(conn_id) = ci.connection_id {
             self.connection_id_session_ids.remove(&conn_id);
+        }
+        if let std::collections::hash_map::Entry::Occupied(mut n) = self.per_ip.entry(ci.address().ip()) {
+            *n.get_mut() -= 1;
+            if *n.get() == 0 {
+                n.remove();
+            }
         }
         match ci.user_id {
             Some(uid) => !self.clients.values().any(|c| c.try_borrow().map_or(true, |c| c.user_id == Some(uid))),
@@ -134,7 +230,7 @@ where
     registry: StreamHandlerRegistry<T>,
     socket: Option<net::UdpSocket>,
     ctx: &'a Context,
-    new_clients: HashMap<u32, ClientInfo<T>>,
+    cookies: Cookies,
     client_registry: ClientRegistry<T>,
     /// A handler for user-defined packets.
     pub user_handler: Option<fn(logger: &Logger, packet: QPacket, client: SocketAddr, sock: &net::UdpSocket)>,
@@ -147,8 +243,11 @@ where
     /// Also given the address the connection came from.
     pub login_handler: Option<Box<dyn FnMut(u32, SocketAddr) + 'a>>,
     next_conn_id: AtomicU32,
-    /// Address echoes answered per source this second.
+    /// Address echoes answered per source this second, and when they were last swept.
     echoes: HashMap<std::net::IpAddr, (Instant, u32)>,
+    echo_sweep: Instant,
+    /// Log lines for what anyone can send.
+    noise: Throttle,
 }
 
 impl<ECH, DH, T> Server<'_, ECH, DH, T>
@@ -160,18 +259,16 @@ where
     /// Creates a new PRUDP server.
     #[must_use]
     pub fn new(logger: slog::Logger, ctx: &Context, registry: StreamHandlerRegistry<T>) -> Server<'_, ECH, DH, T> {
-        let client_registry = ClientRegistry {
-            clients: HashMap::default(),
-            connection_id_session_ids: HashMap::default(),
-        };
         Server {
             logger,
             registry,
             socket: None,
             ctx,
-            new_clients: HashMap::default(),
+            cookies: Cookies::new(),
             echoes: HashMap::default(),
-            client_registry,
+            echo_sweep: Instant::now(),
+            noise: Throttle::default(),
+            client_registry: ClientRegistry::default(),
             user_handler: None,
             expired_client_handler: None,
             disconnect_handler: None,
@@ -229,7 +326,9 @@ where
                 let (packet, nparsed) = match QPacket::from_bytes(self.ctx, data) {
                     Ok(p) => p,
                     Err(e) => {
-                        error!(logger, "Invalid packet received"; "error" =>  %e);
+                        if let Some(skipped) = self.noise.allow() {
+                            warn!(logger, "Invalid packet received"; "error" => %e, "similar_skipped" => skipped);
+                        }
                         continue 'outer;
                     }
                 };
@@ -239,7 +338,9 @@ where
                 trace!(logger, "-> {:02x?}", packet_data);
 
                 if let Err(e) = packet.validate(self.ctx, packet_data) {
-                    error!(logger, "Invalid packet received: {:?}", packet; "error" =>  %e);
+                    if let Some(skipped) = self.noise.allow() {
+                        warn!(logger, "Invalid packet received: {:?}", packet; "error" => %e, "similar_skipped" => skipped);
+                    }
                     continue;
                 }
 
@@ -316,31 +417,47 @@ where
                     return;
                 }
                 if self.user_handler.is_none() {
-                    error!(logger, "unsupported user packet");
+                    if let Some(skipped) = self.noise.allow() {
+                        warn!(logger, "unsupported user packet"; "similar_skipped" => skipped);
+                    }
                 } else {
                     (self.user_handler.as_ref().unwrap())(logger, packet, client, self.socket.as_ref().unwrap());
                 }
             }
             PacketType::Route | PacketType::Raw => {
-                warn!(logger, "unsupported packet type {:?}", packet.packet_type);
+                if let Some(skipped) = self.noise.allow() {
+                    warn!(logger, "unsupported packet type {:?}", packet.packet_type; "similar_skipped" => skipped);
+                }
             }
         }
     }
 
     /// Whether `ip` may have another address echo now (at most
     /// [`ECHOES_PER_SECOND`]).
+    ///
+    /// An address already counted is checked on its own entry. Only a new one may need
+    /// room, and old entries are swept at most once a second: sweeping on every packet cost
+    /// a pass over all [`MAX_ECHO_SOURCES`] for each forged source. While the table is full,
+    /// new addresses wait for the next sweep.
     fn echo_allowed(&mut self, ip: std::net::IpAddr) -> bool {
         let now = Instant::now();
-        if self.echoes.len() > 10_000 {
+        if let Some((since, count)) = self.echoes.get_mut(&ip) {
+            if now.duration_since(*since) >= Duration::from_secs(1) {
+                *since = now;
+                *count = 0;
+            }
+            *count += 1;
+            return *count <= ECHOES_PER_SECOND;
+        }
+        if self.echoes.len() >= MAX_ECHO_SOURCES && now.duration_since(self.echo_sweep) >= Duration::from_secs(1) {
             self.echoes.retain(|_, (since, _)| now.duration_since(*since) < Duration::from_secs(1));
+            self.echo_sweep = now;
         }
-        let (since, count) = self.echoes.entry(ip).or_insert((now, 0));
-        if now.duration_since(*since) >= Duration::from_secs(1) {
-            *since = now;
-            *count = 0;
+        if self.echoes.len() >= MAX_ECHO_SOURCES {
+            return false;
         }
-        *count += 1;
-        *count <= ECHOES_PER_SECOND
+        self.echoes.insert(ip, (now, 1));
+        true
     }
 
     /// Handles a data packet.
@@ -349,7 +466,9 @@ where
 
         debug!(logger, "Handling data packet");
         let Some(ci) = self.client_registry.clients.get(&packet.signature) else {
-            warn!(logger, "client is unknown!");
+            if let Some(skipped) = self.noise.allow() {
+                warn!(logger, "client is unknown!"; "similar_skipped" => skipped);
+            }
             return;
         };
         let logger = logger.new(o!("pid" => ci.borrow().user_id));
@@ -475,109 +594,109 @@ where
     }
 
     /// Handles a SYN packet.
+    ///
+    /// Nothing is kept for a SYN: its answer carries a signature made from the client's
+    /// address and session ([`Cookies`]), and the connection is only made when a CONNECT
+    /// from that address brings it back. Forged SYNs therefore cost an answer to the forged
+    /// address and nothing else.
     fn handle_syn(&mut self, logger: &Logger, mut packet: QPacket, client: SocketAddr) {
         debug!(logger, "Handling syn packet");
         // The same SYN again: the game sends it again when our answer takes longer than
         // its first resend (a server ~300 ms away), and takes the signature from the last
         // answer it gets. A new signature would leave it talking on a handshake that never
-        // finished ("client is unknown"), so it gets the one it already has.
-        if let Some(sig) = self.handshake_of(client, packet.session_id) {
+        // finished ("client is unknown"), so it gets the one it already has: the same
+        // signature while the handshake is open (the cookie is the same every time), and the
+        // connection's own once it is made.
+        let signatures: Vec<u32> = (0..COOKIE_GENERATIONS).map(|g| self.cookies.signature(client, packet.session_id, g)).collect();
+        if let Some(ci) = signatures.iter().find_map(|sig| self.client_registry.clients.get(sig).filter(|ci| self.is_repeat(ci, client, packet.session_id))) {
             debug!(logger, "SYN repeated; answering with the same signature");
-            packet.conn_signature = Some(sig);
-            let ack = match self.new_clients.get(&sig) {
-                Some(ci) => self.send_ack(logger, &client, &packet, ci, false),
-                None => match self.client_registry.clients.get(&sig) {
-                    Some(ci) => self.send_ack(logger, &client, &packet, &ci.borrow(), false),
-                    None => return,
-                },
-            };
-            if let Err(e) = ack {
+            let ci = ci.borrow();
+            packet.conn_signature = Some(ci.server_signature);
+            if let Err(e) = self.send_ack(logger, &client, &packet, &ci, false) {
                 error!(logger, "Error sending syn ack packet"; "error" => %e);
             }
             return;
         }
-        // Bounded handshakes and connections, per address and in all.
-        let pending_here = self.new_clients.values().filter(|c| c.address().ip() == client.ip()).count();
-        let open_here = self
-            .client_registry
-            .clients
-            .values()
-            .filter(|c| c.try_borrow().is_ok_and(|c| c.address().ip() == client.ip()))
-            .count();
-        if pending_here >= MAX_PENDING_PER_IP
-            || open_here >= max_connections_per_ip()
-            || self.new_clients.len() >= MAX_PENDING
-            || self.client_registry.clients.len() >= MAX_CONNECTIONS
-        {
-            warn!(logger, "Refusing a handshake from {client}: too many connections");
+        // A connection from an earlier game on this address can linger for a minute with the
+        // signature a new game's handshake would get (a game started again, by chance, with
+        // the same session number): the new one gets the next generation's.
+        let Some(sig) = signatures.into_iter().find(|sig| !self.client_registry.clients.contains_key(sig)) else {
+            if let Some(skipped) = self.noise.allow() {
+                warn!(logger, "Refusing a handshake from {client}: its signatures are all in use"; "similar_skipped" => skipped);
+            }
+            return;
+        };
+        // Bounded connections, per address and in all (checked again at CONNECT, where
+        // they are made; here it saves answering).
+        if self.client_registry.connections_from(client.ip()) >= max_connections_per_ip() || self.client_registry.clients.len() >= MAX_CONNECTIONS {
+            if let Some(skipped) = self.noise.allow() {
+                warn!(logger, "Refusing a handshake from {client}: too many connections"; "similar_skipped" => skipped);
+            }
             return;
         }
-        let mut ci: ClientInfo<T> = ClientInfo::new(client);
-        ci.client_session = packet.session_id;
-        let sig = ci.server_signature;
-        self.new_clients.insert(sig, ci);
-
         packet.conn_signature = Some(sig);
-
-        let ci = self.new_clients.get(&sig).unwrap();
-
-        if let Err(e) = self.send_ack(logger, &client, &packet, ci, false) {
+        // Not connected yet: no signature of the client's, and session 0 (what an unconnected
+        // `ClientInfo` answered with before).
+        if let Err(e) = self.send_ack(logger, &client, &packet, &ClientInfo::<T>::new(client), false) {
             error!(logger, "Error sending syn ack packet"; "error" => %e);
         }
     }
 
-    /// The signature already given to `client`'s handshake with this session,
-    /// in progress or connected.
+    /// Whether `ci` is the connection a repeated SYN or CONNECT from `client` with this
+    /// session belongs to.
     ///
-    /// A connection counts only while it's fresh (seen in the last few seconds):
-    /// a game started again could, by chance, reuse the session number of its
-    /// last connection, which lingers for a minute, and needs a handshake of its own.
-    fn handshake_of(&self, client: SocketAddr, session: u8) -> Option<u32> {
-        let ours = |ci: &ClientInfo<T>| *ci.address() == client && ci.client_session == session;
-        self.new_clients.iter().find(|(_, ci)| ours(ci)).map(|(sig, _)| *sig).or_else(|| {
-            self.client_registry
-                .clients
-                .iter()
-                .find(|(_, ci)| ci.try_borrow().is_ok_and(|ci| ours(&ci) && ci.last_seen.elapsed() < REPEAT_WINDOW))
-                .map(|(sig, _)| *sig)
-        })
+    /// Only while it's fresh (seen in the last few seconds): a game started again could, by
+    /// chance, reuse the session number of its last connection, which lingers for a minute,
+    /// and needs a handshake of its own.
+    fn is_repeat(&self, ci: &RefCell<ClientInfo<T>>, client: SocketAddr, session: u8) -> bool {
+        ci.try_borrow()
+            .is_ok_and(|ci| *ci.address() == client && ci.client_session == session && ci.last_seen.elapsed() < REPEAT_WINDOW)
     }
 
     /// Handles a CONNECT packet.
     fn handle_connect(&mut self, logger: &Logger, mut packet: QPacket, client: SocketAddr) {
         debug!(logger, "Handling connect packet");
         let Some(signature) = packet.conn_signature else {
-            error!(logger, "Client {:x} did not provide a connection signature. This should not happen", packet.signature);
+            debug!(logger, "Client {:x} did not provide a connection signature. This should not happen", packet.signature);
             return;
         };
 
-        let Some(mut ci) = self.new_clients.remove(&packet.signature) else {
-            // The same CONNECT again (our answer was slow, or lost): answer it again.
-            if let Some(ci) = self.client_registry.clients.get(&packet.signature) {
+        // The same CONNECT again (our answer was slow, or lost): answer it again.
+        if let Some(ci) = self.client_registry.clients.get(&packet.signature) {
+            if self.is_repeat(ci, client, packet.session_id) {
                 let ci = ci.borrow();
-                if *ci.address() == client && ci.client_session == packet.session_id && ci.last_seen.elapsed() < REPEAT_WINDOW {
-                    packet.payload = ci.connect_answer.clone().unwrap_or_default();
-                    packet.conn_signature = Some(0);
-                    if let Err(e) = self.send_ack(logger, &client, &packet, &ci, !packet.payload.is_empty()) {
-                        error!(logger, "Error sending connect ack"; "error" => %e);
-                    }
-                    debug!(logger, "CONNECT repeated; answered again");
-                    return;
+                packet.payload = ci.connect_answer.clone().unwrap_or_default();
+                packet.conn_signature = Some(0);
+                if let Err(e) = self.send_ack(logger, &client, &packet, &ci, !packet.payload.is_empty()) {
+                    error!(logger, "Error sending connect ack"; "error" => %e);
                 }
+                debug!(logger, "CONNECT repeated; answered again");
+            } else if let Some(skipped) = self.noise.allow() {
+                warn!(logger, "CONNECT from {client} for connection {:x}, which isn't its own; ignored", packet.signature; "similar_skipped" => skipped);
             }
-            warn!(logger, "Unknown client {:x} tried to connect. Ignoring the attempt", packet.signature);
             return;
-        };
+        }
+        // The signature must be the one this address got for its SYN (the game sends back
+        // what our SYN answer gave it).
+        if !self.cookies.valid(client, packet.signature) {
+            if let Some(skipped) = self.noise.allow() {
+                warn!(logger, "Unknown client {:x} tried to connect. Ignoring the attempt", packet.signature; "similar_skipped" => skipped);
+            }
+            return;
+        }
+        if self.client_registry.connections_from(client.ip()) >= max_connections_per_ip() || self.client_registry.clients.len() >= MAX_CONNECTIONS {
+            if let Some(skipped) = self.noise.allow() {
+                warn!(logger, "Refusing a connection from {client}: too many connections"; "similar_skipped" => skipped);
+            }
+            return;
+        }
+        let mut ci: ClientInfo<T> = ClientInfo::new(client);
+        ci.server_signature = packet.signature;
         ci.client_signature = Some(signature);
         ci.server_session = rand::random();
         ci.client_session = packet.session_id;
-
-        let ci = {
-            self.client_registry.clients.insert(packet.signature, RefCell::new(ci));
-            let ci = self.client_registry.clients.get(&packet.signature).unwrap();
-            ci
-        };
-
+        self.client_registry.insert(packet.signature, ci);
+        let ci = self.client_registry.clients.get(&packet.signature).expect("just inserted");
         if !packet.payload.is_empty() {
             let data = std::mem::take(&mut packet.payload);
             let mut s = ReadStream::from_bytes(&data);
@@ -731,13 +850,16 @@ where
     /// the creator rather than on the connection.
     fn clear_clients(&mut self) {
         let now = Instant::now();
-        // Handshakes that never completed (a SYN without a CONNECT): these
-        // used to stay forever, one per SYN from anyone.
-        self.new_clients.retain(|_, ci| now - ci.last_seen <= SESSION_TIMEOUT);
+        // A connection that never signed in nor sent anything goes sooner: a game always does
+        // straight away, so it's a handshake someone left open.
+        let expired = |ci: &ClientInfo<T>| {
+            let quiet = now - ci.last_seen;
+            quiet > SESSION_TIMEOUT || (quiet > SILENT_TIMEOUT && ci.user_id.is_none() && ci.handled.is_empty())
+        };
         let expired: Vec<_> = self
             .client_registry
             .clients
-            .extract_if(|_k, v| v.try_borrow().map(|ci| (now - ci.last_seen) > SESSION_TIMEOUT).unwrap_or(false))
+            .extract_if(|_k, v| v.try_borrow().is_ok_and(|ci| expired(&ci)))
             .map(|(_, ci)| ci.into_inner())
             .collect();
         for ci in expired {
@@ -896,17 +1018,120 @@ mod tests {
 
     #[test]
     fn cleanup_waits_for_the_users_last_connection() {
-        let mut registry = ClientRegistry::<()> {
-            clients: HashMap::new(),
-            connection_id_session_ids: HashMap::new(),
-        };
+        let mut registry = ClientRegistry::<()>::default();
         let old = client(Some(1001), 3074);
-        registry.clients.insert(1, RefCell::new(client(Some(1001), 3075)));
-        registry.clients.insert(2, RefCell::new(client(Some(1002), 3076)));
+        registry.insert(1, client(Some(1001), 3075));
+        registry.insert(2, client(Some(1002), 3076));
         assert!(!registry.forget(&old), "the user reconnected: their state must stay");
 
-        registry.clients.remove(&1);
-        assert!(registry.forget(&old), "no connection left: clean up");
+        let gone = registry.clients.remove(&1).unwrap().into_inner();
+        assert!(registry.forget(&gone), "no connection left: clean up");
         assert!(registry.forget(&client(None, 3077)), "never logged in: nothing to keep");
+    }
+
+    fn test_server(ctx: &Context) -> Server<'_, fn(ClientInfo<()>), fn(ClientInfo<()>), ()> {
+        let logger = Logger::root(slog::Discard, o!());
+        let mut server = Server::new(logger.clone(), ctx, StreamHandlerRegistry::new(logger));
+        server.bind("127.0.0.1:0").unwrap();
+        server
+    }
+
+    fn handshake(packet_type: PacketType, signature: u32, session: u8) -> QPacket {
+        QPacket {
+            packet_type,
+            flags: PacketFlag::NeedAck.into(),
+            signature,
+            conn_signature: Some(if packet_type == PacketType::Syn { 0 } else { 0x1234 }),
+            session_id: session,
+            ..Default::default()
+        }
+    }
+
+    /// SYNs, forged or not, leave nothing behind; a CONNECT makes a connection only with the
+    /// signature its own address was given.
+    #[test]
+    fn handshakes_keep_no_state_until_a_connect_proves_its_address() {
+        let ctx = Context::splinter_cell_blacklist();
+        let logger = Logger::root(slog::Discard, o!());
+        let mut server = test_server(&ctx);
+        for port in 40000..41000u16 {
+            server.handle_syn(&logger, handshake(PacketType::Syn, 0, 1), SocketAddr::from(([127, 0, 0, 1], port)));
+        }
+        assert!(server.client_registry.clients.is_empty(), "a SYN keeps no state");
+
+        let me = SocketAddr::from(([127, 0, 0, 1], 50000));
+        let other = SocketAddr::from(([127, 0, 0, 1], 50001));
+        let mine = server.cookies.signature(me, 3, 0);
+        server.handle_connect(&logger, handshake(PacketType::Connect, server.cookies.signature(other, 3, 0), 3), me);
+        server.handle_connect(&logger, handshake(PacketType::Connect, mine ^ 0x400, 3), me);
+        assert!(server.client_registry.clients.is_empty(), "another address's signature, or a guess, makes nothing");
+        server.handle_connect(&logger, handshake(PacketType::Connect, mine, 3), me);
+        assert!(server.client_registry.clients.contains_key(&mine));
+        assert_eq!(server.client_registry.connections_from(me.ip()), 1);
+        assert!(server.cookies.valid(me, mine) && !server.cookies.valid(other, mine));
+    }
+
+    /// A connection an earlier game left lingering keeps its signature; the new game's
+    /// handshake on the same address and session gets another one.
+    #[test]
+    fn a_lingering_connection_gets_a_new_handshake_its_own_signature() {
+        let ctx = Context::splinter_cell_blacklist();
+        let logger = Logger::root(slog::Discard, o!());
+        let mut server = test_server(&ctx);
+        let game = UdpSocket::bind("127.0.0.1:0").unwrap();
+        game.set_read_timeout(Some(Duration::from_secs(2))).unwrap();
+        let from = game.local_addr().unwrap();
+        let answer = || {
+            let mut buf = [0u8; 1024];
+            let n = game.recv(&mut buf).unwrap();
+            QPacket::from_bytes(&ctx, &buf[..n]).unwrap().0
+        };
+        server.handle_syn(&logger, handshake(PacketType::Syn, 0, 9), from);
+        let old = answer().conn_signature.unwrap();
+        server.handle_connect(&logger, handshake(PacketType::Connect, old, 9), from);
+        let _ = answer();
+        server.client_registry.clients[&old].borrow_mut().last_seen = Instant::now() - Duration::from_secs(30);
+
+        server.handle_syn(&logger, handshake(PacketType::Syn, 0, 9), from);
+        let new = answer().conn_signature.unwrap();
+        assert_ne!(new, old);
+        server.handle_connect(&logger, handshake(PacketType::Connect, new, 9), from);
+        assert_eq!(answer().packet_type, PacketType::Connect);
+        assert_eq!(server.client_registry.clients.len(), 2);
+        // Repeated now, the SYN gets the new connection's signature.
+        server.handle_syn(&logger, handshake(PacketType::Syn, 0, 9), from);
+        assert_eq!(answer().conn_signature, Some(new));
+    }
+
+    /// A connection that never says anything after its CONNECT goes after a few seconds.
+    #[test]
+    fn silent_connections_expire_early() {
+        let ctx = Context::splinter_cell_blacklist();
+        let logger = Logger::root(slog::Discard, o!());
+        let mut server = test_server(&ctx);
+        let from = SocketAddr::from(([127, 0, 0, 1], 50002));
+        let sig = server.cookies.signature(from, 1, 0);
+        server.handle_connect(&logger, handshake(PacketType::Connect, sig, 1), from);
+        server.client_registry.clients[&sig].borrow_mut().last_seen = Instant::now() - SILENT_TIMEOUT - Duration::from_secs(1);
+        server.clear_clients();
+        assert!(server.client_registry.clients.is_empty());
+        assert_eq!(server.client_registry.connections_from(from.ip()), 0);
+    }
+
+    #[test]
+    fn echoes_are_limited_per_address_and_in_all() {
+        let ctx = Context::splinter_cell_blacklist();
+        let mut server = test_server(&ctx);
+        let ip = |n: u32| std::net::IpAddr::from(std::net::Ipv4Addr::from(0x0a00_0000 + n));
+        assert_eq!((0..10).filter(|_| server.echo_allowed(ip(0))).count(), ECHOES_PER_SECOND as usize);
+        for n in 1..MAX_ECHO_SOURCES as u32 {
+            server.echo_allowed(ip(n));
+        }
+        assert!(!server.echo_allowed(ip(u32::MAX >> 8)), "a full table takes no new address before the next sweep");
+        server.echo_sweep = Instant::now() - Duration::from_secs(2);
+        for (since, _) in server.echoes.values_mut() {
+            *since -= Duration::from_secs(2);
+        }
+        assert!(server.echo_allowed(ip(u32::MAX >> 8)), "swept, there is room again");
     }
 }

@@ -218,18 +218,53 @@ fn handle_user_packet(logger: &Logger, packet: QPacket, client: SocketAddr, sock
 /// How long the address echo waits for the NAT helper to know a player.
 const ECHO_WAIT: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// Whether an echo from `ip` should go unanswered for now: it first asked less than
-/// [`ECHO_WAIT`] ago (asking again a minute later starts over).
-fn echo_waiting(ip: std::net::IpAddr) -> bool {
-    static FIRST_ASKED: std::sync::Mutex<Option<HashMap<std::net::IpAddr, std::time::Instant>>> = std::sync::Mutex::new(None);
-    let now = std::time::Instant::now();
-    let mut asked = FIRST_ASKED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let asked = asked.get_or_insert_with(HashMap::new);
-    asked.retain(|_, t| now.duration_since(*t) < std::time::Duration::from_secs(60));
-    if asked.len() >= 10_000 {
-        return false;
+/// When each address first asked for its echo (forgotten after a minute), and when the
+/// table was last swept.
+struct EchoWaits {
+    first_asked: HashMap<std::net::IpAddr, std::time::Instant>,
+    swept: std::time::Instant,
+}
+
+impl EchoWaits {
+    const FORGET: std::time::Duration = std::time::Duration::from_secs(60);
+    const MAX: usize = 10_000;
+
+    /// Whether an echo from `ip` should go unanswered for now: it first asked less than
+    /// [`ECHO_WAIT`] ago (asking again a minute later starts over).
+    ///
+    /// The address's own entry is looked at first. Old entries are swept at most once a
+    /// second, not on every packet (a pass over up to [`Self::MAX`] for each forged
+    /// source); a full table answers new addresses at once.
+    fn waiting(&mut self, ip: std::net::IpAddr, now: std::time::Instant) -> bool {
+        if let Some(first) = self.first_asked.get_mut(&ip) {
+            if now.duration_since(*first) >= Self::FORGET {
+                *first = now;
+            }
+            return now.duration_since(*first) < ECHO_WAIT;
+        }
+        if self.first_asked.len() >= Self::MAX && now.duration_since(self.swept) >= std::time::Duration::from_secs(1) {
+            self.first_asked.retain(|_, t| now.duration_since(*t) < Self::FORGET);
+            self.swept = now;
+        }
+        if self.first_asked.len() >= Self::MAX {
+            return false;
+        }
+        self.first_asked.insert(ip, now);
+        true
     }
-    now.duration_since(*asked.entry(ip).or_insert(now)) < ECHO_WAIT
+}
+
+/// [`EchoWaits::waiting`], for the service's one table.
+fn echo_waiting(ip: std::net::IpAddr) -> bool {
+    static WAITS: std::sync::Mutex<Option<EchoWaits>> = std::sync::Mutex::new(None);
+    let now = std::time::Instant::now();
+    let mut waits = WAITS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    waits
+        .get_or_insert_with(|| EchoWaits {
+            first_asked: HashMap::new(),
+            swept: now,
+        })
+        .waiting(ip, now)
 }
 
 /// Log level from the environment variable `var` (default: info).
@@ -591,5 +626,31 @@ fn main() -> color_eyre::Result<()> {
             std::process::exit(1);
         }
         std::thread::sleep(std::time::Duration::from_millis(500));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_echo_waits_once_per_address_and_never_sweeps_per_packet() {
+        let start = std::time::Instant::now();
+        let mut waits = EchoWaits {
+            first_asked: HashMap::new(),
+            swept: start,
+        };
+        let ip = |n: u32| std::net::IpAddr::from(std::net::Ipv4Addr::from(0x0a00_0000 + n));
+        assert!(waits.waiting(ip(0), start));
+        assert!(waits.waiting(ip(0), start + std::time::Duration::from_secs(1)), "still within ECHO_WAIT");
+        assert!(!waits.waiting(ip(0), start + ECHO_WAIT), "then answered");
+        assert!(waits.waiting(ip(0), start + EchoWaits::FORGET + ECHO_WAIT), "a minute later it starts over");
+        for n in 1..EchoWaits::MAX as u32 {
+            waits.waiting(ip(n), start);
+        }
+        assert!(!waits.waiting(ip(u32::MAX >> 8), start), "a full table answers new addresses at once");
+        let later = start + EchoWaits::FORGET + std::time::Duration::from_secs(1);
+        assert!(waits.waiting(ip(u32::MAX >> 8), later), "after a sweep there is room");
+        assert!(waits.first_asked.len() < 10, "the old entries were swept");
     }
 }
