@@ -31,15 +31,18 @@ The server and the coordinator run unprivileged, and can't change their own prog
 **When a server is told to update:**
 
 1. The server writes the version to `update-request` in its folder.
-2. The updater checks the version is a release number (nothing else is read).
+2. The updater reads the start of that file (never through a link, a pipe or a folder, which it just removes) and checks it's a release number. It does nothing while the installed release isn't known (a `--binary` install whose version it couldn't read), and doesn't try a version that just failed again for an hour.
 3. It downloads that release from GitHub, and checks `SHA256SUMS` against the release key (the signature must name that version) and the binaries against `SHA256SUMS`.
 4. It keeps the running binaries in `/opt/5th-echelon/previous/`, swaps in the new ones and restarts the services.
 5. It waits up to 90 seconds for the server (and coordinator) to answer with the new version. If they don't, the previous binaries go back.
-6. It records the result in `update-status.json`, which the server reports to the coordinator.
+6. It records the result in `/var/lib/5th-echelon-update/update-status.json` (root's; the server and coordinator only read it), which the server reports to the coordinator.
+
+The updater runs as root in a sandbox: it can only write its program folder, its records and status, and the services' requests.
 
 **Downgrades:**
-- The updater never installs a release older than the one running, except the one it kept in `previous/`, which is how a rollback works.
-- So a coordinator can only ever have servers install a release signed with the release key: no newer than what's on GitHub, and no older than the one they replaced.
+- The updater never installs a release older than the one running, except the one it kept in `previous/`, which is how a rollback works, and only for 14 days after the update.
+- It never goes below `/etc/5th-echelon/min-release` (root's): the release the installer last installed, raised to the one each update replaced.
+- So a coordinator (or a compromised server) can only ever have a machine install a release signed with the release key: no newer than what's on GitHub, and at most one step back, soon after an update.
 
 ### Keeping up is part of membership
 

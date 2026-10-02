@@ -148,6 +148,8 @@ COORD_ADDR="127.0.0.2"
 # rules it added.
 ETC_DIR="/etc/5th-echelon"
 FIREWALL_RECORD="$ETC_DIR/firewall-rules"
+# The updater's status (root's; the services read it, and can't change it).
+UPDATE_DIR="/var/lib/5th-echelon-update"
 # The release key (its public half), which signs each release's SHA256SUMS.
 RELEASE_KEY_PEM="-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEANX9q9hOdzlNhVlSPEtmjJbbdJyOktGgQkPw4ep2KCLI=
@@ -311,8 +313,8 @@ if [ "$command" = status ]; then
     fi
   fi
   if [ -f "$UPDATE_PATH_UNIT" ]; then
-    echo "Updates:       installs the coordinator's rollouts ($(systemctl is-active 5th-echelon-update.path 2>/dev/null || true)); runs $(cat "$PROGRAM_DIR/release" 2>/dev/null || echo "an unrecorded release")"
-    last="$(cat "$STATE_DIR/update-status.json" "$COORD_DIR/update-status.json" 2>/dev/null | head -1 || true)"
+    echo "Updates:       installs the coordinator's rollouts ($(systemctl is-active 5th-echelon-update.path 2>/dev/null || true)); runs $(head -c 64 "$PROGRAM_DIR/release" 2>/dev/null | printable || echo "an unrecorded release")$( [ -s "$ETC_DIR/min-release" ] && echo ", never older than $(head -c 64 "$ETC_DIR/min-release" | printable)")"
+    last="$(head -c 1024 "$UPDATE_DIR/update-status.json" 2>/dev/null | head -1 | printable || true)"
     [ -z "$last" ] || echo "               last: $last"
   else
     echo "Updates:       by hand (no updater installed)"
@@ -531,7 +533,7 @@ if [ "$uninstall" -eq 1 ]; then
     if command -v firewall-cmd >/dev/null && grep -q '^firewalld ' "$FIREWALL_RECORD"; then firewall-cmd --reload >/dev/null 2>&1 || true; fi
     say "Removed the firewall rules the installer added."
   fi
-  rm -rf "$PROGRAM_DIR" "$ETC_DIR"
+  rm -rf "$PROGRAM_DIR" "$ETC_DIR" "$UPDATE_DIR"
   rm -f "$SYSCTL_FILE"
   if [ "$purge" -eq 1 ]; then
     rm -rf "$STATE_DIR" "$COORD_DIR"
@@ -1168,56 +1170,81 @@ fi # the game server
 # programs: they write the version they were asked for to update-request in
 # their folder, and this updater (started by a systemd path unit when one
 # appears) downloads that release from GitHub, checks SHA256SUMS against the
-# release key's signature and the binaries against SHA256SUMS, swaps them in
-# and restarts the services. If they don't come back healthy, the previous
-# binaries go back. It never installs an older release, except the one it
-# replaced (a rollback, from the copy it kept). It records what happened in
-# update-status.json, which the server reports to the coordinator.
+# release key's signature (which names the version) and the binaries
+# against SHA256SUMS, swaps them in and restarts the services. If they don't
+# come back healthy, the previous binaries go back. It records what happened
+# in $UPDATE_DIR/update-status.json (root's; the services only read it),
+# which the server reports to the coordinator.
+#
+# Downgrades: it never installs a release older than the one running,
+# except the one it replaced (a rollback, from the copy it kept), within
+# ROLLBACK_DAYS of the update, and never older than $ETC_DIR/min-release:
+# the release the installer last installed, raised to the one each update
+# replaced. It does nothing while the installed release isn't known (a
+# --binary install whose version couldn't be read).
 install_updater() {
   {
     echo '#!/usr/bin/env bash'
     echo '# Written by install-server.sh: installs the release a coordinator rolls out.'
     echo 'set -euo pipefail'
     echo 'umask 022'
-    printf 'REPO=%q\nPROGRAM_DIR=%q\nSTATE_DIR=%q\nCOORD_DIR=%q\nCOORD_ADDR=%q\nSERVICE=%q\nCOORD_SERVICE=%q\nCONFIG=%q\n' \
-      "$REPO" "$PROGRAM_DIR" "$STATE_DIR" "$COORD_DIR" "$COORD_ADDR" "$SERVICE" "$COORD_SERVICE" "$CONFIG"
+    printf 'REPO=%q\nPROGRAM_DIR=%q\nSTATE_DIR=%q\nCOORD_DIR=%q\nCOORD_ADDR=%q\nSERVICE=%q\nCOORD_SERVICE=%q\nCONFIG=%q\nETC_DIR=%q\nUPDATE_DIR=%q\n' \
+      "$REPO" "$PROGRAM_DIR" "$STATE_DIR" "$COORD_DIR" "$COORD_ADDR" "$SERVICE" "$COORD_SERVICE" "$CONFIG" "$ETC_DIR" "$UPDATE_DIR"
     printf 'RELEASE_KEY_PEM=%q\n' "$RELEASE_KEY_PEM"
     cat <<'UPDATER'
-CURL=(curl --proto '=https' --tlsv1.2 -fsSL --retry 3)
+CURL=(curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --connect-timeout 20 --max-time 600 --max-filesize 268435456)
+SMALL=(--max-filesize 1048576 --max-time 60)
 VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
-exec 9>/run/5th-echelon-update.lock
+# How long after an update the release it replaced can still be asked for.
+ROLLBACK_DAYS=14
+# A version that failed isn't tried again for this long (each try restarts the services).
+RETRY_AFTER=3600
+install -d -m 755 "$UPDATE_DIR"
+exec 9>"$UPDATE_DIR/lock"
 flock -n 9 || exit 0
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
+now="$(date +%s)"
 
-# What happened, for the server (and coordinator) to report: written beside
-# the request, replacing whatever is there (never following a link).
+current="$(head -c 64 "$PROGRAM_DIR/release" 2>/dev/null | head -1 || true)"
+[[ "$current" =~ $VERSION_RE ]] || current=unknown
+
+# A file of root's, replaced whole.
+put() { printf '%s\n' "$2" > "$1.new" && chmod 644 "$1.new" && mv -f "$1.new" "$1"; }
+
+# What happened, for the server (and coordinator) to report.
 status() {
-  local state="$1" version="$2" error="${3:-}" dir
-  error="$(printf '%s' "$error" | tr -d '"\\\n' | head -c 300)"
-  for dir in "$STATE_DIR" "$COORD_DIR"; do
-    [ -d "$dir" ] || continue
-    printf '{"state":"%s","version":"%s","from":"%s","at":%s,"error":"%s"}\n' "$state" "$version" "$current" "$(date +%s)" "$error" > "$work/status"
-    chmod 644 "$work/status"
-    mv -fT "$work/status" "$dir/update-status.json" 2>/dev/null || true
-  done
+  local state="$1" version="$2" error="${3:-}"
+  error="$(printf '%s' "$error" | tr -d '"\\\000-\037\177' | head -c 300)"
+  put "$UPDATE_DIR/update-status.json" "$(printf '{"state":"%s","version":"%s","from":"%s","at":%s,"error":"%s"}' "$state" "$version" "$current" "$(date +%s)" "$error")"
   echo "update: $state $version${error:+: $error}"
 }
 
-# The version asked for: one line, a release number, from a plain file.
+# The version asked for: the start of a plain file, read without following
+# a link (the services own their folders, and could swap in a link, a pipe
+# or a folder), and then removed, whatever it is.
 wanted=""
 for f in "$STATE_DIR/update-request" "$COORD_DIR/update-request"; do
   if [ -e "$f" ] || [ -L "$f" ]; then
-    if [ -f "$f" ] && [ ! -L "$f" ]; then
-      v="$(head -c 64 "$f" | head -1 | tr -d '[:space:]')"
-      [[ "$v" =~ $VERSION_RE ]] && wanted="$v"
-    fi
-    rm -f "$f"
+    v="$(dd if="$f" bs=64 count=1 iflag=nofollow,nonblock status=none 2>/dev/null | head -1 | tr -d '[:space:]' || true)"
+    if [[ "$v" =~ $VERSION_RE ]]; then wanted="$v"; fi
+    rm -rf -- "$f" 2>/dev/null || true
   fi
 done
 [ -n "$wanted" ] || exit 0
-current="$(cat "$PROGRAM_DIR/release" 2>/dev/null || echo unknown)"
 [ "$wanted" != "$current" ] || exit 0
+
+# Not the same version again soon after it failed.
+last="$(head -c 1024 "$UPDATE_DIR/update-status.json" 2>/dev/null || true)"
+if [[ "$last" == *"\"version\":\"$wanted\""* ]] && [[ "$last" =~ \"state\":\"(failed|rolled-back)\" ]] && [[ "$last" =~ \"at\":([0-9]+) ]] \
+  && [ $(( now - BASH_REMATCH[1] )) -lt "$RETRY_AFTER" ]; then
+  exit 0
+fi
+
+if [ "$current" = unknown ]; then
+  status failed "$wanted" "the release installed here isn't known (a --binary install?); run install-server.sh to install a release"
+  exit 0
+fi
 
 # Release order, with pre-releases before their release (1.0.0-rc.1 < 1.0.0).
 older() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "${1/-/\~}" "${2/-/\~}" | sort -V | head -1)" = "${1/-/\~}" ]; }
@@ -1227,11 +1254,25 @@ parts=()
 [ "${#parts[@]}" -gt 0 ] || exit 0
 asset() { case "$1" in dedicated_server) echo dedicated_server-linux-x86_64 ;; coordinator) echo coordinator-linux-x86_64 ;; esac; }
 
+# The oldest release this machine may run (root's; the installer sets it).
+min="$(head -c 64 "$ETC_DIR/min-release" 2>/dev/null | head -1 || true)"
+[[ "$min" =~ $VERSION_RE ]] || min="$current"
+if older "$wanted" "$min"; then
+  status failed "$wanted" "won't install a release older than $min"
+  exit 0
+fi
 rollback=0
-if [ "$current" != unknown ] && older "$wanted" "$current"; then
-  # Only back to the release this updater replaced, from the copy it kept.
-  if [ "$(cat "$PROGRAM_DIR/previous/release" 2>/dev/null)" != "$wanted" ]; then
+if older "$wanted" "$current"; then
+  # Only back to the release the last update replaced, from the copy it
+  # kept, and only for a while after it.
+  until="$(head -c 32 "$ETC_DIR/rollback-until" 2>/dev/null | head -1 || true)"
+  [[ "$until" =~ ^[0-9]+$ ]] || until=0
+  if [ "$(head -c 64 "$PROGRAM_DIR/previous/release" 2>/dev/null | head -1)" != "$wanted" ]; then
     status failed "$wanted" "won't install a release older than $current (only the one before, kept here)"
+    exit 0
+  fi
+  if [ "$now" -ge "$until" ]; then
+    status failed "$wanted" "$current has run too long to go back to $wanted (a rollback is for $ROLLBACK_DAYS days after an update)"
     exit 0
   fi
   rollback=1
@@ -1240,7 +1281,7 @@ status updating "$wanted"
 
 if [ "$rollback" -eq 0 ]; then
   base="https://github.com/$REPO/releases/download/v$wanted"
-  if ! "${CURL[@]}" -o "$work/SHA256SUMS" "$base/SHA256SUMS" || ! "${CURL[@]}" -o "$work/SHA256SUMS.sig" "$base/SHA256SUMS.sig"; then
+  if ! "${CURL[@]}" "${SMALL[@]}" -o "$work/SHA256SUMS" "$base/SHA256SUMS" || ! "${CURL[@]}" "${SMALL[@]}" -o "$work/SHA256SUMS.sig" "$base/SHA256SUMS.sig"; then
     status failed "$wanted" "couldn't download the release's SHA256SUMS and signature"
     exit 0
   fi
@@ -1250,7 +1291,7 @@ if [ "$rollback" -eq 0 ]; then
   while [ $(( ${#sig} % 8 )) -ne 0 ]; do sig="$sig="; done
   if ! printf '%s' "$sig" | base32 -d > "$work/signature" 2>/dev/null \
     || ! openssl pkeyutl -verify -pubin -inkey "$work/release.pem" -rawin -in "$work/signed" -sigfile "$work/signature" >/dev/null 2>&1; then
-    status failed "$wanted" "the release isn't signed by the release key"
+    status failed "$wanted" "the release isn't signed by the release key as $wanted"
     exit 0
   fi
   for p in "${parts[@]}"; do
@@ -1289,7 +1330,7 @@ healthy() {
     case "$p" in
       dedicated_server)
         systemctl is-active --quiet "$SERVICE" || return 1
-        host="$(sed -n '/^\[public\]$/,/^\[/ s/^host = "\(.*\)"$/\1/p' "$CONFIG" 2>/dev/null | head -1)"
+        host="$(dd if="$CONFIG" iflag=nofollow status=none 2>/dev/null | sed -n '/^\[public\]$/,/^\[/ s/^host = "\([a-z0-9.-]*\)"$/\1/p' | head -1)"
         curl -fsS --max-time 3 ${host:+-H "Host: $host"} http://127.0.0.1/api/info 2>/dev/null | grep -q "\"version\":\"$wanted\"" || return 1 ;;
       coordinator)
         systemctl is-active --quiet "$COORD_SERVICE" || return 1
@@ -1309,6 +1350,13 @@ for _ in $(seq 45); do
   if healthy; then ok=1; break; fi
 done
 if [ "$ok" -eq 1 ]; then
+  if [ "$rollback" -eq 0 ]; then
+    # Never below the release this one replaced; back to it only for a while.
+    put "$ETC_DIR/min-release" "$current"
+    put "$ETC_DIR/rollback-until" "$(( now + ROLLBACK_DAYS * 86400 ))"
+  else
+    put "$ETC_DIR/rollback-until" 0
+  fi
   status done "$wanted"
   exit 0
 fi
@@ -1325,16 +1373,65 @@ status rolled-back "$wanted" "the new release didn't come back healthy within 90
 UPDATER
   } > "$work/update.sh"
   install -m 755 "$work/update.sh" "$UPDATER"
-  [ -n "$release_version" ] && echo "$release_version" > "$PROGRAM_DIR/release"
+  install -d -m 755 "$ETC_DIR" "$UPDATE_DIR"
+  # The release installed now, and the oldest one the updater may go back
+  # to: this one, the operator's choice. A --binary install records the
+  # version the server (or coordinator) reports, or "unknown", which the
+  # updater won't update from.
+  local installed="$release_version"
+  if [ -z "$installed" ] && { [ -n "$binary" ] || [ -n "$coord_binary" ]; }; then
+    installed="$(running_version)"
+    if [[ "$installed" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+      say "The installed build reports release $installed"
+    else
+      installed=unknown
+      warn "couldn't tell which release the installed build is; the updater won't install rollouts until a release is installed with this script"
+    fi
+  fi
+  if [ -n "$installed" ]; then
+    echo "$installed" > "$PROGRAM_DIR/release"
+    if [ "$installed" != unknown ]; then
+      echo "$installed" > "$ETC_DIR/min-release"
+      rm -f "$ETC_DIR/rollback-until"
+    fi
+  fi
   [ -f "$PROGRAM_DIR/release" ] || echo unknown > "$PROGRAM_DIR/release"
+  # Where earlier updaters wrote their status, in the services' folders (the
+  # server reads that only when root's file isn't there).
+  rm -f "$STATE_DIR/update-status.json"
   cat > "$UPDATE_SERVICE_UNIT" <<UNIT
 [Unit]
 Description=5th Echelon updater (installs the release the coordinator rolls out)
 Documentation=https://github.com/$REPO
+# However often the services ask: each run reads and removes the requests,
+# and doesn't try a version that just failed again for an hour.
+StartLimitIntervalSec=0
 
 [Service]
 Type=oneshot
 ExecStart=$UPDATER
+TimeoutStartSec=20min
+# Root, but only what an update needs: its program, records and status,
+# the services' requests; no home folders, devices or kernel settings.
+ProtectSystem=strict
+ReadWritePaths=$PROGRAM_DIR $ETC_DIR $UPDATE_DIR
+ReadWritePaths=-$STATE_DIR -$COORD_DIR
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+NoNewPrivileges=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
 UNIT
   cat > "$UPDATE_PATH_UNIT" <<UNIT
 [Unit]
@@ -1351,6 +1448,16 @@ UNIT
   systemctl daemon-reload
   systemctl enable --now 5th-echelon-update.path >/dev/null 2>&1
   say "Installed the updater: the coordinator's signed releases are installed as they're rolled out$( [ "$auto_update" = false ] && echo " (off for this server: --no-auto-update)")"
+}
+# The version the installed server (or, alone, the coordinator) reports.
+running_version() {
+  local info
+  if [ "$coord_only" -eq 0 ]; then
+    info="$(curl -fsS --max-time 3 ${domain:+-H "Host: $domain"} "http://127.0.0.1:$( [ "$no_caddy" -eq 1 ] && echo 80 || echo 8080 )/api/info" 2>/dev/null || true)"
+  else
+    info="$(curl -fsS --max-time 3 "http://$COORD_ADDR:8700/v1/info" 2>/dev/null || true)"
+  fi
+  printf '%s' "$info" | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4
 }
 if [ "$use_systemd" -eq 1 ]; then install_updater; fi
 

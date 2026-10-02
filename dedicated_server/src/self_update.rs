@@ -7,7 +7,8 @@
 //! GitHub, checks `SHA256SUMS` against the release key's signature and the
 //! binaries against `SHA256SUMS`, swaps them in and restarts the server. If
 //! the new server doesn't come back healthy, the old one is put back. It
-//! records what happened in `update-status.json`, which the server reports.
+//! records what happened in `/var/lib/5th-echelon-update/update-status.json`
+//! (root's: the server only reads it), which the server reports.
 //!
 //! A coordinator can only ever have a server install a release signed with
 //! the release key: no newer than what's on GitHub, and no older than the
@@ -23,6 +24,9 @@ use slog::Logger;
 
 pub const REQUEST_FILE: &str = "update-request";
 pub const STATUS_FILE: &str = "update-status.json";
+/// Where the installer's updater keeps its status; earlier updaters wrote
+/// `STATUS_FILE` in the server's folder.
+const UPDATER_STATUS: &str = "/var/lib/5th-echelon-update/update-status.json";
 /// The unit the installer adds; without it, nothing would act on a request.
 const UPDATER_UNIT: &str = "/etc/systemd/system/5th-echelon-update.path";
 /// A failed update of one version isn't tried again for this long.
@@ -39,7 +43,13 @@ fn valid_version(version: &str) -> bool {
 }
 
 fn status_file() -> Value {
-    std::fs::read_to_string(STATUS_FILE).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null)
+    let read = |path: &str| {
+        let file = std::fs::File::open(path).ok()?;
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::Read::take(file, 4096), &mut text).ok()?;
+        serde_json::from_str(&text).ok()
+    };
+    read(UPDATER_STATUS).or_else(|| read(STATUS_FILE)).unwrap_or(Value::Null)
 }
 
 /// The coordinator asks for `version`: asks the updater for it, unless it's

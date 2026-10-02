@@ -51,6 +51,8 @@ pub const DELIST_AFTER: i64 = 24 * 3600;
 const MAX_SMALL: usize = 1024 * 1024;
 /// A release this machine's updater couldn't install isn't asked for again for this long.
 const OWN_UPDATE_BACKOFF: i64 = 6 * 3600;
+/// Where the installer's updater keeps its status (root's; read only here).
+const UPDATER_STATUS: &str = "/var/lib/5th-echelon-update/update-status.json";
 /// Asked for, a release has this long to be installed before it's asked for again.
 const OWN_UPDATE_WAIT: i64 = 15 * 60;
 
@@ -375,15 +377,15 @@ impl Coordinator {
         if asked.as_ref().is_some_and(|(v, at)| v == version && now - at < OWN_UPDATE_WAIT) {
             return;
         }
-        // What the updater last did (it writes this beside the request).
-        let status: Value = std::fs::File::open(dir.join("update-status.json"))
-            .ok()
-            .and_then(|f| {
-                let mut text = String::new();
-                std::io::Read::read_to_string(&mut std::io::Read::take(f, 4096), &mut text).ok()?;
-                serde_json::from_str(&text).ok()
-            })
-            .unwrap_or_default();
+        // What the updater last did: root's file (earlier updaters wrote it
+        // beside the request).
+        let read = |path: &std::path::Path| {
+            let file = std::fs::File::open(path).ok()?;
+            let mut text = String::new();
+            std::io::Read::read_to_string(&mut std::io::Read::take(file, 4096), &mut text).ok()?;
+            serde_json::from_str::<Value>(&text).ok()
+        };
+        let status: Value = read(std::path::Path::new(UPDATER_STATUS)).or_else(|| read(&dir.join("update-status.json"))).unwrap_or_default();
         if let Some(why) = own_update_waits(version, &status, now) {
             if asked.as_ref().is_none_or(|(v, _)| v != version) {
                 tracing::warn!("Rollout: not asking this machine's updater for {version}: {why}");
