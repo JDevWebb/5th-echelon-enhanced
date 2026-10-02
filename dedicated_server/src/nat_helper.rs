@@ -66,11 +66,37 @@ fn mac(key: &[u8; 32], parts: &[&[u8]]) -> [u8; 32] {
 }
 
 /// The ticket that lets `name`'s game register with the helper: handed out at
-/// sign-in (`Users.Login`). None when the helper isn't running.
+/// sign-in (`Users.Login`), good for [`TICKET_DAYS`] days. None when the
+/// helper isn't running.
 pub fn ticket_for(name: &str) -> Option<nat_proto::Ticket> {
-    let keys = KEYS.get()?;
-    let full = mac(&keys.ticket, &[b"fes-nat-ticket", identity::name_key(name).as_bytes()]);
-    full[..16].try_into().ok()
+    Some(ticket_on(KEYS.get()?, name, today()))
+}
+
+/// Days a ticket works: the day it was issued and the next six. The game
+/// gets a new one each time it signs in to the API (at every start), so
+/// only a game left running for a week loses its relay; a ticket someone
+/// copies stops working within the week.
+const TICKET_DAYS: u64 = 7;
+
+fn today() -> u64 {
+    minute() / (24 * 60)
+}
+
+/// The ticket for `name` issued on `day` (days since 1970): the day's low 16
+/// bits, then a MAC of the name and the day.
+fn ticket_on(keys: &Keys, name: &str, day: u64) -> nat_proto::Ticket {
+    let full = mac(&keys.ticket, &[b"fes-nat-ticket-v2", identity::name_key(name).as_bytes(), &day.to_be_bytes()]);
+    let mut ticket = [0; 16];
+    ticket[..2].copy_from_slice(&(day as u16).to_be_bytes());
+    ticket[2..].copy_from_slice(&full[..14]);
+    ticket
+}
+
+/// Whether `ticket` is `name`'s and still good on `today`.
+fn ticket_valid(keys: &Keys, name: &str, ticket: &nat_proto::Ticket, today: u64) -> bool {
+    let issued = u16::from_be_bytes([ticket[0], ticket[1]]);
+    let age = u64::from((today as u16).wrapping_sub(issued));
+    age < TICKET_DAYS && same(&ticket_on(keys, name, today - age), ticket)
 }
 
 /// The cookie for a probe from `src` for `name`, in time bucket `bucket`
@@ -600,7 +626,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
             }
             let Some(keys) = KEYS.get() else { continue };
             // No ticket for this name: it only learns its address (the launcher's test).
-            if name.is_empty() || !ticket_for(&name).is_some_and(|t| same(&t, &ticket)) {
+            if name.is_empty() || !ticket_valid(keys, &name, &ticket, today()) {
                 let _ = socket.send_to(&address_only(nonce, src, [0; 16]).encode(), src);
                 continue;
             }
@@ -821,6 +847,19 @@ mod tests {
         assert_eq!(ticket_for("Kiwi"), ticket_for("kiwi"), "any case");
         assert_ne!(ticket_for("Kiwi"), ticket_for("Tank"));
         let keys = KEYS.get().unwrap();
+        // Good for a week from the day it's issued, then not.
+        let day = 20_000;
+        let t = ticket_on(keys, "Kiwi", day);
+        assert!(ticket_valid(keys, "kiwi", &t, day) && ticket_valid(keys, "Kiwi", &t, day + TICKET_DAYS - 1));
+        assert!(!ticket_valid(keys, "Kiwi", &t, day + TICKET_DAYS), "expired");
+        assert!(!ticket_valid(keys, "Kiwi", &t, day - 1), "not issued yet");
+        assert!(!ticket_valid(keys, "Tank", &t, day), "another name");
+        let mut later = t;
+        later[..2].copy_from_slice(&((day + 3) as u16).to_be_bytes());
+        assert!(!ticket_valid(keys, "Kiwi", &later, day + 3), "the day can't be changed");
+        // Across the 16-bit wrap of the day number.
+        let wrap = 65_535 + 65_536;
+        assert!(ticket_valid(keys, "Kiwi", &ticket_on(keys, "Kiwi", wrap), wrap + 2));
         let c = cookie_for(keys, a("198.51.100.7:1"), "kiwi", 5);
         assert_ne!(c, cookie_for(keys, a("198.51.100.7:2"), "kiwi", 5), "another address");
         assert_ne!(c, cookie_for(keys, a("198.51.100.7:1"), "tank", 5), "another name");
