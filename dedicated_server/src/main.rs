@@ -192,8 +192,14 @@ fn handle_user_packet(logger: &Logger, packet: QPacket, client: SocketAddr, sock
         return;
     }
 
+    // The game takes its address for other players from this echo. What this socket saw is a
+    // port its router opened for this server alone, which behind a NAT that gives every
+    // destination its own (a VPN, a mobile network) nobody else reaches. The NAT helper knows
+    // the address that works - the player's checked public one, or the relay's - when it's
+    // the only player there.
+    let reply = nat_helper::advertised_for_ip(client.ip()).map_or(client, SocketAddr::V4);
     let mut response = packet.payload;
-    write!(&mut response, "udp:/address={};port={}\0", client.ip(), client.port()).expect("writing to a Vec can't fail");
+    write!(&mut response, "udp:/address={};port={}\0", reply.ip(), reply.port()).expect("writing to a Vec can't fail");
     if let Err(e) = socket.send_to(&response, client) {
         warn!(logger, "user packet reply to {client} failed: {e}");
     }

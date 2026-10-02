@@ -311,6 +311,14 @@ impl Table {
         (IpAddr::V4(*p.real.ip()) == ip).then_some(p.advertise)
     }
 
+    /// The address the one player registered from `ip` should be reached on, if exactly one
+    /// is (several behind one router can't be told apart by address alone).
+    pub fn advertised_for_ip(&self, ip: Ipv4Addr) -> Option<SocketAddrV4> {
+        let mut found = self.peers.values().filter(|p| *p.real.ip() == ip);
+        let first = found.next()?;
+        found.next().is_none().then_some(first.advertise)
+    }
+
     pub fn len(&self) -> usize {
         self.peers.len()
     }
@@ -331,6 +339,13 @@ pub fn relay_ip() -> Option<Ipv4Addr> {
 /// player probed it from `ip`.
 pub fn advertised_for(name: &str, ip: IpAddr) -> Option<SocketAddrV4> {
     TABLE.get()?.lock().ok()?.advertised_for(name, ip)
+}
+
+/// The address the NAT helper checked for the one player at `ip` (their public one, or the
+/// relay's), when it runs and exactly one player there is registered.
+pub fn advertised_for_ip(ip: IpAddr) -> Option<SocketAddrV4> {
+    let IpAddr::V4(ip) = ip else { return None };
+    TABLE.get()?.lock().ok()?.advertised_for_ip(ip)
 }
 
 /// Station URLs with `advertise` in place of the address the game registered
@@ -790,6 +805,20 @@ mod tests {
         assert!(t.expire(now + Duration::from_secs(30)).is_empty());
         assert_eq!(t.expire(now + EXPIRY + Duration::from_secs(1)), ["x"]);
         assert_eq!(t.len(), 0);
+    }
+
+    #[test]
+    fn the_one_player_at_an_address_is_found_by_it() {
+        let mut t = table(RelayMode::All);
+        let now = Instant::now();
+        let ip = Ipv4Addr::new(198, 51, 100, 7);
+        assert_eq!(t.advertised_for_ip(ip), None);
+        let reply = t.probe(a("198.51.100.7:25676"), 0, 1, None, "Solo", now);
+        let (relay, relayed) = advertise(&reply);
+        assert!(relayed);
+        assert_eq!(t.advertised_for_ip(ip), Some(relay), "a relayed player is reached on the relay");
+        t.probe(a("198.51.100.7:51000"), 0, 2, None, "Flatmate", now);
+        assert_eq!(t.advertised_for_ip(ip), None, "two players behind one address can't be told apart");
     }
 
     #[test]
