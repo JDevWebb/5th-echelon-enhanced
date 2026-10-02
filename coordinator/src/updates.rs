@@ -385,7 +385,9 @@ impl Coordinator {
             std::io::Read::read_to_string(&mut std::io::Read::take(file, 4096), &mut text).ok()?;
             serde_json::from_str::<Value>(&text).ok()
         };
-        let status: Value = read(std::path::Path::new(UPDATER_STATUS)).or_else(|| read(&dir.join("update-status.json"))).unwrap_or_default();
+        let status: Value = read(std::path::Path::new(UPDATER_STATUS))
+            .or_else(|| read(&dir.join("update-status.json")))
+            .unwrap_or_default();
         if let Some(why) = own_update_waits(version, &status, now) {
             if asked.as_ref().is_none_or(|(v, _)| v != version) {
                 tracing::warn!("Rollout: not asking this machine's updater for {version}: {why}");
