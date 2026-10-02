@@ -494,19 +494,24 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             .as_ref()
             .is_some_and(|(creator, participants)| *creator == user_id || participants.contains(&user_id));
         // Nobody walks into a private match uninvited (the ids are small numbers anyone could
-        // try); members, and anyone invited, may.
+        // try); members, anyone invited, and the host's party may. A party taken into a
+        // private match follows its host without an invitation of its own.
         if targets == [user_id] && !is_member && self.is_private_room(request.game_session_key.type_id, session_id) {
             let invited = rmc_err!(self.storage.is_invited(user_id, session_id), logger, "error checking invitations")?;
-            if !invited {
+            let party_of_host = members.as_ref().is_some_and(|(creator, _)| self.storage.share_session(user_id, *creator).unwrap_or(false));
+            if !invited && !party_of_host {
                 warn!(logger, "User {user_id} tried to join private room {session_id} without an invitation; refused");
                 return Err(Error::AccessDenied);
             }
         }
-        // Adding someone else is an invitation: the same rules (friends only, no blocks).
-        if let Some(other) = targets
-            .iter()
-            .find(|&&t| t != user_id && !crate::friends_policy::may_invite_blocking(&self.storage, user_id, t))
-        {
+        // Adding someone else is an invitation: the same rules (friends only, no blocks),
+        // except for players already in a session with the caller - a host taking their
+        // party into a match adds them all, friends or not.
+        if let Some(other) = targets.iter().find(|&&t| {
+            t != user_id
+                && !self.storage.share_session(user_id, t).unwrap_or(false)
+                && !crate::friends_policy::may_invite_blocking(&self.storage, user_id, t)
+        }) {
             warn!(logger, "User {user_id} may not add {other} to session {session_id}; refused");
             return Err(Error::AccessDenied);
         }
