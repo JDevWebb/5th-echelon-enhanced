@@ -91,6 +91,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler
       - name: Install the toolchain (rust-toolchain.toml)
         run: rustup toolchain install
+      - name: Build the coordinator's admin UI (Node comes with the runner)
+        working-directory: coordinator/admin-ui
+        run: npm ci --no-audit --no-fund && npm run build
       - name: Build
         run: |
           HOOKS_DLL="$PWD/windows/uplay_r1_loader.dll" cargo build --locked --release -p launcher --features embed-dll

@@ -513,3 +513,59 @@ async fn links_made_before_names_existed_reserve_theirs() {
     assert_eq!(c.owner("old").await.unwrap(), Some(first.global_id()), "the older link keeps it");
     let _ = std::fs::remove_dir_all(dir);
 }
+
+/// The admin UI's router, for a site at https://admin.example.
+fn admin_router(t: &Test) -> Router {
+    let _ = t.c.admin.set(admin::Config::new("https://admin.example", false).unwrap());
+    admin::router(Arc::clone(&t.c)).layer(axum::extract::connect_info::MockConnectInfo(std::net::SocketAddr::from(([192, 0, 2, 1], 1))))
+}
+
+async fn admin_get(router: &Router, path: &str, headers: &[(&str, &str)]) -> axum::response::Response {
+    let mut req = Request::builder().method("GET").uri(path);
+    for (k, v) in headers {
+        req = req.header(*k, *v);
+    }
+    router.clone().oneshot(req.body(Body::empty()).unwrap()).await.unwrap()
+}
+
+#[tokio::test]
+async fn admin_ui_is_served_with_its_assets() {
+    let t = start("admin-ui").await;
+    let r = admin_router(&t);
+    let page = admin_get(&r, "/", &[]).await;
+    assert_eq!(page.status(), StatusCode::OK);
+    assert!(page.headers()["content-type"].to_str().unwrap().starts_with("text/html"));
+    assert!(page.headers()["content-security-policy"].to_str().unwrap().contains("script-src 'self'"));
+    assert_eq!(page.headers()["cache-control"], "no-store");
+    // A built asset (when the UI was built in): cached for good, its name being its hash.
+    if let Some(asset) = admin::ui_asset_paths().into_iter().find(|p| p.starts_with("/assets/")) {
+        let resp = admin_get(&r, asset, &[]).await;
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers()["cache-control"].to_str().unwrap().contains("immutable"));
+    }
+    assert_eq!(admin_get(&r, "/nothing-here.js", &[]).await.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn live_updates_want_the_admin_site_and_a_session() {
+    let t = start("admin-live").await;
+    let r = admin_router(&t);
+    let upgrade = [
+        ("connection", "upgrade"),
+        ("upgrade", "websocket"),
+        ("sec-websocket-version", "13"),
+        ("sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="),
+    ];
+    // Another site's page can't open it, even with the admin's cookie.
+    let mut h = upgrade.to_vec();
+    h.push(("origin", "https://evil.example"));
+    assert_eq!(admin_get(&r, "/api/live", &h).await.status(), StatusCode::FORBIDDEN);
+    // No origin at all (not a browser page) is refused too.
+    assert_eq!(admin_get(&r, "/api/live", &upgrade).await.status(), StatusCode::FORBIDDEN);
+    // The admin site, but nobody signed in.
+    let mut h = upgrade.to_vec();
+    h.push(("origin", "https://admin.example"));
+    assert_eq!(admin_get(&r, "/api/live", &h).await.status(), StatusCode::UNAUTHORIZED);
+    // Telling nobody is fine.
+    t.c.publish(admin::live::Event::Metrics);
+}

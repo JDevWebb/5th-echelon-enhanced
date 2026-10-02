@@ -187,6 +187,15 @@ Under **Security**, limit the admin UI to address ranges (e.g. your home's addre
 | `ERR_HTTP2_PROTOCOL_ERROR` right after switching the record to proxied | Your computer still has the server's own address cached, and Caddy drops anything that isn't from Cloudflare. Flush your DNS cache (macOS: `sudo dscacheutil -flushcache; sudo killall -HUP mDNSResponder`) |
 | "is an admin already" from `--add-admin` | They were added before: `--reset-admin NAME` gives a new setup link |
 
+### Live updates
+
+The dashboards keep themselves current: the page holds a WebSocket to the coordinator (`/api/live`) and changes in place, with no reloading.
+- **Overview and server status:** sent within a couple of seconds of a server's heartbeat (every 30 seconds) or metrics (every minute).
+- **Charts:** fetch their newest points when a server reports new numbers.
+- **Audit log and Admin activity:** new entries appear as they happen.
+
+The badge at the top right says whether it's live. The connection uses the same sign-in as the rest of the admin UI: it ends when the session does, and only the admin UI's own site may open it (the browser's `Origin` is checked). Behind Caddy and Cloudflare, WebSockets pass through as they are.
+
 ### Privacy
 
 **What the admin UI shows:**

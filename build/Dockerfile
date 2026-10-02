@@ -3,7 +3,7 @@
 #   Windows launcher and hooks DLL: cargo-xwin (MSVC targets, from Linux)
 FROM rust:1-bookworm
 RUN apt-get update \
- && apt-get install -y --no-install-recommends protobuf-compiler clang lld llvm \
+ && apt-get install -y --no-install-recommends protobuf-compiler clang lld llvm nodejs npm \
     gcc-x86-64-linux-gnu libc6-dev-amd64-cross \
  && rm -rf /var/lib/apt/lists/*
 COPY rust-toolchain.toml /tmp/tc/rust-toolchain.toml

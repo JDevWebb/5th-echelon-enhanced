@@ -1,44 +1,57 @@
-/* SCBL Network Ops: the coordinator's admin UI. Dark first, night-vision green. */
+/* SCBL Network Ops: the coordinator's admin UI. Dark first, night-vision green,
+   in the launcher's Echelon palette and IBM Plex. */
+
+@font-face { font-family: "IBM Plex Sans"; src: url("./assets/fonts/IBMPlexSans-Regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "IBM Plex Sans"; src: url("./assets/fonts/IBMPlexSans-SemiBold.ttf") format("truetype"); font-weight: 600; font-display: swap; }
+@font-face { font-family: "IBM Plex Sans Condensed"; src: url("./assets/fonts/IBMPlexSansCondensed-Bold.ttf") format("truetype"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "IBM Plex Mono"; src: url("./assets/fonts/IBMPlexMono-Regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }
 
 :root {
-  --bg: #090d0c;
-  --panel: #101614;
-  --panel-2: #141c19;
-  --line: #1e2925;
-  --line-2: #2a3832;
-  --text: #d8e4de;
-  --muted: #80948b;
-  --faint: #56665f;
-  --accent: #6cf09a;
-  --accent-ink: #062012;
-  --accent-soft: rgba(108, 240, 154, 0.12);
-  --warn: #f2b84b;
-  --warn-soft: rgba(242, 184, 75, 0.13);
-  --bad: #ff6e6e;
-  --bad-soft: rgba(255, 110, 110, 0.12);
-  --info: #6cb8f0;
-  --land: #17211d;
-  --land-line: #24332d;
+  --bg: #0f1518;
+  --rail: #0b1013;
+  --panel: #1c252a;
+  --panel-2: #141c20;
+  --line: #2b363c;
+  --line-2: #3a4850;
+  --text: #e6edf0;
+  --soft: #b8c6cd;
+  --muted: #93a4ad;
+  --faint: #66767e;
+  --accent: #8fd14f;
+  --accent-ink: #0b1405;
+  --accent-soft: rgba(143, 209, 79, 0.12);
+  --ok: #3ecf9e;
+  --warn: #f0b44c;
+  --warn-soft: rgba(240, 180, 76, 0.13);
+  --bad: #ff6b6b;
+  --bad-soft: rgba(255, 107, 107, 0.12);
+  --info: #5aa9e6;
+  --land: #1a2428;
+  --land-line: #2b363c;
   --shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
-  --radius: 10px;
-  --mono: ui-monospace, "SF Mono", "Cascadia Mono", "JetBrains Mono", Menlo, Consolas, monospace;
-  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --radius: 14px;
+  --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --display: "IBM Plex Sans Condensed", "IBM Plex Sans", system-ui, sans-serif;
   color-scheme: dark;
 }
 
 @media (prefers-color-scheme: light) {
   :root {
     --bg: #eef2f0;
+    --rail: #e3e9e6;
     --panel: #ffffff;
     --panel-2: #f6f9f7;
     --line: #dce5e0;
     --line-2: #c9d6cf;
     --text: #13201a;
+    --soft: #34443c;
     --muted: #5b6d65;
     --faint: #8a9a92;
-    --accent: #138a4a;
+    --accent: #3d7f12;
     --accent-ink: #ffffff;
-    --accent-soft: rgba(19, 138, 74, 0.1);
+    --accent-soft: rgba(61, 127, 18, 0.1);
+    --ok: #13805e;
     --warn: #a86a00;
     --warn-soft: rgba(168, 106, 0, 0.1);
     --bad: #c62828;
@@ -62,7 +75,8 @@ body {
 }
 a { color: var(--accent); }
 h1, h2, h3 { margin: 0; font-weight: 600; letter-spacing: -0.01em; text-wrap: balance; }
-h1 { font-size: 20px; }
+h1 { font: 700 30px/1.1 var(--display); text-transform: uppercase; letter-spacing: 0.02em; }
+.gate h1 { font-size: 26px; }
 h2 { font-size: 15px; }
 h3 { font-size: 13px; }
 p { margin: 0; }
@@ -95,7 +109,7 @@ code, .mono { font-family: var(--mono); font-size: 12.5px; }
 /* Shell */
 .shell { display: grid; grid-template-columns: 228px minmax(0, 1fr); min-height: 100vh; }
 .side {
-  background: var(--panel);
+  background: var(--rail);
   border-right: 1px solid var(--line);
   padding: 18px 12px;
   display: flex; flex-direction: column; gap: 18px;
@@ -104,7 +118,7 @@ code, .mono { font-family: var(--mono); font-size: 12.5px; }
 .brand { display: flex; align-items: center; gap: 10px; padding: 2px 8px 8px; }
 .brand .goggles { gap: 4px; }
 .brand .goggles i { width: 7px; height: 7px; animation: none; opacity: 0.95; box-shadow: 0 0 8px var(--accent); }
-.brand b { font-size: 14px; letter-spacing: 0.02em; }
+.brand b { font: 700 15px var(--display); letter-spacing: 0.05em; text-transform: uppercase; }
 .brand div span { display: block; font-size: 11px; color: var(--muted); }
 .nav { display: flex; flex-direction: column; gap: 2px; }
 .nav a {
@@ -144,7 +158,7 @@ code, .mono { font-family: var(--mono); font-size: 12.5px; }
 
 /* Status */
 .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--faint); flex: none; }
-.dot.ok { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+.dot.ok { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
 .dot.warn { background: var(--warn); }
 .dot.bad { background: var(--bad); }
 .pill {
@@ -273,6 +287,7 @@ input.code { font: 600 22px var(--mono); letter-spacing: 0.3em; text-align: cent
 
 /* Toast and modal */
 #toast {
+  /* the toast */
   position: fixed; right: 20px; bottom: 20px; z-index: 50;
   background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 10px;
   padding: 11px 16px; box-shadow: var(--shadow); max-width: min(420px, calc(100vw - 32px)); font-size: 13px;
@@ -301,3 +316,12 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(2px); 
   .span-2 { grid-column: auto; }
   .stages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* Live connection */
+.live { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); font-size: 12px; color: var(--soft); white-space: nowrap; }
+.live i { width: 8px; height: 8px; border-radius: 50%; background: var(--faint); }
+.live.on i { background: var(--ok); animation: pulse 2s ease-in-out infinite; }
+.live.retrying i { background: var(--warn); }
+.kpi .v { font-family: var(--mono); font-weight: 400; letter-spacing: 0; }
+.fresh { animation: fresh 1.2s ease-out; }
+@keyframes fresh { from { background: var(--accent-soft); } to { background: transparent; } }

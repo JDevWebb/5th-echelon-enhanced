@@ -329,6 +329,8 @@ pub struct Coordinator {
     pub data_dir: std::sync::OnceLock<std::path::PathBuf>,
     /// The admin UI's settings, once it's on.
     pub admin: std::sync::OnceLock<admin::Config>,
+    /// What the admin UI's live connections hear about (see `admin::live`).
+    pub(crate) live: tokio::sync::broadcast::Sender<admin::live::Event>,
 }
 
 type Shared = Arc<Coordinator>;
@@ -373,6 +375,7 @@ impl Coordinator {
             geo: std::sync::OnceLock::new(),
             data_dir: std::sync::OnceLock::new(),
             admin: std::sync::OnceLock::new(),
+            live: tokio::sync::broadcast::channel(256).0,
         };
         c.claim_linked_names().await?;
         Ok(c)
@@ -993,6 +996,7 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, Json(listing): J
     if let Err(e) = c.set_online(&server, &listing.online).await {
         return internal(e);
     }
+    c.publish(admin::live::Event::Network);
     let mut answer = json!({});
     if !clashes.is_empty() {
         answer["warnings"] = json!(clashes);
@@ -1019,7 +1023,10 @@ async fn metrics_report(State(c): State<Shared>, headers: HeaderMap, Json(report
         return fail(StatusCode::BAD_REQUEST, "not a metrics report");
     }
     match c.record_metrics(&server, &report).await {
-        Ok(()) => ok(json!({})),
+        Ok(()) => {
+            c.publish(admin::live::Event::Metrics);
+            ok(json!({}))
+        }
         Err(e) => internal(e),
     }
 }

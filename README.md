@@ -612,9 +612,12 @@ build/build.sh server     # dist/dedicated_server-linux-x86_64, coordinator-linu
 build/build.sh windows    # dist/launcher.exe (client DLL inside), uplay_r1_loader.dll, dedicated_server.exe
 build/build.sh linux      # dist/launcher-linux-x86_64 (client DLL inside), dedicated_server-linux-x86_64, coordinator-linux-x86_64
 build/build.sh sums       # dist/SHA256SUMS, for a release
+build/build.sh ui         # the coordinator's admin UI (coordinator/admin-ui/dist)
 ```
 
-To build natively instead, install [rustup](https://rustup.rs) (the toolchain in `rust-toolchain.toml` installs itself) and the [Protobuf compiler](https://github.com/protocolbuffers/protobuf/releases/latest) (`protoc` on your `PATH`, or `PROTOC` pointing at it). Then:
+`build/build.sh ui` builds the coordinator's admin UI (Vue 3 and Vite, in `coordinator/admin-ui`), which the coordinator embeds; the targets that build the coordinator run it first.
+
+To build natively instead, install [rustup](https://rustup.rs) (the toolchain in `rust-toolchain.toml` installs itself) and the [Protobuf compiler](https://github.com/protocolbuffers/protobuf/releases/latest) (`protoc` on your `PATH`, or `PROTOC` pointing at it). The coordinator also wants [Node.js](https://nodejs.org) 18 or later, to build its admin UI first (`npm ci && npm run build` in `coordinator/admin-ui`); without it, the coordinator builds with a page saying so in place of the UI. Then:
 
 ```sh
 cargo build --release -p dedicated_server                      # the server, for your OS

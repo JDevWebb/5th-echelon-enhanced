@@ -52,6 +52,7 @@ The same applies to this fork's follow-up changes to code merged from pull reque
 | `coordinator/src/admin/ui/world.js` | The land outline of [Natural Earth](https://www.naturalearthdata.com) (public domain), via [world-atlas](https://github.com/topojson/world-atlas) (ISC licence) |
 | GeoIP data downloaded at run time | [DB-IP](https://db-ip.com)'s IP to City Lite, under CC BY 4.0; the admin UI credits it |
 | `hooks/fonts/*.ttf` | IBM Plex Sans, Sans Condensed and Mono, under the SIL Open Font License 1.1 (`hooks/fonts/OFL-*.txt`) |
+| `coordinator/admin-ui/src/assets/fonts/*.ttf` | the same IBM Plex fonts, for the admin UI, under the SIL Open Font License 1.1 (`coordinator/admin-ui/public/fonts-license.txt`) |
 | `docs/logo.png`, `docs/demo.webm`, `docs/demo_thumb.png`, `docs/overlay_*.png`, `launcher/logo.ico` | Upstream 5th Echelon |
 | `docs/screenshots/` | This fork's screenshots, but they show the upstream logo |
 | `setup/data/base_savegame.xml` | Upstream 5th Echelon's generated save |

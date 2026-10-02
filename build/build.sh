@@ -17,6 +17,8 @@
 #   build/build.sh federation-test
 #                            two servers sharing friends through a coordinator
 #                            (docs/friends.md)
+#   build/build.sh ui        the coordinator's admin UI (Vue, coordinator/admin-ui -> dist/,
+#                            embedded in the coordinator; the targets building it run this first)
 #   build/build.sh fmt       cargo fmt (the crates this fork changes)
 #   build/build.sh shell     interactive shell in the build container
 #
@@ -39,8 +41,24 @@ run() {
     "$@"
 }
 
+# The admin UI the coordinator embeds (coordinator/admin-ui/dist), built when its sources
+# or lock file are newer than the last build. npm's cache lives in a volume too.
+ui() {
+  run -v fes-npm-cache:/root/.npm "$IMAGE" sh -c '
+    set -e
+    cd coordinator/admin-ui
+    if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then npm ci --no-audit --no-fund; touch node_modules; fi
+    if [ ! -f dist/index.html ] || [ -n "$(find src index.html public vite.config.js package-lock.json -newer dist/index.html | head -1)" ]; then npm run build; fi'
+}
+
 mkdir -p dist
 case "${1:-test}" in
+  test|server|linux|federation-test) ui ;;
+esac
+case "${1:-test}" in
+  ui)
+    ui
+    ;;
   test)
     run "$IMAGE" cargo test --workspace --exclude hooks --exclude launcher --exclude umd_browser
     ;;

@@ -27,6 +27,9 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler
       - name: Install the toolchain (rust-toolchain.toml)
         run: rustup toolchain install
+      - name: Build the coordinator's admin UI (Node comes with the runner)
+        working-directory: coordinator/admin-ui
+        run: npm ci --no-audit --no-fund && npm run build
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Tests
         run: cargo test --locked --workspace --exclude hooks --exclude launcher --exclude umd_browser

@@ -20,6 +20,7 @@
 //! Caddy); otherwise the connection's, located with DB-IP.
 
 pub mod auth;
+pub mod live;
 pub mod webauthn;
 
 use std::net::IpAddr;
@@ -193,14 +194,12 @@ pub fn router(c: Shared) -> Router {
         .route("/updates", get(updates))
         .route("/updates/{action}", post(update_action))
         .route("/servers/{id}", delete(remove_server))
-        .route("/servers/{id}/purge-names", post(purge_names));
+        .route("/servers/{id}/purge-names", post(purge_names))
+        .route("/live", get(live::live));
     Router::new()
         .route("/", get(page))
-        .route("/app.js", get(asset))
-        .route("/app.css", get(asset))
-        .route("/world.js", get(asset))
-        .route("/icon.svg", get(asset))
         .nest("/api", api)
+        .fallback(asset)
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
         .layer(axum::middleware::from_fn_with_state(Arc::clone(&c), guard))
         .with_state(c)
@@ -270,19 +269,43 @@ fn secure_headers(mut resp: Response) -> Response {
     resp
 }
 
+/// The admin UI's files: the Vue app built in `coordinator/admin-ui` (see build.rs).
+mod ui {
+    include!(concat!(env!("OUT_DIR"), "/admin_ui.rs"));
+}
+
+/// The paths of the embedded UI's files (for tests).
+#[cfg(test)]
+pub(crate) fn ui_asset_paths() -> Vec<&'static str> {
+    ui::FILES.iter().map(|(p, _, _)| *p).collect()
+}
+
+fn ui_file(path: &str) -> Option<(&'static [u8], &'static str)> {
+    ui::FILES.iter().find(|(p, _, _)| *p == path).map(|(_, body, kind)| (*body, *kind))
+}
+
 async fn page() -> Response {
-    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], include_str!("ui/index.html")).into_response()
+    match ui_file("/index.html") {
+        Some((body, kind)) => ([(header::CONTENT_TYPE, kind)], body).into_response(),
+        None => fail(StatusCode::NOT_FOUND, "not found"),
+    }
 }
 
 async fn asset(req: Request<Body>) -> Response {
-    let (body, kind): (&'static str, &str) = match req.uri().path() {
-        "/app.js" => (include_str!("ui/app.js"), "text/javascript; charset=utf-8"),
-        "/world.js" => (include_str!("ui/world.js"), "text/javascript; charset=utf-8"),
-        "/app.css" => (include_str!("ui/app.css"), "text/css; charset=utf-8"),
-        "/icon.svg" => (include_str!("ui/icon.svg"), "image/svg+xml"),
-        _ => return fail(StatusCode::NOT_FOUND, "not found"),
+    if req.method() != Method::GET && req.method() != Method::HEAD {
+        return fail(StatusCode::NOT_FOUND, "not found");
+    }
+    let path = req.uri().path();
+    let Some((body, kind)) = ui_file(path).filter(|_| path != "/index.html") else {
+        return fail(StatusCode::NOT_FOUND, "not found");
     };
-    ([(header::CONTENT_TYPE, kind)], body).into_response()
+    let mut resp = ([(header::CONTENT_TYPE, kind)], body).into_response();
+    // Built files carry their content's hash in the name: they never change.
+    if path.starts_with("/assets/") {
+        resp.headers_mut()
+            .insert(header::CACHE_CONTROL, HeaderValue::from_static("public, max-age=31536000, immutable"));
+    }
+    resp
 }
 
 // Sessions.
@@ -327,8 +350,12 @@ impl Coordinator {
             .bind(detail)
             .execute(&self.pool)
             .await;
-        if let Err(e) = done {
-            tracing::error!("admin: couldn't record {event}: {e}");
+        match done {
+            Ok(r) => self.publish(live::Event::Audit(json!({
+                "id": r.last_insert_rowid(), "at": identity::now(), "admin": admin, "ip": client.map_or("console".to_string(), |c| c.ip.to_string()),
+                "country": client.map(|c| c.country.clone()).unwrap_or_default(), "event": event, "detail": detail,
+            }))),
+            Err(e) => tracing::error!("admin: couldn't record {event}: {e}"),
         }
     }
 
@@ -1354,23 +1381,32 @@ async fn overview(State(c): State<Shared>, Extension(client): Extension<Client>,
     if let Err(r) = c.full(&headers, &client).await {
         return r;
     }
-    let result: sqlx::Result<Value> = async {
+    c.admin_overview().await.map_or_else(internal, ok)
+}
+
+impl Coordinator {
+    /// The network at a glance: every server with its listing, latest metrics, update state
+    /// and place; the rollout; the day's peak. What the Overview shows, and what live
+    /// connections are sent as it changes.
+    pub(crate) async fn admin_overview(&self) -> sqlx::Result<Value> {
         let now = identity::now();
-        let rollout = c.rollout().await?;
-        let latest: std::collections::HashMap<String, Value> = c.latest_metrics().await?.into_iter().collect();
+        let rollout = self.rollout().await?;
+        let latest: std::collections::HashMap<String, Value> = self.latest_metrics().await?.into_iter().collect();
         let rows: Vec<(String, Option<String>, Option<i64>, Option<String>, i64)> =
-            sqlx::query_as("SELECT id, listing, last_seen, update_status, joined_at FROM servers ORDER BY id").fetch_all(&c.pool).await?;
+            sqlx::query_as("SELECT id, listing, last_seen, update_status, joined_at FROM servers ORDER BY id")
+                .fetch_all(&self.pool)
+                .await?;
         let pings: Vec<(String, Option<f64>)> = sqlx::query_as(
             "SELECT p.server_id, p.ms FROM server_pings p JOIN (SELECT server_id, MAX(at) AS at FROM server_pings GROUP BY server_id) l ON l.server_id = p.server_id AND l.at = p.at",
         )
-        .fetch_all(&c.pool)
+        .fetch_all(&self.pool)
         .await?;
         let pings: std::collections::HashMap<String, Option<f64>> = pings.into_iter().collect();
-        let clashes = c.name_clashes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        let clashes = self.name_clashes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         let mut servers = Vec::new();
         for (id, listing, last_seen, status, joined_at) in rows {
             let l: Value = listing.and_then(|l| serde_json::from_str(&l).ok()).unwrap_or_default();
-            let place = server_place(&c, l["host"].as_str().unwrap_or_default()).await;
+            let place = server_place(self, l["host"].as_str().unwrap_or_default()).await;
             let version = l["version"].as_str().unwrap_or_default();
             let auto_update = l["auto_update"].as_bool().unwrap_or(false);
             servers.push(json!({
@@ -1389,21 +1425,16 @@ async fn overview(State(c): State<Shared>, Extension(client): Extension<Client>,
         }
         let peak: Option<f64> = sqlx::query_scalar("SELECT MAX(json_extract(data, '$.max_players')) FROM hourly WHERE hour >= ?")
             .bind(now - 86_400)
-            .fetch_one(&c.pool)
+            .fetch_one(&self.pool)
             .await?;
         Ok(json!({
             "now": now,
-            "coordinator": { "version": env!("FE_RELEASE"), "geo": c.geo.get().is_some_and(|g| g.ready()) },
+            "coordinator": { "version": env!("FE_RELEASE"), "geo": self.geo.get().is_some_and(|g| g.ready()) },
             "rollout": rollout,
             "servers": servers,
             "peak_24h": peak,
             "attribution": geo::ATTRIBUTION,
         }))
-    }
-    .await;
-    match result {
-        Ok(v) => ok(v),
-        Err(e) => internal(e),
     }
 }
 
