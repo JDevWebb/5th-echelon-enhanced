@@ -91,6 +91,9 @@ pub fn routes(storage: Arc<Storage>, cfg: CommunityApiConfig) -> Routes {
                 Err(e) => internal(e),
             },
             ("GET", "/api/unhandled") if cfg.unhandled => Response::json("200 OK", &json!({ "calls": unhandled::snapshot() })),
+            ("POST", "/api/register" | "/api/login") if cfg.accounts && !req.credentials_allowed() => {
+                Response::json("403 Forbidden", &json!({ "error": rate_limit::TLS_REQUIRED }))
+            }
             ("POST", "/api/register") if cfg.accounts => match rate_limit::registrations().check(req.peer) {
                 true => register(&storage, &req.body),
                 false => too_many(),
@@ -314,6 +317,8 @@ mod tests {
             path: path.into(),
             body: body.as_bytes().to_vec(),
             peer: Some(IpAddr::from([192, 0, 2, 1])),
+            conn_peer: Some(IpAddr::from([192, 0, 2, 1])),
+            forwarded_proto: None,
         }
     }
 

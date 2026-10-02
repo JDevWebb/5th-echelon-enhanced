@@ -102,6 +102,7 @@ logins_per_10_minutes = 120        # per address, failed or not
 registrations_per_hour = 20        # per address
 open_registration = true           # false: no new accounts (only existing ones sign in)
 require_identity = false           # true: every account is linked to a player identity
+require_tls_for_credentials = false  # true: passwords and sign-ins only over HTTPS (or from a LAN)
 ```
 
 - With `require_identity = true` (the installer's default), accounts are only made through the launcher, linked to the player's identity: the launcher finds a player's account by their identity, so they never type a password, and accounts can't be unlinked. `/api/register` and password-only registrations are refused.
@@ -111,6 +112,7 @@ require_identity = false           # true: every account is linked to a player i
 - Players behind one address (a LAN party, a household) share the registration budget, so raise it if a big group sets up at once.
 - Requests from the server's own machine (loopback) are never limited.
 - Failed logins also count per account and address: 10 in 10 minutes stop that address trying that account, without locking its owner out elsewhere. After 50 failures for one account in 10 minutes from anywhere, only addresses that have signed in to it before (since the server started) may try it until the failures age out. IPv6 addresses count per /64.
+- With **`require_tls_for_credentials`**, the launcher's Login, Register, KeyLogin, LinkIdentity and Rename, and the community API's `/api/login` and `/api/register`, are refused when they arrive unencrypted. Through a reverse proxy, the proxy's `X-Forwarded-Proto` header says how the player connected (Caddy sets it; only proxies on this machine or listed in `[public] proxies` are believed). Without a proxy, only this machine and private networks (192.168/16, 10/8, 172.16/12, 100.64/10, IPv6 unique-local and link-local) are let through, since the API itself speaks only plain HTTP/2. Turn it on only when the API is served over HTTPS (`[public] api_tls`) and the players' launchers use it.
 - `FE_MAX_CONNECTIONS_PER_IP` (environment, default 256) caps the game connections from one address.
 
 ## `[admin]`: the admin API

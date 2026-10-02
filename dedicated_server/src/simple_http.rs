@@ -30,7 +30,20 @@ pub struct Request {
     pub method: String,
     pub path: String,
     pub body: Vec<u8>,
+    /// The client: the connection's address, or the one a trusted proxy names.
     pub peer: Option<std::net::IpAddr>,
+    /// The connection's own address (a proxy's, when there is one).
+    pub conn_peer: Option<std::net::IpAddr>,
+    /// For POST, the `X-Forwarded-Proto` header (believed from trusted proxies only).
+    pub forwarded_proto: Option<String>,
+}
+
+impl Request {
+    /// Whether a password may be taken in this request (see
+    /// `rate_limit::credentials_allowed`).
+    pub fn credentials_allowed(&self) -> bool {
+        crate::rate_limit::credentials_allowed(self.conn_peer, self.forwarded_proto.as_deref())
+    }
 }
 
 impl Request {
@@ -44,6 +57,8 @@ impl Request {
             path,
             body: vec![],
             peer: None,
+            conn_peer: None,
+            forwarded_proto: None,
         }
     }
 }
@@ -300,6 +315,7 @@ fn handle(
     debug!(logger, "Request: {}", line);
     let mut req = Request::parse_line(&line);
     req.peer = stream.peer_addr().ok().map(|a| a.ip());
+    req.conn_peer = req.peer;
     // GETs are answered right after the request line, as before (the game
     // doesn't need its headers read). A POST's headers and body are read, if
     // it's to a path that takes one.
@@ -321,6 +337,9 @@ fn handle(
                 }
                 if name.trim().eq_ignore_ascii_case("x-forwarded-for") {
                     req.peer = crate::rate_limit::client_ip(req.peer, Some(value.trim()));
+                }
+                if name.trim().eq_ignore_ascii_case("x-forwarded-proto") {
+                    req.forwarded_proto = Some(value.trim().chars().take(16).collect());
                 }
             }
         }

@@ -106,6 +106,41 @@ pub fn identity_required() -> bool {
     limits().require_identity
 }
 
+/// Whether a request carrying a password or a sign-in may be taken, under
+/// `[limits] require_tls_for_credentials`: through a trusted proxy only when
+/// it reports the client used HTTPS (`X-Forwarded-Proto`, which Caddy sets),
+/// and straight (no proxy header) only from this machine or a private
+/// network. Without the setting, always.
+pub fn credentials_allowed(peer: Option<IpAddr>, forwarded_proto: Option<&str>) -> bool {
+    !limits().require_tls_for_credentials || encrypted_or_local(peer, forwarded_proto)
+}
+
+fn encrypted_or_local(peer: Option<IpAddr>, forwarded_proto: Option<&str>) -> bool {
+    let Some(peer) = peer else { return false };
+    match forwarded_proto {
+        Some(proto) if is_proxy(peer) => proto.split(',').next().is_some_and(|p| p.trim().eq_ignore_ascii_case("https")),
+        _ => is_local_network(peer),
+    }
+}
+
+/// This machine, a private network (RFC 1918, IPv6 unique local), link-local,
+/// or shared address space (100.64/10, which VPNs such as Tailscale use).
+fn is_local_network(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => {
+            let [a, b, ..] = v4.octets();
+            v4.is_loopback() || v4.is_private() || v4.is_link_local() || (a == 100 && (64..128).contains(&b))
+        }
+        IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => is_local_network(IpAddr::V4(v4)),
+            None => v6.is_loopback() || (v6.segments()[0] & 0xfe00) == 0xfc00 || (v6.segments()[0] & 0xffc0) == 0xfe80,
+        },
+    }
+}
+
+/// The answer for credentials refused by [`credentials_allowed`].
+pub const TLS_REQUIRED: &str = "This server takes passwords and sign-ins over HTTPS only; connect to it with https:// (update the 5th Echelon launcher)";
+
 /// Starts a sign-in for `name` from `peer`. It counts now, before the
 /// password is checked, so a burst of guesses can't all get through before the
 /// first failure is recorded; false when the address is over either of its
@@ -563,6 +598,22 @@ mod tests {
         assert!(limit.check_at(local, t0) && limit.check_at(local, t0));
         limit.record_at(local, t0);
         assert!(!limit.blocked_at(local, t0));
+    }
+
+    #[test]
+    fn credentials_need_https_through_a_proxy() {
+        let local: IpAddr = "127.0.0.1".parse().unwrap();
+        let lan: IpAddr = "192.168.1.20".parse().unwrap();
+        let public: IpAddr = "198.51.100.7".parse().unwrap();
+        assert!(encrypted_or_local(Some(local), Some("https")));
+        assert!(!encrypted_or_local(Some(local), Some("http")), "Caddy says the client used plain http");
+        assert!(encrypted_or_local(Some(local), None), "a tool on this machine");
+        assert!(encrypted_or_local(Some(lan), None), "a LAN player straight to the server");
+        assert!(!encrypted_or_local(Some(public), None), "plain h2c from the internet");
+        assert!(!encrypted_or_local(Some(public), Some("https")), "only a trusted proxy's word counts");
+        assert!(encrypted_or_local(Some("fd00::5".parse().unwrap()), None));
+        assert!(!encrypted_or_local(Some("2001:db8::5".parse().unwrap()), None));
+        assert!(!encrypted_or_local(None, None));
     }
 
     #[test]

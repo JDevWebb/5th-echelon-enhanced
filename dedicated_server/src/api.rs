@@ -84,6 +84,18 @@ fn storage_error(e: eyre::Report) -> Status {
     }
 }
 
+/// Refuses a request carrying a password or sign-in that came over plain
+/// HTTP, when `[limits] require_tls_for_credentials` says so (see
+/// `rate_limit::credentials_allowed`).
+fn require_tls<T>(request: &Request<T>) -> Result<(), Status> {
+    let proto = request.metadata().get("x-forwarded-proto").and_then(|v| v.to_str().ok());
+    if crate::rate_limit::credentials_allowed(request.remote_addr().map(|a| a.ip()), proto) {
+        Ok(())
+    } else {
+        Err(Status::failed_precondition(crate::rate_limit::TLS_REQUIRED))
+    }
+}
+
 /// A new sign-in token for `user_id`: the id, the account's token epoch and
 /// the time, sealed with the server's key.
 fn issue_token(key: &Key, user_id: u32, epoch: i64) -> String {
@@ -536,6 +548,7 @@ impl Friends for MyFriends {
     }
 
     async fn link_identity(&self, request: Request<friends::LinkIdentityRequest>) -> Result<Response<friends::LinkIdentityResponse>, Status> {
+        require_tls(&request)?;
         let me = caller(&request)?;
         let request = request.into_inner();
         let person = self
@@ -598,6 +611,7 @@ impl Friends for MyFriends {
     }
 
     async fn rename(&self, request: Request<friends::RenameRequest>) -> Result<Response<friends::RenameResponse>, Status> {
+        require_tls(&request)?;
         let me = caller(&request)?;
         if !crate::rate_limit::friend_changes().check(me) {
             return Err(Status::resource_exhausted("Too many changes; try again in a minute"));
@@ -741,6 +755,7 @@ impl Users for MyUsers {
     ///
     /// Authenticates the user against the storage and generates an authorization token upon successful login.
     async fn login(&self, request: Request<users::LoginRequest>) -> Result<Response<users::LoginResponse>, Status> {
+        require_tls(&request)?;
         let peer = client_addr(&request);
         let request = request.into_inner();
         let username = request.username;
@@ -782,6 +797,7 @@ impl Users for MyUsers {
     ///
     /// Registers a new user in the storage, handling potential conflicts like duplicate usernames or Ubisoft IDs.
     async fn register(&self, request: Request<users::RegisterRequest>) -> Result<Response<users::RegisterResponse>, Status> {
+        require_tls(&request)?;
         if !crate::rate_limit::registrations().check(client_addr(&request)) {
             return Err(Status::resource_exhausted("Too many new accounts from this address; try again later"));
         }
@@ -882,6 +898,7 @@ impl Users for MyUsers {
     /// Without a username: to whichever account here is linked to the identity
     /// (the launcher finding a player's account), or `NotFound` when none is.
     async fn key_login(&self, request: Request<users::KeyLoginRequest>) -> Result<Response<users::LoginResponse>, Status> {
+        require_tls(&request)?;
         let peer = client_addr(&request);
         let request = request.into_inner();
         // Failures count against the account, or the identity when there's no name.

@@ -125,6 +125,12 @@ pub struct LimitsConfig {
     /// `/api/register`), as before identities.
     #[serde(default)]
     pub require_identity: bool,
+    /// Whether passwords and sign-ins must arrive encrypted: through a
+    /// trusted reverse proxy that reports HTTPS (`X-Forwarded-Proto`), or
+    /// straight from this machine or a private network. Off: plain HTTP is
+    /// taken too, as before.
+    #[serde(default)]
+    pub require_tls_for_credentials: bool,
 }
 
 const fn default_failed_logins() -> usize {
@@ -147,6 +153,7 @@ impl Default for LimitsConfig {
             registrations_per_hour: default_registrations(),
             open_registration: true,
             require_identity: false,
+            require_tls_for_credentials: false,
         }
     }
 }
