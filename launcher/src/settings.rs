@@ -546,7 +546,7 @@ fn connection_test(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui
         return;
     };
     ui.label(theme::muted(
-        "Checks each part of the connection in turn: the server's config, its API, signing in to the game service, whether the server can reach this PC directly, and the server's helper for playing over the internet.",
+        "Checks each part of the connection in turn: the server's config, its API, signing in to the game service, how other players reach this PC (as the overlay shows it in game), and the server's helper for playing over the internet.",
     ));
     ui.horizontal(|ui| {
         if settings.tests.running() {
@@ -554,7 +554,8 @@ fn connection_test(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui
             ui.label("Testing…");
         } else if ui.button("Run the test").clicked() {
             let nat_port = profile.nat_port.or(game.cfg.hook_config.networking.nat_port);
-            settings.tests.start(ctx, move || run_tests(&profile, nat_port));
+            let nat_mode = game.cfg.hook_config.networking.nat;
+            settings.tests.start(ctx, move || run_tests(&profile, nat_port, nat_mode));
         }
     });
     for (name, status, note) in &settings.test_results {
@@ -571,7 +572,7 @@ fn connection_test(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui
     }
 }
 
-fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>) -> TestResults {
+fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>, nat_mode: hooks_config::NatMode) -> TestResults {
     use crate::network;
     let rt = crate::services::rt();
     let api = profile.api_server_url().to_string();
@@ -601,11 +602,22 @@ fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>) -> Te
     );
     // Only a router that forwards UDP 13000 (or no router) lets the server's packet in
     // unasked. If it doesn't, ask the router for the mapping the game asks for while it
-    // runs (UPnP, then NAT-PMP), try again, and take the mapping away. Internet play
-    // works either way: the NAT helper's hole punching, or the relay, cover the rest.
+    // runs (UPnP, then NAT-PMP), try again, and take the mapping away. The outcome is
+    // worded like the overlay's line in game: without a port open, the server relays
+    // this PC's matches (Automatic), or other players may not get through (LAN or VPN only).
     let timed_out = |e: &str| e.contains("in time") || e.contains("Deadline");
+    let no_port = |why: String| match nat_mode {
+        hooks_config::NatMode::Off => (
+            Status::Warn,
+            Some(format!("Direct, no router port open ({why}): others may not be able to join you. Internet play is set to LAN or VPN only")),
+        ),
+        _ => (
+            Status::Ok,
+            Some(format!("Through the server's relay: no router port open ({why}), so matches go through the server, which adds a little delay")),
+        ),
+    };
     let direct = match run(Box::pin(network::test_p2p(api.clone(), user, pass))) {
-        Ok(()) => (Status::Ok, Some("reachable without any router set-up".into())),
+        Ok(()) => (Status::Ok, Some("Direct: reachable without any router set-up".into())),
         Err(e) if timed_out(&e) => {
             let pinned = profile
                 .adapter
@@ -616,29 +628,20 @@ fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>) -> Te
                     std::net::IpAddr::V6(_) => None,
                 });
             match portmap::map(nat_proto::STORM_PORT, pinned, 120, "5th Echelon connection test") {
-                Err(why) => (
-                    Status::Warn,
-                    Some(format!(
-                        "not reachable directly, and the router didn't forward a port ({why}). Normal for many routers: matches use hole punching, or the server's relay"
-                    )),
-                ),
+                Err(why) => no_port(format!("the router didn't forward one: {why}")),
                 Ok(mapping) => {
                     let (public, how) = (mapping.public, mapping.how);
                     let outcome = if public.port() != nat_proto::STORM_PORT {
-                        (
-                            Status::Warn,
-                            Some(format!(
-                                "the router forwards {public} ({how}), but not port {} (another PC may have it); the game asks again while it runs",
-                                nat_proto::STORM_PORT
-                            )),
-                        )
+                        no_port(format!("the router offered {public} ({how}), not port {}; another PC may have it", nat_proto::STORM_PORT))
                     } else {
                         match run(Box::pin(network::test_p2p(api, user, pass))) {
-                            Ok(()) => (Status::Ok, Some(format!("reachable through the router's port mapping ({how}, {public}), which the game sets up while it runs"))),
+                            Ok(()) => (Status::Ok, Some(format!("Direct, router port opened ({public}, {how}); the game opens it while it runs"))),
+                            // The game reports this mapping, so the server treats the PC as
+                            // reachable and doesn't relay it.
                             Err(e) if timed_out(&e) => (
                                 Status::Warn,
                                 Some(format!(
-                                    "the router forwards {public} ({how}), but the server's packet still didn't arrive: a firewall on this PC, or another router in front. Matches use hole punching or the relay"
+                                    "Direct, router port opened ({public}, {how}), but the server's packet still didn't arrive: a firewall on this PC, or another router in front. Others may not be able to join you; set Internet play to Always through the server"
                                 )),
                             ),
                             Err(e) => (Status::Fail, Some(e)),
@@ -651,7 +654,13 @@ fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>) -> Te
         }
         Err(e) => (Status::Fail, Some(e)),
     };
-    add("Direct connection to this PC", direct);
+    let direct = match (nat_mode, direct) {
+        (hooks_config::NatMode::Relay, (Status::Ok | Status::Warn, _)) => {
+            (Status::Ok, Some("Through the server's relay: Internet play is set to Always through the server".into()))
+        }
+        (_, outcome) => outcome,
+    };
+    add("How players reach this PC", direct);
     let nat_port = game_nat_port.unwrap_or(nat_proto::DEFAULT_PORT);
     let nat = match rt.block_on(async { tokio::time::timeout(t, network::test_nat_helper(&profile.server, nat_port)).await }) {
         Ok(Ok(check)) => match check.symmetric {
