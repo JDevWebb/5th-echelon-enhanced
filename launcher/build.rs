@@ -116,6 +116,16 @@ fn embed(dll_path: &Path) {
     let dll = dll::parse(&data).unwrap();
 
     println!("cargo:warning=Dll version: {}", dll.version);
+    // The client and the launcher are one release: never carry a DLL from another build.
+    let (_, release) = release();
+    let release = release.split('-').next().unwrap_or_default();
+    assert_eq!(
+        dll.version.to_string(),
+        release,
+        "{} is client {}, but this launcher is {release}: rebuild the hooks DLL",
+        dll_path.display(),
+        dll.version
+    );
     println!("cargo:rustc-env=HOOKS_VERSION={}", dll.version);
 
     let out_dir = PathBuf::from(env::var("OUT_DIR").unwrap());
@@ -155,6 +165,10 @@ fn main() {
             // Task Manager and Explorer show the description. The product name
             // stays "5th Echelon Launcher": tools find launchers by it.
             .set("FileDescription", &format!("{name} {version}"))
+            .set("FileVersion", &version)
+            .set("ProductVersion", &version)
+            .set_version_info(winres::VersionInfo::FILEVERSION, version_number(&version))
+            .set_version_info(winres::VersionInfo::PRODUCTVERSION, version_number(&version))
             .set_icon("logo.ico")
             .set_manifest(
                 r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>

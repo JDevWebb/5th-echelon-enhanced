@@ -760,6 +760,7 @@ impl Users for MyUsers {
         let request = request.into_inner();
         let username = request.username;
         let password = request.password;
+        let client = request.client;
         // Nothing costly for what can't be an account.
         if username.chars().count() > 32 || password.len() > 128 {
             return Err(Status::unauthenticated("Invalid login"));
@@ -787,6 +788,7 @@ impl Users for MyUsers {
             return Err(Status::unauthenticated("Invalid login"));
         }
         crate::rate_limit::login_succeeded(peer, &username);
+        self.admit(user_id, &username, &client).await?;
 
         info!(self.logger, "Login successful for {username}");
         crate::metrics::api_login();
@@ -802,6 +804,7 @@ impl Users for MyUsers {
             return Err(Status::resource_exhausted("Too many new accounts from this address; try again later"));
         }
         let request = request.into_inner();
+        crate::clients::check(&request.client).map_err(Status::failed_precondition)?;
         let username = request.username.trim().to_string();
         let password = request.password;
         check_username(&username).map_err(Status::invalid_argument)?;
@@ -954,6 +957,8 @@ impl Users for MyUsers {
         if !self.storage.is_player_account(person.id).await.map_err(internal)? {
             return Err(refused("Not a player's account"));
         }
+        // Before the password changes: an outdated launcher changes nothing.
+        self.admit(person.id, &person.username, &request.client).await?;
         if !self.storage.use_key_login(person.id, request.time).await.map_err(internal)? {
             return Err(refused("That signature was already used"));
         }
@@ -972,6 +977,18 @@ impl Users for MyUsers {
 }
 
 impl MyUsers {
+    /// Lets `client` finish signing in to the account (whose password or key it proved), or
+    /// refuses an outdated one. Either way it's noted: the game's own sign-in is let through
+    /// only after a current client's (see [`crate::clients`]).
+    async fn admit(&self, user_id: u32, username: &str, client: &str) -> Result<(), Status> {
+        let verdict = crate::clients::check(client);
+        self.storage.note_client_sign_in(user_id, client, verdict.is_ok()).await.map_err(internal)?;
+        verdict.map_err(|why| {
+            warn!(self.logger, "Refused {username}'s outdated client {client:?}");
+            Status::failed_precondition(why)
+        })
+    }
+
     /// The answer to a successful sign-in: a token, and who they are (the
     /// account id the game should use).
     async fn signed_in(&self, user_id: u32) -> Result<Response<users::LoginResponse>, Status> {

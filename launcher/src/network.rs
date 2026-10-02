@@ -13,6 +13,9 @@ pub const QUAZAL_DEFAULT_LOCAL_PORT: u16 = 3074;
 
 // Re-export public functions from submodules.
 pub use discover::try_locate_server;
+/// What this launcher signs in to servers as: they refuse launchers older than they allow.
+pub const CLIENT: &str = concat!("launcher/", env!("FE_RELEASE"));
+
 pub use nat::test_nat_helper;
 pub use quazal::test_p2p;
 pub use quazal::test_quazal_login;

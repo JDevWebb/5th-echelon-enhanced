@@ -64,6 +64,21 @@ impl TicketGrantingProtocolServerImpl {
         })
     }
 
+    /// Whether the game may sign in to the account: player accounts only after a current
+    /// client signed in to the API (see [`crate::clients`]). The server's own accounts
+    /// (Tracking) have no client.
+    fn has_current_client(&self, logger: &slog::Logger, user_id: u32) -> quazal::rmc::Result<bool> {
+        if crate::clients::minimum().is_none() {
+            return Ok(true);
+        }
+        let since = crate::clients::now() - crate::clients::VOUCHES_FOR;
+        let check = async { Ok::<_, eyre::Report>(!self.storage.is_player_account(user_id).await? || self.storage.has_current_client(user_id, since).await?) };
+        crate::storage::run(check).and_then(|r| r).map_err(|e| {
+            error!(logger, "Error checking the client for user {user_id}: {e}");
+            quazal::rmc::Error::InternalError
+        })
+    }
+
     /// Authenticates a user with their username and password.
     #[allow(unreachable_code)]
     fn login(&self, logger: &slog::Logger, username: &str, password: &str) -> quazal::rmc::Result<Option<u32>> {
@@ -150,6 +165,10 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
             warn!(logger, "plain login refused for {:?}: no plaintext password (use LoginEx)", request.str_user_name);
             return Err(quazal::rmc::Error::AccessDenied);
         };
+        if !self.has_current_client(logger, user_id)? {
+            warn!(logger, "plain login refused for {:?}: no current client signed in", request.str_user_name);
+            return Err(quazal::rmc::Error::AccessDenied);
+        }
         let password = Some(password);
         ci.user_id = Some(user_id);
         let session_key = self.get_session_key(logger, user_id);
@@ -216,6 +235,10 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
             return Err(quazal::rmc::Error::AccessDenied);
         };
         crate::rate_limit::login_succeeded(peer, ubi_username);
+        if !self.has_current_client(logger, user_id)? {
+            warn!(logger, "login refused for {:?}: its game client is outdated (or didn't sign in to the API)", ubi_username);
+            return Err(quazal::rmc::Error::AccessDenied);
+        }
         info!(logger, "login successful for {:?}", ubi_username);
 
         ci.user_id = Some(user_id);

@@ -158,6 +158,16 @@ impl Default for LimitsConfig {
     }
 }
 
+/// Which clients may play (`[clients]`).
+#[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq, Default)]
+pub struct ClientsConfig {
+    /// The oldest launcher and game client (major.minor.patch) that may sign in. Unset: this
+    /// server's own release, so players need a client at least as new as the server. "off":
+    /// any client, including ones from before clients said their version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub minimum_version: Option<String>,
+}
+
 /// Who is on a player's friend list.
 #[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq, Default)]
 #[serde(rename_all = "lowercase")]
@@ -398,6 +408,8 @@ pub struct Config {
     pub public: PublicConfig,
     #[serde(default)]
     pub friends: FriendsConfig,
+    #[serde(default)]
+    pub clients: ClientsConfig,
     #[serde(default, skip_serializing_if = "FederationConfig::is_off")]
     pub federation: FederationConfig,
 }
@@ -598,6 +610,7 @@ impl Default for Config {
             nat: NatConfig::default(),
             public: PublicConfig::default(),
             friends: FriendsConfig::default(),
+            clients: ClientsConfig::default(),
             federation: FederationConfig::default(),
         }
     }

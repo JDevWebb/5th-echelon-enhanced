@@ -305,6 +305,7 @@ pub async fn test_p2p(api_url: String, username: &str, password: &str) -> Result
         .login(LoginRequest {
             username: username.to_string(),
             password: password.to_string(),
+            client: super::CLIENT.into(),
         })
         .await
     {

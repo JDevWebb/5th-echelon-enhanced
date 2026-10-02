@@ -29,6 +29,7 @@ pub async fn test_login(api_url: String, username: &str, password: &str) -> Resu
         .login(LoginRequest {
             username: username.to_string(),
             password: password.to_string(),
+            client: super::CLIENT.into(),
         })
         .await
     {
@@ -40,6 +41,9 @@ pub async fn test_login(api_url: String, username: &str, password: &str) -> Resu
             }
             if matches!(status.code(), tonic::Code::NotFound) {
                 return Err(Error::UserNotFound);
+            } else if matches!(status.code(), tonic::Code::FailedPrecondition) {
+                // An outdated launcher: the server says what to do.
+                return Err(Error::Rpc(status));
             } else {
                 return Err(Error::SendingRequestFailed);
             }
@@ -86,6 +90,7 @@ pub async fn register(api_url: String, username: &str, password: &str, identity:
             time,
             signature,
             host,
+            client: super::CLIENT.into(),
         })
         .await
     {
@@ -117,6 +122,7 @@ pub async fn account_id(api_url: String, username: &str, password: &str) -> Resu
         .login(LoginRequest {
             username: username.to_string(),
             password: password.to_string(),
+            client: super::CLIENT.into(),
         })
         .await?
         .into_inner();
@@ -132,6 +138,7 @@ pub async fn rename(api_url: String, username: &str, password: &str, new_name: &
         .login(LoginRequest {
             username: username.to_string(),
             password: password.to_string(),
+            client: super::CLIENT.into(),
         })
         .await?
         .into_inner()
@@ -171,6 +178,7 @@ pub async fn identity_login(api_url: String, identity: &identity::Identity, host
         signature: identity.sign_login(host, "", time, new_password),
         new_password: new_password.to_string(),
         host: identity::host_key(host),
+        client: super::CLIENT.into(),
     };
     match client.key_login(request).await {
         Ok(resp) => Ok(resp.into_inner().user.map(|u| u.username).filter(|u| !u.is_empty())),
@@ -189,6 +197,7 @@ pub async fn link_identity(api_url: String, identity: &identity::Identity, host:
         .login(LoginRequest {
             username: username.to_string(),
             password: password.to_string(),
+            client: super::CLIENT.into(),
         })
         .await?
         .into_inner()
@@ -218,6 +227,7 @@ pub async fn sign_in(api_url: String, username: &str, password: &str) -> Result<
         .login(LoginRequest {
             username: username.to_string(),
             password: password.to_string(),
+            client: super::CLIENT.into(),
         })
         .await
     {

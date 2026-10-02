@@ -149,6 +149,7 @@ async fn identity_login(ctx: &mut Ctx) -> Result<()> {
                 signature: for_elsewhere,
                 new_password: "attackers-password".into(),
                 host: "rogue.example".into(),
+                client: testbot::bot::LAUNCHER_CLIENT.into(),
             })
             .await?;
         Ok::<(), eyre::Report>(())
@@ -938,6 +939,30 @@ async fn nat_public_address(ctx: &mut Ctx) -> Result<()> {
     b.disconnect().await
 }
 
+/// Clients older than the server allows can't sign in, and neither can the game after one
+/// tried; a current client lets it in.
+async fn outdated_client(ctx: &mut Ctx) -> Result<()> {
+    use testbot::bot::api_sign_in;
+    ctx.n += 1;
+    let name = format!("Outdated{}_{}", ctx.run, ctx.n);
+    Bot::register(ctx.server, &name, PASSWORD).await?;
+    ensure!(Bot::game_sign_in_only(ctx.server, &name, PASSWORD).await.is_err(), "the game signed in with no client signing in first");
+    for client in ["game/0.0.1", "", "launcher/0.1.0-dev"] {
+        match api_sign_in(ctx.server, &name, PASSWORD, client).await {
+            Err(e) if e.downcast_ref::<tonic::Status>().is_some_and(|s| s.code() == tonic::Code::FailedPrecondition) => {}
+            other => return Err(eyre!("the client {client:?} wasn't refused: {:?}", other.map(|_| ()))),
+        }
+        ensure!(Bot::game_sign_in_only(ctx.server, &name, PASSWORD).await.is_err(), "the game signed in after the client {client:?}");
+    }
+    // A current client lets the game in; an outdated one trying after it shuts it out again.
+    Bot::login(ctx.server, &name, PASSWORD).await.map_err(|e| eyre!("a current client couldn't play: {e}"))?;
+    ensure!(api_sign_in(ctx.server, &name, PASSWORD, "game/0.0.1").await.is_err(), "an outdated client was let in");
+    ensure!(Bot::game_sign_in_only(ctx.server, &name, PASSWORD).await.is_err(), "the game signed in after an outdated client tried");
+    api_sign_in(ctx.server, &name, PASSWORD, testbot::bot::GAME_CLIENT).await?;
+    Bot::game_sign_in_only(ctx.server, &name, PASSWORD).await.map_err(|e| eyre!("the game couldn't sign in after a current client: {e}"))?;
+    Ok(())
+}
+
 const SCENARIOS: &[&str] = &[
     "login",
     "lobby-invite",
@@ -968,6 +993,7 @@ const SCENARIOS: &[&str] = &[
     "station-url-schemes",
     "syn-flood",
     "login-lockout",
+    "outdated-client",
 ];
 
 #[tokio::main]
@@ -1051,6 +1077,7 @@ async fn main() -> Result<()> {
                 "station-url-schemes" => station_url_schemes(&mut ctx).await,
                 "syn-flood" => syn_flood(&mut ctx).await,
                 "login-lockout" => login_lockout(&mut ctx).await,
+                "outdated-client" => outdated_client(&mut ctx).await,
                 // Not in the default list: a server in the "mutual" mode, one requiring
                 // identities, and two servers.
                 "friends-mutual" => friends_mutual(&mut ctx).await,

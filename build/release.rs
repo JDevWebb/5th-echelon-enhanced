@@ -20,3 +20,14 @@ fn release() -> (String, String) {
     println!("cargo:rustc-env=FE_RELEASE={version}");
     (name, version)
 }
+
+/// `version` ("0.3.156", any "-dev" suffix ignored) packed as a Windows
+/// FILEVERSION/PRODUCTVERSION: major.minor.patch.0.
+#[allow(dead_code)]
+fn version_number(version: &str) -> u64 {
+    let numbers: Vec<u64> = version.split('-').next().unwrap_or_default().split('.').map(|n| n.parse().unwrap_or_else(|_| panic!("release.toml version {version:?} isn't major.minor.patch"))).collect();
+    let [major, minor, patch] = numbers[..] else {
+        panic!("release.toml version {version:?} isn't major.minor.patch");
+    };
+    (major << 48) | (minor << 32) | (patch << 16)
+}

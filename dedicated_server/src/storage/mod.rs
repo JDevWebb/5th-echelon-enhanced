@@ -153,6 +153,32 @@ impl Storage {
             .unwrap_or(0))
     }
 
+    /// Notes that `client` signed in to the account through the API: a current one, or an
+    /// outdated one (refused, after the right password).
+    pub async fn note_client_sign_in(&self, user_id: u32, client: &str, current: bool) -> Result<()> {
+        let column = if current { "current_at" } else { "outdated_at" };
+        sqlx::query(&format!(
+            "INSERT INTO client_sign_ins (user_id, client, {column}) VALUES (?1, ?2, ?3)
+             ON CONFLICT(user_id) DO UPDATE SET client = ?2, {column} = ?3"
+        ))
+        .bind(user_id)
+        .bind(client)
+        .bind(crate::clients::now())
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Whether a current client signed in to the account since `since` (Unix seconds), with no
+    /// outdated one trying after it.
+    pub async fn has_current_client(&self, user_id: u32, since: i64) -> Result<bool> {
+        let row: Option<(Option<i64>, Option<i64>)> = sqlx::query_as("SELECT current_at, outdated_at FROM client_sign_ins WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(matches!(row, Some((Some(current), outdated)) if current >= since && outdated.is_none_or(|o| o <= current)))
+    }
+
     /// Replaces the account's token epoch: every token issued before stops working.
     pub async fn new_token_epoch(&self, user_id: u32) -> Result<()> {
         let epoch = (rand::random::<i64>() & i64::MAX).max(1);
@@ -1171,6 +1197,8 @@ impl Storage {
 
     pub async fn delete_user_async(&self, user_id: u32) -> Result<()> {
         sqlx::query("DELETE FROM users WHERE id = ?").bind(user_id).execute(&self.pool).await?;
+        // Ids are reused: a new account doesn't inherit this one's client.
+        sqlx::query("DELETE FROM client_sign_ins WHERE user_id = ?").bind(user_id).execute(&self.pool).await?;
         Ok(())
     }
 

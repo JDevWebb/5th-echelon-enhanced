@@ -12,6 +12,9 @@ pub enum AccountError {
     NotFound,
     #[error("that name is taken")]
     Taken,
+    /// The server refuses this launcher's version; what it says to do.
+    #[error("{0}")]
+    Outdated(String),
     #[error("{0}")]
     Other(String),
 }

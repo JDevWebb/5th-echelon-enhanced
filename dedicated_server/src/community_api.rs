@@ -174,6 +174,10 @@ fn info(cfg: CommunityApiConfig) -> Value {
         "revision": env!("FE_REVISION"),
         "features": features,
     });
+    // The oldest launcher and client it lets play: launchers say so before signing in.
+    if let Some(minimum) = crate::clients::minimum() {
+        info["minimum_client"] = json!(minimum);
+    }
     if let Some((id, mode, coordinator)) = FRIENDS.get() {
         info["id"] = json!(id);
         info["friends_mode"] = json!(mode);

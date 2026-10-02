@@ -255,10 +255,22 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
     let request = tonic::Request::new(LoginRequest {
         username: String::from(username),
         password: String::from(password),
+        // Servers refuse clients older than they allow, and let the game sign in only after
+        // a current one has.
+        client: concat!("game/", env!("FE_RELEASE")).into(),
     });
 
     debug!("logging in");
-    let response = client.login(request).await?.into_inner();
+    let response = match client.login(request).await {
+        Ok(response) => response.into_inner(),
+        // This client is older than the server allows: the game won't be let in either.
+        Err(status) if status.code() == tonic::Code::FailedPrecondition => {
+            error!("The server refused this client: {}", status.message());
+            crate::community::say(status.message().to_string(), true);
+            return Err(status.into());
+        }
+        Err(status) => return Err(status.into()),
+    };
     if !response.error.is_empty() {
         error!("Login error: {}", response.error);
         return Err(Error::LoginFailure);

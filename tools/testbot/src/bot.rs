@@ -34,6 +34,10 @@ use tonic::transport::Channel;
 use crate::conn::Conn;
 
 /// Default ports of a 5th Echelon server.
+/// What bots sign in to the API as: this release's game client (the DLL) and launcher.
+pub const GAME_CLIENT: &str = concat!("game/", env!("FE_RELEASE"));
+pub const LAUNCHER_CLIENT: &str = concat!("launcher/", env!("FE_RELEASE"));
+
 pub const AUTH_PORT: u16 = 21126;
 pub const API_PORT: u16 = 50051;
 
@@ -126,6 +130,7 @@ pub async fn key_login(server: IpAddr, identity: &identity::Identity, host: &str
             signature: identity.sign_login(host, name, time, new_password),
             new_password: new_password.into(),
             host: host.into(),
+            client: LAUNCHER_CLIENT.into(),
         })
         .await?;
     Ok(answer.into_inner().user.map(|u| u.username).unwrap_or_default())
@@ -143,6 +148,7 @@ pub async fn login_as_client(server: IpAddr, name: &str, password: &str, client:
     let mut request = tonic::Request::new(server_api::users::LoginRequest {
         username: name.into(),
         password: password.into(),
+        client: LAUNCHER_CLIENT.into(),
     });
     request
         .metadata_mut()
@@ -215,6 +221,20 @@ pub fn properties(attrs: &str) -> QList<Property> {
 
 /// The auth server's part of signing in: LoginEx and a ticket for the secure
 /// server. Returns the player's pid, the secure server's address and the ticket.
+/// Signs in to the gRPC API as `client` ("game/…" for the DLL, "launcher/…").
+pub async fn api_sign_in(server: IpAddr, name: &str, password: &str, client: &str) -> Result<(Channel, server_api::users::LoginResponse)> {
+    let api = Channel::from_shared(api_url(server))?.connect().await?;
+    let login = UsersClient::new(api.clone())
+        .login(server_api::users::LoginRequest {
+            username: name.into(),
+            password: password.into(),
+            client: client.into(),
+        })
+        .await?
+        .into_inner();
+    Ok((api, login))
+}
+
 async fn request_ticket(server: IpAddr, name: &str, password: &str) -> Result<(u32, SocketAddr, tg::RequestTicketResponse)> {
     // Auth server: LoginEx and a ticket for the secure server.
     let (mut auth, _) = Conn::connect(SocketAddr::new(server, target(server).auth), vec![]).await?;
@@ -275,32 +295,48 @@ impl Bot {
                 time,
                 signature,
                 host,
+                client: LAUNCHER_CLIENT.into(),
             })
             .await?;
         Ok(())
     }
 
-    /// Logs in like the game and its DLL: LoginEx on the auth server, a
-    /// ticket for the secure server, the secure connection, and the gRPC API.
+    /// Logs in like the game and its DLL: the DLL's gRPC sign-in as the game starts, then
+    /// LoginEx on the auth server, a ticket for the secure server, and the secure connection.
     pub async fn login(server: IpAddr, name: &str, password: &str) -> Result<Bot> {
-        let (pid, secure_addr, ticket) = request_ticket(server, name, password).await?;
-        Self::connect_secure(server, name, password, pid, secure_addr, ticket, "0.0.0.0".parse()?).await
+        Self::login_from(server, name, password, "0.0.0.0".parse()?).await
     }
 
     /// Like [`Self::login`], but the secure connection comes from `secure_from`, another
     /// address than the one that asked for the ticket.
     pub async fn login_from(server: IpAddr, name: &str, password: &str, secure_from: IpAddr) -> Result<Bot> {
+        let (api, signed_in) = api_sign_in(server, name, password, GAME_CLIENT).await?;
         let (pid, secure_addr, ticket) = request_ticket(server, name, password).await?;
-        Self::connect_secure(server, name, password, pid, secure_addr, ticket, secure_from).await
+        Self::connect_secure(api, signed_in, name, pid, secure_addr, ticket, secure_from).await
     }
 
-    /// Signs in to the auth server and takes a ticket for the secure server,
-    /// then stops there, as the launcher's connection test does.
-    pub async fn ticket_only(server: IpAddr, name: &str, password: &str) -> Result<()> {
+    /// The game's own sign-in (LoginEx and a ticket) and nothing else: no client signing in
+    /// to the API first, as with an outdated client DLL.
+    pub async fn game_sign_in_only(server: IpAddr, name: &str, password: &str) -> Result<()> {
         request_ticket(server, name, password).await.map(|_| ())
     }
 
-    async fn connect_secure(server: IpAddr, name: &str, password: &str, pid: u32, secure_addr: SocketAddr, ticket: tg::RequestTicketResponse, from: IpAddr) -> Result<Bot> {
+    /// Signs in to the auth server and takes a ticket for the secure server,
+    /// then stops there, as the launcher's connection test does (after its own sign-in).
+    pub async fn ticket_only(server: IpAddr, name: &str, password: &str) -> Result<()> {
+        api_sign_in(server, name, password, LAUNCHER_CLIENT).await?;
+        request_ticket(server, name, password).await.map(|_| ())
+    }
+
+    async fn connect_secure(
+        api: Channel,
+        login: server_api::users::LoginResponse,
+        name: &str,
+        pid: u32,
+        secure_addr: SocketAddr,
+        ticket: tg::RequestTicketResponse,
+        from: IpAddr,
+    ) -> Result<Bot> {
 
         // The ticket: RC4 under the account's key (the dummy password for
         // accounts with only a hash), then an HMAC we don't need to check.
@@ -325,12 +361,6 @@ impl Bot {
             bail!("the secure server answered the challenge wrongly");
         }
 
-        // The DLL's gRPC session.
-        let api = Channel::from_shared(api_url(server))?.connect().await?;
-        let login = UsersClient::new(api.clone())
-            .login(server_api::users::LoginRequest { username: name.into(), password: password.into() })
-            .await?
-            .into_inner();
         let nat_ticket = login.nat_ticket.as_slice().try_into().unwrap_or([0; 16]);
         Ok(Bot {
             name: name.into(),

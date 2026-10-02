@@ -101,6 +101,7 @@ pub fn main() -> color_eyre::Result<()> {
                 let request = Request::new(LoginRequest {
                     username: cmd.username,
                     password: cmd.password,
+                    client: concat!("launcher/", env!("FE_RELEASE")).into(),
                 });
                 let response = client.login(request).await?.into_inner();
                 let token = response.token;
@@ -121,6 +122,7 @@ pub fn main() -> color_eyre::Result<()> {
                 let request = Request::new(LoginRequest {
                     username: cmd.username,
                     password: cmd.password,
+                    client: concat!("launcher/", env!("FE_RELEASE")).into(),
                 });
                 let response = client.login(request).await?.into_inner();
                 let token = response.token;

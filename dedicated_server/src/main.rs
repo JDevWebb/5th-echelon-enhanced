@@ -69,6 +69,7 @@ fn login_or_service_required<T>(ci: &ClientInfo<T>) -> quazal::rmc::Result<u32> 
 mod api;
 mod challenge;
 mod clan;
+mod clients;
 mod community_api;
 mod config;
 mod federation;
@@ -474,6 +475,11 @@ fn main() -> color_eyre::Result<()> {
     let debug_config = Arc::new(config.debug);
     let admin_api = args.launcher || config.admin.enabled;
     rate_limit::configure(config.limits);
+    match clients::configure(&config.clients) {
+        Ok(Some(minimum)) => info!(logger, "Clients older than {minimum} are refused"),
+        Ok(None) => warn!(logger, "Clients of any version may sign in ([clients] minimum_version = \"off\")"),
+        Err(complaint) => warn!(logger, "{complaint}"),
+    }
     for bad in rate_limit::trust_proxies(&config.public.proxies) {
         warn!(logger, "Ignoring [public] proxies entry {bad:?} (expected an address or a subnet like 172.17.0.0/16)");
     }

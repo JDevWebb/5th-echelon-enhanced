@@ -67,6 +67,13 @@ pub fn gather(game_dir: &Path, cfg: &Config, bundled: Option<&[u8]>) -> (Facts, 
         client: bundled.map(|dll| install::client_state(game_dir, dll)),
         ..Facts::default()
     };
+    // The client is part of the launcher's release: another version (an older one, as servers
+    // refuse those) is replaced at once. It stays as it is while the game has it open.
+    if let (Some(install::ClientState::Different), Some(dll)) = (facts.client, bundled) {
+        if install::install(game_dir, dll).is_ok() {
+            facts.client = Some(install::ClientState::Installed);
+        }
+    }
     if let Some(profile) = cfg.current_profile().filter(|p| !p.server.is_empty()) {
         let ip = net::resolve(&profile.server);
         facts.server = Some((profile.server.clone(), ip));
@@ -85,6 +92,7 @@ pub fn gather(game_dir: &Path, cfg: &Config, bundled: Option<&[u8]>) -> (Facts, 
                     match account::AccountService::login(&accounts, &profile.user.username, &secret) {
                         Ok(()) => AccountFact::Ok(profile.user.username.clone()),
                         Err(e @ (account::AccountError::WrongPassword | account::AccountError::NotFound)) => AccountFact::Refused(e.to_string()),
+                        Err(account::AccountError::Outdated(why)) => AccountFact::Outdated(why),
                         Err(e) => AccountFact::Unknown(e.to_string()),
                     }
                 })

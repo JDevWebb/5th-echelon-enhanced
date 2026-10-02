@@ -281,7 +281,7 @@ fn send(action: Action) {
     }
 }
 
-fn say(text: String, error: bool) {
+pub(crate) fn say(text: String, error: bool) {
     update(|s| {
         s.notice = Some(Notice { text, error, at: Instant::now() });
     });

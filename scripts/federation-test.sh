@@ -66,7 +66,7 @@ for _ in $(seq 60); do
 done
 [ "$moved" -eq 1 ] && echo "PASS server A joined again at the new address" || { echo "FAIL server A didn't join at the new address"; rc=1; }
 if [ $rc -ne 0 ]; then
-  for s in fes-fed-a fes-fed-b; do echo "--- $s"; docker exec "$s" grep -i federation /srv/fe/server.log | tail -20 || true; done
+  for s in fes-fed-a fes-fed-b; do echo "--- $s"; docker exec "$s" grep -iE -A3 "federation|ERRO" /srv/fe/server.log | tail -40 || true; done
   echo "--- coordinator"; docker exec fes-fed-coord tail -30 /srv/c/log || true
 fi
 exit $rc

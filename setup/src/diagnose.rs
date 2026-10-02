@@ -58,6 +58,8 @@ pub enum AccountFact {
     None,
     Ok(String),
     Refused(String),
+    /// The server refuses this launcher's version: what it says to do.
+    Outdated(String),
     Unknown(String),
 }
 
@@ -176,7 +178,7 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
 
     checks.push(match f.client {
         Some(ClientState::Installed) => Check::new("client", Status::Ok, "5th Echelon installed", "", None),
-        Some(ClientState::Different) => Check::new("client", Status::Fail, "Update 5th Echelon", "A different version is installed.", Some(Fix::InstallClient)),
+        Some(ClientState::Different) => Check::new("client", Status::Fail, "Update 5th Echelon", "Another version is installed. Close the game so the launcher can replace it: servers refuse other versions.", Some(Fix::InstallClient)),
         Some(ClientState::NotInstalled) => Check::new("client", Status::Fail, "Install 5th Echelon", "The game still has Ubisoft's online DLL.", Some(Fix::InstallClient)),
         Some(ClientState::NoGameDll) | None => Check::new(
             "client",
@@ -228,6 +230,7 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
         checks.push(match &f.account {
             Some(AccountFact::Ok(name)) => Check::new("account", Status::Ok, format!("Signed in as {name}"), "", None),
             Some(AccountFact::Refused(why)) => Check::new("account", Status::Fail, "Account refused", why.clone(), Some(Fix::SetUpAccount)),
+            Some(AccountFact::Outdated(why)) => Check::new("account", Status::Fail, "Update the launcher", why.clone(), None),
             Some(AccountFact::Unknown(why)) => Check::new("account", Status::Warn, "Couldn't check the account", why.clone(), None),
             Some(AccountFact::None) | None => Check::new("account", Status::Fail, "No account on this server yet", "Connect finds yours, or makes one.", Some(Fix::SetUpAccount)),
         });

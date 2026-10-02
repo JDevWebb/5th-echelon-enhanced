@@ -56,6 +56,9 @@ message User {
 message LoginRequest {
   string username = 1;
   string password = 2;
+  // The client signing in and its release ("launcher/0.3.156", "game/0.3.156"). Servers
+  // refuse clients older than they allow, and ones that leave it empty.
+  string client = 3;
 }
 
 message LoginResponse {
@@ -80,6 +83,9 @@ message RegisterRequest {
   string signature = 6;
   // The host the player reached this server by, as signed.
   string host = 7;
+  // The client signing in and its release ("launcher/0.3.156", "game/0.3.156"). Servers
+  // refuse clients older than they allow, and ones that leave it empty.
+  string client = 8;
 }
 
 message KeyLoginRequest {
@@ -96,6 +102,9 @@ message KeyLoginRequest {
   string new_password = 5;
   // The host the player reached this server by, as signed.
   string host = 6;
+  // The client signing in and its release ("launcher/0.3.156", "game/0.3.156"). Servers
+  // refuse clients older than they allow, and ones that leave it empty.
+  string client = 7;
 }
 
 message RegisterResponse {

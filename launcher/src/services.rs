@@ -50,6 +50,7 @@ impl AccountService for Accounts {
             Ok(Ok(())) => Ok(()),
             Ok(Err(network::Error::InvalidPassword)) => Err(AccountError::WrongPassword),
             Ok(Err(network::Error::UserNotFound)) => Err(AccountError::NotFound),
+            Ok(Err(network::Error::Rpc(status))) if status.code() == tonic::Code::FailedPrecondition => Err(AccountError::Outdated(status.message().to_string())),
             Ok(Err(network::Error::ConnectionFailed)) => Err(AccountError::Other("couldn't connect to the server".into())),
             Ok(Err(e)) => Err(AccountError::Other(e.to_string())),
         }
@@ -65,6 +66,7 @@ impl AccountService for Accounts {
             Ok(Ok(())) => Ok(()),
             Ok(Err(network::Error::UsernameAlreadyTaken)) => Err(AccountError::Taken),
             Ok(Err(network::Error::ConnectionFailed)) => Err(AccountError::Other("couldn't connect to the server".into())),
+            Ok(Err(network::Error::Rpc(status))) if status.code() == tonic::Code::FailedPrecondition => Err(AccountError::Outdated(status.message().to_string())),
             Ok(Err(network::Error::Rpc(status))) => Err(AccountError::Other(status.message().to_string())),
             Ok(Err(e)) => Err(AccountError::Other(e.to_string())),
         }
@@ -79,6 +81,7 @@ impl AccountService for Accounts {
             Ok(Ok(found)) => Ok(found),
             Err(_) => Err(AccountError::Other("the server didn't answer in time".into())),
             Ok(Err(network::Error::ConnectionFailed)) => Err(AccountError::Other("couldn't connect to the server".into())),
+            Ok(Err(network::Error::Rpc(status))) if status.code() == tonic::Code::FailedPrecondition => Err(AccountError::Outdated(status.message().to_string())),
             Ok(Err(network::Error::Rpc(status))) => Err(AccountError::Other(status.message().to_string())),
             Ok(Err(e)) => Err(AccountError::Other(e.to_string())),
         }

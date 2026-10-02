@@ -142,6 +142,19 @@ mode = "everyone"   # or "mutual"
 
 Friend requests, blocks and player search work in both modes, in the overlay. See [friends.md](friends.md).
 
+## `[clients]`: refusing outdated launchers and game clients
+
+```toml
+[clients]
+# minimum_version = "0.3.156"   # unset: this server's own release; "off": any client
+```
+
+The launcher and the game's client DLL are one release (the launcher carries the DLL and replaces any other version in the game folder when it checks the game). Both say their release when they sign in to the API, and the server refuses one older than `minimum_version`, or one that doesn't say (every client from before this check). The player sees what to do: "Update the launcher", or start the game from the launcher.
+
+The game's own sign-in carries no version, so the server lets it in only for an account that a current launcher or client DLL signed in to in the last 24 hours, with no outdated one trying since. The client DLL signs in as the game starts, so a game with an old DLL is refused even if its player has a new launcher.
+
+Unset, the minimum is the server's own release: when a server updates, players need a client at least as new. Set an older version to let clients that are still compatible keep playing after a server-only update. `/api/info` reports the minimum as `minimum_client`.
+
 ## `[federation]`: sharing friends with other servers
 
 ```toml
