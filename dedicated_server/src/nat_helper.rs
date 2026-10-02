@@ -107,7 +107,14 @@ struct Peer {
     window_packets: u32,
     /// The registration's secret: relayed data must carry it, both ways.
     tag: nat_proto::Tag,
+    /// Since when `advertise` has been what it is.
+    settled_since: Instant,
 }
+
+/// How long a direct player's address must stand before the address echo gives it out: the
+/// hook checks a second port first, and a NAT that gives every destination its own port
+/// then moves to the relay (a fraction of a second later).
+const SETTLE: Duration = Duration::from_secs(2);
 
 /// A registered player, by number (so relaying a packet allocates nothing).
 type Id = u64;
@@ -234,6 +241,7 @@ impl Table {
             window_packets: old.as_ref().map_or(0, |(_, o)| o.window_packets),
             // Kept while the registration lives: the game already relays with it.
             tag: old.as_ref().map_or_else(rand::random, |(_, o)| o.tag),
+            settled_since: old.as_ref().filter(|(_, o)| o.advertise == advertise).map_or(now, |(_, o)| o.settled_since),
         };
         let tag = peer.tag;
         self.by_name.insert(key, id);
@@ -313,10 +321,14 @@ impl Table {
 
     /// The address the one player registered from `ip` should be reached on, if exactly one
     /// is (several behind one router can't be told apart by address alone).
-    pub fn advertised_for_ip(&self, ip: Ipv4Addr) -> Option<SocketAddrV4> {
+    ///
+    /// Only once that address is final: a relayed one at once, a direct one when it has stood
+    /// for [`SETTLE`] (until then the player may still move to the relay).
+    pub fn advertised_for_ip(&self, ip: Ipv4Addr, now: Instant) -> Option<SocketAddrV4> {
         let mut found = self.peers.values().filter(|p| *p.real.ip() == ip);
         let first = found.next()?;
-        found.next().is_none().then_some(first.advertise)
+        let settled = first.relayed || now.duration_since(first.settled_since) >= SETTLE;
+        (found.next().is_none() && settled).then_some(first.advertise)
     }
 
     pub fn len(&self) -> usize {
@@ -345,7 +357,7 @@ pub fn advertised_for(name: &str, ip: IpAddr) -> Option<SocketAddrV4> {
 /// relay's), when it runs and exactly one player there is registered.
 pub fn advertised_for_ip(ip: IpAddr) -> Option<SocketAddrV4> {
     let IpAddr::V4(ip) = ip else { return None };
-    TABLE.get()?.lock().ok()?.advertised_for_ip(ip)
+    TABLE.get()?.lock().ok()?.advertised_for_ip(ip, Instant::now())
 }
 
 /// Station URLs with `advertise` in place of the address the game registered
@@ -809,16 +821,20 @@ mod tests {
 
     #[test]
     fn the_one_player_at_an_address_is_found_by_it() {
-        let mut t = table(RelayMode::All);
+        let mut t = table(RelayMode::Auto);
         let now = Instant::now();
         let ip = Ipv4Addr::new(198, 51, 100, 7);
-        assert_eq!(t.advertised_for_ip(ip), None);
-        let reply = t.probe(a("198.51.100.7:25676"), 0, 1, None, "Solo", now);
-        let (relay, relayed) = advertise(&reply);
+        assert_eq!(t.advertised_for_ip(ip, now), None);
+        // First a direct registration: not final until it has stood a while.
+        let (direct, _) = advertise(&t.probe(a("198.51.100.7:25676"), 0, 1, None, "Solo", now));
+        assert_eq!(t.advertised_for_ip(ip, now), None, "the player may still move to the relay");
+        assert_eq!(t.advertised_for_ip(ip, now + SETTLE), Some(direct));
+        // Then its hook asks for the relay: final at once.
+        let (relay, relayed) = advertise(&t.probe(a("198.51.100.7:25676"), nat_proto::probe_flags::WANT_RELAY, 2, None, "Solo", now));
         assert!(relayed);
-        assert_eq!(t.advertised_for_ip(ip), Some(relay), "a relayed player is reached on the relay");
-        t.probe(a("198.51.100.7:51000"), 0, 2, None, "Flatmate", now);
-        assert_eq!(t.advertised_for_ip(ip), None, "two players behind one address can't be told apart");
+        assert_eq!(t.advertised_for_ip(ip, now), Some(relay), "a relayed player is reached on the relay");
+        t.probe(a("198.51.100.7:51000"), 0, 3, None, "Flatmate", now);
+        assert_eq!(t.advertised_for_ip(ip, now + SETTLE), None, "two players behind one address can't be told apart");
     }
 
     #[test]
