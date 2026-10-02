@@ -119,6 +119,7 @@ async fn listings_are_checked() {
         json!({ "name": "A\u{7}", "host": "a.example" }),
         json!({ "name": "A", "host": "a b" }),
         json!({ "name": "A", "host": "a.example", "ports": { "api": 0, "login": 1 } }),
+        json!({ "name": "A", "host": "a.example", "online": ["not-an-identity"] }),
     ] {
         let (status, _) = t.call("POST", "/v1/heartbeat", Some(&secret), Some(bad.clone())).await;
         assert!(status.is_client_error(), "{bad} was taken ({status})");
@@ -308,6 +309,47 @@ async fn friendships_count_where_both_were_seen_online() {
     t.call("POST", "/v1/heartbeat", Some(&r), Some(beat("Server-R", &[]))).await;
     let (_, v) = t.relations(&b, &kiwi.global_id()).await;
     assert_eq!(rel(&v, &tank)["elsewhere"]["server"], "Server-A");
+}
+
+#[tokio::test]
+async fn heartbeats_and_metrics_are_rate_limited() {
+    let t = start("rates").await;
+    let a = t.join("server-a").await;
+    let mut statuses = Vec::new();
+    for _ in 0..6 {
+        statuses.push(t.call("POST", "/v1/heartbeat", Some(&a), Some(beat("server-a", &[]))).await.0);
+    }
+    assert_eq!(statuses.iter().filter(|s| **s == StatusCode::OK).count(), 5, "the join's heartbeat counts: {statuses:?}");
+    assert_eq!(statuses[5], StatusCode::TOO_MANY_REQUESTS);
+    let report = json!({ "metrics": { "players": { "online": 1 } }, "update": {} });
+    assert_eq!(t.call("POST", "/v1/metrics", Some(&a), Some(report.clone())).await.0, StatusCode::OK);
+    assert_eq!(t.call("POST", "/v1/metrics", Some(&a), Some(report.clone())).await.0, StatusCode::OK);
+    assert_eq!(t.call("POST", "/v1/metrics", Some(&a), Some(report)).await.0, StatusCode::TOO_MANY_REQUESTS);
+    let chart = t.c.series(3600).await.unwrap();
+    assert_eq!(chart["points"]["server-a"][0]["players"], 1.0, "{chart}");
+}
+
+#[tokio::test]
+async fn a_servers_names_are_limited_and_clashes_reported() {
+    let t = start("server-names").await;
+    let (_a, b) = (t.join("server-a").await, t.join("server-b").await);
+    let (_, v) = t
+        .call("POST", "/v1/heartbeat", Some(&b), Some(json!({ "name": "B", "host": "server-b", "names": ["server-a"] })))
+        .await;
+    assert!(v["warnings"][0].as_str().unwrap().contains("server-a is another member server's name"), "{v}");
+    assert!(t.c.name_clashes.lock().unwrap()["server-b"][0].contains("server-a"));
+    for round in 0..2 {
+        let names: Vec<String> = (0..16).map(|i| format!("b{round}-{i}.example")).collect();
+        let (_, v) = t
+            .call("POST", "/v1/heartbeat", Some(&b), Some(json!({ "name": "B", "host": "server-b", "names": names })))
+            .await;
+        assert_eq!(v.get("warnings").is_some(), round == 1, "{v}");
+    }
+    let held: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM server_names WHERE server_id = 'server-b'")
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(held, MAX_SERVER_NAMES);
 }
 
 #[tokio::test]

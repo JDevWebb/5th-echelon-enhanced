@@ -496,6 +496,8 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
     let mut last_metrics: Option<Instant> = None;
     let mut last_online_pull: Option<Instant> = None;
     let mut last_join: Option<Instant> = None;
+    // What the coordinator last said is wrong with this server's names (logged when it changes).
+    let mut warnings: Vec<String> = Vec::new();
     loop {
         if secret.is_none() {
             secret = credentials(&base);
@@ -523,6 +525,21 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                         // The release the coordinator is rolling out to this server.
                         if let Some(version) = answer["update"]["version"].as_str() {
                             crate::self_update::request(&logger, version, cfg.auto_update);
+                        }
+                        // E.g. a name of this server's that another member server holds.
+                        let now: Vec<String> = answer["warnings"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .filter_map(|w| w.as_str())
+                            .take(8)
+                            .map(|w| printable(w, 300))
+                            .collect();
+                        if now != warnings {
+                            for w in &now {
+                                warn!(logger, "Federation: the coordinator says: {w}");
+                            }
+                            warnings = now;
                         }
                     }
                     Err(e) => warn!(logger, "Federation: heartbeat failed: {e:#}"),

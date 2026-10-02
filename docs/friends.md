@@ -181,6 +181,8 @@ sudo bash install-server.sh --domain blacklist.example.com --coordinator-domain 
 2. The join token is in `join-token.txt` in the data folder. `coordinator --data <folder> new-token` makes a new one (restart the coordinator afterwards); servers that already joined keep working.
 3. `coordinator --data <folder> remove-server <id>` removes a member server, its links, and the names only it used. Rotate the token too if it could join again.
 
+**A server's host names** (the ones players' signatures name) are first come, first served, 32 per server at most. A name another server holds stays theirs; the server logs a warning, and the admin UI shows it on the Servers page. The coordinator doesn't check who controls a name (it could fetch `https://<name>/api/info` and compare the server id, but names can be plain addresses or aliases without a certificate): give the join token to servers you trust, and remove one that takes another's names.
+
 **On a server**, `[federation]` in `service.toml` (see [server-settings.md](server-settings.md)):
 
 ```toml
@@ -199,7 +201,7 @@ The server keeps its credentials in `federation.key` once it has joined. Its log
 | Call | Who | What |
 |---|---|---|
 | `POST /v1/join` `{token, server_id}` | a new server | joins; answers `{secret}` |
-| `POST /v1/heartbeat` | a member (Bearer secret) | its directory entry |
+| `POST /v1/heartbeat` | a member (Bearer secret) | its directory entry, every 30 seconds (6 a minute at most); answers `{update?, warnings?}`, e.g. a name of its that another server holds |
 | `GET /v1/servers` | anyone | the directory: servers seen in the last 2 minutes |
 | `POST /v1/changes` `{changes: [...]}` | a member | links, unlinks, friendships and blocks, in order; one result each |
 | `GET /v1/relations/<identity>` | a member | a player's friends and blocks, for a player linked on that server |

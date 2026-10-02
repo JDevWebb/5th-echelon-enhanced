@@ -705,6 +705,7 @@ async function servers(id) {
           h('p.meta', [sv.listing?.region, sv.listing?.host].filter(Boolean).join(' · '))), updatePill(sv, o.rollout)),
         sv.delisted && h('p.callout.warn', `Delisted: ${sv.delisted}`),
         !sv.online && h('p.callout.bad', `Offline since ${fmt.when(sv.last_seen)}`),
+        (sv.name_clashes || []).map(clash => h('p.callout.warn', `Name: ${clash}`)),
         h('div.bars',
           bar('CPU', (sys.cpu_percent || 0) / 100, fmt.pct(sys.cpu_percent)),
           bar('Memory', sys.mem_total ? (sys.mem_total - sys.mem_available) / sys.mem_total : 0, sys.mem_total ? `${fmt.bytes(sys.mem_total - sys.mem_available)}` : '–'),

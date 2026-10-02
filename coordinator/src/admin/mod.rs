@@ -1359,6 +1359,7 @@ async fn overview(State(c): State<Shared>, Extension(client): Extension<Client>,
         .fetch_all(&c.pool)
         .await?;
         let pings: std::collections::HashMap<String, Option<f64>> = pings.into_iter().collect();
+        let clashes = c.name_clashes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         let mut servers = Vec::new();
         for (id, listing, last_seen, status, joined_at) in rows {
             let l: Value = listing.and_then(|l| serde_json::from_str(&l).ok()).unwrap_or_default();
@@ -1376,6 +1377,7 @@ async fn overview(State(c): State<Shared>, Extension(client): Extension<Client>,
                 "metrics": latest.get(&id),
                 "ping_ms": pings.get(&id).copied().flatten(),
                 "place": place,
+                "name_clashes": clashes.get(&id).cloned().unwrap_or_default(),
             }));
         }
         let peak: Option<f64> = sqlx::query_scalar("SELECT MAX(json_extract(data, '$.max_players')) FROM hourly WHERE hour >= ?")

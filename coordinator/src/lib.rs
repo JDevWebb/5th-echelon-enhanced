@@ -64,6 +64,8 @@ const CLAIM_GRACE_SECS: i64 = 60 * 60;
 const MAX_UNLINKED_CLAIMS_PER_HOUR: i64 = 200;
 /// The largest request body.
 const MAX_BODY: usize = 256 * 1024;
+/// Host names (and addresses) one server may hold.
+const MAX_SERVER_NAMES: i64 = 32;
 
 /// A request's source address: the peer, or, from a proxy on this machine,
 /// the last address in `X-Forwarded-For`.
@@ -144,6 +146,13 @@ fn valid_text(text: &str, max: usize) -> bool {
     text.chars().count() <= max && !text.chars().any(char::is_control)
 }
 
+/// Whether `s` is spelled like a global id (52 upper-case base32 characters).
+/// Cheap: whether it's a valid key is checked when it's linked, and only
+/// linked ones are used.
+fn spelled_like_global_id(s: &str) -> bool {
+    s.len() == 52 && s.bytes().all(|b| b.is_ascii_uppercase() || (b'2'..=b'7').contains(&b))
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 struct Ports {
     api: u16,
@@ -215,7 +224,7 @@ impl Listing {
         if self.names.len() > 16 || !self.names.iter().all(|n| valid_host(n)) {
             return Err("at most 16 names, each a host name or address");
         }
-        if self.online.len() > MAX_ONLINE || !self.online.iter().all(|id| identity::is_global_id(id)) {
+        if self.online.len() > MAX_ONLINE || !self.online.iter().all(|id| spelled_like_global_id(id)) {
             return Err("online is at most 20000 identities");
         }
         Ok(())
@@ -240,11 +249,16 @@ pub struct Coordinator {
     /// Who is online where: identity -> server -> since when, and when that server last said
     /// so. Each server's word is kept apart, so one can't overwrite where a player really is.
     presence: std::sync::Mutex<HashMap<String, HashMap<String, Seen>>>,
+    /// Each server's names that another server holds (or past the limit), from its last
+    /// heartbeat.
+    pub(crate) name_clashes: std::sync::Mutex<HashMap<String, Vec<String>>>,
     join_token: String,
     joins: Limit,
     reads: Limit,
     changes: Limit,
     pings: Limit,
+    heartbeats: Limit,
+    metrics: Limit,
     /// Where player addresses are (for launchers' ping reports).
     pub geo: std::sync::OnceLock<Arc<geo::Geo>>,
     /// The coordinator's folder (for its own update requests).
@@ -279,6 +293,7 @@ impl Coordinator {
             pool,
             join_token,
             presence: std::sync::Mutex::new(HashMap::new()),
+            name_clashes: std::sync::Mutex::new(HashMap::new()),
             // Per address: joins (the token is guessed at nowhere near this rate) and the
             // public reads; per server: changes.
             joins: Limit::new(10),
@@ -286,6 +301,10 @@ impl Coordinator {
             changes: Limit::new(2000),
             // Launchers report pings when they look at the directory: a few a minute at most.
             pings: Limit::new(6),
+            // Per server: a heartbeat every 30 seconds and metrics every minute, with room
+            // for a retry.
+            heartbeats: Limit::new(6),
+            metrics: Limit::new(2),
             geo: std::sync::OnceLock::new(),
             data_dir: std::sync::OnceLock::new(),
             admin: std::sync::OnceLock::new(),
@@ -535,6 +554,56 @@ impl Coordinator {
         Ok(best.map(|(_, listing, username)| json!({ "username": username, "server": listing.name, "region": listing.region, "host": listing.host })))
     }
 
+    /// Records the names `server` goes by (first come, first served, at most
+    /// [`MAX_SERVER_NAMES`]). Answers why any of them isn't its, for its log and the admin UI.
+    async fn claim_server_names(&self, server: &str, listing: &Listing) -> sqlx::Result<Vec<String>> {
+        let mut keys: Vec<String> = listing.names.iter().chain([&listing.host]).map(|n| identity::host_key(n)).collect();
+        keys.sort();
+        keys.dedup();
+        let mut held: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM server_names WHERE server_id = ?")
+            .bind(server)
+            .fetch_one(&self.pool)
+            .await?;
+        let mut clashes = Vec::new();
+        for key in keys {
+            let owner = |key: String| async move {
+                sqlx::query_scalar::<_, String>("SELECT server_id FROM server_names WHERE name = ?")
+                    .bind(key)
+                    .fetch_optional(&self.pool)
+                    .await
+            };
+            let mut found = owner(key.clone()).await?;
+            if found.is_none() && held < MAX_SERVER_NAMES {
+                sqlx::query("INSERT OR IGNORE INTO server_names (name, server_id) VALUES (?, ?)")
+                    .bind(&key)
+                    .bind(server)
+                    .execute(&self.pool)
+                    .await?;
+                held += 1;
+                found = owner(key.clone()).await?;
+            }
+            match found {
+                Some(owner) if owner == server => {}
+                Some(_) => clashes.push(format!("{key} is another member server's name: players' signatures for it aren't taken from this server")),
+                None => clashes.push(format!(
+                    "{key} wasn't recorded: a server has at most {MAX_SERVER_NAMES} names (the operator can remove it and let it join again)"
+                )),
+            }
+        }
+        let mut all = self.name_clashes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if all.get(server) != Some(&clashes) {
+            for clash in &clashes {
+                tracing::warn!("server {server}: {clash}");
+            }
+            if clashes.is_empty() {
+                all.remove(server);
+            } else {
+                all.insert(server.to_string(), clashes.clone());
+            }
+        }
+        Ok(clashes)
+    }
+
     async fn linked(&self, server: &str, global_id: &str) -> sqlx::Result<bool> {
         Ok(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM links WHERE server_id = ? AND global_id = ?")
             .bind(server)
@@ -760,30 +829,18 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, Json(listing): J
         Ok(s) => s,
         Err(e) => return e,
     };
+    if !c.heartbeats.check(&server) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "a heartbeat every 30 seconds is enough");
+    }
     if let Err(why) = listing.check() {
         return fail(StatusCode::BAD_REQUEST, why);
     }
-    // Its names, first come, first served: a name another server has stays theirs.
-    for name in listing.names.iter().chain([&listing.host]) {
-        let key = identity::host_key(name);
-        let owner: Result<Option<String>, _> = async {
-            sqlx::query("INSERT OR IGNORE INTO server_names (name, server_id) VALUES (?, ?)")
-                .bind(&key)
-                .bind(&server)
-                .execute(&c.pool)
-                .await?;
-            sqlx::query_scalar("SELECT server_id FROM server_names WHERE name = ?")
-                .bind(&key)
-                .fetch_optional(&c.pool)
-                .await
-        }
-        .await;
-        match owner {
-            Ok(Some(owner)) if owner != server => tracing::warn!("server {server} says it's {key}, which is {owner}'s; ignored"),
-            Ok(_) => {}
-            Err(e) => return internal(e),
-        }
-    }
+    // Its names, first come, first served: a name another server has stays theirs, and the
+    // server hears about it (newer servers log it).
+    let clashes = match c.claim_server_names(&server, &listing).await {
+        Ok(clashes) => clashes,
+        Err(e) => return internal(e),
+    };
     let text = match serde_json::to_string(&listing) {
         Ok(t) => t,
         Err(e) => return internal(e),
@@ -800,12 +857,17 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, Json(listing): J
     if let Err(e) = c.set_online(&server, &listing.online).await {
         return internal(e);
     }
+    let mut answer = json!({});
+    if !clashes.is_empty() {
+        answer["warnings"] = json!(clashes);
+    }
     // The release this server should install now, if any.
     match c.update_for(&server, &listing.version, u64::from(listing.players_online)).await {
-        Ok(Some(version)) => ok(json!({ "update": { "version": version } })),
-        Ok(None) => ok(json!({})),
-        Err(e) => internal(e),
+        Ok(Some(version)) => answer["update"] = json!({ "version": version }),
+        Ok(None) => {}
+        Err(e) => return internal(e),
     }
+    ok(answer)
 }
 
 /// A server's metrics report (see [`metrics`]).
@@ -814,6 +876,9 @@ async fn metrics_report(State(c): State<Shared>, headers: HeaderMap, Json(report
         Ok(s) => s,
         Err(e) => return e,
     };
+    if !c.metrics.check(&server) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "metrics every minute are enough");
+    }
     if report.to_string().len() > metrics::MAX_REPORT || !report["metrics"].is_object() {
         return fail(StatusCode::BAD_REQUEST, "not a metrics report");
     }

@@ -151,6 +151,19 @@ fn bucket(points: Vec<Point>, from: i64, step: i64) -> Vec<Point> {
         .collect()
 }
 
+/// A server's samples since a time, cut down in SQL to the numbers [`point`] reads.
+const CHARTED: &str = "SELECT at, json_object(
+        'players', json_object('online', json_extract(data, '$.players.online'), 'in_match', json_extract(data, '$.players.in_match')),
+        'system', json_object(
+            'cpu_percent', json_extract(data, '$.system.cpu_percent'), 'process_cpu_percent', json_extract(data, '$.system.process_cpu_percent'),
+            'mem_total', json_extract(data, '$.system.mem_total'), 'mem_available', json_extract(data, '$.system.mem_available'),
+            'process_rss', json_extract(data, '$.system.process_rss'), 'load', json_array(json_extract(data, '$.system.load[0]')),
+            'net_rx_bytes', json_extract(data, '$.system.net_rx_bytes'), 'net_tx_bytes', json_extract(data, '$.system.net_tx_bytes')),
+        'counters', json_object(
+            'relayed_bytes', json_extract(data, '$.counters.relayed_bytes'), 'game_logins', json_extract(data, '$.counters.game_logins'),
+            'failed_logins', json_extract(data, '$.counters.failed_logins'), 'registrations', json_extract(data, '$.counters.registrations')))
+      FROM samples WHERE server_id = ? AND at >= ? ORDER BY at";
+
 /// The hour (Unix seconds at its start) `t` falls in.
 fn hour_of(t: i64) -> i64 {
     t - t.rem_euclid(3600)
@@ -286,18 +299,25 @@ impl Coordinator {
         let step = (range / MAX_POINTS as i64).max(60);
         let mut by_server: BTreeMap<String, Vec<Point>> = BTreeMap::new();
         if range <= RAW_FOR {
-            let rows: Vec<(String, i64, String)> = sqlx::query_as("SELECT server_id, at, data FROM samples WHERE at >= ? ORDER BY server_id, at")
+            // A server at a time, and only the numbers charted (a report can be 128 KB, and
+            // there are a week of them).
+            let servers: Vec<String> = sqlx::query_scalar("SELECT DISTINCT server_id FROM samples WHERE at >= ?")
                 .bind(from - 600)
                 .fetch_all(&self.pool)
                 .await?;
-            let mut prev: HashMap<String, (i64, Value)> = HashMap::new();
-            for (server, at, data) in rows {
-                let m: Value = serde_json::from_str(&data).unwrap_or_default();
-                let p = point(at, &m, prev.get(&server).map(|(t, v)| (*t, v)));
-                if at >= from {
-                    by_server.entry(server.clone()).or_default().push(p);
+            for server in servers {
+                let rows: Vec<(i64, String)> = sqlx::query_as(CHARTED).bind(&server).bind(from - 600).fetch_all(&self.pool).await?;
+                let mut prev: Option<(i64, Value)> = None;
+                let mut points = Vec::new();
+                for (at, data) in rows {
+                    let m: Value = serde_json::from_str(&data).unwrap_or_default();
+                    let p = point(at, &m, prev.as_ref().map(|(t, v)| (*t, v)));
+                    if at >= from {
+                        points.push(p);
+                    }
+                    prev = Some((at, m));
                 }
-                prev.insert(server, (at, m));
+                by_server.insert(server, points);
             }
         } else {
             let rows: Vec<(String, i64, String)> = sqlx::query_as("SELECT server_id, hour, data FROM hourly WHERE hour >= ? ORDER BY server_id, hour")
