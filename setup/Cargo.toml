@@ -6,6 +6,7 @@ description = "Finds, installs, sets up and checks Splinter Cell: Blacklist for 
 
 [dependencies]
 anyhow = { workspace = true }
+flate2 = { workspace = true }
 hooks-config = { path = "../hooks/hooks-config" }
 identity = { path = "../identity" }
 rand = { workspace = true }

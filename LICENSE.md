@@ -51,7 +51,7 @@ The same applies to this fork's follow-up changes to code merged from pull reque
 | `hooks/src/hooks/nla.rs` ([#128](https://github.com/unixoide/5th-echelon/pull/128)) | Thiago |
 | `coordinator/src/admin/ui/world.js` | The land outline of [Natural Earth](https://www.naturalearthdata.com) (public domain), via [world-atlas](https://github.com/topojson/world-atlas) (ISC licence) |
 | GeoIP data downloaded at run time | [DB-IP](https://db-ip.com)'s IP to City Lite, under CC BY 4.0; the admin UI credits it |
-| `hooks/fonts/*.ttf` | IBM Plex Sans, under the SIL Open Font License 1.1 (`hooks/fonts/OFL-IBMPlexSans.txt`) |
+| `hooks/fonts/*.ttf` | IBM Plex Sans, Sans Condensed and Mono, under the SIL Open Font License 1.1 (`hooks/fonts/OFL-*.txt`) |
 | `docs/logo.png`, `docs/demo.webm`, `docs/demo_thumb.png`, `docs/overlay_*.png`, `launcher/logo.ico` | Upstream 5th Echelon |
 | `docs/screenshots/` | This fork's screenshots, but they show the upstream logo |
 | `setup/data/base_savegame.xml` | Upstream 5th Echelon's generated save |

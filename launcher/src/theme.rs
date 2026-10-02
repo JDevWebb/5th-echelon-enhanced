@@ -36,6 +36,11 @@ pub fn strong() -> FontFamily {
     FontFamily::Name("strong".into())
 }
 
+/// IBM Plex Sans Condensed Bold, for display headings.
+pub fn condensed() -> FontFamily {
+    FontFamily::Name("condensed".into())
+}
+
 pub fn apply(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
@@ -46,10 +51,22 @@ pub fn apply(ctx: &egui::Context) {
         "plex-semibold".into(),
         Arc::new(egui::FontData::from_static(include_bytes!("../../hooks/fonts/IBMPlexSans-SemiBold.ttf"))),
     );
+    fonts.font_data.insert(
+        "plex-condensed".into(),
+        Arc::new(egui::FontData::from_static(include_bytes!("../../hooks/fonts/IBMPlexSansCondensed-Bold.ttf"))),
+    );
+    fonts.font_data.insert(
+        "plex-mono".into(),
+        Arc::new(egui::FontData::from_static(include_bytes!("../../hooks/fonts/IBMPlexMono-Regular.ttf"))),
+    );
     fonts.families.entry(FontFamily::Proportional).or_default().insert(0, "plex".into());
+    fonts.families.entry(FontFamily::Monospace).or_default().insert(0, "plex-mono".into());
     let mut strong = vec!["plex-semibold".to_string()];
     strong.extend(fonts.families[&FontFamily::Proportional].iter().cloned());
     fonts.families.insert(self::strong(), strong);
+    let mut condensed = vec!["plex-condensed".to_string()];
+    condensed.extend(fonts.families[&FontFamily::Proportional].iter().cloned());
+    fonts.families.insert(self::condensed(), condensed);
     ctx.set_fonts(fonts);
 
     ctx.set_theme(egui::Theme::Dark);
@@ -143,7 +160,7 @@ pub fn muted(text: impl Into<String>) -> egui::RichText {
 
 /// Big uppercase display type, for screen titles and the game's name.
 pub fn display(text: &str, size: f32) -> egui::RichText {
-    egui::RichText::new(text.to_uppercase()).family(strong()).size(size).extra_letter_spacing(size * 0.03)
+    egui::RichText::new(text.to_uppercase()).family(condensed()).size(size).extra_letter_spacing(size * 0.02)
 }
 
 /// A small uppercase label over a value or a group ("SERVER", "PING").
@@ -158,7 +175,7 @@ pub fn page() -> egui::Frame {
 
 /// The big Play button.
 pub fn play_button(text: &str) -> egui::Button<'static> {
-    egui::Button::new(egui::RichText::new(text.to_uppercase()).color(ON_ACCENT).family(strong()).size(22.0).extra_letter_spacing(3.0))
+    egui::Button::new(egui::RichText::new(text.to_uppercase()).color(ON_ACCENT).family(condensed()).size(24.0).extra_letter_spacing(3.0))
         .fill(ACCENT)
         .corner_radius(12)
         .min_size(egui::vec2(220.0, 58.0))
@@ -194,6 +211,45 @@ pub fn grid_backdrop(painter: &egui::Painter, rect: egui::Rect) {
         painter.line_segment([egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)], line);
         y += step;
     }
+}
+
+/// `texture` filling `rect` like CSS `object-fit: cover`: scaled to cover it,
+/// cut to fit, kept centred (a little above, where loading screens put their
+/// subject).
+pub fn cover_image(painter: &egui::Painter, rect: egui::Rect, texture: &egui::TextureHandle) {
+    let [w, h] = texture.size().map(|v| v as f32);
+    let (image, area) = (w / h, rect.width() / rect.height());
+    let uv = if area > image {
+        // Wider than the image: full width, a band of its height.
+        let span = image / area;
+        let top = (1.0 - span) * 0.4;
+        egui::Rect::from_min_max(egui::pos2(0.0, top), egui::pos2(1.0, top + span))
+    } else {
+        let span = area / image;
+        let left = (1.0 - span) / 2.0;
+        egui::Rect::from_min_max(egui::pos2(left, 0.0), egui::pos2(left + span, 1.0))
+    };
+    painter.image(texture.id(), rect, uv, Color32::WHITE);
+}
+
+/// Darkens art from the bottom and the left, where the banner's text sits.
+pub fn scrim(painter: &egui::Painter, rect: egui::Rect) {
+    let mut mesh = egui::Mesh::default();
+    let mut quad = |r: egui::Rect, tl: Color32, tr: Color32, bl: Color32, br: Color32| {
+        let i = mesh.vertices.len() as u32;
+        for (pos, color) in [(r.left_top(), tl), (r.right_top(), tr), (r.left_bottom(), bl), (r.right_bottom(), br)] {
+            mesh.colored_vertex(pos, color);
+        }
+        mesh.add_triangle(i, i + 1, i + 2);
+        mesh.add_triangle(i + 1, i + 2, i + 3);
+    };
+    let shade = |a: f32| BG.gamma_multiply(a);
+    // Top to bottom: a light veil, deepening to the page's colour at the foot.
+    quad(rect, shade(0.25), shade(0.25), shade(0.92), shade(0.92));
+    // Left to right: the title's side darker, fading out by two thirds across.
+    let left = egui::Rect::from_min_max(rect.min, egui::pos2(rect.left() + rect.width() * 0.66, rect.bottom()));
+    quad(left, shade(0.55), Color32::TRANSPARENT, shade(0.55), Color32::TRANSPARENT);
+    painter.add(egui::Shape::mesh(mesh));
 }
 
 /// A rounded pill with a coloured dot: a status at a glance. Drawn at its

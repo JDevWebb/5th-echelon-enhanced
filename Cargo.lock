@@ -4927,6 +4927,7 @@ name = "setup"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "flate2",
  "hooks-config",
  "identity",
  "libc",

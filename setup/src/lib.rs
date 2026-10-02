@@ -13,6 +13,7 @@ pub mod diagnose;
 pub mod directory;
 pub mod game;
 pub mod install;
+pub mod key_art;
 pub mod launch;
 pub mod net;
 pub mod overrides;

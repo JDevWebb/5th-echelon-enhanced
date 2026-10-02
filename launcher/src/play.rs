@@ -76,6 +76,14 @@ pub struct Play {
     address: String,
     /// This PC's identity in short, read once (it's decrypted from disk).
     identity: Option<Option<String>>,
+    /// The banner's art, from the game's own loading screens (see `setup::key_art`).
+    art: Slot<Result<setup::key_art::Art, String>>,
+    art_texture: Option<egui::TextureHandle>,
+    art_started: bool,
+    /// The server's news, which server it's from, and when it was fetched.
+    fetching_news: Slot<Result<(String, Vec<setup::server_info::NewsItem>), String>>,
+    news: Vec<setup::server_info::NewsItem>,
+    news_from: Option<(String, Instant)>,
 }
 
 /// A server to switch to, from the network's list or a friend's.
@@ -96,6 +104,8 @@ enum SwitchFrom {
 
 impl Play {
     pub fn game_changed(&mut self) {
+        self.art_started = false;
+        self.art_texture = None;
         self.checks.clear();
         self.support = None;
         self.refreshed = None;
@@ -645,17 +655,38 @@ fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Con
             ui.label(RichText::new(format!("{} sets up this install. Change the server or account there; you can still play from here.", managed.by)));
         });
     }
+    load_art(play, game, ctx);
+    load_news(play, game, ctx);
     hero(play, ui);
     launch_bar(play, game, notices, &mut to, ui);
     theme::page().show(ui, |ui| {
         let width = ui.available_width();
         let columns = if width >= 960.0 { 3 } else if width >= 620.0 { 2 } else { 1 };
-        ui.columns(columns, |cols| {
-            status_card(play, game, ctx, &mut to, &mut cols[0]);
-            let next = 1 % columns;
-            friends_card(play, game, ctx, &mut cols[next]);
-            let last = 2 % columns;
-            server_overview(play, game, &mut to, &mut cols[last]);
+        let news = !play.news.is_empty();
+        ui.columns(columns, |cols| match (columns, news) {
+            (3, true) => {
+                status_card(play, game, ctx, &mut to, &mut cols[0]);
+                friends_card(play, game, ctx, &mut cols[1]);
+                server_overview(play, game, &mut to, &mut cols[1]);
+                news_card(play, &mut cols[2]);
+            }
+            (3, false) => {
+                status_card(play, game, ctx, &mut to, &mut cols[0]);
+                friends_card(play, game, ctx, &mut cols[1]);
+                server_overview(play, game, &mut to, &mut cols[2]);
+            }
+            (2, _) => {
+                status_card(play, game, ctx, &mut to, &mut cols[0]);
+                news_card(play, &mut cols[0]);
+                friends_card(play, game, ctx, &mut cols[1]);
+                server_overview(play, game, &mut to, &mut cols[1]);
+            }
+            _ => {
+                status_card(play, game, ctx, &mut to, &mut cols[0]);
+                friends_card(play, game, ctx, &mut cols[0]);
+                server_overview(play, game, &mut to, &mut cols[0]);
+                news_card(play, &mut cols[0]);
+            }
         });
         if play.setup.running() || play.setup_error.is_some() {
             ui.add_space(10.0);
@@ -665,12 +696,64 @@ fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Con
     to
 }
 
-/// The banner: the game's name over the night-vision grid, with how ready
-/// everything is in the corner.
+/// Starts reading one of the game's loading screens for the banner (a
+/// different one each start), and takes it when it's ready.
+fn load_art(play: &mut Play, game: &Game, ctx: &egui::Context) {
+    if !play.art_started {
+        play.art_started = true;
+        let dir = game.dir.clone();
+        let pick = rand::random::<u32>() as usize;
+        play.art.start(ctx, move || setup::key_art::load(&dir, pick).map_err(|e| e.to_string()));
+    }
+    match play.art.poll() {
+        Some(Ok(art)) => {
+            let image = egui::ColorImage::from_rgba_unmultiplied([art.width, art.height], &art.rgba);
+            play.art_texture = Some(ctx.load_texture("key-art", image, egui::TextureOptions::LINEAR));
+        }
+        // The grid stays: a game without the package, or another version of it.
+        Some(Err(e)) => tracing::info!("No banner art from the game: {e}"),
+        None => {}
+    }
+}
+
+/// How long the server's news is kept before it's asked again.
+const NEWS_EVERY: Duration = Duration::from_secs(15 * 60);
+
+/// Fetches the server's news when the server changes, and now and then.
+fn load_news(play: &mut Play, game: &Game, ctx: &egui::Context) {
+    if let Some(Ok((server, news))) = play.fetching_news.poll() {
+        play.news = news;
+        play.news_from = Some((server, Instant::now()));
+    }
+    let Some(server) = game.cfg.current_profile().map(|p| p.server.clone()).filter(|s| !s.is_empty()) else {
+        play.news.clear();
+        return;
+    };
+    let fresh = play.news_from.as_ref().is_some_and(|(from, at)| *from == server && at.elapsed() < NEWS_EVERY);
+    if !fresh && !play.fetching_news.running() {
+        if play.news_from.as_ref().is_some_and(|(from, _)| *from != server) {
+            play.news.clear();
+        }
+        // Marked as fetched now, so a server that doesn't answer isn't asked every frame.
+        play.news_from = Some((server.clone(), Instant::now()));
+        play.fetching_news.start(ctx, move || {
+            let news = setup::server_info::news(&server, Duration::from_secs(5));
+            Ok((server, news))
+        });
+    }
+}
+
+/// The banner: the game's name over one of its loading screens (or the
+/// night-vision grid until there is one), with how ready everything is in the
+/// corner.
 fn hero(play: &Play, ui: &mut egui::Ui) {
     let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 300.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 320.0), egui::Sense::hover());
     theme::grid_backdrop(ui.painter(), rect);
+    if let Some(texture) = &play.art_texture {
+        theme::cover_image(ui.painter(), rect, texture);
+        theme::scrim(ui.painter(), rect);
+    }
     ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, theme::LINE));
     let inner = rect.shrink2(egui::vec2(36.0, 26.0));
     let mut top = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Min)));
@@ -791,9 +874,12 @@ fn renderer(play: &mut Play, game: &mut Game, notices: &mut Notices, ui: &mut eg
 fn home_card(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
     theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(theme::caps(title));
-        ui.add_space(6.0);
-        body(ui);
+        // Left-aligned, not the columns' justified layout (which spreads words and stretches buttons).
+        ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| {
+            ui.label(theme::caps(title));
+            ui.add_space(6.0);
+            body(ui);
+        });
     });
     ui.add_space(14.0);
 }
@@ -912,6 +998,31 @@ fn friends_card(play: &mut Play, game: &Game, ctx: &egui::Context, ui: &mut egui
     if let Some(host) = switch_to {
         play.switching = Some(Switch { from: SwitchFrom::Friend, host, new_name: None });
     }
+}
+
+/// The server's news: what its game news screen says too.
+fn news_card(play: &Play, ui: &mut egui::Ui) {
+    if play.news.is_empty() {
+        return;
+    }
+    home_card(ui, "Server news", |ui| {
+        for (i, item) in play.news.iter().take(4).enumerate() {
+            if i > 0 {
+                ui.add_space(4.0);
+                ui.separator();
+                ui.add_space(2.0);
+            }
+            // The server's words, shown as text only.
+            ui.label(RichText::new(hooks_config::text::clip(&item.title, 80)).family(theme::strong()));
+            if !item.text.is_empty() {
+                ui.label(RichText::new(hooks_config::text::clip(&item.text, 400)).color(theme::SOFT).size(14.0));
+            }
+            // Only a web address opens, and the player sees where it goes.
+            if item.link.starts_with("https://") {
+                ui.hyperlink_to("Read more", &item.link).on_hover_text(hooks_config::text::clip(&item.link, 120));
+            }
+        }
+    });
 }
 
 /// The server you play on: its numbers, and the way to another.
