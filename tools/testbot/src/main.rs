@@ -285,6 +285,35 @@ async fn friends_mutual(ctx: &mut Ctx) -> Result<()> {
     b.disconnect().await
 }
 
+/// Wrong passwords for an account from one address stop that address only:
+/// its owner, elsewhere, still signs in. (Through the loopback "proxy", so
+/// against a server on this machine.)
+async fn login_lockout(ctx: &mut Ctx) -> Result<()> {
+    use testbot::bot::login_as_client;
+    let owner = ctx.player("Owner").await?;
+    let (home, stranger, travel) = ("198.51.100.10", "203.0.113.66", "192.0.2.77");
+    login_as_client(ctx.server, &owner.name, PASSWORD, home).await.map_err(|e| eyre!("the owner's first sign-in: {e}"))?;
+    let mut refused = None;
+    for i in 0..15 {
+        match login_as_client(ctx.server, &owner.name, "not-the-password", stranger).await {
+            Err(e) if e.code() == tonic::Code::ResourceExhausted => {
+                refused = Some(i);
+                break;
+            }
+            Err(e) if e.code() == tonic::Code::Unauthenticated => {}
+            other => return Err(eyre!("a wrong password answered {other:?}")),
+        }
+    }
+    ensure!(refused == Some(10), "the guessing address was stopped after {refused:?} tries, not 10");
+    ensure!(
+        login_as_client(ctx.server, &owner.name, PASSWORD, stranger).await.is_err(),
+        "the guessing address still got in"
+    );
+    login_as_client(ctx.server, &owner.name, PASSWORD, home).await.map_err(|e| eyre!("the owner was locked out at home: {e}"))?;
+    login_as_client(ctx.server, &owner.name, PASSWORD, travel).await.map_err(|e| eyre!("the owner was locked out elsewhere: {e}"))?;
+    owner.disconnect().await
+}
+
 /// Two servers sharing a coordinator (`--other` is the second): friends made
 /// on one show up on the other once both players link there too.
 async fn federation(ctx: &mut Ctx, other: IpAddr) -> Result<()> {
@@ -935,6 +964,7 @@ const SCENARIOS: &[&str] = &[
     "private-room-hidden",
     "station-url-schemes",
     "syn-flood",
+    "login-lockout",
 ];
 
 #[tokio::main]
@@ -1017,6 +1047,7 @@ async fn main() -> Result<()> {
                 "private-room-hidden" => private_room_hidden(&mut ctx).await,
                 "station-url-schemes" => station_url_schemes(&mut ctx).await,
                 "syn-flood" => syn_flood(&mut ctx).await,
+                "login-lockout" => login_lockout(&mut ctx).await,
                 // Not in the default list: a server in the "mutual" mode, one requiring
                 // identities, and two servers.
                 "friends-mutual" => friends_mutual(&mut ctx).await,

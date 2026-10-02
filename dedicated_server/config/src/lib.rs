@@ -107,6 +107,10 @@ pub struct LimitsConfig {
     /// route. Successful logins don't count.
     #[serde(default = "default_failed_logins")]
     pub failed_logins_per_10_minutes: usize,
+    /// Logins one address may make in ten minutes, failed or not (each
+    /// checks a password, which takes the server real work).
+    #[serde(default = "default_logins")]
+    pub logins_per_10_minutes: usize,
     /// Accounts one address may create in an hour. Players sharing one
     /// address (a LAN party, a household) count together.
     #[serde(default = "default_registrations")]
@@ -127,6 +131,10 @@ const fn default_failed_logins() -> usize {
     30
 }
 
+const fn default_logins() -> usize {
+    120
+}
+
 const fn default_registrations() -> usize {
     20
 }
@@ -135,6 +143,7 @@ impl Default for LimitsConfig {
     fn default() -> Self {
         Self {
             failed_logins_per_10_minutes: default_failed_logins(),
+            logins_per_10_minutes: default_logins(),
             registrations_per_hour: default_registrations(),
             open_registration: true,
             require_identity: false,

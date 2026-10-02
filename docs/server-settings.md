@@ -98,6 +98,7 @@ Without this section, nothing changes. With it:
 ```toml
 [limits]
 failed_logins_per_10_minutes = 30  # per address, over every login route
+logins_per_10_minutes = 120        # per address, failed or not
 registrations_per_hour = 20        # per address
 open_registration = true           # false: no new accounts (only existing ones sign in)
 require_identity = false           # true: every account is linked to a player identity
@@ -105,10 +106,11 @@ require_identity = false           # true: every account is linked to a player i
 
 - With `require_identity = true` (the installer's default), accounts are only made through the launcher, linked to the player's identity: the launcher finds a player's account by their identity, so they never type a password, and accounts can't be unlinked. `/api/register` and password-only registrations are refused.
 
-- The login limit covers the game's own login, the launcher's (gRPC) and the community API. Only failed logins count: players sharing one address sign in often, and only password guessing fails a lot.
+- The login limits cover the game's own login, the launcher's (gRPC) and the community API. `failed_logins_per_10_minutes` counts failures: players sharing one address sign in often, and only password guessing fails a lot. `logins_per_10_minutes` counts every login, because each one checks a password, which takes the server real work; raise it if many players sign in from one address (a big LAN party playing on a server elsewhere).
+- When many logins at once keep the server checking passwords for more than a few seconds, further ones are answered "busy, try again" instead of waiting in line.
 - Players behind one address (a LAN party, a household) share the registration budget, so raise it if a big group sets up at once.
 - Requests from the server's own machine (loopback) are never limited.
-- Failed logins also count per account (10 in 10 minutes), whatever the address, and IPv6 addresses count per /64.
+- Failed logins also count per account and address: 10 in 10 minutes stop that address trying that account, without locking its owner out elsewhere. After 50 failures for one account in 10 minutes from anywhere, only addresses that have signed in to it before (since the server started) may try it until the failures age out. IPv6 addresses count per /64.
 - `FE_MAX_CONNECTIONS_PER_IP` (environment, default 256) caps the game connections from one address.
 
 ## `[admin]`: the admin API

@@ -131,8 +131,14 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
         _client_registry: &ClientRegistry<T>,
         _socket: &std::net::UdpSocket,
     ) -> Result<LoginResponse, quazal::rmc::Error> {
+        // Nothing checks a password here, but each try looks a name up: the same limit on
+        // tries per address as the other logins.
+        if request.str_user_name.chars().count() > crate::rate_limit::MAX_NAME || !crate::rate_limit::plain_login(Some(ci.address().ip())) {
+            warn!(logger, "plain login from {} refused (too many, or too long a name)", ci.address().ip());
+            return Err(quazal::rmc::Error::AccessDenied);
+        }
         let Some(user_id) = self.get_pid_by_username(logger, &request.str_user_name)? else {
-            warn!(logger, "user {} not found", request.str_user_name);
+            warn!(logger, "user {:?} not found", request.str_user_name);
             return Err(quazal::rmc::Error::AccessDenied);
         };
         // Plain Login proves nothing by itself: the ticket is sealed with the
@@ -141,7 +147,7 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
         // sealing theirs with the well-known dummy password let anyone who
         // knew a username log in as them. They must use LoginEx.
         let Some(password) = self.get_password_by_username(logger, &request.str_user_name)? else {
-            warn!(logger, "plain login refused for {}: no plaintext password (use LoginEx)", request.str_user_name);
+            warn!(logger, "plain login refused for {:?}: no plaintext password (use LoginEx)", request.str_user_name);
             return Err(quazal::rmc::Error::AccessDenied);
         };
         let password = Some(password);
@@ -191,20 +197,26 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
             return Err(quazal::rmc::Error::ParsingError);
         };
 
-        info!(logger, "LoginEx attempt by {} ({})", ubi_username, username);
+        // No account has a longer name: not looked up, counted or logged in full.
+        if ubi_username.chars().count() > crate::rate_limit::MAX_NAME || username.chars().count() > crate::rate_limit::MAX_NAME {
+            warn!(logger, "LoginEx from {} with too long a name; refused", ci.address().ip());
+            return Err(quazal::rmc::Error::AccessDenied);
+        }
+        info!(logger, "LoginEx attempt by {:?} ({:?})", ubi_username, username);
         let peer = Some(ci.address().ip());
         if !crate::rate_limit::begin_login(peer, ubi_username) {
-            warn!(logger, "too many failed logins from {} or for {ubi_username}; refused", ci.address().ip());
+            warn!(logger, "too many logins from {} or failures for {ubi_username:?}; refused", ci.address().ip());
             return Err(quazal::rmc::Error::AccessDenied);
         }
 
+        // An error (e.g. the server too busy checking passwords) isn't a failed login.
         let Some(user_id) = self.login(logger, ubi_username, password)? else {
-            crate::rate_limit::login_failed(ubi_username);
-            warn!(logger, "login failed for {}", ubi_username);
+            crate::rate_limit::login_failed(peer, ubi_username);
+            warn!(logger, "login failed for {:?}", ubi_username);
             return Err(quazal::rmc::Error::AccessDenied);
         };
-        crate::rate_limit::login_succeeded(peer);
-        info!(logger, "login successful for {}", ubi_username);
+        crate::rate_limit::login_succeeded(peer, ubi_username);
+        info!(logger, "login successful for {:?}", ubi_username);
 
         ci.user_id = Some(user_id);
         let session_key = self.get_session_key(logger, user_id);

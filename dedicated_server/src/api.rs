@@ -74,6 +74,16 @@ fn internal(e: impl std::fmt::Display) -> Status {
     Status::internal("internal error")
 }
 
+/// A storage error: [`crate::storage::Busy`] says so (try again), anything
+/// else is [`internal`].
+fn storage_error(e: eyre::Report) -> Status {
+    if e.is::<crate::storage::Busy>() {
+        Status::resource_exhausted("The server is busy; try again in a moment")
+    } else {
+        internal(e)
+    }
+}
+
 /// A new sign-in token for `user_id`: the id, the account's token epoch and
 /// the time, sealed with the server's key.
 fn issue_token(key: &Key, user_id: u32, epoch: i64) -> String {
@@ -743,10 +753,10 @@ impl Users for MyUsers {
             return Err(Status::resource_exhausted("Too many failed logins; try again later"));
         }
 
-        let maybe_user = self.storage.login_user_async(&username, &password).await.map_err(internal)?;
+        let maybe_user = self.storage.login_user_async(&username, &password).await.map_err(storage_error)?;
 
         let user_id = maybe_user.map_err(|err| {
-            crate::rate_limit::login_failed(&username);
+            crate::rate_limit::login_failed(peer, &username);
             crate::metrics::failed_login();
             match err {
                 LoginError::InvalidPassword => Status::unauthenticated("Invalid login"),
@@ -758,10 +768,10 @@ impl Users for MyUsers {
         // The server's own accounts (Tracking's password is the game's, so public) never get
         // an API session.
         if !self.storage.is_player_account(user_id).await.map_err(internal)? {
-            crate::rate_limit::login_failed(&username);
+            crate::rate_limit::login_failed(peer, &username);
             return Err(Status::unauthenticated("Invalid login"));
         }
-        crate::rate_limit::login_succeeded(peer);
+        crate::rate_limit::login_succeeded(peer, &username);
 
         info!(self.logger, "Login successful for {username}");
         crate::metrics::api_login();
@@ -825,6 +835,9 @@ impl Users for MyUsers {
         let ubi_id = self.storage.free_ubi_id(&username).await.map_err(internal)?;
 
         let error = if let Err(err) = self.storage.register_user_async(&username, &password, Some(&ubi_id)).await {
+            if err.is::<crate::storage::Busy>() {
+                return Err(storage_error(err));
+            }
             match err.downcast::<sqlx::Error>() {
                 Ok(sqlx::Error::Database(db_err)) if db_err.is_unique_violation() => return Err(Status::already_exists("Username already taken")),
                 Ok(err) => return Err(internal(err)),
@@ -883,7 +896,7 @@ impl Users for MyUsers {
         // One answer for every failure: which accounts are linked to which identity isn't
         // anyone's business.
         let refused = |_why: &str| {
-            crate::rate_limit::login_failed(&limit_key);
+            crate::rate_limit::login_failed(peer, &limit_key);
             Status::unauthenticated("Signing in with this identity didn't work")
         };
         if !identity::fresh(request.time, identity::now()) {
@@ -901,7 +914,7 @@ impl Users for MyUsers {
                 Some(person) => person,
                 // Not a failed sign-in: a player new here.
                 None => {
-                    crate::rate_limit::login_succeeded(peer);
+                    crate::rate_limit::login_succeeded(peer, &limit_key);
                     return Err(Status::not_found("No account here is linked to this identity"));
                 }
             }
@@ -931,10 +944,10 @@ impl Users for MyUsers {
             if request.new_password.len() < 8 || request.new_password.len() > MAX_PASSWORD {
                 return Err(Status::invalid_argument("Passwords are 8 to 63 characters (the game's limit)"));
             }
-            self.storage.set_password(person.id, &request.new_password).await.map_err(internal)?;
+            self.storage.set_password(person.id, &request.new_password).await.map_err(storage_error)?;
             info!(self.logger, "{} set a new password with their identity key", person.username);
         }
-        crate::rate_limit::login_succeeded(peer);
+        crate::rate_limit::login_succeeded(peer, &limit_key);
         info!(self.logger, "Key login successful for {}", person.username);
         crate::metrics::api_login();
         self.signed_in(person.id).await

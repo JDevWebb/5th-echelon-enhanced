@@ -82,12 +82,18 @@ pub fn client_ip(peer: Option<IpAddr>, forwarded_for: Option<&str>) -> Option<Ip
     Some(hops.iter().rev().copied().find(|ip| !is_proxy(*ip)).or(hops.first().copied()).unwrap_or(peer))
 }
 
-/// The server's one limiter for failed password checks, shared by every
-/// login route: check [`RateLimit::blocked`] first, [`RateLimit::record`]
-/// each failure.
+/// The server's one limiter for failed password checks per address, shared
+/// by every login route (through [`begin_login`]).
 pub fn logins() -> &'static RateLimit {
     static LIMIT: std::sync::OnceLock<RateLimit> = std::sync::OnceLock::new();
     LIMIT.get_or_init(|| RateLimit::new((limits().failed_logins_per_10_minutes, Duration::from_secs(10 * 60))))
+}
+
+/// Sign-ins per address, failed or not: each one hashes a password, so even
+/// one account's correct password can't be used to keep the server hashing.
+fn attempts() -> &'static RateLimit {
+    static LIMIT: std::sync::OnceLock<RateLimit> = std::sync::OnceLock::new();
+    LIMIT.get_or_init(|| RateLimit::new((limits().logins_per_10_minutes, Duration::from_secs(10 * 60))))
 }
 
 /// Whether new accounts may be made (`[limits] open_registration`).
@@ -102,21 +108,34 @@ pub fn identity_required() -> bool {
 
 /// Starts a sign-in for `name` from `peer`. It counts now, before the
 /// password is checked, so a burst of guesses can't all get through before the
-/// first failure is recorded; false when the address or the account is over
-/// its limit.
+/// first failure is recorded; false when the address is over either of its
+/// limits, or the account is closed to this address (see [`AccountLimit`]).
 pub fn begin_login(peer: Option<IpAddr>, name: &str) -> bool {
-    !accounts().blocked(name) && logins().check(peer)
+    !accounts().blocked(name, peer) && attempts().check(peer) && logins().check(peer)
 }
 
-/// The sign-in worked: its count is given back (only failures count).
-pub fn login_succeeded(peer: Option<IpAddr>) {
+/// The sign-in worked: it isn't a failure after all (it still counts as an
+/// attempt), and the address is one this account signs in from.
+pub fn login_succeeded(peer: Option<IpAddr>, name: &str) {
     logins().refund(peer);
+    accounts().succeeded(name, peer);
 }
 
-/// The sign-in failed: it counts against the account too.
-pub fn login_failed(name: &str) {
-    accounts().record(name);
+/// The sign-in failed: it counts against the account from this address, and
+/// towards the account's slowdown.
+pub fn login_failed(peer: Option<IpAddr>, name: &str) {
+    accounts().record(name, peer);
 }
+
+/// A login that checks no password (the game's plain `Login`, for the
+/// server's own accounts): it counts against the address's logins only.
+pub fn plain_login(peer: Option<IpAddr>) -> bool {
+    attempts().check(peer)
+}
+
+/// The longest name the login limits keep (longer ones can't be accounts, and
+/// are cut before they're used as keys).
+pub const MAX_NAME: usize = 64;
 
 /// The server's one limiter for new accounts.
 pub fn registrations() -> &'static RateLimit {
@@ -218,44 +237,133 @@ fn bucket(peer: Option<IpAddr>) -> IpAddr {
     }
 }
 
-/// Failed sign-ins per account: 10 in 10 minutes, from anywhere, so guesses
-/// spread over many addresses still stop.
+/// Failed sign-ins per account. Counted per address (IPv6 by /64): 10 in 10
+/// minutes stop that address trying that account, so a stranger guessing
+/// can't lock its owner out. Guesses spread over many addresses still slow
+/// down: after 50 failures in 10 minutes from anywhere, only addresses that
+/// have signed in to the account before (since the server started) may try
+/// it, until the failures age out.
 pub struct AccountLimit {
-    seen: Mutex<HashMap<String, VecDeque<Instant>>>,
+    seen: Mutex<AccountSeen>,
+}
+
+#[derive(Default)]
+struct AccountSeen {
+    /// Failures by (account, address).
+    failures: HashMap<(String, IpAddr), VecDeque<Instant>>,
+    /// Failures by account, from anywhere.
+    all: HashMap<String, VecDeque<Instant>>,
+    /// Addresses each account signed in from lately, newest last.
+    known: HashMap<String, VecDeque<(IpAddr, Instant)>>,
 }
 
 pub fn accounts() -> &'static AccountLimit {
     static LIMIT: std::sync::OnceLock<AccountLimit> = std::sync::OnceLock::new();
-    LIMIT.get_or_init(|| AccountLimit { seen: Mutex::new(HashMap::new()) })
+    LIMIT.get_or_init(AccountLimit::new)
 }
 
 impl AccountLimit {
     const MAX: usize = 10;
+    const MAX_ANYWHERE: usize = 50;
     const WINDOW: Duration = Duration::from_secs(10 * 60);
+    /// How long, and how many, addresses an account is known to sign in from.
+    const KNOWN_FOR: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+    const KNOWN_MAX: usize = 8;
 
-    fn key(name: &str) -> String {
-        identity::name_key(name)
+    fn new() -> Self {
+        Self {
+            seen: Mutex::new(AccountSeen::default()),
+        }
     }
 
-    /// Whether `name` has had too many failed sign-ins lately.
-    pub fn blocked(&self, name: &str) -> bool {
-        let now = Instant::now();
-        let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        let Some(times) = seen.get_mut(&Self::key(name)) else { return false };
+    fn key(name: &str) -> String {
+        identity::name_key(&name.chars().take(MAX_NAME).collect::<String>())
+    }
+
+    fn trim(times: &mut VecDeque<Instant>, now: Instant) {
         while times.front().is_some_and(|t| now.duration_since(*t) >= Self::WINDOW) {
             times.pop_front();
         }
-        times.len() >= Self::MAX
     }
 
-    /// Counts a failed sign-in for `name`.
-    pub fn record(&self, name: &str) {
-        let now = Instant::now();
-        let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if seen.len() > 100_000 {
-            seen.retain(|_, times| times.back().is_some_and(|t| now.duration_since(*t) < Self::WINDOW));
+    /// Whether `peer` may not try `name` now.
+    pub fn blocked(&self, name: &str, peer: Option<IpAddr>) -> bool {
+        self.blocked_at(name, peer, Instant::now())
+    }
+
+    fn blocked_at(&self, name: &str, peer: Option<IpAddr>, now: Instant) -> bool {
+        if peer.is_some_and(|p| p.is_loopback()) {
+            return false;
         }
-        seen.entry(Self::key(name)).or_default().push_back(now);
+        let key = Self::key(name);
+        let addr = bucket(peer);
+        let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(times) = seen.failures.get_mut(&(key.clone(), addr)) {
+            Self::trim(times, now);
+            if times.len() >= Self::MAX {
+                return true;
+            }
+        }
+        let Some(times) = seen.all.get_mut(&key) else { return false };
+        Self::trim(times, now);
+        if times.len() < Self::MAX_ANYWHERE {
+            return false;
+        }
+        // Under attack: an address the account has signed in from still gets to try.
+        !seen
+            .known
+            .get(&key)
+            .is_some_and(|known| known.iter().any(|(ip, t)| *ip == addr && now.duration_since(*t) < Self::KNOWN_FOR))
+    }
+
+    /// Counts a failed sign-in for `name` from `peer`.
+    pub fn record(&self, name: &str, peer: Option<IpAddr>) {
+        self.record_at(name, peer, Instant::now());
+    }
+
+    fn record_at(&self, name: &str, peer: Option<IpAddr>, now: Instant) {
+        if peer.is_some_and(|p| p.is_loopback()) {
+            return;
+        }
+        let key = Self::key(name);
+        let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if seen.failures.len() > 100_000 {
+            seen.failures.retain(|_, times| times.back().is_some_and(|t| now.duration_since(*t) < Self::WINDOW));
+        }
+        if seen.all.len() > 100_000 {
+            seen.all.retain(|_, times| times.back().is_some_and(|t| now.duration_since(*t) < Self::WINDOW));
+        }
+        seen.failures.entry((key.clone(), bucket(peer))).or_default().push_back(now);
+        let all = seen.all.entry(key).or_default();
+        all.push_back(now);
+        // Only the count that blocks matters; no more than that is kept.
+        while all.len() > Self::MAX_ANYWHERE {
+            all.pop_front();
+        }
+    }
+
+    /// Remembers that `name` signed in from `peer`.
+    pub fn succeeded(&self, name: &str, peer: Option<IpAddr>) {
+        self.succeeded_at(name, peer, Instant::now());
+    }
+
+    fn succeeded_at(&self, name: &str, peer: Option<IpAddr>, now: Instant) {
+        if peer.is_some_and(|p| p.is_loopback()) {
+            return;
+        }
+        let key = Self::key(name);
+        let addr = bucket(peer);
+        let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        seen.failures.remove(&(key.clone(), addr));
+        if seen.known.len() > 100_000 {
+            seen.known.retain(|_, known| known.back().is_some_and(|(_, t)| now.duration_since(*t) < Self::KNOWN_FOR));
+        }
+        let known = seen.known.entry(key).or_default();
+        known.retain(|(ip, _)| *ip != addr);
+        known.push_back((addr, now));
+        while known.len() > Self::KNOWN_MAX {
+            known.pop_front();
+        }
     }
 }
 
@@ -407,14 +515,44 @@ mod tests {
     }
 
     #[test]
-    fn failures_are_counted_per_account_too() {
-        let limit = AccountLimit { seen: Mutex::new(HashMap::new()) };
+    fn failures_are_counted_per_account_and_address() {
+        let limit = AccountLimit::new();
+        let stranger = Some(IpAddr::from([198, 51, 100, 1]));
+        let owner = Some(IpAddr::from([203, 0, 113, 5]));
+        let t0 = Instant::now();
         for _ in 0..AccountLimit::MAX {
-            assert!(!limit.blocked("Kiwi"));
-            limit.record("kiwi");
+            assert!(!limit.blocked_at("Kiwi", stranger, t0));
+            limit.record_at("kiwi", stranger, t0);
         }
-        assert!(limit.blocked("KIWI"), "any case");
-        assert!(!limit.blocked("Tank"));
+        assert!(limit.blocked_at("KIWI", stranger, t0), "any case");
+        assert!(!limit.blocked_at("Tank", stranger, t0));
+        assert!(!limit.blocked_at("Kiwi", owner, t0), "a stranger's guesses don't lock the owner out");
+        assert!(!limit.blocked_at("Kiwi", stranger, t0 + AccountLimit::WINDOW), "failures expire");
+    }
+
+    #[test]
+    fn guesses_from_everywhere_leave_known_addresses_in() {
+        let limit = AccountLimit::new();
+        let owner = Some(IpAddr::from([203, 0, 113, 5]));
+        let new_place = Some(IpAddr::from([203, 0, 113, 6]));
+        let t0 = Instant::now();
+        limit.succeeded_at("Kiwi", owner, t0);
+        for i in 0..AccountLimit::MAX_ANYWHERE {
+            limit.record_at("Kiwi", Some(IpAddr::from([198, 51, 100, i as u8])), t0);
+        }
+        assert!(!limit.blocked_at("Kiwi", owner, t0), "signed in from here before");
+        assert!(limit.blocked_at("Kiwi", new_place, t0), "a new address waits");
+        assert!(!limit.blocked_at("Kiwi", new_place, t0 + AccountLimit::WINDOW));
+        assert!(!limit.blocked_at("Tank", new_place, t0));
+        // An IPv6 owner is known by their /64.
+        let v6 = Some("2001:db8:1:2::1".parse().unwrap());
+        limit.succeeded_at("Kiwi", v6, t0);
+        assert!(!limit.blocked_at("Kiwi", Some("2001:db8:1:2::9".parse().unwrap()), t0));
+    }
+
+    #[test]
+    fn long_names_are_cut() {
+        assert_eq!(AccountLimit::key(&"k".repeat(10_000)).len(), MAX_NAME);
     }
 
     #[test]

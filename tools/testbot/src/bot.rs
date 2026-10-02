@@ -131,6 +131,25 @@ pub async fn key_login(server: IpAddr, identity: &identity::Identity, host: &str
     Ok(answer.into_inner().user.map(|u| u.username).unwrap_or_default())
 }
 
+/// The launcher's password sign-in, as if through a reverse proxy on the
+/// server's machine that names `client` in `X-Forwarded-For` (believed only
+/// from loopback, so only against a server on this machine).
+pub async fn login_as_client(server: IpAddr, name: &str, password: &str, client: &str) -> std::result::Result<server_api::users::LoginResponse, tonic::Status> {
+    let channel = Channel::from_shared(api_url(server))
+        .map_err(|e| tonic::Status::internal(e.to_string()))?
+        .connect()
+        .await
+        .map_err(|e| tonic::Status::unavailable(e.to_string()))?;
+    let mut request = tonic::Request::new(server_api::users::LoginRequest {
+        username: name.into(),
+        password: password.into(),
+    });
+    request
+        .metadata_mut()
+        .insert("x-forwarded-for", MetadataValue::try_from(client).map_err(|e| tonic::Status::internal(e.to_string()))?);
+    Ok(UsersClient::new(channel).login(request).await?.into_inner())
+}
+
 /// A registration with the NAT helper, as the hook makes it.
 #[derive(Debug, Clone, Copy)]
 pub struct NatRegistration {

@@ -100,9 +100,9 @@ pub fn routes(storage: Arc<Storage>, cfg: CommunityApiConfig) -> Routes {
                 if rate_limit::begin_login(req.peer, &name) {
                     let response = login(&storage, &req.body);
                     if response.status_is("401 Unauthorized") {
-                        rate_limit::login_failed(&name);
-                    } else {
-                        rate_limit::login_succeeded(req.peer);
+                        rate_limit::login_failed(req.peer, &name);
+                    } else if response.status_is("200 OK") {
+                        rate_limit::login_succeeded(req.peer, &name);
                     }
                     response
                 } else {
@@ -230,6 +230,10 @@ fn internal(e: impl std::fmt::Display) -> Response {
     Response::json("500 Internal Server Error", &json!({ "error": "internal error" }))
 }
 
+fn busy() -> Response {
+    Response::json("503 Service Unavailable", &json!({ "error": "the server is busy; try again in a moment" }))
+}
+
 fn too_many() -> Response {
     Response::json("429 Too Many Requests", &json!({ "error": "too many attempts, try again later" }))
 }
@@ -266,6 +270,7 @@ fn register(storage: &Storage, body: &[u8]) -> Response {
         Err(e) if e.downcast_ref::<sqlx::Error>().and_then(|e| e.as_database_error()).is_some_and(|e| e.is_unique_violation()) => {
             Response::json("409 Conflict", &json!({ "error": "username taken" }))
         }
+        Err(e) if e.is::<crate::storage::Busy>() => busy(),
         Err(e) => internal(e),
     }
 }
@@ -283,6 +288,7 @@ fn login(storage: &Storage, body: &[u8]) -> Response {
         Ok(Ok(_)) => Response::json("200 OK", &json!({ "ok": true })),
         // One answer for unknown user and wrong password.
         Ok(Err(LoginError::NotFound | LoginError::InvalidPassword)) => Response::json("401 Unauthorized", &json!({ "error": "wrong username or password" })),
+        Err(e) if e.is::<crate::storage::Busy>() => busy(),
         Err(e) => internal(e),
     }
 }

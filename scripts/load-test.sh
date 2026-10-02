@@ -28,7 +28,7 @@ docker run -d --name fes-load-srv --network "$net" --cpus "$cpus" --memory "$mem
   ./dedicated_server >gen.log 2>&1 & gen=\$!
   for _ in \$(seq 100); do [ -s service.toml ] && break; sleep 0.1; done
   sleep 0.3; kill \$gen 2>/dev/null || true; wait \$gen 2>/dev/null || true
-  sed -i -E 's/^registrations_per_hour = .*/registrations_per_hour = 1000000/; s/^failed_logins_per_10_minutes = .*/failed_logins_per_10_minutes = 1000000/' service.toml
+  sed -i -E 's/^registrations_per_hour = .*/registrations_per_hour = 1000000/; s/^failed_logins_per_10_minutes = .*/failed_logins_per_10_minutes = 1000000/; s/^logins_per_10_minutes = .*/logins_per_10_minutes = 1000000/' service.toml
   exec ./dedicated_server --public-address \$(hostname -i | cut -d' ' -f1) >server.log 2>&1
 " >/dev/null
 ip=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$net\").IPAddress}}" fes-load-srv)

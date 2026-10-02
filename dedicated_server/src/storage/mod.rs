@@ -48,16 +48,43 @@ pub fn name_key(username: &str) -> String {
     identity::name_key(username)
 }
 
+/// Password checks are queued for too long: the server is busy, and the
+/// sign-in should be tried again in a moment (not counted as failed).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("the server is busy checking passwords; try again in a moment")]
+pub struct Busy;
+
 /// Runs password hashing (Argon2: about 19 MiB of memory and tens of
 /// milliseconds of CPU each) on the blocking pool, a few at a time. A burst
 /// of logins (a server restart, everyone joining at once) then neither
 /// stalls the async API workers nor needs 19 MiB for every login waiting.
+///
+/// The queue is bounded: at most [`MAX_HASHING_QUEUE`] wait, each for at
+/// most [`HASHING_WAIT`]; past that it's [`Busy`], so a flood of sign-ins
+/// can't hold up everyone's for minutes, nor pile up without end.
 async fn hashing<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T> {
     static LIMIT: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    static WAITING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let limit = LIMIT.get_or_init(|| tokio::sync::Semaphore::new(std::thread::available_parallelism().map_or(2, |n| n.get()).clamp(2, 4)));
-    let _permit = limit.acquire().await.map_err(|e| eyre!("{e}"))?;
+    let _permit = match limit.try_acquire() {
+        Ok(permit) => permit,
+        Err(_) => {
+            use std::sync::atomic::Ordering;
+            if WAITING.fetch_add(1, Ordering::SeqCst) >= MAX_HASHING_QUEUE {
+                WAITING.fetch_sub(1, Ordering::SeqCst);
+                return Err(Busy.into());
+            }
+            let permit = tokio::time::timeout(HASHING_WAIT, limit.acquire()).await;
+            WAITING.fetch_sub(1, Ordering::SeqCst);
+            permit.map_err(|_| Busy)?.map_err(|e| eyre!("{e}"))?
+        }
+    };
     tokio::task::spawn_blocking(f).await.map_err(|e| eyre!("password hashing failed: {e}"))
 }
+
+/// Password checks that may wait for a turn, and how long each may wait.
+const MAX_HASHING_QUEUE: usize = 64;
+const HASHING_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
 
 /// Runs a query from the (synchronous) game services. One runtime for all
 /// of them, so the connection pool's background work has a runtime that
@@ -160,10 +187,10 @@ impl Storage {
             .fetch_optional(&self.pool)
             .await?
         else {
-            warn!(self.logger, "User {} not found", username.chars().take(32).collect::<String>());
+            warn!(self.logger, "User {:?} not found", username.chars().take(32).collect::<String>());
             // As long as a real check, so the time taken doesn't tell which names exist.
             let password = password.to_owned();
-            let _ = hashing(move || Argon2::default().verify_password(password.as_bytes(), &PasswordHash::new(DUMMY_HASH).expect("valid dummy hash"))).await;
+            let _ = hashing(move || Argon2::default().verify_password(password.as_bytes(), &PasswordHash::new(DUMMY_HASH).expect("valid dummy hash"))).await?;
             return Ok(Err(LoginError::NotFound));
         };
 
