@@ -26,6 +26,8 @@ The Linux installer sets `mutual`, since a server on a VPS is usually public. Fr
 
 The game only reads its friend list and sends invites. It never calls Uplay's other friend functions (`IsFriend`, `RequestFriendship`, `AddToBlackList`, …), so friends are managed in the overlay rather than the game's menus.
 
+The game reads its friend list once, at the online menu. When a friend is added or removed mid-session, the client tells the game the list changed (Uplay event 10000), and the game reads it again. `PushFriendList = false` in `uplay.toml` turns this off.
+
 ### Blocking
 
 Blocking someone:

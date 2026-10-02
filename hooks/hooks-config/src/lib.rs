@@ -267,6 +267,12 @@ pub struct Config {
     #[serde(default)]
     pub pid_field: PidField,
 
+    /// Tells the game when the friend list changes (Uplay event 10000), so a friend made
+    /// mid-session shows up in its menus without a restart. Off: the game reads the list
+    /// once, at the online menu.
+    #[serde(default = "default_push_friend_list")]
+    pub push_friend_list: bool,
+
     /// Set when another tool manages this install (from the override file's
     /// `[Managed]`); never read from or written to `uplay.toml`.
     #[serde(skip)]
@@ -274,6 +280,10 @@ pub struct Config {
 }
 
 const fn default_share_session_data() -> bool {
+    true
+}
+
+const fn default_push_friend_list() -> bool {
     true
 }
 

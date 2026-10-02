@@ -70,9 +70,21 @@ pub enum Event {
     UserAccountSharing,
     FriendsGameInviteAccepted(String),
     PartyGameInviteAccepted(String),
+    /// The friend list changed: the game fetches it again (`UPLAY_FRIENDS_GetFriendList`).
+    FriendsListUpdated,
 }
 
 pub static EVENTS: OnceLock<Mutex<mpsc::Receiver<Event>>> = OnceLock::new();
+/// The sending side of [`EVENTS`], for events that don't come from the overlay's render loop.
+pub static EVENT_SENDER: OnceLock<Mutex<mpsc::Sender<Event>>> = OnceLock::new();
+
+/// Queues `event` for the game's next `UPLAY_GetNextEvent`. Dropped when the overlay (which
+/// sets the queue up) isn't running.
+pub fn queue_event(event: Event) {
+    if let Some(tx) = EVENT_SENDER.get() {
+        let _ = tx.lock().unwrap_or_else(std::sync::PoisonError::into_inner).send(event);
+    }
+}
 
 unsafe fn into_friend_invite_accepted(event: *mut UplayEvent, ubi_name: String) {
     #![allow(static_mut_refs)]
@@ -190,6 +202,14 @@ unsafe extern "cdecl" fn UPLAY_GetNextEvent(event: *mut UplayEvent) -> bool {
             }
             Event::FriendsGameInviteAccepted(user) => into_friend_invite_accepted(event, user),
             Event::PartyGameInviteAccepted(user) => into_party_invite_accepted(event, user),
+            Event::FriendsListUpdated => {
+                // The game's event loop (FUN_008842b0 in the DX11 exe) answers 10000 and 10001
+                // alike, without reading the payload: it sets its presence goal
+                // eGoal_FriendList, whose state (nsOnlinePresence::StateFetchFriends) calls
+                // GetFriendList again.
+                (*event).event_type = UplayEventType::FriendsFriendListUpdated;
+                (*event).unknown = 0;
+            }
         }
         // (*event).event_type =
         true

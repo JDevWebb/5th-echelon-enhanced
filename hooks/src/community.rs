@@ -427,6 +427,7 @@ fn refresh_now() {
                 s.my_name_conflict = lists.my_name() == friends::NameStatus::Conflict;
                 s.my_identity = clip(&lists.my_identity, MAX_NAME);
                 s.friends = sorted(lists.friends.into_iter().map(player).collect());
+                tell_game_if_changed(&s.friends);
                 let friends = s.friends.clone();
                 remember(&mut s.known, &friends);
                 s.requests_in = lists.requests_received.into_iter().map(player).collect();
@@ -460,6 +461,25 @@ fn refresh_now() {
             s.server = server;
         }
     });
+}
+
+/// Who was on the friend list at the last refresh, by id. None before the first one.
+static LAST_FRIENDS: Mutex<Option<Vec<String>>> = Mutex::new(None);
+
+/// Has the game fetch its friend list again when someone joined or left ours since the last
+/// refresh. The game reads the list itself at the online menu, so the first refresh only
+/// remembers it.
+fn tell_game_if_changed(friends: &[Player]) {
+    let mut ids: Vec<String> = friends.iter().map(|f| f.id.clone()).collect();
+    ids.sort_unstable();
+    let mut last = LAST_FRIENDS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let changed = last.as_ref().is_some_and(|before| *before != ids);
+    *last = Some(ids);
+    drop(last);
+    if changed && crate::config::get().is_none_or(|c| c.push_friend_list) {
+        info!("The friend list changed; asking the game to fetch it again");
+        crate::uplay_r1_loader::queue_event(crate::uplay_r1_loader::Event::FriendsListUpdated);
+    }
 }
 
 /// Online first, then by name.

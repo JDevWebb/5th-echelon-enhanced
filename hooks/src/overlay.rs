@@ -1256,6 +1256,7 @@ impl ImguiRenderLoop for MyRenderLoop {
 fn init_hudhook<T: hudhook::Hooks + 'static>(invites: crossbeam_channel::Receiver<Result<Option<InviteEvent>, crate::api::Error>>) -> anyhow::Result<()> {
     let (tx, rx) = mpsc::channel();
     EVENTS.get_or_init(|| Mutex::new(rx));
+    crate::uplay_r1_loader::EVENT_SENDER.get_or_init(|| Mutex::new(tx.clone()));
     community::start();
     hudhook::Hudhook::builder()
         .with::<T>(MyRenderLoop {
