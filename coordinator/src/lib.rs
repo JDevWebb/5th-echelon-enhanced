@@ -74,6 +74,49 @@ const LINK_SIGNED_FOR: i64 = 7 * 24 * 3600;
 /// Host names (and addresses) one server may hold.
 const MAX_SERVER_NAMES: i64 = 32;
 
+/// The key an address's requests are counted under: IPv4 addresses one by
+/// one, IPv6 by /64 (one subscriber's network, any address of which they can
+/// use).
+pub(crate) fn limit_key(ip: std::net::IpAddr) -> String {
+    match ip {
+        std::net::IpAddr::V4(v4) => v4.to_string(),
+        std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => v4.to_string(),
+            None => {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
+            }
+        },
+    }
+}
+
+/// Whether `ip` is a public address: not this machine, a private or shared
+/// network, link-local, documentation, multicast or reserved.
+pub(crate) fn public_ip(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => {
+            let [a, b, c, _] = v4.octets();
+            !(v4.is_private()
+                || v4.is_loopback()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_documentation()
+                || v4.is_multicast()
+                || a == 0
+                || a >= 240
+                || (a == 100 && (64..128).contains(&b))
+                || (a == 192 && b == 0 && c == 0))
+        }
+        std::net::IpAddr::V6(v6) => {
+            if let Some(v4) = v6.to_ipv4_mapped() {
+                return public_ip(std::net::IpAddr::V4(v4));
+            }
+            let [first, second, ..] = v6.segments();
+            !(v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() || first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80 || (first == 0x2001 && second == 0x0db8))
+        }
+    }
+}
+
 /// A request's source address: the peer, or, from a proxy on this machine,
 /// the last address in `X-Forwarded-For`.
 fn client_ip(peer: std::net::SocketAddr, headers: &HeaderMap) -> std::net::IpAddr {
@@ -153,9 +196,12 @@ fn valid_host(host: &str) -> bool {
     (1..=253).contains(&host.len()) && host.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'[' | b']'))
 }
 
-/// Printable text of at most `max` characters.
+/// Printable text of at most `max` characters, without the characters that
+/// turn the text after them around or hide in it (so a name can't read as
+/// another).
 fn valid_text(text: &str, max: usize) -> bool {
-    text.chars().count() <= max && !text.chars().any(char::is_control)
+    let sneaky = |c: char| matches!(c, '\u{200b}' | '\u{200e}' | '\u{200f}' | '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2060}' | '\u{2066}'..='\u{2069}' | '\u{feff}');
+    text.chars().count() <= max && !text.chars().any(|c| c.is_control() || sneaky(c))
 }
 
 /// Whether `s` is spelled like a global id (52 upper-case base32 characters).
@@ -226,7 +272,11 @@ impl Listing {
             return Err("the host isn't a host name or address");
         }
         if let Some(p) = &self.ports {
-            if [Some(p.api), Some(p.login), p.secure, p.content, p.nat].into_iter().flatten().any(|port| port == 0) {
+            if [Some(p.api), Some(p.login), p.secure, p.content, p.nat, p.api_tls]
+                .into_iter()
+                .flatten()
+                .any(|port| port == 0)
+            {
                 return Err("port 0");
             }
         }
@@ -861,7 +911,7 @@ struct JoinRequest {
 }
 
 async fn join(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap, Json(req): Json<JoinRequest>) -> Answer {
-    if !c.joins.check(&client_ip(peer, &headers).to_string()) {
+    if !c.joins.check(&limit_key(client_ip(peer, &headers))) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many attempts; try again in a minute");
     }
     if c.join_token.is_empty() || !same_secret(req.token.trim(), &c.join_token) {
@@ -974,7 +1024,7 @@ async fn metrics_report(State(c): State<Shared>, headers: HeaderMap, Json(report
 /// A launcher's pings to the servers in the directory.
 async fn pings(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap, Json(body): Json<Value>) -> Answer {
     let ip = client_ip(peer, &headers);
-    if !c.pings.check(&ip.to_string()) {
+    if !c.pings.check(&limit_key(ip)) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many reports");
     }
     let list = body["pings"].as_array().cloned().unwrap_or_default();
@@ -987,7 +1037,7 @@ async fn pings(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net:
 /// The directory: servers that are listed and have sent a heartbeat lately,
 /// most players online first.
 async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap) -> Answer {
-    if !c.reads.check(&client_ip(peer, &headers).to_string()) {
+    if !c.reads.check(&limit_key(client_ip(peer, &headers))) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many requests");
     }
     let since = identity::now() - i64::try_from(LISTED_FOR.as_secs()).unwrap_or(120);

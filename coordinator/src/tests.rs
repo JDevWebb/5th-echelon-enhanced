@@ -117,8 +117,10 @@ async fn listings_are_checked() {
         json!([]),
         json!("x"),
         json!({ "name": "A\u{7}", "host": "a.example" }),
+        json!({ "name": "A\u{202e}B", "host": "a.example" }),
         json!({ "name": "A", "host": "a b" }),
         json!({ "name": "A", "host": "a.example", "ports": { "api": 0, "login": 1 } }),
+        json!({ "name": "A", "host": "a.example", "ports": { "api": 80, "login": 1, "api_tls": 0 } }),
         json!({ "name": "A", "host": "a.example", "online": ["not-an-identity"] }),
     ] {
         let (status, _) = t.call("POST", "/v1/heartbeat", Some(&secret), Some(bad.clone())).await;
@@ -397,6 +399,32 @@ async fn a_servers_names_are_limited_and_clashes_reported() {
         .await
         .unwrap();
     assert_eq!(held, MAX_SERVER_NAMES);
+}
+
+#[test]
+fn addresses_are_counted_by_network() {
+    assert_eq!(limit_key("203.0.113.9".parse().unwrap()), "203.0.113.9");
+    assert_eq!(limit_key("2001:db8:1:2:aaaa::1".parse().unwrap()), limit_key("2001:db8:1:2:bbbb::2".parse().unwrap()));
+    assert_ne!(limit_key("2001:db8:1:2::1".parse().unwrap()), limit_key("2001:db8:1:3::1".parse().unwrap()));
+    assert_eq!(limit_key("::ffff:203.0.113.9".parse().unwrap()), "203.0.113.9");
+    for private in [
+        "127.0.0.1",
+        "10.1.2.3",
+        "192.168.1.1",
+        "172.16.0.1",
+        "100.64.0.1",
+        "169.254.1.1",
+        "0.0.0.0",
+        "::1",
+        "fd00::1",
+        "fe80::1",
+        "::ffff:10.0.0.1",
+    ] {
+        assert!(!public_ip(private.parse().unwrap()), "{private}");
+    }
+    for public in ["1.1.1.1", "2606:4700::1111"] {
+        assert!(public_ip(public.parse().unwrap()), "{public}");
+    }
 }
 
 #[tokio::test]

@@ -239,13 +239,22 @@ impl Coordinator {
         for (id, listing) in rows {
             let l: Value = serde_json::from_str(&listing).unwrap_or_default();
             let host = l["host"].as_str().unwrap_or_default().to_string();
-            let port = l["ports"]["api_tls"].as_u64().or_else(|| l["ports"]["api"].as_u64()).unwrap_or(80);
+            let port = l["ports"]["api_tls"]
+                .as_u64()
+                .or_else(|| l["ports"]["api"].as_u64())
+                .and_then(|p| u16::try_from(p).ok())
+                .unwrap_or(80);
             if host.is_empty() {
                 continue;
             }
             tasks.push(tokio::spawn(async move {
+                // Only to a public address: a member can't have the coordinator knock on its
+                // own network, or this machine's.
+                let resolved = tokio::time::timeout(Duration::from_secs(3), tokio::net::lookup_host((host.as_str(), port))).await;
+                let Some(target) = resolved.ok().and_then(Result::ok).and_then(|mut a| a.find(|a| crate::public_ip(a.ip()))) else {
+                    return (id, None);
+                };
                 let start = Instant::now();
-                let target = format!("{host}:{port}");
                 let ms = match tokio::time::timeout(Duration::from_secs(3), tokio::net::TcpStream::connect(target)).await {
                     Ok(Ok(_)) => Some(start.elapsed().as_secs_f64() * 1000.0),
                     _ => None,

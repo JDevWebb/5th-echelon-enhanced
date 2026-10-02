@@ -219,8 +219,9 @@ async fn guard(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<SocketAdd
         peer.ip()
     };
     let mut country = if from_proxy { header_text("x-admin-country").to_uppercase() } else { String::new() };
-    // Cloudflare's "XX" (unknown) and "T1" (Tor) aren't countries.
-    if country.len() != 2 || country == "XX" || country == "T1" {
+    // Cloudflare's "XX" (unknown) and "T1" (Tor) aren't countries, and stay what they are:
+    // looked up again, an exit node's address could pass a country rule.
+    if country.len() != 2 {
         country = c.geo.get().and_then(|g| g.lookup(ip)).map(|p| p.country).unwrap_or_default();
     }
     let client = Client {
@@ -258,6 +259,8 @@ fn secure_headers(mut resp: Response) -> Response {
         ("permissions-policy", "camera=(), microphone=(), geolocation=(), publickey-credentials-get=(self), publickey-credentials-create=(self)"),
         ("cross-origin-opener-policy", "same-origin"),
         ("cross-origin-resource-policy", "same-origin"),
+        // Browsers ignore it over plain HTTP (only localhost may be), and keep to HTTPS after.
+        ("strict-transport-security", "max-age=31536000"),
     ] {
         h.insert(name, HeaderValue::from_static(value));
     }
@@ -616,11 +619,14 @@ struct LoginRequest {
 }
 
 async fn login(State(c): State<Shared>, Extension(client): Extension<Client>, Json(req): Json<LoginRequest>) -> Response {
-    if !limits().0.check(&client.ip.to_string()) {
+    if !limits().0.check(&crate::limit_key(client.ip)) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many attempts; wait a minute");
     }
+    // Anyone can try a name, and failures are kept 400 days: only as much of it as a name can
+    // be (admins' names are at most 32 characters).
+    let username: String = req.username.trim().chars().filter(|c| !c.is_control()).take(40).collect();
     let row: Option<(i64, Option<String>, i64, i64)> = match sqlx::query_as("SELECT id, password_hash, disabled, locked_until FROM admins WHERE username = ?")
-        .bind(req.username.trim())
+        .bind(&username)
         .fetch_optional(&c.pool)
         .await
     {
@@ -634,7 +640,7 @@ async fn login(State(c): State<Shared>, Extension(client): Extension<Client>, Js
             &req.password,
             "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$k8xR2o1fpLwqgMB0ZDzR2X0Hr7nCMuq1H1IMpJzSo4o",
         );
-        c.audit(req.username.trim(), Some(&client), "sign-in failed", "no such admin").await;
+        c.audit(&username, Some(&client), "sign-in failed", "no such admin").await;
         return refused();
     };
     if identity::now() < locked_until {
@@ -642,7 +648,7 @@ async fn login(State(c): State<Shared>, Extension(client): Extension<Client>, Js
     }
     let valid = hash.as_deref().is_some_and(|h| auth::check_password(&req.password, h));
     if !valid || disabled != 0 {
-        c.failed(id, req.username.trim(), &client, "password").await;
+        c.failed(id, &username, &client, "password").await;
         return refused();
     }
     let (totp, passkeys, _) = match c.factors(id).await {
@@ -663,7 +669,7 @@ struct CodeRequest {
 
 /// A TOTP code: finishes a sign-in, or confirms it's still the admin.
 async fn login_totp(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Json(req): Json<CodeRequest>) -> Response {
-    if !limits().0.check(&client.ip.to_string()) {
+    if !limits().0.check(&crate::limit_key(client.ip)) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many attempts; wait a minute");
     }
     let s = match c.session(&headers, &client).await {
@@ -701,7 +707,7 @@ async fn login_totp(State(c): State<Shared>, Extension(client): Extension<Client
 }
 
 async fn login_recovery(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Json(req): Json<CodeRequest>) -> Response {
-    if !limits().0.check(&client.ip.to_string()) {
+    if !limits().0.check(&crate::limit_key(client.ip)) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many attempts; wait a minute");
     }
     let s = match c.session(&headers, &client).await {
@@ -745,7 +751,7 @@ async fn second_factor_done(c: &Coordinator, s: &Session, client: &Client, how: 
 }
 
 async fn passkey_login_begin(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap) -> Response {
-    if !limits().0.check(&client.ip.to_string()) {
+    if !limits().0.check(&crate::limit_key(client.ip)) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many attempts; wait a minute");
     }
     // After a password (or to confirm it's them), the admin's own passkeys; else any (discoverable).
@@ -780,7 +786,7 @@ struct PasskeyFinish {
 }
 
 async fn passkey_login_finish(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Json(req): Json<PasskeyFinish>) -> Response {
-    if !limits().0.check(&client.ip.to_string()) {
+    if !limits().0.check(&crate::limit_key(client.ip)) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many attempts; wait a minute");
     }
     let Ok(Some((for_admin, challenge))) = c.take_challenge(&req.challenge_id, "login").await else {
@@ -853,7 +859,7 @@ struct SetupRequest {
 
 /// A setup link: the admin chooses a password, then must add a second factor.
 async fn setup(State(c): State<Shared>, Extension(client): Extension<Client>, Json(req): Json<SetupRequest>) -> Response {
-    if !limits().0.check(&client.ip.to_string()) {
+    if !limits().0.check(&crate::limit_key(client.ip)) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many attempts; wait a minute");
     }
     let row: Option<(i64, String)> =
@@ -1401,7 +1407,7 @@ async fn overview(State(c): State<Shared>, Extension(client): Extension<Client>,
     }
 }
 
-/// Where a server is, for the map: its host's address, located.
+/// Where a server is, for the map: its host's address (a public one), located.
 async fn server_place(c: &Coordinator, host: &str) -> Option<Value> {
     if host.is_empty() {
         return None;
@@ -1412,9 +1418,12 @@ async fn server_place(c: &Coordinator, host: &str) -> Option<Value> {
             .await
             .ok()?
             .ok()?
-            .next()?
-            .ip(),
+            .map(|a| a.ip())
+            .find(|ip| crate::public_ip(*ip))?,
     };
+    if !crate::public_ip(ip) {
+        return None;
+    }
     let p = c.geo.get()?.lookup(ip)?;
     Some(json!({ "lat": p.lat, "lon": p.lon, "city": p.city, "country": p.country }))
 }
