@@ -22,7 +22,9 @@ async fn start(name: &str) -> Test {
     std::fs::create_dir_all(&dir).unwrap();
     let c = Coordinator::open(&dir.join("c.db").to_string_lossy(), "TOKEN".into()).await.unwrap();
     Test {
-        router: Arc::new(c).router().layer(axum::extract::connect_info::MockConnectInfo(std::net::SocketAddr::from(([192, 0, 2, 1], 1)))),
+        router: Arc::new(c)
+            .router()
+            .layer(axum::extract::connect_info::MockConnectInfo(std::net::SocketAddr::from(([192, 0, 2, 1], 1)))),
         dir,
     }
 }
@@ -46,7 +48,12 @@ impl Test {
         assert_eq!(status, StatusCode::OK, "{v}");
         let secret = v["secret"].as_str().unwrap().to_string();
         let (status, v) = self
-            .call("POST", "/v1/heartbeat", Some(&secret), Some(json!({ "name": server_id, "host": server_id, "names": [server_id], "listed": false })))
+            .call(
+                "POST",
+                "/v1/heartbeat",
+                Some(&secret),
+                Some(json!({ "name": server_id, "host": server_id, "names": [server_id], "listed": false })),
+            )
             .await;
         assert_eq!(status, StatusCode::OK, "{v}");
         secret
@@ -75,7 +82,9 @@ async fn joining_needs_the_token() {
     let (status, _) = t.call("POST", "/v1/heartbeat", Some("nope"), Some(json!({ "name": "A", "host": "a.example" }))).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED);
     let secret = t.join("server-a").await;
-    let (status, _) = t.call("POST", "/v1/heartbeat", Some(&secret), Some(json!({ "name": "A", "host": "server-a", "listed": true }))).await;
+    let (status, _) = t
+        .call("POST", "/v1/heartbeat", Some(&secret), Some(json!({ "name": "A", "host": "server-a", "listed": true })))
+        .await;
     assert_eq!(status, StatusCode::OK);
     // Joining again as an existing server needs its current secret.
     let (status, _) = t.call("POST", "/v1/join", None, Some(json!({ "token": "TOKEN", "server_id": "server-a" }))).await;
@@ -88,7 +97,13 @@ async fn joining_needs_the_token() {
 async fn listings_are_checked() {
     let t = start("listing").await;
     let secret = t.join("server-a").await;
-    for bad in [json!([]), json!("x"), json!({ "name": "A\u{7}", "host": "a.example" }), json!({ "name": "A", "host": "a b" }), json!({ "name": "A", "host": "a.example", "ports": { "api": 0, "login": 1 } })] {
+    for bad in [
+        json!([]),
+        json!("x"),
+        json!({ "name": "A\u{7}", "host": "a.example" }),
+        json!({ "name": "A", "host": "a b" }),
+        json!({ "name": "A", "host": "a.example", "ports": { "api": 0, "login": 1 } }),
+    ] {
         let (status, _) = t.call("POST", "/v1/heartbeat", Some(&secret), Some(bad.clone())).await;
         assert!(status.is_client_error(), "{bad} was taken ({status})");
     }
@@ -101,7 +116,8 @@ async fn a_server_only_uses_its_own_names() {
     let t = start("names-own").await;
     let (a, b) = (t.join("server-a").await, t.join("server-b").await);
     // B says it's server-a too: ignored, the name is A's.
-    t.call("POST", "/v1/heartbeat", Some(&b), Some(json!({ "name": "B", "host": "server-b", "names": ["server-a"] }))).await;
+    t.call("POST", "/v1/heartbeat", Some(&b), Some(json!({ "name": "B", "host": "server-b", "names": ["server-a"] })))
+        .await;
     let kiwi = identity::Identity::generate();
     // A signature players made for A (server-a), brought by B.
     let r = t.changes(&b, json!([link(&kiwi, "server-a", "Kiwi")])).await;
@@ -115,7 +131,13 @@ async fn directory_lists_live_listed_servers_busiest_first() {
     let t = start("directory").await;
     for (id, players, listed) in [("quiet", 1, true), ("busy", 40, true), ("hidden", 99, false)] {
         let secret = t.join(id).await;
-        t.call("POST", "/v1/heartbeat", Some(&secret), Some(json!({ "name": id, "host": id, "listed": listed, "players_online": players }))).await;
+        t.call(
+            "POST",
+            "/v1/heartbeat",
+            Some(&secret),
+            Some(json!({ "name": id, "host": id, "listed": listed, "players_online": players })),
+        )
+        .await;
     }
     t.join("never-heard-from").await;
     let (_, v) = t.call("GET", "/v1/servers", None, None).await;
@@ -132,7 +154,10 @@ async fn friends_made_on_one_server_reach_another() {
 
     // Both play on A and become friends there.
     let r = t
-        .changes(&a, json!([link(&kiwi, "server-a", "Kiwi"), link(&tank, "server-a", "Tank"), { "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": true }]))
+        .changes(
+            &a,
+            json!([link(&kiwi, "server-a", "Kiwi"), link(&tank, "server-a", "Tank"), { "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": true }]),
+        )
         .await;
     assert!(r.iter().all(|r| r.get("error").is_none()), "{r:?}");
 
@@ -141,17 +166,28 @@ async fn friends_made_on_one_server_reach_another() {
     assert_eq!(status, StatusCode::FORBIDDEN, "not linked on B yet");
     t.changes(&b, json!([link(&kiwi, "server-b", "Kiwi")])).await;
     let (_, v) = t.relations(&b, &kiwi.global_id()).await;
-    assert_eq!(v["relations"], json!([{ "other": tank.global_id(), "friends": true, "blocked": false, "blocked_by": false }]));
+    assert_eq!(
+        v["relations"],
+        json!([{ "other": tank.global_id(), "friends": true, "blocked": false, "blocked_by": false }])
+    );
 
     // B can't act for Tank, who never linked there.
-    let r = t.changes(&b, json!([{ "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": false }])).await;
+    let r = t
+        .changes(&b, json!([{ "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": false }]))
+        .await;
     assert!(r[0]["error"].as_str().unwrap().contains("isn't linked"));
 
     // A block on A ends the friendship everywhere, and a friendship can't come back past it.
-    t.changes(&a, json!([{ "op": "block", "from": tank.global_id(), "to": kiwi.global_id(), "blocked": true }])).await;
+    t.changes(&a, json!([{ "op": "block", "from": tank.global_id(), "to": kiwi.global_id(), "blocked": true }]))
+        .await;
     let (_, v) = t.relations(&b, &kiwi.global_id()).await;
-    assert_eq!(v["relations"], json!([{ "other": tank.global_id(), "friends": false, "blocked": false, "blocked_by": true }]));
-    let r = t.changes(&a, json!([{ "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": true }])).await;
+    assert_eq!(
+        v["relations"],
+        json!([{ "other": tank.global_id(), "friends": false, "blocked": false, "blocked_by": true }])
+    );
+    let r = t
+        .changes(&a, json!([{ "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": true }]))
+        .await;
     assert!(r[0]["error"].as_str().unwrap().contains("blocked"));
 }
 
@@ -160,19 +196,30 @@ async fn friends_see_which_other_server_a_friend_is_on() {
     let t = start("presence").await;
     let (a, b) = (t.join("server-a").await, t.join("server-b").await);
     let (kiwi, tank, pest) = (identity::Identity::generate(), identity::Identity::generate(), identity::Identity::generate());
-    t.changes(&a, json!([link(&kiwi, "server-a", "Kiwi"), link(&pest, "server-a", "Pest"), { "op": "friends", "a": kiwi.global_id(), "b": pest.global_id(), "friends": true }]))
-        .await;
+    t.changes(
+        &a,
+        json!([link(&kiwi, "server-a", "Kiwi"), link(&pest, "server-a", "Pest"), { "op": "friends", "a": kiwi.global_id(), "b": pest.global_id(), "friends": true }]),
+    )
+    .await;
     // Tank plays on B only, under another name there; Kiwi and Tank are friends.
-    t.changes(&b, json!([link(&tank, "server-b", "TankB"), link(&kiwi, "server-b", "Kiwi"), { "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": true }]))
-        .await;
+    t.changes(
+        &b,
+        json!([link(&tank, "server-b", "TankB"), link(&kiwi, "server-b", "Kiwi"), { "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": true }]),
+    )
+    .await;
     let beat = |online: Vec<String>, name: &str| json!({ "name": name, "host": name.to_lowercase(), "region": "Oceania", "online": online });
 
     // B says Tank is online, and Pest too, who isn't B's to speak for.
-    let (status, v) = t.call("POST", "/v1/heartbeat", Some(&b), Some(beat(vec![tank.global_id(), pest.global_id()], "Server-B"))).await;
+    let (status, v) = t
+        .call("POST", "/v1/heartbeat", Some(&b), Some(beat(vec![tank.global_id(), pest.global_id()], "Server-B")))
+        .await;
     assert_eq!(status, StatusCode::OK, "{v}");
     let (_, v) = t.relations(&a, &kiwi.global_id()).await;
     let rel = |v: &Value, who: &identity::Identity| v["relations"].as_array().unwrap().iter().find(|r| r["other"] == json!(who.global_id())).cloned().unwrap();
-    assert_eq!(rel(&v, &tank)["elsewhere"], json!({ "username": "TankB", "server": "Server-B", "region": "Oceania", "host": "server-b" }));
+    assert_eq!(
+        rel(&v, &tank)["elsewhere"],
+        json!({ "username": "TankB", "server": "Server-B", "region": "Oceania", "host": "server-b" })
+    );
     assert!(rel(&v, &pest).get("elsewhere").is_none(), "B spoke for a player it doesn't have");
 
     // Asked on B itself, B's own players aren't "elsewhere".
@@ -186,7 +233,8 @@ async fn friends_see_which_other_server_a_friend_is_on() {
 
     // Only friends see it.
     t.call("POST", "/v1/heartbeat", Some(&b), Some(beat(vec![tank.global_id()], "Server-B"))).await;
-    t.changes(&b, json!([{ "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": false }])).await;
+    t.changes(&b, json!([{ "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": false }]))
+        .await;
     let (_, v) = t.relations(&a, &kiwi.global_id()).await;
     assert!(rel(&v, &tank).get("elsewhere").is_none());
 }
@@ -204,7 +252,9 @@ async fn links_need_the_players_signature_for_that_server() {
     forged["username"] = json!("Impostor");
     let r = t.changes(&a, json!([forged])).await;
     assert!(r[0]["error"].as_str().unwrap().contains("signature"));
-    let r = t.changes(&a, json!([link(&kiwi, "server-a", "Kiwi"), { "op": "unlink", "global_id": kiwi.global_id() }])).await;
+    let r = t
+        .changes(&a, json!([link(&kiwi, "server-a", "Kiwi"), { "op": "unlink", "global_id": kiwi.global_id() }]))
+        .await;
     assert!(r.iter().all(|r| r.get("error").is_none()));
     let (status, _) = t.relations(&a, &kiwi.global_id()).await;
     assert_eq!(status, StatusCode::FORBIDDEN, "unlinked");
@@ -215,9 +265,7 @@ async fn names_belong_to_one_player_across_the_group() {
     let t = start("names").await;
     let (a, b) = (t.join("server-a").await, t.join("server-b").await);
     let (kiwi, other) = (identity::Identity::generate(), identity::Identity::generate());
-    let claim = |who: &identity::Identity, host: &str, name: &str| {
-        json!({ "name": name, "global_id": who.global_id(), "host": host, "time": 5, "signature": who.sign_link(host, name, 5) })
-    };
+    let claim = |who: &identity::Identity, host: &str, name: &str| json!({ "name": name, "global_id": who.global_id(), "host": host, "time": 5, "signature": who.sign_link(host, name, 5) });
 
     // Kiwi takes the name on A; nobody else gets it on B, whatever the case; Kiwi does.
     let (status, _) = t.call("POST", "/v1/names/claim", Some(&a), Some(claim(&kiwi, "server-a", "Kiwi"))).await;
@@ -252,8 +300,15 @@ async fn links_made_before_names_existed_reserve_theirs() {
     let first = identity::Identity::generate();
     {
         let c = Coordinator::open(&db, "T".into()).await.unwrap();
-        sqlx::query("INSERT INTO servers (id, secret_hash, joined_at) VALUES ('s', 'h', 0)").execute(&c.pool).await.unwrap();
-        sqlx::query("INSERT INTO links VALUES (?, 's', 'Old', 1)").bind(first.global_id()).execute(&c.pool).await.unwrap();
+        sqlx::query("INSERT INTO servers (id, secret_hash, joined_at) VALUES ('s', 'h', 0)")
+            .execute(&c.pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO links VALUES (?, 's', 'Old', 1)")
+            .bind(first.global_id())
+            .execute(&c.pool)
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO links VALUES ('ZZZ', 's', 'old', 2)").execute(&c.pool).await.unwrap();
         sqlx::query("DELETE FROM names").execute(&c.pool).await.unwrap();
     }

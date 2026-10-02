@@ -415,7 +415,12 @@ impl Coordinator {
         let linked: std::collections::HashSet<String> = if online.is_empty() {
             std::collections::HashSet::new()
         } else {
-            sqlx::query_scalar("SELECT global_id FROM links WHERE server_id = ?").bind(server).fetch_all(&self.pool).await?.into_iter().collect()
+            sqlx::query_scalar("SELECT global_id FROM links WHERE server_id = ?")
+                .bind(server)
+                .fetch_all(&self.pool)
+                .await?
+                .into_iter()
+                .collect()
         };
         let now = identity::now();
         let mut presence = self.presence.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -438,16 +443,17 @@ impl Coordinator {
     /// Where a friend is playing, as their friends' servers show it: that server's name,
     /// region and host, and the friend's name there.
     async fn whereabouts(&self, server: &str, global_id: &str) -> sqlx::Result<Option<Value>> {
-        let row: Option<(Option<String>, String)> = sqlx::query_as(
-            "SELECT s.listing, l.username FROM servers s JOIN links l ON l.server_id = s.id WHERE s.id = ? AND l.global_id = ?",
-        )
-        .bind(server)
-        .bind(global_id)
-        .fetch_optional(&self.pool)
-        .await?;
+        let row: Option<(Option<String>, String)> =
+            sqlx::query_as("SELECT s.listing, l.username FROM servers s JOIN links l ON l.server_id = s.id WHERE s.id = ? AND l.global_id = ?")
+                .bind(server)
+                .bind(global_id)
+                .fetch_optional(&self.pool)
+                .await?;
         let Some((Some(listing), username)) = row else { return Ok(None) };
         let Ok(listing) = serde_json::from_str::<Listing>(&listing) else { return Ok(None) };
-        Ok(Some(json!({ "username": username, "server": listing.name, "region": listing.region, "host": listing.host })))
+        Ok(Some(
+            json!({ "username": username, "server": listing.name, "region": listing.region, "host": listing.host }),
+        ))
     }
 
     async fn linked(&self, server: &str, global_id: &str) -> sqlx::Result<bool> {
