@@ -569,6 +569,25 @@ async fn trusted_subnet(ctx: &mut Ctx) -> Result<()> {
     b.disconnect().await
 }
 
+/// A station URL's address is checked whatever its scheme: a `udp:` URL naming someone
+/// else's address is corrected, and a host name never reaches other players.
+async fn station_url_schemes(ctx: &mut Ctx) -> Result<()> {
+    let mut a = ctx.player("Host").await?;
+    let mut b = ctx.player("Guest").await?;
+    a.register_urls(&["udp:/address=198.51.100.1;port=3074;type=2", "prudps:/address=victim.example;port=3074;type=3"]).await?;
+    let lobby = a.create_session(LOBBY).await?;
+    a.add_participants(lobby, &[a.pid], &[]).await?;
+    let found = b.search_with_participants(&[a.pid]).await?;
+    let room = found
+        .iter()
+        .find(|r| r.game_session_search_result.session_key.session_id == lobby)
+        .ok_or_else(|| eyre!("lobby not found"))?;
+    let addrs: Vec<String> = room.game_session_search_result.host_urls.0.iter().map(|u| u.address.clone()).collect();
+    ensure!(!addrs.is_empty() && addrs.iter().all(|a| a.starts_with("127.")), "another address reached the friend: {addrs:?}");
+    a.disconnect().await?;
+    b.disconnect().await
+}
+
 /// The newest sign-in wins: the same account signing in from another PC
 /// closes the first game's connection, and what it left (its lobby) goes with
 /// it; the new one works as usual.
@@ -880,6 +899,7 @@ const SCENARIOS: &[&str] = &[
     "private-room-join",
     "split-limits",
     "private-room-hidden",
+    "station-url-schemes",
 ];
 
 #[tokio::main]
@@ -960,6 +980,7 @@ async fn main() -> Result<()> {
                 "private-room-join" => private_room_join(&mut ctx).await,
                 "split-limits" => split_limits(&mut ctx).await,
                 "private-room-hidden" => private_room_hidden(&mut ctx).await,
+                "station-url-schemes" => station_url_schemes(&mut ctx).await,
                 // Not in the default list: a server in the "mutual" mode, one requiring
                 // identities, and two servers.
                 "friends-mutual" => friends_mutual(&mut ctx).await,

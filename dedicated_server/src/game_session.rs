@@ -209,6 +209,49 @@ impl Subnet {
     }
 }
 
+/// A station URL other players may be sent to, taken apart: its scheme and its
+/// parameters in order. `None` for anything else: a scheme the game doesn't use for
+/// players (`prudp`, `prudps`, `udp`), or an address that isn't an IPv4 literal, which is
+/// all the game writes (a host name, or any other scheme, got past the address checks
+/// below, which only knew `prudp:/address=` and `prudps:/address=`).
+fn station_url_parts(url: &str) -> Option<(&str, Vec<(&str, &str)>)> {
+    let (scheme, rest) = url.split_once(":/")?;
+    if !["prudp", "prudps", "udp"].iter().any(|s| s.eq_ignore_ascii_case(scheme)) {
+        return None;
+    }
+    let params: Vec<(&str, &str)> = rest.split(';').map(|p| p.split_once('=')).collect::<Option<_>>()?;
+    let addresses: Vec<&str> = params.iter().filter(|(k, _)| *k == "address").map(|(_, v)| *v).collect();
+    let ports: Vec<&str> = params.iter().filter(|(k, _)| *k == "port").map(|(_, v)| *v).collect();
+    let valid = !addresses.is_empty()
+        && addresses.iter().all(|a| a.parse::<std::net::Ipv4Addr>().is_ok())
+        && !ports.is_empty()
+        && ports.iter().all(|p| p.parse::<u16>().is_ok());
+    valid.then_some((scheme, params))
+}
+
+/// `url` with each address `rewrite` gives a new one for replaced (the rest as written), or
+/// `None` if it isn't a station URL players may be sent to ([`station_url_parts`]).
+fn rewrite_addresses(url: &str, rewrite: impl Fn(std::net::Ipv4Addr) -> Option<std::net::IpAddr>) -> Option<String> {
+    let (scheme, params) = station_url_parts(url)?;
+    let mut changed = false;
+    let params: Vec<String> = params
+        .into_iter()
+        .map(|(k, v)| match (k, v.parse().ok().and_then(&rewrite)) {
+            ("address", Some(new)) => {
+                changed = true;
+                format!("address={new}")
+            }
+            _ => format!("{k}={v}"),
+        })
+        .collect();
+    Some(if changed { format!("{scheme}:/{}", params.join(";")) } else { url.to_string() })
+}
+
+/// Only the station URLs other players can be sent to ([`station_url_parts`]).
+fn allowed_station_urls(urls: Vec<String>) -> Vec<String> {
+    urls.into_iter().filter(|u| station_url_parts(u).is_some()).collect()
+}
+
 /// The station URLs other players get for a client, given the address the
 /// server saw it connect from.
 ///
@@ -219,25 +262,17 @@ impl Subnet {
 /// the community plays over, `10.8.0.0/16`), a client connecting from inside that network gets every
 /// other address in its URLs replaced by the one it connected from: the
 /// address the server itself reached it on. Without it, URLs are kept as sent
-/// (upstream behaviour).
+/// (upstream behaviour). URLs players can't be sent to are left out.
 fn station_urls_for_peers(urls: Vec<String>, observed: std::net::IpAddr, trusted: Option<Subnet>) -> Vec<String> {
     let Some(trusted) = trusted.filter(|t| t.contains(observed)) else {
-        return urls;
+        return allowed_station_urls(urls);
     };
-    urls.into_iter()
-        .map(|url| {
-            url.split(';')
-                .map(|part| {
-                    for prefix in ["prudp:/address=", "prudps:/address=", "address="] {
-                        if let Some(addr) = part.strip_prefix(prefix) {
-                            let other = addr.parse::<std::net::IpAddr>().is_ok_and(|ip| ip != observed && !trusted.contains(ip));
-                            return if other { format!("{prefix}{observed}") } else { part.to_string() };
-                        }
-                    }
-                    part.to_string()
-                })
-                .collect::<Vec<_>>()
-                .join(";")
+    urls.iter()
+        .filter_map(|url| {
+            rewrite_addresses(url, |ip| {
+                let ip = std::net::IpAddr::V4(ip);
+                (ip != observed && !trusted.contains(ip)).then_some(observed)
+            })
         })
         .collect()
 }
@@ -266,24 +301,15 @@ fn is_public(ip: std::net::IpAddr) -> bool {
 /// Station URLs other players may be sent to: a public address in them must be
 /// the one this client connected from (or the relay's). Anything else would
 /// have other players' games send traffic wherever a client said. LAN
-/// addresses stay, for players on one network.
+/// addresses stay, for players on one network. URLs players can't be sent to
+/// at all (another scheme, a host name: [`station_url_parts`]) are left out.
 pub(crate) fn only_reachable_addresses(urls: Vec<String>, observed: std::net::IpAddr, relay: Option<std::net::Ipv4Addr>) -> Vec<String> {
-    urls.into_iter()
-        .map(|url| {
-            url.split(';')
-                .map(|part| {
-                    for prefix in ["prudp:/address=", "prudps:/address=", "address="] {
-                        if let Some(addr) = part.strip_prefix(prefix) {
-                            let foreign = addr
-                                .parse::<std::net::IpAddr>()
-                                .is_ok_and(|ip| is_public(ip) && ip != observed && !matches!((ip, relay), (std::net::IpAddr::V4(v4), Some(r)) if v4 == r));
-                            return if foreign { format!("{prefix}{observed}") } else { part.to_string() };
-                        }
-                    }
-                    part.to_string()
-                })
-                .collect::<Vec<_>>()
-                .join(";")
+    urls.iter()
+        .filter_map(|url| {
+            rewrite_addresses(url, |ip| {
+                let foreign = is_public(std::net::IpAddr::V4(ip)) && std::net::IpAddr::V4(ip) != observed && relay != Some(ip);
+                foreign.then_some(observed)
+            })
         })
         .collect()
 }
@@ -776,11 +802,15 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             warn!(logger, "User {user_id} registers too many or too long station URLs; refused");
             return Err(Error::AccessDenied);
         }
-        let mut urls = station_urls_for_peers(sent.clone(), ci.address().ip(), trusted);
+        let allowed = allowed_station_urls(sent.clone());
+        if allowed.len() != sent.len() {
+            warn!(logger, "User {user_id} registers station URLs other players can't be sent to; left out");
+        }
+        let mut urls = station_urls_for_peers(allowed.clone(), ci.address().ip(), trusted);
         // Outside the trusted network: the address the NAT helper checked
         // (the player's public one, or the relay's), in place of the one
         // the game registered, local or public.
-        if urls == sent {
+        if urls == allowed {
             let name = self.storage.find_username_by_user_id(user_id).ok().flatten();
             if let Some(advertise) = name.and_then(|name| crate::nat_helper::advertised_for(&name, ci.address().ip())) {
                 urls = crate::nat_helper::urls_with_public_address(urls, advertise);
@@ -1383,6 +1413,7 @@ mod tests {
     use super::attribute_value;
     use super::may_change_session;
     use super::rooms_for_friend_search;
+    use super::only_reachable_addresses;
     use super::station_urls_for_peers;
     use super::NotificationEvent;
     use super::Subnet;
@@ -1498,6 +1529,43 @@ mod tests {
         // Not configured, or a client from outside the trusted network: kept as sent.
         assert_eq!(station_urls_for_peers(sent.clone(), vpn, None), sent);
         assert_eq!(station_urls_for_peers(sent.clone(), "203.0.113.9".parse().unwrap(), trusted), sent);
+    }
+
+    #[test]
+    fn station_urls_players_cant_be_sent_to_are_left_out() {
+        let observed: std::net::IpAddr = "203.0.113.9".parse().unwrap();
+        let sent: Vec<String> = [
+            "prudp:/address=198.51.100.1;port=3074;type=2",
+            "udp:/address=198.51.100.1;port=80",
+            "prudps:/address=victim.example;port=3074",
+            "http:/address=192.168.1.1;port=80",
+            "prudp:/address=::1;port=3074",
+            "prudp:/port=3074",
+            "prudp:/address=10.0.0.5;port=13000;RVCID=5;hdrType=0",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            only_reachable_addresses(sent.clone(), observed, None),
+            [
+                "prudp:/address=203.0.113.9;port=3074;type=2",
+                "udp:/address=203.0.113.9;port=80",
+                "prudp:/address=10.0.0.5;port=13000;RVCID=5;hdrType=0"
+            ]
+        );
+        let trusted = Subnet::parse("10.8.0.0/16");
+        let vpn: std::net::IpAddr = "10.8.1.2".parse().unwrap();
+        assert_eq!(
+            station_urls_for_peers(sent, vpn, trusted),
+            [
+                "prudp:/address=10.8.1.2;port=3074;type=2",
+                "udp:/address=10.8.1.2;port=80",
+                "prudp:/address=10.8.1.2;port=13000;RVCID=5;hdrType=0"
+            ]
+        );
+        // Unchanged URLs keep their exact text (the probe check compares it).
+        let own = vec!["prudp:/port=13000;address=203.0.113.9;type=2;RVCID=7".to_string()];
+        assert_eq!(only_reachable_addresses(own.clone(), observed, None), own);
     }
 
     #[test]
