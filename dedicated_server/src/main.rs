@@ -6,6 +6,7 @@ extern crate quazal_macros;
 #[macro_use]
 extern crate slog;
 
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::io::Write;
@@ -197,12 +198,37 @@ fn handle_user_packet(logger: &Logger, packet: QPacket, client: SocketAddr, sock
     // destination its own (a VPN, a mobile network) nobody else reaches. The NAT helper knows
     // the address that works - the player's checked public one, or the relay's - when it's
     // the only player there.
-    let reply = nat_helper::advertised_for_ip(client.ip()).map_or(client, SocketAddr::V4);
+    //
+    // The game asks the moment its socket opens, a little before its hook has reached the
+    // helper, and asks again every quarter second until answered: so it isn't answered until
+    // the helper knows it, for up to ECHO_WAIT, and then with what was seen.
+    let reply = match nat_helper::advertised_for_ip(client.ip()) {
+        Some(advertise) => SocketAddr::V4(advertise),
+        None if nat_helper::relay_ip().is_some() && echo_waiting(client.ip()) => return,
+        None => client,
+    };
     let mut response = packet.payload;
     write!(&mut response, "udp:/address={};port={}\0", reply.ip(), reply.port()).expect("writing to a Vec can't fail");
     if let Err(e) = socket.send_to(&response, client) {
         warn!(logger, "user packet reply to {client} failed: {e}");
     }
+}
+
+/// How long the address echo waits for the NAT helper to know a player.
+const ECHO_WAIT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Whether an echo from `ip` should go unanswered for now: it first asked less than
+/// [`ECHO_WAIT`] ago (asking again a minute later starts over).
+fn echo_waiting(ip: std::net::IpAddr) -> bool {
+    static FIRST_ASKED: std::sync::Mutex<Option<HashMap<std::net::IpAddr, std::time::Instant>>> = std::sync::Mutex::new(None);
+    let now = std::time::Instant::now();
+    let mut asked = FIRST_ASKED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let asked = asked.get_or_insert_with(HashMap::new);
+    asked.retain(|_, t| now.duration_since(*t) < std::time::Duration::from_secs(60));
+    if asked.len() >= 10_000 {
+        return false;
+    }
+    now.duration_since(*asked.entry(ip).or_insert(now)) < ECHO_WAIT
 }
 
 /// Log level from the environment variable `var` (default: info).
