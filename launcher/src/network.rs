@@ -83,6 +83,36 @@ pub enum Error {
     ConfigServer(#[from] reqwest::Error),
 }
 
+/// What a server says about itself, asked over HTTPS on `port` (443, or the
+/// port it gives its HTTPS API): None when it has no certificate for `host`
+/// or doesn't answer there. Unlike the plain answer, nobody on the way can
+/// change this one.
+pub async fn server_info_tls(host: &str, port: u16) -> Option<setup::server_info::ServerInfo> {
+    if !setup::net::valid_host(host) || host.parse::<std::net::IpAddr>().is_ok() {
+        return None;
+    }
+    let url = if port == 443 {
+        format!("https://{host}/api/info")
+    } else {
+        format!("https://{host}:{port}/api/info")
+    };
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .ok()?;
+    let mut resp = client.get(url).header("accept", "application/json").send().await.ok()?.error_for_status().ok()?;
+    let mut body = Vec::new();
+    while let Some(chunk) = resp.chunk().await.ok()? {
+        if body.len() + chunk.len() > 64 * 1024 {
+            return None;
+        }
+        body.extend_from_slice(&chunk);
+    }
+    // Another site's JSON on the same name isn't a game server's answer.
+    setup::server_info::parse_json(std::str::from_utf8(&body).ok()?).filter(|i| !i.version.is_empty())
+}
+
 /// Whether `url` (https://host) is a network's coordinator: its `/v1/info`
 /// answers with the coordinator's name and how many servers it has.
 pub async fn is_coordinator(url: &str) -> bool {

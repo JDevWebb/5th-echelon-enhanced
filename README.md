@@ -504,7 +504,7 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
   - requests, blocking and player search in the overlay;
   - friends-only lists and invites for public servers.
 - An identity per player that links their accounts across servers, and signs them in on a new PC.
-- A coordinator that shares friends between servers, reserves names across them, and keeps a server directory; the launcher adopts it on joining, pings every server and preselects the best.
+- A coordinator that shares friends between servers, reserves names across them, and keeps a server directory; the launcher adopts it on joining a server that names it over HTTPS, pings every server and preselects the best.
 - Every account is linked to its player's identity: the launcher finds your account on a server by itself, and asks for a name only when you have none there yet. Servers can require it (`[limits] require_identity`, on by default with the installer).
 - Renaming, with the account id kept, and warnings in the overlay about players using a friend's name on another server.
 - Each server gets its own random password (upstream reused one everywhere); on Windows it's saved encrypted.

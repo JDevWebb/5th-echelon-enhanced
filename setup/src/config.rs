@@ -40,6 +40,11 @@ pub struct Profile {
     /// The server's NAT helper port, when it isn't the usual 21128.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nat_port: Option<u16>,
+    /// The server has answered over HTTPS, with its API there. From then on
+    /// only HTTPS is used for it: a plain answer could come from anyone on
+    /// the way, so the setup stops rather than send the password readable.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub https: bool,
 }
 
 /// The NAT helper's usual port (`nat_proto::DEFAULT_PORT`).
@@ -78,6 +83,11 @@ impl Profile {
         };
         self.login_port = (ports.login != crate::QUAZAL_PORT).then_some(ports.login);
         self.nat_port = ports.nat.filter(|p| *p != nat_proto_default());
+    }
+
+    /// Whether its API is plain HTTP: passwords and sign-ins travel readable.
+    pub fn unencrypted(&self) -> bool {
+        self.api_server_url().scheme() != "https"
     }
 
     /// Whether the profile has an account to sign in with.
@@ -269,9 +279,29 @@ mod tests {
         assert_eq!((p.api_server_url.clone(), p.login_port, p.nat_port), (None, None, None));
         assert_eq!(p.api_server_url().as_str(), "http://blacklist.example.com:50051/");
 
+        assert!(p.unencrypted());
         // HTTPS offered: used.
         p.use_ports(&crate::server_info::Ports { api: 80, login: 21126, nat: None, api_tls: Some(443) });
         assert_eq!(p.api_server_url().as_str(), "https://blacklist.example.com/");
+        assert!(!p.unencrypted());
+    }
+
+    #[test]
+    fn a_server_with_https_is_remembered() {
+        let dir = temp_dir("config-https");
+        let mut cfg = Config::load(&dir);
+        cfg.update(|c| {
+            c.upsert_profile(Profile {
+                name: "Kiwi".into(),
+                server: "bl.example.com".into(),
+                https: true,
+                ..Default::default()
+            });
+        })
+        .unwrap();
+        assert!(std::fs::read_to_string(dir.join("uplay.toml")).unwrap().contains("Https = true"));
+        assert!(Config::load(&dir).current_profile().unwrap().https);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

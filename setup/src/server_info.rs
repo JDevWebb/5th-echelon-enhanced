@@ -4,6 +4,11 @@
 //! A server behind a reverse proxy, or with its ports forwarded to other
 //! numbers, reports the ports players use there. Set up reads them, so
 //! players only ever type the server's name.
+//!
+//! The same answer comes over HTTPS from a server with a certificate (the
+//! launcher asks there first, see its `flow`): only that one can be trusted
+//! not to have been changed on the way, so only that one may name a
+//! coordinator or mark a server as having HTTPS.
 
 use std::io::Read;
 use std::io::Write;
@@ -84,7 +89,12 @@ fn parse_response(response: &[u8]) -> Option<ServerInfo> {
         l.starts_with("transfer-encoding:") && l.contains("chunked")
     });
     let body = if chunked { dechunk(body)? } else { body.to_string() };
-    serde_json::from_str(&body).ok()
+    parse_json(&body)
+}
+
+/// The answer's body, however it arrived (the launcher reads the HTTPS one itself).
+pub fn parse_json(body: &str) -> Option<ServerInfo> {
+    serde_json::from_str(body).ok()
 }
 
 /// A chunked body, joined (a proxy may send the answer that way).

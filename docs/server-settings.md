@@ -90,7 +90,7 @@ Without this section, nothing changes. With it:
 - the server hands out these ports, and for any left unset, the port its service listens on: the login port in the online config, the game service in tickets, content downloads, and relay addresses;
 - `GET /api/info` reports them as `ports` (and `host`), and the launcher's **Connect** stores them for the player;
 - `X-Forwarded-For` is believed from the listed proxies (and always from a proxy on this machine), so the rate limits count each player, not the proxy.
-- With **`api_tls`**, launchers and overlays use `https://host[:api_tls]` for the API instead, so passwords and sign-in tokens never travel readable. The launcher falls back to the plain API when that port doesn't answer.
+- With **`api_tls`**, launchers and overlays use `https://host[:api_tls]` for the API instead, so passwords and sign-in tokens never travel readable. The launcher asks `https://host/api/info` first (then the `api_tls` port), and only that answer can name a coordinator. Once a server has answered over HTTPS, the launcher never moves that player back to plain HTTP: if HTTPS stops answering, Connect fails with a message instead. A server that never had HTTPS for that player falls back to the plain API when the HTTPS port doesn't answer, and the checklist then warns that the connection is unencrypted (not for servers on the player's own network).
 - Identity signatures name the host the player typed. The server accepts signatures for its `host`, its public address and its **`aliases`**, and no others, so a signature made for another server can't be replayed here.
 
 ## `[limits]`: rate limits on accounts and logins

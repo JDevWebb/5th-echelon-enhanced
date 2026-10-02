@@ -42,6 +42,14 @@ pub fn is_public(ip: IpAddr) -> bool {
     }
 }
 
+/// Whether a server is on this PC or its own network (`host` as typed, `ip`
+/// what it resolved to): such a server is played over plain HTTP without a
+/// warning, as nobody on the internet is on the way.
+pub fn is_local_server(host: &str, ip: IpAddr) -> bool {
+    let host = host.trim();
+    host == "localhost" || host.ends_with(".localhost") || !is_public(ip)
+}
+
 /// Resolves a server address typed by a player (an IP or a host name).
 pub fn resolve(server: &str) -> Option<IpAddr> {
     let server = server.trim();
@@ -116,6 +124,10 @@ mod tests {
         for private in [[10, 0, 0, 1], [192, 168, 1, 1], [127, 0, 0, 1], [100, 64, 0, 1], [169, 254, 1, 1], [0, 0, 0, 0], [255, 255, 255, 255]] {
             assert!(!is_public(IpAddr::from(private)), "{private:?}");
         }
+        assert!(is_local_server("10.8.0.10", IpAddr::from([10, 8, 0, 10])));
+        assert!(is_local_server("game.localhost", IpAddr::from([203, 0, 114, 5])));
+        assert!(is_local_server("box.lan", IpAddr::from([192, 168, 1, 4])), "a name for a LAN address");
+        assert!(!is_local_server("play.example.org", IpAddr::from([203, 0, 114, 5])));
     }
 
     #[test]

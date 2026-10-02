@@ -73,6 +73,9 @@ pub struct Facts {
     pub server_ports: Option<(bool, bool)>,
     /// The server's API port (50051 unless the server says otherwise).
     pub api_port: Option<u16>,
+    /// The server's API is plain HTTP, and the server isn't on this PC or
+    /// its network (see `net::is_local_server`).
+    pub unencrypted: bool,
     pub account: Option<AccountFact>,
     /// The pinned adapter, its current address, and the adapter the server
     /// is routed through.
@@ -208,6 +211,15 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
                     )
                 }
             });
+            if f.unencrypted {
+                checks.push(Check::new(
+                    "encryption",
+                    Status::Warn,
+                    "Unencrypted connection",
+                    format!("Your password and sign-ins travel readable to {name}: anyone on the way can read them. Ask its operator to set up HTTPS."),
+                    None,
+                ));
+            }
             Some(*ip)
         }
     };
@@ -331,6 +343,7 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
             server: Some(("10.8.0.10".into(), Some(IpAddr::from([10, 8, 0, 10])))),
             server_ports: Some((true, true)),
             api_port: None,
+            unencrypted: false,
             account: Some(AccountFact::Ok("Kiwi".into())),
             pinned: Some("Game VPN".into()),
             pinned_ip: Some(IpAddr::from([10, 8, 1, 2])),
@@ -374,6 +387,15 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
             ..ready_facts()
         };
         assert!(ready(&checklist(&f)), "a server on this PC needs no pin");
+    }
+
+    #[test]
+    fn plain_http_to_a_public_server_is_a_lasting_warning() {
+        let f = Facts { unencrypted: true, ..ready_facts() };
+        let checks = checklist(&f);
+        let check = checks.iter().find(|c| c.id == "encryption").unwrap();
+        assert_eq!(check.status, Status::Warn);
+        assert!(ready(&checks), "a warning, not a failure");
     }
 
     #[test]

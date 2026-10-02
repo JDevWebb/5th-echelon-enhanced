@@ -73,6 +73,7 @@ pub fn gather(game_dir: &Path, cfg: &Config, bundled: Option<&[u8]>) -> (Facts, 
         if let Some(ip) = ip {
             let t = Duration::from_secs(2);
             facts.api_port = Some(profile.api_port());
+            facts.unencrypted = profile.unencrypted() && !net::is_local_server(&profile.server, ip);
             facts.server_ports = Some((net::port_open(ip, profile.api_port(), t), net::port_open(ip, setup::CONFIG_PORT, t)));
             facts.account = Some(if !profile.has_account() {
                 AccountFact::None
@@ -235,6 +236,31 @@ pub fn pick_from_network(address: &str, log: &Log) -> Result<Option<String>, Str
     Ok(Some(listing.host.clone()))
 }
 
+/// What `server` says about itself (`/api/info`), and whether it said so over HTTPS.
+///
+/// HTTPS is asked first: on 443, then on the port the plain answer gives the HTTPS API.
+/// The plain answer could come from anyone on the way, so it's only taken as it is from a
+/// server that never had HTTPS here (`had_https`). From one that did, it's taken only
+/// when it still offers its API over HTTPS (whose certificate is checked when used);
+/// otherwise this fails rather than switch the player to plain HTTP.
+fn server_info(server: &str, had_https: bool) -> Result<(Option<setup::server_info::ServerInfo>, bool), String> {
+    let rt = crate::services::rt();
+    if let Some(info) = rt.block_on(crate::network::server_info_tls(server, 443)) {
+        return Ok((Some(info), true));
+    }
+    let plain = setup::server_info::fetch(server, Duration::from_secs(4));
+    let api_tls = plain.as_ref().and_then(|i| i.ports).and_then(|p| p.api_tls);
+    if let Some(info) = api_tls.filter(|p| *p != 443).and_then(|port| rt.block_on(crate::network::server_info_tls(server, port))) {
+        return Ok((Some(info), true));
+    }
+    if had_https && api_tls.is_none() {
+        return Err(format!(
+            "{server} answered over HTTPS before but doesn't now, so your password isn't sent to it unencrypted. Try again later. If its operator turned HTTPS off, remove {server} under Settings › Servers and accounts, then connect again."
+        ));
+    }
+    Ok((plain, false))
+}
+
 pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done, String> {
     let dir = &plan.game_dir;
 
@@ -268,20 +294,32 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
         server: plan.server.clone(),
         ..Default::default()
     });
-    // A server behind a proxy, or with remapped ports, says which it uses.
-    let info = setup::server_info::fetch(&plan.server, Duration::from_secs(4));
+    // A server behind a proxy, or with remapped ports, says which it uses; over HTTPS when it can.
+    let (info, over_tls) = server_info(&plan.server, profile.https)?;
     if let Some(ports) = info.as_ref().and_then(|i| i.ports) {
         profile.use_ports(&ports);
         if profile.api_server_url.is_some() || profile.login_port.is_some() || profile.nat_port.is_some() {
             say(log, format!("The server uses API port {}, game port {}.", ports.api, ports.login));
         }
     }
-    // HTTPS that doesn't answer (the port closed on a firewall in front): the plain API.
+    // An HTTPS API that doesn't answer (the port closed on a firewall in front): the plain
+    // one, but only on a server that never had HTTPS here, and never quietly (the checklist
+    // keeps warning).
     if let Some(ports) = info.as_ref().and_then(|i| i.ports).filter(|p| p.api_tls.is_some()) {
         if !net::port_open(ip, profile.api_port(), Duration::from_secs(4)) {
+            if profile.https {
+                return Err(format!(
+                    "{}'s HTTPS API doesn't answer, and it had one before, so your password isn't sent to it unencrypted. Try again later.",
+                    plan.server
+                ));
+            }
             profile.use_ports(&setup::server_info::Ports { api_tls: None, ..ports });
-            say(log, "The server's HTTPS port doesn't answer; using its unencrypted API.");
+            say(log, "The server's HTTPS port doesn't answer; using its unencrypted API, so your password travels readable.");
         }
+    }
+    if profile.https && profile.unencrypted() {
+        // Said over HTTPS (see `server_info`), so it's the server's own word.
+        say(log, "The server no longer offers its API over HTTPS.");
     }
     let api_port = profile.api_port();
     if !net::port_open(ip, api_port, Duration::from_secs(4)) {
@@ -291,10 +329,17 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
     }
 
     // A server that shares friends through a coordinator also has its server directory:
-    // used from now on, unless the player already chose one.
-    if let Some(coordinator) = info.as_ref().and_then(|i| i.coordinator.clone()) {
-        if crate::app::Prefs::adopt_directory(&coordinator) {
-            say(log, format!("Using the server directory at {coordinator}."));
+    // used from now on, unless the player already chose one. Only when the server said so
+    // over HTTPS: a plain answer could name any directory.
+    if let Some(coordinator) = info.as_ref().and_then(|i| i.coordinator.clone()).filter(|c| setup::directory::valid_coordinator(c)) {
+        let shown = hooks_config::text::clip(&coordinator, 120);
+        if !over_tls {
+            say(
+                log,
+                format!("The server names the server directory {shown}, but not over HTTPS, so it isn't used. If you trust it, set it in Settings."),
+            );
+        } else if crate::app::Prefs::adopt_directory(&coordinator) {
+            say(log, format!("Using the server directory at {shown}."));
         }
     }
 
@@ -417,6 +462,8 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
         }
     }
 
+    // HTTPS from now on, once the API answered there.
+    profile.https = !profile.unencrypted();
     let mut cfg = cfg;
     cfg.update(|c| {
         c.upsert_profile(profile.clone());
@@ -444,7 +491,7 @@ pub fn rename(game_dir: &Path, profile_name: &str, new_name: &str) -> Result<Str
     let profile = cfg.profile(profile_name).cloned().ok_or("That server isn't set up any more.")?;
     let password = profile.user.secret().ok_or("The saved password can't be read here; press Connect on the server again.")?;
     let new_name = new_name.trim().to_string();
-    let info = setup::server_info::fetch(&profile.server, Duration::from_secs(4));
+    let (info, _) = server_info(&profile.server, profile.https)?;
     if !info.is_some_and(|i| i.features.iter().any(|f| f == "rename")) {
         return Err("This server can't rename accounts.".into());
     }
