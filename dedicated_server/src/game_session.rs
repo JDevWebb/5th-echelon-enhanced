@@ -340,7 +340,9 @@ impl GameSessionProtocolServerImpl {
     /// lobbies stayed on offer.
     fn leave(&self, logger: &Logger, user_id: u32, session_id: u32, verb: &str) -> Result<(), Error> {
         let Some(ended) = rmc_err!(self.storage.leave_game_session(user_id, session_id), logger, "error leaving session")? else {
-            warn!(logger, "User {user_id} {verb} session {session_id}, which they aren't in; nothing changes");
+            // Usual, not suspicious: a host taking its party along or ending a match removes
+            // the guests first, and their own leave arrives a moment later.
+            info!(logger, "User {user_id} {verb} session {session_id}, which they aren't in; nothing changes");
             return Ok(());
         };
         let mut left = self.left.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
