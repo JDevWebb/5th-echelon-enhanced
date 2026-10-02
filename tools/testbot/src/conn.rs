@@ -284,6 +284,19 @@ impl Conn {
         }
     }
 
+    /// Whether the server closes this connection (sends a Disconnect) within `wait`.
+    pub async fn closed_by_server(&mut self, wait: Duration) -> Result<bool> {
+        let deadline = Instant::now() + wait;
+        while let Some(left) = deadline.checked_duration_since(Instant::now()) {
+            if let Some(p) = self.recv(left).await? {
+                if p.packet_type == PacketType::Disconnect && !p.flags.contains(PacketFlag::Ack) {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
+    }
+
     /// Says goodbye (the server then cleans up this connection's state).
     pub async fn disconnect(mut self) -> Result<()> {
         self.send(QPacket {

@@ -476,6 +476,32 @@ async fn trusted_subnet(ctx: &mut Ctx) -> Result<()> {
     b.disconnect().await
 }
 
+/// The newest sign-in wins: the same account signing in from another PC
+/// closes the first game's connection, and what it left (its lobby) goes with
+/// it; the new one works as usual.
+async fn second_sign_in(ctx: &mut Ctx) -> Result<()> {
+    let mut first = ctx.player("Twin").await?;
+    let mut friend = ctx.player("Friend").await?;
+    first.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
+    let lobby = first.create_session(LOBBY).await?;
+    first.add_participants(lobby, &[first.pid], &[]).await?;
+    ensure!(has_session(&friend.search_with_participants(&[first.pid]).await?, lobby), "the first game's lobby isn't found");
+
+    // Another socket: another PC, as the server sees it.
+    let mut second = Bot::login(ctx.server, &first.name, PASSWORD).await?;
+    ensure!(first.signed_out(Duration::from_secs(3)).await?, "the first game wasn't disconnected");
+    ensure!(
+        !has_session(&friend.search_with_participants(&[first.pid]).await?, lobby),
+        "the first game's lobby outlived its connection"
+    );
+    second.register_urls(&["prudp:/address=127.0.0.1;port=3075;sid=15;type=3"]).await?;
+    let again = second.create_session(LOBBY).await?;
+    second.add_participants(again, &[second.pid], &[]).await?;
+    ensure!(has_session(&friend.search_with_participants(&[second.pid]).await?, again), "the second game's lobby isn't found");
+    second.disconnect().await?;
+    friend.disconnect().await
+}
+
 /// Junk on the server's ports doesn't take it down.
 async fn bad_packets(ctx: &mut Ctx) -> Result<()> {
     let sock = UdpSocket::bind("0.0.0.0:0")?;
@@ -740,6 +766,7 @@ const SCENARIOS: &[&str] = &[
     "direct-test",
     "presence",
     "slow-handshake",
+    "second-sign-in",
 ];
 
 #[tokio::main]
@@ -815,6 +842,7 @@ async fn main() -> Result<()> {
                 "direct-test" => direct_test(&mut ctx).await,
                 "presence" => presence(&mut ctx).await,
                 "slow-handshake" => slow_handshake(&mut ctx).await,
+                "second-sign-in" => second_sign_in(&mut ctx).await,
                 // Not in the default list: a server in the "mutual" mode, one requiring
                 // identities, and two servers.
                 "friends-mutual" => friends_mutual(&mut ctx).await,

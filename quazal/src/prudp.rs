@@ -642,9 +642,59 @@ where
         }
         info!(logger, "New client connected"; "signature" => packet.signature, "session" => packet.session_id);
         let signed_in = ci.borrow().user_id;
+        if let Some(user_id) = signed_in {
+            self.sign_out_elsewhere(logger, user_id, client);
+        }
         if let (Some(user_id), Some(handler)) = (signed_in, self.login_handler.as_mut()) {
             handler(user_id, client);
         }
+    }
+
+    /// The newest sign-in wins: `user_id` just signed in from `from`, so their connections
+    /// from any other address (another PC, or this one before its address changed) are
+    /// closed, and what that game left behind (station URLs, rooms) is cleaned up before the
+    /// new one registers its own.
+    ///
+    /// Only other addresses: one game holds several connections to a service at once (three
+    /// to the secure server), all from the one socket, so `from` keeps every one of them.
+    /// Two games on one account used to stay connected together, each overwriting the other's
+    /// station URLs, with invitations and notifications reaching either.
+    fn sign_out_elsewhere(&mut self, logger: &Logger, user_id: u32, from: SocketAddr) {
+        let stale: Vec<ClientInfo<T>> = self
+            .client_registry
+            .clients
+            .extract_if(|_, c| c.try_borrow().is_ok_and(|c| c.user_id == Some(user_id) && *c.address() != from))
+            .map(|(_, c)| c.into_inner())
+            .collect();
+        let Some(first) = stale.first() else { return };
+        info!(logger, "User {user_id} signed in from {from}; closing their {} connection(s) from {}", stale.len(), first.address());
+        for ci in &stale {
+            if let Err(e) = self.send_disconnect(logger, ci) {
+                debug!(logger, "Couldn't tell {} it was disconnected: {e}", ci.address());
+            }
+            self.client_registry.forget(ci);
+        }
+        if let Some(handler) = self.disconnect_handler.as_mut() {
+            stale.into_iter().take(1).for_each(|ci| handler(ci));
+        }
+    }
+
+    /// Tells a client its connection is closed (it may not be listening any more).
+    fn send_disconnect(&self, logger: &Logger, ci: &ClientInfo<T>) -> Result<usize, Box<dyn std::error::Error>> {
+        let Some((client_vport, server_vport)) = ci.last_vports else {
+            return Err("the client hasn't sent anything yet".into());
+        };
+        let mut packet = QPacket {
+            source: server_vport,
+            destination: client_vport,
+            packet_type: PacketType::Disconnect,
+            sequence: ci.server_sequence_id,
+            signature: ci.client_signature.unwrap_or_default(),
+            session_id: ci.server_session,
+            ..Default::default()
+        };
+        packet.flags.insert(PacketFlag::HasSize);
+        self.send_packet(logger, ci.address(), packet)
     }
 
     /// Sends a response to a client.

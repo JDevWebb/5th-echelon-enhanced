@@ -326,6 +326,12 @@ impl Bot {
         decode(&self.secure.call(gs::GAME_SESSION_PROTOCOL_ID, method as u32, req.to_bytes()).await?)
     }
 
+    /// Whether the server closes this game's connection within `wait` (the
+    /// account signed in somewhere else).
+    pub async fn signed_out(&mut self, wait: Duration) -> Result<bool> {
+        self.secure.closed_by_server(wait).await
+    }
+
     /// Registers where other players reach this one (the game's own station URLs).
     pub async fn register_urls(&mut self, urls: &[&str]) -> Result<()> {
         let station_urls = QList(urls.iter().map(|u| u.parse::<StationURL>().map_err(|e| eyre!("{u}: {e:?}"))).collect::<Result<_>>()?);
