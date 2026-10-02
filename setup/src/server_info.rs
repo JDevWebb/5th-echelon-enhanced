@@ -61,6 +61,35 @@ pub fn fetch(server: &str, timeout: Duration) -> Option<ServerInfo> {
 }
 
 fn fetch_on(server: &str, port: u16, timeout: Duration) -> Option<ServerInfo> {
+    parse_json(&get(server, port, "/api/info", timeout)?)
+}
+
+/// One item of a server's news (`GET /api/news`, what the game's news screen
+/// shows). Text from the server: show it as text, and only open a link the
+/// player clicks.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct NewsItem {
+    pub title: String,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub link: String,
+}
+
+/// The server's news; empty when it has none or doesn't say.
+pub fn news(server: &str, timeout: Duration) -> Vec<NewsItem> {
+    #[derive(Deserialize)]
+    struct News {
+        news: Vec<NewsItem>,
+    }
+    get(server, crate::CONFIG_PORT, "/api/news", timeout)
+        .and_then(|body| serde_json::from_str::<News>(&body).ok())
+        .map(|n| n.news.into_iter().take(10).collect())
+        .unwrap_or_default()
+}
+
+/// The body of a GET to `path` on `server`'s port `port`, if it answers 200.
+fn get(server: &str, port: u16, path: &str, timeout: Duration) -> Option<String> {
     let host = server.trim();
     if !crate::net::valid_host(host) {
         return None;
@@ -70,14 +99,20 @@ fn fetch_on(server: &str, port: u16, timeout: Duration) -> Option<ServerInfo> {
     stream.set_read_timeout(Some(timeout)).ok()?;
     stream.set_write_timeout(Some(timeout)).ok()?;
     // The Host header lets a reverse proxy route by name.
-    let request = format!("GET /api/info HTTP/1.1\r\nHost: {host}\r\nAccept: application/json\r\nConnection: close\r\n\r\n");
+    let request = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nAccept: application/json\r\nConnection: close\r\n\r\n");
     stream.write_all(request.as_bytes()).ok()?;
     let mut response = Vec::new();
     stream.take(64 * 1024).read_to_end(&mut response).ok()?;
-    parse_response(&response)
+    response_body(&response)
 }
 
+#[cfg(test)]
 fn parse_response(response: &[u8]) -> Option<ServerInfo> {
+    parse_json(&response_body(response)?)
+}
+
+/// The body of a 200 answer, however it arrived.
+fn response_body(response: &[u8]) -> Option<String> {
     let text = std::str::from_utf8(response).ok()?;
     let (head, body) = text.split_once("\r\n\r\n")?;
     let status = head.lines().next()?;
@@ -88,8 +123,11 @@ fn parse_response(response: &[u8]) -> Option<ServerInfo> {
         let l = l.to_ascii_lowercase();
         l.starts_with("transfer-encoding:") && l.contains("chunked")
     });
-    let body = if chunked { dechunk(body)? } else { body.to_string() };
-    parse_json(&body)
+    if chunked {
+        dechunk(body)
+    } else {
+        Some(body.to_string())
+    }
 }
 
 /// The answer's body, however it arrived (the launcher reads the HTTPS one itself).

@@ -27,6 +27,9 @@ use storage::Storage;
 
 const DEFAULT_MP_DATA: &str = include_str!("../../data/mp_balancing.ini");
 const DEFAULT_NEWS: &str = include_str!("../../data/news.json");
+/// Upstream's news, which servers wrote as their default before this fork had
+/// its own: replaced by the new default when found unchanged.
+const UPSTREAM_NEWS: &str = include_str!("news_upstream.json");
 const DEFAULT_CHALLENGES: &str = include_str!("../../data/challenges.json");
 
 const SERVER_PID: u32 = 0x1000;
@@ -337,6 +340,11 @@ fn ensure_data_dir(content_files: &[std::path::PathBuf]) -> io::Result<()> {
     let defaults = [("mp_balancing.ini", DEFAULT_MP_DATA), ("news.json", DEFAULT_NEWS), ("challenges.json", DEFAULT_CHALLENGES)];
     for (name, contents) in defaults {
         write_if_missing(&data.join(name), contents)?;
+    }
+    // Upstream's placeholder news, never edited: this fork's news instead.
+    let news = data.join("news.json");
+    if fs::read_to_string(&news).is_ok_and(|n| n == UPSTREAM_NEWS) {
+        fs::write(&news, DEFAULT_NEWS)?;
     }
     for path in content_files.iter().filter(|p| p.file_name().is_some_and(|n| n == "mp_balancing.ini")) {
         write_if_missing(path, DEFAULT_MP_DATA)?;

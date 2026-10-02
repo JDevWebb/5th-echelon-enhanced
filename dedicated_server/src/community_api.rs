@@ -6,6 +6,8 @@
 //! (`[community_api]`); only `info` is on by default:
 //!
 //! * `GET /api/info` - what this server is and supports.
+//! * `GET /api/news` - the server's news (`data/news.json`, as the game's news
+//!   screen shows it), for the launcher. On with `info`.
 //! * `GET /api/presence` - every registered player, who's online and what
 //!   they're playing (`presence = true`).
 //! * `POST /api/register` `{"username","password"}` - create an account, as
@@ -86,6 +88,7 @@ pub fn routes(storage: Arc<Storage>, cfg: CommunityApiConfig) -> Routes {
         }
         Some(match (req.method.as_str(), path) {
             ("GET", "/api/info") if cfg.info => Response::json("200 OK", &info(cfg)),
+            ("GET", "/api/news") if cfg.info => Response::json("200 OK", &news()),
             ("GET", "/api/presence") if cfg.presence => match storage.presence() {
                 Ok((players, sessions)) => Response::json("200 OK", &presence(&players, &sessions)),
                 Err(e) => internal(e),
@@ -117,8 +120,45 @@ pub fn routes(storage: Arc<Storage>, cfg: CommunityApiConfig) -> Routes {
     })
 }
 
+/// The most news items `/api/news` gives, and the longest title, text and link.
+const MAX_NEWS: usize = 10;
+const MAX_NEWS_TITLE: usize = 80;
+const MAX_NEWS_TEXT: usize = 500;
+const MAX_NEWS_LINK: usize = 300;
+
+/// The news from `data/news.json`: title, text and link of each item. Read at
+/// most once a minute (anyone may ask, as often as they like).
+fn news() -> Value {
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, Value)>> = std::sync::Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, news)) = cache.as_ref().filter(|(at, _)| at.elapsed() < std::time::Duration::from_secs(60)) {
+        return news.clone();
+    }
+    let items: Vec<Value> = std::fs::read_to_string("data/news.json")
+        .ok()
+        .and_then(|s| serde_json::from_str::<Vec<Value>>(&s).ok())
+        .unwrap_or_default();
+    let text = |item: &Value, key: &str, max: usize| -> String { item[key].as_str().unwrap_or_default().chars().take(max).collect() };
+    let news: Vec<Value> = items
+        .iter()
+        .filter(|item| item["title"].is_string())
+        .take(MAX_NEWS)
+        .map(|item| {
+            json!({
+                "title": text(item, "title", MAX_NEWS_TITLE),
+                "text": text(item, "description", MAX_NEWS_TEXT),
+                "link": text(item, "link", MAX_NEWS_LINK),
+            })
+        })
+        .collect();
+    let news = json!({ "news": news });
+    *cache = Some((std::time::Instant::now(), news.clone()));
+    news
+}
+
 fn info(cfg: CommunityApiConfig) -> Value {
     let mut features: Vec<&str> = FEATURES.to_vec();
+    features.push("news");
     if cfg.presence {
         features.push("presence");
     }
