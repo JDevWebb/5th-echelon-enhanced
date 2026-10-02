@@ -46,6 +46,8 @@ url = { workspace = true }
 # driver only have OpenGL 1.1, but Direct3D 12 always has WARP, Windows' own
 # software renderer.
 eframe = { version = "0.33", default-features = false, features = ["glow", "wgpu", "default_fonts"] }
+# eframe's wgpu has no backends of its own: Direct3D 12 (with WARP), and Vulkan.
+wgpu = { version = "27", default-features = false, features = ["dx12", "vulkan"] }
 rfd = "0.15"
 
 # Linux (and Steam Deck): X11 (XWayland on Wayland desktops), and the
