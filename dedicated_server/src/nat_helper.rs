@@ -197,6 +197,10 @@ impl Table {
 
     /// Registers (or refreshes) the player behind `src` and answers its probe.
     pub fn probe(&mut self, src: SocketAddrV4, flags: u8, nonce: u32, mapping: Option<SocketAddrV4>, name: &str, now: Instant) -> Message {
+        // The router port mapping the client reports is only its word: a mapping on another
+        // address than the one this probe came from would have this player advertised (and
+        // relayed packets routed) at someone else's address.
+        let mapping = mapping.filter(|m| m.ip() == src.ip());
         let key = if name.is_empty() { format!("@{src}") } else { name.to_lowercase() };
         let old = self.by_name.get(&key).copied().and_then(|id| self.take(id).map(|p| (id, p)));
         // Someone else registered from this address before (a restarted game
@@ -216,12 +220,6 @@ impl Table {
             None
         };
         let relayed = relayed && vport.is_some();
-        let advertise = match (vport, mapping, &old) {
-            (Some(v), _, _) => SocketAddrV4::new(self.relay_ip, v),
-            (None, _, Some((_, o))) if !o.relayed && o.real == src => o.advertise,
-            (None, Some(m), _) if !nat_proto::is_private(*m.ip()) => m,
-            _ => src,
-        };
         let id = old.as_ref().map_or_else(
             || {
                 self.next_id += 1;
@@ -229,6 +227,15 @@ impl Table {
             },
             |(id, _)| *id,
         );
+        // Another player's advertised address is theirs: relayed packets for it go to them.
+        let taken = |table: &Self, a: &SocketAddrV4| table.by_advertise.get(a).is_some_and(|other| *other != id);
+        let advertise = match (vport, mapping, &old) {
+            (Some(v), _, _) => SocketAddrV4::new(self.relay_ip, v),
+            (None, _, Some((_, o))) if !o.relayed && o.real == src => o.advertise,
+            (None, Some(m), _) if !nat_proto::is_private(*m.ip()) => m,
+            _ => src,
+        };
+        let advertise = if vport.is_none() && taken(self, &advertise) { src } else { advertise };
         let peer = Peer {
             name: key.clone(),
             real: src,
@@ -246,7 +253,9 @@ impl Table {
         let tag = peer.tag;
         self.by_name.insert(key, id);
         self.by_real.insert(src, id);
-        self.by_advertise.insert(advertise, id);
+        if !taken(self, &advertise) {
+            self.by_advertise.insert(advertise, id);
+        }
         if let Some(v) = vport {
             self.by_vport.insert(v, id);
         }
@@ -669,6 +678,21 @@ mod tests {
         // A mapping that is itself private (double NAT) is useless.
         let reply = t.probe(a("198.51.100.8:61000"), probe_flags::HAS_MAPPING, 1, Some(a("10.0.0.2:13000")), "fisher", Instant::now());
         assert_eq!(advertise(&reply), (a("198.51.100.8:61000"), false));
+    }
+
+    #[test]
+    fn a_mapping_counts_only_on_the_probes_own_address() {
+        let mut t = table(RelayMode::Auto);
+        let now = Instant::now();
+        let (victim, _) = advertise(&t.probe(a("198.51.100.7:61000"), 0, 1, None, "victim", now));
+        // A mapping on someone else's address is ignored.
+        let reply = t.probe(a("203.0.113.4:5000"), probe_flags::HAS_MAPPING, 1, Some(victim), "thief", now);
+        assert_eq!(advertise(&reply), (a("203.0.113.4:5000"), false));
+        // Behind the same router, another player's advertised address stays theirs.
+        let reply = t.probe(a("198.51.100.7:5001"), probe_flags::HAS_MAPPING, 1, Some(victim), "flatmate", now);
+        assert_eq!(advertise(&reply), (a("198.51.100.7:5001"), false));
+        // Packets for the victim's address still reach the victim.
+        assert_eq!(t.route(a("203.0.113.4:5000"), victim, 10, now).map(|(to, _)| to), Some(a("198.51.100.7:61000")));
     }
 
     #[test]
