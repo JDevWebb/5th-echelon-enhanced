@@ -635,7 +635,7 @@ The release workflow:
 - makes the GitHub release as a draft;
 - pushes the server image to `ghcr.io`.
 
-`sign-release.sh` checks every download against `SHA256SUMS`, signs `SHA256SUMS` with the release key (`SHA256SUMS.sig`), uploads the signature and publishes the draft. The key stays off GitHub, in `~/.config/5th-echelon-release/`. Launchers, the installer and the servers' updater only install releases it signed, and a coordinator only rolls out signed releases. Its public half is in `identity/src/lib.rs` (`RELEASE_KEYS`) and `scripts/install-server.sh`; `cargo run -p identity --bin release-sign -- keygen <file>` makes a new one.
+`sign-release.sh` checks every download against `SHA256SUMS`, signs the version and `SHA256SUMS` with the release key (`SHA256SUMS.sig`; the version is signed so a release can't be published again under another tag), uploads the signature and publishes the draft. The key stays off GitHub, in `~/.config/5th-echelon-release/`. Launchers, the installer and the servers' updater only install releases it signed, and a coordinator only rolls out signed releases. Its public half is in `identity/src/lib.rs` (`RELEASE_KEYS`) and `scripts/install-server.sh`; `cargo run -p identity --bin release-sign -- keygen <file>` makes a new one.
 
 Once a release is published, every network's coordinator finds it within 10 minutes and rolls it out to its servers.
 

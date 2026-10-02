@@ -30,7 +30,7 @@ keydir=$(dirname "$KEY")
 docker run --rm -v "$PWD":/src -w /src \
   -v fe-cargo-registry:/usr/local/cargo/registry -v fes-target:/target -e CARGO_TARGET_DIR=/target/native \
   -v "$keydir":/keys:ro -v "$work":/release \
-  "$IMAGE" cargo run -q -p identity --bin release-sign -- sign "/keys/$(basename "$KEY")" /release/SHA256SUMS
+  "$IMAGE" cargo run -q -p identity --bin release-sign -- sign "/keys/$(basename "$KEY")" /release/SHA256SUMS "${TAG#v}"
 gh release upload "$TAG" "$work/SHA256SUMS.sig" --repo "$REPO" --clobber
 printf 'Publish %s now? [y/N] ' "$TAG"
 read -r answer

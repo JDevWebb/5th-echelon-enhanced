@@ -8,7 +8,7 @@ A coordinator does more than share friends. It keeps every server in its network
 
 1. **The coordinator finds it.**
    - It asks GitHub for the latest release every 10 minutes.
-   - It only takes a release whose `SHA256SUMS` carries the release key's signature, and which has a server build.
+   - It only takes a release whose `SHA256SUMS` carries the release key's signature for that release's version (its tag), and which has a server build.
    - An unsigned release is never rolled out.
 2. **One server goes first (the canary).**
    - The coordinator picks the quietest server that installs updates, and its next heartbeat answer names the release.
@@ -19,7 +19,7 @@ A coordinator does more than share friends. It keeps every server in its network
    - Two hours into the stage, a server updates even with players on.
 4. **The coordinator updates itself** once the canary has proved the release, when the installer's updater is on its machine. If that updater fails or rolls back, the coordinator doesn't ask for that release again for 6 hours (it reads `update-status.json`), so a bad release doesn't restart its machine every 30 seconds.
 
-**What's rolled out on its own:** a release newer than the one being rolled out (with none yet, not older than the coordinator's own), and at most one major version past it. Anything else is recorded, and an admin can roll it out (Roll this out). Until signatures name the version, an old signed release published again under a new tag would verify; this keeps it from moving the rollout on its own.
+**What's rolled out on its own:** a release newer than the one being rolled out (with none yet, not older than the coordinator's own), and at most one major version past it. Anything else is recorded, and an admin can roll it out (Roll this out). The signature names the version, so an old signed release published again under a new tag doesn't verify.
 
 ### On each machine
 
@@ -32,7 +32,7 @@ The server and the coordinator run unprivileged, and can't change their own prog
 
 1. The server writes the version to `update-request` in its folder.
 2. The updater checks the version is a release number (nothing else is read).
-3. It downloads that release from GitHub, and checks `SHA256SUMS` against the release key and the binaries against `SHA256SUMS`.
+3. It downloads that release from GitHub, and checks `SHA256SUMS` against the release key (the signature must name that version) and the binaries against `SHA256SUMS`.
 4. It keeps the running binaries in `/opt/5th-echelon/previous/`, swaps in the new ones and restarts the services.
 5. It waits up to 90 seconds for the server (and coordinator) to answer with the new version. If they don't, the previous binaries go back.
 6. It records the result in `update-status.json`, which the server reports to the coordinator.

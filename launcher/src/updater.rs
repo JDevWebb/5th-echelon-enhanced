@@ -2,7 +2,10 @@
 //! against the `SHA256SUMS` published with the release before it's used,
 //! and `SHA256SUMS` must carry the release key's signature
 //! (`SHA256SUMS.sig`, made offline with `scripts/sign-release.sh`): someone
-//! who can change the release on GitHub still can't ship an update.
+//! who can change the release on GitHub still can't ship an update. The
+//! signature names the release's version, which must be the tag's, and the
+//! launcher only replaces itself with a newer release than it is, so an old
+//! release published again under a new tag isn't installed either.
 //!
 //! The launcher replaces itself by renaming: Windows lets a running exe be
 //! renamed, so the new one takes its name, starts, and the old one (kept as
@@ -116,9 +119,9 @@ async fn get(url: &str, timeout: Duration, max: usize) -> anyhow::Result<Vec<u8>
     .map_err(|_| anyhow::anyhow!("GitHub didn't answer in time, or the download stalled"))?
 }
 
-/// Whether one of the release keys signed `sums`.
-fn signed(sums: &str, signature: &str) -> bool {
-    identity::release_signed(sums, signature)
+/// Whether one of the release keys signed `sums` as release `version`.
+fn signed(version: &str, sums: &str, signature: &str) -> bool {
+    identity::release_signed(version, sums, signature)
 }
 
 /// Asks GitHub for the latest release.
@@ -141,8 +144,10 @@ pub fn download(latest: &Latest, name: &str, to: &Path) -> anyhow::Result<()> {
         .url(SIG_ASSET)
         .map_err(|_| anyhow::anyhow!("release {} isn't signed yet; try again later", latest.version))?;
     let sig = String::from_utf8(rt.block_on(get(sig, Duration::from_secs(30), MAX_SMALL))?)?;
-    if !signed(&sums, &sig) {
-        anyhow::bail!("release {} isn't signed by this fork's release key; not installed", latest.version);
+    // The tag's version, signed with the files: a signed release published
+    // again under another tag fails here.
+    if !signed(&latest.version, &sums, &sig) {
+        anyhow::bail!("release {} isn't signed by this fork's release key as {}; not installed", latest.version, latest.version);
     }
     let want = setup::update::checksum_for(&sums, name).ok_or_else(|| anyhow::anyhow!("{SUMS_ASSET} doesn't list {name}"))?;
     let data = rt.block_on(get(latest.url(name)?, Duration::from_secs(300), MAX_DOWNLOAD))?;
@@ -171,6 +176,9 @@ fn old_path(exe: &Path) -> PathBuf {
 
 /// Replaces this launcher with the release's, starts it, and exits.
 pub fn update_self(latest: &Latest) -> anyhow::Result<()> {
+    if !latest.newer() {
+        anyhow::bail!("release {} isn't newer than this launcher ({}); not installed", latest.version, env!("FE_RELEASE"));
+    }
     let exe = std::env::current_exe()?;
     let mut new = exe.as_os_str().to_owned();
     new.push(".new");
@@ -212,8 +220,8 @@ mod tests {
     fn only_release_key_signatures_count() {
         let sums = "abc  launcher.exe\n";
         let other = identity::Identity::generate();
-        assert!(!signed(sums, &other.sign(&identity::release_message(sums))), "another key");
-        assert!(!signed(sums, "not a signature"));
+        assert!(!signed("1.0.0", sums, &other.sign(&identity::release_message("1.0.0", sums))), "another key");
+        assert!(!signed("1.0.0", sums, "not a signature"));
         assert!(identity::RELEASE_KEYS.iter().all(|k| identity::is_global_id(k)));
     }
 }

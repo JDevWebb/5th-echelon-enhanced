@@ -151,8 +151,11 @@ friends="" server_name="" region="" coordinator="" join_token="" coord_domain=""
 https_api=1 allow_unsigned=0 coord_only=0 admin="" registration="" listed="" command=""
 metrics_cert="" metrics_key="" metrics_domain="" origin_pull=0 admin_name="" auto_update="" release_version=""
 aliases=()
-# Only HTTPS, and TLS 1.2 or newer, for every download.
-CURL=(curl --proto '=https' --tlsv1.2)
+# Only HTTPS, and TLS 1.2 or newer, for every download, and none larger
+# than a release's binaries could be (SMALL: for listings, checksums and
+# signatures).
+CURL=(curl --proto '=https' --tlsv1.2 --connect-timeout 20 --max-filesize 268435456)
+SMALL=(--max-filesize 1048576 --max-time 60)
 
 say() { printf '\033[1m==>\033[0m %s\n' "$*"; }
 warn() { printf '\033[33mwarning:\033[0m %s\n' "$*" >&2; }
@@ -643,16 +646,18 @@ trap 'rm -rf "$work"' EXIT
 
 # Checks the release's SHA256SUMS against its signature (SHA256SUMS.sig,
 # base32, by the release key): whoever can change a release on GitHub
-# still can't change what this installs.
+# still can't change what this installs. The signature covers the version
+# too (the tag, without its v), so an old release published again under a
+# new tag doesn't verify.
 verify_release() {
-  local base="$1"
-  if ! "${CURL[@]}" -fsSL --retry 3 -o "$work/SHA256SUMS.sig" "$base/SHA256SUMS.sig" 2>/dev/null; then
+  local base="$1" release="$2"
+  if ! "${CURL[@]}" -fsSL --retry 3 "${SMALL[@]}" -o "$work/SHA256SUMS.sig" "$base/SHA256SUMS.sig" 2>/dev/null; then
     [ "$allow_unsigned" -eq 1 ] || die "this release isn't signed (no SHA256SUMS.sig). --allow-unsigned installs it anyway, checked by its checksum only"
     warn "the release isn't signed; installing it on its checksum alone (--allow-unsigned)"
     return 0
   fi
   printf '%s\n' "$RELEASE_KEY_PEM" > "$work/release.pem"
-  { printf '5th-echelon/release/v1\n'; cat "$work/SHA256SUMS"; } > "$work/signed"
+  { printf '5th-echelon/release/v2\n%s\n' "$release"; cat "$work/SHA256SUMS"; } > "$work/signed"
   # base32 without padding: pad it for coreutils.
   local sig
   sig="$(tr -d '[:space:]' < "$work/SHA256SUMS.sig")"
@@ -664,8 +669,25 @@ verify_release() {
     [ "$allow_unsigned" -eq 1 ] || die "this system's OpenSSL ($(openssl version)) can't check the release's signature (it needs OpenSSL 3). --allow-unsigned installs on the checksum alone"
     warn "OpenSSL can't check the signature here; installing on the checksum alone (--allow-unsigned)"
   else
-    die "the release's signature doesn't match: SHA256SUMS wasn't signed by the release key. Not installing it"
+    die "the release's signature doesn't match: SHA256SUMS wasn't signed by the release key as release $release. Not installing it"
   fi
+}
+
+# Which release to download: the one asked for, or the latest one's tag
+# (from GitHub's API, or else where /releases/latest leads). Downloads then
+# come from that tag, and its signature must name that version.
+resolve_version() {
+  [ -z "$release_version" ] || return 0
+  if [ "$version" = latest ]; then
+    version="$("${CURL[@]}" -fsSL --retry 3 "${SMALL[@]}" "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
+    if [ -z "$version" ]; then
+      version="$("${CURL[@]}" -fsSI --retry 3 "${SMALL[@]}" -o /dev/null -w '%{redirect_url}' "https://github.com/$REPO/releases/latest" 2>/dev/null || true)"
+      version="${version##*/tag/}"
+    fi
+    [[ "${version#v}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]] || die "couldn't find which release is the latest (GitHub didn't answer); pass --version"
+  fi
+  release_version="${version#v}"
+  base="https://github.com/$REPO/releases/download/v$release_version"
 }
 
 if [ "$coord_only" -eq 1 ]; then
@@ -675,22 +697,12 @@ elif [ -n "$binary" ]; then
   cp "$binary" "$work/$ASSET"
   say "Using $binary"
 else
-  if [ "$version" = latest ]; then
-    # Which release that is, for the updater (it never goes back past it).
-    version="$("${CURL[@]}" -fsSL --retry 3 "https://api.github.com/repos/$REPO/releases/latest" 2>/dev/null | grep -o '"tag_name": *"[^"]*"' | head -1 | cut -d'"' -f4 || true)"
-    version="${version:-latest}"
-  fi
-  if [ "$version" = latest ]; then
-    base="https://github.com/$REPO/releases/latest/download"
-  else
-    base="https://github.com/$REPO/releases/download/v${version#v}"
-    release_version="${version#v}"
-  fi
+  resolve_version
   say "Downloading the server ($version)"
   "${CURL[@]}" -fsSL --retry 3 -o "$work/$ASSET" "$base/$ASSET" \
     || die "couldn't download $base/$ASSET (is there a release yet? --binary installs a file you have)"
-  "${CURL[@]}" -fsSL --retry 3 -o "$work/SHA256SUMS" "$base/SHA256SUMS" || die "couldn't download the release's SHA256SUMS"
-  verify_release "$base"
+  "${CURL[@]}" -fsSL --retry 3 "${SMALL[@]}" -o "$work/SHA256SUMS" "$base/SHA256SUMS" || die "couldn't download the release's SHA256SUMS"
+  verify_release "$base" "$release_version"
   (cd "$work" && grep " $ASSET\$" SHA256SUMS | sha256sum -c --quiet -) || die "the download doesn't match the release's checksum"
   say "Checksum verified"
 fi
@@ -706,9 +718,9 @@ if [ -n "$coord_domain" ]; then
   else
     say "Downloading the coordinator ($version)"
     if [ ! -f "$work/SHA256SUMS" ]; then
-      if [ "$version" = latest ]; then base="https://github.com/$REPO/releases/latest/download"; else base="https://github.com/$REPO/releases/download/v${version#v}"; fi
-      "${CURL[@]}" -fsSL --retry 3 -o "$work/SHA256SUMS" "$base/SHA256SUMS" || die "couldn't download the release's SHA256SUMS"
-      verify_release "$base"
+      resolve_version
+      "${CURL[@]}" -fsSL --retry 3 "${SMALL[@]}" -o "$work/SHA256SUMS" "$base/SHA256SUMS" || die "couldn't download the release's SHA256SUMS"
+      verify_release "$base" "$release_version"
     fi
     "${CURL[@]}" -fsSL --retry 3 -o "$work/$COORD_ASSET" "$base/$COORD_ASSET" || die "couldn't download $base/$COORD_ASSET"
     (cd "$work" && grep " $COORD_ASSET\$" SHA256SUMS | sha256sum -c --quiet -) || die "the coordinator doesn't match the release's checksum"
@@ -1168,7 +1180,7 @@ if [ "$rollback" -eq 0 ]; then
     exit 0
   fi
   printf '%s\n' "$RELEASE_KEY_PEM" > "$work/release.pem"
-  { printf '5th-echelon/release/v1\n'; cat "$work/SHA256SUMS"; } > "$work/signed"
+  { printf '5th-echelon/release/v2\n%s\n' "$wanted"; cat "$work/SHA256SUMS"; } > "$work/signed"
   sig="$(tr -d '[:space:]' < "$work/SHA256SUMS.sig")"
   while [ $(( ${#sig} % 8 )) -ne 0 ]; do sig="$sig="; done
   if ! printf '%s' "$sig" | base32 -d > "$work/signature" 2>/dev/null \

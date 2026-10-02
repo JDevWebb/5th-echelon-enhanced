@@ -545,13 +545,11 @@ pub async fn latest_signed(http: &reqwest::Client) -> Result<(String, String, St
     };
     let sums = String::from_utf8(get(asset("SHA256SUMS")?).await?).map_err(|e| e.to_string())?;
     let signature = String::from_utf8(get(asset("SHA256SUMS.sig")?).await?).map_err(|e| e.to_string())?;
-    if !identity::release_signed(&sums, &signature) {
-        return Err(format!("release {version} isn't signed with the release key"));
+    // The signature names the version: an old signed release published again
+    // under this tag doesn't verify, so it never becomes the rollout's target.
+    if !identity::release_signed(&version, &sums, &signature) {
+        return Err(format!("release {version} isn't signed with the release key as {version}"));
     }
-    // TODO(version-bound signatures): once SHA256SUMS carries a signed `version` line, check
-    // here that it's this tag's `version`, and refuse the release otherwise (an old signed
-    // release republished under a new tag would verify until then; `held_back` limits what
-    // that can do to a rollout).
     if !sums.lines().any(|l| l.split_whitespace().nth(1).map(|n| n.trim_start_matches('*')) == Some(SERVER_ASSET)) {
         return Err(format!("release {version} has no {SERVER_ASSET}"));
     }

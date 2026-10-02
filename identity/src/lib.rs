@@ -97,9 +97,24 @@ pub fn login_message(host: &str, username: &str, time: i64, new_password: &str) 
     format!("5th-echelon/login/v2\n{}\n{username}\n{time}\n{password}", host_key(host))
 }
 
-/// What the release key signs: a release's `SHA256SUMS`, as published.
-pub fn release_message(sums: &str) -> String {
-    format!("5th-echelon/release/v1\n{sums}")
+/// What the release key signs: a release's version (its tag without the
+/// `v`, e.g. `0.4.0`) and its `SHA256SUMS`, as published. With the version
+/// signed, a release published again under another tag doesn't verify, so
+/// nothing can be made to install an old release as a new one.
+///
+/// The shell verifiers (`scripts/install-server.sh` and the updater it
+/// writes) build the same text with `printf '5th-echelon/release/v2\n%s\n'`
+/// followed by the file.
+pub fn release_message(version: &str, sums: &str) -> String {
+    format!("5th-echelon/release/v2\n{version}\n{sums}")
+}
+
+/// Whether `version` can be a release's version: digits first, then only
+/// letters, digits, `.` and `-` (no `v`, no separators), at most 32 bytes.
+pub fn valid_release_version(version: &str) -> bool {
+    (1..=32).contains(&version.len())
+        && version.starts_with(|c: char| c.is_ascii_digit())
+        && version.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
 }
 
 /// The public halves of the release keys: a release is installed (by the
@@ -108,9 +123,13 @@ pub fn release_message(sums: &str) -> String {
 /// (`scripts/sign-release.sh`); install-server.sh carries the same key.
 pub const RELEASE_KEYS: &[&str] = &["GV7WV5QTTXHFGYKWKSHRFWNDEW3N2JZDUS2GQEEQ7Q4HVHMKBCZA"];
 
-/// Whether one of the release keys signed `sums` (a release's `SHA256SUMS`).
-pub fn release_signed(sums: &str, signature: &str) -> bool {
-    let message = release_message(sums);
+/// Whether one of the release keys signed `sums` (a release's `SHA256SUMS`)
+/// as release `version` (the tag it was published under, without the `v`).
+pub fn release_signed(version: &str, sums: &str, signature: &str) -> bool {
+    if !valid_release_version(version) {
+        return false;
+    }
+    let message = release_message(version, sums);
     RELEASE_KEYS.iter().any(|key| verify(key, &message, signature.trim()))
 }
 
@@ -214,6 +233,27 @@ pub fn base32_decode(text: &str) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn release_signatures_bind_the_version() {
+        let key = Identity::generate();
+        let id = key.global_id();
+        let sums = "abc  launcher.exe\n";
+        let sig = key.sign(&release_message("0.4.0", sums));
+        assert!(verify(&id, &release_message("0.4.0", sums), &sig));
+        assert!(!verify(&id, &release_message("0.4.1", sums), &sig), "the same files under another version");
+        assert!(!verify(&id, &release_message("0.4.0", "abd  launcher.exe\n"), &sig), "other files");
+        assert_eq!(release_message("0.4.0", sums), "5th-echelon/release/v2\n0.4.0\nabc  launcher.exe\n", "what the shell verifiers build");
+        for v in ["0.4.0", "1.0.0-rc.1", "10.20.30"] {
+            assert!(valid_release_version(v), "{v}");
+        }
+        for v in ["", "v0.4.0", "0.4.0\n", "0.4.0 x", "-1", &"1".repeat(33)] {
+            assert!(!valid_release_version(v), "{v:?}");
+        }
+        // Not one of RELEASE_KEYS, and an invalid version never verifies.
+        assert!(!release_signed("0.4.0", sums, &sig));
+        assert!(!release_signed("v0.4.0", sums, &sig));
+    }
 
     #[test]
     fn base32_round_trips() {

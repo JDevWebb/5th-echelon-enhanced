@@ -148,7 +148,7 @@ jobs:
             echo "Every file is checked by the launcher's updater and the Linux installer before it's used. To check one yourself:"
             echo
             echo "- **Checksum:** compare with \`SHA256SUMS\` (\`Get-FileHash launcher.exe\` in PowerShell, \`sha256sum\` on Linux)."
-            echo "- **Signature:** \`SHA256SUMS.sig\` is the release key's signature of \`SHA256SUMS\`; the launcher and installer check it."
+            echo "- **Signature:** \`SHA256SUMS.sig\` is the release key's signature of this version (\`$VERSION\`) and \`SHA256SUMS\`; the launcher, the installer and the servers' updater check it."
             echo "- **Build provenance:** \`gh attestation verify <file> --repo ${{ github.repository }}\` shows it was built by this repository's release workflow, from tag \`v$VERSION\`."
             echo
             echo "### VirusTotal"

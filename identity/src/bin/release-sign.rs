@@ -2,10 +2,13 @@
 //! carries the release key's signature (`SHA256SUMS.sig`).
 //!
 //! ```text
-//! release-sign keygen <key file>             make the release key; prints its public half
-//! release-sign sign <key file> <SHA256SUMS>  writes SHA256SUMS.sig next to it
-//! release-sign verify <public key> <SHA256SUMS>
+//! release-sign keygen <key file>                       make the release key; prints its public half
+//! release-sign sign <key file> <SHA256SUMS> <version>  writes SHA256SUMS.sig next to it
+//! release-sign verify <public key> <SHA256SUMS> <version>
 //! ```
+//!
+//! The signature covers the version (the tag without its `v`, e.g. `0.4.0`)
+//! and `SHA256SUMS` ([`identity::release_message`]).
 //!
 //! Keep the key file off any machine that builds or publishes releases
 //! automatically; see `scripts/sign-release.sh`.
@@ -42,6 +45,14 @@ fn write_private(path: &Path, text: &str) -> std::io::Result<()> {
     f.write_all(text.as_bytes())
 }
 
+fn check_version(version: &str) -> Result<(), String> {
+    if identity::valid_release_version(version) {
+        Ok(())
+    } else {
+        Err(format!("{version:?} isn't a release version (the tag without its v, e.g. 0.4.0)"))
+    }
+}
+
 fn run(args: &[String]) -> Result<(), String> {
     match args {
         [cmd, key] if cmd == "keygen" => {
@@ -50,25 +61,27 @@ fn run(args: &[String]) -> Result<(), String> {
             println!("{}", id.global_id());
             Ok(())
         }
-        [cmd, key, sums] if cmd == "sign" => {
+        [cmd, key, sums, version] if cmd == "sign" => {
+            check_version(version)?;
             let id = read_key(Path::new(key))?;
             let text = std::fs::read_to_string(sums).map_err(|e| format!("{sums}: {e}"))?;
-            let sig = id.sign(&identity::release_message(&text));
+            let sig = id.sign(&identity::release_message(version, &text));
             std::fs::write(sig_path(Path::new(sums)), format!("{sig}\n")).map_err(|e| e.to_string())?;
-            println!("Signed {sums} with {}", id.global_id());
+            println!("Signed {sums} as release {version} with {}", id.global_id());
             Ok(())
         }
-        [cmd, public, sums] if cmd == "verify" => {
+        [cmd, public, sums, version] if cmd == "verify" => {
+            check_version(version)?;
             let text = std::fs::read_to_string(sums).map_err(|e| format!("{sums}: {e}"))?;
             let sig = std::fs::read_to_string(sig_path(Path::new(sums))).map_err(|e| e.to_string())?;
-            if identity::verify(public, &identity::release_message(&text), sig.trim()) {
+            if identity::verify(public, &identity::release_message(version, &text), sig.trim()) {
                 println!("Good signature");
                 Ok(())
             } else {
                 Err("BAD signature".into())
             }
         }
-        _ => Err("usage: release-sign keygen <key file> | sign <key file> <SHA256SUMS> | verify <public key> <SHA256SUMS>".into()),
+        _ => Err("usage: release-sign keygen <key file> | sign <key file> <SHA256SUMS> <version> | verify <public key> <SHA256SUMS> <version>".into()),
     }
 }
 
