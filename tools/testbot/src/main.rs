@@ -488,6 +488,51 @@ async fn private_room_join(ctx: &mut Ctx) -> Result<()> {
     Ok(())
 }
 
+/// Splitting makes sessions: only of a session the player is in (or just left), and no
+/// more than creating them would.
+async fn split_limits(ctx: &mut Ctx) -> Result<()> {
+    let mut host = ctx.player("Host").await?;
+    let mut stranger = ctx.player("Stranger").await?;
+    host.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
+    let lobby = host.create_session(LOBBY).await?;
+    host.add_participants(lobby, &[host.pid], &[]).await?;
+    ensure!(stranger.split_session(lobby).await.is_err(), "a stranger split someone else's session");
+    let mut made = 0;
+    while host.split_session(lobby).await.is_ok() {
+        made += 1;
+        ensure!(made < 40, "splitting is unlimited");
+    }
+    ensure!(made > 0, "the host couldn't split its own session");
+    host.disconnect().await?;
+    stranger.disconnect().await
+}
+
+/// A private match isn't handed to strangers: not in matchmaking, and not by searching for
+/// its host. Its own players, and the invited, still find it.
+async fn private_room_hidden(ctx: &mut Ctx) -> Result<()> {
+    let mut host = ctx.player("Host").await?;
+    let mut guest = ctx.player("Guest").await?;
+    let mut stranger = ctx.player("Stranger").await?;
+    host.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
+    let lobby = host.create_session(LOBBY).await?;
+    host.add_participants(lobby, &[host.pid], &[]).await?;
+    // A match matchmaking would find (103 => 0), if it weren't invite-only.
+    let game = host.create_session("113 => 0;103 => 0;3 => 0;4 => 8;102 => 7").await?;
+    host.add_participants(game, &[], &[host.pid]).await?;
+    host.set_session(game, true).await?;
+    ensure!(!stranger.search_sessions("113 => 0;102 => 7").await?.iter().any(|(s, _)| *s == game), "matchmaking offered a private match");
+    let found = stranger.search_with_participants(&[host.pid]).await?;
+    ensure!(!has_session(&found, game), "a stranger found the private match by its host");
+    ensure!(has_session(&found, lobby), "the host's public lobby went missing too");
+    host.invite(&guest.name).await?;
+    ensure!(guest.poll_invite(Duration::from_secs(3)).await?.is_some(), "invite not delivered");
+    ensure!(has_session(&guest.search_with_participants(&[host.pid]).await?, game), "the invited guest doesn't find the match");
+    for p in [host, guest, stranger] {
+        p.disconnect().await?;
+    }
+    Ok(())
+}
+
 /// A host who quits takes their lobby with them.
 async fn cleanup(ctx: &mut Ctx) -> Result<()> {
     let mut a = ctx.player("Host").await?;
@@ -833,6 +878,8 @@ const SCENARIOS: &[&str] = &[
     "second-sign-in",
     "ticket-elsewhere",
     "private-room-join",
+    "split-limits",
+    "private-room-hidden",
 ];
 
 #[tokio::main]
@@ -911,6 +958,8 @@ async fn main() -> Result<()> {
                 "second-sign-in" => second_sign_in(&mut ctx).await,
                 "ticket-elsewhere" => ticket_elsewhere(&mut ctx).await,
                 "private-room-join" => private_room_join(&mut ctx).await,
+                "split-limits" => split_limits(&mut ctx).await,
+                "private-room-hidden" => private_room_hidden(&mut ctx).await,
                 // Not in the default list: a server in the "mutual" mode, one requiring
                 // identities, and two servers.
                 "friends-mutual" => friends_mutual(&mut ctx).await,

@@ -63,6 +63,7 @@ use crate::protocols::game_session_service::types::GameSessionKey;
 use crate::protocols::game_session_service::types::GameSessionSearchResult;
 use crate::protocols::game_session_service::types::GameSessionSearchWithParticipantsResult;
 use crate::storage::Storage;
+use crate::storage::UrlsFor;
 
 /// Quazal's notification event, hand-written rather than generated.
 ///
@@ -90,7 +91,13 @@ const PROCESS_NOTIFICATION_EVENT: u32 = 1;
 struct GameSessionProtocolServerImpl {
     storage: Arc<Storage>,
     debug_config: Arc<DebugConfig>,
+    /// The session each player last left, and when: a player splits the session it has
+    /// just abandoned (see `split_session`), and is no longer in it then.
+    left: std::sync::Mutex<std::collections::HashMap<u32, (u32, std::time::Instant)>>,
 }
+
+/// How long after leaving a session a player may still split it.
+const SPLIT_AFTER_LEAVING: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Property that tells the two rooms of a private match apart.
 ///
@@ -238,10 +245,10 @@ fn station_urls_for_peers(urls: Vec<String>, observed: std::net::IpAddr, trusted
 /// Limits on what one player can put into sessions.
 const MAX_ATTRIBUTES: usize = 64;
 const MAX_LIVE_SESSIONS: u32 = 16;
-const MAX_URLS: usize = 8;
+const MAX_URLS: usize = crate::storage::MAX_STATION_URLS as usize;
 const MAX_URL_LEN: usize = 256;
 const MAX_RECIPIENTS: usize = 16;
-const MAX_SEARCH_RESULTS: usize = 50;
+pub(crate) const MAX_SEARCH_RESULTS: u32 = 50;
 const MAX_SEARCH_PIDS: usize = 32;
 
 /// Whether an address could be on the internet (not a LAN, loopback, link-local
@@ -310,6 +317,13 @@ impl GameSessionProtocolServerImpl {
     /// lobbies stayed on offer.
     fn leave(&self, logger: &Logger, user_id: u32, session_id: u32, verb: &str) -> Result<(), Error> {
         let ended = rmc_err!(self.storage.leave_game_session(user_id, session_id), logger, "error leaving session")?;
+        let mut left = self.left.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = std::time::Instant::now();
+        if left.len() >= 10_000 {
+            left.retain(|_, (_, at)| now.duration_since(*at) < SPLIT_AFTER_LEAVING);
+        }
+        left.insert(user_id, (session_id, now));
+        drop(left);
         info!(logger, "User {user_id} {verb} session {session_id}{}", if ended { "; nobody left, it ends" } else { "" });
         Ok(())
     }
@@ -412,6 +426,10 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // Ensure the client is logged in.
         let user_id = login_required(&*ci)?;
         info!(logger, "Client updates session: {:?}", request);
+        if request.game_session_update.attributes.0.len() > MAX_ATTRIBUTES {
+            warn!(logger, "User {user_id} updates a session with too many attributes; refused");
+            return Err(Error::AccessDenied);
+        }
         self.authorise(logger, user_id, request.game_session_update.session_key.session_id, None, "update")?;
         let attributes = request
             .game_session_update
@@ -825,11 +843,27 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
 
         let mut sessions = self
             .storage
-            .search_sessions_with_participants(request.game_session_type_id, request.participant_ids.0.as_slice())
+            .search_sessions_with_participants(request.game_session_type_id, request.participant_ids.0.as_slice(), MAX_SEARCH_RESULTS)
             .map_err(|e| {
                 error!(logger, "Error searching game sessions: {e}");
                 Error::InternalError
             })?;
+
+        // Any pid can be searched for, so an invite-only room is answered only to those who
+        // may join it: its members (the invited player was just added), anyone invited, and
+        // the host's party. Anyone else learnt its host's address from this.
+        let private = rmc_err!(
+            self.storage.invite_only_among(&sessions.iter().map(|s| s.session_id).collect::<Vec<_>>()),
+            logger,
+            "error reading invite-only sessions"
+        )?;
+        sessions.retain(|session| {
+            !private.contains(&session.session_id)
+                || session.creator_id == user_id
+                || session.participants.iter().any(|p| p.user_id == user_id)
+                || self.storage.is_invited(user_id, session.session_id).unwrap_or(false)
+                || self.in_party_of(user_id, session.creator_id)
+        });
 
         // Answer with the invited room, and - if that is a match room - the host's anteroom.
         //
@@ -876,7 +910,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             }
         }
 
-        info!(logger, "Found sessions: {sessions:#?}");
+        info!(logger, "Found {} sessions", sessions.len());
 
         Ok(SearchSessionsWithParticipantsResponse {
             search_results: sessions
@@ -919,6 +953,31 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // Ensure the client is logged in.
         let user_id = login_required(&*ci)?;
         let key = request.game_session_key;
+        // A split makes a session, copied from another: as limited as creating one, and
+        // only of a session the caller is in, or has just left (the game abandons its
+        // session and then splits it).
+        if !crate::rate_limit::sessions().check(user_id) {
+            warn!(logger, "User {user_id} splits sessions too fast; refused");
+            return Err(Error::AccessDenied);
+        }
+        if rmc_err!(self.storage.count_live_sessions(user_id), logger, "error counting sessions")? >= MAX_LIVE_SESSIONS {
+            warn!(logger, "User {user_id} already hosts {MAX_LIVE_SESSIONS} sessions; split refused");
+            return Err(Error::AccessDenied);
+        }
+        let just_left = self
+            .left
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(&user_id)
+            .is_some_and(|(session, at)| *session == key.session_id && at.elapsed() < SPLIT_AFTER_LEAVING);
+        let creator = rmc_err!(self.storage.session_creator(key.session_id), logger, "error reading session")?;
+        let member = just_left
+            || creator == Some(user_id)
+            || rmc_err!(self.storage.session_members(key.session_id), logger, "error reading session members")?.is_some_and(|(_, p)| p.contains(&user_id));
+        if creator.is_some() && !member {
+            warn!(logger, "User {user_id} splits session {} they aren't in; refused", key.session_id);
+            return Err(Error::AccessDenied);
+        }
 
         let migrated = rmc_err!(
             self.storage.split_game_session(user_id, key.type_id, key.session_id),
@@ -1245,16 +1304,16 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         }
 
         let sessions = rmc_err!(
-            self.storage.search_sessions(request.game_session_query.type_id, Some(user_id)),
+            self.storage.search_sessions(request.game_session_query.type_id, user_id, Some(MAX_SEARCH_RESULTS)),
             logger,
             "error searching game sessions"
         )?;
+        let sessions = rmc_err!(self.storage.with_participants(sessions, UrlsFor::Hosts), logger, "error reading participants")?;
         info!(logger, "Found {} sessions", sessions.len());
 
         Ok(SearchSessionsResponse {
             search_results: sessions
                 .into_iter()
-                .take(MAX_SEARCH_RESULTS)
                 .filter_map(|session| {
                     // A session whose creator is not among its own participants has not
                     // registered its host URLs yet; there is nothing a client could connect to,
@@ -1309,7 +1368,11 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
 /// This function is typically used to register the game session protocol
 /// with the server's protocol dispatcher.
 pub fn new_protocol<T: 'static>(storage: Arc<Storage>, debug_config: Arc<DebugConfig>) -> Box<dyn Protocol<T>> {
-    Box::new(GameSessionProtocolServer::new(GameSessionProtocolServerImpl { storage, debug_config }))
+    Box::new(GameSessionProtocolServer::new(GameSessionProtocolServerImpl {
+        storage,
+        debug_config,
+        left: std::sync::Mutex::default(),
+    }))
 }
 
 #[cfg(test)]

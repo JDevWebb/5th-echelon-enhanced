@@ -30,6 +30,18 @@ const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$ak/934K3+OsQ71Dogbr+Iw$
 /// Invitations one player can have waiting at once (one per sender).
 const MAX_PENDING_INVITES: i64 = 5;
 
+/// Station URLs kept per player: the newest.
+pub const MAX_STATION_URLS: u32 = 8;
+
+/// Which participants' station URLs a search answer needs.
+#[derive(Debug, Clone, Copy)]
+pub enum UrlsFor {
+    /// Each session's host only (what a joiner connects to).
+    Hosts,
+    /// Everyone's but this player's (who has no use for their own).
+    AllBut(u32),
+}
+
 /// The key that makes names unique whatever their case ("Kiwi" and "kiwi"
 /// are one name).
 pub fn name_key(username: &str) -> String {
@@ -419,44 +431,104 @@ impl Storage {
         Ok(())
     }
 
-    pub fn search_sessions(&self, type_id: u32, exclude_user: Option<u32>) -> Result<Vec<GameSession>> {
-        let mut sessions: Vec<GameSession> = if let Some(uid) = exclude_user {
-            run(sqlx::query_as(
-                "SELECT type_id as session_type, id as session_id, creator_id, attributes FROM game_sessions WHERE type_id = ? AND creator_id != ? AND destroyed_at IS NULL",
-            )
-            .bind(type_id)
-            .bind(uid)
-            .fetch_all(&self.pool))??
-        } else {
-            run(
-                sqlx::query_as("SELECT type_id as session_type, id as session_id FROM game_sessions WHERE type_id = ? AND destroyed_at IS NULL")
-                    .bind(type_id)
-                    .fetch_all(&self.pool),
-            )??
-        };
+    /// Open sessions of a type for matchmaking, newest first, at most `limit` (`None`: all
+    /// of them), without their participants (see [`Self::with_participants`]).
+    ///
+    /// Only sessions someone could join: live, their host in them, not `exclude_user`'s own,
+    /// and not invite-only (a private match is reached through its invitation, and listing
+    /// it handed its players' addresses to anyone).
+    pub fn search_sessions(&self, type_id: u32, exclude_user: u32, limit: Option<u32>) -> Result<Vec<GameSession>> {
+        Ok(run(sqlx::query_as(
+            r"
+            SELECT g.type_id AS session_type, g.id AS session_id, g.creator_id, COALESCE(g.attributes, '') AS attributes
+            FROM game_sessions g
+            WHERE g.type_id = ? AND g.creator_id != ? AND g.destroyed_at IS NULL
+              AND EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = g.creator_id)
+              AND NOT EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.invite_only = 1)
+            ORDER BY g.id DESC
+            LIMIT ?
+            ",
+        )
+        .bind(type_id)
+        .bind(exclude_user)
+        .bind(limit.map_or(-1, i64::from))
+        .fetch_all(&self.pool))??)
+    }
 
-        for session in &mut sessions {
-            session.participants = run(
-                sqlx::query_as("SELECT user_id, username as name FROM participants p, users u WHERE u.id = user_id AND game_id = ?")
-                    .bind(session.session_id)
-                    .fetch_all(&self.pool),
-            )??;
+    /// Fills in the sessions' participants, with station URLs as `urls` says: two queries
+    /// for all of them, where there were two per session and participant.
+    pub fn with_participants(&self, sessions: Vec<GameSession>, urls: UrlsFor) -> Result<Vec<GameSession>> {
+        run(self.with_participants_async(sessions, urls))?
+    }
 
-            for participant in &mut session.participants {
-                // Is this needed? Games seems to try to connect to itself
-                if matches!(exclude_user, Some(pid) if pid == participant.user_id) {
-                    continue;
-                }
-                participant.station_urls = run(sqlx::query_as("SELECT url FROM station_urls WHERE user_id = ?")
-                    .bind(participant.user_id)
-                    .fetch_all(&self.pool))??
-                .into_iter()
-                .map(|r: (String,)| r.0)
-                .collect();
+    pub async fn with_participants_async(&self, mut sessions: Vec<GameSession>, urls: UrlsFor) -> Result<Vec<GameSession>> {
+        if sessions.is_empty() {
+            return Ok(sessions);
+        }
+        let mut query = sqlx::QueryBuilder::new("SELECT p.game_id, p.user_id, u.username FROM participants p JOIN users u ON u.id = p.user_id WHERE p.game_id IN (");
+        let mut ids = query.separated(",");
+        for session in &sessions {
+            ids.push_bind(session.session_id);
+        }
+        query.push(") ORDER BY p.rowid");
+        let members: Vec<(u32, u32, String)> = query.build_query_as().fetch_all(&self.pool).await?;
+        for (game_id, user_id, name) in members {
+            if let Some(session) = sessions.iter_mut().find(|s| s.session_id == game_id) {
+                session.participants.push(Participant {
+                    user_id,
+                    name,
+                    station_urls: vec![],
+                });
             }
         }
 
+        let wanted = |session: &GameSession, p: &Participant| match urls {
+            UrlsFor::Hosts => p.user_id == session.creator_id,
+            UrlsFor::AllBut(user) => p.user_id != user,
+        };
+        let mut users: Vec<u32> = sessions
+            .iter()
+            .flat_map(|s| s.participants.iter().filter(|p| wanted(s, p)).map(|p| p.user_id))
+            .collect();
+        users.sort_unstable();
+        users.dedup();
+        if users.is_empty() {
+            return Ok(sessions);
+        }
+        let mut query = sqlx::QueryBuilder::new("SELECT user_id, url FROM station_urls WHERE user_id IN (");
+        let mut ids = query.separated(",");
+        for user in &users {
+            ids.push_bind(*user);
+        }
+        query.push(") ORDER BY rowid");
+        let rows: Vec<(u32, String)> = query.build_query_as().fetch_all(&self.pool).await?;
+        for session in &mut sessions {
+            let creator = session.creator_id;
+            for p in &mut session.participants {
+                let keep = match urls {
+                    UrlsFor::Hosts => p.user_id == creator,
+                    UrlsFor::AllBut(user) => p.user_id != user,
+                };
+                if keep {
+                    p.station_urls = rows.iter().filter(|(u, _)| *u == p.user_id).map(|(_, url)| url.clone()).collect();
+                }
+            }
+        }
         Ok(sessions)
+    }
+
+    /// Which of these sessions their hosts announced as invite-only.
+    pub fn invite_only_among(&self, session_ids: &[u32]) -> Result<Vec<u32>> {
+        if session_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut query = sqlx::QueryBuilder::new("SELECT DISTINCT session_id FROM advertised_sessions WHERE invite_only = 1 AND session_id IN (");
+        let mut ids = query.separated(",");
+        for id in session_ids {
+            ids.push_bind(*id);
+        }
+        query.push(")");
+        Ok(run(query.build_query_scalar().fetch_all(&self.pool))??)
     }
 
     pub fn add_participants(&self, _type_id: u32, session_id: u32, private_participants: Vec<u32>, public_participants: Vec<u32>) -> Result<()> {
@@ -515,7 +587,17 @@ impl Storage {
         });
         let query = builder.build();
         debug!(self.logger, "SQL: {}", query.sql());
-        run(query.execute(&self.pool))??;
+        run(async {
+            query.execute(&self.pool).await?;
+            // Registering again added to what was there, without end. Only the newest few
+            // stay (a URL registered again counts as new).
+            sqlx::query("DELETE FROM station_urls WHERE user_id = ? AND rowid NOT IN (SELECT rowid FROM station_urls WHERE user_id = ? ORDER BY rowid DESC LIMIT ?)")
+                .bind(user_id)
+                .bind(user_id)
+                .bind(i64::from(MAX_STATION_URLS))
+                .execute(&self.pool)
+                .await
+        })??;
         Ok(())
     }
 
@@ -849,6 +931,13 @@ impl Storage {
         .rows_affected())
     }
 
+    /// Who opened a session, live or ended (until it's purged).
+    pub fn session_creator(&self, session_id: u32) -> Result<Option<u32>> {
+        Ok(run(sqlx::query_scalar("SELECT creator_id FROM game_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_optional(&self.pool))??)
+    }
+
     /// A player leaves a session (LeaveSession/AbandonSession): they're no
     /// longer a participant, and a session nobody is left in ends. Returns
     /// whether it ended.
@@ -895,66 +984,32 @@ impl Storage {
         })?
     }
 
-    pub fn search_sessions_with_participants(&self, type_id: u32, participant_ids: &[u32]) -> Result<Vec<GameSession>> {
-        run(self.search_sessions_with_participants_async(type_id, participant_ids))?
+    /// Sessions of a type any of `participant_ids` is in, newest first, at most `limit`,
+    /// with their participants and their hosts' station URLs.
+    pub fn search_sessions_with_participants(&self, type_id: u32, participant_ids: &[u32], limit: u32) -> Result<Vec<GameSession>> {
+        run(self.search_sessions_with_participants_async(type_id, participant_ids, limit))?
     }
 
-    pub async fn search_sessions_with_participants_async(&self, type_id: u32, participant_ids: &[u32]) -> Result<Vec<GameSession>> {
-        let placeholders = std::iter::repeat('?').take(participant_ids.len()).intersperse(',').collect::<String>();
-        let sql = format!(
-            r"SELECT
-                    g.type_id as session_type,
-                    g.id as session_id,
-                    g.creator_id,
-                    g.attributes
-                FROM game_sessions AS g
-                WHERE type_id = ? AND destroyed_at IS NULL AND g.id IN (
-                    SELECT game_id
-                    FROM participants
-                    WHERE user_id IN ({placeholders})
-                )
-            "
+    pub async fn search_sessions_with_participants_async(&self, type_id: u32, participant_ids: &[u32], limit: u32) -> Result<Vec<GameSession>> {
+        if participant_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut query = sqlx::QueryBuilder::new(
+            "SELECT g.type_id AS session_type, g.id AS session_id, g.creator_id, COALESCE(g.attributes, '') AS attributes
+             FROM game_sessions AS g
+             WHERE g.type_id = ",
         );
-        let mut query = sqlx::query_as(&sql).bind(type_id);
-
+        query.push_bind(type_id);
+        query.push(" AND g.destroyed_at IS NULL AND g.id IN (SELECT game_id FROM participants WHERE user_id IN (");
+        let mut ids = query.separated(",");
         for id in participant_ids {
-            query = query.bind(id);
+            ids.push_bind(*id);
         }
-        info!(self.logger, "Searching sessions with participants: {}", query.sql());
-
-        let mut sessions: Vec<GameSession> = query.fetch_all(&self.pool).await?;
-
-        for session in &mut sessions {
-            session.participants = sqlx::query_as(
-                r"
-                SELECT
-                    user_id,
-                    username as name
-                FROM participants p, users u
-                WHERE u.id = user_id AND game_id = ?
-                ",
-            )
-            .bind(session.session_id)
-            .fetch_all(&self.pool)
-            .await?;
-
-            for participant in &mut session.participants {
-                participant.station_urls = sqlx::query_as(
-                    r"
-                    SELECT url
-                    FROM station_urls
-                    WHERE user_id = ?
-                    ",
-                )
-                .bind(participant.user_id)
-                .fetch_all(&self.pool)
-                .await?
-                .into_iter()
-                .map(|r: (String,)| r.0)
-                .collect();
-            }
-        }
-        Ok(sessions)
+        query.push(")) ORDER BY g.id DESC LIMIT ");
+        query.push_bind(i64::from(limit));
+        debug!(self.logger, "Searching sessions with participants: {}", query.sql());
+        let sessions: Vec<GameSession> = query.build_query_as().fetch_all(&self.pool).await?;
+        self.with_participants_async(sessions, UrlsFor::Hosts).await
     }
 
     /// Whether `user_id` is a player's account (not the server's own, which
@@ -1327,12 +1382,61 @@ pub(crate) mod tests {
         storage.add_participants(1, lobby, vec![], vec![host, guest]).unwrap();
 
         assert!(!storage.leave_game_session(guest, lobby).unwrap(), "the host is still there");
-        assert!(storage.search_sessions_with_participants(1, &[guest]).unwrap().is_empty(), "the guest left");
-        assert_eq!(storage.search_sessions_with_participants(1, &[host]).unwrap().len(), 1);
+        assert!(storage.search_sessions_with_participants(1, &[guest], 50).unwrap().is_empty(), "the guest left");
+        assert_eq!(storage.search_sessions_with_participants(1, &[host], 50).unwrap().len(), 1);
 
         assert!(storage.leave_game_session(host, lobby).unwrap(), "nobody left: the session ends");
-        assert!(storage.search_sessions_with_participants(1, &[host]).unwrap().is_empty());
+        assert!(storage.search_sessions_with_participants(1, &[host], 50).unwrap().is_empty());
         assert!(!storage.leave_game_session(host, lobby).unwrap(), "leaving twice is harmless");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn searches_offer_joinable_rooms_with_their_hosts_addresses() {
+        let (storage, dir) = temp_storage("search");
+        storage.invalidate_sessions().unwrap(); // the sample session
+        let mut ids = vec![];
+        for name in ["Host", "Guest", "Private", "Seeker"] {
+            storage.register_user(name, "pw", Some(name)).unwrap();
+            let id = storage.find_user_id_by_name(name).unwrap().unwrap();
+            storage.register_urls(id, vec![format!("prudp:/address=10.0.0.{id};port=3074;type=2")]).unwrap();
+            ids.push(id);
+        }
+        let [host, guest, private, seeker] = ids[..] else { unreachable!() };
+        let open = storage.create_game_session(host, 1, "113 => 1".into()).unwrap();
+        storage.add_participants(1, open, vec![], vec![host, guest]).unwrap();
+        let closed = storage.create_game_session(private, 1, "113 => 0".into()).unwrap();
+        storage.add_participants(1, closed, vec![private], vec![]).unwrap();
+        run(storage.set_advertised_session_async(private, Some(closed), true, &[])).unwrap().unwrap();
+        let _hostless = storage.create_game_session(guest, 1, "113 => 1".into()).unwrap();
+
+        let found = storage.search_sessions(1, seeker, None).unwrap();
+        assert_eq!(found.iter().map(|s| s.session_id).collect::<Vec<_>>(), [open], "not the invite-only room, nor one without its host");
+        assert!(storage.search_sessions(1, host, None).unwrap().is_empty(), "nor the searcher's own");
+        let found = storage.with_participants(found, UrlsFor::Hosts).unwrap();
+        let urls: Vec<(u32, usize)> = found[0].participants.iter().map(|p| (p.user_id, p.station_urls.len())).collect();
+        assert_eq!(urls, [(host, 1), (guest, 0)], "the host's address only");
+        let found = storage.with_participants(storage.search_sessions(1, seeker, None).unwrap(), UrlsFor::AllBut(guest)).unwrap();
+        assert_eq!(found[0].participants.iter().map(|p| p.station_urls.len()).collect::<Vec<_>>(), [1, 0]);
+
+        let by_pid = storage.search_sessions_with_participants(1, &[guest, private], 1).unwrap();
+        assert_eq!(by_pid.len(), 1, "limited");
+        assert_eq!(storage.invite_only_among(&[open, closed]).unwrap(), [closed]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_player_keeps_only_their_newest_station_urls() {
+        let (storage, dir) = temp_storage("urls");
+        storage.register_user("Many", "pw", Some("MANY")).unwrap();
+        let id = storage.find_user_id_by_name("Many").unwrap().unwrap();
+        for port in 0..20 {
+            storage.register_urls(id, vec![format!("prudp:/address=10.0.0.1;port={port};type=2")]).unwrap();
+        }
+        let urls = run(storage.list_urls(id)).unwrap().unwrap();
+        assert_eq!(urls.len(), MAX_STATION_URLS as usize);
+        assert!(urls.iter().any(|u| u.contains("port=19;")), "the newest stays: {urls:?}");
+        assert!(!urls.iter().any(|u| u.contains("port=0;")), "the oldest goes: {urls:?}");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

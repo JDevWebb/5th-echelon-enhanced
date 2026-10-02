@@ -24,6 +24,10 @@ use crate::protocols::game_session_service::types::GameSessionKey;
 use crate::protocols::game_session_service::types::GameSessionParticipant;
 use crate::protocols::game_session_service::types::GameSessionSearchResult;
 use crate::storage::Storage;
+use crate::storage::UrlsFor;
+
+/// The most open sessions one matchmaking search compares (newest first).
+const MAX_SCANNED: u32 = 1000;
 
 /// Implementation of the `GameSessionExProtocolServerTrait` for extended game session operations.
 struct GameSessionExProtocolServerImpl {
@@ -48,6 +52,9 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
 
         let user_id = login_required(&*ci)?;
         info!(logger, "Client searches for session: {:?}", request);
+        if !crate::rate_limit::game_requests().check(user_id) {
+            return Err(Error::AccessDenied);
+        }
 
         // A client that just accepted an invitation looks for the room with query 8, but it
         // sends the ordinary matchmaking attributes along - and a private room carries
@@ -78,7 +85,13 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
             );
             vec![session]
         } else {
-            rmc_err!(self.storage.search_sessions(session_type, ci.user_id), logger, "Error searching game sessions")?
+            // Without participants: the attributes decide first, and only the answer's few
+            // sessions are read in full (below).
+            rmc_err!(
+                self.storage.search_sessions(session_type, user_id, Some(MAX_SCANNED)),
+                logger,
+                "Error searching game sessions"
+            )?
         };
         // search svm
         // 103 => 2165463540
@@ -132,8 +145,15 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
                 }
                 true
             })
+            .take(crate::game_session::MAX_SEARCH_RESULTS as usize)
             .collect();
-        info!(logger, "Found sessions {sessions:?}");
+        // The invited room comes with its participants already.
+        let sessions = if invitation_search {
+            sessions
+        } else {
+            rmc_err!(self.storage.with_participants(sessions, UrlsFor::AllBut(user_id)), logger, "Error reading participants")?
+        };
+        info!(logger, "Found {} sessions", sessions.len());
         Ok(SearchSessionsResponse {
             search_results: QList(
                 sessions
