@@ -111,6 +111,40 @@ pub fn friends_elsewhere(user: u32) -> Vec<Elsewhere> {
     elsewhere_map().get(&user).cloned().unwrap_or_default()
 }
 
+impl Elsewhere {
+    /// The entry as players may be shown it, or None when it can't be: the
+    /// coordinator's text is clipped and loses control and direction
+    /// characters, and the host must be a host name or an IPv4 address (the
+    /// launcher connects to it).
+    fn cleaned(&self) -> Option<Self> {
+        let username = printable(&self.username, 32);
+        let host = self.host.trim();
+        if username.is_empty() || !(valid_host_name(host) || host.parse::<std::net::Ipv4Addr>().is_ok()) {
+            return None;
+        }
+        Some(Self {
+            username,
+            server: printable(&self.server, 40),
+            region: printable(&self.region, 32),
+            host: host.to_string(),
+        })
+    }
+}
+
+/// `text` without control characters or the ones that change the direction
+/// of what follows (which could make a name read as something else), at most
+/// `max` characters.
+fn printable(text: &str, max: usize) -> String {
+    let bidi = |c: char| matches!(c, '\u{200e}' | '\u{200f}' | '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}');
+    text.chars().filter(|c| !c.is_control() && !bidi(*c)).take(max).collect::<String>().trim().to_string()
+}
+
+/// A DNS host name: dot-separated labels of letters, digits and `-`.
+fn valid_host_name(host: &str) -> bool {
+    let label = |l: &str| !l.is_empty() && l.len() <= 63 && !l.starts_with('-') && !l.ends_with('-') && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-');
+    (1..=253).contains(&host.len()) && host.split('.').all(label)
+}
+
 /// What the directory shows about this server.
 #[derive(Debug, Clone, Serialize)]
 pub struct Listing {
@@ -555,6 +589,9 @@ impl Coordinator<'_> {
     }
 }
 
+/// Friends elsewhere kept per player (more than a friend list shows).
+const MAX_ELSEWHERE: usize = 200;
+
 /// The saved credentials, if they're for this coordinator.
 fn credentials(base: &str) -> Option<String> {
     let (url, secret) = saved_credentials()?;
@@ -568,6 +605,31 @@ fn saved_credentials() -> Option<(String, String)> {
     Some((url.trim().to_string(), secret.trim().to_string()))
 }
 
+/// Whether two URLs name the same host.
+fn same_host(a: &str, b: &str) -> bool {
+    let host = |u: &str| reqwest::Url::parse(u).ok().and_then(|u| u.host_str().map(str::to_ascii_lowercase));
+    host(a).is_some_and(|h| Some(h) == host(b))
+}
+
+/// Whether two URLs reach the same machine: the same host, or names and
+/// addresses that resolve to a shared address.
+async fn same_machine(a: &str, b: &str) -> bool {
+    async fn addresses(url: &str) -> Vec<std::net::IpAddr> {
+        let Some((host, port)) = reqwest::Url::parse(url).ok().and_then(|u| Some((u.host_str()?.to_string(), u.port_or_known_default()?))) else {
+            return vec![];
+        };
+        match tokio::time::timeout(Duration::from_secs(5), tokio::net::lookup_host(format!("{host}:{port}"))).await {
+            Ok(Ok(found)) => found.map(|a| a.ip()).collect(),
+            _ => vec![],
+        }
+    }
+    if same_host(a, b) {
+        return true;
+    }
+    let (x, y) = (addresses(a).await, addresses(b).await);
+    x.iter().any(|ip| y.contains(ip))
+}
+
 /// Joins the coordinator with the join token and saves the credentials.
 async fn join(logger: &Logger, http: &reqwest::Client, base: &str, cfg: &FederationConfig, server_id: &str) -> Option<String> {
     if cfg.join_token.trim().is_empty() {
@@ -578,11 +640,18 @@ async fn join(logger: &Logger, http: &reqwest::Client, base: &str, cfg: &Federat
         return None;
     }
     let body = serde_json::json!({ "token": cfg.join_token.trim(), "server_id": server_id });
-    // Joined before, at another address (the coordinator moved): the coordinator only lets
-    // a server join again with its current secret, so it goes along.
-    let previous = saved_credentials().filter(|(url, _)| url != base);
-    if let Some((url, _)) = &previous {
-        info!(logger, "Federation: the coordinator was {url}; joining again at {base}");
+    // Joined before, at another address of the same machine (the coordinator moved, e.g. to
+    // https or from its IP address to a name): the coordinator only lets a server join again
+    // with its current secret, so it goes along. Never to another machine: the secret is
+    // that coordinator's, and anyone holding it can act as this server there.
+    let mut previous = saved_credentials().filter(|(url, _)| url != base);
+    if let Some((url, _)) = previous.take() {
+        if same_machine(&url, base).await {
+            info!(logger, "Federation: the coordinator was {url}; joining again at {base}");
+            previous = saved_credentials();
+        } else {
+            info!(logger, "Federation: joined {url} before, which isn't {base}'s machine; joining {base} afresh");
+        }
     }
     let result = async {
         let mut request = http.post(format!("{base}/v1/join")).json(&body);
@@ -654,7 +723,8 @@ async fn pull(logger: &Logger, storage: &Storage, client: &Coordinator<'_>, user
     let elsewhere: Vec<Elsewhere> = relations
         .iter()
         .filter(|r| r.friends && !r.blocked && !r.blocked_by)
-        .filter_map(|r| r.elsewhere.clone())
+        .filter_map(|r| r.elsewhere.as_ref().and_then(Elsewhere::cleaned))
+        .take(MAX_ELSEWHERE)
         .collect();
     {
         let mut map = elsewhere_map();
@@ -720,6 +790,34 @@ mod tests {
         assert_eq!(block_on(s.relation(kiwi, tank)).unwrap().unwrap(), Relation::None);
         assert_eq!(block_on(s.relation(kiwi, pest)).unwrap().unwrap(), Relation::None);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn elsewhere_is_cleaned_before_players_see_it() {
+        let e = |username: &str, server: &str, host: &str| Elsewhere {
+            username: username.into(),
+            server: server.into(),
+            region: "Oceania".into(),
+            host: host.into(),
+        };
+        let clean = e("Tank\u{202e}", "Server\nB", "server-b.example.com").cleaned().unwrap();
+        assert_eq!((clean.username.as_str(), clean.server.as_str()), ("Tank", "ServerB"));
+        assert_eq!(e(&"x".repeat(100), "B", "1.2.3.4").cleaned().unwrap().username.len(), 32);
+        for host in ["", "evil.com/path", "a b", "[::1]", "host:80", "-x.com", "\u{202e}moc"] {
+            assert!(e("Tank", "B", host).cleaned().is_none(), "{host:?}");
+        }
+        assert!(e("\u{200f}", "B", "b.example.com").cleaned().is_none(), "nothing left of the name");
+    }
+
+    #[test]
+    fn the_secret_goes_only_to_the_same_host() {
+        assert!(same_host("http://coord.example.com:8700", "https://coord.example.com"));
+        assert!(same_host("https://Coord.example.com", "https://coord.example.com/"));
+        assert!(!same_host("https://coord.example.com", "https://other.example.com"));
+        assert!(!same_host("not a url", "not a url"));
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        assert!(rt.block_on(same_machine("http://127.0.0.1:8700", "http://localhost:8700")), "a name for the same address");
+        assert!(!rt.block_on(same_machine("http://127.0.0.1:8700", "http://192.0.2.1:8700")));
     }
 
     #[test]
