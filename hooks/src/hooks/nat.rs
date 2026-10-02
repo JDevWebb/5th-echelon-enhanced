@@ -68,6 +68,26 @@ const DETECT_WAIT: Duration = Duration::from_millis(1500);
 /// No socket yet.
 const NO_SOCKET: usize = usize::MAX;
 static STORM_SOCKET: AtomicUsize = AtomicUsize::new(NO_SOCKET);
+/// Other sockets the game bound on the Storm port before the latest. The game
+/// binds two there, one right after the other, and its traffic to other
+/// players can leave on either: both must be wrapped for the relay and
+/// unwrapped from it, or a player joining a relayed host sends to the relay's
+/// address unwrapped, and nothing there answers.
+static OTHER_STORM_SOCKETS: [AtomicUsize; 4] = [const { AtomicUsize::new(NO_SOCKET) }; 4];
+/// Said once: game traffic seen on a Storm socket other than the latest.
+static OTHER_SOCKET_USED: AtomicBool = AtomicBool::new(false);
+
+/// Whether `s` is one of the game's sockets on the Storm port.
+fn is_storm_socket(s: usize) -> bool {
+    s != NO_SOCKET && (s == STORM_SOCKET.load(Ordering::Relaxed) || OTHER_STORM_SOCKETS.iter().any(|o| o.load(Ordering::Relaxed) == s))
+}
+
+/// Notes that the game used a Storm socket other than the latest (once).
+fn note_other_socket(s: usize) {
+    if s != STORM_SOCKET.load(Ordering::Relaxed) && !OTHER_SOCKET_USED.swap(true, Ordering::Relaxed) {
+        info!("NAT: game traffic on the earlier Storm socket too; it goes through the relay as well");
+    }
+}
 static LOG_PACKETS: AtomicBool = AtomicBool::new(false);
 static PARSE: OnceLock<usize> = OnceLock::new();
 
@@ -223,6 +243,16 @@ fn bind(s: usize, name: *const u8, namelen: i32) -> i32 {
         if let Some(addr) = read_addr(name) {
             if addr.port() == nat_proto::STORM_PORT {
                 let old = STORM_SOCKET.swap(s, Ordering::SeqCst);
+                if old != s && old != NO_SOCKET {
+                    // Kept, newest first: the oldest of five drops out.
+                    let mut carry = old;
+                    for slot in &OTHER_STORM_SOCKETS {
+                        carry = slot.swap(carry, Ordering::SeqCst);
+                        if carry == NO_SOCKET || carry == s {
+                            break;
+                        }
+                    }
+                }
                 if old != s {
                     info!("NAT: Storm socket bound on {addr}");
                     let mut st = state();
@@ -239,7 +269,7 @@ fn bind(s: usize, name: *const u8, namelen: i32) -> i32 {
 }
 
 fn sendto(s: usize, buf: *const u8, len: i32, flags: i32, to: *const u8, tolen: i32) -> i32 {
-    if s == STORM_SOCKET.load(Ordering::Relaxed) && !buf.is_null() && len > 0 {
+    if is_storm_socket(s) && !buf.is_null() && len > 0 {
         let data = unsafe { std::slice::from_raw_parts(buf, len as usize) };
         let dest = read_addr(to);
         if LOG_PACKETS.load(Ordering::Relaxed) {
@@ -254,6 +284,7 @@ fn sendto(s: usize, buf: *const u8, len: i32, flags: i32, to: *const u8, tolen: 
                 }
             };
             if let Some((server, tag)) = relay {
+                note_other_socket(s);
                 if data.len() > nat_proto::MAX_PAYLOAD {
                     // Dropped, not sent directly: that would give away the address the relay
                     // hides.
@@ -276,7 +307,7 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
     // A peek leaves the packet queued; consuming NAT messages then would
     // loop on the same one.
     const MSG_PEEK: i32 = 2;
-    if s != STORM_SOCKET.load(Ordering::Relaxed) || buf.is_null() || flags & MSG_PEEK != 0 {
+    if !is_storm_socket(s) || buf.is_null() || flags & MSG_PEEK != 0 {
         return unsafe { RecvFromHook.call(s, buf, len, flags, from, fromlen) };
     }
     // The sender is needed to trust NAT messages, even if the game doesn't
