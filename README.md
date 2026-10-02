@@ -103,13 +103,16 @@ You need **Splinter Cell: Blacklist on PC** (Steam or Ubisoft Connect) and **Win
 
 1. **Download `launcher.exe`** from the [latest release](https://github.com/JDevWebb/5th-echelon-enhanced/releases/latest). It's one file; put it anywhere.
 2. **Run it.** It finds the game on its own: Steam libraries, Ubisoft Connect, and the usual folders on every drive. If it can't, choose the folder with `Blacklist_game.exe`; it remembers it.
-3. **Join a server.**
-   - Enter **`play.scbl.jdevwebb.net`** for the [community server](#the-community-server), the address your own community gave you, or press **Find on my network**.
-   - Press **Connect**. The launcher finds your account with your identity; if you don't have one there yet, it asks for the name other players will see and makes it.
+3. **Choose a server.** The launcher walks you through it:
+   - it lists the [community servers](#the-community-server) with your ping to each and picks the closest; or type the address your own community gave you, or press **Find on my network**;
+   - press **Connect**. The launcher finds your account with your identity; if you don't have one there yet, it asks for the name other players will see and makes it.
 4. **Press Play.**
 
 <p align="center">
-  <img src="./docs/screenshots/launcher-play.png" width="640" alt="The launcher's Play screen: the game found, the join form with the community network's servers and your ping to each, and the checklist">
+  <img src="./docs/screenshots/launcher-setup.png" width="640" alt="The launcher's first-run setup: the steps on the left, and the community servers with your ping to each, the closest picked">
+</p>
+<p align="center">
+  <img src="./docs/screenshots/launcher-play.png" width="640" alt="The launcher's home screen: your profile on the banner, the server with its ping, Ready to play and a big Play button, and cards for status, friends online and the server's news">
 </p>
 
 **What Connect does for you:**
@@ -120,7 +123,11 @@ You need **Splinter Cell: Blacklist on PC** (Steam or Ubisoft Connect) and **Win
 - picks the network adapter other players can reach you on;
 - makes a rank 5 save so co-op and Spies vs Mercs are unlocked.
 
-The **checklist** keeps an eye on all of this. Anything that goes wrong later (a VPN that's off, an update) shows up there with a button that fixes it.
+The **Status** card on the home screen keeps an eye on all of this. Anything that goes wrong later (a VPN that's off, an update) shows up there with a button that fixes it, and the bar beside **Play** says whether you're ready. **Friends** shows who's online and what they're playing (and friends on other servers, with a button to join them), and **Server news** turns through the server's news; the **News** screen has all of it. The **Servers** screen lists the network's servers with your ping, the players on each and the friends there, and switches you over in one click; your identity signs you in there with the same name.
+
+<p align="center">
+  <img src="./docs/screenshots/launcher-servers.png" width="640" alt="The launcher's Servers screen: a card per community server with ping and players, the one you're on marked Connected, and joining by address or on your network">
+</p>
 
 > [!TIP]
 > **No VPN needed.** The server tells your game its public address, so friends anywhere can join your matches; when a router can't be reached directly, the match goes through the server instead. See [Playing over the internet](#playing-over-the-internet).
@@ -152,16 +159,16 @@ Invites and friend requests also pop up as notifications. Friend lists, blocking
 
 ### When something doesn't work
 
-1. **Look at the checklist** on the Play screen and press the button next to anything red.
-2. **Run Settings › Connection test.** It checks each part in turn:
+1. **Look at the Status card** on the home screen and press the button under anything red.
+2. **Run Settings › Network › Connection test.** It checks each part in turn:
    - the server's config (port 80) and its API;
    - signing in to the game service (21126);
-   - whether the server can reach your PC directly. If not, it asks your router to forward the match port (UPnP, then NAT-PMP) as the game does, tries again, and removes the mapping afterwards. An amber result here is normal for many routers: matches then use hole punching or the server's relay;
+   - how other players reach your PC, in the words the overlay uses in game: **Direct**, **Direct, router port opened** (it asks your router to forward the match port with UPnP or NAT-PMP, as the game does, then removes it), or **Through the server's relay** when no port can be opened. Only a port that's open but still unreachable (a firewall on the PC, or a second router) is a warning: set Internet play to **Always through the server** then;
    - the server's internet play helper (21128).
 3. **The game's log** is `bl-tracing.log` in the game folder; the previous game's is `bl-tracing.prev.log`. Include it when you ask for help.
 
 <p align="center">
-  <img src="./docs/screenshots/launcher-connection-test.png" width="560" alt="The connection test: config server, API and account, game service sign-in, direct connection and the internet play helper all passing">
+  <img src="./docs/screenshots/launcher-connection-test.png" width="640" alt="Settings › Network: Internet play, and the connection test with config server, API and account, game service sign-in, how players reach this PC and the internet play helper all passing">
 </p>
 
 ### Antivirus warnings
@@ -203,7 +210,7 @@ The game runs under Proton (Steam) or Wine (Lutris, Heroic, …), and 5th Echelo
    chmod +x launcher-linux-x86_64 && ./launcher-linux-x86_64
    ```
    On a Steam Deck, do this in **Desktop Mode**.
-2. **If you've never started the game on this PC, start it once from Steam and quit.** Proton only creates the game's Wine files on its first run, and your save goes in there; the checklist reminds you.
+2. **If you've never started the game on this PC, start it once from Steam and quit.** Proton only creates the game's Wine files on its first run, and your save goes in there; the launcher's Status card reminds you.
 3. **Join a server and press Connect**, as on Windows. The launcher finds the game in any Steam library (native, Flatpak or Snap, SD card included), or in Lutris, Heroic and `~/.wine` prefixes. You can also choose the folder yourself.
 4. **Press Play.**
    - Steam games start through Steam, with Proton.
@@ -212,7 +219,7 @@ The game runs under Proton (Steam) or Wine (Lutris, Heroic, …), and 5th Echelo
 **On a Steam Deck,** you only need Desktop Mode for the setup. The client is installed in the game's own folder, so afterwards just play from your library in **Game Mode**.
 
 > [!IMPORTANT]
-> **CPUs with more than 16 threads:** under Wine the game can freeze at start, with or without 5th Echelon. The launcher's checklist and Settings show the fix: a Steam launch option (Properties › Launch options), with a Copy button:
+> **CPUs with more than 16 threads:** under Wine the game can freeze at start, with or without 5th Echelon. The launcher's Status card and Settings show the fix: a Steam launch option (Properties › Launch options), with a Copy button:
 > ```
 > WINE_CPU_TOPOLOGY=16:0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15 %command%
 > ```
@@ -245,7 +252,7 @@ Everything the launcher does can be done by hand:
   - lobby invites;
   - **invites into private matches**.
 - **Internet play without a VPN:** public addresses from the server, router port forwarding (UPnP / NAT-PMP), and a relay through the server when a router can't be reached.
-- **An automatic setup:** game detection, client install, your account found (or made) with your identity, network adapter pinning and a rank 5 save, then a checklist with a fix for each problem.
+- **An automatic setup:** game detection, client install, your account found (or made) with your identity, network adapter pinning and a rank 5 save, then a Status card with a fix for each problem.
 - **An in-game overlay** (<kbd>F5</kbd>): friends and what they're playing, friend requests, player search and blocking, invites, lobby player limits, and server status.
 - **One identity, every server:** the launcher makes you an identity (a key that stays on your PC) and links every account to it. It finds your account on a server by itself, with no username or password to remember, and asks for a name only the first time. Friends made on one server show up on every other server that shares a coordinator, and friends playing on another of them are listed in the overlay and the launcher, which joins you to their server in one click. Moving PCs? Copy your identity across in **Settings**, before connecting on the new PC ([how](docs/friends.md#your-identity)).
 - **Your name is yours:** servers that share a coordinator reserve each name for one player. Elsewhere, the overlay warns when someone has a friend's name but isn't them. You can rename your account from the launcher.
@@ -292,7 +299,7 @@ Everything the launcher does can be done by hand:
   - adds fail2ban;
   - hardens the kernel and turns off services a server doesn't need.
 - **Runs anywhere:**
-  - Windows, from the launcher's **Server** screen or on its own;
+  - Windows, from the launcher's **Host** screen or on its own;
   - Linux;
   - Docker.
 - **A management screen** in the launcher: see and remove players and games, and read the log. It works for the server on your PC, or for a remote server through an SSH tunnel with its admin key.
@@ -331,14 +338,14 @@ Matches run **peer to peer** between players. The server's NAT helper (21128–2
 
 ### On Windows: from the launcher (easiest)
 
-1. Open the launcher's **Server** screen. If `dedicated_server.exe` isn't next to the launcher, press **Download the server**.
+1. Open the launcher's **Host** screen. If `dedicated_server.exe` isn't next to the launcher, press **Download the server**.
 2. Choose what to **listen on** (every address is fine), and fill in the **public address** if players come in through port forwarding.
 3. Switch on the community API parts you want, then press **Start server**.
 
 The launcher stops the server when it closes. The **Manage a server** section lists players and games, and shows the log.
 
 <p align="center">
-  <img src="./docs/screenshots/launcher-server.png" width="640" alt="The launcher's Server screen: a running server and its player list">
+  <img src="./docs/screenshots/launcher-server.png" width="640" alt="The launcher's Host screen: a running server and its player list">
 </p>
 
 ### On Windows: on its own
@@ -484,7 +491,7 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
 
 **Launcher**
 - Rewritten in egui around a new `setup` library, for Windows and Linux (Steam, Flatpak, Steam Deck, Lutris, Heroic).
-- Automatic setup and a checklist with fixes. **Connect** finds your account with your identity, and asks for a name only when you have none on that server.
+- A guided first-run setup, and a Status card with fixes. **Connect** finds your account with your identity, and asks for a name only when you have none on that server.
 - Typing a network's address (a coordinator) sets you up on its best server by ping; **Switch** moves to another.
 - Adapter pinning that works (upstream's saved a value that never matched an adapter).
 - Server management, and verified updates from this fork's releases.
