@@ -168,6 +168,9 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
             }
         });
     }
+    // The service accounts are shared (Tracking's password is the game's own): signing in to
+    // one must not close everyone else's connections to it.
+    server.newest_sign_in_wins = |user_id| !SERVICE_ACCOUNTS.contains(&user_id);
     if is_secure {
         server.user_handler = Some(handle_user_packet);
         // Online means a signed-in connection here, not just a ticket from the auth server.

@@ -242,6 +242,10 @@ where
     /// user is signed in here (until their last connection closes or expires).
     /// Also given the address the connection came from.
     pub login_handler: Option<Box<dyn FnMut(u32, SocketAddr) + 'a>>,
+    /// Whether a user's newest sign-in closes their connections from elsewhere (see
+    /// [`Self::sign_out_elsewhere`]): every user by default. Shared accounts (the server's
+    /// own, whose passwords are public) must not.
+    pub newest_sign_in_wins: fn(u32) -> bool,
     next_conn_id: AtomicU32,
     /// Address echoes answered per source this second, and when they were last swept.
     echoes: HashMap<std::net::IpAddr, (Instant, u32)>,
@@ -273,6 +277,7 @@ where
             expired_client_handler: None,
             disconnect_handler: None,
             login_handler: None,
+            newest_sign_in_wins: |_| true,
             next_conn_id: AtomicU32::new(0x3AAA_AAAA),
         }
     }
@@ -761,7 +766,7 @@ where
         }
         info!(logger, "New client connected"; "signature" => packet.signature, "session" => packet.session_id);
         let signed_in = ci.borrow().user_id;
-        if let Some(user_id) = signed_in {
+        if let Some(user_id) = signed_in.filter(|id| (self.newest_sign_in_wins)(*id)) {
             self.sign_out_elsewhere(logger, user_id, client);
         }
         if let (Some(user_id), Some(handler)) = (signed_in, self.login_handler.as_mut()) {
@@ -778,6 +783,10 @@ where
     /// to the secure server), all from the one socket, so `from` keeps every one of them.
     /// Two games on one account used to stay connected together, each overwriting the other's
     /// station URLs, with invitations and notifications reaching either.
+    ///
+    /// Not for the accounts [`Self::newest_sign_in_wins`] leaves out: every game signs in to
+    /// the telemetry account, with the game's public password, and each would close the
+    /// others' connections and clean up after them.
     fn sign_out_elsewhere(&mut self, logger: &Logger, user_id: u32, from: SocketAddr) {
         let stale: Vec<ClientInfo<T>> = self
             .client_registry
