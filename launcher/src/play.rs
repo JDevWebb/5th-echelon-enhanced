@@ -97,6 +97,7 @@ impl Play {
         if let Some(result) = self.setup.poll() {
             match result {
                 Ok(flow::Done::Ready) => {
+                    flow::forget_account_check();
                     notices.info("You're set up.");
                     self.editing = false;
                     self.needs_name = None;

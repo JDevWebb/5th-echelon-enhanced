@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::Duration;
+use std::time::Instant;
 
 use setup::account;
 use setup::config::Config;
@@ -72,12 +73,16 @@ pub fn gather(game_dir: &Path, cfg: &Config, bundled: Option<&[u8]>) -> (Facts, 
             facts.account = Some(if !profile.has_account() {
                 AccountFact::None
             } else {
-                let accounts = Accounts::new(profile.api_server_url().to_string());
-                match account::AccountService::login(&accounts, &profile.user.username, &profile.user.secret().unwrap_or_default()) {
-                    Ok(()) => AccountFact::Ok(profile.user.username.clone()),
-                    Err(e @ (account::AccountError::WrongPassword | account::AccountError::NotFound)) => AccountFact::Refused(e.to_string()),
-                    Err(e) => AccountFact::Unknown(e.to_string()),
-                }
+                let url = profile.api_server_url().to_string();
+                let secret = profile.user.secret().unwrap_or_default();
+                checked_account(&url, &profile.user.username, &secret, || {
+                    let accounts = Accounts::new(url.clone());
+                    match account::AccountService::login(&accounts, &profile.user.username, &secret) {
+                        Ok(()) => AccountFact::Ok(profile.user.username.clone()),
+                        Err(e @ (account::AccountError::WrongPassword | account::AccountError::NotFound)) => AccountFact::Refused(e.to_string()),
+                        Err(e) => AccountFact::Unknown(e.to_string()),
+                    }
+                })
             });
             let adapters = net::adapters();
             facts.route_adapter = net::adapter_for_server(ip, &adapters);
@@ -90,6 +95,38 @@ pub fn gather(game_dir: &Path, cfg: &Config, bundled: Option<&[u8]>) -> (Facts, 
     facts.wine = wine_facts(game_dir);
     let version = setup::game::pick_version(game_dir, cfg.default_game).unwrap_or(cfg.default_game);
     (facts, support(game_dir, version))
+}
+
+/// How long an account check holds. The checklist refreshes every 30 s, and
+/// signing in each time cost the server a password hash per player per
+/// refresh (and a refused one counts towards its lockout).
+const ACCOUNT_CHECK_HOLDS: Duration = Duration::from_secs(10 * 60);
+
+/// The last account check: the server, name and a hash of the password it
+/// was made with, when, and what it found.
+static LAST_ACCOUNT_CHECK: Mutex<Option<(String, Instant, AccountFact)>> = Mutex::new(None);
+
+/// Forgets the last account check, so the next one signs in: after a setup,
+/// which may have made or changed the account.
+pub fn forget_account_check() {
+    *LAST_ACCOUNT_CHECK.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+}
+
+/// `check`'s answer for this server, name and password, reusing one from the
+/// last [`ACCOUNT_CHECK_HOLDS`]. A changed server, name or password checks
+/// again at once; so does a check that couldn't reach the server.
+fn checked_account(url: &str, username: &str, secret: &str, check: impl FnOnce() -> AccountFact) -> AccountFact {
+    use sha2::Digest as _;
+    let key = format!("{url}\n{username}\n{:x}", sha2::Sha256::digest(secret.as_bytes()));
+    let mut last = LAST_ACCOUNT_CHECK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((k, at, fact)) = last.as_ref() {
+        if *k == key && at.elapsed() < ACCOUNT_CHECK_HOLDS {
+            return fact.clone();
+        }
+    }
+    let fact = check();
+    *last = (!matches!(fact, AccountFact::Unknown(_))).then(|| (key, Instant::now(), fact.clone()));
+    fact
 }
 
 /// What the player asked the setup for.
