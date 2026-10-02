@@ -3,7 +3,10 @@
 # the launcher title and the version resources of launcher.exe and
 # uplay_r1_loader.dll show it.
 #
-# Bump `version` for every release. 0.2.5 was upstream's last release; this
-# fork continues from 0.3.0.
+# major.minor.patch: every change or patch bumps the patch number (0.3.148 was
+# the estimate of the fork's changes so far: 119 commits since the import from
+# the private fork, plus the 29 it carried). The -dev suffix marks builds that
+# aren't a signed release; it comes off when one is. 0.2.5 was upstream's last
+# release; this fork continues from 0.3.0.
 name = "5th Echelon Enhanced"
-version = "0.3.0-dev"
+version = "0.3.148-dev"
