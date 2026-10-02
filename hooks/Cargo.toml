@@ -28,6 +28,7 @@ hooks-proc = { path = "hooks-proc" }
 portmap = { path = "../portmap" }
 imgui = { workspace = true }
 nat_proto = { path = "../nat_proto" }
+rand = { workspace = true }
 region = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }

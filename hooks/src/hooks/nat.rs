@@ -526,7 +526,9 @@ fn worker(host: String, port: u16) {
                 continue;
             }
             st.last_probe = Some(Instant::now());
-            st.nonce = st.nonce.wrapping_add(1).max(1);
+            // Random and never 0: whoever can send as the helper (e.g. on the LAN) can't
+            // guess the next one, so can't answer for it.
+            st.nonce = rand::random::<u32>() | 1;
             let nonce = st.nonce;
             st.sent.rotate_right(1);
             st.sent[0] = nonce;
