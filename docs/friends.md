@@ -210,8 +210,10 @@ The server keeps its credentials in `federation.key` once it has joined. Its log
 | `GET /v1/relations/<identity>` | a member | a player's friends and blocks, for a player linked on that server |
 | `POST /v1/names/claim` `{name, global_id, time, signature}` | a member | reserves a name for a player (their link signature for that server, from the last five minutes); `409` if someone else has it |
 | `GET /v1/names/<name>` | a member | whether a name is reserved (`{claimed}`) |
-| `POST /v1/metrics` | a member | the minute's metrics, and the anonymised ids of the players online (see [operations.md](operations.md#metrics)) |
-| `POST /v1/pulse` | a member | the 10-second pulse: players online, counters and traffic, for live figures |
+| `POST /v1/metrics` | a member | the minute's metrics, the anonymised ids of the players online and the matches that ended (see [operations.md](operations.md#metrics)) |
+| `POST /v1/pulse` | a member | the 10-second pulse: players online, counters and traffic, for live figures; answers with the admin actions waiting for that server (`{actions}`) |
+| `POST /v1/players` `{full, players, sessions}` | a member | its players (name, identity fingerprint, play time, sessions, matches, ban) and play sessions: the changes every 5 minutes, everyone at start and every 6 hours |
+| `POST /v1/actions/<id>` `{ok, message, password}` | a member | how an admin action it was sent went (kick, ban, unban, a new password, rename, delete) |
 | `POST /v1/pings` `{pings: [{server, ms}]}` | anyone (launchers) | a launcher's pings to the directory's servers; one sample per address and server every 10 minutes counts |
 | `GET /v1/info` | anyone | name, version, number of servers |
 

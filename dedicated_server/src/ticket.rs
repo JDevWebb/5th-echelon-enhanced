@@ -231,6 +231,7 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
         // An error (e.g. the server too busy checking passwords) isn't a failed login.
         let Some(user_id) = self.login(logger, ubi_username, password)? else {
             crate::rate_limit::login_failed(peer, ubi_username);
+            crate::metrics::failed_login();
             warn!(logger, "login failed for {:?}", ubi_username);
             return Err(quazal::rmc::Error::AccessDenied);
         };

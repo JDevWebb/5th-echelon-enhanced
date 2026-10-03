@@ -6,10 +6,10 @@
 //! `POST /v1/metrics`; a smaller [`Pulse`] goes every ten seconds
 //! (`POST /v1/pulse`), for the admin UI's live numbers.
 //!
-//! Who played is sent only as `active`: each online player's account id run
+//! Who is online is sent as `active`: each online player's account id run
 //! through HMAC with a key that never leaves this server ([`ACTIVITY_KEY_FILE`]),
-//! so the coordinator can count the same player on different days without
-//! learning who they are, or matching them with another server's.
+//! for the counts of players per day. Players by name, with their play time,
+//! go separately, to the admin UI's player list (`federation::send_roster`).
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -59,6 +59,8 @@ struct Counters {
     registrations: AtomicU64,
     relayed_bytes: AtomicU64,
     relayed_packets: AtomicU64,
+    failed_joins: AtomicU64,
+    matches_started: AtomicU64,
 }
 
 static COUNTERS: OnceLock<Counters> = OnceLock::new();
@@ -82,9 +84,13 @@ pub fn start(geo: std::sync::Arc<geo::Geo>) {
     let _ = GEO.set(geo);
 }
 
-/// A player signed in to the game (the secure server) from `ip`.
-pub fn game_login(user_id: u32, ip: IpAddr) {
-    counters().game_logins.fetch_add(1, Ordering::Relaxed);
+/// A player signed in to the game (the secure server) from `ip`. Counted as a sign-in
+/// only when it started a play session: not a reconnect, or another connection of the
+/// same game.
+pub fn game_login(user_id: u32, ip: IpAddr, new_session: bool) {
+    if new_session {
+        counters().game_logins.fetch_add(1, Ordering::Relaxed);
+    }
     addresses().lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(user_id, ip);
 }
 
@@ -103,6 +109,16 @@ pub fn failed_login() {
 
 pub fn registration() {
     counters().registrations.fetch_add(1, Ordering::Relaxed);
+}
+
+/// A player's game reported it couldn't join a session.
+pub fn failed_join() {
+    counters().failed_joins.fetch_add(1, Ordering::Relaxed);
+}
+
+/// A second player came into a match: it's played.
+pub fn match_started() {
+    counters().matches_started.fetch_add(1, Ordering::Relaxed);
 }
 
 /// The NAT helper relayed a packet of `bytes` between players.
@@ -129,6 +145,42 @@ pub struct Metrics {
     /// The players online, anonymised (see the module's notes).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub active: Vec<String>,
+    /// Matches that ended since the last report, with at least two players.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub matches: Vec<Match>,
+}
+
+/// A finished match.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct Match {
+    /// "svm" or "coop".
+    pub mode: &'static str,
+    /// The map (attribute 101) and game mode (102), 0 when unset.
+    pub map: u32,
+    pub game_mode: u32,
+    /// Unix seconds.
+    pub started: i64,
+    pub ended: i64,
+    /// Players who were in it.
+    pub players: u32,
+    /// Only invited players could join.
+    pub private: bool,
+}
+
+impl Match {
+    fn from_finished(m: &crate::storage::FinishedMatch) -> Option<Self> {
+        let value = |id| crate::game_session::attribute_value(&m.attributes, id);
+        Some(Self {
+            mode: crate::game_session::match_mode(&m.attributes)?,
+            map: value(101).unwrap_or_default(),
+            game_mode: value(102).unwrap_or_default(),
+            started: m.started,
+            ended: m.ended.max(m.started),
+            players: m.players,
+            // Private seats only (3 => 0, 4 => some), as storage's PRIVATE_SEATS_ONLY.
+            private: value(3) == Some(0) && value(4).is_some_and(|n| n > 0),
+        })
+    }
 }
 
 /// The live numbers, every ten seconds: players, sessions, counters and traffic.
@@ -183,6 +235,8 @@ pub struct CounterValues {
     pub registrations: u64,
     pub relayed_bytes: u64,
     pub relayed_packets: u64,
+    pub failed_joins: u64,
+    pub matches_started: u64,
 }
 
 /// The machine (Linux; zero elsewhere). Byte counts are since boot.
@@ -261,6 +315,9 @@ pub async fn collect(storage: &Storage) -> Metrics {
     if let (Some(key), Ok(ids)) = (activity_key(), storage.online_player_ids().await) {
         m.active = ids.into_iter().take(MAX_ACTIVE).map(|id| activity_id(key, id)).collect();
     }
+    if let Ok(finished) = storage.take_finished_matches_async().await {
+        m.matches = finished.iter().filter_map(Match::from_finished).collect();
+    }
     m.counters = counter_values();
     m.system = tokio::task::spawn_blocking(system).await.unwrap_or_default();
     m
@@ -275,6 +332,8 @@ fn counter_values() -> CounterValues {
         registrations: c.registrations.load(Ordering::Relaxed),
         relayed_bytes: c.relayed_bytes.load(Ordering::Relaxed),
         relayed_packets: c.relayed_packets.load(Ordering::Relaxed),
+        failed_joins: c.failed_joins.load(Ordering::Relaxed),
+        matches_started: c.matches_started.load(Ordering::Relaxed),
     }
 }
 
@@ -428,9 +487,9 @@ mod tests {
 
     #[test]
     fn players_are_counted_by_city_without_addresses() {
-        game_login(1, "10.0.0.1".parse().unwrap());
-        game_login(2, "10.0.0.2".parse().unwrap());
-        game_login(2, "10.0.0.3".parse().unwrap());
+        game_login(1, "10.0.0.1".parse().unwrap(), true);
+        game_login(2, "10.0.0.2".parse().unwrap(), true);
+        game_login(2, "10.0.0.3".parse().unwrap(), true);
         let p = places();
         assert_eq!(p.iter().map(|p| p.players).sum::<u32>(), 2, "one place per player, the latest address");
         game_logout(1);

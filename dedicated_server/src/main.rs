@@ -88,6 +88,7 @@ mod overlord_challenge;
 mod overlord_core;
 mod overlord_news;
 mod player_stats;
+mod players;
 mod privileges;
 mod rate_limit;
 mod secure;
@@ -104,6 +105,14 @@ mod user_storage;
 
 use crate::config::Config;
 use crate::config::DebugConfig;
+
+/// A player's game connection closed: their play session ends.
+fn end_play(logger: &slog::Logger, storage: &Storage, user_id: u32) {
+    if let Err(e) = storage.end_play(user_id) {
+        error!(logger, "ending the play session of {user_id} failed: {e}");
+    }
+    players::changed(user_id);
+}
 
 /// Starts a Quazal server (either secure or authentication).
 ///
@@ -159,6 +168,7 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
         server.expired_client_handler = Some(|ci: ClientInfo| {
             if let Some(user_id) = ci.user_id {
                 metrics::game_logout(user_id);
+                end_play(logger, storage, user_id);
                 info!(logger, "Cleaning old session of user {user_id}");
                 if let Err(e) = storage.delete_user_session(user_id) {
                     error!(logger, "session clean error: {e}");
@@ -168,6 +178,7 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
         server.disconnect_handler = Some(|ci: ClientInfo| {
             if let Some(user_id) = ci.user_id {
                 metrics::game_logout(user_id);
+                end_play(logger, storage, user_id);
                 info!(logger, "Cleaning closed session of user {user_id}");
                 if let Err(e) = storage.delete_user_session(user_id) {
                     error!(logger, "session clean error: {e}");
@@ -179,6 +190,8 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
     // one must not close everyone else's connections to it.
     server.newest_sign_in_wins = |user_id| !SERVICE_ACCOUNTS.contains(&user_id);
     if is_secure {
+        // An admin's kick or ban (players.rs).
+        server.sign_outs = Some(players::sign_outs());
         server.user_handler = Some(handle_user_packet);
         // Online means a signed-in connection here, not just a ticket from the auth server.
         let (storage, logger) = (Arc::clone(storage), logger.clone());
@@ -187,7 +200,12 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
             if SERVICE_ACCOUNTS.contains(&user_id) {
                 return;
             }
-            metrics::game_login(user_id, from.ip());
+            let new_session = storage.start_play(user_id).unwrap_or_else(|e| {
+                error!(logger, "starting the play session of {user_id} failed: {e}");
+                false
+            });
+            metrics::game_login(user_id, from.ip(), new_session);
+            players::changed(user_id);
             if let Err(e) = storage.set_online(user_id) {
                 error!(logger, "marking user {user_id} online failed: {e}");
             }
@@ -479,6 +497,8 @@ fn main() -> color_eyre::Result<()> {
 
     warn!(logger, "Clearing stale sessions");
     storage.invalidate_sessions()?;
+    // Play sessions the server didn't see end (it stopped) end when last seen.
+    storage.close_stale_play()?;
 
     let debug_config = Arc::new(config.debug);
     let admin_api = args.launcher || config.admin.enabled;
@@ -618,6 +638,20 @@ fn main() -> color_eyre::Result<()> {
                             tokio::time::sleep(std::time::Duration::from_secs(300)).await;
                             if let Err(e) = storage.purge_stale_async().await {
                                 warn!(logger, "Purging old sessions failed: {e}");
+                            }
+                        }
+                    });
+                }
+                // Play sessions still going, every minute: where one ends if the server stops.
+                {
+                    let storage = Arc::clone(&storage);
+                    let logger = logger.clone();
+                    rt.spawn(async move {
+                        loop {
+                            tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                            let storage = Arc::clone(&storage);
+                            if let Ok(Err(e)) = tokio::task::spawn_blocking(move || storage.touch_play()).await {
+                                warn!(logger, "Noting play sessions failed: {e}");
                             }
                         }
                     });

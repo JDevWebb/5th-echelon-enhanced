@@ -188,7 +188,8 @@ A coordinator has an admin web UI at a name of its own, served only through Clou
 - what's being played;
 - pings, load and bandwidth, live;
 - bandwidth over time, with monthly allowances, the 95th percentile and a CSV export;
-- players over time (anonymised), and when people play;
+- players over time, play time and when people play, and the matches played;
+- the players on every server, by name, with their play time, and actions on them (kick, ban, a new password, rename, delete);
 - alerts: a server offline, CPU, memory, disk, refused sign-ins, the traffic allowance, failed updates; optionally posted to Discord or Slack;
 - the update rollout.
 

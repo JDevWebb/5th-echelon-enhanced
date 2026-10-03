@@ -246,6 +246,9 @@ where
     /// [`Self::sign_out_elsewhere`]): every user by default. Shared accounts (the server's
     /// own, whose passwords are public) must not.
     pub newest_sign_in_wins: fn(u32) -> bool,
+    /// Users to sign out now, from every address (an admin's kick or ban); read once a
+    /// second.
+    pub sign_outs: Option<std::sync::mpsc::Receiver<u32>>,
     next_conn_id: AtomicU32,
     /// Address echoes answered per source this second, and when they were last swept.
     echoes: HashMap<std::net::IpAddr, (Instant, u32)>,
@@ -278,6 +281,7 @@ where
             disconnect_handler: None,
             login_handler: None,
             newest_sign_in_wins: |_| true,
+            sign_outs: None,
             next_conn_id: AtomicU32::new(0x3AAA_AAAA),
         }
     }
@@ -311,6 +315,11 @@ where
             // never expired.
             if last_sweep.elapsed() >= Duration::from_secs(1) {
                 self.clear_clients();
+                let wanted: Vec<u32> = self.sign_outs.as_ref().map(|r| r.try_iter().collect()).unwrap_or_default();
+                for user_id in wanted {
+                    let logger = self.logger.clone();
+                    self.sign_out(&logger, user_id, None);
+                }
                 last_sweep = Instant::now();
             }
             let (nread, client) = match socket.recv_from(&mut buf) {
@@ -801,19 +810,27 @@ where
     /// the telemetry account, with the game's public password, and each would close the
     /// others' connections and clean up after them.
     fn sign_out_elsewhere(&mut self, logger: &Logger, user_id: u32, from: SocketAddr) {
+        self.sign_out(logger, user_id, Some(from));
+    }
+
+    /// Closes `user_id`'s connections, except those from `keep`, and cleans up after them.
+    fn sign_out(&mut self, logger: &Logger, user_id: u32, keep: Option<SocketAddr>) {
         let stale: Vec<ClientInfo<T>> = self
             .client_registry
             .clients
-            .extract_if(|_, c| c.try_borrow().is_ok_and(|c| c.user_id == Some(user_id) && *c.address() != from))
+            .extract_if(|_, c| c.try_borrow().is_ok_and(|c| c.user_id == Some(user_id) && Some(*c.address()) != keep))
             .map(|(_, c)| c.into_inner())
             .collect();
         let Some(first) = stale.first() else { return };
-        info!(
-            logger,
-            "User {user_id} signed in from {from}; closing their {} connection(s) from {}",
-            stale.len(),
-            first.address()
-        );
+        match keep {
+            Some(from) => info!(
+                logger,
+                "User {user_id} signed in from {from}; closing their {} connection(s) from {}",
+                stale.len(),
+                first.address()
+            ),
+            None => info!(logger, "Signing out user {user_id}: closing their {} connection(s)", stale.len()),
+        }
         for ci in &stale {
             if let Err(e) = self.send_disconnect(logger, ci) {
                 debug!(logger, "Couldn't tell {} it was disconnected: {e}", ci.address());

@@ -779,6 +779,7 @@ impl Users for MyUsers {
                 // The launcher needs to know a saved account is gone (to make a new one);
                 // names can be looked up by anyone signed in anyway.
                 LoginError::NotFound => Status::not_found("Unknown user"),
+                LoginError::Banned(ban) => Status::permission_denied(crate::players::banned_message(&ban)),
             }
         })?;
         // The server's own accounts (Tracking's password is the game's, so public) never get
@@ -992,6 +993,10 @@ impl MyUsers {
     /// The answer to a successful sign-in: a token, and who they are (the
     /// account id the game should use).
     async fn signed_in(&self, user_id: u32) -> Result<Response<users::LoginResponse>, Status> {
+        // Every way in ends here: a password, or the identity key.
+        if let Some(ban) = self.storage.active_ban(user_id).await.map_err(internal)? {
+            return Err(Status::permission_denied(crate::players::banned_message(&ban)));
+        }
         let person = self.storage.find_person(user_id).await.map_err(internal)?;
         let epoch = self.storage.token_epoch(user_id).await.map_err(internal)?;
         let nat_ticket = person.as_ref().and_then(|p| crate::nat_helper::ticket_for(&p.username)).map(Vec::from).unwrap_or_default();

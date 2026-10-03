@@ -314,7 +314,10 @@ fn register(storage: &Storage, body: &[u8]) -> Response {
         Ok(Err(e)) | Err(e) => return internal(e),
     };
     match storage.register_user(&username, &password, Some(&ubi_id)) {
-        Ok(()) => Response::json("200 OK", &json!({ "ok": true })),
+        Ok(()) => {
+            crate::metrics::registration();
+            Response::json("200 OK", &json!({ "ok": true }))
+        }
         Err(e) if e.downcast_ref::<sqlx::Error>().and_then(|e| e.as_database_error()).is_some_and(|e| e.is_unique_violation()) => {
             Response::json("409 Conflict", &json!({ "error": "username taken" }))
         }
@@ -333,9 +336,16 @@ fn login(storage: &Storage, body: &[u8]) -> Response {
         Ok(Ok(id)) if !crate::storage::run(storage.is_player_account(id)).ok().and_then(Result::ok).unwrap_or(false) => {
             Response::json("401 Unauthorized", &json!({ "error": "wrong username or password" }))
         }
-        Ok(Ok(_)) => Response::json("200 OK", &json!({ "ok": true })),
+        Ok(Ok(_)) => {
+            crate::metrics::api_login();
+            Response::json("200 OK", &json!({ "ok": true }))
+        }
         // One answer for unknown user and wrong password.
-        Ok(Err(LoginError::NotFound | LoginError::InvalidPassword)) => Response::json("401 Unauthorized", &json!({ "error": "wrong username or password" })),
+        Ok(Err(LoginError::NotFound | LoginError::InvalidPassword)) => {
+            crate::metrics::failed_login();
+            Response::json("401 Unauthorized", &json!({ "error": "wrong username or password" }))
+        }
+        Ok(Err(LoginError::Banned(ban))) => Response::json("403 Forbidden", &json!({ "error": crate::players::banned_message(&ban) })),
         Err(e) if e.is::<crate::storage::Busy>() => busy(),
         Err(e) => internal(e),
     }

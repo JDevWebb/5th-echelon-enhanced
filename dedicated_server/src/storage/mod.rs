@@ -13,9 +13,12 @@ use sqlx::Execute;
 use sqlx::Executor;
 use sqlx::Statement;
 
+mod players;
 mod relationships;
 mod stats;
 
+pub use players::Ban;
+pub use players::FinishedMatch;
 pub use relationships::FriendError;
 pub use relationships::FriendEventKind;
 pub use relationships::Person;
@@ -140,6 +143,8 @@ pub struct Storage {
 pub enum LoginError {
     NotFound,
     InvalidPassword,
+    /// The right password, but an admin banned the account.
+    Banned(players::Ban),
 }
 
 impl Storage {
@@ -270,6 +275,10 @@ impl Storage {
         }?;
 
         if let Ok(user_id) = maybe_id {
+            if let Some(ban) = self.active_ban(user_id).await? {
+                warn!(self.logger, "User {user_id} is banned; sign-in refused");
+                return Ok(Err(LoginError::Banned(ban)));
+            }
             // (Upstream's "SET last_login = CURRENT_TIMESTAMP AND is_online=1"
             // stored a boolean in last_login.) Being online is set when the game
             // opens a session (create_user_session), not by a launcher login.

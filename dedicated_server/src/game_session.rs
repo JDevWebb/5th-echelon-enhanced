@@ -337,6 +337,18 @@ impl GameSessionProtocolServerImpl {
         self.storage.is_invite_only_session(session_id).unwrap_or(false)
     }
 
+    /// Notes who is in a match (for the players count of finished matches and each
+    /// player's matches); a lobby is left alone.
+    fn note_match_players(&self, logger: &Logger, session_id: u32, users: impl IntoIterator<Item = u32>) {
+        for user in users {
+            match self.storage.note_match_player(session_id, user) {
+                Ok(true) => crate::metrics::match_started(),
+                Ok(false) => {}
+                Err(e) => warn!(logger, "Couldn't note {user} in match {session_id}: {e}"),
+            }
+        }
+    }
+
     /// Whether `member` is in `host`'s party: the anteroom (room kind 1) the host opened and
     /// is still in, with `member` in it too. A party follows its host into a private match
     /// (the members add themselves, or the host adds them) without invitations of its own.
@@ -611,6 +623,8 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             logger,
             "error adding participants"
         )?;
+        let added = request.private_participant_ids.iter().chain(request.public_participant_ids.iter()).copied();
+        self.note_match_players(logger, request.game_session_key.session_id, added);
 
         // On the invitation route this call IS the join - the client never sends JoinSession
         // here (see split_session for the measurement). Retire the binding now, otherwise it
@@ -888,6 +902,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                     logger,
                     "error adding the invited player"
                 )?;
+                self.note_match_players(logger, room.session_id, [user_id]);
             }
         }
 
@@ -1066,6 +1081,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
     ) -> Result<ReportUnsuccessfulJoinSessionsResponse, Error> {
         let user_id = login_required(&*ci)?;
         for failed in &request.unsuccessful_join_sessions.0 {
+            crate::metrics::failed_join();
             warn!(
                 logger,
                 "Join failed: {user_id} did not get into session {} (type {}) - category {}, code {:#010x}",
@@ -1409,6 +1425,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // knowing that the join happened: only now may a pending invitation be retired, so
         // that a client repeating its search in the meantime still finds the room.
         let key = request.game_session_key;
+        self.note_match_players(logger, key.session_id, [user_id]);
         if rmc_err!(
             self.storage.consume_invite_for_session(user_id, key.type_id, key.session_id),
             logger,

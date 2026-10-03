@@ -298,7 +298,8 @@ Everything the launcher does can be done by hand:
     - pings from players and the coordinator;
     - each server's CPU, memory and bandwidth, live;
     - bandwidth over time: in, out and relayed, the 95th percentile, monthly allowances, CSV export;
-    - players over time (anonymised: never names or addresses), and when people play;
+    - players over time, play time and when people play, and the matches played (by mode, map, length and players);
+    - the players on every server, by name, with their play time, sessions and matches, and actions on them: kick, ban, a new password, rename, delete (never their addresses);
     - alerts (a server offline, CPU, memory, disk, refused sign-ins, the traffic allowance, failed updates), optionally posted to Discord or Slack;
     - the update rollout.
   - **How it's protected:**

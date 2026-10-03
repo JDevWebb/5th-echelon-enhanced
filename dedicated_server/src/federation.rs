@@ -52,6 +52,18 @@ const OUTBOX_BATCH: u32 = 50;
 const JOIN_RETRY: Duration = Duration::from_secs(60);
 /// Changes the coordinator refused for now (429) are sent again this much later.
 const CHANGES_WAIT: Duration = Duration::from_secs(60);
+/// Players and their play sessions for the admin UI: what changed this often, everyone at
+/// start and this much later again (a coordinator without the roster is asked again only
+/// now and then).
+const ROSTER_EVERY: Duration = Duration::from_secs(300);
+const ROSTER_FULL_EVERY: Duration = Duration::from_secs(6 * 3600);
+const ROSTER_UNSUPPORTED_WAIT: Duration = Duration::from_secs(3600);
+/// The most players and play sessions one roster request carries.
+const ROSTER_PLAYERS: usize = 2000;
+const ROSTER_SESSIONS: u32 = 5000;
+/// Admin actions already carried out, kept so one the coordinator sends again (its answer
+/// lost) isn't done twice.
+const ACTIONS_KEPT: usize = 200;
 
 /// One change for the coordinator, as stored in the outbox and sent.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -508,6 +520,8 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
     let mut warnings: Vec<String> = Vec::new();
     // Changes the coordinator asked to send later (too many new links at once).
     let mut changes_wait: Option<Instant> = None;
+    let mut roster = Roster::default();
+    let mut actions_done: Vec<(u64, crate::players::Outcome)> = Vec::new();
     loop {
         if secret.is_none() {
             secret = credentials(&base);
@@ -567,7 +581,10 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                 last_pulse = Some(Instant::now());
                 let pulse = crate::metrics::pulse(&storage).await;
                 pulse_wait = match client.post("/v1/pulse", &pulse).await {
-                    Ok(_) => PULSE_EVERY,
+                    Ok(answer) => {
+                        carry_out_actions(&logger, &storage, &client, &answer, &mut actions_done).await;
+                        PULSE_EVERY
+                    }
                     // An older coordinator: not every ten seconds, then.
                     Err(e) if e.to_string().starts_with("404") => PULSE_UNSUPPORTED_WAIT,
                     Err(e) => {
@@ -575,6 +592,11 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                         PULSE_EVERY
                     }
                 };
+            }
+            if roster.due() {
+                if let Err(e) = send_roster(&storage, &client, &mut roster).await {
+                    debug!(logger, "Federation: sending players failed: {e:#}");
+                }
             }
             if changes_wait.is_some_and(|t| t.elapsed() < CHANGES_WAIT) {
                 // The coordinator asked for them later; friend lists wait too.
@@ -602,6 +624,121 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
             }
         }
         let _ = tokio::time::timeout(Duration::from_secs(5), state.wake.notified()).await;
+    }
+}
+
+/// When the roster last went, and from when play sessions are still to go.
+#[derive(Default)]
+struct Roster {
+    last: Option<Instant>,
+    last_full: Option<Instant>,
+    wait: Option<Duration>,
+    /// Play sessions changed at or after this (Unix seconds) haven't gone yet.
+    sessions_since: i64,
+}
+
+impl Roster {
+    fn due(&self) -> bool {
+        self.last.is_none_or(|t| t.elapsed() >= self.wait.unwrap_or(ROSTER_EVERY))
+    }
+}
+
+/// Runs `f` with the storage on a blocking thread (its calls block).
+async fn blocking<T: Send + 'static>(storage: &Arc<Storage>, f: impl FnOnce(&Storage) -> eyre::Result<T> + Send + 'static) -> eyre::Result<T> {
+    let storage = Arc::clone(storage);
+    tokio::task::spawn_blocking(move || f(&storage)).await?
+}
+
+/// Sends the coordinator the players that changed (all of them now and then) and the play
+/// sessions that did (`POST /v1/players`).
+async fn send_roster(storage: &Arc<Storage>, client: &Coordinator<'_>, roster: &mut Roster) -> eyre::Result<()> {
+    roster.last = Some(Instant::now());
+    let full = roster.last_full.is_none_or(|t| t.elapsed() >= ROSTER_FULL_EVERY);
+    let started = blocking(storage, Storage::now).await?;
+    let mut ids: Vec<u32> = crate::players::take_changed().into_iter().collect();
+    let result = async {
+        let players = if full {
+            blocking(storage, |s| s.player_records(None)).await?
+        } else {
+            let online = storage.online_player_ids().await.unwrap_or_default();
+            ids.extend(online);
+            ids.sort_unstable();
+            ids.dedup();
+            let wanted = ids.clone();
+            blocking(storage, move |s| s.player_records(Some(&wanted))).await?
+        };
+        let since = roster.sessions_since;
+        let mut sessions = Vec::new();
+        for page in 0..10 {
+            let batch = blocking(storage, move |s| s.play_sessions_changed_since(since, ROSTER_SESSIONS, page * ROSTER_SESSIONS)).await?;
+            let last = batch.len() < ROSTER_SESSIONS as usize;
+            sessions.push(batch);
+            if last {
+                break;
+            }
+        }
+        // The whole roster in one request is authoritative (players missing from it are
+        // gone); split, it's only an update.
+        let whole = full && players.len() <= ROSTER_PLAYERS;
+        let chunks = players.chunks(ROSTER_PLAYERS).count().max(sessions.len());
+        for i in 0..chunks {
+            let body = serde_json::json!({
+                "full": whole && i == 0,
+                "players": players.chunks(ROSTER_PLAYERS).nth(i).unwrap_or_default(),
+                "sessions": sessions.get(i).map(Vec::as_slice).unwrap_or_default(),
+            });
+            client.post("/v1/players", &body).await?;
+        }
+        Ok::<_, eyre::Report>(())
+    }
+    .await;
+    match result {
+        Ok(()) => {
+            roster.wait = None;
+            roster.sessions_since = started;
+            if full {
+                roster.last_full = Some(Instant::now());
+            }
+            Ok(())
+        }
+        Err(e) => {
+            crate::players::changed_again(ids);
+            // An older coordinator: not every five minutes, then.
+            if e.to_string().starts_with("404") {
+                roster.wait = Some(ROSTER_UNSUPPORTED_WAIT);
+            }
+            Err(e)
+        }
+    }
+}
+
+/// Carries out the admin actions the coordinator sent with its answer to the pulse, and
+/// tells it how each went (`POST /v1/actions/{id}`). One it sends again is answered from
+/// `done`, not done twice.
+async fn carry_out_actions(logger: &Logger, storage: &Arc<Storage>, client: &Coordinator<'_>, answer: &serde_json::Value, done: &mut Vec<(u64, crate::players::Outcome)>) {
+    let Some(actions) = answer["actions"].as_array() else { return };
+    for value in actions.iter().take(20) {
+        let Ok(action) = serde_json::from_value::<crate::players::Action>(value.clone()) else {
+            warn!(logger, "Federation: an admin action this server can't read: {}", printable(&value.to_string(), 200));
+            continue;
+        };
+        let outcome = match done.iter().find(|(id, _)| *id == action.id) {
+            Some((_, outcome)) => outcome.clone(),
+            None => {
+                let outcome = crate::players::perform(logger, storage, &action).await;
+                done.push((action.id, outcome.clone()));
+                if done.len() > ACTIONS_KEPT {
+                    done.remove(0);
+                }
+                outcome
+            }
+        };
+        if let Err(e) = client.post(&format!("/v1/actions/{}", action.id), &outcome).await {
+            warn!(
+                logger,
+                "Federation: telling the coordinator how action {} went failed (will tell it again): {e:#}", action.id
+            );
+        }
     }
 }
 
