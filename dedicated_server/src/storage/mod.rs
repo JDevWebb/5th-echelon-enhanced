@@ -105,6 +105,14 @@ where
     Ok(rt.block_on(future))
 }
 
+/// SQL: whether game session `g` has private seats only, as a private match
+/// has (`3 => 0;4 => 8`, co-op `3 => 0;4 => 2`). Attribute 3 counts public
+/// seats, 4 private ones; a public room or lobby has public seats (`3 => 2`,
+/// `3 => 8`). Attributes are stored as `id => value` joined by `;`.
+pub(crate) const PRIVATE_SEATS_ONLY: &str = "(';' || COALESCE(g.attributes, '') || ';' LIKE '%;3 => 0;%' \
+     AND ';' || COALESCE(g.attributes, '') || ';' LIKE '%;4 => %' \
+     AND ';' || COALESCE(g.attributes, '') || ';' NOT LIKE '%;4 => 0;%')";
+
 pub struct Storage {
     logger: Logger,
     pool: SqlitePool,
@@ -154,12 +162,13 @@ impl Storage {
     }
 
     /// Notes that `client` signed in to the account through the API: a current one, or an
-    /// outdated one (refused, after the right password).
+    /// outdated one (refused, after the right password). The latest one counts: each clears
+    /// the other's time, since two in the same second can't be told apart by time.
     pub async fn note_client_sign_in(&self, user_id: u32, client: &str, current: bool) -> Result<()> {
-        let column = if current { "current_at" } else { "outdated_at" };
+        let (column, other) = if current { ("current_at", "outdated_at") } else { ("outdated_at", "current_at") };
         sqlx::query(&format!(
             "INSERT INTO client_sign_ins (user_id, client, {column}) VALUES (?1, ?2, ?3)
-             ON CONFLICT(user_id) DO UPDATE SET client = ?2, {column} = ?3"
+             ON CONFLICT(user_id) DO UPDATE SET client = ?2, {column} = ?3, {other} = NULL"
         ))
         .bind(user_id)
         .bind(client)
@@ -489,19 +498,22 @@ impl Storage {
     ///
     /// Only sessions someone could join: live, their host in them, not `exclude_user`'s own,
     /// and not invite-only (a private match is reached through its invitation, and listing
-    /// it handed its players' addresses to anyone).
+    /// it handed its players' addresses to anyone). Invite-only is what the host's game
+    /// announced, or a room with private seats only ([`PRIVATE_SEATS_ONLY`]): the game
+    /// announces its lobby, never its private match, which Find Teammate then offered.
     pub fn search_sessions(&self, type_id: u32, exclude_user: u32, limit: Option<u32>) -> Result<Vec<GameSession>> {
-        Ok(run(sqlx::query_as(
+        Ok(run(sqlx::query_as(&format!(
             r"
             SELECT g.type_id AS session_type, g.id AS session_id, g.creator_id, COALESCE(g.attributes, '') AS attributes
             FROM game_sessions g
             WHERE g.type_id = ? AND g.creator_id != ? AND g.destroyed_at IS NULL
               AND EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = g.creator_id)
               AND NOT EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.invite_only = 1)
+              AND NOT {PRIVATE_SEATS_ONLY}
             ORDER BY g.id DESC
             LIMIT ?
-            ",
-        )
+            "
+        ))
         .bind(type_id)
         .bind(exclude_user)
         .bind(limit.map_or(-1, i64::from))
@@ -567,17 +579,20 @@ impl Storage {
         Ok(sessions)
     }
 
-    /// Which of these sessions their hosts announced as invite-only.
+    /// Which of these sessions are invite-only: announced so by their hosts, or
+    /// with private seats only ([`PRIVATE_SEATS_ONLY`]).
     pub fn invite_only_among(&self, session_ids: &[u32]) -> Result<Vec<u32>> {
         if session_ids.is_empty() {
             return Ok(vec![]);
         }
-        let mut query = sqlx::QueryBuilder::new("SELECT DISTINCT session_id FROM advertised_sessions WHERE invite_only = 1 AND session_id IN (");
+        let mut query = sqlx::QueryBuilder::new(format!(
+            "SELECT g.id FROM game_sessions g WHERE (EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.invite_only = 1) OR {PRIVATE_SEATS_ONLY}) AND g.id IN ("
+        ));
         let mut ids = query.separated(",");
         for id in session_ids {
             ids.push_bind(*id);
         }
-        query.push(")");
+        query.push(") ORDER BY g.id");
         Ok(run(query.build_query_scalar().fetch_all(&self.pool))??)
     }
 
@@ -1145,12 +1160,10 @@ impl Storage {
         Ok(n > 0)
     }
 
-    /// Whether a host announced `session_id` as invite-only.
+    /// Whether `session_id` is invite-only: a host announced it so, or it has
+    /// private seats only ([`PRIVATE_SEATS_ONLY`]).
     pub fn is_invite_only_session(&self, session_id: u32) -> Result<bool> {
-        let n: i64 = run(sqlx::query_scalar("SELECT COUNT(*) FROM advertised_sessions WHERE session_id = ? AND invite_only = 1")
-            .bind(session_id)
-            .fetch_one(&self.pool))??;
-        Ok(n > 0)
+        Ok(!self.invite_only_among(&[session_id])?.is_empty())
     }
 
     /// Whether `user_id` has a pending invitation into `session_id`: the API's
@@ -1497,6 +1510,17 @@ pub(crate) mod tests {
         let by_pid = storage.search_sessions_with_participants(1, &[guest, private], 1).unwrap();
         assert_eq!(by_pid.len(), 1, "limited");
         assert_eq!(storage.invite_only_among(&[open, closed]).unwrap(), [closed]);
+
+        // A private co-op match its host's game never announced: private seats only.
+        let coop = storage.create_game_session(host, 1, "113 => 0;3 => 0;4 => 2;102 => 3;103 => 0".into()).unwrap();
+        storage.add_participants(1, coop, vec![host], vec![]).unwrap();
+        let public_coop = storage.create_game_session(guest, 1, "113 => 0;3 => 2;4 => 0;102 => 3;103 => 0".into()).unwrap();
+        storage.add_participants(1, public_coop, vec![], vec![guest]).unwrap();
+        let found: Vec<u32> = storage.search_sessions(1, seeker, None).unwrap().iter().map(|s| s.session_id).collect();
+        assert_eq!(found, [public_coop, open], "a private co-op match isn't offered, a public one is");
+        assert!(storage.is_invite_only_session(coop).unwrap());
+        assert!(!storage.is_invite_only_session(public_coop).unwrap());
+        assert!(!storage.is_invite_only_session(open).unwrap());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
