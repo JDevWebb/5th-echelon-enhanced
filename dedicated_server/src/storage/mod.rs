@@ -14,12 +14,16 @@ use sqlx::Executor;
 use sqlx::Statement;
 
 mod relationships;
+mod stats;
 
 pub use relationships::FriendError;
 pub use relationships::FriendEventKind;
 pub use relationships::Person;
 pub use relationships::Relation;
 pub use relationships::RenameError;
+pub use stats::Ranked;
+pub use stats::StatWrite;
+pub use stats::StoredStats;
 
 type Result<T> = eyre::Result<T>;
 
@@ -103,6 +107,21 @@ where
             .expect("storage runtime")
     });
     Ok(rt.block_on(future))
+}
+
+/// SQL: the date in `column` (SQLite's `YYYY-MM-DD HH:MM:SS`) packed the way Quazal puts
+/// dates on the wire: seconds, minutes, hours, day, month and year in one integer at bit
+/// offsets 0/6/12/17/22/26. Done in the query, which keeps the crate free of a date
+/// dependency. `column` is never user input.
+fn packed_date(column: &str) -> String {
+    format!(
+        "((CAST(strftime('%Y', {column}) AS INTEGER) << 26) \
+         | (CAST(strftime('%m', {column}) AS INTEGER) << 22) \
+         | (CAST(strftime('%d', {column}) AS INTEGER) << 17) \
+         | (CAST(strftime('%H', {column}) AS INTEGER) << 12) \
+         | (CAST(strftime('%M', {column}) AS INTEGER) << 6) \
+         | CAST(strftime('%S', {column}) AS INTEGER))"
+    )
 }
 
 /// SQL: whether game session `g` has private seats only, as a private match
@@ -934,10 +953,7 @@ impl Storage {
 
     /// Shared body of the two listings above; `column` selects the direction.
     ///
-    /// `created_at` is converted to the packed date format Quazal puts on the wire right here in
-    /// SQL: seconds, minutes, hours, day, month and year sit in one integer at bit offsets
-    /// 0/6/12/17/22/26. Doing it in the query keeps the crate free of a date dependency, which
-    /// it currently does not have at all.
+    /// `created_at` goes out in the packed date format Quazal puts on the wire ([`packed_date`]).
     fn list_game_session_invites(&self, column: &str, user_id: u32, session_type: u32, offset: u32, size: u32) -> Result<Vec<GameSessionInvite>> {
         // `column` is never user input - it is one of the two literals above.
         let sql = format!(
@@ -947,16 +963,12 @@ impl Storage {
                     sender,
                     receiver,
                     message,
-                    (CAST(strftime('%Y', created_at) AS INTEGER) << 26)
-                  | (CAST(strftime('%m', created_at) AS INTEGER) << 22)
-                  | (CAST(strftime('%d', created_at) AS INTEGER) << 17)
-                  | (CAST(strftime('%H', created_at) AS INTEGER) << 12)
-                  | (CAST(strftime('%M', created_at) AS INTEGER) <<  6)
-                  |  CAST(strftime('%S', created_at) AS INTEGER) AS created_at
+                    {created_at} AS created_at
                 FROM game_session_invites
                 WHERE {column} = ? AND session_type = ?
                 ORDER BY id
-                LIMIT ? OFFSET ?"
+                LIMIT ? OFFSET ?",
+            created_at = packed_date("created_at")
         );
         // A size of 0 means "no limit" on the wire; SQLite spells that -1.
         let limit = if size == 0 { -1i64 } else { i64::from(size) };

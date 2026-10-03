@@ -15,6 +15,8 @@ use crate::protocols::user_storage::types::UserContentKey;
 use crate::protocols::user_storage::types::UserContentURL;
 use crate::protocols::user_storage::user_storage_protocol::GetContentUrlRequest;
 use crate::protocols::user_storage::user_storage_protocol::GetContentUrlResponse;
+use crate::protocols::user_storage::user_storage_protocol::SaveContentAndGetUploadInfoRequest;
+use crate::protocols::user_storage::user_storage_protocol::SaveContentAndGetUploadInfoResponse;
 use crate::protocols::user_storage::user_storage_protocol::SearchContentsRequest;
 use crate::protocols::user_storage::user_storage_protocol::SearchContentsResponse;
 use crate::protocols::user_storage::user_storage_protocol::UserStorageProtocolServer;
@@ -70,6 +72,30 @@ impl<CI> UserStorageProtocolServerTrait<CI> for UserStorageProtocolServerImpl {
         } else {
             Ok(SearchContentsResponse { search_results: QList::default() })
         }
+    }
+
+    /// The game asking where to upload a player's content. Nothing is kept yet: the
+    /// game is told no, as before, but what it wanted to upload is logged, to work out
+    /// what it is.
+    fn save_content_and_get_upload_info(
+        &self,
+        logger: &Logger,
+        _ctx: &Context,
+        ci: &mut ClientInfo<CI>,
+        request: SaveContentAndGetUploadInfoRequest,
+        _client_registry: &ClientRegistry<CI>,
+        _socket: &std::net::UdpSocket,
+    ) -> Result<SaveContentAndGetUploadInfoResponse, Error> {
+        let user_id = login_required(&*ci)?;
+        info!(
+            logger,
+            "User {user_id} wants to upload {} bytes of content type {:#x} (id {}), properties {:?}; uploads aren't kept",
+            request.size,
+            request.content_key.type_id,
+            request.content_key.content_id,
+            request.properties
+        );
+        Err(Error::AccessDenied)
     }
 
     /// Handles the `GetContentUrl` request, returning the URL for a piece of user content.

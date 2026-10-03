@@ -93,6 +93,7 @@ mod rate_limit;
 mod secure;
 mod self_update;
 mod simple_http;
+mod stat_boards;
 mod storage;
 mod ticket;
 mod tracking;
@@ -128,7 +129,7 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
         handler.register_protocol(overlord_challenge::new_protocol());
         handler.register_protocol(overlord_core::new_protocol());
         handler.register_protocol(overlord_news::new_protocol());
-        handler.register_protocol(player_stats::new_protocol());
+        handler.register_protocol(player_stats::new_protocol(Arc::clone(storage)));
         handler.register_protocol(privileges::new_protocol());
         handler.register_protocol(secure::new_protocol());
         handler.register_protocol(tracking_ext::new_protocol());

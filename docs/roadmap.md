@@ -26,11 +26,10 @@ Also worth an experiment: switching servers without restarting the game.
 
 ## Game features the server doesn't have yet
 
-The game calls a few services the server doesn't implement, seen in the community servers' logs:
-- **Leaderboards by player** (`PlayerStats.ReadLeaderboardsByPlayers`): your friends' standings.
-- **Uploading content** (`UserStorage.SaveContentAndGetUploadInfo`).
+The game calls a service the server doesn't implement, seen in the community servers' logs:
+- **Uploading content** (`UserStorage.SaveContentAndGetUploadInfo`), at the end of some matches. The server now logs what the game wants to upload, to work out what it is; the game is still told no.
 
-Each needs the game's side worked out first, from the protocol and the game's code, without shipping anything of the game's.
+It needs the game's side worked out first, from the protocol and the game's code, without shipping anything of the game's.
 
 ## Running servers
 
@@ -39,6 +38,8 @@ Each needs the game's side worked out first, from the protocol and the game's co
 
 ## Done recently
 
+- Stats and leaderboards: the server keeps the stats the game writes after each match and mission (Spies vs Mercs per mode, weapon and gadget, medals, ladders, solo and co-op missions), added up as the game's stats configuration says, and answers the game's leaderboards: solo and co-op high scores and best times, Spies vs Mercs total score and the ladders, overall, around you and among your friends. Each server keeps its own.
+- A VPN on the player's PC (Radmin VPN): when the game offers the VPN's address for connecting, the server uses the address the player connected from instead of refusing the game's request.
 - Co-op over the relay: missions failed to load when a player was relayed, because the relay dropped the game's largest packets. Confirmed in games with one and with both players relayed, in co-op and Spies vs Mercs.
 - Private matches stay private: Find Teammate offered private co-op matches to anyone, friends or not. Public matchmaking still finds public rooms, between friends and strangers alike, direct or relayed.
 - Hosts without a router port forward can be invited to: they go through the relay.
