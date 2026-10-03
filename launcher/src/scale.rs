@@ -65,7 +65,7 @@ pub fn apply(ctx: &egui::Context, size: f32, sized: &mut bool) -> Option<f32> {
 
     let changed = shortcut(ctx, size);
     let size = changed.unwrap_or(size);
-    let physical = ctx.screen_rect().size() * ctx.pixels_per_point();
+    let physical = ctx.content_rect().size() * ctx.pixels_per_point();
     let zoom = zoom_for(physical, native, size);
     if (ctx.zoom_factor() - zoom).abs() > 0.002 {
         ctx.set_zoom_factor(zoom);

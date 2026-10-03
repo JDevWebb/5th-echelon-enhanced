@@ -1556,7 +1556,7 @@ fn fix_label(fix: Fix) -> &'static str {
         Fix::InstallClient => "Install",
         Fix::ChooseServer => "Choose",
         Fix::SetUpAccount => "Connect",
-        Fix::PinAdapter => "Pin",
+        Fix::AutoAdapter => "Choose automatically",
         Fix::CreateSave => "Set up a save",
         Fix::RaiseSave => "Raise to rank 5",
         Fix::UpdateLauncher => "Update",
@@ -1574,7 +1574,7 @@ fn run_fix(play: &mut Play, game: &Game, fix: Fix, ctx: &egui::Context) {
             play.server = profile.server;
         }
         Fix::InstallClient => play.fixing.start(ctx, move || flow::install_client(&dir, crate::dll_utils::bundled())),
-        Fix::PinAdapter => play.fixing.start(ctx, move || flow::pin_adapter(&dir)),
+        Fix::AutoAdapter => play.fixing.start(ctx, move || flow::auto_adapter(&dir)),
         Fix::CreateSave | Fix::RaiseSave => play.fixing.start(ctx, move || flow::fix_save(&dir)),
         Fix::UpdateLauncher => play.update_asked = true,
     }

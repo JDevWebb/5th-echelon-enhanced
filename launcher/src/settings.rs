@@ -173,7 +173,7 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
         Section::Network => {
             section(ui, "Internet play", |ui| ui.add_enabled_ui(!locked, |ui| internet_play(game, notices, ui)).inner);
             section(ui, "Connection test", |ui| connection_test(settings, game, &ctx, ui));
-            section(ui, "Network adapter", |ui| network(game, notices, locked, &ctx, settings, ui));
+            section(ui, "Network adapter", |ui| network(game, notices, locked, ui));
         }
         Section::Servers => section(ui, "Servers and accounts", |ui| servers(settings, game, notices, locked, &ctx, ui)),
         Section::Identity => {
@@ -292,19 +292,22 @@ fn game_folder(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
-fn network(game: &mut Game, notices: &mut Notices, locked: bool, ctx: &egui::Context, settings: &mut Settings, ui: &mut egui::Ui) {
+/// The adapter choice that pins nothing.
+const AUTOMATIC: &str = "Automatic (the one that reaches the server)";
+
+fn network(game: &mut Game, notices: &mut Notices, locked: bool, ui: &mut egui::Ui) {
     let adapters = setup::net::adapters();
     let pinned = game.cfg.hook_config.networking.adapter.clone();
     ui.label(theme::muted(
-        "The game uses one network adapter for matches. The setup pins the one your server is reached through.",
+        "The game uses one network adapter for matches: automatically, the one that reaches your server, chosen each time the game starts. Pin one only if your group plays over a VPN on purpose.",
     ));
     ui.add_enabled_ui(!locked, |ui| {
         ui.horizontal(|ui| {
             ui.label("Adapter");
-            let label = pinned.clone().unwrap_or_else(|| "Any (not pinned)".into());
+            let label = pinned.clone().unwrap_or_else(|| AUTOMATIC.into());
             let mut choice: Option<Option<String>> = None;
             egui::ComboBox::from_id_salt("adapter").selected_text(label).width(260.0).show_ui(ui, |ui| {
-                if ui.selectable_label(pinned.is_none(), "Any (not pinned)").clicked() {
+                if ui.selectable_label(pinned.is_none(), AUTOMATIC).clicked() {
                     choice = Some(None);
                 }
                 for (name, ip) in &adapters {
@@ -323,18 +326,18 @@ fn network(game: &mut Game, notices: &mut Notices, locked: bool, ctx: &egui::Con
                     } else {
                         c.hook_config.networking.adapter = adapter.clone();
                     }
+                    if adapter.is_none() {
+                        c.hook_config.networking.require_adapter = false;
+                    }
                 });
-            }
-            if ui.add_enabled(!settings.working.running(), egui::Button::new("Pick automatically")).clicked() {
-                let dir = game.dir.clone();
-                settings.working.start(ctx, move || flow::pin_adapter(&dir));
             }
         });
         let mut require = game.cfg.hook_config.networking.require_adapter;
-        if ui
-            .checkbox(&mut require, "Don't start the game without this adapter")
-            .on_hover_text("Stops the game from quietly playing over the wrong network when your VPN is off.")
-            .changed()
+        if pinned.is_some()
+            && ui
+                .checkbox(&mut require, "Don't start the game without this adapter")
+                .on_hover_text("Stops the game from quietly playing over the wrong network when your VPN is off.")
+                .changed()
         {
             game.update(notices, |c| c.hook_config.networking.require_adapter = require);
         }

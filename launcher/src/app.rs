@@ -259,7 +259,7 @@ impl App {
             app.check_for_update(&cc.egui_ctx);
         }
         match Prefs::load().game_dir.filter(|d| setup::game::is_game_dir(d)) {
-            Some(dir) => app.game = Some(Game::open(dir)),
+            Some(dir) => app.open_game(dir),
             None => app.find_games(&cc.egui_ctx),
         }
         app
@@ -277,8 +277,21 @@ impl App {
 
     pub fn choose_game(&mut self, dir: PathBuf) {
         Prefs::remember(&dir);
-        self.game = Some(Game::open(dir));
+        self.open_game(dir);
         self.play.game_changed();
+    }
+
+    /// Opens a game folder, saying so when its settings came from an earlier launcher and
+    /// started over.
+    fn open_game(&mut self, dir: PathBuf) {
+        let game = Game::open(dir);
+        if let Some(kept) = game.cfg.started_over() {
+            self.notices.info(format!(
+                "Settings from an earlier 5th Echelon were set aside (kept as {} in the game folder); this launcher starts from its own.",
+                kept.file_name().map_or_else(|| kept.display().to_string(), |n| n.to_string_lossy().into_owned())
+            ));
+        }
+        self.game = Some(game);
     }
 
     /// Asks for the game folder with a folder picker.

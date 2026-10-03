@@ -1,6 +1,11 @@
 //! The launcher's settings: `uplay.toml` in the game folder, which the hook
-//! also reads. Same format as upstream's launcher, so existing profiles
-//! carry over.
+//! also reads.
+//!
+//! A file this launcher didn't write (upstream 5th Echelon's, or this one's before
+//! [`FORMAT`] 2) isn't trusted: it carried stale addresses, adapters pinned to a VPN,
+//! accounts on other servers and switches nobody remembered setting, which made the
+//! first connection fail in ways the checklist couldn't explain. It is kept as a
+//! backup and the settings start over; see [`fresh_start`].
 
 use std::fs;
 use std::ops::Deref;
@@ -10,6 +15,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use serde::Serialize;
 use tracing::error;
+use tracing::info;
 
 use crate::game::GameVersion;
 
@@ -96,9 +102,16 @@ impl Profile {
     }
 }
 
+/// The settings format this launcher writes. A file without it, or with an older
+/// one, starts over ([`fresh_start`]).
+pub const FORMAT: u32 = 2;
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub struct Config {
+    /// [`FORMAT`] when this launcher wrote the file; 0 when it didn't.
+    #[serde(default)]
+    pub format: u32,
     #[serde(default)]
     pub profiles: Vec<Profile>,
     #[serde(default)]
@@ -118,6 +131,7 @@ fn default_game() -> GameVersion {
 impl Default for Config {
     fn default() -> Self {
         Self {
+            format: FORMAT,
             profiles: Vec::new(),
             default_profile: String::new(),
             hook_config: hooks_config::default(),
@@ -165,12 +179,28 @@ impl Config {
 
     /// Reads `uplay.toml` from `game_dir`. A missing file gives the defaults
     /// (written on the first change); an unreadable one is kept as
-    /// `uplay.toml.broken` before starting over, never silently lost.
+    /// `uplay.toml.broken` before starting over, never silently lost. A file
+    /// this launcher didn't write is backed up and replaced ([`fresh_start`]).
     pub fn load(game_dir: &Path) -> ConfigMut {
         let path = hooks_config::get_config_path(game_dir);
+        let mut started_over = None;
         let inner = match fs::read_to_string(&path) {
             Ok(s) => match toml::from_str::<Config>(&s) {
-                Ok(cfg) => cfg,
+                Ok(cfg) if cfg.format >= FORMAT => cfg,
+                Ok(old) => {
+                    let fresh = fresh_start(old);
+                    match backup(&path) {
+                        Ok(kept) => {
+                            info!("Settings from an earlier launcher kept as {}; starting over", kept.display());
+                            if let Err(e) = crate::write_private(&path, toml::to_string_pretty(&fresh).unwrap_or_default().as_bytes()) {
+                                error!("Couldn't write the new settings: {e}");
+                            }
+                            started_over = Some(kept);
+                        }
+                        Err(e) => error!("Couldn't back up {}, so it is left alone for now: {e}", path.display()),
+                    }
+                    fresh
+                }
                 Err(e) => {
                     error!("Can't parse {}: {e}", path.display());
                     let backup = path.with_extension("toml.broken");
@@ -191,8 +221,39 @@ impl Config {
             inner,
             loaded: modified(&path),
             path,
+            started_over,
         }
     }
+}
+
+/// The settings that replace a file this launcher didn't write. Kept from it: the game
+/// version (DirectX 9 or 11), a save folder the player chose, and accounts on servers
+/// this launcher set up (they answer over HTTPS, which upstream's never recorded), without
+/// a pinned adapter. Everything else goes back to the defaults.
+pub fn fresh_start(old: Config) -> Config {
+    let mut fresh = Config {
+        default_game: old.default_game,
+        ..Config::default()
+    };
+    fresh.hook_config.save = old.hook_config.save;
+    fresh.profiles = old.profiles.into_iter().filter(|p| p.https).map(|p| Profile { adapter: None, ..p }).collect();
+    let current = fresh.profile(&old.default_profile).or_else(|| fresh.profiles.first()).cloned();
+    if let Some(profile) = current {
+        fresh.apply_profile(&profile);
+    }
+    fresh
+}
+
+/// Copies `path` to a backup beside it that doesn't exist yet: `uplay.toml.old`, then
+/// `uplay.toml.old-2` and on.
+fn backup(path: &Path) -> std::io::Result<PathBuf> {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("uplay.toml");
+    let kept = (1..100)
+        .map(|i| path.with_file_name(if i == 1 { format!("{name}.old") } else { format!("{name}.old-{i}") }))
+        .find(|p| !p.exists())
+        .ok_or_else(|| std::io::Error::other("too many backups"))?;
+    fs::copy(path, &kept)?;
+    Ok(kept)
 }
 
 fn modified(path: &Path) -> Option<std::time::SystemTime> {
@@ -206,11 +267,18 @@ pub struct ConfigMut {
     path: PathBuf,
     /// The file's modification time when last read or written.
     loaded: Option<std::time::SystemTime>,
+    /// Where the earlier launcher's settings were kept, when this read replaced them.
+    started_over: Option<PathBuf>,
 }
 
 impl ConfigMut {
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    /// Where the earlier launcher's settings were kept, when loading replaced them.
+    pub fn started_over(&self) -> Option<&Path> {
+        self.started_over.as_deref()
     }
 
     fn save(&mut self) -> anyhow::Result<()> {
@@ -305,26 +373,55 @@ mod tests {
     }
 
     #[test]
-    fn upstream_launcher_files_still_load() {
+    fn an_earlier_launchers_settings_are_backed_up_and_start_over() {
         let dir = temp_dir("config-upstream");
-        std::fs::write(
-            dir.join("uplay.toml"),
-            r#"
-Profiles = [{ Name = "Home", Server = "192.168.1.10", Username = "Nexus", Password = "pw12345678", AccountId = "Nexus", Adapter = "Ethernet" }]
+        let upstream = r#"
+Profiles = [
+    { Name = "Home", Server = "192.168.1.10", Username = "Nexus", Password = "pw12345678", AccountId = "Nexus", Adapter = "Radmin VPN" },
+    { Name = "Community NA", Server = "na1.example.net", Username = "Kiwi", Password = "pw87654321", AccountId = "Kiwi", Adapter = "Wi-Fi", Https = true },
+]
 DefaultProfile = "Home"
 DefaultGame = "SplinterCellBlacklistDx9"
 UiVersion = "New"
 ApiServer = "http://192.168.1.10:50051"
 ConfigServer = "192.168.1.10"
+ForwardAllCalls = true
 [User]
 Username = "Nexus"
 Password = "pw12345678"
-"#,
-        )
-        .unwrap();
+[Networking]
+IpAddress = "26.70.109.161"
+Adapter = "Radmin VPN"
+[Save.SaveDir]
+Custom = "D:/Saves"
+"#;
+        std::fs::write(dir.join("uplay.toml"), upstream).unwrap();
         let cfg = Config::load(&dir);
-        assert_eq!(cfg.current_profile().unwrap().user.username, "Nexus");
+        let kept = dir.join("uplay.toml.old");
+        assert_eq!(cfg.started_over(), Some(kept.as_path()));
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), upstream, "the old file, untouched");
+
+        // Only the account this launcher set up, unpinned; the game version and save folder.
+        assert_eq!(cfg.profiles.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Community NA"]);
+        assert_eq!(cfg.profiles[0].adapter, None);
         assert_eq!(cfg.default_game, GameVersion::SplinterCellBlacklistDx9);
+        let hook = &cfg.hook_config;
+        assert_eq!(hook.user.username, "Kiwi");
+        assert_eq!(hook.config_server.as_deref(), Some("na1.example.net"));
+        assert_eq!((hook.networking.ip_address, hook.networking.adapter.as_deref()), (None, None));
+        assert!(!hook.forward_all_calls);
+        assert_eq!(hook.save.save_dir, hooks_config::SaveDir::Custom("D:/Saves".into()));
+        assert_eq!(cfg.format, FORMAT);
+
+        // Written at once, so the game reads the new settings; done once.
+        let again = Config::load(&dir);
+        assert_eq!(again.started_over(), None);
+        assert_eq!(again.profiles, cfg.profiles);
+        assert!(!dir.join("uplay.toml.old-2").exists());
+
+        // Another old file later goes next to the first backup.
+        std::fs::write(dir.join("uplay.toml"), upstream).unwrap();
+        assert_eq!(Config::load(&dir).started_over(), Some(dir.join("uplay.toml.old-2").as_path()));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

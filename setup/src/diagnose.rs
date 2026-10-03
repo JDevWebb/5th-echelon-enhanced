@@ -26,7 +26,8 @@ pub enum Fix {
     InstallClient,
     ChooseServer,
     SetUpAccount,
-    PinAdapter,
+    /// Unpin the adapter: the game uses whichever reaches the server.
+    AutoAdapter,
     CreateSave,
     RaiseSave,
     /// The server refuses this launcher's version: update it from the releases.
@@ -85,6 +86,8 @@ pub struct Facts {
     /// is routed through.
     pub pinned: Option<String>,
     pub pinned_ip: Option<IpAddr>,
+    /// The game refuses to start without the pinned adapter (Settings).
+    pub require_adapter: bool,
     pub route_adapter: Option<String>,
     /// This PC's address on the route to the server (the route adapter's).
     pub route_ip: Option<IpAddr>,
@@ -241,30 +244,30 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
     }
 
     if let Some(server_ip) = server_ip.filter(|ip| !ip.is_loopback()) {
+        // Nothing pinned is the usual: the client uses the address that reaches the server
+        // each time the game starts. A pin is for groups playing over a VPN on purpose, and
+        // only a pin can be wrong.
         checks.push(match (&f.pinned, &f.route_adapter) {
+            (None, Some(route)) => Check::new("network", Status::Ok, format!("Playing over \"{route}\""), "The adapter that reaches the server, chosen each time the game starts.", None),
+            (None, None) => Check::new("network", Status::Ok, "Network chosen automatically", "The game uses the address that reaches the server.", None),
             (Some(pinned), _) if f.pinned_ip.is_none() => Check::new(
                 "network",
-                Status::Fail,
-                "Network adapter missing",
-                format!("\"{pinned}\" isn't connected. Connect it (e.g. turn your VPN on), or pick the adapter again."),
-                Some(Fix::PinAdapter),
+                if f.require_adapter { Status::Fail } else { Status::Warn },
+                "Pinned adapter not connected",
+                format!(
+                    "\"{pinned}\" is pinned in Settings but isn't connected, so the game {}. Connect it (turn the VPN on), or let the launcher choose.",
+                    if f.require_adapter { "won't start" } else { "plays over another adapter" }
+                ),
+                Some(Fix::AutoAdapter),
             ),
             (Some(pinned), Some(route)) if !hooks_config::adapter_name_matches(route, pinned) => Check::new(
                 "network",
-                Status::Fail,
-                "Wrong network adapter",
-                format!("The game is pinned to \"{pinned}\", but {server_ip} is reached through \"{route}\"."),
-                Some(Fix::PinAdapter),
+                Status::Warn,
+                "Pinned adapter doesn't reach the server",
+                format!("\"{pinned}\" is pinned in Settings, but {server_ip} is reached through \"{route}\". Let the launcher choose, unless you play over \"{pinned}\" on purpose."),
+                Some(Fix::AutoAdapter),
             ),
-            (Some(pinned), _) => Check::new("network", Status::Ok, format!("Playing over \"{pinned}\""), "", None),
-            (None, Some(route)) => Check::new(
-                "network",
-                Status::Fail,
-                "Network adapter not set",
-                format!("Pin \"{route}\" so other players can join you."),
-                Some(Fix::PinAdapter),
-            ),
-            (None, None) => Check::new("network", Status::Warn, "Network adapter not set", "Couldn't tell which adapter reaches the server.", None),
+            (Some(pinned), _) => Check::new("network", Status::Ok, format!("Playing over \"{pinned}\""), "Pinned in Settings.", None),
         });
     }
 
@@ -293,14 +296,17 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
     }
 
     if let Some(log) = &f.log {
-        if let Some(adapter) = &log.adapter_missing {
-            checks.push(Check::new(
-                "session",
-                Status::Fail,
-                "Last game: adapter missing",
-                format!("The game couldn't find \"{adapter}\"."),
-                Some(Fix::PinAdapter),
-            ));
+        // Only about a pin that's still there: without one, nothing can go missing.
+        if let (Some(adapter), Some(pinned)) = (&log.adapter_missing, &f.pinned) {
+            if hooks_config::adapter_name_matches(adapter, pinned) && f.pinned_ip.is_none() {
+                checks.push(Check::new(
+                    "session",
+                    Status::Warn,
+                    "Last game: pinned adapter not connected",
+                    format!("\"{adapter}\" wasn't connected, so the game played over another adapter."),
+                    Some(Fix::AutoAdapter),
+                ));
+            }
         } else if let (Some(used), Some(pinned)) = (log.enforcing, f.pinned_ip) {
             if used != pinned {
                 checks.push(Check::new(
@@ -380,6 +386,7 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
             account: Some(AccountFact::Ok("Kiwi".into())),
             pinned: Some("Game VPN".into()),
             pinned_ip: Some(IpAddr::from([10, 8, 1, 2])),
+            require_adapter: false,
             route_adapter: Some("Game VPN".into()),
             route_ip: Some(IpAddr::from([10, 8, 1, 2])),
             save: Some(SaveState::Ok { xp: 6600 }),
@@ -408,10 +415,19 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
         assert_eq!(fix(f, "account"), Some((Status::Fail, Some(Fix::SetUpAccount))));
         let f = Facts { account: Some(AccountFact::Outdated("update".into())), ..ready_facts() };
         assert_eq!(fix(f, "account"), Some((Status::Fail, Some(Fix::UpdateLauncher))));
+        // A pin is the only thing that can be wrong, and only a warning, unless the game
+        // is set to refuse to start without it.
         let f = Facts { route_adapter: Some("Ethernet".into()), ..ready_facts() };
-        assert_eq!(fix(f, "network"), Some((Status::Fail, Some(Fix::PinAdapter))));
-        let f = Facts { pinned: None, pinned_ip: None, ..ready_facts() };
-        assert_eq!(fix(f, "network"), Some((Status::Fail, Some(Fix::PinAdapter))));
+        assert_eq!(fix(f, "network"), Some((Status::Warn, Some(Fix::AutoAdapter))));
+        let f = Facts { pinned_ip: None, ..ready_facts() };
+        assert_eq!(fix(f.clone(), "network"), Some((Status::Warn, Some(Fix::AutoAdapter))));
+        assert_eq!(fix(Facts { require_adapter: true, ..f }, "network"), Some((Status::Fail, Some(Fix::AutoAdapter))));
+        let f = Facts { pinned: None, pinned_ip: None, route_adapter: Some("Wi-Fi".into()), ..ready_facts() };
+        assert_eq!(fix(f.clone(), "network"), Some((Status::Ok, None)), "automatic, the usual");
+        // A last game without the pinned adapter, once the pin is gone: nothing to say.
+        let log = Some(LogFacts { adapter_missing: Some("Game VPN".into()), ..LogFacts::default() });
+        assert_eq!(fix(Facts { log: log.clone(), ..f }, "session"), None);
+        assert_eq!(fix(Facts { log, pinned_ip: None, ..ready_facts() }, "session"), Some((Status::Warn, Some(Fix::AutoAdapter))));
         let f = Facts { save: Some(SaveState::Unreadable), ..ready_facts() };
         assert_eq!(fix(f, "save"), Some((Status::Ok, None)), "a save it can't read is still a save");
         let f = Facts { save: Some(SaveState::Ok { xp: 10 }), ..ready_facts() };

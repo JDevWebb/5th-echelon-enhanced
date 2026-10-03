@@ -2,7 +2,6 @@
 //! facts, the automatic setup, and single fixes. Each works on its own copy
 //! of the settings file; the UI reloads it afterwards.
 
-use std::net::IpAddr;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -102,6 +101,7 @@ pub fn gather(game_dir: &Path, cfg: &Config, bundled: Option<&[u8]>) -> (Facts, 
             facts.route_ip = net::local_ip_towards(ip);
             facts.pinned = cfg.hook_config.networking.adapter.clone();
             facts.pinned_ip = facts.pinned.as_deref().and_then(|p| net::adapter_ip(p, &adapters));
+            facts.require_adapter = cfg.hook_config.networking.require_adapter;
         }
     }
     facts.save = save::save_path(&cfg.hook_config.save, game_dir).map(|p| save::check(&p));
@@ -527,11 +527,12 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
     user.set_secret(&password);
     profile.user = user;
 
-    let adapters = net::adapters();
-    profile.adapter = net::adapter_for_server(ip, &adapters);
-    match &profile.adapter {
-        Some(a) => say(log, format!("Playing over \"{a}\".")),
-        None => say(log, "No network adapter to pin."),
+    // Nothing is pinned: the game uses the adapter that reaches the server each time it
+    // starts. A pin chosen in Settings stays.
+    match (&profile.adapter, net::adapter_for_server(ip, &net::adapters())) {
+        (Some(pinned), _) => say(log, format!("Playing over \"{pinned}\" (pinned in Settings).")),
+        (None, Some(route)) => say(log, format!("Playing over \"{route}\".")),
+        (None, None) => {}
     }
 
     let cfg = Config::load(dir);
@@ -613,22 +614,20 @@ pub fn rename(game_dir: &Path, profile_name: &str, new_name: &str) -> Result<Str
     Ok(format!("You're {renamed} now. Restart the game if it's running."))
 }
 
-/// Pins the adapter the current server is reached through.
-pub fn pin_adapter(game_dir: &Path) -> Result<String, String> {
+/// Unpins the adapter: the game uses whichever reaches the server, each time it starts.
+pub fn auto_adapter(game_dir: &Path) -> Result<String, String> {
     let mut cfg = Config::load(game_dir);
-    let profile = cfg.current_profile().cloned().ok_or("Choose a server first.")?;
-    let ip: IpAddr = net::resolve(&profile.server).ok_or("The server's address can't be found.")?;
-    let adapter = net::adapter_for_server(ip, &net::adapters()).ok_or("No adapter on this PC reaches the server.")?;
     cfg.update(|c| {
-        let p = Profile {
-            adapter: Some(adapter.clone()),
-            ..profile
-        };
-        c.upsert_profile(p.clone());
-        c.apply_profile(&p);
+        if let Some(mut p) = c.current_profile().cloned() {
+            p.adapter = None;
+            c.upsert_profile(p.clone());
+            c.apply_profile(&p);
+        }
+        c.hook_config.networking.adapter = None;
+        c.hook_config.networking.require_adapter = false;
     })
     .map_err(|e| e.to_string())?;
-    Ok(format!("Pinned \"{adapter}\"."))
+    Ok("The game now uses the adapter that reaches the server.".into())
 }
 
 /// Creates or raises the save to rank 5.

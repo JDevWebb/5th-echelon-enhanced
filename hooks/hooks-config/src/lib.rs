@@ -887,6 +887,21 @@ fn find_ipaddress_for_adapter(target_adapter: &str) -> anyhow::Result<Option<std
     }
 }
 
+/// This PC's address on the way to `server` (a host name or address): the one the
+/// system would send from. `None` for a server on this PC, or one that can't be found.
+/// Nothing is sent: connecting a UDP socket only picks the route.
+pub fn route_ip_towards(server: &str) -> Option<std::net::Ipv4Addr> {
+    use std::net::Ipv4Addr;
+    use std::net::ToSocketAddrs;
+    let target = (server.trim(), 21126).to_socket_addrs().ok()?.find(std::net::SocketAddr::is_ipv4)?;
+    let socket = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.connect(target).ok()?;
+    match socket.local_addr().ok()?.ip() {
+        std::net::IpAddr::V4(ip) if !ip.is_loopback() && !ip.is_unspecified() => Some(ip),
+        _ => None,
+    }
+}
+
 /// Whether the game runs under Wine or Proton (ntdll exports
 /// `wine_get_version` there, never on Windows).
 pub fn running_under_wine() -> bool {
@@ -967,6 +982,20 @@ fn _get_or_load(path: &Path) -> anyhow::Result<&'static Config> {
             Ok(None) => tracing::warn!("Adapter {target_adapter:?} not found; other players may not be able to join you"),
             Err(e) if cfg.networking.require_adapter => anyhow::bail!("Couldn't check network adapter \"{target_adapter}\": {e}"),
             Err(e) => tracing::warn!("Couldn't check adapter {target_adapter:?}: {e}"),
+        }
+    }
+
+    // Nothing pinned: the address this PC reaches the server from, worked out at every
+    // start. A laptop moving from Wi-Fi to Ethernet doesn't matter, and the game can't pick
+    // a VPN's adapter (Radmin) nobody else can reach it on.
+    #[cfg(target_os = "windows")]
+    if cfg.networking.adapter.is_none() && cfg.networking.ip_address.is_none() {
+        match cfg.config_server.as_deref().and_then(route_ip_towards) {
+            Some(ip) => {
+                info!("Playing over {ip}, the address that reaches the server");
+                cfg.networking.ip_address = Some(ip);
+            }
+            None => tracing::warn!("Couldn't tell which address reaches the server; the game picks its own"),
         }
     }
 

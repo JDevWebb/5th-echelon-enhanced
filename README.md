@@ -109,9 +109,9 @@ You need **Splinter Cell: Blacklist on PC** (Steam or Ubisoft Connect) and **Win
 
 **Used upstream 5th Echelon before?** Use this launcher instead of the old one; you don't need to uninstall anything first:
 - **The client:** it replaces the old 5th Echelon DLL with its own, keeping the game's original file (`uplay_r1_loader.orig.dll`) as before.
-- **Your settings and saves** carry over: the same `uplay.toml` in the game folder, and the same saves in `%APPDATA%\5th-Echelon\Saves`.
-- **Your old server** is still selected, so the launcher opens on the home screen rather than the setup. To play on the community servers, open **Servers** and press **Switch** on the closest (or **Change** on the home screen). The launcher makes you an account there with your new identity; old usernames and passwords from other servers aren't needed.
-- **If you played over Radmin VPN, Hamachi or similar**, your old settings may tie the game to that adapter. The Status card then says **Wrong network adapter**: press its button to fix it. You don't need the VPN for the community servers.
+- **Your saves** carry over: the same saves in `%APPDATA%\5th-Echelon\Saves`.
+- **Your old settings are set aside, not used.** The old launcher's `uplay.toml` (its server, accounts, network adapter and switches) is kept as `uplay.toml.old` in the game folder, and the launcher starts from its own settings with the setup screen: choose a community server and press **Connect**. The launcher makes you an account there with your new identity; old usernames and passwords from other servers aren't needed. Kept: your game version (DirectX 9 or 11) and a save folder you chose.
+- **Radmin VPN, Hamachi and the like** can stay installed, and don't need to be on: you don't need a VPN for the community servers.
 
 <p align="center">
   <img src="./docs/screenshots/launcher-setup.png" width="640" alt="The launcher's first-run setup: the steps on the left, and the community servers with your ping to each, the closest picked">
@@ -125,7 +125,7 @@ You need **Splinter Cell: Blacklist on PC** (Steam or Ubisoft Connect) and **Win
 - checks the server answers;
 - finds your account with your identity (no username or password to remember), or creates one with the name you choose, with a random password for that server only;
 - keeps every account linked to your identity, so friends follow you between servers and a new PC signs straight in;
-- picks the network adapter other players can reach you on;
+- leaves the network adapter to the game: each time it starts, it uses the one that reaches the server, so other players can reach you (and switching between Wi-Fi and Ethernet doesn't matter);
 - brings over your Ubisoft Connect save, or makes a rank 5 one, so co-op and Spies vs Mercs are unlocked.
 
 The **Status** card on the home screen keeps an eye on all of this. Anything that goes wrong later (a VPN that's off, an update) shows up there with a button that fixes it, and the bar beside **Play** says whether you're ready. **Friends** shows who's online and what they're playing (and friends on other servers, with a button to join them), and **Server news** turns through the server's news; the **News** screen has all of it. The **Servers** screen lists the network's servers with your ping, the players on each and the friends there, and switches you over in one click; your identity signs you in there with the same name.
@@ -138,9 +138,9 @@ The **Status** card on the home screen keeps an eye on all of this. Anything tha
 > **No VPN needed.** The server tells your game its public address, so friends anywhere can join your matches; when a router can't be reached directly, the match goes through the server instead. See [Playing over the internet](#playing-over-the-internet).
 >
 > **VPNs and the community servers:**
-> - **Radmin VPN, Hamachi, ZeroTier, Tailscale** and other "virtual LAN" VPNs can stay installed: the launcher ties the game to the adapter that actually reaches the server, so other players aren't given your VPN address. You don't need them for the community servers.
+> - **Radmin VPN, Hamachi, ZeroTier, Tailscale** and other "virtual LAN" VPNs can stay installed: each time the game starts, it uses the adapter that actually reaches the server, so other players aren't given your VPN address. You don't need them for the community servers.
 > - **A VPN that sends all your traffic through it** (NordVPN, ProtonVPN, Mullvad and the like) works, but adds delay, and your matches go through the server's relay. The Status card notes it (**Playing through NordVPN**, say) without stopping you playing; turn it off while you play if you can, then press **Check again**.
-> - **Your group's own server inside a VPN** (a Radmin network address, say)? Turn the VPN on before pressing Connect. The launcher then ties the game to the VPN's adapter, and **Settings › Network › Don't start the game without this adapter** stops it quietly using the wrong network when the VPN is off.
+> - **Your group's own server inside a VPN** (a Radmin network address, say)? Turn the VPN on before starting the game: the game then plays over the VPN's adapter, as that's what reaches the server. To be sure it never uses another network, pin the VPN's adapter in **Settings › Network adapter** and tick **Don't start the game without this adapter**.
 
 ### Playing over the internet
 
@@ -260,7 +260,7 @@ Everything the launcher does can be done by hand:
   - lobby invites;
   - **invites into private matches**.
 - **Internet play without a VPN:** public addresses from the server, router port forwarding (UPnP / NAT-PMP), and a relay through the server when a router can't be reached.
-- **An automatic setup:** game detection, client install, your account found (or made) with your identity, network adapter pinning and your save (your Ubisoft Connect one, or a new rank 5 one), then a Status card with a fix for each problem.
+- **An automatic setup:** game detection, client install, your account found (or made) with your identity, the network adapter chosen at every start, and your save (your Ubisoft Connect one, or a new rank 5 one), then a Status card with a fix for each problem.
 - **An in-game overlay** (<kbd>F5</kbd>): friends and what they're playing, friend requests, player search and blocking, invites, lobby player limits, and server status.
 - **One identity, every server:** the launcher makes you an identity (a key that stays on your PC) and links every account to it. It finds your account on a server by itself, with no username or password to remember, and asks for a name only the first time. Friends made on one server show up on every other server that shares a coordinator, and friends playing on another of them are listed in the overlay and the launcher, which joins you to their server in one click. Moving PCs? Copy your identity across in **Settings**, before connecting on the new PC ([how](docs/friends.md#your-identity)).
 - **Your name is yours:** servers that share a coordinator reserve each name for one player. Elsewhere, the overlay warns when someone has a friend's name but isn't them. You can rename your account from the launcher.
