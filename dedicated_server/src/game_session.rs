@@ -151,6 +151,24 @@ pub(crate) fn attribute_value(attributes: &str, wanted_id: u32) -> Option<u32> {
     })
 }
 
+/// A match room's mode: `"svm"` (Spies vs Mercs) or `"coop"`. None for a lobby
+/// (room kind 1), which serves either.
+///
+/// Attribute 103 is set only by Spies vs Mercs matchmaking; a private Spies vs
+/// Mercs match carries `103 => 0` like co-op. What tells them apart there is the
+/// seats (attributes 3 and 4: co-op has two, Spies vs Mercs four or eight) and
+/// attribute 105, which co-op sets to 2.
+pub(crate) fn match_mode(attributes: &str) -> Option<&'static str> {
+    if attribute_value(attributes, PROPERTY_ROOM_KIND) != Some(0) {
+        return None;
+    }
+    if attribute_value(attributes, 103).unwrap_or(0) != 0 {
+        return Some("svm");
+    }
+    let seats = attribute_value(attributes, 3).unwrap_or(0).saturating_add(attribute_value(attributes, 4).unwrap_or(0));
+    Some(if seats > 2 && attribute_value(attributes, 105) != Some(2) { "svm" } else { "coop" })
+}
+
 /// Presents a private room as if its slots were public.
 ///
 /// Attribute 3 counts public slots, attribute 4 private ones - a private match reserves all
@@ -1599,6 +1617,23 @@ mod tests {
         assert!(Subnet::parse("0.0.0.0/0").unwrap().contains("8.8.8.8".parse().unwrap()));
         assert_eq!(Subnet::parse("10.8.0.0"), None);
         assert_eq!(Subnet::parse("10.8.0.0/33"), None);
+    }
+
+    #[test]
+    fn matches_tell_their_mode() {
+        use super::match_mode;
+        // As the game sends them (co-op on Oceania, Spies vs Mercs on na1, 2026-10-03).
+        let coop_private = "113 => 0;109 => 0;110 => 0;106 => 3564829;107 => 3909881133;108 => 0;3 => 0;4 => 2;101 => 3578398534;102 => 3;103 => 0;105 => 2;112 => 2";
+        let coop_public = "113 => 0;109 => 0;110 => 0;106 => 3564829;107 => 3909881133;108 => 0;3 => 2;4 => 0;101 => 3578398534;102 => 3;103 => 0;105 => 2;112 => 2";
+        let svm_private = "113 => 0;109 => 0;110 => 0;106 => 3564829;107 => 3909881133;108 => 0;3 => 0;4 => 8;101 => 615323303;102 => 7;103 => 0;105 => 1;112 => 3";
+        let svm_classic = "113 => 0;109 => 0;110 => 0;106 => 3564829;107 => 3909881133;108 => 0;3 => 0;4 => 4;101 => 2423434240;102 => 8;103 => 0;105 => 1;112 => 4";
+        let svm_matchmaking = "113 => 0;109 => 0;110 => 0;106 => 3564829;107 => 3909881133;108 => 0;3 => 4;4 => 0;101 => 72621668;102 => 8;103 => 2165463540;105 => 0;112 => 2";
+        assert_eq!(match_mode(coop_private), Some("coop"));
+        assert_eq!(match_mode(coop_public), Some("coop"));
+        assert_eq!(match_mode(svm_private), Some("svm"));
+        assert_eq!(match_mode(svm_classic), Some("svm"));
+        assert_eq!(match_mode(svm_matchmaking), Some("svm"));
+        assert_eq!(match_mode("113 => 1;3 => 8;4 => 0"), None, "a lobby serves either mode");
     }
 
     #[test]

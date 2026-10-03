@@ -152,7 +152,7 @@ pub struct Players {
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Activity {
-    /// "svm" or "coop".
+    /// "svm" or "coop" for a match; "" for a lobby, which serves either.
     pub mode: &'static str,
     /// "match" or "lobby".
     pub room: &'static str,
@@ -218,14 +218,15 @@ pub async fn collect(storage: &Storage) -> Metrics {
     if let Ok((players, sessions)) = storage.presence_async().await {
         let mut activity: BTreeMap<(&'static str, &'static str, Option<u32>, Option<u32>), (u32, u32)> = BTreeMap::new();
         for s in &sessions {
-            let svm = crate::game_session::attribute_value(&s.attributes, 103).unwrap_or(0) != 0;
+            let mode = crate::game_session::match_mode(&s.attributes);
             let room = if crate::game_session::attribute_value(&s.attributes, 113) == Some(0) {
                 "match"
             } else {
                 "lobby"
             };
             let key = (
-                if svm { "svm" } else { "coop" },
+                // A lobby serves either mode: "".
+                mode.unwrap_or(""),
                 room,
                 crate::game_session::attribute_value(&s.attributes, 101),
                 crate::game_session::attribute_value(&s.attributes, 102),

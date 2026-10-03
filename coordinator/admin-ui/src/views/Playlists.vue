@@ -9,7 +9,7 @@
         <thead><tr><th>Mode</th><th>Room</th><th>Map</th><th>Game mode</th><th class="r">{{ now ? 'Players' : 'Player-min' }}</th><th class="r">{{ now ? 'Sessions' : 'Session-min' }}</th><th>Share</th></tr></thead>
         <tbody>
           <tr v-for="(a, i) in data.activity" :key="i">
-            <td>{{ a.mode === 'svm' ? 'Spies vs Mercs' : 'Co-op' }}</td>
+            <td>{{ a.mode === 'svm' ? 'Spies vs Mercs' : a.mode === 'coop' ? 'Co-op' : 'Any' }}</td>
             <td class="muted">{{ a.room === 'match' ? 'Match' : 'Lobby' }}</td>
             <td v-for="kind in ['map', 'game_mode']" :key="kind">
               <span v-if="a[kind] == null" class="faint">–</span>

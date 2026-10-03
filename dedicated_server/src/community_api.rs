@@ -51,10 +51,9 @@ const FEATURES: &[&str] = &[
     "rename",
 ];
 
-/// Session attributes (see game_session.rs): 101 map, 102 mode, 103 non-zero
-/// for Spies vs Mercs, 113 room kind (0 match, 1 lobby).
+/// Session attributes (see game_session.rs): 101 map, 102 mode, 113 room kind
+/// (0 match, 1 lobby); `match_mode` tells co-op from Spies vs Mercs.
 const ATTR_MAP: u32 = 101;
-const ATTR_SVM: u32 = 103;
 const ATTR_ROOM_KIND: u32 = 113;
 
 /// The ports (and host) players connect to, for `/api/info`; set at start.
@@ -234,7 +233,9 @@ pub(crate) fn activity_of(name: &str, sessions: &[LiveSession]) -> Option<Activi
         _ => 2,
     })?;
     Some(Activity {
-        mode: if attribute_value(&best.attributes, ATTR_SVM).unwrap_or(0) != 0 { "svm" } else { "coop" },
+        // A lobby serves either mode; clients up to 0.4.0 show any mode, so lobbies
+        // stay "coop" as they always were.
+        mode: crate::game_session::match_mode(&best.attributes).unwrap_or("coop"),
         room: match attribute_value(&best.attributes, ATTR_ROOM_KIND) {
             Some(0) => "match",
             _ => "lobby",

@@ -182,6 +182,10 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
         // Online means a signed-in connection here, not just a ticket from the auth server.
         let (storage, logger) = (Arc::clone(storage), logger.clone());
         server.login_handler = Some(Box::new(move |user_id, from: std::net::SocketAddr| {
+            // Each game also signs in as the shared tracking account: a player, not two.
+            if SERVICE_ACCOUNTS.contains(&user_id) {
+                return;
+            }
             metrics::game_login(user_id, from.ip());
             if let Err(e) = storage.set_online(user_id) {
                 error!(logger, "marking user {user_id} online failed: {e}");
