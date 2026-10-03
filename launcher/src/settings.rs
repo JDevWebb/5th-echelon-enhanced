@@ -643,7 +643,9 @@ fn identity_section(settings: &mut Settings, accounts: usize, notices: &mut Noti
             }
         }
     });
-    ui.label(theme::muted("Offered by the first server you join that shares friends; lists servers to choose from."));
+    ui.label(theme::muted(
+        "The servers to choose from: the community network unless you join another network. Empty: none.",
+    ));
 }
 
 fn connection_test(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui: &mut egui::Ui) {

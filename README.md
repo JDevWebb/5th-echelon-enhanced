@@ -25,10 +25,10 @@
 
 ## The community server
 
-**There are public 5th Echelon servers that anyone can play on, for free.** Get the launcher, type one address, press Connect: the launcher picks the server closest to you.
+**There are public 5th Echelon servers that anyone can play on, for free.** Get the launcher and press Connect: it picks the server closest to you.
 
 <table>
-<tr><td><b>Address</b></td><td><code>play.scbl.jdevwebb.net</code>: the community network; the launcher pings every server in it and sets you up on the best</td></tr>
+<tr><td><b>Address</b></td><td><code>play.scbl.jdevwebb.net</code>: the community network, the launcher's default; it pings every server in it and sets you up on the best</td></tr>
 <tr><td><b>Servers</b></td><td>Europe: <code>eu1.scbl.jdevwebb.net</code> (Falkenstein, Germany)<br>North America: <code>na1.scbl.jdevwebb.net</code> (Beauharnois, Canada)<br>Oceania: <code>oceania.scbl.jdevwebb.net</code> (Australia)</td></tr>
 <tr><td><b>Modes</b></td><td>Co-op and Spies vs Mercs: Find Teammate, Quick Match, lobby and private-match invites</td></tr>
 <tr><td><b>Friends</b></td><td>Friends-only lists and invites, blocking, player search; your friends follow you to every server in the community network</td></tr>
@@ -39,7 +39,7 @@
 
 **To play:**
 1. Download **`launcher.exe`** (Windows) or **`launcher-linux-x86_64`** (Linux, Steam Deck) from the [latest release](https://github.com/JDevWebb/5th-echelon-enhanced/releases/latest).
-2. Run it, and under **Choose a server** type **`play.scbl.jdevwebb.net`** as the server's address.
+2. Run it. Under **Choose a server** it lists the community servers with your ping to each, the closest already picked.
 3. Press **Connect** (the first time, pick the name other players will see), then **Play**. Press <kbd>F5</kbd> in the game to add friends.
 
 The launcher pings every server in the network and sets you up on the one with the lowest ping (the setup log says which). Afterwards the Play screen lists them all with your ping to each, and **Switch** moves you to another in one click, with the same name and friends.
@@ -103,12 +103,12 @@ You need **Splinter Cell: Blacklist on PC** (Steam or Ubisoft Connect) and **Win
 1. **Download `launcher.exe`** from the [latest release](https://github.com/JDevWebb/5th-echelon-enhanced/releases/latest). It's one file; put it anywhere.
 2. **Run it.** It finds the game on its own: Steam libraries, Ubisoft Connect, and the usual folders on every drive. If it can't, choose the folder with `Blacklist_game.exe`; it remembers it.
 3. **Choose a server.** The launcher walks you through it:
-   - type `play.scbl.jdevwebb.net` (the [community network](#the-community-server)) or the address your own community gave you; for a network, the launcher pings its servers and picks the closest. Or press **Find on my network**;
+   - it lists the [community network's](#the-community-server) servers with your ping to each and picks the closest; or type the address your own community gave you (for a network, it pings its servers and picks the closest), or press **Find on my network**;
    - press **Connect**. The launcher finds your account with your identity; if you don't have one there yet, it asks for the name other players will see and makes it.
 4. **Press Play.**
 
 <p align="center">
-  <img src="./docs/screenshots/launcher-setup.png" width="640" alt="The launcher's first-run setup: the steps on the left, and a network's servers with your ping to each, the closest picked">
+  <img src="./docs/screenshots/launcher-setup.png" width="640" alt="The launcher's first-run setup: the steps on the left, and the community servers with your ping to each, the closest picked">
 </p>
 <p align="center">
   <img src="./docs/screenshots/launcher-play.png" width="640" alt="The launcher's home screen: your profile on the banner, the server with its ping, Ready to play and a big Play button, and cards for status, friends online and the server's news">

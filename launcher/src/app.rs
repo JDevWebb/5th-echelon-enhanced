@@ -64,6 +64,11 @@ impl Game {
 
 /// The directory, as last read from disk.
 type DirectoryPrefs = Option<String>;
+
+/// The community network: the directory a new launcher browses, so setting up is
+/// choosing from its servers. Another one replaces it (Settings, a network's address
+/// typed in setup, or the first server joined that reports its own).
+pub const COMMUNITY_DIRECTORY: &str = "https://play.scbl.jdevwebb.net";
 static DIRECTORY_CACHE: std::sync::Mutex<Option<(Instant, DirectoryPrefs)>> = std::sync::Mutex::new(None);
 
 /// The launcher's own settings (`%APPDATA%\5th-Echelon\launcher.toml`):
@@ -76,6 +81,9 @@ pub struct Prefs {
     /// server that reports one, or set in Settings.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub directory: Option<String>,
+    /// The player set the directory (to none, too): no default then.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    directory_set: bool,
 }
 
 impl Prefs {
@@ -115,7 +123,8 @@ impl Prefs {
         match cache.as_ref() {
             Some((at, prefs)) if at.elapsed() < Duration::from_secs(3) => prefs.clone(),
             _ => {
-                let prefs = Self::load().directory;
+                let loaded = Self::load();
+                let prefs = loaded.directory.or_else(|| (!loaded.directory_set).then(|| COMMUNITY_DIRECTORY.to_string()));
                 *cache = Some((Instant::now(), prefs.clone()));
                 prefs
             }
@@ -126,6 +135,7 @@ impl Prefs {
     pub fn set_directory(url: Option<String>) {
         let mut prefs = Self::load();
         prefs.directory = url.map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
+        prefs.directory_set = true;
         prefs.save();
         Self::forget_cached_directory();
     }
@@ -135,7 +145,7 @@ impl Prefs {
     /// was adopted.
     pub fn adopt_directory(url: &str) -> bool {
         let mut prefs = Self::load();
-        if prefs.directory.is_some() || !setup::directory::valid_coordinator(url) {
+        if prefs.directory.is_some() || prefs.directory_set || !setup::directory::valid_coordinator(url) {
             return false;
         }
         prefs.directory = Some(url.trim().to_string());
