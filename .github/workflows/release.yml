@@ -117,9 +117,16 @@ jobs:
       attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      # By name: the server image's job leaves a Docker build record among the
+      # artifacts too, which isn't a download and can't be fetched like one.
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          path: artifacts
+          name: windows
+          path: artifacts/windows
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: linux
+          path: artifacts/linux
       - name: Collect and checksum
         run: |
           mkdir dist
