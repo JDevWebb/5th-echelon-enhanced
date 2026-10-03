@@ -105,8 +105,13 @@ docker run --rm --network none -v "$work/sign":/release:ro "$IMAGE" sh -c '
 echo "Signed $TAG ($VERSION), and checked the signature."
 
 gh release upload "$TAG" "$work/sign/SHA256SUMS.sig" --repo "$REPO" --clobber
-printf 'Publish %s now? [y/N] ' "$TAG"
-read -r answer
+# PUBLISH=yes (scripts/release.sh) publishes without asking again.
+if [ "${PUBLISH:-}" = yes ]; then
+  answer=y
+else
+  printf 'Publish %s now? [y/N] ' "$TAG"
+  read -r answer
+fi
 case "$answer" in
   y|Y) gh release edit "$TAG" --repo "$REPO" --draft=false && echo "Published $TAG." ;;
   *) echo "Signed; still a draft. Run this again to publish it (and tag its image)."; exit 0 ;;

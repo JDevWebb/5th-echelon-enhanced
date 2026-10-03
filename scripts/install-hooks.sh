@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Installs a pre-push hook that runs scripts/check-clean.sh, so nothing that
-# mentions private names can be pushed. There's no CI; this is the guard.
+# mentions private names can be pushed, before CI ever sees it.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 hook=$(git rev-parse --git-path hooks/pre-push)

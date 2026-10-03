@@ -29,7 +29,7 @@ Everything in these files and folders is under MIT:
 | `hooks/src/community.rs`, `hooks/src/hooks/nat.rs`, `hooks/src/hooks/portmap.rs`, `hooks/hooks-config/src/text.rs` | The overlay's friends, player search and invites; internet play in the client (the NAT helper, the relay, keeping the router's port mapping) |
 | `tools/testbot/` | Headless test players and the load test |
 | `build/`, `docker/`, `release.toml`, `.dockerignore`, `.github/` | Builds, the server image, release numbering, CI and release workflows, issue forms |
-| `scripts/install-server.sh`, `harden-host.sh`, `sign-release.sh`, `bots.sh`, `load-test.sh`, `proxy-test.sh`, `federation-test.sh`, `check-clean.sh`, `install-hooks.sh` | The Linux installer, release signing, test runners and repository checks |
+| `scripts/install-server.sh`, `harden-host.sh`, `sign-release.sh`, `release.sh`, `bots.sh`, `load-test.sh`, `proxy-test.sh`, `federation-test.sh`, `check-clean.sh`, `install-hooks.sh` | The Linux installer, release signing, test runners and repository checks |
 | `docs/deploying.md`, `operations.md`, `community-servers.md`, `friends.md`, `server-settings.md`, `reverse-proxy.md`, `reverse-proxy/`, `load-testing.md`, `roadmap.md`, `releases/`, `research/nat-traversal.md`, `research/cross-region.md` | This fork's documentation |
 | `LICENSE.md` | This file |
 | `SECURITY.md` | How to report security problems |

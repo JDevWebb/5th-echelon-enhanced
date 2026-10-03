@@ -648,12 +648,19 @@ GitHub Actions tests and builds every push and pull request (Linux tests, the te
 
 `release.toml`'s `version` is the one release number for the launcher, the client DLL, the server and the coordinator. Every change bumps the patch number, with a `-dev` suffix on builds that aren't a release (e.g. `0.4.1-dev`).
 
+On the machine with the release key, one command does it all:
+```sh
+scripts/release.sh 0.4.1
+```
+It checks `main` is clean and that CI passed on it, drops the suffix in `release.toml`, commits and tags `v0.4.1`, pushes `main` and that tag, waits for the release workflow, runs `sign-release.sh` (which asks once before signing), publishes, and moves `main` on to `0.4.2-dev`. Release notes go in `docs/releases/v0.4.1.md`; the workflow puts them first.
+
+By hand, the same steps are:
 1. Drop the suffix in `release.toml` (e.g. `0.4.1`) and commit it.
-2. Tag it with exactly that version, and push:
+2. Tag it with exactly that version, and push that tag by name (never `--tags`):
    ```sh
    git tag v0.4.1 && git push origin main v0.4.1
    ```
-3. Sign and publish it, on the machine with the release key:
+3. Sign and publish it:
    ```sh
    scripts/sign-release.sh v0.4.1
    ```
