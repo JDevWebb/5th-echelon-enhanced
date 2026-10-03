@@ -39,6 +39,10 @@ Each needs the game's side worked out first, from the protocol and the game's co
 
 ## Done recently
 
+- Co-op over the relay: missions failed to load when a player was relayed, because the relay dropped the game's largest packets. Confirmed in games with one and with both players relayed, in co-op and Spies vs Mercs.
+- Private matches stay private: Find Teammate offered private co-op matches to anyone, friends or not. Public matchmaking still finds public rooms, between friends and strangers alike, direct or relayed.
+- Hosts without a router port forward can be invited to: they go through the relay.
+- The launcher notes when a VPN sits between you and the server, which adds delay and sends your matches through the relay.
 - A third community server, in North America (Beauharnois, Canada).
 - Servers refuse outdated clients, and the launcher updates itself when one does (release builds), and checks every 4 hours.
 - The admin UI rebuilt with live updates, bandwidth and players reports, and alerts to Discord or Slack.

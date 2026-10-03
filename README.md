@@ -319,7 +319,7 @@ Everything the launcher does can be done by hand:
 - **Built for the public internet**, and [audited](#whats-new-in-this-fork):
   - rate limits on logins (per address and per account), new accounts, invites, searches and friend requests;
   - login tickets that expire, and API tokens that end when the password changes;
-  - private matches need an invite, and only a match's own players can change it;
+  - private matches need an invite, are never offered to Find Teammate or Quick Match, and only a match's own players can change them;
   - caps on packets, fragments, connections per address, sessions and lookups;
   - the admin API never reachable from the internet;
   - a malformed packet can't crash it.
@@ -570,6 +570,8 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
   - pushes are resent until acknowledged;
   - duplicate packets are answered, not handled twice.
 - Leaving and abandoning a session removes the player, and empty sessions end.
+- Private matches (co-op and Spies vs Mercs) stay out of matchmaking: a room with only private seats counts as invite-only, whatever the game announces, so Find Teammate no longer drops a stranger into someone's private co-op match.
+- Co-op loads over the relay: it carries the game's largest packets (up to 1,472 bytes), which co-op sends while a mission loads.
 - The `trusted_subnet` address fix for VPN play.
 
 **Server stability and security**
