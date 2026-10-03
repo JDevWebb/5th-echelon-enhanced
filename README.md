@@ -282,6 +282,7 @@ Everything the launcher does can be done by hand:
   - a network's admin UI sees counts and cities, never your name or address; your launcher reports its ping to each server in a directory, from which only your city is noted;
   - a server directory is used only over `https://`, never replaces one you chose, and lists only public hosts, each shown by name;
   - on Windows, saved passwords and your identity key are encrypted for your Windows user.
+- **Fits your screen:** resize, maximise or go full screen (<kbd>F11</kbd>) and the launcher scales to fit; on a small or high-DPI screen it starts smaller. Make everything bigger or smaller in **Settings › Display** or with <kbd>Ctrl</kbd> + / <kbd>Ctrl</kbd> −.
 - **Linux and Steam Deck:** a native Linux launcher, Proton and Wine support in the client, and the many-core CPU fix.
 - **Unusual game builds:** unknown game executables can be identified from the launcher, which covers most mods.
 
@@ -512,6 +513,7 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
 - Server management, and verified updates from this fork's releases.
 - Settings are never silently reset: an unreadable file is kept as `uplay.toml.broken`, and outside changes are merged rather than overwritten.
 - No sample accounts; DirectX 11 by default.
+- A window you can resize, maximise or make full screen (F11), with everything scaled to fit it, and your own size on top (Settings › Display, or Ctrl + / Ctrl −).
 
 **Internet play**
 - Players no longer need a LAN or VPN:

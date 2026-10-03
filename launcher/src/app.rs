@@ -84,6 +84,9 @@ pub struct Prefs {
     /// The player set the directory (to none, too): no default then.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     directory_set: bool,
+    /// The player's size for the launcher (1.0: as designed), on top of fitting the window.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    ui_scale: Option<f32>,
 }
 
 impl Prefs {
@@ -129,6 +132,18 @@ impl Prefs {
                 prefs
             }
         }
+    }
+
+    /// The player's size for the launcher (Settings › Display).
+    pub fn ui_scale() -> f32 {
+        crate::scale::clamp(Self::load().ui_scale.unwrap_or(1.0))
+    }
+
+    pub fn set_ui_scale(size: f32) {
+        let mut prefs = Self::load();
+        let size = crate::scale::clamp(size);
+        prefs.ui_scale = ((size - 1.0).abs() > f32::EPSILON).then_some(size);
+        prefs.save();
     }
 
     /// Sets (or with None, clears) the server directory.
@@ -208,6 +223,9 @@ pub struct App {
     checked_at: Option<std::time::Instant>,
     /// Install the release the running check finds (the player asked to update).
     install_found: bool,
+    /// The player's size (Settings › Display), and whether the window was fitted to the screen.
+    pub ui_scale: f32,
+    sized: bool,
 }
 
 /// How often a release build that stays open looks for a newer release.
@@ -231,7 +249,11 @@ impl App {
             update_later: false,
             checked_at: None,
             install_found: false,
+            ui_scale: Prefs::ui_scale(),
+            sized: false,
         };
+        // Ctrl + and Ctrl − change the player's size instead (scale.rs).
+        cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         // Release builds look for a newer release on their own.
         if !crate::updater::is_dev_build() {
             app.check_for_update(&cc.egui_ctx);
@@ -382,6 +404,12 @@ impl App {
     }
 
     /// Settings, open at `section`.
+    /// Changes the player's size, and remembers it.
+    pub fn set_ui_scale(&mut self, size: f32) {
+        self.ui_scale = crate::scale::clamp(size);
+        Prefs::set_ui_scale(self.ui_scale);
+    }
+
     pub fn open_settings(&mut self, section: crate::settings::Section) {
         self.settings.section = section;
         self.view = View::Settings;
@@ -390,6 +418,9 @@ impl App {
 
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        if let Some(size) = crate::scale::apply(ctx, self.ui_scale, &mut self.sized) {
+            self.set_ui_scale(size);
+        }
         if let Some(found) = self.finding.poll() {
             if self.game.is_none() {
                 if let Some(first) = found.first().cloned() {

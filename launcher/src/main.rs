@@ -9,6 +9,7 @@ mod flow;
 mod logging;
 mod network;
 mod play;
+mod scale;
 mod server;
 mod services;
 mod settings;
@@ -51,12 +52,11 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(concat!(env!("FE_PRODUCT"), " ", env!("FE_RELEASE")))
-            // A fixed size: the screens are laid out for it.
-            .with_inner_size([1120.0, 760.0])
-            .with_min_inner_size([1120.0, 760.0])
-            .with_max_inner_size([1120.0, 760.0])
-            .with_resizable(false)
-            .with_maximize_button(false)
+            // The screens are laid out for this size, and scale with the window (scale.rs).
+            .with_inner_size(scale::DESIGN)
+            .with_min_inner_size(scale::DESIGN * 0.4)
+            .with_resizable(true)
+            .with_maximize_button(true)
             .with_icon(eframe::egui::IconData {
                 rgba: icon.pixels.iter().flat_map(|c| c.to_array()).collect(),
                 width: icon.size[0] as u32,

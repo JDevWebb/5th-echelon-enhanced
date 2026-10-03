@@ -22,7 +22,7 @@ Everything in these files and folders is under MIT:
 | `nat_proto/` | The NAT helper's protocol between the server and the client (internet play) |
 | `portmap/` | Asking the router to forward a port (UPnP and NAT-PMP), for the client and the launcher's connection test |
 | `setup/`, except the files listed in section 3 | The launcher's logic library: finding the game, installing, accounts, saves, checks, the server directory |
-| `launcher/src/app.rs`, `flow.rs`, `play.rs`, `server.rs` (except its log view; see section 3), `settings.rs`, `services.rs`, `task.rs`, `theme.rs`, `updater.rs`, `main.rs`, `network/nat.rs` | The launcher's interface, signed updates, and internet play checks (`updater.rs` and `main.rs` were rewritten from scratch) |
+| `launcher/src/app.rs`, `flow.rs`, `play.rs`, `server.rs` (except its log view; see section 3), `settings.rs`, `scale.rs`, `services.rs`, `task.rs`, `theme.rs`, `updater.rs`, `main.rs`, `network/nat.rs` | The launcher's interface, signed updates, and internet play checks (`updater.rs` and `main.rs` were rewritten from scratch) |
 | `dedicated_server/src/clients.rs`, `news_0.3.150.json`, `community_api.rs`, `federation.rs`, `friends_policy.rs`, `keys.rs`, `metrics.rs`, `nat_helper.rs`, `rate_limit.rs`, `self_update.rs`, `storage/relationships.rs` | Refusing outdated clients, the community API, sharing friends with a coordinator, friend-list rules, persistent keys, the NAT helper and relay, rate limits, and friends, blocks and identities in the database |
 | `dedicated_server/src/storage/migrations/` dated 2026-09-28, 2026-10-01 and 2026-10-04 | Disabling the sample accounts; friends, name conflicts and token epochs; client sign-ins |
 | `quazal/src/rmc/unhandled.rs` | Counting calls the server can't answer |

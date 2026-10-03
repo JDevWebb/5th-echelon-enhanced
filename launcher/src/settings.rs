@@ -31,11 +31,12 @@ pub enum Section {
     Save,
     Client,
     Advanced,
+    Display,
     About,
 }
 
 impl Section {
-    const ALL: [Self; 8] = [
+    const ALL: [Self; 9] = [
         Self::Game,
         Self::Network,
         Self::Servers,
@@ -43,6 +44,7 @@ impl Section {
         Self::Save,
         Self::Client,
         Self::Advanced,
+        Self::Display,
         Self::About,
     ];
 
@@ -55,6 +57,7 @@ impl Section {
             Self::Save => "Save game",
             Self::Client => "5th Echelon client",
             Self::Advanced => "Advanced",
+            Self::Display => "Display",
             Self::About => "About",
         }
     }
@@ -131,6 +134,10 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
             about(app, ui);
             return;
         }
+        Section::Display => {
+            display(app, ui);
+            return;
+        }
         _ => {}
     }
     let (settings, game, notices) = app.settings_mut();
@@ -176,8 +183,45 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
         Section::Save => section(ui, "Save game", |ui| save_game(settings, game, &ctx, ui)),
         Section::Client => section(ui, "5th Echelon client", |ui| client(settings, game, &ctx, ui)),
         Section::Advanced => section(ui, "Hooks", |ui| hooks(game, notices, ui)),
-        Section::About => {}
+        Section::About | Section::Display => {}
     }
+}
+
+/// The launcher's size: it fits its window, and the player's size comes on top.
+fn display(app: &mut App, ui: &mut egui::Ui) {
+    section(ui, "Size", |ui| {
+        ui.label(theme::muted(
+            "The launcher scales with its window: resize it, maximise it, or press F11 for full screen. Make everything bigger or smaller here, or with Ctrl + and Ctrl −; Ctrl 0 puts it back.",
+        ));
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            // Buttons, not a slider: the page rescales as the size changes.
+            let size = app.ui_scale;
+            if ui
+                .add_enabled(size > crate::scale::MIN_SIZE + 0.01, egui::Button::new("  −  "))
+                .on_hover_text("Smaller (Ctrl −)")
+                .clicked()
+            {
+                app.set_ui_scale(size - 0.1);
+            }
+            ui.label(RichText::new(format!("{:.0} %", size * 100.0)).family(theme::strong()));
+            if ui
+                .add_enabled(size < crate::scale::MAX_SIZE - 0.01, egui::Button::new("  +  "))
+                .on_hover_text("Bigger (Ctrl +)")
+                .clicked()
+            {
+                app.set_ui_scale(size + 0.1);
+            }
+            if (size - 1.0).abs() > 0.01 && ui.button("Reset").on_hover_text("Ctrl 0").clicked() {
+                app.set_ui_scale(1.0);
+            }
+        });
+        ui.add_space(6.0);
+        let full = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
+        if ui.button(if full { "Leave full screen (F11)" } else { "Full screen (F11)" }).clicked() {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+        }
+    });
 }
 
 fn about(app: &mut App, ui: &mut egui::Ui) {
