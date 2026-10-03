@@ -595,6 +595,7 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
   - it starts without Ubisoft Connect there;
   - its network runtime uses two threads instead of one per CPU core.
 - Signs in again on its own when the server says it's signed out.
+- Players with the game in another language can join each other: the game refuses them as a "data version mismatch" although its code is the same, so the client turns that check off in the game it loads (`AllowDataMismatch = false` in `uplay.toml` restores it).
 - Crash fixes in the hook.
 - `uplay.override.toml`, for tools that set up the game (see below).
 - A redesigned overlay.

@@ -19,6 +19,7 @@ use tracing::error;
 use tracing::info;
 use tracing::instrument;
 use tracing::level_filters::LevelFilter;
+use tracing::warn;
 use windows::core::PCSTR;
 use windows::Win32::Foundation::BOOL;
 use windows::Win32::Foundation::HMODULE;
@@ -69,6 +70,71 @@ unsafe fn write_c_string_in_place(ptr: *mut u8, new: &CString) -> bool {
     }
     writemem(ptr, new.as_bytes_with_nul());
     true
+}
+
+/// The host's data version check, in a game's join handling: `mov ecx,[global]`,
+/// `mov edx,[eax+0x20]` (the joiner's data version), `mov ecx,[ecx+0x70]`,
+/// `cmp edx,[ecx+0x418]` (the host's own), then `jz` to accept; otherwise the joiner
+/// is refused with DATA_VERSION_MISMATCH. The same bytes in every build of both
+/// executables (Ubisoft and Steam DX11, DX9).
+const DATA_VERSION_CHECK: [Option<u8>; 19] = [
+    Some(0x8B),
+    Some(0x0D),
+    None,
+    None,
+    None,
+    None, // mov ecx,[global]
+    Some(0x8B),
+    Some(0x50),
+    Some(0x20), // mov edx,[eax+0x20]
+    Some(0x8B),
+    Some(0x49),
+    Some(0x70), // mov ecx,[ecx+0x70]
+    Some(0x3B),
+    Some(0x91),
+    Some(0x18),
+    Some(0x04),
+    Some(0x00),
+    Some(0x00), // cmp edx,[ecx+0x418]
+    Some(0x74), // jz accept
+];
+
+/// The game's code: its executable's `.text` section in memory.
+unsafe fn game_code() -> Option<&'static [u8]> {
+    use windows::Win32::System::LibraryLoader::GetModuleHandleA;
+    let base = GetModuleHandleA(windows::core::PCSTR::null()).ok()?.0 as *const u8;
+    let pe = base.add(std::ptr::read_unaligned(base.add(0x3c).cast::<u32>()) as usize);
+    let sections = u16::from_le_bytes([*pe.add(6), *pe.add(7)]) as usize;
+    let optional = u16::from_le_bytes([*pe.add(20), *pe.add(21)]) as usize;
+    let mut header = pe.add(24 + optional);
+    for _ in 0..sections {
+        if std::slice::from_raw_parts(header, 8).starts_with(b".text") {
+            let size = std::ptr::read_unaligned(header.add(8).cast::<u32>()) as usize;
+            let rva = std::ptr::read_unaligned(header.add(12).cast::<u32>()) as usize;
+            return Some(std::slice::from_raw_parts(base.add(rva), size));
+        }
+        header = header.add(40);
+    }
+    None
+}
+
+/// Lets a game in another language join this one's matches: turns the host's data
+/// version check's `jz` into a `jmp`. Only where the check is found exactly once, so an
+/// unknown build is left as it is.
+unsafe fn allow_data_mismatch() {
+    let Some(code) = game_code() else {
+        warn!("Data version check: the game's code wasn't found; left as it is");
+        return;
+    };
+    let matches = |at: &[u8]| at.iter().zip(DATA_VERSION_CHECK).all(|(b, want)| want.is_none_or(|w| *b == w));
+    let found: Vec<usize> = code.windows(DATA_VERSION_CHECK.len()).enumerate().filter(|(_, w)| matches(w)).map(|(i, _)| i).collect();
+    let [at] = found[..] else {
+        warn!("Data version check: found {} times, not once; left as it is", found.len());
+        return;
+    };
+    let jz = code.as_ptr().add(at + DATA_VERSION_CHECK.len() - 1).cast_mut();
+    writemem(jz, &[0xEB]);
+    info!("Data version check: off at {jz:?}, so players in another game language can join matches this game hosts");
 }
 
 unsafe fn patch_url(new_server: &str, addrs: &Addresses) {
@@ -222,6 +288,10 @@ fn init(hmodule: Option<HMODULE>) {
         }
 
         enable_debug_print(&addr);
+        if config.allow_data_mismatch {
+            #[cfg(not(feature = "patch-free"))]
+            allow_data_mismatch();
+        }
     }
 
     // needs to be done in a separate thread, otherwise it'll block indefinitely
