@@ -404,13 +404,32 @@ fn save_game(settings: &mut Settings, game: &mut Game, ctx: &egui::Context, ui: 
                     Err(e) => settings.working.start(ctx, move || Err(format!("Couldn't back up: {e}"))),
                 }
             }
-            if let Some(ubisoft) = setup::save::find_ubisoft_save() {
+            if let Some(ubisoft) = setup::save::find_ubisoft_save(Some(&game.dir)) {
                 if ui.button("Import from Ubisoft Connect").on_hover_text(ubisoft.display().to_string()).clicked() {
                     let to = path.clone();
                     settings.working.start(ctx, move || {
                         setup::save::import_ubisoft(&ubisoft, &to)
                             .map(|_| "Imported your Ubisoft Connect save.".to_string())
                             .map_err(|e| e.to_string())
+                    });
+                }
+            }
+            if ui
+                .button("Import a save file…")
+                .on_hover_text("A Blacklist save from another PC, Ubisoft Connect's 1.save, or one of the launcher's backups. Your current save is backed up first.")
+                .clicked()
+            {
+                let start = path.parent().map(std::path::Path::to_path_buf);
+                let mut dialog = rfd::FileDialog::new().set_title("Choose a Blacklist save");
+                if let Some(dir) = start.filter(|d| d.is_dir()) {
+                    dialog = dialog.set_directory(dir);
+                }
+                if let Some(from) = dialog.pick_file() {
+                    let to = path.clone();
+                    settings.working.start(ctx, move || match setup::save::import_file(&from, &to) {
+                        Ok(Some(backup)) => Ok(format!("Imported the save; the one it replaced is in {}.", backup.display())),
+                        Ok(None) => Ok("That's already your save.".to_string()),
+                        Err(e) => Err(format!("Couldn't import it: {e}")),
                     });
                 }
             }

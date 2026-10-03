@@ -536,16 +536,12 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
 
     let cfg = Config::load(dir);
     if let Some(path) = save::save_path(&cfg.hook_config.save, dir) {
-        match save::check(&path) {
-            save::SaveState::Missing => {
-                save::create_rank5(&path).map_err(|e| format!("Couldn't create a save: {e}"))?;
-                say(log, "Created a rank 5 save.");
-            }
-            s if s.below_rank5() => {
-                save::raise_to_rank5(&path).map_err(|e| format!("Couldn't raise the save to rank 5: {e}"))?;
-                say(log, "Raised your save to rank 5 (the old one is backed up).");
-            }
-            _ => {}
+        let prepared = save::prepare(&path, Some(dir)).map_err(|e| format!("Couldn't get your save ready: {e}"))?;
+        if let save::Prepared::Imported { from, .. } = &prepared {
+            say(log, format!("Found your Ubisoft Connect save ({}).", from.display()));
+        }
+        if let Some(done) = prepared.describe() {
+            say(log, done);
         }
     }
 
@@ -639,11 +635,9 @@ pub fn pin_adapter(game_dir: &Path) -> Result<String, String> {
 pub fn fix_save(game_dir: &Path) -> Result<String, String> {
     let cfg = Config::load(game_dir);
     let path = save::save_path(&cfg.hook_config.save, game_dir).ok_or("The save folder can't be found.")?;
-    match save::check(&path) {
-        save::SaveState::Missing => save::create_rank5(&path).map(|_| "Created a rank 5 save.".to_string()),
-        _ => save::raise_to_rank5(&path).map(|_| "Raised the save to rank 5; the old one is backed up.".to_string()),
-    }
-    .map_err(|e| e.to_string())
+    save::prepare(&path, Some(game_dir))
+        .map(|p| p.describe().unwrap_or("Your save is ready.").to_string())
+        .map_err(|e| e.to_string())
 }
 
 /// Installs (or updates) the client.

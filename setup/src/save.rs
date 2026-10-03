@@ -125,23 +125,132 @@ pub fn raise_to_rank5(path: &Path) -> std::io::Result<Option<PathBuf>> {
     Ok(Some(backup))
 }
 
-/// The save Ubisoft Connect keeps for Blacklist (game id 449), if any.
-pub fn find_ubisoft_save() -> Option<PathBuf> {
-    let saves = crate::sys::ubisoft_launcher_dir()?.join("savegames");
-    std::fs::read_dir(saves).ok()?.flatten().map(|user| user.path().join("449").join("1.save")).find(|p| p.is_file())
+/// Ubisoft Connect's folders that may hold `savegames`: the one the registry
+/// names, its default place, any folder above the game that has `savegames`
+/// (a game installed through Ubisoft Connect), and Ubisoft Connect inside the
+/// game's Wine or Proton prefix.
+fn ubisoft_roots(game_dir: Option<&Path>) -> Vec<PathBuf> {
+    let mut roots: Vec<PathBuf> = crate::sys::ubisoft_launcher_dir().into_iter().collect();
+    if cfg!(windows) {
+        roots.push(PathBuf::from(r"C:\Program Files (x86)\Ubisoft\Ubisoft Game Launcher"));
+    }
+    if let Some(game_dir) = game_dir {
+        roots.extend(game_dir.ancestors().skip(1).filter(|d| d.join("savegames").is_dir()).map(Path::to_path_buf));
+        if let Some(prefix) = crate::wine::prefix_for(game_dir) {
+            roots.push(prefix.root.join("drive_c").join("Program Files (x86)").join("Ubisoft").join("Ubisoft Game Launcher"));
+        }
+    }
+    let mut seen = Vec::new();
+    roots.retain(|r| {
+        let new = !seen.contains(r);
+        seen.push(r.clone());
+        new
+    });
+    roots
 }
 
-/// Imports a Ubisoft Connect save: its own metadata comes first (a u32 LE
-/// length), then the same layout as ours.
+/// Blacklist saves in these Ubisoft Connect folders, newest first: slot 1
+/// (`1.save`) of any account and any game id (the game runs as 449 or 91,
+/// depending on the edition), only the files that are Blacklist saves.
+pub fn ubisoft_saves_in(roots: &[PathBuf]) -> Vec<PathBuf> {
+    let mut found: Vec<(std::time::SystemTime, PathBuf)> = roots
+        .iter()
+        .filter_map(|root| std::fs::read_dir(root.join("savegames")).ok())
+        .flat_map(|accounts| accounts.flatten())
+        .filter_map(|account| std::fs::read_dir(account.path()).ok())
+        .flat_map(|games| games.flatten())
+        .map(|game| game.path().join("1.save"))
+        .filter(|p| std::fs::read(p).is_ok_and(|data| ubisoft_payload(&data).is_some()))
+        .map(|p| (std::fs::metadata(&p).and_then(|m| m.modified()).unwrap_or(std::time::UNIX_EPOCH), p))
+        .collect();
+    found.sort_by(|a, b| b.0.cmp(&a.0));
+    found.dedup_by(|a, b| a.1 == b.1);
+    found.into_iter().map(|(_, p)| p).collect()
+}
+
+/// The newest Blacklist save Ubisoft Connect keeps on this PC (or in the
+/// game's prefix), if any.
+pub fn find_ubisoft_save(game_dir: Option<&Path>) -> Option<PathBuf> {
+    ubisoft_saves_in(&ubisoft_roots(game_dir)).into_iter().next()
+}
+
+/// The save inside a Ubisoft Connect save file: its own metadata comes first
+/// (a u32 LE length), then the same layout as ours.
+fn ubisoft_payload(data: &[u8]) -> Option<&[u8]> {
+    let meta = u32::from_le_bytes(data.get(..4)?.try_into().ok()?) as usize;
+    let payload = data.get(4usize.checked_add(meta)?..)?;
+    split(payload).map(|_| payload)
+}
+
+/// Imports a Ubisoft Connect save, backing up the save at `to` first.
 pub fn import_ubisoft(from: &Path, to: &Path) -> std::io::Result<Option<PathBuf>> {
     let data = std::fs::read(from)?;
-    let bad = || std::io::Error::new(std::io::ErrorKind::InvalidData, "not a Blacklist save");
-    let meta = u32::from_le_bytes(data.get(..4).ok_or_else(bad)?.try_into().unwrap()) as usize;
-    let payload = data.get(4 + meta..).ok_or_else(bad)?;
-    split(payload).ok_or_else(bad)?;
+    let payload = ubisoft_payload(&data).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "not a Blacklist save"))?;
     let backup = if to.exists() { Some(backup(to)?) } else { None };
     write(to, payload)?;
     Ok(backup)
+}
+
+/// Imports any Blacklist save file: one of ours (a `.sav`, or one of the
+/// launcher's `.bak` backups) or Ubisoft Connect's (`1.save`). The save at
+/// `to` is backed up first; a file that isn't a Blacklist save changes nothing.
+pub fn import_file(from: &Path, to: &Path) -> std::io::Result<Option<PathBuf>> {
+    let data = std::fs::read(from)?;
+    let save = if split(&data).is_some() { &data[..] } else { ubisoft_payload(&data).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "that file isn't a Blacklist save"))? };
+    if std::fs::canonicalize(from).ok() == std::fs::canonicalize(to).ok() && to.exists() {
+        return Ok(None);
+    }
+    let backup = if to.exists() { Some(backup(to)?) } else { None };
+    write(to, save)?;
+    Ok(backup)
+}
+
+/// What [`prepare`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Prepared {
+    /// The save was already there, at rank 5 or above (or in a layout left alone).
+    Ready,
+    /// Ubisoft Connect's save, imported from this file; `raised` if it was below rank 5.
+    Imported { from: PathBuf, raised: bool },
+    /// No save anywhere: a new rank 5 one.
+    Created,
+    /// The save was below rank 5, and is raised (backed up first).
+    Raised,
+}
+
+impl Prepared {
+    /// For the setup log and the Status card.
+    pub fn describe(&self) -> Option<&'static str> {
+        match self {
+            Prepared::Ready => None,
+            Prepared::Imported { raised: false, .. } => Some("Imported your Ubisoft Connect save."),
+            Prepared::Imported { raised: true, .. } => Some("Imported your Ubisoft Connect save and raised it to rank 5."),
+            Prepared::Created => Some("Created a rank 5 save."),
+            Prepared::Raised => Some("Raised your save to rank 5 (the old one is backed up)."),
+        }
+    }
+}
+
+/// Gets the save at `path` ready to play: with none there, the player's own
+/// from Ubisoft Connect when there is one (rather than a blank profile), else
+/// a new rank 5 save; and below rank 5, raised.
+pub fn prepare(path: &Path, game_dir: Option<&Path>) -> std::io::Result<Prepared> {
+    prepare_from(path, find_ubisoft_save(game_dir))
+}
+
+fn prepare_from(path: &Path, ubisoft: Option<PathBuf>) -> std::io::Result<Prepared> {
+    match check(path) {
+        SaveState::Missing => match ubisoft {
+            Some(from) => {
+                import_ubisoft(&from, path)?;
+                let raised = check(path).below_rank5() && raise_to_rank5(path)?.is_some();
+                Ok(Prepared::Imported { from, raised })
+            }
+            None => create_rank5(path).map(|_| Prepared::Created),
+        },
+        s if s.below_rank5() => raise_to_rank5(path).map(|_| Prepared::Raised),
+        _ => Ok(Prepared::Ready),
+    }
 }
 
 #[cfg(test)]
@@ -173,6 +282,78 @@ mod tests {
         std::fs::write(&path, b"garbage").unwrap();
         assert_eq!(check(&path), SaveState::Unreadable);
         assert!(raise_to_rank5(&path).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn ubisoft_file(xp: u32) -> Vec<u8> {
+        let base = String::from_utf8(BASE_SAVE.to_vec()).unwrap().replacen("<m_iXP> 6600</m_iXP>", &format!("<m_iXP>{xp}</m_iXP>"), 1);
+        let mut ubisoft = 3u32.to_le_bytes().to_vec();
+        ubisoft.extend(b"abc");
+        ubisoft.extend(assemble(&NEW_HEADER, base.as_bytes()));
+        ubisoft
+    }
+
+    #[test]
+    fn finds_the_newest_ubisoft_save_under_any_account_and_game_id() {
+        let dir = temp_dir("save-find");
+        let root = dir.join("Ubisoft Game Launcher");
+        let put = |rel: &str, data: &[u8]| {
+            let p = root.join("savegames").join(rel);
+            std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+            std::fs::write(&p, data).unwrap();
+            p
+        };
+        let old = put("account-a/449/1.save", &ubisoft_file(100));
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let newer = put("account-b/91/1.save", &ubisoft_file(200));
+        put("account-b/1234/1.save", b"another game's save");
+        put("account-a/449/2.save", &ubisoft_file(300));
+        assert_eq!(ubisoft_saves_in(&[root.clone(), dir.join("missing")]), [newer, old]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn prepare_imports_before_making_a_blank_save() {
+        let dir = temp_dir("save-prepare");
+        let path = dir.join("Saves").join("00000001.sav");
+        std::fs::write(dir.join("1.save"), ubisoft_file(50_000)).unwrap();
+        assert_eq!(prepare_from(&path, Some(dir.join("1.save"))).unwrap(), Prepared::Imported { from: dir.join("1.save"), raised: false });
+        assert_eq!(check(&path), SaveState::Ok { xp: 50_000 }, "the player's own progress, not rank 5");
+        assert_eq!(prepare_from(&path, Some(dir.join("1.save"))).unwrap(), Prepared::Ready, "a save there is never replaced");
+
+        std::fs::remove_dir_all(dir.join("Saves")).unwrap();
+        std::fs::write(dir.join("1.save"), ubisoft_file(10)).unwrap();
+        assert_eq!(prepare_from(&path, Some(dir.join("1.save"))).unwrap(), Prepared::Imported { from: dir.join("1.save"), raised: true });
+        assert_eq!(check(&path), SaveState::Ok { xp: RANK5_XP });
+
+        std::fs::remove_dir_all(dir.join("Saves")).unwrap();
+        assert_eq!(prepare_from(&path, None).unwrap(), Prepared::Created);
+        assert_eq!(check(&path), SaveState::Ok { xp: RANK5_XP });
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn imports_save_files_of_either_kind() {
+        let dir = temp_dir("save-file");
+        let to = dir.join("Saves").join("00000001.sav");
+        create_rank5(&to).unwrap();
+        // One of the launcher's backups (our layout).
+        let ours = dir.join("old.sav.123.bak");
+        let base = String::from_utf8(BASE_SAVE.to_vec()).unwrap().replacen("<m_iXP> 6600</m_iXP>", "<m_iXP>9000</m_iXP>", 1);
+        std::fs::write(&ours, assemble(&NEW_HEADER, base.as_bytes())).unwrap();
+        let backup = import_file(&ours, &to).unwrap().expect("the save there was backed up");
+        assert_eq!(check(&to), SaveState::Ok { xp: 9000 });
+        assert_eq!(check(&backup), SaveState::Ok { xp: RANK5_XP });
+        // Ubisoft Connect's.
+        std::fs::write(dir.join("1.save"), ubisoft_file(12_345)).unwrap();
+        import_file(&dir.join("1.save"), &to).unwrap();
+        assert_eq!(check(&to), SaveState::Ok { xp: 12_345 });
+        // Anything else changes nothing.
+        std::fs::write(dir.join("notes.txt"), b"hello").unwrap();
+        assert!(import_file(&dir.join("notes.txt"), &to).is_err());
+        assert_eq!(check(&to), SaveState::Ok { xp: 12_345 });
+        // The save itself: nothing to do.
+        assert_eq!(import_file(&to, &to).unwrap(), None);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

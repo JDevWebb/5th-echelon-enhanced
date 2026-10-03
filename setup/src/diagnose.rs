@@ -335,7 +335,13 @@ fn save_check(f: &Facts) -> Check {
         // A save the launcher can't read (one changed by another tool, say) is still a save:
         // the check is only that there is one.
         Some(SaveState::Unreadable) => Check::new("save", Status::Ok, "Save game found", "", None),
-        Some(SaveState::Missing) | None => Check::new("save", Status::Fail, "No save game yet", "A rank 5 save unlocks co-op and Spies vs Mercs.", Some(Fix::CreateSave)),
+        Some(SaveState::Missing) | None => Check::new(
+            "save",
+            Status::Fail,
+            "No save game yet",
+            "Your Ubisoft Connect save is brought over if there is one, else a new rank 5 save: rank 5 unlocks co-op and Spies vs Mercs.",
+            Some(Fix::CreateSave),
+        ),
     }
 }
 

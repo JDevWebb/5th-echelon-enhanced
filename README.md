@@ -126,7 +126,7 @@ You need **Splinter Cell: Blacklist on PC** (Steam or Ubisoft Connect) and **Win
 - finds your account with your identity (no username or password to remember), or creates one with the name you choose, with a random password for that server only;
 - keeps every account linked to your identity, so friends follow you between servers and a new PC signs straight in;
 - picks the network adapter other players can reach you on;
-- makes a rank 5 save so co-op and Spies vs Mercs are unlocked.
+- brings over your Ubisoft Connect save, or makes a rank 5 one, so co-op and Spies vs Mercs are unlocked.
 
 The **Status** card on the home screen keeps an eye on all of this. Anything that goes wrong later (a VPN that's off, an update) shows up there with a button that fixes it, and the bar beside **Play** says whether you're ready. **Friends** shows who's online and what they're playing (and friends on other servers, with a button to join them), and **Server news** turns through the server's news; the **News** screen has all of it. The **Servers** screen lists the network's servers with your ping, the players on each and the friends there, and switches you over in one click; your identity signs you in there with the same name.
 
@@ -260,15 +260,16 @@ Everything the launcher does can be done by hand:
   - lobby invites;
   - **invites into private matches**.
 - **Internet play without a VPN:** public addresses from the server, router port forwarding (UPnP / NAT-PMP), and a relay through the server when a router can't be reached.
-- **An automatic setup:** game detection, client install, your account found (or made) with your identity, network adapter pinning and a rank 5 save, then a Status card with a fix for each problem.
+- **An automatic setup:** game detection, client install, your account found (or made) with your identity, network adapter pinning and your save (your Ubisoft Connect one, or a new rank 5 one), then a Status card with a fix for each problem.
 - **An in-game overlay** (<kbd>F5</kbd>): friends and what they're playing, friend requests, player search and blocking, invites, lobby player limits, and server status.
 - **One identity, every server:** the launcher makes you an identity (a key that stays on your PC) and links every account to it. It finds your account on a server by itself, with no username or password to remember, and asks for a name only the first time. Friends made on one server show up on every other server that shares a coordinator, and friends playing on another of them are listed in the overlay and the launcher, which joins you to their server in one click. Moving PCs? Copy your identity across in **Settings**, before connecting on the new PC ([how](docs/friends.md#your-identity)).
 - **Your name is yours:** servers that share a coordinator reserve each name for one player. Elsewhere, the overlay warns when someone has a friend's name but isn't them. You can rename your account from the launcher.
 - **A server directory:** joining a server that shares a coordinator brings in its directory. The launcher pings every server in it, preselects the best (the lowest ping, then the busiest), and offers a one-click **Switch** to a closer one.
 - **Save games:**
-  - a rank 5 save for new players;
+  - a rank 5 save for new players with no save anywhere;
   - raising an existing save to rank 5 (with a backup first);
-  - importing your Ubisoft Connect save;
+  - your Ubisoft Connect save brought over at setup (the newest, from any Ubisoft account on the PC, on Windows and in a Proton or Wine prefix), and raised to rank 5 only if it's lower;
+  - importing any save file: from another PC, Ubisoft Connect's `1.save`, or one of the launcher's backups;
   - backups.
 - **Staying signed in:**
   - the client signs in again on its own if the server restarts or your sign-in lapses;

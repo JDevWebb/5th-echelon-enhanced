@@ -1557,7 +1557,7 @@ fn fix_label(fix: Fix) -> &'static str {
         Fix::ChooseServer => "Choose",
         Fix::SetUpAccount => "Connect",
         Fix::PinAdapter => "Pin",
-        Fix::CreateSave => "Create",
+        Fix::CreateSave => "Set up a save",
         Fix::RaiseSave => "Raise to rank 5",
         Fix::UpdateLauncher => "Update",
     }
