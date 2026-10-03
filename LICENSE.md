@@ -32,6 +32,7 @@ Everything in these files and folders is under MIT:
 | `scripts/install-server.sh`, `harden-host.sh`, `sign-release.sh`, `bots.sh`, `load-test.sh`, `proxy-test.sh`, `federation-test.sh`, `check-clean.sh`, `install-hooks.sh` | The Linux installer, release signing, test runners and repository checks |
 | `docs/deploying.md`, `operations.md`, `community-servers.md`, `friends.md`, `server-settings.md`, `reverse-proxy.md`, `reverse-proxy/`, `load-testing.md`, `roadmap.md`, `research/nat-traversal.md`, `research/cross-region.md` | This fork's documentation |
 | `LICENSE.md` | This file |
+| `SECURITY.md` | How to report security problems |
 
 ### 2. This fork's changes to other files
 

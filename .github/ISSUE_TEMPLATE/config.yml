@@ -1,5 +1,8 @@
 blank_issues_enabled: true
 contact_links:
+  - name: Report a security problem
+    url: https://github.com/JDevWebb/5th-echelon-enhanced/security/advisories/new
+    about: Privately, not in a public issue. See SECURITY.md for what to include and what happens next.
   - name: Deploying a server
     url: https://github.com/JDevWebb/5th-echelon-enhanced/blob/main/docs/deploying.md
     about: How to run your own server, or your own network of servers with a coordinator.

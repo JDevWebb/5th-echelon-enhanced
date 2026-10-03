@@ -716,7 +716,7 @@ Contributions of every size are welcome: bug reports with logs, testing with fri
 - **Collaborators:** see [Become a collaborator](#become-a-collaborator).
 - **What to work on:** the [roadmap](docs/roadmap.md) has what's planned next.
 - **Servers:** running one for your group is one of the best ways to help. List a public one in [docs/community-servers.md](docs/community-servers.md).
-- **Security:** found a weakness? Please don't post the details in a public issue; open one asking for a private contact, and we'll take it from there.
+- **Security:** found a weakness? Please don't post it in a public issue: report it privately, as [SECURITY.md](SECURITY.md) describes.
 
 Never commit game files or anything extracted from them. Facts learned from the game (IDs, names, protocol layouts) are fine.
 
