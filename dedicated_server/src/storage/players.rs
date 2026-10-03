@@ -267,10 +267,6 @@ impl Storage {
 
     /// Matches that ended with at least two players and haven't been reported, marked
     /// reported.
-    pub fn take_finished_matches(&self) -> Result<Vec<FinishedMatch>> {
-        run(self.take_finished_matches_async())?
-    }
-
     pub async fn take_finished_matches_async(&self) -> Result<Vec<FinishedMatch>> {
         let mut tx = self.pool.begin().await?;
         let rows: Vec<(Option<String>, Option<i64>, Option<i64>, u32)> = sqlx::query_as(
@@ -359,12 +355,12 @@ mod tests {
         let matches = |id| storage.player_records(Some(&[id])).unwrap()[0].matches;
         assert_eq!((matches(a), matches(b), matches(c)), (1, 1, 1));
 
-        assert!(storage.take_finished_matches().unwrap().is_empty(), "still going");
+        assert!(crate::storage::run(storage.take_finished_matches_async()).unwrap().unwrap().is_empty(), "still going");
         storage.delete_game_session(a, 1, game).unwrap();
-        let finished = storage.take_finished_matches().unwrap();
+        let finished = crate::storage::run(storage.take_finished_matches_async()).unwrap().unwrap();
         assert_eq!(finished.len(), 1);
         assert_eq!(finished[0].players, 3);
-        assert!(storage.take_finished_matches().unwrap().is_empty(), "reported once");
+        assert!(crate::storage::run(storage.take_finished_matches_async()).unwrap().unwrap().is_empty(), "reported once");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

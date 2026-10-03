@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Two servers sharing friends through a coordinator (docs/friends.md), in
 # containers: a friendship made on one reaches the other, a block on the
-# other comes back, and both servers are in the coordinator's directory.
+# other comes back, and both servers are in the coordinator's directory. Then
+# the admin UI's side: a server's players reach the coordinator, and an admin's
+# ban goes out to the server and comes back done.
 #
 #   scripts/federation-test.sh <folder with dedicated_server, testbot and coordinator, in the build image>
 #
@@ -65,6 +67,34 @@ for _ in $(seq 60); do
   sleep 1
 done
 [ "$moved" -eq 1 ] && echo "PASS server A joined again at the new address" || { echo "FAIL server A didn't join at the new address"; rc=1; }
+echo "--- players and admin actions"
+db() { # db <container> <database> <sql>: the first column of the first row
+  docker exec "$1" python3 -c "import sqlite3,sys; r=sqlite3.connect(sys.argv[1]).execute(sys.argv[2]).fetchone(); print('' if r is None else r[0])" "$2" "$3"
+}
+coord_db() { db fes-fed-coord /srv/c/coordinator.db "$1"; }
+coord_write() { # coord_write <sql>: runs it and commits; prints the first column of the first row
+  docker exec fes-fed-coord python3 -c "import sqlite3,sys; c=sqlite3.connect('/srv/c/coordinator.db'); r=c.execute(sys.argv[1]).fetchone(); c.commit(); print('' if r is None else r[0])" "$1"
+}
+server_a=$(coord_db "SELECT id FROM servers WHERE json_extract(listing, '$.name') = 'Server A'")
+# Server A sends everyone as it starts (it just restarted, after the test players made accounts).
+players=0
+for _ in $(seq 60); do
+  players=$(coord_db "SELECT COUNT(*) FROM players WHERE server_id = '$server_a'")
+  [ "${players:-0}" -gt 0 ] && break; sleep 1
+done
+[ "${players:-0}" -gt 0 ] && echo "PASS server A's $players players reached the coordinator" || { echo "FAIL no players from server A"; rc=1; }
+player=$(coord_db "SELECT id FROM players WHERE server_id = '$server_a' ORDER BY id LIMIT 1")
+if [ -n "$player" ]; then
+  action=$(coord_write "INSERT INTO player_actions (server_id, player, kind, args, created_by, created_at) VALUES ('$server_a', $player, 'ban', '{\"reason\":\"federation test\"}', 'test', CAST(strftime('%s','now') AS INTEGER)) RETURNING id")
+  status=pending
+  for _ in $(seq 60); do
+    status=$(coord_db "SELECT status FROM player_actions WHERE id = ${action:-0}")
+    [ "$status" != pending ] && break; sleep 1
+  done
+  banned=$(db fes-fed-a /srv/fe/5th-echelon.db "SELECT COUNT(*) FROM bans WHERE user_id = $player AND reason = 'federation test'")
+  [ "$status" = done ] && [ "${banned:-0}" -eq 1 ] && echo "PASS an admin's ban reached server A and came back done" \
+    || { echo "FAIL the ban: status ${status:-none}, banned ${banned:-0}"; rc=1; }
+fi
 if [ $rc -ne 0 ]; then
   for s in fes-fed-a fes-fed-b; do echo "--- $s"; docker exec "$s" grep -iE -A3 "federation|ERRO" /srv/fe/server.log | tail -40 || true; done
   echo "--- coordinator"; docker exec fes-fed-coord tail -30 /srv/c/log || true

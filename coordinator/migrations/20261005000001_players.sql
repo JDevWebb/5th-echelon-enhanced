@@ -1,5 +1,5 @@
 -- Each member server's players, as it reports them (POST /v1/players): for the admin UI's
--- player list. `identity` is the player's identity fingerprint (the same person has the same
+-- player list. `identity` is the player's global id, their identity's public key (the same person has the same
 -- one on every server), or NULL for an account without one.
 CREATE TABLE players (
     server_id TEXT NOT NULL REFERENCES servers(id) ON DELETE CASCADE,
