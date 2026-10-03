@@ -148,8 +148,10 @@ jobs:
           VT_API_KEY: ${{ secrets.VT_API_KEY }}
         run: |
           if [ -z "$VT_API_KEY" ]; then echo "No VT_API_KEY secret; skipping the scan"; exit 1; fi
+          # Into vt.md only when it finished: a half table would replace the plain links.
           scripts/virustotal.sh dist/launcher.exe dist/uplay_r1_loader.dll dist/dedicated_server.exe \
-            dist/launcher-linux-x86_64 dist/dedicated_server-linux-x86_64 dist/coordinator-linux-x86_64 > vt.md
+            dist/launcher-linux-x86_64 dist/dedicated_server-linux-x86_64 dist/coordinator-linux-x86_64 > vt.tmp
+          mv vt.tmp vt.md
           cat vt.md
       - name: Write the release notes
         env:

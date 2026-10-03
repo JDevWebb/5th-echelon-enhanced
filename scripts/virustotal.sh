@@ -17,7 +17,8 @@ command -v jq >/dev/null || { echo "needs jq" >&2; exit 2; }
 API=https://www.virustotal.com/api/v3
 # Free keys: 4 requests a minute.
 pace() { sleep 16; }
-vt() { curl -fsS --proto '=https' --retry 3 -H "x-apikey: $VT_API_KEY" "$@"; }
+# Over the rate (429) and other passing errors: a minute's wait, five times.
+vt() { curl -fsS --proto '=https' --retry 5 --retry-delay 60 -H "x-apikey: $VT_API_KEY" "$@"; }
 
 # Waits for an analysis and prints "malicious suspicious total".
 wait_for() {
@@ -52,13 +53,15 @@ for f in "$@"; do
     size="$(stat -c %s "$f" 2>/dev/null || stat -f %z "$f")"
     if [ "$size" -gt 33554432 ]; then
       # Over 32 MB: VirusTotal hands out a one-off upload address.
-      url="$(vt "$API/files/upload_url" | jq -r '.data')"
+      url="$(vt "$API/files/upload_url" | jq -r '.data')" || url=""
       pace
     else
       url="$API/files"
     fi
-    id="$(vt -X POST -F "file=@$f" "$url" | jq -r '.data.id')"
-    result="$(wait_for "$id")"
+    # A file that can't be scanned now keeps its link, marked pending.
+    id=""
+    [ -z "$url" ] || id="$(vt -X POST -F "file=@$f" "$url" | jq -r '.data.id // empty')" || id=""
+    [ -z "$id" ] || result="$(wait_for "$id")" || result=
   fi
   link="https://www.virustotal.com/gui/file/$sha"
   if [ "$result" = timeout ] || [ -z "$result" ]; then
