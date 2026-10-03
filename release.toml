@@ -9,4 +9,4 @@
 # aren't a signed release; it comes off when one is. 0.2.5 was upstream's last
 # release; this fork continues from 0.3.0.
 name = "5th Echelon Enhanced"
-version = "0.3.171-dev"
+version = "0.3.172-dev"

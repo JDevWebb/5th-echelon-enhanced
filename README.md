@@ -107,6 +107,12 @@ You need **Splinter Cell: Blacklist on PC** (Steam or Ubisoft Connect) and **Win
    - press **Connect**. The launcher finds your account with your identity; if you don't have one there yet, it asks for the name other players will see and makes it.
 4. **Press Play.**
 
+**Used upstream 5th Echelon before?** Use this launcher instead of the old one; you don't need to uninstall anything first:
+- **The client:** it replaces the old 5th Echelon DLL with its own, keeping the game's original file (`uplay_r1_loader.orig.dll`) as before.
+- **Your settings and saves** carry over: the same `uplay.toml` in the game folder, and the same saves in `%APPDATA%\5th-Echelon\Saves`.
+- **Your old server** is still selected, so the launcher opens on the home screen rather than the setup. To play on the community servers, open **Servers** and press **Switch** on the closest (or **Change** on the home screen). The launcher makes you an account there with your new identity; old usernames and passwords from other servers aren't needed.
+- **If you played over Radmin VPN, Hamachi or similar**, your old settings may tie the game to that adapter. The Status card then says **Wrong network adapter**: press its button to fix it. You don't need the VPN for the community servers.
+
 <p align="center">
   <img src="./docs/screenshots/launcher-setup.png" width="640" alt="The launcher's first-run setup: the steps on the left, and the community servers with your ping to each, the closest picked">
 </p>
@@ -131,7 +137,10 @@ The **Status** card on the home screen keeps an eye on all of this. Anything tha
 > [!TIP]
 > **No VPN needed.** The server tells your game its public address, so friends anywhere can join your matches; when a router can't be reached directly, the match goes through the server instead. See [Playing over the internet](#playing-over-the-internet).
 >
-> **Playing over a VPN** anyway (Radmin VPN, ZeroTier, Tailscale, …)? Turn it on before pressing Connect. The launcher then pins the VPN adapter, and **Settings › Network › Don't start the game without this adapter** stops the game quietly using the wrong network when the VPN is off.
+> **VPNs and the community servers:**
+> - **Radmin VPN, Hamachi, ZeroTier, Tailscale** and other "virtual LAN" VPNs can stay installed: the launcher ties the game to the adapter that actually reaches the server, so other players aren't given your VPN address. You don't need them for the community servers.
+> - **A VPN that sends all your traffic through it** (NordVPN, ProtonVPN, Mullvad and the like) works, but adds delay, and your matches go through the server's relay. Turn it off while you play if you can, then press **Check again** on the Status card.
+> - **Your group's own server inside a VPN** (a Radmin network address, say)? Turn the VPN on before pressing Connect. The launcher then ties the game to the VPN's adapter, and **Settings › Network › Don't start the game without this adapter** stops it quietly using the wrong network when the VPN is off.
 
 ### Playing over the internet
 
