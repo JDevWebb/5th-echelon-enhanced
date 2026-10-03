@@ -9,6 +9,7 @@ Servers that share friends through the community coordinator, `https://play.scbl
 | Server | Address | Region | Friend lists | Run by |
 |---|---|---|---|---|
 | 5th Echelon Community EU | `eu1.scbl.jdevwebb.net` | Falkenstein, Germany | mutual | [JDevWebb](https://github.com/JDevWebb) |
+| 5th Echelon Community North America | `na1.scbl.jdevwebb.net` | Beauharnois, Canada | mutual | [JDevWebb](https://github.com/JDevWebb) |
 | 5th Echelon Community Oceania | `oceania.scbl.jdevwebb.net` | Sydney, Australia | mutual | [JDevWebb](https://github.com/JDevWebb) |
 
 The community network's servers are run by its maintainers only.

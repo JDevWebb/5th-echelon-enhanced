@@ -29,7 +29,7 @@
 
 <table>
 <tr><td><b>Address</b></td><td><code>play.scbl.jdevwebb.net</code>: the community network; the launcher pings every server in it and sets you up on the best</td></tr>
-<tr><td><b>Servers</b></td><td>Europe: <code>eu1.scbl.jdevwebb.net</code> (Falkenstein, Germany)<br>Oceania: <code>oceania.scbl.jdevwebb.net</code> (Australia)</td></tr>
+<tr><td><b>Servers</b></td><td>Europe: <code>eu1.scbl.jdevwebb.net</code> (Falkenstein, Germany)<br>North America: <code>na1.scbl.jdevwebb.net</code> (Beauharnois, Canada)<br>Oceania: <code>oceania.scbl.jdevwebb.net</code> (Australia)</td></tr>
 <tr><td><b>Modes</b></td><td>Co-op and Spies vs Mercs: Find Teammate, Quick Match, lobby and private-match invites</td></tr>
 <tr><td><b>Friends</b></td><td>Friends-only lists and invites, blocking, player search; your friends follow you to every server in the community network</td></tr>
 <tr><td><b>Internet play</b></td><td>No VPN or port forwarding: the server tells your game its public address, and relays matches when a router can't be reached</td></tr>
