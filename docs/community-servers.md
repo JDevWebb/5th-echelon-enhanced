@@ -14,6 +14,8 @@ Servers that share friends through the community coordinator, `https://play.scbl
 
 The community network's servers are run by its maintainers only.
 
+5th Echelon is a fan project, not affiliated with or endorsed by Ubisoft. You need your own copy of the game.
+
 ## Other servers and networks
 
 Servers and groups with coordinators of their own. Add yours with a pull request: one row, with an address players can type.

@@ -30,6 +30,8 @@ const DEFAULT_NEWS: &str = include_str!("../../data/news.json");
 /// Upstream's news, which servers wrote as their default before this fork had
 /// its own: replaced by the new default when found unchanged.
 const UPSTREAM_NEWS: &str = include_str!("news_upstream.json");
+/// This fork's first news (0.3.150): replaced like upstream's, unless edited.
+const FIRST_NEWS: &str = include_str!("news_0.3.150.json");
 const DEFAULT_CHALLENGES: &str = include_str!("../../data/challenges.json");
 
 const SERVER_PID: u32 = 0x1000;
@@ -342,9 +344,10 @@ fn ensure_data_dir(content_files: &[std::path::PathBuf]) -> io::Result<()> {
     for (name, contents) in defaults {
         write_if_missing(&data.join(name), contents)?;
     }
-    // Upstream's placeholder news, never edited: this fork's news instead.
+    // Upstream's placeholder news, or an earlier release's default, never edited: this
+    // release's news instead.
     let news = data.join("news.json");
-    if fs::read_to_string(&news).is_ok_and(|n| n == UPSTREAM_NEWS) {
+    if fs::read_to_string(&news).is_ok_and(|n| n == UPSTREAM_NEWS || n == FIRST_NEWS) {
         fs::write(&news, DEFAULT_NEWS)?;
     }
     for path in content_files.iter().filter(|p| p.file_name().is_some_and(|n| n == "mp_balancing.ini")) {
