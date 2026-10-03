@@ -7,6 +7,7 @@ use quazal::prudp::packet::StreamType;
 use quazal::prudp::packet::VPort;
 use quazal::prudp::ClientRegistry;
 use quazal::rmc::basic::ToStream;
+use quazal::rmc::types::StationURL;
 use quazal::rmc::Error;
 use quazal::rmc::Protocol;
 use quazal::rmc::Request;
@@ -44,6 +45,19 @@ fn probe_address_allowed(address: &str, observed: std::net::IpAddr) -> bool {
     !special || std::net::IpAddr::V4(ip) == observed.to_canonical()
 }
 
+/// Where other players' games are told to probe the caller, from the station the game
+/// offered: as offered, or, when it carries a public address that isn't the caller's, at the
+/// address the caller connected from. Such an address is most often a VPN's (Radmin VPN
+/// gives out 26.x.x.x), where nobody else can reach the game; their station URLs are
+/// corrected the same way ([`crate::game_session::only_reachable_addresses`]). `None` when
+/// no probe may go there ([`probe_address_allowed`]).
+fn probe_station(offered: &StationURL, observed: std::net::IpAddr, relay: Option<std::net::Ipv4Addr>) -> Option<StationURL> {
+    crate::game_session::only_reachable_addresses(vec![offered.to_string()], observed, relay)
+        .pop()
+        .and_then(|url| url.parse::<StationURL>().ok())
+        .filter(|station| probe_address_allowed(&station.address, observed))
+}
+
 impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
     /// Handles the `RequestProbeInitiationExt` request.
     ///
@@ -65,12 +79,15 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
         if request.url_target_list.len() > MAX_PROBE_TARGETS || !crate::rate_limit::game_requests().check(user_id) {
             return Err(Error::AccessDenied);
         }
-        let own = std::iter::once(request.url_station_to_probe.to_string()).collect::<Vec<_>>();
-        if crate::game_session::only_reachable_addresses(own.clone(), ci.address().ip(), crate::nat_helper::relay_ip()) != own
-            || !probe_address_allowed(&request.url_station_to_probe.address, ci.address().ip())
-        {
+        let Some(station) = probe_station(&request.url_station_to_probe, ci.address().ip(), crate::nat_helper::relay_ip()) else {
             warn!(logger, "User {user_id} asked for probes to an address not their own; refused");
             return Err(Error::AccessDenied);
+        };
+        if station.address != request.url_station_to_probe.address {
+            info!(
+                logger,
+                "User {user_id} offered {} for probes, another network's address (a VPN?); using {} instead", request.url_station_to_probe.address, station.address
+            );
         }
 
         // Iterate over each target URL provided in the request.
@@ -98,7 +115,7 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
                 call_id: rand::random(), // Generate a random call ID for the probe.
                 method_id: NatTraversalProtocolMethod::InitiateProbe as u32,
                 parameters: InitiateProbeRequest {
-                    url_station_to_probe: request.url_station_to_probe.clone(),
+                    url_station_to_probe: station.clone(),
                 }
                 .to_bytes(),
             }
@@ -162,6 +179,7 @@ pub fn new_protocol<T: 'static>(storage: std::sync::Arc<crate::storage::Storage>
 #[cfg(test)]
 mod tests {
     use super::probe_address_allowed;
+    use super::probe_station;
 
     #[test]
     fn probes_only_to_addresses_that_can_mean_the_caller() {
@@ -172,5 +190,22 @@ mod tests {
             assert!(!probe_address_allowed(special, public), "{special}");
         }
         assert!(probe_address_allowed("127.0.0.1", "127.0.0.1".parse().unwrap()), "a game on the server's own machine");
+    }
+
+    #[test]
+    fn probes_go_where_the_caller_can_be_reached() {
+        let observed = "203.0.113.9".parse().unwrap();
+        let relay = Some("198.51.100.1".parse().unwrap());
+        let probe = |url: &str| probe_station(&url.parse().unwrap(), observed, relay).map(|s| s.address);
+        assert_eq!(probe("udp:/address=203.0.113.9;port=13000").as_deref(), Some("203.0.113.9"));
+        assert_eq!(probe("udp:/address=192.168.1.70;port=13000").as_deref(), Some("192.168.1.70"), "a LAN address stays");
+        assert_eq!(probe("udp:/address=198.51.100.1;port=40000").as_deref(), Some("198.51.100.1"), "the relay");
+        assert_eq!(
+            probe("udp:/address=26.70.109.161;port=13000").as_deref(),
+            Some("203.0.113.9"),
+            "a VPN's address: the caller's"
+        );
+        assert_eq!(probe("udp:/address=127.0.0.1;port=13000"), None);
+        assert_eq!(probe("http:/address=203.0.113.9;port=13000"), None);
     }
 }
