@@ -435,17 +435,25 @@ fi
 
 say "$os_name ($family), $(uname -m)"
 
-# The PIDs of every running copy of the installed server, by command line
-# (/proc/*/exe can name an emulator instead of the program).
+# The PIDs of every running copy of the installed server: the program a process
+# runs, or, where /proc/*/exe names an emulator instead (qemu-user) or can't be read,
+# the program its command line starts with. Only those exactly: a shell or an editor whose command
+# line mentions the server's path isn't the server.
 server_pids() {
-  local p cmd
+  local p exe a0 a1 bin="$PROGRAM_DIR/dedicated_server"
   for p in /proc/[0-9]*; do
     [ "${p#/proc/}" = "$$" ] && continue
-    cmd="$({ tr '\0' ' ' < "$p/cmdline"; } 2>/dev/null)" || continue
-    case "$cmd" in
-      "$PROGRAM_DIR/dedicated_server"*|*" $PROGRAM_DIR/dedicated_server"*)
-        case "$cmd" in runuser*) ;; *) echo "${p#/proc/}" ;; esac ;;
+    # Unreadable without ptrace rights over the process (another user's, in a container):
+    # then the command line, read exactly, decides.
+    exe="$(readlink "$p/exe" 2>/dev/null)" || exe=""
+    case "$exe" in
+      "$bin"|"$bin (deleted)") echo "${p#/proc/}"; continue ;;
+      ""|*/qemu-*) ;;
+      *) continue ;;
     esac
+    a0="" a1=""
+    { IFS= read -r -d '' a0 && IFS= read -r -d '' a1; } < "$p/cmdline" 2>/dev/null || true
+    if [ "${a0:-}" = "$bin" ] || { [[ "${a0:-}" == *qemu-* ]] && [ "${a1:-}" = "$bin" ]; }; then echo "${p#/proc/}"; fi
   done
 }
 
