@@ -155,6 +155,9 @@ Unattended-Upgrade::Automatic-Reboot "true";
 Unattended-Upgrade::Automatic-Reboot-Time "$reboot_time";
 Unattended-Upgrade::Remove-Unused-Dependencies "true";
 Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
+// Caddy from its own repository (install-server.sh adds it): its fixes too, not only the
+// distribution's. Added to the distribution's own list.
+Unattended-Upgrade::Origins-Pattern { "origin=cloudsmith/caddy/stable"; };
 APT
 systemctl enable --now unattended-upgrades >/dev/null 2>&1 || true
 say "Unattended upgrades: on, rebooting at $reboot_time when an update needs it"

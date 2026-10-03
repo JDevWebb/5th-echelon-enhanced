@@ -155,9 +155,9 @@ RELEASE_KEY_PEM="-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEANX9q9hOdzlNhVlSPEtmjJbbdJyOktGgQkPw4ep2KCLI=
 -----END PUBLIC KEY-----"
 # Caddy's static build, when there's no package: pinned, with its SHA-512.
-CADDY_VERSION="2.11.4"
-CADDY_SHA512_amd64="8220d1f013b6f27510247b2360c9e0ca9f018feebd82515f07635318b34ff9777ccc8fd0b6e6f2486ce3a33fe389fbb7db12d05baa474f4587509fb4f5ebf1c9"
-CADDY_SHA512_arm64="d5a7c423853c24a799765e0e8210d5c7c22a8f56ed37a3cae2fb9f58be138853c02b4efd6b59d576e6d8c7c0d30b9c1592deeaa6a536ff69bcca23b8c1ea709c"
+CADDY_VERSION="2.11.6"
+CADDY_SHA512_amd64="422771007d505ea97efd1177a4905b2c1a471cd426668f2ace3bcda3d8e30b11f9b1610bfb02c6ad60f2a795f56124f2f5eec6409c17d5a0dd4c21a11375fb94"
+CADDY_SHA512_arm64="bd228ea44b6b95720a0c2d7b62886e99cb4a0b05356fe6e058c4a155618c913377b18e686839ae7fcc6c2c05aea2d549fa91f25aa3ef8d43cdead117259577ed"
 
 domain="" no_caddy=0 public_address="" version="latest" binary="" relay=""
 firewall=1 yes=0 force=0 uninstall=0 purge=0 use_systemd=1
@@ -1549,6 +1549,9 @@ install_caddy_static() {
   printf '%s  %s\n' "$want" "$work/$tarball" | sha512sum -c --quiet - || die "the Caddy download doesn't match its pinned checksum"
   tar -xzf "$work/$tarball" -C "$work" caddy
   install -m 755 "$work/caddy" /usr/bin/caddy
+  # This script's own Caddy: later runs keep it up to date (see caddy_is_ours).
+  install -d -m 755 "$ETC_DIR"
+  touch "$ETC_DIR/caddy-static"
   if ! id caddy >/dev/null 2>&1; then
     useradd --system --home-dir /var/lib/caddy --create-home --shell /usr/sbin/nologin caddy 2>/dev/null \
       || useradd --system --home-dir /var/lib/caddy --create-home --shell /sbin/nologin caddy
@@ -1757,6 +1760,22 @@ notes=()
 if [ "$no_caddy" -eq 0 ]; then
   install_caddy || true
   command -v caddy >/dev/null || install_caddy_static
+  # A packaged Caddy updates with the system; Caddy's own build that this script put in
+  # place doesn't, so an older one than this script's is replaced. Anyone else's (built
+  # with plugins, say) is left alone.
+  caddy_is_ours() {
+    [ "$(command -v caddy)" = /usr/bin/caddy ] || return 1
+    { dpkg -S /usr/bin/caddy || rpm -qf /usr/bin/caddy || pacman -Qo /usr/bin/caddy; } >/dev/null 2>&1 && return 1
+    [ -f "$ETC_DIR/caddy-static" ] || grep -qxF 'ExecStart=/usr/bin/caddy run --environ --config /etc/caddy/Caddyfile' /etc/systemd/system/caddy.service 2>/dev/null
+  }
+  if caddy_is_ours; then
+    have="$(caddy version 2>/dev/null | cut -d' ' -f1 | tr -d v)"
+    if [[ "$have" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$have" != "$CADDY_VERSION" ] && [ "$(printf '%s\n%s\n' "$have" "$CADDY_VERSION" | sort -V | head -1)" = "$have" ]; then
+      say "Updating Caddy $have to $CADDY_VERSION"
+      install_caddy_static
+      caddy_unit_changed=1
+    fi
+  fi
   caddy version >/dev/null 2>&1 || die "Caddy was installed but doesn't run ($(command -v caddy)); install Caddy 2.6+ yourself and run this again"
   caddy_version="$(caddy version | cut -d' ' -f1)"
   case "$caddy_version" in
