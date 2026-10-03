@@ -149,6 +149,11 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           {
+            # This release's own notes first, when docs/releases has them.
+            if [ -f "docs/releases/v$VERSION.md" ]; then
+              cat "docs/releases/v$VERSION.md"
+              echo
+            fi
             echo "## Verify your download"
             echo
             echo "Every file is checked by the launcher's updater and the Linux installer before it's used. To check one yourself:"
