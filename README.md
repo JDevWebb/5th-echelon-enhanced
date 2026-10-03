@@ -647,7 +647,7 @@ cargo build --release -p launcher --features embed-dll         # on Windows: bui
 
 GitHub Actions tests and builds every push and pull request (Linux tests, the test players, and the Windows and Linux builds). Releases are published by pushing a version tag:
 
-`release.toml`'s `version` is the one release number for the launcher, the client DLL, the server and the coordinator. Every change bumps the patch number, with a `-dev` suffix on builds that aren't a release (e.g. `0.4.1-dev`).
+`release.toml`'s `version` is the one release number for the launcher, the client DLL, the server and the coordinator. Between releases it names the next one, with a `-dev` suffix on builds that aren't a release (`0.4.1-dev` until 0.4.1 is out); it moves on per release, not per change.
 
 On the machine with the release key, one command does it all:
 ```sh
