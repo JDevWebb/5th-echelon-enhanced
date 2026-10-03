@@ -392,7 +392,7 @@ fn save_game(settings: &mut Settings, game: &mut Game, ctx: &egui::Context, ui: 
     ui.label(path.display().to_string());
     ui.label(theme::muted(match &state {
         SaveState::Missing => "No save yet.".to_string(),
-        SaveState::Unreadable => "Not a save this launcher can read; it's left as it is.".to_string(),
+        SaveState::Unreadable => "Found.".to_string(),
         SaveState::Ok { xp } => format!("{xp} XP{}", if *xp < setup::save::RANK5_XP { " (below rank 5)" } else { "" }),
     }));
     ui.add_enabled_ui(!settings.working.running(), |ui| {

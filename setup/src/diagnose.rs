@@ -312,7 +312,9 @@ fn save_check(f: &Facts) -> Check {
             Some(Fix::RaiseSave),
         ),
         Some(SaveState::Ok { .. }) => Check::new("save", Status::Ok, "Save game ready", "", None),
-        Some(SaveState::Unreadable) => Check::new("save", Status::Warn, "Save game not recognised", "It's left as it is.", None),
+        // A save the launcher can't read (one changed by another tool, say) is still a save:
+        // the check is only that there is one.
+        Some(SaveState::Unreadable) => Check::new("save", Status::Ok, "Save game found", "", None),
         Some(SaveState::Missing) | None => Check::new("save", Status::Fail, "No save game yet", "A rank 5 save unlocks co-op and Spies vs Mercs.", Some(Fix::CreateSave)),
     }
 }
@@ -383,6 +385,8 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
         assert_eq!(fix(f, "network"), Some((Status::Fail, Some(Fix::PinAdapter))));
         let f = Facts { pinned: None, pinned_ip: None, ..ready_facts() };
         assert_eq!(fix(f, "network"), Some((Status::Fail, Some(Fix::PinAdapter))));
+        let f = Facts { save: Some(SaveState::Unreadable), ..ready_facts() };
+        assert_eq!(fix(f, "save"), Some((Status::Ok, None)), "a save it can't read is still a save");
         let f = Facts { save: Some(SaveState::Ok { xp: 10 }), ..ready_facts() };
         assert_eq!(fix(f, "save"), Some((Status::Fail, Some(Fix::RaiseSave))));
         let f = Facts { server_ports: Some((true, false)), ..ready_facts() };
