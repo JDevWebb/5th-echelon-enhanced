@@ -28,7 +28,8 @@ pub struct Ban {
 pub struct PlayerRecord {
     pub id: u32,
     pub name: String,
-    /// A short fingerprint of their identity key: the same person on every server.
+    /// Their identity's public key (the global id the heartbeat already lists for online
+    /// players): the same person on every server.
     pub identity: Option<String>,
     pub created_at: i64,
     pub last_seen: Option<i64>,
@@ -56,12 +57,6 @@ pub struct FinishedMatch {
     pub started: i64,
     pub ended: i64,
     pub players: u32,
-}
-
-/// The identity fingerprint sent for a player: 16 hex digits of SHA-256 of their key.
-fn fingerprint(global_id: &str) -> String {
-    use sha2::Digest as _;
-    sha2::Sha256::digest(global_id.as_bytes())[..8].iter().map(|b| format!("{b:02x}")).collect()
 }
 
 impl Storage {
@@ -175,7 +170,7 @@ impl Storage {
                 |(id, name, global_id, created_at, last_seen, online, play_seconds, sessions, matches, reason, until, at)| PlayerRecord {
                     id,
                     name,
-                    identity: global_id.as_deref().map(fingerprint),
+                    identity: global_id,
                     created_at,
                     last_seen,
                     online,
