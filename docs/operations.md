@@ -84,12 +84,15 @@ A member server drops out of the server directory, and players' launchers stop o
 - players online, in a match and in a lobby;
 - every live session's mode (Spies vs Mercs or co-op), room (match or lobby), map and game mode;
 - online players per city;
-- sign-ins, failed sign-ins, new accounts and relayed traffic;
+- sign-ins, failed sign-ins, new accounts, failed joins, matches started and relayed traffic;
+- the matches that finished since the last report: mode, map, game mode, start and end, the most players at once, and whether it was private;
 - the machine's CPU, memory, load, disk, network traffic, and the server process's own CPU and memory.
 
 **Every 10 seconds, a lighter pulse:** players online, in a match and in a lobby; the sign-in, account and match counters; and network traffic. It feeds the live figures and the Live events panel. Older coordinators answer 404, and the server tries again ten minutes later.
 
-**Who played:** with each minute's metrics, each server sends a short id for every player online. The id is an HMAC of the player's account number under a key only that server has (`metrics.key`, made on first start), cut to 16 hex characters: the coordinator can count distinct players, new ones and returning ones, but can't tell who they are or match them across servers.
+**Players and play sessions:** at start, every 5 minutes (what changed) and every 6 hours (the whole roster), each server sends its accounts (name, identity, created, last seen, online, time played, sessions, matches, ban) and its play sessions (sign-in to sign-out). Up to 2,000 players and 5,000 sessions a request; a whole roster that fits in one request also removes accounts deleted on the server. Older coordinators answer 404.
+
+**Who played (older servers):** with each minute's metrics, each server sends a short id for every player online. The id is an HMAC of the player's account number under a key only that server has (`metrics.key`, made on first start), cut to 16 hex characters: the coordinator can count distinct players, new ones and returning ones, but can't tell who they are or match them across servers.
 
 **Locations:**
 - Each server looks up its players' addresses in [DB-IP](https://db-ip.com)'s free city database, on its own machine. It downloads the database to `geoip/` and refreshes it monthly.
@@ -102,12 +105,31 @@ A member server drops out of the server directory, and players' launchers stop o
 **History:**
 - Samples are kept for a week.
 - Hourly summaries are kept for 400 days, for the 30-day and one-year views. They keep each hour's bytes in and out, relayed bytes, peak rate and five-minute rates, so the bandwidth report stays exact after the samples are gone.
-- Players per day (by anonymised id, with minutes played) and resolved alerts are kept for 400 days too.
+- Players per day (by anonymised id, with minutes played), play sessions, finished matches, admins' player actions and resolved alerts are kept for 400 days too.
+- The live points and events (from the pulses) are kept a day, so restarting the coordinator keeps the live view.
 
 ### Reports
 
 - **Bandwidth:** data in, out and relayed per hour, day or month; totals, the peak, and the 95th percentile of five-minute rates (what burstable plans bill); a row per day (per month over a year), and a CSV export. Set each server's monthly allowance in TB to see how far through it the month is and where it's heading.
-- **Players & map:** players per period, daily average, new and returning players, time played per player per day, the peak; sign-ins per day; a heatmap of when people play, in your time zone; median pings by city; the live map.
+- **Players & map › Report & map:** players per period, daily average, new and returning players, time played per player per day, the peak; sign-ins and failed joins per day; a heatmap of when people play, in your time zone; median pings by city; the live map. Time played comes from play sessions for servers that send them (from the first whole day they did), else from a sample each minute.
+- **Players & map › Matches:** finished matches per day by mode, matches started, their average length and players, private and public, by mode, game mode and map (name maps as you identify them).
+
+### Players
+
+**Players & map › Accounts** lists every server's accounts: search by name, account number or identity; filter by server, online or banned; sort by last seen, time played, name or when they joined. An account's identity is the same on every server, so the list shows where else the player has an account.
+
+Pick a player for their sessions, time played each day of the last 30, their other accounts and what admins did to them, and to act:
+
+| Action | What it does |
+|---|---|
+| Kick | Signs them out; they can sign in again |
+| Ban | Signs them out and refuses sign-in for 1, 7 or 30 days, or for good, with a reason they see. Optionally every account of theirs |
+| Unban | Lifts a ban |
+| Reset password | Their server makes a temporary password, shown once to the admin who asked, to give them privately. The coordinator forgets it once shown (or after an hour) |
+| Rename | A new name (3 to 24 letters, digits, _ - .), not one another player holds on the network; friends on other servers see it |
+| Delete | Removes the account for good (type the name to confirm) |
+
+The server carries an action out when it next sends its pulse (within 10 seconds) and says how it went; the page follows it. An action the server doesn't answer within an hour expires. Every action is in the audit log; ban, reset password, rename and delete ask for your second factor again if the last was more than 10 minutes ago.
 
 ### Alerts
 
@@ -186,7 +208,8 @@ The admin UI is served by the coordinator on its own port (127.0.0.2:8701, a loo
 - adding or resetting admins;
 - sign-in restrictions;
 - rollbacks;
-- removing servers.
+- removing servers;
+- banning, renaming or deleting a player, and resetting their password.
 
 **Failed sign-ins:**
 - Five in a row lock the account for 15 minutes, doubling after each further failure.
@@ -227,11 +250,12 @@ The badge at the top right says whether it's live. The connection uses the same 
 
 **What the admin UI shows:**
 - counts, cities, and the names of admins;
-- never players' names, addresses or accounts.
+- each server's accounts: names, identities, when they played, bans; never players' addresses or passwords.
 
 **What's stored:**
 - Players' locations are city counts.
-- Who played is a per-server keyed hash of the account number, with minutes played per day. The coordinator never has the key, so it can't turn one back into a player, and someone playing on two servers counts twice.
+- Each server's accounts and play sessions, as it reports them (see Metrics), so admins can manage players.
+- The per-minute "who played" ids are a per-server keyed hash of the account number, with minutes played per day; the reports count players per server, so someone playing on two servers counts twice.
 - Launchers' ping reports keep only the city and the round trip.
 
 IP geolocation by [DB-IP](https://db-ip.com), CC BY 4.0. The world map is [Natural Earth](https://www.naturalearthdata.com) (public domain), via [world-atlas](https://github.com/topojson/world-atlas) (ISC).

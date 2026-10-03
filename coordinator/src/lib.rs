@@ -21,9 +21,12 @@
 //! player's signature, so no server can speak for someone who never used it.
 //!
 //! * `POST /v1/pulse`: a server's live numbers, every ten seconds (for the
-//!   admin UI, kept in memory only),
+//!   admin UI, kept a day); the answer lists what admins asked it to do to
+//!   players (see [`players`]),
 //! * `POST /v1/metrics`: a server's metrics, every minute (see [`metrics`]),
 //!   for the admin UI ([`admin`], on its own listener).
+//! * `POST /v1/players`: a server's players and play sessions, and
+//!   `POST /v1/actions/<id>`: what came of an admin's action (see [`players`]).
 //! * `POST /v1/pings`: a launcher's pings to the servers (no sign-in).
 //! * Heartbeat answers carry the release a server should install (see
 //!   [`updates`]); servers that don't keep up leave the directory.
@@ -31,6 +34,7 @@
 pub mod admin;
 pub mod alerts;
 pub mod metrics;
+pub mod players;
 pub mod updates;
 
 use std::collections::BTreeMap;
@@ -199,12 +203,15 @@ fn valid_host(host: &str) -> bool {
     (1..=253).contains(&host.len()) && host.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'[' | b']'))
 }
 
-/// Printable text of at most `max` characters, without the characters that
-/// turn the text after them around or hide in it (so a name can't read as
+/// Whether `c` turns the text after it around, or hides in it (so a name could read as
 /// another).
+pub(crate) fn hidden_char(c: char) -> bool {
+    matches!(c, '\u{200b}' | '\u{200e}' | '\u{200f}' | '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2060}' | '\u{2066}'..='\u{2069}' | '\u{feff}')
+}
+
+/// Printable text of at most `max` characters, without [`hidden_char`]s.
 fn valid_text(text: &str, max: usize) -> bool {
-    let sneaky = |c: char| matches!(c, '\u{200b}' | '\u{200e}' | '\u{200f}' | '\u{061c}' | '\u{202a}'..='\u{202e}' | '\u{2060}' | '\u{2066}'..='\u{2069}' | '\u{feff}');
-    text.chars().count() <= max && !text.chars().any(|c| c.is_control() || sneaky(c))
+    text.chars().count() <= max && !text.chars().any(|c| c.is_control() || hidden_char(c))
 }
 
 /// Whether `s` is spelled like a global id (52 upper-case base32 characters).
@@ -337,10 +344,13 @@ pub struct Coordinator {
     /// What the admin UI's live connections hear about (see `admin::live`).
     pub(crate) live: tokio::sync::broadcast::Sender<admin::live::Event>,
     /// The servers' live numbers (their pulses) of the last half hour, and the recent
-    /// events made from them (see `admin::live`). Kept in memory only.
+    /// events made from them (see `admin::live`). Stored too, and loaded at start.
     pub(crate) pulses: std::sync::Mutex<HashMap<String, admin::live::Pulses>>,
     pub(crate) feed: std::sync::Mutex<std::collections::VecDeque<Value>>,
     pulse_limit: Limit,
+    /// Per server: players reports (a roster comes in chunks) and action results.
+    player_posts: Limit,
+    action_posts: Limit,
 }
 
 type Shared = Arc<Coordinator>;
@@ -420,8 +430,12 @@ impl Coordinator {
             feed: std::sync::Mutex::new(std::collections::VecDeque::new()),
             // A pulse every ten seconds, with room for a retry.
             pulse_limit: Limit::new(9),
+            // A roster of 50,000 players is 25 requests.
+            player_posts: Limit::new(40),
+            action_posts: Limit::new(120),
         };
         c.claim_linked_names().await?;
+        c.load_live().await?;
         Ok(c)
     }
 
@@ -553,6 +567,8 @@ impl Coordinator {
             .route("/v1/names/{name}", get(name_owner))
             .route("/v1/metrics", post(metrics_report))
             .route("/v1/pulse", post(pulse))
+            .route("/v1/players", post(players_report).layer(DefaultBodyLimit::max(players::MAX_BODY)))
+            .route("/v1/actions/{id}", post(action_result))
             .route("/v1/pings", post(pings))
             .layer(DefaultBodyLimit::max(MAX_BODY))
             .with_state(self)
@@ -1088,7 +1104,8 @@ async fn metrics_report(State(c): State<Shared>, headers: HeaderMap, body: axum:
     }
 }
 
-/// A server's live numbers, every ten seconds: for the admin UI only, never stored.
+/// A server's live numbers, every ten seconds, for the admin UI. The answer carries the
+/// actions admins asked of it (see [`players`]).
 async fn pulse(State(c): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {
     let server = match c.server(&headers).await {
         Ok(s) => s,
@@ -1104,8 +1121,63 @@ async fn pulse(State(c): State<Shared>, headers: HeaderMap, body: axum::body::By
     if p.to_string().len() > 8 * 1024 || !p["players"].is_object() {
         return fail(StatusCode::BAD_REQUEST, "not a pulse");
     }
-    c.record_pulse(&server, &p);
-    ok(json!({}))
+    if let Err(e) = c.record_pulse(&server, &p).await {
+        return internal(e);
+    }
+    match c.pending_actions(&server).await {
+        Ok(actions) => ok(json!({ "actions": actions })),
+        Err(e) => internal(e),
+    }
+}
+
+/// A server's players and play sessions (see [`players`]).
+async fn players_report(State(c): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {
+    let server = match c.server(&headers).await {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let roster: Value = match parse(&body) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    if !c.player_posts.check(&server) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "too many players reports; send the rest in a minute");
+    }
+    let count = |k: &str| roster[k].as_array().map_or(0, Vec::len);
+    if !roster["players"].is_array() && !roster["sessions"].is_array() {
+        return fail(StatusCode::BAD_REQUEST, "not a players report");
+    }
+    if count("players") > players::MAX_PLAYERS || count("sessions") > players::MAX_SESSIONS {
+        return fail(StatusCode::PAYLOAD_TOO_LARGE, "at most 2000 players and 5000 sessions a request");
+    }
+    match c.record_players(&server, &roster).await {
+        Ok(answer) => ok(answer),
+        Err(e) => internal(e),
+    }
+}
+
+/// What came of an action a server was asked to carry out (see [`players`]).
+async fn action_result(State(c): State<Shared>, headers: HeaderMap, Path(id): Path<i64>, body: axum::body::Bytes) -> Answer {
+    let server = match c.server(&headers).await {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let result: Value = match parse(&body) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    if !c.action_posts.check(&server) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "too many results; slow down");
+    }
+    if !result["ok"].is_boolean() {
+        return fail(StatusCode::BAD_REQUEST, "not an action result");
+    }
+    match c.action_result(&server, id, &result).await {
+        Ok(true) => ok(json!({ "ok": true })),
+        // Another server's, or none: nothing said about which.
+        Ok(false) => fail(StatusCode::NOT_FOUND, "no such action for this server"),
+        Err(e) => internal(e),
+    }
 }
 
 /// A launcher's pings to the servers in the directory.

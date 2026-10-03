@@ -1,8 +1,14 @@
 <template>
   <PageTop title="Players" :sub="sub">
-    <RangePicker v-model="range" :options="REPORT_RANGES" />
+    <div class="seg" role="group" aria-label="View">
+      <button v-for="[id, label] in TABS" :key="id" type="button" :aria-pressed="String(tab === id)" @click="setTab(id)">{{ label }}</button>
+    </div>
+    <RangePicker v-if="tab === 'report'" v-model="range" :options="REPORT_RANGES" />
+    <RangePicker v-if="tab === 'matches'" v-model="matchDays" :options="MATCH_RANGES" />
   </PageTop>
-  <template v-if="r">
+  <PlayerList v-if="tab === 'accounts'" />
+  <MatchesReport v-else-if="tab === 'matches'" :days="matchDays" />
+  <template v-else-if="r">
     <div class="kpis kpis-6">
       <div class="kpi"><span class="label">Players</span><span class="v">{{ fmt.n(t.players) }}</span><span class="d">played at least once</span></div>
       <div class="kpi"><span class="label">Daily average</span><span class="v">{{ fmt.n(t.daily_average, 1) }}</span><span class="d">players a day</span></div>
@@ -11,7 +17,7 @@
       <div class="kpi"><span class="label">Time played</span><span class="v">{{ fmt.n(t.minutes_per_player_day) }}<small>min</small></span><span class="d">per player, per day played</span></div>
       <div class="kpi"><span class="label">Peak online</span><span class="v">{{ fmt.n(t.peak) }}</span><span class="d">most at once</span></div>
     </div>
-    <p class="small muted">Players are counted per server, from ids each server makes unreadable with its own key: the coordinator never learns who they are, and someone playing on two servers counts twice.{{ r.tracking_since ? ` Counted since ${new Date(r.tracking_since * 1000).toLocaleDateString(undefined, { dateStyle: 'medium', timeZone: 'UTC' })}.` : '' }}</p>
+    <p class="small muted">Players are counted per server: someone playing on two servers counts twice. Time played comes from play sessions for servers that send them ({{ sessionServers }}), else from a sample each minute.{{ r.tracking_since ? ` Counted since ${new Date(r.tracking_since * 1000).toLocaleDateString(undefined, { dateStyle: 'medium', timeZone: 'UTC' })}.` : '' }}</p>
     <div class="grid cols-2">
       <section class="panel">
         <header><h2>Players per day</h2><div class="legend"><span v-for="s in daySeries" :key="s.name"><i :style="{ background: s.color }"></i>{{ s.name }}</span></div></header>
@@ -47,6 +53,7 @@
   <div v-else-if="error" class="panel"><p class="err">{{ error }}</p></div>
   <div v-else class="empty">Loading…</div>
 
+  <template v-if="tab === 'report'">
   <PageTop title="Map" :sub="mapRange === 0 ? 'Players online now, by city.' : 'Time played, by city (player-minutes).'">
     <RangePicker v-model="mapRange" :options="PLACE_RANGES" />
   </PageTop>
@@ -78,11 +85,15 @@
       <div v-else class="empty">{{ mapRange === 0 ? 'Nobody is playing right now.' : 'No players in this period.' }}</div>
     </section>
   </template>
+  </template>
 </template>
 
 <script setup>
 import { computed, onMounted, ref } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import PageTop from '../components/PageTop.vue';
+import PlayerList from '../components/PlayerList.vue';
+import MatchesReport from '../components/MatchesReport.vue';
 import RangePicker from '../components/RangePicker.vue';
 import LineChart from '../components/LineChart.vue';
 import Heatmap from '../components/Heatmap.vue';
@@ -93,15 +104,31 @@ import { flag, fmt, PALETTE, PLACE_RANGES, serverName } from '../lib/fmt.js';
 import { live } from '../lib/live.js';
 
 const REPORT_RANGES = [[86400, '24 h'], [604800, '7 d'], [2592000, '30 d'], [31536000, '12 months']];
+const MATCH_RANGES = [[1, 'Today'], [7, '7 d'], [30, '30 d'], [365, '12 months']];
+const TABS = [['accounts', 'Accounts'], ['report', 'Report & map'], ['matches', 'Matches']];
+const route = useRoute();
+const router = useRouter();
+const tab = computed(() => (TABS.some(([id]) => id === route.query.tab) ? route.query.tab : 'accounts'));
+const setTab = id => router.replace({ query: { ...route.query, tab: id } });
 const range = ref(2592000);
+const matchDays = ref(30);
 const mapRange = ref(0);
 onMounted(() => ensureOverview().catch(() => {}));
 const servers = computed(() => live.overview?.servers || []);
 const names = computed(() => new Map(servers.value.map(sv => [sv.id, serverName(sv)])));
-const { data: r, error } = useLoad(() => api('GET', `/players-report?range=${range.value}`), () => range.value);
-const { data: places } = useLoad(() => api('GET', `/places?range=${mapRange.value}`), () => mapRange.value);
+// The report and map load while their tab is open.
+const onReport = computed(() => tab.value === 'report');
+const { data: r, error } = useLoad(() => (onReport.value ? api('GET', `/players-report?range=${range.value}`) : null), () => [range.value, onReport.value]);
+const { data: places } = useLoad(() => (onReport.value ? api('GET', `/places?range=${mapRange.value}`) : null), () => [mapRange.value, onReport.value]);
+const sessionServers = computed(() => {
+  const ids = Object.keys(r.value?.sessions_from || {});
+  return ids.length ? ids.map(id => names.value.get(id) || id).join(', ') : 'none yet';
+});
 const t = computed(() => r.value.totals);
-const sub = computed(() => `${({ 86400: 'Last 24 hours', 604800: 'Last 7 days', 2592000: 'Last 30 days', 31536000: 'Last 12 months' })[range.value]} · who plays, when, and from where`);
+const sub = computed(() => ({
+  accounts: 'Every server\'s accounts: find a player, see what they played, and act on their account.',
+  matches: 'Finished matches: by mode, map and game mode, how long, how many play.',
+}[tab.value] || `${({ 86400: 'Last 24 hours', 604800: 'Last 7 days', 2592000: 'Last 30 days', 31536000: 'Last 12 months' })[range.value]} · who plays, when, and from where`));
 const daySeries = computed(() => [
   { name: 'Players', color: PALETTE[0], points: r.value.days.map(d => ({ t: d.t, v: d.players })) },
   { name: 'New', color: PALETTE[1], points: r.value.days.map(d => ({ t: d.t, v: d.new })) },
@@ -110,6 +137,7 @@ const signinSeries = computed(() => [
   { name: 'Signed in', color: PALETTE[0], points: r.value.signins.map(d => ({ t: d.t, v: d.ok })) },
   { name: 'Refused', color: PALETTE[4], points: r.value.signins.map(d => ({ t: d.t, v: d.failed })) },
   { name: 'New accounts', color: PALETTE[1], points: r.value.signins.map(d => ({ t: d.t, v: d.new })) },
+  { name: 'Failed joins', color: PALETTE[2], points: r.value.signins.map(d => ({ t: d.t, v: d.failed_joins || 0 })) },
 ]);
 const placeTotal = computed(() => (places.value?.places || []).reduce((n, p) => n + p.amount, 0));
 const pingColor = ms => (ms == null ? 'var(--faint)' : ms < 90 ? 'var(--ok)' : ms < 180 ? 'var(--text)' : 'var(--warn)');
