@@ -42,6 +42,79 @@ pub fn is_public(ip: IpAddr) -> bool {
     }
 }
 
+/// A VPN an adapter belongs to, as far as its name or address tells.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Vpn {
+    /// What to call it: the product ("NordVPN"), or "a VPN" when only the kind is known.
+    pub name: &'static str,
+    /// A "virtual LAN" (Radmin VPN, Hamachi, ZeroTier, Tailscale) rather than a VPN that
+    /// carries all the PC's traffic.
+    pub virtual_lan: bool,
+}
+
+/// The VPN an adapter called `name`, with address `ip`, belongs to: by the names the VPN
+/// clients give their adapters on Windows and Linux, and by Radmin's and Hamachi's own
+/// address ranges (26/8, 25/8). None for anything else.
+pub fn vpn(name: &str, ip: Option<IpAddr>) -> Option<Vpn> {
+    let n = name.to_lowercase();
+    let has = |s: &str| n.contains(s);
+    // A Linux interface name: these letters, then only digits (wg0, tun1).
+    let iface = |prefix: &str| n.strip_prefix(prefix).is_some_and(|rest| !rest.is_empty() && rest.bytes().all(|b| b.is_ascii_digit()));
+    let lan = |name| Some(Vpn { name, virtual_lan: true });
+    let tunnel = |name| Some(Vpn { name, virtual_lan: false });
+    let v4 = ip.and_then(|ip| match ip {
+        IpAddr::V4(v4) => Some(v4.octets()),
+        IpAddr::V6(_) => None,
+    });
+    if has("radmin") || v4.is_some_and(|o| o[0] == 26) {
+        return lan("Radmin VPN");
+    }
+    if has("hamachi") || n.starts_with("ham") && iface("ham") || v4.is_some_and(|o| o[0] == 25) {
+        return lan("Hamachi");
+    }
+    if has("zerotier") || (n.starts_with("zt") && n.len() == 10 && n[2..].bytes().all(|b| b.is_ascii_alphanumeric())) {
+        return lan("ZeroTier");
+    }
+    if has("tailscale") {
+        return lan("Tailscale");
+    }
+    for (needle, product) in [
+        ("nordlynx", "NordVPN"),
+        ("nordvpn", "NordVPN"),
+        ("protonvpn", "Proton VPN"),
+        ("proton vpn", "Proton VPN"),
+        ("proton0", "Proton VPN"),
+        ("mullvad", "Mullvad VPN"),
+        ("expressvpn", "ExpressVPN"),
+        ("surfshark", "Surfshark"),
+        ("windscribe", "Windscribe"),
+        ("cyberghost", "CyberGhost"),
+        ("private internet access", "Private Internet Access"),
+        ("pia", "Private Internet Access"),
+    ] {
+        if (needle == "pia" && (n == "pia" || n.starts_with("pia "))) || (needle != "pia" && has(needle)) {
+            return tunnel(product);
+        }
+    }
+    if has("wireguard") || has("openvpn") || has("tap-windows") || has("wintun") || iface("wg") || iface("tun") || iface("tap") {
+        return tunnel("a VPN");
+    }
+    None
+}
+
+impl Vpn {
+    /// Whether `ip` is an address inside this virtual LAN: Radmin VPN's 26/8 and Hamachi's
+    /// 25/8 (public space they borrow). A server there is the VPN's own, not the internet.
+    pub fn holds(&self, ip: IpAddr) -> bool {
+        let IpAddr::V4(v4) = ip else { return false };
+        match self.name {
+            "Radmin VPN" => v4.octets()[0] == 26,
+            "Hamachi" => v4.octets()[0] == 25,
+            _ => false,
+        }
+    }
+}
+
 /// Whether a server is on this PC or its own network (`host` as typed, `ip`
 /// what it resolved to): such a server is played over plain HTTP without a
 /// warning, as nobody on the internet is on the way.
@@ -143,5 +216,34 @@ mod tests {
         assert!(port_open(IpAddr::from([127, 0, 0, 1]), port, Duration::from_secs(1)));
         drop(listener);
         assert!(!port_open(IpAddr::from([127, 0, 0, 1]), port, Duration::from_millis(300)));
+    }
+}
+
+#[cfg(test)]
+mod vpn_tests {
+    use super::*;
+
+    #[test]
+    fn vpns_are_told_apart() {
+        let ip = |a: [u8; 4]| Some(IpAddr::from(a));
+        assert_eq!(vpn("Radmin VPN", None).map(|v| (v.name, v.virtual_lan)), Some(("Radmin VPN", true)));
+        assert_eq!(vpn("Ethernet 3", ip([26, 12, 4, 5])).map(|v| v.name), Some("Radmin VPN"), "by Radmin's range");
+        assert_eq!(vpn("Hamachi", None).map(|v| v.name), Some("Hamachi"));
+        assert_eq!(vpn("ham0", ip([25, 1, 2, 3])).map(|v| v.name), Some("Hamachi"));
+        assert_eq!(vpn("ZeroTier One [8056c2e21c000001]", None).map(|v| v.name), Some("ZeroTier"));
+        assert_eq!(vpn("ztks575eoa", None).map(|v| v.name), Some("ZeroTier"));
+        assert_eq!(vpn("Tailscale", ip([100, 101, 2, 3])).map(|v| v.name), Some("Tailscale"));
+        assert_eq!(vpn("tailscale0", None).map(|v| v.name), Some("Tailscale"));
+        assert_eq!(vpn("NordLynx", None).map(|v| (v.name, v.virtual_lan)), Some(("NordVPN", false)));
+        assert_eq!(vpn("ProtonVPN TUN", None).map(|v| v.name), Some("Proton VPN"));
+        assert_eq!(vpn("Mullvad", None).map(|v| v.name), Some("Mullvad VPN"));
+        assert_eq!(vpn("wg0", None).map(|v| (v.name, v.virtual_lan)), Some(("a VPN", false)));
+        assert_eq!(vpn("tun0", None).map(|v| v.name), Some("a VPN"));
+        assert_eq!(vpn("TAP-Windows Adapter V9", None).map(|v| v.name), Some("a VPN"));
+        assert_eq!(vpn("OpenVPN Data Channel Offload", None).map(|v| v.name), Some("a VPN"));
+        // Ordinary adapters aren't VPNs.
+        for name in ["Ethernet", "Wi-Fi", "eth0", "wlan0", "enp3s0", "Local Area Connection", "lo", "tunnel-broker", "wgadget", "Zte modem", "Pianet"] {
+            assert_eq!(vpn(name, ip([192, 168, 1, 20])), None, "{name}");
+        }
     }
 }

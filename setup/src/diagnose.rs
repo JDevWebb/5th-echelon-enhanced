@@ -86,6 +86,8 @@ pub struct Facts {
     pub pinned: Option<String>,
     pub pinned_ip: Option<IpAddr>,
     pub route_adapter: Option<String>,
+    /// This PC's address on the route to the server (the route adapter's).
+    pub route_ip: Option<IpAddr>,
     pub save: Option<SaveState>,
     pub log: Option<LogFacts>,
     /// Set when the game runs under Wine or Proton.
@@ -266,6 +268,24 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
         });
     }
 
+    // A VPN on the way to a server on the internet: it works, but adds delay and sends
+    // matches through the server's relay. Only a note: it never stops anyone playing. A
+    // server inside the VPN (a group's Radmin network) is what the VPN is for.
+    if let (Some(server_ip), Some(route)) = (server_ip.filter(|ip| crate::net::is_public(*ip)), &f.route_adapter) {
+        if let Some(vpn) = crate::net::vpn(route, f.route_ip).filter(|v| !v.holds(server_ip)) {
+            let what = if vpn.virtual_lan { format!("{} (sending its traffic to the internet)", vpn.name) } else { vpn.name.to_string() };
+            checks.push(Check::new(
+                "vpn",
+                Status::Warn,
+                format!("Playing through {}", vpn.name.trim_start_matches("a ")),
+                format!(
+                    "Your connection to {server_ip} goes through {what}. It works, but adds delay, and your matches go through the server's relay. Turn it off while you play to connect directly, then check again."
+                ),
+                None,
+            ));
+        }
+    }
+
     // Without the Wine prefix there's nowhere for a save yet ("prefix" above).
     let prefix_missing = f.wine.as_ref().is_some_and(|w| !w.prefix_ready);
     if !prefix_missing {
@@ -355,6 +375,7 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
             pinned: Some("Game VPN".into()),
             pinned_ip: Some(IpAddr::from([10, 8, 1, 2])),
             route_adapter: Some("Game VPN".into()),
+            route_ip: Some(IpAddr::from([10, 8, 1, 2])),
             save: Some(SaveState::Ok { xp: 6600 }),
             log: None,
             wine: None,
@@ -436,5 +457,46 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
         assert!(!ready(&checklist(&wine(false, None))));
         assert_eq!(ids(wine(true, Some("WINE_CPU_TOPOLOGY=16:0 %command%"))), ["cpu"]);
         assert!(ready(&checklist(&wine(true, Some("x")))), "a warning, not a failure");
+    }
+}
+
+#[cfg(test)]
+mod vpn_check_tests {
+    use super::*;
+
+    fn facts(server: [u8; 4], route: &str, route_ip: [u8; 4]) -> Facts {
+        Facts {
+            game_dir: Some("C:/Game".into()),
+            client: Some(ClientState::Installed),
+            server: Some(("play.example.com".into(), Some(IpAddr::from(server)))),
+            server_ports: Some((true, true)),
+            account: Some(AccountFact::Ok("Kiwi".into())),
+            pinned: Some(route.into()),
+            pinned_ip: Some(IpAddr::from(route_ip)),
+            route_adapter: Some(route.into()),
+            route_ip: Some(IpAddr::from(route_ip)),
+            save: Some(SaveState::Ok { xp: 6600 }),
+            ..Facts::default()
+        }
+    }
+
+    #[test]
+    fn a_vpn_on_the_way_to_an_internet_server_is_a_note() {
+        let checks = checklist(&facts([139, 99, 171, 113], "NordLynx", [10, 5, 0, 2]));
+        let vpn = checks.iter().find(|c| c.id == "vpn").expect("a note about the VPN");
+        assert_eq!(vpn.status, Status::Warn);
+        assert_eq!(vpn.title, "Playing through NordVPN");
+        assert!(vpn.detail.contains("relay"), "{}", vpn.detail);
+        assert!(ready(&checks), "a note never stops anyone playing: {checks:#?}");
+        let generic = checklist(&facts([139, 99, 171, 113], "wg0", [10, 5, 0, 2]));
+        assert_eq!(generic.iter().find(|c| c.id == "vpn").map(|c| c.title.as_str()), Some("Playing through VPN"));
+    }
+
+    #[test]
+    fn a_server_inside_the_vpn_or_no_vpn_says_nothing() {
+        // A group's server on its Radmin network: what the VPN is for.
+        assert!(!checklist(&facts([26, 1, 2, 3], "Radmin VPN", [26, 4, 5, 6])).iter().any(|c| c.id == "vpn"));
+        // The internet through the PC's own connection, with Radmin merely installed.
+        assert!(!checklist(&facts([139, 99, 171, 113], "Ethernet", [192, 168, 1, 20])).iter().any(|c| c.id == "vpn"));
     }
 }

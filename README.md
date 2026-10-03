@@ -139,7 +139,7 @@ The **Status** card on the home screen keeps an eye on all of this. Anything tha
 >
 > **VPNs and the community servers:**
 > - **Radmin VPN, Hamachi, ZeroTier, Tailscale** and other "virtual LAN" VPNs can stay installed: the launcher ties the game to the adapter that actually reaches the server, so other players aren't given your VPN address. You don't need them for the community servers.
-> - **A VPN that sends all your traffic through it** (NordVPN, ProtonVPN, Mullvad and the like) works, but adds delay, and your matches go through the server's relay. Turn it off while you play if you can, then press **Check again** on the Status card.
+> - **A VPN that sends all your traffic through it** (NordVPN, ProtonVPN, Mullvad and the like) works, but adds delay, and your matches go through the server's relay. The Status card notes it (**Playing through NordVPN**, say) without stopping you playing; turn it off while you play if you can, then press **Check again**.
 > - **Your group's own server inside a VPN** (a Radmin network address, say)? Turn the VPN on before pressing Connect. The launcher then ties the game to the VPN's adapter, and **Settings › Network › Don't start the game without this adapter** stops it quietly using the wrong network when the VPN is off.
 
 ### Playing over the internet

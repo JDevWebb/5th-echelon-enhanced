@@ -99,6 +99,7 @@ pub fn gather(game_dir: &Path, cfg: &Config, bundled: Option<&[u8]>) -> (Facts, 
             });
             let adapters = net::adapters();
             facts.route_adapter = net::adapter_for_server(ip, &adapters);
+            facts.route_ip = net::local_ip_towards(ip);
             facts.pinned = cfg.hook_config.networking.adapter.clone();
             facts.pinned_ip = facts.pinned.as_deref().and_then(|p| net::adapter_ip(p, &adapters));
         }
