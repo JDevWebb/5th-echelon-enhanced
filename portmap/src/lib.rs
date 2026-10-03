@@ -112,14 +112,40 @@ fn upnp(port: u16, pinned: Option<Ipv4Addr>, lease: u32, description: &str) -> R
     let internal = SocketAddr::V4(SocketAddrV4::new(local, port));
     let mapped = match gateway.add_port(PortMappingProtocol::UDP, port, internal, lease, description) {
         Ok(()) => port,
-        // Taken, e.g. by another PC on this network playing too.
-        Err(_) => gateway.add_any_port(PortMappingProtocol::UDP, internal, lease, description).map_err(|e| e.to_string())?,
+        Err(_) => {
+            // This PC's own mapping from an earlier game (one that didn't get to remove it)
+            // holds the port for up to its lease; many routers then refuse any other mapping
+            // to the same address and port ("no free ports"). Only mappings to this PC's
+            // address and port are taken away.
+            let entries = (0..MAX_ENTRIES).map_while(|i| gateway.get_generic_port_mapping_entry(i).ok());
+            let stale = stale_mappings(entries.map(|e| (e.protocol, e.external_port, e.internal_client, e.internal_port)), local, port);
+            for external in &stale {
+                let _ = gateway.remove_port(PortMappingProtocol::UDP, *external);
+            }
+            match gateway.add_port(PortMappingProtocol::UDP, port, internal, lease, description) {
+                Ok(()) => port,
+                // Taken, e.g. by another PC on this network playing too.
+                Err(_) => gateway.add_any_port(PortMappingProtocol::UDP, internal, lease, description).map_err(|e| e.to_string())?,
+            }
+        }
     };
     Ok(Mapping {
         public: SocketAddrV4::new(external, mapped),
         how: "UPnP",
         handle: Handle::Upnp { gateway, port: mapped },
     })
+}
+
+/// The most mapping entries read from a router's table.
+const MAX_ENTRIES: u32 = 128;
+
+/// The external ports of the router's UDP mappings to `local`:`port`, from its table's
+/// (protocol, external port, internal client, internal port) entries.
+fn stale_mappings(entries: impl Iterator<Item = (PortMappingProtocol, u16, String, u16)>, local: Ipv4Addr, port: u16) -> Vec<u16> {
+    entries
+        .filter(|(protocol, _, client, internal)| *protocol == PortMappingProtocol::UDP && *internal == port && client.trim() == local.to_string())
+        .map(|(_, external, _, _)| external)
+        .collect()
 }
 
 /// Whether the router's "external" address could be one the internet reaches.
@@ -232,6 +258,20 @@ mod tests {
                      eth0\t00000000\t0101A8C0\t0003\t0\t0\t100\t00000000\t0\t0\t0\n";
         assert_eq!(gateway_from_route_table(table), Some(Ipv4Addr::new(192, 168, 1, 1)));
         assert_eq!(gateway_from_route_table("Iface\tDestination\n"), None);
+    }
+
+    #[test]
+    fn only_this_pcs_own_mappings_are_stale() {
+        let local = Ipv4Addr::new(192, 168, 0, 2);
+        let entry = |protocol, external, client: &str, internal| (protocol, external, client.to_string(), internal);
+        let table = vec![
+            entry(PortMappingProtocol::UDP, 13000, "192.168.0.2", 13000),
+            entry(PortMappingProtocol::UDP, 41234, "192.168.0.2", 13000),
+            entry(PortMappingProtocol::UDP, 13001, "192.168.0.7", 13000),
+            entry(PortMappingProtocol::TCP, 13000, "192.168.0.2", 13000),
+            entry(PortMappingProtocol::UDP, 3074, "192.168.0.2", 3074),
+        ];
+        assert_eq!(stale_mappings(table.into_iter(), local, 13000), [13000, 41234]);
     }
 
     #[test]
