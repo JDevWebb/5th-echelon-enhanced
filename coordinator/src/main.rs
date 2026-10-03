@@ -18,7 +18,7 @@ struct Args {
     /// Put it behind Cloudflare and Caddy, on a host name of its own
     #[argh(option)]
     admin_listen: Option<String>,
-    /// where admins open the web UI, e.g. https://metrics.scbl.jdevwebb.net
+    /// where admins open the web UI, e.g. https://scbl-metrics.jdevwebb.net
     /// (passkeys are made for it, and requests must come from it)
     #[argh(option)]
     admin_origin: Option<String>,

@@ -39,7 +39,7 @@
 
 **To play:**
 1. Download **`launcher.exe`** (Windows) or **`launcher-linux-x86_64`** (Linux, Steam Deck) from the [latest release](https://github.com/JDevWebb/5th-echelon-enhanced/releases/latest).
-2. Run it, and under **Join a server** type **`play.scbl.jdevwebb.net`**.
+2. Run it, and under **Choose a server** type **`play.scbl.jdevwebb.net`** as the server's address.
 3. Press **Connect** (the first time, pick the name other players will see), then **Play**. Press <kbd>F5</kbd> in the game to add friends.
 
 The launcher pings every server in the network and sets you up on the one with the lowest ping (the setup log says which). Afterwards the Play screen lists them all with your ping to each, and **Switch** moves you to another in one click, with the same name and friends.
@@ -103,12 +103,12 @@ You need **Splinter Cell: Blacklist on PC** (Steam or Ubisoft Connect) and **Win
 1. **Download `launcher.exe`** from the [latest release](https://github.com/JDevWebb/5th-echelon-enhanced/releases/latest). It's one file; put it anywhere.
 2. **Run it.** It finds the game on its own: Steam libraries, Ubisoft Connect, and the usual folders on every drive. If it can't, choose the folder with `Blacklist_game.exe`; it remembers it.
 3. **Choose a server.** The launcher walks you through it:
-   - it lists the [community servers](#the-community-server) with your ping to each and picks the closest; or type the address your own community gave you, or press **Find on my network**;
+   - type `play.scbl.jdevwebb.net` (the [community network](#the-community-server)) or the address your own community gave you; for a network, the launcher pings its servers and picks the closest. Or press **Find on my network**;
    - press **Connect**. The launcher finds your account with your identity; if you don't have one there yet, it asks for the name other players will see and makes it.
 4. **Press Play.**
 
 <p align="center">
-  <img src="./docs/screenshots/launcher-setup.png" width="640" alt="The launcher's first-run setup: the steps on the left, and the community servers with your ping to each, the closest picked">
+  <img src="./docs/screenshots/launcher-setup.png" width="640" alt="The launcher's first-run setup: the steps on the left, and a network's servers with your ping to each, the closest picked">
 </p>
 <p align="center">
   <img src="./docs/screenshots/launcher-play.png" width="640" alt="The launcher's home screen: your profile on the banner, the server with its ping, Ready to play and a big Play button, and cards for status, friends online and the server's news">
@@ -265,6 +265,8 @@ Everything the launcher does can be done by hand:
   - the client signs in again on its own if the server restarts or your sign-in lapses;
   - logins survive server restarts.
 - **Updates:** the launcher updates itself from this project's releases (each one's notes carry checksums, build provenance and [VirusTotal](#antivirus-warnings) results). It checks every download against the published SHA-256 checksums, and the checksums against the release key's signature, so a changed release is never installed.
+  - **When:** at start, every 4 hours while it's open, and at once when a server refuses it as outdated (the Status card then offers **Update**). Development builds never update themselves.
+  - **One release:** the launcher and the client DLL it installs are always the same version; the launcher replaces any other version in the game folder. Servers refuse launchers and clients older than they allow (by default, their own release).
 - **Your details stay yours:**
   - the launcher and overlay use HTTPS where the server offers it, so passwords and sign-ins never travel unencrypted;
   - a network's admin UI sees counts and cities, never your name or address; your launcher reports its ping to each server in a directory, from which only your city is noted;
@@ -283,7 +285,10 @@ Everything the launcher does can be done by hand:
     - players and where they are (cities, on a map);
     - what's being played;
     - pings from players and the coordinator;
-    - each server's CPU, memory and bandwidth;
+    - each server's CPU, memory and bandwidth, live;
+    - bandwidth over time: in, out and relayed, the 95th percentile, monthly allowances, CSV export;
+    - players over time (anonymised: never names or addresses), and when people play;
+    - alerts (a server offline, CPU, memory, disk, refused sign-ins, the traffic allowance, failed updates), optionally posted to Discord or Slack;
     - the update rollout.
   - **How it's protected:**
     - it's served only through Cloudflare;
@@ -478,6 +483,7 @@ The server reads `service.toml` from its working folder, writing the defaults on
 - **`[nat]`:** internet play: the NAT helper's port, and who is relayed (`auto`, `all` or `off`) and how fast.
 - **`[public]`:** the host name and ports players connect to, when they differ from what the server listens on (a reverse proxy, remapped ports), and which proxies' `X-Forwarded-For` to trust.
 - **`[friends]`:** every player on the friend list (`everyone`, the default) or only friends (`mutual`).
+- **`[clients]`:** the oldest launcher and client allowed to sign in (default: this server's own release; `"off"` for any).
 - **`[federation]`:** a coordinator to share friends with other servers, this server's name and region in its directory, and whether it installs the network's releases (`auto_update`).
 
 Command-line options: `--public-address <ip>`, `--listen <ip>`, and `-c <file>` for another settings file. The first two are also the `FE_PUBLIC_ADDRESS` and `FE_LISTEN` environment variables. The address options rewrite `service.toml` on every start, so the addresses always match.
@@ -524,7 +530,7 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
 - **Membership is kept current:** servers that don't install updates, or still run an old release a day after a rollout, leave the directory.
 - **Metrics from every server:** players, cities (DB-IP, looked up on the server; no addresses sent), what's being played, sign-ins, load, bandwidth and relayed traffic. Pings come from the coordinator and from players' launchers.
 - **An admin UI:**
-  - the views: overview, servers, players and map, playlists, network, updates, security and audit log;
+  - the views: overview, servers, bandwidth, players and map, playlists, network, alerts, updates, security and audit log, updated live;
   - sign-in: passkeys, an authenticator app or recovery codes;
   - address and country restrictions;
   - served only through Cloudflare.
@@ -540,7 +546,7 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
   - **coordinator:** a server can't take over another's place, typed and checked listings, rate limits, `remove-server` and `new-token`.
 - **The launcher's API over HTTPS** where the server has a domain; the admin API is never reachable from the internet, and the launcher warns before sending an admin key unencrypted.
 - **Signed releases:** the launcher and the installer install only releases whose checksums carry the release key's signature; downloads are size-capped; CI pins its actions and attests every download's provenance.
-- **Installer and Docker:** inputs checked, the join token never printed, sandboxed services (Caddy too, with its admin API off the network), Caddy pinned by checksum, the server image without root.
+- **Installer and Docker:** inputs checked, the join token never printed, sandboxed services (Caddy too, with its admin API off the network), Caddy from its own package repository or a static build pinned by checksum (updated on reruns), the server image without root.
 - **The admin UI:**
   - passwords with Argon2id;
   - TOTP and passkeys (WebAuthn, with user verification);
@@ -548,7 +554,7 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
   - a fresh second factor for sensitive changes;
   - CSP, CSRF and origin checks;
   - an audit log.
-- **Hosts:** `harden-host.sh`, for SSH, fail2ban, the kernel, and automatic security reboots.
+- **Hosts:** `harden-host.sh`, for SSH, fail2ban, the kernel, and automatic updates (Caddy's included) with reboots at a quiet hour.
 
 **Invites and matches**
 - Invites into private matches, from [#123](https://github.com/unixoide/5th-echelon/pull/123) by Matthias Walther, with follow-up fixes:
@@ -609,10 +615,12 @@ build/build.sh federation-test   # two servers sharing friends through a coordin
 build/build.sh load --players 500 --relayed 20   # a load test (see docs/load-testing.md)
 build/build.sh server     # dist/dedicated_server-linux-x86_64, coordinator-linux-x86_64
 build/build.sh windows    # dist/launcher.exe (client DLL inside), uplay_r1_loader.dll, dedicated_server.exe
-build/build.sh linux      # dist/launcher-linux-x86_64 (client DLL inside), dedicated_server-linux-x86_64, coordinator-linux-x86_64
+build/build.sh linux      # dist/launcher-linux-x86_64 (client DLL inside: run windows first), dedicated_server-linux-x86_64, coordinator-linux-x86_64
 build/build.sh sums       # dist/SHA256SUMS, for a release
 build/build.sh ui         # the coordinator's admin UI (coordinator/admin-ui/dist)
 ```
+
+The launcher and the client DLL are one release: a launcher build fails if the DLL it would carry is from another one (an old `dist/uplay_r1_loader.dll`, say), so build `windows` before `linux`.
 
 `build/build.sh ui` builds the coordinator's admin UI (Vue 3 and Vite, in `coordinator/admin-ui`), which the coordinator embeds; the targets that build the coordinator run it first.
 
@@ -627,14 +635,16 @@ cargo build --release -p launcher --features embed-dll         # on Windows: bui
 
 GitHub Actions tests and builds every push and pull request (Linux tests, the test players, and the Windows and Linux builds). Releases are published by pushing a version tag:
 
-1. Set `version` in `release.toml` (e.g. `0.3.1`) and commit it.
-2. Tag and push:
+`release.toml`'s `version` is the one release number for the launcher, the client DLL, the server and the coordinator. Every change bumps the patch number, with a `-dev` suffix on builds that aren't a release (e.g. `0.3.164-dev`).
+
+1. Drop the suffix in `release.toml` (e.g. `0.3.164`) and commit it.
+2. Tag it with exactly that version, and push:
    ```sh
-   git tag v0.3.1 && git push origin main v0.3.1
+   git tag v0.3.164 && git push origin main v0.3.164
    ```
 3. Sign and publish it, on the machine with the release key:
    ```sh
-   scripts/sign-release.sh v0.3.1
+   scripts/sign-release.sh v0.3.164
    ```
 
 The release workflow:
@@ -704,6 +714,7 @@ Contributions of every size are welcome: bug reports with logs, testing with fri
 - **Credit:** your commits keep your name, and you'll be listed under [Authors and contributors](#authors-and-contributors).
 - **Upstream:** fixes that apply to upstream 5th Echelon are offered there as well.
 - **Collaborators:** see [Become a collaborator](#become-a-collaborator).
+- **What to work on:** the [roadmap](docs/roadmap.md) has what's planned next.
 - **Servers:** running one for your group is one of the best ways to help. List a public one in [docs/community-servers.md](docs/community-servers.md).
 - **Security:** found a weakness? Please don't post the details in a public issue; open one asking for a private contact, and we'll take it from there.
 
@@ -713,7 +724,7 @@ Never commit game files or anything extracted from them. Facts learned from the 
 
 ## Community
 
-**Play on the [community server](#the-community-server)** at `play.scbl.jdevwebb.net`, or [run your own](#run-your-own-server). The community network's servers, and public servers run by others, are listed in [docs/community-servers.md](docs/community-servers.md).
+**Play on the [community server](#the-community-server)** at `play.scbl.jdevwebb.net`, or [run your own](#run-your-own-server). The community network's servers, and public servers run by others, are listed in [docs/community-servers.md](docs/community-servers.md). What's coming next, cross-region play among it, is in the **[roadmap](docs/roadmap.md)**.
 
 Find other players, active servers and help:
 

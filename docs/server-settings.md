@@ -8,7 +8,7 @@ The config server on port 80 also answers a small JSON API under `/api/`, for la
 
 ```toml
 [community_api]
-info = true        # GET /api/info: name, version, features (on by default)
+info = true        # GET /api/info: name, version, features, and GET /api/news: the server's news (on by default)
 presence = false   # GET /api/presence: registered players, who's online, what they're playing
 accounts = false   # POST /api/register and /api/login, for tools (register is refused with [limits] require_identity)
 unhandled = false  # GET /api/unhandled: game calls this server couldn't answer
@@ -17,7 +17,7 @@ unhandled = false  # GET /api/unhandled: game calls this server couldn't answer
 - **presence** shares every registered username and what each online player is doing. Turn it on only for a community whose players expect that.
 - **accounts** lets anyone who can reach port 80 create an account.
   - Registering and logging in are rate-limited per address (see `[limits]`).
-  - Usernames are 1–32 characters, passwords 8–128.
+  - Usernames are 1–32 characters. Passwords are 8–63 characters for a new account (the game's limit); signing in takes up to 128.
   - Wrong passwords and unknown users get the same answer.
 - **unhandled** is for development: it lists the game's RMC calls the server has no handler for, most frequent first.
 

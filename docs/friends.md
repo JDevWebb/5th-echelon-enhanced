@@ -90,7 +90,7 @@ When two players are friends on one server, have both linked their identities, a
 Matches, parties and invitations stay on one server: friends on different servers of the group can't see or invite each other in the game. They can see where the other is:
 
 - **In the overlay** (F5), the Friends tab lists **On other servers**: each friend online on another server of the group, by their name there, and which server.
-- **In the launcher**, the Play screen shows **Friends on other servers**, with **Switch to this server** for each. It joins that server (finding your account there by your identity, or asking for a name if you have none yet). Quit the game first.
+- **In the launcher**, the **Friends** card on the home screen lists each one as "On <server>", with **Join**. It sets you up on that server (finding your account there by your identity, or asking for a name if you have none yet). Quit the game first.
 
 Only friends see where you play, never across a block, and never on a server that isn't listed in the directory. Each server tells the coordinator which of its players (by identity) are online every 30 seconds, and the coordinator tells a player's own server where their friends are when it asks for their friends (every minute while they're online). So a friend shows up there within about a minute and a half of starting to play, and drops off as quickly when they stop.
 
@@ -161,7 +161,7 @@ The first server you join that uses a coordinator brings its directory: the laun
 
 - Only `https://` directories are used.
 - A directory entry must be a public host name or address. Entries for private addresses (your own network) are skipped, as are more than 200 entries.
-- Each server's host is shown next to its name, so you can see where Choose takes you.
+- Each server's host is shown next to its name, so you can see where **Switch** takes you.
 
 ### Running a coordinator
 
@@ -210,7 +210,12 @@ The server keeps its credentials in `federation.key` once it has joined. Its log
 | `GET /v1/relations/<identity>` | a member | a player's friends and blocks, for a player linked on that server |
 | `POST /v1/names/claim` `{name, global_id, time, signature}` | a member | reserves a name for a player (their link signature for that server, from the last five minutes); `409` if someone else has it |
 | `GET /v1/names/<name>` | a member | whether a name is reserved (`{claimed}`) |
+| `POST /v1/metrics` | a member | the minute's metrics, and the anonymised ids of the players online (see [operations.md](operations.md#metrics)) |
+| `POST /v1/pulse` | a member | the 10-second pulse: players online, counters and traffic, for live figures |
+| `POST /v1/pings` `{pings: [{server, ms}]}` | anyone (launchers) | a launcher's pings to the directory's servers; one sample per address and server every 10 minutes counts |
 | `GET /v1/info` | anyone | name, version, number of servers |
+
+A member's calls check its secret before the body is read; a body that doesn't parse gets `400` "not a valid request", whatever the call.
 
 ## Testing
 

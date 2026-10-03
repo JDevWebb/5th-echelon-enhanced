@@ -59,7 +59,7 @@ Nothing here has been tested in the game yet.
    - Relayed players advertise `server:4xxxx`, a virtual address.
    - The client wraps packets for relay addresses, and every packet of a relayed player, in `DataTo`. The helper forwards them as `DataFrom`, carrying the sender's advertised address. The client unwraps them and shows the game that address as the sender.
    - Mixed direct and relayed players work, because every packet is presented from the address its sender advertises.
-   - Who is relayed: symmetric NAT (the mapping differs between 21128 and 21129), a player's choice, or a player on the server's own network without a port mapping. Or everyone, with `relay = "all"`.
+   - Who is relayed (`auto`): symmetric NAT (the mapping differs between 21128 and 21129), a player's choice, or any player whose router has no public port mapping for the game, unless the server is on their own network. Since the first community night (2026-10-02), when every host without a mapping could invite no one. Or everyone, with `relay = "all"`.
 5. **NAT-type detection server:** not built; it would only label sessions.
 
 ## To check in the game

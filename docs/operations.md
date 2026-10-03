@@ -97,7 +97,7 @@ A member server drops out of the server directory, and players' launchers stop o
 
 **Pings:**
 - The coordinator measures its round trip to each server every minute.
-- Launchers report their own ping to each server when they look at the directory. The coordinator notes which city a report came from and keeps nothing else about it.
+- Launchers report their own ping to each server when they look at the directory. The coordinator notes which city a report came from and keeps nothing else about it. It counts one report per launcher address and server every 10 minutes, so no one address can skew a city's figures.
 
 **History:**
 - Samples are kept for a week.
@@ -154,9 +154,6 @@ The admin UI is served by the coordinator on its own port (127.0.0.2:8701, a loo
 5. **Optional extra gates:**
    - **Authenticated Origin Pulls:** turn it on in Cloudflare (**SSL/TLS › Origin Server**), and run the installer with `--cloudflare-origin-pull`. Caddy then refuses any TLS connection without Cloudflare's client certificate.
    - **Cloudflare WAF rules, or a [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/) policy:** a second check before the UI's own sign-in.
-4. **Optional: Authenticated Origin Pulls.**
-   - Turn it on in Cloudflare: **SSL/TLS › Origin Server**.
-   - Run the installer with `--cloudflare-origin-pull`. Caddy then refuses any TLS connection without Cloudflare's client certificate.
 6. **Add yourself:**
 
    ```sh
@@ -165,6 +162,8 @@ The admin UI is served by the coordinator on its own port (127.0.0.2:8701, a loo
 
    This prints a one-time setup link. It works for 24 hours.
 7. **Set up your sign-in.** Open the link, choose a password, and add a passkey (recommended) or an authenticator app. Save the recovery codes it shows you.
+
+**Cloudflare leaves the pages as they are:** the admin UI sends `Cache-Control: no-store, no-transform`, so Cloudflare neither caches it nor adds scripts of its own (Web Analytics, bot detection, Rocket Loader), which the UI's content security policy would block.
 
 **Caddy refuses requests that don't come from Cloudflare's addresses**, so nobody reaches the UI straight from the internet. That's Cloudflare as a whole, though, not your zone: someone with a Cloudflare account of their own can point a proxied name at the server's address, and their requests come from Cloudflare's addresses too, past your zone's WAF rules and Access policy (Authenticated Origin Pulls with Cloudflare's shared certificate doesn't tell zones apart either). The UI's own sign-in (password plus a passkey or authenticator app) is what keeps them out. The client's address and country are Cloudflare's (`CF-Connecting-IP`, `CF-IPCountry`), and are only as trustworthy as that.
 

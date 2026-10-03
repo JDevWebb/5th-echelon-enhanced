@@ -171,13 +171,13 @@ The admin API is never reachable from the internet; Caddy refuses it. Use an SSH
 1. `sudo bash install-server.sh --admin`
 2. `sudo cat /var/lib/5th-echelon/admin-key.txt`
 3. From your PC: `ssh -L 50051:127.0.0.1:50051 you@play.example.com` (add `-p 28622` if you [moved SSH](#hardening-the-machine))
-4. In the launcher: **Server › Manage a server**, address `localhost`, and the key.
+4. In the launcher: **Host › Manage a server**, address `localhost`, and the key.
 
 ## Updating
 
 **Servers in a network update themselves.** Their coordinator rolls out each signed release, one server first, then the rest. The installer's updater installs it, checking the release key's signature, and puts the previous release back if the new one doesn't come back healthy. See [operations.md](operations.md). `--no-auto-update` turns this off for a server, but a coordinator then leaves it out of its directory.
 
-**To update by hand**, run the installer again. It keeps the settings, accounts and keys, and updates the server, the coordinator and the Caddy site. A release that isn't signed by the release key is refused.
+**To update by hand**, run the installer again. It keeps the settings, accounts and keys, and updates the server, the coordinator and the Caddy site, and Caddy itself when it's the installer's own static build (a packaged Caddy updates with the system). A release that isn't signed by the release key is refused.
 
 `--uninstall` removes the services, programs, Caddy site, updater and the firewall rules the installer added, and keeps the data; add `--purge` to delete that too.
 
@@ -186,7 +186,10 @@ The admin API is never reachable from the internet; Caddy refuses it. Use an SSH
 A coordinator has an admin web UI at a name of its own, served only through Cloudflare. It shows:
 - the network's players and where they are;
 - what's being played;
-- pings, load and bandwidth;
+- pings, load and bandwidth, live;
+- bandwidth over time, with monthly allowances, the 95th percentile and a CSV export;
+- players over time (anonymised), and when people play;
+- alerts: a server offline, CPU, memory, disk, refused sign-ins, the traffic allowance, failed updates; optionally posted to Discord or Slack;
 - the update rollout.
 
 Turn it on with `--metrics-domain NAME` and an Origin CA certificate, and add yourself with `--add-admin NAME`. [operations.md](operations.md) has the steps, the Cloudflare settings, and sign-in with passkeys or an authenticator app.
@@ -196,12 +199,18 @@ Turn it on with `--metrics-domain NAME` and an Origin CA certificate, and add yo
 The installer hardens what it installs:
 - each service runs in a systemd sandbox, Caddy included;
 - Caddy's admin API listens on a root-only socket;
-- the firewall opens only the game's ports.
+- if ufw or firewalld is already on, it opens only the game's ports there.
+
+Neither script turns a firewall on. Use your provider's firewall, or turn on ufw before installing (SSH first, so you keep your login):
+
+```sh
+sudo ufw default deny incoming && sudo ufw allow 22/tcp && sudo ufw --force enable
+```
 
 `scripts/harden-host.sh` does the rest of a Debian or Ubuntu host:
-- installs updates, and lets unattended upgrades reboot at a quiet hour;
+- installs updates, and lets unattended upgrades reboot at a quiet hour; they include Caddy from its own repository, not only the distribution's;
 - SSH: keys only, named users, no forwarding but local tunnels, modern algorithms; it then checks with `sshd -T` that sshd really uses them, and warns about any that an earlier file overrides;
-- fail2ban for SSH, never banning the address you ran it from (`--ignore-ip` adds others);
+- fail2ban for SSH, never banning the address you ran it from (`--ignore-ip` adds others; give yours with it when running the script without a terminal, e.g. through `ssh host 'sudo bash …'`, where it can't tell);
 - kernel hardening, no core dumps, and no services a server doesn't need.
 
 ```sh

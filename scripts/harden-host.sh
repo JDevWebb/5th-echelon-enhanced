@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Hardens the Linux machine a 5th Echelon server or coordinator runs on
 # (Debian or Ubuntu). install-server.sh hardens what it installs (the
-# services' sandboxes, Caddy, the firewall); this does the rest of the host.
+# services' sandboxes, Caddy, and rules in a firewall that's already on); this
+# does the rest of the host. Neither turns a firewall on.
 #
 #   sudo bash harden-host.sh [options]
 #

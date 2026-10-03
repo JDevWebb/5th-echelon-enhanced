@@ -3,7 +3,7 @@
 //!
 //! It has a listener of its own (`--admin-listen`, on this machine only),
 //! meant to be reached through Cloudflare and Caddy at its own host name
-//! (`--admin-origin`, e.g. https://metrics.scbl.jdevwebb.net); the public API
+//! (`--admin-origin`, e.g. https://scbl-metrics.jdevwebb.net); the public API
 //! never serves it.
 //!
 //! Signing in takes a password and a second factor (a TOTP code, a passkey,
@@ -70,7 +70,7 @@ const TOTP_TRIES: i64 = 5;
 /// The admin UI's settings.
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Where admins open it, e.g. "https://metrics.scbl.jdevwebb.net":
+    /// Where admins open it, e.g. "https://scbl-metrics.jdevwebb.net":
     /// passkeys are made for this site, and requests must come from it.
     pub origin: String,
     pub rp_id: String,

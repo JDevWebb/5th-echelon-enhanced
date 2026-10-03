@@ -115,7 +115,7 @@ Without that, all players would share one budget of failed logins and new accoun
 
 ## Checking it
 
-- The launcher's **Settings › Connection test** checks each part on the ports the server reported.
+- The launcher's **Settings › Network › Connection test** checks each part on the ports the server reported.
 - From anywhere:
   ```sh
   curl http://blacklist.example.com/api/info
