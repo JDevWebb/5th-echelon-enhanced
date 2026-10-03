@@ -18,6 +18,9 @@ for _ in $(seq 100); do [ -s service.toml ] && break; sleep 0.1; done
 sleep 0.3; kill $gen 2>/dev/null || true; wait $gen 2>/dev/null || true
 # The bots connect from 127.0.0.1: trust it, as a server trusts its VPN.
 sed -i -E "s|^(storage_host = \".*\")$|\1\ntrusted_subnet = \"127.0.0.0/8\"|" service.toml
+# Port 80 needs root, which CI's runner isn't: the config server moves up.
+sed -i 's|^listen = "0.0.0.0:80"$|listen = "127.0.0.1:8080"|' service.toml
+grep -q '^listen = "127.0.0.1:8080"$' service.toml || { echo "couldn't move the config server off port 80"; exit 1; }
 if [ -n "${FRIENDS_MODE:-}" ]; then
   sed -i "/^\[friends\]/,/^\[/ s/^mode = .*/mode = \"$FRIENDS_MODE\"/" service.toml
   grep -q "^mode = \"$FRIENDS_MODE\"" service.toml || { echo "couldn't set [friends] mode"; exit 1; }

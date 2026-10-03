@@ -646,16 +646,16 @@ cargo build --release -p launcher --features embed-dll         # on Windows: bui
 
 GitHub Actions tests and builds every push and pull request (Linux tests, the test players, and the Windows and Linux builds). Releases are published by pushing a version tag:
 
-`release.toml`'s `version` is the one release number for the launcher, the client DLL, the server and the coordinator. Every change bumps the patch number, with a `-dev` suffix on builds that aren't a release (e.g. `0.3.164-dev`).
+`release.toml`'s `version` is the one release number for the launcher, the client DLL, the server and the coordinator. Every change bumps the patch number, with a `-dev` suffix on builds that aren't a release (e.g. `0.4.1-dev`).
 
-1. Drop the suffix in `release.toml` (e.g. `0.3.164`) and commit it.
+1. Drop the suffix in `release.toml` (e.g. `0.4.1`) and commit it.
 2. Tag it with exactly that version, and push:
    ```sh
-   git tag v0.3.164 && git push origin main v0.3.164
+   git tag v0.4.1 && git push origin main v0.4.1
    ```
 3. Sign and publish it, on the machine with the release key:
    ```sh
-   scripts/sign-release.sh v0.3.164
+   scripts/sign-release.sh v0.4.1
    ```
 
 The release workflow:
