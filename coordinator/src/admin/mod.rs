@@ -11,8 +11,9 @@
 //! or biometric). New admins get a one-time setup link from
 //! `coordinator admin add`; they choose a password and must add a second
 //! factor before anything else. Changes that matter (admins, sign-in
-//! restrictions, rollbacks, removing servers) want a second factor proved in
-//! the last ten minutes.
+//! restrictions, rollbacks, removing servers, banning, renaming or deleting
+//! a player, resetting their password) want a second factor proved in the
+//! last ten minutes.
 //!
 //! Every request (the page too) must come from an allowed network and
 //! country, when those are set. Behind Cloudflare, the address and country
@@ -21,6 +22,7 @@
 
 pub mod auth;
 pub mod live;
+mod players;
 pub mod webauthn;
 
 use std::net::IpAddr;
@@ -201,7 +203,8 @@ pub fn router(c: Shared) -> Router {
         .route("/alerts", get(alerts))
         .route("/alerts/webhook", axum::routing::put(set_webhook))
         .route("/alerts/test", post(test_webhook))
-        .route("/live", get(live::live));
+        .route("/live", get(live::live))
+        .merge(players::routes());
     Router::new()
         .route("/", get(page))
         .nest("/api", api)

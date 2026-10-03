@@ -18,7 +18,7 @@
         <div v-else class="empty">Loading…</div>
       </section>
       <section class="panel">
-        <header><h2>Where players are now</h2><RouterLink class="small" to="/players">Players &amp; map →</RouterLink></header>
+        <header><h2>Where players are now</h2><RouterLink class="small" to="/players?tab=report">Players &amp; map →</RouterLink></header>
         <WorldMap :places="now?.places || []" :servers="o.servers" unit="players" />
         <p class="attr">{{ now?.attribution }}</p>
       </section>

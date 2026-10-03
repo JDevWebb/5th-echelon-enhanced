@@ -21,7 +21,7 @@
 //!   and relayed).
 //! * `{"type":"event","event":{…}}`: something that happened, made from the
 //!   pulses: players signing in, new accounts, failed sign-ins, matches starting
-//!   and ending. Counts only: the admin UI never shows who.
+//!   and ending. Counts only.
 //! * `{"type":"alert","alert":{…}}`: an alert raised or resolved (see `alerts`).
 //! * `{"type":"bye","reason":"…"}`: the session ended; the socket closes.
 //!
@@ -74,18 +74,19 @@ const KEEP_FEED: usize = 50;
 /// A server's last pulse, and its points of the last half hour.
 #[derive(Debug, Default)]
 pub struct Pulses {
-    last: Option<(i64, Value)>,
-    points: std::collections::VecDeque<Value>,
+    pub(crate) last: Option<(i64, Value)>,
+    pub(crate) points: std::collections::VecDeque<Value>,
 }
 
 fn num(v: &Value) -> f64 {
     v.as_f64().unwrap_or(0.0)
 }
 
-/// How much a counter grew since `before` (none when it went back: a restart).
+/// How much a counter grew since `before`. When it went back (the server restarted), all
+/// of it is new.
 fn grew(now: &Value, before: &Value) -> Option<f64> {
     let (a, b) = (num(now), num(before));
-    (a >= b).then_some(a - b)
+    Some(if a >= b { a - b } else { a })
 }
 
 fn plural(n: f64, one: &str, many: &str) -> String {
@@ -132,7 +133,8 @@ fn point_from(at: i64, p: &Value, last: Option<&(i64, Value)>) -> (Value, Vec<(&
 
 impl Coordinator {
     /// Takes a server's pulse: its live point, and events from what changed since the last.
-    pub(crate) fn record_pulse(&self, server: &str, p: &Value) {
+    /// Both are stored too (a day), so a restart of the coordinator keeps the live view.
+    pub(crate) async fn record_pulse(&self, server: &str, p: &Value) -> sqlx::Result<()> {
         let at = identity::now();
         let (point, events) = {
             let mut pulses = self.pulses.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -145,9 +147,27 @@ impl Coordinator {
             }
             (point, events)
         };
+        let events: Vec<Value> = events
+            .into_iter()
+            .map(|(kind, level, text)| json!({ "t": at, "server": server, "kind": kind, "level": level, "text": text }))
+            .collect();
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("INSERT OR REPLACE INTO pulses (server_id, at, point) VALUES (?, ?, ?)")
+            .bind(server)
+            .bind(at)
+            .bind(point.to_string())
+            .execute(&mut *tx)
+            .await?;
+        for event in &events {
+            sqlx::query("INSERT INTO live_feed (at, event) VALUES (?, ?)")
+                .bind(at)
+                .bind(event.to_string())
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
         self.publish(Event::Pulse(server.to_string(), point));
-        for (kind, level, text) in events {
-            let event = json!({ "t": at, "server": server, "kind": kind, "level": level, "text": text });
+        for event in events {
             {
                 let mut feed = self.feed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 feed.push_front(event.clone());
@@ -155,6 +175,35 @@ impl Coordinator {
             }
             self.publish(Event::Feed(event));
         }
+        Ok(())
+    }
+
+    /// Loads the stored live points and events of the last half hour (at start).
+    pub(crate) async fn load_live(&self) -> sqlx::Result<()> {
+        let since = identity::now() - 1800;
+        let points: Vec<(String, String)> = sqlx::query_as("SELECT server_id, point FROM pulses WHERE at >= ? ORDER BY at")
+            .bind(since)
+            .fetch_all(&self.pool)
+            .await?;
+        let events: Vec<(String,)> = sqlx::query_as("SELECT event FROM live_feed WHERE at >= ? ORDER BY id DESC LIMIT ?")
+            .bind(since)
+            .bind(KEEP_FEED as i64)
+            .fetch_all(&self.pool)
+            .await?;
+        {
+            let mut pulses = self.pulses.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            for (server, point) in points {
+                let Ok(point) = serde_json::from_str::<Value>(&point) else { continue };
+                let entry = pulses.entry(server).or_default();
+                entry.points.push_back(point);
+                while entry.points.len() > KEEP_POINTS {
+                    entry.points.pop_front();
+                }
+            }
+        }
+        let mut feed = self.feed.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        feed.extend(events.into_iter().filter_map(|(e,)| serde_json::from_str(&e).ok()));
+        Ok(())
     }
 
     /// The live points of the last half hour per server, and the recent events.

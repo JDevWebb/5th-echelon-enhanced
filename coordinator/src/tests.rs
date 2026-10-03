@@ -605,7 +605,15 @@ async fn reports_count_anonymised_players_traffic_and_alerts() {
 async fn strangers_learn_nothing_from_bad_bodies() {
     let t = start("bad-bodies").await;
     // Without a server's secret: refused before the body is looked at.
-    for path in ["/v1/heartbeat", "/v1/metrics", "/v1/pulse", "/v1/changes", "/v1/names/claim"] {
+    for path in [
+        "/v1/heartbeat",
+        "/v1/metrics",
+        "/v1/pulse",
+        "/v1/changes",
+        "/v1/names/claim",
+        "/v1/players",
+        "/v1/actions/1",
+    ] {
         let (status, v) = t.call("POST", path, None, Some(json!({ "nonsense": 1 }))).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}: {v}");
     }
@@ -626,4 +634,381 @@ async fn an_address_adds_one_ping_per_server_in_a_while() {
     assert_eq!((status, v["recorded"].as_u64()), (StatusCode::OK, Some(1)), "{v}");
     let (status, v) = t.call("POST", "/v1/pings", None, Some(report)).await;
     assert_eq!((status, v["recorded"].as_u64()), (StatusCode::OK, Some(0)), "a second report counted again: {v}");
+}
+
+/// A players report entry.
+fn player(id: i64, name: &str, identity: Option<&str>) -> Value {
+    json!({ "id": id, "name": name, "identity": identity, "created_at": identity::now() - 86_400, "last_seen": identity::now(),
+            "online": true, "play_seconds": 5400, "sessions": 12, "matches": 3, "banned": null })
+}
+
+#[tokio::test]
+async fn players_and_sessions_are_taken_and_a_full_roster_deletes() {
+    let t = start("players").await;
+    let a = t.join("server-a").await;
+    let now = identity::now();
+    let body = json!({ "full": true,
+        "players": [player(1007, "Exo", Some("ab12")), player(1008, "Kiwi", None), player(1009, "Tank", None), { "id": "nope" }],
+        "sessions": [{ "id": 1, "player": 1007, "start": now - 600, "end": null }, { "id": 2, "player": 4242, "start": now - 60, "end": now }] });
+    let (status, v) = t.call("POST", "/v1/players", Some(&a), Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["ok"].as_bool(), v["players"].as_i64(), v["sessions"].as_i64(), v["skipped"].as_i64()),
+        (Some(true), Some(3), Some(1), Some(2)),
+        "{v}"
+    );
+    // Changes only: the session ends, a player is renamed; nobody is removed.
+    let mut renamed = player(1009, "Tanker", None);
+    renamed["online"] = json!(false);
+    let body = json!({ "full": false, "players": [renamed.clone()], "sessions": [{ "id": 1, "player": 1007, "start": now - 600, "end": now - 10 }] });
+    assert_eq!(t.call("POST", "/v1/players", Some(&a), Some(body)).await.0, StatusCode::OK);
+    let ended: Option<i64> = sqlx::query_scalar("SELECT ended FROM play_sessions WHERE server_id = 'server-a' AND id = 1")
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(ended, Some(now - 10));
+    let list =
+        t.c.player_list(&players::ListQuery {
+            sort: "name".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    let names: Vec<&str> = list["players"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap()).collect();
+    assert_eq!(names, ["Exo", "Kiwi", "Tanker"]);
+    assert_eq!(list["players"][0]["week_seconds"], 590);
+    // The whole roster again, without Kiwi: deleted there, so gone here; the sessions stay.
+    let body = json!({ "full": true, "players": [player(1007, "Exo", Some("ab12")), renamed] });
+    let (_, v) = t.call("POST", "/v1/players", Some(&a), Some(body)).await;
+    assert_eq!(v["removed"], 1, "{v}");
+    let list = t.c.player_list(&players::ListQuery::default()).await.unwrap();
+    assert_eq!(list["total"], 2);
+    // Search, filters.
+    let found =
+        t.c.player_list(&players::ListQuery {
+            q: "xo".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(found["players"][0]["id"], 1007);
+    let online =
+        t.c.player_list(&players::ListQuery {
+            online: "1".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(online["total"], 1, "Tanker went offline: {online}");
+    // The same identity on another server: "also on".
+    let b = t.join("server-b").await;
+    t.call("POST", "/v1/players", Some(&b), Some(json!({ "full": true, "players": [player(5, "Exo", Some("ab12"))] })))
+        .await;
+    let found =
+        t.c.player_list(&players::ListQuery {
+            q: "ab12".into(),
+            server: "server-a".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(found["players"][0]["also_on"], json!(["server-b"]));
+    let d = t.c.player_detail("server-a", 1007).await.unwrap().unwrap();
+    assert_eq!((d["sessions"][0]["seconds"].as_i64(), d["others"][0]["server"].as_str()), (Some(590), Some("server-b")));
+    assert_eq!(d["days"].as_array().unwrap().len(), 30);
+    assert_eq!(d["days"].as_array().unwrap().iter().map(|x| x["seconds"].as_i64().unwrap()).sum::<i64>(), 590);
+}
+
+#[tokio::test]
+async fn players_reports_are_checked_and_capped() {
+    let t = start("players-caps").await;
+    let a = t.join("server-a").await;
+    let (status, _) = t.call("POST", "/v1/players", None, Some(json!({ "players": [] }))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _) = t.call("POST", "/v1/players", Some(&a), Some(json!({ "nonsense": 1 }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let many: Vec<Value> = (0..=players::MAX_PLAYERS as i64).map(|i| json!({ "id": i, "name": "P" })).collect();
+    let (status, _) = t.call("POST", "/v1/players", Some(&a), Some(json!({ "players": many }))).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    // 2000 long-named players fit in one request (bigger than other calls may be).
+    let many: Vec<Value> = (0..players::MAX_PLAYERS as i64).map(|i| player(i, &"N".repeat(64), Some(&"a".repeat(64)))).collect();
+    let (status, v) = t.call("POST", "/v1/players", Some(&a), Some(json!({ "full": true, "players": many }))).await;
+    assert_eq!((status, v["players"].as_i64()), (StatusCode::OK, Some(2000)), "{v}");
+    // Names are cleaned, not refused; a name too long is cut.
+    let body = json!({ "players": [{ "id": 1, "name": format!("Bad\u{202e}{}", "x".repeat(100)), "play_seconds": -3 }] });
+    t.call("POST", "/v1/players", Some(&a), Some(body)).await;
+    let (name, secs): (String, i64) = sqlx::query_as("SELECT name, play_seconds FROM players WHERE server_id = 'server-a' AND id = 1")
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!((name.chars().count(), name.starts_with("Badx"), secs), (64, true, 0));
+}
+
+impl Test {
+    /// The pending actions in a pulse's answer.
+    async fn pulse_actions(&self, secret: &str) -> Vec<Value> {
+        let (status, v) = self
+            .call("POST", "/v1/pulse", Some(secret), Some(json!({ "players": { "online": 1 }, "counters": {} })))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        v["actions"].as_array().unwrap().clone()
+    }
+
+    async fn action_done(&self, secret: &str, id: i64, result: Value) -> StatusCode {
+        self.call("POST", &format!("/v1/actions/{id}"), Some(secret), Some(result)).await.0
+    }
+}
+
+#[tokio::test]
+async fn actions_go_with_the_pulse_and_only_their_server_answers() {
+    let t = start("actions").await;
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    t.call("POST", "/v1/players", Some(&a), Some(json!({ "full": true, "players": [player(1007, "Exo", None)] })))
+        .await;
+    let ban =
+        t.c.queue_action("server-a", 1007, "ban", &json!({ "reason": "cheating", "until": null }), "admin1")
+            .await
+            .unwrap();
+    let reset = t.c.queue_action("server-a", 1007, "reset_password", &json!({ "reason": "" }), "admin1").await.unwrap();
+    let sent = t.pulse_actions(&a).await;
+    assert_eq!(sent.len(), 2);
+    assert_eq!(
+        (sent[0]["id"].as_i64(), sent[0]["kind"].as_str(), sent[0]["player"].as_i64()),
+        (Some(ban), Some("ban"), Some(1007))
+    );
+    assert_eq!(sent[0]["reason"], "cheating");
+    assert!(t.pulse_actions(&b).await.is_empty(), "server-b has none");
+    // Sent again until answered; only server-a may answer.
+    let result = json!({ "ok": true, "message": "Banned Exo", "password": null });
+    assert_eq!(t.action_done(&b, ban, result.clone()).await, StatusCode::NOT_FOUND);
+    assert_eq!(t.action_done(&a, ban, result).await, StatusCode::OK);
+    let sent = t.pulse_actions(&a).await;
+    assert_eq!(sent.len(), 1, "the ban is done: {sent:?}");
+    let banned =
+        t.c.player_list(&players::ListQuery {
+            banned: "1".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(banned["players"][0]["banned"]["reason"], "cheating", "shown before the server's next report");
+    // A reset password: shown once, to the admin who asked.
+    let result = json!({ "ok": true, "message": "Reset", "password": "temp-pass-123" });
+    assert_eq!(t.action_done(&a, reset, result).await, StatusCode::OK);
+    assert_eq!(t.c.read_action(reset, "admin2").await.unwrap().unwrap()["password"], Value::Null);
+    let first = t.c.read_action(reset, "admin1").await.unwrap().unwrap();
+    assert_eq!((first["status"].as_str(), first["password"].as_str()), (Some("done"), Some("temp-pass-123")));
+    assert_eq!(t.c.read_action(reset, "admin1").await.unwrap().unwrap()["password"], Value::Null, "only once");
+    // An hour without an answer: expired, and no longer sent.
+    let kick = t.c.queue_action("server-a", 1007, "kick", &json!({}), "admin1").await.unwrap();
+    sqlx::query("UPDATE player_actions SET created_at = created_at - 7200 WHERE id = ?")
+        .bind(kick)
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    assert!(t.pulse_actions(&a).await.is_empty());
+    assert_eq!(t.c.read_action(kick, "admin1").await.unwrap().unwrap()["status"], "expired");
+    // Results are checked.
+    assert_eq!(t.action_done(&a, kick, json!({ "message": "?" })).await, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_rename_moves_the_players_name_across_the_network() {
+    let t = start("rename").await;
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    let (kiwi, tank) = (identity::Identity::generate(), identity::Identity::generate());
+    t.changes(&a, json!([link(&kiwi, "server-a", "Kiwi")])).await;
+    t.changes(&b, json!([link(&tank, "server-b", "Tank")])).await;
+    let roster = json!({ "full": true, "players": [player(1, "Kiwi", Some(&kiwi.global_id()))] });
+    t.call("POST", "/v1/players", Some(&a), Some(roster)).await;
+    // Another player's name is refused before anything is queued.
+    assert!(t.c.rename_refused("server-a", 1, "TANK").await.unwrap().is_some());
+    assert!(t.c.rename_refused("server-a", 1, "Kiwi2").await.unwrap().is_none());
+    let id = t.c.queue_action("server-a", 1, "rename", &json!({ "name": "Kiwi2" }), "admin1").await.unwrap();
+    assert_eq!(t.action_done(&a, id, json!({ "ok": true, "message": "Renamed", "password": null })).await, StatusCode::OK);
+    assert_eq!(t.c.owner("kiwi2").await.unwrap(), Some(kiwi.global_id()));
+    assert_eq!(t.c.owner("kiwi").await.unwrap(), None, "the old name is free");
+    let username: String = sqlx::query_scalar("SELECT username FROM links WHERE server_id = 'server-a'")
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(username, "Kiwi2");
+    // A failed one changes nothing.
+    let id = t.c.queue_action("server-a", 1, "rename", &json!({ "name": "Kiwi3" }), "admin1").await.unwrap();
+    t.action_done(&a, id, json!({ "ok": false, "message": "name taken here", "password": null })).await;
+    assert_eq!(t.c.owner("kiwi3").await.unwrap(), None);
+}
+
+#[tokio::test]
+async fn matches_are_stored_once_and_reported() {
+    let t = start("matches").await;
+    let a = t.join("server-a").await;
+    let now = identity::now();
+    let report = json!({ "metrics": { "players": { "online": 4 }, "counters": { "matches_started": 2, "failed_joins": 1 }, "matches": [
+        { "mode": "svm", "map": 3_578_398_534_u32, "game_mode": 3, "started": now - 1800, "ended": now - 600, "players": 4, "private": false },
+        { "mode": "coop", "map": 7, "game_mode": 1, "started": now - 1200, "ended": now - 300, "players": 2, "private": true },
+        { "mode": "svm", "map": 7, "game_mode": 1, "started": now, "ended": now - 300, "players": 2 },
+    ] }, "update": {} });
+    // Sent twice (a retry): stored once. The bad one (ends before it starts) isn't.
+    assert_eq!(t.call("POST", "/v1/metrics", Some(&a), Some(report.clone())).await.0, StatusCode::OK);
+    assert_eq!(t.call("POST", "/v1/metrics", Some(&a), Some(report)).await.0, StatusCode::OK);
+    let r = t.c.matches_report(7).await.unwrap();
+    assert_eq!(r["totals"]["matches"], 2, "{r}");
+    assert_eq!(r["totals"]["avg_seconds"], 1050.0);
+    assert_eq!(r["totals"]["avg_players"], 3.0);
+    assert_eq!((r["private"]["matches"].as_i64(), r["public"]["matches"].as_i64()), (Some(1), Some(1)));
+    assert_eq!(r["days"].as_array().unwrap().len(), 7);
+    let svm: i64 = r["days"].as_array().unwrap().iter().map(|d| d["svm"].as_i64().unwrap()).sum();
+    assert_eq!(svm, 1);
+    assert!(r["maps"].as_array().unwrap().iter().any(|m| m["map"] == 3_578_398_534_u32));
+    // Older servers send no matches: nothing changes.
+    t.c.record_matches("server-a", &Value::Null).await.unwrap();
+}
+
+#[tokio::test]
+async fn play_time_comes_from_sessions_when_servers_send_them() {
+    let t = start("play-time").await;
+    let a = t.join("server-a").await;
+    let now = identity::now();
+    let body = json!({ "full": true, "players": [player(1, "Exo", None), player(2, "Kiwi", None)], "sessions": [
+        // Days ago: sessions are used from the day after a server's first.
+        { "id": 1, "player": 1, "start": now - 3 * 86_400, "end": now - 3 * 86_400 + 600 },
+        { "id": 2, "player": 1, "start": now - 3600, "end": now - 1800 },
+        { "id": 3, "player": 2, "start": now - 3000, "end": now - 2400 },
+    ] });
+    assert_eq!(t.call("POST", "/v1/players", Some(&a), Some(body)).await.0, StatusCode::OK);
+    let r = t.c.players_report(7 * 86_400).await.unwrap();
+    let minutes: i64 = r["days"].as_array().unwrap().iter().map(|d| d["minutes"].as_i64().unwrap()).sum();
+    assert_eq!(minutes, 40, "{r}");
+    assert!(r["sessions_from"]["server-a"].is_i64());
+    assert_eq!(r["totals"]["peak"], 2.0, "both played at once");
+    assert_eq!(r["totals"]["players"], 2, "from sessions, though they cover only part of the week");
+}
+
+#[tokio::test]
+async fn live_points_and_events_survive_a_restart() {
+    let dir = std::env::temp_dir().join(format!("fe-coord-live-restart-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("c.db").to_string_lossy().to_string();
+    {
+        let c = Coordinator::open(&db, "T".into()).await.unwrap();
+        sqlx::query("INSERT INTO servers (id, secret_hash, joined_at) VALUES ('s', 'h', 0)")
+            .execute(&c.pool)
+            .await
+            .unwrap();
+        c.record_pulse("s", &json!({ "players": { "online": 1 }, "matches": 0, "counters": { "game_logins": 1 } }))
+            .await
+            .unwrap();
+        // Ten seconds on (a point a second apart replaces the last).
+        sqlx::query("UPDATE pulses SET at = at - 10").execute(&c.pool).await.unwrap();
+        let last = c.pulses.lock().unwrap().get_mut("s").unwrap().last.as_mut().map(|l| l.0 -= 10);
+        assert!(last.is_some());
+        c.record_pulse("s", &json!({ "players": { "online": 3 }, "matches": 1, "counters": { "game_logins": 3 } }))
+            .await
+            .unwrap();
+    }
+    let c = Coordinator::open(&db, "T".into()).await.unwrap();
+    assert_eq!(c.pulses.lock().unwrap()["s"].points.len(), 2);
+    let feed = c.feed.lock().unwrap().clone();
+    assert!(feed.iter().any(|e| e["text"] == "1 match started"), "{feed:?}");
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+/// A signed-in admin's cookie for the admin router, their second factor proved `verified_ago`
+/// seconds ago.
+async fn admin_cookie(t: &Test, name: &str, verified_ago: i64) -> String {
+    let now = identity::now();
+    let id: i64 = sqlx::query_scalar("INSERT INTO admins (username, created_at) VALUES (?, ?) RETURNING id")
+        .bind(name)
+        .bind(now)
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+    let token = admin::auth::random(32);
+    sqlx::query(
+        "INSERT INTO admin_sessions (token_hash, admin_id, stage, created_at, last_seen, verified_at, ip, country, user_agent)
+         VALUES (?, ?, 'full', ?, ?, ?, '192.0.2.1', '', 'test')",
+    )
+    .bind(admin::auth::digest(&token))
+    .bind(id)
+    .bind(now)
+    .bind(now)
+    .bind(now - verified_ago)
+    .execute(&t.c.pool)
+    .await
+    .unwrap();
+    format!("__Host-fes-admin={token}")
+}
+
+async fn admin_call(router: &Router, method: &str, path: &str, cookie: &str, body: Option<Value>) -> (StatusCode, Value) {
+    let req = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("cookie", cookie)
+        .header("x-fes-admin", "1")
+        .header("content-type", "application/json")
+        .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+}
+
+#[tokio::test]
+async fn admins_manage_players_through_the_api() {
+    let t = start("admin-players").await;
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&a),
+        Some(json!({ "full": true, "players": [player(1007, "Exo", Some("ab12"))] })),
+    )
+    .await;
+    assert_eq!(admin_call(&r, "GET", "/api/players", "", None).await.0, StatusCode::UNAUTHORIZED);
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    let (status, v) = admin_call(&r, "GET", "/api/players?q=exo&sort=play_time", &cookie, None).await;
+    assert_eq!((status, v["total"].as_i64()), (StatusCode::OK, Some(1)), "{v}");
+    let (status, v) = admin_call(&r, "GET", "/api/players/server-a/1007", &cookie, None).await;
+    assert_eq!((status, v["player"]["name"].as_str()), (StatusCode::OK, Some("Exo")), "{v}");
+    assert_eq!(admin_call(&r, "GET", "/api/players/server-a/1", &cookie, None).await.0, StatusCode::NOT_FOUND);
+    // A kick needs a session; a ban a second factor proved lately.
+    let (status, v) = admin_call(&r, "POST", "/api/players/server-a/1007/actions", &cookie, Some(json!({ "kind": "kick" }))).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let kick = v["actions"][0]["id"].as_i64().unwrap();
+    let ban = json!({ "kind": "ban", "reason": "cheating", "until": identity::now() + 86_400 });
+    let (status, v) = admin_call(&r, "POST", "/api/players/server-a/1007/actions", &cookie, Some(ban.clone())).await;
+    assert_eq!((status, v["reverify"].as_bool()), (StatusCode::FORBIDDEN, Some(true)));
+    let fresh = admin_cookie(&t, "admin2", 0).await;
+    let (status, v) = admin_call(&r, "POST", "/api/players/server-a/1007/actions", &fresh, Some(ban)).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    // Checked: kinds, names, reasons, ban ends.
+    for bad in [
+        json!({ "kind": "explode" }),
+        json!({ "kind": "rename", "name": "x" }),
+        json!({ "kind": "ban", "reason": "r".repeat(201) }),
+        json!({ "kind": "ban", "until": 5 }),
+    ] {
+        let (status, _) = admin_call(&r, "POST", "/api/players/server-a/1007/actions", &fresh, Some(bad.clone())).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    // Every account of theirs, with all_servers.
+    let b = t.join("server-b").await;
+    t.call("POST", "/v1/players", Some(&b), Some(json!({ "full": true, "players": [player(9, "Exo", Some("ab12"))] })))
+        .await;
+    let all = json!({ "kind": "delete", "all_servers": true });
+    let (_, v) = admin_call(&r, "POST", "/api/players/server-a/1007/actions", &fresh, Some(all)).await;
+    assert_eq!(v["actions"].as_array().unwrap().len(), 2, "{v}");
+    let (status, v) = admin_call(&r, "GET", &format!("/api/actions/{kick}"), &cookie, None).await;
+    assert_eq!((status, v["status"].as_str(), v["kind"].as_str()), (StatusCode::OK, Some("pending"), Some("kick")), "{v}");
+    let audited: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM audit WHERE event LIKE 'player: %'")
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(audited, 3);
+    let (status, v) = admin_call(&r, "GET", "/api/matches-report?days=30", &cookie, None).await;
+    assert_eq!((status, v["days"].as_array().map(Vec::len)), (StatusCode::OK, Some(30)));
 }

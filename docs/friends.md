@@ -211,7 +211,9 @@ The server keeps its credentials in `federation.key` once it has joined. Its log
 | `POST /v1/names/claim` `{name, global_id, time, signature}` | a member | reserves a name for a player (their link signature for that server, from the last five minutes); `409` if someone else has it |
 | `GET /v1/names/<name>` | a member | whether a name is reserved (`{claimed}`) |
 | `POST /v1/metrics` | a member | the minute's metrics, and the anonymised ids of the players online (see [operations.md](operations.md#metrics)) |
-| `POST /v1/pulse` | a member | the 10-second pulse: players online, counters and traffic, for live figures |
+| `POST /v1/pulse` | a member | the 10-second pulse: players online, counters and traffic, for live figures; answers `{actions: [{id, kind, player, reason, until, name}]}`, what admins asked of it (ban, unban, kick, reset_password, rename, delete), oldest first, at most 20, sent again until answered (an hour) |
+| `POST /v1/players` `{full, players, sessions}` | a member | its accounts and play sessions (see [operations.md](operations.md#metrics)); up to 2,000 players and 5,000 sessions (4 MB), `413` past that; `full` (the whole roster) removes accounts it no longer lists; answers `{ok, players, sessions, removed, skipped}` |
+| `POST /v1/actions/<id>` `{ok, message, password}` | a member | what came of an action; only for its own actions (`404` otherwise). `password` only for reset_password. A rename that worked moves the player's link and reserved name to the new name |
 | `POST /v1/pings` `{pings: [{server, ms}]}` | anyone (launchers) | a launcher's pings to the directory's servers; one sample per address and server every 10 minutes counts |
 | `GET /v1/info` | anyone | name, version, number of servers |
 
