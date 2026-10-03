@@ -184,7 +184,8 @@ fn about(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     section(ui, "About", |ui| {
         ui.label(format!("{} {}", env!("FE_PRODUCT"), env!("FE_RELEASE")));
-        ui.label(theme::muted("A fork of 5th Echelon by unixoide and contributors.").small());
+        ui.label(theme::muted("Developed by JDevWebb, building on 5th Echelon by unixoide and its contributors.").small());
+        ui.label(theme::muted("Free, and provided as is, without warranty of any kind. Not affiliated with or endorsed by Ubisoft.").small());
         ui.horizontal(|ui| {
             if app.checking.running() {
                 ui.spinner();

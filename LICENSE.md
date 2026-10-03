@@ -60,6 +60,8 @@ The same applies to this fork's follow-up changes to code merged from pull reque
 | `docs/research/`, except `nat-traversal.md` and `cross-region.md` | Upstream's research notes |
 | The README | Partly written by this fork, and partly upstream's (community links, research tools) |
 
+**No warranty, for everything here.** Whatever its licence, the software in this repository, its builds, and the community network are provided "as is", without warranty of any kind, express or implied, including merchantability, fitness for a particular purpose and non-infringement. In no event are the authors or the network's operator liable for any claim, damages or other liability, in contract, tort or otherwise, arising from or in connection with them, their use, or other dealings in them. 5th Echelon Enhanced isn't affiliated with or endorsed by Ubisoft; *Tom Clancy's Splinter Cell: Blacklist* and its names and marks are Ubisoft's.
+
 **The community network** (`play.scbl.jdevwebb.net` and its servers, and its admin UI at `scbl-metrics.jdevwebb.net`) is a service JDevWebb runs with this software. The licence covers the code, not the service or access to it; the release signing key and the community coordinator's join token aren't part of it either.
 
 Third-party libraries used by the build (egui, hudhook, Dear ImGui, tokio, tonic and others) keep their own licences. They're fetched by Cargo and aren't part of this repository.

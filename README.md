@@ -66,7 +66,7 @@ Tell us how it goes: bugs, ideas and questions are all welcome as [issues](https
 
 ## Standing on the shoulders of
 
-**5th Echelon Enhanced is a fork of [5th Echelon](https://github.com/unixoide/5th-echelon) by [unixoide](https://github.com/unixoide).** They reverse-engineered the game's Quazal online stack, wrote the server, the launcher and the game hook, and documented the protocols in the [5th Echelon reference](https://unixoide.github.io/5th-echelon). None of this fork would exist without that work.
+**5th Echelon Enhanced is developed by [JDevWebb](https://github.com/JDevWebb), building on [5th Echelon](https://github.com/unixoide/5th-echelon) by [unixoide](https://github.com/unixoide).** unixoide reverse-engineered the game's Quazal online stack, wrote the server, the launcher and the game hook, and documented the protocols in the [5th Echelon reference](https://unixoide.github.io/5th-echelon). None of this fork would exist without that work.
 
 ### Authors and contributors
 
@@ -732,6 +732,14 @@ Find other players, active servers and help:
 - [Splinter Cell Community Hub](https://discord.com/invite/ubX9D9v)
 - [/r/SplinterCell](https://discord.gg/ywdszwF)
 - [SCBL Multiplayer](https://discord.gg/uJH5Sv5Zw3)
+
+## Disclaimer
+
+**5th Echelon Enhanced is free software provided "as is", without warranty of any kind,** express or implied, including fitness for a particular purpose. You use it, and the community servers, at your own risk: no one involved is liable for any damage or loss, to your game, your saves, your PC or anything else, arising from them.
+
+- **The game:** the launcher changes your game's files (it installs a DLL, keeping the original so you can undo it) and your saves (with backups). Keep your own backups of anything you care about.
+- **The community servers:** a free service with no guarantee. They can be down, reset or shut down at any time, and accounts, friends and stats on them can be lost.
+- **Not affiliated with Ubisoft:** this is a fan project, not affiliated with, endorsed by or connected to Ubisoft. *Tom Clancy's Splinter Cell: Blacklist* and its names and marks belong to Ubisoft. You need your own copy of the game.
 
 ## Licence
 

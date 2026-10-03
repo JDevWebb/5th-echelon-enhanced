@@ -147,7 +147,7 @@ pub fn download(latest: &Latest, name: &str, to: &Path) -> anyhow::Result<()> {
     // The tag's version, signed with the files: a signed release published
     // again under another tag fails here.
     if !signed(&latest.version, &sums, &sig) {
-        anyhow::bail!("release {} isn't signed by this fork's release key as {}; not installed", latest.version, latest.version);
+        anyhow::bail!("release {} isn't signed by the project's release key as {}; not installed", latest.version, latest.version);
     }
     let want = setup::update::checksum_for(&sums, name).ok_or_else(|| anyhow::anyhow!("{SUMS_ASSET} doesn't list {name}"))?;
     let data = rt.block_on(get(latest.url(name)?, Duration::from_secs(300), MAX_DOWNLOAD))?;
