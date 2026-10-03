@@ -43,8 +43,12 @@ pub const DEFAULT_PORT: u16 = 21128;
 pub const PROBE_SIZE: usize = 96;
 /// The longest account name a probe carries.
 pub const MAX_NAME: usize = 32;
-/// The largest game packet the relay carries.
-pub const MAX_PAYLOAD: usize = 1400;
+/// The largest game packet the relay carries: the largest UDP payload on a
+/// 1500-byte link, so every packet the game sends. Storm fills its packets up
+/// to about 1460 bytes while a co-op mission loads; at 1400 the relay dropped
+/// those, and the guest's game gave up waiting for them. Wrapped, the biggest
+/// ones exceed the link and travel as two IP fragments.
+pub const MAX_PAYLOAD: usize = 1472;
 /// The port Storm, the game's peer-to-peer layer, binds.
 pub const STORM_PORT: u16 = 13000;
 
@@ -409,6 +413,20 @@ mod tests {
         let (tag, sender, offset) = data_from(&from).unwrap();
         assert_eq!((tag, sender, &from[offset..]), ([6; 8], a("198.51.100.9:13000"), &b"game"[..]));
         assert_eq!(from.len() - b"game".len(), DATA_OVERHEAD);
+    }
+
+    #[test]
+    fn the_largest_game_packets_are_relayed() {
+        // Storm's packets while a co-op mission loads, and the largest a 1500-byte link carries.
+        let mut buf = Vec::new();
+        for size in [1460, 1472] {
+            let packet = vec![0x33; size];
+            encode_data_to(&mut buf, [5; 8], a("192.0.2.1:40003"), &packet);
+            let (_, _, offset) = data_to(&buf).unwrap_or_else(|| panic!("a {size}-byte packet isn't relayed"));
+            assert_eq!(&buf[offset..], &packet[..]);
+        }
+        encode_data_to(&mut buf, [5; 8], a("192.0.2.1:40003"), &[0; MAX_PAYLOAD + 1]);
+        assert_eq!(data_to(&buf), None);
     }
 
     #[test]

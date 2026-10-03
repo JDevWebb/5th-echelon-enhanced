@@ -311,6 +311,23 @@ fn sendto(s: usize, buf: *const u8, len: i32, flags: i32, to: *const u8, tolen: 
     unsafe { SendToHook.call(s, buf, len, flags, to, tolen) }
 }
 
+/// The longest relayed packet: the largest game packet and the relay's header.
+const WRAPPED_MAX: usize = nat_proto::MAX_PAYLOAD + nat_proto::DATA_OVERHEAD;
+
+/// Copies a received packet into the game's buffer of `len` bytes as Winsock
+/// would: one that doesn't fit is cut short, and the receive fails with
+/// WSAEMSGSIZE.
+fn hand_over(packet: &[u8], buf: *mut u8, len: i32) -> i32 {
+    const WSAEMSGSIZE: i32 = 10040;
+    let room = usize::try_from(len).unwrap_or(0);
+    unsafe { std::ptr::copy_nonoverlapping(packet.as_ptr(), buf, packet.len().min(room)) };
+    if packet.len() > room {
+        unsafe { windows::Win32::Networking::WinSock::WSASetLastError(WSAEMSGSIZE) };
+        return -1;
+    }
+    packet.len() as i32
+}
+
 fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen: *mut i32) -> i32 {
     // A peek leaves the packet queued; consuming NAT messages then would
     // loop on the same one.
@@ -327,18 +344,24 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
     } else {
         (from, fromlen)
     };
+    // A relayed packet is longer than the game packet inside it: into a buffer
+    // only big enough for the game packet it wouldn't fit. Received here then,
+    // and handed over as the game's own receive would.
+    let small = usize::try_from(len).map_or(true, |l| l < WRAPPED_MAX);
+    let mut scratch = [0u8; WRAPPED_MAX];
+    let (into, into_len) = if small { (scratch.as_mut_ptr(), WRAPPED_MAX as i32) } else { (buf, len) };
     loop {
-        let n = unsafe { RecvFromHook.call(s, buf, len, flags, from_ptr, len_ptr) };
+        let n = unsafe { RecvFromHook.call(s, into, into_len, flags, from_ptr, len_ptr) };
         if n <= 0 {
             return n;
         }
-        let data = unsafe { std::slice::from_raw_parts_mut(buf, n as usize) };
+        let data = unsafe { std::slice::from_raw_parts_mut(into, n as usize) };
         let sender = read_addr(from_ptr);
         if !nat_proto::is_nat_message(data) {
             if LOG_PACKETS.load(Ordering::Relaxed) {
                 info!("recvfrom {sender:?}: {}", to_hex(data));
             }
-            return n;
+            return if small { hand_over(data, buf, len) } else { n };
         }
         let (server, second) = {
             let st = state();
@@ -355,7 +378,15 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
                 continue;
             }
             let payload = data.len() - offset;
-            data.copy_within(offset.., 0);
+            if LOG_PACKETS.load(Ordering::Relaxed) {
+                info!("recvfrom {relayed_from} (relayed): {}", to_hex(&data[offset..]));
+            }
+            let n = if small {
+                hand_over(&data[offset..], buf, len)
+            } else {
+                data.copy_within(offset.., 0);
+                payload as i32
+            };
             if !from.is_null() && !fromlen.is_null() {
                 let sa = sockaddr(relayed_from);
                 unsafe {
@@ -363,10 +394,7 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
                     *fromlen = sa.len() as i32;
                 }
             }
-            if LOG_PACKETS.load(Ordering::Relaxed) {
-                info!("recvfrom {relayed_from} (relayed): {}", to_hex(&data[..payload]));
-            }
-            return payload as i32;
+            return n;
         }
         if let Some(Message::ProbeReply {
             nonce,
