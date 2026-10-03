@@ -899,6 +899,18 @@ async fn nat_relay(ctx: &mut Ctx) -> Result<()> {
             }),
         "the direct player got something else"
     );
+    // The largest game packet, as Storm sends them while a co-op mission loads.
+    let full = vec![0x33; nat_proto::MAX_PAYLOAD];
+    b.send_to(&send(rb.tag, ra.advertise, &full), nat).await?;
+    ensure!(
+        nat_wait_data(&a, Duration::from_secs(2)).await
+            == Some(Message::DataFrom {
+                tag: ra.tag,
+                from: rb.advertise,
+                payload: full
+            }),
+        "a full-size game packet wasn't relayed"
+    );
     stranger.send_to(&send(rb.tag, ra.advertise, b"spam"), nat).await?;
     b.send_to(&send([1; 8], ra.advertise, b"wrong tag"), nat).await?;
     ensure!(nat_wait_data(&a, Duration::from_millis(400)).await.is_none(), "a stranger's or an untagged packet was relayed");
