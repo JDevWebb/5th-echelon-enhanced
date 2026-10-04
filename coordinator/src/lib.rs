@@ -31,6 +31,8 @@
 //! * `POST /v1/stats`, `GET /v1/leaderboards`, `POST /v1/leaderboards/players` and
 //!   `POST /v1/stats/players`: each person's stats across the network, and the global
 //!   leaderboards (see [`stats`]).
+//! * `POST /v1/reports`: a player's feedback or problem report, forwarded by the server they
+//!   played on, with their logs and the server's (see [`reports`]).
 //! * Heartbeat answers carry the release a server should install (see
 //!   [`updates`]); servers that don't keep up leave the directory.
 
@@ -38,6 +40,7 @@ pub mod admin;
 pub mod alerts;
 pub mod metrics;
 pub mod players;
+pub mod reports;
 pub mod stats;
 pub mod updates;
 
@@ -365,6 +368,14 @@ pub struct Coordinator {
     stat_posts: Limit,
     stat_reads: Limit,
     pub(crate) stats_cache: tokio::sync::Mutex<stats::Cache>,
+    /// Per server: new reports (see [`reports`]).
+    report_posts: Limit,
+    /// The folder the database is in: reports' files go under it.
+    files_dir: std::path::PathBuf,
+    /// The most the reports' files may take ([`reports::STORAGE_CAP`]; less in tests).
+    pub(crate) report_storage_cap: std::sync::atomic::AtomicU64,
+    /// Report alerts not posted yet, past a few a minute.
+    pub(crate) report_batch: std::sync::Mutex<reports::Batcher>,
 }
 
 type Shared = Arc<Coordinator>;
@@ -452,6 +463,13 @@ impl Coordinator {
             stat_posts: Limit::per(600, Duration::from_secs(3600)),
             stat_reads: Limit::new(120),
             stats_cache: tokio::sync::Mutex::new(stats::Cache::default()),
+            report_posts: Limit::per(reports::PER_HOUR, Duration::from_secs(3600)),
+            files_dir: std::path::Path::new(path)
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map_or_else(|| std::path::PathBuf::from("."), std::path::Path::to_path_buf),
+            report_storage_cap: std::sync::atomic::AtomicU64::new(reports::STORAGE_CAP),
+            report_batch: std::sync::Mutex::new(reports::Batcher::default()),
         };
         c.claim_linked_names().await?;
         c.load_live().await?;
@@ -593,6 +611,7 @@ impl Coordinator {
             .route("/v1/stats/players", post(stats_of_players))
             .route("/v1/leaderboards", get(leaderboards))
             .route("/v1/leaderboards/players", post(leaderboard_players))
+            .route("/v1/reports", post(report).layer(DefaultBodyLimit::max(reports::MAX_BODY)))
             .layer(DefaultBodyLimit::max(MAX_BODY))
             .with_state(self)
     }
@@ -1224,6 +1243,52 @@ async fn stats_report(State(c): State<Shared>, headers: HeaderMap, body: axum::b
     }
     match c.apply_stats(&server, &epoch.to_ascii_lowercase(), writes).await {
         Ok(last_id) => ok(json!({ "ok": true, "last_id": last_id })),
+        Err(e) => internal(e),
+    }
+}
+
+/// A player's report, forwarded by their server (see [`reports`]).
+async fn report(State(c): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {
+    let server = match c.server(&headers).await {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let v: Value = match parse(&body) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    let Some(id) = v["id"].as_str().filter(|id| reports::valid_id(id)) else {
+        return fail(StatusCode::BAD_REQUEST, "id is 32 hex digits");
+    };
+    // The same report again (a retry): taken already.
+    match c.report_exists(id).await {
+        Ok(true) => return ok(json!({ "ok": true })),
+        Ok(false) => {}
+        Err(e) => return internal(e),
+    }
+    if !c.report_posts.check(&server) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "too many reports this hour; send the rest later");
+    }
+    // Decompressing the files to check them is work for a blocking thread.
+    let checked = match tokio::task::spawn_blocking(move || reports::check(&v, identity::now())).await {
+        Ok(r) => r,
+        Err(e) => return internal(e),
+    };
+    let r = match checked {
+        Ok(r) => r,
+        Err(why) => {
+            tracing::warn!("server {server}: refused a report: {why}");
+            return fail(StatusCode::BAD_REQUEST, &why);
+        }
+    };
+    match c.store_report(&server, &r).await {
+        Ok(true) => {
+            tracing::info!("server {server}: a report from {} ({} files)", r.player_name, r.files.len());
+            c.publish(admin::live::Event::Report);
+            c.alert_report(&server, &r).await;
+            ok(json!({ "ok": true }))
+        }
+        Ok(false) => ok(json!({ "ok": true })),
         Err(e) => internal(e),
     }
 }

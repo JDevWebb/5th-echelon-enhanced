@@ -154,9 +154,33 @@ The coordinator checks every minute. An alert opens when its condition starts, u
 | Traffic allowance | 80% or 100% of the month's allowance, or on course to pass it |
 | Update | A server's update failed or was rolled back, or a rollout halted |
 
-Open alerts show on the Overview and as a badge on **Alerts**. To have them posted to a chat, paste a Discord or Slack incoming webhook under **Alerts**: it must be https and reach a public address. Changing it asks for your second factor, and **Send a test** checks it.
+Open alerts show on the Overview and as a badge on **Alerts**. To have them posted to a chat, paste a Discord or Slack incoming webhook under **Alerts**: it must be https and reach a public address. Changing it asks for your second factor, and **Send a test** checks it. Players' reports can go there too (see [Player reports](#player-reports)).
 
 The game reports maps and game modes as numbers. Name them under **Playlists** as you identify them; the names apply everywhere.
+
+## Player reports
+
+After a game session with problems (a failed join, a relayed connection, a crash, a refused sign-in, a different version of the game, a disconnect), and now and then after a normal one, the launcher asks the player how it went. They can rate it, tick what went wrong (couldn't join, lag, crash, connection, game version, sign-in, other) and say what happened, and choose whether to attach their logs. The launcher sends the report to the server they played on, which adds its own log lines about that player and a summary of their recent session, and forwards it to its coordinator (`POST /v1/reports`, see [friends.md](friends.md#the-coordinators-api)).
+
+**What's in a report:**
+- the player's account number, name and identity on that server;
+- their rating, the problems they ticked and their comment (up to 2,000 characters);
+- why the launcher asked (e.g. `failed_join`, `relayed`, `panic`, `exit_code`, `routine`);
+- the launcher's and client's versions, the game's build, Windows version and language;
+- the server's summary of their session, and its log lines about them;
+- the logs they chose to attach: up to 8 files, 4 MB each.
+
+**Redaction happens on the player's PC:** the launcher redacts the logs before they leave it, and attaches them only if the player agrees. The coordinator stores what it's sent as it is; it checks sizes and names, and that each file decompresses to what it says.
+
+**Where it's kept:**
+- The report in the coordinator's database; the files on disk in its data folder (`reports/<report id>/<name>.gz`, gzip as received; `/var/lib/5th-echelon-coordinator` with the installer).
+- Reports and their files are kept 90 days, removed with the hourly rollup.
+- The files take at most 2 GB: past that, the oldest reports' files go first, and their reports stay (the page says the files were removed).
+- Each server may send 120 new reports an hour.
+
+**In the admin UI, under Reports:** the open reports (or resolved, or all), filtered by server or problem, or searched by player, comment, identity or report id; the badge on **Reports** counts the open ones. A report shows what the player said, why they were asked, their client, a link to their account under **Players**, the server's summary and log lines, each file (view it in the page, the first 2 MB, with a search; or download it), and the player's other reports (the same account, or the same identity on any server). **Resolve** or **Reopen** it with a note; **Delete** removes it and its files (it asks for your second factor again if the last was more than 10 minutes ago). All three are in the audit log.
+
+**Alerts:** with the alert webhook set (see Alerts), each new report is posted to it, e.g. "📝 Report from ijsman5530 on eu1: couldn't join, lag — "couldn't join my friend"", with a link to it. Under **Alerts › Player reports**: post the reports rated bad or with problems ticked (the default), all of them, or none. Past 5 in a minute, the rest wait and go together in one message ("7 new reports …") a minute later. A player's words can't ping anyone: mentions are broken up.
 
 ## The admin UI
 
@@ -253,6 +277,7 @@ The dashboards keep themselves current: the page holds a WebSocket to the coordi
 - **Audit log and Admin activity:** new entries appear as they happen.
 - **Live figures and Live events:** players online and bandwidth now, from every server's 10-second pulse; events like "6 players signed in" or "a match started" are counts only.
 - **Alerts:** appear and resolve as the coordinator raises them.
+- **Reports:** new players' reports appear in the list, and the badge on **Reports** follows.
 
 The badge at the top right says whether it's live. The connection uses the same sign-in as the rest of the admin UI: it ends when the session does, and only the admin UI's own site may open it (the browser's `Origin` is checked). Behind Caddy and Cloudflare, WebSockets pass through as they are.
 
@@ -261,11 +286,13 @@ The badge at the top right says whether it's live. The connection uses the same 
 **What the admin UI shows:**
 - counts, cities, and the names of admins;
 - each server's accounts: names, identities, when they played, bans; never players' addresses or passwords.
+- players' reports: what they said, and their logs and the server's.
 
 **What's stored:**
 - Players' locations are city counts.
 - Each server's accounts and play sessions, as it reports them (see Metrics), so admins can manage players.
 - The per-minute "who played" ids are a per-server keyed hash of the account number, with minutes played per day; the reports count players per server, so someone playing on two servers counts twice.
 - Launchers' ping reports keep only the city and the round trip.
+- Players' reports, with the logs they chose to attach (redacted on their PC) and their server's log lines about them, for 90 days (see [Player reports](#player-reports)).
 
 IP geolocation by [DB-IP](https://db-ip.com), CC BY 4.0. The world map is [Natural Earth](https://www.naturalearthdata.com) (public domain), via [world-atlas](https://github.com/topojson/world-atlas) (ISC).
