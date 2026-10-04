@@ -216,6 +216,12 @@ The server keeps its credentials in `federation.key` once it has joined. Its log
 | `POST /v1/actions/<id>` `{ok, message, password}` | a member | what came of an action; only for its own actions (`404` otherwise). `password` only for reset_password. A rename that worked moves the player's link and reserved name to the new name |
 | `POST /v1/pings` `{pings: [{server, ms}]}` | anyone (launchers) | a launcher's pings to the directory's servers; one sample per address and server every 10 minutes counts |
 | `GET /v1/info` | anyone | name, version, number of servers |
+| `POST /v1/stats` `{epoch, writes: [{id, global_id, name, board, context, stat, value}]}` | a member | the stat writes the game sent it, in order, for the global stats and leaderboards. `id` ascends per `epoch` (16 hex digits, random per server database: a reset database starts a new epoch). Each write after the last applied for that server and epoch is applied once, added up the way its board says (`stat_boards`), in one transaction; invalid ones (unknown board, context or stat, ratio stats, values past ±10¹², a `global_id` that isn't 1 to 128 letters and digits) are skipped and count as done. The latest `name` (up to 64 printable characters) is shown for that identity. Up to 1,000 writes (1 MB), `413` past that; 600 requests an hour. Answers `{ok, last_id}`: the server may forget its writes up to `last_id` |
+| `GET /v1/leaderboards?count=` | a member | the top `count` (1 to 100, default 100) of every leaderboard in every context, empty lists left out: `{lists: [{leaderboard, context, total, top: [{global_id, name, rank, value, stats: [[stat, value]]}]}]}`, `stats` being that person's stats on the leaderboard's board and context. Ranked by value (lowest first for best times, which count only once set), then who got there first. Made at most once a minute |
+| `POST /v1/leaderboards/players` `{ids}` | a member | up to 200 identities: `{ranks: [{global_id, name, leaderboard, context, rank, value, stats}], totals: [{leaderboard, context, total}]}`, every list each is on and the size of every list that isn't empty |
+| `POST /v1/stats/players` `{ids}` | a member | up to 200 identities: everything kept for them, `{stats: [{global_id, board, context, stat, value}]}` |
+
+The stats calls share 120 lookups a minute per server (`429` past that).
 
 A member's calls check its secret before the body is read; a body that doesn't parse gets `400` "not a valid request", whatever the call.
 

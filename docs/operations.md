@@ -106,6 +106,7 @@ A member server drops out of the server directory, and players' launchers stop o
 - Samples are kept for a week.
 - Hourly summaries are kept for 400 days, for the 30-day and one-year views. They keep each hour's bytes in and out, relayed bytes, peak rate and five-minute rates, so the bandwidth report stays exact after the samples are gone.
 - Players per day (by anonymised id, with minutes played), play sessions, finished matches, admins' player actions and resolved alerts are kept for 400 days too.
+- Players' global stats (for the leaderboards) are kept for good, until an admin removes someone's.
 - The live points and events (from the pulses) are kept a day, so restarting the coordinator keeps the live view.
 
 ### Reports
@@ -130,6 +131,14 @@ Pick a player for their sessions, time played each day of the last 30, their oth
 | Delete | Removes the account for good (type the name to confirm) |
 
 The server carries an action out when it next sends its pulse (within 10 seconds) and says how it went; the page follows it. An action the server doesn't answer within an hour expires. Every action is in the audit log; ban, reset password, rename and delete ask for your second factor again if the last was more than 10 minutes ago.
+
+### Leaderboards
+
+Servers forward every stat the game writes to the coordinator, which keeps each person's stats across the network: one entry per identity, however many servers they play on (see [friends.md](friends.md#the-coordinators-api)). The stats are kept for good.
+
+**Players & map › Leaderboards** shows the top 100 of a global leaderboard: pick the leaderboard (solo and co-op high scores and best times, Spies vs Mercs total score, the ladders' time played, wins, deaths from above, takedowns, kills, total score and objectives) and the mission, game mode or ladder; each shows how many it ranks. Best times read m:ss, time played in hours.
+
+**Remove stats** (on a row) removes everything the network keeps for that person, on every leaderboard: a cheater's, say. It asks for your second factor again if the last was more than 10 minutes ago, and is in the audit log. It can't be undone. Their servers keep their own copy, and games they play afterwards count again, so ban them too if they shouldn't come back.
 
 ### Alerts
 
@@ -209,7 +218,8 @@ The admin UI is served by the coordinator on its own port (127.0.0.2:8701, a loo
 - sign-in restrictions;
 - rollbacks;
 - removing servers;
-- banning, renaming or deleting a player, and resetting their password.
+- banning, renaming or deleting a player, and resetting their password;
+- removing a person's stats.
 
 **Failed sign-ins:**
 - Five in a row lock the account for 15 minutes, doubling after each further failure.
