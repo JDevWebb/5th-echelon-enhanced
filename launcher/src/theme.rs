@@ -192,13 +192,30 @@ pub fn secondary(text: &str) -> egui::Button<'static> {
     egui::Button::new(text.to_string()).corner_radius(10).min_size(egui::vec2(0.0, 38.0))
 }
 
-/// The three night-vision lenses, the launcher's mark.
-pub fn mark(ui: &mut egui::Ui, height: f32) {
-    let r = height / 2.0;
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(height * 3.0 + r, height), egui::Sense::hover());
-    for i in 0..3 {
-        let c = egui::pos2(rect.left() + r + i as f32 * (height + r / 2.0), rect.center().y);
-        ui.painter().circle_filled(c, r, ACCENT);
+/// The launcher's mark (docs/logo.svg): five units in an echelon formation, the fifth
+/// out in front, on a tile `size` points square.
+pub fn mark(ui: &mut egui::Ui, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    let at = |x: f32, y: f32| rect.min + egui::vec2(x, y) * (size / 100.0);
+    let tile = egui::Rect::from_min_max(at(4.0, 4.0), at(96.0, 96.0));
+    let painter = ui.painter();
+    painter.rect(
+        tile,
+        size * 0.18,
+        Color32::from_rgb(0x14, 0x1c, 0x20),
+        Stroke::new((size / 50.0).max(1.0), LINE),
+        egui::StrokeKind::Inside,
+    );
+    let shades = [
+        Color32::from_rgb(0x4a, 0x5a, 0x62),
+        Color32::from_rgb(0x5d, 0x70, 0x79),
+        Color32::from_rgb(0x73, 0x87, 0x8f),
+        MUTED,
+        ACCENT,
+    ];
+    for (i, shade) in shades.into_iter().enumerate() {
+        let (x, y) = (16.0 + 14.0 * i as f32, 68.0 - 14.0 * i as f32);
+        painter.rect_filled(egui::Rect::from_min_max(at(x, y), at(x + 14.0, y + 14.0)), size * 0.02, shade);
     }
 }
 

@@ -375,7 +375,7 @@ fn wizard(ui: &mut egui::Ui, step: usize, body: impl FnOnce(&mut egui::Ui)) {
                                 ui.set_min_height(470.0);
                             }
                             ui.vertical(|ui| {
-                                theme::mark(ui, 12.0);
+                                theme::mark(ui, 34.0);
                                 ui.add_space(14.0);
                                 ui.label(theme::display("Get online in a minute", 28.0));
                                 ui.add_space(6.0);

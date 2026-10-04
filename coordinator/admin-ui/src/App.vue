@@ -1,5 +1,5 @@
 <template>
-  <div v-if="session.view === 'loading'" class="boot"><span class="goggles"><i></i><i></i><i></i></span></div>
+  <div v-if="session.view === 'loading'" class="boot"><span class="mark"><i></i><i></i><i></i><i></i><i></i></span></div>
   <Login v-else-if="session.view === 'login'" />
   <SecondFactor v-else-if="session.view === 'password'" />
   <Setup v-else-if="session.view === 'setup'" />

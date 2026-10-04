@@ -417,7 +417,7 @@ impl App {
             )
             .show(ctx, |ui| {
                 ui.vertical_centered(|ui| {
-                    theme::mark(ui, 12.0);
+                    theme::mark(ui, 34.0);
                     ui.add_space(22.0);
                     for (view, icon, label) in [
                         (View::Play, theme::Icon::Play, "Play"),

@@ -95,15 +95,24 @@ code, .mono { font-family: var(--mono); font-size: 12.5px; }
 
 /* Boot */
 .boot { display: grid; place-items: center; height: 100vh; }
-.goggles { display: flex; gap: 10px; }
-.goggles i {
-  width: 12px; height: 12px; border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 14px var(--accent);
-  animation: pulse 1.4s ease-in-out infinite;
+/* The mark (docs/logo.svg): five units in an echelon formation, the fifth in front. */
+.mark {
+  position: relative; display: inline-block; flex-shrink: 0;
+  width: 64px; height: 64px; box-sizing: border-box;
+  border-radius: 18%; background: #141c20; border: 1px solid #2b363c;
 }
-.goggles i:nth-child(2) { animation-delay: 0.2s; }
-.goggles i:nth-child(3) { animation-delay: 0.4s; }
+.mark i { position: absolute; width: 15.2%; height: 15.2%; border-radius: 2px; }
+.mark i:nth-child(1) { left: 13%; top: 69.6%; background: #4a5a62; }
+.mark i:nth-child(2) { left: 28.3%; top: 54.3%; background: #5d7079; }
+.mark i:nth-child(3) { left: 43.5%; top: 39.1%; background: #73878f; }
+.mark i:nth-child(4) { left: 58.7%; top: 23.9%; background: #93a4ad; }
+.mark i:nth-child(5) { left: 73.9%; top: 8.7%; background: var(--accent); }
+.boot .mark i { animation: pulse 1.4s ease-in-out infinite; }
+.boot .mark i:nth-child(2) { animation-delay: 0.15s; }
+.boot .mark i:nth-child(3) { animation-delay: 0.3s; }
+.boot .mark i:nth-child(4) { animation-delay: 0.45s; }
+.boot .mark i:nth-child(5) { animation-delay: 0.6s; }
+@media (prefers-reduced-motion: reduce) { .boot .mark i { animation: none; } }
 @keyframes pulse { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
 
 /* Shell */
@@ -116,8 +125,7 @@ code, .mono { font-family: var(--mono); font-size: 12.5px; }
   position: sticky; top: 0; height: 100vh;
 }
 .brand { display: flex; align-items: center; gap: 10px; padding: 2px 8px 8px; }
-.brand .goggles { gap: 4px; }
-.brand .goggles i { width: 7px; height: 7px; animation: none; opacity: 0.95; box-shadow: 0 0 8px var(--accent); }
+.brand .mark { width: 30px; height: 30px; }
 .brand b { font: 700 15px var(--display); letter-spacing: 0.05em; text-transform: uppercase; }
 .brand div span { display: block; font-size: 11px; color: var(--muted); }
 .nav { display: flex; flex-direction: column; gap: 2px; }
@@ -275,7 +283,7 @@ input.code { font: 600 22px var(--mono); letter-spacing: 0.3em; text-align: cent
 .gate .card { width: 100%; max-width: 400px; background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 28px; box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 18px; }
 .gate .card.wide { max-width: 520px; }
 .gate .brand { padding: 0; }
-.gate .brand .goggles i { width: 9px; height: 9px; }
+.gate .brand .mark { width: 40px; height: 40px; }
 .divider { display: flex; align-items: center; gap: 10px; color: var(--faint); font-size: 12px; }
 .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .err { color: var(--bad); font-size: 13px; }

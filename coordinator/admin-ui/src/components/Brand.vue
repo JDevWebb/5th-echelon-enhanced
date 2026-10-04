@@ -1,6 +1,6 @@
 <template>
   <div class="brand">
-    <span class="goggles"><i></i><i></i><i></i></span>
+    <span class="mark"><i></i><i></i><i></i><i></i><i></i></span>
     <div><b>SCBL Network</b><span>{{ sub }}</span></div>
   </div>
 </template>
