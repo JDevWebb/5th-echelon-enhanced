@@ -1148,6 +1148,20 @@ impl Storage {
         Ok(n > 0)
     }
 
+    /// Whether `host` hosts a session anyone may join: one public matchmaking finds
+    /// ([`Self::search_sessions`]), not an invite-only or private one.
+    pub fn hosts_public_session(&self, host: u32) -> Result<bool> {
+        let n: i64 = run(sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM game_sessions g WHERE g.creator_id = ? AND g.destroyed_at IS NULL
+               AND EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = g.creator_id)
+               AND NOT EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.invite_only = 1)
+               AND NOT {PRIVATE_SEATS_ONLY}"
+        ))
+        .bind(host)
+        .fetch_one(&self.pool))??;
+        Ok(n > 0)
+    }
+
     /// The attributes of the live sessions `host` opened and is in together with `member`.
     pub fn rooms_of_host_with(&self, host: u32, member: u32) -> Result<Vec<String>> {
         let rows: Vec<Option<String>> = run(sqlx::query_scalar(

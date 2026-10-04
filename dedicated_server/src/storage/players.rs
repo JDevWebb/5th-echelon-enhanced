@@ -340,6 +340,33 @@ mod tests {
     }
 
     #[test]
+    fn only_public_sessions_open_their_host_to_probes() {
+        let (storage, dir) = temp_storage("public-host");
+        let (host, other) = (player(&storage, "HostP"), player(&storage, "OtherP"));
+        let coop = "113 => 0;109 => 0;110 => 0;106 => 3564829;107 => 3909881133;108 => 0;3 => 2;4 => 0;101 => 3578398534;102 => 3;103 => 0;105 => 2;112 => 2";
+        let private = "113 => 0;109 => 0;110 => 0;106 => 3564829;107 => 3909881133;108 => 0;3 => 0;4 => 2;101 => 3578398534;102 => 3;103 => 0;105 => 2;112 => 2";
+
+        let private_room = storage.create_game_session(host, 1, private.into()).unwrap();
+        storage.add_participants(1, private_room, vec![], vec![host]).unwrap();
+        assert!(!storage.hosts_public_session(host).unwrap(), "private seats only");
+
+        let public = storage.create_game_session(host, 1, coop.into()).unwrap();
+        assert!(!storage.hosts_public_session(host).unwrap(), "not in it yet");
+        storage.add_participants(1, public, vec![], vec![host]).unwrap();
+        assert!(storage.hosts_public_session(host).unwrap());
+        assert!(!storage.hosts_public_session(other).unwrap());
+
+        // Announced invite-only: not public, whatever its seats.
+        crate::storage::run(storage.set_advertised_session_async(host, Some(public), true, &[])).unwrap().unwrap();
+        assert!(!storage.hosts_public_session(host).unwrap());
+        crate::storage::run(storage.set_advertised_session_async(host, Some(public), false, &[])).unwrap().unwrap();
+        assert!(storage.hosts_public_session(host).unwrap());
+        storage.delete_game_session(host, 1, public).unwrap();
+        assert!(!storage.hosts_public_session(host).unwrap(), "ended");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn matches_count_once_a_second_player_is_in() {
         let (storage, dir) = temp_storage("matches");
         let (a, b, c) = (player(&storage, "MatchA"), player(&storage, "MatchB"), player(&storage, "MatchC"));

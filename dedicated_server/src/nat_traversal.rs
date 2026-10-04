@@ -75,7 +75,8 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
         let user_id = login_required(&*ci)?;
         info!(logger, "Probe initiation requested: {request:?}");
         // A probe makes another player's game send to an address: only to players in a
-        // session with the caller, a few at a time, and only to the caller's own address.
+        // session with the caller or hosting a public one, a few at a time, and only to the
+        // caller's own address.
         if request.url_target_list.len() > MAX_PROBE_TARGETS || !crate::rate_limit::game_requests().check(user_id) {
             return Err(Error::AccessDenied);
         }
@@ -138,9 +139,13 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
                 continue;
             };
             let addr = *target.address();
-            let shares_session = target.user_id.is_some_and(|other| self.storage.share_session(user_id, other).unwrap_or(false));
-            if !shares_session {
-                warn!(logger, "Not probing {url}: not in a session with {user_id}");
+            // A player in a session with the caller, or hosting one the caller may join anyway:
+            // matchmaking asks for the probe to a host it found before it joins.
+            let may_probe = target
+                .user_id
+                .is_some_and(|other| self.storage.share_session(user_id, other).unwrap_or(false) || self.storage.hosts_public_session(other).unwrap_or(false));
+            if !may_probe {
+                warn!(logger, "Not probing {url}: not in a session with {user_id}, nor hosting a public one");
                 continue;
             }
             info!(logger, "Sending probe to {url} ({addr})\n{payload:x?}");
