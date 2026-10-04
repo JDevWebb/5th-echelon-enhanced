@@ -12,8 +12,8 @@
 //! `coordinator admin add`; they choose a password and must add a second
 //! factor before anything else. Changes that matter (admins, sign-in
 //! restrictions, rollbacks, removing servers, banning, renaming or deleting
-//! a player, resetting their password, removing a person's stats) want a
-//! second factor proved in the last ten minutes.
+//! a player, resetting their password, removing a person's stats, deleting a
+//! player's report) want a second factor proved in the last ten minutes.
 //!
 //! Every request (the page too) must come from an allowed network and
 //! country, when those are set. Behind Cloudflare, the address and country
@@ -24,6 +24,7 @@ pub mod auth;
 mod leaderboards;
 pub mod live;
 mod players;
+mod reports;
 pub mod webauthn;
 
 use std::net::IpAddr;
@@ -204,8 +205,10 @@ pub fn router(c: Shared) -> Router {
         .route("/alerts", get(alerts))
         .route("/alerts/webhook", axum::routing::put(set_webhook))
         .route("/alerts/test", post(test_webhook))
+        .route("/alerts/reports", axum::routing::put(set_report_alerts))
         .route("/live", get(live::live))
         .merge(players::routes())
+        .merge(reports::routes())
         .merge(leaderboards::routes());
     Router::new()
         .route("/", get(page))
@@ -1448,6 +1451,7 @@ impl Coordinator {
             "servers": servers,
             "peak_24h": peak,
             "alerts": self.open_alerts().await?,
+            "open_reports": self.open_reports().await?,
             "attribution": geo::ATTRIBUTION,
         }))
     }
@@ -1645,6 +1649,30 @@ async fn set_webhook(State(c): State<Shared>, Extension(client): Extension<Clien
                 .unwrap_or_else(|| "none".into());
             c.audit(&s.username, Some(&client), "set the alert webhook", &host).await;
             ok(json!({}))
+        }
+        Err(e) => internal(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct ReportAlerts {
+    mode: String,
+}
+
+/// Which new player reports go to the webhook: off, problems (rated bad or with problems
+/// ticked) or all.
+async fn set_report_alerts(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Json(req): Json<ReportAlerts>) -> Response {
+    let s = match c.full(&headers, &client).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    if !crate::reports::ALERT_MODES.contains(&req.mode.as_str()) {
+        return fail(StatusCode::BAD_REQUEST, "report alerts are off, problems or all");
+    }
+    match c.set_setting(crate::reports::ALERTS_SETTING, &req.mode).await {
+        Ok(()) => {
+            c.audit(&s.username, Some(&client), "set report alerts", &req.mode).await;
+            ok(json!({ "report_alerts": req.mode }))
         }
         Err(e) => internal(e),
     }

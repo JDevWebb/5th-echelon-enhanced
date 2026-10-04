@@ -58,13 +58,14 @@
         </span>
       </div>
     </section>
-    <PlayerDetail v-if="open" :server="open.server" :id="open.id" :names="names" @close="open = null" @changed="reload" @open="pick" />
+    <PlayerDetail v-if="open" :server="open.server" :id="open.id" :names="names" @close="close" @changed="reload" @open="pick" />
   </div>
 </template>
 
 <script setup>
 // Every server's players, searchable; picking one opens their detail beside the list.
 import { computed, ref, watch } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 import PlayerDetail from './PlayerDetail.vue';
 import { api } from '../lib/api.js';
 import { useLoad } from '../lib/data.js';
@@ -80,6 +81,12 @@ const banned = ref(false);
 const sort = ref('last_seen');
 const page = ref(0);
 const open = ref(null);
+// A player's own address (#/players/<server>/<id>, e.g. from a report) opens their detail.
+const route = useRoute();
+const router = useRouter();
+watch(() => [route.params.server, route.params.id], ([sv, id]) => {
+  if (sv && id && /^\d+$/.test(id)) open.value = { server: sv, id: Number(id) };
+}, { immediate: true });
 
 // Typing waits a moment before searching.
 const search = ref('');
@@ -91,7 +98,14 @@ const query = computed(() => new URLSearchParams({
   q: search.value, server: server.value, online: online.value ? '1' : '', banned: banned.value ? '1' : '', sort: sort.value, page: String(page.value),
 }).toString());
 const { data, error, reload } = useLoad(() => api('GET', `/players?${query.value}`), () => query.value);
-const pick = p => { open.value = { server: p.server, id: p.id }; };
+const pick = p => {
+  open.value = { server: p.server, id: p.id };
+  router.replace({ path: `/players/${encodeURIComponent(p.server)}/${p.id}`, query: route.query });
+};
+const close = () => {
+  open.value = null;
+  router.replace({ path: '/players', query: route.query });
+};
 </script>
 
 <style scoped>

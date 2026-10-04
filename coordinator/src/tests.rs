@@ -613,6 +613,7 @@ async fn strangers_learn_nothing_from_bad_bodies() {
         "/v1/names/claim",
         "/v1/players",
         "/v1/actions/1",
+        "/v1/reports",
     ] {
         let (status, v) = t.call("POST", path, None, Some(json!({ "nonsense": 1 }))).await;
         assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}: {v}");
@@ -1346,4 +1347,361 @@ async fn admins_see_leaderboards_and_remove_stats() {
             .all(|l| l["top"].as_array().unwrap().iter().all(|p| p["global_id"] != "CHEAT")),
         "{after}"
     );
+}
+
+/// `text` gzipped and in base64, as a report's file carries it.
+fn gz64(text: &[u8]) -> String {
+    use std::io::Write as _;
+
+    use base64::Engine as _;
+    let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    e.write_all(text).unwrap();
+    base64::engine::general_purpose::STANDARD.encode(e.finish().unwrap())
+}
+
+/// A report from player 1011 on its server, with one file.
+fn report_body(id: &str) -> Value {
+    json!({
+        "id": id,
+        "created_at": identity::now() - 60,
+        "player": { "id": 1011, "name": "ijsman5530", "identity": "GV7ABC" },
+        "rating": "bad",
+        "problems": ["join", "lag"],
+        "comment": "couldn't join my friend",
+        "triggers": ["failed_join", "relayed"],
+        "client": { "launcher": "0.4.1", "client": "0.4.1", "build": "Steam DX11", "os": "Windows 11", "language": "pt-BR" },
+        "summary": { "session": { "joins_failed": 2 }, "relayed": true },
+        "files": [{ "name": "bl-tracing.log", "gzip_base64": gz64(b"line one\nline two\n"), "size": 18 }],
+        "server_log": "12:00:01 1011 join refused\n",
+    })
+}
+
+fn report_id(n: u32) -> String {
+    format!("{n:032x}")
+}
+
+#[tokio::test]
+async fn reports_are_taken_once_and_checked() {
+    let t = start("reports-ingest").await;
+    let body = report_body(&report_id(1));
+    let (status, _) = t.call("POST", "/v1/reports", None, Some(body.clone())).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "members only");
+    let a = t.join("server-a").await;
+    let (status, v) = t.call("POST", "/v1/reports", Some(&a), Some(body.clone())).await;
+    assert_eq!((status, &v), (StatusCode::OK, &json!({ "ok": true })));
+    // Stored as received: gzip on disk under the coordinator's folder.
+    let stored = std::fs::read(t.dir.join("reports").join(report_id(1)).join("bl-tracing.log.gz")).unwrap();
+    assert_eq!(reports::gunzip(&stored, 100).unwrap(), b"line one\nline two\n");
+    // The same report again (a retry) is the same report.
+    let (status, v) = t.call("POST", "/v1/reports", Some(&a), Some(body.clone())).await;
+    assert_eq!((status, &v), (StatusCode::OK, &json!({ "ok": true })));
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM player_reports").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(n, 1);
+    let server: String = sqlx::query_scalar("SELECT server_id FROM player_reports").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(server, "server-a", "the server is the one whose secret it is");
+
+    let big = vec![b'x'; reports::MAX_FILE_SIZE + 1];
+    let file = |name: &str, data: &[u8], size: usize| json!({ "name": name, "gzip_base64": gz64(data), "size": size });
+    let mut n = 100;
+    for (field, value, why) in [
+        ("id", json!("not-hex"), "id"),
+        ("created_at", json!(identity::now() + 3 * 86_400), "created_at"),
+        ("created_at", json!(identity::now() - 100 * 86_400), "created_at"),
+        ("player", json!({ "id": -1, "name": "x" }), "player.id"),
+        ("player", json!({ "id": 1, "name": "" }), "player.name"),
+        ("player", json!({ "id": 1, "name": "a\u{202e}b" }), "player.name"),
+        ("player", json!({ "id": 1, "name": "x", "identity": "no spaces" }), "player.identity"),
+        ("rating", json!("meh"), "rating"),
+        ("problems", json!(["join", "explode"]), "problems"),
+        ("problems", json!("join"), "problems"),
+        ("comment", json!("c".repeat(2001)), "comment"),
+        ("triggers", json!(vec!["t"; 17]), "triggers"),
+        ("triggers", json!(["t".repeat(41)]), "triggers"),
+        ("client", json!({ "os": "o".repeat(65) }), "client"),
+        ("client", json!({ "bad key": "x" }), "client"),
+        ("client", json!({ "os": 11 }), "client"),
+        ("summary", json!([1, 2]), "summary"),
+        ("summary", json!({ "big": "s".repeat(64 * 1024) }), "summary"),
+        ("server_log", json!("l".repeat(1024 * 1024 + 1)), "server_log"),
+        ("files", json!([file("../evil", b"x", 1)]), "name"),
+        ("files", json!([file("a b.log", b"x", 1)]), "name"),
+        ("files", json!([file("a.log", b"x", 1), file("a.log", b"y", 1)]), "same name"),
+        ("files", json!((0..9).map(|i| file(&format!("f{i}"), b"x", 1)).collect::<Vec<_>>()), "at most 8"),
+        ("files", json!([file("a.log", b"four", 5)]), "size isn't"),
+        ("files", json!([file("a.log", &big, big.len())]), "4 MB"),
+        ("files", json!([file("a.log", &big, 4)]), "4 MB"),
+        ("files", json!([{ "name": "a.log", "gzip_base64": "%%%", "size": 1 }]), "base64"),
+        (
+            "files",
+            json!([{ "name": "a.log", "gzip_base64": "aGVsbG8gdGhlcmUgdGhpcyBpc24ndCBnemlw", "size": 1 }]),
+            "gzip",
+        ),
+        ("files", json!([{ "name": "a.log", "gzip_base64": "", "size": 0 }]), "gzip"),
+    ] {
+        n += 1;
+        let mut body = report_body(&report_id(n));
+        body[field] = value;
+        let (status, v) = t.call("POST", "/v1/reports", Some(&a), Some(body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{field}: {v}");
+        assert!(v["error"].as_str().unwrap().contains(why), "{field}: {v}");
+    }
+    let (status, _) = t.call("POST", "/v1/reports", Some(&a), Some(json!("nonsense"))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM player_reports").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(n, 1, "nothing refused was kept");
+    // The least a report needs, and characters that hide in text taken out of what's kept.
+    let mut lean = json!({ "id": report_id(2).to_uppercase(), "created_at": identity::now(), "player": { "id": 5, "name": "Kiwi" } });
+    lean["comment"] = json!("fine\u{202e} really");
+    let (status, v) = t.call("POST", "/v1/reports", Some(&a), Some(lean)).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let comment: String = sqlx::query_scalar("SELECT comment FROM player_reports WHERE id = ?")
+        .bind(report_id(2))
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(comment, "fine really");
+}
+
+#[tokio::test]
+async fn reports_are_rate_limited_per_server() {
+    let t = start("reports-limit").await;
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    let lean = |n: u32| json!({ "id": report_id(n), "created_at": identity::now(), "player": { "id": 5, "name": "Kiwi" } });
+    for n in 0..reports::PER_HOUR as u32 {
+        assert_eq!(t.call("POST", "/v1/reports", Some(&a), Some(lean(n))).await.0, StatusCode::OK, "{n}");
+    }
+    assert_eq!(t.call("POST", "/v1/reports", Some(&a), Some(lean(1000))).await.0, StatusCode::TOO_MANY_REQUESTS);
+    // A retry of one it has is still answered; another server has its own allowance.
+    assert_eq!(t.call("POST", "/v1/reports", Some(&a), Some(lean(3))).await.0, StatusCode::OK);
+    assert_eq!(t.call("POST", "/v1/reports", Some(&b), Some(lean(1001))).await.0, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn admins_read_resolve_and_delete_reports() {
+    let t = start("reports-admin").await;
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    let b = t.join("server-b").await;
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&a),
+        Some(json!({ "full": true, "players": [player(1011, "ijsman5530", Some("GV7ABC"))] })),
+    )
+    .await;
+    let (one, two, three, four) = (report_id(1), report_id(2), report_id(3), report_id(4));
+    let mut first = report_body(&one);
+    first["created_at"] = json!(identity::now() - 600);
+    first["comment"] = json!("c".repeat(300));
+    t.call("POST", "/v1/reports", Some(&a), Some(first)).await;
+    t.call("POST", "/v1/reports", Some(&a), Some(report_body(&two))).await;
+    // The same person on another server (their identity), and someone else.
+    let mut elsewhere = report_body(&three);
+    elsewhere["player"] = json!({ "id": 7, "name": "ijsman", "identity": "GV7ABC" });
+    elsewhere["problems"] = json!(["crash"]);
+    elsewhere["created_at"] = json!(identity::now() - 30);
+    t.call("POST", "/v1/reports", Some(&b), Some(elsewhere)).await;
+    let mut other = report_body(&four);
+    other["player"] = json!({ "id": 8, "name": "Kiwi", "identity": null });
+    other["rating"] = json!("good");
+    other["problems"] = json!([]);
+    other["comment"] = json!("great games");
+    t.call("POST", "/v1/reports", Some(&b), Some(other)).await;
+
+    assert_eq!(admin_call(&r, "GET", "/api/reports", "", None).await.0, StatusCode::UNAUTHORIZED);
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    let (status, v) = admin_call(&r, "GET", "/api/reports", &cookie, None).await;
+    assert_eq!((status, v["total"].as_i64(), v["per_page"].as_i64()), (StatusCode::OK, Some(4), Some(reports::PAGE)), "{v}");
+    let row = v["reports"].as_array().unwrap().iter().find(|x| x["id"] == json!(one)).unwrap();
+    assert_eq!(row["comment"].as_str().unwrap().chars().count(), 200);
+    assert_eq!(row["player"], json!({ "id": 1011, "name": "ijsman5530", "identity": "GV7ABC" }));
+    assert_eq!(row["files"], json!([{ "name": "bl-tracing.log", "size": 18, "dropped": false }]));
+    assert_eq!((row["status"].as_str(), row["server"].as_str()), (Some("open"), Some("server-a")));
+    assert!(row.get("server_log").is_none() && row.get("summary").is_none(), "only in the detail");
+    let by_id = format!("q={four}");
+    for (query, total) in [
+        ("server=server-b", 2),
+        ("problem=crash", 1),
+        ("problem=join", 2),
+        ("q=kiwi", 1),
+        ("q=great", 1),
+        ("q=GV7ABC", 3),
+        (by_id.as_str(), 1),
+        ("status=resolved", 0),
+        ("status=all", 4),
+    ] {
+        let (_, v) = admin_call(&r, "GET", &format!("/api/reports?{query}"), &cookie, None).await;
+        assert_eq!(v["total"].as_i64(), Some(total), "{query}: {v}");
+    }
+
+    // The detail: everything, and the player's other reports, newest first.
+    let (status, v) = admin_call(&r, "GET", &format!("/api/reports/{one}"), &cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["comment"].as_str().unwrap().len(), 300);
+    assert_eq!(v["summary"]["session"]["joins_failed"], 2);
+    assert_eq!(v["server_log"], "12:00:01 1011 join refused\n");
+    assert_eq!(v["client"]["language"], "pt-BR");
+    assert_eq!(v["triggers"], json!(["failed_join", "relayed"]));
+    assert_eq!(v["player_known"], true);
+    let others: Vec<&str> = v["others"].as_array().unwrap().iter().map(|o| o["id"].as_str().unwrap()).collect();
+    assert_eq!(others, [three.as_str(), two.as_str()]);
+    assert_eq!(
+        admin_call(&r, "GET", &format!("/api/reports/{}", report_id(9)), &cookie, None).await.0,
+        StatusCode::NOT_FOUND
+    );
+
+    // A file: plain text, to save, never a page.
+    let resp = admin_get(&r, &format!("/api/reports/{one}/files/bl-tracing.log"), &[("cookie", cookie.as_str())]).await;
+    assert_eq!(resp.status(), StatusCode::OK);
+    assert_eq!(resp.headers()["content-type"], "text/plain; charset=utf-8");
+    assert_eq!(resp.headers()["content-disposition"], format!("attachment; filename=\"{one}-bl-tracing.log\"").as_str());
+    assert_eq!(resp.headers()["x-content-type-options"], "nosniff");
+    let text = resp.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(&text[..], b"line one\nline two\n");
+    for path in [format!("/api/reports/{one}/files/other.log"), format!("/api/reports/{one}/files/..")] {
+        assert_eq!(admin_get(&r, &path, &[("cookie", cookie.as_str())]).await.status(), StatusCode::NOT_FOUND, "{path}");
+    }
+    assert_eq!(
+        admin_get(&r, &format!("/api/reports/{one}/files/bl-tracing.log"), &[]).await.status(),
+        StatusCode::UNAUTHORIZED
+    );
+
+    // Resolving notes who and a note; reopening clears who.
+    let (status, v) = admin_call(
+        &r,
+        "POST",
+        &format!("/api/reports/{one}"),
+        &cookie,
+        Some(json!({ "status": "resolved", "note": "port forwarding" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["status"].as_str(), v["note"].as_str(), v["resolved_by"].as_str()),
+        (Some("resolved"), Some("port forwarding"), Some("admin1"))
+    );
+    let (_, v) = admin_call(&r, "GET", "/api/reports?status=resolved", &cookie, None).await;
+    assert_eq!(v["total"], 1);
+    let (_, v) = admin_call(&r, "POST", &format!("/api/reports/{one}"), &cookie, Some(json!({ "status": "open" }))).await;
+    assert_eq!(
+        (v["status"].as_str(), v["note"].as_str(), v["resolved_by"].as_str()),
+        (Some("open"), Some("port forwarding"), None)
+    );
+    // A note alone (resolved twice: still who resolved it first).
+    let (_, v) = admin_call(&r, "POST", &format!("/api/reports/{two}"), &cookie, Some(json!({ "status": "resolved" }))).await;
+    let at = v["resolved_at"].clone();
+    let fresh_eyes = admin_cookie(&t, "admin3", 3600).await;
+    let (_, v) = admin_call(
+        &r,
+        "POST",
+        &format!("/api/reports/{two}"),
+        &fresh_eyes,
+        Some(json!({ "status": "resolved", "note": "known issue" })),
+    )
+    .await;
+    assert_eq!(
+        (v["resolved_by"].as_str(), &v["resolved_at"], v["note"].as_str()),
+        (Some("admin1"), &at, Some("known issue"))
+    );
+    admin_call(&r, "POST", &format!("/api/reports/{two}"), &cookie, Some(json!({ "status": "open" }))).await;
+    for bad in [
+        json!({ "status": "closed" }),
+        json!({ "status": "open", "note": "n".repeat(501) }),
+        json!({ "status": "open", "note": "a\u{7}" }),
+    ] {
+        assert_eq!(
+            admin_call(&r, "POST", &format!("/api/reports/{one}"), &cookie, Some(bad.clone())).await.0,
+            StatusCode::BAD_REQUEST,
+            "{bad}"
+        );
+    }
+    assert_eq!(
+        admin_call(&r, "POST", &format!("/api/reports/{}", report_id(9)), &cookie, Some(json!({ "status": "open" })))
+            .await
+            .0,
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(t.c.open_reports().await.unwrap(), 4, "the nav's badge");
+
+    // Deleting wants a second factor proved lately, and takes the files with it.
+    let (status, v) = admin_call(&r, "DELETE", &format!("/api/reports/{one}"), &cookie, None).await;
+    assert_eq!((status, v["reverify"].as_bool()), (StatusCode::FORBIDDEN, Some(true)));
+    let fresh = admin_cookie(&t, "admin2", 0).await;
+    assert_eq!(admin_call(&r, "DELETE", &format!("/api/reports/{one}"), &fresh, None).await.0, StatusCode::OK);
+    assert!(!t.dir.join("reports").join(&one).exists());
+    assert_eq!(admin_call(&r, "DELETE", &format!("/api/reports/{one}"), &fresh, None).await.0, StatusCode::NOT_FOUND);
+    let events: Vec<String> = sqlx::query_scalar("SELECT event FROM audit WHERE event LIKE 'report: %' ORDER BY id")
+        .fetch_all(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        events,
+        [
+            "report: resolved",
+            "report: reopened",
+            "report: resolved",
+            "report: noted",
+            "report: reopened",
+            "report: deleted"
+        ]
+    );
+
+    // Which reports go to the webhook.
+    let (_, v) = admin_call(&r, "GET", "/api/alerts", &cookie, None).await;
+    assert_eq!(v["report_alerts"], "problems");
+    assert_eq!(
+        admin_call(&r, "PUT", "/api/alerts/reports", &cookie, Some(json!({ "mode": "all" }))).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        admin_call(&r, "PUT", "/api/alerts/reports", &cookie, Some(json!({ "mode": "loud" }))).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    let (_, v) = admin_call(&r, "GET", "/api/alerts", &cookie, None).await;
+    assert_eq!(v["report_alerts"], "all");
+}
+
+#[tokio::test]
+async fn reports_files_keep_under_the_cap_and_reports_go_after_90_days() {
+    let t = start("reports-storage").await;
+    let a = t.join("server-a").await;
+    let ids: Vec<String> = (1..=3).map(report_id).collect();
+    for id in &ids {
+        assert_eq!(t.call("POST", "/v1/reports", Some(&a), Some(report_body(id))).await.0, StatusCode::OK);
+    }
+    let one: i64 = sqlx::query_scalar("SELECT stored FROM player_report_files LIMIT 1").fetch_one(&t.c.pool).await.unwrap();
+    // Room for two reports' files: the oldest one's go, the report stays.
+    sqlx::query("UPDATE player_reports SET received_at = received_at - 100 WHERE id = ?")
+        .bind(&ids[0])
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    t.c.report_storage_cap.store(u64::try_from(one * 2).unwrap(), std::sync::atomic::Ordering::Relaxed);
+    t.c.cap_report_storage().await.unwrap();
+    assert!(!t.dir.join("reports").join(&ids[0]).exists());
+    assert!(t.dir.join("reports").join(&ids[1]).exists() && t.dir.join("reports").join(&ids[2]).exists());
+    assert_eq!(t.c.report_file(&ids[0], "bl-tracing.log").await.unwrap(), Some(None), "gone, said so");
+    let r = admin_router(&t);
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    let resp = admin_get(&r, &format!("/api/reports/{}/files/bl-tracing.log", ids[0]), &[("cookie", cookie.as_str())]).await;
+    assert_eq!(resp.status(), StatusCode::GONE);
+    let (_, v) = admin_call(&r, "GET", &format!("/api/reports/{}", ids[0]), &cookie, None).await;
+    assert_eq!(v["files"][0]["dropped"], true);
+    assert_eq!(v["comment"], "couldn't join my friend", "the report itself stays");
+    // A new report over the cap pushes out the next oldest.
+    t.call("POST", "/v1/reports", Some(&a), Some(report_body(&report_id(4)))).await;
+    assert!(!t.dir.join("reports").join(&ids[1]).exists());
+    assert!(t.dir.join("reports").join(report_id(4)).exists());
+
+    // Past 90 days: the report and its files go, with the hourly rollup.
+    sqlx::query("UPDATE player_reports SET received_at = received_at - 91 * 86400 WHERE id = ?")
+        .bind(&ids[2])
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    t.c.roll_up().await.unwrap();
+    assert!(!t.c.report_exists(&ids[2]).await.unwrap());
+    assert!(!t.dir.join("reports").join(&ids[2]).exists());
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM player_report_files").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(left, 3, "its file rows went with it");
 }

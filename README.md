@@ -301,6 +301,7 @@ Everything the launcher does can be done by hand:
     - players over time, play time and when people play, and the matches played (by mode, map, length and players);
     - the players on every server, by name, with their play time, sessions and matches, and actions on them: kick, ban, a new password, rename, delete (never their addresses);
     - alerts (a server offline, CPU, memory, disk, refused sign-ins, the traffic allowance, failed updates), optionally posted to Discord or Slack;
+    - players' reports after their sessions (what went wrong, their logs, redacted on their PC, and the server's), to read and resolve, each posted to the alert chat;
     - the update rollout.
   - **How it's protected:**
     - it's served only through Cloudflare;
@@ -543,7 +544,7 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
 - **Membership is kept current:** servers that don't install updates, or still run an old release a day after a rollout, leave the directory.
 - **Metrics from every server:** players, cities (DB-IP, looked up on the server; no addresses sent), what's being played, sign-ins, load, bandwidth and relayed traffic. Pings come from the coordinator and from players' launchers.
 - **An admin UI:**
-  - the views: overview, servers, bandwidth, players and map, playlists, network, alerts, updates, security and audit log, updated live;
+  - the views: overview, servers, bandwidth, players and map, playlists, network, alerts, players' reports, updates, security and audit log, updated live;
   - sign-in: passkeys, an authenticator app or recovery codes;
   - address and country restrictions;
   - served only through Cloudflare.

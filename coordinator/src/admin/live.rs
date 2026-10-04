@@ -23,6 +23,8 @@
 //!   pulses: players signing in, new accounts, failed sign-ins, matches starting
 //!   and ending. Counts only.
 //! * `{"type":"alert","alert":{…}}`: an alert raised or resolved (see `alerts`).
+//! * `{"type":"report"}`: a player's report came, or an admin changed one (see `reports`);
+//!   the overview that follows has the open reports' count.
 //! * `{"type":"bye","reason":"…"}`: the session ended; the socket closes.
 //!
 //! Nothing the browser sends is acted on.
@@ -64,6 +66,8 @@ pub enum Event {
     Feed(Value),
     /// An alert raised or resolved.
     Alert(Value),
+    /// A player's report came, or an admin changed one.
+    Report,
 }
 
 /// The live points kept per server: half an hour of them.
@@ -297,6 +301,12 @@ async fn serve(c: Arc<Coordinator>, mut socket: WebSocket, headers: HeaderMap, c
                 Ok(Event::Alert(alert)) => {
                     dirty = true;
                     if !send(&mut socket, json!({ "type": "alert", "alert": alert })).await {
+                        return;
+                    }
+                }
+                Ok(Event::Report) => {
+                    dirty = true;
+                    if !send(&mut socket, json!({ "type": "report" })).await {
                         return;
                     }
                 }

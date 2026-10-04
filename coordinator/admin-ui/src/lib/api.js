@@ -34,3 +34,33 @@ export async function api(method, path, body) {
     throw e;
   }
 }
+
+/** A text file from the API (a report's file), its first `limit` bytes: `{ text, cut }`. */
+export async function fetchText(path, limit) {
+  const resp = await fetch('/api' + path, { credentials: 'same-origin' });
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    if (resp.status === 401) session.signedOut();
+    throw new ApiError(resp.status, body);
+  }
+  const reader = resp.body.getReader();
+  const chunks = [];
+  let size = 0;
+  let cut = false;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    chunks.push(value);
+    size += value.length;
+    if (size > limit) { cut = true; reader.cancel().catch(() => {}); break; }
+  }
+  const bytes = new Uint8Array(Math.min(size, limit));
+  let at = 0;
+  for (const c of chunks) {
+    const take = Math.min(c.length, bytes.length - at);
+    bytes.set(c.subarray(0, take), at);
+    at += take;
+    if (at >= bytes.length) break;
+  }
+  return { text: new TextDecoder().decode(bytes), cut };
+}

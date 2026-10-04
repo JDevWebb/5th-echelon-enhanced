@@ -232,7 +232,7 @@ impl Coordinator {
             .await?
             .and_then(|u| reqwest::Url::parse(&u).ok())
             .and_then(|u| u.host_str().map(str::to_string));
-        Ok(json!({ "active": active, "recent": recent, "webhook_host": webhook }))
+        Ok(json!({ "active": active, "recent": recent, "webhook_host": webhook, "report_alerts": self.report_alert_mode().await? }))
     }
 
     /// The open alerts, for the overview.

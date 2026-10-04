@@ -123,3 +123,14 @@ export function liveTotals(pulses) {
   }
   return { now, series: [...series.values()].sort((a, b) => a.t - b.t) };
 }
+
+/** What players can tick in a report. */
+export const PROBLEMS = {
+  join: 'Couldn\'t join',
+  lag: 'Lag',
+  crash: 'Crash',
+  connection: 'Connection',
+  version: 'Game version',
+  signin: 'Sign-in',
+  other: 'Other',
+};

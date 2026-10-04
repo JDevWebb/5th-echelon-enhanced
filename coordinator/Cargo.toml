@@ -17,6 +17,7 @@ ring = "0.17"
 sha1 = "0.10"
 axum = { version = "0.8", default-features = false, features = ["http1", "json", "tokio", "query", "ws"] }
 eyre = { workspace = true }
+flate2 = { workspace = true }
 identity = { path = "../identity" }
 stat_boards = { path = "../stat_boards" }
 rand = { workspace = true }

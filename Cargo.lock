@@ -1058,6 +1058,7 @@ dependencies = [
  "base64",
  "ciborium",
  "eyre",
+ "flate2",
  "geo",
  "hmac",
  "http-body-util",

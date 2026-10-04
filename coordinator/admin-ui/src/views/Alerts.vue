@@ -43,6 +43,17 @@
           <button v-if="data.webhook_host" type="button" @click="test">Send a test</button>
         </div>
       </form>
+      <div class="stack reports">
+        <div class="row" style="justify-content: space-between">
+          <div>
+            <h3>Player reports</h3>
+            <p class="small muted">New reports from players' launchers, one message each (a few a minute; more go together in one).</p>
+          </div>
+          <div class="seg" role="group" aria-label="Player reports to post">
+            <button v-for="[id, label] in REPORT_MODES" :key="id" type="button" :aria-pressed="String(data.report_alerts === id)" @click="setReports(id)">{{ label }}</button>
+          </div>
+        </div>
+      </div>
     </section>
   </template>
   <div v-else-if="error" class="panel"><p class="err">{{ error }}</p></div>
@@ -77,7 +88,18 @@ async function save() {
     reload();
   } catch (e) { toast(e.message, true); }
 }
+const REPORT_MODES = [['off', 'Off'], ['problems', 'Bad or with problems'], ['all', 'All']];
+async function setReports(mode) {
+  try {
+    data.value.report_alerts = (await api('PUT', '/alerts/reports', { mode })).report_alerts;
+    toast({ off: 'Player reports won\'t be posted.', problems: 'Reports rated bad or with problems ticked will be posted.', all: 'Every report will be posted.' }[mode]);
+  } catch (e) { toast(e.message, true); }
+}
 async function test() {
   try { toast((await api('POST', '/alerts/test', {})).message); } catch (e) { toast(e.message, true); }
 }
 </script>
+
+<style scoped>
+.reports { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--line); }
+</style>

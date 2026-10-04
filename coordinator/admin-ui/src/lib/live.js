@@ -20,6 +20,8 @@ export const live = reactive({
   feed: [],
   /** Goes up when an alert is raised or resolved. */
   alertTick: 0,
+  /** Goes up when a player's report comes, or an admin changes one. */
+  reportTick: 0,
 });
 
 const KEEP_POINTS = 180;
@@ -57,6 +59,9 @@ export function connectLive() {
     } else if (msg.type === 'alert') {
       // The overview that follows carries the open alerts; pages listening for alerts reload.
       live.alertTick++;
+    } else if (msg.type === 'report') {
+      // The overview that follows carries the open reports' count; the Reports page reloads.
+      live.reportTick++;
     } else if (msg.type === 'bye') {
       wanted = false;
       session.signedOut();

@@ -376,6 +376,7 @@ impl Coordinator {
         ] {
             sqlx::query(sql).bind(now - keep).execute(&self.pool).await?;
         }
+        self.prune_reports().await?;
         self.expire_actions().await
     }
 
