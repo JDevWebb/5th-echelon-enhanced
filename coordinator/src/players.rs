@@ -573,35 +573,59 @@ impl Coordinator {
         })))
     }
 
-    /// A page of players across the servers, for the admin UI.
+    /// A page of players across the servers, for the admin UI: one row a person. Accounts on
+    /// several servers are one row when they're the same identity, linked on each server (as
+    /// "also on"); the row opens the account last seen. A search, server or filter that
+    /// matches any of a person's accounts shows the person.
     pub async fn player_list(&self, q: &ListQuery) -> sqlx::Result<Value> {
         let now = identity::now();
         let search = q.q.trim();
         let like = format!("%{}%", search.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"));
         let order = match q.sort.as_str() {
-            "play_time" => "p.play_seconds DESC",
-            "name" => "p.name COLLATE NOCASE",
-            "created" => "p.created_at DESC NULLS LAST",
-            _ => "online_now DESC, p.last_seen DESC NULLS LAST",
+            "play_time" => "play_seconds DESC",
+            "name" => "a.name COLLATE NOCASE",
+            "created" => "created_at DESC NULLS LAST",
+            _ => "online_now DESC, last_seen DESC NULLS LAST",
         };
-        let filter = "FROM players p LEFT JOIN servers s ON s.id = p.server_id
-             WHERE (?2 = '' OR p.name LIKE ?3 ESCAPE '\\' OR p.identity = ?2 OR CAST(p.id AS TEXT) = ?2)
-               AND (?4 = '' OR p.server_id = ?4)
-               AND (?5 = 0 OR (p.online = 1 AND COALESCE(s.last_seen, 0) >= ?1 - 180))
-               AND (?6 = 0 OR (p.banned_at IS NOT NULL AND (p.banned_until IS NULL OR p.banned_until > ?1)))";
+        let accounts = format!(
+            "WITH acc AS (
+               SELECT {PLAYER_COLUMNS},
+                      CASE WHEN p.identity IS NOT NULL AND EXISTS (SELECT 1 FROM links l WHERE l.global_id = p.identity AND l.server_id = p.server_id)
+                           THEN 'i:' || p.identity ELSE 's:' || p.server_id || ':' || p.id END AS person,
+                      (p.banned_at IS NOT NULL AND (p.banned_until IS NULL OR p.banned_until > ?1)) AS banned_now
+                 FROM players p LEFT JOIN servers s ON s.id = p.server_id),
+             hit AS (SELECT DISTINCT person FROM acc
+                      WHERE (?2 = '' OR name LIKE ?3 ESCAPE '\\' OR identity = ?2 OR CAST(id AS TEXT) = ?2)
+                        AND (?4 = '' OR server_id = ?4)
+                        AND (?5 = 0 OR online_now)
+                        AND (?6 = 0 OR banned_now))"
+        );
         let page = q.page.clamp(0, 100_000);
-        let rows = sqlx::query(&format!("SELECT {PLAYER_COLUMNS} {filter} ORDER BY {order}, p.server_id, p.id LIMIT ?7 OFFSET ?8"))
-            .bind(now)
-            .bind(search)
-            .bind(&like)
-            .bind(q.server.trim())
-            .bind(yes(&q.online))
-            .bind(yes(&q.banned))
-            .bind(PAGE)
-            .bind(page * PAGE)
-            .fetch_all(&self.pool)
-            .await?;
-        let total: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) {filter}"))
+        // The account a row opens: the one last seen.
+        let rows = sqlx::query(&format!(
+            "{accounts}
+             SELECT g.*, a.server_id, a.id, a.name, a.identity FROM
+               (SELECT person, MAX(last_seen) AS last_seen, MAX(online_now) AS online_now, MIN(created_at) AS created_at,
+                       SUM(play_seconds) AS play_seconds, SUM(MAX(week_seconds, 0)) AS week_seconds, SUM(sessions) AS sessions,
+                       SUM(matches) AS matches, SUM(banned_now) AS banned_accounts, COUNT(*) AS accounts,
+                       group_concat(server_id, ',') AS servers
+                  FROM acc WHERE person IN (SELECT person FROM hit) GROUP BY person) g
+               JOIN (SELECT person, server_id, id, name, identity,
+                            ROW_NUMBER() OVER (PARTITION BY person ORDER BY COALESCE(last_seen, 0) DESC, server_id, id) AS rn
+                       FROM acc) a ON a.person = g.person AND a.rn = 1
+              ORDER BY {order}, g.person LIMIT ?7 OFFSET ?8"
+        ))
+        .bind(now)
+        .bind(search)
+        .bind(&like)
+        .bind(q.server.trim())
+        .bind(yes(&q.online))
+        .bind(yes(&q.banned))
+        .bind(PAGE)
+        .bind(page * PAGE)
+        .fetch_all(&self.pool)
+        .await?;
+        let total: i64 = sqlx::query_scalar(&format!("{accounts} SELECT COUNT(*) FROM hit"))
             .bind(now)
             .bind(search)
             .bind(&like)
@@ -610,12 +634,34 @@ impl Coordinator {
             .bind(yes(&q.banned))
             .fetch_one(&self.pool)
             .await?;
-        Ok(json!({
-            "players": rows.iter().map(|r| player_json(r, now)).collect::<Vec<_>>(),
-            "total": total,
-            "page": page,
-            "per_page": PAGE,
-        }))
+        let players: Vec<Value> = rows
+            .iter()
+            .map(|r| {
+                let server: String = r.get("server_id");
+                let mut servers: Vec<String> = r.get::<String, _>("servers").split(',').map(str::to_string).collect();
+                servers.sort();
+                servers.dedup();
+                let also_on: Vec<&String> = servers.iter().filter(|s| **s != server).collect();
+                json!({
+                    "server": server,
+                    "id": r.get::<i64, _>("id"),
+                    "name": r.get::<String, _>("name"),
+                    "identity": r.get::<Option<String>, _>("identity"),
+                    "servers": servers,
+                    "also_on": also_on,
+                    "accounts": r.get::<i64, _>("accounts"),
+                    "created_at": r.get::<Option<i64>, _>("created_at"),
+                    "last_seen": r.get::<Option<i64>, _>("last_seen"),
+                    "online": r.get::<bool, _>("online_now"),
+                    "play_seconds": r.get::<i64, _>("play_seconds"),
+                    "week_seconds": r.get::<i64, _>("week_seconds"),
+                    "sessions": r.get::<i64, _>("sessions"),
+                    "matches": r.get::<i64, _>("matches"),
+                    "banned_accounts": r.get::<i64, _>("banned_accounts"),
+                })
+            })
+            .collect();
+        Ok(json!({ "players": players, "total": total, "page": page, "per_page": PAGE }))
     }
 
     /// One player: their last 50 sessions, time played each day of the last 30, their other
@@ -872,7 +918,7 @@ impl Coordinator {
             "by_mode": by_mode.into_iter().map(|(mode, s)| { let mut v = s.json(); v["mode"] = json!(mode); v }).collect::<Vec<_>>(),
             "maps": ranked(by_map, "map"),
             "game_modes": ranked(by_game_mode, "game_mode"),
-            "labels": labels.into_iter().map(|(kind, id, name)| json!({ "kind": kind, "id": id, "name": name })).collect::<Vec<_>>(),
+            "labels": crate::game_names::labels(labels),
         }))
     }
 }

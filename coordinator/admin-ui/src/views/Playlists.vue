@@ -26,7 +26,7 @@
       </table>
     </div>
     <div v-else class="empty">{{ now ? 'No lobbies or matches right now.' : 'Nothing was played in this period.' }}</div>
-    <p class="small muted" style="margin-top: 10px">The game reports maps and modes by number. Name them as you identify them; the names apply everywhere.</p>
+    <p class="small muted" style="margin-top: 10px">Maps and modes are named from the game's data. Rename any here; the names apply everywhere.</p>
   </section>
 </template>
 

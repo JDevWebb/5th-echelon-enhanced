@@ -38,6 +38,7 @@
 
 pub mod admin;
 pub mod alerts;
+pub mod game_names;
 pub mod metrics;
 pub mod players;
 pub mod reports;

@@ -733,6 +733,29 @@ async fn players_and_sessions_are_taken_and_a_full_roster_deletes() {
         .await
         .unwrap();
     assert_eq!(found["players"][0]["also_on"], json!(["server-b"]));
+    // One row for the person: both servers, their numbers added up; before the links, two.
+    let all = t.c.player_list(&players::ListQuery::default()).await.unwrap();
+    let exo: Vec<&Value> = all["players"].as_array().unwrap().iter().filter(|p| p["name"] == "Exo").collect();
+    assert_eq!(exo.len(), 1, "{all}");
+    assert_eq!(exo[0]["servers"], json!(["server-a", "server-b"]));
+    assert_eq!(
+        (exo[0]["accounts"].as_i64(), exo[0]["play_seconds"].as_i64(), exo[0]["sessions"].as_i64()),
+        (Some(2), Some(10_800), Some(24))
+    );
+    assert_eq!(all["total"], 2, "Exo and Tanker: {all}");
+    // A filter matching one of the accounts shows the person, with both servers.
+    let on_b =
+        t.c.player_list(&players::ListQuery {
+            server: "server-b".into(),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(
+        (on_b["total"].as_i64(), on_b["players"][0]["servers"].as_array().map(Vec::len)),
+        (Some(1), Some(2)),
+        "{on_b}"
+    );
     let d = t.c.player_detail("server-a", 1007).await.unwrap().unwrap();
     assert_eq!((d["sessions"][0]["seconds"].as_i64(), d["others"][0]["server"].as_str()), (Some(590), Some("server-b")));
     assert_eq!(d["days"].as_array().unwrap().len(), 30);
@@ -811,7 +834,9 @@ async fn actions_go_with_the_pulse_and_only_their_server_answers() {
         })
         .await
         .unwrap();
-    assert_eq!(banned["players"][0]["banned"]["reason"], "cheating", "shown before the server's next report");
+    assert_eq!(banned["players"][0]["banned_accounts"], 1, "shown before the server's next report: {banned}");
+    let d = t.c.player_detail("server-a", 1007).await.unwrap().unwrap();
+    assert_eq!(d["player"]["banned"]["reason"], "cheating", "{d}");
     // A reset password: shown once, to the admin who asked.
     let result = json!({ "ok": true, "message": "Reset", "password": "temp-pass-123" });
     assert_eq!(t.action_done(&a, reset, result).await, StatusCode::OK);

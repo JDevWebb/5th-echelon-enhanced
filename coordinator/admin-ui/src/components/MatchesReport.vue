@@ -50,7 +50,7 @@
       </section>
     </div>
     <section class="panel">
-      <header><h2>Top maps</h2><span class="small muted">Name maps as you identify them; the names apply everywhere.</span></header>
+      <header><h2>Top maps</h2><span class="small muted">Named from the game's data; rename any, and the names apply everywhere.</span></header>
       <div v-if="r.maps.length" class="table-wrap">
         <table>
           <thead><tr><th>Map</th><th>Mode</th><th class="r">Matches</th><th class="r">Length</th><th class="r">Players</th><th>Share</th></tr></thead>

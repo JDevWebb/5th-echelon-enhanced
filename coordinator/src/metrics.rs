@@ -599,7 +599,7 @@ impl Coordinator {
         let mut list: Vec<Value> = by.into_values().collect();
         list.sort_by(|a, b| num(&b["players"]).total_cmp(&num(&a["players"])));
         let labels: Vec<(String, i64, String)> = sqlx::query_as("SELECT kind, id, name FROM labels").fetch_all(&self.pool).await?;
-        let labels: Vec<Value> = labels.into_iter().map(|(kind, id, name)| json!({ "kind": kind, "id": id, "name": name })).collect();
+        let labels = crate::game_names::labels(labels);
         Ok(json!({ "unit": if range == 0 { "now" } else { "minutes" }, "activity": list, "labels": labels }))
     }
 

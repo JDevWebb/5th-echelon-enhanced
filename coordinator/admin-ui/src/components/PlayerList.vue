@@ -2,7 +2,7 @@
   <div class="grid" :class="{ split: open }">
     <section class="panel">
       <header>
-        <h2>Accounts <span class="muted small">{{ data ? fmt.n(data.total) : '' }}</span></h2>
+        <h2>Players <span class="muted small">{{ data ? fmt.n(data.total) : '' }}</span></h2>
         <form class="row filters" role="search" @submit.prevent>
           <input v-model="q" type="search" placeholder="Name, account # or identity" aria-label="Search players">
           <select v-model="server" aria-label="Server">
@@ -35,11 +35,10 @@
                 <span class="row" style="gap: 8px">
                   <span class="dot" :class="{ ok: p.online }" :title="p.online ? 'online' : 'offline'"></span>
                   <b>{{ p.name }}</b>
-                  <span v-if="p.banned" class="pill bad">banned</span>
+                  <span v-if="p.banned_accounts" class="pill bad">{{ p.accounts > 1 ? `banned on ${p.banned_accounts} of ${p.accounts}` : 'banned' }}</span>
                 </span>
-                <span v-if="p.also_on.length" class="small muted also">also on {{ p.also_on.map(s => names.get(s) || s).join(', ') }}</span>
               </td>
-              <td class="muted">{{ names.get(p.server) || p.server }}</td>
+              <td class="muted">{{ p.servers.map(s => names.get(s) || s).join(', ') }}</td>
               <td class="muted">{{ p.online ? 'now' : fmt.ago(p.last_seen) }}</td>
               <td class="r">{{ fmt.dur(p.play_seconds) }}</td>
               <td class="r">{{ fmt.dur(p.week_seconds) }}</td>
@@ -120,6 +119,5 @@ const close = () => {
 .sort:not([aria-pressed="true"]):hover { color: var(--text); }
 tbody tr { cursor: pointer; }
 tbody tr.picked td { background: var(--accent-soft); }
-.also { display: block; margin-left: 16px; }
 @media (max-width: 1100px) { .split { grid-template-columns: 1fr; } }
 </style>
