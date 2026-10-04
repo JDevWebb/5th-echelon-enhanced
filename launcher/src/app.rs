@@ -68,7 +68,7 @@ type DirectoryPrefs = Option<String>;
 /// The community network: the directory a new launcher browses, so setting up is
 /// choosing from its servers. Another one replaces it (Settings, a network's address
 /// typed in setup, or the first server joined that reports its own).
-pub const COMMUNITY_DIRECTORY: &str = "https://play.scbl.jdevwebb.net";
+pub const COMMUNITY_DIRECTORY: &str = setup::directory::COMMUNITY;
 static DIRECTORY_CACHE: std::sync::Mutex<Option<(Instant, DirectoryPrefs)>> = std::sync::Mutex::new(None);
 
 /// The launcher's own settings (`%APPDATA%\5th-Echelon\launcher.toml`):

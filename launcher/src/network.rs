@@ -143,12 +143,67 @@ pub async fn is_coordinator(url: &str) -> bool {
     info["servers"].is_u64() && info["name"].as_str().is_some_and(|n| n.to_ascii_lowercase().contains("coordinator"))
 }
 
-/// The servers in a coordinator's directory, each with this PC's ping to it
-/// (None: no answer), measured in parallel.
-pub async fn server_directory(coordinator: &str) -> Result<Vec<(setup::directory::Listing, Option<u32>)>, String> {
+/// A directory's servers, each with this PC's ping to it (None: no answer), and a
+/// note when they're its last list or the built-in one because it didn't answer.
+#[derive(Debug, Clone)]
+pub struct Browsed {
+    pub servers: Vec<(setup::directory::Listing, Option<u32>)>,
+    pub note: Option<String>,
+}
+
+/// The servers in a coordinator's directory, each with this PC's ping to it, measured in
+/// parallel. When the directory doesn't answer: the list it gave last, else the community's
+/// built-in servers (see `setup::directory::fallback`), pinged the same way.
+pub async fn server_directory(coordinator: &str) -> Result<Browsed, String> {
     if !setup::directory::valid_coordinator(coordinator) {
         return Err("the server directory must be an https:// address".into());
     }
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    let dir = setup::app_data_dir();
+    let (servers, note) = match fetch_directory(coordinator).await {
+        Ok(servers) => {
+            if let Some(dir) = &dir {
+                setup::directory::save_cache(dir, coordinator, &servers, now);
+            }
+            (servers, None)
+        }
+        Err(e) => match setup::directory::fallback(dir.as_deref(), coordinator, now) {
+            Some((servers, note)) => {
+                tracing::warn!("Server directory {coordinator}: {e}; using {} servers it listed before", servers.len());
+                (servers, Some(note))
+            }
+            None => return Err(e),
+        },
+    };
+    // All at once: a server that doesn't answer costs two seconds, not two each.
+    let handles: Vec<_> = servers.iter().map(|s| tokio::spawn(ping(s.host.clone(), s.ports.and_then(|p| p.nat)))).collect();
+    let mut pings = Vec::with_capacity(handles.len());
+    for handle in handles {
+        pings.push(handle.await.unwrap_or(Ping::NoAnswer));
+    }
+    // A name that resolves into this PC's network isn't listed: a directory can't point
+    // players at their own machines.
+    let (servers, pings): (Vec<_>, Vec<_>) = servers
+        .into_iter()
+        .zip(pings)
+        .filter_map(|(s, ping)| match ping {
+            Ping::Private => None,
+            Ping::NoAnswer => Some((s, None)),
+            Ping::Ms(ms) => Some((s, Some(ms))),
+        })
+        .unzip();
+    // Pings to a directory that didn't answer would go nowhere.
+    if note.is_none() {
+        report_pings(coordinator, &servers, &pings);
+    }
+    Ok(Browsed {
+        servers: servers.into_iter().zip(pings).collect(),
+        note,
+    })
+}
+
+/// The directory's list (`GET /v1/servers`), read and checked.
+async fn fetch_directory(coordinator: &str) -> Result<Vec<setup::directory::Listing>, String> {
     let mut resp = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
         .redirect(reqwest::redirect::Policy::none())
@@ -168,26 +223,7 @@ pub async fn server_directory(coordinator: &str) -> Result<Vec<(setup::directory
         body.extend_from_slice(&chunk);
     }
     let body = String::from_utf8(body).map_err(|_| "the directory's answer isn't text".to_string())?;
-    let servers = setup::directory::parse(&body).map_err(|e| format!("the directory's answer isn't one: {e}"))?;
-    // All at once: a server that doesn't answer costs two seconds, not two each.
-    let handles: Vec<_> = servers.iter().map(|s| tokio::spawn(ping(s.host.clone(), s.ports.and_then(|p| p.nat)))).collect();
-    let mut pings = Vec::with_capacity(handles.len());
-    for handle in handles {
-        pings.push(handle.await.unwrap_or(Ping::NoAnswer));
-    }
-    // A name that resolves into this PC's network isn't listed: a directory can't point
-    // players at their own machines.
-    let (servers, pings): (Vec<_>, Vec<_>) = servers
-        .into_iter()
-        .zip(pings)
-        .filter_map(|(s, ping)| match ping {
-            Ping::Private => None,
-            Ping::NoAnswer => Some((s, None)),
-            Ping::Ms(ms) => Some((s, Some(ms))),
-        })
-        .unzip();
-    report_pings(coordinator, &servers, &pings);
-    Ok(servers.into_iter().zip(pings).collect())
+    setup::directory::parse(&body).map_err(|e| format!("the directory's answer isn't one: {e}"))
 }
 
 /// How a directory's server answered [`ping`].

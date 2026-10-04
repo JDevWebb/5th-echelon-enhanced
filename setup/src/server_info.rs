@@ -18,9 +18,10 @@ use std::net::ToSocketAddrs;
 use std::time::Duration;
 
 use serde::Deserialize;
+use serde::Serialize;
 
 /// The ports players use on a server.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 pub struct Ports {
     pub api: u16,
     pub login: u16,

@@ -304,12 +304,17 @@ pub fn pick_from_network(address: &str, log: &Log) -> Result<Option<String>, Str
     }
     let url = format!("https://{address}");
     let rt = crate::services::rt();
-    if !rt.block_on(crate::network::is_coordinator(&url)) {
+    // A network known here (the community's, or one listed before) is still one when its
+    // directory doesn't answer: its servers come from the last list.
+    if !rt.block_on(crate::network::is_coordinator(&url)) && !setup::directory::known_network(setup::app_data_dir().as_deref(), &url) {
         return Ok(None);
     }
     say(log, format!("{address} is a network of servers: finding the best one for you…"));
     crate::app::Prefs::set_directory(Some(url.clone()));
-    let servers = rt.block_on(crate::network::server_directory(&url))?;
+    let crate::network::Browsed { servers, note } = rt.block_on(crate::network::server_directory(&url))?;
+    if let Some(note) = note {
+        say(log, note);
+    }
     let best = setup::directory::best(&servers).ok_or_else(|| format!("{address} lists no servers right now; try again in a minute."))?;
     let (listing, ping) = &servers[best];
     let region = if listing.region.is_empty() { String::new() } else { format!(" ({})", listing.region) };

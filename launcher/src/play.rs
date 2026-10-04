@@ -52,14 +52,15 @@ pub struct Play {
     /// The servers that answered on this network, when more than one did.
     found: Vec<IpAddr>,
     /// The coordinator's server directory, with this PC's ping to each.
-    browsing: Slot<Result<Vec<(setup::directory::Listing, Option<u32>)>, String>>,
+    browsing: Slot<Result<crate::network::Browsed, String>>,
     directory: Option<Vec<(setup::directory::Listing, Option<u32>)>>,
     /// The directory was browsed on its own since the last setup: once is enough.
     browsed: bool,
     /// The server field holds a server the launcher picked, not one typed:
     /// a newer pick may replace it.
     server_picked: bool,
-    /// Why the directory couldn't be read, shown quietly with the servers.
+    /// Why the directory couldn't be read, or that the servers are its last list,
+    /// shown quietly with the servers.
     directory_error: Option<String>,
 
     setup: Slot<Result<flow::Done, String>>,
@@ -274,7 +275,7 @@ fn found_list(play: &mut Play, ui: &mut egui::Ui) {
 fn poll_directory(play: &mut Play) {
     if let Some(found) = play.browsing.poll() {
         match found {
-            Ok(servers) => {
+            Ok(crate::network::Browsed { servers, note }) => {
                 if play.server.trim().is_empty() || play.server_picked {
                     if let Some(best) = setup::directory::best(&servers) {
                         play.server = servers[best].0.host.clone();
@@ -282,7 +283,7 @@ fn poll_directory(play: &mut Play) {
                     }
                 }
                 play.directory = Some(servers);
-                play.directory_error = None;
+                play.directory_error = note;
             }
             Err(e) => play.directory_error = Some(format!("The server directory couldn't be read: {e}")),
         }
