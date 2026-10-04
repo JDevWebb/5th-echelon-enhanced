@@ -428,7 +428,11 @@ impl Coordinator {
     pub async fn open(path: &str, join_token: String) -> eyre::Result<Self> {
         let options = SqliteConnectOptions::new().filename(path).create_if_missing(true).foreign_keys(true);
         let pool = SqlitePool::connect_with(options).await?;
-        sqlx::migrate!("./migrations").run(&pool).await?;
+        // A database a newer release migrated still opens: after a rollback, the
+        // release before runs on it (migrations only add to the schema).
+        let mut migrator = sqlx::migrate!("./migrations");
+        migrator.set_ignore_missing(true);
+        migrator.run(&pool).await?;
         let c = Self {
             pool,
             join_token,

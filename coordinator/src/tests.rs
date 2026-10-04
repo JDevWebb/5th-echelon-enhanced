@@ -91,6 +91,18 @@ fn rel(v: &Value, who: &identity::Identity) -> Value {
 }
 
 #[tokio::test]
+async fn a_database_a_newer_release_migrated_still_opens() {
+    let t = start("newer").await;
+    sqlx::query("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (29991231000000, 'from a newer release', 1, x'00', 0)")
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    Coordinator::open(&t.dir.join("c.db").to_string_lossy(), "TOKEN".into())
+        .await
+        .expect("the release before opens it");
+}
+
+#[tokio::test]
 async fn joining_needs_the_token() {
     let t = start("join").await;
     let (status, _) = t.call("POST", "/v1/join", None, Some(json!({ "token": "WRONG", "server_id": "a" }))).await;

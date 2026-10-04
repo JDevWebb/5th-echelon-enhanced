@@ -175,7 +175,7 @@ The admin API is never reachable from the internet; Caddy refuses it. Use an SSH
 
 ## Updating
 
-**Servers in a network update themselves.** Their coordinator rolls out each signed release, one server first, then the rest. The installer's updater installs it, checking the release key's signature, and puts the previous release back if the new one doesn't come back healthy. See [operations.md](operations.md). `--no-auto-update` turns this off for a server, but a coordinator then leaves it out of its directory.
+**Servers in a network update themselves.** Their coordinator rolls out each signed release, one server first, then the rest. The installer's updater installs it, checking the release key's signature, and puts the previous release back if the new one doesn't come back healthy, with the databases as they were before the update (it copies them first, into `/var/lib/5th-echelon-update/databases`). See [operations.md](operations.md). `--no-auto-update` turns this off for a server, but a coordinator then leaves it out of its directory.
 
 **To update by hand**, run the installer again. It keeps the settings, accounts and keys, and updates the server, the coordinator and the Caddy site, and Caddy itself when it's the installer's own static build (a packaged Caddy updates with the system). A release that isn't signed by the release key is refused.
 

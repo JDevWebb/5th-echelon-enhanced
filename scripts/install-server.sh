@@ -1308,6 +1308,46 @@ if older "$wanted" "$current"; then
 fi
 status updating "$wanted"
 
+# Each service's database: its folder's, as the services are set up here.
+databases() {
+  for p in "${parts[@]}"; do
+    case "$p" in dedicated_server) echo "$STATE_DIR/5th-echelon.db" ;; coordinator) echo "$COORD_DIR/coordinator.db" ;; esac
+  done
+}
+stop_all() {
+  for p in "${parts[@]}"; do
+    case "$p" in dedicated_server) systemctl stop "$SERVICE" ;; coordinator) systemctl stop "$COORD_SERVICE" ;; esac
+  done
+}
+# Copies each database (and its WAL) into $UPDATE_DIR/databases, root's
+# only. Links aren't followed: the services own their folders.
+save_databases() {
+  local db f
+  rm -rf "$UPDATE_DIR/databases.new"
+  install -d -m 700 "$UPDATE_DIR/databases.new" || return 1
+  while read -r db; do
+    for f in "$db" "$db-wal" "$db-shm"; do
+      if [ -f "$f" ] && [ ! -L "$f" ]; then
+        install -d -m 700 "$UPDATE_DIR/databases.new$(dirname "$f")" && cp -p "$f" "$UPDATE_DIR/databases.new$f" || return 1
+      fi
+    done
+  done < <(databases)
+  rm -rf "$UPDATE_DIR/databases"
+  mv "$UPDATE_DIR/databases.new" "$UPDATE_DIR/databases"
+}
+# Puts the copies back, with the services stopped.
+restore_databases() {
+  local db f
+  [ -d "$UPDATE_DIR/databases" ] || return 0
+  while read -r db; do
+    [ -f "$UPDATE_DIR/databases$db" ] || continue
+    for f in "$db" "$db-wal" "$db-shm"; do
+      rm -f -- "$f"
+      if [ -f "$UPDATE_DIR/databases$f" ]; then cp -p "$UPDATE_DIR/databases$f" "$f"; fi
+    done
+  done < <(databases)
+}
+
 if [ "$rollback" -eq 0 ]; then
   base="https://github.com/$REPO/releases/download/v$wanted"
   if ! "${CURL[@]}" "${SMALL[@]}" -o "$work/SHA256SUMS" "$base/SHA256SUMS" || ! "${CURL[@]}" "${SMALL[@]}" -o "$work/SHA256SUMS.sig" "$base/SHA256SUMS.sig"; then
@@ -1331,6 +1371,16 @@ if [ "$rollback" -eq 0 ]; then
     fi
     chmod 755 "$work/$a"
   done
+  # The databases as they are now, with the services stopped: the new release
+  # may migrate them, and if it doesn't come back healthy they go back with
+  # the release before (which may not open them migrated). Kept until the
+  # next update, in $UPDATE_DIR/databases.
+  stop_all || true
+  if ! save_databases; then
+    restart_all || true
+    status failed "$wanted" "couldn't copy the databases before updating (is the disk full?)"
+    exit 0
+  fi
   # Keep what runs now, for a rollback.
   rm -rf "$PROGRAM_DIR/previous.new"
   install -d -m 755 "$PROGRAM_DIR/previous.new"
@@ -1397,6 +1447,11 @@ for p in "${parts[@]}"; do
 done
 if [ "$rollback" -eq 1 ]; then echo "$wanted" > "$PROGRAM_DIR/previous/release"; fi
 echo "$current" > "$PROGRAM_DIR/release"
+# After an update (not a rollback), the databases as they were before it.
+if [ "$rollback" -eq 0 ]; then
+  stop_all || true
+  restore_databases
+fi
 restart_all || true
 status rolled-back "$wanted" "the new release didn't come back healthy within 90 seconds; $current is back"
 UPDATER

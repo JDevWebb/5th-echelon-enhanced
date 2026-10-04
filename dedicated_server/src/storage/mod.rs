@@ -163,7 +163,11 @@ impl Storage {
             let pool = SqlitePool::connect(&format!("sqlite://{path}?mode=rwc")).await?;
             // enable foreign key checks
             sqlx::query("PRAGMA foreign_keys=ON").execute(&pool).await?;
-            sqlx::migrate!("src/storage/migrations").run(&pool).await?;
+            // A database a newer release migrated still opens: after a rollback, the
+            // release before runs on it (migrations only add to the schema).
+            let mut migrator = sqlx::migrate!("src/storage/migrations");
+            migrator.set_ignore_missing(true);
+            migrator.run(&pool).await?;
             Ok::<_, eyre::Error>(pool)
         })??;
         let storage = Self { logger, pool };
@@ -1420,6 +1424,22 @@ pub(crate) mod tests {
         let db = dir.join("test.db");
         let logger = Logger::root(slog::Discard, slog::o!());
         (Storage::open(logger, db.to_str().unwrap()).unwrap(), dir)
+    }
+
+    #[test]
+    fn a_database_a_newer_release_migrated_still_opens() {
+        let (storage, dir) = temp_storage("newer");
+        run(async {
+            sqlx::query("INSERT INTO _sqlx_migrations (version, description, success, checksum, execution_time) VALUES (29991231000000, 'from a newer release', 1, x'00', 0)")
+                .execute(&storage.pool)
+                .await
+        })
+        .unwrap()
+        .unwrap();
+        drop(storage);
+        let logger = Logger::root(slog::Discard, slog::o!());
+        Storage::open(logger, dir.join("test.db").to_str().unwrap()).expect("the release before opens it");
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
