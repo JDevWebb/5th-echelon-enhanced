@@ -671,6 +671,34 @@ pub fn wine_facts(game_dir: &Path) -> Option<setup::diagnose::WineFacts> {
 
 /// Opens a folder in the file manager.
 pub fn open_folder(dir: &Path) {
-    let program = if cfg!(target_os = "windows") { "explorer" } else { "xdg-open" };
-    let _ = std::process::Command::new(program).arg(dir).spawn();
+    if cfg!(target_os = "windows") {
+        let _ = std::process::Command::new("explorer").arg(explorer_path(&dir.to_string_lossy())).spawn();
+    } else {
+        let _ = std::process::Command::new("xdg-open").arg(dir).spawn();
+    }
+}
+
+/// A folder as Explorer takes it: it opens Documents instead for a path with forward
+/// slashes (as Steam records its own folder) or the `\\?\` prefix.
+fn explorer_path(dir: &str) -> String {
+    let dir = dir.replace('/', "\\");
+    match dir.strip_prefix(r"\\?\UNC\") {
+        Some(share) => format!(r"\\{share}"),
+        None => dir.strip_prefix(r"\\?\").unwrap_or(&dir).to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::explorer_path;
+
+    #[test]
+    fn explorer_gets_backslashes() {
+        assert_eq!(
+            explorer_path(r"c:/program files (x86)/steam\steamapps\common\Blacklist\src\SYSTEM"),
+            r"c:\program files (x86)\steam\steamapps\common\Blacklist\src\SYSTEM"
+        );
+        assert_eq!(explorer_path(r"\\?\D:\Games\Blacklist"), r"D:\Games\Blacklist");
+        assert_eq!(explorer_path(r"\\?\UNC\nas\games"), r"\\nas\games");
+    }
 }

@@ -81,7 +81,9 @@ fn read_string(key: Key, subkey: &str, value: &str) -> Option<OsString> {
 }
 
 fn read_path(key: Key, subkey: &str, value: &str) -> Option<PathBuf> {
-    read_string(key, subkey, value).map(PathBuf::from).filter(|p| !p.as_os_str().is_empty())
+    // Steam writes its own with forward slashes ("c:/program files (x86)/steam"), which
+    // Explorer, among others, doesn't take.
+    read_string(key, subkey, value).map(|s| PathBuf::from(s.to_string_lossy().replace('/', "\\"))).filter(|p| !p.as_os_str().is_empty())
 }
 
 pub fn install_roots() -> Vec<PathBuf> {

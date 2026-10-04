@@ -60,7 +60,7 @@ case "${1:-test}" in
     ui
     ;;
   test)
-    run "$IMAGE" cargo test --workspace --exclude hooks --exclude launcher --exclude umd_browser
+    run "$IMAGE" cargo test --workspace --exclude hooks --exclude umd_browser
     ;;
   server)
     # The node runs on x86_64; cross-compile for it from any host.
