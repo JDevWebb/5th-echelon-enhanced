@@ -120,7 +120,7 @@ import { live } from '../lib/live.js';
 const RANGES = [[6, '6 h'], [24, '24 h'], [72, '3 d'], [168, '7 d']];
 const LEVELS = [['bad', 'Problems'], ['warn', 'And warnings'], ['all', 'Everything']];
 const MODES = { coop: 'co-op', svm: 'Spies vs Mercs' };
-const PROBLEM_KINDS = new Set(['signin_refused', 'join_failed', 'relay_drop', 'request_error']);
+const PROBLEM_KINDS = new Set(['signin_refused', 'join_failed', 'relay_drop', 'request_error', 'nat_missing', 'nat_lost']);
 
 const hours = ref(24);
 const server = ref('');

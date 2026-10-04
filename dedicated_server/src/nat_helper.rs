@@ -406,6 +406,15 @@ impl Table {
             .map_or_else(|| "nobody's".into(), |p| format!("{}'s", p.name))
     }
 
+    /// The players [`Self::expire`] would forget now, with their game's last probe.
+    fn expiring(&self, now: Instant) -> Vec<(String, Instant)> {
+        self.peers
+            .values()
+            .filter(|p| now.duration_since(p.last_seen) > EXPIRY)
+            .map(|p| (p.name.clone(), p.probed_at))
+            .collect()
+    }
+
     /// Forgets players not heard from in [`EXPIRY`].
     pub fn expire(&mut self, now: Instant) -> Vec<String> {
         let stale: Vec<Id> = self.peers.iter().filter(|(_, p)| now.duration_since(p.last_seen) > EXPIRY).map(|(id, _)| *id).collect();
@@ -628,16 +637,37 @@ fn awaiting() -> std::sync::MutexGuard<'static, HashMap<String, Instant>> {
     AWAITING.get_or_init(Mutex::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Games signed in to the server now, by name: a registration that lapses while its game is
+/// still signed in leaves it unreachable.
+fn signed_in() -> std::sync::MutexGuard<'static, std::collections::HashSet<String>> {
+    static SIGNED_IN: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    SIGNED_IN.get_or_init(Mutex::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// `name`'s game signed in: it should register with the helper soon (see [`PROBE_WITHIN`]).
 pub fn game_signed_in(name: &str) {
     if TABLE.get().is_some() {
         awaiting().insert(name.to_lowercase(), Instant::now());
+        signed_in().insert(name.to_lowercase());
     }
 }
 
 /// `name`'s game signed out (or its connection timed out): nothing to wait for.
 pub fn game_signed_out(name: &str) {
     awaiting().remove(&name.to_lowercase());
+    signed_in().remove(&name.to_lowercase());
+}
+
+/// Of the players whose registration just lapsed (with their last probe), those whose game
+/// is still signed in, with how long since it last probed. Their game stopped probing (the
+/// hook every 20 s) though it still talks to the server: nobody can reach it, relayed or
+/// direct, until it registers again (a restart of the game did, on NA1 on 2026-10-04).
+fn lapsed_while_signed_in(gone: &[(String, Instant)], now: Instant) -> Vec<(String, u64)> {
+    let signed_in = signed_in();
+    gone.iter()
+        .filter(|(name, _)| signed_in.contains(&name.to_lowercase()))
+        .map(|(name, probed)| (name.clone(), now.duration_since(*probed).as_secs()))
+        .collect()
 }
 
 /// Games that signed in [`PROBE_WITHIN`] ago or more and haven't probed since (each said
@@ -711,7 +741,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
         if now.duration_since(last_expiry) > Duration::from_secs(10) {
             let secs = now.duration_since(last_expiry).as_secs_f64();
             last_expiry = now;
-            let (gone, players, relayed, flows, late, dropped_from) = table
+            let (gone, players, relayed, flows, late, dropped_from, lapsed) = table
                 .lock()
                 .map(|mut t| {
                     // Who sent the packets the relay dropped, and whose port they were for: a
@@ -727,7 +757,8 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
                     } else {
                         Vec::new()
                     };
-                    (t.expire(now), t.len(), t.relayed(), t.flows(), unregistered(&t, now), told)
+                    let lapsed = lapsed_while_signed_in(&t.expiring(now), now);
+                    (t.expire(now), t.len(), t.relayed(), t.flows(), unregistered(&t, now), told, lapsed)
                 })
                 .unwrap_or_default();
             if !dropped_from.is_empty() {
@@ -748,8 +779,15 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
                     serde_json::json!({ "direction": direction, "before": before.round(), "after": after.round() }),
                 );
             }
-            for name in gone {
+            for name in gone.iter().filter(|n| !lapsed.iter().any(|(l, _)| l == *n)) {
                 info!(logger, "NAT helper: {name} is gone");
+            }
+            for (name, secs) in lapsed {
+                warn!(
+                    logger,
+                    "NAT helper: {name}'s registration lapsed (last probe {secs} s ago) while the game is still signed in: nobody can reach it until it registers again"
+                );
+                crate::session_events::note(crate::session_events::Who::Name(name), "nat_lost", serde_json::json!({ "probe_secs": secs }));
             }
             if forwarded + dropped + failed > 0 {
                 info!(
@@ -898,6 +936,25 @@ mod tests {
         assert!(!t.probed_since("nat-test-registered", ago(1)));
         game_signed_out("NAT-Test-Starting");
         assert!(!awaiting().contains_key("nat-test-starting"));
+    }
+
+    /// A registration that lapses while its game is still signed in is told; one whose game
+    /// signed out (or never signed in here) isn't.
+    #[test]
+    fn a_registration_lapsing_while_the_game_is_signed_in_is_noticed() {
+        let mut t = table(RelayMode::All);
+        let now = Instant::now();
+        let ago = |s| now.checked_sub(Duration::from_secs(s)).unwrap();
+        t.probe(a("198.51.100.30:13000"), 0, 1, None, "NAT-Lapse-On", ago(120));
+        t.probe(a("198.51.100.31:13000"), 0, 1, None, "NAT-Lapse-Off", ago(120));
+        signed_in().insert("nat-lapse-on".into());
+        let lapsed = lapsed_while_signed_in(&t.expiring(now), now);
+        assert_eq!(lapsed.len(), 1, "{lapsed:?}");
+        assert_eq!(lapsed[0].0, "nat-lapse-on");
+        assert!(lapsed[0].1 >= 120);
+        assert_eq!(t.expire(now).len(), 2);
+        game_signed_out("NAT-Lapse-On");
+        assert!(lapsed_while_signed_in(&[("nat-lapse-on".into(), ago(100))], now).is_empty());
     }
 
     /// The relay's dropped packets are put down to who sent them: a registered game, an

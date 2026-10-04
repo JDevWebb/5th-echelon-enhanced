@@ -45,6 +45,7 @@ const KINDS: &[&str] = &[
     "stats",
     "nat",
     "nat_missing",
+    "nat_lost",
     "relay_drop",
     "request_error",
 ];
@@ -529,6 +530,10 @@ fn describe(e: &Event) -> String {
                 "Online play direct".into()
             }
         }
+        "nat_lost" => format!(
+            "The game stopped registering for online play ({} s since its last check-in) while still signed in: nobody could reach it until it registered again",
+            e.detail["probe_secs"]
+        ),
         "nat_missing" => format!(
             "Signed in, but the game hadn't registered for online play {} s later: nobody could reach it",
             e.detail["after_secs"]
@@ -607,6 +612,8 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
             "join_failed" => out.push(problem(e, "bad", format!("{} couldn't join a room", e.name), describe(e))),
             // Joins with them fail (CONNECTION_FAILED) until a restart registers it.
             "nat_missing" => out.push(problem(e, "bad", format!("{}'s game couldn't be reached", e.name), describe(e))),
+            // Joins with them fail (CONNECTION_FAILED) until it registers again.
+            "nat_lost" => out.push(problem(e, "bad", format!("{}'s game dropped off the relay", e.name), describe(e))),
             "request_error" => out.push(problem(
                 e,
                 "warn",
@@ -863,6 +870,9 @@ mod tests {
             ),
         ];
         let found = problems(&events);
+        let lost = problems(&[ev("na", 300, 4, "SirCooms", "nat_lost", json!({ "probe_secs": 95 }))]);
+        assert_eq!(lost[0]["title"], "SirCooms's game dropped off the relay");
+        assert!(lost[0]["text"].as_str().unwrap().contains("95 s"), "{}", lost[0]);
         assert_eq!(found[0]["title"], "emeraldknight33's game couldn't be reached");
         assert!(found[0]["text"].as_str().unwrap().contains("92 s later"), "{}", found[0]);
         assert!(found[1]["text"].as_str().unwrap().contains("CONNECTION_FAILED"), "{}", found[1]);

@@ -140,7 +140,7 @@ Above it, **Problems** lists what went wrong, worst first in each level:
 
 | Level | What |
 |---|---|
-| Problem | A player couldn't sign in (each reason and how often: an outdated client, too many attempts, banned...); a join that failed, with the game's code; a player who dropped out of a match: their relayed traffic fell, then they left the match without it ending (no stats written) |
+| Problem | A player couldn't sign in (each reason and how often: an outdated client, too many attempts, banned...); a join that failed, with the game's code; a player who dropped out of a match: their relayed traffic fell, then they left the match without it ending (no stats written); a game nobody could reach: it signed in but never registered for online play (NAT helper), or its registration lapsed while it was still signed in (joins with it fail with CONNECTION_FAILED until it registers again; restarting the game does) |
 | Warning | A request the server failed to answer; an invitation that never reached the player (offline, or out of the online menus); an invitation with no room to join; a game that went quiet in a match with others still in it (a crash, or their connection lost) |
 | Note | A player refused who then got in; two players who searched for the same mode on different servers within five minutes and both found nobody; a public match its host waited in alone for a minute or more |
 
