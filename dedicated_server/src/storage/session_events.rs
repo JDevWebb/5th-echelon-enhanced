@@ -62,10 +62,10 @@ impl Storage {
                         .bind(super::name_key(&name))
                         .fetch_optional(&mut *tx)
                         .await?;
-                    match found {
-                        Some((id, name)) => (Some(id), Some(name)),
-                        None => (None, Some(name)),
-                    }
+                    // Only accounts: anyone can send sign-ins for names that don't exist, and
+                    // those would only fill the table.
+                    let Some((id, name)) = found else { continue };
+                    (Some(id), Some(name))
                 }
                 (None, None) => (None, None),
             };
@@ -205,6 +205,7 @@ mod tests {
         let (storage, dir) = temp_storage("session-events");
         storage.register_user("Host1", "pw", Some("Host1-UBI")).unwrap();
         storage.register_user("Guest1", "pw", Some("Guest1-UBI")).unwrap();
+        storage.register_user("Stranger", "pw", Some("Stranger-UBI")).unwrap();
         let host = storage.find_user_id_by_name("Host1").unwrap().unwrap();
         let guest = storage.find_user_id_by_name("Guest1").unwrap().unwrap();
         let coop = "113 => 0;3 => 0;4 => 2;101 => 3578398534;102 => 3;103 => 0;105 => 2";
@@ -215,8 +216,9 @@ mod tests {
             event(101, None, Some("guest1"), "relay_drop", json!({ "direction": "sending", "before": 60, "after": 4 })),
             event(102, None, Some("Stranger"), "signin_refused", json!({ "reason": "too_many", "via": "game" })),
             event(103, None, Some("Stranger"), "signin_refused", json!({ "reason": "too_many", "via": "game" })),
-            // The server's own accounts aren't players.
+            // The server's own accounts aren't players, and names without an account are nobody.
             event(104, Some(105), None, "signout", json!({ "how": "closed" })),
+            event(105, None, Some("NoSuchName"), "signin_refused", json!({ "reason": "wrong_password", "via": "api" })),
         ]))
         .unwrap()
         .unwrap();
@@ -231,7 +233,7 @@ mod tests {
         assert_eq!(join.detail["host_name"], "Host1");
         assert!(join.detail["since"].as_i64().is_some_and(|t| t > 0));
         assert_eq!((events[1].player, events[1].name.as_deref()), (Some(guest), Some("Guest1")), "found by name");
-        assert_eq!((events[2].player, events[2].count, events[2].last_at), (None, 2, 103), "a repeat is counted");
+        assert_eq!((events[2].count, events[2].last_at), (2, 103), "a repeat is counted");
 
         run(storage.mark_session_events_sent_async(&events)).unwrap().unwrap();
         assert!(run(storage.unsent_session_events_async(100)).unwrap().unwrap().is_empty());

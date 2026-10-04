@@ -63,7 +63,7 @@ const SAME_JOIN: Duration = Duration::from_secs(600);
 pub enum Who {
     /// A player by account id.
     Id(u32),
-    /// A player by name (the relay and the API know them so).
+    /// A player by name (the relay and the API know them so). Dropped when no account has it.
     Name(String),
     /// Nobody: the server itself.
     Server,
