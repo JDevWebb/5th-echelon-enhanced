@@ -768,6 +768,12 @@ impl Users for MyUsers {
         if !crate::rate_limit::begin_login(peer, &username) {
             return Err(Status::resource_exhausted("Too many failed logins; try again later"));
         }
+        // An outdated client retrying what was refused a moment ago: the same answer, without
+        // the password hash again (the password was right then, as it is now).
+        if let Some(why) = crate::clients::refused_lately(&username, &client, &password) {
+            crate::rate_limit::login_succeeded(peer, &username);
+            return Err(Status::failed_precondition(why));
+        }
 
         let maybe_user = self.storage.login_user_async(&username, &password).await.map_err(storage_error)?;
 
@@ -789,7 +795,12 @@ impl Users for MyUsers {
             return Err(Status::unauthenticated("Invalid login"));
         }
         crate::rate_limit::login_succeeded(peer, &username);
-        self.admit(user_id, &username, &client).await?;
+        if let Err(refusal) = self.admit(user_id, &username, &client).await {
+            if refusal.code() == tonic::Code::FailedPrecondition {
+                crate::clients::refused(user_id, &username, &client, &password);
+            }
+            return Err(refusal);
+        }
 
         info!(self.logger, "Login successful for {username}");
         crate::metrics::api_login();
@@ -984,6 +995,9 @@ impl MyUsers {
     async fn admit(&self, user_id: u32, username: &str, client: &str) -> Result<(), Status> {
         let verdict = crate::clients::check(client);
         self.storage.note_client_sign_in(user_id, client, verdict.is_ok()).await.map_err(internal)?;
+        if verdict.is_ok() {
+            crate::clients::admitted(user_id);
+        }
         verdict.map_err(|why| {
             warn!(self.logger, "Refused {username}'s outdated client {client:?}");
             Status::failed_precondition(why)

@@ -4,6 +4,7 @@ use quazal::rmc::Error;
 use quazal::rmc::Protocol;
 use quazal::ClientInfo;
 use quazal::Context;
+use slog::debug;
 use slog::Logger;
 
 use crate::login_or_service_required as login_required;
@@ -11,6 +12,8 @@ use crate::protocols::uplay_win_service::uplay_win_protocol::GetActionsCompleted
 use crate::protocols::uplay_win_service::uplay_win_protocol::GetActionsCompletedResponse;
 use crate::protocols::uplay_win_service::uplay_win_protocol::GetRewardsPurchasedRequest;
 use crate::protocols::uplay_win_service::uplay_win_protocol::GetRewardsPurchasedResponse;
+use crate::protocols::uplay_win_service::uplay_win_protocol::SetActionsCompletedRequest;
+use crate::protocols::uplay_win_service::uplay_win_protocol::SetActionsCompletedResponse;
 use crate::protocols::uplay_win_service::uplay_win_protocol::UplayWelcomeRequest;
 use crate::protocols::uplay_win_service::uplay_win_protocol::UplayWelcomeResponse;
 use crate::protocols::uplay_win_service::uplay_win_protocol::UplayWinProtocolServer;
@@ -50,6 +53,25 @@ impl<CI> UplayWinProtocolServerTrait<CI> for UplayWinProtocolServerImpl {
     ) -> Result<GetActionsCompletedResponse, Error> {
         login_required(&*ci)?;
         Ok(GetActionsCompletedResponse { action_list: QList::default() })
+    }
+
+    /// Handles the `SetActionsCompleted` request: the game reporting Uplay actions it
+    /// completed (after a match, say).
+    ///
+    /// There are no Uplay actions here (`UplayWelcome` lists none), so nothing unlocks: it's
+    /// acknowledged with an empty list instead of refused.
+    fn set_actions_completed(
+        &self,
+        logger: &Logger,
+        _ctx: &Context,
+        ci: &mut ClientInfo<CI>,
+        request: SetActionsCompletedRequest,
+        _client_registry: &ClientRegistry<CI>,
+        _socket: &std::net::UdpSocket,
+    ) -> Result<SetActionsCompletedResponse, Error> {
+        login_required(&*ci)?;
+        debug!(logger, "Uplay actions completed (none to unlock): {} of them", request.action_code_list.0.len());
+        Ok(SetActionsCompletedResponse { action_list: QList::default() })
     }
 
     /// Handles the `GetRewardsPurchased` request.

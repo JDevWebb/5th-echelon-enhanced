@@ -8,12 +8,26 @@
 //! account a current client signed in to lately, with no outdated one trying since: the
 //! client DLL signs in to the API as the game starts, well before the game signs in.
 
+use std::collections::HashMap;
+use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::time::Duration;
+use std::time::Instant;
+
+use sha2::Digest as _;
+use sha2::Sha256;
 
 /// How long a current client's sign-in vouches for the game's (a ticket lasts as long).
 pub const VOUCHES_FOR: i64 = 24 * 60 * 60;
 
 static MINIMUM: OnceLock<Option<[u32; 3]>> = OnceLock::new();
+
+/// How long an outdated client that proved its password is refused again without the
+/// password being checked (an old client retrying every second costs a hash each time).
+const REFUSED_FOR: Duration = Duration::from_secs(60);
+/// Outdated sign-ins that proved their password lately, by a hash of the name, client and
+/// password (only the same three match): when, and the account.
+static REFUSED: Mutex<Option<HashMap<[u8; 32], (Instant, u32)>>> = Mutex::new(None);
 
 /// Unix seconds now.
 pub fn now() -> i64 {
@@ -81,6 +95,45 @@ fn refusal(kind: &str, what: &str, minimum: [u32; 3]) -> String {
     format!("This server needs 5th Echelon {} or newer, and this is {what}. {fix}.", show(minimum))
 }
 
+fn refusal_key(username: &str, client: &str, password: &str) -> [u8; 32] {
+    let mut h = Sha256::new();
+    for part in [username, client, password] {
+        h.update((part.len() as u64).to_le_bytes());
+        h.update(part.as_bytes());
+    }
+    h.finalize().into()
+}
+
+/// Whether this outdated client signed in with this name and password within the last
+/// minute and was refused: if so, what to tell it, without checking the password again.
+pub fn refused_lately(username: &str, client: &str, password: &str) -> Option<String> {
+    let why = check(client).err()?;
+    let key = refusal_key(username, client, password);
+    let mut refused = REFUSED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let map = refused.get_or_insert_with(HashMap::new);
+    map.retain(|_, (at, _)| at.elapsed() < REFUSED_FOR);
+    map.contains_key(&key).then_some(why)
+}
+
+/// An outdated client proved the account's password and was refused (and noted as such).
+pub fn refused(user_id: u32, username: &str, client: &str, password: &str) {
+    let mut refused = REFUSED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let map = refused.get_or_insert_with(HashMap::new);
+    // Bounded: one per account and client at most, gone after a minute.
+    if map.len() < 10_000 {
+        map.insert(refusal_key(username, client, password), (Instant::now(), user_id));
+    }
+}
+
+/// A current client signed in to the account: an outdated one trying after it must be
+/// checked (and noted) again, or the game's sign-in would go by the current one.
+pub fn admitted(user_id: u32) {
+    let mut refused = REFUSED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some(map) = refused.as_mut() {
+        map.retain(|_, (_, user)| *user != user_id);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -93,5 +146,22 @@ mod tests {
         assert_eq!(parse("0.3.1.2"), None);
         assert_eq!(parse(""), None);
         assert!([0, 3, 99] < [0, 3, 156] && [0, 4, 0] > [0, 3, 156]);
+    }
+
+    #[test]
+    fn outdated_refusals_are_remembered_for_the_same_credentials() {
+        let _ = MINIMUM.set(Some([0, 4, 1]));
+        assert_eq!(refused_lately("ana", "launcher/0.4.0", "secret1"), None);
+        refused(7, "ana", "launcher/0.4.0", "secret1");
+        assert!(refused_lately("ana", "launcher/0.4.0", "secret1").is_some());
+        // Another password, client or name goes through the full check.
+        assert_eq!(refused_lately("ana", "launcher/0.4.0", "secret2"), None);
+        assert_eq!(refused_lately("ana", "game/0.4.0", "secret1"), None);
+        assert_eq!(refused_lately("bob", "launcher/0.4.0", "secret1"), None);
+        // A current client: never refused from memory.
+        assert_eq!(refused_lately("ana", "launcher/0.4.1", "secret1"), None);
+        // A current client signing in to the account clears it.
+        admitted(7);
+        assert_eq!(refused_lately("ana", "launcher/0.4.0", "secret1"), None);
     }
 }

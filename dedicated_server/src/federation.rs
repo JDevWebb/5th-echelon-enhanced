@@ -565,6 +565,7 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
     // When reports may be sent again, after a failure.
     let mut reports_after: Option<Instant> = None;
     let mut actions_done: Vec<(u64, crate::players::Outcome)> = Vec::new();
+    let (mut heartbeats, mut changes, mut pulls) = (Failing::default(), Failing::default(), Failing::default());
     loop {
         if secret.is_none() {
             secret = credentials(&base);
@@ -588,6 +589,7 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                 }
                 match client.post("/v1/heartbeat", &listing).await {
                     Ok(answer) => {
+                        heartbeats.worked(&logger, "the heartbeat");
                         last_heartbeat = Some(Instant::now());
                         // The release the coordinator is rolling out to this server.
                         if let Some(version) = answer["update"]["version"].as_str() {
@@ -609,7 +611,7 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                             warnings = now;
                         }
                     }
-                    Err(e) => warn!(logger, "Federation: heartbeat failed: {e:#}"),
+                    Err(e) => heartbeats.failed(&logger, "the heartbeat", &e),
                 }
             }
             if last_metrics.is_none_or(|t| t.elapsed() >= METRICS_EVERY) {
@@ -662,9 +664,10 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
             if changes_wait.is_some_and(|t| t.elapsed() < CHANGES_WAIT) {
                 // The coordinator asked for them later; friend lists wait too.
             } else if let Err(e) = flush(&logger, &storage, &client).await {
-                warn!(logger, "Federation: sending changes failed (will retry): {e:#}");
+                changes.failed(&logger, "sending changes", &e);
                 changes_wait = e.to_string().starts_with("429").then(Instant::now);
             } else {
+                changes.worked(&logger, "sending changes");
                 changes_wait = None;
                 if last_online_pull.is_none_or(|t| t.elapsed() >= PULL_ONLINE_EVERY) {
                     last_online_pull = Some(Instant::now());
@@ -678,13 +681,38 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                 }
                 let users: Vec<u32> = state.pulls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).drain().collect();
                 for user in users {
-                    if let Err(e) = pull(&logger, &storage, &client, user).await {
-                        warn!(logger, "Federation: pulling friends of {user} failed: {e:#}");
+                    match pull(&logger, &storage, &client, user).await {
+                        Ok(_) => pulls.worked(&logger, "pulling friend lists"),
+                        Err(e) => pulls.failed(&logger, &format!("pulling friends of {user}"), &e),
                     }
                 }
             }
         }
         let _ = tokio::time::timeout(Duration::from_secs(5), state.wake.notified()).await;
+    }
+}
+
+/// One kind of call to the coordinator failing: logged when it starts failing and when it
+/// works again, not every five seconds while the coordinator is out of reach.
+#[derive(Default)]
+struct Failing {
+    since: Option<Instant>,
+}
+
+impl Failing {
+    fn failed(&mut self, logger: &Logger, what: &str, e: &eyre::Report) {
+        if self.since.is_none() {
+            self.since = Some(Instant::now());
+            warn!(logger, "Federation: {what} failed (will keep trying; logged again when it works): {e:#}");
+        } else {
+            debug!(logger, "Federation: {what} failed again: {e:#}");
+        }
+    }
+
+    fn worked(&mut self, logger: &Logger, what: &str) {
+        if let Some(since) = self.since.take() {
+            info!(logger, "Federation: {what} works again, after failing for {} s", since.elapsed().as_secs());
+        }
     }
 }
 
