@@ -21,6 +21,7 @@ libc = { workspace = true }
 geo = { path = "../geo" }
 md-5 = { workspace = true }
 nat_proto = { path = "../nat_proto" }
+stat_boards = { path = "../stat_boards" }
 num_enum = { workspace = true }
 quazal = { path = "../quazal" }
 quazal-macros = { path = "../quazal/quazal-macros" }

@@ -94,7 +94,6 @@ mod rate_limit;
 mod secure;
 mod self_update;
 mod simple_http;
-mod stat_boards;
 mod storage;
 mod ticket;
 mod tracking;

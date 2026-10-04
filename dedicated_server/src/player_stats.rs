@@ -1,5 +1,5 @@
 //! Implements the `PlayerStatsProtocolServer`: the stats the game writes, kept per
-//! player as each board says ([`crate::stat_boards`]), read back by the game and
+//! player as each board says ([`stat_boards`]), read back by the game and
 //! ranked on its leaderboards.
 
 use std::sync::Arc;
@@ -16,6 +16,7 @@ use sc_bl_protocols::player_stats_service::types::PlayerRank;
 use sc_bl_protocols::player_stats_service::types::PlayerStatSet;
 use sc_bl_protocols::player_stats_service::types::StatboardResult;
 use slog::Logger;
+use stat_boards::Aggregation;
 
 use crate::login_required;
 use crate::protocols::player_stats_service::player_stats_protocol::PlayerStatsProtocolServer;
@@ -36,8 +37,6 @@ use crate::protocols::player_stats_service::player_stats_protocol::ReadStatsByPl
 use crate::protocols::player_stats_service::player_stats_protocol::ReadStatsByPlayersResponse;
 use crate::protocols::player_stats_service::player_stats_protocol::WriteStatsRequest;
 use crate::protocols::player_stats_service::player_stats_protocol::WriteStatsResponse;
-use crate::stat_boards;
-use crate::stat_boards::Aggregation;
 use crate::storage::Ranked;
 use crate::storage::StatWrite;
 use crate::storage::Storage;

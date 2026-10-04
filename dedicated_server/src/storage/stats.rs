@@ -1,12 +1,12 @@
 //! Player stats (the `player_stats` table): what the game writes, added up as each
-//! board says ([`crate::stat_boards`]), and leaderboards ranked from it.
+//! board says ([`stat_boards`]), and leaderboards ranked from it.
+
+use stat_boards::Aggregation;
 
 use super::packed_date;
 use super::run;
 use super::Result;
 use super::Storage;
-use crate::stat_boards;
-use crate::stat_boards::Aggregation;
 
 /// One stat the game wrote, already checked against its board ([`stat_boards`]).
 #[derive(Debug, Clone, Copy, PartialEq)]

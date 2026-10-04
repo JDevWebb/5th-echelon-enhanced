@@ -17,6 +17,7 @@ members = [
   # "tools/wireshark-dissector",
   "launcher",
   "nat_proto",
+  "stat_boards",
   "portmap",
   "identity",
   "geo",

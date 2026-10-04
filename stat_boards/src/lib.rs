@@ -1,7 +1,9 @@
 //! The game's statistics: which boards it writes, which stats each holds and how a
 //! write adds to what is stored, and the leaderboards ranked from them. The game
-//! reads these numbers from its own stats configuration; the server needs them to
-//! keep the stats the way Ubisoft's did. Only the numbers are here.
+//! reads these numbers from its own stats configuration; the servers (each player's
+//! stats on that server) and the coordinator (each player's stats across the network,
+//! and the global leaderboards) need them to keep the stats the way Ubisoft's did.
+//! Only the numbers are here.
 
 use std::ops::RangeInclusive;
 
@@ -37,6 +39,15 @@ impl Board {
             context == 0
         } else {
             self.contexts.iter().any(|r| r.contains(&context))
+        }
+    }
+
+    /// The contexts it is kept for: 0 alone for a board without contexts.
+    pub fn context_ids(&self) -> Vec<u32> {
+        if self.contexts.is_empty() {
+            vec![0]
+        } else {
+            self.contexts.iter().flat_map(Clone::clone).collect()
         }
     }
 
@@ -431,5 +442,7 @@ mod tests {
         assert!(svm.has_context(228) && !svm.has_context(0) && !svm.has_context(232));
         let global = board(1).unwrap();
         assert!(global.has_context(0) && !global.has_context(1));
+        assert_eq!(global.context_ids(), [0]);
+        assert_eq!(board(17).unwrap().context_ids(), [1, 2, 3]);
     }
 }
