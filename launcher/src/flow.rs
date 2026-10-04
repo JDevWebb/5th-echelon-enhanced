@@ -633,7 +633,7 @@ pub fn auto_adapter(game_dir: &Path) -> Result<String, String> {
 /// Creates or raises the save to rank 5.
 pub fn fix_save(game_dir: &Path) -> Result<String, String> {
     let cfg = Config::load(game_dir);
-    let path = save::save_path(&cfg.hook_config.save, game_dir).ok_or("The save folder can't be found.")?;
+    let path = save::save_path(&cfg.hook_config.save, game_dir).ok_or_else(|| setup::wine::no_save_folder(game_dir))?;
     save::prepare(&path, Some(game_dir))
         .map(|p| p.describe().unwrap_or("Your save is ready.").to_string())
         .map_err(|e| e.to_string())

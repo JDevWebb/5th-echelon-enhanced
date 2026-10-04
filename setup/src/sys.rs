@@ -42,6 +42,18 @@ mod other {
         dirs
     }
 
+    /// Every Steam library (the folders holding `steamapps`): each Steam
+    /// install's own and those its `libraryfolders.vdf` lists, an SD card too.
+    pub fn steam_libraries() -> Vec<PathBuf> {
+        let mut libraries = Vec::new();
+        for steam in steam_dirs() {
+            let vdf = std::fs::read_to_string(steam.join("steamapps/libraryfolders.vdf")).unwrap_or_default();
+            libraries.extend(crate::game::steam_libraries(&vdf));
+            libraries.push(steam);
+        }
+        libraries
+    }
+
     /// Where Ubisoft Connect keeps games inside a Wine prefix.
     fn ubisoft_games(prefix: &Path) -> [PathBuf; 2] {
         let drive_c = prefix.join("drive_c");
@@ -55,13 +67,7 @@ mod other {
     /// (an SD card too, when Steam lists it), and Ubisoft Connect's games in
     /// the usual Wine prefixes (Lutris, Heroic, ~/.wine).
     pub fn library_roots() -> Vec<PathBuf> {
-        let mut roots = Vec::new();
-        for steam in steam_dirs() {
-            let vdf = std::fs::read_to_string(steam.join("steamapps/libraryfolders.vdf")).unwrap_or_default();
-            let mut libraries = crate::game::steam_libraries(&vdf);
-            libraries.push(steam);
-            roots.extend(libraries.into_iter().map(|l| l.join("steamapps/common")));
-        }
+        let mut roots: Vec<PathBuf> = steam_libraries().into_iter().map(|l| l.join("steamapps/common")).collect();
         if let Some(home) = home() {
             roots.extend(ubisoft_games(&home.join(".wine")));
             for parent in ["Games", "Games/Heroic/Prefixes", "Games/Heroic/Prefixes/default"] {

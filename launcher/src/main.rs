@@ -47,6 +47,9 @@ const RENDERER_VAR: &str = "FE_RENDERER";
 
 fn main() -> eframe::Result {
     logging::init();
+    if scale::gamescope() {
+        tracing::info!("Running in gamescope (gaming mode): full screen");
+    }
     std::thread::spawn(updater::clean_up);
     let icon = logo();
     let renderer = renderer();
@@ -57,6 +60,7 @@ fn main() -> eframe::Result {
             .with_inner_size(scale::DESIGN)
             .with_min_inner_size(scale::DESIGN * 0.4)
             .with_resizable(true)
+            .with_fullscreen(scale::gamescope())
             .with_maximize_button(true)
             .with_icon(eframe::egui::IconData {
                 rgba: icon.pixels.iter().flat_map(|c| c.to_array()).collect(),

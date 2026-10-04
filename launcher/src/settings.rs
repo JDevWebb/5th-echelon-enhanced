@@ -462,7 +462,7 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
 
 fn save_game(settings: &mut Settings, game: &mut Game, ctx: &egui::Context, ui: &mut egui::Ui) {
     let Some(path) = setup::save::save_path(&game.cfg.hook_config.save, &game.dir) else {
-        ui.label(theme::muted("The save folder can't be found."));
+        ui.label(theme::muted(setup::wine::no_save_folder(&game.dir)));
         return;
     };
     let state = setup::save::check(&path);

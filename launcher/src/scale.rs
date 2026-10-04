@@ -16,6 +16,14 @@ const STEP: f32 = 0.1;
 /// The window starts no larger than this share of the screen.
 const OF_SCREEN: f32 = 0.9;
 
+/// Whether the launcher runs inside gamescope (the Steam Deck's gaming
+/// mode). Gamescope stretches a window smaller than the screen to fill it
+/// but hands the pointer over unstretched, so clicks land off target, worse
+/// the further right and down; the launcher runs full screen there instead.
+pub fn gamescope() -> bool {
+    std::env::var_os("GAMESCOPE_WAYLAND_DISPLAY").is_some() || std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.eq_ignore_ascii_case("gamescope"))
+}
+
 /// A size the player chose, kept within range and to a step.
 pub fn clamp(size: f32) -> f32 {
     if !size.is_finite() {
@@ -50,6 +58,10 @@ pub fn first_size(window: egui::Vec2, monitor: egui::Vec2) -> Option<egui::Vec2>
 /// shortcut changed it.
 pub fn apply(ctx: &egui::Context, size: f32, sized: &mut bool) -> Option<f32> {
     let native = ctx.native_pixels_per_point().unwrap_or(1.0);
+    if !*sized && gamescope() {
+        // Full screen from the start (main.rs): nothing to fit.
+        *sized = true;
+    }
     if !*sized {
         // The screen's size arrives within the first frames.
         let (inner, monitor) = ctx.input(|i| (i.viewport().inner_rect, i.viewport().monitor_size));

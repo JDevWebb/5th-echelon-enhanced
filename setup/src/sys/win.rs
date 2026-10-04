@@ -114,6 +114,11 @@ fn fixed_drives() -> Vec<PathBuf> {
         .collect()
 }
 
+/// Steam libraries holding Proton prefixes: none on Windows.
+pub fn steam_libraries() -> Vec<PathBuf> {
+    Vec::new()
+}
+
 pub fn library_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
     for steam in steam_dirs() {

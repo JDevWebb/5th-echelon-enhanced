@@ -63,7 +63,7 @@ pub fn prefix_for(game_dir: &Path) -> Option<Prefix> {
         match dir.file_name().and_then(|n| n.to_str()) {
             Some("steamapps") => {
                 return Some(Prefix {
-                    root: dir.join("compatdata").join(STEAM_APP_ID.to_string()).join("pfx"),
+                    root: steam_prefix(dir, &crate::sys::steam_libraries()),
                     steam: true,
                 })
             }
@@ -77,6 +77,42 @@ pub fn prefix_for(game_dir: &Path) -> Option<Prefix> {
         }
     }
     None
+}
+
+/// Proton's prefix for the game in a library's `steamapps`.
+fn proton_prefix(steamapps: &Path) -> PathBuf {
+    steamapps.join("compatdata").join(STEAM_APP_ID.to_string()).join("pfx")
+}
+
+/// Proton's prefix for a game in `steamapps`: usually in the same library,
+/// but a game moved to another library (an SD card, say) leaves its prefix
+/// behind, so the other `libraries` are looked in too. Where it would be in
+/// the game's own library when there's none yet.
+fn steam_prefix(steamapps: &Path, libraries: &[PathBuf]) -> PathBuf {
+    let own = proton_prefix(steamapps);
+    if own.join("drive_c").is_dir() {
+        return own;
+    }
+    libraries
+        .iter()
+        .map(|l| proton_prefix(&l.join("steamapps")))
+        .find(|p| p.join("drive_c").is_dir())
+        .unwrap_or(own)
+}
+
+/// Why the game's save folder can't be found, for the player.
+pub fn no_save_folder(game_dir: &Path) -> String {
+    match prefix_for(game_dir) {
+        Some(p) if p.steam && !p.ready() => format!(
+            "Proton hasn't set the game up yet: there's nothing at {}. Start the game from Steam once, quit it, then come back.",
+            p.root.display()
+        ),
+        Some(p) if !p.ready() => format!("The game's Wine prefix has no drive_c: {}.", p.root.display()),
+        None if !cfg!(target_os = "windows") => {
+            "The game's folder isn't in a Steam library or a Wine prefix, so where it keeps its save can't be worked out.".to_string()
+        }
+        _ => "The save folder can't be found.".to_string(),
+    }
 }
 
 /// This PC's CPU threads.
@@ -124,6 +160,22 @@ mod tests {
         assert!(p.roaming_dir().ends_with("AppData/Roaming"));
         assert!(!p.roaming_dir().to_string_lossy().contains("Public"));
         assert_eq!(prefix_for(Path::new("/opt/games/blacklist")), None);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_prefix_left_in_another_library_is_found() {
+        let root = temp_dir("wine-moved");
+        let sd = root.join("sdcard/steamapps");
+        let internal = root.join("internal");
+        let left = proton_prefix(&internal.join("steamapps"));
+        // None anywhere yet: where Proton will make it, beside the game.
+        assert_eq!(steam_prefix(&sd, &[internal.clone()]), proton_prefix(&sd));
+        std::fs::create_dir_all(left.join("drive_c")).unwrap();
+        assert_eq!(steam_prefix(&sd, &[internal.clone()]), left);
+        // One beside the game wins.
+        std::fs::create_dir_all(proton_prefix(&sd).join("drive_c")).unwrap();
+        assert_eq!(steam_prefix(&sd, &[internal]), proton_prefix(&sd));
         std::fs::remove_dir_all(root).unwrap();
     }
 
