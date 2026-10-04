@@ -199,6 +199,18 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
 
 /// Asking how games went, and sending a report now.
 fn feedback(app: &mut App, ui: &mut egui::Ui) {
+    let (_, game, notices) = app.settings_mut();
+    if let Some(game) = game.as_mut() {
+        section(ui, "While you play", |ui| {
+            ui.label(theme::muted(
+                "The game sends the server it's signed in to its warnings, errors and network events as they happen, so the server's admins can see why a join or a connection failed. Your PC's name, your user folder and your internet address are hidden first.",
+            ));
+            let mut send = game.cfg.hook_config.send_diagnostics;
+            if ui.checkbox(&mut send, "Send the game's diagnostics to the server").changed() {
+                game.update(notices, |c| c.hook_config.send_diagnostics = send);
+            }
+        });
+    }
     section(ui, "After a game", |ui| {
         ui.label(theme::muted(
             "When something goes wrong in a game (a join that fails, a crash), and now and then otherwise, the launcher asks how it went once the game closes. Your answer goes to the server's admins, with your logs if you agree: your PC's name, your user folder and your internet address are hidden first.",

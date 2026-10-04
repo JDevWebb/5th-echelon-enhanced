@@ -12,6 +12,28 @@ service Misc {
     // The player's feedback, with their logs if they agreed: the server adds what it logged
     // about them and passes it on to the network's admins.
     rpc Report(ReportRequest) returns (ReportResponse);
+    // The game's warnings, errors and network events as they happen (redacted on the
+    // player's PC), for the server's admins: Settings › Feedback turns them off.
+    rpc ClientLog(ClientLogRequest) returns (ClientLogResponse);
+}
+
+message ClientLogRequest {
+    repeated ClientLogLine lines = 1;
+    // Lines the game had to leave out since the last request (too many at once).
+    uint32 dropped = 2;
+}
+message ClientLogLine {
+    // Unix milliseconds on the player's PC.
+    int64 at = 1;
+    // ERROR, WARN or INFO.
+    string level = 2;
+    // Where in the client it came from (e.g. hooks::hooks::nat).
+    string target = 3;
+    string message = 4;
+}
+message ClientLogResponse {
+    // Lines the server kept; the rest went over its limit.
+    uint32 kept = 1;
 }
 
 message EventRequest {}

@@ -634,6 +634,15 @@ impl Bot {
         Ok(MiscClient::new(self.api.clone()).session_summary(self.authed(server_api::misc::SessionSummaryRequest {})).await?.into_inner())
     }
 
+    /// Sends the game's diagnostic lines, as the hooks DLL does; answers how many were kept.
+    pub async fn client_log(&self, lines: Vec<server_api::misc::ClientLogLine>) -> std::result::Result<u32, tonic::Status> {
+        Ok(MiscClient::new(self.api.clone())
+            .client_log(self.authed(server_api::misc::ClientLogRequest { lines, dropped: 0 }))
+            .await?
+            .into_inner()
+            .kept)
+    }
+
     /// Sends a report, as the launcher does after a game; answers its id.
     pub async fn report(&self, report: server_api::misc::ReportRequest) -> std::result::Result<String, tonic::Status> {
         Ok(MiscClient::new(self.api.clone()).report(self.authed(report)).await?.into_inner().id)

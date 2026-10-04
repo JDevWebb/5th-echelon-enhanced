@@ -144,6 +144,8 @@ Above it, **Problems** lists what went wrong, worst first in each level:
 | Warning | A request the server failed to answer; an invitation that never reached the player (offline, or out of the online menus); an invitation with no room to join; a game that went quiet in a match with others still in it (a crash, or their connection lost) |
 | Note | A player refused who then got in; two players who searched for the same mode on different servers within five minutes and both found nobody; a public match its host waited in alone for a minute or more |
 
+**The game's own side** comes on the timeline too: unless the player turned it off (launcher **Settings › Feedback**), their game sends its warnings, errors and network lines (the NAT helper: registering, its silence, address changes; the router's port mapping) every few seconds, redacted on their PC as reports are. They show as marks on the player's row, and the game's errors as warnings in the list, so a failed join can be read from both ends. The server keeps 60 lines a minute per player at most, and a line repeated within ten minutes once, with a count.
+
 Servers record these as they happen and send them to the coordinator every few seconds. They keep them until the coordinator has them, so an outage loses none, and repeat events (an outdated client retrying its sign-in every few seconds) come as one, with a count. The coordinator keeps them 30 days. The relay sees only relayed players' traffic, so a dropout between two players connected directly shows only as their leaving.
 
 ### Leaderboards
@@ -305,7 +307,7 @@ The badge at the top right says whether it's live. The connection uses the same 
 **What's stored:**
 - Players' locations are city counts.
 - Each server's accounts and play sessions, as it reports them (see Metrics), so admins can manage players.
-- Players' session events (sign-ins, rooms, searches, joins, invitations, problems), with their names but no addresses, for 30 days on the coordinator (a few days on each server).
+- Players' session events (sign-ins, rooms, searches, joins, invitations, problems), with their names but no addresses, for 30 days on the coordinator (a few days on each server), and their game's warnings, errors and network lines, redacted on their PC, unless they turned that off.
 - The per-minute "who played" ids are a per-server keyed hash of the account number, with minutes played per day; the reports count players per server, so someone playing on two servers counts twice.
 - Launchers' ping reports keep only the city and the round trip.
 - Players' reports, with the logs they chose to attach (redacted on their PC) and their server's log lines about them, for 90 days (see [Player reports](#player-reports)).

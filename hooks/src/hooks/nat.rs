@@ -123,6 +123,12 @@ struct State {
     tag: nat_proto::Tag,
     /// Nonces of recent probes: only replies to these are believed.
     sent: [u32; 4],
+    /// The helper's last answer, and whether its silence since was said (the server's
+    /// admins see these lines: a game the relay stops knowing can't be joined).
+    last_answer: Option<Instant>,
+    silence_said: bool,
+    /// Whether sending the probes failed (said once until they go again).
+    send_failing: bool,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -143,7 +149,14 @@ static STATE: Mutex<State> = Mutex::new(State {
     cookie: [0; 16],
     tag: [0; 8],
     sent: [0; 4],
+    last_answer: None,
+    silence_said: false,
+    send_failing: false,
 });
+
+/// The helper not answering this long (three keepalives) is worth a line: it forgets a game
+/// after 90 s without a probe.
+const SILENCE: Duration = Duration::from_secs(60);
 
 /// Takes the ticket the server gave at sign-in (it names this account).
 pub fn set_ticket(ticket: &[u8]) {
@@ -413,8 +426,18 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
                 if nonce == 0 || !st.sent.contains(&nonce) {
                     continue;
                 }
+                if st.silence_said {
+                    let quiet = st.last_answer.map_or(0, |t| t.elapsed().as_secs());
+                    info!("NAT: the server's NAT helper answers again (after {quiet} s)");
+                    st.silence_said = false;
+                }
+                st.last_answer = Some(Instant::now());
                 if sender != second {
                     if tag == [0; 8] {
+                        if st.tag != [0; 8] {
+                            info!("NAT: the server's NAT helper no longer knows this game; registering again");
+                            st.tag = [0; 8];
+                        }
                         // Not registered yet: come back at once with the cookie.
                         if cookie != [0; 16] && st.ticket != [0; 16] {
                             st.cookie = cookie;
@@ -561,6 +584,17 @@ fn worker(host: String, port: u16) {
             if st.last_probe.is_some_and(|t| t.elapsed() < interval) {
                 continue;
             }
+            let quiet = st.last_answer.map(|t| t.elapsed());
+            if let (Some(quiet), false) = (quiet, st.silence_said) {
+                if quiet >= SILENCE {
+                    warn!(
+                        "NAT: no answer from the server's NAT helper for {} s (probing every {} s); it forgets this game after 90 s, and nobody can join it then",
+                        quiet.as_secs(),
+                        interval.as_secs()
+                    );
+                    st.silence_said = true;
+                }
+            }
             st.last_probe = Some(Instant::now());
             // Random and never 0: whoever can send as the helper (e.g. on the LAN) can't
             // guess the next one, so can't answer for it.
@@ -597,7 +631,15 @@ fn worker(host: String, port: u16) {
         };
         for (data, to) in probes {
             if let Some(to) = to {
-                send_raw(socket, &data, to);
+                let sent = send_raw(socket, &data, to);
+                let mut st = state();
+                if sent < 0 && !st.send_failing {
+                    warn!("NAT: sending a probe to the server's NAT helper {to} failed ({sent})");
+                    st.send_failing = true;
+                } else if sent >= 0 && st.send_failing {
+                    info!("NAT: probes to the server's NAT helper go again");
+                    st.send_failing = false;
+                }
             }
         }
     }

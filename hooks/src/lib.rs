@@ -35,6 +35,7 @@ mod addresses;
 mod api;
 mod community;
 mod dataversion;
+mod diagnostics;
 mod dll_utils;
 mod hooks;
 mod macros;
@@ -269,6 +270,7 @@ fn init(hmodule: Option<HMODULE>) {
         config::LogLevel::Error => tracing_subscriber::filter::LevelFilter::ERROR,
     };
     reload_handle.reload(tracing_subscriber::EnvFilter::default().add_directive(level.into())).unwrap();
+    diagnostics::start(config);
 
     let addr = addresses::get();
 
@@ -428,7 +430,12 @@ fn init_log(target_dir: &Path) -> ReconfigurableLogger {
         .with_env_filter(tracing_subscriber::EnvFilter::builder().with_default_directive(LevelFilter::INFO.into()).from_env_lossy())
         .with_filter_reloading();
     let reload_handle = subscriber_builder.reload_handle();
-    subscriber_builder.init();
+    {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        use tracing_subscriber::util::SubscriberInitExt as _;
+        // The log file, and the lines the server gets (diagnostics.rs).
+        subscriber_builder.finish().with(diagnostics::DiagnosticsLayer).init();
+    }
     tracing::event!(tracing::Level::INFO, "attaching");
 
     std::panic::set_hook(Box::new(|panic_info| {

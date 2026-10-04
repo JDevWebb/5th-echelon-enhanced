@@ -132,6 +132,8 @@ The **Status** card on the home screen keeps an eye on all of this. Anything tha
 
 **How did that go?** When the game closes after something went wrong (a join that failed, a crash, a refused sign-in), and about once a week after a normal online game, the launcher asks how it went: good or not, what went wrong, and a comment. If you agree, your logs go with it to the admins of the server you play on, who see them in the admin UI's Reports. Before anything leaves your PC, your user folder, your PC's and Windows account's names and your internet address are hidden, and **What's sent** shows exactly what goes. It asks at most once a day; **Don't ask again** (or **Settings › Feedback**) turns it off, and **Settings › Feedback › Send feedback** sends one any time.
 
+**While you play,** the game sends the server it's signed in to its warnings, errors and network events (a few lines a minute at most, never the whole log), so the server's admins can see why a join or a connection failed. The same private details are hidden first. **Settings › Feedback › Send the game's diagnostics to the server** turns it off.
+
 <p align="center">
   <img src="./docs/screenshots/launcher-servers.png" width="640" alt="The launcher's Servers screen: a card per community server with ping and players, the one you're on marked Connected, and joining by address or on your network">
 </p>

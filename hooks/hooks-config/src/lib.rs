@@ -10,6 +10,8 @@ use tracing::info;
 use tracing::instrument;
 use url::Url;
 
+pub mod redact;
+
 #[cfg(target_os = "windows")]
 mod saves;
 pub mod text;
@@ -280,6 +282,12 @@ pub struct Config {
     #[serde(default = "default_push_friend_list")]
     pub push_friend_list: bool,
 
+    /// Sends the server the game's warnings, errors and network events as they happen
+    /// (private names, folders and addresses hidden first), so its admins can see why a
+    /// join or a connection failed. Settings › Feedback in the launcher.
+    #[serde(default = "default_send_diagnostics")]
+    pub send_diagnostics: bool,
+
     /// Set when another tool manages this install (from the override file's
     /// `[Managed]`); never read from or written to `uplay.toml`.
     #[serde(skip)]
@@ -291,6 +299,10 @@ const fn default_share_session_data() -> bool {
 }
 
 const fn default_push_friend_list() -> bool {
+    true
+}
+
+const fn default_send_diagnostics() -> bool {
     true
 }
 

@@ -10,7 +10,7 @@ use super::Storage;
 
 /// Kinds whose repeat (the same detail, for the same player) within this many seconds is
 /// counted on the earlier event instead of making one of its own.
-const REPEATS: &[(&str, i64)] = &[("signin_refused", 600), ("request_error", 600), ("stats", 120), ("relay_drop", 60)];
+const REPEATS: &[(&str, i64)] = &[("signin_refused", 600), ("request_error", 600), ("stats", 120), ("relay_drop", 60), ("client_log", 600)];
 /// Sent events are kept this long (for a look on the server itself), unsent ones longer.
 const KEEP_SENT_SECS: i64 = 3 * 86_400;
 const KEEP_UNSENT_SECS: i64 = 14 * 86_400;

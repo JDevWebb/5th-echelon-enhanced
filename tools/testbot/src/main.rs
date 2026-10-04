@@ -213,6 +213,25 @@ async fn direct_test(ctx: &mut Ctx) -> Result<()> {
 /// A player's report after a game, as the launcher sends it: the server tells what it saw
 /// of the session, and takes the report with a log; a file that isn't one of the
 /// launcher's is refused, and a player sends a few a day at most.
+/// The game's diagnostics: kept up to the request's and the player's limits, never from
+/// someone not signed in.
+async fn client_log(ctx: &mut Ctx) -> Result<()> {
+    let a = ctx.player("Logger").await?;
+    let line = |i: usize| server_api::misc::ClientLogLine {
+        at: 0,
+        level: "WARN".into(),
+        target: "hooks::hooks::nat".into(),
+        message: format!("NAT: no answer from the server's NAT helper for {i} s"),
+    };
+    let kept = a.client_log((0..3).map(line).collect()).await.map_err(|e| eyre!("client log: {}", e.message()))?;
+    ensure!(kept == 3, "three lines kept: {kept}");
+    let kept = a.client_log((0..100).map(line).collect()).await.map_err(|e| eyre!("client log: {}", e.message()))?;
+    ensure!(kept <= 50, "at most 50 a request: {kept}");
+    let kept = a.client_log((0..50).map(line).collect()).await.map_err(|e| eyre!("client log: {}", e.message()))?;
+    ensure!(kept < 50, "and the player's budget a minute: {kept}");
+    a.disconnect().await
+}
+
 async fn report(ctx: &mut Ctx) -> Result<()> {
     let a = ctx.player("Reporter").await?;
     let summary = a.session_summary().await.map_err(|e| eyre!("session summary: {}", e.message()))?;
@@ -1040,6 +1059,7 @@ const SCENARIOS: &[&str] = &[
     "login-lockout",
     "outdated-client",
     "report",
+    "client-log",
 ];
 
 #[tokio::main]
@@ -1125,6 +1145,7 @@ async fn main() -> Result<()> {
                 "login-lockout" => login_lockout(&mut ctx).await,
                 "outdated-client" => outdated_client(&mut ctx).await,
                 "report" => report(&mut ctx).await,
+                "client-log" => client_log(&mut ctx).await,
                 // Not in the default list: a server in the "mutual" mode, one requiring
                 // identities, and two servers.
                 "friends-mutual" => friends_mutual(&mut ctx).await,

@@ -193,6 +193,7 @@ function roomTitle(r) {
   return `${what} (${whose})${who}\n${time(r.from)}–${time(r.to)} · ${fmt.dur(r.to - r.from) || '<1m'}`;
 }
 function markClass(m) {
+  if (m.kind === 'client_log') return /^Game error/.test(m.text) ? 'bad' : /^Game warn/.test(m.text) ? 'warn' : 'muted';
   if (PROBLEM_KINDS.has(m.kind)) return m.kind === 'request_error' ? 'warn' : 'bad';
   if (m.kind === 'stats') return 'ok';
   if (m.kind === 'search') return 'info';

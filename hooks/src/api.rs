@@ -12,6 +12,8 @@ use server_api::friends::SearchRequest;
 use server_api::friends::SetSessionRequest;
 use server_api::friends::TargetRequest;
 use server_api::misc::misc_client::MiscClient;
+use server_api::misc::ClientLogLine;
+use server_api::misc::ClientLogRequest;
 use server_api::misc::EventRequest;
 use server_api::misc::EventResponse;
 use server_api::users::users_client::UsersClient;
@@ -373,6 +375,23 @@ pub async fn event() -> Result<EventResponse, Error> {
         let request = tonic::Request::new(EventRequest {});
 
         Ok(client.event(request).await?.into_inner())
+    })
+    .await
+}
+
+/// Sends the game's diagnostics (diagnostics.rs). Not before the game signed in: there's
+/// nobody to send them as.
+pub async fn client_log(lines: Vec<ClientLogLine>, dropped: u32) -> Result<(), Error> {
+    if TOKEN.lock().unwrap().is_none() {
+        return Err(Error::NotConnected);
+    }
+    signed_in(|| {
+        let lines = lines.clone();
+        async move {
+            let mut client = connect!(MiscClient);
+            client.client_log(tonic::Request::new(ClientLogRequest { lines, dropped })).await?;
+            Ok(())
+        }
     })
     .await
 }

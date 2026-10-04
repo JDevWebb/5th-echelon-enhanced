@@ -46,6 +46,7 @@ const KINDS: &[&str] = &[
     "nat",
     "nat_missing",
     "nat_lost",
+    "client_log",
     "relay_drop",
     "request_error",
 ];
@@ -530,6 +531,10 @@ fn describe(e: &Event) -> String {
                 "Online play direct".into()
             }
         }
+        "client_log" => {
+            let times = if e.count > 1 { format!(" ({} times)", e.count) } else { String::new() };
+            format!("Game {}: {}{times}", e.str("level"), e.str("message"))
+        }
         "nat_lost" => format!(
             "The game stopped registering for online play ({} s since its last check-in) while still signed in: nobody could reach it until it registered again",
             e.detail["probe_secs"]
@@ -614,6 +619,8 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
             "nat_missing" => out.push(problem(e, "bad", format!("{}'s game couldn't be reached", e.name), describe(e))),
             // Joins with them fail (CONNECTION_FAILED) until it registers again.
             "nat_lost" => out.push(problem(e, "bad", format!("{}'s game dropped off the relay", e.name), describe(e))),
+            // The game's own errors; its warnings and network events are on its timeline.
+            "client_log" if e.str("level") == "error" => out.push(problem(e, "warn", format!("{}'s game reported an error", e.name), describe(e))),
             "request_error" => out.push(problem(
                 e,
                 "warn",
@@ -871,6 +878,26 @@ mod tests {
         ];
         let found = problems(&events);
         let lost = problems(&[ev("na", 300, 4, "SirCooms", "nat_lost", json!({ "probe_secs": 95 }))]);
+        let logged = problems(&[
+            ev(
+                "na",
+                310,
+                4,
+                "SirCooms",
+                "client_log",
+                json!({ "level": "error", "target": "hooks::hooks::nat", "message": "NAT: can't resolve the helper" }),
+            ),
+            ev(
+                "na",
+                311,
+                4,
+                "SirCooms",
+                "client_log",
+                json!({ "level": "info", "target": "hooks::hooks::nat", "message": "NAT: Storm socket bound" }),
+            ),
+        ]);
+        assert_eq!(logged.len(), 1, "only errors are problems");
+        assert_eq!(logged[0]["text"], "Game error: NAT: can't resolve the helper");
         assert_eq!(lost[0]["title"], "SirCooms's game dropped off the relay");
         assert!(lost[0]["text"].as_str().unwrap().contains("95 s"), "{}", lost[0]);
         assert_eq!(found[0]["title"], "emeraldknight33's game couldn't be reached");

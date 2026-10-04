@@ -32,6 +32,9 @@
 //! - `relay_drop`: `direction` (`sending`: the relay stopped getting this player's traffic;
 //!   `receiving`: stopped getting traffic for them), `before` and `after` (packets a second).
 //! - `request_error`: `call` (Protocol.Method), `error`.
+//! - `client_log`: `level` (`error`, `warn`, `info`), `target`, `message`: a line
+//!   of the game's own log (its warnings, errors and network events), sent by the game
+//!   (Misc.ClientLog) unless the player turned it off.
 //!
 //! Every `room` gets `since` (when it was made: ids come again once old rooms are gone),
 //! `room_kind` (`party` or `match`), `mode` (`coop`, `svm`), `private`, `map`, `game_mode` and

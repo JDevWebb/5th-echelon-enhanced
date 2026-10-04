@@ -58,6 +58,16 @@ const SESSION_DATA_SIZE: usize = 496;
 /// again on their own when one runs out.
 const TOKEN_LIFETIME_SECS: i64 = 30 * 24 * 60 * 60;
 
+/// The game's diagnostic lines (Misc.ClientLog): most taken from one request, and the most
+/// of one kept.
+const CLIENT_LOG_LINES: usize = 50;
+const CLIENT_LOG_CHARS: usize = 300;
+
+/// `text` without control characters, cut to `max` characters.
+fn printable(text: &str, max: usize) -> String {
+    text.chars().filter(|c| !c.is_control()).take(max).collect::<String>().trim().to_string()
+}
+
 /// The caller's user id, put there by [`check_token`].
 fn caller<T>(request: &Request<T>) -> Result<u32, Status> {
     request
@@ -1140,6 +1150,47 @@ impl Misc for MyMisc {
             matches: summary.matches,
             json: summary.json.to_string(),
         }))
+    }
+
+    /// The game's warnings, errors and network events (redacted on the player's PC), kept
+    /// as session events (`client_log`) for the admin UI: at most [`CLIENT_LOG_LINES`] a
+    /// request and the player's budget a minute (rate_limit.rs); the rest are counted.
+    async fn client_log(&self, request: Request<misc::ClientLogRequest>) -> Result<Response<misc::ClientLogResponse>, Status> {
+        let user_id = caller(&request)?;
+        let request = request.into_inner();
+        let mut kept = 0u32;
+        let mut over = request.dropped;
+        for line in request.lines.iter().take(CLIENT_LOG_LINES) {
+            if !crate::rate_limit::client_log_lines().check(user_id) {
+                over = over.saturating_add(1);
+                continue;
+            }
+            let level = match line.level.as_str() {
+                "ERROR" => "error",
+                "WARN" => "warn",
+                _ => "info",
+            };
+            crate::session_events::note(
+                crate::session_events::Who::Id(user_id),
+                "client_log",
+                serde_json::json!({
+                    "level": level,
+                    "target": printable(&line.target, 60),
+                    // Not the PC's time: the same line again soon is then one event, counted.
+                    "message": printable(&line.message, CLIENT_LOG_CHARS),
+                }),
+            );
+            kept += 1;
+        }
+        over = over.saturating_add(u32::try_from(request.lines.len().saturating_sub(CLIENT_LOG_LINES)).unwrap_or(u32::MAX));
+        if over > 0 {
+            crate::session_events::note(
+                crate::session_events::Who::Id(user_id),
+                "client_log",
+                serde_json::json!({ "level": "info", "target": "", "message": "some lines were left out (too many at once)" }),
+            );
+        }
+        Ok(Response::new(misc::ClientLogResponse { kept }))
     }
 
     /// A player's feedback, with their logs if they agreed: queued for the coordinator with
