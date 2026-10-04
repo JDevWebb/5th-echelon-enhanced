@@ -443,7 +443,8 @@ impl Storage {
     pub fn delete_user_session(&self, user_id: u32) -> Result<()> {
         run(async {
             sqlx::query("DELETE FROM station_urls WHERE user_id = ?").bind(user_id).execute(&self.pool).await?;
-            sqlx::query("UPDATE game_sessions SET destroyed_at=CURRENT_TIMESTAMP WHERE creator_id = ?")
+            // Only the sessions still open: one that ended keeps its end (a finished match's length).
+            sqlx::query("UPDATE game_sessions SET destroyed_at=CURRENT_TIMESTAMP WHERE creator_id = ? AND destroyed_at IS NULL")
                 .bind(user_id)
                 .execute(&self.pool)
                 .await?;
@@ -1505,6 +1506,29 @@ pub(crate) mod tests {
             assert_eq!(count(table), 0, "{table} must be empty after a restart");
         }
         assert!(storage.find_user_id_by_name("Nexus").unwrap().is_some(), "accounts stay");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn signing_out_keeps_the_end_of_sessions_that_already_ended() {
+        let (storage, dir) = temp_storage("ended");
+        storage.register_user("Host", "pw", Some("HOST")).unwrap();
+        let host = storage.find_user_id_by_name("Host").unwrap().unwrap();
+        let ended = storage.create_game_session(host, 1, "101 => 3".into()).unwrap();
+        let open = storage.create_game_session(host, 1, "101 => 3".into()).unwrap();
+        run(sqlx::query("UPDATE game_sessions SET destroyed_at = '2026-01-01 00:00:00' WHERE id = ?")
+            .bind(ended)
+            .execute(&storage.pool))
+        .unwrap()
+        .unwrap();
+        storage.delete_user_session(host).unwrap();
+        let end = |id: u32| -> Option<String> {
+            run(sqlx::query_scalar("SELECT destroyed_at FROM game_sessions WHERE id = ?").bind(id).fetch_one(&storage.pool))
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(end(ended).as_deref(), Some("2026-01-01 00:00:00"), "a finished match keeps its length");
+        assert!(end(open).is_some_and(|e| e.as_str() > "2026-01-01 00:00:00"), "the open one ends now");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
