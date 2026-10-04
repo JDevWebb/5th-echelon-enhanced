@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="./docs/logo.png" width="140" alt="5th Echelon">
+  <img src="./docs/logo.svg" width="140" alt="5th Echelon Enhanced">
 </p>
 
 <h1 align="center">5th Echelon Enhanced</h1>
@@ -781,7 +781,7 @@ Find other players, active servers and help:
 - **Not MIT:**
   - upstream 5th Echelon's code, which has no licence yet ([unixoide/5th-echelon#129](https://github.com/unixoide/5th-echelon/issues/129)) and remains its authors';
   - code merged from others' pull requests, which stays theirs: [#123](https://github.com/unixoide/5th-echelon/pull/123) and [#124](https://github.com/unixoide/5th-echelon/pull/124) by Matthias Walther, [#128](https://github.com/unixoide/5th-echelon/pull/128) by Thiago;
-  - the fonts (SIL Open Font License), and upstream's logo, images, generated save and research notes.
+  - the fonts (SIL Open Font License), and upstream's images, generated save and research notes.
 - **Not software:** the [community network](#the-community-server) (its servers, coordinator and admin UI) is a service run with this code; the licence doesn't cover it or access to it.
 - **Data:** DB-IP's city database, downloaded at run time, is CC BY 4.0; the admin UI's world map is Natural Earth (public domain).
 

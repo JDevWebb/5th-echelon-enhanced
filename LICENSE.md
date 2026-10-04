@@ -32,6 +32,7 @@ Everything in these files and folders is under MIT:
 | `build/`, `docker/`, `release.toml`, `.dockerignore`, `.github/` | Builds, the server image, release numbering, CI and release workflows, issue forms |
 | `scripts/install-server.sh`, `harden-host.sh`, `sign-release.sh`, `release.sh`, `bots.sh`, `load-test.sh`, `proxy-test.sh`, `federation-test.sh`, `check-clean.sh`, `install-hooks.sh` | The Linux installer, release signing, test runners and repository checks |
 | `docs/deploying.md`, `operations.md`, `community-servers.md`, `friends.md`, `server-settings.md`, `reverse-proxy.md`, `reverse-proxy/`, `load-testing.md`, `roadmap.md`, `releases/`, `research/nat-traversal.md`, `research/cross-region.md` | This project's documentation |
+| `docs/logo.svg`, `docs/logo.png`, `launcher/logo.ico`, `coordinator/admin-ui/public/icon.svg` | 5th Echelon Enhanced's logo: five units in an echelon formation |
 | `LICENSE.md` | This file |
 | `SECURITY.md` | How to report security problems |
 
@@ -55,7 +56,7 @@ The same applies to this project's follow-up changes to code merged from pull re
 | GeoIP data downloaded at run time | [DB-IP](https://db-ip.com)'s IP to City Lite, under CC BY 4.0; the admin UI credits it |
 | `hooks/fonts/*.ttf` | IBM Plex Sans, Sans Condensed and Mono, under the SIL Open Font License 1.1 (`hooks/fonts/OFL-*.txt`) |
 | `coordinator/admin-ui/src/assets/fonts/*.ttf` | the same IBM Plex fonts, for the admin UI, under the SIL Open Font License 1.1 (`coordinator/admin-ui/public/fonts-license.txt`) |
-| `docs/logo.png`, `docs/demo.webm`, `docs/demo_thumb.png`, `docs/overlay_*.png`, `launcher/logo.ico` | Upstream 5th Echelon |
+| `docs/demo.webm`, `docs/demo_thumb.png`, `docs/overlay_*.png`, `launcher/old_logo.ico` | Upstream 5th Echelon (upstream's logo, which this project used until 0.4.1, is in the git history) |
 | `docs/screenshots/` | This project's screenshots, but they show the upstream logo |
 | `setup/data/base_savegame.xml` | Upstream 5th Echelon's generated save |
 | `dedicated_server/src/news_upstream.json` | Upstream 5th Echelon's news (`data/news.json`), kept to recognise it |
