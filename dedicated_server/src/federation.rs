@@ -70,6 +70,8 @@ const BOARD_TOP: u32 = 100;
 const STATS_PLAYERS: u32 = 200;
 /// A coordinator without global stats is asked again only now and then.
 const STATS_UNSUPPORTED_WAIT: Duration = Duration::from_secs(3600);
+/// A coordinator without reports is asked again only now and then.
+const REPORTS_UNSUPPORTED_WAIT: Duration = Duration::from_secs(3600);
 /// Admin actions already carried out, kept so one the coordinator sends again (its answer
 /// lost) isn't done twice.
 const ACTIONS_KEPT: usize = 200;
@@ -347,6 +349,13 @@ pub fn stats_written() {
     }
 }
 
+/// A player's report is waiting: it goes to the coordinator soon.
+pub fn report_queued() {
+    if let Some(state) = STATE.get().filter(|s| s.enabled) {
+        state.wake.notify_one();
+    }
+}
+
 /// Asks for `user`'s friends from other servers soon.
 pub fn pull_soon(user: u32) {
     if let Some(state) = STATE.get().filter(|s| s.enabled) {
@@ -550,6 +559,8 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
     let mut changes_wait: Option<Instant> = None;
     let mut roster = Roster::default();
     let mut boards = Boards::default();
+    // When the coordinator last said it takes no reports.
+    let mut reports_unsupported: Option<Instant> = None;
     let mut actions_done: Vec<(u64, crate::players::Outcome)> = Vec::new();
     loop {
         if secret.is_none() {
@@ -630,6 +641,13 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                     }
                 }
             }
+            if reports_unsupported.is_none_or(|t| t.elapsed() >= REPORTS_UNSUPPORTED_WAIT) {
+                match send_reports(&storage, &client).await {
+                    Ok(()) => reports_unsupported = None,
+                    Err(e) if e.to_string().starts_with("404") => reports_unsupported = Some(Instant::now()),
+                    Err(e) => debug!(logger, "Federation: sending a report failed (will retry): {e:#}"),
+                }
+            }
             if roster.due() {
                 if let Err(e) = send_roster(&storage, &client, &mut roster).await {
                     debug!(logger, "Federation: sending players failed: {e:#}");
@@ -662,6 +680,24 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
         }
         let _ = tokio::time::timeout(Duration::from_secs(5), state.wake.notified()).await;
     }
+}
+
+/// Players' reports waiting for the coordinator, sent one at a time. One it refuses as
+/// invalid (400) is dropped; anything else is tried again.
+async fn send_reports(storage: &Storage, client: &Coordinator<'_>) -> eyre::Result<()> {
+    for _ in 0..5 {
+        let Some((id, body)) = storage.next_report().await? else { return Ok(()) };
+        let body: serde_json::Value = serde_json::from_str(&body)?;
+        match client.post("/v1/reports", &body).await {
+            Ok(_) => storage.report_sent(&id).await?,
+            Err(e) if e.to_string().starts_with("400") => {
+                storage.report_sent(&id).await?;
+                return Err(e.wrap_err(format!("the coordinator refused report {id}; dropped")));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
 }
 
 /// When the global leaderboards were last fetched.

@@ -1082,6 +1082,8 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         let user_id = login_required(&*ci)?;
         for failed in &request.unsuccessful_join_sessions.0 {
             crate::metrics::failed_join();
+            #[allow(clippy::cast_sign_loss)]
+            crate::reports::join_failed(user_id, failed.session_key.session_id, failed.error_code as u32);
             warn!(
                 logger,
                 "Join failed: {user_id} did not get into session {} (type {}) - category {}, code {:#010x}",

@@ -659,6 +659,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
             };
             if new {
                 if let Message::ProbeReply { advertise, flags: rf, .. } = &reply {
+                    crate::reports::nat_registered(&name, rf & reply_flags::RELAYED != 0);
                     info!(
                         logger,
                         "NAT helper: {name} at {src} advertises {advertise}{} (mapping {mapping:?}, flags {flags:#x}); {count} players, {relayed} relayed",

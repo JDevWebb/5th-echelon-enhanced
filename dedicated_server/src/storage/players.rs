@@ -108,6 +108,55 @@ impl Storage {
         Ok(())
     }
 
+    /// `user_id`'s last play session: when it started, and ended (0 while still going).
+    pub fn last_play_session(&self, user_id: u32) -> Result<Option<(i64, i64)>> {
+        let row: Option<(i64, Option<i64>)> = run(sqlx::query_as("SELECT started_at, ended_at FROM play_sessions WHERE user_id = ? ORDER BY id DESC LIMIT 1")
+            .bind(user_id)
+            .fetch_optional(&self.pool))??;
+        Ok(row.map(|(start, end)| (start, end.unwrap_or(0))))
+    }
+
+    /// How many reports `user_id` sent in the last day.
+    pub async fn reports_today(&self, user_id: u32) -> Result<i64> {
+        Ok(sqlx::query_scalar(&format!("SELECT COUNT(*) FROM report_log WHERE user_id = ? AND at > {NOW} - 86400"))
+            .bind(user_id)
+            .fetch_one(&self.pool)
+            .await?)
+    }
+
+    /// Queues `user_id`'s report for the coordinator, and notes they sent one.
+    pub async fn queue_report(&self, user_id: u32, id: &str, body: &str) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query(&format!("INSERT INTO report_outbox (id, body, created_at) VALUES (?, ?, {NOW})"))
+            .bind(id)
+            .bind(body)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(&format!("INSERT INTO report_log (user_id, at) VALUES (?, {NOW})"))
+            .bind(user_id)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(&format!("DELETE FROM report_log WHERE at < {NOW} - 86400")).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// The oldest report waiting for the coordinator; ones waiting over a week are dropped.
+    pub async fn next_report(&self) -> Result<Option<(String, String)>> {
+        sqlx::query(&format!("DELETE FROM report_outbox WHERE created_at < {NOW} - 7 * 86400"))
+            .execute(&self.pool)
+            .await?;
+        Ok(sqlx::query_as("SELECT id, body FROM report_outbox ORDER BY created_at, id LIMIT 1")
+            .fetch_optional(&self.pool)
+            .await?)
+    }
+
+    /// The coordinator has the report.
+    pub async fn report_sent(&self, id: &str) -> Result<()> {
+        sqlx::query("DELETE FROM report_outbox WHERE id = ?").bind(id).execute(&self.pool).await?;
+        Ok(())
+    }
+
     /// Every minute: the open play sessions are still going.
     pub fn touch_play(&self) -> Result<()> {
         run(sqlx::query(&format!("UPDATE play_sessions SET seen_at = {NOW} WHERE ended_at IS NULL")).execute(&self.pool))??;

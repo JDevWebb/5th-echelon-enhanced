@@ -1091,6 +1091,54 @@ impl Misc for MyMisc {
     /// Handles P2P testing requests.
     ///
     /// Attempts to establish a UDP connection with the client and exchanges a challenge.
+    /// What the server saw of the player's last game session, for the launcher to decide
+    /// whether to ask how it went.
+    async fn session_summary(&self, request: Request<misc::SessionSummaryRequest>) -> Result<Response<misc::SessionSummaryResponse>, Status> {
+        let user_id = caller(&request)?;
+        if !crate::rate_limit::game_requests().check(user_id) {
+            return Err(Status::resource_exhausted("Too many requests; slow down"));
+        }
+        let storage = Arc::clone(&self.storage);
+        let summary = tokio::task::spawn_blocking(move || crate::reports::summary(&storage, user_id))
+            .await
+            .map_err(internal)?
+            .map_err(internal)?;
+        Ok(Response::new(misc::SessionSummaryResponse {
+            started: summary.started,
+            ended: summary.ended,
+            failed_joins: summary.failed_joins,
+            version_mismatches: summary.version_mismatches,
+            relayed: summary.relayed,
+            matches: summary.matches,
+            json: summary.json.to_string(),
+        }))
+    }
+
+    /// A player's feedback, with their logs if they agreed: queued for the coordinator with
+    /// this server's side added (reports.rs).
+    async fn report(&self, request: Request<misc::ReportRequest>) -> Result<Response<misc::ReportResponse>, Status> {
+        let user_id = caller(&request)?;
+        let peer = client_addr(&request);
+        let r = request.into_inner();
+        let incoming = crate::reports::Incoming {
+            rating: r.rating,
+            problems: r.problems,
+            comment: r.comment,
+            triggers: r.triggers,
+            client: r.client.into_iter().collect(),
+            files: r.files.into_iter().map(|f| (f.name, f.gzip, f.size)).collect(),
+        };
+        match crate::reports::accept(&self.storage, user_id, peer, incoming).await.map_err(internal)? {
+            Ok(id) => {
+                info!(self.logger, "Report {id} from {user_id}, for the coordinator");
+                crate::federation::report_queued();
+                Ok(Response::new(misc::ReportResponse { id }))
+            }
+            Err(crate::reports::Refused::TooMany) => Err(Status::resource_exhausted("You've sent a few reports today already; thanks, they're with the admins")),
+            Err(crate::reports::Refused::Invalid(why)) => Err(Status::invalid_argument(why)),
+        }
+    }
+
     async fn test_p2p(&self, request: Request<misc::TestP2pRequest>) -> Result<Response<misc::TestP2pResponse>, Status> {
         if !crate::rate_limit::game_requests().check(caller(&request)?) {
             return Err(Status::resource_exhausted("Too many requests; slow down"));
@@ -1433,7 +1481,9 @@ pub async fn start_server(
                 logger: logger.clone(),
                 storage: Arc::clone(&storage),
                 debug_config,
-            }),
+            })
+            // A player's report carries their logs (reports.rs keeps them under 6 MB).
+            .max_decoding_message_size(8 * 1024 * 1024),
             logger.clone(),
             key.clone(),
             Arc::clone(&storage),

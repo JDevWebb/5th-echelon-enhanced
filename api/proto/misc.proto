@@ -7,6 +7,11 @@ import "users.proto";
 service Misc {
     rpc Event(EventRequest) returns (EventResponse);
     rpc TestP2P(TestP2PRequest) returns (TestP2PResponse);
+    // What the server saw of the player's last game session: whether to ask them how it went.
+    rpc SessionSummary(SessionSummaryRequest) returns (SessionSummaryResponse);
+    // The player's feedback, with their logs if they agreed: the server adds what it logged
+    // about them and passes it on to the network's admins.
+    rpc Report(ReportRequest) returns (ReportResponse);
 }
 
 message EventRequest {}
@@ -37,4 +42,47 @@ message TestP2PRequest {
 }
 message TestP2PResponse {
     bytes challenge = 2;
+}
+message SessionSummaryRequest {}
+message SessionSummaryResponse {
+    // The last play session (Unix seconds); 0 when there was none.
+    int64 started = 1;
+    int64 ended = 2;
+    // Joins the player's game reported failing in it, and how many of those were refused as
+    // a different version of the game.
+    int32 failed_joins = 3;
+    int32 version_mismatches = 4;
+    // Whether the player's matches went through the server's relay.
+    bool relayed = 5;
+    // Matches they were in, in all.
+    int32 matches = 6;
+    // All of it, and more, as JSON (sent along with a report).
+    string json = 7;
+}
+
+message ReportFile {
+    // [A-Za-z0-9._-], at most 64 characters.
+    string name = 1;
+    // gzip.
+    bytes gzip = 2;
+    // Uncompressed.
+    uint64 size = 3;
+}
+
+message ReportRequest {
+    // "good", "bad" or "".
+    string rating = 1;
+    // Any of: join, lag, crash, connection, version, signin, other.
+    repeated string problems = 2;
+    string comment = 3;
+    // Why the launcher asked: failed_join, relayed, panic, exit_code, signin_refused,
+    // version_mismatch, disconnect, routine.
+    repeated string triggers = 4;
+    // launcher, client, build, os, language.
+    map<string, string> client = 5;
+    // Redacted on the player's PC. None when they didn't agree to send logs.
+    repeated ReportFile files = 6;
+}
+message ReportResponse {
+    string id = 1;
 }

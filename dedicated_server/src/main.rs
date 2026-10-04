@@ -91,6 +91,8 @@ mod player_stats;
 mod players;
 mod privileges;
 mod rate_limit;
+mod recent_log;
+mod reports;
 mod secure;
 mod self_update;
 mod simple_http;
@@ -446,11 +448,13 @@ fn main() -> color_eyre::Result<()> {
     color_eyre::install()?;
     let args = argh::from_env::<Args>();
 
+    // Every line is also kept in memory for a while, for players' problem reports
+    // (recent_log.rs).
     let logger = if args.launcher {
-        Logger::root(build_file_logger(), o!())
+        Logger::root(slog::Duplicate(build_file_logger(), recent_log::Recent).fuse(), o!())
     } else {
         let logger = build_term_logger();
-        Logger::root(slog::Duplicate(logger, build_file_logger()).fuse(), o!())
+        Logger::root(slog::Duplicate(slog::Duplicate(logger, build_file_logger()), recent_log::Recent).fuse(), o!())
     };
 
     {

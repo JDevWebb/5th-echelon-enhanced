@@ -94,6 +94,11 @@ pub fn game_login(user_id: u32, ip: IpAddr, new_session: bool) {
     addresses().lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(user_id, ip);
 }
 
+/// Where `user_id`'s game connected from, while it's connected.
+pub fn address_of(user_id: u32) -> Option<IpAddr> {
+    addresses().lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(&user_id).copied()
+}
+
 /// A player's game connection closed.
 pub fn game_logout(user_id: u32) {
     addresses().lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&user_id);
