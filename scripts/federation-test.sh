@@ -3,7 +3,8 @@
 # containers: a friendship made on one reaches the other, a block on the
 # other comes back, and both servers are in the coordinator's directory. Then
 # the admin UI's side: a server's players reach the coordinator, and an admin's
-# ban goes out to the server and comes back done.
+# ban goes out to the server and comes back done. Last, global stats: a stat
+# written on server A reaches the coordinator and server B's leaderboards.
 #
 #   scripts/federation-test.sh <folder with dedicated_server, testbot and coordinator, in the build image>
 #
@@ -94,6 +95,28 @@ if [ -n "$player" ]; then
   banned=$(db fes-fed-a /srv/fe/5th-echelon.db "SELECT COUNT(*) FROM bans WHERE user_id = $player AND reason = 'federation test'")
   [ "$status" = done ] && [ "${banned:-0}" -eq 1 ] && echo "PASS an admin's ban reached server A and came back done" \
     || { echo "FAIL the ban: status ${status:-none}, banned ${banned:-0}"; rc=1; }
+fi
+echo "--- global stats"
+# A ladder kill for a player with an identity on server A, as the game's write leaves it.
+global_id=$(db fes-fed-a /srv/fe/5th-echelon.db "SELECT global_id FROM users WHERE global_id IS NOT NULL ORDER BY id LIMIT 1")
+if [ -n "$global_id" ]; then
+  docker exec fes-fed-a python3 -c "import sqlite3,sys; c=sqlite3.connect('/srv/fe/5th-echelon.db'); c.execute('INSERT INTO stats_outbox (global_id, name, board, context, stat, value) VALUES (?, \'Tester\', 17, 1, 100, 42)', (sys.argv[1],)); c.commit()" "$global_id"
+  kills=""
+  for _ in $(seq 60); do
+    kills=$(coord_db "SELECT value FROM global_stats WHERE global_id = '$global_id' AND board = 17 AND context = 1 AND stat = 100")
+    [ -n "$kills" ] && break; sleep 1
+  done
+  [ "${kills%.0}" = 42 ] && echo "PASS server A's stat reached the coordinator" || { echo "FAIL the stat didn't reach the coordinator (${kills:-none})"; rc=1; }
+  # Server B fetches the global leaderboards as it starts, then every 5 minutes.
+  docker restart fes-fed-b >/dev/null
+  top=""
+  for _ in $(seq 60); do
+    top=$(db fes-fed-b /srv/fe/5th-echelon.db "SELECT top FROM global_leaderboards WHERE leaderboard = 10 AND context = 1")
+    [ -n "$top" ] && break; sleep 1
+  done
+  case "$top" in *"$global_id"*) echo "PASS server B has the global leaderboard with server A's player";; *) echo "FAIL server B's leaderboards: ${top:-none}"; rc=1;; esac
+else
+  echo "FAIL no player with an identity on server A"; rc=1
 fi
 if [ $rc -ne 0 ]; then
   for s in fes-fed-a fes-fed-b; do echo "--- $s"; docker exec "$s" grep -iE -A3 "federation|ERRO" /srv/fe/server.log | tail -40 || true; done

@@ -1021,8 +1021,23 @@ fn sw(id: i64, who: &str, board: u32, context: u32, stat: u32, value: f64) -> Va
 const EPOCH: &str = "0123456789abcdef";
 
 impl Test {
-    /// Sends stat writes; answers the last applied id.
+    /// Sends stat writes, for people linked on every server; answers the last applied id.
     async fn stats(&self, secret: &str, epoch: &str, writes: Vec<Value>) -> i64 {
+        for w in &writes {
+            if let Some(who) = w["global_id"].as_str() {
+                sqlx::query("INSERT OR IGNORE INTO links (global_id, server_id, username, linked_at) SELECT ?, id, ?, 0 FROM servers")
+                    .bind(who)
+                    .bind(format!("Name{who}"))
+                    .execute(&self.c.pool)
+                    .await
+                    .unwrap();
+            }
+        }
+        self.unlinked_stats(secret, epoch, writes).await
+    }
+
+    /// Sends stat writes as they are; answers the last applied id.
+    async fn unlinked_stats(&self, secret: &str, epoch: &str, writes: Vec<Value>) -> i64 {
         let (status, v) = self.call("POST", "/v1/stats", Some(secret), Some(json!({ "epoch": epoch, "writes": writes }))).await;
         assert_eq!((status, v["ok"].as_bool()), (StatusCode::OK, Some(true)), "{v}");
         v["last_id"].as_i64().unwrap()
@@ -1038,6 +1053,21 @@ impl Test {
             .await
             .unwrap()
     }
+}
+
+#[tokio::test]
+async fn stats_only_for_people_linked_on_the_server() {
+    let t = start("stats-linked").await;
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    sqlx::query("INSERT INTO links (global_id, server_id, username, linked_at) VALUES ('EXO', 'server-b', 'Exo', 0)")
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    // Server A makes up stats for a player linked only on B: skipped, but done with.
+    assert_eq!(t.unlinked_stats(&a, EPOCH, vec![sw(1, "EXO", 17, 1, 100, 5.0)]).await, 1);
+    assert_eq!(t.stat("EXO", 17, 1, 100).await, None);
+    assert_eq!(t.unlinked_stats(&b, EPOCH, vec![sw(1, "EXO", 17, 1, 100, 7.0)]).await, 1);
+    assert_eq!(t.stat("EXO", 17, 1, 100).await, Some(7.0));
 }
 
 #[tokio::test]

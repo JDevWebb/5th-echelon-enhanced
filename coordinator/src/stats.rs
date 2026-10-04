@@ -5,11 +5,12 @@
 //!   stat, value }] }`: the stat writes the game sent its server, in order. Each server numbers
 //!   them (ids ascending, per `epoch`, a random 16 hex digits per server database); a write is
 //!   applied once, added up the way its board says ([`stat_boards`]), and the answer's
-//!   `last_id` tells the server how far it may forget. Invalid writes are skipped (and counted
-//!   as done). Up to [`MAX_WRITES`] a request.
+//!   `last_id` tells the server how far it may forget. Invalid writes, and writes for people
+//!   not linked on that server, are skipped (and counted as done). Up to [`MAX_WRITES`] a
+//!   request.
 //! * `GET /v1/leaderboards?count=` (a member): the top of every leaderboard in every context,
 //!   with each person's stats on that board (the servers answer the game from it). Made at
-//!   most once a minute.
+//!   most once a minute, and again after stats changed.
 //! * `POST /v1/leaderboards/players` `{ ids }` (a member): where those people are on every
 //!   list, and every list's size.
 //! * `POST /v1/stats/players` `{ ids }` (a member): everything kept for those people.
@@ -157,6 +158,10 @@ impl Coordinator {
         let mut writes: Vec<(i64, &Value)> = writes.iter().filter_map(|w| Some((w["id"].as_i64()?, w))).collect();
         writes.sort_by_key(|(id, _)| *id);
         let mut names: BTreeMap<String, String> = BTreeMap::new();
+        // Only for people linked on the server that sends them: a server can't make up
+        // anyone else's stats.
+        let mut linked: BTreeMap<String, bool> = BTreeMap::new();
+        let mut changed = false;
         for (id, w) in writes {
             if id <= last {
                 continue;
@@ -165,6 +170,17 @@ impl Coordinator {
             let Some((w, aggregation)) = checked(w) else {
                 continue;
             };
+            if !linked.contains_key(&w.global_id) {
+                let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM links WHERE global_id = ? AND server_id = ?")
+                    .bind(&w.global_id)
+                    .bind(server)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                linked.insert(w.global_id.clone(), n > 0);
+            }
+            if !linked[&w.global_id] {
+                continue;
+            }
             let stored: Option<f64> = sqlx::query_scalar("SELECT value FROM global_stats WHERE global_id = ? AND board = ? AND context = ? AND stat = ?")
                 .bind(&w.global_id)
                 .bind(w.board)
@@ -174,6 +190,7 @@ impl Coordinator {
                 .await?;
             let value = stat_boards::aggregate(aggregation, stored, w.value);
             if value.is_finite() && stored != Some(value) {
+                changed = true;
                 sqlx::query(
                     "INSERT INTO global_stats (global_id, board, context, stat, value, updated_at) VALUES (?, ?, ?, ?, ?, ?)
                      ON CONFLICT (global_id, board, context, stat) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
@@ -211,6 +228,10 @@ impl Coordinator {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
+        // New figures: the leaderboards are made again when next asked for.
+        if changed {
+            self.forget_leaderboards().await;
+        }
         Ok(last)
     }
 
