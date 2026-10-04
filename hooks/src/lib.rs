@@ -34,6 +34,7 @@ use windows::Win32::UI::WindowsAndMessaging::MB_OK;
 mod addresses;
 mod api;
 mod community;
+mod dataversion;
 mod dll_utils;
 mod hooks;
 mod macros;
@@ -118,21 +119,31 @@ unsafe fn game_code() -> Option<&'static [u8]> {
     None
 }
 
-/// Lets a game in another language join this one's matches: turns the host's data
-/// version check's `jz` into a `jmp`. Only where the check is found exactly once, so an
-/// unknown build is left as it is.
-unsafe fn allow_data_mismatch() {
+/// Where the host's data version check starts, if it's found exactly once in the game's
+/// code (an unknown build is left alone).
+unsafe fn data_version_check() -> Option<*mut u8> {
     let Some(code) = game_code() else {
-        warn!("Data version check: the game's code wasn't found; left as it is");
-        return;
+        warn!("Data version check: the game's code wasn't found");
+        return None;
     };
     let matches = |at: &[u8]| at.iter().zip(DATA_VERSION_CHECK).all(|(b, want)| want.is_none_or(|w| *b == w));
     let found: Vec<usize> = code.windows(DATA_VERSION_CHECK.len()).enumerate().filter(|(_, w)| matches(w)).map(|(i, _)| i).collect();
     let [at] = found[..] else {
-        warn!("Data version check: found {} times, not once; left as it is", found.len());
+        warn!("Data version check: found {} times, not once", found.len());
+        return None;
+    };
+    Some(code.as_ptr().add(at).cast_mut())
+}
+
+/// Lets a game in another language join this one's matches: turns the host's data
+/// version check's `jz` into a `jmp`. Only where the check is found exactly once, so an
+/// unknown build is left as it is.
+unsafe fn allow_data_mismatch() {
+    let Some(check) = data_version_check() else {
+        warn!("Data version check: left as it is");
         return;
     };
-    let jz = code.as_ptr().add(at + DATA_VERSION_CHECK.len() - 1).cast_mut();
+    let jz = check.add(DATA_VERSION_CHECK.len() - 1);
     writemem(jz, &[0xEB]);
     info!("Data version check: off at {jz:?}, so players in another game language can join matches this game hosts");
 }
@@ -244,6 +255,7 @@ fn init(hmodule: Option<HMODULE>) {
     if let Some(cmdline) = get_arguments() {
         info!("Cmdline: {}", cmdline);
     }
+    let game_dir = dir.clone();
     let path = config::get_config_path(dir);
     info!("Config path={:?}", path);
     let config = match config::get_or_load(path) {
@@ -291,6 +303,11 @@ fn init(hmodule: Option<HMODULE>) {
         if config.allow_data_mismatch {
             #[cfg(not(feature = "patch-free"))]
             allow_data_mismatch();
+        }
+        // What the data version is made of, to compare two players' (dataversion.rs).
+        #[cfg(not(feature = "patch-free"))]
+        if let Some(check) = data_version_check() {
+            dataversion::write_when_ready(check as usize, game_dir.clone());
         }
     }
 
