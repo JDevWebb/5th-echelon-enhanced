@@ -247,10 +247,12 @@ pub struct Config {
     /// Off: a server shouldn't be able to put you into a match by itself.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_force_join: bool,
-    /// Lets players whose game data differs from this one's join a match this game hosts:
-    /// the same game in another language (Steam's Portuguese, say) is refused as a "data
-    /// version mismatch", although its game code is the same. Off restores the game's check.
-    #[serde(default = "default_allow_data_mismatch", skip_serializing_if = "Clone::clone")]
+    /// Lets players whose game data differs from this one's (a mod that changes the game's
+    /// files, such as a loose PEC.ini) into a match this game hosts, past the game's "data
+    /// version mismatch". Off by default: they get into the lobby but can't start the match
+    /// with the others (the match's details don't read on a copy with other data). For
+    /// experiments only.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_data_mismatch: bool,
     /// Which Uplay event an accepted invitation raises. See [`InviteAcceptEvent`]; switching
     /// costs a game restart rather than a rebuild.
@@ -285,10 +287,6 @@ pub struct Config {
 }
 
 const fn default_share_session_data() -> bool {
-    true
-}
-
-const fn default_allow_data_mismatch() -> bool {
     true
 }
 

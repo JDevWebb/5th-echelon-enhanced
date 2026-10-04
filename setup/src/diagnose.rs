@@ -14,8 +14,8 @@ pub const LOG_FILE: &str = "bl-tracing.log";
 /// What the hook found the game's data version to be, written as the game starts (DX11).
 pub const DATA_VERSION_FILE: &str = "bl-dataversion.txt";
 /// The data version of the unmodified game (DX11, build V2425.0), the same for the Steam
-/// and Ubisoft editions in every language. Players whose versions differ can meet in a lobby,
-/// but the game can't start a match with them in it.
+/// and Ubisoft editions in every language. Players whose versions differ can't play a match
+/// together; the same mods (the same version) play fine.
 pub const STOCK_DATA_VERSION: u32 = 0xe90c_0d2d;
 
 /// A mod known to change the game's data version: the file it puts in the game folder, a
@@ -229,7 +229,7 @@ fn data_check(data: &DataFacts) -> Option<Check> {
         detail.push_str(&format!("Found: {}. ", found.join("; ")));
     }
     detail.push_str(
-        "Players whose game data differs can meet in a lobby, but the match fails to start for them (a version mismatch).          It still works when everyone in the match has the same mods installed. To play with everyone else,          remove the mod (or rename its file), or verify the game's files in Steam or Ubisoft Connect, then start the game again.",
+        "Players whose game data differs can't join each other's matches (the game says \"data version mismatch\"). Players who all have the same mods installed play together fine. To play with everyone else, remove the mod (or rename its file), or verify the game's files in Steam or Ubisoft Connect, then start the game again.",
     );
     Some(Check::new("data", Status::Warn, "Your game data is modified", detail, None))
 }
@@ -495,6 +495,7 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
         let c = check(DataFacts { version: Some(0xdd55_acd3), mods: vec![] }).unwrap();
         assert_eq!(c.status, Status::Warn);
         assert!(c.detail.contains("0xdd55acd3") && c.detail.contains("same mods"), "{}", c.detail);
+        assert!(!c.detail.contains("  "), "one space between words: {}", c.detail);
         // A mod in the folder is named even before the next game shows the version.
         let c = check(DataFacts { version: None, mods: vec![(KNOWN_MODS[0].name, "PEC.ini")] }).unwrap();
         assert!(c.detail.contains("balaclava") && c.detail.contains("PEC.ini"), "{}", c.detail);

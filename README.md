@@ -601,7 +601,7 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
   - it starts without Ubisoft Connect there;
   - its network runtime uses two threads instead of one per CPU core.
 - Signs in again on its own when the server says it's signed out.
-- Players with the game in another language can join each other: the game refuses them as a "data version mismatch" although its code is the same, so the client turns that check off in the game it loads (`AllowDataMismatch = false` in `uplay.toml` restores it).
+- A "data version mismatch" means the two copies' game data differs, almost always because of a mod that changes the game's files (a loose `PEC.ini` in `src\SYSTEM`, say). Copies with the same data play together, mods or not; the launcher warns when yours is modified. Steam and Ubisoft Connect copies, in any language, have the same data.
 - Crash fixes in the hook.
 - `uplay.override.toml`, for tools that set up the game (see below).
 - A redesigned overlay.

@@ -135,13 +135,13 @@ unsafe fn data_version_check() -> Option<*mut u8> {
     Some(code.as_ptr().add(at).cast_mut())
 }
 
-/// Lets a game in another language join this one's matches: turns the host's data
-/// version check's `jz` into a `jmp`. Only where the check is found exactly once, so an
-/// unknown build is left as it is.
+/// Lets a game whose data differs join this one's matches (`AllowDataMismatch`, off by
+/// default): turns the host's data version check's `jz` into a `jmp`. Only where the check is
+/// found exactly once, so an unknown build is left as it is.
 unsafe fn allow_data_mismatch(check: *mut u8) {
     let jz = check.add(DATA_VERSION_CHECK.len() - 1);
     writemem(jz, &[0xEB]);
-    info!("Data version check: off at {jz:?}, so players in another game language can join matches this game hosts");
+    info!("Data version check: off at {jz:?} (AllowDataMismatch), so players whose game data differs can join this game's lobbies");
 }
 
 unsafe fn patch_url(new_server: &str, addrs: &Addresses) {
