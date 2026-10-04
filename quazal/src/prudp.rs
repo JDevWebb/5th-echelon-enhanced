@@ -46,6 +46,10 @@ const UNACKED_MAX: usize = 256;
 /// Fragments of one message a client may send, and their total size.
 const MAX_FRAGMENTS: usize = 32;
 const MAX_REASSEMBLED: usize = 64 * 1024;
+/// Messages whose last fragment may wait for the others at once, and how far behind the
+/// newest packet a kept fragment may be before it's given up on.
+const MAX_HELD_MESSAGES: usize = 4;
+const FRAGMENT_WINDOW: u16 = 256;
 /// Connections in all (per address: [`max_connections_per_ip`]).
 const MAX_CONNECTIONS: usize = 16384;
 /// A connection that has neither signed in nor sent anything since its
@@ -78,6 +82,78 @@ pub(crate) fn address_bytes(ip: std::net::IpAddr) -> [u8; 16] {
         std::net::IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
         std::net::IpAddr::V6(v6) => v6.octets(),
     }
+}
+
+/// What a fragment made of the message it belongs to.
+enum Assembled {
+    /// The whole message: its last packet (whose sequence number the replies go with), the
+    /// payload, and how many packets it came in.
+    Whole(QPacket, Vec<u8>, usize),
+    /// Kept until the rest of the message is in.
+    Waiting,
+    /// Over the limits: everything kept was dropped.
+    TooMuch,
+}
+
+/// Takes a data packet that carries a fragment id: 1, 2, ... for the leading fragments of a
+/// message and 0 for its last (or only) one, with consecutive sequence numbers.
+///
+/// UDP may reorder them, so leading fragments are kept by sequence number, and the message
+/// is put together only once every one is in. A last fragment that comes before the others
+/// waits for them, and so does one whose message lost a fragment in the middle (that used to
+/// be put together without it, and a stats request of a dozen fragments failed). Fragments
+/// are matched by sequence number, so leftovers of an earlier message never get mixed in.
+fn add_fragment<T>(ci: &mut ClientInfo<T>, packet: QPacket) -> Assembled {
+    let seq = packet.sequence;
+    // Leftovers far from it belong to messages that never completed (packets that came
+    // early are a little ahead).
+    let near = |s: &u16| {
+        let d = seq.wrapping_sub(*s);
+        d <= FRAGMENT_WINDOW || d >= FRAGMENT_WINDOW.wrapping_neg()
+    };
+    ci.packet_fragments.retain(|s, _| near(s));
+    ci.held_last_fragments.retain(|s, _| near(s));
+    if packet.fragment_id == Some(0) {
+        // Nothing of an earlier fragment just before it: a message in one packet. (If every
+        // leading fragment is still on its way, there is no telling it apart.)
+        if !ci.packet_fragments.contains_key(&seq.wrapping_sub(1)) {
+            let mut packet = packet;
+            let payload = std::mem::take(&mut packet.payload);
+            return Assembled::Whole(packet, payload, 1);
+        }
+        if ci.held_last_fragments.len() >= MAX_HELD_MESSAGES {
+            ci.packet_fragments.clear();
+            ci.held_last_fragments.clear();
+            return Assembled::TooMuch;
+        }
+        ci.held_last_fragments.insert(seq, packet);
+    } else {
+        let cached: usize = ci.packet_fragments.values().map(|(_, p)| p.len()).sum();
+        if ci.packet_fragments.len() >= MAX_FRAGMENTS || cached + packet.payload.len() > MAX_REASSEMBLED {
+            ci.packet_fragments.clear();
+            ci.held_last_fragments.clear();
+            return Assembled::TooMuch;
+        }
+        ci.packet_fragments.insert(seq, (packet.fragment_id.unwrap_or_default(), packet.payload));
+    }
+    let complete = ci.held_last_fragments.keys().copied().find(|last| {
+        let Some((n, _)) = ci.packet_fragments.get(&last.wrapping_sub(1)) else {
+            return false;
+        };
+        (1..=*n).all(|k| ci.packet_fragments.get(&last.wrapping_sub(u16::from(*n - k + 1))).is_some_and(|(fid, _)| *fid == k))
+    });
+    let Some(last) = complete else {
+        return Assembled::Waiting;
+    };
+    let mut packet = ci.held_last_fragments.remove(&last).expect("found above");
+    let n = ci.packet_fragments[&last.wrapping_sub(1)].0;
+    let mut payload = vec![];
+    for k in 1..=n {
+        let (_, part) = ci.packet_fragments.remove(&last.wrapping_sub(u16::from(n - k + 1))).expect("checked above");
+        payload.extend(part);
+    }
+    payload.extend(std::mem::take(&mut packet.payload));
+    Assembled::Whole(packet, payload, usize::from(n) + 1)
 }
 
 /// Records that a client's packet with this sequence number is being handled.
@@ -475,7 +551,7 @@ where
     }
 
     /// Handles a data packet.
-    fn handle_data(&mut self, logger: &Logger, packet: QPacket, client: SocketAddr) {
+    fn handle_data(&mut self, logger: &Logger, mut packet: QPacket, client: SocketAddr) {
         #![allow(clippy::cast_possible_truncation)]
 
         debug!(logger, "Handling data packet");
@@ -505,39 +581,26 @@ where
             return;
         }
         remember_handled(ci, packet.sequence);
-        let payload = if let Some(fid) = packet.fragment_id {
-            if fid != 0 {
-                // Bounded per connection: fragments are kept until the last one comes.
-                let cached: usize = ci.packet_fragments.values().map(Vec::len).sum();
-                if ci.packet_fragments.len() >= MAX_FRAGMENTS || cached + packet.payload.len() > MAX_REASSEMBLED {
-                    warn!(logger, "Too many or too large fragments; dropping them");
-                    ci.packet_fragments.clear();
+        let (packet, payload) = if packet.fragment_id.is_some() {
+            match add_fragment(ci, packet) {
+                Assembled::Whole(packet, payload, fragments) => {
+                    if fragments > 1 {
+                        info!(logger, "Reassembled {fragments} fragments");
+                    }
+                    (packet, payload)
+                }
+                Assembled::Waiting => {
+                    debug!(logger, "Fragment kept until the rest of its message is in");
                     return;
                 }
-                debug!(logger, "Caching fragment {}", fid);
-                ci.packet_fragments.insert(fid, packet.payload);
-                return;
-            }
-            let mut payload = vec![];
-            if !ci.packet_fragments.is_empty() {
-                for fid in 1..=ci.packet_fragments.len() as u8 {
-                    let f = match ci.packet_fragments.get(&fid) {
-                        None => {
-                            error!(logger, "missing fragment {}", fid);
-                            ci.packet_fragments.clear();
-                            return;
-                        }
-                        Some(f) => f,
-                    };
-                    payload.extend(f.iter());
+                Assembled::TooMuch => {
+                    warn!(logger, "Too many or too large fragments; dropping them");
+                    return;
                 }
-                info!(logger, "Reassembled {} fragments", ci.packet_fragments.len() + 1);
-                ci.packet_fragments.clear();
             }
-            payload.extend(packet.payload);
-            payload
         } else {
-            packet.payload
+            let payload = std::mem::take(&mut packet.payload);
+            (packet, payload)
         };
         ci.replying = Some(vec![]);
         let resp = self
@@ -1005,6 +1068,54 @@ mod tests {
         let mut ci = ClientInfo::new(SocketAddr::from(([10, 77, 0, 2], port)));
         ci.user_id = user_id;
         ci
+    }
+
+    fn fragment(seq: u16, fid: u8, data: &[u8]) -> QPacket {
+        QPacket {
+            packet_type: PacketType::Data,
+            sequence: seq,
+            fragment_id: Some(fid),
+            payload: data.to_vec(),
+            ..Default::default()
+        }
+    }
+
+    fn whole(a: Assembled) -> Option<(u16, Vec<u8>, usize)> {
+        match a {
+            Assembled::Whole(p, payload, n) => Some((p.sequence, payload, n)),
+            _ => None,
+        }
+    }
+
+    /// Fragments are put together in order whatever order they come in, and a message
+    /// missing one waits for it instead of being handled without it.
+    #[test]
+    fn fragments_are_put_together_in_order_whenever_they_come() {
+        let mut ci = client(Some(1000), 3074);
+        // In order.
+        assert!(whole(add_fragment(&mut ci, fragment(10, 1, b"a"))).is_none());
+        assert!(whole(add_fragment(&mut ci, fragment(11, 2, b"b"))).is_none());
+        assert_eq!(whole(add_fragment(&mut ci, fragment(12, 0, b"c"))), Some((12, b"abc".to_vec(), 3)));
+        // One in the middle late: the last waits for it.
+        assert!(whole(add_fragment(&mut ci, fragment(13, 1, b"d"))).is_none());
+        assert!(whole(add_fragment(&mut ci, fragment(15, 3, b"f"))).is_none());
+        assert!(whole(add_fragment(&mut ci, fragment(16, 0, b"g"))).is_none(), "fragment 2 is missing");
+        assert_eq!(whole(add_fragment(&mut ci, fragment(14, 2, b"e"))), Some((16, b"defg".to_vec(), 4)));
+        // Unfragmented messages around it.
+        assert_eq!(whole(add_fragment(&mut ci, fragment(17, 0, b"h"))), Some((17, b"h".to_vec(), 1)));
+        assert!(ci.packet_fragments.is_empty() && ci.held_last_fragments.is_empty());
+    }
+
+    /// A leftover of a message that never completed isn't mixed into the next one, and
+    /// sequence numbers may wrap around.
+    #[test]
+    fn leftovers_never_get_into_another_message() {
+        let mut ci = client(Some(1000), 3074);
+        assert!(whole(add_fragment(&mut ci, fragment(30000, 1, b"old"))).is_none());
+        assert!(whole(add_fragment(&mut ci, fragment(65534, 1, b"x"))).is_none());
+        assert!(whole(add_fragment(&mut ci, fragment(65535, 2, b"y"))).is_none());
+        assert_eq!(whole(add_fragment(&mut ci, fragment(0, 0, b"z"))), Some((0, b"xyz".to_vec(), 3)));
+        assert!(!ci.packet_fragments.contains_key(&30000), "far behind: given up on");
     }
 
     /// A SYN sent twice (its answer was slow) gets the same signature both

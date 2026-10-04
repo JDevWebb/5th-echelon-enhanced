@@ -70,8 +70,12 @@ pub struct ClientInfo<T = ()> {
     client_session: u8,
     /// The server's session ID.
     server_session: u8,
-    /// A map of packet fragments that have been received.
-    packet_fragments: HashMap<u8, Vec<u8>>,
+    /// Leading fragments of messages being received (fragment id and payload), by
+    /// sequence number: see `prudp::add_fragment`.
+    pub(crate) packet_fragments: HashMap<u16, (u8, Vec<u8>)>,
+    /// Last fragments that came before one of their message's others, by sequence number:
+    /// handled once the rest is in.
+    pub(crate) held_last_fragments: HashMap<u16, crate::prudp::packet::QPacket>,
     /// The client's network address.
     address: SocketAddr,
     /// The time the client was last seen.
@@ -125,6 +129,7 @@ impl<T> ClientInfo<T> {
             server_session: Default::default(),
             user_id: None,
             packet_fragments: HashMap::default(),
+            held_last_fragments: HashMap::default(),
             address,
             additional: Default::default(),
             last_seen: std::time::Instant::now(),
