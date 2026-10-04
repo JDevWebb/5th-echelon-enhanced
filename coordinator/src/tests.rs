@@ -1802,3 +1802,10 @@ async fn all_servers_silent_is_one_alert_about_the_coordinator() {
     t.c.check_alerts().await.unwrap();
     assert_eq!(active().await, ["offline"]);
 }
+
+#[tokio::test]
+async fn the_database_is_in_wal_mode_for_the_live_backup() {
+    let t = start("wal").await;
+    let mode: String = sqlx::query_scalar("PRAGMA journal_mode").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(mode, "wal");
+}

@@ -8,6 +8,8 @@ use argon2::PasswordHasher;
 use argon2::PasswordVerifier;
 use eyre::eyre;
 use slog::Logger;
+use sqlx::sqlite::SqliteConnectOptions;
+use sqlx::sqlite::SqliteJournalMode;
 use sqlx::sqlite::SqlitePool;
 use sqlx::Execute;
 use sqlx::Executor;
@@ -160,9 +162,14 @@ impl Storage {
     /// Opens (creating if needed) and migrates the database at `path`.
     pub fn open(logger: Logger, path: &str) -> Result<Self> {
         let pool = run(async {
-            let pool = SqlitePool::connect(&format!("sqlite://{path}?mode=rwc")).await?;
-            // enable foreign key checks
-            sqlx::query("PRAGMA foreign_keys=ON").execute(&pool).await?;
+            // WAL: readers don't wait for a writer, and the live backup (Litestream) needs it.
+            // The mode stays with the file, so the release before still opens it.
+            let options = SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(true)
+                .foreign_keys(true)
+                .journal_mode(SqliteJournalMode::Wal);
+            let pool = SqlitePool::connect_with(options).await?;
             // A database a newer release migrated still opens: after a rollback, the
             // release before runs on it (migrations only add to the schema).
             let mut migrator = sqlx::migrate!("src/storage/migrations");
@@ -1425,6 +1432,14 @@ pub(crate) mod tests {
         let db = dir.join("test.db");
         let logger = Logger::root(slog::Discard, slog::o!());
         (Storage::open(logger, db.to_str().unwrap()).unwrap(), dir)
+    }
+
+    #[test]
+    fn the_database_is_in_wal_mode_for_the_live_backup() {
+        let (storage, dir) = temp_storage("wal");
+        let mode: String = run(sqlx::query_scalar("PRAGMA journal_mode").fetch_one(&storage.pool)).unwrap().unwrap();
+        assert_eq!(mode, "wal");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

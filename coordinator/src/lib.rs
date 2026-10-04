@@ -427,7 +427,13 @@ impl Coordinator {
 
     /// Opens (creating if needed) the database at `path`.
     pub async fn open(path: &str, join_token: String) -> eyre::Result<Self> {
-        let options = SqliteConnectOptions::new().filename(path).create_if_missing(true).foreign_keys(true);
+        // WAL: readers don't wait for a writer, and the live backup (Litestream) needs it. The
+        // mode stays with the file, so the release before still opens it.
+        let options = SqliteConnectOptions::new()
+            .filename(path)
+            .create_if_missing(true)
+            .foreign_keys(true)
+            .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal);
         let pool = SqlitePool::connect_with(options).await?;
         // A database a newer release migrated still opens: after a rollback, the
         // release before runs on it (migrations only add to the schema).
