@@ -57,6 +57,11 @@ const CHANGES_WAIT: Duration = Duration::from_secs(60);
 /// now and then).
 const ROSTER_EVERY: Duration = Duration::from_secs(300);
 const ROSTER_FULL_EVERY: Duration = Duration::from_secs(6 * 3600);
+/// A player signed in or out: the roster goes this long after (their online state is
+/// written by then, and a burst of them goes as one), but not sooner than
+/// [`ROSTER_SOON_GAP`] after the last.
+const ROSTER_SOON_DELAY: Duration = Duration::from_secs(5);
+const ROSTER_SOON_GAP: Duration = Duration::from_secs(10);
 const ROSTER_UNSUPPORTED_WAIT: Duration = Duration::from_secs(3600);
 /// The most players and play sessions one roster request carries.
 const ROSTER_PLAYERS: usize = 2000;
@@ -205,6 +210,9 @@ struct State {
     pulls: Mutex<HashSet<u32>>,
     /// Players whose places and stats across the network to fetch now (they signed in).
     stat_pulls: Mutex<HashSet<u32>>,
+    /// When a player's roster entry changed (they signed in or out), if the roster hasn't
+    /// gone since: it goes soon, not at the next [`ROSTER_EVERY`].
+    roster_soon: Mutex<Option<Instant>>,
     /// When each player's friends were last asked for on their behalf
     /// ([`pull_now_and_then`]).
     asked: Mutex<std::collections::HashMap<u32, Instant>>,
@@ -224,6 +232,7 @@ pub fn init(server_id: String, enabled: bool) {
         wake: tokio::sync::Notify::new(),
         pulls: Mutex::new(HashSet::new()),
         stat_pulls: Mutex::new(HashSet::new()),
+        roster_soon: Mutex::new(None),
         asked: Mutex::new(std::collections::HashMap::new()),
         joined: Mutex::new(None),
     });
@@ -340,6 +349,15 @@ pub async fn linked(logger: &Logger, storage: &Storage, user: u32, link: Change)
 pub fn stats_soon(user: u32) {
     if let Some(state) = STATE.get().filter(|s| s.enabled) {
         state.stat_pulls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(user);
+        state.wake.notify_one();
+    }
+}
+
+/// A player's roster entry changed (they signed in or out): the roster goes to the
+/// coordinator within seconds, so the admin UI's list keeps up.
+pub fn roster_soon() {
+    if let Some(state) = STATE.get().filter(|s| s.enabled) {
+        state.roster_soon.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get_or_insert_with(Instant::now);
         state.wake.notify_one();
     }
 }
@@ -656,7 +674,9 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                     }
                 }
             }
-            if roster.due() {
+            let soon = *state.roster_soon.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if roster.due() || roster.due_soon(soon) {
+                state.roster_soon.lock().unwrap_or_else(std::sync::PoisonError::into_inner).take();
                 if let Err(e) = send_roster(&storage, &client, &mut roster).await {
                     debug!(logger, "Federation: sending players failed: {e:#}");
                 }
@@ -823,6 +843,12 @@ struct Roster {
 impl Roster {
     fn due(&self) -> bool {
         self.last.is_none_or(|t| t.elapsed() >= self.wait.unwrap_or(ROSTER_EVERY))
+    }
+
+    /// Whether a change asked for at `soon` sends the roster now: after [`ROSTER_SOON_DELAY`],
+    /// [`ROSTER_SOON_GAP`] after the last, and not while the coordinator said it takes none.
+    fn due_soon(&self, soon: Option<Instant>) -> bool {
+        soon.is_some_and(|t| t.elapsed() >= ROSTER_SOON_DELAY) && self.wait.is_none() && self.last.is_none_or(|t| t.elapsed() >= ROSTER_SOON_GAP)
     }
 }
 
@@ -1103,6 +1129,31 @@ async fn pull(logger: &Logger, storage: &Storage, client: &Coordinator<'_>, user
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_sign_in_sends_the_roster_within_seconds_not_minutes() {
+        let ago = |secs| Instant::now().checked_sub(Duration::from_secs(secs));
+        let roster = Roster {
+            last: ago(60),
+            ..Roster::default()
+        };
+        assert!(!roster.due(), "the regular roster waits five minutes");
+        assert!(!roster.due_soon(None), "nothing changed");
+        assert!(!roster.due_soon(ago(1)), "a moment for the online state to be written");
+        assert!(roster.due_soon(ago(6)));
+        // Not right after the last one, and not while the coordinator takes none.
+        assert!(!Roster {
+            last: ago(3),
+            ..Roster::default()
+        }
+        .due_soon(ago(6)));
+        assert!(!Roster {
+            last: ago(60),
+            wait: Some(ROSTER_UNSUPPORTED_WAIT),
+            ..Roster::default()
+        }
+        .due_soon(ago(6)));
+    }
     use super::*;
     use crate::storage::run as block_on;
     use crate::storage::tests::temp_storage;

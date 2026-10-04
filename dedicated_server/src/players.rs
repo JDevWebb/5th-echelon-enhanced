@@ -41,9 +41,11 @@ fn changed_set() -> &'static Mutex<HashSet<u32>> {
     CHANGED.get_or_init(Mutex::default)
 }
 
-/// `user_id`'s roster entry changed: it goes with the next roster.
+/// `user_id`'s roster entry changed (they signed in or out): it goes with the roster, sent
+/// within seconds ([`crate::federation::roster_soon`]).
 pub fn changed(user_id: u32) {
     changed_set().lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(user_id);
+    crate::federation::roster_soon();
 }
 
 /// The players changed since the last call.
