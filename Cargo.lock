@@ -1275,6 +1275,7 @@ dependencies = [
  "dedicated_server_config",
  "diff",
  "eyre",
+ "flate2",
  "geo",
  "hmac",
  "identity",
