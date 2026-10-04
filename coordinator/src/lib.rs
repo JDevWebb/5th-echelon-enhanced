@@ -33,6 +33,8 @@
 //!   leaderboards (see [`stats`]).
 //! * `POST /v1/reports`: a player's feedback or problem report, forwarded by the server they
 //!   played on, with their logs and the server's (see [`reports`]).
+//! * `POST /v1/events`: players' session events, for the admin UI's Sessions page (see
+//!   [`sessions`]).
 //! * Heartbeat answers carry the release a server should install (see
 //!   [`updates`]); servers that don't keep up leave the directory.
 
@@ -42,6 +44,7 @@ pub mod game_names;
 pub mod metrics;
 pub mod players;
 pub mod reports;
+pub mod sessions;
 pub mod stats;
 pub mod updates;
 
@@ -365,6 +368,8 @@ pub struct Coordinator {
     /// Per server: players reports (a roster comes in chunks) and action results.
     player_posts: Limit,
     action_posts: Limit,
+    /// Per server: players' session events (see [`sessions`]).
+    event_posts: Limit,
     /// Per server: stat writes and stats lookups; the leaderboards answer, kept a minute.
     stat_posts: Limit,
     stat_reads: Limit,
@@ -468,6 +473,8 @@ impl Coordinator {
             pulse_limit: Limit::new(9),
             // A roster of 50,000 players is 25 requests.
             player_posts: Limit::new(40),
+            // A batch every five seconds, and a backlog after an outage in a few minutes.
+            event_posts: Limit::new(60),
             action_posts: Limit::new(120),
             // A batch of writes every few seconds at most, on average; lookups as players
             // sign in and look at the leaderboards.
@@ -623,6 +630,7 @@ impl Coordinator {
             .route("/v1/leaderboards", get(leaderboards))
             .route("/v1/leaderboards/players", post(leaderboard_players))
             .route("/v1/reports", post(report).layer(DefaultBodyLimit::max(reports::MAX_BODY)))
+            .route("/v1/events", post(events_report).layer(DefaultBodyLimit::max(sessions::MAX_BODY)))
             .layer(DefaultBodyLimit::max(MAX_BODY))
             .with_state(self)
     }
@@ -1179,6 +1187,30 @@ async fn pulse(State(c): State<Shared>, headers: HeaderMap, body: axum::body::By
     }
     match c.pending_actions(&server).await {
         Ok(actions) => ok(json!({ "actions": actions })),
+        Err(e) => internal(e),
+    }
+}
+
+/// A server's players' session events (see [`sessions`]).
+async fn events_report(State(c): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {
+    let server = match c.server(&headers).await {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let events: Value = match parse(&body) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    if !c.event_posts.check(&server) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "too many event reports; send the rest in a minute");
+    }
+    match events["events"].as_array() {
+        None => return fail(StatusCode::BAD_REQUEST, "not an events report"),
+        Some(list) if list.len() > sessions::MAX_EVENTS => return fail(StatusCode::PAYLOAD_TOO_LARGE, "at most 500 events a request"),
+        Some(_) => {}
+    }
+    match c.record_events(&server, &events).await {
+        Ok(kept) => ok(json!({ "kept": kept })),
         Err(e) => internal(e),
     }
 }

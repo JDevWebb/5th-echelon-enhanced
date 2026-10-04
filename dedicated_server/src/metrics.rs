@@ -263,8 +263,10 @@ pub struct System {
     pub uptime_secs: u64,
 }
 
-/// Collects the metrics now.
-pub async fn collect(storage: &Storage) -> Metrics {
+/// Collects the metrics now, and the ids of the finished matches in them (marked reported
+/// once the coordinator took them).
+pub async fn collect(storage: &Storage) -> (Metrics, Vec<u32>) {
+    let mut reported = Vec::new();
     let mut m = Metrics {
         version: crate::community_api::RELEASE.to_string(),
         uptime_secs: STARTED.get().map_or(0, |t| t.elapsed().as_secs()),
@@ -320,12 +322,13 @@ pub async fn collect(storage: &Storage) -> Metrics {
     if let (Some(key), Ok(ids)) = (activity_key(), storage.online_player_ids().await) {
         m.active = ids.into_iter().take(MAX_ACTIVE).map(|id| activity_id(key, id)).collect();
     }
-    if let Ok(finished) = storage.take_finished_matches_async().await {
+    if let Ok(finished) = storage.finished_matches_async().await {
         m.matches = finished.iter().filter_map(Match::from_finished).collect();
+        reported = finished.iter().map(|f| f.id).collect();
     }
     m.counters = counter_values();
     m.system = tokio::task::spawn_blocking(system).await.unwrap_or_default();
-    m
+    (m, reported)
 }
 
 fn counter_values() -> CounterValues {

@@ -79,6 +79,11 @@ const STATS_UNSUPPORTED_WAIT: Duration = Duration::from_secs(3600);
 const REPORTS_UNSUPPORTED_WAIT: Duration = Duration::from_secs(3600);
 /// After a report failed to go (the coordinator down, say): reports can be megabytes.
 const REPORTS_RETRY_WAIT: Duration = Duration::from_secs(300);
+/// Players' session events: how many go in one request, and the waits after a failure and
+/// for a coordinator without them.
+const EVENTS_BATCH: u32 = 200;
+const EVENTS_RETRY_WAIT: Duration = Duration::from_secs(30);
+const EVENTS_UNSUPPORTED_WAIT: Duration = Duration::from_secs(3600);
 /// Admin actions already carried out, kept so one the coordinator sends again (its answer
 /// lost) isn't done twice.
 const ACTIONS_KEPT: usize = 200;
@@ -582,6 +587,8 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
     // When the coordinator last said it takes no reports.
     // When reports may be sent again, after a failure.
     let mut reports_after: Option<Instant> = None;
+    // When session events may be sent again, after a failure.
+    let mut events_after: Option<Instant> = None;
     let mut actions_done: Vec<(u64, crate::players::Outcome)> = Vec::new();
     let (mut heartbeats, mut changes, mut pulls) = (Failing::default(), Failing::default(), Failing::default());
     loop {
@@ -634,10 +641,17 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
             }
             if last_metrics.is_none_or(|t| t.elapsed() >= METRICS_EVERY) {
                 last_metrics = Some(Instant::now());
-                let metrics = crate::metrics::collect(&storage).await;
+                let (metrics, matches) = crate::metrics::collect(&storage).await;
                 let report = serde_json::json!({ "metrics": metrics, "update": crate::self_update::status(cfg.auto_update) });
-                if let Err(e) = client.post("/v1/metrics", &report).await {
-                    debug!(logger, "Federation: sending metrics failed: {e:#}");
+                match client.post("/v1/metrics", &report).await {
+                    // Finished matches count as reported only now: sent again next minute
+                    // otherwise (the coordinator keeps one of each).
+                    Ok(_) => {
+                        if let Err(e) = storage.mark_matches_reported_async(&matches).await {
+                            warn!(logger, "Federation: noting matches reported failed: {e:#}");
+                        }
+                    }
+                    Err(e) => debug!(logger, "Federation: sending metrics failed: {e:#}"),
                 }
             }
             if last_pulse.is_none_or(|t| t.elapsed() >= pulse_wait) {
@@ -671,6 +685,16 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                     Err(e) => {
                         debug!(logger, "Federation: sending a report failed (will retry): {e:#}");
                         reports_after = Some(Instant::now() + REPORTS_RETRY_WAIT);
+                    }
+                }
+            }
+            if events_after.is_none_or(|t| Instant::now() >= t) {
+                match send_events(&storage, &client).await {
+                    Ok(()) => events_after = None,
+                    Err(e) if e.to_string().starts_with("404") => events_after = Some(Instant::now() + EVENTS_UNSUPPORTED_WAIT),
+                    Err(e) => {
+                        debug!(logger, "Federation: sending session events failed (will retry): {e:#}");
+                        events_after = Some(Instant::now() + EVENTS_RETRY_WAIT);
                     }
                 }
             }
@@ -761,6 +785,23 @@ async fn send_reports(storage: &Storage, client: &Coordinator<'_>) -> eyre::Resu
                 return Err(e.wrap_err(format!("the coordinator refused report {id}; dropped")));
             }
             Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Sends the session events the coordinator hasn't got (`POST /v1/events`), oldest first;
+/// they're marked sent only once it took them.
+async fn send_events(storage: &Storage, client: &Coordinator<'_>) -> eyre::Result<()> {
+    for _ in 0..5 {
+        let events = storage.unsent_session_events_async(EVENTS_BATCH).await?;
+        if events.is_empty() {
+            return Ok(());
+        }
+        client.post("/v1/events", &serde_json::json!({ "events": events })).await?;
+        storage.mark_session_events_sent_async(&events).await?;
+        if events.len() < EVENTS_BATCH as usize {
+            return Ok(());
         }
     }
     Ok(())

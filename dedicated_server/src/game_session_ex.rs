@@ -154,6 +154,11 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
             rmc_err!(self.storage.with_participants(sessions, UrlsFor::AllBut(user_id)), logger, "Error reading participants")?
         };
         info!(logger, "Found {} sessions", sessions.len());
+        crate::session_events::note(
+            crate::session_events::Who::Id(user_id),
+            "search",
+            serde_json::json!({ "query": request.game_session_query.query_id, "found": sessions.len() }),
+        );
         Ok(SearchSessionsResponse {
             search_results: QList(
                 sessions

@@ -95,6 +95,7 @@ mod recent_log;
 mod reports;
 mod secure;
 mod self_update;
+mod session_events;
 mod simple_http;
 mod storage;
 mod ticket;
@@ -170,6 +171,7 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
             if let Some(user_id) = ci.user_id {
                 metrics::game_logout(user_id);
                 end_play(logger, storage, user_id);
+                session_events::note(session_events::Who::Id(user_id), "signout", serde_json::json!({ "how": "timed_out" }));
                 info!(logger, "Cleaning old session of user {user_id}");
                 if let Err(e) = storage.delete_user_session(user_id) {
                     error!(logger, "session clean error: {e}");
@@ -180,6 +182,7 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
             if let Some(user_id) = ci.user_id {
                 metrics::game_logout(user_id);
                 end_play(logger, storage, user_id);
+                session_events::note(session_events::Who::Id(user_id), "signout", serde_json::json!({ "how": "closed" }));
                 info!(logger, "Cleaning closed session of user {user_id}");
                 if let Err(e) = storage.delete_user_session(user_id) {
                     error!(logger, "session clean error: {e}");
@@ -505,6 +508,8 @@ fn main() -> color_eyre::Result<()> {
         .collect();
     ensure_data_dir(&content_files)?;
 
+    session_events::watch_request_failures();
+    session_events::note(session_events::Who::Server, "server_start", serde_json::json!({ "version": env!("FE_RELEASE") }));
     warn!(logger, "Clearing stale sessions");
     storage.invalidate_sessions()?;
     // Play sessions the server didn't see end (it stopped) end when last seen.
@@ -652,6 +657,8 @@ fn main() -> color_eyre::Result<()> {
                         }
                     });
                 }
+                // Players' session events, saved for the admin UI (sent by the federation).
+                rt.spawn(session_events::run(logger.new(o!("service" => "session_events")), Arc::clone(&storage)));
                 // Play sessions still going, every minute: where one ends if the server stops.
                 {
                     let storage = Arc::clone(&storage);

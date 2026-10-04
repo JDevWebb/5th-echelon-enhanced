@@ -10,6 +10,10 @@ use super::Storage;
 /// SQL for the current time in Unix seconds.
 const NOW: &str = "CAST(strftime('%s', 'now') AS INTEGER)";
 
+/// SQL: an ended session that may go: not a match, or one the coordinator took (or that
+/// waited for it two days).
+pub(super) const DONE_WITH: &str = "(peak_players < 2 OR reported = 1 OR destroyed_at < datetime('now', '-2 days'))";
+
 /// A sign-in this soon after the last sign-out carries on that session (a reconnect, a
 /// restarted game).
 pub const RESUME_WITHIN_SECS: i64 = 120;
@@ -53,6 +57,8 @@ pub struct PlaySession {
 /// A finished match, as sent to the coordinator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FinishedMatch {
+    /// The game session's id here, to mark it reported once sent.
+    pub id: u32,
     pub attributes: String,
     pub started: i64,
     pub ended: i64,
@@ -324,29 +330,36 @@ impl Storage {
         .map_err(Into::into)
     }
 
-    /// Matches that ended with at least two players and haven't been reported, marked
-    /// reported.
-    pub async fn take_finished_matches_async(&self) -> Result<Vec<FinishedMatch>> {
-        let mut tx = self.pool.begin().await?;
-        let rows: Vec<(Option<String>, Option<i64>, Option<i64>, u32)> = sqlx::query_as(
-            "SELECT attributes, CAST(strftime('%s', created_at) AS INTEGER), CAST(strftime('%s', destroyed_at) AS INTEGER), peak_players
-             FROM game_sessions WHERE destroyed_at IS NOT NULL AND reported = 0 AND peak_players >= 2",
+    /// Matches that ended with at least two players and haven't been reported (the oldest,
+    /// at most 200). They stay unreported until [`Self::mark_matches_reported_async`], so a
+    /// coordinator out of reach loses none.
+    pub async fn finished_matches_async(&self) -> Result<Vec<FinishedMatch>> {
+        let rows: Vec<(u32, Option<String>, Option<i64>, Option<i64>, u32)> = sqlx::query_as(
+            "SELECT id, attributes, CAST(strftime('%s', created_at) AS INTEGER), CAST(strftime('%s', destroyed_at) AS INTEGER), peak_players
+             FROM game_sessions WHERE destroyed_at IS NOT NULL AND reported = 0 AND peak_players >= 2 ORDER BY id LIMIT 200",
         )
-        .fetch_all(&mut *tx)
+        .fetch_all(&self.pool)
         .await?;
-        sqlx::query("UPDATE game_sessions SET reported = 1 WHERE destroyed_at IS NOT NULL AND reported = 0")
-            .execute(&mut *tx)
-            .await?;
-        tx.commit().await?;
         Ok(rows
             .into_iter()
-            .map(|(attributes, started, ended, players)| FinishedMatch {
+            .map(|(id, attributes, started, ended, players)| FinishedMatch {
+                id,
                 attributes: attributes.unwrap_or_default(),
                 started: started.unwrap_or_default(),
                 ended: ended.unwrap_or_default(),
                 players,
             })
             .collect())
+    }
+
+    /// The coordinator took these matches.
+    pub async fn mark_matches_reported_async(&self, ids: &[u32]) -> Result<()> {
+        let mut tx = self.pool.begin().await?;
+        for id in ids {
+            sqlx::query("UPDATE game_sessions SET reported = 1 WHERE id = ?").bind(id).execute(&mut *tx).await?;
+        }
+        tx.commit().await?;
+        Ok(())
     }
 }
 
@@ -441,12 +454,19 @@ mod tests {
         let matches = |id| storage.player_records(Some(&[id])).unwrap()[0].matches;
         assert_eq!((matches(a), matches(b), matches(c)), (1, 1, 1));
 
-        assert!(crate::storage::run(storage.take_finished_matches_async()).unwrap().unwrap().is_empty(), "still going");
+        use crate::storage::run;
+        assert!(run(storage.finished_matches_async()).unwrap().unwrap().is_empty(), "still going");
         storage.delete_game_session(a, 1, game).unwrap();
-        let finished = crate::storage::run(storage.take_finished_matches_async()).unwrap().unwrap();
+        let finished = run(storage.finished_matches_async()).unwrap().unwrap();
         assert_eq!(finished.len(), 1);
         assert_eq!(finished[0].players, 3);
-        assert!(crate::storage::run(storage.take_finished_matches_async()).unwrap().unwrap().is_empty(), "reported once");
+        // Not sent (the coordinator was out of reach): still there, through a restart and a
+        // purge too.
+        storage.invalidate_sessions().unwrap();
+        run(storage.purge_stale_async()).unwrap().unwrap();
+        assert_eq!(run(storage.finished_matches_async()).unwrap().unwrap(), finished);
+        run(storage.mark_matches_reported_async(&[finished[0].id])).unwrap().unwrap();
+        assert!(run(storage.finished_matches_async()).unwrap().unwrap().is_empty(), "reported once");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

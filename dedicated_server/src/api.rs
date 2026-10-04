@@ -766,11 +766,13 @@ impl Users for MyUsers {
             return Err(Status::unauthenticated("Invalid login"));
         }
         if !crate::rate_limit::begin_login(peer, &username) {
+            crate::session_events::refused(crate::session_events::Who::Name(username.clone()), "too_many", "api", Some(client.as_str()));
             return Err(Status::resource_exhausted("Too many failed logins; try again later"));
         }
         // An outdated client retrying what was refused a moment ago: the same answer, without
         // the password hash again (the password was right then, as it is now).
         if let Some(why) = crate::clients::refused_lately(&username, &client, &password) {
+            crate::session_events::refused(crate::session_events::Who::Name(username.clone()), "outdated", "api", Some(client.as_str()));
             crate::rate_limit::login_succeeded(peer, &username);
             return Err(Status::failed_precondition(why));
         }
@@ -780,6 +782,12 @@ impl Users for MyUsers {
         let user_id = maybe_user.map_err(|err| {
             crate::rate_limit::login_failed(peer, &username);
             crate::metrics::failed_login();
+            let who = || crate::session_events::Who::Name(username.clone());
+            match &err {
+                LoginError::InvalidPassword => crate::session_events::refused(who(), "wrong_password", "api", Some(client.as_str())),
+                LoginError::Banned(_) => crate::session_events::refused(who(), "banned", "api", Some(client.as_str())),
+                LoginError::NotFound => {}
+            }
             match err {
                 LoginError::InvalidPassword => Status::unauthenticated("Invalid login"),
                 // The launcher needs to know a saved account is gone (to make a new one);
@@ -1000,6 +1008,7 @@ impl MyUsers {
         }
         verdict.map_err(|why| {
             warn!(self.logger, "Refused {username}'s outdated client {client:?}");
+            crate::session_events::refused(crate::session_events::Who::Id(user_id), "outdated", "api", Some(client));
             Status::failed_precondition(why)
         })
     }
@@ -1087,6 +1096,11 @@ impl Misc for MyMisc {
                 "Delivering UNBOUND invitation from {} to {} - the receiver will not find a room to join", invite.sender, invite.receiver
             ),
         }
+        crate::session_events::note(
+            crate::session_events::Who::Id(invite.receiver),
+            "invite_delivered",
+            serde_json::json!({ "from": invite.sender, "room": invite.session_id }),
+        );
 
         Ok(Response::new(misc::EventResponse {
             invite: Some(misc::InviteEvent {

@@ -18,6 +18,7 @@ use crate::ClientInfo;
 use crate::Context;
 
 pub mod basic;
+pub mod failures;
 pub mod result;
 pub mod types;
 pub mod unhandled;
@@ -480,6 +481,13 @@ impl<T> StreamHandler<T> for RVSecHandler<T> {
         let Ok(rmc_packet) = rmc_packet else {
             let err = rmc_packet.err().unwrap();
             error!(logger, "Parsing RMC packet failed"; "error" => %err);
+            failures::report(failures::Failure {
+                user_id: ci.user_id,
+                protocol: None,
+                method: None,
+                call: None,
+                error: format!("parsing the request failed: {err}"),
+            });
             return Err(packet::Error::StreamHandler(Box::new(err)));
         };
 
@@ -487,6 +495,13 @@ impl<T> StreamHandler<T> for RVSecHandler<T> {
             Packet::Request(r) => r,
             Packet::Response(_r) => {
                 error!(logger, "RMC response not supported here. Data: {:#?}", data);
+                failures::report(failures::Failure {
+                    user_id: ci.user_id,
+                    protocol: None,
+                    method: None,
+                    call: None,
+                    error: "a reply came where a request was expected".into(),
+                });
                 return Err(packet::Error::Unimplemented);
             }
         };
@@ -523,6 +538,16 @@ impl<T> StreamHandler<T> for RVSecHandler<T> {
         let result = match maybe_protocol {
             Err(e) => {
                 error!(logger, "handling request failed"; "error" => %e);
+                if failures::is_failure(&e) {
+                    let name = protocol.map(|p| format!("{}.{}", p.name(), p.method_name(rmc_packet.method_id).unwrap_or_default()));
+                    failures::report(failures::Failure {
+                        user_id: ci.user_id,
+                        protocol: Some(rmc_packet.protocol_id),
+                        method: Some(rmc_packet.method_id),
+                        call: name,
+                        error: e.to_string(),
+                    });
+                }
                 Err(ResponseError {
                     error_code: e.to_error_code(),
                     call_id: rmc_packet.call_id,

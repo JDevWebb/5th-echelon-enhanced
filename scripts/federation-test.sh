@@ -129,6 +129,17 @@ done
 with_side=$(coord_db "SELECT COUNT(*) FROM player_reports r JOIN player_report_files f ON f.report_id = r.id WHERE r.server_id = '$server_a' AND r.server_log LIKE '%Reporter%' AND r.summary LIKE '%started%'")
 [ "${reports:-0}" -ge 5 ] && [ "${with_side:-0}" -ge 1 ] && echo "PASS server A's $reports reports reached the coordinator, with the server's side and the log" \
   || { echo "FAIL reports: ${reports:-0} arrived, ${with_side:-0} with the server's side and a file"; rc=1; }
+echo "--- session events"
+# The test players signed in and out on server A: those events reach the coordinator (they're
+# sent every few seconds).
+kinds=""
+for _ in $(seq 30); do
+  kinds=$(coord_db "SELECT group_concat(DISTINCT kind) FROM session_events WHERE server_id = '$server_a'")
+  case ",$kinds," in *,signin,*) case ",$kinds," in *,signout,*) break;; esac;; esac
+  sleep 1
+done
+case ",$kinds," in *,signin,*) case ",$kinds," in *,signout,*) ok=1;; esac;; esac
+[ "${ok:-0}" = 1 ] && echo "PASS server A's session events reached the coordinator ($kinds)" || { echo "FAIL session events: ${kinds:-none}"; rc=1; }
 if [ $rc -ne 0 ]; then
   for s in fes-fed-a fes-fed-b; do echo "--- $s"; docker exec "$s" grep -iE -A3 "federation|ERRO" /srv/fe/server.log | tail -40 || true; done
   echo "--- coordinator"; docker exec fes-fed-coord tail -30 /srv/c/log || true

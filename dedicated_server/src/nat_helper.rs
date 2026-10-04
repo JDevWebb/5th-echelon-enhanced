@@ -135,6 +135,9 @@ struct Peer {
     tag: nat_proto::Tag,
     /// Since when `advertise` has been what it is.
     settled_since: Instant,
+    /// Packets relayed from this player and to them since [`Table::flows`] last looked.
+    sent: u64,
+    received: u64,
 }
 
 /// How long a direct player's address must stand before the address echo gives it out: the
@@ -282,6 +285,8 @@ impl Table {
             // Kept while the registration lives: the game already relays with it.
             tag: old.as_ref().map_or_else(rand::random, |(_, o)| o.tag),
             settled_since: old.as_ref().filter(|(_, o)| o.advertise == advertise).map_or(now, |(_, o)| o.settled_since),
+            sent: old.as_ref().map_or(0, |(_, o)| o.sent),
+            received: old.as_ref().map_or(0, |(_, o)| o.received),
         };
         let tag = peer.tag;
         self.by_name.insert(key, id);
@@ -345,7 +350,21 @@ impl Table {
         if sender.window_bytes > limit || sender.window_packets > MAX_PACKETS_PER_SECOND {
             return None;
         }
-        Some((target, sender.advertise))
+        sender.sent += 1;
+        let from = sender.advertise;
+        if let Some(receiver) = self.peers.get_mut(&target_id) {
+            receiver.received += 1;
+        }
+        Some((target, from))
+    }
+
+    /// Each player's relayed packets (from them, to them) since the last call.
+    pub fn flows(&mut self) -> Vec<(String, u64, u64)> {
+        self.peers
+            .values_mut()
+            .filter(|p| p.sent + p.received > 0 || p.relayed)
+            .map(|p| (p.name.clone(), std::mem::take(&mut p.sent), std::mem::take(&mut p.received)))
+            .collect()
     }
 
     /// Forgets players not heard from in [`EXPIRY`].
@@ -560,10 +579,47 @@ fn address_only(nonce: u32, src: SocketAddrV4, cookie: nat_proto::Cookie) -> Mes
     }
 }
 
+/// A player's relayed traffic in one direction counts as having fallen when it was at least
+/// this many packets a second (a match is 30 or more) and is now under a quarter of that.
+const DROP_FROM_PPS: f64 = 20.0;
+const DROP_TO_SHARE: f64 = 0.25;
+
+/// Watches each player's relayed traffic from one look to the next (every ten seconds), for
+/// a match whose traffic stops while the players are still connected: the relay can't tell
+/// why, but the admin UI can show which side went quiet.
+#[derive(Default)]
+struct RelayWatch {
+    last: HashMap<String, (f64, f64)>,
+}
+
+impl RelayWatch {
+    /// Takes the packets each player sent and received over `secs`; returns who fell, which
+    /// way (`sending`: from them, `receiving`: to them), and from what to what (a second).
+    fn tick(&mut self, flows: &[(String, u64, u64)], secs: f64) -> Vec<(String, &'static str, f64, f64)> {
+        let mut fell = Vec::new();
+        let mut now = HashMap::with_capacity(flows.len());
+        #[allow(clippy::cast_precision_loss)]
+        for (name, sent, received) in flows {
+            let rates = (*sent as f64 / secs.max(1.0), *received as f64 / secs.max(1.0));
+            if let Some(&(sent_before, received_before)) = self.last.get(name) {
+                for (direction, before, after) in [("sending", sent_before, rates.0), ("receiving", received_before, rates.1)] {
+                    if before >= DROP_FROM_PPS && after < before * DROP_TO_SHARE {
+                        fell.push((name.clone(), direction, before, after));
+                    }
+                }
+            }
+            now.insert(name.clone(), rates);
+        }
+        self.last = now;
+        fell
+    }
+}
+
 fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
     let mut buf = vec![0u8; 2048];
     let mut out = Vec::with_capacity(2048);
     let mut last_expiry = Instant::now();
+    let mut watch = RelayWatch::default();
     // Relayed packets since the last report: forwarded, and dropped.
     let (mut forwarded, mut dropped, mut failed) = (0u64, 0u64, 0u64);
     loop {
@@ -571,7 +627,15 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
         if now.duration_since(last_expiry) > Duration::from_secs(10) {
             let secs = now.duration_since(last_expiry).as_secs_f64();
             last_expiry = now;
-            let (gone, players, relayed) = table.lock().map(|mut t| (t.expire(now), t.len(), t.relayed())).unwrap_or_default();
+            let (gone, players, relayed, flows) = table.lock().map(|mut t| (t.expire(now), t.len(), t.relayed(), t.flows())).unwrap_or_default();
+            for (name, direction, before, after) in watch.tick(&flows, secs) {
+                info!(logger, "NAT relay: {name}'s traffic {direction} fell from {before:.0} to {after:.0} packets/s");
+                crate::session_events::note(
+                    crate::session_events::Who::Name(name),
+                    "relay_drop",
+                    serde_json::json!({ "direction": direction, "before": before.round(), "after": after.round() }),
+                );
+            }
             for name in gone {
                 info!(logger, "NAT helper: {name} is gone");
             }
@@ -660,6 +724,11 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
             if new {
                 if let Message::ProbeReply { advertise, flags: rf, .. } = &reply {
                     crate::reports::nat_registered(&name, rf & reply_flags::RELAYED != 0);
+                    crate::session_events::note(
+                        crate::session_events::Who::Name(name.clone()),
+                        "nat",
+                        serde_json::json!({ "relayed": rf & reply_flags::RELAYED != 0 }),
+                    );
                     info!(
                         logger,
                         "NAT helper: {name} at {src} advertises {advertise}{} (mapping {mapping:?}, flags {flags:#x}); {count} players, {relayed} relayed",
@@ -727,6 +796,20 @@ mod tests {
         assert_eq!(advertise(&reply), (a("198.51.100.7:5001"), false));
         // Packets for the victim's address still reach the victim.
         assert_eq!(t.route(a("203.0.113.4:5000"), victim, 10, now).map(|(to, _)| to), Some(a("198.51.100.7:61000")));
+    }
+
+    /// A player whose relayed traffic one way falls from a match's rate to almost nothing is
+    /// noticed, once; a quiet player or a slow fall isn't.
+    #[test]
+    fn falling_relay_traffic_is_noticed() {
+        let mut watch = super::RelayWatch::default();
+        let flows = |a: (u64, u64), b: (u64, u64)| vec![("a".to_string(), a.0, a.1), ("b".to_string(), b.0, b.1)];
+        assert!(watch.tick(&flows((650, 640), (5, 5)), 10.0).is_empty(), "nothing to compare with yet");
+        assert!(watch.tick(&flows((600, 400), (3, 0)), 10.0).is_empty(), "lower, not fallen");
+        let fell = watch.tick(&flows((610, 40), (0, 0)), 10.0);
+        assert_eq!(fell.len(), 1, "{fell:?}");
+        assert_eq!((fell[0].0.as_str(), fell[0].1), ("a", "receiving"));
+        assert!(watch.tick(&flows((610, 40), (0, 0)), 10.0).is_empty(), "already low");
     }
 
     #[test]

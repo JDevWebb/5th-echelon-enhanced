@@ -25,6 +25,7 @@ mod leaderboards;
 pub mod live;
 mod players;
 mod reports;
+mod sessions;
 pub mod webauthn;
 
 use std::net::IpAddr;
@@ -209,6 +210,7 @@ pub fn router(c: Shared) -> Router {
         .route("/live", get(live::live))
         .merge(players::routes())
         .merge(reports::routes())
+        .merge(sessions::routes())
         .merge(leaderboards::routes());
     Router::new()
         .route("/", get(page))

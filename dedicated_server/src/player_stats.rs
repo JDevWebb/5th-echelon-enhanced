@@ -356,6 +356,7 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         _socket: &std::net::UdpSocket,
     ) -> Result<WriteStatsResponse, Error> {
         let user_id = player(&*ci)?;
+        crate::session_events::note(crate::session_events::Who::Id(user_id), "stats", serde_json::json!({}));
         let (writes, refused) = checked_writes(&request);
         if refused > 0 {
             let boards: Vec<u32> = request.player_stat_updates.iter().map(|u| u.board_id).collect();

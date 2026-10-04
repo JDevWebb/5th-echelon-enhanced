@@ -383,6 +383,15 @@ impl GameSessionProtocolServerImpl {
         left.insert(user_id, (session_id, now));
         drop(left);
         info!(logger, "User {user_id} {verb} session {session_id}{}", if ended { "; nobody left, it ends" } else { "" });
+        let how = if verb == "abandons" { "abandoned" } else { "left" };
+        crate::session_events::note(
+            crate::session_events::Who::Id(user_id),
+            "leave",
+            serde_json::json!({ "room": session_id, "how": how, "ended": ended }),
+        );
+        if ended {
+            crate::session_events::room_ended(session_id);
+        }
         Ok(())
     }
 }
@@ -461,6 +470,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             logger,
             "error creating game session"
         )?;
+        crate::session_events::note(crate::session_events::Who::Id(user_id), "room", serde_json::json!({ "room": session_id }));
         Ok(CreateSessionResponse {
             game_session_key: GameSessionKey {
                 type_id: request.game_session.type_id,
@@ -639,6 +649,23 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 "User {user_id} joined session {} through an invitation (via AddParticipants)", request.game_session_key.session_id
             );
         }
+        // Joins into someone else's room: the player's own (invited, following their party,
+        // or a public room found), or their host taking them along.
+        let host = members.as_ref().map(|(creator, _)| *creator);
+        for &target in &targets {
+            if host.is_some_and(|h| h != target) {
+                let via = if target != user_id {
+                    "party"
+                } else if via_invitation {
+                    "invite"
+                } else if self.is_private_room(request.game_session_key.type_id, session_id) {
+                    "party"
+                } else {
+                    "search"
+                };
+                crate::session_events::joined(target, session_id, via);
+            }
+        }
 
         // Nudge the player who was just added, or they wait forever.
         //
@@ -787,6 +814,13 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             logger,
             "error removing participants"
         )?;
+        for &removed in request.participant_ids.0.iter().filter(|&&t| t != user_id) {
+            crate::session_events::note(
+                crate::session_events::Who::Id(removed),
+                "leave",
+                serde_json::json!({ "room": request.game_session_key.session_id, "how": "removed", "by": user_id }),
+            );
+        }
         Ok(RemoveParticipantsResponse)
     }
 
@@ -1084,6 +1118,11 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             crate::metrics::failed_join();
             #[allow(clippy::cast_sign_loss)]
             crate::reports::join_failed(user_id, failed.session_key.session_id, failed.error_code as u32);
+            crate::session_events::note(
+                crate::session_events::Who::Id(user_id),
+                "join_failed",
+                serde_json::json!({ "room": failed.session_key.session_id, "code": format!("{:#010x}", failed.error_code) }),
+            );
             warn!(
                 logger,
                 "Join failed: {user_id} did not get into session {} (type {}) - category {}, code {:#010x}",
@@ -1428,13 +1467,15 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // that a client repeating its search in the meantime still finds the room.
         let key = request.game_session_key;
         self.note_match_players(logger, key.session_id, [user_id]);
-        if rmc_err!(
+        let invited = rmc_err!(
             self.storage.consume_invite_for_session(user_id, key.type_id, key.session_id),
             logger,
             "error consuming invitation"
-        )? {
+        )?;
+        if invited {
             info!(logger, "User {user_id} joined session {} through an invitation", key.session_id);
         }
+        crate::session_events::joined(user_id, key.session_id, if invited { "invite" } else { "search" });
         Ok(JoinSessionResponse)
     }
 }

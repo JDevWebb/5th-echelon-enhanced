@@ -132,6 +132,20 @@ Pick a player for their sessions, time played each day of the last 30, their oth
 
 The server carries an action out when it next sends its pulse (within 10 seconds) and says how it went; the page follows it. An action the server doesn't answer within an hour expires. Every action is in the audit log; ban, reset password, rename and delete ask for your second factor again if the last was more than 10 minutes ago.
 
+### Sessions
+
+**Sessions** shows each player's time on the servers over the last 6 hours to 7 days, on one server or all: a row per player with when they were online, the rooms they were in (a party, or a co-op or Spies vs Mercs match; hatched when private, faded when alone; hover for whose it was and who else was in it), and marks for searches, stats written (a mission or match played to its end) and problems. Click a row, or a problem, for that player's events in order. Server trouble (alerts, and times a server's API didn't answer the coordinator's pings) is shaded behind the rows.
+
+Above it, **Problems** lists what went wrong, worst first in each level:
+
+| Level | What |
+|---|---|
+| Problem | A player couldn't sign in (each reason and how often: an outdated client, too many attempts, banned...); a join that failed, with the game's code; a player who dropped out of a match: their relayed traffic fell, then they left the match without it ending (no stats written) |
+| Warning | A request the server failed to answer; an invitation that never reached the player (offline, or out of the online menus); an invitation with no room to join; a game that went quiet in a match with others still in it (a crash, or their connection lost) |
+| Note | A player refused who then got in; two players who searched for the same mode on different servers within five minutes and both found nobody; a public match its host waited in alone for a minute or more |
+
+Servers record these as they happen and send them to the coordinator every few seconds. They keep them until the coordinator has them, so an outage loses none, and repeat events (an outdated client retrying its sign-in every few seconds) come as one, with a count. The coordinator keeps them 30 days. The relay sees only relayed players' traffic, so a dropout between two players connected directly shows only as their leaving.
+
 ### Leaderboards
 
 Servers forward every stat the game writes to the coordinator, which keeps each person's stats across the network: one entry per identity, however many servers they play on (see [friends.md](friends.md#the-coordinators-api)). The stats are kept for good.
@@ -291,6 +305,7 @@ The badge at the top right says whether it's live. The connection uses the same 
 **What's stored:**
 - Players' locations are city counts.
 - Each server's accounts and play sessions, as it reports them (see Metrics), so admins can manage players.
+- Players' session events (sign-ins, rooms, searches, joins, invitations, problems), with their names but no addresses, for 30 days on the coordinator (a few days on each server).
 - The per-minute "who played" ids are a per-server keyed hash of the account number, with minutes played per day; the reports count players per server, so someone playing on two servers counts twice.
 - Launchers' ping reports keep only the city and the round trip.
 - Players' reports, with the logs they chose to attach (redacted on their PC) and their server's log lines about them, for 90 days (see [Player reports](#player-reports)).

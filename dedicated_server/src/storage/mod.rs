@@ -18,6 +18,7 @@ use sqlx::Statement;
 mod global_stats;
 mod players;
 mod relationships;
+mod session_events;
 mod stats;
 
 pub use global_stats::GlobalList;
@@ -31,6 +32,7 @@ pub use relationships::FriendEventKind;
 pub use relationships::Person;
 pub use relationships::Relation;
 pub use relationships::RenameError;
+pub use session_events::NewSessionEvent;
 pub use stats::Ranked;
 pub use stats::StatWrite;
 pub use stats::StoredStats;
@@ -475,7 +477,11 @@ impl Storage {
             sqlx::query("DELETE FROM participants").execute(&self.pool).await?;
             sqlx::query("DELETE FROM game_session_invites").execute(&self.pool).await?;
             sqlx::query("DELETE FROM advertised_sessions").execute(&self.pool).await?;
-            sqlx::query("DELETE FROM game_sessions").execute(&self.pool).await?;
+            // Matches the coordinator hasn't taken stay (ended now), until it has.
+            sqlx::query("UPDATE game_sessions SET destroyed_at = CURRENT_TIMESTAMP WHERE destroyed_at IS NULL")
+                .execute(&self.pool)
+                .await?;
+            sqlx::query(&format!("DELETE FROM game_sessions WHERE {}", players::DONE_WITH)).execute(&self.pool).await?;
             sqlx::query("DELETE FROM invites").execute(&self.pool).await?;
             sqlx::query("UPDATE users SET is_online=0").execute(&self.pool).await
         })??;
@@ -804,6 +810,11 @@ impl Storage {
             (Some(type_id), Some(id)) => info!(self.logger, "sending invite from {sender_id} to {receiver_id}, bound to session {id} (type {type_id})"),
             _ => info!(self.logger, "sending invite from {sender_id} to {receiver_id}, unbound - no active session found"),
         }
+        crate::session_events::note(
+            crate::session_events::Who::Id(sender_id),
+            "invite",
+            serde_json::json!({ "to": receiver_id, "room": session_id }),
+        );
 
         let mut transaction = self.pool.begin().await?;
         sqlx::query("DELETE FROM invites WHERE (receiver = ? AND sender = ?) OR consumed_at IS NOT NULL OR expires_at IS NULL OR expires_at <= CURRENT_TIMESTAMP")
@@ -1248,9 +1259,12 @@ impl Storage {
     /// Deletes what's left of ended sessions and old invitations, which used
     /// to stay until a restart. Called every few minutes.
     pub async fn purge_stale_async(&self) -> Result<()> {
-        sqlx::query("DELETE FROM game_sessions WHERE destroyed_at IS NOT NULL AND destroyed_at < datetime('now', '-10 minutes')")
-            .execute(&self.pool)
-            .await?;
+        sqlx::query(&format!(
+            "DELETE FROM game_sessions WHERE destroyed_at IS NOT NULL AND destroyed_at < datetime('now', '-10 minutes') AND {}",
+            players::DONE_WITH
+        ))
+        .execute(&self.pool)
+        .await?;
         sqlx::query("DELETE FROM game_session_invites WHERE created_at < datetime('now', '-30 minutes')")
             .execute(&self.pool)
             .await?;

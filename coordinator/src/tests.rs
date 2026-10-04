@@ -1809,3 +1809,49 @@ async fn the_database_is_in_wal_mode_for_the_live_backup() {
     let mode: String = sqlx::query_scalar("PRAGMA journal_mode").fetch_one(&t.c.pool).await.unwrap();
     assert_eq!(mode, "wal");
 }
+
+#[tokio::test]
+async fn session_events_are_taken_once_and_shown_with_their_problems() {
+    let t = start("session-events").await;
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    let now = identity::now();
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&a),
+        Some(json!({ "full": true, "players": [player(11, "Viper", None)], "sessions": [{ "id": 1, "player": 11, "start": now - 1800, "end": now - 60 }] })),
+    )
+    .await;
+    let coop = json!({ "room": 16, "room_kind": "match", "mode": "coop", "private": true, "host": 5, "host_name": "Theusma" });
+    let events = json!({ "events": [
+        { "id": 1, "at": now - 1700, "last_at": now - 1700, "player": 11, "name": "Viper", "kind": "join", "detail": coop, "count": 1 },
+        { "id": 2, "at": now - 300, "last_at": now - 300, "player": 11, "name": "Viper", "kind": "relay_drop",
+          "detail": { "direction": "sending", "before": 65, "after": 8 }, "count": 1 },
+        { "id": 3, "at": now - 240, "last_at": now - 240, "player": 11, "name": "Viper", "kind": "leave",
+          "detail": { "room": 16, "how": "left", "ended": false, "room_kind": "match", "mode": "coop" }, "count": 1 },
+        { "id": 4, "at": now - 900, "last_at": now - 100, "player": null, "name": "Renegade", "kind": "signin_refused",
+          "detail": { "reason": "outdated", "via": "api", "client": "game/0.4.0" }, "count": 300 },
+        { "id": 5, "at": now, "last_at": now, "player": 11, "name": "Viper", "kind": "made_up", "detail": {}, "count": 1 },
+    ] });
+    let (status, v) = t.call("POST", "/v1/events", Some(&a), Some(events)).await;
+    assert_eq!((status, v["kept"].as_i64()), (StatusCode::OK, Some(4)), "{v}");
+    // A repeat counted since comes again with the same id.
+    let again = json!({ "events": [{ "id": 4, "at": now - 900, "last_at": now - 50, "player": null, "name": "Renegade", "kind": "signin_refused",
+        "detail": { "reason": "outdated", "via": "api", "client": "game/0.4.0" }, "count": 351 }] });
+    assert_eq!(t.call("POST", "/v1/events", Some(&a), Some(again)).await.0, StatusCode::OK);
+    assert_eq!(t.call("POST", "/v1/events", None, Some(json!({ "events": [] }))).await.0, StatusCode::UNAUTHORIZED);
+
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    let (status, v) = admin_call(&r, "GET", "/api/sessions", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let titles: Vec<&str> = v["problems"].as_array().unwrap().iter().filter_map(|p| p["title"].as_str()).collect();
+    assert!(titles.contains(&"Viper dropped out of a co-op match"), "{titles:?}");
+    assert!(titles.contains(&"Renegade couldn't sign in"), "{titles:?}");
+    let renegade = v["problems"].as_array().unwrap().iter().find(|p| p["name"] == "Renegade").unwrap();
+    assert!(renegade["text"].as_str().unwrap().contains("351 times"), "{renegade}");
+    let viper = v["players"].as_array().unwrap().iter().find(|p| p["name"] == "Viper").unwrap();
+    assert_eq!(viper["rooms"][0]["with"], json!([]), "{viper}");
+    assert_eq!(viper["rooms"][0]["to"].as_i64(), Some(now - 240));
+    assert_eq!(admin_call(&r, "GET", "/api/sessions", "", None).await.0, StatusCode::UNAUTHORIZED);
+}
