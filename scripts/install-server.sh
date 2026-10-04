@@ -99,6 +99,8 @@
 #   --show-join-token     print this machine's coordinator join token
 #   --rotate-join-token   make a new join token (servers that joined keep
 #                         working)
+#   Backups (live to Cloudflare R2, a daily archive to Backblaze B2) turn on when
+#   /etc/5th-echelon/backup.env exists; see docs/backups.md.
 #   --uninstall           remove the service and program (keeps the data)
 #   --purge               with --uninstall: also delete the data
 #   --no-systemd          only install files (containers, testing)
@@ -154,12 +156,25 @@ UPDATE_DIR="/var/lib/5th-echelon-update"
 RELEASE_KEY_PEM="-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEANX9q9hOdzlNhVlSPEtmjJbbdJyOktGgQkPw4ep2KCLI=
 -----END PUBLIC KEY-----"
+# Backups (see install_backups and docs/backups.md): on when this file exists. Root's only.
+BACKUP_ENV="$ETC_DIR/backup.env"
+BACKUP_SCRIPT="$PROGRAM_DIR/backup.sh"
+BACKUP_STATE="/var/lib/5th-echelon-backup"
+# Litestream (the live copy to R2) and rclone (the archive to B2): pinned, with their SHA-256.
+LITESTREAM_VERSION="0.5.17"
+LITESTREAM_SHA256_amd64="cfb371176d164437ae869f8351cfde49bd1804ae71c61923f75c9cba9c9c006d"
+LITESTREAM_SHA256_arm64="f8ca4a050095c1efbda2c4365172e61bf9d955ea0d9ac42f448b52e51819baa5"
+RCLONE_VERSION="1.75.1"
+RCLONE_SHA256_amd64="982b5aa772841168f8e380f139e9e787b2a105403e32b94da8676a0e1c0a13ab"
+RCLONE_SHA256_arm64="03f2504174034b6d004152ed7369251c9a9ec1f7e0836eda420f5c7a5ec0dff9"
 # Caddy's static build, when there's no package: pinned, with its SHA-512.
 CADDY_VERSION="2.11.7"
 CADDY_SHA512_amd64="a7a433a1b133efc3c8d10eb0b99d52a24b5ef5c322dc77f5282182b1c0402139ab83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7"
 CADDY_SHA512_arm64="3db36ba90c7a6e8dda40ee3dd71fa08844c76b5fb08f61b31e5e78d2ed38e71c51dc7baed875e50d1ca1279196e84302967237386ae87c91ae9f2aaceada682e"
 
 domain="" no_caddy=0 public_address="" version="latest" binary="" relay=""
+# What to tell the operator at the end (added to along the way).
+notes=()
 firewall=1 yes=0 force=0 uninstall=0 purge=0 use_systemd=1
 friends="" server_name="" region="" coordinator="" join_token="" coord_domain="" coord_binary=""
 https_api=1 allow_unsigned=0 coord_only=0 admin="" registration="" listed="" command=""
@@ -513,6 +528,11 @@ if [ "$uninstall" -eq 1 ]; then
     systemctl disable --now "$SERVICE" 2>/dev/null || true
     systemctl disable --now "$COORD_SERVICE" 2>/dev/null || true
     systemctl disable --now 5th-echelon-update.path 2>/dev/null || true
+    for u in 5th-echelon-backup.service 5th-echelon-coordinator-backup.service 5th-echelon-backup-archive.timer 5th-echelon-backup-files.timer; do
+      systemctl disable --now "$u" 2>/dev/null || true
+      rm -f "/etc/systemd/system/$u" "/etc/systemd/system/${u%.timer}.service"
+    done
+    rm -f "$BACKUP_SCRIPT" "$ETC_DIR"/litestream-*.yml
     rm -f "$UNIT" "$COORD_UNIT" "$UPDATE_PATH_UNIT" "$UPDATE_SERVICE_UNIT" "$CADDY_DROPIN"
     systemctl daemon-reload
   fi
@@ -1556,6 +1576,341 @@ UNIT
   systemctl enable --now 5th-echelon-update.path >/dev/null 2>&1
   say "Installed the updater: the coordinator's signed releases are installed as they're rolled out$( [ "$auto_update" = false ] && echo " (off for this server: --no-auto-update)")"
 }
+# Backups: the live copy of each database to R2 (Litestream, seconds behind) and a daily
+# archive to B2 (30 days, plus the 1st of each month for 12). Only with $BACKUP_ENV, which
+# the operator writes (docs/backups.md); its keys never go anywhere else.
+install_backups() {
+  if [ ! -f "$BACKUP_ENV" ]; then
+    notes+=("Backups are off: write $BACKUP_ENV (R2 for the live copy, B2 for the archive; see docs/backups.md), then run this script again.")
+    return 0
+  fi
+  [ "$(stat -c '%u %a' "$BACKUP_ENV")" = "0 600" ] || { chown root:root "$BACKUP_ENV"; chmod 600 "$BACKUP_ENV"; }
+  local arch=amd64 work
+  [ "$(uname -m)" = aarch64 ] && arch=arm64
+  work="$(mktemp -d)"
+  if [ "$(/usr/local/bin/litestream version 2>/dev/null | tr -d v)" != "$LITESTREAM_VERSION" ]; then
+    local tarball want
+    tarball="litestream-$LITESTREAM_VERSION-linux-$( [ "$arch" = arm64 ] && echo arm64 || echo x86_64 ).tar.gz"
+    "${CURL[@]}" -fsSL --retry 3 -o "$work/$tarball" "https://github.com/benbjohnson/litestream/releases/download/v$LITESTREAM_VERSION/$tarball" \
+      || die "couldn't download Litestream $LITESTREAM_VERSION"
+    if [ "$arch" = arm64 ]; then want="$LITESTREAM_SHA256_arm64"; else want="$LITESTREAM_SHA256_amd64"; fi
+    printf '%s  %s\n' "$want" "$work/$tarball" | sha256sum -c --quiet - || die "the Litestream download doesn't match its pinned checksum"
+    tar -xzf "$work/$tarball" -C "$work" litestream
+    install -m 755 "$work/litestream" /usr/local/bin/litestream
+  fi
+  if [ "$(/usr/local/bin/rclone version 2>/dev/null | head -1 | awk '{print $2}' | tr -d v)" != "$RCLONE_VERSION" ]; then
+    local zip want
+    zip="rclone-v$RCLONE_VERSION-linux-$arch.zip"
+    "${CURL[@]}" -fsSL --retry 3 -o "$work/$zip" "https://github.com/rclone/rclone/releases/download/v$RCLONE_VERSION/$zip" \
+      || die "couldn't download rclone $RCLONE_VERSION"
+    if [ "$arch" = arm64 ]; then want="$RCLONE_SHA256_arm64"; else want="$RCLONE_SHA256_amd64"; fi
+    printf '%s  %s\n' "$want" "$work/$zip" | sha256sum -c --quiet - || die "the rclone download doesn't match its pinned checksum"
+    command -v unzip >/dev/null || install_packages unzip
+    unzip -q -j -o "$work/$zip" "rclone-v$RCLONE_VERSION-linux-$arch/rclone" -d "$work"
+    install -m 755 "$work/rclone" /usr/local/bin/rclone
+  fi
+  rm -rf "$work"
+  install -d -m 700 "$BACKUP_STATE"
+  # Each database's backup runs as its service's user (what Litestream writes beside the
+  # database stays theirs), stops and starts with it (PartOf, WantedBy: the updater's
+  # stop, restore and start take it along), and reads only its own folder.
+  local name db user dir svc unit cfg units=()
+  for name in game coordinator; do
+    case "$name" in
+      game) db="$STATE_DIR/5th-echelon.db"; user="$USER_NAME"; dir="$STATE_DIR"; svc="$SERVICE"; unit="5th-echelon-backup.service" ;;
+      coordinator) db="$COORD_DIR/coordinator.db"; user="$COORD_USER"; dir="$COORD_DIR"; svc="$COORD_SERVICE"; unit="5th-echelon-coordinator-backup.service" ;;
+    esac
+    cfg="$ETC_DIR/litestream-$name.yml"
+    # Litestream needs the database in WAL mode, which the services set from 0.4.2 on (the
+    # header's read and write versions are 2): never switched underneath a running service.
+    if [ -f "$db" ] && [ "$(od -An -tu1 -j18 -N2 "$db" | tr -s ' ')" != " 2 2" ]; then
+      notes+=("The $name database isn't in WAL mode yet (a release before 0.4.2 runs here), so its live backup waits: run this script again after the update.")
+      continue
+    fi
+    if [ ! -f "/etc/systemd/system/$svc.service" ]; then
+      systemctl disable --now "$unit" 2>/dev/null || true
+      rm -f "/etc/systemd/system/$unit" "$cfg"
+      continue
+    fi
+    # No secrets here: Litestream fills in ${...} from the unit's environment ($BACKUP_ENV).
+    cat > "$cfg.new" <<CFG
+# Written by install-server.sh: the live copy of $db (docs/backups.md).
+snapshot:
+  interval: 24h
+  retention: 168h
+dbs:
+  - path: $db
+    replica:
+      type: s3
+      endpoint: \${BACKUP_R2_ENDPOINT}
+      region: auto
+      bucket: \${BACKUP_R2_BUCKET}
+      path: live/\${BACKUP_NAME}/$name
+      access-key-id: \${BACKUP_R2_ACCESS_KEY_ID}
+      secret-access-key: \${BACKUP_R2_SECRET_ACCESS_KEY}
+CFG
+    chmod 644 "$cfg.new" && mv -f "$cfg.new" "$cfg"
+    cat > "/etc/systemd/system/$unit.new" <<UNIT
+# Written by install-server.sh: the live copy of $db to R2 (docs/backups.md).
+[Unit]
+Description=5th Echelon: live backup of $db
+After=$svc.service network-online.target
+Wants=network-online.target
+PartOf=$svc.service
+ConditionPathExists=$BACKUP_ENV
+
+[Service]
+User=$user
+Group=$user
+EnvironmentFile=$BACKUP_ENV
+Environment=BACKUP_NAME=$(backup_name)
+ExecStart=/usr/local/bin/litestream replicate -config $cfg
+Restart=always
+RestartSec=10
+NoNewPrivileges=yes
+ProtectSystem=strict
+ReadWritePaths=$dir
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+SystemCallArchitectures=native
+
+[Install]
+WantedBy=$svc.service
+UNIT
+    chmod 644 "/etc/systemd/system/$unit.new" && mv -f "/etc/systemd/system/$unit.new" "/etc/systemd/system/$unit"
+    units+=("$unit")
+  done
+  write_backup_script
+  local t
+  for t in archive files; do
+    cat > "/etc/systemd/system/5th-echelon-backup-$t.service" <<UNIT
+# Written by install-server.sh (docs/backups.md).
+[Unit]
+Description=5th Echelon: $( [ "$t" = archive ] && echo "daily archive to B2" || echo "the coordinator's join token and reports to R2" )
+ConditionPathExists=$BACKUP_ENV
+[Service]
+Type=oneshot
+ExecStart=$BACKUP_SCRIPT $t
+UNIT
+    cat > "/etc/systemd/system/5th-echelon-backup-$t.timer" <<UNIT
+# Written by install-server.sh (docs/backups.md).
+[Unit]
+Description=5th Echelon: $( [ "$t" = archive ] && echo "daily archive to B2" || echo "the coordinator's files to R2, hourly" )
+[Timer]
+OnCalendar=$( [ "$t" = archive ] && echo "*-*-* 03:30:00" || echo hourly )
+RandomizedDelaySec=$( [ "$t" = archive ] && echo 30m || echo 5m )
+Persistent=true
+[Install]
+WantedBy=timers.target
+UNIT
+    chmod 644 "/etc/systemd/system/5th-echelon-backup-$t".{service,timer}
+  done
+  systemctl daemon-reload
+  for unit in "${units[@]}"; do
+    systemctl enable "$unit" >/dev/null 2>&1
+    systemctl restart "$unit"
+  done
+  systemctl enable --now 5th-echelon-backup-archive.timer >/dev/null 2>&1
+  if [ -f "/etc/systemd/system/$COORD_SERVICE.service" ]; then
+    systemctl enable --now 5th-echelon-backup-files.timer >/dev/null 2>&1
+  else
+    systemctl disable --now 5th-echelon-backup-files.timer >/dev/null 2>&1 || true
+  fi
+  say "Backups: live to R2 (${#units[@]} database(s), as $(backup_name)), daily archive to B2. Check: $BACKUP_SCRIPT status"
+}
+# What this machine's backups are kept under: BACKUP_NAME in $BACKUP_ENV, else the game
+# server's id, else the host name.
+backup_name() {
+  local n
+  n="$(sed -n 's/^BACKUP_NAME=//p' "$BACKUP_ENV" 2>/dev/null | tr -d "\"' " | head -1)"
+  [ -n "$n" ] || n="$(head -c 64 "$STATE_DIR/server-id.txt" 2>/dev/null | tr -cd 'a-z0-9-')"
+  [ -n "$n" ] || n="$(hostname -s | tr -cd 'a-z0-9-')"
+  printf '%s' "$n"
+}
+# The backup helper (archive, files, status, restore), root's.
+write_backup_script() {
+  {
+    echo '#!/usr/bin/env bash'
+    echo '# Written by install-server.sh: backups (docs/backups.md).'
+    printf 'BACKUP_ENV=%q\nBACKUP_STATE=%q\nETC_DIR=%q\nSTATE_DIR=%q\nCOORD_DIR=%q\nSERVICE=%q\nCOORD_SERVICE=%q\nBACKUP_NAME_DEFAULT=%q\n' \
+      "$BACKUP_ENV" "$BACKUP_STATE" "$ETC_DIR" "$STATE_DIR" "$COORD_DIR" "$SERVICE" "$COORD_SERVICE" "$(backup_name)"
+    cat <<'BACKUP'
+# Usage:
+#   backup.sh status                    what's backed up, and the last archive
+#   backup.sh archive                   the daily archive to B2 (its timer runs it)
+#   backup.sh files                     the coordinator's join token and reports to R2 (hourly)
+#   backup.sh restore game|coordinator [--time 2026-10-05T03:00:00Z] [--archive 2026-10-05|2026-10]
+#                     [--from NAME]     put a copy back: the live copy (now, or as it was at
+#                                       --time), or an archive (a day, or a month's), from this
+#                                       machine's backups or another's (--from)
+set -euo pipefail
+umask 077
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+[ "$(id -u)" -eq 0 ] || die "run as root"
+[ -f "$BACKUP_ENV" ] || die "no $BACKUP_ENV: backups are off (docs/backups.md)"
+[ "$(stat -c '%u %a' "$BACKUP_ENV")" = "0 600" ] || die "$BACKUP_ENV must be root's, mode 600"
+set -a
+# shellcheck disable=SC1090
+. "$BACKUP_ENV"
+set +a
+BACKUP_NAME="${BACKUP_NAME:-$BACKUP_NAME_DEFAULT}"
+for v in BACKUP_R2_ENDPOINT BACKUP_R2_BUCKET BACKUP_R2_ACCESS_KEY_ID BACKUP_R2_SECRET_ACCESS_KEY; do
+  [ -n "${!v:-}" ] || die "$v isn't set in $BACKUP_ENV"
+done
+has_b2() { [ -n "${BACKUP_B2_ENDPOINT:-}" ] && [ -n "${BACKUP_B2_BUCKET:-}" ] && [ -n "${BACKUP_B2_ACCESS_KEY_ID:-}" ] && [ -n "${BACKUP_B2_SECRET_ACCESS_KEY:-}" ]; }
+# rclone's remotes, from the environment (nothing written to disk).
+export RCLONE_CONFIG_R2_TYPE=s3 RCLONE_CONFIG_R2_PROVIDER=Cloudflare RCLONE_CONFIG_R2_ENDPOINT="$BACKUP_R2_ENDPOINT" \
+  RCLONE_CONFIG_R2_ACCESS_KEY_ID="$BACKUP_R2_ACCESS_KEY_ID" RCLONE_CONFIG_R2_SECRET_ACCESS_KEY="$BACKUP_R2_SECRET_ACCESS_KEY" \
+  RCLONE_CONFIG_R2_NO_CHECK_BUCKET=true RCLONE_CONFIG_R2_ACL=private
+if has_b2; then
+  export RCLONE_CONFIG_B2_TYPE=s3 RCLONE_CONFIG_B2_PROVIDER=Other RCLONE_CONFIG_B2_ENDPOINT="$BACKUP_B2_ENDPOINT" \
+    RCLONE_CONFIG_B2_ACCESS_KEY_ID="$BACKUP_B2_ACCESS_KEY_ID" RCLONE_CONFIG_B2_SECRET_ACCESS_KEY="$BACKUP_B2_SECRET_ACCESS_KEY" \
+    RCLONE_CONFIG_B2_NO_CHECK_BUCKET=true
+fi
+RCLONE=(/usr/local/bin/rclone --config /dev/null --retries 3 --low-level-retries 5)
+database() { case "$1" in game) echo "$STATE_DIR/5th-echelon.db" ;; coordinator) echo "$COORD_DIR/coordinator.db" ;; *) die "game or coordinator, not $1" ;; esac; }
+service() { case "$1" in game) echo "$SERVICE" ;; coordinator) echo "$COORD_SERVICE" ;; esac; }
+here() { [ -f "/etc/systemd/system/$(service "$1").service" ]; }
+# Restores the live copy kept under NAME (this machine's, or another's) to FILE, as it is
+# now or as it was at TIME.
+restore_live() {
+  local what="$1" from="$2" out="$3" time="${4:-}" cfg
+  cfg="$(mktemp)"
+  cat > "$cfg" <<CFG
+dbs:
+  - path: $(database "$what")
+    replica:
+      type: s3
+      endpoint: \${BACKUP_R2_ENDPOINT}
+      region: auto
+      bucket: \${BACKUP_R2_BUCKET}
+      path: live/$from/$what
+      access-key-id: \${BACKUP_R2_ACCESS_KEY_ID}
+      secret-access-key: \${BACKUP_R2_SECRET_ACCESS_KEY}
+CFG
+  /usr/local/bin/litestream restore -config "$cfg" ${time:+-timestamp "$time"} -o "$out" "$(database "$what")"
+  rm -f "$cfg"
+}
+# Whether FILE is a whole SQLite database (Python's check, when Python is there).
+sound() {
+  [ -s "$1" ] && [ "$(head -c 15 "$1")" = "SQLite format 3" ] || return 1
+  command -v python3 >/dev/null || return 0
+  python3 - "$1" <<'PY'
+import sqlite3, sys
+c = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True)
+sys.exit(0 if c.execute("PRAGMA integrity_check").fetchone()[0] == "ok" else 1)
+PY
+}
+
+case "${1:-status}" in
+  status)
+    echo "Backups of $BACKUP_NAME: live to $BACKUP_R2_BUCKET (R2)$(has_b2 && echo ", archive to $BACKUP_B2_BUCKET (B2)" || echo ", no archive (B2 isn't set)")"
+    for what in game coordinator; do
+      here "$what" || continue
+      case "$what" in game) unit=5th-echelon-backup.service ;; coordinator) unit=5th-echelon-coordinator-backup.service ;; esac
+      echo "  $what: $(systemctl is-active "$unit" 2>/dev/null || true) ($unit)"
+    done
+    echo "  last archive: $(cat "$BACKUP_STATE/last-archive" 2>/dev/null || echo never)"
+    echo "  last files:   $(cat "$BACKUP_STATE/last-files" 2>/dev/null || echo never)"
+    ;;
+  archive)
+    has_b2 || die "B2 isn't set in $BACKUP_ENV: no archive"
+    work="$(mktemp -d)"
+    trap 'rm -rf "$work"' EXIT
+    day="$(date -u +%F)"
+    month="$(date -u +%Y-%m)"
+    base="B2:$BACKUP_B2_BUCKET/archive/$BACKUP_NAME"
+    # From the live copy, not the database: nothing touches the running service, and each
+    # day proves the live copy restores.
+    for what in game coordinator; do
+      here "$what" || continue
+      restore_live "$what" "$BACKUP_NAME" "$work/$what.db"
+      sound "$work/$what.db" || die "the live copy of $what didn't restore whole"
+      gzip -9 "$work/$what.db"
+      "${RCLONE[@]}" copyto "$work/$what.db.gz" "$base/daily/$day-$what.db.gz"
+      if [ "$(date -u +%d)" = 01 ]; then
+        "${RCLONE[@]}" copyto "$work/$what.db.gz" "$base/monthly/$month-$what.db.gz"
+      fi
+    done
+    files=()
+    for f in join-token.txt reports; do [ -e "$COORD_DIR/$f" ] && files+=("$f"); done
+    if here coordinator && [ "${#files[@]}" -gt 0 ]; then
+      tar -czf "$work/coordinator-files.tar.gz" -C "$COORD_DIR" "${files[@]}"
+      "${RCLONE[@]}" copyto "$work/coordinator-files.tar.gz" "$base/daily/$day-coordinator-files.tar.gz"
+      if [ "$(date -u +%d)" = 01 ]; then
+        "${RCLONE[@]}" copyto "$work/coordinator-files.tar.gz" "$base/monthly/$month-coordinator-files.tar.gz"
+      fi
+    fi
+    "${RCLONE[@]}" delete --min-age 31d "$base/daily"
+    "${RCLONE[@]}" delete --min-age 366d "$base/monthly"
+    date -u +%FT%TZ > "$BACKUP_STATE/last-archive"
+    echo "Archived $BACKUP_NAME for $day"
+    ;;
+  files)
+    here coordinator || exit 0
+    for f in join-token.txt; do
+      [ -f "$COORD_DIR/$f" ] && "${RCLONE[@]}" copyto "$COORD_DIR/$f" "R2:$BACKUP_R2_BUCKET/live/$BACKUP_NAME/coordinator-files/$f"
+    done
+    if [ -d "$COORD_DIR/reports" ]; then
+      "${RCLONE[@]}" sync "$COORD_DIR/reports" "R2:$BACKUP_R2_BUCKET/live/$BACKUP_NAME/coordinator-files/reports"
+    fi
+    date -u +%FT%TZ > "$BACKUP_STATE/last-files"
+    ;;
+  restore)
+    what="${2:-}"; shift 2 || die "restore game|coordinator"
+    time="" archive="" from="$BACKUP_NAME"
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --time) time="${2:?}"; shift ;;
+        --archive) archive="${2:?}"; shift ;;
+        --from) from="${2:?}"; shift ;;
+        *) die "unknown option $1" ;;
+      esac
+      shift
+    done
+    [[ "$from" =~ ^[a-z0-9-]{1,64}$ ]] || die "--from: a backup name (letters, digits, -)"
+    db="$(database "$what")"
+    here "$what" || die "there's no $what service on this machine"
+    work="$(mktemp -d)"
+    trap 'rm -rf "$work"' EXIT
+    if [ -n "$archive" ]; then
+      has_b2 || die "B2 isn't set in $BACKUP_ENV"
+      if [[ "$archive" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]; then kind=daily
+      elif [[ "$archive" =~ ^[0-9]{4}-[0-9]{2}$ ]]; then kind=monthly
+      else die "--archive: a day (2026-10-05) or a month (2026-10)"; fi
+      "${RCLONE[@]}" copyto "B2:$BACKUP_B2_BUCKET/archive/$from/$kind/$archive-$what.db.gz" "$work/restored.db.gz" 2>/dev/null || true
+      [ -s "$work/restored.db.gz" ] || die "there's no $kind archive $archive of $from's $what; nothing changed"
+      gunzip "$work/restored.db.gz"
+    else
+      restore_live "$what" "$from" "$work/restored.db" "$time"
+    fi
+    sound "$work/restored.db" || die "the copy isn't a whole database; nothing changed"
+    svc="$(service "$what")"
+    echo "Stopping $svc to put the copy in place…"
+    systemctl stop "$svc"
+    stamp="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    # The database as it was, kept beside it; its WAL goes with it, never onto the copy.
+    for f in "$db" "$db-wal" "$db-shm"; do
+      if [ -f "$f" ]; then mv -f -- "$f" "$f.before-restore-$stamp"; fi
+    done
+    install -m 600 -o "$(stat -c %U "$(dirname "$db")")" -g "$(stat -c %G "$(dirname "$db")")" "$work/restored.db" "$db"
+    systemctl start "$svc"
+    echo "Restored $what from $( [ -n "$archive" ] && echo "the $kind archive $archive" || echo "the live copy${time:+ as at $time}" ) of $from."
+    echo "The one it replaced: $db.before-restore-$stamp"
+    ;;
+  *) die "status, archive, files or restore (see the top of $0)" ;;
+esac
+BACKUP
+  } > "$BACKUP_SCRIPT.new"
+  chmod 700 "$BACKUP_SCRIPT.new"
+  mv -f "$BACKUP_SCRIPT.new" "$BACKUP_SCRIPT"
+}
 # The version the installed server (or, alone, the coordinator) reports.
 running_version() {
   local info
@@ -1567,6 +1922,7 @@ running_version() {
   printf '%s' "$info" | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4
 }
 if [ "$use_systemd" -eq 1 ]; then install_updater; fi
+if [ "$use_systemd" -eq 1 ]; then install_backups; fi
 
 # --- Firewall -----------------------------------------------------------
 
@@ -1845,7 +2201,6 @@ METRICS_CERT="/etc/caddy/5th-echelon-metrics.crt"
 METRICS_KEY="/etc/caddy/5th-echelon-metrics.key"
 ORIGIN_PULL_CA="/etc/caddy/cloudflare-origin-pull-ca.pem"
 
-notes=()
 if [ "$no_caddy" -eq 0 ]; then
   install_caddy || true
   command -v caddy >/dev/null || install_caddy_static

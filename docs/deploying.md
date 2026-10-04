@@ -181,6 +181,10 @@ The admin API is never reachable from the internet; Caddy refuses it. Use an SSH
 
 `--uninstall` removes the services, programs, Caddy site, updater and the firewall rules the installer added, and keeps the data; add `--purge` to delete that too.
 
+## Backups
+
+The databases (accounts, friends and stats; and the coordinator's links, names and admins) can be backed up off the machine: live to Cloudflare R2, seconds behind, and a daily archive to Backblaze B2 (30 days, and 12 monthly copies). Write `/etc/5th-echelon/backup.env` with the buckets' keys and run the installer again; `/opt/5th-echelon/backup.sh` restores. See **[backups.md](backups.md)**.
+
 ## The admin UI
 
 A coordinator has an admin web UI at a name of its own, served only through Cloudflare. It shows:
