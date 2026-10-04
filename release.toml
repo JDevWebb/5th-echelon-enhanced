@@ -7,7 +7,7 @@
 # names the next one, with a -dev suffix (0.4.1-dev until 0.4.1 is out). The
 # suffix marks builds that aren't a signed release, and comes off when one is
 # (scripts/release.sh, which then moves on to the next patch). 0.2.5 was
-# upstream's last release; this fork continued from 0.3.0, and 0.4.0 is its
+# upstream's last release; 5th Echelon Enhanced continued from 0.3.0, and 0.4.0 is its
 # first public release.
 name = "5th Echelon Enhanced"
 version = "0.4.1-dev"

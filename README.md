@@ -16,7 +16,7 @@
   <a href="#host-a-server">Host a server</a> ·
   <a href="#run-your-own-server">Run your own</a> ·
   <a href="#features">Features</a> ·
-  <a href="#whats-new-in-this-fork">What's new</a> ·
+  <a href="#whats-new-since-5th-echelon">What's new</a> ·
   <a href="#contributing">Contribute</a> ·
   <a href="#community">Community</a>
 </p>
@@ -66,7 +66,7 @@ Tell us how it goes: bugs, ideas and questions are all welcome as [issues](https
 
 ## Standing on the shoulders of
 
-**5th Echelon Enhanced is developed by [JDevWebb](https://github.com/JDevWebb), building on [5th Echelon](https://github.com/unixoide/5th-echelon) by [unixoide](https://github.com/unixoide).** unixoide reverse-engineered the game's Quazal online stack, wrote the server, the launcher and the game hook, and documented the protocols in the [5th Echelon reference](https://unixoide.github.io/5th-echelon). None of this fork would exist without that work.
+**5th Echelon Enhanced is developed by [JDevWebb](https://github.com/JDevWebb), building on [5th Echelon](https://github.com/unixoide/5th-echelon) by [unixoide](https://github.com/unixoide).** unixoide reverse-engineered the game's Quazal online stack, wrote the server, the launcher and the game hook, and documented the protocols in the [5th Echelon reference](https://unixoide.github.io/5th-echelon). None of 5th Echelon Enhanced would exist without that work. It began as a fork of 5th Echelon 0.2.5 and is now developed as a project of its own; upstream's history and its authors are kept in this repository.
 
 ### Authors and contributors
 
@@ -80,9 +80,9 @@ Tell us how it goes: bugs, ideas and questions are all welcome as [issues](https
 | **[Michał Kapała (michal-kapala)](https://github.com/michal-kapala)** | Contributions to upstream 5th Echelon, and co-author of [GROBackendWV](https://github.com/zeroKilo/GROBackendWV) |
 | **[Askorbinovaya Kislota](https://github.com/askorbinovaya-kislota)** | Contributions to upstream 5th Echelon |
 | **[zeroKilo](https://github.com/zeroKilo)** | [GROBackendWV](https://github.com/zeroKilo/GROBackendWV), which shares parts of the protocol and helped get 5th Echelon started |
-| **[JDevWebb](https://github.com/JDevWebb)** | This fork: the new launcher, automatic setup, internet play without a VPN, friends, identities and the coordinator, the network's automatic updates and admin UI, server hardening and the security audit, the community API, and the community network |
+| **[JDevWebb](https://github.com/JDevWebb)** | 5th Echelon Enhanced: the new launcher, automatic setup, internet play without a VPN, friends, identities and the coordinator, the network's automatic updates and admin UI, server hardening and the security audit, the community API, and the community network |
 
-Every upstream commit keeps its original author in this repository's history, and merged pull requests keep their authors' commits. The [changelog](#whats-new-in-this-fork) lists what this fork changed and where each change came from.
+Every upstream commit keeps its original author in this repository's history, and merged pull requests keep their authors' commits. The [changelog](#whats-new-since-5th-echelon) lists what 5th Echelon Enhanced changed and where each change came from.
 
 Also used: [IBM Plex](https://github.com/IBM/plex) Sans, Sans Condensed and Mono (SIL Open Font License) for the overlay and launcher, [egui](https://github.com/emilk/egui) for the launcher, and [hudhook](https://github.com/veeenu/hudhook) with [Dear ImGui](https://github.com/ocornut/imgui) for the overlay.
 
@@ -322,7 +322,7 @@ Everything the launcher does can be done by hand:
   - Linux;
   - Docker.
 - **A management screen** in the launcher: see and remove players and games, and read the log. It works for the server on your PC, or for a remote server through an SSH tunnel with its admin key.
-- **Built for the public internet**, and [audited](#whats-new-in-this-fork):
+- **Built for the public internet**, and [audited](#whats-new-since-5th-echelon):
   - rate limits on logins (per address and per account), new accounts, invites, searches and friend requests;
   - login tickets that expire, and API tokens that end when the password changes;
   - private matches need an invite, are never offered to Find Teammate or Quick Match, and only a match's own players can change them;
@@ -489,7 +489,7 @@ The guide, with a tested Caddyfile: **[docs/reverse-proxy.md](docs/reverse-proxy
 
 ### Settings
 
-The server reads `service.toml` from its working folder, writing the defaults on the first start. The settings this fork adds are in **[docs/server-settings.md](docs/server-settings.md)**:
+The server reads `service.toml` from its working folder, writing the defaults on the first start. The settings 5th Echelon Enhanced adds are in **[docs/server-settings.md](docs/server-settings.md)**:
 
 - **`[community_api]`:** server info, who's online, sign-up for tools, unhandled calls. Only server info is on by default.
 - **`trusted_subnet`:** fixes joins when players' games advertise the wrong network adapter (e.g. everyone on one VPN).
@@ -505,7 +505,9 @@ Command-line options: `--public-address <ip>`, `--listen <ip>`, and `-c <file>` 
 
 ---
 
-## What's new in this fork
+<a id="whats-new-in-this-fork"></a>
+
+## What's new since 5th Echelon
 
 Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echelon/releases/tag/v0.2.5):
 
@@ -514,7 +516,7 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
 - A guided first-run setup, and a Status card with fixes. **Connect** finds your account with your identity, and asks for a name only when you have none on that server.
 - Typing a network's address (a coordinator) sets you up on its best server by ping; **Switch** moves to another.
 - Adapter pinning that works (upstream's saved a value that never matched an adapter).
-- Server management, and verified updates from this fork's releases.
+- Server management, and verified updates from this project's releases.
 - Settings are never silently reset: an unreadable file is kept as `uplay.toml.broken`, and outside changes are merged rather than overwritten.
 - No sample accounts; DirectX 11 by default.
 - A window you can resize, maximise or make full screen (F11), with everything scaled to fit it, and your own size on top (Settings › Display, or Ctrl + / Ctrl −).
@@ -769,13 +771,13 @@ Find other players, active servers and help:
 
 ## Licence
 
-**This fork's own work is under the MIT licence; upstream's code isn't licensed yet.** [LICENSE.md](LICENSE.md) says exactly what's covered:
+**5th Echelon Enhanced's own work is under the MIT licence; upstream's code isn't licensed yet.** [LICENSE.md](LICENSE.md) says exactly what's covered:
 
 - **MIT:**
-  - the crates this fork created: `identity/` (player identities and release signing), `coordinator/` (friends across servers, the server directory, updates and the admin UI), `geo/` (locations for metrics), `nat_proto/` and `portmap/` (internet play) and `setup/` (the launcher's logic);
+  - the crates this project created: `identity/` (player identities and release signing), `coordinator/` (friends across servers, the server directory, updates and the admin UI), `geo/` (locations for metrics), `nat_proto/` and `portmap/` (internet play) and `setup/` (the launcher's logic);
   - the files it added elsewhere: the new launcher screens and updater, the NAT helper and relay, friends, federation, rate limits and the community API in the server, internet play and the friends overlay in the client;
-  - the test players and load test, the Linux installer and release signing, builds, Docker, CI, and this fork's docs;
-  - this fork's changes to every other file, line by line as the git history records them.
+  - the test players and load test, the Linux installer and release signing, builds, Docker, CI, and this project's docs;
+  - this project's changes to every other file, line by line as the git history records them.
 - **Not MIT:**
   - upstream 5th Echelon's code, which has no licence yet ([unixoide/5th-echelon#129](https://github.com/unixoide/5th-echelon/issues/129)) and remains its authors';
   - code merged from others' pull requests, which stays theirs: [#123](https://github.com/unixoide/5th-echelon/pull/123) and [#124](https://github.com/unixoide/5th-echelon/pull/124) by Matthias Walther, [#128](https://github.com/unixoide/5th-echelon/pull/128) by Thiago;

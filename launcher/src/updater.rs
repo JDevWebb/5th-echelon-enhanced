@@ -1,4 +1,4 @@
-//! Updates from this fork's GitHub releases. Every download is checked
+//! Updates from this project's GitHub releases. Every download is checked
 //! against the `SHA256SUMS` published with the release before it's used,
 //! and `SHA256SUMS` must carry the release key's signature
 //! (`SHA256SUMS.sig`, made offline with `scripts/sign-release.sh`): someone

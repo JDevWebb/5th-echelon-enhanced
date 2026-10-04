@@ -54,6 +54,6 @@ flate2 = { workspace = true }
 
 [package.metadata.winres]
 ProductName = "5th Echelon Server"
-FileDescription = "https://github.com/unixoide/5th-echelon"
+FileDescription = "5th Echelon Enhanced server, building on 5th Echelon by unixoide"
 OriginalFilename = "dedicated_server.exe"
 InternalName = "dedicated_server"

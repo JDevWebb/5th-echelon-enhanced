@@ -54,4 +54,4 @@ Security fixes go into the latest release, and the community network's servers u
 
 ## What's already in place
 
-The design choices are described in the [README](README.md#whats-new-in-this-fork) (Security) and the docs: [friends.md](docs/friends.md) (identities and what the coordinator trusts), [operations.md](docs/operations.md) (updates and the admin UI), [deploying.md](docs/deploying.md) (hardening the machine) and [server-settings.md](docs/server-settings.md).
+The design choices are described in the [README](README.md#whats-new-since-5th-echelon) (Security) and the docs: [friends.md](docs/friends.md) (identities and what the coordinator trusts), [operations.md](docs/operations.md) (updates and the admin UI), [deploying.md](docs/deploying.md) (hardening the machine) and [server-settings.md](docs/server-settings.md).

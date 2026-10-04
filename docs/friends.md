@@ -2,7 +2,7 @@
 
 Blacklist has one friend list, and it's whatever the Uplay layer hands it. Upstream's server gave every player every account on the server. That's fine for a LAN or a group that all know each other, but not for a public server with hundreds of strangers.
 
-This fork has real friend lists, blocking, and an identity that carries friends between servers that share a coordinator.
+5th Echelon Enhanced has real friend lists, blocking, and an identity that carries friends between servers that share a coordinator.
 
 ## Friend lists
 

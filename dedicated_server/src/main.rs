@@ -27,10 +27,10 @@ use storage::Storage;
 
 const DEFAULT_MP_DATA: &str = include_str!("../../data/mp_balancing.ini");
 const DEFAULT_NEWS: &str = include_str!("../../data/news.json");
-/// Upstream's news, which servers wrote as their default before this fork had
+/// Upstream's news, which servers wrote as their default before 5th Echelon Enhanced had
 /// its own: replaced by the new default when found unchanged.
 const UPSTREAM_NEWS: &str = include_str!("news_upstream.json");
-/// This fork's first news (0.3.150): replaced like upstream's, unless edited.
+/// 5th Echelon Enhanced's first news (0.3.150): replaced like upstream's, unless edited.
 const FIRST_NEWS: &str = include_str!("news_0.3.150.json");
 const DEFAULT_CHALLENGES: &str = include_str!("../../data/challenges.json");
 

@@ -19,7 +19,7 @@
 #                            (docs/friends.md)
 #   build/build.sh ui        the coordinator's admin UI (Vue, coordinator/admin-ui -> dist/,
 #                            embedded in the coordinator; the targets building it run this first)
-#   build/build.sh fmt       cargo fmt (the crates this fork changes)
+#   build/build.sh fmt       cargo fmt (the crates this project changes)
 #   build/build.sh shell     interactive shell in the build container
 #
 # Caches (cargo registry, xwin SDK, target dirs) live in Docker volumes.

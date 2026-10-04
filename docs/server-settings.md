@@ -1,4 +1,4 @@
-# Server settings added by this fork
+# Server settings added by 5th Echelon Enhanced
 
 These go in the server's `service.toml`, next to upstream's settings. Each is off, or at its safest, unless you set it; the NAT helper for internet play is on.
 
