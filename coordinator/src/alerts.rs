@@ -3,7 +3,10 @@
 //! a webhook (Discord's or Slack's incoming webhooks take the same message).
 //!
 //! What's watched:
-//! * a server that stopped sending heartbeats (seen in the last week, silent 3 minutes);
+//! * a server that stopped sending heartbeats (seen in the last week, silent 3 minutes), or
+//!   all of them at once: then it's the coordinator that can't be reached (its address, or
+//!   the web server in front of it), and that's the one alert;
+//! * a server whose launcher API port didn't answer the coordinator's last three checks;
 //! * a server's CPU over 90% for its last five minutes, memory over 90%, disk under 10% free;
 //! * bursts of refused sign-ins (30 or more in ten minutes on a server);
 //! * a server's month of traffic against its allowance: 80% used, all of it used, or on
@@ -27,6 +30,8 @@ const CPU_HIGH: f64 = 90.0;
 const MEMORY_HIGH: f64 = 0.9;
 const DISK_LOW: f64 = 0.1;
 const FAILED_SIGNINS: f64 = 30.0;
+/// Failed checks of a server's API port in a row (one a minute) before it's an alert.
+const API_CHECKS_FAILED: usize = 3;
 /// The setting with the webhook's address.
 pub const WEBHOOK_SETTING: &str = "alert_webhook";
 
@@ -52,11 +57,14 @@ impl Coordinator {
                 .unwrap_or_else(|| id.to_string())
         };
         let mut names = HashMap::new();
+        let mut offline = Vec::new();
+        let mut known = 0;
         for (id, listing, last_seen, status) in &servers {
             let n = name(listing, id);
             names.insert(id.clone(), n.clone());
+            known += usize::from(last_seen.is_some_and(|t| now - t < FORGET_AFTER));
             if let Some(seen) = last_seen.filter(|t| now - t > OFFLINE_AFTER && now - t < FORGET_AFTER) {
-                found.push(("offline".into(), id.clone(), "bad", format!("{n} has sent no heartbeat for {} min", (now - seen) / 60)));
+                offline.push(("offline".to_string(), id.clone(), "bad", format!("{n} has sent no heartbeat for {} min", (now - seen) / 60)));
             }
             let updater = status
                 .as_deref()
@@ -70,6 +78,43 @@ impl Coordinator {
                     id.clone(),
                     "warn",
                     format!("{n}'s update to {version} {}", if state == "failed" { "failed" } else { "was rolled back" }),
+                ));
+            }
+        }
+        // Every server silent at once: they can't reach the coordinator, more likely than all
+        // of them going down together.
+        if offline.len() >= 2 && offline.len() == known {
+            let silent = servers.iter().filter_map(|s| s.2).max().map_or(0, |seen| (now - seen) / 60);
+            found.push((
+                "unreachable".into(),
+                String::new(),
+                "bad",
+                format!("No server has reached the coordinator for {silent} min: its address, or the web server in front of it, may be down"),
+            ));
+        } else {
+            found.extend(offline.iter().cloned());
+        }
+        // Servers still sending heartbeats whose launcher API port stopped answering (the
+        // coordinator checks it every minute): the web server in front of it, say.
+        let pings: Vec<(String, Option<f64>)> = sqlx::query_as("SELECT server_id, ms FROM server_pings WHERE at >= ? ORDER BY at DESC")
+            .bind(now - 300)
+            .fetch_all(&self.pool)
+            .await?;
+        let mut recent: BTreeMap<String, Vec<Option<f64>>> = BTreeMap::new();
+        for (id, ms) in pings {
+            recent.entry(id).or_default().push(ms);
+        }
+        for (id, checks) in &recent {
+            if offline.iter().any(|o| &o.1 == id) {
+                continue;
+            }
+            if checks.len() >= API_CHECKS_FAILED && checks.iter().take(API_CHECKS_FAILED).all(Option::is_none) {
+                let n = names.get(id).cloned().unwrap_or_else(|| id.clone());
+                found.push((
+                    "api".into(),
+                    id.clone(),
+                    "bad",
+                    format!("{n}'s launcher API didn't answer the last {API_CHECKS_FAILED} checks (its web server may be down)"),
                 ));
             }
         }

@@ -1731,3 +1731,49 @@ async fn reports_files_keep_under_the_cap_and_reports_go_after_90_days() {
     let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM player_report_files").fetch_one(&t.c.pool).await.unwrap();
     assert_eq!(left, 3, "its file rows went with it");
 }
+
+#[tokio::test]
+async fn all_servers_silent_is_one_alert_about_the_coordinator() {
+    let t = start("all-silent").await;
+    t.join("srv-a").await;
+    t.join("srv-b").await;
+    let now = identity::now();
+    let seen = |id: &'static str, at: i64| sqlx::query("UPDATE servers SET last_seen = ? WHERE id = ?").bind(at).bind(id).execute(&t.c.pool);
+    let active = || async {
+        t.c.alerts().await.unwrap()["active"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|a| a["kind"].as_str().unwrap().to_string())
+            .collect::<Vec<_>>()
+    };
+    // Both silent: the coordinator can't be reached, not two servers down.
+    seen("srv-a", now - 600).await.unwrap();
+    seen("srv-b", now - 600).await.unwrap();
+    t.c.check_alerts().await.unwrap();
+    assert_eq!(active().await, ["unreachable"]);
+    // One back: the other is the one down.
+    seen("srv-a", now).await.unwrap();
+    t.c.check_alerts().await.unwrap();
+    assert_eq!(active().await, ["offline"]);
+    // srv-a sends heartbeats, but its API port stopped answering the coordinator's checks.
+    for ago in [0, 60, 120] {
+        sqlx::query("INSERT INTO server_pings (server_id, at, ms) VALUES ('srv-a', ?, NULL)")
+            .bind(now - ago)
+            .execute(&t.c.pool)
+            .await
+            .unwrap();
+    }
+    t.c.check_alerts().await.unwrap();
+    let mut kinds = active().await;
+    kinds.sort();
+    assert_eq!(kinds, ["api", "offline"]);
+    // It answers again.
+    sqlx::query("UPDATE server_pings SET ms = 1.5 WHERE server_id = 'srv-a' AND at = ?")
+        .bind(now)
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    t.c.check_alerts().await.unwrap();
+    assert_eq!(active().await, ["offline"]);
+}
