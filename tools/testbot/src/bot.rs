@@ -629,6 +629,16 @@ impl Bot {
             .challenge)
     }
 
+    /// What the server saw of this player's last game session.
+    pub async fn session_summary(&self) -> std::result::Result<server_api::misc::SessionSummaryResponse, tonic::Status> {
+        Ok(MiscClient::new(self.api.clone()).session_summary(self.authed(server_api::misc::SessionSummaryRequest {})).await?.into_inner())
+    }
+
+    /// Sends a report, as the launcher does after a game; answers its id.
+    pub async fn report(&self, report: server_api::misc::ReportRequest) -> std::result::Result<String, tonic::Status> {
+        Ok(MiscClient::new(self.api.clone()).report(self.authed(report)).await?.into_inner().id)
+    }
+
     /// Unlinks this account from its identity.
     pub async fn unlink(&self) -> std::result::Result<(), tonic::Status> {
         FriendsClient::new(self.api.clone()).unlink_identity(self.authed(server_api::friends::UnlinkIdentityRequest {})).await?;

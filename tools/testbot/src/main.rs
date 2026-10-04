@@ -210,6 +210,39 @@ async fn direct_test(ctx: &mut Ctx) -> Result<()> {
     a.disconnect().await
 }
 
+/// A player's report after a game, as the launcher sends it: the server tells what it saw
+/// of the session, and takes the report with a log; a file that isn't one of the
+/// launcher's is refused, and a player sends a few a day at most.
+async fn report(ctx: &mut Ctx) -> Result<()> {
+    let a = ctx.player("Reporter").await?;
+    let summary = a.session_summary().await.map_err(|e| eyre!("session summary: {}", e.message()))?;
+    ensure!(summary.started > 0 && summary.ended == 0, "a connected game has a play session going: {summary:?}");
+    let log = setup::feedback::attach("bl-tracing.log", "INFO hooks: attaching\n", &setup::feedback::Private::default())?;
+    let request = |files: Vec<server_api::misc::ReportFile>| server_api::misc::ReportRequest {
+        rating: "bad".into(),
+        problems: vec!["join".into()],
+        comment: "a test report".into(),
+        triggers: vec!["failed_join".into()],
+        client: [("launcher".to_string(), "testbot".to_string())].into_iter().collect(),
+        files,
+    };
+    let file = |name: &str| server_api::misc::ReportFile {
+        name: name.into(),
+        gzip: log.gzip.clone(),
+        size: log.size,
+    };
+    let id = a.report(request(vec![file("bl-tracing.log")])).await.map_err(|e| eyre!("the report: {}", e.message()))?;
+    ensure!(id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()), "a report id: {id:?}");
+    let refused = a.report(request(vec![file("../uplay.toml")])).await;
+    ensure!(matches!(&refused, Err(s) if s.code() == tonic::Code::InvalidArgument), "a file named ../uplay.toml: {refused:?}");
+    for _ in 0..4 {
+        a.report(request(vec![])).await.map_err(|e| eyre!("another report: {}", e.message()))?;
+    }
+    let sixth = a.report(request(vec![])).await;
+    ensure!(matches!(&sixth, Err(s) if s.code() == tonic::Code::ResourceExhausted), "a sixth report today: {sixth:?}");
+    a.disconnect().await
+}
+
 /// A game far from the server (its first resend comes before the answer) sends
 /// SYN and CONNECT twice and switches to the last SYN answer's signature: it
 /// must still sign in and play.
@@ -1006,6 +1039,7 @@ const SCENARIOS: &[&str] = &[
     "syn-flood",
     "login-lockout",
     "outdated-client",
+    "report",
 ];
 
 #[tokio::main]
@@ -1090,6 +1124,7 @@ async fn main() -> Result<()> {
                 "syn-flood" => syn_flood(&mut ctx).await,
                 "login-lockout" => login_lockout(&mut ctx).await,
                 "outdated-client" => outdated_client(&mut ctx).await,
+                "report" => report(&mut ctx).await,
                 // Not in the default list: a server in the "mutual" mode, one requiring
                 // identities, and two servers.
                 "friends-mutual" => friends_mutual(&mut ctx).await,

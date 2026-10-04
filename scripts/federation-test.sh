@@ -3,8 +3,9 @@
 # containers: a friendship made on one reaches the other, a block on the
 # other comes back, and both servers are in the coordinator's directory. Then
 # the admin UI's side: a server's players reach the coordinator, and an admin's
-# ban goes out to the server and comes back done. Last, global stats: a stat
-# written on server A reaches the coordinator and server B's leaderboards.
+# ban goes out to the server and comes back done. Then global stats: a stat
+# written on server A reaches the coordinator and server B's leaderboards. Last,
+# a player's report sent to server A reaches the coordinator with the server's side.
 #
 #   scripts/federation-test.sh <folder with dedicated_server, testbot and coordinator, in the build image>
 #
@@ -118,6 +119,16 @@ if [ -n "$global_id" ]; then
 else
   echo "FAIL no player with an identity on server A"; rc=1
 fi
+echo "--- reports"
+client "$bin/testbot" --server "$a" report || rc=1
+reports=0
+for _ in $(seq 60); do
+  reports=$(coord_db "SELECT COUNT(*) FROM player_reports WHERE server_id = '$server_a'")
+  [ "${reports:-0}" -ge 5 ] && break; sleep 1
+done
+with_side=$(coord_db "SELECT COUNT(*) FROM player_reports r JOIN player_report_files f ON f.report_id = r.id WHERE r.server_id = '$server_a' AND r.server_log LIKE '%Reporter%' AND r.summary LIKE '%started%'")
+[ "${reports:-0}" -ge 5 ] && [ "${with_side:-0}" -ge 1 ] && echo "PASS server A's $reports reports reached the coordinator, with the server's side and the log" \
+  || { echo "FAIL reports: ${reports:-0} arrived, ${with_side:-0} with the server's side and a file"; rc=1; }
 if [ $rc -ne 0 ]; then
   for s in fes-fed-a fes-fed-b; do echo "--- $s"; docker exec "$s" grep -iE -A3 "federation|ERRO" /srv/fe/server.log | tail -40 || true; done
   echo "--- coordinator"; docker exec fes-fed-coord tail -30 /srv/c/log || true
