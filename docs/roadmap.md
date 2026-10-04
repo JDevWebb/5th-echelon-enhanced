@@ -36,6 +36,20 @@ It needs the game's side worked out first, from the protocol and the game's code
 - **The admin UI:** more reports as operators ask for them; the bandwidth, players and alerts reports are new.
 - **More regions** for the community network, as players turn up from further away.
 
+## On hold
+
+Planned, and waiting until players need them.
+
+### Settings of our own, apart from the original launcher's
+
+The launcher and the original 5th Echelon launcher both keep their settings in `uplay.toml` in the game's folder, which the game's client reads too. Each one resets the other's: this launcher backs up a file it didn't write (`uplay.toml.old`) and starts over, and the original rewrites the file in its own format. Players who switch between the two lose their settings each time. For now: use one launcher.
+
+The fix, if players ask for it:
+- **A file of our own,** say `5th-echelon-enhanced.toml`, for this launcher and its client. The name is in one place (`hooks-config`).
+- **Moving over:** the first start copies this launcher's settings out of `uplay.toml` into the new file, and puts the original launcher's backup (`uplay.toml.old`, when it's the original's) back as `uplay.toml`, so its profiles return.
+- **Then:** no more starting over for the original's files (`fresh_start`), and the docs that name `uplay.toml` (`AllowDataMismatch` among them) updated.
+- **What stays shared:** the game loads one online DLL (`uplay_r1_loader.dll`), and each launcher installs its own. This one replaces it every time it starts; started from the original launcher, the game may run this one's client with this one's settings.
+
 ## Done recently
 
 - Stats and leaderboards: the server keeps the stats the game writes after each match and mission (Spies vs Mercs per mode, weapon and gadget, medals, ladders, solo and co-op missions), added up as the game's stats configuration says, and answers the game's leaderboards: solo and co-op high scores and best times, Spies vs Mercs total score and the ladders, overall, around you and among your friends. Leaderboards are global: every server sends the stats to the coordinator, which ranks each player once across the network (by their identity), so your stats follow you between servers. Servers answer the game from what the coordinator last sent, and from their own stats while it can't be reached.
