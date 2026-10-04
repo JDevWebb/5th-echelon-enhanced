@@ -235,10 +235,17 @@ pub struct Attachment {
 /// The most of each file sent: the end of a longer one (where the problem usually is).
 pub const MAX_FILE: usize = 3 * 1024 * 1024;
 
-/// A file's text, redacted and cut to its last [`MAX_FILE`] bytes, as an attachment.
+/// A file's text, redacted and cut to [`MAX_FILE`] bytes, as an attachment: a log's last
+/// part (where the trouble is), the data version's first (its summary).
 pub fn attach(name: &str, text: &str, private: &Private) -> std::io::Result<Attachment> {
     let mut text = redact(text, private);
-    if text.len() > MAX_FILE {
+    if text.len() > MAX_FILE && name == "bl-dataversion.txt" {
+        let mut end = MAX_FILE;
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text = format!("{}\n(the last {} bytes left out)", &text[..end], text.len() - end);
+    } else if text.len() > MAX_FILE {
         let mut start = text.len() - MAX_FILE;
         while !text.is_char_boundary(start) {
             start += 1;
@@ -347,5 +354,9 @@ this PC is 122.58.93.144:13000; advertising 139.99.171.113:40000; LAN 192.168.0.
         assert!(a.text.ends_with("THE END") && a.text.starts_with("(the first"));
         assert!(a.size as usize <= MAX_FILE + 64);
         assert_eq!(&a.gzip[..2], &[0x1f, 0x8b]);
+        // The data version's summary is at its start.
+        let text = format!("data version: 0x1234\n{}", "x".repeat(MAX_FILE + 10));
+        let a = attach("bl-dataversion.txt", &text, &Private::default()).unwrap();
+        assert!(a.text.starts_with("data version: 0x1234") && a.text.ends_with("left out)"));
     }
 }

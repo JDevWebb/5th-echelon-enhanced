@@ -17,7 +17,9 @@
 //!
 //! So the version is a checksum of everything the game loaded at startup: two installs that
 //! load different packages (another language's, a mod, a missing or extra file) differ. The
-//! file lists the inputs and every name counted, so two players' files can be compared.
+//! file lists the inputs and fingerprints of the ranges of names, and of the startup range in
+//! blocks, so two players' files show where their copies part (`bl-dataversion.full` in the
+//! game's folder lists every name too, in `bl-dataversion-full.txt`).
 //!
 //! Only for the DirectX 11 build (Steam's and Ubisoft's are the same code): the addresses
 //! are that build's, checked by finding the data version check where that build has it.
@@ -104,8 +106,39 @@ fn counted_in_startup(name: &str) -> bool {
     !name.contains(".ini") && !name.starts_with("..\\..\\")
 }
 
-/// The file's text.
-fn report(version: u32) -> String {
+/// Names per block fingerprinted in the startup range.
+const BLOCK: usize = 1000;
+/// In the game's folder, asks for every name to be listed too (`bl-dataversion-full.txt`).
+const FULL_FLAG: &str = "bl-dataversion.full";
+
+/// A fingerprint of names, so two players' files show at a glance whether a range differs.
+#[derive(Default)]
+struct Fingerprint {
+    hash: u64,
+    count: usize,
+}
+
+impl Fingerprint {
+    fn add(&mut self, index: usize, value: u32, name: &str) {
+        if self.count == 0 {
+            self.hash = 0xcbf2_9ce4_8422_2325;
+        }
+        for b in (index as u32).to_le_bytes().into_iter().chain(value.to_le_bytes()).chain(name.bytes()).chain([0]) {
+            self.hash = (self.hash ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3);
+        }
+        self.count += 1;
+    }
+
+    fn show(&self) -> String {
+        format!("{} names, fingerprint {:016x}", self.count, self.hash)
+    }
+}
+
+/// The file's text: the version and its inputs, a fingerprint of each range of names and of
+/// each block of [`BLOCK`] in the startup range (where two copies usually differ: the first
+/// block whose fingerprints differ is where to look). With `full`, every name too, as the
+/// second text.
+fn report(version: u32, full: bool) -> (String, Option<String>) {
     let mut out = String::new();
     let _ = writeln!(out, "data version: {version:#010x}");
     let (number, string) = inputs();
@@ -122,23 +155,58 @@ fn report(version: u32) -> String {
         field(STARTUP_END)
     );
     let _ = writeln!(out, "game version count: {}", field(0x0330_c478));
-    let _ = writeln!(out, "\nindex\tvalue\tcounted\tname");
     let (Some(table), Some(count), Some(native_end), Some(start), Some(end)) = (read_u32(NAMES), count, native_end, start, end) else {
         let _ = writeln!(out, "(the name table couldn't be read)");
-        return out;
+        return (out, None);
     };
-    let last = (count as usize).min(MAX_NAMES);
-    for i in 0..last {
+    let (mut native, mut startup, mut skipped, mut later) = (Fingerprint::default(), Fingerprint::default(), Fingerprint::default(), Fingerprint::default());
+    let mut blocks: Vec<Fingerprint> = Vec::new();
+    let mut listed = full.then(|| String::from("index\tvalue\tcounted\tname\n"));
+    for i in 0..(count as usize).min(MAX_NAMES) {
         let Some(entry) = read_u32(table as usize + i * 4).filter(|e| *e != 0).map(|e| e as usize) else {
             continue;
         };
         let value = read_u32(entry + 4).unwrap_or_default();
         let name = read_string(entry + 8, 1024).unwrap_or_default();
-        let i32_index = i as u32;
-        let counted = i32_index < native_end || (start..end).contains(&i32_index) && counted_in_startup(&name);
-        let _ = writeln!(out, "{i}\t{value:#010x}\t{}\t{name}", if counted { "yes" } else { "no" });
+        let index = i as u32;
+        let counted = index < native_end || (start..end).contains(&index) && counted_in_startup(&name);
+        if index < native_end {
+            native.add(i, value, &name);
+        } else if (start..end).contains(&index) {
+            if counted {
+                startup.add(i, value, &name);
+            } else {
+                skipped.add(i, value, &name);
+            }
+            let block = (index - start) as usize / BLOCK;
+            if blocks.len() <= block {
+                blocks.resize_with(block + 1, Fingerprint::default);
+            }
+            blocks[block].add(i, value, &name);
+        } else {
+            later.add(i, value, &name);
+        }
+        if let Some(listed) = &mut listed {
+            let _ = writeln!(listed, "{i}\t{value:#010x}\t{}\t{name}", if counted { "yes" } else { "no" });
+        }
     }
-    out
+    let _ = writeln!(out, "\nengine's own (counted): {}", native.show());
+    let _ = writeln!(out, "startup packages (counted): {}", startup.show());
+    let _ = writeln!(out, "startup packages (.ini and outside paths, not counted): {}", skipped.show());
+    let _ = writeln!(out, "loaded later (not counted): {}", later.show());
+    let _ = writeln!(
+        out,
+        "\nThe startup range by blocks of {BLOCK} (compare two files: the first that differs is where they part):"
+    );
+    for (n, block) in blocks.iter().enumerate() {
+        let from = start as usize + n * BLOCK;
+        let _ = writeln!(out, "{from}..{}\t{}", from + BLOCK, block.show());
+    }
+    let _ = writeln!(
+        out,
+        "\nEvery name: put an empty {FULL_FLAG} in the game's folder, and the next start writes bl-dataversion-full.txt."
+    );
+    (out, listed)
 }
 
 /// Waits (on a thread of its own) for the game to work its data version out, then writes
@@ -153,10 +221,23 @@ pub fn write_when_ready(check: usize, dir: PathBuf) {
         let started = Instant::now();
         while started.elapsed() < WAIT {
             if let Some(version) = version() {
+                let (summary, full) = report(version, dir.join(FULL_FLAG).exists());
                 let path = dir.join("bl-dataversion.txt");
-                match std::fs::write(&path, report(version)) {
+                match std::fs::write(&path, summary) {
                     Ok(()) => info!("Data version {version:#010x}; what it's made of is in {}", path.display()),
                     Err(e) => warn!("Data version {version:#010x}; couldn't write {}: {e}", path.display()),
+                }
+                let full_path = dir.join("bl-dataversion-full.txt");
+                match full {
+                    Some(full) => {
+                        if let Err(e) = std::fs::write(&full_path, full) {
+                            warn!("Data version: couldn't write {}: {e}", full_path.display());
+                        }
+                    }
+                    // An old full listing would be mistaken for this start's.
+                    None => {
+                        let _ = std::fs::remove_file(&full_path);
+                    }
                 }
                 return;
             }
@@ -175,6 +256,18 @@ mod tests {
         assert!(counted_in_startup("Loc_Messages"));
         assert!(!counted_in_startup("DefaultEngine.ini"));
         assert!(!counted_in_startup("..\\..\\Config\\X"));
+    }
+
+    #[test]
+    fn fingerprints_tell_ranges_apart() {
+        let mut a = Fingerprint::default();
+        let mut b = Fingerprint::default();
+        a.add(1, 7, "Loc_Messages");
+        b.add(1, 7, "Loc_Messages");
+        assert_eq!(a.show(), b.show());
+        b.add(2, 9, "Loc_Messages_POR");
+        assert_ne!(a.show(), b.show());
+        assert!(b.show().starts_with("2 names, fingerprint "));
     }
 
     #[test]

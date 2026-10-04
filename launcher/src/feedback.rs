@@ -239,55 +239,66 @@ impl Feedback {
         let Some(ask) = self.asking.as_mut() else { return };
         let mut close = false;
         let mut send_now = false;
+        // The window's height, in the points the launcher lays out in: the middle scrolls
+        // so the buttons always fit, however the window is sized or scaled.
+        let middle = (ctx.content_rect().height() - 230.0).max(120.0);
         let modal = egui::Modal::new(egui::Id::new("feedback")).show(ctx, |ui| {
             ui.set_max_width(560.0);
             ui.label(theme::heading("How did that go?"));
             ui.label(theme::muted(why(&ask.triggers)));
             ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui.selectable_label(ask.good == Some(true), "👍  Good").clicked() {
-                    ask.good = Some(true);
-                }
-                if ui.selectable_label(ask.good == Some(false), "👎  Not great").clicked() {
-                    ask.good = Some(false);
-                }
-            });
-            ui.add_space(6.0);
-            ui.label("What went wrong? (tick any)");
-            for (id, label) in PROBLEMS {
-                let mut on = ask.problems.contains(id);
-                if ui.checkbox(&mut on, label).changed() {
-                    if on {
-                        ask.problems.insert(id);
-                    } else {
-                        ask.problems.remove(id);
-                    }
-                }
-            }
-            ui.add_space(6.0);
-            ui.label("Anything else? (who you played with, what you were doing)");
-            ui.add(egui::TextEdit::multiline(&mut ask.comment).desired_rows(3).desired_width(f32::INFINITY).char_limit(2000));
-            ui.add_space(6.0);
-            ui.checkbox(&mut ask.attach, "Send my logs too");
-            ui.label(theme::muted("Your PC's name, your user folder and your internet address are hidden before they're sent."));
-            if ask.attach && !ask.files.is_empty() {
-                egui::CollapsingHeader::new("What's sent").show(ui, |ui| {
-                    for (i, f) in ask.files.iter().enumerate() {
-                        let label = format!("{}  ({} KB)", f.name, f.size.div_ceil(1024));
-                        if ui.selectable_label(ask.viewing == Some(i), label).clicked() {
-                            ask.viewing = if ask.viewing == Some(i) { None } else { Some(i) };
+            // A scroll bar beside the content, not over the comment box.
+            ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
+            egui::ScrollArea::vertical()
+                .id_salt("feedback-middle")
+                .max_height(middle)
+                .auto_shrink([false, true])
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        if ui.selectable_label(ask.good == Some(true), "👍  Good").clicked() {
+                            ask.good = Some(true);
+                        }
+                        if ui.selectable_label(ask.good == Some(false), "👎  Not great").clicked() {
+                            ask.good = Some(false);
+                        }
+                    });
+                    ui.add_space(6.0);
+                    ui.label("What went wrong? (tick any)");
+                    for (id, label) in PROBLEMS {
+                        let mut on = ask.problems.contains(id);
+                        if ui.checkbox(&mut on, label).changed() {
+                            if on {
+                                ask.problems.insert(id);
+                            } else {
+                                ask.problems.remove(id);
+                            }
                         }
                     }
-                    if let Some(f) = ask.viewing.and_then(|i| ask.files.get(i)) {
-                        egui::ScrollArea::both().max_height(220.0).id_salt("feedback-file").show(ui, |ui| {
-                            // The last part: where the trouble usually is, and light to show.
-                            let start = f.text.len().saturating_sub(64 * 1024);
-                            let start = (start..f.text.len()).find(|i| f.text.is_char_boundary(*i)).unwrap_or(0);
-                            ui.label(egui::RichText::new(&f.text[start..]).monospace().size(11.0));
+                    ui.add_space(6.0);
+                    ui.label("Anything else? (who you played with, what you were doing)");
+                    ui.add(egui::TextEdit::multiline(&mut ask.comment).desired_rows(3).desired_width(f32::INFINITY).char_limit(2000));
+                    ui.add_space(6.0);
+                    ui.checkbox(&mut ask.attach, "Send my logs too");
+                    ui.label(theme::muted("Your PC's name, your user folder and your internet address are hidden before they're sent."));
+                    if ask.attach && !ask.files.is_empty() {
+                        egui::CollapsingHeader::new("What's sent").show(ui, |ui| {
+                            for (i, f) in ask.files.iter().enumerate() {
+                                let label = format!("{}  ({} KB)", f.name, f.size.div_ceil(1024));
+                                if ui.selectable_label(ask.viewing == Some(i), label).clicked() {
+                                    ask.viewing = if ask.viewing == Some(i) { None } else { Some(i) };
+                                }
+                            }
+                            if let Some(f) = ask.viewing.and_then(|i| ask.files.get(i)) {
+                                egui::ScrollArea::both().max_height((middle * 0.5).min(220.0)).id_salt("feedback-file").show(ui, |ui| {
+                                    // The last part: where the trouble usually is, and light to show.
+                                    let start = f.text.len().saturating_sub(64 * 1024);
+                                    let start = (start..f.text.len()).find(|i| f.text.is_char_boundary(*i)).unwrap_or(0);
+                                    ui.label(egui::RichText::new(&f.text[start..]).monospace().size(11.0));
+                                });
+                            }
                         });
                     }
                 });
-            }
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 let can_send = ask.good.is_some() || !ask.problems.is_empty() || !ask.comment.trim().is_empty();
