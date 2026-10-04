@@ -151,8 +151,11 @@ pub async fn perform(logger: &slog::Logger, storage: &Storage, action: &Action) 
                 .filter(|c| !c.is_control())
                 .take(MAX_REASON)
                 .collect();
-            let until = action.until.filter(|u| *u > identity::now());
-            match storage.ban(user, &reason, until).await {
+            // A ban that ended before it got here (a late action) isn't made permanent.
+            if action.until.is_some_and(|u| u <= identity::now()) {
+                return Outcome::failed(format!("The ban on {name} had already ended"));
+            }
+            match storage.ban(user, &reason, action.until).await {
                 Ok(()) => {
                     // Signed out everywhere: the game now, the launcher's tokens too.
                     let _ = storage.new_token_epoch(user).await;

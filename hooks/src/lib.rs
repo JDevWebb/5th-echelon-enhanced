@@ -138,11 +138,7 @@ unsafe fn data_version_check() -> Option<*mut u8> {
 /// Lets a game in another language join this one's matches: turns the host's data
 /// version check's `jz` into a `jmp`. Only where the check is found exactly once, so an
 /// unknown build is left as it is.
-unsafe fn allow_data_mismatch() {
-    let Some(check) = data_version_check() else {
-        warn!("Data version check: left as it is");
-        return;
-    };
+unsafe fn allow_data_mismatch(check: *mut u8) {
     let jz = check.add(DATA_VERSION_CHECK.len() - 1);
     writemem(jz, &[0xEB]);
     info!("Data version check: off at {jz:?}, so players in another game language can join matches this game hosts");
@@ -300,14 +296,17 @@ fn init(hmodule: Option<HMODULE>) {
         }
 
         enable_debug_print(&addr);
-        if config.allow_data_mismatch {
-            #[cfg(not(feature = "patch-free"))]
-            allow_data_mismatch();
-        }
-        // What the data version is made of, to compare two players' (dataversion.rs).
+        // Found once, before it's patched (the patch changes the bytes it's found by).
         #[cfg(not(feature = "patch-free"))]
-        if let Some(check) = data_version_check() {
-            dataversion::write_when_ready(check as usize, game_dir.clone());
+        match data_version_check() {
+            Some(check) => {
+                if config.allow_data_mismatch {
+                    allow_data_mismatch(check);
+                }
+                // What the data version is made of, to compare two players' (dataversion.rs).
+                dataversion::write_when_ready(check as usize, game_dir.clone());
+            }
+            None => warn!("Data version check: left as it is"),
         }
     }
 

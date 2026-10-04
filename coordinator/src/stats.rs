@@ -44,6 +44,8 @@ pub const MAX_BODY: usize = 1024 * 1024;
 const LARGEST: f64 = 1e12;
 /// How long the leaderboards answer is kept.
 const CACHE_FOR: Duration = Duration::from_secs(60);
+/// ...and at most this long once new stats came.
+const STALE_FOR: Duration = Duration::from_secs(10);
 
 /// Whether `s` may be a person's global id here: 1 to 128 letters and digits.
 pub fn valid_global_id(s: &str) -> bool {
@@ -135,6 +137,8 @@ fn checked_ids(ids: &[Value]) -> Vec<String> {
 #[derive(Default)]
 pub(crate) struct Cache {
     made: Option<(Instant, Value)>,
+    /// New stats came since it was made.
+    stale: bool,
 }
 
 impl Coordinator {
@@ -228,9 +232,10 @@ impl Coordinator {
             .execute(&mut *tx)
             .await?;
         tx.commit().await?;
-        // New figures: the leaderboards are made again when next asked for.
+        // New figures: the leaderboards are made again soon, but not for every write while
+        // people play.
         if changed {
-            self.forget_leaderboards().await;
+            self.stats_cache.lock().await.stale = true;
         }
         Ok(last)
     }
@@ -298,7 +303,8 @@ impl Coordinator {
     pub async fn leaderboards(&self, count: usize) -> sqlx::Result<Value> {
         let count = count.clamp(1, MAX_COUNT);
         let mut cache = self.stats_cache.lock().await;
-        let fresh = cache.made.as_ref().filter(|(at, _)| at.elapsed() < CACHE_FOR).map(|(_, v)| v.clone());
+        let keep_for = if cache.stale { STALE_FOR } else { CACHE_FOR };
+        let fresh = cache.made.as_ref().filter(|(at, _)| at.elapsed() < keep_for).map(|(_, v)| v.clone());
         let all = match fresh {
             Some(v) => v,
             None => {
@@ -310,6 +316,7 @@ impl Coordinator {
                 }
                 let v = json!({ "lists": lists });
                 cache.made = Some((Instant::now(), v.clone()));
+                cache.stale = false;
                 v
             }
         };

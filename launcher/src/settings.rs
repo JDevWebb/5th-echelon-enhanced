@@ -88,6 +88,8 @@ pub struct Settings {
     identity: Option<Result<Option<(String, String)>, String>>,
     /// The profile being renamed, and the new name typed so far.
     renaming: Option<(String, String)>,
+    /// Ubisoft Connect's save, as last looked for (it reads every save it finds), and when.
+    ubisoft_save: Option<(std::time::Instant, Option<std::path::PathBuf>)>,
 }
 
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
@@ -480,7 +482,10 @@ fn save_game(settings: &mut Settings, game: &mut Game, ctx: &egui::Context, ui: 
                     Err(e) => settings.working.start(ctx, move || Err(format!("Couldn't back up: {e}"))),
                 }
             }
-            if let Some(ubisoft) = setup::save::find_ubisoft_save(Some(&game.dir)) {
+            if settings.ubisoft_save.as_ref().is_none_or(|(at, _)| at.elapsed() >= std::time::Duration::from_secs(10)) {
+                settings.ubisoft_save = Some((std::time::Instant::now(), setup::save::find_ubisoft_save(Some(&game.dir))));
+            }
+            if let Some(ubisoft) = settings.ubisoft_save.as_ref().and_then(|(_, p)| p.clone()) {
                 if ui.button("Import from Ubisoft Connect").on_hover_text(ubisoft.display().to_string()).clicked() {
                     let to = path.clone();
                     settings.working.start(ctx, move || {

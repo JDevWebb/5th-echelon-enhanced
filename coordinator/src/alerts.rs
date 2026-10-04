@@ -286,7 +286,8 @@ pub async fn post_webhook(url: &str, text: &str) -> Result<(), String> {
     let resp = crate::http()
         .post(u)
         .timeout(std::time::Duration::from_secs(10))
-        .json(&json!({ "content": text, "text": text }))
+        // No @everyone, @here or role pings, whatever the text says (Slack ignores this).
+        .json(&json!({ "content": text, "text": text, "allowed_mentions": { "parse": [] } }))
         .send()
         .await
         .map_err(|e| e.to_string())?;

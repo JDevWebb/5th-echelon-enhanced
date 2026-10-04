@@ -44,7 +44,7 @@ pub const KEEP_FOR: i64 = 90 * 86_400;
 /// The most the reports' files may take on disk (as stored, compressed).
 pub const STORAGE_CAP: u64 = 2 * 1024 * 1024 * 1024;
 /// New reports one server may send in an hour.
-pub const PER_HOUR: usize = 120;
+pub const PER_HOUR: usize = 30;
 /// Rows on a page of the report list.
 pub const PAGE: i64 = 50;
 /// What a player can tick.

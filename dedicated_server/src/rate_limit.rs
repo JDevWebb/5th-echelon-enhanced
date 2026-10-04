@@ -241,6 +241,13 @@ pub fn game_requests() -> &'static PlayerLimit {
     LIMIT.get_or_init(|| PlayerLimit::new(120, Duration::from_secs(60)))
 }
 
+/// Stats and leaderboard requests: 240 a minute, far above the game's menus and a
+/// match's end, so one player can't keep the server busy reading and writing stats.
+pub fn stats_requests() -> &'static PlayerLimit {
+    static LIMIT: std::sync::OnceLock<PlayerLimit> = std::sync::OnceLock::new();
+    LIMIT.get_or_init(|| PlayerLimit::new(240, Duration::from_secs(60)))
+}
+
 /// Requests the overlay and the game poll (friend lists, events, session
 /// announcements): 240 a minute, well above what they need.
 pub fn polls() -> &'static PlayerLimit {

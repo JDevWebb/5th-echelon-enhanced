@@ -45,6 +45,10 @@ use crate::storage::StoredStats;
 
 /// The most of anything one request may name: players, boards, contexts, stats, places.
 const MAX_ITEMS: usize = 100;
+/// The most stat writes one request may make, and boards read (queries × contexts):
+/// the limits on each part multiply, and all of it runs on the game service's thread.
+const MAX_WRITES: usize = 1000;
+const MAX_READS: usize = 200;
 /// Larger stat values than this are refused: no stat the game keeps comes near it.
 const MAX_VALUE: f64 = 1e12;
 
@@ -88,7 +92,7 @@ fn checked_writes(request: &WriteStatsRequest) -> (Vec<StatWrite>, usize) {
             for stat in update.stats.iter().take(MAX_ITEMS) {
                 let allowed = stat_boards::board(update.board_id).filter(|b| b.has_context(context)).and_then(|b| b.aggregation(stat.id));
                 match (allowed, written_value(&stat.value)) {
-                    (Some(a), Some(value)) if !matches!(a, Aggregation::Ratio(..)) => writes.push(StatWrite {
+                    (Some(a), Some(value)) if !matches!(a, Aggregation::Ratio(..)) && writes.len() < MAX_WRITES => writes.push(StatWrite {
                         board: update.board_id,
                         context,
                         stat: stat.id,
@@ -207,7 +211,11 @@ impl PlayerStatsProtocolServerImpl {
     /// The places the game asked for on the network's leaderboard (as the coordinator last
     /// sent it), and its size.
     fn global_places(&self, leaderboard: &stat_boards::Leaderboard, context: u32, wanted: &Wanted) -> eyre::Result<(u32, Vec<Place>)> {
-        let (total, top) = self.storage.global_top(leaderboard.id, context)?.unwrap_or_default();
+        // One the coordinator hasn't listed (nobody on the network has a place there yet):
+        // this server's own.
+        let Some((total, top)) = self.storage.global_top(leaderboard.id, context)? else {
+            return self.local_places(leaderboard, context, wanted);
+        };
         let found: Vec<storage::GlobalPlace> = match wanted {
             Wanted::From(rank, count) => top.iter().filter(|p| p.rank >= (*rank).max(1)).take(*count as usize).cloned().collect(),
             Wanted::Around(player, count) => {
@@ -325,6 +333,16 @@ impl PlayerStatsProtocolServerImpl {
     }
 }
 
+/// The signed-in player asking, within [`crate::rate_limit::stats_requests`].
+fn player<T>(ci: &ClientInfo<T>) -> Result<u32, Error> {
+    let user_id = login_required(ci)?;
+    if crate::rate_limit::stats_requests().check(user_id) {
+        Ok(user_id)
+    } else {
+        Err(Error::AccessDenied)
+    }
+}
+
 impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
     /// The game's stats after a match or mission: added to the player's, each as its
     /// board says. Stats no board has are left out.
@@ -337,7 +355,7 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         _client_registry: &ClientRegistry<T>,
         _socket: &std::net::UdpSocket,
     ) -> Result<WriteStatsResponse, Error> {
-        let user_id = login_required(&*ci)?;
+        let user_id = player(&*ci)?;
         let (writes, refused) = checked_writes(&request);
         if refused > 0 {
             let boards: Vec<u32> = request.player_stat_updates.iter().map(|u| u.board_id).collect();
@@ -359,7 +377,7 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         _client_registry: &ClientRegistry<T>,
         _socket: &std::net::UdpSocket,
     ) -> Result<ReadStatsByPlayersResponse, Error> {
-        login_required(&*ci)?;
+        player(&*ci)?;
         info!(logger, "ReadStatsByPlayers: pids={:?}", request.player_pids);
         let players: Vec<u32> = request.player_pids.iter().copied().take(MAX_ITEMS).collect();
         let mut results = Vec::new();
@@ -371,6 +389,9 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
                 query.context_ids.iter().copied().take(MAX_ITEMS).collect()
             };
             for context_id in contexts {
+                if results.len() >= MAX_READS {
+                    break;
+                }
                 let stored = rmc_err!(self.stats_of(&players, query.board_id, context_id), logger, "error reading stats")?;
                 let sets: Vec<PlayerStatSet> = stored.into_iter().map(|s| stat_set(query.board_id, s, &wanted)).collect();
                 results.push(StatboardResult {
@@ -394,7 +415,7 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         _client_registry: &ClientRegistry<T>,
         _socket: &std::net::UdpSocket,
     ) -> Result<ReadLeaderboardsNearPlayerResponse, Error> {
-        login_required(&*ci)?;
+        player(&*ci)?;
         info!(logger, "Leaderboards near {}: {:?}", request.player_pid, request.queries);
         let queries = request.queries.iter().map(|q| (q.board_id, q.context_id, q.reset_frequency, &q.stat_ids[..]));
         let results = self.leaderboards(logger, queries, |_| Wanted::Around(request.player_pid, capped(request.count)))?;
@@ -410,7 +431,7 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         _client_registry: &ClientRegistry<T>,
         _socket: &std::net::UdpSocket,
     ) -> Result<ReadLeaderboardsByRankResponse, Error> {
-        login_required(&*ci)?;
+        player(&*ci)?;
         info!(logger, "Leaderboards from rank {}: {:?}", request.starting_rank, request.queries);
         let queries = request.queries.iter().map(|q| (q.board_id, q.context_id, q.reset_frequency, &q.stat_ids[..]));
         let results = self.leaderboards(logger, queries, |_| Wanted::From(request.starting_rank, capped(request.count)))?;
@@ -427,7 +448,7 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         _client_registry: &ClientRegistry<T>,
         _socket: &std::net::UdpSocket,
     ) -> Result<ReadLeaderboardsByPlayersResponse, Error> {
-        login_required(&*ci)?;
+        player(&*ci)?;
         info!(logger, "Leaderboards of {:?}: {:?}", request.player_pids, request.queries);
         let players: Vec<u32> = request.player_pids.iter().copied().take(MAX_ITEMS).collect();
         let queries = request.queries.iter().map(|q| (q.board_id, q.context_id, q.reset_frequency, &q.stat_ids[..]));
@@ -444,7 +465,7 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         _client_registry: &ClientRegistry<T>,
         _socket: &std::net::UdpSocket,
     ) -> Result<ReadLeaderboardsNearPlayer2Response, Error> {
-        login_required(&*ci)?;
+        player(&*ci)?;
         info!(logger, "Leaderboards near {} (2): {:?}", request.player_pid, request.queries);
         let queries = request.queries.iter().map(|q| (q.board_id, q.context_id, q.reset_frequency, &q.stat_ids[..]));
         let results = self.leaderboards(logger, queries, |_| Wanted::Around(request.player_pid, capped(request.count)))?;
@@ -460,7 +481,7 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         _client_registry: &ClientRegistry<T>,
         _socket: &std::net::UdpSocket,
     ) -> Result<ReadLeaderboardsByRank2Response, Error> {
-        login_required(&*ci)?;
+        player(&*ci)?;
         info!(logger, "Leaderboards from rank {} (2): {:?}", request.starting_rank, request.queries);
         let queries = request.queries.iter().map(|q| (q.board_id, q.context_id, q.reset_frequency, &q.stat_ids[..]));
         let results = self.leaderboards(logger, queries, |_| Wanted::From(request.starting_rank, capped(request.count)))?;
@@ -477,7 +498,7 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         _client_registry: &ClientRegistry<T>,
         _socket: &std::net::UdpSocket,
     ) -> Result<ReadLeaderboardsByPlayers2Response, Error> {
-        login_required(&*ci)?;
+        player(&*ci)?;
         info!(logger, "Leaderboards of players (2): {:?}", request.queries);
         let mut results = Vec::new();
         for q in request.queries.iter().take(MAX_ITEMS) {

@@ -186,7 +186,8 @@ impl Config {
         let mut started_over = None;
         let inner = match fs::read_to_string(&path) {
             Ok(s) => match toml::from_str::<Config>(&s) {
-                Ok(cfg) if cfg.format >= FORMAT => cfg,
+                // A folder another tool manages keeps its file as that tool wrote it.
+                Ok(cfg) if cfg.format >= FORMAT || crate::overrides::managed_by(game_dir).is_some() => cfg,
                 Ok(old) => {
                     let fresh = fresh_start(old);
                     match backup(&path) {
@@ -202,7 +203,9 @@ impl Config {
                     fresh
                 }
                 Err(e) => {
-                    error!("Can't parse {}: {e}", path.display());
+                    // Not the error itself: it quotes the line, which may be a password.
+                    let line = e.span().map_or(0, |span| s[..span.start.min(s.len())].lines().count());
+                    error!("Can't parse {} (line {line}): {}", path.display(), e.message());
                     let backup = path.with_extension("toml.broken");
                     if let Err(e) = fs::copy(&path, &backup) {
                         error!("Couldn't keep the unreadable config: {e}");
@@ -282,6 +285,8 @@ impl ConfigMut {
     }
 
     fn save(&mut self) -> anyhow::Result<()> {
+        // Written by this launcher now, whoever wrote what it was read from.
+        self.inner.format = FORMAT;
         // It holds the account passwords: readable by this user only on Linux.
         crate::write_private(&self.path, toml::to_string_pretty(&self.inner)?.as_bytes())?;
         self.loaded = modified(&self.path);
@@ -300,7 +305,7 @@ impl ConfigMut {
                 self.inner = cfg;
                 self.loaded = now;
             }
-            Ok(Err(e)) => error!("Config changed on disk but can't be parsed, keeping ours: {e}"),
+            Ok(Err(e)) => error!("Config changed on disk but can't be parsed, keeping ours: {}", e.message()),
             Err(e) => error!("Config changed on disk but can't be read: {e}"),
         }
     }

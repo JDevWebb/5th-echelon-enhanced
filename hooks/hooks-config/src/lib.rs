@@ -528,6 +528,9 @@ pub struct Networking {
     /// The server's NAT helper port (UDP, 21128 unless the server changed it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nat_port: Option<u16>,
+    /// `ip_address` was worked out at start (nothing pinned), not set by the player.
+    #[serde(skip)]
+    pub ip_address_automatic: bool,
 }
 
 const fn default_true() -> bool {
@@ -548,6 +551,7 @@ impl Default for Networking {
             nat: NatMode::default(),
             port_mapping: true,
             nat_port: None,
+            ip_address_automatic: false,
         }
     }
 }
@@ -994,6 +998,7 @@ fn _get_or_load(path: &Path) -> anyhow::Result<&'static Config> {
             Some(ip) => {
                 info!("Playing over {ip}, the address that reaches the server");
                 cfg.networking.ip_address = Some(ip);
+                cfg.networking.ip_address_automatic = true;
             }
             None => tracing::warn!("Couldn't tell which address reaches the server; the game picks its own"),
         }

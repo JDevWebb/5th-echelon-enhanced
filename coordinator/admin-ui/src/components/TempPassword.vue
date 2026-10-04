@@ -1,7 +1,7 @@
 <template>
   <div class="stack">
     <h2>Temporary password for {{ who }}</h2>
-    <p class="muted">Give it to them privately (a direct message, not a channel). It's shown this once: the coordinator doesn't keep it. They should change it after signing in.</p>
+    <p class="muted">Give it to them privately (a direct message, not a channel). It's shown this once: the coordinator keeps it only until it's read, an hour at most. They should change it after signing in.</p>
     <p class="secret">{{ password }}</p>
     <div class="row end">
       <button type="button" @click="copy">Copy</button>

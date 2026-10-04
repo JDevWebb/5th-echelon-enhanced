@@ -201,6 +201,12 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
             if SERVICE_ACCOUNTS.contains(&user_id) {
                 return;
             }
+            // A ticket from before a ban still connects: signed out again at once.
+            if storage.banned(user_id).unwrap_or(false) {
+                info!(logger, "{user_id} is banned; signing them out");
+                players::sign_out(user_id);
+                return;
+            }
             let new_session = storage.start_play(user_id).unwrap_or_else(|e| {
                 error!(logger, "starting the play session of {user_id} failed: {e}");
                 false

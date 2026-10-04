@@ -63,7 +63,7 @@ pub fn prefix_for(game_dir: &Path) -> Option<Prefix> {
         match dir.file_name().and_then(|n| n.to_str()) {
             Some("steamapps") => {
                 return Some(Prefix {
-                    root: steam_prefix(dir, &crate::sys::steam_libraries()),
+                    root: steam_prefix(dir, crate::sys::steam_libraries),
                     steam: true,
                 })
             }
@@ -88,12 +88,12 @@ fn proton_prefix(steamapps: &Path) -> PathBuf {
 /// but a game moved to another library (an SD card, say) leaves its prefix
 /// behind, so the other `libraries` are looked in too. Where it would be in
 /// the game's own library when there's none yet.
-fn steam_prefix(steamapps: &Path, libraries: &[PathBuf]) -> PathBuf {
+fn steam_prefix(steamapps: &Path, libraries: impl FnOnce() -> Vec<PathBuf>) -> PathBuf {
     let own = proton_prefix(steamapps);
     if own.join("drive_c").is_dir() {
         return own;
     }
-    libraries
+    libraries()
         .iter()
         .map(|l| proton_prefix(&l.join("steamapps")))
         .find(|p| p.join("drive_c").is_dir())
@@ -170,12 +170,12 @@ mod tests {
         let internal = root.join("internal");
         let left = proton_prefix(&internal.join("steamapps"));
         // None anywhere yet: where Proton will make it, beside the game.
-        assert_eq!(steam_prefix(&sd, &[internal.clone()]), proton_prefix(&sd));
+        assert_eq!(steam_prefix(&sd, || vec![internal.clone()]), proton_prefix(&sd));
         std::fs::create_dir_all(left.join("drive_c")).unwrap();
-        assert_eq!(steam_prefix(&sd, &[internal.clone()]), left);
+        assert_eq!(steam_prefix(&sd, || vec![internal.clone()]), left);
         // One beside the game wins.
         std::fs::create_dir_all(proton_prefix(&sd).join("drive_c")).unwrap();
-        assert_eq!(steam_prefix(&sd, &[internal]), proton_prefix(&sd));
+        assert_eq!(steam_prefix(&sd, || vec![internal]), proton_prefix(&sd));
         std::fs::remove_dir_all(root).unwrap();
     }
 

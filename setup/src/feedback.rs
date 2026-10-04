@@ -138,11 +138,12 @@ impl Private {
 /// also with doubled backslashes as debug output writes them), the names in `private`
 /// wherever they appear, and public IPv4 addresses (`203.0.x.x`) other than those kept.
 pub fn redact(text: &str, private: &Private) -> String {
-    let mut out = hide_homes(text);
+    // The names first: a home folder may be the whole of one ("C:\Users\Jo Smith").
+    let mut out = text.to_string();
     for name in &private.names {
         out = replace_ignoring_case(&out, name, "<private>");
     }
-    hide_public_addresses(&out, &private.keep)
+    hide_public_addresses(&hide_homes(&out), &private.keep)
 }
 
 fn hide_homes(text: &str) -> String {
@@ -156,7 +157,8 @@ fn hide_homes(text: &str) -> String {
         if let (Some(m), true) = (marker, at_boundary) {
             out.push_str(&text[i..i + m.len()]);
             i += m.len();
-            let end = text[i..].find(['\\', '/', '"', '\'', ' ', '\n']).map_or(text.len(), |e| i + e);
+            // To the end of the folder's name, spaces and all ("Jo Smith").
+            let end = text[i..].find(['\\', '/', '"', '\'', '\n', '\r', ',', ';', ')', ']']).map_or(text.len(), |e| i + e);
             if end > i {
                 out.push_str("<user>");
             }
@@ -171,10 +173,11 @@ fn hide_homes(text: &str) -> String {
 }
 
 fn replace_ignoring_case(text: &str, what: &str, with: &str) -> String {
-    let lower = text.to_lowercase();
-    let what = what.to_lowercase();
-    if what.is_empty() || lower.len() != text.len() {
-        return text.replace(&what, with);
+    // ASCII case only: it keeps every byte where it was, so the offsets match `text`.
+    let lower = text.to_ascii_lowercase();
+    let what = what.to_ascii_lowercase();
+    if what.is_empty() {
+        return text.to_string();
     }
     let mut out = String::with_capacity(text.len());
     let mut last = 0;
@@ -326,6 +329,15 @@ this PC is 122.58.93.144:13000; advertising 139.99.171.113:40000; LAN 192.168.0.
         assert!(out.contains("139.99.171.113:40000"), "the server's address stays: {out}");
         assert!(out.contains("192.168.0.2"), "LAN addresses stay: {out}");
         assert!(!out.contains("msjou") && !out.contains("Jason") && !out.contains("deck"));
+    }
+
+    #[test]
+    fn names_with_spaces_and_other_alphabets_are_hidden() {
+        let private = Private { names: vec!["Jo Smith".into(), "DESKTOP-NASN".into()], keep: vec![] };
+        let text = "İstanbul: C:\\Users\\Jo Smith\\AppData and C:\\Users\\Other Name\\x; on desktop-nasn";
+        let out = redact(text, &private);
+        assert!(!out.contains("Smith") && !out.contains("Other Name") && !out.to_lowercase().contains("nasn"), "{out}");
+        assert!(out.contains("İstanbul") && out.contains("Users\\<user>\\AppData"), "{out}");
     }
 
     #[test]

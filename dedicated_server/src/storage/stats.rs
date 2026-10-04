@@ -38,6 +38,9 @@ pub struct Ranked {
     pub value: f64,
 }
 
+/// The most stat writes kept for the coordinator.
+const STATS_OUTBOX_MAX: i64 = 200_000;
+
 impl Storage {
     /// Adds the game's writes to `user_id`'s stats, each as its board says. Ratio stats
     /// aren't stored; they are worked out when read.
@@ -116,6 +119,12 @@ impl Storage {
                         .await?;
                 }
             }
+            // The writes waiting for the coordinator, at most the newest STATS_OUTBOX_MAX: a
+            // server with no coordinator, or one away for long, doesn't keep them all.
+            sqlx::query("DELETE FROM stats_outbox WHERE id <= (SELECT MAX(id) FROM stats_outbox) - ?")
+                .bind(STATS_OUTBOX_MAX)
+                .execute(&mut *transaction)
+                .await?;
             transaction.commit().await?;
             Ok::<_, sqlx::Error>(())
         })??;

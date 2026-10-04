@@ -124,6 +124,11 @@ impl Storage {
             .await?)
     }
 
+    /// How much the reports waiting for the coordinator take.
+    pub async fn report_outbox_bytes(&self) -> Result<i64> {
+        Ok(sqlx::query_scalar("SELECT COALESCE(SUM(length(body)), 0) FROM report_outbox").fetch_one(&self.pool).await?)
+    }
+
     /// Queues `user_id`'s report for the coordinator, and notes they sent one.
     pub async fn queue_report(&self, user_id: u32, id: &str, body: &str) -> Result<()> {
         let mut tx = self.pool.begin().await?;
@@ -265,6 +270,11 @@ impl Storage {
             .bind(user_id)
             .fetch_optional(&self.pool)
             .await?)
+    }
+
+    /// [`Self::active_ban`], for the game service's thread.
+    pub fn banned(&self, user_id: u32) -> Result<bool> {
+        run(async { Ok::<_, eyre::Error>(self.active_ban(user_id).await?.is_some()) })?
     }
 
     /// `user_id` is in match `game_id` (a session of room kind 0). Counts the match for

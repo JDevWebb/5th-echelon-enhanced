@@ -72,6 +72,8 @@ const STATS_PLAYERS: u32 = 200;
 const STATS_UNSUPPORTED_WAIT: Duration = Duration::from_secs(3600);
 /// A coordinator without reports is asked again only now and then.
 const REPORTS_UNSUPPORTED_WAIT: Duration = Duration::from_secs(3600);
+/// After a report failed to go (the coordinator down, say): reports can be megabytes.
+const REPORTS_RETRY_WAIT: Duration = Duration::from_secs(300);
 /// Admin actions already carried out, kept so one the coordinator sends again (its answer
 /// lost) isn't done twice.
 const ACTIONS_KEPT: usize = 200;
@@ -560,7 +562,8 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
     let mut roster = Roster::default();
     let mut boards = Boards::default();
     // When the coordinator last said it takes no reports.
-    let mut reports_unsupported: Option<Instant> = None;
+    // When reports may be sent again, after a failure.
+    let mut reports_after: Option<Instant> = None;
     let mut actions_done: Vec<(u64, crate::players::Outcome)> = Vec::new();
     loop {
         if secret.is_none() {
@@ -641,11 +644,14 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                     }
                 }
             }
-            if reports_unsupported.is_none_or(|t| t.elapsed() >= REPORTS_UNSUPPORTED_WAIT) {
+            if reports_after.is_none_or(|t| Instant::now() >= t) {
                 match send_reports(&storage, &client).await {
-                    Ok(()) => reports_unsupported = None,
-                    Err(e) if e.to_string().starts_with("404") => reports_unsupported = Some(Instant::now()),
-                    Err(e) => debug!(logger, "Federation: sending a report failed (will retry): {e:#}"),
+                    Ok(()) => reports_after = None,
+                    Err(e) if e.to_string().starts_with("404") => reports_after = Some(Instant::now() + REPORTS_UNSUPPORTED_WAIT),
+                    Err(e) => {
+                        debug!(logger, "Federation: sending a report failed (will retry): {e:#}");
+                        reports_after = Some(Instant::now() + REPORTS_RETRY_WAIT);
+                    }
                 }
             }
             if roster.due() {
@@ -684,13 +690,25 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
 
 /// Players' reports waiting for the coordinator, sent one at a time. One it refuses as
 /// invalid (400) is dropped; anything else is tried again.
+/// A coordinator's answer that sending the same again won't change: a 4xx other than
+/// 404 (no reports there yet), 408 and 429.
+fn refused_for_good(e: &eyre::Report) -> bool {
+    let text = e.to_string();
+    text.get(..3)
+        .and_then(|c| c.parse::<u16>().ok())
+        .is_some_and(|c| (400..500).contains(&c) && !matches!(c, 404 | 408 | 429))
+}
+
 async fn send_reports(storage: &Storage, client: &Coordinator<'_>) -> eyre::Result<()> {
     for _ in 0..5 {
         let Some((id, body)) = storage.next_report().await? else { return Ok(()) };
-        let body: serde_json::Value = serde_json::from_str(&body)?;
+        let Ok(body) = serde_json::from_str::<serde_json::Value>(&body) else {
+            storage.report_sent(&id).await?;
+            continue;
+        };
         match client.post("/v1/reports", &body).await {
             Ok(_) => storage.report_sent(&id).await?,
-            Err(e) if e.to_string().starts_with("400") => {
+            Err(e) if refused_for_good(&e) => {
                 storage.report_sent(&id).await?;
                 return Err(e.wrap_err(format!("the coordinator refused report {id}; dropped")));
             }

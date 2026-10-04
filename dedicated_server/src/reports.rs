@@ -27,8 +27,12 @@ const MAX_FILES_GZIP: usize = 6 * 1024 * 1024;
 const MAX_COMMENT: usize = 2000;
 /// Reports a player may send a day.
 const PER_DAY: i64 = 5;
-/// The most of the server's log sent with a report.
-const MAX_SERVER_LOG: usize = 1024 * 1024;
+/// Reports waiting for the coordinator, in bytes, past which new ones are refused (the
+/// coordinator away for long, or someone filling the queue).
+const MAX_OUTBOX: i64 = 200 * 1024 * 1024;
+/// The most of the server's log sent with a report: a long session's worth (the
+/// coordinator takes up to a megabyte).
+const MAX_SERVER_LOG: usize = 256 * 1024;
 /// What the server keeps of each player's recent events.
 const EVENTS_KEPT: usize = 50;
 const EVENTS_FOR_SECS: i64 = 6 * 3600;
@@ -216,7 +220,7 @@ pub fn body(report: Incoming, player: Value, summary: &Value, server_log: String
 /// Takes `user`'s report, adds this server's side and queues it for the coordinator.
 /// Answers the report's id.
 pub async fn accept(storage: &Storage, user: u32, peer: Option<std::net::IpAddr>, report: Incoming) -> eyre::Result<Result<String, Refused>> {
-    if storage.reports_today(user).await? >= PER_DAY {
+    if storage.reports_today(user).await? >= PER_DAY || storage.report_outbox_bytes().await? > MAX_OUTBOX {
         return Ok(Err(Refused::TooMany));
     }
     let person = storage.find_person(user).await?.ok_or_else(|| eyre::eyre!("no such player"))?;

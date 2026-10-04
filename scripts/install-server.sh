@@ -1232,7 +1232,17 @@ install -d -m 755 "$UPDATE_DIR"
 exec 9>"$UPDATE_DIR/lock"
 flock -n 9 || exit 0
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+# Set while the services are stopped for an update: if anything fails then (set -e),
+# they're started again and the failure recorded, rather than left down.
+stopped=0
+on_exit() {
+  if [ "$stopped" -eq 1 ]; then
+    restart_all || true
+    status failed "${wanted:-?}" "the update stopped part way; the services were started again"
+  fi
+  rm -rf "$work"
+}
+trap on_exit EXIT
 now="$(date +%s)"
 
 current="$(head -c 64 "$PROGRAM_DIR/release" 2>/dev/null | head -1 || true)"
@@ -1319,6 +1329,11 @@ stop_all() {
     case "$p" in dedicated_server) systemctl stop "$SERVICE" ;; coordinator) systemctl stop "$COORD_SERVICE" ;; esac
   done
 }
+restart_all() {
+  for p in "${parts[@]}"; do
+    case "$p" in dedicated_server) systemctl restart "$SERVICE" ;; coordinator) systemctl restart "$COORD_SERVICE" ;; esac
+  done
+}
 # Copies each database (and its WAL) into $UPDATE_DIR/databases, root's
 # only. Links aren't followed: the services own their folders.
 save_databases() {
@@ -1342,8 +1357,14 @@ restore_databases() {
   while read -r db; do
     [ -f "$UPDATE_DIR/databases$db" ] || continue
     for f in "$db" "$db-wal" "$db-shm"; do
-      rm -f -- "$f"
-      if [ -f "$UPDATE_DIR/databases$f" ]; then cp -p "$UPDATE_DIR/databases$f" "$f"; fi
+      if [ -f "$UPDATE_DIR/databases$f" ]; then
+        # Beside it first, then over it: the database is never missing, and a link
+        # there is replaced, not followed.
+        rm -f -- "$f.restoring"
+        cp -p "$UPDATE_DIR/databases$f" "$f.restoring" && mv -f -- "$f.restoring" "$f" || return 1
+      else
+        rm -f -- "$f"
+      fi
     done
   done < <(databases)
 }
@@ -1375,9 +1396,11 @@ if [ "$rollback" -eq 0 ]; then
   # may migrate them, and if it doesn't come back healthy they go back with
   # the release before (which may not open them migrated). Kept until the
   # next update, in $UPDATE_DIR/databases.
-  stop_all || true
+  stopped=1
+  stop_all
   if ! save_databases; then
     restart_all || true
+    stopped=0
     status failed "$wanted" "couldn't copy the databases before updating (is the disk full?)"
     exit 0
   fi
@@ -1417,12 +1440,8 @@ healthy() {
     esac
   done
 }
-restart_all() {
-  for p in "${parts[@]}"; do
-    case "$p" in dedicated_server) systemctl restart "$SERVICE" ;; coordinator) systemctl restart "$COORD_SERVICE" ;; esac
-  done
-}
 restart_all || true
+stopped=0
 ok=0
 for _ in $(seq 45); do
   sleep 2
@@ -1448,12 +1467,16 @@ done
 if [ "$rollback" -eq 1 ]; then echo "$wanted" > "$PROGRAM_DIR/previous/release"; fi
 echo "$current" > "$PROGRAM_DIR/release"
 # After an update (not a rollback), the databases as they were before it.
+restored=""
 if [ "$rollback" -eq 0 ]; then
-  stop_all || true
-  restore_databases
+  if stop_all && restore_databases; then
+    restored=", with the databases as they were before it"
+  else
+    restored="; the databases couldn't be put back (copies in $UPDATE_DIR/databases)"
+  fi
 fi
 restart_all || true
-status rolled-back "$wanted" "the new release didn't come back healthy within 90 seconds; $current is back"
+status rolled-back "$wanted" "the new release didn't come back healthy within 90 seconds; $current is back$restored"
 UPDATER
   } > "$work/update.sh"
   install -m 755 "$work/update.sh" "$UPDATER"

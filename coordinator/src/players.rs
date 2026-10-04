@@ -34,8 +34,10 @@ pub(crate) const KEEP_FOR: i64 = 400 * 86_400;
 const LONGEST_SESSION: i64 = 7 * 86_400;
 /// A match longer than this isn't one.
 const LONGEST_MATCH: i64 = 86_400;
-/// The most finished matches taken from one metrics report.
-const MAX_MATCHES: usize = 500;
+/// The most finished matches taken from one metrics report (sent each minute), and kept
+/// for one server.
+const MAX_MATCHES: usize = 100;
+const MATCHES_PER_SERVER: i64 = 2_000_000;
 /// An action unanswered this long has expired; a reset password nobody read this long after
 /// it came is blanked.
 pub(crate) const ACTION_EXPIRES: i64 = 3600;
@@ -149,7 +151,8 @@ const PLAYER_COLUMNS: &str = "p.server_id, p.id, p.name, p.identity, p.created_a
        (SELECT COALESCE(SUM(MIN(COALESCE(x.ended, MIN(?1, MAX(x.started, COALESCE(s.last_seen, 0) + 60))), ?1) - MAX(x.started, ?1 - 604800)), 0)
           FROM play_sessions x WHERE x.server_id = p.server_id AND x.player = p.id AND x.started < ?1
            AND COALESCE(x.ended, ?1) > ?1 - 604800) AS week_seconds,
-       (SELECT group_concat(o.server_id) FROM players o WHERE o.identity = p.identity AND o.server_id != p.server_id) AS also_on";
+       (SELECT group_concat(o.server_id) FROM players o JOIN links l ON l.global_id = o.identity AND l.server_id = o.server_id
+         WHERE o.identity = p.identity AND o.server_id != p.server_id) AS also_on";
 
 fn player_json(r: &sqlx::sqlite::SqliteRow, now: i64) -> Value {
     let banned_at: Option<i64> = r.get("banned_at");
@@ -305,6 +308,13 @@ impl Coordinator {
         let Some(list) = matches.as_array().filter(|l| !l.is_empty()) else {
             return Ok(());
         };
+        let stored: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM matches WHERE server_id = ?")
+            .bind(server)
+            .fetch_one(&self.pool)
+            .await?;
+        if stored >= MATCHES_PER_SERVER {
+            return Ok(());
+        }
         let mut tx = self.pool.begin().await?;
         for m in list.iter().take(MAX_MATCHES) {
             let mode = match m["mode"].as_str() {
@@ -654,7 +664,9 @@ impl Coordinator {
         let others = match player["identity"].as_str() {
             Some(identity) => sqlx::query(&format!(
                 "SELECT {PLAYER_COLUMNS} FROM players p LEFT JOIN servers s ON s.id = p.server_id
-                  WHERE p.identity = ?2 AND NOT (p.server_id = ?3 AND p.id = ?4) ORDER BY p.server_id, p.id LIMIT 50"
+                  WHERE p.identity = ?2 AND NOT (p.server_id = ?3 AND p.id = ?4)
+                    AND EXISTS (SELECT 1 FROM links l WHERE l.global_id = p.identity AND l.server_id = p.server_id)
+                  ORDER BY p.server_id, p.id LIMIT 50"
             ))
             .bind(now)
             .bind(identity)
@@ -690,19 +702,28 @@ impl Coordinator {
 
     /// The accounts sharing `player`'s identity (theirs too), as (server, id); just theirs
     /// without one.
+    ///
+    /// Only identities linked where each account is: a server says which identity its
+    /// players have, and one mustn't have an admin's action reach another's players.
     pub(crate) async fn accounts_of(&self, server: &str, player: i64) -> sqlx::Result<Vec<(String, i64)>> {
-        let identity: Option<String> = sqlx::query_scalar("SELECT identity FROM players WHERE server_id = ? AND id = ?")
-            .bind(server)
-            .bind(player)
-            .fetch_optional(&self.pool)
-            .await?
-            .flatten();
+        let identity: Option<String> = sqlx::query_scalar(
+            "SELECT p.identity FROM players p JOIN links l ON l.global_id = p.identity AND l.server_id = p.server_id
+              WHERE p.server_id = ? AND p.id = ?",
+        )
+        .bind(server)
+        .bind(player)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten();
         match identity {
             Some(identity) => {
-                sqlx::query_as("SELECT server_id, id FROM players WHERE identity = ? ORDER BY server_id, id LIMIT 100")
-                    .bind(identity)
-                    .fetch_all(&self.pool)
-                    .await
+                sqlx::query_as(
+                    "SELECT p.server_id, p.id FROM players p JOIN links l ON l.global_id = p.identity AND l.server_id = p.server_id
+                      WHERE p.identity = ? ORDER BY p.server_id, p.id LIMIT 100",
+                )
+                .bind(identity)
+                .fetch_all(&self.pool)
+                .await
             }
             None => Ok(vec![(server.to_string(), player)]),
         }

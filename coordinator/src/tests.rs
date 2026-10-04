@@ -717,6 +717,13 @@ async fn players_and_sessions_are_taken_and_a_full_roster_deletes() {
     let b = t.join("server-b").await;
     t.call("POST", "/v1/players", Some(&b), Some(json!({ "full": true, "players": [player(5, "Exo", Some("ab12"))] })))
         .await;
+    // Only an identity linked where each account is counts.
+    let unlinked = t.c.player_detail("server-a", 1007).await.unwrap().unwrap();
+    assert_eq!(unlinked["others"], json!([]), "{unlinked}");
+    sqlx::query("INSERT INTO links (global_id, server_id, username, linked_at) VALUES ('ab12', 'server-a', 'Exo', 0), ('ab12', 'server-b', 'Exo', 0)")
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
     let found =
         t.c.player_list(&players::ListQuery {
             q: "ab12".into(),
@@ -1013,6 +1020,13 @@ async fn admins_manage_players_through_the_api() {
     t.call("POST", "/v1/players", Some(&b), Some(json!({ "full": true, "players": [player(9, "Exo", Some("ab12"))] })))
         .await;
     let all = json!({ "kind": "delete", "all_servers": true });
+    // A server saying its player has someone's identity doesn't reach that person's accounts.
+    let (_, v) = admin_call(&r, "POST", "/api/players/server-a/1007/actions", &fresh, Some(all.clone())).await;
+    assert_eq!(v["actions"].as_array().unwrap().len(), 1, "{v}");
+    sqlx::query("INSERT INTO links (global_id, server_id, username, linked_at) VALUES ('ab12', 'server-a', 'Exo', 0), ('ab12', 'server-b', 'Exo', 0)")
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
     let (_, v) = admin_call(&r, "POST", "/api/players/server-a/1007/actions", &fresh, Some(all)).await;
     assert_eq!(v["actions"].as_array().unwrap().len(), 2, "{v}");
     let (status, v) = admin_call(&r, "GET", &format!("/api/actions/{kick}"), &cookie, None).await;
@@ -1021,7 +1035,7 @@ async fn admins_manage_players_through_the_api() {
         .fetch_one(&t.c.pool)
         .await
         .unwrap();
-    assert_eq!(audited, 3);
+    assert_eq!(audited, 4);
     let (status, v) = admin_call(&r, "GET", "/api/matches-report?days=30", &cookie, None).await;
     assert_eq!((status, v["days"].as_array().map(Vec::len)), (StatusCode::OK, Some(30)));
 }

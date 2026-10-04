@@ -636,7 +636,9 @@ pub unsafe fn init_hooks(config: &Config, addr: &Addresses) {
     let port = config.networking.nat_port.unwrap_or(nat_proto::DEFAULT_PORT);
     let _ = std::thread::Builder::new().name("fe-nat".into()).spawn(move || worker(host, port));
     if config.networking.port_mapping {
-        super::portmap::start(config.networking.ip_address);
+        // A pinned address is the one to map; otherwise this PC's address towards the
+        // router, which the automatic one (towards the server) may not be, behind a VPN.
+        super::portmap::start(config.networking.ip_address.filter(|_| !config.networking.ip_address_automatic));
     }
 }
 
