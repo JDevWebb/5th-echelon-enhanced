@@ -8,6 +8,7 @@
   </PageTop>
   <PlayerList v-if="tab === 'accounts'" />
   <MatchesReport v-else-if="tab === 'matches'" :days="matchDays" />
+  <Leaderboards v-else-if="tab === 'leaderboards'" />
   <template v-else-if="r">
     <div class="kpis kpis-6">
       <div class="kpi"><span class="label">Players</span><span class="v">{{ fmt.n(t.players) }}</span><span class="d">played at least once</span></div>
@@ -94,6 +95,7 @@ import { useRoute, useRouter } from 'vue-router';
 import PageTop from '../components/PageTop.vue';
 import PlayerList from '../components/PlayerList.vue';
 import MatchesReport from '../components/MatchesReport.vue';
+import Leaderboards from '../components/Leaderboards.vue';
 import RangePicker from '../components/RangePicker.vue';
 import LineChart from '../components/LineChart.vue';
 import Heatmap from '../components/Heatmap.vue';
@@ -105,7 +107,7 @@ import { live } from '../lib/live.js';
 
 const REPORT_RANGES = [[86400, '24 h'], [604800, '7 d'], [2592000, '30 d'], [31536000, '12 months']];
 const MATCH_RANGES = [[1, 'Today'], [7, '7 d'], [30, '30 d'], [365, '12 months']];
-const TABS = [['accounts', 'Accounts'], ['report', 'Report & map'], ['matches', 'Matches']];
+const TABS = [['accounts', 'Accounts'], ['report', 'Report & map'], ['matches', 'Matches'], ['leaderboards', 'Leaderboards']];
 const route = useRoute();
 const router = useRouter();
 const tab = computed(() => (TABS.some(([id]) => id === route.query.tab) ? route.query.tab : 'accounts'));
@@ -128,6 +130,7 @@ const t = computed(() => r.value.totals);
 const sub = computed(() => ({
   accounts: 'Every server\'s accounts: find a player, see what they played, and act on their account.',
   matches: 'Finished matches: by mode, map and game mode, how long, how many play.',
+  leaderboards: 'The global leaderboards: everyone across the network, one entry per person.',
 }[tab.value] || `${({ 86400: 'Last 24 hours', 604800: 'Last 7 days', 2592000: 'Last 30 days', 31536000: 'Last 12 months' })[range.value]} · who plays, when, and from where`));
 const daySeries = computed(() => [
   { name: 'Players', color: PALETTE[0], points: r.value.days.map(d => ({ t: d.t, v: d.players })) },

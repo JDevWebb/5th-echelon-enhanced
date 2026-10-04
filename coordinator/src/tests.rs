@@ -1012,3 +1012,308 @@ async fn admins_manage_players_through_the_api() {
     let (status, v) = admin_call(&r, "GET", "/api/matches-report?days=30", &cookie, None).await;
     assert_eq!((status, v["days"].as_array().map(Vec::len)), (StatusCode::OK, Some(30)));
 }
+
+/// A stat write: `value` to `stat` on `board` in `context`, for `who` (named after them).
+fn sw(id: i64, who: &str, board: u32, context: u32, stat: u32, value: f64) -> Value {
+    json!({ "id": id, "global_id": who, "name": format!("Name{who}"), "board": board, "context": context, "stat": stat, "value": value })
+}
+
+const EPOCH: &str = "0123456789abcdef";
+
+impl Test {
+    /// Sends stat writes; answers the last applied id.
+    async fn stats(&self, secret: &str, epoch: &str, writes: Vec<Value>) -> i64 {
+        let (status, v) = self.call("POST", "/v1/stats", Some(secret), Some(json!({ "epoch": epoch, "writes": writes }))).await;
+        assert_eq!((status, v["ok"].as_bool()), (StatusCode::OK, Some(true)), "{v}");
+        v["last_id"].as_i64().unwrap()
+    }
+
+    async fn stat(&self, who: &str, board: u32, context: u32, stat: u32) -> Option<f64> {
+        sqlx::query_scalar("SELECT value FROM global_stats WHERE global_id = ? AND board = ? AND context = ? AND stat = ?")
+            .bind(who)
+            .bind(board)
+            .bind(context)
+            .bind(stat)
+            .fetch_optional(&self.c.pool)
+            .await
+            .unwrap()
+    }
+}
+
+#[tokio::test]
+async fn stat_writes_apply_once_per_sequence() {
+    let t = start("stats-seq").await;
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    let writes = vec![sw(1, "EXO", 17, 1, 100, 5.0), sw(2, "EXO", 17, 1, 100, 5.0), sw(3, "EXO", 17, 1, 100, 5.0)];
+    assert_eq!(t.stats(&a, EPOCH, writes.clone()).await, 3);
+    assert_eq!(t.stat("EXO", 17, 1, 100).await, Some(15.0));
+    // Sent again (the answer was lost): nothing changes.
+    assert_eq!(t.stats(&a, EPOCH, writes.clone()).await, 3);
+    assert_eq!(t.stat("EXO", 17, 1, 100).await, Some(15.0));
+    // Partly new, out of order: only the new ones, in order.
+    assert_eq!(
+        t.stats(&a, EPOCH, vec![sw(5, "EXO", 17, 1, 100, 1.0), sw(3, "EXO", 17, 1, 100, 5.0), sw(4, "EXO", 17, 1, 100, 1.0)])
+            .await,
+        5
+    );
+    assert_eq!(t.stat("EXO", 17, 1, 100).await, Some(17.0));
+    // A server whose database was reset starts again, and another server has its own sequence.
+    assert_eq!(t.stats(&a, "fedcba9876543210", writes[..2].to_vec()).await, 2);
+    assert_eq!(t.stats(&b, EPOCH, writes[..1].to_vec()).await, 1);
+    assert_eq!(t.stat("EXO", 17, 1, 100).await, Some(32.0));
+    // Nothing to apply: the last id as it was.
+    assert_eq!(t.stats(&a, EPOCH, vec![]).await, 5);
+    assert_eq!(t.stats(&a, "00000000000000aa", vec![]).await, 0);
+}
+
+#[tokio::test]
+async fn stat_writes_add_up_as_the_board_says() {
+    let t = start("stats-agg").await;
+    let a = t.join("server-a").await;
+    t.stats(
+        &a,
+        EPOCH,
+        vec![
+            // Add: kills on a ladder.
+            sw(1, "EXO", 17, 2, 100, 3.0),
+            sw(2, "EXO", 17, 2, 100, 4.0),
+            // Maximum and Minimum: longest and shortest life in Spies vs Mercs.
+            sw(3, "EXO", 10, 228, 212, 50.0),
+            sw(4, "EXO", 10, 228, 212, 30.0),
+            sw(5, "EXO", 10, 228, 213, 50.0),
+            sw(6, "EXO", 10, 228, 213, 30.0),
+            sw(7, "EXO", 10, 228, 213, 40.0),
+            // Overwrite: a mission's high score.
+            sw(8, "EXO", 22, 100, 153, 900.0),
+            sw(9, "EXO", 22, 100, 153, 700.0),
+        ],
+    )
+    .await;
+    assert_eq!(t.stat("EXO", 17, 2, 100).await, Some(7.0));
+    assert_eq!(t.stat("EXO", 10, 228, 212).await, Some(50.0));
+    assert_eq!(t.stat("EXO", 10, 228, 213).await, Some(30.0));
+    assert_eq!(t.stat("EXO", 22, 100, 153).await, Some(700.0));
+    let name: String = sqlx::query_scalar("SELECT name FROM global_names WHERE global_id = 'EXO'")
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(name, "NameEXO");
+}
+
+#[tokio::test]
+async fn invalid_stat_writes_are_skipped() {
+    let t = start("stats-invalid").await;
+    let a = t.join("server-a").await;
+    let mut bad_name = sw(10, "EXO", 17, 1, 100, 1.0);
+    bad_name["name"] = json!("Ex\u{202e}o");
+    let last = t
+        .stats(
+            &a,
+            EPOCH,
+            vec![
+                sw(1, "EXO", 99, 0, 100, 1.0),        // no such board
+                sw(2, "EXO", 17, 0, 100, 1.0),        // no such context on it
+                sw(3, "EXO", 17, 1, 999, 1.0),        // no such stat on it
+                sw(4, "EXO", 10, 227, 102, 1.0),      // a ratio
+                sw(5, "EXO", 17, 1, 100, 2e12),       // too large
+                sw(6, "not an id!", 17, 1, 100, 1.0), // not a global id
+                sw(7, &"A".repeat(129), 17, 1, 100, 1.0),
+                json!({ "id": 8, "global_id": "EXO" }), // not a write
+                json!({ "id": 9, "global_id": "EXO", "board": -1, "context": 1, "stat": 100, "value": 1 }),
+                bad_name, // applied, but the name isn't taken
+            ],
+        )
+        .await;
+    assert_eq!(last, 10, "skipped writes are done with too");
+    let stored: Vec<(String, u32, u32, u32, f64)> = sqlx::query_as("SELECT global_id, board, context, stat, value FROM global_stats")
+        .fetch_all(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(stored, [("EXO".to_string(), 17, 1, 100, 1.0)]);
+    let names: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM global_names").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(names, 0);
+    // Whole requests that aren't right.
+    for (bad, want) in [
+        (json!({ "epoch": "xyz", "writes": [] }), StatusCode::BAD_REQUEST),
+        (json!({ "epoch": "0123456789abcdeg", "writes": [] }), StatusCode::BAD_REQUEST),
+        (json!({ "epoch": EPOCH }), StatusCode::BAD_REQUEST),
+        (
+            json!({ "epoch": EPOCH, "writes": (1..=1001).map(|i| sw(i, "EXO", 17, 1, 100, 1.0)).collect::<Vec<_>>() }),
+            StatusCode::PAYLOAD_TOO_LARGE,
+        ),
+    ] {
+        let (status, _) = t.call("POST", "/v1/stats", Some(&a), Some(bad)).await;
+        assert_eq!(status, want);
+    }
+    assert_eq!(t.stat("EXO", 17, 1, 100).await, Some(1.0));
+}
+
+#[tokio::test]
+async fn leaderboards_rank_across_servers() {
+    let t = start("stats-boards").await;
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    // Kills on ladder 1 (leaderboard 10): EXO plays on both servers, so 7 + 6 = 13.
+    t.stats(
+        &a,
+        EPOCH,
+        vec![sw(1, "EXO", 17, 1, 100, 7.0), sw(2, "KIWI", 17, 1, 100, 10.0), sw(3, "ZED", 17, 1, 100, 10.0)],
+    )
+    .await;
+    t.stats(&b, EPOCH, vec![sw(1, "EXO", 17, 1, 100, 6.0), sw(2, "EXO", 17, 1, 122, 2.0)]).await;
+    // Best times on solo mission 101 (leaderboard 2): lowest first, times never set left out.
+    t.stats(
+        &a,
+        "1111111111111111",
+        vec![
+            sw(1, "EXO", 23, 101, 154, 90.0),
+            sw(2, "KIWI", 23, 101, 154, 60.0),
+            sw(3, "ZED", 23, 101, 154, 120.0),
+            sw(4, "NONE", 23, 101, 154, f64::from(i32::MAX)),
+            sw(5, "ZERO", 23, 101, 154, 0.0),
+        ],
+    )
+    .await;
+    let (status, v) = t.call("GET", "/v1/leaderboards", Some(&a), None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let list = |v: &Value, l: u64, c: u64| v["lists"].as_array().unwrap().iter().find(|x| x["leaderboard"] == l && x["context"] == c).cloned();
+    let kills = list(&v, 10, 1).unwrap();
+    assert_eq!(kills["total"], 3);
+    let order: Vec<(&str, i64, f64)> = kills["top"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["global_id"].as_str().unwrap(), r["rank"].as_i64().unwrap(), r["value"].as_f64().unwrap()))
+        .collect();
+    assert_eq!(order, [("EXO", 1, 13.0), ("KIWI", 2, 10.0), ("ZED", 3, 10.0)]);
+    assert_eq!(kills["top"][0]["name"], "NameEXO");
+    assert_eq!(kills["top"][0]["stats"], json!([[100, 13.0], [122, 2.0]]));
+    let times = list(&v, 2, 101).unwrap();
+    let order: Vec<&str> = times["top"].as_array().unwrap().iter().map(|r| r["global_id"].as_str().unwrap()).collect();
+    assert_eq!((order, times["total"].as_i64()), (vec!["KIWI", "EXO", "ZED"], Some(3)));
+    // Empty lists are left out; wins on ladder 1 has EXO's 2.
+    assert!(list(&v, 10, 2).is_none() && list(&v, 1, 100).is_none());
+    assert_eq!(list(&v, 7, 1).unwrap()["total"], 1);
+    // count, at most 100.
+    let (_, v) = t.call("GET", "/v1/leaderboards?count=1", Some(&a), None).await;
+    assert_eq!(list(&v, 10, 1).unwrap()["top"].as_array().unwrap().len(), 1);
+    assert_eq!(list(&v, 10, 1).unwrap()["total"], 3);
+    for bad in ["0", "101", "x"] {
+        let (status, _) = t.call("GET", &format!("/v1/leaderboards?count={bad}"), Some(&a), None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+    }
+
+    // Where people are, and every list's size.
+    let (status, v) = t.call("POST", "/v1/leaderboards/players", Some(&b), Some(json!({ "ids": ["ZED", "NOBODY", 5] }))).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let ranks = v["ranks"].as_array().unwrap();
+    assert_eq!(ranks.len(), 2, "{v}");
+    let zed_kills = ranks.iter().find(|r| r["leaderboard"] == 10).unwrap();
+    assert_eq!(
+        (&zed_kills["global_id"], &zed_kills["context"], &zed_kills["rank"], &zed_kills["value"], &zed_kills["stats"]),
+        (&json!("ZED"), &json!(1), &json!(3), &json!(10.0), &json!([[100, 10.0]]))
+    );
+    let zed_time = ranks.iter().find(|r| r["leaderboard"] == 2).unwrap();
+    assert_eq!((&zed_time["rank"], &zed_time["context"], &zed_time["name"]), (&json!(3), &json!(101), &json!("NameZED")));
+    let totals = v["totals"].as_array().unwrap();
+    assert!(totals.contains(&json!({ "leaderboard": 10, "context": 1, "total": 3 })));
+    assert!(totals.contains(&json!({ "leaderboard": 2, "context": 101, "total": 3 })));
+    assert_eq!(totals.len(), 3, "{v}");
+    let (status, _) = t.call("POST", "/v1/leaderboards/players", Some(&b), Some(json!({ "ids": vec!["X"; 201] }))).await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+
+    // Everything kept for them.
+    let (status, v) = t.call("POST", "/v1/stats/players", Some(&b), Some(json!({ "ids": ["EXO", "ZERO"] }))).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(
+        v["stats"],
+        json!([
+            { "global_id": "EXO", "board": 17, "context": 1, "stat": 100, "value": 13.0 },
+            { "global_id": "EXO", "board": 17, "context": 1, "stat": 122, "value": 2.0 },
+            { "global_id": "EXO", "board": 23, "context": 101, "stat": 154, "value": 90.0 },
+            { "global_id": "ZERO", "board": 23, "context": 101, "stat": 154, "value": 0.0 },
+        ])
+    );
+}
+
+#[tokio::test]
+async fn stats_are_for_members_only() {
+    let t = start("stats-auth").await;
+    let a = t.join("server-a").await;
+    t.stats(&a, EPOCH, vec![sw(1, "EXO", 17, 1, 100, 1.0)]).await;
+    for secret in [None, Some("not-a-secret")] {
+        for (method, path, body) in [
+            ("POST", "/v1/stats", Some(json!({ "epoch": EPOCH, "writes": [sw(2, "EXO", 17, 1, 100, 100.0)] }))),
+            ("GET", "/v1/leaderboards", None),
+            ("POST", "/v1/leaderboards/players", Some(json!({ "ids": ["EXO"] }))),
+            ("POST", "/v1/stats/players", Some(json!({ "ids": ["EXO"] }))),
+        ] {
+            let (status, v) = t.call(method, path, secret, body).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{path}");
+            assert!(v.get("stats").is_none() && v.get("lists").is_none());
+        }
+    }
+    assert_eq!(t.stat("EXO", 17, 1, 100).await, Some(1.0));
+}
+
+#[tokio::test]
+async fn admins_see_leaderboards_and_remove_stats() {
+    let t = start("stats-admin").await;
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    t.stats(
+        &a,
+        EPOCH,
+        vec![sw(1, "EXO", 17, 1, 100, 7.0), sw(2, "CHEAT", 17, 1, 100, 99999.0), sw(3, "CHEAT", 17, 1, 122, 500.0)],
+    )
+    .await;
+    assert_eq!(admin_call(&r, "GET", "/api/leaderboards", "", None).await.0, StatusCode::UNAUTHORIZED);
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    let (status, v) = admin_call(&r, "GET", "/api/leaderboards?leaderboard=10&context=1&count=10", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["leaderboards"].as_array().unwrap().len(), stat_boards::LEADERBOARDS.len());
+    assert_eq!(v["leaderboards"][1]["contexts"].as_array().unwrap().len(), 13);
+    assert_eq!(v["list"]["top"][0]["global_id"], "CHEAT");
+    assert_eq!(v["list"]["total"], 2);
+    assert!(v["lists"].as_array().unwrap().contains(&json!({ "leaderboard": 7, "context": 1, "total": 1 })));
+    for bad in [
+        "leaderboard=99&context=1",
+        "leaderboard=10&context=4",
+        "leaderboard=10",
+        "leaderboard=10&context=1&count=101",
+    ] {
+        assert_eq!(
+            admin_call(&r, "GET", &format!("/api/leaderboards?{bad}"), &cookie, None).await.0,
+            StatusCode::BAD_REQUEST,
+            "{bad}"
+        );
+    }
+    // The servers' answer is made now, and forgotten when stats are removed.
+    let (_, before) = t.call("GET", "/v1/leaderboards", Some(&a), None).await;
+    let kills = before["lists"].as_array().unwrap().iter().find(|l| l["leaderboard"] == 10).unwrap();
+    assert_eq!(kills["top"].as_array().unwrap().len(), 2, "{before}");
+
+    // Removing wants a second factor proved lately.
+    let (status, v) = admin_call(&r, "DELETE", "/api/stats/CHEAT", &cookie, None).await;
+    assert_eq!((status, v["reverify"].as_bool()), (StatusCode::FORBIDDEN, Some(true)));
+    let fresh = admin_cookie(&t, "admin2", 0).await;
+    let (status, v) = admin_call(&r, "DELETE", "/api/stats/CHEAT", &fresh, None).await;
+    assert_eq!((status, v["removed"].as_u64()), (StatusCode::OK, Some(2)), "{v}");
+    assert_eq!(admin_call(&r, "DELETE", "/api/stats/CHEAT", &fresh, None).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(admin_call(&r, "DELETE", "/api/stats/not%20an%20id", &fresh, None).await.0, StatusCode::BAD_REQUEST);
+    let detail: String = sqlx::query_scalar("SELECT detail FROM audit WHERE event = 'stats: removed'")
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(detail, "NameCHEAT (CHEAT): 2 stats");
+    let (_, v) = admin_call(&r, "GET", "/api/leaderboards?leaderboard=10&context=1", &cookie, None).await;
+    assert_eq!((v["list"]["total"].as_i64(), v["list"]["top"][0]["global_id"].as_str()), (Some(1), Some("EXO")));
+    let (_, after) = t.call("GET", "/v1/leaderboards", Some(&a), None).await;
+    assert!(
+        after["lists"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|l| l["top"].as_array().unwrap().iter().all(|p| p["global_id"] != "CHEAT")),
+        "{after}"
+    );
+}

@@ -12,8 +12,8 @@
 //! `coordinator admin add`; they choose a password and must add a second
 //! factor before anything else. Changes that matter (admins, sign-in
 //! restrictions, rollbacks, removing servers, banning, renaming or deleting
-//! a player, resetting their password) want a second factor proved in the
-//! last ten minutes.
+//! a player, resetting their password, removing a person's stats) want a
+//! second factor proved in the last ten minutes.
 //!
 //! Every request (the page too) must come from an allowed network and
 //! country, when those are set. Behind Cloudflare, the address and country
@@ -21,6 +21,7 @@
 //! Caddy); otherwise the connection's, located with DB-IP.
 
 pub mod auth;
+mod leaderboards;
 pub mod live;
 mod players;
 pub mod webauthn;
@@ -204,7 +205,8 @@ pub fn router(c: Shared) -> Router {
         .route("/alerts/webhook", axum::routing::put(set_webhook))
         .route("/alerts/test", post(test_webhook))
         .route("/live", get(live::live))
-        .merge(players::routes());
+        .merge(players::routes())
+        .merge(leaderboards::routes());
     Router::new()
         .route("/", get(page))
         .nest("/api", api)

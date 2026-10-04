@@ -28,6 +28,9 @@
 //! * `POST /v1/players`: a server's players and play sessions, and
 //!   `POST /v1/actions/<id>`: what came of an admin's action (see [`players`]).
 //! * `POST /v1/pings`: a launcher's pings to the servers (no sign-in).
+//! * `POST /v1/stats`, `GET /v1/leaderboards`, `POST /v1/leaderboards/players` and
+//!   `POST /v1/stats/players`: each person's stats across the network, and the global
+//!   leaderboards (see [`stats`]).
 //! * Heartbeat answers carry the release a server should install (see
 //!   [`updates`]); servers that don't keep up leave the directory.
 
@@ -35,6 +38,7 @@ pub mod admin;
 pub mod alerts;
 pub mod metrics;
 pub mod players;
+pub mod stats;
 pub mod updates;
 
 use std::collections::BTreeMap;
@@ -140,23 +144,29 @@ fn client_ip(peer: std::net::SocketAddr, headers: &HeaderMap) -> std::net::IpAdd
     peer.ip()
 }
 
-/// At most `max` requests per key in a minute.
+/// At most `max` requests per key in a minute (or another `window`).
 struct Limit {
     max: usize,
+    window: Duration,
     seen: std::sync::Mutex<std::collections::HashMap<String, std::collections::VecDeque<std::time::Instant>>>,
 }
 
 impl Limit {
     fn new(max: usize) -> Self {
+        Self::per(max, Duration::from_secs(60))
+    }
+
+    fn per(max: usize, window: Duration) -> Self {
         Self {
             max,
+            window,
             seen: std::sync::Mutex::new(std::collections::HashMap::new()),
         }
     }
 
     fn check(&self, key: &str) -> bool {
         let now = std::time::Instant::now();
-        let window = Duration::from_secs(60);
+        let window = self.window;
         let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         if seen.len() > 50_000 {
             seen.retain(|_, t| t.back().is_some_and(|t| now.duration_since(*t) < window));
@@ -351,6 +361,10 @@ pub struct Coordinator {
     /// Per server: players reports (a roster comes in chunks) and action results.
     player_posts: Limit,
     action_posts: Limit,
+    /// Per server: stat writes and stats lookups; the leaderboards answer, kept a minute.
+    stat_posts: Limit,
+    stat_reads: Limit,
+    pub(crate) stats_cache: tokio::sync::Mutex<stats::Cache>,
 }
 
 type Shared = Arc<Coordinator>;
@@ -433,6 +447,11 @@ impl Coordinator {
             // A roster of 50,000 players is 25 requests.
             player_posts: Limit::new(40),
             action_posts: Limit::new(120),
+            // A batch of writes every few seconds at most, on average; lookups as players
+            // sign in and look at the leaderboards.
+            stat_posts: Limit::per(600, Duration::from_secs(3600)),
+            stat_reads: Limit::new(120),
+            stats_cache: tokio::sync::Mutex::new(stats::Cache::default()),
         };
         c.claim_linked_names().await?;
         c.load_live().await?;
@@ -570,6 +589,10 @@ impl Coordinator {
             .route("/v1/players", post(players_report).layer(DefaultBodyLimit::max(players::MAX_BODY)))
             .route("/v1/actions/{id}", post(action_result))
             .route("/v1/pings", post(pings))
+            .route("/v1/stats", post(stats_report).layer(DefaultBodyLimit::max(stats::MAX_BODY)))
+            .route("/v1/stats/players", post(stats_of_players))
+            .route("/v1/leaderboards", get(leaderboards))
+            .route("/v1/leaderboards/players", post(leaderboard_players))
             .layer(DefaultBodyLimit::max(MAX_BODY))
             .with_state(self)
     }
@@ -1178,6 +1201,83 @@ async fn action_result(State(c): State<Shared>, headers: HeaderMap, Path(id): Pa
         Ok(false) => fail(StatusCode::NOT_FOUND, "no such action for this server"),
         Err(e) => internal(e),
     }
+}
+
+/// A server's stat writes (see [`stats`]).
+async fn stats_report(State(c): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {
+    let server = match c.server(&headers).await {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let batch: Value = match parse(&body) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    if !c.stat_posts.check(&server) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "too many stats requests this hour; send the rest later");
+    }
+    let (Some(epoch), Some(writes)) = (batch["epoch"].as_str().filter(|e| stats::valid_epoch(e)), batch["writes"].as_array()) else {
+        return fail(StatusCode::BAD_REQUEST, "not a stats report");
+    };
+    if writes.len() > stats::MAX_WRITES {
+        return fail(StatusCode::PAYLOAD_TOO_LARGE, "at most 1000 writes a request");
+    }
+    match c.apply_stats(&server, &epoch.to_ascii_lowercase(), writes).await {
+        Ok(last_id) => ok(json!({ "ok": true, "last_id": last_id })),
+        Err(e) => internal(e),
+    }
+}
+
+/// The ids a stats lookup asks about, or the answer to give.
+async fn stats_lookup(c: &Coordinator, headers: &HeaderMap, body: &[u8]) -> Result<Vec<Value>, Answer> {
+    let server = c.server(headers).await?;
+    let req: Value = parse(body)?;
+    if !c.stat_reads.check(&server) {
+        return Err(fail(StatusCode::TOO_MANY_REQUESTS, "too many stats lookups; slow down"));
+    }
+    let Some(ids) = req["ids"].as_array() else {
+        return Err(fail(StatusCode::BAD_REQUEST, "not a stats lookup"));
+    };
+    if ids.len() > stats::MAX_IDS {
+        return Err(fail(StatusCode::PAYLOAD_TOO_LARGE, "at most 200 ids a request"));
+    }
+    Ok(ids.clone())
+}
+
+/// Everything kept for some people (see [`stats`]).
+async fn stats_of_players(State(c): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {
+    match stats_lookup(&c, &headers, &body).await {
+        Ok(ids) => c.player_stats(&ids).await.map_or_else(internal, ok),
+        Err(e) => e,
+    }
+}
+
+/// Where some people are on the leaderboards (see [`stats`]).
+async fn leaderboard_players(State(c): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {
+    match stats_lookup(&c, &headers, &body).await {
+        Ok(ids) => c.player_ranks(&ids).await.map_or_else(internal, ok),
+        Err(e) => e,
+    }
+}
+
+/// The top of every leaderboard (see [`stats`]).
+async fn leaderboards(State(c): State<Shared>, headers: HeaderMap, axum::extract::RawQuery(query): axum::extract::RawQuery) -> Answer {
+    let server = match c.server(&headers).await {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    if !c.stat_reads.check(&server) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "the leaderboards change once a minute; slow down");
+    }
+    let count = query
+        .unwrap_or_default()
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("count="))
+        .map_or(Some(stats::MAX_COUNT), |n| n.parse::<usize>().ok().filter(|n| (1..=stats::MAX_COUNT).contains(n)));
+    let Some(count) = count else {
+        return fail(StatusCode::BAD_REQUEST, "count is 1 to 100");
+    };
+    c.leaderboards(count).await.map_or_else(internal, ok)
 }
 
 /// A launcher's pings to the servers in the directory.
