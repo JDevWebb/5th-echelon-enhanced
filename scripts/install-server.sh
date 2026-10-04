@@ -155,9 +155,9 @@ RELEASE_KEY_PEM="-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEANX9q9hOdzlNhVlSPEtmjJbbdJyOktGgQkPw4ep2KCLI=
 -----END PUBLIC KEY-----"
 # Caddy's static build, when there's no package: pinned, with its SHA-512.
-CADDY_VERSION="2.11.6"
-CADDY_SHA512_amd64="422771007d505ea97efd1177a4905b2c1a471cd426668f2ace3bcda3d8e30b11f9b1610bfb02c6ad60f2a795f56124f2f5eec6409c17d5a0dd4c21a11375fb94"
-CADDY_SHA512_arm64="bd228ea44b6b95720a0c2d7b62886e99cb4a0b05356fe6e058c4a155618c913377b18e686839ae7fcc6c2c05aea2d549fa91f25aa3ef8d43cdead117259577ed"
+CADDY_VERSION="2.11.7"
+CADDY_SHA512_amd64="a7a433a1b133efc3c8d10eb0b99d52a24b5ef5c322dc77f5282182b1c0402139ab83f3a99f0c52409df77d20123fb0b523edad8a66d8f5e49136197bf61ef0e7"
+CADDY_SHA512_arm64="3db36ba90c7a6e8dda40ee3dd71fa08844c76b5fb08f61b31e5e78d2ed38e71c51dc7baed875e50d1ca1279196e84302967237386ae87c91ae9f2aaceada682e"
 
 domain="" no_caddy=0 public_address="" version="latest" binary="" relay=""
 firewall=1 yes=0 force=0 uninstall=0 purge=0 use_systemd=1
@@ -1771,6 +1771,9 @@ harden_caddy() {
   want="$(cat <<UNIT
 # Written by install-server.sh: Caddy in a sandbox.
 [Service]
+# Started again if it stops on its own (a crash took the sites down once).
+Restart=on-failure
+RestartSec=2s
 RuntimeDirectory=caddy
 RuntimeDirectoryMode=0750
 NoNewPrivileges=yes
