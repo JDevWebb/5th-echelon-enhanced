@@ -11,6 +11,35 @@ use crate::save::SaveState;
 
 /// The hook's log of the current (or last) game session, in the game folder.
 pub const LOG_FILE: &str = "bl-tracing.log";
+/// What the hook found the game's data version to be, written as the game starts (DX11).
+pub const DATA_VERSION_FILE: &str = "bl-dataversion.txt";
+/// The data version of the unmodified game (DX11, build V2425.0), the same for the Steam
+/// and Ubisoft editions in every language. Players whose versions differ can meet in a lobby,
+/// but the game can't start a match with them in it.
+pub const STOCK_DATA_VERSION: u32 = 0xe90c_0d2d;
+
+/// A mod known to change the game's data version: the file it puts in the game folder, a
+/// line of the file that only that mod has (none: any copy of the file), and its name.
+pub struct KnownMod {
+    pub file: &'static str,
+    pub marker: Option<&'static str>,
+    pub name: &'static str,
+}
+
+/// Mods found to change the data version. A loose PEC.ini replaces the one in the game's
+/// packages: any change to the meshes, presets or names it lists changes the version.
+pub const KNOWN_MODS: &[KnownMod] = &[
+    KnownMod {
+        file: "PEC.ini",
+        marker: Some("CHARM-CCS-Balaclava.Balaclava_head_dirt"),
+        name: "the balaclava mod (Sam and Briggs in balaclavas)",
+    },
+    KnownMod {
+        file: "PEC.ini",
+        marker: None,
+        name: "a mod that replaces the game's PEC.ini",
+    },
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Status {
@@ -95,6 +124,16 @@ pub struct Facts {
     pub log: Option<LogFacts>,
     /// Set when the game runs under Wine or Proton.
     pub wine: Option<WineFacts>,
+    pub data: Option<DataFacts>,
+}
+
+/// Whether the game's data is the unmodified game's (see [`STOCK_DATA_VERSION`]).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DataFacts {
+    /// The data version of the last game started (the hook writes it, DX11 only).
+    pub version: Option<u32>,
+    /// The known mods in the game folder, by name, and the file each is in.
+    pub mods: Vec<(&'static str, &'static str)>,
 }
 
 /// The Wine or Proton side of things (Linux, Steam Deck).
@@ -147,6 +186,52 @@ pub fn read_log(game_dir: &Path) -> Option<LogFacts> {
     let mut facts = parse_log(&String::from_utf8_lossy(&text));
     facts.started = std::fs::metadata(path).and_then(|m| m.modified()).ok();
     Some(facts)
+}
+
+/// The data version in the hook's file ("data version: 0xe90c0d2d" on its first line).
+pub fn parse_data_version(text: &str) -> Option<u32> {
+    let hex = text.lines().next()?.strip_prefix("data version: ")?.trim().strip_prefix("0x")?;
+    u32::from_str_radix(hex, 16).ok()
+}
+
+/// The last game's data version and the known mods in `game_dir` (the exe's folder).
+pub fn read_data(game_dir: &Path) -> DataFacts {
+    let version = std::fs::read(game_dir.join(DATA_VERSION_FILE)).ok().and_then(|t| parse_data_version(&String::from_utf8_lossy(&t)));
+    let mut mods = Vec::new();
+    for known in KNOWN_MODS {
+        // One name per file: the first entry that matches it (the specific ones come first).
+        if mods.iter().any(|(_, file)| *file == known.file) {
+            continue;
+        }
+        let Ok(text) = std::fs::read(game_dir.join(known.file)) else { continue };
+        if known.marker.is_none_or(|m| String::from_utf8_lossy(&text).contains(m)) {
+            mods.push((known.name, known.file));
+        }
+    }
+    DataFacts { version, mods }
+}
+
+fn data_check(data: &DataFacts) -> Option<Check> {
+    let changed = data.version.is_some_and(|v| v != STOCK_DATA_VERSION);
+    if !changed && data.mods.is_empty() {
+        return None;
+    }
+    let mut detail = String::new();
+    if let Some(version) = data.version.filter(|_| changed) {
+        detail.push_str(&format!(
+            "The last game's data version was {version:#010x}; the unmodified game's is {STOCK_DATA_VERSION:#010x}. "
+        ));
+    }
+    if data.mods.is_empty() {
+        detail.push_str("A mod or a changed game file is the usual cause. ");
+    } else {
+        let found: Vec<String> = data.mods.iter().map(|(name, file)| format!("{name} ({file} in the game folder)")).collect();
+        detail.push_str(&format!("Found: {}. ", found.join("; ")));
+    }
+    detail.push_str(
+        "Players whose game data differs can meet in a lobby, but the match fails to start for them (a version mismatch).          It still works when everyone in the match has the same mods installed. To play with everyone else,          remove the mod (or rename its file), or verify the game's files in Steam or Ubisoft Connect, then start the game again.",
+    );
+    Some(Check::new("data", Status::Warn, "Your game data is modified", detail, None))
 }
 
 /// The checklist, in the order the setup runs.
@@ -295,6 +380,10 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
         checks.push(save_check(f));
     }
 
+    if let Some(check) = f.data.as_ref().and_then(data_check) {
+        checks.push(check);
+    }
+
     if let Some(log) = &f.log {
         // Only about a pin that's still there: without one, nothing can go missing.
         if let (Some(adapter), Some(pinned)) = (&log.adapter_missing, &f.pinned) {
@@ -392,7 +481,42 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
             save: Some(SaveState::Ok { xp: 6600 }),
             log: None,
             wine: None,
+            data: Some(DataFacts { version: Some(STOCK_DATA_VERSION), mods: vec![] }),
         }
+    }
+
+    #[test]
+    fn modified_game_data_is_a_warning_naming_the_mod() {
+        assert_eq!(parse_data_version("data version: 0xdd55acd3\nengine[+0x64][+0x410]: 0x00000000\n"), Some(0xdd55_acd3));
+        assert_eq!(parse_data_version("index\tvalue\n"), None);
+        let check = |data: DataFacts| checklist(&Facts { data: Some(data), ..ready_facts() }).into_iter().find(|c| c.id == "data");
+        assert_eq!(check(DataFacts { version: Some(STOCK_DATA_VERSION), mods: vec![] }), None);
+        assert_eq!(check(DataFacts { version: None, mods: vec![] }), None, "no game started yet, no mod");
+        let c = check(DataFacts { version: Some(0xdd55_acd3), mods: vec![] }).unwrap();
+        assert_eq!(c.status, Status::Warn);
+        assert!(c.detail.contains("0xdd55acd3") && c.detail.contains("same mods"), "{}", c.detail);
+        // A mod in the folder is named even before the next game shows the version.
+        let c = check(DataFacts { version: None, mods: vec![(KNOWN_MODS[0].name, "PEC.ini")] }).unwrap();
+        assert!(c.detail.contains("balaclava") && c.detail.contains("PEC.ini"), "{}", c.detail);
+        let mut f = Facts { data: Some(DataFacts { version: Some(0xdd55_acd3), mods: vec![] }), ..ready_facts() };
+        assert!(ready(&checklist(&f)), "a warning, never a failure");
+        f.data = None;
+        assert!(!checklist(&f).iter().any(|c| c.id == "data"));
+    }
+
+    #[test]
+    fn known_mods_are_found_in_the_game_folder() {
+        let dir = std::env::temp_dir().join(format!("fe-data-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(read_data(&dir), DataFacts::default());
+        std::fs::write(dir.join(DATA_VERSION_FILE), "data version: 0xdd55acd3\n").unwrap();
+        std::fs::write(dir.join("PEC.ini"), "m_MeshName=\"CHARM-CCS-Balaclava.Balaclava_head_dirt\"\n").unwrap();
+        let d = read_data(&dir);
+        assert_eq!(d.version, Some(0xdd55_acd3));
+        assert_eq!(d.mods, vec![(KNOWN_MODS[0].name, "PEC.ini")]);
+        std::fs::write(dir.join("PEC.ini"), "[Something.Else]\n").unwrap();
+        assert_eq!(read_data(&dir).mods, vec![(KNOWN_MODS[1].name, "PEC.ini")], "any other loose PEC.ini");
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
