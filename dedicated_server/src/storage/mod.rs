@@ -13,10 +13,15 @@ use sqlx::Execute;
 use sqlx::Executor;
 use sqlx::Statement;
 
+mod global_stats;
 mod players;
 mod relationships;
 mod stats;
 
+pub use global_stats::GlobalList;
+pub use global_stats::GlobalPlace;
+pub use global_stats::GlobalRank;
+pub use global_stats::GlobalStat;
 pub use players::Ban;
 pub use players::FinishedMatch;
 pub use relationships::FriendError;

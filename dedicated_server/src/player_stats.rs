@@ -37,6 +37,7 @@ use crate::protocols::player_stats_service::player_stats_protocol::ReadStatsByPl
 use crate::protocols::player_stats_service::player_stats_protocol::ReadStatsByPlayersResponse;
 use crate::protocols::player_stats_service::player_stats_protocol::WriteStatsRequest;
 use crate::protocols::player_stats_service::player_stats_protocol::WriteStatsResponse;
+use crate::storage;
 use crate::storage::Ranked;
 use crate::storage::StatWrite;
 use crate::storage::Storage;
@@ -141,15 +142,120 @@ fn capped(count: u32) -> u32 {
 /// A leaderboard query's fields: board, context, reset frequency and the stats wanted.
 type Query<'a> = (u32, u32, u32, &'a [u32]);
 
+/// Which places of a leaderboard the game asked for.
+enum Wanted {
+    /// `count` places from `rank` (1 is the top).
+    From(u32, u32),
+    /// `count` places around the player's.
+    Around(u32, u32),
+    /// These players' places.
+    Players(Vec<u32>),
+}
+
+/// A place on a leaderboard, from this server's stats or the network's.
+struct Place {
+    pid: u32,
+    name: String,
+    rank: u32,
+    value: f64,
+    submitted: u64,
+    stats: Vec<(u32, f64)>,
+}
+
+/// The id a player without an account here goes by on the global leaderboards: from their
+/// global id, above any account id here.
+fn outside_pid(global_id: &str) -> u32 {
+    // FNV-1a.
+    let hash = global_id.bytes().fold(0x811c_9dc5_u32, |h, b| (h ^ u32::from(b)).wrapping_mul(0x0100_0193));
+    0x4000_0000 | (hash & 0x3fff_ffff)
+}
+
+/// `count` places of `top` around `rank`, best first.
+fn window(top: &[storage::GlobalPlace], rank: u32, count: u32) -> Vec<storage::GlobalPlace> {
+    let start = rank.saturating_sub(count / 2).max(1);
+    top.iter().filter(|p| p.rank >= start).take(count as usize).cloned().collect()
+}
+
 impl PlayerStatsProtocolServerImpl {
-    /// A leaderboard's places as the game wants them, each with the player's stats
-    /// (those the query names, all when none) and the stat they are ranked by as the score.
-    fn leaderboard_result(
-        &self,
-        logger: &Logger,
-        (board_id, context_id, reset_frequency, stat_ids): Query,
-        places: impl FnOnce(&stat_boards::Leaderboard) -> eyre::Result<Vec<Ranked>>,
-    ) -> Result<LeaderboardResult, Error> {
+    /// The places the game asked for on this server's own leaderboard, and its size.
+    fn local_places(&self, leaderboard: &stat_boards::Leaderboard, context: u32, wanted: &Wanted) -> eyre::Result<(u32, Vec<Place>)> {
+        let total = self.storage.leaderboard_size(leaderboard, context)?;
+        let ranked: Vec<Ranked> = match wanted {
+            Wanted::From(rank, count) => self.storage.leaderboard_from(leaderboard, context, *rank, *count)?,
+            Wanted::Around(player, count) => self.storage.leaderboard_around(leaderboard, context, *player, *count)?,
+            Wanted::Players(players) => self.storage.leaderboard_of(leaderboard, context, players)?,
+        };
+        let players: Vec<u32> = ranked.iter().map(|p| p.user_id).collect();
+        let mut stats = self.storage.stats_of(&players, leaderboard.board, context)?;
+        let places = ranked
+            .into_iter()
+            .map(|r| {
+                let stored = stats.iter().position(|s| s.user_id == r.user_id).map(|i| stats.swap_remove(i));
+                Place {
+                    pid: r.user_id,
+                    name: r.name,
+                    rank: r.rank,
+                    value: r.value,
+                    submitted: stored.as_ref().map_or(0, |s| s.submitted),
+                    stats: stored.map(|s| s.stats).unwrap_or_default(),
+                }
+            })
+            .collect();
+        Ok((total, places))
+    }
+
+    /// The places the game asked for on the network's leaderboard (as the coordinator last
+    /// sent it), and its size.
+    fn global_places(&self, leaderboard: &stat_boards::Leaderboard, context: u32, wanted: &Wanted) -> eyre::Result<(u32, Vec<Place>)> {
+        let (total, top) = self.storage.global_top(leaderboard.id, context)?.unwrap_or_default();
+        let found: Vec<storage::GlobalPlace> = match wanted {
+            Wanted::From(rank, count) => top.iter().filter(|p| p.rank >= (*rank).max(1)).take(*count as usize).cloned().collect(),
+            Wanted::Around(player, count) => {
+                let me = self.storage.global_ids_of(&[*player])?.remove(player).map(|(g, _)| g);
+                let mine = match &me {
+                    Some(g) => self.storage.global_ranks_of(std::slice::from_ref(g), leaderboard.id, context)?.pop(),
+                    None => None,
+                };
+                match mine {
+                    // Within the top: the places around theirs.
+                    Some(m) if top.iter().any(|p| p.rank >= m.rank) => window(&top, m.rank, *count),
+                    // Further down: the top, then theirs.
+                    Some(m) => top.iter().take((*count).saturating_sub(1) as usize).cloned().chain(std::iter::once(m)).collect(),
+                    None => top.iter().take(*count as usize).cloned().collect(),
+                }
+            }
+            Wanted::Players(players) => {
+                let ids: Vec<String> = self.storage.global_ids_of(players)?.into_values().map(|(g, _)| g).collect();
+                let mut found = self.storage.global_ranks_of(&ids, leaderboard.id, context)?;
+                for p in top.iter().filter(|p| ids.contains(&p.global_id)) {
+                    if !found.iter().any(|f| f.global_id == p.global_id) {
+                        found.push(p.clone());
+                    }
+                }
+                found.sort_by_key(|p| p.rank);
+                found
+            }
+        };
+        let ids: Vec<String> = found.iter().map(|p| p.global_id.clone()).collect();
+        let accounts = self.storage.accounts_of(&ids)?;
+        let places = found
+            .into_iter()
+            .map(|p| Place {
+                pid: accounts.get(&p.global_id).copied().unwrap_or_else(|| outside_pid(&p.global_id)),
+                name: p.name,
+                rank: p.rank,
+                value: p.value,
+                submitted: 0,
+                stats: p.stats,
+            })
+            .collect();
+        Ok((total, places))
+    }
+
+    /// A leaderboard's places as the game wants them, each with the player's stats (those
+    /// the query names, all when none) and the stat they are ranked by as the score: the
+    /// network's, once the coordinator has sent them, else this server's.
+    fn leaderboard_result(&self, logger: &Logger, (board_id, context_id, reset_frequency, stat_ids): Query, wanted: &Wanted) -> Result<LeaderboardResult, Error> {
         let mut result = LeaderboardResult {
             board_id,
             context_id,
@@ -161,45 +267,61 @@ impl PlayerStatsProtocolServerImpl {
             info!(logger, "No leaderboard {board_id}");
             return Ok(result);
         };
-        result.leaderboard_total_player_count = rmc_err!(self.storage.leaderboard_size(leaderboard, context_id), logger, "error counting a leaderboard")?;
-        let places = rmc_err!(places(leaderboard), logger, "error reading a leaderboard")?;
-        let players: Vec<u32> = places.iter().map(|p| p.user_id).collect();
-        let mut stats = rmc_err!(self.storage.stats_of(&players, leaderboard.board, context_id), logger, "error reading stats")?;
+        let global = self.storage.has_global_leaderboards().unwrap_or(false);
+        let found = if global {
+            self.global_places(leaderboard, context_id, wanted)
+        } else {
+            self.local_places(leaderboard, context_id, wanted)
+        };
+        let (total, places) = rmc_err!(found, logger, "error reading a leaderboard")?;
+        result.leaderboard_total_player_count = total;
         let ranks: Vec<PlayerRank> = places
             .into_iter()
-            .map(|place| {
-                let stored = match stats.iter().position(|s| s.user_id == place.user_id) {
-                    Some(i) => stats.swap_remove(i),
-                    None => StoredStats {
-                        user_id: place.user_id,
-                        name: place.name.clone(),
-                        submitted: 0,
-                        stats: vec![],
-                    },
-                };
-                PlayerRank {
-                    player_stat_set: stat_set(leaderboard.board, stored, stat_ids),
-                    rank_status: 0,
-                    rank: place.rank,
-                    score: variant(leaderboard.stat, place.value),
-                }
+            .map(|place| PlayerRank {
+                player_stat_set: PlayerStatSet {
+                    player_pid: place.pid,
+                    stats: stat_values(leaderboard.board, &place.stats, stat_ids).into(),
+                    player_name: place.name,
+                    submitted_time: quazal::rmc::types::DateTime(place.submitted),
+                },
+                rank_status: 0,
+                rank: place.rank,
+                score: variant(leaderboard.stat, place.value),
             })
             .collect();
         result.player_ranks = ranks.into();
         Ok(result)
     }
 
-    /// Each query's leaderboard, its places from `places`.
-    fn leaderboards<'q>(
-        &self,
-        logger: &Logger,
-        queries: impl Iterator<Item = Query<'q>>,
-        places: impl Fn(&stat_boards::Leaderboard, u32) -> eyre::Result<Vec<Ranked>>,
-    ) -> Result<Vec<LeaderboardResult>, Error> {
-        queries
-            .take(MAX_ITEMS)
-            .map(|query| self.leaderboard_result(logger, query, |lb| places(lb, query.1)))
-            .collect()
+    /// Each query's leaderboard, with the places `wanted` names for it.
+    fn leaderboards<'q>(&self, logger: &Logger, queries: impl Iterator<Item = Query<'q>>, wanted: impl Fn(&Query<'q>) -> Wanted) -> Result<Vec<LeaderboardResult>, Error> {
+        queries.take(MAX_ITEMS).map(|query| self.leaderboard_result(logger, query, &wanted(&query))).collect()
+    }
+
+    /// Players' stats on a board and context: across the network for those the coordinator
+    /// sent them for, this server's for the rest. Players without any are left out.
+    fn stats_of(&self, players: &[u32], board: u32, context: u32) -> eyre::Result<Vec<StoredStats>> {
+        let identities = self.storage.global_ids_of(players)?;
+        let mut local = self.storage.stats_of(players, board, context)?;
+        let mut found = Vec::new();
+        for player in players {
+            let global = match identities.get(player) {
+                Some((g, name)) => self.storage.global_stats_of(g, board, context)?.map(|stats| (name.clone(), stats)),
+                None => None,
+            };
+            let here = local.iter().position(|s| s.user_id == *player).map(|i| local.swap_remove(i));
+            match global {
+                Some((_, stats)) if stats.is_empty() => {}
+                Some((name, stats)) => found.push(StoredStats {
+                    user_id: *player,
+                    name,
+                    submitted: here.map_or(0, |s| s.submitted),
+                    stats,
+                }),
+                None => found.extend(here),
+            }
+        }
+        Ok(found)
     }
 }
 
@@ -222,6 +344,7 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
             info!(logger, "Stats of {user_id}: {} kept, {refused} not on their boards (boards {boards:?})", writes.len());
         }
         rmc_err!(self.storage.write_stats(user_id, &writes), logger, "error writing stats")?;
+        crate::federation::stats_written();
         Ok(WriteStatsResponse)
     }
 
@@ -248,7 +371,7 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
                 query.context_ids.iter().copied().take(MAX_ITEMS).collect()
             };
             for context_id in contexts {
-                let stored = rmc_err!(self.storage.stats_of(&players, query.board_id, context_id), logger, "error reading stats")?;
+                let stored = rmc_err!(self.stats_of(&players, query.board_id, context_id), logger, "error reading stats")?;
                 let sets: Vec<PlayerStatSet> = stored.into_iter().map(|s| stat_set(query.board_id, s, &wanted)).collect();
                 results.push(StatboardResult {
                     board_id: query.board_id,
@@ -274,9 +397,7 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         login_required(&*ci)?;
         info!(logger, "Leaderboards near {}: {:?}", request.player_pid, request.queries);
         let queries = request.queries.iter().map(|q| (q.board_id, q.context_id, q.reset_frequency, &q.stat_ids[..]));
-        let results = self.leaderboards(logger, queries, |lb, context| {
-            self.storage.leaderboard_around(lb, context, request.player_pid, capped(request.count))
-        })?;
+        let results = self.leaderboards(logger, queries, |_| Wanted::Around(request.player_pid, capped(request.count)))?;
         Ok(ReadLeaderboardsNearPlayerResponse { results: results.into() })
     }
 
@@ -292,9 +413,7 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         login_required(&*ci)?;
         info!(logger, "Leaderboards from rank {}: {:?}", request.starting_rank, request.queries);
         let queries = request.queries.iter().map(|q| (q.board_id, q.context_id, q.reset_frequency, &q.stat_ids[..]));
-        let results = self.leaderboards(logger, queries, |lb, context| {
-            self.storage.leaderboard_from(lb, context, request.starting_rank, capped(request.count))
-        })?;
+        let results = self.leaderboards(logger, queries, |_| Wanted::From(request.starting_rank, capped(request.count)))?;
         Ok(ReadLeaderboardsByRankResponse { results: results.into() })
     }
 
@@ -312,7 +431,7 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         info!(logger, "Leaderboards of {:?}: {:?}", request.player_pids, request.queries);
         let players: Vec<u32> = request.player_pids.iter().copied().take(MAX_ITEMS).collect();
         let queries = request.queries.iter().map(|q| (q.board_id, q.context_id, q.reset_frequency, &q.stat_ids[..]));
-        let results = self.leaderboards(logger, queries, |lb, context| self.storage.leaderboard_of(lb, context, &players))?;
+        let results = self.leaderboards(logger, queries, |_| Wanted::Players(players.clone()))?;
         Ok(ReadLeaderboardsByPlayersResponse { results: results.into() })
     }
 
@@ -328,9 +447,7 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         login_required(&*ci)?;
         info!(logger, "Leaderboards near {} (2): {:?}", request.player_pid, request.queries);
         let queries = request.queries.iter().map(|q| (q.board_id, q.context_id, q.reset_frequency, &q.stat_ids[..]));
-        let results = self.leaderboards(logger, queries, |lb, context| {
-            self.storage.leaderboard_around(lb, context, request.player_pid, capped(request.count))
-        })?;
+        let results = self.leaderboards(logger, queries, |_| Wanted::Around(request.player_pid, capped(request.count)))?;
         Ok(ReadLeaderboardsNearPlayer2Response { results: results.into() })
     }
 
@@ -346,9 +463,7 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         login_required(&*ci)?;
         info!(logger, "Leaderboards from rank {} (2): {:?}", request.starting_rank, request.queries);
         let queries = request.queries.iter().map(|q| (q.board_id, q.context_id, q.reset_frequency, &q.stat_ids[..]));
-        let results = self.leaderboards(logger, queries, |lb, context| {
-            self.storage.leaderboard_from(lb, context, request.starting_rank, capped(request.count))
-        })?;
+        let results = self.leaderboards(logger, queries, |_| Wanted::From(request.starting_rank, capped(request.count)))?;
         Ok(ReadLeaderboardsByRank2Response { results: results.into() })
     }
 
@@ -368,7 +483,7 @@ impl<T> PlayerStatsProtocolServerTrait<T> for PlayerStatsProtocolServerImpl {
         for q in request.queries.iter().take(MAX_ITEMS) {
             let players: Vec<u32> = q.estimated_pids.iter().copied().take(MAX_ITEMS).collect();
             let query = (q.board_id, q.context_id, q.reset_frequency, &q.stat_ids[..]);
-            results.push(self.leaderboard_result(logger, query, |lb| self.storage.leaderboard_of(lb, q.context_id, &players))?);
+            results.push(self.leaderboard_result(logger, query, &Wanted::Players(players))?);
         }
         Ok(ReadLeaderboardsByPlayers2Response { results: results.into() })
     }
@@ -391,6 +506,29 @@ mod tests {
 
     fn stat(id: u32, value: Variant) -> PropertyVariant {
         PropertyVariant { id, value }
+    }
+
+    #[test]
+    fn players_from_elsewhere_get_ids_above_the_accounts_here() {
+        let a = outside_pid("GV7WV5QTKBCZA");
+        assert!(a >= 0x4000_0000 && a < 0x8000_0000);
+        assert_eq!(a, outside_pid("GV7WV5QTKBCZA"));
+        assert_ne!(a, outside_pid("GV7WV5QTKBCZB"));
+    }
+
+    #[test]
+    fn places_around_a_rank() {
+        let top: Vec<storage::GlobalPlace> = (1..=10)
+            .map(|rank| storage::GlobalPlace {
+                global_id: format!("P{rank}"),
+                name: String::new(),
+                rank,
+                value: 0.0,
+                stats: vec![],
+            })
+            .collect();
+        assert_eq!(window(&top, 5, 4).iter().map(|p| p.rank).collect::<Vec<_>>(), [3, 4, 5, 6]);
+        assert_eq!(window(&top, 1, 4).iter().map(|p| p.rank).collect::<Vec<_>>(), [1, 2, 3, 4]);
     }
 
     #[test]

@@ -205,6 +205,7 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
             });
             metrics::game_login(user_id, from.ip(), new_session);
             players::changed(user_id);
+            federation::stats_soon(user_id);
             if let Err(e) = storage.set_online(user_id) {
                 error!(logger, "marking user {user_id} online failed: {e}");
             }

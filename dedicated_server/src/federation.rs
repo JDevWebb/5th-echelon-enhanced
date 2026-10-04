@@ -61,6 +61,15 @@ const ROSTER_UNSUPPORTED_WAIT: Duration = Duration::from_secs(3600);
 /// The most players and play sessions one roster request carries.
 const ROSTER_PLAYERS: usize = 2000;
 const ROSTER_SESSIONS: u32 = 5000;
+/// Global stats: the leaderboards' top places are fetched this often, with the places and
+/// stats of the players online and their friends; stat writes go in batches of this many.
+const BOARDS_EVERY: Duration = Duration::from_secs(300);
+const STATS_BATCH: u32 = 1000;
+/// The places kept of each global leaderboard, and players asked about at once.
+const BOARD_TOP: u32 = 100;
+const STATS_PLAYERS: u32 = 200;
+/// A coordinator without global stats is asked again only now and then.
+const STATS_UNSUPPORTED_WAIT: Duration = Duration::from_secs(3600);
 /// Admin actions already carried out, kept so one the coordinator sends again (its answer
 /// lost) isn't done twice.
 const ACTIONS_KEPT: usize = 200;
@@ -190,6 +199,8 @@ struct State {
     enabled: bool,
     wake: tokio::sync::Notify,
     pulls: Mutex<HashSet<u32>>,
+    /// Players whose places and stats across the network to fetch now (they signed in).
+    stat_pulls: Mutex<HashSet<u32>>,
     /// When each player's friends were last asked for on their behalf
     /// ([`pull_now_and_then`]).
     asked: Mutex<std::collections::HashMap<u32, Instant>>,
@@ -208,6 +219,7 @@ pub fn init(server_id: String, enabled: bool) {
         enabled,
         wake: tokio::sync::Notify::new(),
         pulls: Mutex::new(HashSet::new()),
+        stat_pulls: Mutex::new(HashSet::new()),
         asked: Mutex::new(std::collections::HashMap::new()),
         joined: Mutex::new(None),
     });
@@ -317,6 +329,22 @@ pub async fn linked(logger: &Logger, storage: &Storage, user: u32, link: Change)
         }
     }
     pull_soon(user);
+}
+
+/// Fetches `user`'s and their friends' places and stats across the network soon (they
+/// signed in), for the game's leaderboards.
+pub fn stats_soon(user: u32) {
+    if let Some(state) = STATE.get().filter(|s| s.enabled) {
+        state.stat_pulls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(user);
+        state.wake.notify_one();
+    }
+}
+
+/// Stats were written: they go to the coordinator soon.
+pub fn stats_written() {
+    if let Some(state) = STATE.get().filter(|s| s.enabled) {
+        state.wake.notify_one();
+    }
 }
 
 /// Asks for `user`'s friends from other servers soon.
@@ -521,6 +549,7 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
     // Changes the coordinator asked to send later (too many new links at once).
     let mut changes_wait: Option<Instant> = None;
     let mut roster = Roster::default();
+    let mut boards = Boards::default();
     let mut actions_done: Vec<(u64, crate::players::Outcome)> = Vec::new();
     loop {
         if secret.is_none() {
@@ -593,6 +622,14 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                     }
                 };
             }
+            if boards.waited() {
+                if let Err(e) = global_stats(&logger, &storage, &client, &state, &mut boards).await {
+                    debug!(logger, "Federation: global stats failed: {e:#}");
+                    if e.to_string().starts_with("404") {
+                        boards.unsupported = Some(Instant::now());
+                    }
+                }
+            }
             if roster.due() {
                 if let Err(e) = send_roster(&storage, &client, &mut roster).await {
                     debug!(logger, "Federation: sending players failed: {e:#}");
@@ -625,6 +662,70 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
         }
         let _ = tokio::time::timeout(Duration::from_secs(5), state.wake.notified()).await;
     }
+}
+
+/// When the global leaderboards were last fetched.
+#[derive(Default)]
+struct Boards {
+    last: Option<Instant>,
+    /// When the coordinator said it has no global stats.
+    unsupported: Option<Instant>,
+}
+
+impl Boards {
+    fn waited(&self) -> bool {
+        self.unsupported.is_none_or(|t| t.elapsed() >= STATS_UNSUPPORTED_WAIT)
+    }
+}
+
+/// Global stats: sends the stat writes waiting (`POST /v1/stats`), fetches the
+/// leaderboards' top places now and then (`GET /v1/leaderboards`), and the places and stats
+/// of the players online and their friends (`POST /v1/leaderboards/players`,
+/// `POST /v1/stats/players`): all of them now and then, and those of a player who just
+/// signed in at once.
+async fn global_stats(logger: &Logger, storage: &Storage, client: &Coordinator<'_>, state: &State, boards: &mut Boards) -> eyre::Result<()> {
+    let epoch = storage.stats_epoch().await?;
+    for _ in 0..5 {
+        let writes = storage.stats_outbox_peek(STATS_BATCH).await?;
+        if writes.is_empty() {
+            break;
+        }
+        let answer = client.post("/v1/stats", &serde_json::json!({ "epoch": epoch, "writes": writes })).await?;
+        let Some(last) = answer["last_id"].as_i64() else {
+            return Err(eyre::eyre!("the coordinator didn't say which stats it has"));
+        };
+        storage.stats_outbox_remove_upto(last).await?;
+        if last < writes.last().map_or(0, |w| w.id) {
+            // It took only some: the rest next time.
+            break;
+        }
+    }
+    boards.unsupported = None;
+    let mut follow: Vec<String> = Vec::new();
+    if boards.last.is_none_or(|t| t.elapsed() >= BOARDS_EVERY) {
+        boards.last = Some(Instant::now());
+        let answer = client.get(&format!("/v1/leaderboards?count={BOARD_TOP}")).await?;
+        let lists: Vec<crate::storage::GlobalList> = serde_json::from_value(answer["lists"].clone())?;
+        storage.replace_global_leaderboards(&lists).await?;
+        follow = storage.global_ids_to_follow(STATS_PLAYERS * 5).await?;
+    }
+    let signed_in: Vec<u32> = state.stat_pulls.lock().unwrap_or_else(std::sync::PoisonError::into_inner).drain().collect();
+    for user in signed_in {
+        follow.extend(storage.global_ids_around(user, STATS_PLAYERS).await?);
+    }
+    follow.sort_unstable();
+    follow.dedup();
+    for ids in follow.chunks(STATS_PLAYERS as usize) {
+        let body = serde_json::json!({ "ids": ids });
+        let answer = client.post("/v1/leaderboards/players", &body).await?;
+        let ranks: Vec<crate::storage::GlobalRank> = serde_json::from_value(answer["ranks"].clone())?;
+        storage.replace_global_ranks(ids, &ranks).await?;
+        let answer = client.post("/v1/stats/players", &body).await?;
+        let stats: Vec<crate::storage::GlobalStat> = serde_json::from_value(answer["stats"].clone())?;
+        storage.replace_global_stats(ids, &stats).await?;
+        debug!(logger, "Federation: places and stats of {} players across the network", ids.len());
+    }
+    Ok(())
 }
 
 /// When the roster last went, and from when play sessions are still to go.

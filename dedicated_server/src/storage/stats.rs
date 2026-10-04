@@ -41,9 +41,27 @@ pub struct Ranked {
 impl Storage {
     /// Adds the game's writes to `user_id`'s stats, each as its board says. Ratio stats
     /// aren't stored; they are worked out when read.
+    ///
+    /// For a player with an identity the writes also go to the coordinator (the global
+    /// leaderboards; `stats_outbox`), and onto their stats across the network as last heard
+    /// from it, so those stay current until it answers again.
     pub fn write_stats(&self, user_id: u32, writes: &[StatWrite]) -> Result<()> {
         run(async {
             let mut transaction = self.pool.begin().await?;
+            let identity: Option<(String, String)> = sqlx::query_as("SELECT global_id, username FROM users WHERE id = ? AND global_id IS NOT NULL")
+                .bind(user_id)
+                .fetch_optional(&mut *transaction)
+                .await?;
+            let global_known = match &identity {
+                Some((global_id, _)) => {
+                    sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM global_stats WHERE global_id = ?")
+                        .bind(global_id)
+                        .fetch_one(&mut *transaction)
+                        .await?
+                        > 0
+                }
+                None => false,
+            };
             for w in writes {
                 let Some(aggregation) = stat_boards::board(w.board).and_then(|b| b.aggregation(w.stat)) else {
                     continue;
@@ -70,6 +88,33 @@ impl Storage {
                 .bind(value)
                 .execute(&mut *transaction)
                 .await?;
+                let Some((global_id, name)) = &identity else { continue };
+                sqlx::query("INSERT INTO stats_outbox (global_id, name, board, context, stat, value) VALUES (?, ?, ?, ?, ?, ?)")
+                    .bind(global_id)
+                    .bind(name)
+                    .bind(w.board)
+                    .bind(w.context)
+                    .bind(w.stat)
+                    .bind(w.value)
+                    .execute(&mut *transaction)
+                    .await?;
+                if global_known {
+                    let global: Option<f64> = sqlx::query_scalar("SELECT value FROM global_stats WHERE global_id = ? AND board = ? AND context = ? AND stat = ?")
+                        .bind(global_id)
+                        .bind(w.board)
+                        .bind(w.context)
+                        .bind(w.stat)
+                        .fetch_optional(&mut *transaction)
+                        .await?;
+                    sqlx::query("INSERT OR REPLACE INTO global_stats (global_id, board, context, stat, value) VALUES (?, ?, ?, ?, ?)")
+                        .bind(global_id)
+                        .bind(w.board)
+                        .bind(w.context)
+                        .bind(w.stat)
+                        .bind(stat_boards::aggregate(aggregation, global, w.value))
+                        .execute(&mut *transaction)
+                        .await?;
+                }
             }
             transaction.commit().await?;
             Ok::<_, sqlx::Error>(())
