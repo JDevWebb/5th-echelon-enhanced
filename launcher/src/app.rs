@@ -93,6 +93,9 @@ pub struct Prefs {
     /// The player said not to ask.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     feedback_off: bool,
+    /// The player answered whether the game may send its diagnostics (diagnostics.rs).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    diagnostics_asked: bool,
 }
 
 impl Prefs {
@@ -161,6 +164,17 @@ impl Prefs {
     pub fn set_feedback_asked(asked: setup::feedback::Asked) {
         let mut prefs = Self::load();
         prefs.feedback = asked;
+        prefs.save();
+    }
+
+    /// Whether the player answered the question about the game's diagnostics.
+    pub fn diagnostics_asked() -> bool {
+        Self::load().diagnostics_asked
+    }
+
+    pub fn set_diagnostics_asked() {
+        let mut prefs = Self::load();
+        prefs.diagnostics_asked = true;
         prefs.save();
     }
 
@@ -238,6 +252,8 @@ pub struct App {
     play: Play,
     /// "How did that go?" after a game (feedback.rs).
     feedback: crate::feedback::Feedback,
+    /// Asking once about the game's diagnostics (diagnostics.rs).
+    diagnostics: crate::diagnostics::Ask,
     settings: Settings,
     server: Server,
     /// The latest release, once looked up.
@@ -268,6 +284,7 @@ impl App {
             notices: Notices::default(),
             play: Play::default(),
             feedback: crate::feedback::Feedback::default(),
+            diagnostics: crate::diagnostics::Ask::default(),
             settings: Settings::default(),
             server: Server::default(),
             latest: None,
@@ -516,6 +533,7 @@ impl eframe::App for App {
             }
         }
         self.feedback.show(ctx, &mut self.notices);
+        self.diagnostics.show(ctx, self.game.as_mut(), &mut self.notices);
         if let Some(Err(e)) = self.updating.poll() {
             self.notices.error(format!("Couldn't update: {e}"));
         }

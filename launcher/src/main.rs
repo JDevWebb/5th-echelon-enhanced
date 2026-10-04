@@ -4,6 +4,7 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod diagnostics;
 mod dll_utils;
 mod feedback;
 mod flow;

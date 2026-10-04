@@ -10,6 +10,7 @@ use tracing::info;
 use tracing::instrument;
 use url::Url;
 
+pub mod diagnostics;
 pub mod redact;
 
 #[cfg(target_os = "windows")]
@@ -284,7 +285,8 @@ pub struct Config {
 
     /// Sends the server the game's warnings, errors and network events as they happen
     /// (private names, folders and addresses hidden first), so its admins can see why a
-    /// join or a connection failed. Settings › Feedback in the launcher.
+    /// join or a connection failed. The launcher asks once (on by default) and writes it;
+    /// Settings › Feedback changes it.
     #[serde(default = "default_send_diagnostics")]
     pub send_diagnostics: bool,
 
@@ -302,8 +304,10 @@ const fn default_push_friend_list() -> bool {
     true
 }
 
+/// Off until the player answered the launcher's question (on by default there): nothing is
+/// sent from an install nobody asked.
 const fn default_send_diagnostics() -> bool {
-    true
+    false
 }
 
 /// Which field of Uplay's friend structure carries a friend's Quazal principal id.

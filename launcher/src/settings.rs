@@ -208,6 +208,7 @@ fn feedback(app: &mut App, ui: &mut egui::Ui) {
             let mut send = game.cfg.hook_config.send_diagnostics;
             if ui.checkbox(&mut send, "Send the game's diagnostics to the server").changed() {
                 game.update(notices, |c| c.hook_config.send_diagnostics = send);
+                Prefs::set_diagnostics_asked();
             }
         });
     }

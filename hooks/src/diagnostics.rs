@@ -17,7 +17,6 @@ use hooks_config::redact::Private;
 use server_api::misc::ClientLogLine;
 use tracing::field::Field;
 use tracing::field::Visit;
-use tracing::Level;
 use tracing::Subscriber;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::Layer;
@@ -30,9 +29,6 @@ const EVERY: Duration = Duration::from_secs(5);
 const RETRY: Duration = Duration::from_secs(30);
 /// The most of one line sent.
 const MAX_LINE: usize = 300;
-/// Modules whose ordinary (INFO) lines go too: the network code.
-const NETWORK: &[&str] = &["hooks::hooks::nat", "hooks::hooks::portmap", "hooks::hooks::nla"];
-
 struct Queue {
     lines: VecDeque<ClientLogLine>,
     dropped: u32,
@@ -45,18 +41,6 @@ static QUEUE: Mutex<Queue> = Mutex::new(Queue {
 /// Set when the player turned it off or the server doesn't take it: nothing is kept.
 static OFF: AtomicBool = AtomicBool::new(false);
 
-/// Whether a log line goes to the server: this client's warnings and errors, and the network
-/// code's lines but its packet dumps (those are for the player's own packet logging).
-fn wanted(level: Level, target: &str, message: &str) -> bool {
-    if !target.starts_with("hooks") || target.starts_with("hooks::diagnostics") {
-        return false;
-    }
-    if level <= Level::WARN {
-        return true;
-    }
-    level == Level::INFO && NETWORK.iter().any(|m| target.starts_with(m)) && !message.starts_with("sendto ") && !message.starts_with("recvfrom ")
-}
-
 /// The tracing layer that picks the lines out (installed with the log, lib.rs).
 pub struct DiagnosticsLayer;
 
@@ -68,7 +52,7 @@ impl<S: Subscriber> Layer<S> for DiagnosticsLayer {
         let meta = event.metadata();
         let mut text = Text::default();
         event.record(&mut text);
-        if !wanted(*meta.level(), meta.target(), &text.0) {
+        if !hooks_config::diagnostics::wanted(meta.level().as_str(), meta.target(), &text.0) {
             return;
         }
         let line = ClientLogLine {
@@ -164,22 +148,4 @@ pub fn start(config: &hooks_config::Config) {
             }
         }
     });
-}
-
-#[cfg(test)]
-mod tests {
-    use tracing::Level;
-
-    #[test]
-    fn warnings_errors_and_network_lines_go_packet_dumps_dont() {
-        use super::wanted;
-        assert!(wanted(Level::WARN, "hooks::overlay", "Lost the server"));
-        assert!(wanted(Level::ERROR, "hooks::api", "sign-in failed"));
-        assert!(wanted(Level::INFO, "hooks::hooks::nat", "NAT: told the game to advertise 1.2.3.4:5"));
-        assert!(!wanted(Level::INFO, "hooks::hooks::nat", "sendto Some(1.2.3.4:5): 00ff"));
-        assert!(!wanted(Level::INFO, "hooks::overlay", "refreshing"));
-        assert!(!wanted(Level::DEBUG, "hooks::hooks::nat", "probe"));
-        assert!(!wanted(Level::ERROR, "hyper::proto", "connection error"), "only this client's own");
-        assert!(!wanted(Level::WARN, "hooks::diagnostics", "x"), "never its own");
-    }
 }

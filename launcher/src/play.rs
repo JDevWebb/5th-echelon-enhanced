@@ -1659,6 +1659,11 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, ui: &mut
 }
 
 fn launch(play: &mut Play, game: &mut Game, notices: &mut Notices) {
+    // The question about diagnostics is answered first (diagnostics.rs shows it).
+    if crate::diagnostics::Ask::pending(Some(game)) {
+        notices.info("First, say whether the game may send its diagnostics.");
+        return;
+    }
     if setup::game::game_running() {
         notices.error("Splinter Cell: Blacklist is already running.");
         return;
