@@ -190,8 +190,9 @@ fn send(ask: &Ask) -> Result<String, String> {
     };
     crate::services::rt()
         .block_on(async {
+            // A few MB of logs can take minutes from far away.
             tokio::time::timeout(
-                Duration::from_secs(60),
+                Duration::from_secs(240),
                 crate::network::send_report(ask.profile.api_server_url().to_string(), &ask.profile.user.username, &password, report),
             )
             .await
@@ -199,6 +200,14 @@ fn send(ask: &Ask) -> Result<String, String> {
         .map_err(|_| "The server didn't answer in time.".to_string())?
         .map_err(|e| match e {
             crate::network::Error::Rpc(status) if status.code() == tonic::Code::Unimplemented => "This server doesn't take reports yet.".to_string(),
+            // A proxy in front of the server gave up on the upload (servers set up before
+            // 0.4.2 waited 30 s for it).
+            crate::network::Error::Rpc(status) if status.code() == tonic::Code::Unavailable || status.code() == tonic::Code::Unknown => {
+                format!(
+                    "The server couldn't take your report ({}). Try again, or untick \"Send my logs too\" to send it without them.",
+                    status.message()
+                )
+            }
             crate::network::Error::Rpc(status) => status.message().to_string(),
             e => e.to_string(),
         })

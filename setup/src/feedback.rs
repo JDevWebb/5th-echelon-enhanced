@@ -131,15 +131,20 @@ pub const MAX_FILE: usize = 3 * 1024 * 1024;
 /// A file's text, redacted and cut to [`MAX_FILE`] bytes, as an attachment: a log's last
 /// part (where the trouble is), the data version's first (its summary).
 pub fn attach(name: &str, text: &str, private: &Private) -> std::io::Result<Attachment> {
+    attach_within(name, text, private, MAX_FILE)
+}
+
+/// [`attach`], cut to `max` bytes.
+fn attach_within(name: &str, text: &str, private: &Private, max: usize) -> std::io::Result<Attachment> {
     let mut text = redact(text, private);
-    if text.len() > MAX_FILE && name == "bl-dataversion.txt" {
-        let mut end = MAX_FILE;
+    if text.len() > max && name == "bl-dataversion.txt" {
+        let mut end = max;
         while !text.is_char_boundary(end) {
             end -= 1;
         }
         text = format!("{}\n(the last {} bytes left out)", &text[..end], text.len() - end);
-    } else if text.len() > MAX_FILE {
-        let mut start = text.len() - MAX_FILE;
+    } else if text.len() > max {
+        let mut start = text.len() - max;
         while !text.is_char_boundary(start) {
             start += 1;
         }
@@ -167,11 +172,73 @@ pub fn prepare(game_dir: &Path, launcher_log: Option<&Path>, extra: &[(&str, Str
         files.push(("launcher.log".into(), String::from_utf8_lossy(&text).into_owned()));
     }
     files.extend(extra.iter().map(|(n, t)| (n.to_string(), t.clone())));
-    files.into_iter().filter_map(|(name, text)| attach(&name, &text, private).ok()).collect()
+    within_total(files, private, MAX_TOTAL_GZIP)
+}
+
+/// The most a report's files may come to, compressed: under the 4 MB a server's proxy took
+/// before 0.4.2 (a larger report was refused before reaching the server), with room for the
+/// rest of the report.
+pub const MAX_TOTAL_GZIP: usize = 3 * 1024 * 1024 + 512 * 1024;
+
+/// Files that go first when a report is too large, least useful first.
+const LEAST_USEFUL: [&str; 2] = ["bl-tracing.prev.log", "launcher.log"];
+
+/// The files as attachments, coming to at most `max_total` bytes compressed: the least
+/// useful ones left out first, then the client's log cut to a shorter end.
+fn within_total(files: Vec<(String, String)>, private: &Private, max_total: usize) -> Vec<Attachment> {
+    let mut attached: Vec<Attachment> = files.iter().filter_map(|(name, text)| attach(name, text, private).ok()).collect();
+    let total = |a: &[Attachment]| a.iter().map(|f| f.gzip.len()).sum::<usize>();
+    for name in LEAST_USEFUL {
+        if total(&attached) <= max_total {
+            return attached;
+        }
+        attached.retain(|f| f.name != name);
+    }
+    let mut max = MAX_FILE;
+    while total(&attached) > max_total && max > 16 * 1024 {
+        max /= 2;
+        let Some((name, text)) = files.iter().find(|(n, _)| n == "bl-tracing.log") else { break };
+        if let (Some(i), Ok(cut)) = (attached.iter().position(|f| f.name == *name), attach_within(name, text, private, max)) {
+            attached[i] = cut;
+        } else {
+            break;
+        }
+    }
+    attached
 }
 
 #[cfg(test)]
 mod tests {
+
+    /// A report too large for a server's proxy leaves out the least useful files first, then
+    /// keeps a shorter end of the client's log.
+    #[test]
+    fn reports_stay_within_what_a_server_takes() {
+        // Text that hardly compresses (random letters and digits), 3 MB each.
+        let noisy = |seed: u64| {
+            const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+            let mut x = seed;
+            (0..3 * 1024 * 1024)
+                .map(|_| {
+                    x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+                    char::from(ABC[(x >> 58) as usize])
+                })
+                .collect::<String>()
+        };
+        let files = vec![
+            ("bl-tracing.log".to_string(), noisy(1)),
+            ("bl-tracing.prev.log".to_string(), noisy(2)),
+            ("launcher.log".to_string(), "small".to_string()),
+        ];
+        let out = super::within_total(files.clone(), &Private::default(), super::MAX_TOTAL_GZIP);
+        let names: Vec<&str> = out.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(names, ["bl-tracing.log", "launcher.log"], "the log before goes first");
+        assert!(out.iter().map(|f| f.gzip.len()).sum::<usize>() <= super::MAX_TOTAL_GZIP);
+        let out = super::within_total(files, &Private::default(), 1024 * 1024);
+        assert_eq!(out[0].name, "bl-tracing.log", "the client's log stays, its end");
+        assert!(out.iter().map(|f| f.gzip.len()).sum::<usize>() <= 1024 * 1024);
+        assert!(out[0].text.starts_with("(the first"));
+    }
     use std::net::Ipv4Addr;
     use super::*;
 

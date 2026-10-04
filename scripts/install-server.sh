@@ -2039,10 +2039,10 @@ restart_server() {
 # on the machine itself (or through an SSH tunnel to 127.0.0.1:50051).
 site_routes() {
   cat <<'SITE'
-	# Nothing the game, launcher or overlay sends is near this (the API's
-	# messages are 4 MB at most).
+	# The API takes messages up to 8 MB: a player's report with its logs is
+	# the largest (6 MB of them, compressed). Nothing else is near it.
 	request_body {
-		max_size 4MB
+		max_size 8MB
 	}
 	@admin path /users.UsersAdmin/* /games.GamesAdmin/*
 	handle @admin {
@@ -2193,9 +2193,11 @@ metrics_tls() {
   printf '\t}\n'
 }
 # How long Caddy waits for a request's headers and body, and keeps an idle
-# connection (for every site on the port).
+# connection (for every site on the port). A report's logs, a few MB, can take
+# well over 30 s from the other side of the world (NZ to Canada did, and the
+# report failed); headers must still come at once.
 caddy_timeouts() {
-  printf '\t\ttimeouts {\n\t\t\tread_header 10s\n\t\t\tread_body 30s\n\t\t\tidle 2m\n\t\t}\n'
+  printf '\t\ttimeouts {\n\t\t\tread_header 10s\n\t\t\tread_body 3m\n\t\t\tidle 3m\n\t\t}\n'
 }
 METRICS_CERT="/etc/caddy/5th-echelon-metrics.crt"
 METRICS_KEY="/etc/caddy/5th-echelon-metrics.key"
