@@ -1257,10 +1257,14 @@ impl Storage {
     }
 
     /// Deletes what's left of ended sessions and old invitations, which used
-    /// to stay until a restart. Called every few minutes.
+    /// to stay until a restart. Called every few minutes. The newest session stays: ids
+    /// aren't AUTOINCREMENT, so with the table emptied they started from 1 again, and a
+    /// game still holding an old id (a friend's advertised session, an invitation) could
+    /// find someone else's new session under it.
     pub async fn purge_stale_async(&self) -> Result<()> {
         sqlx::query(&format!(
-            "DELETE FROM game_sessions WHERE destroyed_at IS NOT NULL AND destroyed_at < datetime('now', '-10 minutes') AND {}",
+            "DELETE FROM game_sessions WHERE destroyed_at IS NOT NULL AND destroyed_at < datetime('now', '-10 minutes') AND {}
+               AND id < (SELECT MAX(id) FROM game_sessions)",
             players::DONE_WITH
         ))
         .execute(&self.pool)
@@ -1558,6 +1562,22 @@ pub(crate) mod tests {
         };
         assert_eq!(end(ended).as_deref(), Some("2026-01-01 00:00:00"), "a finished match keeps its length");
         assert!(end(open).is_some_and(|e| e.as_str() > "2026-01-01 00:00:00"), "the open one ends now");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn purging_ended_sessions_never_hands_an_id_out_again() {
+        let (storage, dir) = temp_storage("ids");
+        storage.register_user("Host", "pw", Some("HOST")).unwrap();
+        let host = storage.find_user_id_by_name("Host").unwrap().unwrap();
+        let first = storage.create_game_session(host, 1, "113 => 1".into()).unwrap();
+        let last = storage.create_game_session(host, 1, "113 => 1".into()).unwrap();
+        run(sqlx::query("UPDATE game_sessions SET destroyed_at = datetime('now', '-1 hour')").execute(&storage.pool))
+            .unwrap()
+            .unwrap();
+        run(storage.purge_stale_async()).unwrap().unwrap();
+        let next = storage.create_game_session(host, 1, "113 => 1".into()).unwrap();
+        assert!(next > last && last > first, "{first} {last} {next}: ids keep climbing");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
