@@ -89,11 +89,38 @@ export function seriesFor(data, field, servers = [], transform = v => v) {
   }));
 }
 
+/** Adds up servers' values over time. Each server's points come at their own times, and
+ * now and then one misses a slot: a server counts with its last value until it's `stale`
+ * seconds old (gone quiet: nothing), so a missed or late point isn't a drop to zero.
+ * `servers` is a list of point lists sorted by time; `pick(p)` gives the values to add, as
+ * an object. Answers `[{ t, ...sums }]`, one per slot of `slot` seconds. */
+export function sumOverTime(servers, pick, slot, stale) {
+  const slots = new Set();
+  for (const pts of servers) for (const p of pts) slots.add(Math.floor(p.t / slot) * slot);
+  const times = [...slots].sort((a, b) => a - b);
+  const out = times.map(t => ({ t }));
+  for (const pts of servers) {
+    let i = -1;
+    times.forEach((t, n) => {
+      while (i + 1 < pts.length && pts[i + 1].t < t + slot) i++;
+      const p = pts[i];
+      if (!p || t + slot - p.t > stale) return;
+      for (const [k, v] of Object.entries(pick(p))) out[n][k] = (out[n][k] || 0) + (v || 0);
+    });
+  }
+  return out;
+}
+
 /** One line adding up every server's `field`. */
 export function totalSeries(data, field, name = 'All servers') {
-  const sums = new Map();
-  for (const pts of Object.values(data.points || {})) for (const p of pts) sums.set(p.t, (sums.get(p.t) || 0) + (p[field] || 0));
-  return { name, color: 'var(--text)', points: [...sums.entries()].sort((a, b) => a[0] - b[0]).map(([t, v]) => ({ t, v })) };
+  const servers = Object.values(data.points || {}).map(pts => [...pts].sort((a, b) => a.t - b.t));
+  const all = servers.flat().map(p => p.t).sort((a, b) => a - b);
+  // The points' spacing (the series' step), for the slots and how long a value stands.
+  let step = Infinity;
+  for (let i = 1; i < all.length; i++) if (all[i] > all[i - 1]) step = Math.min(step, all[i] - all[i - 1]);
+  if (!Number.isFinite(step)) step = 60;
+  const sums = sumOverTime(servers, p => ({ v: p[field] }), step, step * 3);
+  return { name, color: 'var(--text)', points: sums.map(({ t, v }) => ({ t, v: v || 0 })) };
 }
 
 export const RANGES = [[3600, '1 h'], [21600, '6 h'], [86400, '24 h'], [604800, '7 d'], [2592000, '30 d'], [31536000, '1 y']];
@@ -102,7 +129,6 @@ export const PLACE_RANGES = [[0, 'Now'], [86400, '24 h'], [604800, '7 d'], [2592
 /** The network's live numbers now, and over the last half hour, from the servers' pulses. */
 export function liveTotals(pulses) {
   const now = { players: 0, in_match: 0, matches: 0, bps: 0, relayed: 0, servers: 0 };
-  const series = new Map();
   for (const points of Object.values(pulses || {})) {
     const last = points.at(-1);
     if (!last || Date.now() / 1000 - last.t > 45) continue;
@@ -112,16 +138,13 @@ export function liveTotals(pulses) {
     now.matches += last.matches;
     now.bps += (last.rx + last.tx) * 8;
     now.relayed += last.relayed * 8;
-    // Points land at different seconds on each server: 10-second slots.
-    for (const p of points) {
-      const k = Math.floor(p.t / 10) * 10;
-      const e = series.get(k) || { t: k, players: 0, bps: 0 };
-      e.players += p.players;
-      e.bps += (p.rx + p.tx) * 8;
-      series.set(k, e);
-    }
   }
-  return { now, series: [...series.values()].sort((a, b) => a.t - b.t) };
+  // Pulses land at different seconds on each server, every ten or so: 10-second slots, each
+  // server with its latest pulse (half a minute old at most: after that it's gone quiet).
+  const servers = Object.values(pulses || {}).map(pts => [...pts].sort((a, b) => a.t - b.t));
+  const series = sumOverTime(servers, p => ({ players: p.players, bps: (p.rx + p.tx) * 8 }), 10, 30)
+    .map(e => ({ t: e.t, players: e.players || 0, bps: e.bps || 0 }));
+  return { now, series };
 }
 
 /** What players can tick in a report. */
