@@ -113,7 +113,14 @@ fn report(version: u32) -> String {
     let _ = writeln!(out, "engine[+0x68][+0x40c]: {:?}", string.as_deref().unwrap_or("(unreadable)"));
     let field = |a| read_u32(a).map_or("unreadable".into(), |v| v.to_string());
     let (count, native_end, start, end) = (read_u32(NAMES_COUNT), read_u32(NATIVE_END), read_u32(STARTUP_START), read_u32(STARTUP_END));
-    let _ = writeln!(out, "names: {} in all; counted: [0, {}) and [{}, {})", field(NAMES_COUNT), field(NATIVE_END), field(STARTUP_START), field(STARTUP_END));
+    let _ = writeln!(
+        out,
+        "names: {} in all; counted: [0, {}) and [{}, {})",
+        field(NAMES_COUNT),
+        field(NATIVE_END),
+        field(STARTUP_START),
+        field(STARTUP_END)
+    );
     let _ = writeln!(out, "game version count: {}", field(0x0330_c478));
     let _ = writeln!(out, "\nindex\tvalue\tcounted\tname");
     let (Some(table), Some(count), Some(native_end), Some(start), Some(end)) = (read_u32(NAMES), count, native_end, start, end) else {
@@ -122,7 +129,9 @@ fn report(version: u32) -> String {
     };
     let last = (count as usize).min(MAX_NAMES);
     for i in 0..last {
-        let Some(entry) = read_u32(table as usize + i * 4).filter(|e| *e != 0).map(|e| e as usize) else { continue };
+        let Some(entry) = read_u32(table as usize + i * 4).filter(|e| *e != 0).map(|e| e as usize) else {
+            continue;
+        };
         let value = read_u32(entry + 4).unwrap_or_default();
         let name = read_string(entry + 8, 1024).unwrap_or_default();
         let i32_index = i as u32;

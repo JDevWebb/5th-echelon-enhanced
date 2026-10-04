@@ -13,6 +13,7 @@ use setup::save::SaveState;
 use crate::app::App;
 use crate::app::Game;
 use crate::app::Notices;
+use crate::app::Prefs;
 use crate::flow;
 use crate::task::Slot;
 use crate::theme;
@@ -32,11 +33,12 @@ pub enum Section {
     Client,
     Advanced,
     Display,
+    Feedback,
     About,
 }
 
 impl Section {
-    const ALL: [Self; 9] = [
+    const ALL: [Self; 10] = [
         Self::Game,
         Self::Network,
         Self::Servers,
@@ -45,6 +47,7 @@ impl Section {
         Self::Client,
         Self::Advanced,
         Self::Display,
+        Self::Feedback,
         Self::About,
     ];
 
@@ -58,6 +61,7 @@ impl Section {
             Self::Client => "5th Echelon client",
             Self::Advanced => "Advanced",
             Self::Display => "Display",
+            Self::Feedback => "Feedback",
             Self::About => "About",
         }
     }
@@ -138,6 +142,10 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
             display(app, ui);
             return;
         }
+        Section::Feedback => {
+            feedback(app, ui);
+            return;
+        }
         _ => {}
     }
     let (settings, game, notices) = app.settings_mut();
@@ -183,8 +191,29 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
         Section::Save => section(ui, "Save game", |ui| save_game(settings, game, &ctx, ui)),
         Section::Client => section(ui, "5th Echelon client", |ui| client(settings, game, &ctx, ui)),
         Section::Advanced => section(ui, "Hooks", |ui| hooks(game, notices, ui)),
-        Section::About | Section::Display => {}
+        Section::About | Section::Display | Section::Feedback => {}
     }
+}
+
+/// Asking how games went, and sending a report now.
+fn feedback(app: &mut App, ui: &mut egui::Ui) {
+    section(ui, "After a game", |ui| {
+        ui.label(theme::muted(
+            "When something goes wrong in a game (a join that fails, a crash), and now and then otherwise, the launcher asks how it went once the game closes. Your answer goes to the server's admins, with your logs if you agree: your PC's name, your user folder and your internet address are hidden first.",
+        ));
+        let (_, off) = Prefs::feedback();
+        let mut ask = !off;
+        if ui.checkbox(&mut ask, "Ask me how my games went").changed() {
+            Prefs::set_feedback_off(!ask);
+        }
+    });
+    section(ui, "Report a problem", |ui| {
+        ui.label(theme::muted("Something wrong now? Tell the admins of the server you play on, with your logs."));
+        let ctx = ui.ctx().clone();
+        if ui.add_enabled(!app.feedback_busy(), theme::secondary("Send feedback")).clicked() {
+            app.ask_feedback(&ctx);
+        }
+    });
 }
 
 /// The launcher's size: it fits its window, and the player's size comes on top.

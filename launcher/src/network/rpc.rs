@@ -256,3 +256,39 @@ pub async fn relationships(api_url: String, token: &str) -> Result<server_api::f
         Err(status) => Err(status.into()),
     }
 }
+
+/// A session token for the account, and a channel to its server.
+async fn signed_in(api_url: &str, username: &str, password: &str) -> Result<(tonic::transport::Channel, tonic::metadata::MetadataValue<tonic::metadata::Ascii>), Error> {
+    let channel = super::endpoint(api_url)?.connect().await.map_err(|_| Error::ConnectionFailed)?;
+    let token = UsersClient::new(channel.clone())
+        .login(LoginRequest {
+            username: username.to_string(),
+            password: password.to_string(),
+            client: super::CLIENT.into(),
+        })
+        .await?
+        .into_inner()
+        .token;
+    let token = token.parse().map_err(|_| Error::ServerFailure("bad token".into()))?;
+    Ok((channel, token))
+}
+
+/// What the server saw of the account's last game session (feedback.rs).
+pub async fn session_summary(api_url: String, username: &str, password: &str) -> Result<server_api::misc::SessionSummaryResponse, Error> {
+    let (channel, token) = signed_in(&api_url, username, password).await?;
+    let mut client = server_api::misc::misc_client::MiscClient::with_interceptor(channel, move |mut req: tonic::Request<()>| {
+        req.metadata_mut().insert("authorization", token.clone());
+        Ok(req)
+    });
+    Ok(client.session_summary(server_api::misc::SessionSummaryRequest {}).await?.into_inner())
+}
+
+/// Sends the player's report to the server; answers its id.
+pub async fn send_report(api_url: String, username: &str, password: &str, report: server_api::misc::ReportRequest) -> Result<String, Error> {
+    let (channel, token) = signed_in(&api_url, username, password).await?;
+    let mut client = server_api::misc::misc_client::MiscClient::with_interceptor(channel, move |mut req: tonic::Request<()>| {
+        req.metadata_mut().insert("authorization", token.clone());
+        Ok(req)
+    });
+    Ok(client.report(report).await?.into_inner().id)
+}

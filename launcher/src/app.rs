@@ -87,6 +87,12 @@ pub struct Prefs {
     /// The player's size for the launcher (1.0: as designed), on top of fitting the window.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     ui_scale: Option<f32>,
+    /// When the player was last asked how a game went (feedback.rs).
+    #[serde(default)]
+    feedback: setup::feedback::Asked,
+    /// The player said not to ask.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    feedback_off: bool,
 }
 
 impl Prefs {
@@ -143,6 +149,24 @@ impl Prefs {
         let mut prefs = Self::load();
         let size = crate::scale::clamp(size);
         prefs.ui_scale = ((size - 1.0).abs() > f32::EPSILON).then_some(size);
+        prefs.save();
+    }
+
+    /// When the player was last asked how a game went, and whether they said not to ask.
+    pub fn feedback() -> (setup::feedback::Asked, bool) {
+        let prefs = Self::load();
+        (prefs.feedback, prefs.feedback_off)
+    }
+
+    pub fn set_feedback_asked(asked: setup::feedback::Asked) {
+        let mut prefs = Self::load();
+        prefs.feedback = asked;
+        prefs.save();
+    }
+
+    pub fn set_feedback_off(off: bool) {
+        let mut prefs = Self::load();
+        prefs.feedback_off = off;
         prefs.save();
     }
 
@@ -212,6 +236,8 @@ pub struct App {
     finding: Slot<Vec<PathBuf>>,
     pub notices: Notices,
     play: Play,
+    /// "How did that go?" after a game (feedback.rs).
+    feedback: crate::feedback::Feedback,
     settings: Settings,
     server: Server,
     /// The latest release, once looked up.
@@ -241,6 +267,7 @@ impl App {
             finding: Slot::default(),
             notices: Notices::default(),
             play: Play::default(),
+            feedback: crate::feedback::Feedback::default(),
             settings: Settings::default(),
             server: Server::default(),
             latest: None,
@@ -423,6 +450,18 @@ impl App {
         Prefs::set_ui_scale(self.ui_scale);
     }
 
+    /// The player wants to send feedback or report a problem (Settings › Feedback).
+    pub fn ask_feedback(&mut self, ctx: &egui::Context) {
+        match &self.game {
+            Some(game) => self.feedback.ask_now(ctx, game.dir.clone(), self.play.checks_text()),
+            None => self.notices.error("Find the game first (Settings › Game)."),
+        }
+    }
+
+    pub fn feedback_busy(&self) -> bool {
+        self.feedback.busy()
+    }
+
     pub fn open_settings(&mut self, section: crate::settings::Section) {
         self.settings.section = section;
         self.view = View::Settings;
@@ -471,6 +510,12 @@ impl eframe::App for App {
             }
         }
         self.keep_up_to_date(ctx);
+        if let Some((code, checks)) = self.play.take_closed() {
+            if let Some(game) = &self.game {
+                self.feedback.game_closed(ctx, game.dir.clone(), code, checks);
+            }
+        }
+        self.feedback.show(ctx, &mut self.notices);
         if let Some(Err(e)) = self.updating.poll() {
             self.notices.error(format!("Couldn't update: {e}"));
         }

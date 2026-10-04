@@ -269,7 +269,10 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
             crate::community::say(status.message().to_string(), true);
             return Err(status.into());
         }
-        Err(status) => return Err(status.into()),
+        Err(status) => {
+            error!("Sign-in failed: {}", status.message());
+            return Err(status.into());
+        }
     };
     if !response.error.is_empty() {
         error!("Login error: {}", response.error);

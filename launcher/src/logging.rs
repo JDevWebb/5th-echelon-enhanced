@@ -6,6 +6,7 @@
 
 use tracing_subscriber::layer::SubscriberExt as _;
 use tracing_subscriber::util::SubscriberInitExt as _;
+use tracing_subscriber::Layer as _;
 
 /// Shows a Windows message box with the specified message and caption.
 #[cfg(target_os = "windows")]
@@ -74,18 +75,37 @@ fn catch_panics() {
     }));
 }
 
-/// Initializes the logging and panic handling for the application.
+/// The launcher's log file (in its data folder), for players' problem reports
+/// (feedback.rs); the run before's is kept beside it.
+pub fn log_path() -> Option<std::path::PathBuf> {
+    setup::app_data_dir().map(|d| d.join("launcher.log"))
+}
+
+/// Initializes the logging and panic handling for the application: warnings and errors to
+/// the console, and everything from info up to [`log_path`].
 pub fn init() {
     enable_console();
     catch_panics();
 
-    // Initialize the tracing subscriber with a default log level of WARN.
+    let file = log_path().and_then(|path| {
+        let _ = std::fs::create_dir_all(path.parent()?);
+        let _ = std::fs::rename(&path, path.with_file_name("launcher.prev.log"));
+        std::fs::File::create(&path).ok()
+    });
+    let file_layer = file.map(|f| {
+        tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(std::sync::Mutex::new(f))
+            .with_filter(tracing_subscriber::filter::LevelFilter::INFO)
+    });
     tracing_subscriber::registry()
-        .with(tracing_subscriber::fmt::layer())
         .with(
-            tracing_subscriber::EnvFilter::builder()
-                .with_default_directive(tracing_subscriber::filter::LevelFilter::WARN.into())
-                .from_env_lossy(),
+            tracing_subscriber::fmt::layer().with_filter(
+                tracing_subscriber::EnvFilter::builder()
+                    .with_default_directive(tracing_subscriber::filter::LevelFilter::WARN.into())
+                    .from_env_lossy(),
+            ),
         )
+        .with(file_layer)
         .init();
 }

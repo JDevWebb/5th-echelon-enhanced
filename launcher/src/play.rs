@@ -74,6 +74,10 @@ pub struct Play {
     /// seconds.
     game_seen: bool,
     game_checked: Option<Instant>,
+    /// The game just closed (its exit code, when the launcher started it), for the feedback
+    /// ask; and when a close was last seen (both ways of seeing one fire for one close).
+    closed: Option<Option<i32>>,
+    closed_at: Option<Instant>,
     /// The home screen's checks: every one, not only what matters.
     show_all_checks: bool,
     /// What's typed in Servers › Join by address.
@@ -195,20 +199,51 @@ impl Play {
             }
             changed = true;
         }
-        if let Some(Ok(Some(_))) = self.running.as_mut().map(Child::try_wait) {
+        if let Some(Ok(Some(status))) = self.running.as_mut().map(Child::try_wait) {
             self.running = None;
+            self.game_closed(status.code());
             changed = true;
         }
         if self.game_checked.is_none_or(|t| t.elapsed() > Duration::from_secs(3)) {
             self.game_checked = Some(Instant::now());
             let seen = setup::game::game_running();
-            changed |= self.game_seen && !seen;
+            if self.game_seen && !seen {
+                changed = true;
+                if self.running.is_none() {
+                    self.game_closed(None);
+                }
+            }
             self.game_seen = seen;
         }
         let stale = self.refreshed.is_none_or(|t| t.elapsed() > REFRESH_EVERY);
         if (changed || stale) && !self.busy() {
             self.refresh(ctx, game);
         }
+    }
+}
+
+impl Play {
+    fn game_closed(&mut self, code: Option<i32>) {
+        if self.closed_at.is_some_and(|t| t.elapsed() < Duration::from_secs(60)) {
+            return;
+        }
+        self.closed_at = Some(Instant::now());
+        self.closed = Some(code);
+    }
+
+    /// The game closed since last asked: its exit code if known, and the checklist as text.
+    pub(crate) fn take_closed(&mut self) -> Option<(Option<i32>, String)> {
+        let code = self.closed.take()?;
+        Some((code, self.checks_text()))
+    }
+
+    /// The home screen's checklist as text, one check a line.
+    pub(crate) fn checks_text(&self) -> String {
+        self.checks
+            .iter()
+            .map(|c| format!("{:?}\t{}\t{}", c.status, c.title, c.detail.replace('\n', " ")))
+            .collect::<Vec<_>>()
+            .join("\n")
     }
 }
 

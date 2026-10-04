@@ -5,6 +5,7 @@
 
 mod app;
 mod dll_utils;
+mod feedback;
 mod flow;
 mod logging;
 mod network;

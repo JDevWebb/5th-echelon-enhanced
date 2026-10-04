@@ -25,6 +25,8 @@ pub use rpc::link_identity;
 pub use rpc::register;
 pub use rpc::relationships;
 pub use rpc::rename;
+pub use rpc::send_report;
+pub use rpc::session_summary;
 pub use rpc::sign_in;
 pub use rpc::test_login;
 
