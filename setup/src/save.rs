@@ -64,6 +64,16 @@ fn split(data: &[u8]) -> Option<(&[u8], &[u8])> {
     (length == data.len() - at).then(|| (&data[..at - 4], &data[at + MAGIC.len()..]))
 }
 
+/// Whether `data` is a save the game wrote: [`split`]'s XML profile (upstream's generated
+/// save), or the game's own binary one, which has the same frame (a 6-byte header starting
+/// with 1, then the length of the rest) without the XML. Only the XML one can be read and
+/// raised to rank 5; the binary one is kept as it is.
+fn is_save(data: &[u8]) -> bool {
+    split(data).is_some()
+        || (data.first() == Some(&1)
+            && data.get(6..10).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes).is_some_and(|n| n as usize == data.len() - 10 && n > 0))
+}
+
 fn xp(xml: &[u8]) -> Option<u32> {
     let text = std::str::from_utf8(xml).ok()?;
     let start = text.find(XP_OPEN)? + XP_OPEN.len();
@@ -179,7 +189,7 @@ pub fn find_ubisoft_save(game_dir: Option<&Path>) -> Option<PathBuf> {
 fn ubisoft_payload(data: &[u8]) -> Option<&[u8]> {
     let meta = u32::from_le_bytes(data.get(..4)?.try_into().ok()?) as usize;
     let payload = data.get(4usize.checked_add(meta)?..)?;
-    split(payload).map(|_| payload)
+    is_save(payload).then_some(payload)
 }
 
 /// Imports a Ubisoft Connect save, backing up the save at `to` first.
@@ -196,7 +206,7 @@ pub fn import_ubisoft(from: &Path, to: &Path) -> std::io::Result<Option<PathBuf>
 /// `to` is backed up first; a file that isn't a Blacklist save changes nothing.
 pub fn import_file(from: &Path, to: &Path) -> std::io::Result<Option<PathBuf>> {
     let data = std::fs::read(from)?;
-    let save = if split(&data).is_some() { &data[..] } else { ubisoft_payload(&data).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "that file isn't a Blacklist save"))? };
+    let save = if is_save(&data) { &data[..] } else { ubisoft_payload(&data).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "that file isn't a Blacklist save"))? };
     if std::fs::canonicalize(from).ok() == std::fs::canonicalize(to).ok() && to.exists() {
         return Ok(None);
     }
@@ -309,6 +319,33 @@ mod tests {
         put("account-b/1234/1.save", b"another game's save");
         put("account-a/449/2.save", &ubisoft_file(300));
         assert_eq!(ubisoft_saves_in(&[root.clone(), dir.join("missing")]), [newer, old]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_games_binary_saves_are_saves() {
+        // As Ubisoft Connect keeps one: its metadata, then the game's binary save.
+        let body: Vec<u8> = (0..300u32).map(|i| (i * 7) as u8).collect();
+        let mut game = vec![1, 0, 0, 0, 0, 0];
+        game.extend((body.len() as u32).to_le_bytes());
+        game.extend(&body);
+        let mut ubisoft = 0x224u32.to_le_bytes().to_vec();
+        ubisoft.extend(vec![0u8; 0x224]);
+        ubisoft.extend(&game);
+        assert_eq!(ubisoft_payload(&ubisoft), Some(&game[..]));
+        assert!(is_save(&game));
+        let dir = temp_dir("binary-save");
+        let (from, to) = (dir.join("1.save"), dir.join("Saves").join("00000001.sav"));
+        std::fs::write(&from, &ubisoft).unwrap();
+        import_file(&from, &to).unwrap();
+        assert_eq!(std::fs::read(&to).unwrap(), game);
+        // Kept as it is: it can't be read for its rank.
+        assert_eq!(check(&to), SaveState::Unreadable);
+        assert_eq!(prepare_from(&to, None).unwrap(), Prepared::Ready);
+        // Not anything with a 1 in front.
+        let mut wrong = game.clone();
+        wrong.push(0);
+        assert!(!is_save(&wrong) && !is_save(b"\x01garbage"));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
