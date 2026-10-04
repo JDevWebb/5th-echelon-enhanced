@@ -44,6 +44,7 @@ const KINDS: &[&str] = &[
     "invite_delivered",
     "stats",
     "nat",
+    "nat_missing",
     "relay_drop",
     "request_error",
 ];
@@ -511,8 +512,8 @@ fn describe(e: &Event) -> String {
             )
         }
         "join_failed" => match e.detail["host_name"].as_str() {
-            Some(host) => format!("Couldn't join {host}'s room ({})", e.str("code")),
-            None => format!("Couldn't join a room ({})", e.str("code")),
+            Some(host) => format!("Couldn't join {host}'s room ({})", join_error(&e.str("code"))),
+            None => format!("Couldn't join a room ({})", join_error(&e.str("code"))),
         },
         "invite" => match e.detail["to_name"].as_str() {
             Some(to) if e.room().is_some() => format!("Invited {to}"),
@@ -528,6 +529,10 @@ fn describe(e: &Event) -> String {
                 "Online play direct".into()
             }
         }
+        "nat_missing" => format!(
+            "Signed in, but the game hadn't registered for online play {} s later: nobody could reach it",
+            e.detail["after_secs"]
+        ),
         "relay_drop" => format!(
             "Relayed traffic {} fell from {} to {} packets/s",
             if e.str("direction") == "sending" { "from them" } else { "to them" },
@@ -541,6 +546,17 @@ fn describe(e: &Event) -> String {
 
 /// The problems in a run of events (sorted by time), each `{at, server, level (bad, warn,
 /// info), player, name, title, text}`.
+/// A failed join's code with its name: the game's codes are the CRC-32 of the error's name.
+fn join_error(code: &str) -> String {
+    let name = match code {
+        "0xb08a1a05" => "CONNECTION_FAILED: couldn't reach the host",
+        "0x97182b1b" => "LOCKED_SESSION: the match had started",
+        "0xeea440ee" => "DATA_VERSION_MISMATCH: different game data (a mod)",
+        _ => return code.to_string(),
+    };
+    format!("{name}, {code}")
+}
+
 pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
     let mut out = Vec::new();
     let problem = |e: &Event, level: &str, title: String, text: String| json!({ "at": e.at, "server": e.server, "level": level, "player": e.player, "name": e.name, "title": title, "text": text });
@@ -589,6 +605,8 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
                 out.push(p);
             }
             "join_failed" => out.push(problem(e, "bad", format!("{} couldn't join a room", e.name), describe(e))),
+            // Joins with them fail (CONNECTION_FAILED) until a restart registers it.
+            "nat_missing" => out.push(problem(e, "bad", format!("{}'s game couldn't be reached", e.name), describe(e))),
             "request_error" => out.push(problem(
                 e,
                 "warn",
@@ -827,6 +845,28 @@ mod tests {
         // A match that ended (stats written) isn't.
         events.push(ev("na", 1350, 2, "Viper", "stats", json!({})));
         assert!(titles(&events).is_empty());
+    }
+
+    /// Tonight's on NA1: a game that signed in and never registered for online play, and
+    /// the joins with it that failed to connect, named.
+    #[test]
+    fn a_game_nobody_could_reach_is_a_problem_and_join_codes_are_named() {
+        let events = vec![
+            ev("na", 100, 13, "emeraldknight33", "nat_missing", json!({ "after_secs": 92 })),
+            ev(
+                "na",
+                200,
+                13,
+                "emeraldknight33",
+                "join_failed",
+                json!({ "room": 8, "code": "0xb08a1a05", "host_name": "SirCooms" }),
+            ),
+        ];
+        let found = problems(&events);
+        assert_eq!(found[0]["title"], "emeraldknight33's game couldn't be reached");
+        assert!(found[0]["text"].as_str().unwrap().contains("92 s later"), "{}", found[0]);
+        assert!(found[1]["text"].as_str().unwrap().contains("CONNECTION_FAILED"), "{}", found[1]);
+        assert_eq!(super::join_error("0x12345678"), "0x12345678", "an unknown code as it is");
     }
 
     #[test]

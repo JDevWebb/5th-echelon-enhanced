@@ -138,6 +138,8 @@ struct Peer {
     /// Packets relayed from this player and to them since [`Table::flows`] last looked.
     sent: u64,
     received: u64,
+    /// The game's last probe (relayed traffic doesn't count: a registration lives on that).
+    probed_at: Instant,
 }
 
 /// How long a direct player's address must stand before the address echo gives it out: the
@@ -287,6 +289,7 @@ impl Table {
             settled_since: old.as_ref().filter(|(_, o)| o.advertise == advertise).map_or(now, |(_, o)| o.settled_since),
             sent: old.as_ref().map_or(0, |(_, o)| o.sent),
             received: old.as_ref().map_or(0, |(_, o)| o.received),
+            probed_at: now,
         };
         let tag = peer.tag;
         self.by_name.insert(key, id);
@@ -365,6 +368,42 @@ impl Table {
             .filter(|p| p.sent + p.received > 0 || p.relayed)
             .map(|p| (p.name.clone(), std::mem::take(&mut p.sent), std::mem::take(&mut p.received)))
             .collect()
+    }
+
+    /// Whether `name`'s game probed at or after `since`.
+    pub fn probed_since(&self, name: &str, since: Instant) -> bool {
+        self.by_name
+            .get(&name.to_lowercase())
+            .and_then(|id| self.peers.get(id))
+            .is_some_and(|p| p.probed_at >= since)
+    }
+
+    /// Who an address the relay saw is: a registered player's game, an unregistered port on
+    /// the address a player registered from (a game sending from a port it didn't register),
+    /// or nobody known.
+    fn who_sent(&self, src: SocketAddrV4) -> String {
+        if let Some(p) = self.by_real.get(&src).and_then(|id| self.peers.get(id)) {
+            return p.name.clone();
+        }
+        let same_ip: Vec<String> = self
+            .peers
+            .values()
+            .filter(|p| p.real.ip() == src.ip())
+            .map(|p| format!("{} (registered from port {})", p.name, p.real.port()))
+            .collect();
+        if same_ip.is_empty() {
+            "nobody registered".into()
+        } else {
+            format!("an unregistered port of {}", same_ip.join(", "))
+        }
+    }
+
+    /// Whose relay port (or advertised address) `to` is.
+    fn who_has(&self, to: SocketAddrV4) -> String {
+        self.by_advertise
+            .get(&to)
+            .and_then(|id| self.peers.get(id))
+            .map_or_else(|| "nobody's".into(), |p| format!("{}'s", p.name))
     }
 
     /// Forgets players not heard from in [`EXPIRY`].
@@ -579,6 +618,49 @@ fn address_only(nonce: u32, src: SocketAddrV4, cookie: nat_proto::Cookie) -> Mes
     }
 }
 
+/// A game that signed in should probe the helper within this (it does in seconds; up to
+/// a minute seen): one that hasn't can't be reached by anyone, relayed or direct.
+const PROBE_WITHIN: Duration = Duration::from_secs(90);
+
+/// Games that signed in and haven't probed since: when they signed in, by name.
+fn awaiting() -> std::sync::MutexGuard<'static, HashMap<String, Instant>> {
+    static AWAITING: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
+    AWAITING.get_or_init(Mutex::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `name`'s game signed in: it should register with the helper soon (see [`PROBE_WITHIN`]).
+pub fn game_signed_in(name: &str) {
+    if TABLE.get().is_some() {
+        awaiting().insert(name.to_lowercase(), Instant::now());
+    }
+}
+
+/// `name`'s game signed out (or its connection timed out): nothing to wait for.
+pub fn game_signed_out(name: &str) {
+    awaiting().remove(&name.to_lowercase());
+}
+
+/// Games that signed in [`PROBE_WITHIN`] ago or more and haven't probed since (each said
+/// once), with how long ago they signed in; those that probed are let go.
+fn unregistered(table: &Table, now: Instant) -> Vec<(String, u64)> {
+    let mut late = Vec::new();
+    awaiting().retain(|name, at| {
+        if table.probed_since(name, *at) {
+            return false;
+        }
+        let waited = now.duration_since(*at);
+        if waited >= PROBE_WITHIN {
+            late.push((name.clone(), waited.as_secs()));
+            return false;
+        }
+        true
+    });
+    late
+}
+
+/// Dropped relayed packets whose senders are told, at most this many a report (the busiest).
+const DROPS_TOLD: usize = 3;
+
 /// A player's relayed traffic in one direction counts as having fallen when it was at least
 /// this many packets a second (a match is 30 or more) and is now under a quarter of that.
 const DROP_FROM_PPS: f64 = 20.0;
@@ -622,12 +704,42 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
     let mut watch = RelayWatch::default();
     // Relayed packets since the last report: forwarded, and dropped.
     let (mut forwarded, mut dropped, mut failed) = (0u64, 0u64, 0u64);
+    // Where the dropped ones came from and went to (a few hundred at most a report).
+    let mut drops: HashMap<(SocketAddrV4, SocketAddrV4), u64> = HashMap::new();
     loop {
         let now = Instant::now();
         if now.duration_since(last_expiry) > Duration::from_secs(10) {
             let secs = now.duration_since(last_expiry).as_secs_f64();
             last_expiry = now;
-            let (gone, players, relayed, flows) = table.lock().map(|mut t| (t.expire(now), t.len(), t.relayed(), t.flows())).unwrap_or_default();
+            let (gone, players, relayed, flows, late, dropped_from) = table
+                .lock()
+                .map(|mut t| {
+                    // Who sent the packets the relay dropped, and whose port they were for: a
+                    // game sending from a port it never registered shows here.
+                    let mut busiest: Vec<_> = drops.drain().collect();
+                    busiest.sort_by(|a, b| b.1.cmp(&a.1));
+                    let told: Vec<String> = if dropped >= 3 {
+                        busiest
+                            .iter()
+                            .take(DROPS_TOLD)
+                            .map(|((src, to), n)| format!("{n} from {src} ({}) to {to} ({} relay port)", t.who_sent(*src), t.who_has(*to)))
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    (t.expire(now), t.len(), t.relayed(), t.flows(), unregistered(&t, now), told)
+                })
+                .unwrap_or_default();
+            if !dropped_from.is_empty() {
+                info!(logger, "NAT relay: dropped {}", dropped_from.join("; "));
+            }
+            for (name, secs) in late {
+                warn!(
+                    logger,
+                    "NAT helper: {name}'s game signed in {secs} s ago and hasn't registered with the helper: nobody can reach it until it does"
+                );
+                crate::session_events::note(crate::session_events::Who::Name(name), "nat_missing", serde_json::json!({ "after_secs": secs }));
+            }
             for (name, direction, before, after) in watch.tick(&flows, secs) {
                 info!(logger, "NAT relay: {name}'s traffic {direction} fell from {before:.0} to {after:.0} packets/s");
                 crate::session_events::note(
@@ -679,6 +791,9 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
                 }
             } else {
                 dropped += 1;
+                if drops.len() < 256 {
+                    *drops.entry((src, to)).or_default() += 1;
+                }
             }
             continue;
         }
@@ -760,6 +875,44 @@ mod tests {
             Message::ProbeReply { advertise, flags, .. } => (*advertise, flags & reply_flags::RELAYED != 0),
             _ => panic!("{m:?}"),
         }
+    }
+
+    /// A game that signed in and never probed is told once, after a while; one that probed
+    /// since, or is still within its time, isn't.
+    #[test]
+    fn a_game_that_signs_in_and_never_registers_is_noticed() {
+        let mut t = table(RelayMode::Auto);
+        let now = Instant::now();
+        let ago = |s| now.checked_sub(Duration::from_secs(s)).unwrap();
+        awaiting().insert("nat-test-silent".into(), ago(100));
+        awaiting().insert("nat-test-registered".into(), ago(100));
+        awaiting().insert("nat-test-starting".into(), ago(10));
+        t.probe(a("198.51.100.20:13000"), 0, 1, None, "NAT-Test-Registered", ago(5));
+        let late = unregistered(&t, now);
+        assert_eq!(late.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>(), ["nat-test-silent"]);
+        assert!(late[0].1 >= 100);
+        assert!(unregistered(&t, now).is_empty(), "told once");
+        assert!(awaiting().contains_key("nat-test-starting"), "still has time");
+        // A probe from before the sign-in (the game before a restart) doesn't count.
+        awaiting().insert("nat-test-registered".into(), ago(1));
+        assert!(!t.probed_since("nat-test-registered", ago(1)));
+        game_signed_out("NAT-Test-Starting");
+        assert!(!awaiting().contains_key("nat-test-starting"));
+    }
+
+    /// The relay's dropped packets are put down to who sent them: a registered game, an
+    /// unregistered port of a player's address, or nobody.
+    #[test]
+    fn dropped_packets_say_who_sent_them() {
+        let mut t = table(RelayMode::All);
+        let now = Instant::now();
+        let (sam, relayed) = advertise(&t.probe(a("198.51.100.7:13000"), 0, 1, None, "Sam", now));
+        assert!(relayed);
+        assert_eq!(t.who_sent(a("198.51.100.7:13000")), "sam");
+        assert_eq!(t.who_sent(a("198.51.100.7:3074")), "an unregistered port of sam (registered from port 13000)");
+        assert_eq!(t.who_sent(a("203.0.113.9:13000")), "nobody registered");
+        assert_eq!(t.who_has(sam), "sam's");
+        assert_eq!(t.who_has(a("192.0.2.1:49999")), "nobody's");
     }
 
     #[test]

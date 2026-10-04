@@ -110,6 +110,9 @@ use crate::config::DebugConfig;
 
 /// A player's game connection closed: their play session ends.
 fn end_play(logger: &slog::Logger, storage: &Storage, user_id: u32) {
+    if let Ok(Some(name)) = storage.find_username_by_user_id(user_id) {
+        nat_helper::game_signed_out(&name);
+    }
     if let Err(e) = storage.end_play(user_id) {
         error!(logger, "ending the play session of {user_id} failed: {e}");
     }
@@ -215,6 +218,10 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
                 false
             });
             metrics::game_login(user_id, from.ip(), new_session);
+            // It should register with the NAT helper next: noticed when it doesn't.
+            if let Ok(Some(name)) = storage.find_username_by_user_id(user_id) {
+                nat_helper::game_signed_in(&name);
+            }
             players::changed(user_id);
             federation::stats_soon(user_id);
             if let Err(e) = storage.set_online(user_id) {
