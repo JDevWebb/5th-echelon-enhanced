@@ -3,7 +3,6 @@
 
 use std::net::IpAddr;
 use std::process::Child;
-use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -14,6 +13,7 @@ use setup::diagnose::Fix;
 use setup::diagnose::Status;
 use setup::game::GameVersion;
 
+use crate::activity::Action;
 use crate::app::App;
 use crate::app::Game;
 use crate::app::Notices;
@@ -66,10 +66,16 @@ pub struct Play {
     setup: Slot<Result<flow::Done, String>>,
     /// A switch to a server another server named, waiting for the player to confirm it.
     switching: Option<Switch>,
-    log: flow::Log,
-    setup_error: Option<String>,
+    /// The setup's activity, and what it was asked (to try again).
+    setup_activity: Option<crate::activity::Handle>,
+    last_setup: Option<SetupAsked>,
     fixing: Slot<Result<String, String>>,
     identifying: Slot<Result<(), String>>,
+    /// The fix's (or identifying the game's) activity, and the fix to try again.
+    fix_activity: Option<(crate::activity::Handle, Option<Fix>)>,
+    /// The activities that failed, for their Try again.
+    setup_failed: Option<u64>,
+    fix_failed: Option<(u64, Fix)>,
     running: Option<Child>,
     /// The game runs (started through Steam, or by hand); checked every few
     /// seconds.
@@ -96,6 +102,16 @@ pub struct Play {
     /// The news item the home card shows, and when it last turned.
     news_index: usize,
     news_turned: Option<Instant>,
+}
+
+/// A setup as it was started, to start it again.
+#[derive(Debug, Clone)]
+struct SetupAsked {
+    server: String,
+    new_name: Option<String>,
+    public_only: bool,
+    /// What the activity says when it worked.
+    done: String,
 }
 
 /// A server to switch to, from the network's list or a friend's.
@@ -165,40 +181,65 @@ impl Play {
         }
         let mut changed = false;
         if let Some(result) = self.setup.poll() {
+            let activity = self.setup_activity.take();
+            let asked = self.last_setup.clone();
             match result {
                 Ok(flow::Done::Ready) => {
                     flow::forget_account_check();
-                    notices.info("You're set up.");
+                    if let (Some(a), Some(asked)) = (&activity, &asked) {
+                        a.done(asked.done.clone());
+                    }
                     self.editing = false;
                     self.needs_name = None;
                     // The setup may have brought a directory: look at its servers again.
                     self.browsed = false;
                     self.directory = None;
-                    self.setup_error = None;
                 }
                 Ok(flow::Done::NeedsName { server, suggested }) => {
+                    if let Some(a) = &activity {
+                        a.finish_quietly();
+                    }
                     // The network's best server, or the one typed: the account is made there.
                     self.server = server.clone();
                     self.server_picked = false;
                     self.nick = suggested;
                     self.needs_name = Some(server);
                     self.editing = true;
-                    self.setup_error = None;
                 }
-                Err(e) => self.setup_error = Some(e),
+                Err(e) => match &activity {
+                    Some(a) => a.fail(e, &[Action::Retry, Action::CopyDetails]),
+                    None => notices.error(e),
+                },
             }
             changed = true;
+        }
+        // Try again, from the activity bar.
+        if let (Some(id), Some(asked)) = (self.setup_failed, self.last_setup.clone()) {
+            if notices.take_action(id) == Some(Action::Retry) && !self.busy() {
+                self.server = asked.server.clone();
+                start_setup(self, game, ctx, notices, asked.new_name.clone(), asked.public_only);
+            }
         }
         if let Some(result) = self
             .fixing
             .poll()
             .or_else(|| self.identifying.poll().map(|r| r.map(|()| "The game version is now supported.".to_string())))
         {
-            match result {
-                Ok(msg) => notices.info(msg),
-                Err(e) => notices.error(e),
+            let activity = self.fix_activity.take();
+            match (result, &activity) {
+                (Ok(msg), Some((a, _))) => a.done(msg),
+                (Err(e), Some((a, fix))) => a.fail(e, if fix.is_some() { &[Action::Retry, Action::CopyDetails] } else { &[Action::CopyDetails] }),
+                (Ok(msg), None) => notices.info(msg),
+                (Err(e), None) => notices.error(e),
             }
+            self.fix_failed = activity.and_then(|(a, fix)| Some((a.id(), fix?)));
             changed = true;
+        }
+        if let Some((id, fix)) = self.fix_failed {
+            if notices.take_action(id) == Some(Action::Retry) && !self.busy() {
+                self.fix_failed = None;
+                run_fix(self, game, notices, fix, ctx);
+            }
         }
         if let Some(Ok(Some(status))) = self.running.as_mut().map(Child::try_wait) {
             self.running = None;
@@ -332,7 +373,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         play.poll(&ctx, game, notices);
         let has_server = game.cfg.current_profile().is_some_and(|p| !p.server.is_empty());
         if game.managed.is_none() && (!has_server || play.editing) {
-            setup_screen(play, game, &ctx, ui);
+            setup_screen(play, game, notices, &ctx, ui);
         } else {
             to = home(play, game, notices, &ctx, ui);
         }
@@ -488,7 +529,7 @@ fn no_game(app: &mut App, ui: &mut egui::Ui) {
 }
 
 /// Picks up a network search and the directory's servers when they arrive.
-fn poll_lookups(play: &mut Play) {
+fn poll_lookups(play: &mut Play, notices: &mut Notices) {
     if let Some(found) = play.looking.poll() {
         match found {
             Ok(ips) if ips.len() == 1 => {
@@ -498,7 +539,7 @@ fn poll_lookups(play: &mut Play) {
                 play.found.clear();
             }
             Ok(ips) => play.found = ips,
-            Err(e) => play.setup_error = Some(e),
+            Err(e) => notices.error(e),
         }
     }
     poll_directory(play);
@@ -520,8 +561,8 @@ fn ping_again(play: &mut Play, ctx: &egui::Context, url: String) {
 
 /// The guided setup's server and name steps (the setup itself installs the
 /// client, makes or finds the account and pins the adapter).
-fn setup_screen(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut egui::Ui) {
-    poll_lookups(play);
+fn setup_screen(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Context, ui: &mut egui::Ui) {
+    poll_lookups(play, notices);
     // With a directory, its servers are pinged as soon as the form opens, and the best preselected.
     auto_browse(play, ctx);
     let naming = play.needs_name.is_some();
@@ -614,7 +655,7 @@ fn setup_screen(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut 
                 .clicked()
             {
                 let name = naming.then(|| play.nick.trim().to_string());
-                start_setup(play, game, ctx, name, false);
+                start_setup(play, game, ctx, notices, name, false);
             }
             if game.cfg.current_profile().is_some_and(|p| !p.server.is_empty())
                 && !play.setup.running()
@@ -624,8 +665,6 @@ fn setup_screen(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut 
                 play.needs_name = None;
             }
         });
-        ui.add_space(6.0);
-        setup_progress(play, ui);
     });
 }
 
@@ -768,14 +807,10 @@ fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Con
         let width = ((ui.available_width() - 2.0 * gap) / 3.0).floor();
         ui.horizontal_top(|ui| {
             ui.spacing_mut().item_spacing.x = gap;
-            status_card(play, game, ctx, &mut to, width, ui);
+            status_card(play, game, notices, ctx, &mut to, width, ui);
             friends_card(play, game, &mut to, width, ui);
             news_card(play, ctx, &mut to, width, ui);
         });
-        if play.setup.running() || play.setup_error.is_some() {
-            ui.add_space(10.0);
-            setup_progress(play, ui);
-        }
     });
     to
 }
@@ -1023,7 +1058,7 @@ fn home_card(ui: &mut egui::Ui, width: f32, title: &str, note: Option<RichText>,
 
 /// The checks: anything that needs fixing, with its fix; when all is well,
 /// a short summary that opens into the full list.
-fn status_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, to: &mut Option<Go>, width: f32, ui: &mut egui::Ui) {
+fn status_card(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Context, to: &mut Option<Go>, width: f32, ui: &mut egui::Ui) {
     let issues = play.checks.iter().any(|c| c.status != Status::Ok);
     let fixable = play.checks.iter().any(|c| c.status == Status::Fail && c.fix.is_some());
     let has_server = game.cfg.current_profile().is_some_and(|p| !p.server.is_empty());
@@ -1074,7 +1109,7 @@ fn status_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, to: &mut O
                 });
                 ui.add_space(2.0);
             }
-            support_row(play, game, ctx, ui);
+            support_row(play, game, notices, ctx, ui);
         },
         |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -1101,7 +1136,7 @@ fn status_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, to: &mut O
         },
     );
     if let Some(f) = fix {
-        run_fix(play, game, f, ctx);
+        run_fix(play, game, notices, f, ctx);
     }
     if toggle {
         play.show_all_checks = !play.show_all_checks;
@@ -1113,7 +1148,7 @@ fn status_card(play: &mut Play, game: &mut Game, ctx: &egui::Context, to: &mut O
         let profile = game.cfg.current_profile().cloned().unwrap_or_default();
         play.server = profile.server;
         let name = Some(profile.user.username).filter(|n| !n.is_empty());
-        start_setup(play, game, ctx, name, false);
+        start_setup(play, game, ctx, notices, name, false);
     }
 }
 
@@ -1336,15 +1371,15 @@ pub fn show_servers(app: &mut App, ui: &mut egui::Ui) {
                 return;
             };
             play.poll(&ctx, game, notices);
-            poll_lookups(play);
+            poll_lookups(play, notices);
             auto_browse(play, &ctx);
-            to = servers_page(play, game, &ctx, ui);
+            to = servers_page(play, game, notices, &ctx, ui);
         });
     });
     go(app, to);
 }
 
-fn servers_page(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut egui::Ui) -> Option<Go> {
+fn servers_page(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Context, ui: &mut egui::Ui) -> Option<Go> {
     let mut to = None;
     let current = game.cfg.current_profile().map(|p| p.server.clone()).unwrap_or_default();
     let locked = game.managed.is_some();
@@ -1438,7 +1473,7 @@ fn servers_page(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut 
                 play.server = host;
                 play.server_picked = false;
                 play.editing = true;
-                start_setup(play, game, ctx, None, false);
+                start_setup(play, game, ctx, notices, None, false);
                 to = Some(Go::View(View::Play));
             } else {
                 // The same name on the network's other server: made there if need be, once confirmed.
@@ -1450,7 +1485,7 @@ fn servers_page(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut 
                 });
             }
         }
-        confirm_switch(play, game, SwitchFrom::Network, ctx, ui);
+        confirm_switch(play, game, notices, SwitchFrom::Network, ctx, ui);
     } else if play.browsing.running() {
         ui.horizontal(|ui| {
             ui.spinner();
@@ -1458,10 +1493,7 @@ fn servers_page(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut 
         });
     }
     // A friend's server, asked for on the home screen.
-    confirm_switch(play, game, SwitchFrom::Friend, ctx, ui);
-    if play.setup.running() || play.setup_error.is_some() {
-        setup_progress(play, ui);
-    }
+    confirm_switch(play, game, notices, SwitchFrom::Friend, ctx, ui);
     if locked {
         return to;
     }
@@ -1487,7 +1519,7 @@ fn servers_page(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut 
                     play.needs_name = None;
                     play.editing = true;
                     let name = game.cfg.current_profile().map(|p| p.user.username.clone()).filter(|n| !n.is_empty());
-                    start_setup(play, game, ctx, name, false);
+                    start_setup(play, game, ctx, notices, name, false);
                     to = Some(Go::View(View::Play));
                 }
             });
@@ -1529,18 +1561,39 @@ fn servers_page(play: &mut Play, game: &mut Game, ctx: &egui::Context, ui: &mut 
 
 /// Runs the setup; `new_name` names the account if the player has none on
 /// the server (None: the setup asks). `public_only` when another server named
-/// it (see [`flow::Plan`]).
-fn start_setup(play: &mut Play, game: &Game, ctx: &egui::Context, new_name: Option<String>, public_only: bool) {
+/// it (see [`flow::Plan`]). It reports in the activity bar.
+fn start_setup(play: &mut Play, game: &Game, ctx: &egui::Context, notices: &mut Notices, new_name: Option<String>, public_only: bool) {
+    let server = play.server.trim().to_string();
+    let current = game.cfg.current_profile().map(|p| p.server.clone()).filter(|s| !s.is_empty());
+    let shown = play
+        .directory
+        .as_ref()
+        .and_then(|d| d.iter().find(|(s, _)| s.host == server))
+        .map_or_else(|| server.clone(), |(s, _)| place(s));
+    let (title, done) = match current.as_deref() {
+        Some(c) if c == server => (format!("Setting up {shown} again"), format!("You're set up on {shown}")),
+        Some(_) => (format!("Switching to {shown}"), format!("Switched to {shown}")),
+        None => (format!("Connecting to {shown}"), format!("You're set up on {shown}")),
+    };
     let mut plan = flow::Plan {
         game_dir: game.dir.clone(),
-        server: play.server.trim().to_string(),
-        new_name,
+        server: server.clone(),
+        new_name: new_name.clone(),
         public_only,
     };
-    play.setup_error = None;
     play.switching = None;
-    play.log = Arc::default();
-    let log = Arc::clone(&play.log);
+    if let Some(id) = play.setup_failed.take() {
+        notices.dismiss(id);
+    }
+    let log = notices.start(ctx, title);
+    play.setup_failed = Some(log.id());
+    play.setup_activity = Some(log.clone());
+    play.last_setup = Some(SetupAsked {
+        server,
+        new_name,
+        public_only,
+        done,
+    });
     play.setup.start(ctx, move || {
         // A network's address: set up on its best server, which its directory named.
         if let Some(host) = flow::pick_from_network(&plan.server, &log)? {
@@ -1551,9 +1604,18 @@ fn start_setup(play: &mut Play, game: &Game, ctx: &egui::Context, new_name: Opti
     });
 }
 
+/// Where a server is: its region ("Sydney, Australia"), else its name.
+fn place(s: &setup::directory::Listing) -> String {
+    if s.region.is_empty() {
+        s.name.clone()
+    } else {
+        s.region.clone()
+    }
+}
+
 /// Asks before switching to a server another server named: its address in full, and what
 /// happens there. Shown in the card that asked.
-fn confirm_switch(play: &mut Play, game: &Game, from: SwitchFrom, ctx: &egui::Context, ui: &mut egui::Ui) {
+fn confirm_switch(play: &mut Play, game: &Game, notices: &mut Notices, from: SwitchFrom, ctx: &egui::Context, ui: &mut egui::Ui) {
     let Some(switch) = play.switching.clone().filter(|s| s.from == from) else {
         return;
     };
@@ -1568,22 +1630,12 @@ fn confirm_switch(play: &mut Play, game: &Game, from: SwitchFrom, ctx: &egui::Co
             play.server = switch.host.clone();
             play.server_picked = false;
             play.needs_name = None;
-            start_setup(play, game, ctx, switch.new_name.clone(), true);
+            start_setup(play, game, ctx, notices, switch.new_name.clone(), true);
         }
         if ui.button("Cancel").clicked() {
             play.switching = None;
         }
     });
-}
-
-fn setup_progress(play: &Play, ui: &mut egui::Ui) {
-    let log = play.log.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    for line in log.iter() {
-        ui.label(theme::muted(line.as_str()));
-    }
-    if let Some(e) = &play.setup_error {
-        ui.label(RichText::new(e).color(theme::BAD));
-    }
 }
 
 fn fix_label(fix: Fix) -> &'static str {
@@ -1599,8 +1651,14 @@ fn fix_label(fix: Fix) -> &'static str {
     }
 }
 
-fn run_fix(play: &mut Play, game: &Game, fix: Fix, ctx: &egui::Context) {
+fn run_fix(play: &mut Play, game: &Game, notices: &mut Notices, fix: Fix, ctx: &egui::Context) {
     let dir = game.dir.clone();
+    let title = match fix {
+        Fix::InstallClient => "Installing the 5th Echelon client",
+        Fix::AutoAdapter => "Choosing the network adapter automatically",
+        Fix::CreateSave | Fix::RaiseSave => "Fixing your save",
+        Fix::FindGame | Fix::ChooseServer | Fix::SetUpAccount | Fix::UpdateLauncher => "",
+    };
     match fix {
         Fix::FindGame => {}
         Fix::ChooseServer | Fix::SetUpAccount => {
@@ -1614,9 +1672,12 @@ fn run_fix(play: &mut Play, game: &Game, fix: Fix, ctx: &egui::Context) {
         Fix::CreateSave | Fix::RaiseSave => play.fixing.start(ctx, move || flow::fix_save(&dir)),
         Fix::UpdateLauncher => play.update_asked = true,
     }
+    if !title.is_empty() {
+        play.fix_activity = Some((notices.start(ctx, title), Some(fix)));
+    }
 }
 
-fn support_row(play: &mut Play, game: &Game, ctx: &egui::Context, ui: &mut egui::Ui) {
+fn support_row(play: &mut Play, game: &Game, notices: &mut Notices, ctx: &egui::Context, ui: &mut egui::Ui) {
     let (status, title, detail) = match &play.support {
         None | Some(Support::Supported) => return,
         Some(Support::Unsupported(why)) => (Status::Fail, "This game version isn't supported yet", why.clone()),
@@ -1635,6 +1696,7 @@ fn support_row(play: &mut Play, game: &Game, ctx: &egui::Context, ui: &mut egui:
                     let version = setup::game::pick_version(&dir, game.cfg.default_game).unwrap_or(GameVersion::SplinterCellBlacklistDx11);
                     play.identifying
                         .start(ctx, move || flow::identify(&dir, version).map_err(|e| format!("Couldn't identify it: {e}")));
+                    play.fix_activity = Some((notices.start(ctx, "Identifying the game's version"), None));
                 }
             }
         });

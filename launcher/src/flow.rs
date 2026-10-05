@@ -283,12 +283,20 @@ pub enum Done {
     },
 }
 
-/// Progress lines for the UI.
-pub type Log = Arc<Mutex<Vec<String>>>;
+/// Where the setup reports: its steps in the activity bar.
+pub type Log = crate::activity::Handle;
 
 fn say(log: &Log, line: impl Into<String>) {
-    log.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push(line.into());
+    log.step(line);
 }
+
+/// The setup's fixed stages, as the activity bar counts them ("step 2 of 4").
+pub const STAGES: [&str; 4] = [
+    "Reaching the server",
+    "Signing in or creating your account",
+    "Writing the game's settings",
+    "Checking the connection",
+];
 
 /// The automatic setup: install the client, check the server, set up the
 /// account, pin the adapter, make a save, and save it all as the player's
@@ -350,6 +358,8 @@ fn server_info(server: &str, had_https: bool) -> Result<(Option<setup::server_in
 
 pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done, String> {
     let dir = &plan.game_dir;
+    log.stages(&STAGES);
+    log.stage(1);
 
     if let Some(dll) = bundled {
         if install::client_state(dir, dll) != install::ClientState::Installed {
@@ -436,6 +446,7 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
         }
     }
 
+    log.stage(2);
     say(log, "Looking for your account…");
     // Every account is linked to the player's identity: it finds their account here, from any
     // PC, and carries friends between servers.
@@ -541,6 +552,8 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
         (None, None) => {}
     }
 
+    log.stage(3);
+    say(log, "Writing the game's settings…");
     let cfg = Config::load(dir);
     if let Some(path) = save::save_path(&cfg.hook_config.save, dir) {
         let prepared = save::prepare(&path, Some(dir)).map_err(|e| format!("Couldn't get your save ready: {e}"))?;
@@ -560,6 +573,11 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
         c.apply_profile(&profile);
     })
     .map_err(|e| format!("Couldn't save the settings: {e}"))?;
+    log.stage(4);
+    say(log, format!("Checking the connection to {}…", plan.server));
+    if !net::port_open(ip, setup::CONFIG_PORT, Duration::from_secs(4)) {
+        say(log, format!("{ip} doesn't answer on port {} yet; the Status card says more.", setup::CONFIG_PORT));
+    }
     say(
         log,
         format!(

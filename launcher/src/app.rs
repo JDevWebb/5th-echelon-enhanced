@@ -212,35 +212,9 @@ impl Prefs {
     }
 }
 
-/// Short messages at the bottom of the window.
-#[derive(Default)]
-pub struct Notices(Vec<(String, bool, Instant)>);
-
-impl Notices {
-    pub fn info(&mut self, text: impl Into<String>) {
-        self.0.push((text.into(), false, Instant::now()));
-    }
-
-    pub fn error(&mut self, text: impl Into<String>) {
-        self.0.push((text.into(), true, Instant::now()));
-    }
-
-    fn show(&mut self, ctx: &egui::Context) {
-        self.0
-            .retain(|(_, error, at)| at.elapsed() < if *error { Duration::from_secs(12) } else { Duration::from_secs(5) });
-        if self.0.is_empty() {
-            return;
-        }
-        ctx.request_repaint_after(Duration::from_millis(500));
-        egui::TopBottomPanel::bottom("notices")
-            .frame(egui::Frame::new().fill(theme::SURFACE).inner_margin(egui::Margin::symmetric(16, 8)))
-            .show(ctx, |ui| {
-                for (text, error, _) in &self.0 {
-                    ui.label(egui::RichText::new(text).color(if *error { theme::BAD } else { theme::FG }));
-                }
-            });
-    }
-}
+/// Notices and tasks, in the activity bar along the bottom (activity.rs): `info` and
+/// `error` make a one-line activity.
+pub use crate::activity::Activities as Notices;
 
 pub struct App {
     view: View,
@@ -260,6 +234,9 @@ pub struct App {
     pub latest: Option<crate::updater::Latest>,
     pub checking: Slot<anyhow::Result<crate::updater::Latest>>,
     updating: Slot<anyhow::Result<()>>,
+    /// The update being installed, and the one asked for by the player's check.
+    updating_activity: Option<crate::activity::Handle>,
+    checking_activity: Option<crate::activity::Handle>,
     update_later: bool,
     /// When the last look for a release started: release builds look again now and then.
     checked_at: Option<std::time::Instant>,
@@ -290,6 +267,8 @@ impl App {
             latest: None,
             checking: Slot::default(),
             updating: Slot::default(),
+            updating_activity: None,
+            checking_activity: None,
             update_later: false,
             checked_at: None,
             install_found: false,
@@ -356,13 +335,26 @@ impl App {
         if self.checking.running() {
             return;
         }
+
         self.checked_at = Some(std::time::Instant::now());
         self.checking.start(ctx, crate::updater::latest);
+    }
+
+    /// Looks for a newer release because the player asked, in the activity bar.
+    pub fn check_for_update_shown(&mut self, ctx: &egui::Context) {
+        if self.checking.running() {
+            return;
+        }
+        self.checking_activity = Some(self.notices.start(ctx, "Looking for a newer launcher"));
+        self.check_for_update(ctx);
     }
 
     /// Installs `latest` and restarts into it.
     fn install_update(&mut self, ctx: &egui::Context, latest: crate::updater::Latest) {
         if !self.updating.running() {
+            let activity = self.notices.start(ctx, format!("Updating the launcher to {}", latest.version));
+            activity.step("Downloading the new launcher; it restarts when it's ready");
+            self.updating_activity = Some(activity);
             self.updating.start(ctx, move || crate::updater::update_self(&latest));
         }
     }
@@ -384,7 +376,7 @@ impl App {
                 self.install_update(ctx, latest);
             } else {
                 self.install_found = true;
-                self.check_for_update(ctx);
+                self.check_for_update_shown(ctx);
             }
         }
         if !dev {
@@ -415,7 +407,7 @@ impl App {
                     }
                     ui.label(egui::RichText::new(format!("Version {} is available.", latest.version)).family(theme::strong()));
                     if ui.add(theme::primary("Update now")).clicked() {
-                        self.updating.start(ctx, move || crate::updater::update_self(&latest));
+                        self.install_update(ctx, latest.clone());
                     }
                     ui.hyperlink_to("What's new", &self.latest.as_ref().map(|l| l.page.clone()).unwrap_or_default());
                     if ui.button("Later").clicked() {
@@ -508,24 +500,35 @@ impl eframe::App for App {
 
         if let Some(result) = self.checking.poll() {
             let install = std::mem::take(&mut self.install_found);
+            let activity = self.checking_activity.take();
             match result {
                 Ok(latest) if install && latest.newer() => {
+                    if let Some(a) = activity {
+                        a.finish_quietly();
+                    }
                     self.latest = Some(latest.clone());
                     self.install_update(ctx, latest);
                 }
                 Ok(latest) => {
-                    if install {
-                        self.notices.error(format!(
-                            "No newer release yet ({} is the latest): the server needs one that hasn't been published. Try again later.",
-                            latest.version
-                        ));
+                    match activity {
+                        Some(a) if install => {
+                            a.title("No newer launcher yet");
+                            a.fail(
+                                format!("{} is the latest: the server needs one that hasn't been published. Try again later.", latest.version),
+                                &[],
+                            );
+                        }
+                        Some(a) if latest.newer() => a.done(format!("Version {} is available", latest.version)),
+                        Some(a) => a.done(format!("Up to date: {} is the latest release", latest.version)),
+                        None => {}
                     }
                     self.latest = Some(latest);
                 }
                 Err(e) => {
                     tracing::warn!("Couldn't check for updates: {e}");
-                    if install {
-                        self.notices.error(format!("Couldn't look for updates: {e}"));
+                    if let Some(a) = activity {
+                        a.title("Couldn't look for a newer launcher");
+                        a.fail(e.to_string(), &[crate::activity::Action::CopyDetails]);
                     }
                 }
             }
@@ -539,7 +542,13 @@ impl eframe::App for App {
         self.feedback.show(ctx, &mut self.notices);
         self.diagnostics.show(ctx, self.game.as_mut(), &mut self.notices);
         if let Some(Err(e)) = self.updating.poll() {
-            self.notices.error(format!("Couldn't update: {e}"));
+            match self.updating_activity.take() {
+                Some(a) => {
+                    a.title("Couldn't update the launcher");
+                    a.fail(e.to_string(), &[crate::activity::Action::CopyDetails]);
+                }
+                None => self.notices.error(format!("Couldn't update: {e}")),
+            }
         }
 
         self.rail(ctx);

@@ -74,6 +74,10 @@ pub struct Settings {
     tests: Slot<TestResults>,
     test_results: TestResults,
     working: Slot<Result<String, String>>,
+    /// What the work running is, for the activity bar, and its activity there.
+    working_title: &'static str,
+    working_activity: Option<crate::activity::Handle>,
+    tests_activity: Option<crate::activity::Handle>,
     confirm_new_save: bool,
     confirm_uninstall: bool,
     show_passwords: bool,
@@ -159,14 +163,24 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
     };
     let ctx = ui.ctx().clone();
     if let Some(result) = settings.working.poll() {
-        match result {
-            Ok(msg) => notices.info(msg),
-            Err(e) => notices.error(e),
+        match (result, settings.working_activity.take()) {
+            (Ok(msg), Some(a)) => a.done(msg),
+            (Err(e), Some(a)) => a.fail(e, &[crate::activity::Action::CopyDetails]),
+            (Ok(msg), None) => notices.info(msg),
+            (Err(e), None) => notices.error(e),
         }
         // The work may have changed uplay.toml (a rename, a pinned adapter).
         game.reload();
     }
     if let Some(results) = settings.tests.poll() {
+        if let Some(a) = settings.tests_activity.take() {
+            let failed = results.iter().filter(|(_, s, _)| *s == setup::diagnose::Status::Fail).count();
+            match failed {
+                0 => a.done("Connection test: everything answered"),
+                1 => a.done("Connection test: 1 part didn't work (Settings › Network)"),
+                n => a.done(format!("Connection test: {n} parts didn't work (Settings › Network)")),
+            }
+        }
         settings.test_results = results;
     }
     let locked = game.managed.is_some();
@@ -194,6 +208,23 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
         Section::Client => section(ui, "5th Echelon client", |ui| client(settings, game, &ctx, ui)),
         Section::Advanced => section(ui, "Hooks", |ui| hooks(game, notices, ui)),
         Section::About | Section::Display | Section::Feedback => {}
+    }
+    // Work started above shows in the activity bar.
+    if settings.working.running() && settings.working_activity.is_none() {
+        settings.working_activity = Some(notices.start(&ctx, settings.working_title));
+    }
+    if settings.tests.running() && settings.tests_activity.is_none() {
+        let a = notices.start(&ctx, "Testing the connection");
+        a.step("the server's config, its API, signing in, how players reach you, the internet play helper");
+        settings.tests_activity = Some(a);
+    }
+}
+
+impl Settings {
+    /// Runs `f` in the background, shown in the activity bar as `title`.
+    fn work(&mut self, ctx: &egui::Context, title: &'static str, f: impl FnOnce() -> Result<String, String> + Send + 'static) {
+        self.working_title = title;
+        self.working.start(ctx, f);
     }
 }
 
@@ -278,7 +309,7 @@ fn about(app: &mut App, ui: &mut egui::Ui) {
             if app.checking.running() {
                 ui.spinner();
             } else if ui.button("Check for updates").clicked() {
-                app.check_for_update(&ctx);
+                app.check_for_update_shown(&ctx);
             }
             match &app.latest {
                 Some(l) if l.newer() => ui.label(RichText::new(format!("Version {} is available (see the banner).", l.version)).color(theme::ACCENT)),
@@ -491,8 +522,8 @@ fn save_game(settings: &mut Settings, game: &mut Game, ctx: &egui::Context, ui: 
         ui.horizontal(|ui| {
             if state != SaveState::Missing && ui.button("Back up now").clicked() {
                 match setup::save::backup(&path) {
-                    Ok(b) => settings.working.start(ctx, move || Ok(format!("Backed up to {}", b.display()))),
-                    Err(e) => settings.working.start(ctx, move || Err(format!("Couldn't back up: {e}"))),
+                    Ok(b) => settings.work(ctx, "Backing up your save", move || Ok(format!("Backed up to {}", b.display()))),
+                    Err(e) => settings.work(ctx, "Backing up your save", move || Err(format!("Couldn't back up: {e}"))),
                 }
             }
             if settings.ubisoft_save.as_ref().is_none_or(|(at, _)| at.elapsed() >= std::time::Duration::from_secs(10)) {
@@ -501,7 +532,7 @@ fn save_game(settings: &mut Settings, game: &mut Game, ctx: &egui::Context, ui: 
             if let Some(ubisoft) = settings.ubisoft_save.as_ref().and_then(|(_, p)| p.clone()) {
                 if ui.button("Import from Ubisoft Connect").on_hover_text(ubisoft.display().to_string()).clicked() {
                     let to = path.clone();
-                    settings.working.start(ctx, move || {
+                    settings.work(ctx, "Importing your Ubisoft Connect save", move || {
                         setup::save::import_ubisoft(&ubisoft, &to)
                             .map(|_| "Imported your Ubisoft Connect save.".to_string())
                             .map_err(|e| e.to_string())
@@ -520,7 +551,7 @@ fn save_game(settings: &mut Settings, game: &mut Game, ctx: &egui::Context, ui: 
                 }
                 if let Some(from) = dialog.pick_file() {
                     let to = path.clone();
-                    settings.working.start(ctx, move || match setup::save::import_file(&from, &to) {
+                    settings.work(ctx, "Importing the save", move || match setup::save::import_file(&from, &to) {
                         Ok(Some(backup)) => Ok(format!("Imported the save; the one it replaced is in {}.", backup.display())),
                         Ok(None) => Ok("That's already your save.".to_string()),
                         Err(e) => Err(format!("Couldn't import it: {e}")),
@@ -543,7 +574,7 @@ fn save_game(settings: &mut Settings, game: &mut Game, ctx: &egui::Context, ui: 
                 if ui.button("Replace").clicked() {
                     settings.confirm_new_save = false;
                     let to = path.clone();
-                    settings.working.start(ctx, move || {
+                    settings.work(ctx, "Making a new rank 5 save", move || {
                         setup::save::create_rank5(&to).map(|_| "Created a new rank 5 save.".to_string()).map_err(|e| e.to_string())
                     });
                 }
@@ -591,7 +622,7 @@ fn servers(settings: &mut Settings, game: &mut Game, notices: &mut Notices, lock
                         if ui.add_enabled(!busy, egui::Button::new("Save name")).clicked() {
                             if let Some((profile, new_name)) = settings.renaming.take() {
                                 let dir = game.dir.clone();
-                                settings.working.start(ctx, move || flow::rename(&dir, &profile, &new_name));
+                                settings.work(ctx, "Renaming your account", move || flow::rename(&dir, &profile, &new_name));
                             }
                         }
                         if ui.button("Cancel").clicked() {
@@ -922,7 +953,7 @@ fn client(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui: &mut eg
         ui.horizontal(|ui| {
             if state != Some(setup::install::ClientState::Installed) && ui.button("Install").clicked() {
                 let dir = game.dir.clone();
-                settings.working.start(ctx, move || flow::install_client(&dir, crate::dll_utils::bundled()));
+                settings.work(ctx, "Installing the 5th Echelon client", move || flow::install_client(&dir, crate::dll_utils::bundled()));
             }
             if game.dir.join(setup::install::ORIG_DLL_NAME).exists() && ui.button("Uninstall…").clicked() {
                 settings.confirm_uninstall = true;
@@ -934,7 +965,7 @@ fn client(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui: &mut eg
                 if ui.button("Uninstall").clicked() {
                     settings.confirm_uninstall = false;
                     let dir = game.dir.clone();
-                    settings.working.start(ctx, move || {
+                    settings.work(ctx, "Putting the game's own DLL back", move || {
                         setup::install::uninstall(&dir)
                             .map(|()| "The game's own DLL is back.".to_string())
                             .map_err(|e| e.to_string())

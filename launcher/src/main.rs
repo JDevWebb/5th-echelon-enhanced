@@ -3,6 +3,7 @@
 
 #![windows_subsystem = "windows"]
 
+mod activity;
 mod app;
 mod diagnostics;
 mod dll_utils;

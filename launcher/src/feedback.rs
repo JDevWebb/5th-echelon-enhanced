@@ -13,6 +13,7 @@ use setup::config::Config;
 use setup::config::Profile;
 use setup::feedback::Attachment;
 
+use crate::activity::Action;
 use crate::app::Notices;
 use crate::app::Prefs;
 use crate::task::Slot;
@@ -57,6 +58,7 @@ fn ticked(triggers: &[&'static str]) -> BTreeSet<&'static str> {
 }
 
 /// An open "How did that go?".
+#[derive(Clone)]
 pub struct Ask {
     triggers: Vec<&'static str>,
     profile: Profile,
@@ -75,6 +77,10 @@ pub struct Feedback {
     checking: Slot<Result<Option<Ask>, String>>,
     asking: Option<Ask>,
     sending: Slot<Result<String, String>>,
+    /// The report being sent, with its activity: kept to send again.
+    sent: Option<(crate::activity::Handle, Ask)>,
+    /// A report that couldn't be sent, by its activity, for Try again and Without logs.
+    failed: Option<(u64, Ask)>,
 }
 
 impl crate::task::FromPanic for Option<Ask> {
@@ -154,8 +160,17 @@ fn check(game_dir: PathBuf, exit_code: Option<i32>, checks: String, manual: bool
     }))
 }
 
-/// Sends the player's answer to their server.
-fn send(ask: &Ask) -> Result<String, String> {
+/// The server's name for the bar: its name in the directory, else its address.
+fn server_shown(profile: &Profile) -> String {
+    if profile.name.is_empty() || profile.name == profile.server {
+        profile.server.clone()
+    } else {
+        profile.name.clone()
+    }
+}
+
+/// Sends the player's answer to their server, reporting the bytes sent.
+fn send(ask: &Ask, activity: &crate::activity::Handle) -> Result<String, String> {
     let password = ask
         .profile
         .user
@@ -188,12 +203,16 @@ fn send(ask: &Ask) -> Result<String, String> {
             vec![]
         },
     };
+    let total = crate::network::report_size(&report);
+    activity.progress(crate::activity::Progress::Bytes { sent: 0, total });
+    let progress = activity.clone();
+    let on_sent = move |sent: u64| progress.progress(crate::activity::Progress::Bytes { sent: sent.min(total), total });
     crate::services::rt()
         .block_on(async {
             // A few MB of logs can take minutes from far away.
             tokio::time::timeout(
                 Duration::from_secs(240),
-                crate::network::send_report(ask.profile.api_server_url().to_string(), &ask.profile.user.username, &password, report),
+                crate::network::send_report(ask.profile.api_server_url().to_string(), &ask.profile.user.username, &password, report, on_sent),
             )
             .await
         })
@@ -203,10 +222,7 @@ fn send(ask: &Ask) -> Result<String, String> {
             // A proxy in front of the server gave up on the upload (servers set up before
             // 0.4.2 waited 30 s for it).
             crate::network::Error::Rpc(status) if status.code() == tonic::Code::Unavailable || status.code() == tonic::Code::Unknown => {
-                format!(
-                    "The server couldn't take your report ({}). Try again, or untick \"Send my logs too\" to send it without them.",
-                    status.message()
-                )
+                format!("The server couldn't take your report ({}). Try again, or send it without your logs.", status.message())
             }
             crate::network::Error::Rpc(status) => status.message().to_string(),
             e => e.to_string(),
@@ -233,6 +249,21 @@ impl Feedback {
         self.checking.running() || self.sending.running()
     }
 
+    /// Sends `ask` in the background, in the activity bar.
+    fn start_sending(&mut self, ctx: &egui::Context, notices: &mut Notices, ask: Ask) {
+        let files = if ask.attach { ask.files.len() } else { 0 };
+        let activity = notices.start(ctx, format!("Sending your report to {}", server_shown(&ask.profile)));
+        match files {
+            0 => activity.step("without logs"),
+            1 => activity.step("with 1 log file"),
+            n => activity.step(format!("with {n} log files")),
+        }
+        let handle = activity.clone();
+        let sending = ask.clone();
+        self.sending.start(ctx, move || send(&sending, &handle));
+        self.sent = Some((activity, ask));
+    }
+
     /// Shows the ask, when there is one, and what came of sending.
     pub fn show(&mut self, ctx: &egui::Context, notices: &mut Notices) {
         match self.checking.poll() {
@@ -240,10 +271,35 @@ impl Feedback {
             Some(Err(e)) => notices.error(e),
             _ => {}
         }
-        match self.sending.poll() {
-            Some(Ok(_)) => notices.info("Thanks! Your report is with the server's admins."),
-            Some(Err(e)) => notices.error(format!("Couldn't send your report: {e}")),
-            None => {}
+        if let Some(result) = self.sending.poll() {
+            if let Some((activity, ask)) = self.sent.take() {
+                match result {
+                    Ok(_) => activity.done("Thanks! Your report is with the server's admins."),
+                    Err(e) => {
+                        activity.title("Couldn't send your report");
+                        let actions: &[Action] = if ask.attach && !ask.files.is_empty() {
+                            &[Action::Retry, Action::WithoutLogs, Action::CopyDetails]
+                        } else {
+                            &[Action::Retry, Action::CopyDetails]
+                        };
+                        activity.fail(e, actions);
+                        self.failed = Some((activity.id(), ask));
+                    }
+                }
+            }
+        }
+        if let Some((id, ask)) = self.failed.clone() {
+            match notices.take_action(id) {
+                Some(Action::Retry) => {
+                    self.failed = None;
+                    self.start_sending(ctx, notices, ask);
+                }
+                Some(Action::WithoutLogs) => {
+                    self.failed = None;
+                    self.start_sending(ctx, notices, Ask { attach: false, ..ask });
+                }
+                _ => {}
+            }
         }
         let Some(ask) = self.asking.as_mut() else { return };
         let mut close = false;
@@ -327,8 +383,9 @@ impl Feedback {
             close = true;
         }
         if send_now {
+            // The window closes; the upload carries on in the activity bar.
             if let Some(ask) = self.asking.take() {
-                self.sending.start(ctx, move || send(&ask));
+                self.start_sending(ctx, notices, ask);
             }
         } else if close {
             self.asking = None;

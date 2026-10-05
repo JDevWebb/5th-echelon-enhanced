@@ -283,12 +283,159 @@ pub async fn session_summary(api_url: String, username: &str, password: &str) ->
     Ok(client.session_summary(server_api::misc::SessionSummaryRequest {}).await?.into_inner())
 }
 
-/// Sends the player's report to the server; answers its id.
-pub async fn send_report(api_url: String, username: &str, password: &str, report: server_api::misc::ReportRequest) -> Result<String, Error> {
+/// Sends the player's report to the server; answers its id. `on_sent` hears how many of
+/// the request's bytes have gone (see [`report_size`] for all of them).
+pub async fn send_report(
+    api_url: String,
+    username: &str,
+    password: &str,
+    report: server_api::misc::ReportRequest,
+    on_sent: impl Fn(u64) + Send + Sync + 'static,
+) -> Result<String, Error> {
     let (channel, token) = signed_in(&api_url, username, password).await?;
-    let mut client = server_api::misc::misc_client::MiscClient::with_interceptor(channel, move |mut req: tonic::Request<()>| {
+    let counted = upload::Counted::new(channel, on_sent);
+    let mut client = server_api::misc::misc_client::MiscClient::with_interceptor(counted, move |mut req: tonic::Request<()>| {
         req.metadata_mut().insert("authorization", token.clone());
         Ok(req)
     });
     Ok(client.report(report).await?.into_inner().id)
+}
+
+/// The bytes a report takes on the wire: the message and gRPC's 5-byte frame header.
+pub fn report_size(report: &server_api::misc::ReportRequest) -> u64 {
+    use prost::Message as _;
+    report.encoded_len() as u64 + 5
+}
+
+/// Counting a request's bytes as they're sent, for the activity bar's upload progress.
+mod upload {
+    use std::pin::Pin;
+    use std::sync::Arc;
+    use std::task::Context;
+    use std::task::Poll;
+
+    use bytes::Bytes;
+    use http_body::Frame;
+    use tonic::body::Body;
+    use tonic::transport::Channel;
+    use tower_service::Service;
+
+    /// The request goes in pieces this size, so the count follows what the connection takes
+    /// (it asks for the next piece once it has room for it).
+    const PIECE: usize = 32 * 1024;
+
+    /// A channel whose requests report their bytes sent.
+    #[derive(Clone)]
+    pub struct Counted {
+        inner: Channel,
+        on_sent: Arc<dyn Fn(u64) + Send + Sync>,
+    }
+
+    impl Counted {
+        pub fn new(inner: Channel, on_sent: impl Fn(u64) + Send + Sync + 'static) -> Self {
+            Self {
+                inner,
+                on_sent: Arc::new(on_sent),
+            }
+        }
+    }
+
+    impl Service<http::Request<Body>> for Counted {
+        type Response = <Channel as Service<http::Request<Body>>>::Response;
+        type Error = <Channel as Service<http::Request<Body>>>::Error;
+        type Future = <Channel as Service<http::Request<Body>>>::Future;
+
+        fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+            Service::<http::Request<Body>>::poll_ready(&mut self.inner, cx)
+        }
+
+        fn call(&mut self, request: http::Request<Body>) -> Self::Future {
+            let on_sent = Arc::clone(&self.on_sent);
+            let request = request.map(|inner| {
+                Body::new(Counting {
+                    inner,
+                    rest: Bytes::new(),
+                    sent: 0,
+                    on_sent,
+                })
+            });
+            self.inner.call(request)
+        }
+    }
+
+    /// A body handing on its data in pieces, counting them.
+    pub struct Counting {
+        inner: Body,
+        rest: Bytes,
+        sent: u64,
+        on_sent: Arc<dyn Fn(u64) + Send + Sync>,
+    }
+
+    impl http_body::Body for Counting {
+        type Data = Bytes;
+        type Error = tonic::Status;
+
+        fn poll_frame(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Result<Frame<Bytes>, tonic::Status>>> {
+            let this = &mut *self;
+            if this.rest.is_empty() {
+                match Pin::new(&mut this.inner).poll_frame(cx) {
+                    Poll::Ready(Some(Ok(frame))) => match frame.into_data() {
+                        Ok(data) => this.rest = data,
+                        Err(frame) => return Poll::Ready(Some(Ok(frame))),
+                    },
+                    other => return other,
+                }
+            }
+            let piece = this.rest.split_to(this.rest.len().min(PIECE));
+            this.sent += piece.len() as u64;
+            (this.on_sent)(this.sent);
+            Poll::Ready(Some(Ok(Frame::data(piece))))
+        }
+
+        fn is_end_stream(&self) -> bool {
+            self.rest.is_empty() && self.inner.is_end_stream()
+        }
+
+        fn size_hint(&self) -> http_body::SizeHint {
+            let inner = self.inner.size_hint();
+            let rest = self.rest.len() as u64;
+            let mut hint = http_body::SizeHint::new();
+            hint.set_lower(inner.lower() + rest);
+            if let Some(upper) = inner.upper() {
+                hint.set_upper(upper + rest);
+            }
+            hint
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use std::sync::atomic::AtomicU64;
+        use std::sync::atomic::Ordering;
+
+        use http_body::Body as _;
+
+        use super::*;
+
+        #[test]
+        fn bodies_go_in_counted_pieces() {
+            let seen = Arc::new(AtomicU64::new(0));
+            let s = Arc::clone(&seen);
+            let mut body = Counting {
+                inner: Body::new(http_body_util::Full::new(Bytes::from(vec![7u8; PIECE * 2 + 10]))),
+                rest: Bytes::new(),
+                sent: 0,
+                on_sent: Arc::new(move |n| s.store(n, Ordering::SeqCst)),
+            };
+            let waker = std::task::Waker::noop();
+            let mut cx = Context::from_waker(waker);
+            let mut sizes = vec![];
+            while let Poll::Ready(Some(Ok(frame))) = Pin::new(&mut body).poll_frame(&mut cx) {
+                sizes.push(frame.into_data().map(|d| d.len()).unwrap_or(0));
+            }
+            assert_eq!(sizes, vec![PIECE, PIECE, 10]);
+            assert_eq!(seen.load(Ordering::SeqCst), (PIECE * 2 + 10) as u64);
+            assert!(body.is_end_stream());
+        }
+    }
 }

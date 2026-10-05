@@ -11,6 +11,7 @@ GetAdapterInfos = []
 
 [dependencies]
 anyhow = { workspace = true }
+bytes = "1"
 brotli = { workspace = true, optional = true }
 dedicated_server_config = { path = "../dedicated_server/config" }
 eframe = { version = "0.33", default-features = false, features = ["glow", "default_fonts"] }
@@ -21,8 +22,11 @@ goblin = { workspace = true, default-features = false, features = [
 ] }
 hooks-addresses = { path = "../hooks/hooks-addresses" }
 hooks-config = { path = "../hooks/hooks-config" }
+http = "1"
+http-body = "1"
 nat_proto = { path = "../nat_proto" }
 portmap = { path = "../portmap" }
+prost = { workspace = true }
 quazal = { path = "../quazal" }
 rand = { workspace = true }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "http2"] }
@@ -37,6 +41,7 @@ thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "net", "macros"] }
 tonic = { workspace = true, features = ["tls-ring", "tls-webpki-roots"] }
 toml = { workspace = true }
+tower-service = "0.3"
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 url = { workspace = true }
@@ -75,6 +80,9 @@ features = [
     "Win32_System_ProcessStatus",
     "Win32_Security",
 ]
+
+[dev-dependencies]
+http-body-util = "0.1"
 
 [build-dependencies]
 brotli = { workspace = true }
