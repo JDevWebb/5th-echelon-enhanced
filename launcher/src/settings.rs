@@ -969,6 +969,11 @@ fn hooks(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
             }
         });
     });
+    ui.add_space(10.0);
+    ui.label(theme::muted(
+        "For working out why two copies of the game refuse each other (\"a different version of the game\"): the game writes what its data version is made of to bl-dataversion.txt in its folder. Off, the file is deleted.",
+    ));
+    ui.checkbox(&mut hook.log_data_version, "Write the game's data version (bl-dataversion.txt)");
     if hook != game.cfg.hook_config {
         game.update(notices, |c| c.hook_config = hook);
     }

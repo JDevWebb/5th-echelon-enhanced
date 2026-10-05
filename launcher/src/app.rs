@@ -329,6 +329,10 @@ impl App {
     /// started over.
     fn open_game(&mut self, dir: PathBuf) {
         let game = Game::open(dir);
+        // Data version logging's files, from before it was off by default (0.4.2).
+        if !game.cfg.hook_config.log_data_version {
+            hooks_config::remove_data_version_files(&game.dir);
+        }
         if let Some(kept) = game.cfg.started_over() {
             self.notices.info(format!(
                 "Settings from an earlier 5th Echelon were set aside (kept as {} in the game folder); this launcher starts from its own.",

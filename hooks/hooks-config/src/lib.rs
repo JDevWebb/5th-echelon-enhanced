@@ -290,6 +290,13 @@ pub struct Config {
     #[serde(default = "default_send_diagnostics")]
     pub send_diagnostics: bool,
 
+    /// Writes what the game's data version is made of to `bl-dataversion.txt` (and, with
+    /// `bl-dataversion.full` in the game's folder, every name to `bl-dataversion-full.txt`),
+    /// to find out why two copies refuse each other's joins. Off: the files are deleted when
+    /// the launcher opens the game and when the game starts. Advanced › Hooks in the launcher.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub log_data_version: bool,
+
     /// Set when another tool manages this install (from the override file's
     /// `[Managed]`); never read from or written to `uplay.toml`.
     #[serde(skip)]
@@ -306,6 +313,23 @@ const fn default_push_friend_list() -> bool {
 
 /// Off until the player answered the launcher's question (on by default there): nothing is
 /// sent from an install nobody asked.
+/// The files the data version logging writes in the game's folder (`log_data_version`).
+pub const DATA_VERSION_FILES: [&str; 2] = ["bl-dataversion.txt", "bl-dataversion-full.txt"];
+
+/// Deletes the data version logging's files from `game_dir`, when they're there (with the
+/// logging off: nothing needs them any more).
+pub fn remove_data_version_files(game_dir: &Path) {
+    for name in DATA_VERSION_FILES {
+        let path = game_dir.join(name);
+        if path.exists() {
+            match fs::remove_file(&path) {
+                Ok(()) => info!("Deleted {} (data version logging is off)", path.display()),
+                Err(e) => tracing::warn!("Couldn't delete {}: {e}", path.display()),
+            }
+        }
+    }
+}
+
 const fn default_send_diagnostics() -> bool {
     false
 }

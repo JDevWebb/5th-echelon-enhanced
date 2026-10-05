@@ -305,8 +305,13 @@ fn init(hmodule: Option<HMODULE>) {
                 if config.allow_data_mismatch {
                     allow_data_mismatch(check);
                 }
-                // What the data version is made of, to compare two players' (dataversion.rs).
-                dataversion::write_when_ready(check as usize, game_dir.clone());
+                // What the data version is made of, to compare two players' (dataversion.rs):
+                // only when asked for (Advanced › Hooks); otherwise last time's files go.
+                if config.log_data_version {
+                    dataversion::write_when_ready(check as usize, game_dir.clone());
+                } else {
+                    config::remove_data_version_files(&game_dir);
+                }
             }
             None => warn!("Data version check: left as it is"),
         }
