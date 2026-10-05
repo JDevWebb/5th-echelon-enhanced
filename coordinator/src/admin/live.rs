@@ -182,6 +182,26 @@ impl Coordinator {
         Ok(())
     }
 
+    /// Who's online now on each server that pulsed in the last half minute, as its last
+    /// pulse listed them (kept in memory only, never stored): `[{server, id, name, city, ...}]`.
+    pub(crate) fn online_now(&self) -> Value {
+        let now = identity::now();
+        let pulses = self.pulses.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut out = Vec::new();
+        for (server, entry) in pulses.iter() {
+            let Some((at, p)) = entry.last.as_ref().filter(|(at, _)| now - at <= 30) else {
+                continue;
+            };
+            for player in p["online"].as_array().into_iter().flatten().take(1000) {
+                let mut player = player.clone();
+                player["server"] = json!(server);
+                player["seen"] = json!(at);
+                out.push(player);
+            }
+        }
+        Value::Array(out)
+    }
+
     /// Loads the stored live points and events of the last half hour (at start).
     pub(crate) async fn load_live(&self) -> sqlx::Result<()> {
         let since = identity::now() - 1800;

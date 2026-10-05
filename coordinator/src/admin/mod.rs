@@ -195,6 +195,7 @@ pub fn router(c: Shared) -> Router {
         .route("/places", get(places))
         .route("/activity", get(activity))
         .route("/pings", get(pings))
+        .route("/online", get(online))
         .route("/labels", axum::routing::put(set_label))
         .route("/updates", get(updates))
         .route("/updates/{action}", post(update_action))
@@ -266,7 +267,9 @@ fn secure_headers(mut resp: Response) -> Response {
     for (name, value) in [
         (
             "content-security-policy",
-            "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+            // Style attributes in the pages' markup (a legend's colour, a row's spacing) are
+            // allowed; style elements and scripts only from the UI's own files.
+            "default-src 'none'; script-src 'self'; style-src 'self'; style-src-attr 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
         ),
         ("x-frame-options", "DENY"),
         ("x-content-type-options", "nosniff"),
@@ -1394,6 +1397,14 @@ struct Range {
 
 fn range(r: i64) -> Option<i64> {
     [0, 3600, 6 * 3600, 86_400, 7 * 86_400, 30 * 86_400, 365 * 86_400].contains(&r).then_some(r)
+}
+
+/// Who's online now, with where (by city) and what they're doing: the map's players.
+async fn online(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap) -> Response {
+    if let Err(r) = c.full(&headers, &client).await {
+        return r;
+    }
+    ok(json!({ "players": c.online_now() }))
 }
 
 async fn overview(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap) -> Response {

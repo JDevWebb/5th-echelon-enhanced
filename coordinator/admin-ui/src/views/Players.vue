@@ -60,9 +60,10 @@
   </PageTop>
   <template v-if="places">
     <section class="panel">
-      <WorldMap :places="places.places" :servers="servers" :unit="places.unit" />
+      <WorldMap :places="places.places" :servers="servers" :unit="places.unit" :live="mapRange === 0" />
       <div class="row" style="justify-content: space-between; margin-top: 8px">
-        <span class="legend"><span><i style="background: var(--accent)"></i>{{ places.unit === 'players' ? 'players' : 'player-minutes' }}</span><span><i style="background: var(--warn)"></i>servers</span></span>
+        <span v-if="mapRange === 0" class="legend"><span><i style="background: var(--accent)"></i>in a match</span><span><i style="background: var(--info)"></i>in a lobby</span><span><i style="background: var(--muted)"></i>in the menus</span><span><i style="background: var(--warn)"></i>servers</span><span><i style="background: #02070a; opacity: 0.5"></i>night</span></span>
+        <span v-else class="legend"><span><i style="background: var(--accent)"></i>{{ places.unit === 'players' ? 'players' : 'player-minutes' }}</span><span><i style="background: var(--warn)"></i>servers</span><span><i style="background: #02070a; opacity: 0.5"></i>night now</span></span>
         <span class="attr">{{ places.attribution }}</span>
       </div>
     </section>

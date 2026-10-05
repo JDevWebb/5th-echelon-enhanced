@@ -352,6 +352,20 @@ impl Storage {
             .collect())
     }
 
+    /// The players online now (at most `limit`, by name): account id, name, and when their
+    /// play session started.
+    pub async fn online_players_async(&self, limit: u32) -> Result<Vec<(u32, String, Option<i64>)>> {
+        Ok(sqlx::query_as(
+            "SELECT u.id, u.username,
+                    (SELECT started_at FROM play_sessions s WHERE s.user_id = u.id AND s.ended_at IS NULL ORDER BY s.id DESC LIMIT 1)
+             FROM users u WHERE u.is_online = 1 AND u.ubi_id IS NOT NULL AND u.ubi_id != ''
+             ORDER BY u.username COLLATE NOCASE LIMIT ?",
+        )
+        .bind(limit)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     /// The coordinator took these matches.
     pub async fn mark_matches_reported_async(&self, ids: &[u32]) -> Result<()> {
         let mut tx = self.pool.begin().await?;

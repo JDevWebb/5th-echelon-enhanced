@@ -1179,7 +1179,8 @@ async fn pulse(State(c): State<Shared>, headers: HeaderMap, body: axum::body::By
     if !c.pulse_limit.check(&server) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "a pulse every ten seconds is enough");
     }
-    if p.to_string().len() > 8 * 1024 || !p["players"].is_object() {
+    // The list of who's online (for the admin UI's map) makes up most of it: 300 players.
+    if p.to_string().len() > 256 * 1024 || !p["players"].is_object() {
         return fail(StatusCode::BAD_REQUEST, "not a pulse");
     }
     if let Err(e) = c.record_pulse(&server, &p).await {

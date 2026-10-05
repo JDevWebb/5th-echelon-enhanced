@@ -914,12 +914,14 @@ async fn matches_are_stored_once_and_reported() {
 async fn play_time_comes_from_sessions_when_servers_send_them() {
     let t = start("play-time").await;
     let a = t.join("server-a").await;
+    // Yesterday at noon (UTC): no session crosses midnight, whatever time the test runs.
     let now = identity::now();
+    let noon = now - now % 86_400 - 86_400 + 43_200;
     let body = json!({ "full": true, "players": [player(1, "Exo", None), player(2, "Kiwi", None)], "sessions": [
         // Days ago: sessions are used from the day after a server's first.
-        { "id": 1, "player": 1, "start": now - 3 * 86_400, "end": now - 3 * 86_400 + 600 },
-        { "id": 2, "player": 1, "start": now - 3600, "end": now - 1800 },
-        { "id": 3, "player": 2, "start": now - 3000, "end": now - 2400 },
+        { "id": 1, "player": 1, "start": noon - 2 * 86_400, "end": noon - 2 * 86_400 + 600 },
+        { "id": 2, "player": 1, "start": noon - 3600, "end": noon - 1800 },
+        { "id": 3, "player": 2, "start": noon - 3000, "end": noon - 2400 },
     ] });
     assert_eq!(t.call("POST", "/v1/players", Some(&a), Some(body)).await.0, StatusCode::OK);
     let r = t.c.players_report(7 * 86_400).await.unwrap();
@@ -1854,4 +1856,29 @@ async fn session_events_are_taken_once_and_shown_with_their_problems() {
     assert_eq!(viper["rooms"][0]["with"], json!([]), "{viper}");
     assert_eq!(viper["rooms"][0]["to"].as_i64(), Some(now - 240));
     assert_eq!(admin_call(&r, "GET", "/api/sessions", "", None).await.0, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn the_map_lists_who_is_online_from_the_last_pulse_only() {
+    let t = start("online-now").await;
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    let pulse = json!({ "players": { "online": 1, "total": 3 }, "online": [
+        { "id": 1011, "name": "Viper", "country": "AR", "country_name": "Argentina", "region": "Buenos Aires", "city": "Buenos Aires",
+          "lat": -34.6, "lon": -58.4, "status": "match", "mode": "coop", "with": ["Theusma"], "since": 1, "network": "relayed" },
+    ] });
+    assert_eq!(t.call("POST", "/v1/pulse", Some(&a), Some(pulse)).await.0, StatusCode::OK);
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    let (status, v) = admin_call(&r, "GET", "/api/online", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let players = v["players"].as_array().unwrap();
+    assert_eq!(players.len(), 1);
+    assert_eq!(
+        (players[0]["name"].as_str(), players[0]["server"].as_str(), players[0]["city"].as_str()),
+        (Some("Viper"), Some("server-a"), Some("Buenos Aires"))
+    );
+    assert_eq!(admin_call(&r, "GET", "/api/online", "", None).await.0, StatusCode::UNAUTHORIZED);
+    // Nothing of it is stored: only the live point.
+    let stored: String = sqlx::query_scalar("SELECT point FROM pulses").fetch_one(&t.c.pool).await.unwrap();
+    assert!(!stored.contains("Viper"), "{stored}");
 }

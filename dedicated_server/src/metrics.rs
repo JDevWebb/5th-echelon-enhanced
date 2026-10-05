@@ -192,11 +192,42 @@ impl Match {
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct Pulse {
     pub players: Players,
+    /// Who's online and what they're doing, for the admin UI's map (at most
+    /// [`MAX_ONLINE_LISTED`]): where by city, never their address.
+    pub online: Vec<OnlinePlayer>,
     pub matches: u32,
     pub lobbies: u32,
     pub counters: CounterValues,
     pub net_rx_bytes: u64,
     pub net_tx_bytes: u64,
+}
+
+/// Online players listed in a pulse at most.
+const MAX_ONLINE_LISTED: u32 = 300;
+
+/// An online player, for the admin UI's map.
+#[derive(Debug, Clone, Serialize, Default)]
+pub struct OnlinePlayer {
+    pub id: u32,
+    pub name: String,
+    /// Where they connect from, by city (from the geolocation database; empty without one).
+    pub country: String,
+    pub country_name: String,
+    pub region: String,
+    pub city: String,
+    pub lat: f64,
+    pub lon: f64,
+    /// "menus" (signed in, in no room), "lobby" or "match".
+    pub status: &'static str,
+    /// "coop" or "svm" in a room; empty otherwise.
+    pub mode: &'static str,
+    /// The others in their room.
+    pub with: Vec<String>,
+    /// When their play session started (Unix seconds).
+    pub since: Option<i64>,
+    /// "relayed", "direct" or "unregistered" (no NAT helper registration: nobody can reach
+    /// them); empty when the server runs no NAT helper.
+    pub network: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -369,6 +400,9 @@ pub async fn pulse(storage: &Storage) -> Pulse {
                 None => {}
             }
         }
+        if let Ok(online) = storage.online_players_async(MAX_ONLINE_LISTED).await {
+            p.online = online.into_iter().map(|(id, name, since)| online_player(id, name, since, &sessions)).collect();
+        }
     }
     p.counters = counter_values();
     (p.net_rx_bytes, p.net_tx_bytes) = tokio::task::spawn_blocking(net_bytes).await.unwrap_or_default();
@@ -391,6 +425,37 @@ fn net_bytes() -> (u64, u64) {
 }
 
 /// Online players per city.
+/// An online player as the map shows them: where (by city), what they're doing, and how
+/// their game is reached.
+fn online_player(id: u32, name: String, since: Option<i64>, sessions: &[crate::storage::LiveSession]) -> OnlinePlayer {
+    let ip = address_of(id);
+    let place = ip.and_then(|ip| GEO.get().and_then(|g| g.lookup(ip))).unwrap_or_default();
+    let activity = activity_of(&name, sessions);
+    let network = match (crate::nat_helper::relay_ip(), ip) {
+        (None, _) | (_, None) => "",
+        (Some(relay), Some(ip)) => match crate::nat_helper::advertised_for(&name, ip) {
+            Some(a) if *a.ip() == relay => "relayed",
+            Some(_) => "direct",
+            None => "unregistered",
+        },
+    };
+    OnlinePlayer {
+        id,
+        country: place.country,
+        country_name: place.country_name,
+        region: place.region,
+        city: place.city,
+        lat: place.lat,
+        lon: place.lon,
+        status: activity.as_ref().map_or("menus", |a| a.room),
+        mode: activity.as_ref().map_or("", |a| a.mode),
+        with: activity.map(|a| a.with).unwrap_or_default(),
+        since,
+        network,
+        name,
+    }
+}
+
 fn places() -> Vec<Place> {
     let ips: Vec<IpAddr> = addresses().lock().unwrap_or_else(std::sync::PoisonError::into_inner).values().copied().collect();
     let geo = GEO.get();

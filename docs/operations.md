@@ -112,6 +112,7 @@ A member server drops out of the server directory, and players' launchers stop o
 ### Reports
 
 - **Bandwidth:** data in, out and relayed per hour, day or month; totals, the peak, and the 95th percentile of five-minute rates (what burstable plans bill); a row per day (per month over a year), and a CSV export. Set each server's monthly allowance in TB to see how far through it the month is and where it's heading.
+- **The map** (Overview, and Players & map with **Now**): night is shaded as it is now, deepening through the twilights, with the sun where it's overhead. Each player online has a marker (green in a match, blue in a lobby, grey in the menus); hover for their name, server, city, what they're doing and with whom, how long they've been on, how their game is reached (direct, relayed, or not registered for online play) and the time of day there. The other periods show time played by city.
 - **Players & map › Report & map:** players per period, daily average, new and returning players, time played per player per day, the peak; sign-ins and failed joins per day; a heatmap of when people play, in your time zone; median pings by city; the live map. Time played comes from play sessions for servers that send them (from the first whole day they did), else from a sample each minute.
 - **Players & map › Matches:** finished matches per day by mode, matches started, their average length and players, private and public, by mode, game mode and map (name maps as you identify them).
 
@@ -305,7 +306,7 @@ The badge at the top right says whether it's live. The connection uses the same 
 - players' reports: what they said, and their logs and the server's.
 
 **What's stored:**
-- Players' locations are city counts.
+- Players' locations are city counts. The live map's list of who's online (name, city, what they're doing) comes with each server's pulse and is kept in the coordinator's memory only, the latest for each server: it's never stored.
 - Each server's accounts and play sessions, as it reports them (see Metrics), so admins can manage players.
 - Players' session events (sign-ins, rooms, searches, joins, invitations, problems), with their names but no addresses, for 30 days on the coordinator (a few days on each server), and their game's warnings, errors and network lines, redacted on their PC, unless they turned that off.
 - The per-minute "who played" ids are a per-server keyed hash of the account number, with minutes played per day; the reports count players per server, so someone playing on two servers counts twice.
