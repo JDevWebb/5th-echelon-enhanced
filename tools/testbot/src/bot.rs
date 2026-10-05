@@ -17,13 +17,16 @@ use quazal::rmc::basic::ReadStream;
 use quazal::rmc::basic::ToStream;
 use quazal::rmc::types::Any;
 use quazal::rmc::types::Property;
+use quazal::rmc::types::PropertyVariant;
 use quazal::rmc::types::QList;
 use quazal::rmc::types::StationURL;
+pub use quazal::rmc::types::Variant;
 use sc_bl_protocols::authentication_foundation::ticket_granting_protocol as tg;
 use sc_bl_protocols::game_session_service::game_session_protocol as gs;
 use sc_bl_protocols::game_session_service::types::GameSession;
 use sc_bl_protocols::game_session_service::types::GameSessionKey;
 use sc_bl_protocols::game_session_service::types::GameSessionSearchWithParticipantsResult;
+use sc_bl_protocols::player_stats_service::player_stats_protocol as ps;
 use sc_bl_protocols::ubi_authentication::types::UbiAuthenticationLoginCustomData;
 use server_api::friends::friends_client::FriendsClient;
 use server_api::misc::misc_client::MiscClient;
@@ -461,6 +464,281 @@ impl Bot {
             .collect())
     }
 
+    /// Changes a session's attributes (the game sends them all).
+    pub async fn update_session(&mut self, session: u32, attrs: &str) -> Result<()> {
+        use sc_bl_protocols::game_session_service::types::GameSessionUpdate;
+        self.gs::<gs::UpdateSessionResponse>(
+            gs::GameSessionProtocolMethod::UpdateSession,
+            gs::UpdateSessionRequest {
+                game_session_update: GameSessionUpdate {
+                    session_key: key(session),
+                    attributes: properties(attrs),
+                },
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn delete_session(&mut self, session: u32) -> Result<()> {
+        self.gs::<gs::DeleteSessionResponse>(gs::GameSessionProtocolMethod::DeleteSession, gs::DeleteSessionRequest { game_session_key: key(session) })
+            .await?;
+        Ok(())
+    }
+
+    pub async fn remove_participants(&mut self, session: u32, pids: &[u32]) -> Result<()> {
+        self.gs::<gs::RemoveParticipantsResponse>(
+            gs::GameSessionProtocolMethod::RemoveParticipants,
+            gs::RemoveParticipantsRequest {
+                game_session_key: key(session),
+                participant_ids: QList(pids.to_vec()),
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// The game's report of joins that failed: (session, error code).
+    pub async fn report_failed_joins(&mut self, failed: &[(u32, u32)]) -> Result<()> {
+        use sc_bl_protocols::game_session_service::types::GameSessionUnsuccessfulJoinSession;
+        #[allow(clippy::cast_possible_wrap)]
+        let list = failed
+            .iter()
+            .map(|&(session, code)| GameSessionUnsuccessfulJoinSession {
+                session_key: key(session),
+                error_category: 0,
+                error_code: code as i32,
+            })
+            .collect();
+        self.gs::<gs::ReportUnsuccessfulJoinSessionsResponse>(
+            gs::GameSessionProtocolMethod::ReportUnsuccessfulJoinSessions,
+            gs::ReportUnsuccessfulJoinSessionsRequest {
+                unsuccessful_join_sessions: QList(list),
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// The plain (not GameSessionEx) search: every session of the type whose host can be
+    /// reached. Returns (session id, host pid).
+    pub async fn search_sessions_plain(&mut self) -> Result<Vec<(u32, u32)>> {
+        use sc_bl_protocols::game_session_service::types::GameSessionQuery;
+        let resp: gs::SearchSessionsResponse = self
+            .gs(
+                gs::GameSessionProtocolMethod::SearchSessions,
+                gs::SearchSessionsRequest {
+                    game_session_query: GameSessionQuery {
+                        type_id: SESSION_TYPE,
+                        query_id: 0,
+                        parameters: QList(vec![]),
+                    },
+                },
+            )
+            .await?;
+        Ok(resp.search_results.0.iter().map(|r| (r.session_key.session_id, r.host_pid)).collect())
+    }
+
+    /// The game's own invitation into a session (GameSession, not the overlay's).
+    pub async fn send_invitation(&mut self, session: u32, to: &[u32], message: &str) -> Result<()> {
+        use sc_bl_protocols::game_session_service::types::GameSessionInvitation;
+        self.gs::<gs::SendInvitationResponse>(
+            gs::GameSessionProtocolMethod::SendInvitation,
+            gs::SendInvitationRequest {
+                invitation: GameSessionInvitation {
+                    session_key: key(session),
+                    recipient_pids: QList(to.to_vec()),
+                    message: message.into(),
+                },
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// (received, sent) invitation counts.
+    pub async fn invitation_counts(&mut self) -> Result<(u32, u32)> {
+        let received: gs::GetInvitationReceivedCountResponse = self
+            .gs(
+                gs::GameSessionProtocolMethod::GetInvitationReceivedCount,
+                gs::GetInvitationReceivedCountRequest {
+                    game_session_type_id: SESSION_TYPE,
+                },
+            )
+            .await?;
+        let sent: gs::GetInvitationSentCountResponse = self
+            .gs(
+                gs::GameSessionProtocolMethod::GetInvitationSentCount,
+                gs::GetInvitationSentCountRequest {
+                    game_session_type_id: SESSION_TYPE,
+                },
+            )
+            .await?;
+        Ok((received.count, sent.count))
+    }
+
+    pub async fn invitations_received(&mut self) -> Result<Vec<sc_bl_protocols::game_session_service::types::GameSessionInvitationReceived>> {
+        let resp: gs::GetInvitationsReceivedResponse = self
+            .gs(
+                gs::GameSessionProtocolMethod::GetInvitationsReceived,
+                gs::GetInvitationsReceivedRequest {
+                    game_session_type_id: SESSION_TYPE,
+                    result_range: quazal::rmc::types::ResultRange { offset: 0, size: 20 },
+                },
+            )
+            .await?;
+        Ok(resp.invitations.0)
+    }
+
+    pub async fn invitations_sent(&mut self) -> Result<Vec<sc_bl_protocols::game_session_service::types::GameSessionInvitationSent>> {
+        let resp: gs::GetInvitationsSentResponse = self
+            .gs(
+                gs::GameSessionProtocolMethod::GetInvitationsSent,
+                gs::GetInvitationsSentRequest {
+                    game_session_type_id: SESSION_TYPE,
+                    result_range: quazal::rmc::types::ResultRange { offset: 0, size: 20 },
+                },
+            )
+            .await?;
+        Ok(resp.invitations.0)
+    }
+
+    pub async fn accept_invitation(&mut self, invitation: sc_bl_protocols::game_session_service::types::GameSessionInvitationReceived) -> Result<()> {
+        self.gs::<gs::AcceptInvitationResponse>(
+            gs::GameSessionProtocolMethod::AcceptInvitation,
+            gs::AcceptInvitationRequest {
+                game_session_invitation: invitation,
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn decline_invitation(&mut self, invitation: sc_bl_protocols::game_session_service::types::GameSessionInvitationReceived) -> Result<()> {
+        self.gs::<gs::DeclineInvitationResponse>(
+            gs::GameSessionProtocolMethod::DeclineInvitation,
+            gs::DeclineInvitationRequest {
+                game_session_invitation: invitation,
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    pub async fn cancel_invitation(&mut self, invitation: sc_bl_protocols::game_session_service::types::GameSessionInvitationSent) -> Result<()> {
+        self.gs::<gs::CancelInvitationResponse>(
+            gs::GameSessionProtocolMethod::CancelInvitation,
+            gs::CancelInvitationRequest {
+                game_session_invitation: invitation,
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    async fn ps<Resp: FromStream>(&mut self, method: ps::PlayerStatsProtocolMethod, req: impl ToStream) -> Result<Resp> {
+        decode(&self.secure.call(ps::PLAYER_STATS_PROTOCOL_ID, method as u32, req.to_bytes()).await?)
+    }
+
+    /// Stats after a match, as the game writes them: (board, context, [(stat, value)]).
+    pub async fn write_stats(&mut self, updates: &[(u32, u32, &[(u32, Variant)])]) -> Result<()> {
+        use sc_bl_protocols::player_stats_service::types::PlayerStatUpdate;
+        let player_stat_updates = updates
+            .iter()
+            .map(|(board, context, stats)| PlayerStatUpdate {
+                board_id: *board,
+                context_ids: QList(vec![*context]),
+                stats: QList(stats.iter().map(|(id, value)| PropertyVariant { id: *id, value: value.clone() }).collect()),
+            })
+            .collect();
+        self.ps::<ps::WriteStatsResponse>(
+            ps::PlayerStatsProtocolMethod::WriteStats,
+            ps::WriteStatsRequest {
+                player_stat_updates: QList(player_stat_updates),
+            },
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Players' stats on a board in a context: per player, (stat, value as Debug text).
+    pub async fn read_stats(&mut self, pids: &[u32], board: u32, context: u32, stats: &[u32]) -> Result<Vec<(u32, Vec<(u32, String)>)>> {
+        use sc_bl_protocols::player_stats_service::types::StatboardQuery;
+        let resp: ps::ReadStatsByPlayersResponse = self
+            .ps(
+                ps::PlayerStatsProtocolMethod::ReadStatsByPlayers,
+                ps::ReadStatsByPlayersRequest {
+                    player_pids: QList(pids.to_vec()),
+                    queries: QList(vec![StatboardQuery {
+                        board_id: board,
+                        context_ids: QList(vec![context]),
+                        reset_frequency: 0,
+                        stat_ids: QList(stats.to_vec()),
+                        sort_criterias: QList(vec![]),
+                    }]),
+                },
+            )
+            .await?;
+        Ok(resp
+            .results
+            .0
+            .into_iter()
+            .flat_map(|r| r.player_stat_sets.0)
+            .map(|set| (set.player_pid, set.stats.0.into_iter().map(|p| (p.id, format!("{:?}", p.value))).collect()))
+            .collect())
+    }
+
+    /// A leaderboard's places: from a rank, around a player, or for players. Returns the
+    /// total and (pid, rank, score as Debug text).
+    pub async fn leaderboard(&mut self, board: u32, context: u32, wanted: Places<'_>) -> Result<(u32, Vec<(u32, u32, String)>)> {
+        use sc_bl_protocols::player_stats_service::types::LeaderboardQuery;
+        let queries = QList(vec![LeaderboardQuery {
+            board_id: board,
+            context_id: context,
+            reset_frequency: 0,
+            stat_ids: QList(vec![]),
+        }]);
+        let results = match wanted {
+            Places::From(starting_rank, count) => {
+                self.ps::<ps::ReadLeaderboardsByRankResponse>(
+                    ps::PlayerStatsProtocolMethod::ReadLeaderboardsByRank,
+                    ps::ReadLeaderboardsByRankRequest { starting_rank, count, queries },
+                )
+                .await?
+                .results
+            }
+            Places::Around(player_pid, count) => {
+                self.ps::<ps::ReadLeaderboardsNearPlayerResponse>(
+                    ps::PlayerStatsProtocolMethod::ReadLeaderboardsNearPlayer,
+                    ps::ReadLeaderboardsNearPlayerRequest { player_pid, count, queries },
+                )
+                .await?
+                .results
+            }
+            Places::Of(pids) => {
+                self.ps::<ps::ReadLeaderboardsByPlayersResponse>(
+                    ps::PlayerStatsProtocolMethod::ReadLeaderboardsByPlayers,
+                    ps::ReadLeaderboardsByPlayersRequest {
+                        player_pids: QList(pids.to_vec()),
+                        queries,
+                    },
+                )
+                .await?
+                .results
+            }
+        };
+        let result = results.0.into_iter().next().ok_or_else(|| eyre!("no leaderboard in the answer"))?;
+        Ok((
+            result.leaderboard_total_player_count,
+            result
+                .player_ranks
+                .0
+                .into_iter()
+                .map(|r| (r.player_stat_set.player_pid, r.rank, format!("{:?}", r.score)))
+                .collect(),
+        ))
+    }
+
     /// Simulated loss: the next push from the server is dropped unacknowledged.
     pub fn drop_next_push(&mut self) {
         self.secure.drop_requests += 1;
@@ -750,6 +1028,16 @@ impl NotificationEvent {
             ui_param_3,
         })
     }
+}
+
+/// Which places of a leaderboard to read.
+pub enum Places<'a> {
+    /// From a rank (1 is the top), this many.
+    From(u32, u32),
+    /// Around a player, this many.
+    Around(u32, u32),
+    /// These players'.
+    Of(&'a [u32]),
 }
 
 fn key(session_id: u32) -> GameSessionKey {

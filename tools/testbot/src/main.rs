@@ -15,6 +15,8 @@ use eyre::Result;
 use quazal::rmc::types::Property;
 use sc_bl_protocols::game_session_service::types::GameSessionSearchWithParticipantsResult;
 use testbot::bot::Bot;
+use testbot::bot::Places;
+use testbot::bot::Variant;
 use testbot::bot::LOBBY;
 use testbot::bot::PRIVATE_MATCH;
 
@@ -326,6 +328,202 @@ async fn presence(ctx: &mut Ctx) -> Result<()> {
         tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
     seer.disconnect().await
+}
+
+/// A match from creation to deletion: found by its attributes, changed by its host (and
+/// found by the new ones only), its guest removed, deleted. Only its members change it,
+/// only its host removes others, and only its host deletes it.
+async fn session_lifecycle(ctx: &mut Ctx) -> Result<()> {
+    let mut host = ctx.player("Host").await?;
+    let mut guest = ctx.player("Guest").await?;
+    let mut stranger = ctx.player("Stranger").await?;
+    host.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
+    // Maps no other scenario's sessions have.
+    let (first, second) = (900_000 + ctx.run * 2, 900_001 + ctx.run * 2);
+    let attrs = |map: u32| format!("113 => 0;103 => 0;102 => 6;101 => {map}");
+    let game = host.create_session(&attrs(first)).await?;
+    host.add_participants(game, &[host.pid], &[]).await?;
+    let has = |found: Vec<(u32, u32)>| found.iter().any(|(s, _)| *s == game);
+    ensure!(has(guest.search_sessions(&attrs(first)).await?), "the match isn't found by its attributes");
+    ensure!(
+        guest.search_sessions_plain().await?.iter().any(|&(s, h)| s == game && h == host.pid),
+        "the plain search doesn't list the match with its host"
+    );
+
+    // The host picks another map: found by it, not by the old one.
+    host.update_session(game, &attrs(second)).await?;
+    ensure!(has(guest.search_sessions(&attrs(second)).await?), "not found by its new map");
+    ensure!(!has(guest.search_sessions(&attrs(first)).await?), "still found by its old map");
+    ensure!(stranger.update_session(game, &attrs(first)).await.is_err(), "someone not in the match changed it");
+    ensure!(has(guest.search_sessions(&attrs(second)).await?), "a refused change changed it");
+
+    // A guest comes in. Only the host removes others; then the guest isn't in it.
+    guest.add_participants(game, &[guest.pid], &[]).await?;
+    guest.join_session(game).await?;
+    let guest_in = |found: Vec<sc_bl_protocols::game_session_service::types::GameSessionSearchWithParticipantsResult>| {
+        found.iter().any(|r| r.game_session_search_result.session_key.session_id == game)
+    };
+    ensure!(guest_in(stranger.search_with_participants(&[guest.pid]).await?), "the guest isn't in the match");
+    ensure!(
+        stranger.remove_participants(game, &[guest.pid]).await.is_err(),
+        "someone not in the match removed the guest"
+    );
+    ensure!(guest.remove_participants(game, &[host.pid]).await.is_err(), "the guest removed the host");
+    host.remove_participants(game, &[guest.pid]).await?;
+    ensure!(!guest_in(stranger.search_with_participants(&[guest.pid]).await?), "a removed guest is still in the match");
+
+    // Only the host's delete deletes it.
+    stranger.delete_session(game).await?;
+    ensure!(has(guest.search_sessions(&attrs(second)).await?), "someone else deleted the host's match");
+    host.delete_session(game).await?;
+    ensure!(!has(guest.search_sessions(&attrs(second)).await?), "a deleted match is still found");
+    for bot in [host, guest, stranger] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
+/// The game's own invitations (GameSession's): sent, counted and listed on both sides,
+/// declined, cancelled, accepted (the guest is then in the room). Only someone in the room
+/// invites into it, and only an invitation that exists is accepted.
+async fn game_invitations(ctx: &mut Ctx) -> Result<()> {
+    use sc_bl_protocols::game_session_service::types::GameSessionInvitationReceived;
+    use sc_bl_protocols::game_session_service::types::GameSessionKey;
+    let mut host = ctx.player("Host").await?;
+    let mut guest = ctx.player("Guest").await?;
+    let mut other = ctx.player("Other").await?;
+    let mut stranger = ctx.player("Stranger").await?;
+    host.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
+    let room = host.create_session(LOBBY).await?;
+    host.add_participants(room, &[host.pid], &[]).await?;
+
+    host.send_invitation(room, &[guest.pid, other.pid], "come play").await?;
+    ensure!(host.invitation_counts().await? == (0, 2), "the host's counts");
+    ensure!(guest.invitation_counts().await? == (1, 0), "the guest's counts");
+    let mut got = guest.invitations_received().await?;
+    ensure!(got.len() == 1, "the guest has {} invitations", got.len());
+    ensure!(
+        (got[0].session_key.session_id, got[0].sender_pid, got[0].message.as_str()) == (room, host.pid, "come play"),
+        "the invitation: {:?}",
+        got[0]
+    );
+    // Declined: gone for the guest; the other one is still out.
+    guest.decline_invitation(got.remove(0)).await?;
+    ensure!(guest.invitation_counts().await? == (0, 0), "declined, still there");
+    ensure!(host.invitation_counts().await? == (0, 1), "the host's counts after a decline");
+    // Cancelled by the host: gone for the other player.
+    let sent = host.invitations_sent().await?;
+    let to_other = sent
+        .into_iter()
+        .find(|i| i.recipient_pid == other.pid)
+        .ok_or_else(|| eyre!("the host's sent list lacks the other player"))?;
+    host.cancel_invitation(to_other).await?;
+    ensure!(other.invitation_counts().await? == (0, 0), "cancelled, still there");
+
+    // Accepted: the guest is in the room.
+    host.send_invitation(room, &[guest.pid], "again").await?;
+    let invitation = guest.invitations_received().await?.pop().ok_or_else(|| eyre!("the second invitation didn't arrive"))?;
+    guest.accept_invitation(invitation).await?;
+    let found = stranger.search_with_participants(&[guest.pid]).await?;
+    ensure!(
+        found.iter().any(|r| r.game_session_search_result.session_key.session_id == room),
+        "accepting didn't put the guest in the room"
+    );
+    ensure!(guest.invitation_counts().await? == (0, 0), "an accepted invitation is still pending");
+
+    // Refused: inviting into a room you aren't in, accepting one nobody sent.
+    ensure!(
+        stranger.send_invitation(room, &[other.pid], "sneaky").await.is_err(),
+        "someone not in the room invited into it"
+    );
+    let made_up = GameSessionInvitationReceived {
+        session_key: GameSessionKey { type_id: 1, session_id: room },
+        sender_pid: host.pid,
+        message: String::new(),
+        creation_time: quazal::rmc::types::DateTime(0),
+    };
+    ensure!(other.accept_invitation(made_up).await.is_err(), "an invitation nobody sent was accepted");
+    ensure!(other.invitation_counts().await? == (0, 0), "a refused invitation was stored");
+    for bot in [host, guest, other, stranger] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
+/// Joins the game reports failing are counted in the player's session summary (what a
+/// feedback report carries), a different game version apart.
+async fn failed_joins(ctx: &mut Ctx) -> Result<()> {
+    let mut a = ctx.player("Joiner").await?;
+    // CONNECTION_FAILED, then DATA_VERSION_MISMATCH.
+    a.report_failed_joins(&[(123_456, 0xb08a_1a05), (123_457, 0xeea4_40ee)]).await?;
+    let summary = a.session_summary().await.map_err(|e| eyre!("session summary: {}", e.message()))?;
+    ensure!(
+        (summary.failed_joins, summary.version_mismatches) == (2, 1),
+        "the summary counts {} failed joins, {} version mismatches",
+        summary.failed_joins,
+        summary.version_mismatches
+    );
+    a.disconnect().await
+}
+
+/// Stats after matches add up per board and context, the ratios are worked out, stats no
+/// board has are left out, and the leaderboard ranks players by their score.
+async fn stats(ctx: &mut Ctx) -> Result<()> {
+    // Spies vs Mercs, in a game mode (context) no other scenario writes: kills (100),
+    // deaths (101), their ratio (102) and the score (127, leaderboard 5).
+    const BOARD: u32 = 10;
+    const MODE: u32 = 228;
+    let mut scorer = ctx.player("Scorer").await?;
+    let mut rival = ctx.player("Rival").await?;
+    scorer
+        .write_stats(&[(BOARD, MODE, &[(100, Variant::I64(9)), (101, Variant::I64(4)), (127, Variant::I64(500))])])
+        .await?;
+    rival
+        .write_stats(&[(BOARD, MODE, &[(100, Variant::I64(3)), (101, Variant::I64(1)), (127, Variant::I64(800))])])
+        .await?;
+    // Another match: added to what's there. A mode the board doesn't have, and a board that
+    // doesn't exist, are left out.
+    scorer
+        .write_stats(&[
+            (BOARD, MODE, &[(100, Variant::I64(1)), (127, Variant::I64(100))]),
+            (BOARD, 999, &[(100, Variant::I64(50))]),
+            (99, 0, &[(100, Variant::I64(1))]),
+        ])
+        .await?;
+    let read = rival.read_stats(&[scorer.pid, rival.pid], BOARD, MODE, &[100, 101, 102, 127]).await?;
+    let of = |pid: u32| {
+        read.iter()
+            .find(|(p, _)| *p == pid)
+            .map(|(_, s)| s.iter().map(|(id, v)| format!("{id}={v}")).collect::<Vec<_>>().join(" "))
+    };
+    ensure!(
+        of(scorer.pid).as_deref() == Some("100=I64(10) 101=I64(4) 102=F64(2.5) 127=I64(600)"),
+        "the scorer's stats: {:?}",
+        of(scorer.pid)
+    );
+    ensure!(
+        of(rival.pid).as_deref() == Some("100=I64(3) 101=I64(1) 102=F64(3.0) 127=I64(800)"),
+        "the rival's stats: {:?}",
+        of(rival.pid)
+    );
+    let other_mode = rival.read_stats(&[scorer.pid], BOARD, 227, &[100]).await?;
+    ensure!(other_mode.is_empty(), "stats appeared in another mode: {other_mode:?}");
+
+    // The leaderboard: the rival first, on score.
+    let (total, top) = scorer.leaderboard(5, MODE, Places::From(1, 10)).await?;
+    let place = |list: &[(u32, u32, String)], pid: u32| list.iter().find(|(p, ..)| *p == pid).map(|(_, rank, score)| (*rank, score.clone()));
+    let (rival_place, scorer_place) = (place(&top, rival.pid), place(&top, scorer.pid));
+    ensure!(total >= 2, "{total} players on the leaderboard");
+    ensure!(
+        matches!((&rival_place, &scorer_place), (Some((r, rs)), Some((s, ss))) if r < s && rs == "I64(800)" && ss == "I64(600)"),
+        "the leaderboard: rival {rival_place:?}, scorer {scorer_place:?}"
+    );
+    let (_, around) = rival.leaderboard(5, MODE, Places::Around(scorer.pid, 3)).await?;
+    ensure!(place(&around, scorer.pid) == scorer_place, "around the scorer: {around:?}");
+    let (_, theirs) = rival.leaderboard(5, MODE, Places::Of(&[scorer.pid])).await?;
+    ensure!(place(&theirs, scorer.pid) == scorer_place, "the scorer's own place: {theirs:?}");
+    scorer.disconnect().await?;
+    rival.disconnect().await
 }
 
 /// A name check answers free, taken or not allowed, and makes nothing.
@@ -1227,6 +1425,10 @@ const SCENARIOS: &[&str] = &[
     "report",
     "client-log",
     "name-check",
+    "session-lifecycle",
+    "game-invitations",
+    "failed-joins",
+    "stats",
 ];
 
 #[tokio::main]
@@ -1322,6 +1524,10 @@ async fn main() -> Result<()> {
                 "report" => report(&mut ctx).await,
                 "client-log" => client_log(&mut ctx).await,
                 "name-check" => name_check(&mut ctx).await,
+                "session-lifecycle" => session_lifecycle(&mut ctx).await,
+                "game-invitations" => game_invitations(&mut ctx).await,
+                "failed-joins" => failed_joins(&mut ctx).await,
+                "stats" => stats(&mut ctx).await,
                 // Not in the default list: a server in the "mutual" mode, one requiring
                 // identities, and two servers.
                 "friends-mutual" => friends_mutual(&mut ctx).await,
