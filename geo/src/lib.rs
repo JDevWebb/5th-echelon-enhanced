@@ -204,9 +204,34 @@ fn year_month(t: SystemTime) -> (i64, u32) {
     (year, month)
 }
 
+impl Place {
+    /// Whether the database knew where it is (DB-IP gives 0, 0 when it doesn't).
+    pub fn located(&self) -> bool {
+        self.lat != 0.0 || self.lon != 0.0
+    }
+
+    /// The great-circle distance to `other`, in km.
+    pub fn km_to(&self, other: &Place) -> f64 {
+        const EARTH_KM: f64 = 6371.0;
+        let (a, b) = ((self.lat.to_radians(), self.lon.to_radians()), (other.lat.to_radians(), other.lon.to_radians()));
+        let h = ((b.0 - a.0) / 2.0).sin().powi(2) + a.0.cos() * b.0.cos() * ((b.1 - a.1) / 2.0).sin().powi(2);
+        2.0 * EARTH_KM * h.sqrt().min(1.0).asin()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn distances() {
+        let at = |lat, lon| Place { lat, lon, ..Place::default() };
+        let (auckland, sydney, london) = (at(-36.85, 174.76), at(-33.87, 151.21), at(51.51, -0.13));
+        assert!((auckland.km_to(&sydney) - 2160.0).abs() < 30.0, "{}", auckland.km_to(&sydney));
+        assert!((auckland.km_to(&london) - 18_350.0).abs() < 100.0, "{}", auckland.km_to(&london));
+        assert!(auckland.km_to(&auckland) < 0.001);
+        assert!(auckland.located() && !Place::default().located());
+    }
 
     #[test]
     fn months() {

@@ -147,6 +147,8 @@ The server carries an action out when it next sends its pulse (within 10 seconds
 
 **Sessions** shows each player's time on the servers over the last 6 hours to 7 days, on one server or all: a row per player with when they were online, the rooms they were in (a party, or a co-op or Spies vs Mercs match; hatched when private, faded when alone; hover for whose it was and who else was in it), and marks for searches, stats written (a mission or match played to its end) and problems. Click a row, or a problem, for that player's events in order. Server trouble (alerts, and times a server's API didn't answer the coordinator's pings) is shaded behind the rows.
 
+Each room someone joined also says how their game reached the host's (hover it): each one's ping to the server, as their game measured it (0.4.2 games; older ones show `?`), and whether the server's relay carried their traffic. For a relayed pair it shows their round trip through the relay (one's ping plus the other's) and the least a direct round trip could take over the distance between them (from where their addresses are; never sent to the coordinator). **Relayed round trip**, at the top, is the median of those over the period, with how many joins were relayed: the difference between the two is about what the relay costs those players. Players see their own ping to the server on the overlay's network line (F5).
+
 Above it, **Problems** lists what went wrong, worst first in each level:
 
 | Level | What |

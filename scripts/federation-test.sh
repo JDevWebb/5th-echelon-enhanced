@@ -143,6 +143,17 @@ for _ in $(seq 30); do
 done
 case ",$kinds," in *,signin,*) case ",$kinds," in *,signout,*) ok=1;; esac;; esac
 [ "${ok:-0}" = 1 ] && echo "PASS server A's session events reached the coordinator ($kinds)" || { echo "FAIL session events: ${kinds:-none}"; rc=1; }
+echo "--- relay ping"
+# A relayed player joins a direct one's match on server A: the join says how they reach each
+# other (both games' round trips to the server, and the relayed round trip).
+client "$bin/testbot" --server "$a" relay-ping || rc=1
+net=""
+for _ in $(seq 30); do
+  net=$(coord_db "SELECT json_extract(detail, '$.relayed') || ' ' || json_extract(detail, '$.ping_ms') || ' ' || json_extract(detail, '$.host_ping_ms') || ' ' || json_extract(detail, '$.relay_ms') FROM session_events WHERE server_id = '$server_a' AND kind = 'join' AND json_extract(detail, '$.host_name') LIKE 'PingHost%'")
+  [ -n "$net" ] && break; sleep 1
+done
+case "$net" in "1 "[0-9]*" "[0-9]*" "[0-9]*) echo "PASS the relayed join reached the coordinator with its round trips (relayed, ping, host's, through the relay: $net)";;
+  *) echo "FAIL the relayed join's network detail: ${net:-no join}"; rc=1;; esac
 if [ $rc -ne 0 ]; then
   for s in fes-fed-a fes-fed-b; do echo "--- $s"; docker exec "$s" grep -iE -A3 "federation|ERRO" /srv/fe/server.log | tail -40 || true; done
   echo "--- coordinator"; docker exec fes-fed-coord tail -30 /srv/c/log || true

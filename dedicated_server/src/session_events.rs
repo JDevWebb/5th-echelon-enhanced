@@ -18,7 +18,11 @@
 //! - `signout`: `how` (`closed`: the game said goodbye; `timed_out`: it went quiet).
 //! - `room`: `room` (the session id), made by the player.
 //! - `search`: `query` (8: Spies vs Mercs matchmaking or an invitation, 11: co-op), `found`.
-//! - `join`: `room`, `via` (`invite`, `party`: their host took them along, `search`).
+//! - `join`: `room`, `via` (`invite`, `party`: their host took them along, `search`); when the
+//!   NAT helper knows the guest, how their game reaches the host's (`nat_helper::Path`):
+//!   `ping_ms` and `host_ping_ms` (each one's round trip to this server, as their game
+//!   measured it), `relayed`, and for a relayed pair `relay_ms` (their round trip through
+//!   the relay) and `direct_ms` (the least a direct one could take, from where they are).
 //! - `join_failed`: `room`, `code` (the game's error code, hex).
 //! - `leave`: `room`, `how` (`left`, `abandoned`, `removed` by the host: `by`), `ended`.
 //! - `invite`: `to`, `room` (none: unbound, the receiver finds nothing to join).

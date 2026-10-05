@@ -1226,6 +1226,7 @@ async fn nat_probe_scenario(ctx: &mut Ctx) -> Result<()> {
             name: String::new(),
             ticket: [0; 16],
             cookie: [0; 16],
+            rtt_ms: None,
         }
         .encode()
     };
@@ -1323,6 +1324,24 @@ async fn nat_relay(ctx: &mut Ctx) -> Result<()> {
     pb.disconnect().await
 }
 
+/// A relayed player joins a direct player's match, both games having told the NAT helper
+/// their round trip to it: the join is noted with how the two reach each other (the
+/// federation test checks it reaches the coordinator).
+async fn relay_ping(ctx: &mut Ctx) -> Result<()> {
+    let nat = nat_addr(ctx.server, false)?;
+    let (mut host, mut guest) = (ctx.player("PingHost").await?, ctx.player("PingGuest").await?);
+    let (h, g) = (tokio::net::UdpSocket::bind("0.0.0.0:0").await?, tokio::net::UdpSocket::bind("0.0.0.0:0").await?);
+    let rh = testbot::bot::nat_register(&h, nat, 0, &host.name, host.nat_ticket).await?;
+    let rg = testbot::bot::nat_register(&g, nat, nat_proto::probe_flags::WANT_RELAY, &guest.name, guest.nat_ticket).await?;
+    ensure!(rg.relayed && !rh.relayed, "relayed: guest {}, host {}", rg.relayed, rh.relayed);
+    let room = host.create_session("113 => 0;3 => 8;4 => 0;102 => 7").await?;
+    guest.join_session(room).await?;
+    // Saved every couple of seconds; the players stay until then.
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    guest.disconnect().await?;
+    host.disconnect().await
+}
+
 /// A game that still registers its local address gets the public one the
 /// NAT helper found (with the local one kept for players on its network).
 async fn nat_public_address(ctx: &mut Ctx) -> Result<()> {
@@ -1404,6 +1423,7 @@ const SCENARIOS: &[&str] = &[
     "lost-push",
     "nat-probe",
     "nat-relay",
+    "relay-ping",
     "nat-public-address",
     "friends",
     "block",
@@ -1503,6 +1523,7 @@ async fn main() -> Result<()> {
                 "lost-push" => lost_push(&mut ctx).await,
                 "nat-probe" => nat_probe_scenario(&mut ctx).await,
                 "nat-relay" => nat_relay(&mut ctx).await,
+                "relay-ping" => relay_ping(&mut ctx).await,
                 "nat-public-address" => nat_public_address(&mut ctx).await,
                 "friends" => friends(&mut ctx).await,
                 "block" => block(&mut ctx).await,

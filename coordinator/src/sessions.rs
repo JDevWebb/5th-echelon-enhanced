@@ -355,7 +355,15 @@ struct Stay {
     mode: String,
     private: bool,
     host: bool,
+    /// How the player's game reached the host's, when they joined: [`NET_KEYS`].
+    net: Value,
 }
+
+/// What a join says of the network between the guest and the host (the server's
+/// `nat_helper::Path::detail`): each one's ping to the server, whether the relay carried
+/// their traffic, and if so their round trip through it next to the least a direct one could
+/// take.
+const NET_KEYS: &[&str] = &["ping_ms", "host_ping_ms", "relayed", "relay_ms", "direct_ms"];
 
 /// Each player's timeline: when they were online, the rooms they were in (party or match,
 /// whose, with whom), and the events worth a mark (searches, stats, refusals...).
@@ -407,7 +415,7 @@ fn timelines(events: &[Event], sessions: &[(String, i64, i64, Option<i64>)], nam
         if let Some(p) = players.get_mut(who) {
             p["rooms"].as_array_mut().expect("an array").push(json!({
                 "room": stay.room.0, "from": stay.from.max(from), "to": until.min(to), "kind": stay.kind,
-                "mode": stay.mode, "private": stay.private, "host": stay.host, "with": with,
+                "mode": stay.mode, "private": stay.private, "host": stay.host, "with": with, "net": stay.net,
             }));
         }
     };
@@ -448,6 +456,11 @@ fn timelines(events: &[Event], sessions: &[(String, i64, i64, Option<i64>)], nam
                             mode: e.str("mode").to_string(),
                             private: e.detail["private"].as_bool().unwrap_or(false),
                             host: e.kind == "room",
+                            net: NET_KEYS
+                                .iter()
+                                .filter_map(|k| e.detail.get(*k).filter(|v| v.is_number() || v.is_boolean()).map(|v| ((*k).to_string(), v.clone())))
+                                .collect::<serde_json::Map<_, _>>()
+                                .into(),
                         });
                     }
                 }
@@ -993,5 +1006,31 @@ mod tests {
         let viper = t.iter().find(|p| p["name"] == "Viper").unwrap();
         assert_eq!((viper["rooms"][0]["to"].as_i64(), viper["rooms"][0]["host"].as_bool()), (Some(1356), Some(false)));
         assert_eq!(viper["online"][0], json!([120, 1400]));
+    }
+
+    /// A join says how the guest's game reached the host's; the room on the timeline keeps
+    /// that, and nothing else of the detail.
+    #[test]
+    fn joined_rooms_keep_how_the_guest_reached_the_host() {
+        let mut join = json!({ "room": 16, "room_kind": "match", "mode": "svm", "via": "search" });
+        join.as_object_mut().unwrap().extend(
+            json!({ "relayed": true, "ping_ms": 38, "host_ping_ms": 41, "relay_ms": 79, "direct_ms": 4, "ip": "198.51.100.7" })
+                .as_object()
+                .unwrap()
+                .clone(),
+        );
+        let events = vec![
+            ev("oc", 100, 5, "Kiwi", "room", json!({ "room": 16, "room_kind": "match", "mode": "svm" })),
+            ev("oc", 130, 11, "Tui", "join", join),
+            ev("oc", 900, 11, "Tui", "leave", json!({ "room": 16 })),
+        ];
+        let t = super::timelines(&events, &[], &std::collections::HashMap::new(), 0, 2000);
+        let tui = t.iter().find(|p| p["name"] == "Tui").unwrap();
+        assert_eq!(
+            tui["rooms"][0]["net"],
+            json!({ "relayed": true, "ping_ms": 38, "host_ping_ms": 41, "relay_ms": 79, "direct_ms": 4 })
+        );
+        let kiwi = t.iter().find(|p| p["name"] == "Kiwi").unwrap();
+        assert_eq!(kiwi["rooms"][0]["net"], json!({}), "the host's own room says nothing of it");
     }
 }

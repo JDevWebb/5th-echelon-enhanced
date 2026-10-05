@@ -268,6 +268,7 @@ pub async fn run(server: IpAddr, o: Options) -> Result<()> {
                                 name: name.clone(),
                                 ticket,
                                 cookie,
+                                rtt_ms: None,
                             };
                             let _ = socket.send_to(&again.encode(), nat).await;
                         }
@@ -324,6 +325,7 @@ pub async fn run(server: IpAddr, o: Options) -> Result<()> {
                             name: name.clone(),
                             ticket,
                             cookie: reg.cookie,
+                            rtt_ms: None,
                         };
                         let _ = socket.send_to(&msg.encode(), nat).await;
                     }

@@ -54,6 +54,8 @@ pub const STORM_PORT: u16 = 13000;
 
 const HEADER: usize = MAGIC.len() + 2;
 const ADDR: usize = 6;
+/// Where a probe's `rtt_ms` is: in the padding, after the longest name.
+const PROBE_RTT: usize = HEADER + 1 + 4 + ADDR + 16 + 16 + 1 + MAX_NAME;
 
 /// Proves a probe's name: the server's MAC of it, handed to the player when
 /// they sign in.
@@ -98,6 +100,10 @@ pub enum Message {
         ticket: Ticket,
         /// The cookie from the last reply (zeros: none yet).
         cookie: Cookie,
+        /// The game's round trip to the server, as the hook last measured it. Carried in
+        /// the padding, so a server from before it reads none, and a hook from before it
+        /// sends none.
+        rtt_ms: Option<u16>,
     },
     /// Server → hook.
     ProbeReply {
@@ -156,6 +162,7 @@ impl Message {
                 name,
                 ticket,
                 cookie,
+                rtt_ms,
             } => {
                 out.push(OP_PROBE);
                 out.push(*flags);
@@ -167,6 +174,7 @@ impl Message {
                 out.push(name.len() as u8);
                 out.extend_from_slice(name.as_bytes());
                 out.resize(PROBE_SIZE, 0);
+                out[PROBE_RTT..PROBE_RTT + 2].copy_from_slice(&rtt_ms.unwrap_or(0).to_be_bytes());
             }
             Message::ProbeReply {
                 nonce,
@@ -213,6 +221,7 @@ impl Message {
                 let cookie: Cookie = body[27..43].try_into().ok()?;
                 let len = usize::from(body[43]).min(MAX_NAME);
                 let name = body.get(fixed..fixed + len)?;
+                let rtt_ms = Some(u16::from_be_bytes([data[PROBE_RTT], data[PROBE_RTT + 1]])).filter(|ms| *ms > 0);
                 Some(Message::Probe {
                     flags,
                     nonce,
@@ -220,6 +229,7 @@ impl Message {
                     name: String::from_utf8_lossy(name).into_owned(),
                     ticket,
                     cookie,
+                    rtt_ms,
                 })
             }
             OP_PROBE_REPLY => {
@@ -351,6 +361,7 @@ mod tests {
                 name: "sam".into(),
                 ticket: [1; 16],
                 cookie: [2; 16],
+                rtt_ms: Some(187),
             },
             Message::Probe {
                 flags: 0,
@@ -359,6 +370,7 @@ mod tests {
                 name: String::new(),
                 ticket: [0; 16],
                 cookie: [0; 16],
+                rtt_ms: None,
             },
             reply(7),
             Message::DataTo {
@@ -386,12 +398,34 @@ mod tests {
             name: "x".repeat(200),
             ticket: [0; 16],
             cookie: [0; 16],
+            rtt_ms: Some(u16::MAX),
         }
         .encode();
         assert_eq!(probe.len(), PROBE_SIZE);
         assert!(reply(0).encode().len() <= probe.len());
         // A short probe (someone trying to get a bigger reply) is refused.
         assert_eq!(Message::decode(&probe[..40]), None);
+    }
+
+    /// The round trip rides in the padding: a full-length name leaves it alone, and a probe
+    /// from a hook before it (zeros there) carries none.
+    #[test]
+    fn the_round_trip_is_in_the_padding() {
+        let probe = |name: &str, rtt_ms| Message::Probe {
+            flags: 0,
+            nonce: 1,
+            mapping: None,
+            name: name.into(),
+            ticket: [0; 16],
+            cookie: [0; 16],
+            rtt_ms,
+        };
+        let long = "n".repeat(MAX_NAME);
+        assert_eq!(Message::decode(&probe(&long, Some(42)).encode()), Some(probe(&long, Some(42))));
+        let mut old = probe("sam", Some(42)).encode();
+        old[PROBE_RTT..PROBE_RTT + 2].fill(0);
+        assert_eq!(Message::decode(&old), Some(probe("sam", None)));
+        assert!(PROBE_RTT + 2 <= PROBE_SIZE);
     }
 
     #[test]

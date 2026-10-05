@@ -456,6 +456,11 @@ fn online_player(id: u32, name: String, since: Option<i64>, sessions: &[crate::s
     }
 }
 
+/// Where `ip` is, from the geolocation database (looked up here, never sent).
+pub fn place(ip: IpAddr) -> Option<geo::Place> {
+    GEO.get()?.lookup(ip)
+}
+
 fn places() -> Vec<Place> {
     let ips: Vec<IpAddr> = addresses().lock().unwrap_or_else(std::sync::PoisonError::into_inner).values().copied().collect();
     let geo = GEO.get();

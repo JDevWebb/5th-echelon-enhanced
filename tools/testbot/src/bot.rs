@@ -175,6 +175,8 @@ pub async fn nat_register(socket: &tokio::net::UdpSocket, nat: std::net::SocketA
     use nat_proto::Message;
     let mut cookie = [0u8; 16];
     let mut buf = [0u8; 256];
+    // The round trip of the last exchange, sent with the next probe as the hook does.
+    let mut rtt_ms = None;
     for _ in 0..10 {
         let nonce: u32 = rand::random::<u32>() | 1;
         let msg = Message::Probe {
@@ -184,10 +186,13 @@ pub async fn nat_register(socket: &tokio::net::UdpSocket, nat: std::net::SocketA
             name: name.into(),
             ticket,
             cookie,
+            rtt_ms,
         }
         .encode();
+        let sent = std::time::Instant::now();
         socket.send_to(&msg, nat).await?;
         if let Ok(Ok((n, _))) = tokio::time::timeout(Duration::from_millis(500), socket.recv_from(&mut buf)).await {
+            rtt_ms = Some(u16::try_from(sent.elapsed().as_millis()).unwrap_or(u16::MAX).max(1));
             if let Some(Message::ProbeReply {
                 nonce: got,
                 observed,

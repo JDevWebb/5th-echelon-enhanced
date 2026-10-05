@@ -140,6 +140,8 @@ struct Peer {
     received: u64,
     /// The game's last probe (relayed traffic doesn't count: a registration lives on that).
     probed_at: Instant,
+    /// The game's round trip to this server, as it last measured it.
+    rtt_ms: Option<u16>,
 }
 
 /// How long a direct player's address must stand before the address echo gives it out: the
@@ -290,6 +292,7 @@ impl Table {
             sent: old.as_ref().map_or(0, |(_, o)| o.sent),
             received: old.as_ref().map_or(0, |(_, o)| o.received),
             probed_at: now,
+            rtt_ms: old.as_ref().and_then(|(_, o)| o.rtt_ms),
         };
         let tag = peer.tag;
         self.by_name.insert(key, id);
@@ -359,6 +362,27 @@ impl Table {
             receiver.received += 1;
         }
         Some((target, from))
+    }
+
+    /// Notes `name`'s round trip to this server, as its game measured it.
+    pub fn note_rtt(&mut self, name: &str, rtt_ms: Option<u16>) {
+        let Some(ms) = rtt_ms else { return };
+        if let Some(p) = self.by_name.get(&name.to_lowercase()).and_then(|id| self.peers.get_mut(id)) {
+            p.rtt_ms = Some(ms);
+        }
+    }
+
+    /// How `guest`'s game and `host`'s reach each other, when the guest is registered.
+    pub fn path(&self, guest: &str, host: &str) -> Option<Path> {
+        let peer = |name: &str| self.by_name.get(&name.to_lowercase()).and_then(|id| self.peers.get(id));
+        let g = peer(guest)?;
+        let h = peer(host);
+        Some(Path {
+            ping_ms: g.rtt_ms,
+            host_ping_ms: h.and_then(|h| h.rtt_ms),
+            relayed: g.relayed || h.is_some_and(|h| h.relayed),
+            ips: h.map(|h| (*g.real.ip(), *h.real.ip())),
+        })
     }
 
     /// Each player's relayed packets (from them, to them) since the last call.
@@ -447,6 +471,60 @@ impl Table {
     pub fn relayed(&self) -> usize {
         self.peers.values().filter(|p| p.relayed).count()
     }
+}
+
+/// How a guest's game and their host's reach each other ([`Table::path`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct Path {
+    /// Each one's round trip to this server, as their game measured it.
+    pub ping_ms: Option<u16>,
+    pub host_ping_ms: Option<u16>,
+    /// Whether their traffic goes through the relay (either one relayed is enough).
+    pub relayed: bool,
+    /// Their public addresses (guest, host), to place them; never sent.
+    ips: Option<(Ipv4Addr, Ipv4Addr)>,
+}
+
+/// Light in fibre covers about 200 km a millisecond: a round trip takes at least this long
+/// per km between two players, whatever the route.
+const KM_PER_RTT_MS: f64 = 100.0;
+
+impl Path {
+    /// As event detail: `ping_ms`, `host_ping_ms`, `relayed`, and for a relayed pair
+    /// `relay_ms` (their round trip through this server: one's to it, plus the other's) and
+    /// `direct_ms` (the least a direct one could take, over the distance between where they
+    /// are, from `km`).
+    pub fn detail(&self, km: impl Fn(Ipv4Addr, Ipv4Addr) -> Option<f64>) -> serde_json::Value {
+        let mut d = serde_json::json!({ "relayed": self.relayed });
+        if let Some(ms) = self.ping_ms {
+            d["ping_ms"] = ms.into();
+        }
+        if let Some(ms) = self.host_ping_ms {
+            d["host_ping_ms"] = ms.into();
+        }
+        if self.relayed {
+            if let (Some(a), Some(b)) = (self.ping_ms, self.host_ping_ms) {
+                d["relay_ms"] = (u32::from(a) + u32::from(b)).into();
+            }
+            if let Some(km) = self.ips.and_then(|(a, b)| if a == b { Some(0.0) } else { km(a, b) }) {
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let ms = (km / KM_PER_RTT_MS).round() as u32;
+                d["direct_ms"] = ms.into();
+            }
+        }
+        d
+    }
+}
+
+/// How `guest` and the `host` they joined reach each other, as event detail
+/// ([`Path::detail`]), when the helper runs and the guest's game registered with it.
+pub fn path_detail(guest: &str, host: &str) -> Option<serde_json::Value> {
+    let path = TABLE.get()?.lock().ok()?.path(guest, host)?;
+    // Looked up with the table let go: relaying waits on it.
+    Some(path.detail(|a, b| {
+        let (a, b) = (crate::metrics::place(IpAddr::V4(a))?, crate::metrics::place(IpAddr::V4(b))?);
+        (a.located() && b.located()).then(|| a.km_to(&b))
+    }))
 }
 
 static TABLE: OnceLock<Arc<Mutex<Table>>> = OnceLock::new();
@@ -843,6 +921,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
             name,
             ticket,
             cookie,
+            rtt_ms,
         }) = Message::decode(data)
         {
             if flags & probe_flags::SECOND_PORT != 0 {
@@ -869,6 +948,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
                 }
                 let new = t.advertised_for(&name, IpAddr::V4(*src.ip())).is_none();
                 let mut reply = t.probe(src, flags, nonce, mapping, &name, now);
+                t.note_rtt(&name, rtt_ms);
                 if let Message::ProbeReply { cookie: c, .. } = &mut reply {
                     *c = cookie_for(keys, src, &name, bucket);
                 }
@@ -981,6 +1061,48 @@ mod tests {
         assert_eq!(t.advertised_for("sam", "198.51.100.7".parse().unwrap()), Some(a("198.51.100.7:61000")));
         // Only for the address the player probed from.
         assert_eq!(t.advertised_for("sam", "203.0.113.1".parse().unwrap()), None);
+    }
+
+    /// A join's network detail: each one's ping as their game reported it (kept when a later
+    /// probe has none), whether either is relayed, and for a relayed pair the round trip
+    /// through the relay next to the least a direct one could take.
+    #[test]
+    fn a_guest_and_host_path_says_what_the_relay_costs() {
+        let mut t = table(RelayMode::Auto);
+        let now = Instant::now();
+        let (guest, host) = (a("203.0.113.4:61000"), a("198.51.100.7:13000"));
+        t.probe(guest, 0, 1, None, "Tui", now);
+        t.note_rtt("Tui", Some(38));
+        t.probe(host, probe_flags::HAS_MAPPING, 1, Some(host), "Kiwi", now);
+        t.note_rtt("kiwi", Some(41));
+        // A probe without one (a hook from before) keeps what was measured.
+        t.probe(guest, 0, 2, None, "Tui", now);
+        t.note_rtt("Tui", None);
+
+        let path = t.path("tui", "Kiwi").unwrap();
+        assert_eq!((path.ping_ms, path.host_ping_ms, path.relayed), (Some(38), Some(41), true));
+        // Auckland to Wellington, about 490 km: a direct round trip takes 5 ms at least.
+        let km = |a: Ipv4Addr, b: Ipv4Addr| {
+            assert_eq!((a, b), (*guest.ip(), *host.ip()));
+            Some(490.0)
+        };
+        assert_eq!(
+            path.detail(km),
+            serde_json::json!({ "relayed": true, "ping_ms": 38, "host_ping_ms": 41, "relay_ms": 79, "direct_ms": 5 })
+        );
+        // Not placed: no direct estimate. Under one roof: none needed to say it's 0.
+        assert!(path.detail(|_, _| None).get("direct_ms").is_none());
+        t.probe(a("203.0.113.4:61001"), 0, 1, None, "Flatmate", now);
+        assert_eq!(t.path("Flatmate", "Tui").unwrap().detail(|_, _| None)["direct_ms"], 0);
+
+        // Both direct: only the pings.
+        let mut d = table(RelayMode::Off);
+        d.probe(guest, 0, 1, None, "Tui", now);
+        d.note_rtt("Tui", Some(38));
+        d.probe(host, 0, 1, None, "Kiwi", now);
+        assert_eq!(d.path("Tui", "Kiwi").unwrap().detail(km), serde_json::json!({ "relayed": false, "ping_ms": 38 }));
+        // A guest the helper doesn't know: nothing to say.
+        assert!(d.path("Nobody", "Kiwi").is_none());
     }
 
     #[test]

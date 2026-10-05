@@ -101,6 +101,16 @@ impl Storage {
                     }
                 }
             }
+            // How the guest's game reaches the host's: each one's ping, and the relay's detour.
+            if event.kind == "join" {
+                let net = match (&name, detail["host_name"].as_str()) {
+                    (Some(guest), Some(host)) => crate::nat_helper::path_detail(guest, host),
+                    _ => None,
+                };
+                if let (Value::Object(d), Some(Value::Object(net))) = (&mut detail, net) {
+                    d.extend(net);
+                }
+            }
             let detail = detail.to_string();
             if let Some((_, window)) = REPEATS.iter().find(|(k, _)| *k == event.kind) {
                 let repeated = sqlx::query(

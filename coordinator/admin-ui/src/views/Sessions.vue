@@ -13,6 +13,7 @@
       <div class="kpi"><span class="label">Players</span><span class="v">{{ fmt.n(data.players.filter(p => p.online.length).length) }}</span><span class="d">on in this period</span></div>
       <div class="kpi"><span class="label">In a match</span><span class="v">{{ fmt.n(matchPlayers) }}</span><span class="d">played with someone</span></div>
       <div class="kpi"><span class="label">Problems</span><span class="v" :class="{ bad: counts.bad }">{{ fmt.n(counts.bad) }}</span><span class="d">{{ fmt.n(counts.warn) }} warnings · {{ fmt.n(counts.info) }} notes</span></div>
+      <div v-if="relayStats.joins" class="kpi" title="Joins into someone's room where the relay carried the guest's or the host's traffic: their round trip through the server (each one's ping to it, added), next to the least a direct one could take over the distance between them."><span class="label">Relayed round trip</span><span class="v">{{ relayStats.relayMs != null ? relayStats.relayMs + ' ms' : '–' }}</span><span class="d">median · {{ fmt.n(relayStats.relayed) }} of {{ fmt.n(relayStats.joins) }} joins relayed<template v-if="relayStats.directMs != null"> · direct at best {{ relayStats.directMs }} ms</template></span></div>
       <div class="kpi"><span class="label">Server trouble</span><span class="v" :class="{ warn: data.outages.length }">{{ fmt.n(data.outages.length) }}</span><span class="d">alerts and unanswered pings</span></div>
     </div>
 
@@ -149,6 +150,22 @@ const counts = computed(() => {
   return c;
 });
 const shownProblems = computed(() => (data.value?.problems || []).filter(p => level.value === 'all' || p.level === 'bad' || (level.value === 'warn' && p.level === 'warn')));
+const median = xs => {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  return Math.round(s.length % 2 ? s[(s.length - 1) / 2] : (s[s.length / 2 - 1] + s[s.length / 2]) / 2);
+};
+// Joins whose network the server measured (`net` of a room joined), for the relay's detour.
+const relayStats = computed(() => {
+  const nets = (data.value?.players || []).flatMap(p => p.rooms.filter(r => !r.host && r.net && 'relayed' in r.net).map(r => r.net));
+  const relayed = nets.filter(n => n.relayed);
+  return {
+    joins: nets.length,
+    relayed: relayed.length,
+    relayMs: median(relayed.filter(n => n.relay_ms != null).map(n => n.relay_ms)),
+    directMs: median(relayed.filter(n => n.direct_ms != null).map(n => n.direct_ms)),
+  };
+});
 const matchPlayers = computed(() => (data.value?.players || []).filter(p => p.rooms.some(r => r.kind === 'match' && r.with.length)).length);
 
 const span0 = computed(() => data.value?.from || 0);
@@ -190,7 +207,16 @@ function roomTitle(r) {
   const what = r.kind === 'match' ? `${r.private ? 'Private' : 'Public'} ${MODES[r.mode] || ''} match` : 'Party';
   const whose = r.host ? 'hosting' : 'joined';
   const who = r.with.length ? ` with ${r.with.join(', ')}` : ', alone';
-  return `${what} (${whose})${who}\n${time(r.from)}–${time(r.to)} · ${fmt.dur(r.to - r.from) || '<1m'}`;
+  return `${what} (${whose})${who}\n${time(r.from)}–${time(r.to)} · ${fmt.dur(r.to - r.from) || '<1m'}${netText(r.net) ? '\n' + netText(r.net) : ''}`;
+}
+// How a guest's game reached the host's, as the server saw it when they joined.
+function netText(n) {
+  if (!n || !('relayed' in n)) return '';
+  const ms = v => (v != null ? `${v} ms` : '?');
+  const pings = `ping ${ms(n.ping_ms)}, host ${ms(n.host_ping_ms)}`;
+  if (!n.relayed) return `Direct · ${pings}`;
+  const best = n.direct_ms != null ? ` (direct at best ${n.direct_ms} ms)` : '';
+  return `Relayed: ${ms(n.relay_ms)} round trip${best} · ${pings}`;
 }
 function markClass(m) {
   if (m.kind === 'client_log') return /^Game error/.test(m.text) ? 'bad' : /^Game warn/.test(m.text) ? 'warn' : 'muted';
@@ -210,7 +236,7 @@ const pickedRows = computed(() => {
   const rows = [
     ...p.online.flatMap(o => [{ at: o[0], text: 'Came online', cls: 'ok' }, ...(o[1] ? [{ at: o[1], text: 'Went offline', cls: '' }] : [])]),
     ...p.rooms.flatMap(r => [
-      { at: r.from, text: `${r.host ? 'Opened' : 'Joined'} ${roomTitle(r).split('\n')[0].replace(/^./, c => c.toLowerCase())}`, cls: r.kind === 'match' ? 'ok' : '' },
+      { at: r.from, text: `${r.host ? 'Opened' : 'Joined'} ${roomTitle(r).split('\n')[0].replace(/^./, c => c.toLowerCase())}${netText(r.net) ? ' · ' + netText(r.net) : ''}`, cls: r.kind === 'match' ? 'ok' : '' },
       { at: r.to, text: `Left the ${r.kind === 'match' ? 'match' : 'party'} after ${fmt.dur(r.to - r.from) || '<1m'}`, cls: '' },
     ]),
     ...p.marks.map(m => ({ at: m.at, text: m.text, cls: markClass(m) })),

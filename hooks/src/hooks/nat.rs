@@ -129,6 +129,9 @@ struct State {
     silence_said: bool,
     /// Whether sending the probes failed (said once until they go again).
     send_failing: bool,
+    /// The round trip to the server (see [`round_trip`]), and when it was last measured.
+    rtt_ms: Option<u16>,
+    rtt_at: Option<Instant>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -152,6 +155,8 @@ static STATE: Mutex<State> = Mutex::new(State {
     last_answer: None,
     silence_said: false,
     send_failing: false,
+    rtt_ms: None,
+    rtt_at: None,
 });
 
 /// The helper not answering this long (three keepalives) is worth a line: it forgets a game
@@ -191,7 +196,8 @@ pub fn status() -> Option<String> {
             .into(),
         );
     };
-    Some(if r.relayed {
+    let ping = st.rtt_ms.map(|ms| format!(" · {ms} ms to the server")).unwrap_or_default();
+    let line = if r.relayed {
         format!("Through the server's relay ({})", r.advertise)
     } else if st.mapping.is_some_and(|m| m == r.advertise) {
         format!("Direct, router port opened ({})", r.advertise)
@@ -205,7 +211,8 @@ pub fn status() -> Option<String> {
             r.advertise,
             if st.symmetric { ", strict NAT" } else { "" }
         )
-    })
+    };
+    Some(line + &ping)
 }
 
 /// The router's port mapping for the Storm port, from `portmap`.
@@ -541,6 +548,44 @@ fn echo_send(engine: *mut c_void) {
     }
 }
 
+/// The round trip to the server's NAT helper, in ms: the best of three probes that only
+/// ask for an address, from a socket of its own. Answers on the Storm socket wait until the
+/// game reads them, which would add up to a frame.
+fn round_trip(server: SocketAddrV4) -> Option<u16> {
+    let socket = std::net::UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    socket.set_read_timeout(Some(Duration::from_secs(1))).ok()?;
+    let mut buf = [0u8; 256];
+    let mut best: Option<Duration> = None;
+    for _ in 0..3 {
+        let nonce = rand::random::<u32>() | 1;
+        let probe = Message::Probe {
+            flags: 0,
+            nonce,
+            mapping: None,
+            name: String::new(),
+            ticket: [0; 16],
+            cookie: [0; 16],
+            rtt_ms: None,
+        }
+        .encode();
+        let started = Instant::now();
+        if socket.send_to(&probe, server).is_err() {
+            continue;
+        }
+        while let Ok((n, from)) = socket.recv_from(&mut buf) {
+            if from == std::net::SocketAddr::V4(server) && matches!(Message::decode(&buf[..n]), Some(Message::ProbeReply { nonce: got, .. }) if got == nonce) {
+                let took = started.elapsed();
+                best = Some(best.map_or(took, |b| b.min(took)));
+                break;
+            }
+            if started.elapsed() > Duration::from_secs(1) {
+                break;
+            }
+        }
+    }
+    best.map(|b| u16::try_from(b.as_millis()).unwrap_or(u16::MAX).max(1))
+}
+
 fn resolve(host: &str, port: u16) -> Option<SocketAddrV4> {
     (host, port).to_socket_addrs().ok()?.find_map(|a| match a {
         std::net::SocketAddr::V4(v4) => Some(v4),
@@ -620,6 +665,7 @@ fn worker(host: String, port: u16) {
                     name: st.name.clone(),
                     ticket: st.ticket,
                     cookie: st.cookie,
+                    rtt_ms: st.rtt_ms,
                 }
                 .encode()
             };
@@ -629,6 +675,20 @@ fn worker(host: String, port: u16) {
             }
             probes
         };
+        // Measured once registered, as often as the keepalive: the next probe tells the
+        // server.
+        let measure = {
+            let st = state();
+            st.server.filter(|_| st.reply.is_some() && st.rtt_at.is_none_or(|t| t.elapsed() >= KEEPALIVE))
+        };
+        if let Some(server) = measure {
+            let rtt = round_trip(server);
+            let mut st = state();
+            st.rtt_at = Some(Instant::now());
+            if rtt.is_some() {
+                st.rtt_ms = rtt;
+            }
+        }
         for (data, to) in probes {
             if let Some(to) = to {
                 let sent = send_raw(socket, &data, to);
