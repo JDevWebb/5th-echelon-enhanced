@@ -1,5 +1,13 @@
 <template>
-  <PageTop title="Security" sub="Your sign-in, the other admins, and where the admin UI may be reached from." />
+  <PageTop title="Security" :tabs="SECURITY_TABS" sub="Your sign-in, the other admins, and where the admin UI may be reached from.">
+    <template v-if="me && admins && rules" #stats>
+      <Stat :value="fmt.n(admins.admins.length)" label="Admins" :sub="pending ? `${pending} setup pending` : 'all set up'" />
+      <Stat :value="fmt.n(me.passkeys.length)" label="Your passkeys" :tone="me.passkeys.length ? '' : 'warn'" />
+      <Stat :value="me.totp ? 'On' : 'Off'" label="Authenticator" :tone="me.totp ? 'ok' : ''" />
+      <Stat :value="me.recovery_left" unit="/ 10" label="Recovery codes" :tone="me.recovery_left < 3 ? 'warn' : ''" />
+      <Stat :value="rules.networks.length || rules.countries.length ? 'Limited' : 'Anywhere'" label="Sign-in from" :sub="[rules.networks.length ? `${rules.networks.length} networks` : '', rules.countries.join(', ')].filter(Boolean).join(' · ')" />
+    </template>
+  </PageTop>
   <template v-if="me && admins && rules">
     <div class="grid cols-2">
       <section class="panel">
@@ -98,9 +106,11 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue';
+import { computed, onMounted, reactive, ref } from 'vue';
 import PageTop from '../components/PageTop.vue';
 import KeyIcon from '../components/KeyIcon.vue';
+import Stat from '../components/Stat.vue';
+import { SECURITY_TABS } from '../router.js';
 import TotpDialog from '../components/TotpDialog.vue';
 import ShowCodes from '../components/ShowCodes.vue';
 import SetupLink from '../components/SetupLink.vue';
@@ -126,6 +136,7 @@ async function load() {
 }
 onMounted(load);
 
+const pending = computed(() => (admins.value?.admins || []).filter(a => !a.set_up).length);
 const factors = a => [a.passkeys ? `${a.passkeys} passkey${a.passkeys > 1 ? 's' : ''}` : null, a.totp ? 'authenticator' : null].filter(Boolean).join(' · ');
 const run = async (fn, done) => { try { const r = await fn(); if (done) toast(typeof done === 'function' ? done(r) : done); load(); return r; } catch (e) { toast(e.message, true); } };
 

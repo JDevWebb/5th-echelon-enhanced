@@ -1,5 +1,9 @@
 <template>
   <PageTop title="Reports" sub="What players said after their sessions, with their logs (redacted on their PC) and their server's.">
+    <template #stats>
+      <Stat :value="fmt.n(live.overview?.open_reports || 0)" label="Open" :tone="live.overview?.open_reports ? 'info' : ''" />
+      <Stat :value="data ? fmt.n(data.total) : '–'" :label="`${STATUSES.find(([id]) => id === status)[1]}${q || server || problem ? ', matching' : ''}`" />
+    </template>
     <div class="seg" role="group" aria-label="Status">
       <button v-for="[id, label] in STATUSES" :key="id" type="button" :aria-pressed="String(status === id)" @click="status = id">{{ label }}</button>
     </div>
@@ -59,6 +63,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import PageTop from '../components/PageTop.vue';
 import RatingPill from '../components/RatingPill.vue';
+import Stat from '../components/Stat.vue';
 import ReportDetail from '../components/ReportDetail.vue';
 import { api } from '../lib/api.js';
 import { ensureOverview, useLoad } from '../lib/data.js';

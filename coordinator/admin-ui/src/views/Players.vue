@@ -1,5 +1,19 @@
 <template>
   <PageTop title="Players" :sub="sub">
+    <template #stats>
+      <template v-if="tab === 'report' && r">
+        <Stat :value="fmt.n(t.players)" label="Players" sub="played at least once" />
+        <Stat :value="fmt.n(t.daily_average, 1)" label="Daily average" sub="players a day" />
+        <Stat :value="fmt.n(t.new)" label="New players" sub="first seen in this period" />
+        <Stat :value="t.earlier ? fmt.pct(t.returning / t.earlier * 100) : '–'" label="Came back" :sub="t.earlier ? `${fmt.n(t.returning)} of the ${fmt.n(t.earlier)} before` : 'nothing to compare yet'" />
+        <Stat :value="fmt.n(t.minutes_per_player_day)" unit="min" label="Time played" sub="per player, per day played" />
+        <Stat :value="fmt.n(t.peak)" label="Peak online" sub="most at once" />
+      </template>
+      <template v-else>
+        <Stat :value="fmt.n(onlineNow.players)" label="Online now" :sub="`${fmt.n(onlineNow.inMatch)} in a match`" />
+        <Stat :value="fmt.n(servers.length)" label="Servers" sub="each with its own accounts" />
+      </template>
+    </template>
     <div class="seg" role="group" aria-label="View">
       <button v-for="[id, label] in TABS" :key="id" type="button" :aria-pressed="String(tab === id)" @click="setTab(id)">{{ label }}</button>
     </div>
@@ -10,14 +24,6 @@
   <MatchesReport v-else-if="tab === 'matches'" :days="matchDays" />
   <Leaderboards v-else-if="tab === 'leaderboards'" />
   <template v-else-if="r">
-    <div class="kpis kpis-6">
-      <div class="kpi"><span class="label">Players</span><span class="v">{{ fmt.n(t.players) }}</span><span class="d">played at least once</span></div>
-      <div class="kpi"><span class="label">Daily average</span><span class="v">{{ fmt.n(t.daily_average, 1) }}</span><span class="d">players a day</span></div>
-      <div class="kpi"><span class="label">New players</span><span class="v">{{ fmt.n(t.new) }}</span><span class="d">first seen in this period</span></div>
-      <div class="kpi"><span class="label">Came back</span><span class="v">{{ t.earlier ? fmt.pct(t.returning / t.earlier * 100) : '–' }}</span><span class="d">{{ t.earlier ? `${fmt.n(t.returning)} of the ${fmt.n(t.earlier)} before` : 'nothing to compare yet' }}</span></div>
-      <div class="kpi"><span class="label">Time played</span><span class="v">{{ fmt.n(t.minutes_per_player_day) }}<small>min</small></span><span class="d">per player, per day played</span></div>
-      <div class="kpi"><span class="label">Peak online</span><span class="v">{{ fmt.n(t.peak) }}</span><span class="d">most at once</span></div>
-    </div>
     <p class="small muted">Players are counted per server: someone playing on two servers counts twice. Time played comes from play sessions for servers that send them ({{ sessionServers }}), else from a sample each minute.{{ r.tracking_since ? ` Counted since ${new Date(r.tracking_since * 1000).toLocaleDateString(undefined, { dateStyle: 'medium', timeZone: 'UTC' })}.` : '' }}</p>
     <div class="grid cols-2">
       <section class="panel">
@@ -55,18 +61,25 @@
   <div v-else class="empty">Loading…</div>
 
   <template v-if="tab === 'report'">
-  <PageTop title="Map" :sub="mapRange === 0 ? 'Players online now, by city.' : 'Time played, by city (player-minutes).'">
-    <RangePicker v-model="mapRange" :options="PLACE_RANGES" />
-  </PageTop>
-  <template v-if="places">
     <section class="panel">
-      <WorldMap :places="places.places" :servers="servers" :unit="places.unit" :live="mapRange === 0" />
-      <div class="row" style="justify-content: space-between; margin-top: 8px">
-        <span v-if="mapRange === 0" class="legend"><span><i style="background: var(--accent)"></i>in a match</span><span><i style="background: var(--info)"></i>in a lobby</span><span><i style="background: var(--muted)"></i>in the menus</span><span><i style="background: var(--warn)"></i>servers</span><span><i style="background: #02070a; opacity: 0.5"></i>night</span></span>
-        <span v-else class="legend"><span><i style="background: var(--accent)"></i>{{ places.unit === 'players' ? 'players' : 'player-minutes' }}</span><span><i style="background: var(--warn)"></i>servers</span><span><i style="background: #02070a; opacity: 0.5"></i>night now</span></span>
-        <span class="attr">{{ places.attribution }}</span>
-      </div>
+      <header>
+        <div>
+          <h2 class="big-title">Map</h2>
+          <p class="small muted">{{ mapRange === 0 ? 'Players online now, by city.' : 'Time played, by city (player-minutes).' }}</p>
+        </div>
+        <RangePicker v-model="mapRange" :options="PLACE_RANGES" />
+      </header>
+      <template v-if="places">
+        <WorldMap :places="places.places" :servers="servers" :unit="places.unit" :live="mapRange === 0" />
+        <div class="row" style="justify-content: space-between; margin-top: 8px">
+          <span v-if="mapRange === 0" class="legend"><span><i style="background: var(--accent)"></i>in a match</span><span><i style="background: var(--info)"></i>in a lobby</span><span><i style="background: var(--muted)"></i>in the menus</span><span><i style="background: var(--warn)"></i>servers</span><span><i style="background: #02070a; opacity: 0.5"></i>night</span></span>
+          <span v-else class="legend"><span><i style="background: var(--accent)"></i>{{ places.unit === 'players' ? 'players' : 'player-minutes' }}</span><span><i style="background: var(--warn)"></i>servers</span><span><i style="background: #02070a; opacity: 0.5"></i>night now</span></span>
+          <span class="attr">{{ places.attribution }}</span>
+        </div>
+      </template>
+      <div v-else class="empty">Loading…</div>
     </section>
+  <template v-if="places">
     <section class="panel">
       <header><h2>By city</h2><span class="muted small">{{ fmt.n(placeTotal) }} {{ places.unit }} · {{ places.places.length }} places</span></header>
       <div v-if="places.places.length" class="table-wrap">
@@ -98,6 +111,7 @@ import PlayerList from '../components/PlayerList.vue';
 import MatchesReport from '../components/MatchesReport.vue';
 import Leaderboards from '../components/Leaderboards.vue';
 import RangePicker from '../components/RangePicker.vue';
+import Stat from '../components/Stat.vue';
 import LineChart from '../components/LineChart.vue';
 import Heatmap from '../components/Heatmap.vue';
 import WorldMap from '../components/WorldMap.vue';
@@ -108,7 +122,7 @@ import { live } from '../lib/live.js';
 
 const REPORT_RANGES = [[86400, '24 h'], [604800, '7 d'], [2592000, '30 d'], [31536000, '12 months']];
 const MATCH_RANGES = [[1, 'Today'], [7, '7 d'], [30, '30 d'], [365, '12 months']];
-const TABS = [['accounts', 'Accounts'], ['report', 'Report & map'], ['matches', 'Matches'], ['leaderboards', 'Leaderboards']];
+const TABS = [['accounts', 'Accounts'], ['report', 'Report and map'], ['matches', 'Matches'], ['leaderboards', 'Leaderboards']];
 const route = useRoute();
 const router = useRouter();
 const tab = computed(() => (TABS.some(([id]) => id === route.query.tab) ? route.query.tab : 'accounts'));
@@ -128,6 +142,10 @@ const sessionServers = computed(() => {
   return ids.length ? ids.map(id => names.value.get(id) || id).join(', ') : 'none yet';
 });
 const t = computed(() => r.value.totals);
+const onlineNow = computed(() => {
+  const up = servers.value.filter(sv => sv.online);
+  return { players: up.reduce((n, sv) => n + (sv.metrics?.players?.online || 0), 0), inMatch: up.reduce((n, sv) => n + (sv.metrics?.players?.in_match || 0), 0) };
+});
 const sub = computed(() => ({
   accounts: 'Every server\'s accounts: find a player, see what they played, and act on their account.',
   matches: 'Finished matches: by mode, map and game mode, how long, how many play.',
@@ -147,8 +165,3 @@ const placeTotal = computed(() => (places.value?.places || []).reduce((n, p) => 
 const pingColor = ms => (ms == null ? 'var(--faint)' : ms < 90 ? 'var(--ok)' : ms < 180 ? 'var(--text)' : 'var(--warn)');
 </script>
 
-<style scoped>
-.kpis-6 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-@media (max-width: 1100px) { .kpis-6 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 820px) { .kpis-6 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-</style>

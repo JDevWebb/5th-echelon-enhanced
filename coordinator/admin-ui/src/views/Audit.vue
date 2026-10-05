@@ -1,5 +1,11 @@
 <template>
-  <PageTop title="Audit log" sub="Sign-ins, failures and every change, newest first. Kept for 400 days." />
+  <PageTop title="Security" :tabs="SECURITY_TABS" sub="Audit log: sign-ins, failures and every change, newest first. Kept for 400 days.">
+    <template #stats>
+      <Stat :value="fmt.n(events.length)" label="Entries shown" :sub="more ? 'older ones below' : 'all of them'" />
+      <Stat :value="fmt.n(today)" label="Last 24 hours" />
+      <Stat :value="fmt.n(failures)" label="Failed sign-ins" sub="last 24 hours" :tone="failures ? 'warn' : ''" />
+    </template>
+  </PageTop>
   <section class="panel">
     <div v-if="loaded && !events.length" class="empty">Nothing yet.</div>
     <div v-else class="table-wrap">
@@ -23,6 +29,8 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue';
 import PageTop from '../components/PageTop.vue';
+import Stat from '../components/Stat.vue';
+import { SECURITY_TABS } from '../router.js';
 import { api } from '../lib/api.js';
 import { fmt } from '../lib/fmt.js';
 import { live } from '../lib/live.js';
@@ -48,4 +56,6 @@ const events = computed(() => {
   const fresh = live.audit.filter(e => !ids.has(e.id)).map(e => ({ ...e, fresh: e.at >= openedAt }));
   return [...fresh, ...stored.value];
 });
+const today = computed(() => events.value.filter(e => e.at >= Date.now() / 1000 - 86400).length);
+const failures = computed(() => events.value.filter(e => e.at >= Date.now() / 1000 - 86400 && /fail|refused/i.test(e.event)).length);
 </script>

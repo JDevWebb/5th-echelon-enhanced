@@ -1,5 +1,10 @@
 <template>
-  <PageTop title="Network" sub="Bandwidth, relayed traffic and round trips.">
+  <PageTop title="Network" :tabs="NETWORK_TABS" sub="Traffic: bandwidth, relayed traffic and round trips.">
+    <template #stats>
+      <Stat :value="pulse.now.servers ? fmt.bits(pulse.now.bps) : '–'" label="Bandwidth now" :sub="pulse.now.servers ? `${pulse.now.servers} servers reporting` : 'waiting for the servers\' pulse'" />
+      <Stat :value="pulse.now.servers ? fmt.bits(pulse.now.relayed) : '–'" label="Relayed now" tone="warn" />
+      <Stat :value="pingMedian != null ? fmt.ms(pingMedian) : '–'" label="Players' ping" sub="median, as launchers measured it" />
+    </template>
     <RangePicker v-model="range" :options="RANGES.slice(0, 5)" />
   </PageTop>
   <div v-if="data" class="grid cols-2">
@@ -31,9 +36,11 @@ import { computed, onMounted, ref } from 'vue';
 import PageTop from '../components/PageTop.vue';
 import RangePicker from '../components/RangePicker.vue';
 import LineChart from '../components/LineChart.vue';
+import Stat from '../components/Stat.vue';
+import { NETWORK_TABS } from '../router.js';
 import { api } from '../lib/api.js';
 import { ensureOverview, useLoad } from '../lib/data.js';
-import { colorFor, flag, fmt, RANGES, serverName, seriesFor } from '../lib/fmt.js';
+import { colorFor, flag, fmt, liveTotals, RANGES, serverName, seriesFor } from '../lib/fmt.js';
 import { live } from '../lib/live.js';
 
 const range = ref(86400);
@@ -42,6 +49,15 @@ const servers = computed(() => live.overview?.servers || []);
 const names = computed(() => new Map(servers.value.map(sv => [sv.id, serverName(sv)])));
 const { data } = useLoad(() => api('GET', `/series?range=${range.value}`), () => range.value);
 const { data: pings } = useLoad(() => api('GET', `/pings?range=${Math.max(range.value, 86400)}`), () => range.value, { refresh: false });
+const pulse = computed(() => liveTotals(live.pulses));
+// The median of every country's median, weighted by its reports: a rough "typical ping".
+const pingMedian = computed(() => {
+  const rows = (pings.value?.pings || []).filter(p => p.median != null).sort((a, b) => a.median - b.median);
+  const all = rows.reduce((n, p) => n + p.reports, 0);
+  let seen = 0;
+  for (const p of rows) { seen += p.reports; if (seen * 2 >= all) return p.median; }
+  return null;
+});
 const charts = computed(() => {
   const d = data.value;
   const pingLines = Object.keys(d.pings || {}).sort().map(id => ({ name: names.value.get(id) || id, color: colorFor(id), points: d.pings[id].map(p => ({ t: p.t, v: p.ms })) }));

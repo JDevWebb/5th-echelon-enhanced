@@ -5,6 +5,12 @@
   </template>
   <template v-else-if="sv">
     <PageTop :title="serverName(sv)" :sub="[sv.listing?.region, sv.listing?.host, `id ${sv.id}`].filter(Boolean).join(' · ')">
+      <template #stats>
+        <Stat :value="serverStatus(sv)[1]" label="Status" :tone="serverStatus(sv)[0]" :sub="sv.online ? `seen ${fmt.ago(sv.last_seen)}` : `since ${fmt.when(sv.last_seen)}`" />
+        <Stat :value="fmt.n(sv.metrics?.players?.online)" label="Players online" :sub="`${fmt.n(sv.metrics?.players?.in_match)} in a match`" />
+        <Stat :value="fmt.ms(sv.ping_ms)" label="Ping" sub="from the coordinator" />
+        <Stat :value="sv.listing?.version || '?'" label="Release" :sub="fmt.dur(sv.metrics?.uptime_secs) + ' up'" />
+      </template>
       <RangePicker v-model="range" :options="RANGES" />
       <button class="small" type="button" @click="purge">Release unused names</button>
       <button class="danger small" type="button" @click="remove">Remove</button>
@@ -18,7 +24,10 @@
     </div>
     <div v-else class="empty">Loading…</div>
   </template>
-  <div v-else class="empty">Loading…</div>
+  <template v-else>
+    <PageTop title="Server" />
+    <div class="empty">Loading…</div>
+  </template>
 </template>
 
 <script setup>
@@ -27,10 +36,11 @@ import { useRouter } from 'vue-router';
 import PageTop from '../components/PageTop.vue';
 import LineChart from '../components/LineChart.vue';
 import RangePicker from '../components/RangePicker.vue';
+import Stat from '../components/Stat.vue';
 import { api } from '../lib/api.js';
 import { ensureOverview, useLoad } from '../lib/data.js';
 import { confirmBox } from '../lib/dialogs.js';
-import { fmt, PALETTE, RANGES, serverName } from '../lib/fmt.js';
+import { fmt, PALETTE, RANGES, serverName, serverStatus } from '../lib/fmt.js';
 import { live } from '../lib/live.js';
 import { toast } from '../lib/ui.js';
 

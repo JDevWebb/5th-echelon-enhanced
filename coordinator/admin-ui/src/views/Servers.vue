@@ -1,6 +1,14 @@
 <template>
+  <PageTop title="Servers" sub="Every member of the network, as each last reported.">
+    <template v-if="o" #stats>
+      <Stat :value="fmt.n(online)" :unit="`/ ${o.servers.length}`" label="Online" :tone="online < o.servers.length ? 'warn' : ''" />
+      <Stat :value="fmt.n(players)" label="Players online" />
+      <Stat :value="fmt.n(delisted)" label="Delisted" :tone="delisted ? 'warn' : ''" />
+      <Stat :value="o.rollout.target || '–'" label="Release" :sub="behind ? `${behind} behind` : 'all on it'" />
+    </template>
+    <RouterLink class="btn" to="/updates">Updates</RouterLink>
+  </PageTop>
   <template v-if="o">
-    <PageTop title="Servers" sub="Every member of the network, as each last reported." />
     <div v-if="o.servers.length" class="servers">
       <section v-for="sv in o.servers" :key="sv.id" class="panel server">
         <header>
@@ -37,6 +45,7 @@
 import { computed, onMounted } from 'vue';
 import PageTop from '../components/PageTop.vue';
 import Bar from '../components/Bar.vue';
+import Stat from '../components/Stat.vue';
 import { api } from '../lib/api.js';
 import { ensureOverview, useLoad } from '../lib/data.js';
 import { fmt, serverName, serverStatus, updatePill } from '../lib/fmt.js';
@@ -44,6 +53,10 @@ import { live } from '../lib/live.js';
 
 onMounted(() => ensureOverview().catch(() => {}));
 const o = computed(() => live.overview);
+const online = computed(() => o.value.servers.filter(sv => sv.online).length);
+const players = computed(() => o.value.servers.reduce((n, sv) => n + (sv.online ? sv.metrics?.players?.online || 0 : 0), 0));
+const delisted = computed(() => o.value.servers.filter(sv => sv.delisted).length);
+const behind = computed(() => o.value.servers.filter(sv => o.value.rollout.target && sv.listing?.version && sv.listing.version !== o.value.rollout.target).length);
 const sys = sv => sv.metrics?.system || {};
 const { data: hour } = useLoad(() => api('GET', '/series?range=3600'));
 const last = id => (hour.value?.points?.[id] || []).at(-1) || {};

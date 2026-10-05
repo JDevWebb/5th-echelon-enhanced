@@ -1,16 +1,18 @@
 <template>
   <template v-if="o">
-    <PageTop title="Overview" :sub="`Coordinator ${o.coordinator.version} · ${online.length} of ${o.servers.length} servers online`" />
+    <PageTop title="Overview" sub="Who's playing, on which servers, and what needs you.">
+      <template #stats>
+        <Stat :value="fmt.n(players)" label="Players online" :sub="`${fmt.n(inMatch)} in a match`"><Sparkline :values="pulse.series.map(p => p.players)" /></Stat>
+        <Stat :value="pulse.now.servers ? fmt.bits(pulse.now.bps) : '–'" label="Bandwidth now" :sub="pulse.now.servers ? `${fmt.bits(pulse.now.relayed)} through the relay` : 'waiting for the servers\' pulse'"><Sparkline :values="pulse.series.map(p => p.bps)" color="var(--info)" /></Stat>
+        <Stat :value="fmt.n(Math.max(o.peak_24h || 0, players))" label="Peak, 24 h" sub="most online at once" />
+        <Stat :value="fmt.n(sessions)" label="Sessions" :sub="pulse.now.servers ? `${fmt.n(pulse.now.matches)} matches running` : 'lobbies and matches'" />
+        <Stat :value="fmt.n(online.length)" :unit="`/ ${o.servers.length}`" label="Servers up" :sub="`Coordinator ${o.coordinator.version} · ${delisted ? `${delisted} delisted` : 'all listed'}`" />
+      </template>
+      <RouterLink class="btn primary" to="/sessions">Sessions</RouterLink>
+    </PageTop>
     <RouterLink v-if="(o.alerts || []).length" to="/alerts" class="callout" :class="o.alerts.some(a => a.level === 'bad') ? 'bad' : 'warn'" style="text-decoration: none; color: inherit">
       <b>{{ o.alerts.length === 1 ? '1 alert' : `${o.alerts.length} alerts` }}:</b> {{ o.alerts[0].detail }}{{ o.alerts.length > 1 ? ' …' : '' }}
     </RouterLink>
-    <div class="kpis">
-      <div class="kpi"><span class="label">Players online</span><span class="v" :key="'p' + players" :class="{ fresh: true }">{{ fmt.n(players) }}</span><span class="d">{{ fmt.n(inMatch) }} in a match</span><Sparkline :values="pulse.series.map(p => p.players)" /></div>
-      <div class="kpi"><span class="label">Bandwidth now</span><span class="v">{{ pulse.now.servers ? fmt.bits(pulse.now.bps) : '–' }}</span><span class="d">{{ pulse.now.servers ? `${fmt.bits(pulse.now.relayed)} through the relay` : 'waiting for the servers\' pulse' }}</span><Sparkline :values="pulse.series.map(p => p.bps)" color="var(--info)" /></div>
-      <div class="kpi"><span class="label">Peak, 24 h</span><span class="v">{{ fmt.n(Math.max(o.peak_24h || 0, players)) }}</span><span class="d">most online at once</span></div>
-      <div class="kpi"><span class="label">Sessions</span><span class="v">{{ fmt.n(sessions) }}</span><span class="d">{{ pulse.now.servers ? `${fmt.n(pulse.now.matches)} matches running` : 'lobbies and matches' }}</span></div>
-      <div class="kpi"><span class="label">Servers</span><span class="v">{{ fmt.n(online.length) }}<small>/ {{ o.servers.length }}</small></span><span class="d">{{ delisted ? `${delisted} delisted` : 'all listed' }}</span></div>
-    </div>
     <div class="grid cols-2">
       <section class="panel">
         <header><h2>Players online, 24 hours</h2><div class="legend"><span v-for="s in playerLines" :key="s.name"><i :style="{ background: s.color }"></i>{{ s.name }}</span></div></header>
@@ -18,7 +20,7 @@
         <div v-else class="empty">Loading…</div>
       </section>
       <section class="panel">
-        <header><h2>Where players are now</h2><RouterLink class="small" to="/players?tab=report">Players &amp; map →</RouterLink></header>
+        <header><h2>Where players are now</h2><RouterLink class="small" to="/players?tab=report">Players and map →</RouterLink></header>
         <WorldMap :places="now?.places || []" :servers="o.servers" unit="players" live />
         <p class="attr">{{ now?.attribution }}</p>
       </section>
@@ -50,8 +52,11 @@
       </section>
     </div>
   </template>
-  <div v-else-if="error" class="panel"><p class="err">{{ error }}</p></div>
-  <div v-else class="empty">Loading…</div>
+  <template v-else>
+    <PageTop title="Overview" sub="Who's playing, on which servers, and what needs you." />
+    <div v-if="error" class="panel"><p class="err">{{ error }}</p></div>
+    <div v-else class="empty">Loading…</div>
+  </template>
 </template>
 
 <script setup>
@@ -63,6 +68,7 @@ import ServerTable from '../components/ServerTable.vue';
 import { api } from '../lib/api.js';
 import { ensureOverview, useLoad } from '../lib/data.js';
 import Sparkline from '../components/Sparkline.vue';
+import Stat from '../components/Stat.vue';
 import { fmt, liveTotals, serverName, seriesFor, totalSeries } from '../lib/fmt.js';
 import { live } from '../lib/live.js';
 

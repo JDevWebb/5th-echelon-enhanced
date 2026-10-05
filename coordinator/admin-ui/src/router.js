@@ -1,19 +1,25 @@
 import { createRouter, createWebHashHistory } from 'vue-router';
 
+// The rail: [id, label, icon (SVG shapes, 24 × 24, stroked)]; null draws a separator.
 export const ROUTES = [
-  ['overview', 'Overview', 'M3 13h4v8H3zM10 3h4v18h-4zM17 9h4v12h-4z'],
-  ['servers', 'Servers', 'M4 4h16v6H4zM4 14h16v6H4zM7 7h.01M7 17h.01'],
-  ['bandwidth', 'Bandwidth', 'M7 4v16M7 20l-3-3M7 20l3-3M17 20V4M17 4l-3 3M17 4l3 3'],
-  ['sessions', 'Sessions', 'M3 6h8M3 12h13M3 18h6M14 4v4M19 10v4M11 16v4'],
-  ['players', 'Players & map', 'M12 21s-7-6.2-7-11a7 7 0 1 1 14 0c0 4.8-7 11-7 11zM12 12.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5z'],
-  ['activity', 'Playlists', 'M4 6h16M4 12h10M4 18h13'],
-  ['network', 'Network', 'M2 12h4l3-8 4 16 3-8h6'],
-  ['alerts', 'Alerts', 'M12 3a6 6 0 0 0-6 6v4l-2 3h16l-2-3V9a6 6 0 0 0-6-6zM10 19a2 2 0 0 0 4 0'],
-  ['reports', 'Reports', 'M5 4h14v12H9l-4 4zM9 8h6M9 12h4'],
-  ['updates', 'Updates', 'M12 3v12m0 0-4-4m4 4 4-4M5 21h14'],
-  ['security', 'Security', 'M12 3 4 6v6c0 5 3.4 8.2 8 9 4.6-.8 8-4 8-9V6z'],
-  ['audit', 'Audit log', 'M8 6h12M8 12h12M8 18h12M4 6h.01M4 12h.01M4 18h.01'],
+  ['overview', 'Overview', '<rect x="3" y="3" width="7" height="8" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="15" width="7" height="6" rx="1.5"/>'],
+  ['servers', 'Servers', '<rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/>'],
+  ['players', 'Players', '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18.5 14.8c1.6.8 2.6 2.5 3 5.2"/>'],
+  ['sessions', 'Sessions', '<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.5 2"/>'],
+  ['reports', 'Reports', '<path d="M5 4h10l4 4v12H5z"/><path d="M15 4v4h4M8.5 12.5h7M8.5 16h5"/>'],
+  ['alerts', 'Alerts', '<path d="M12 3.5 21.5 20h-19z"/><path d="M12 10v4.5M12 17.5h.01"/>'],
+  ['updates', 'Updates', '<path d="M20 12a8 8 0 1 1-2.3-5.6"/><path d="M20 4v5h-5"/>'],
+  ['roadmap', 'Roadmap', '<path d="M4 19V5M4 5h11l-2 3.5L15 12H4"/><path d="M15 19h5M18 16l2 3-2 3"/>'],
+  null,
+  ['network', 'Network', '<circle cx="12" cy="5" r="2"/><circle cx="5" cy="19" r="2"/><circle cx="19" cy="19" r="2"/><path d="M12 7v4M12 11l-6 6M12 11l6 6"/>'],
+  ['security', 'Security', '<path d="M12 3 19 6v6c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z"/><path d="m9 12 2 2 4-4"/>'],
 ];
+
+/** Pages shown as tabs of another page in the rail: Bandwidth and Activity under Network,
+ * the audit log under Security. */
+export const PARENT = { bandwidth: 'network', activity: 'network', audit: 'security' };
+export const NETWORK_TABS = [['/network', 'Traffic'], ['/bandwidth', 'Bandwidth'], ['/activity', 'Activity']];
+export const SECURITY_TABS = [['/security', 'Sign-in and admins'], ['/audit', 'Audit log']];
 
 export const router = createRouter({
   history: createWebHashHistory(),
@@ -32,6 +38,7 @@ export const router = createRouter({
     { path: '/activity', component: () => import('./views/Playlists.vue') },
     { path: '/network', component: () => import('./views/Network.vue') },
     { path: '/updates', component: () => import('./views/Updates.vue') },
+    { path: '/roadmap', component: () => import('./views/Roadmap.vue') },
     { path: '/security', component: () => import('./views/Security.vue') },
     { path: '/audit', component: () => import('./views/Audit.vue') },
     { path: '/:rest(.*)*', redirect: '/overview' },

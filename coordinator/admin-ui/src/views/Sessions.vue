@@ -1,5 +1,12 @@
 <template>
   <PageTop title="Sessions" sub="Each player's time on the servers: when they were on, the rooms they were in and with whom, and anything that went wrong.">
+    <template v-if="data" #stats>
+      <Stat :value="fmt.n(data.players.filter(p => p.online.length).length)" label="Players" sub="on in this period" />
+      <Stat :value="fmt.n(matchPlayers)" label="In a match" sub="played with someone" />
+      <Stat :value="fmt.n(counts.bad)" label="Problems" :tone="counts.bad ? 'bad' : ''" :sub="`${fmt.n(counts.warn)} warnings · ${fmt.n(counts.info)} notes`" />
+      <Stat v-if="relayStats.joins" :value="relayStats.relayMs != null ? relayStats.relayMs + ' ms' : '–'" label="Relayed round trip" :sub="`median · ${fmt.n(relayStats.relayed)} of ${fmt.n(relayStats.joins)} joins relayed${relayStats.directMs != null ? ` · direct at best ${relayStats.directMs} ms` : ''}`" title="Joins into someone's room where the relay carried the guest's or the host's traffic: their round trip through the server (each one's ping to it, added), next to the least a direct one could take over the distance between them." />
+      <Stat :value="fmt.n(data.outages.length)" label="Server trouble" :tone="data.outages.length ? 'warn' : ''" sub="alerts and unanswered pings" />
+    </template>
     <div class="seg" role="group" aria-label="Server">
       <button type="button" :aria-pressed="String(server === '')" @click="server = ''">All servers</button>
       <button v-for="sv in servers" :key="sv.id" type="button" :aria-pressed="String(server === sv.id)" @click="server = sv.id">{{ sv.name }}</button>
@@ -9,14 +16,6 @@
   <div v-if="error && !data" class="panel"><p class="err">{{ error }}</p></div>
   <div v-else-if="!data" class="empty">Loading…</div>
   <template v-else>
-    <div class="kpis">
-      <div class="kpi"><span class="label">Players</span><span class="v">{{ fmt.n(data.players.filter(p => p.online.length).length) }}</span><span class="d">on in this period</span></div>
-      <div class="kpi"><span class="label">In a match</span><span class="v">{{ fmt.n(matchPlayers) }}</span><span class="d">played with someone</span></div>
-      <div class="kpi"><span class="label">Problems</span><span class="v" :class="{ bad: counts.bad }">{{ fmt.n(counts.bad) }}</span><span class="d">{{ fmt.n(counts.warn) }} warnings · {{ fmt.n(counts.info) }} notes</span></div>
-      <div v-if="relayStats.joins" class="kpi" title="Joins into someone's room where the relay carried the guest's or the host's traffic: their round trip through the server (each one's ping to it, added), next to the least a direct one could take over the distance between them."><span class="label">Relayed round trip</span><span class="v">{{ relayStats.relayMs != null ? relayStats.relayMs + ' ms' : '–' }}</span><span class="d">median · {{ fmt.n(relayStats.relayed) }} of {{ fmt.n(relayStats.joins) }} joins relayed<template v-if="relayStats.directMs != null"> · direct at best {{ relayStats.directMs }} ms</template></span></div>
-      <div class="kpi"><span class="label">Server trouble</span><span class="v" :class="{ warn: data.outages.length }">{{ fmt.n(data.outages.length) }}</span><span class="d">alerts and unanswered pings</span></div>
-    </div>
-
     <section class="panel">
       <header>
         <h2>Problems</h2>
@@ -113,6 +112,7 @@
 import { computed, onMounted, ref } from 'vue';
 import PageTop from '../components/PageTop.vue';
 import RangePicker from '../components/RangePicker.vue';
+import Stat from '../components/Stat.vue';
 import { api } from '../lib/api.js';
 import { ensureOverview, useLoad } from '../lib/data.js';
 import { fmt, serverName } from '../lib/fmt.js';
@@ -246,8 +246,6 @@ const pickedRows = computed(() => {
 </script>
 
 <style scoped>
-.kpi .v.bad { color: var(--bad); }
-.kpi .v.warn { color: var(--warn); }
 .problem { display: block; width: 100%; text-align: left; color: var(--text); cursor: pointer; }
 .problem { border-left: 3px solid var(--faint); }
 .problem.bad { border-left-color: var(--bad); }

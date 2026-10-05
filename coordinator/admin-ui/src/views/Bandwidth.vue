@@ -1,5 +1,13 @@
 <template>
-  <PageTop title="Bandwidth" :sub="data ? `${rangeLabel} · data in and out of every server, and what went through the relay` : 'Data in and out of every server.'">
+  <PageTop title="Network" :tabs="NETWORK_TABS" :sub="data ? `${rangeLabel} · data in and out of every server, and what went through the relay.` : 'Data in and out of every server.'">
+    <template v-if="data" #stats>
+      <Stat :value="fmt.size(total)" label="Transferred" sub="in and out" />
+      <Stat :value="fmt.size(data.totals.rx)" label="In" tone="info" sub="players to the servers" />
+      <Stat :value="fmt.size(data.totals.tx)" label="Out" tone="accent" sub="servers to the players" />
+      <Stat :value="fmt.size(data.totals.relayed)" label="Relayed" tone="warn" :sub="`${total ? fmt.pct(data.totals.relayed / total * 100) : '–'} of all traffic`" />
+      <Stat :value="fmt.rate(data.peak.bps)" label="Peak" :sub="data.peak.bps ? `${names.get(data.peak.server) || data.peak.server} · ${fmt.when(data.peak.t)}` : '–'" />
+      <Stat :value="fmt.rate(data.p95_bps)" label="95th percentile" sub="what burstable plans bill" />
+    </template>
     <RangePicker v-model="range" :options="REPORT_RANGES" />
     <select v-model="server" aria-label="Server" style="width: auto">
       <option value="">All servers</option>
@@ -8,14 +16,6 @@
     <button type="button" :disabled="!data" @click="exportCsv">Export CSV</button>
   </PageTop>
   <template v-if="data">
-    <div class="kpis kpis-6">
-      <div class="kpi"><span class="label">Transferred</span><span class="v">{{ fmt.size(total) }}</span><span class="d">in and out</span></div>
-      <div class="kpi"><span class="label">In</span><span class="v" style="color: var(--info)">{{ fmt.size(data.totals.rx) }}</span><span class="d">players to the servers</span></div>
-      <div class="kpi"><span class="label">Out</span><span class="v" style="color: var(--accent)">{{ fmt.size(data.totals.tx) }}</span><span class="d">servers to the players</span></div>
-      <div class="kpi"><span class="label">Relayed</span><span class="v" style="color: var(--warn)">{{ fmt.size(data.totals.relayed) }}</span><span class="d">{{ total ? fmt.pct(data.totals.relayed / total * 100) : '–' }} of all traffic</span></div>
-      <div class="kpi"><span class="label">Peak</span><span class="v">{{ fmt.rate(data.peak.bps) }}</span><span class="d">{{ data.peak.bps ? `${names.get(data.peak.server) || data.peak.server} · ${fmt.when(data.peak.t)}` : '–' }}</span></div>
-      <div class="kpi"><span class="label">95th percentile</span><span class="v">{{ fmt.rate(data.p95_bps) }}</span><span class="d">what burstable plans bill</span></div>
-    </div>
     <section class="panel">
       <header>
         <h2>Data per {{ data.step }}</h2>
@@ -83,6 +83,8 @@ import PageTop from '../components/PageTop.vue';
 import RangePicker from '../components/RangePicker.vue';
 import StackedBars from '../components/StackedBars.vue';
 import Bar from '../components/Bar.vue';
+import Stat from '../components/Stat.vue';
+import { NETWORK_TABS } from '../router.js';
 import { api } from '../lib/api.js';
 import { ensureOverview, useLoad } from '../lib/data.js';
 import { fmt, serverName } from '../lib/fmt.js';
@@ -134,9 +136,6 @@ function exportCsv() {
 </script>
 
 <style scoped>
-.kpis-6 { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-@media (max-width: 1100px) { .kpis-6 { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-@media (max-width: 820px) { .kpis-6 { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .split { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: var(--panel-2); }
 .split .in { background: var(--info); }
 .split .out { background: var(--accent); }

@@ -1,5 +1,12 @@
 <template>
-  <PageTop title="Alerts" sub="Checked every minute. Raised when something goes wrong, resolved on their own when it's fixed." />
+  <PageTop title="Alerts" sub="Checked every minute. Raised when something goes wrong, resolved on their own when it's fixed.">
+    <template v-if="data" #stats>
+      <Stat :value="fmt.n(data.active.length)" label="Open" :tone="data.active.some(a => a.level === 'bad') ? 'bad' : data.active.length ? 'warn' : 'ok'" />
+      <Stat :value="fmt.n(data.recent.length)" label="Resolved" sub="the last hundred at most" />
+      <Stat :value="data.webhook_host ? 'On' : 'Off'" label="Sent to a chat" :sub="data.webhook_host || 'no webhook set'" :tone="data.webhook_host ? 'ok' : ''" />
+    </template>
+    <button v-if="data?.webhook_host" type="button" @click="test">Send a test</button>
+  </PageTop>
   <template v-if="data">
     <section class="panel">
       <header><h2>Open</h2><span class="small muted">{{ data.active.length ? `${data.active.length} open` : 'none' }}</span></header>
@@ -63,6 +70,7 @@
 <script setup>
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
 import PageTop from '../components/PageTop.vue';
+import Stat from '../components/Stat.vue';
 import { api } from '../lib/api.js';
 import { ensureOverview, useLoad } from '../lib/data.js';
 import { fmt, serverName } from '../lib/fmt.js';
