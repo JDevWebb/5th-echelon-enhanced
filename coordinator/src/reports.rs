@@ -334,7 +334,7 @@ impl Coordinator {
     /// whether it's new (the same id twice is one report).
     pub(crate) async fn store_report(&self, server: &str, r: &Report) -> Result<bool, String> {
         let now = identity::now();
-        let mut tx = self.pool.begin().await.map_err(|e| e.to_string())?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| e.to_string())?;
         let added = sqlx::query(
             "INSERT OR IGNORE INTO player_reports (id, server_id, created_at, received_at, player_id, player_name, player_identity, rating,
                                                    problems, triggers, client, summary, comment, server_log)
@@ -548,7 +548,7 @@ impl Coordinator {
     /// a new note if given. Answers its status before, and its row; None for no such report.
     pub async fn set_report_status(&self, id: &str, status: &str, note: Option<&str>, by: &str) -> sqlx::Result<Option<(String, Value)>> {
         let id = id.to_ascii_lowercase();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let before: Option<String> = sqlx::query_scalar("SELECT status FROM player_reports WHERE id = ?")
             .bind(&id)
             .fetch_optional(&mut *tx)

@@ -70,7 +70,7 @@ impl Storage {
     /// when it ended moments ago. True for a new one.
     pub fn start_play(&self, user_id: u32) -> Result<bool> {
         run(async {
-            let mut tx = self.pool.begin().await?;
+            let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
             let open: Option<i64> = sqlx::query_scalar("SELECT id FROM play_sessions WHERE user_id = ? AND ended_at IS NULL ORDER BY id DESC LIMIT 1")
                 .bind(user_id)
                 .fetch_optional(&mut *tx)
@@ -137,7 +137,7 @@ impl Storage {
 
     /// Queues `user_id`'s report for the coordinator, and notes they sent one.
     pub async fn queue_report(&self, user_id: u32, id: &str, body: &str) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query(&format!("INSERT INTO report_outbox (id, body, created_at) VALUES (?, ?, {NOW})"))
             .bind(id)
             .bind(body)
@@ -287,7 +287,7 @@ impl Storage {
     /// each player once a second one is in it. True when that made it a match.
     pub fn note_match_player(&self, game_id: u32, user_id: u32) -> Result<bool> {
         run(async {
-            let mut tx = self.pool.begin().await?;
+            let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
             let is_match: Option<String> = sqlx::query_scalar("SELECT attributes FROM game_sessions WHERE id = ? AND destroyed_at IS NULL")
                 .bind(game_id)
                 .fetch_optional(&mut *tx)
@@ -368,7 +368,7 @@ impl Storage {
 
     /// The coordinator took these matches.
     pub async fn mark_matches_reported_async(&self, ids: &[u32]) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         for id in ids {
             sqlx::query("UPDATE game_sessions SET reported = 1 WHERE id = ?").bind(id).execute(&mut *tx).await?;
         }

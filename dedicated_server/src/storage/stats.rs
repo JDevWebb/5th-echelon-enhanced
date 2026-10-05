@@ -50,7 +50,7 @@ impl Storage {
     /// from it, so those stay current until it answers again.
     pub fn write_stats(&self, user_id: u32, writes: &[StatWrite]) -> Result<()> {
         run(async {
-            let mut transaction = self.pool.begin().await?;
+            let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
             let identity: Option<(String, String)> = sqlx::query_as("SELECT global_id, username FROM users WHERE id = ? AND global_id IS NOT NULL")
                 .bind(user_id)
                 .fetch_optional(&mut *transaction)

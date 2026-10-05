@@ -159,7 +159,7 @@ impl Coordinator {
             .bind(server)
             .fetch_one(&self.pool)
             .await?;
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let mut kept = 0;
         for e in list.iter().take(MAX_EVENTS) {
             let (Some(id), Some(at)) = (e["id"].as_i64().filter(|n| *n > 0), e["at"].as_i64()) else {

@@ -288,7 +288,7 @@ impl Storage {
     /// Makes two players friends, replacing any request between them
     /// (never a block: a blocked pair stays blocked).
     pub async fn make_friends(&self, a: u32, b: u32) -> Result<bool> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let blocked: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM relationships WHERE kind = 'block' AND ((user_id = ? AND other_id = ?) OR (user_id = ? AND other_id = ?))")
             .bind(a)
             .bind(b)
@@ -330,7 +330,7 @@ impl Storage {
         if me == other {
             return Ok(Err(FriendError::Yourself));
         }
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query("DELETE FROM relationships WHERE kind IN ('friend', 'request') AND ((user_id = ? AND other_id = ?) OR (user_id = ? AND other_id = ?))")
             .bind(me)
             .bind(other)
@@ -390,7 +390,7 @@ impl Storage {
 
     /// The oldest thing to tell `user`, removed as it's handed out.
     pub async fn take_friend_event(&self, user: u32) -> Result<Option<(FriendEventKind, Person)>> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let row: Option<(i64, u32, String)> = sqlx::query_as("SELECT id, other_id, kind FROM friend_events WHERE user_id = ? ORDER BY id LIMIT 1")
             .bind(user)
             .fetch_optional(&mut *tx)
@@ -573,6 +573,35 @@ mod tests {
     fn user(storage: &Storage, name: &str) -> u32 {
         storage.register_user(name, "password1", Some(name)).unwrap();
         storage.find_user_id_by_name(name).unwrap().unwrap()
+    }
+
+    #[test]
+    fn transactions_that_read_first_wait_for_other_writers() {
+        // In WAL mode, a transaction that reads and then writes can't take the write lock
+        // once another connection has written since it read: SQLite says "database is
+        // locked" at once, without waiting. Transactions begin IMMEDIATE, so they wait.
+        let (s, dir) = temp_storage("concurrent-writes");
+        let ids: Vec<u32> = (0..12).map(|i| user(&s, &format!("Player{i}"))).collect();
+        let s = std::sync::Arc::new(s);
+        let failures = run(async {
+            let mut set = tokio::task::JoinSet::new();
+            for round in 0..20 {
+                for (i, &a) in ids.iter().enumerate() {
+                    let b = ids[(i + 1 + round) % ids.len()];
+                    let s = std::sync::Arc::clone(&s);
+                    set.spawn(async move { s.make_friends(a, b).await.err().map(|e| e.to_string()) });
+                }
+            }
+            let mut failures = Vec::new();
+            while let Some(r) = set.join_next().await {
+                failures.extend(r.unwrap());
+            }
+            failures
+        })
+        .unwrap();
+        assert!(failures.is_empty(), "{} of 240 failed, e.g. {:?}", failures.len(), failures.first());
+        drop(s);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

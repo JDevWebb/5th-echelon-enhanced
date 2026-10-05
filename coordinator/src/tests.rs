@@ -1852,6 +1852,37 @@ async fn all_servers_silent_is_one_alert_about_the_coordinator() {
     assert_eq!(active().await, ["offline"]);
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn servers_reporting_at_once_dont_lock_each_other_out() {
+    // In WAL mode a transaction that reads and then writes can't take the write lock once
+    // another connection has written since it read: "database is locked", at once, without
+    // waiting. Transactions begin IMMEDIATE, so they wait their turn.
+    let t = start("concurrent-writes").await;
+    for i in 0..6 {
+        sqlx::query("INSERT INTO servers (id, secret_hash, joined_at) VALUES (?, ?, 0)")
+            .bind(format!("s{i}"))
+            .bind(format!("h{i}"))
+            .execute(&t.c.pool)
+            .await
+            .unwrap();
+    }
+    let mut set = tokio::task::JoinSet::new();
+    for round in 0..30i64 {
+        for i in 0..6 {
+            let c = Arc::clone(&t.c);
+            set.spawn(async move {
+                let players: Vec<Value> = (0..5).map(|p| json!({ "id": p, "name": format!("P{p}"), "matches": round })).collect();
+                c.record_players(&format!("s{i}"), &json!({ "full": true, "players": players })).await.err().map(|e| e.to_string())
+            });
+        }
+    }
+    let mut failures = Vec::new();
+    while let Some(r) = set.join_next().await {
+        failures.extend(r.unwrap());
+    }
+    assert!(failures.is_empty(), "{} of 180 failed, e.g. {:?}", failures.len(), failures.first());
+}
+
 #[tokio::test]
 async fn the_database_is_in_wal_mode_for_the_live_backup() {
     let t = start("wal").await;

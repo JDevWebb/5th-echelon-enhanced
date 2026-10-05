@@ -211,7 +211,7 @@ impl Coordinator {
         let empty = Vec::new();
         let players = body["players"].as_array().unwrap_or(&empty);
         let sessions = body["sessions"].as_array().unwrap_or(&empty);
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let mut known: HashSet<i64> = sqlx::query_scalar("SELECT id FROM players WHERE server_id = ?")
             .bind(server)
             .fetch_all(&mut *tx)
@@ -315,7 +315,7 @@ impl Coordinator {
         if stored >= MATCHES_PER_SERVER {
             return Ok(());
         }
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         for m in list.iter().take(MAX_MATCHES) {
             let mode = match m["mode"].as_str() {
                 Some(mode @ ("svm" | "coop")) => mode,

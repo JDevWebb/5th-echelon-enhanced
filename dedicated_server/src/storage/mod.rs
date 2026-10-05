@@ -816,7 +816,7 @@ impl Storage {
             serde_json::json!({ "to": receiver_id, "room": session_id }),
         );
 
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query("DELETE FROM invites WHERE (receiver = ? AND sender = ?) OR consumed_at IS NOT NULL OR expires_at IS NULL OR expires_at <= CURRENT_TIMESTAMP")
             .bind(receiver_id)
             .bind(sender_id)
@@ -858,7 +858,7 @@ impl Storage {
         if waiting == 0 {
             return Ok(None);
         }
-        let mut transaction = self.pool.begin().await?;
+        let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let invite: Option<Invite> = sqlx::query_as(
             r"
             SELECT id, sender, receiver, session_type, session_id

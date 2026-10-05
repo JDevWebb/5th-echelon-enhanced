@@ -693,7 +693,7 @@ impl Coordinator {
         };
         // Where each player has been seen online, for vouching friendships (see `vouched`).
         if !newly.is_empty() {
-            let mut tx = self.pool.begin().await?;
+            let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
             for id in &newly {
                 sqlx::query("INSERT OR IGNORE INTO seen_online (global_id, server_id, first_seen) VALUES (?, ?, ?)")
                     .bind(id)
@@ -856,7 +856,7 @@ impl Coordinator {
                 // The same link again (a retry) changes nothing: it isn't a new link, and keeps
                 // its time.
                 if !self.has_link(server, &global_id, &username).await.map_err(|e| e.to_string())? {
-                    let mut tx = self.pool.begin().await.map_err(|e| e.to_string())?;
+                    let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| e.to_string())?;
                     // One identity per account and one account per identity, on each server.
                     sqlx::query("DELETE FROM links WHERE server_id = ? AND (username = ? OR global_id = ?)")
                         .bind(server)
@@ -955,7 +955,7 @@ impl Coordinator {
     /// (see `vouched`).
     async fn set_friends(&self, a: &str, b: &str, friends: bool, now: i64, server: &str) -> sqlx::Result<()> {
         let (a, b) = if a < b { (a, b) } else { (b, a) };
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query(
             "INSERT INTO friendships (a, b, friends, updated) VALUES (?, ?, ?, ?)
              ON CONFLICT(a, b) DO UPDATE SET friends = excluded.friends, updated = excluded.updated",

@@ -146,7 +146,7 @@ impl Coordinator {
     /// transaction), and answers the last applied id now.
     pub async fn apply_stats(&self, server: &str, epoch: &str, writes: &[Value]) -> sqlx::Result<i64> {
         let now = identity::now();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         // A write first, so the transaction holds the database's write lock from the start.
         sqlx::query("INSERT INTO stat_sequences (server_id, epoch, last_id, updated_at) VALUES (?, ?, 0, ?) ON CONFLICT DO NOTHING")
             .bind(server)
@@ -439,7 +439,7 @@ impl Coordinator {
     /// Removes everything kept for `global_id` (and the name shown for them): answers how
     /// many stats went, and the name they had.
     pub async fn remove_stats(&self, global_id: &str) -> sqlx::Result<(u64, Option<String>)> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let name: Option<String> = sqlx::query_scalar("DELETE FROM global_names WHERE global_id = ? RETURNING name")
             .bind(global_id)
             .fetch_optional(&mut *tx)

@@ -314,7 +314,7 @@ impl Coordinator {
             return Ok(());
         }
         let day = day_of(now);
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         for id in ids {
             sqlx::query("INSERT INTO daily_players (server_id, day, player, minutes) VALUES (?, ?, ?, 1) ON CONFLICT DO UPDATE SET minutes = minutes + 1")
                 .bind(server)

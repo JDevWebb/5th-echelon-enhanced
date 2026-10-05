@@ -195,7 +195,7 @@ impl Coordinator {
             .into_iter()
             .map(|(kind, level, text)| json!({ "t": at, "server": server, "kind": kind, "level": level, "text": text }))
             .collect();
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query("INSERT OR REPLACE INTO pulses (server_id, at, point) VALUES (?, ?, ?)")
             .bind(server)
             .bind(at)

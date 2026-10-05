@@ -46,7 +46,7 @@ impl Storage {
     /// names of the players they mention; a repeat is counted on the event it repeats. The
     /// server's own accounts (the game's tracking sign-in) are left out.
     pub async fn save_session_events_async(&self, events: Vec<NewSessionEvent>) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         for mut event in events {
             let (user_id, name) = match (event.user_id, event.name.take()) {
                 (Some(id), _) => {
@@ -158,7 +158,7 @@ impl Storage {
 
     /// Marks events sent, unless they changed since (a repeat counted meanwhile goes again).
     pub async fn mark_session_events_sent_async(&self, events: &[SessionEvent]) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         for event in events {
             sqlx::query("UPDATE session_events SET sent = 1 WHERE id = ? AND count = ? AND last_at = ?")
                 .bind(event.id)

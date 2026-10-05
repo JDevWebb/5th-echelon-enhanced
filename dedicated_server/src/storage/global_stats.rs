@@ -94,7 +94,7 @@ impl Storage {
 
     /// Replaces the global leaderboards' top places with the coordinator's.
     pub async fn replace_global_leaderboards(&self, lists: &[GlobalList]) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query("DELETE FROM global_leaderboards").execute(&mut *tx).await?;
         for list in lists {
             sqlx::query("INSERT OR REPLACE INTO global_leaderboards (leaderboard, context, total, top) VALUES (?, ?, ?, ?)")
@@ -114,7 +114,7 @@ impl Storage {
         if players.is_empty() {
             return Ok(());
         }
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let sql = format!("DELETE FROM global_ranks WHERE global_id IN ({})", placeholders(players.len()));
         let mut delete = sqlx::query(&sql);
         for p in players {
@@ -141,7 +141,7 @@ impl Storage {
     /// coordinator's, except for players with writes it doesn't have yet (their stats
     /// here are ahead of its).
     pub async fn replace_global_stats(&self, players: &[String], stats: &[GlobalStat]) -> Result<()> {
-        let mut tx = self.pool.begin().await?;
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         for p in players {
             let waiting: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM stats_outbox WHERE global_id = ?")
                 .bind(p)
