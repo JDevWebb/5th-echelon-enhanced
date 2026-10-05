@@ -345,14 +345,27 @@ pub fn pick_from_network(address: &str, log: &Log) -> Result<Option<String>, Str
 /// when it still offers its API over HTTPS (whose certificate is checked when used);
 /// otherwise this fails rather than switch the player to plain HTTP.
 fn server_info(server: &str, had_https: bool) -> Result<(Option<setup::server_info::ServerInfo>, bool), String> {
+    // Twice: one lost packet on a long way shouldn't fail the setup.
+    match server_info_once(server, had_https)? {
+        (None, _) => server_info_once(server, had_https),
+        answered => Ok(answered),
+    }
+}
+
+fn server_info_once(server: &str, had_https: bool) -> Result<(Option<setup::server_info::ServerInfo>, bool), String> {
     let rt = crate::services::rt();
     if let Some(info) = rt.block_on(crate::network::server_info_tls(server, 443)) {
         return Ok((Some(info), true));
     }
-    let plain = setup::server_info::fetch(server, Duration::from_secs(4));
+    let plain = setup::server_info::fetch(server, crate::network::INFO_TIMEOUT);
     let api_tls = plain.as_ref().and_then(|i| i.ports).and_then(|p| p.api_tls);
     if let Some(info) = api_tls.filter(|p| *p != 443).and_then(|port| rt.block_on(crate::network::server_info_tls(server, port))) {
         return Ok((Some(info), true));
+    }
+    // Nothing answered at all: not a server that turned HTTPS off, so the caller says what
+    // happened (and asks again).
+    if plain.is_none() {
+        return Ok((None, false));
     }
     if had_https && api_tls.is_none() {
         return Err(format!(
@@ -360,6 +373,12 @@ fn server_info(server: &str, had_https: bool) -> Result<(Option<setup::server_in
         ));
     }
     Ok((plain, false))
+}
+
+/// Why the setup stops when `server` said nothing about itself (`/api/info`, asked twice)
+/// and nothing answers on the API's default port either.
+fn no_answer(server: &str) -> String {
+    format!("{server} didn't answer in time. It may be restarting or down, or this PC's connection is having trouble: check your internet connection and try again in a minute.")
 }
 
 pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done, String> {
@@ -431,6 +450,11 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
         say(log, "The server no longer offers its API over HTTPS.");
     }
     let api_port = profile.api_port();
+    if info.is_none() && !net::port_open(ip, api_port, Duration::from_secs(4)) {
+        // No answer about itself, so its ports are unknown: not "port 50051" (the API's
+        // default, which servers behind HTTPS keep closed), but what actually went wrong.
+        return Err(no_answer(&plan.server));
+    }
     if !net::port_open(ip, api_port, Duration::from_secs(4)) {
         return Err(format!(
             "{ip} doesn't answer on port {api_port}. Check the server is running and you're connected to its network."
@@ -617,7 +641,8 @@ pub fn rename(game_dir: &Path, profile_name: &str, new_name: &str) -> Result<Str
     let password = profile.user.secret().ok_or("The saved password can't be read here; press Connect on the server again.")?;
     let new_name = new_name.trim().to_string();
     let (info, _) = server_info(&profile.server, profile.https)?;
-    if !info.is_some_and(|i| i.features.iter().any(|f| f == "rename")) {
+    let info = info.ok_or_else(|| no_answer(&profile.server))?;
+    if !info.features.iter().any(|f| f == "rename") {
         return Err("This server can't rename accounts.".into());
     }
     let host = identity::host_key(&profile.server);
@@ -867,6 +892,19 @@ mod tests {
         assert_eq!(country_of("mi-Latn-NZ").as_deref(), Some("NZ"));
         assert_eq!(country_of("C.UTF-8"), None);
         assert_eq!(country_of("de"), None);
+    }
+
+    #[test]
+    fn a_server_that_doesnt_answer_is_said_so_not_its_port() {
+        // Nothing listens on this machine's 443 or 80 in the tests: no answer, whether or not
+        // the server had HTTPS before (not "answered over HTTPS before"), asked twice.
+        for had_https in [false, true] {
+            assert!(matches!(super::server_info("localhost", had_https), Ok((None, false))));
+        }
+        // The message names the server and what to do, never the API's default port.
+        let message = super::no_answer("eu1.example.net");
+        assert!(message.starts_with("eu1.example.net didn't answer in time."), "{message}");
+        assert!(!message.contains("50051"), "{message}");
     }
 
     #[test]

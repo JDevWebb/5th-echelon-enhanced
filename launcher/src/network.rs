@@ -90,6 +90,11 @@ pub enum Error {
     ConfigServer(#[from] reqwest::Error),
 }
 
+/// How long a server's `/api/info` may take. A secure connection to a server on the other
+/// side of the world takes several round trips before the answer, and more on a connection
+/// that drops packets: 3 s wasn't enough for some players.
+pub const INFO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// What a server says about itself, asked over HTTPS on `port` (443, or the
 /// port it gives its HTTPS API): None when it has no certificate for `host`
 /// or doesn't answer there. Unlike the plain answer, nobody on the way can
@@ -103,11 +108,7 @@ pub async fn server_info_tls(host: &str, port: u16) -> Option<setup::server_info
     } else {
         format!("https://{host}:{port}/api/info")
     };
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(3))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .ok()?;
+    let client = reqwest::Client::builder().timeout(INFO_TIMEOUT).redirect(reqwest::redirect::Policy::none()).build().ok()?;
     let mut resp = client.get(url).header("accept", "application/json").send().await.ok()?.error_for_status().ok()?;
     let mut body = Vec::new();
     while let Some(chunk) = resp.chunk().await.ok()? {
