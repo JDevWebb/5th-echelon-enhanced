@@ -21,6 +21,16 @@ A coordinator does more than share friends. It keeps every server in its network
 
 **What's rolled out on its own:** a release newer than the one being rolled out (with none yet, not older than the coordinator's own), and at most one major version past it. Anything else is recorded, and an admin can roll it out (Roll this out). The signature names the version, so an old signed release published again under a new tag doesn't verify.
 
+### What players see
+
+While a release is going out, `/v1/servers` carries the rollout (see the [coordinator's API](friends.md#the-coordinators-api)), and players' launchers show a notice under the launch bar, read again every minute:
+
+- **While it's tested:** the canary's minutes left, and when the player's own server updates: about two minutes after the test, or for a server with players on, once they leave and by two hours into the stage at the latest. They can keep playing until their server restarts.
+- **While their server restarts:** back in about two minutes (the launcher checks every 15 seconds), and a server already on the release to play on meanwhile.
+- **When their server runs a newer release than their launcher** (it turns older games away): **Update and restart**, and **Play** waits.
+
+Each server is shown with its version (old → new while it installs) and what's happening to it. Times are relative first, then the clock time in the player's own time zone and 12 or 24-hour style ("in ~16 min, about 9:46 pm NZDT"); the coordinator sends Unix timestamps only.
+
 ### On each machine
 
 The server and the coordinator run unprivileged, and can't change their own programs. The installer adds a root updater:

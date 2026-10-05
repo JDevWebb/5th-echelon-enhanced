@@ -48,6 +48,8 @@ The blocked player isn't told. Their friend requests look sent, but never arrive
 - **The server sets each account's id** (the game's "Ubisoft id"), so no one can register with someone else's.
 - **Renaming:** **Settings › Servers and accounts › Rename** in the launcher. The account id stays, so friends, blocks and invites carry on, and the old name is free again.
 - **New names** are 1 to 32 letters, digits, `_`, `-` and `.`.
+- **Checking a name** without making anything: the API's `Users.NameAvailable` answers `FREE`, `TAKEN` (an account here has it, or another player across the servers sharing friends) or `NOT_ALLOWED` (its length, its characters, or a reserved name such as "admin"), with the reason. It's rate limited per address, as sign-ins are (`[limits] logins_per_10_minutes`, counted on its own). Servers that answer it list `name-check` in `/api/info`'s features; the launcher checks names with it as they're typed.
+- **On a community server** (one in your network's directory) where you have no account yet, the launcher makes one with your usual name (the one on most of your servers), without asking. It asks only when that name is taken there (an account from before names were reserved), or you have no name yet, and suggests free ones (`Kiwi_NZ` from your PC's region, `Kiwi2`). Connecting to a server of your own always asks, with your usual name filled in.
 - **Sign-in tokens** for the launcher and the overlay expire after 30 days. The game signs in again on its own.
 
 ### Passwords
@@ -101,7 +103,7 @@ Names are unique on each server, so two strangers could both be "Kiwi" on differ
 - **The coordinator reserves names.**
   - A name belongs to the identity that first used it, on any server in the group, whatever the case.
   - The launcher makes each account with your identity's signature, so the server claims the name for you before making the account.
-  - On another server of the group, a name someone else holds is refused ("That name belongs to another player on the servers sharing friends"). The launcher then picks the next free one (`Kiwi2`), as it does for a name taken on that server.
+  - On another server of the group, a name someone else holds is refused ("That name belongs to another player on the servers sharing friends"). The launcher then asks for another, with free ones to pick (`Kiwi2`), as it does for a name taken on that server.
 - **Accounts made without an identity** (an older launcher, the community API) can only take names nobody has reserved.
 - **Clashes from before** (two servers that had a "Kiwi" each, then joined one coordinator): the first to link keeps the name. The other account keeps working, but is flagged. Its owner sees a note in the overlay's Friends tab asking them to rename, and anyone looking them up sees "another player has this name on other servers". Renaming clears it.
 - **A rename claims the new name first**, and the old one is released once nothing of yours uses it.
@@ -158,7 +160,8 @@ You can also type a coordinator's address where you'd type a server's (the commu
 The first server you join that uses a coordinator brings its directory: the launcher uses it from then on. A directory you set yourself, in **Settings › Identity and friends**, is never replaced.
 
 - **The join form** pings the directory's servers as soon as it opens, and preselects the best (unless you've typed a server).
-- **Once you've joined,** the server card lists the network's servers with your ping to each. **Switch** sets you up on another in one click: your identity signs you in there, with the same name, and your friends follow.
+- **Once you've joined,** the server card on the Play screen opens a menu of the network's servers, best first, with your ping to each and the players on it. Picking one switches you there at once: your identity signs you in, with the same name (an account is made for you if you have none there), and your friends follow.
+- **The Servers screen** shows the network in use, and takes another network's address (it must answer `/v1/info` and `/v1/servers`), with one click back to the community network.
 
 - Only `https://` directories are used.
 - A directory entry must be a public host name or address. Entries for private addresses (your own network) are skipped, as are more than 200 entries.
@@ -206,7 +209,7 @@ The server keeps its credentials in `federation.key` once it has joined. Its log
 |---|---|---|
 | `POST /v1/join` `{token, server_id}` | a new server | joins; answers `{secret}` |
 | `POST /v1/heartbeat` | a member (Bearer secret) | its directory entry, every 30 seconds (6 a minute at most); answers `{update?, warnings?}`, e.g. a name of its that another server holds |
-| `GET /v1/servers` | anyone | the directory: servers seen in the last 2 minutes |
+| `GET /v1/servers` | anyone | the directory: servers seen in the last 2 minutes, each with its `version` and `players_online`; and while a release is going out (its canary, verifying or rolling stage, not when it's done, halted or paused), `rollout` `{release, stage, stage_started, canary, healthy_for, quiet_wait}`: `stage_started` in Unix seconds (UTC), `canary` the id of the server it's tried on first, and the rule's times in seconds (see [operations.md](operations.md#what-players-see)) |
 | `POST /v1/changes` `{changes: [...]}` | a member | links, unlinks, friendships and blocks, in order; one result each. `429` for the whole batch past 120 new links an hour (50,000 in all): the server sends it again later |
 | `GET /v1/relations/<identity>` | a member | a player's friends and blocks, for a player linked on that server |
 | `POST /v1/names/claim` `{name, global_id, time, signature}` | a member | reserves a name for a player (their link signature for that server, from the last five minutes); `409` if someone else has it |

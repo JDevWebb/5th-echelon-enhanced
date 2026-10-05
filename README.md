@@ -42,7 +42,7 @@
 2. Run it. Under **Choose a server** it lists the community servers with your ping to each, the closest already picked.
 3. Press **Connect** (the first time, pick the name other players will see), then **Play**. Press <kbd>F5</kbd> in the game to add friends.
 
-The launcher pings every server in the network and sets you up on the one with the lowest ping (the setup log says which). Afterwards the Play screen lists them all with your ping to each, and **Switch** moves you to another in one click, with the same name and friends.
+The launcher pings every server in the network and sets you up on the one with the lowest ping (its steps, under **Steps** in the bar along the bottom, say which). Afterwards the server card on the Play screen lists them all with your ping to each, and picking one moves you there in one click, with the same name and friends.
 
 ### Run your own server
 
@@ -117,25 +117,29 @@ You need **Splinter Cell: Blacklist on PC** (Steam or Ubisoft Connect) and **Win
   <img src="./docs/screenshots/launcher-setup.png" width="640" alt="The launcher's first-run setup: the steps on the left, and the community servers with your ping to each, the closest picked">
 </p>
 <p align="center">
-  <img src="./docs/screenshots/launcher-play.png" width="640" alt="The launcher's home screen: your profile on the banner, the server with its ping, Ready to play and a big Play button, and cards for status, friends online and the server's news">
+  <img src="./docs/screenshots/launcher-play.png" width="640" alt="The launcher's home screen with the server menu open: the network's servers best first, each with its ping and players online, the current one ticked; beside it Ready to play and a big Play button, and cards for status, friends and the server's news">
 </p>
 
 **What Connect does for you:**
 - installs the 5th Echelon client into the game, keeping the game's own file so you can undo it;
 - checks the server answers;
-- finds your account with your identity (no username or password to remember), or creates one with the name you choose, with a random password for that server only;
+- finds your account with your identity (no username or password to remember), or creates one with a random password for that server only: with the name you choose the first time, and on the community's other servers with the same name, without asking (you're asked only if someone there already has it);
 - keeps every account linked to your identity, so friends follow you between servers and a new PC signs straight in;
 - leaves the network adapter to the game: each time it starts, it uses the one that reaches the server, so other players can reach you (and switching between Wi-Fi and Ethernet doesn't matter);
 - brings over your Ubisoft Connect save, or makes a rank 5 one, so co-op and Spies vs Mercs are unlocked.
 
-The **Status** card on the home screen keeps an eye on all of this. Anything that goes wrong later (a VPN that's off, an update) shows up there with a button that fixes it, and the bar beside **Play** says whether you're ready. **Friends** shows who's online and what they're playing (and friends on other servers, with a button to join them), and **Server news** turns through the server's news; the **News** screen has all of it. The **Servers** screen lists the network's servers with your ping, the players on each and the friends there, and switches you over in one click; your identity signs you in there with the same name.
+The **Status** card on the home screen keeps an eye on all of this. Anything that goes wrong later (a VPN that's off, an update) shows up there with a button that fixes it, and the bar beside **Play** says whether you're ready. **Friends** shows who's online and what they're playing (and friends on other servers, with a button to join them), and **Server news** turns through the server's news; the **News** screen has all of it.
+
+**The server card** opens a menu of the network's servers, best first, with your ping and the players on each: pick one and you're switched there at once, signed in with the same name. The **Servers** screen is for the rest: a server of your own (with your recent ones), one at a LAN party, or another group's network, with one click back to the community's.
+
+**Along the bottom,** one bar shows whatever the launcher is doing (switching servers, with its steps; creating your account; sending a report, with how much has gone up; installing; updating) and anything that went wrong, with **Try again** and **Copy details**. **While a new release goes out** to the servers, a notice under the launch bar says when your server updates and is back, in your own time zone, and that you can keep playing until then.
 
 **How did that go?** When the game closes after something went wrong (a join that failed, a crash, a refused sign-in), and about once a week after a normal online game, the launcher asks how it went: good or not, what went wrong, and a comment. If you agree, your logs go with it to the admins of the server you play on, who see them in the admin UI's Reports. Before anything leaves your PC, your user folder, your PC's and Windows account's names and your internet address are hidden, and **What's sent** shows exactly what goes. It asks at most once a day; **Don't ask again** (or **Settings › Feedback**) turns it off, and **Settings › Feedback › Send feedback** sends one any time.
 
 **While you play,** the game sends the server it's signed in to its warnings, errors and network events (a few lines a minute at most, never the whole log), so the server's admins can see why a join or a connection failed. The same private details are hidden first. **Settings › Feedback › Send the game's diagnostics to the server** turns it off.
 
 <p align="center">
-  <img src="./docs/screenshots/launcher-servers.png" width="640" alt="The launcher's Servers screen: a card per community server with ping and players, the one you're on marked Connected, and joining by address or on your network">
+  <img src="./docs/screenshots/launcher-servers.png" width="640" alt="The launcher's Servers screen: the network in use with a box for another network's address and a link back to the community network, a server of your own by address with two recent servers, and finding a server on your network">
 </p>
 
 > [!TIP]
@@ -268,7 +272,7 @@ Everything the launcher does can be done by hand:
 - **An in-game overlay** (<kbd>F5</kbd>): friends and what they're playing, friend requests, player search and blocking, invites, lobby player limits, and server status.
 - **One identity, every server:** the launcher makes you an identity (a key that stays on your PC) and links every account to it. It finds your account on a server by itself, with no username or password to remember, and asks for a name only the first time. Friends made on one server show up on every other server that shares a coordinator, and friends playing on another of them are listed in the overlay and the launcher, which joins you to their server in one click. Moving PCs? Copy your identity across in **Settings**, before connecting on the new PC ([how](docs/friends.md#your-identity)).
 - **Your name is yours:** servers that share a coordinator reserve each name for one player. Elsewhere, the overlay warns when someone has a friend's name but isn't them. You can rename your account from the launcher.
-- **A server directory:** joining a server that shares a coordinator brings in its directory. The launcher pings every server in it, preselects the best (the lowest ping, then the busiest), and offers a one-click **Switch** to a closer one.
+- **A server directory:** joining a server that shares a coordinator brings in its directory. The launcher pings every server in it, preselects the best (the lowest ping, then the busiest), and its server menu moves you to another in one click.
 - **Save games:**
   - a rank 5 save for new players with no save anywhere;
   - raising an existing save to rank 5 (with a backup first);
@@ -516,7 +520,7 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
 **Launcher**
 - Rewritten in egui around a new `setup` library, for Windows and Linux (Steam, Flatpak, Steam Deck, Lutris, Heroic).
 - A guided first-run setup, and a Status card with fixes. **Connect** finds your account with your identity, and asks for a name only when you have none on that server.
-- Typing a network's address (a coordinator) sets you up on its best server by ping; **Switch** moves to another.
+- Typing a network's address (a coordinator) sets you up on its best server by ping; the server menu moves you to another.
 - Adapter pinning that works (upstream's saved a value that never matched an adapter).
 - Server management, and verified updates from this project's releases.
 - Settings are never silently reset: an unreadable file is kept as `uplay.toml.broken`, and outside changes are merged rather than overwritten.
