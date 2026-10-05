@@ -1,11 +1,18 @@
 <template>
+  <PageTop title="Updates" :sub="u ? `Releases from github.com/${u.repo}, signed with the release key. Servers check the signature again before installing. Book maintenance below.` : 'Signed releases, the rollout, and maintenance windows.'">
+    <template v-if="u && o" #stats>
+      <Stat :value="r.target || '–'" label="Release" :sub="r.previous ? `previous ${r.previous}` : 'no previous one'" />
+      <Stat :value="r.target ? (r.paused ? 'paused' : r.stage) : '–'" label="Rollout" :tone="r.stage === 'halted' ? 'bad' : r.paused ? 'warn' : r.stage === 'done' ? 'ok' : ''" />
+      <Stat :value="fmt.n(onTarget)" :unit="`/ ${o.servers.length}`" label="Servers on it" />
+      <Stat :value="fmt.n(upcoming)" label="Maintenance" :sub="upcoming ? 'booked, not ended' : 'nothing booked'" :tone="upcoming ? 'warn' : ''" />
+    </template>
+    <button v-if="u" type="button" @click="act('check')">Check GitHub now</button>
+    <button class="primary" type="button" @click="toBooking">Book maintenance</button>
+  </PageTop>
   <template v-if="u && o">
-    <PageTop title="Updates" :sub="`Releases from github.com/${u.repo}, signed with the release key. Servers check the signature again before installing.`">
-      <button type="button" @click="act('check')">Check GitHub now</button>
-    </PageTop>
     <section class="panel">
       <header>
-        <div><span class="label">Rollout</span><h2 style="font-size: 18px; margin-top: 2px">{{ r.target ? `Release ${r.target}` : 'Nothing rolled out yet' }}</h2></div>
+        <div><span class="label">Rollout</span><h2 class="big-title" style="margin-top: 2px">{{ r.target ? `Release ${r.target}` : 'Nothing rolled out yet' }}</h2></div>
         <div class="row">
           <span v-if="r.paused" class="pill warn">paused</span>
           <span v-if="r.pinned" class="pill">pinned</span>
@@ -69,11 +76,14 @@
     </section>
   </template>
   <div v-else class="empty">Loading…</div>
+  <Maintenance :servers="o?.servers || []" :windows="maint?.windows || null" :error="maintError" @changed="reloadMaint" />
 </template>
 
 <script setup>
-import { computed, onMounted } from 'vue';
+import { computed, onMounted, watch } from 'vue';
 import PageTop from '../components/PageTop.vue';
+import Stat from '../components/Stat.vue';
+import Maintenance from '../components/Maintenance.vue';
 import { api } from '../lib/api.js';
 import { ensureOverview, useLoad } from '../lib/data.js';
 import { confirmBox } from '../lib/dialogs.js';
@@ -86,6 +96,17 @@ onMounted(() => ensureOverview().catch(() => {}));
 const o = computed(() => live.overview);
 const { data: u, reload } = useLoad(() => api('GET', '/updates'));
 const r = computed(() => u.value.rollout);
+const onTarget = computed(() => (o.value?.servers || []).filter(sv => r.value.target && sv.listing?.version === r.value.target).length);
+// Maintenance windows: reloaded when any admin books or cancels one.
+const { data: maint, error: maintError, reload: reloadMaint } = useLoad(() => api('GET', '/maintenance'), () => null, { refresh: false });
+watch(() => live.maintenanceTick, reloadMaint);
+const upcoming = computed(() => (maint.value?.windows || []).filter(w => !w.cancelled_at && w.end > Date.now() / 1000).length);
+function toBooking() {
+  const el = document.getElementById('maintenance');
+  if (!el) return;
+  el.scrollIntoView({ behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' });
+  el.querySelector('input')?.focus({ preventScroll: true });
+}
 const at = computed(() => ORDER.indexOf(r.value.stage));
 const name = id => serverName(o.value?.servers.find(sv => sv.id === id) || { id });
 const stageText = computed(() => ({
