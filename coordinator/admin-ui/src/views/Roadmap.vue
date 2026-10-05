@@ -17,7 +17,7 @@
   <div v-else-if="!road" class="empty">Loading…</div>
   <section v-else-if="!road.items.length" class="panel start">
     <h2 class="big-title">Nothing on the roadmap yet</h2>
-    <p class="muted">Start from the project's roadmap as it stood for 0.4.2: {{ STARTING_ITEMS.length }} items in four lanes, all public. Edit or delete any of them afterwards.</p>
+    <p class="muted">Start from the project's roadmap as it stood for 0.4.2: {{ STARTING_ITEMS.length }} items in four lanes. Players see all but the requests, which quote players. Edit or delete any of them afterwards.</p>
     <div class="row">
       <button class="primary" type="button" :disabled="seeding" @click="seed">{{ seeding ? `Adding ${seeded} of ${STARTING_ITEMS.length}…` : 'Start from the project\'s roadmap' }}</button>
       <span class="small muted">Or add your own with the form below.</span>
