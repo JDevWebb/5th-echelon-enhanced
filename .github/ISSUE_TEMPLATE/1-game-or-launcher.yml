@@ -1,0 +1,86 @@
+name: Game or launcher problem
+description: The launcher, the in-game overlay (F5), saves, stats or a crash. Something on your PC.
+labels: ["bug", "client"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. Can't join, host or stay connected? Use **Can't join, host or stay connected** instead: it asks for what those need.
+        Security problems go privately to the maintainer, not here: see [SECURITY.md](https://github.com/JDevWebb/5th-echelon-enhanced/blob/main/SECURITY.md).
+  - type: dropdown
+    id: area
+    attributes:
+      label: What's affected
+      options:
+        - The launcher (setup, settings, updates, the server list)
+        - The in-game overlay (F5): friends, invites, messages
+        - Signing in
+        - Saves and progress
+        - Stats and leaderboards
+        - The game crashes or freezes
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Launcher version
+      description: Settings › About in the launcher.
+      placeholder: "0.4.2"
+    validations:
+      required: true
+  - type: dropdown
+    id: system
+    attributes:
+      label: Where you play
+      options:
+        - Windows
+        - Steam Deck
+        - Linux (Proton)
+        - Linux (Wine, Lutris or similar)
+    validations:
+      required: true
+  - type: dropdown
+    id: copy
+    attributes:
+      label: Your copy of the game
+      options:
+        - Steam
+        - Ubisoft Connect
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead. Exact messages help most (a screenshot is fine).
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to make it happen again
+      description: The steps, if you know them. "It happened once" is useful too.
+      placeholder: |
+        1. Start the launcher
+        2. Press Play
+        3. ...
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        The game's `bl-tracing.log` (in the game's folder; `bl-tracing.prev.log` is the game before) and the launcher's, `launcher.log` in `%APPDATA%\5th-Echelon` (on Linux, `~/.config/5th-Echelon`).
+        **Read them first:** they can contain your Windows user name, your PC's name and your internet address. Or send them with the launcher's report (Settings › Feedback › Send feedback), which removes those for you, and say so below.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you send
+      options:
+        - label: I looked for an existing issue about this.
+          required: true
+        - label: I removed anything private from what I pasted (or sent the logs with the launcher's report instead).
+          required: true
+        - label: I sent a report from the launcher (Settings › Feedback › Send feedback).

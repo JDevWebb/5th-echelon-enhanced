@@ -735,9 +735,9 @@ A tag with a suffix (`v0.3.1-rc.1`) makes a pre-release, which the updater doesn
 
 ## Contributing
 
-Contributions of every size are welcome: bug reports with logs, testing with friends, protocol research, documentation, and code.
+Contributions of every size are welcome: bug reports with logs, testing with friends, protocol research, documentation, and code. **[CONTRIBUTING.md](CONTRIBUTING.md)** has the details: how to report a problem so it can be fixed, how to build and test, and the project's conventions.
 
-- **Bugs:** open an issue with what you did, what happened, and the game's `bl-tracing.log` (look it over for anything private before posting it). For server problems, add the server's `server.log.json` or console output.
+- **Bugs:** [open an issue](https://github.com/JDevWebb/5th-echelon-enhanced/issues/new/choose) and pick the form that fits (a game or launcher problem, a connection problem, your own server). For a connection problem, send the launcher's report (**Settings › Feedback › Send feedback**) right after it happens, and give the time with your time zone.
 - **Pull requests:** keep them focused, and describe how you tested.
   - CI builds and tests every pull request on Linux and Windows. Run `build/build.sh test` and, for server changes, `build/build.sh bots` locally first (add a scenario to `tools/testbot` for new server behaviour). Format with `build/build.sh fmt`.
   - Changes that affect the game should say whether they were tried in the game itself.

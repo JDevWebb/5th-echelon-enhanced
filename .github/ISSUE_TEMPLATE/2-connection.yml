@@ -1,0 +1,93 @@
+name: Can't join, host or stay connected
+description: Joins that fail, invites that never arrive, being dropped from a match, or a match that won't start.
+labels: ["bug", "connection"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        These are found by matching what your game saw with what the server saw at that moment, so **the time and the server matter most.**
+        The fastest way to get it looked at: right after it happens, send the launcher's report (**Settings › Feedback › Send feedback**). It goes to the server's admins with your logs, private details removed.
+  - type: input
+    id: when
+    attributes:
+      label: When it happened
+      description: Date and time, with your time zone (or in UTC).
+      placeholder: "4 Oct, about 22:25 UTC"
+    validations:
+      required: true
+  - type: dropdown
+    id: server
+    attributes:
+      label: Server
+      options:
+        - Community network, EU (eu1)
+        - Community network, North America (na1)
+        - Community network, Oceania
+        - Someone else's server
+        - My own server
+        - On a LAN
+    validations:
+      required: true
+  - type: input
+    id: names
+    attributes:
+      label: Your player name, and the others involved
+      description: So the admins can find your session. Leave out anyone who'd rather not be named.
+      placeholder: "Me: Agent47 · host: SomeFriend"
+    validations:
+      required: true
+  - type: dropdown
+    id: what
+    attributes:
+      label: What went wrong
+      multiple: true
+      options:
+        - Couldn't join someone's match or lobby
+        - Nobody could join me
+        - An invite never arrived
+        - Dropped out of a match
+        - The match wouldn't start ("a different version of the game")
+        - Matchmaking never found anyone
+        - Lag, or players out of sync
+        - Something else
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Game mode
+      options:
+        - Co-op
+        - Spies vs Mercs
+        - Not in a match yet (party or lobby)
+  - type: dropdown
+    id: private
+    attributes:
+      label: Public or private
+      options:
+        - Private (invites)
+        - Public (matchmaking)
+        - Not sure
+  - type: textarea
+    id: details
+    attributes:
+      label: What happened
+      description: Who hosted, who tried to join, the exact message the game showed, and whether it worked before or after (a restart of the game, say).
+    validations:
+      required: true
+  - type: textarea
+    id: network
+    attributes:
+      label: Your connection
+      description: |
+        The launcher's connection test (**Settings › Network › Connection test**) says whether your router opened a port and whether you play through the server's relay; paste what it says. Also helpful: a VPN, a mobile or satellite connection, or a router without UPnP.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you send
+      options:
+        - label: I looked for an existing issue about this.
+          required: true
+        - label: I sent a report from the launcher right after it happened.
+        - label: Everyone involved was on the same launcher version (Settings › About).

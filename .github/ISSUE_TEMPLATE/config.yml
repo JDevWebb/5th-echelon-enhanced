@@ -1,8 +1,11 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
 contact_links:
   - name: Report a security problem
     url: https://github.com/JDevWebb/5th-echelon-enhanced/security/advisories/new
     about: Privately, not in a public issue. See SECURITY.md for what to include and what happens next.
+  - name: Find players and arrange games
+    url: https://github.com/JDevWebb/5th-echelon-enhanced#community
+    about: The Discords where people play Blacklist online.
   - name: Deploying a server
     url: https://github.com/JDevWebb/5th-echelon-enhanced/blob/main/docs/deploying.md
     about: How to run your own server, or your own network of servers with a coordinator.

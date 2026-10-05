@@ -1,0 +1,36 @@
+name: Idea or improvement
+description: Something new, or something that could work better.
+labels: ["idea"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        What's already planned is in the [roadmap](https://github.com/JDevWebb/5th-echelon-enhanced/blob/main/docs/roadmap.md): have a look first, and say so if your idea is on it.
+  - type: dropdown
+    id: for
+    attributes:
+      label: Who it's for
+      options:
+        - Players
+        - People running a server
+        - Both
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What you'd like to do, or what gets in the way
+      description: The problem first, then any solution you have in mind.
+    validations:
+      required: true
+  - type: textarea
+    id: more
+    attributes:
+      label: Anything else
+      description: How the original game or Ubisoft's servers did it, other projects that do it well, screenshots.
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Helping
+      options:
+        - label: I'd like to work on this myself.

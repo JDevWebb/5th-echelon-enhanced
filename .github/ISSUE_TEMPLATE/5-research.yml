@@ -1,0 +1,48 @@
+name: Game research
+description: Something you've worked out about the game's protocols, services or data.
+labels: ["research"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Findings are very welcome: they're how the services the game expects get brought back.
+        **Facts only, in your own words:** IDs, names, message layouts, offsets, what a call does. **Never attach or paste the game's files or anything extracted from them** (executables, archives, textures, maps, saves), not even small parts.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - A Quazal protocol or RMC call
+        - Storm (peer-to-peer traffic) or NAT traversal
+        - Uplay's API (what the client DLL provides)
+        - Game data (maps, modes, stats, store items)
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Game version
+      description: Which executable you looked at, and from which store.
+      placeholder: "Blacklist_DX11_game.exe, Steam"
+    validations:
+      required: true
+  - type: textarea
+    id: finding
+    attributes:
+      label: What you found
+      description: What it is, how you found it (a capture, a debugger, the server's `unhandled_rmc` warnings), and how sure you are.
+    validations:
+      required: true
+  - type: textarea
+    id: use
+    attributes:
+      label: What it would make possible
+      description: Which feature it brings back, or which problem it explains.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you send
+      options:
+        - label: Nothing here is copied from the game's files; it's described in my own words.
+          required: true

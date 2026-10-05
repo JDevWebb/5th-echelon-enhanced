@@ -1,0 +1,74 @@
+name: Running your own server
+description: The installer, Docker, a reverse proxy, the coordinator or its admin UI, on a server you run.
+labels: ["server"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For your own server or your own network. The community network (play.scbl.jdevwebb.net) doesn't take outside servers: to play together across groups, run your own coordinator ([docs/deploying.md](https://github.com/JDevWebb/5th-echelon-enhanced/blob/main/docs/deploying.md)).
+        **Never paste a join token, an admin password, setup links or keys** here.
+  - type: dropdown
+    id: how
+    attributes:
+      label: How it's installed
+      options:
+        - The Linux installer (install-server.sh)
+        - Docker
+        - From source
+        - Windows (dedicated_server.exe)
+    validations:
+      required: true
+  - type: dropdown
+    id: part
+    attributes:
+      label: What's affected
+      multiple: true
+      options:
+        - Installing or updating
+        - Players can't connect or sign in
+        - Internet play (NAT helper, relay, ports)
+        - Reverse proxy or certificates
+        - The coordinator (friends, directory, updates)
+        - The admin UI
+        - Backups
+        - Something else
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Server version
+      description: "`/api/info` on your server, or the release you installed."
+      placeholder: "0.4.2"
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Host
+      description: The distribution and version, and where it runs (a VPS, at home, behind which router).
+      placeholder: "Ubuntu 24.04 on a 2 vCPU VPS"
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        `journalctl -u 5th-echelon --since "-1 hour"` (and `-u 5th-echelon-coordinator`, `-u caddy` if they're involved), or the container's output.
+        They contain players' names and addresses: cut what isn't needed, and hide addresses that aren't yours.
+      render: text
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before you send
+      options:
+        - label: I read docs/deploying.md (and docs/reverse-proxy.md if I use one).
+          required: true
+        - label: I removed tokens, passwords, keys and players' addresses from what I pasted.
+          required: true
