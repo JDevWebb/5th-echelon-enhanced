@@ -251,6 +251,68 @@ mod tests {
     }
 
     #[test]
+    fn admins_actions_are_carried_out_here() {
+        use serde_json::json;
+
+        use crate::storage::run;
+        use crate::storage::tests::temp_storage;
+        let (s, dir) = temp_storage("admin-actions");
+        let logger = slog::Logger::root(slog::Discard, slog::o!());
+        let user = |name: &str, ubi: Option<&str>| {
+            s.register_user(name, "password1", ubi).unwrap();
+            s.find_user_id_by_name(name).unwrap().unwrap()
+        };
+        let (kiwi, tank, own) = (user("Kiwi", Some("Kiwi")), user("Tank", Some("Tank")), user("Bot", None));
+        let act = |json: serde_json::Value| -> Outcome {
+            let action: Action = serde_json::from_value(json).unwrap();
+            run(perform(&logger, &s, &action)).unwrap()
+        };
+        let now = identity::now();
+
+        // Bans: for a while, or for good; one that ended before it got here isn't made one.
+        let o = act(json!({ "id": 1, "kind": "ban", "player": kiwi, "reason": "cheating\u{7}", "until": now + 3600 }));
+        assert!(o.ok && s.banned(kiwi).unwrap(), "{}", o.message);
+        let o = act(json!({ "id": 2, "kind": "ban", "player": tank, "reason": "", "until": now - 1 }));
+        assert!(!o.ok && !s.banned(tank).unwrap(), "{}", o.message);
+        let o = act(json!({ "id": 3, "kind": "unban", "player": kiwi }));
+        assert!(o.ok && !s.banned(kiwi).unwrap(), "{}", o.message);
+        assert_eq!(act(json!({ "id": 4, "kind": "unban", "player": kiwi })).message, "Kiwi wasn't banned");
+
+        // A new password: the old one stops working, the new one (shown once) works.
+        let o = act(json!({ "id": 5, "kind": "reset_password", "player": kiwi }));
+        let password = o.password.clone().expect("the new password");
+        assert!(o.ok && s.login_user("Kiwi", "password1").unwrap().is_err(), "{}", o.message);
+        assert_eq!(s.login_user("Kiwi", &password).unwrap().ok(), Some(kiwi));
+
+        // Renames: to a free, valid name only.
+        assert!(!act(json!({ "id": 6, "kind": "rename", "player": kiwi, "name": "tank" })).ok, "another player's name");
+        assert!(
+            !act(json!({ "id": 7, "kind": "rename", "player": kiwi, "name": "no spaces allowed" })).ok,
+            "an invalid name"
+        );
+        let o = act(json!({ "id": 8, "kind": "rename", "player": kiwi, "name": "Kiwi2" }));
+        assert!(o.ok, "{}", o.message);
+        assert_eq!(s.find_user_id_by_name("Kiwi2").unwrap(), Some(kiwi));
+
+        // The server's own accounts, and players it doesn't have, are left alone.
+        assert_eq!(
+            act(json!({ "id": 9, "kind": "ban", "player": own, "reason": "" })).message,
+            "That's one of the server's own accounts"
+        );
+        assert!(!s.banned(own).unwrap());
+        assert_eq!(act(json!({ "id": 10, "kind": "kick", "player": 999_999 })).message, "No such player on this server");
+        assert!(!act(json!({ "id": 11, "kind": "explode", "player": tank })).ok, "an action there isn't");
+
+        // Deleting: the account is gone.
+        let o = act(json!({ "id": 12, "kind": "delete", "player": tank }));
+        assert!(o.ok, "{}", o.message);
+        assert_eq!(s.find_user_id_by_name("Tank").unwrap(), None);
+        assert!(run(s.find_person(tank)).unwrap().unwrap().is_none());
+        drop(s);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
     fn actions_read_as_the_coordinator_sends_them() {
         let a: Action = serde_json::from_str(r#"{"id":17,"kind":"ban","player":1007,"reason":"cheating","until":null,"name":null}"#).unwrap();
         assert_eq!((a.id, a.kind.as_str(), a.player, a.until), (17, "ban", 1007, None));
