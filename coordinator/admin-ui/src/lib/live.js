@@ -22,6 +22,10 @@ export const live = reactive({
   alertTick: 0,
   /** Goes up when a player's report comes, or an admin changes one. */
   reportTick: 0,
+  /** Goes up when a maintenance window is booked or cancelled. */
+  maintenanceTick: 0,
+  /** Goes up when the roadmap or a suggestion changes. */
+  roadmapTick: 0,
 });
 
 const KEEP_POINTS = 180;
@@ -62,6 +66,10 @@ export function connectLive() {
     } else if (msg.type === 'report') {
       // The overview that follows carries the open reports' count; the Reports page reloads.
       live.reportTick++;
+    } else if (msg.type === 'maintenance') {
+      live.maintenanceTick++;
+    } else if (msg.type === 'roadmap') {
+      live.roadmapTick++;
     } else if (msg.type === 'bye') {
       wanted = false;
       session.signedOut();
