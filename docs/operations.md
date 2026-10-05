@@ -88,6 +88,24 @@ A member server drops out of the server directory, and players' launchers stop o
 | Roll this out | Roll out an earlier signed release, with a canary, and pin it |
 | Check GitHub now | Look for a new release now (and says why one isn't rolled out on its own) |
 
+## Maintenance windows
+
+Admins book a time a server will be down, or the whole network (the coordinator itself), in the admin UI's **Updates** page: the servers, the start in the admin's own time (with UTC beside it), how long, and a note for players ("Moving to a faster machine"). A booking is a notice for players; nothing is stopped, and the work is the admin's to do.
+
+**What players see:**
+- **In the launcher,** from the start of the day it begins by their PC's clock, or 12 hours before it if that's earlier: a notice under the launch bar ("Maintenance today, 8:00–9:00 pm NZDT"), in their time zone and their PC's 12 or 24-hour clock, and a tag on that server in the server menu. From 30 minutes before, it offers the nearest server that stays up. While it's under way and the server doesn't answer, **Play** waits and offers that server; past its end with the server still down, "Taking longer than planned". The network's window says that friends on other servers, the server list and new names pause, and games carry on; it never stops **Play**.
+- **In the game,** from 10 minutes before: a toast in the overlay with the time left, how long, and the note (each server hears its windows and the network's in its heartbeat answer, and tells its games in `/api/info`).
+
+**Updates wait:** no rollout starts an update on a server during its window or the network's. Cancelling a window takes it off launchers within a minute.
+
+## Roadmap and suggestions
+
+The **Roadmap** page of the admin UI keeps the project's roadmap in four lanes: **Shipping**, **Next**, **Later** and **Requested**, each with the release it's for. Items are edited in place, shown to players or kept for admins, moved and deleted, and every change is in the audit log. An empty roadmap can start from the project's as it stood for 0.4.2.
+
+Players see the public items in the launcher's **Roadmap** screen, which always reads the community network's coordinator (the roadmap is the project's, whatever network they play on), and send suggestions from it: an area, a title and the details, signed with their identity, three a day. Their suggestions land in the page's inbox with their name, server and launcher version; admins reply (the player sees the reply in their launcher), set the status (new, planned, done or declined), or promote one to a lane, where it starts hidden from players.
+
+Every item and suggestion has **Prompt**: a ready-to-paste prompt for Claude Code in this repository to research it, mock it up and list the decisions, without pushing or deploying anything.
+
 ## Metrics
 
 **Every minute, each server sends its coordinator:**

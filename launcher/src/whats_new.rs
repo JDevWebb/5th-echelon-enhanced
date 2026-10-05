@@ -44,8 +44,8 @@ pub const RELEASES: &[Release] = &[Release {
             community: true,
         },
         Item {
-            title: "Know when your server updates",
-            text: "A notice under Play says when yours restarts, in your time zone, and offers a server that's already back.",
+            title: "Know when your server goes down",
+            text: "For an update or booked maintenance, a notice under Play says when, in your time zone, and offers a server that's up. The game warns you 10 minutes before.",
             community: false,
         },
         Item {
@@ -57,6 +57,11 @@ pub const RELEASES: &[Release] = &[Release {
             title: "Your account is made for you",
             text: "On a community server you haven't played on, with the name you use everywhere.",
             community: true,
+        },
+        Item {
+            title: "The roadmap, and your ideas",
+            text: "See what's coming under Roadmap, and send a suggestion. The admins' answer shows there too.",
+            community: false,
         },
         Item {
             title: "One bar for everything that takes a while",
