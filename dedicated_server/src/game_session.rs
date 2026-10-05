@@ -635,6 +635,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             "error adding participants"
         )?;
         let added = request.private_participant_ids.iter().chain(request.public_participant_ids.iter()).copied();
+        joined(added.clone(), request.game_session_key.session_id);
         self.note_match_players(logger, request.game_session_key.session_id, added);
 
         // On the invitation route this call IS the join - the client never sends JoinSession
@@ -937,6 +938,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                     logger,
                     "error adding the invited player"
                 )?;
+                joined([user_id], room.session_id);
                 self.note_match_players(logger, room.session_id, [user_id]);
             }
         }
@@ -1342,6 +1344,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             logger,
             "error joining session after accepting invitation"
         )?;
+        joined([user_id], invitation.session_key.session_id);
         rmc_err!(
             self.storage
                 .delete_game_session_invite(invitation.session_key.type_id, invitation.session_key.session_id, invitation.sender_pid, user_id,),
@@ -1514,9 +1517,65 @@ pub fn rooms_of(user_id: u32, conn: quazal::ConnectionID) -> Vec<u32> {
     gone.into_iter().map(|(_, room)| room).collect()
 }
 
-/// Forgets `user_id`'s rooms: they're signed out, and every room of theirs has ended.
+/// When each signed-in player's current game signed in, and the sessions they were put in
+/// (most recent last, at most [`JOINS_KEPT`]): a game that dropped and signed in again
+/// stays a member of the rooms it had joined, and leaves them when its old connection goes
+/// ([`joined_by_earlier_games`]).
+#[derive(Default)]
+struct Membership {
+    signed_in: Option<std::time::Instant>,
+    joined: std::collections::VecDeque<(u32, std::time::Instant)>,
+}
+
+const JOINS_KEPT: usize = 256;
+
+static MEMBERSHIP: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u32, Membership>>> = std::sync::LazyLock::new(Default::default);
+
+fn membership() -> std::sync::MutexGuard<'static, std::collections::HashMap<u32, Membership>> {
+    MEMBERSHIP.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `user_id`'s game signed in: a new game, if they had one before.
+pub fn signed_in(user_id: u32) {
+    membership().entry(user_id).or_default().signed_in = Some(std::time::Instant::now());
+}
+
+/// Notes that `users` were put in session `session_id`.
+fn joined(users: impl IntoIterator<Item = u32>, session_id: u32) {
+    let now = std::time::Instant::now();
+    let mut all = membership();
+    for user_id in users {
+        let joined = &mut all.entry(user_id).or_default().joined;
+        if joined.len() >= JOINS_KEPT {
+            joined.pop_front();
+        }
+        joined.push_back((session_id, now));
+    }
+}
+
+/// The sessions `user_id` was put in before their current game signed in, forgotten here:
+/// the games that joined them are gone. Not those the current game was put in again.
+pub fn joined_by_earlier_games(user_id: u32) -> Vec<u32> {
+    let mut all = membership();
+    let Some(m) = all.get_mut(&user_id) else { return Vec::new() };
+    let Some(since) = m.signed_in else { return Vec::new() };
+    let (earlier, later): (Vec<_>, Vec<_>) = m.joined.drain(..).partition(|(_, at)| *at < since);
+    let mut gone: Vec<u32> = earlier
+        .into_iter()
+        .map(|(session, _)| session)
+        .filter(|s| !later.iter().any(|(again, _)| again == s))
+        .collect();
+    gone.sort_unstable();
+    gone.dedup();
+    m.joined = later.into();
+    gone
+}
+
+/// Forgets `user_id`'s rooms and memberships: they're signed out, every room of theirs has
+/// ended, and their memberships are cleaned up with their session.
 pub fn forget_rooms(user_id: u32) {
     ROOMS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&user_id);
+    membership().remove(&user_id);
 }
 
 /// Creates a new boxed `GameSessionProtocolServer` instance.
@@ -1533,6 +1592,27 @@ pub fn new_protocol<T: 'static>(storage: Arc<Storage>, debug_config: Arc<DebugCo
 
 #[cfg(test)]
 mod tests {
+
+    /// A game that signed in again leaves the rooms an earlier game of the player's joined,
+    /// but not one it joined again itself.
+    #[test]
+    fn earlier_games_rooms_are_left_but_not_those_joined_again() {
+        use super::forget_rooms;
+        use super::joined;
+        use super::joined_by_earlier_games;
+        use super::signed_in;
+        let user = 4_000_123;
+        joined([user], 1);
+        joined([user], 2);
+        assert!(joined_by_earlier_games(user).is_empty(), "no game signed in since");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        signed_in(user);
+        joined([user], 2);
+        joined([user], 3);
+        assert_eq!(joined_by_earlier_games(user), vec![1]);
+        assert!(joined_by_earlier_games(user).is_empty(), "forgotten once left");
+        forget_rooms(user);
+    }
     use quazal::rmc::basic::ToStream as _;
     use quazal::rmc::Request;
 

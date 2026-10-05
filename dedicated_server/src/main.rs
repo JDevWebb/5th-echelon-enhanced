@@ -209,13 +209,34 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
         server.stale_connection_handler = Some(Box::new(move |ci: ClientInfo| {
             let (Some(user_id), Some(conn)) = (ci.user_id, ci.connection_id) else { return };
             let rooms = game_session::rooms_of(user_id, conn);
-            if rooms.is_empty() {
-                return;
+            if !rooms.is_empty() {
+                match rooms_storage.end_game_sessions(user_id, &rooms) {
+                    Ok(0) => {}
+                    Ok(n) => info!(rooms_logger, "User {user_id}'s earlier connection is gone; ending the {n} room(s) it made"),
+                    Err(e) => error!(rooms_logger, "ending the rooms of {user_id}'s earlier connection failed: {e}"),
+                }
             }
-            match rooms_storage.end_game_sessions(user_id, &rooms) {
-                Ok(0) => {}
-                Ok(n) => info!(rooms_logger, "User {user_id}'s earlier connection is gone; ending the {n} room(s) it made"),
-                Err(e) => error!(rooms_logger, "ending the rooms of {user_id}'s earlier connection failed: {e}"),
+            // And the rooms an earlier game of theirs joined: it's no longer in them.
+            for room in game_session::joined_by_earlier_games(user_id).into_iter().filter(|r| !rooms.contains(r)) {
+                match rooms_storage.leave_game_session(user_id, room) {
+                    Ok(None) => {}
+                    Ok(Some(ended)) => {
+                        info!(
+                            rooms_logger,
+                            "User {user_id}'s earlier game leaves session {room}{}",
+                            if ended { "; nobody left, it ends" } else { "" }
+                        );
+                        session_events::note(
+                            session_events::Who::Id(user_id),
+                            "leave",
+                            serde_json::json!({ "room": room, "how": "dropped", "ended": ended }),
+                        );
+                        if ended {
+                            session_events::room_ended(room);
+                        }
+                    }
+                    Err(e) => error!(rooms_logger, "taking {user_id}'s earlier game out of session {room} failed: {e}"),
+                }
             }
         }));
         // Online means a signed-in connection here, not just a ticket from the auth server.
@@ -231,6 +252,8 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
                 players::sign_out(user_id);
                 return;
             }
+            // A new game: the rooms an earlier one joined are left once its connection goes.
+            game_session::signed_in(user_id);
             // First: friends and searches see them online as soon as they're signed in.
             if let Err(e) = storage.set_online(user_id) {
                 error!(logger, "marking user {user_id} online failed: {e}");

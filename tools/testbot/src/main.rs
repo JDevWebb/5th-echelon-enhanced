@@ -1036,8 +1036,9 @@ enum Reach {
 /// chance, the old one; for a player reached directly, through the relay, or not registered
 /// with the NAT helper at all. Each time it's signed in and served, registers with the NAT
 /// helper again, can be reached, and friends find the lobby it makes; once the old
-/// connections time out, the lobbies the dropped games made are gone and nothing of the new
-/// game's is. Every problem is listed, not just the first.
+/// connections time out, the lobbies the dropped games made are gone, the player is out of
+/// the friend's lobby they joined, and nothing of the new game's is touched (its lobby, a
+/// lobby it joined again). Every problem is listed, not just the first.
 async fn reconnect(ctx: &mut Ctx) -> Result<()> {
     let mut cases = vec![];
     for reach in [Reach::Unregistered, Reach::Direct, Reach::Relayed] {
@@ -1099,8 +1100,16 @@ async fn reconnect_case(server: IpAddr, reach: Reach, mut a: Bot, mut friend: Bo
     a.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
     let mut lobby = a.create_session(LOBBY).await?;
     a.add_participants(lobby, &[a.pid], &[]).await?;
+    // Two lobbies of the friend's: each dropped game joins the first; the second, the first
+    // game only, and the last game again.
+    friend.register_urls(&["prudp:/address=127.0.0.1;port=3075;sid=15;type=3"]).await?;
+    let (theirs, rejoined) = (friend.create_session(LOBBY).await?, friend.create_session(LOBBY).await?);
+    friend.add_participants(theirs, &[friend.pid], &[]).await?;
+    friend.add_participants(rejoined, &[friend.pid], &[]).await?;
+    a.add_participants(rejoined, &[a.pid], &[]).await?;
     let mut lost = vec![];
     for (quiet, same_session) in [(0, false), (0, true), (6, false), (6, true)] {
+        a.add_participants(theirs, &[a.pid], &[]).await?;
         let how = format!(
             "{reach:?}, reconnecting after {quiet} s with {} session number",
             if same_session { "the same" } else { "a new" }
@@ -1139,6 +1148,7 @@ async fn reconnect_case(server: IpAddr, reach: Reach, mut a: Bot, mut friend: Bo
             problems.push(format!("{how}: friends don't find the new lobby"));
         }
     }
+    a.add_participants(rejoined, &[a.pid], &[]).await?;
     // The old connections time out (a minute without a packet) and the old NAT helper
     // registrations (90 s): the new game keeps talking, as a game's own traffic does.
     let until = std::time::Instant::now() + Duration::from_secs(100);
@@ -1160,6 +1170,19 @@ async fn reconnect_case(server: IpAddr, reach: Reach, mut a: Bot, mut friend: Bo
         problems.push(format!(
             "{reach:?}: the old connections timed out, but friends still find the lobbies the dropped games made ({stale:?})"
         ));
+    }
+    if has_session(&found, theirs) {
+        problems.push(format!(
+            "{reach:?}: the old connections timed out, but the player is still in the friend's lobby the dropped games joined"
+        ));
+    }
+    if !has_session(&found, rejoined) {
+        problems.push(format!(
+            "{reach:?}: the old connections timing out took the player out of a lobby the new game joined again"
+        ));
+    }
+    if !has_session(&friend.search_with_participants(&[friend.pid]).await?, theirs) {
+        problems.push(format!("{reach:?}: the friend's own lobby ended when the dropped player's old connections did"));
     }
     if let (Reach::Relayed, Some(ar), Some(fr)) = (reach, &a_reg, &f_reg) {
         if !reconnect_relays(server, &f_nat, fr, &a_nat, ar).await? || !reconnect_relays(server, &a_nat, ar, &f_nat, fr).await? {
