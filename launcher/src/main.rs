@@ -14,6 +14,7 @@ mod network;
 mod play;
 mod scale;
 mod server;
+mod server_menu;
 mod services;
 mod settings;
 mod task;

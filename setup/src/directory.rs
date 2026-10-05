@@ -207,7 +207,8 @@ pub fn known_network(dir: Option<&Path>, coordinator: &str) -> bool {
     !built_in(coordinator).is_empty() || dir.is_some_and(|d| read_cache(d).iter().any(|c| same_directory(&c.directory, coordinator)))
 }
 
-fn ago(secs: i64) -> String {
+/// How long ago, `secs` seconds back: "within the last hour", "5 hours ago", "3 days ago".
+pub fn ago(secs: i64) -> String {
     match secs.max(0) {
         s if s < 3600 => "within the last hour".into(),
         s if s < 2 * 86_400 => format!("{} hours ago", s / 3600),

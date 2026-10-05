@@ -144,6 +144,26 @@ pub async fn is_coordinator(url: &str) -> bool {
     info["servers"].is_u64() && info["name"].as_str().is_some_and(|n| n.to_ascii_lowercase().contains("coordinator"))
 }
 
+/// A network's coordinator, from what the player typed (`play.example.org`, or its
+/// `https://` address): it must answer `/v1/info` as one and list its servers
+/// (`/v1/servers`). Answers its address and how many servers it lists.
+pub async fn check_network(typed: &str) -> Result<(String, usize), String> {
+    let typed = typed.trim().trim_end_matches('/');
+    if typed.starts_with("http://") {
+        return Err("A network's address starts with https://, so nobody on the way can change its list.".into());
+    }
+    let url = if typed.starts_with("https://") { typed.to_string() } else { format!("https://{typed}") };
+    if !setup::directory::valid_coordinator(&url) || url.trim_start_matches("https://").contains('/') {
+        return Err(format!("\"{typed}\" isn't a network's address: type its host, like play.example.org."));
+    }
+    let host = url.trim_start_matches("https://").to_string();
+    if !is_coordinator(&url).await {
+        return Err(format!("{host} doesn't answer as a network of servers (its /v1/info)."));
+    }
+    let servers = fetch_directory(&url).await.map_err(|e| format!("{host}'s list of servers didn't work: {e}."))?;
+    Ok((url, servers.len()))
+}
+
 /// A directory's servers, each with this PC's ping to it (None: no answer), and a
 /// note when they're its last list or the built-in one because it didn't answer.
 #[derive(Debug, Clone)]

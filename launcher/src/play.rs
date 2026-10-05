@@ -20,6 +20,7 @@ use crate::app::Notices;
 use crate::app::View;
 use crate::flow;
 use crate::flow::Support;
+use crate::server_menu::ping_text;
 use crate::task::Slot;
 use crate::theme;
 
@@ -63,9 +64,15 @@ pub struct Play {
     /// shown quietly with the servers.
     directory_error: Option<String>,
 
-    setup: Slot<Result<flow::Done, String>>,
-    /// A switch to a server another server named, waiting for the player to confirm it.
+    /// The setup: how it ended, the server it set up, and whether a network's directory chose it.
+    setup: Slot<Result<(flow::Done, String, bool), String>>,
+    /// A friend's server to switch to, waiting for the player to confirm it.
     switching: Option<Switch>,
+    /// The server menu's row the arrow keys are on.
+    menu_focus: usize,
+    /// What's typed in Servers › Use another network, and its check.
+    network_typed: String,
+    checking_network: Slot<Result<(String, usize), String>>,
     /// The setup's activity, and what it was asked (to try again).
     setup_activity: Option<crate::activity::Handle>,
     last_setup: Option<SetupAsked>,
@@ -110,24 +117,17 @@ struct SetupAsked {
     server: String,
     new_name: Option<String>,
     public_only: bool,
-    /// What the activity says when it worked.
+    /// What the activity says when it worked, and when it didn't.
     done: String,
+    failed: String,
 }
 
-/// A server to switch to, from the network's list or a friend's.
+/// A friend's server to switch to.
 #[derive(Debug, Clone)]
 struct Switch {
-    /// Which card asks.
-    from: SwitchFrom,
     host: String,
     /// The name for an account made there, if the player has none (None: the setup asks).
     new_name: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SwitchFrom {
-    Network,
-    Friend,
 }
 
 impl Play {
@@ -184,10 +184,16 @@ impl Play {
             let activity = self.setup_activity.take();
             let asked = self.last_setup.clone();
             match result {
-                Ok(flow::Done::Ready) => {
+                Ok((flow::Done::Ready, server, via_network)) => {
                     flow::forget_account_check();
                     if let (Some(a), Some(asked)) = (&activity, &asked) {
                         a.done(asked.done.clone());
+                    }
+                    // A server of the player's own (not the network's, nor one a server named): kept
+                    // with the recent ones on the Servers screen.
+                    let listed = self.directory.as_ref().is_some_and(|d| d.iter().any(|(s, _)| s.host.eq_ignore_ascii_case(&server)));
+                    if !via_network && !listed && !asked.as_ref().is_some_and(|a| a.public_only) {
+                        crate::app::Prefs::remember_server(&server, None);
                     }
                     self.editing = false;
                     self.needs_name = None;
@@ -195,7 +201,7 @@ impl Play {
                     self.browsed = false;
                     self.directory = None;
                 }
-                Ok(flow::Done::NeedsName { server, suggested }) => {
+                Ok((flow::Done::NeedsName { server, suggested }, _, _)) => {
                     if let Some(a) = &activity {
                         a.finish_quietly();
                     }
@@ -206,9 +212,12 @@ impl Play {
                     self.needs_name = Some(server);
                     self.editing = true;
                 }
-                Err(e) => match &activity {
-                    Some(a) => a.fail(e, &[Action::Retry, Action::CopyDetails]),
-                    None => notices.error(e),
+                Err(e) => match (&activity, &asked) {
+                    (Some(a), Some(asked)) => {
+                        a.title(asked.failed.clone());
+                        a.fail(e, &[Action::Retry, Action::CopyDetails]);
+                    }
+                    _ => notices.error(e),
                 },
             }
             changed = true;
@@ -292,7 +301,7 @@ impl Play {
 /// The servers that answered on this network, when several did: the player
 /// picks the one they meant.
 fn found_list(play: &mut Play, ui: &mut egui::Ui) {
-    if play.found.is_empty() {
+    if play.found.len() < 2 {
         return;
     }
     ui.add_space(8.0);
@@ -536,7 +545,7 @@ fn poll_lookups(play: &mut Play, notices: &mut Notices) {
                 play.server = ips[0].to_string();
                 play.address = ips[0].to_string();
                 play.server_picked = false;
-                play.found.clear();
+                play.found = ips;
             }
             Ok(ips) => play.found = ips,
             Err(e) => notices.error(e),
@@ -685,7 +694,8 @@ fn server_choices(play: &mut Play, ui: &mut egui::Ui) {
     }
     let best = setup::directory::best(servers);
     let mut pick = None;
-    for (i, (s, ping)) in servers.iter().enumerate() {
+    for i in crate::server_menu::ranked(servers) {
+        let (s, ping) = &servers[i];
         let chosen = play.server.trim() == s.host;
         let frame = egui::Frame::new()
             .fill(if chosen { theme::ACCENT.linear_multiply(0.08) } else { theme::SUNKEN })
@@ -732,22 +742,6 @@ fn server_name(s: &setup::directory::Listing) -> String {
         s.name.clone()
     } else {
         format!("{} ({})", s.name, s.region)
-    }
-}
-
-/// A ping, coloured by how it plays: green is good, amber is far.
-fn ping_text(ping: Option<u32>) -> RichText {
-    match ping {
-        None => theme::muted("no answer"),
-        Some(ms) => RichText::new(format!("{ms} ms")).monospace().color(ping_color(ms)),
-    }
-}
-
-fn ping_color(ms: u32) -> egui::Color32 {
-    match ms {
-        0..=90 => theme::OK,
-        91..=180 => theme::FG,
-        _ => theme::WARN,
     }
 }
 
@@ -965,53 +959,120 @@ fn readiness(play: &Play) -> (egui::Color32, String) {
 fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, to: &mut Option<Go>, ui: &mut egui::Ui) {
     let profile = game.cfg.current_profile().cloned().unwrap_or_default();
     let listing = play.directory.as_ref().and_then(|d| d.iter().find(|(s, _)| s.host == profile.server)).cloned();
+    let playing = play.game_seen || play.running.is_some();
+    let menu_id = egui::Id::new("server-menu");
+    let menu_open = egui::Popup::is_id_open(ui.ctx(), menu_id);
     egui::Frame::new().fill(theme::SUNKEN).inner_margin(egui::Margin::symmetric(32, 16)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 20.0;
-            // The server: click for the Servers screen.
+            // The server: click for the server menu.
             let chip = ui.allocate_ui_with_layout(egui::vec2(300.0, 60.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 egui::Frame::new()
                     .fill(theme::SURFACE)
-                    .stroke(egui::Stroke::new(1.0, theme::LINE))
+                    .stroke(egui::Stroke::new(1.0, if menu_open { theme::ACCENT } else { theme::CONTROL_LINE }))
                     .corner_radius(12)
-                    .inner_margin(egui::Margin::symmetric(16, 10))
+                    .inner_margin(egui::Margin {
+                        left: 16,
+                        right: 10,
+                        top: 10,
+                        bottom: 10,
+                    })
                     .show(ui, |ui| {
-                        ui.set_width(300.0 - 32.0);
+                        ui.set_width(300.0 - 26.0);
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
                                 ui.spacing_mut().item_spacing.y = 2.0;
                                 ui.label(theme::caps("Server"));
                                 // Its region is enough here ("Sydney, Australia").
-                                let name = listing
-                                    .as_ref()
-                                    .map(|(s, _)| if s.region.is_empty() { s.name.clone() } else { s.region.clone() })
-                                    .unwrap_or_else(|| profile.server.clone());
-                                ui.label(RichText::new(hooks_config::text::clip(&name, 26)).family(theme::strong()));
+                                let name = listing.as_ref().map(|(s, _)| place(s)).unwrap_or_else(|| profile.server.clone());
+                                ui.label(RichText::new(hooks_config::text::clip(&name, 24)).family(theme::strong()));
                             });
-                            ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
-                                ui.spacing_mut().item_spacing.y = 2.0;
-                                match &listing {
-                                    Some((s, ping)) => {
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                chevron_down(ui, menu_open);
+                                ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
+                                    ui.spacing_mut().item_spacing.y = 2.0;
+                                    if let Some((s, ping)) = &listing {
                                         ui.label(ping_text(*ping));
                                         ui.label(theme::muted(format!("{} online", s.players_online)).small());
                                     }
-                                    None => {
-                                        ui.label(theme::muted("Change").small());
-                                    }
-                                }
+                                });
                             });
                         });
                     });
             });
-            if ui
-                .interact(chip.response.rect, ui.id().with("server-chip"), egui::Sense::click())
-                .on_hover_cursor(egui::CursorIcon::PointingHand)
-                .on_hover_text(format!("{} · Servers", profile.server))
-                .clicked()
+            // Shown, but closed, while the game runs or a task is busy.
+            let blocked = if playing {
+                Some("Quit the game first")
+            } else if play.busy() {
+                Some("Wait for the current task to finish")
+            } else if game.managed.is_some() {
+                Some("Another tool manages this install: change the server there")
+            } else {
+                None
+            };
+            let chip = ui.interact(
+                chip.response.rect,
+                ui.id().with("server-chip"),
+                if blocked.is_none() { egui::Sense::click() } else { egui::Sense::hover() },
+            );
+            let chip = match blocked {
+                Some(why) => chip.on_hover_text(why),
+                None => chip.on_hover_cursor(egui::CursorIcon::PointingHand),
+            };
+            let popup = egui::Popup::from_toggle_button_response(&chip)
+                .id(menu_id)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .align(egui::RectAlign::BOTTOM_START)
+                .gap(6.0)
+                .width(440.0)
+                .frame(
+                    egui::Frame::new()
+                        .fill(theme::SURFACE)
+                        .stroke(egui::Stroke::new(1.0, theme::CONTROL_LINE))
+                        .corner_radius(12)
+                        .inner_margin(8)
+                        .shadow(egui::Shadow {
+                            offset: [0, 18],
+                            blur: 50,
+                            spread: 0,
+                            color: egui::Color32::from_black_alpha(140),
+                        }),
+                );
+            let network = crate::app::Prefs::directory();
+            let header = match &network {
+                Some(url) if crate::app::Prefs::is_community(url) => format!("Community servers · {}", url_host(url)),
+                Some(url) => format!("Servers · {}", url_host(url)),
+                None => "No network".to_string(),
+            };
+            let rows = play.directory.as_ref().map(|d| crate::server_menu::rows(d, &profile.server)).unwrap_or_default();
+            let pinging = play.browsing.running();
+            let note = play.directory_error.clone();
+            let mut focus = play.menu_focus;
+            if let Some(picked) = popup
+                .show(|ui| crate::server_menu::show(ui, &header, &rows, pinging, note.as_deref(), &mut focus))
+                .and_then(|r| r.inner)
             {
-                *to = Some(Go::View(View::Servers));
+                egui::Popup::close_id(ui.ctx(), menu_id);
+                match picked {
+                    crate::server_menu::Picked::Server(host) if blocked.is_none() => {
+                        // A community server: switched to at once, in the activity bar.
+                        play.server = host;
+                        play.server_picked = false;
+                        play.needs_name = None;
+                        let name = Some(profile.user.username.clone()).filter(|n| !n.is_empty());
+                        start_setup(play, game, ui.ctx(), notices, name, true);
+                    }
+                    crate::server_menu::Picked::Server(_) => {}
+                    crate::server_menu::Picked::PingAgain => {
+                        if let Some(url) = network {
+                            ping_again(play, ui.ctx(), url);
+                        }
+                    }
+                    crate::server_menu::Picked::ServersScreen => *to = Some(Go::View(View::Servers)),
+                }
             }
+            play.menu_focus = focus;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 play_button(play, game, notices, ui);
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
@@ -1023,6 +1084,21 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, to: &mut 
             });
         });
     });
+}
+
+/// A network's host, from its address.
+fn url_host(url: &str) -> &str {
+    url.trim_start_matches("https://").trim_end_matches('/')
+}
+
+/// The chevron on the server card: down, or up while the menu is open.
+fn chevron_down(ui: &mut egui::Ui, open: bool) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+    let c = rect.center();
+    let d = if open { -1.0 } else { 1.0 };
+    let s = egui::Stroke::new(2.0, theme::MUTED);
+    ui.painter().line_segment([c + egui::vec2(-5.0, -2.5 * d), c + egui::vec2(0.0, 2.5 * d)], s);
+    ui.painter().line_segment([c + egui::vec2(0.0, 2.5 * d), c + egui::vec2(5.0, -2.5 * d)], s);
 }
 
 /// A card of the home screen's row: fixed size, a small uppercase title with
@@ -1212,11 +1288,7 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
     );
     if let Some(host) = switch_to {
         // Confirmed on the Servers screen, which says where it goes and what happens there.
-        play.switching = Some(Switch {
-            from: SwitchFrom::Friend,
-            host,
-            new_name: None,
-        });
+        play.switching = Some(Switch { host, new_name: None });
         *to = Some(Go::View(View::Servers));
     }
 }
@@ -1356,8 +1428,8 @@ pub fn show_news(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
-/// The Servers screen: the network's servers with your ping to each, a server
-/// by its address, or one on this network.
+/// The Servers screen: the network the server menu shows (and another one), a server of
+/// your own by its address, or one on this network.
 pub fn show_servers(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let mut to = None;
@@ -1381,149 +1453,74 @@ pub fn show_servers(app: &mut App, ui: &mut egui::Ui) {
 
 fn servers_page(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Context, ui: &mut egui::Ui) -> Option<Go> {
     let mut to = None;
-    let current = game.cfg.current_profile().map(|p| p.server.clone()).unwrap_or_default();
     let locked = game.managed.is_some();
-    ui.horizontal(|ui| {
-        ui.vertical(|ui| {
-            ui.label(theme::display("Servers", 32.0));
-            match crate::app::Prefs::directory() {
-                Some(url) => ui.label(theme::muted(format!(
-                    "Network {} · your friends and identity follow you between these servers",
-                    url.trim_start_matches("https://").trim_end_matches('/')
-                ))),
-                None => ui.label(theme::muted("No server network yet: join a server by its address, or find one on your network.")),
-            };
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if play.browsing.running() {
-                ui.spinner();
-            } else if let Some(url) = crate::app::Prefs::directory().filter(|_| ui.add(theme::secondary("Ping again")).clicked()) {
-                ping_again(play, ctx, url);
-            }
-        });
-    });
+    let playing = play.game_seen || play.running.is_some();
+    ui.label(theme::display("Servers", 32.0));
+    ui.label(RichText::new("Community servers are in the server menu on the Play screen. Here: a server of your own, a LAN party, or another network.").color(theme::SOFT));
+    ui.add_space(14.0);
     if locked {
         ui.label(theme::muted("Another tool manages this install: change the server there."));
-    }
-    ui.add_space(14.0);
-    if let Some(e) = &play.directory_error {
-        ui.label(theme::muted(e.as_str()).small());
-    }
-    let playing = play.game_seen || play.running.is_some();
-    if let Some(servers) = play.directory.clone() {
-        let best = setup::directory::best(&servers);
-        let columns = if ui.available_width() >= 760.0 { 2 } else { 1 };
-        let mut switch_to = None;
-        ui.columns(columns, |cols| {
-            for (i, (s, ping)) in servers.iter().enumerate() {
-                let ui = &mut cols[i % columns];
-                let here = s.host == current;
-                let friends_here = play.friends.elsewhere.iter().filter(|f| f.host == s.host).count();
-                theme::card()
-                    .stroke(egui::Stroke::new(if here { 2.0 } else { 1.0 }, if here { theme::ACCENT } else { theme::LINE }))
-                    .show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        // One height for the badge row, button or not, so the cards line up.
-                        ui.horizontal(|ui| {
-                            ui.set_min_height(38.0);
-                            if best == Some(i) {
-                                badge(ui, "Best for you", true);
-                            }
-                            if s.friends_mode == "mutual" {
-                                badge(ui, "Friends only", false);
-                            }
-                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                                if here {
-                                    ui.label(RichText::new("Connected").color(theme::OK));
-                                    let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
-                                    ui.painter().circle_filled(rect.center(), 4.0, theme::OK);
-                                } else if !locked {
-                                    let label = if current.is_empty() { "Connect" } else { "Switch" };
-                                    let button = ui.add_enabled(!playing && !play.setup.running(), theme::secondary(label));
-                                    let button = if playing { button.on_disabled_hover_text("Quit the game first") } else { button };
-                                    if button.clicked() {
-                                        switch_to = Some(s.host.clone());
-                                    }
-                                }
-                            });
-                        });
-                        ui.add_space(4.0);
-                        ui.label(
-                            RichText::new(if s.region.is_empty() { s.name.clone() } else { s.region.clone() })
-                                .family(theme::strong())
-                                .size(19.0),
-                        );
-                        let sub = if s.region.is_empty() { s.host.clone() } else { format!("{} · {}", s.name, s.host) };
-                        ui.label(theme::muted(sub).small());
-                        ui.add_space(8.0);
-                        ui.horizontal(|ui| {
-                            theme::stat(ui, "Ping", &ping.map_or_else(|| "–".into(), |ms| format!("{ms} ms")), ping.map_or(theme::MUTED, ping_color));
-                            theme::stat(ui, "Online", &s.players_online.to_string(), theme::FG);
-                            if friends_here > 0 {
-                                theme::stat(ui, "Friends", &friends_here.to_string(), theme::FG);
-                            }
-                        });
-                    });
-                ui.add_space(14.0);
-            }
-        });
-        if let Some(host) = switch_to {
-            if current.is_empty() {
-                // No server yet: the guided setup takes it from here.
-                play.server = host;
-                play.server_picked = false;
-                play.editing = true;
-                start_setup(play, game, ctx, notices, None, false);
-                to = Some(Go::View(View::Play));
-            } else {
-                // The same name on the network's other server: made there if need be, once confirmed.
-                let new_name = game.cfg.current_profile().map(|p| p.user.username.clone()).filter(|n| !n.is_empty());
-                play.switching = Some(Switch {
-                    from: SwitchFrom::Network,
-                    host,
-                    new_name,
-                });
-            }
-        }
-        confirm_switch(play, game, notices, SwitchFrom::Network, ctx, ui);
-    } else if play.browsing.running() {
-        ui.horizontal(|ui| {
-            ui.spinner();
-            ui.label(theme::muted("Pinging the servers in this network…"));
-        });
-    }
-    // A friend's server, asked for on the home screen.
-    confirm_switch(play, game, notices, SwitchFrom::Friend, ctx, ui);
-    if locked {
         return to;
     }
-    ui.add_space(8.0);
+    // A friend's server, asked for on the home screen.
+    confirm_switch(play, game, notices, ctx, ui);
+    if let Some(result) = play.checking_network.poll() {
+        match result {
+            Ok((url, count)) => {
+                crate::app::Prefs::set_directory(Some(url.clone()));
+                // The menu fills from the new network.
+                play.browsed = false;
+                play.directory = None;
+                play.directory_error = None;
+                play.network_typed.clear();
+                let s = if count == 1 { "" } else { "s" };
+                notices.info(format!(
+                    "Using the network {}: its {count} server{s} are in the server menu on the Play screen.",
+                    url_host(&url)
+                ));
+            }
+            Err(e) => notices.error(e),
+        }
+    }
+    network_card(play, notices, ctx, ui);
+    ui.add_space(14.0);
     let columns = if ui.available_width() >= 760.0 { 2 } else { 1 };
+    let mut connect = None;
     ui.columns(columns, |cols| {
         let ui = &mut cols[0];
         theme::card().show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(theme::caps("Join by address"));
+            ui.label(theme::caps("A server of your own"));
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.add(
+                let typed = ui.add(
                     egui::TextEdit::singleline(&mut play.address)
                         .hint_text("play.example.org or 192.168.1.20")
                         .desired_width(ui.available_width() - 110.0)
                         .min_size(egui::vec2(0.0, 38.0)),
                 );
-                let ready = !play.address.trim().is_empty() && !play.setup.running() && !playing;
-                if ui.add_enabled(ready, theme::primary("Connect").min_size(egui::vec2(90.0, 38.0))).clicked() {
-                    play.server = play.address.trim().to_string();
-                    play.server_picked = false;
-                    play.needs_name = None;
-                    play.editing = true;
-                    let name = game.cfg.current_profile().map(|p| p.user.username.clone()).filter(|n| !n.is_empty());
-                    start_setup(play, game, ctx, notices, name, false);
-                    to = Some(Go::View(View::Play));
+                let ready = !play.address.trim().is_empty() && !play.busy() && !playing;
+                let enter = typed.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                let button = ui.add_enabled(ready, theme::primary("Connect").min_size(egui::vec2(90.0, 38.0)));
+                let button = if playing { button.on_disabled_hover_text("Quit the game first") } else { button };
+                if button.clicked() || (enter && ready) {
+                    connect = Some(play.address.trim().to_string());
                 }
             });
-            ui.label(theme::muted("A private server for your group, or another community network.").small());
+            ui.label(theme::muted("A private server for your group, outside the network: the server menu takes you back.").small());
+            let recent = crate::app::Prefs::recent_servers();
+            if !recent.is_empty() {
+                ui.add_space(8.0);
+                ui.label(theme::muted("Recent").small());
+                let now = identity::now();
+                for r in recent {
+                    let label = r.name.clone().unwrap_or_else(|| r.address.clone());
+                    let when = format!("used {}", setup::directory::ago(now - r.last_used).replace("within the last hour", "just now"));
+                    if server_row(ui, &label, &when, !play.busy() && !playing) {
+                        connect = Some(r.address.clone());
+                    }
+                }
+            }
         });
         let ui = &mut cols[1 % columns];
         if columns == 1 {
@@ -1533,30 +1530,125 @@ fn servers_page(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &e
             ui.set_width(ui.available_width());
             ui.label(theme::caps("On your network"));
             ui.add_space(6.0);
-            ui.label(RichText::new("Looks for a server running at a LAN party.").color(theme::SOFT));
+            ui.label(RichText::new("Looks for a server running at a LAN party, on this network.").color(theme::SOFT));
+            ui.add_space(4.0);
             if play.looking.running() {
-                ui.spinner();
+                ui.horizontal(|ui| {
+                    ui.spinner();
+                    ui.label(theme::muted("Looking…"));
+                });
             } else if ui.horizontal(|ui| ui.add(theme::secondary("Find on my network"))).inner.clicked() {
+                play.found.clear();
                 find_on_network(play, ctx);
             }
-            if !play.found.is_empty() {
-                ui.label(theme::muted("Several servers answered. Choose one:"));
-                let mut pick = None;
-                ui.horizontal_wrapped(|ui| {
-                    for ip in &play.found {
-                        if ui.button(ip.to_string()).clicked() {
-                            pick = Some(*ip);
-                        }
-                    }
-                });
-                if let Some(ip) = pick {
-                    play.address = ip.to_string();
-                    play.found.clear();
+            for ip in play.found.clone() {
+                if server_row(ui, &ip.to_string(), "found on your network", !play.busy() && !playing) {
+                    connect = Some(ip.to_string());
                 }
             }
         });
     });
+    if let Some(address) = connect {
+        play.address = address.clone();
+        play.server = address;
+        play.server_picked = false;
+        play.needs_name = None;
+        let name = game.cfg.current_profile().map(|p| p.user.username.clone()).filter(|n| !n.is_empty());
+        start_setup(play, game, ctx, notices, name, false);
+        to = Some(Go::View(View::Play));
+    }
     to
+}
+
+/// The network the server menu shows, and changing it.
+fn network_card(play: &mut Play, notices: &mut Notices, ctx: &egui::Context, ui: &mut egui::Ui) {
+    let network = crate::app::Prefs::directory();
+    let community = network.as_deref().is_some_and(crate::app::Prefs::is_community);
+    theme::card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(theme::caps("Network"));
+        ui.add_space(4.0);
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.spacing_mut().item_spacing.y = 2.0;
+                match &network {
+                    Some(url) => {
+                        ui.label(RichText::new(url_host(url)).family(theme::strong()).size(18.0));
+                        let count = match play.directory.as_ref().map(Vec::len) {
+                            Some(1) => "1 server · ".to_string(),
+                            Some(n) => format!("{n} servers · "),
+                            None => String::new(),
+                        };
+                        let what = if community { "The 5th Echelon community network · " } else { "" };
+                        ui.label(theme::muted(format!("{what}{count}your friends and identity follow you between its servers")).small());
+                    }
+                    None => {
+                        ui.label(RichText::new("No network").family(theme::strong()).size(18.0));
+                        ui.label(theme::muted("The server menu on the Play screen is empty until you use one.").small());
+                    }
+                }
+            });
+            if network.is_some() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.label(RichText::new("In use").color(theme::OK).size(13.0));
+                    let (rect, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                    ui.painter().circle_filled(rect.center(), 4.0, theme::OK);
+                });
+            }
+        });
+        let (line, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 13.0), egui::Sense::hover());
+        ui.painter().hline(line.x_range(), line.center().y, egui::Stroke::new(1.0, theme::LINE));
+        ui.label(RichText::new("Use another network").family(theme::strong()).size(14.0));
+        ui.horizontal(|ui| {
+            let typed = ui.add(
+                egui::TextEdit::singleline(&mut play.network_typed)
+                    .hint_text("its address, e.g. play.mygroup.org")
+                    .desired_width((ui.available_width() - 130.0).min(420.0))
+                    .min_size(egui::vec2(0.0, 36.0)),
+            );
+            let ready = !play.network_typed.trim().is_empty();
+            let enter = typed.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if play.checking_network.running() {
+                ui.spinner();
+            } else if (ui.add_enabled(ready, theme::secondary("Look it up").min_size(egui::vec2(0.0, 36.0))).clicked() || (enter && ready)) && ready {
+                let typed = play.network_typed.clone();
+                play.checking_network
+                    .start(ctx, move || crate::services::rt().block_on(crate::network::check_network(&typed)));
+            }
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.label(theme::muted("Another group's network of servers: its servers then fill the server menu on the Play screen.").small());
+            if !community && ui.link(RichText::new("Back to the community network").color(theme::ACCENT).size(12.5)).clicked() {
+                crate::app::Prefs::use_community_network();
+                play.browsed = false;
+                play.directory = None;
+                play.directory_error = None;
+                notices.info("Back on the community network: its servers are in the server menu.");
+            }
+        });
+    });
+}
+
+/// A server to connect to: its name or address, a note, and Connect. Says whether it was pressed.
+fn server_row(ui: &mut egui::Ui, label: &str, note: &str, enabled: bool) -> bool {
+    let mut pressed = false;
+    egui::Frame::new()
+        .fill(theme::SUNKEN)
+        .stroke(egui::Stroke::new(1.0, theme::LINE))
+        .corner_radius(8)
+        .inner_margin(egui::Margin::symmetric(12, 6))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(hooks_config::text::clip(label, 40)).family(theme::strong()));
+                ui.label(theme::muted(note).small());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    pressed = ui.add_enabled(enabled, theme::secondary("Connect")).clicked();
+                });
+            });
+        });
+    ui.add_space(4.0);
+    pressed
 }
 
 /// Runs the setup; `new_name` names the account if the player has none on
@@ -1570,10 +1662,14 @@ fn start_setup(play: &mut Play, game: &Game, ctx: &egui::Context, notices: &mut 
         .as_ref()
         .and_then(|d| d.iter().find(|(s, _)| s.host == server))
         .map_or_else(|| server.clone(), |(s, _)| place(s));
-    let (title, done) = match current.as_deref() {
-        Some(c) if c == server => (format!("Setting up {shown} again"), format!("You're set up on {shown}")),
-        Some(_) => (format!("Switching to {shown}"), format!("Switched to {shown}")),
-        None => (format!("Connecting to {shown}"), format!("You're set up on {shown}")),
+    let (title, done, failed) = match current.as_deref() {
+        Some(c) if c == server => (format!("Setting up {shown} again"), format!("You're set up on {shown}"), format!("Couldn't set up {shown}")),
+        Some(_) => (format!("Switching to {shown}"), format!("Switched to {shown}"), format!("Couldn't switch to {shown}")),
+        None => (
+            format!("Connecting to {shown}"),
+            format!("You're set up on {shown}"),
+            format!("Couldn't connect to {shown}"),
+        ),
     };
     let mut plan = flow::Plan {
         game_dir: game.dir.clone(),
@@ -1593,14 +1689,19 @@ fn start_setup(play: &mut Play, game: &Game, ctx: &egui::Context, notices: &mut 
         new_name,
         public_only,
         done,
+        failed,
     });
     play.setup.start(ctx, move || {
         // A network's address: set up on its best server, which its directory named.
-        if let Some(host) = flow::pick_from_network(&plan.server, &log)? {
-            plan.server = host;
-            plan.public_only = true;
-        }
-        flow::run_setup(&plan, crate::dll_utils::bundled(), &log)
+        let via_network = match flow::pick_from_network(&plan.server, &log)? {
+            Some(host) => {
+                plan.server = host;
+                plan.public_only = true;
+                true
+            }
+            None => false,
+        };
+        flow::run_setup(&plan, crate::dll_utils::bundled(), &log).map(|done| (done, plan.server.clone(), via_network))
     });
 }
 
@@ -1613,29 +1714,31 @@ fn place(s: &setup::directory::Listing) -> String {
     }
 }
 
-/// Asks before switching to a server another server named: its address in full, and what
-/// happens there. Shown in the card that asked.
-fn confirm_switch(play: &mut Play, game: &Game, notices: &mut Notices, from: SwitchFrom, ctx: &egui::Context, ui: &mut egui::Ui) {
-    let Some(switch) = play.switching.clone().filter(|s| s.from == from) else {
+/// Asks before switching to a friend's server: its address in full, and what happens there.
+fn confirm_switch(play: &mut Play, game: &Game, notices: &mut Notices, ctx: &egui::Context, ui: &mut egui::Ui) {
+    let Some(switch) = play.switching.clone() else {
         return;
     };
-    ui.add_space(6.0);
     let account = match &switch.new_name {
         Some(name) => format!("signs you in there with your identity, as {name} (an account is made there if you have none)"),
         None => String::from("signs you in there with your identity (if you have no account there, you choose a name first)"),
     };
-    ui.horizontal_wrapped(|ui| {
-        ui.label(RichText::new(format!("Switch to {}? This {account}.", switch.host)).color(theme::WARN));
-        if ui.button(format!("Switch to {}", switch.host)).clicked() {
-            play.server = switch.host.clone();
-            play.server_picked = false;
-            play.needs_name = None;
-            start_setup(play, game, ctx, notices, switch.new_name.clone(), true);
-        }
-        if ui.button("Cancel").clicked() {
-            play.switching = None;
-        }
+    theme::card().stroke(egui::Stroke::new(1.0, theme::WARN)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new(format!("Switch to your friend's server {}? This {account}.", switch.host)).color(theme::WARN));
+        ui.horizontal(|ui| {
+            if ui.add(theme::primary(&format!("Switch to {}", switch.host))).clicked() {
+                play.server = switch.host.clone();
+                play.server_picked = false;
+                play.needs_name = None;
+                start_setup(play, game, ctx, notices, switch.new_name.clone(), true);
+            }
+            if ui.add(theme::secondary("Cancel")).clicked() {
+                play.switching = None;
+            }
+        });
     });
+    ui.add_space(14.0);
 }
 
 fn fix_label(fix: Fix) -> &'static str {

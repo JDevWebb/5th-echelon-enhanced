@@ -23,8 +23,6 @@ const NOTICE_AT_MOST: Duration = Duration::from_secs(12);
 pub enum Progress {
     /// It can't say: the bar moves to show it's working.
     Unknown,
-    /// 0.0 to 1.0.
-    Fraction(f32),
     /// An upload or download.
     Bytes { sent: u64, total: u64 },
 }
@@ -33,7 +31,6 @@ impl Progress {
     fn fraction(self) -> Option<f32> {
         match self {
             Self::Unknown => None,
-            Self::Fraction(f) => Some(f.clamp(0.0, 1.0)),
             Self::Bytes { sent, total } => Some(if total == 0 { 0.0 } else { (sent as f32 / total as f32).clamp(0.0, 1.0) }),
         }
     }
@@ -343,28 +340,34 @@ impl Activities {
                     })
                     .show(ui, |ui| {
                         ui.horizontal(|ui| {
+                            // One height for the row, so the spinner or icon sits level with the title.
+                            ui.set_min_height(34.0);
                             ui.spacing_mut().item_spacing.x = 12.0;
                             mark(ui, &activity.state);
                             let right = 330.0_f32.min(ui.available_width() * 0.5);
-                            ui.allocate_ui_with_layout(egui::vec2(ui.available_width() - right, 0.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
-                                ui.spacing_mut().item_spacing.y = 2.0;
-                                ui.horizontal_wrapped(|ui| {
-                                    ui.label(RichText::new(&activity.title).family(theme::strong()));
-                                    let step = [activity.step.clone(), activity.stage_text()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
-                                    if !step.is_empty() && !matches!(activity.state, State::Failed { .. }) {
-                                        ui.label(theme::muted(step));
+                            ui.allocate_ui_with_layout(
+                                egui::vec2(ui.available_width() - right, 34.0),
+                                egui::Layout::top_down(egui::Align::LEFT).with_main_align(egui::Align::Center),
+                                |ui| {
+                                    ui.spacing_mut().item_spacing.y = 2.0;
+                                    ui.horizontal_wrapped(|ui| {
+                                        ui.label(RichText::new(&activity.title).family(theme::strong()));
+                                        let step = [activity.step.clone(), activity.stage_text()].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+                                        if !step.is_empty() && !matches!(activity.state, State::Failed { .. }) {
+                                            ui.label(theme::muted(step));
+                                        }
+                                    });
+                                    if let State::Failed { message, .. } = &activity.state {
+                                        if !message.is_empty() {
+                                            ui.label(RichText::new(message).color(theme::SOFT).size(13.5));
+                                        }
                                     }
-                                });
-                                if let State::Failed { message, .. } = &activity.state {
-                                    if !message.is_empty() {
-                                        ui.label(RichText::new(message).color(theme::SOFT).size(13.5));
-                                    }
-                                }
-                            });
+                                },
+                            );
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 ui.spacing_mut().item_spacing.x = 6.0;
                                 if let State::Failed { actions, .. } = &activity.state {
-                                    if ui.add(egui::Button::new("✕").frame(false)).on_hover_text("Dismiss").clicked() {
+                                    if close_button(ui).on_hover_text("Dismiss").clicked() {
                                         dismiss = true;
                                     }
                                     // Right to left: the first action ends up leftmost, as the main one.
@@ -379,7 +382,7 @@ impl Activities {
                                         }
                                     }
                                 }
-                                if !activity.steps.is_empty() && ui.add(egui::Button::new(if self.steps_open { "Steps ▴" } else { "Steps ▾" }).frame(false)).clicked() {
+                                if !activity.steps.is_empty() && steps_button(ui, self.steps_open).clicked() {
                                     toggle_steps = true;
                                 }
                                 if waiting > 0 {
@@ -458,6 +461,41 @@ fn track(ui: &mut egui::Ui, a: &Activity, now: Instant) {
             }
         },
     };
+}
+
+/// "Steps" with a chevron (painted: the fonts have no arrows), down to open, up to close.
+fn steps_button(ui: &mut egui::Ui, open: bool) -> egui::Response {
+    let galley = ui.fonts_mut(|f| f.layout_no_wrap("Steps".into(), egui::FontId::new(13.5, theme::strong()), theme::SOFT));
+    let size = galley.size() + egui::vec2(34.0, 12.0);
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+    let p = ui.painter();
+    if response.hovered() {
+        p.rect_filled(rect, 6, theme::CONTROL);
+    }
+    let text_at = egui::pos2(rect.left() + 8.0, rect.center().y - galley.size().y / 2.0);
+    p.galley(text_at, galley, theme::SOFT);
+    let c = egui::pos2(rect.right() - 13.0, rect.center().y);
+    let d = if open { -1.0 } else { 1.0 };
+    let stroke = egui::Stroke::new(1.8, theme::SOFT);
+    p.line_segment([c + egui::vec2(-4.0, -2.0 * d), c + egui::vec2(0.0, 2.0 * d)], stroke);
+    p.line_segment([c + egui::vec2(0.0, 2.0 * d), c + egui::vec2(4.0, -2.0 * d)], stroke);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, if open { "Hide steps" } else { "Show steps" }));
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A small painted cross, to dismiss.
+fn close_button(ui: &mut egui::Ui) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
+    let p = ui.painter();
+    if response.hovered() {
+        p.rect_filled(rect, 6, theme::CONTROL);
+    }
+    let c = rect.center();
+    let stroke = egui::Stroke::new(1.8, theme::SOFT);
+    p.line_segment([c + egui::vec2(-4.5, -4.5), c + egui::vec2(4.5, 4.5)], stroke);
+    p.line_segment([c + egui::vec2(-4.5, 4.5), c + egui::vec2(4.5, -4.5)], stroke);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Dismiss"));
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// A spinner while working, a tick when done, a cross when failed.
@@ -683,7 +721,7 @@ mod tests {
         assert_eq!(Progress::Unknown.fraction(), None);
         assert_eq!(Progress::Bytes { sent: 1, total: 4 }.fraction(), Some(0.25));
         assert_eq!(Progress::Bytes { sent: 1, total: 0 }.fraction(), Some(0.0));
-        assert_eq!(Progress::Fraction(1.5).fraction(), Some(1.0));
+        assert_eq!(Progress::Bytes { sent: 9, total: 4 }.fraction(), Some(1.0));
         assert_eq!(megabytes(1_400_000), "1.4 MB");
     }
 }

@@ -275,21 +275,6 @@ pub fn scrim(painter: &egui::Painter, rect: egui::Rect) {
     painter.add(egui::Shape::mesh(mesh));
 }
 
-/// A small well with a label over a value ("PING / 40 ms").
-pub fn stat(ui: &mut egui::Ui, label: &str, value: &str, color: Color32) {
-    egui::Frame::new()
-        .fill(SUNKEN)
-        .corner_radius(10)
-        .inner_margin(egui::Margin::symmetric(12, 9))
-        .show(ui, |ui| {
-            ui.set_min_width(84.0);
-            ui.vertical(|ui| {
-                ui.label(caps(label));
-                ui.label(egui::RichText::new(value).monospace().size(17.0).color(color));
-            });
-        });
-}
-
 /// A row of buttons of which one is chosen (in place of a drop-down when
 /// the choices are few and worth seeing at once).
 pub fn segmented<T: PartialEq + Copy>(ui: &mut egui::Ui, value: &mut T, options: &[(T, &str)]) -> bool {

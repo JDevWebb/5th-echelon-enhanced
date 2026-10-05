@@ -96,6 +96,38 @@ pub struct Prefs {
     /// The player answered whether the game may send its diagnostics (diagnostics.rs).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     diagnostics_asked: bool,
+    /// Servers of their own the player connected to (Servers › A server of your own), newest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    recent_servers: Vec<RecentServer>,
+}
+
+/// A server the player connected to by its address.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RecentServer {
+    pub address: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    /// Unix seconds.
+    pub last_used: i64,
+}
+
+/// How many recent servers are kept.
+const RECENT_SERVERS: usize = 5;
+
+/// `list` with `address` used now, newest first, at most [`RECENT_SERVERS`].
+fn note_recent(mut list: Vec<RecentServer>, address: &str, name: Option<String>, now: i64) -> Vec<RecentServer> {
+    let address = address.trim();
+    let before = list.iter().position(|r| r.address.eq_ignore_ascii_case(address)).map(|i| list.remove(i));
+    list.insert(
+        0,
+        RecentServer {
+            address: address.to_string(),
+            name: name.or_else(|| before.and_then(|b| b.name)),
+            last_used: now,
+        },
+    );
+    list.truncate(RECENT_SERVERS);
+    list
 }
 
 impl Prefs {
@@ -182,6 +214,33 @@ impl Prefs {
         let mut prefs = Self::load();
         prefs.feedback_off = off;
         prefs.save();
+    }
+
+    /// Servers of their own the player connected to, newest first.
+    pub fn recent_servers() -> Vec<RecentServer> {
+        Self::load().recent_servers
+    }
+
+    /// Notes a server of the player's own as just used.
+    pub fn remember_server(address: &str, name: Option<String>) {
+        let mut prefs = Self::load();
+        prefs.recent_servers = note_recent(std::mem::take(&mut prefs.recent_servers), address, name, identity::now());
+        prefs.save();
+    }
+
+    /// Back to the community network's directory.
+    pub fn use_community_network() {
+        let mut prefs = Self::load();
+        prefs.directory = None;
+        prefs.directory_set = false;
+        prefs.save();
+        Self::forget_cached_directory();
+    }
+
+    /// Whether `url` is the community network's directory.
+    pub fn is_community(url: &str) -> bool {
+        let key = |u: &str| u.trim().trim_end_matches('/').to_ascii_lowercase();
+        key(url) == key(COMMUNITY_DIRECTORY)
     }
 
     /// Sets (or with None, clears) the server directory.
@@ -588,5 +647,27 @@ impl App {
 
     pub fn server_mut(&mut self) -> (&mut Server, &mut Notices) {
         (&mut self.server, &mut self.notices)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn recent_servers_newest_first_and_few() {
+        let mut list = Vec::new();
+        for (i, a) in ["a.example", "b.example", "c.example", "d.example", "e.example", "f.example"].iter().enumerate() {
+            list = note_recent(list, a, None, i as i64);
+        }
+        let addresses: Vec<&str> = list.iter().map(|r| r.address.as_str()).collect();
+        assert_eq!(addresses, ["f.example", "e.example", "d.example", "c.example", "b.example"]);
+        // Used again: to the top, keeping the name it had.
+        list[2].name = Some("LAN party".into());
+        let list = note_recent(list, " D.example ", None, 99);
+        assert_eq!((list[0].address.as_str(), list[0].name.as_deref(), list[0].last_used), ("D.example", Some("LAN party"), 99));
+        assert_eq!(list.len(), 5);
+        assert!(Prefs::is_community("https://play.scbl.jdevwebb.net/"));
+        assert!(!Prefs::is_community("https://play.example.org"));
     }
 }
