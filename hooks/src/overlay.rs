@@ -66,6 +66,7 @@ const ACCENT_SOFT: [f32; 4] = rgba(0x8fd14f, 0.16);
 const ON_ACCENT: [f32; 4] = rgba(0x0b1405, 1.0);
 const OK: [f32; 4] = rgba(0x3ecf9e, 1.0);
 const BAD: [f32; 4] = rgba(0xff6b6b, 1.0);
+const WARN: [f32; 4] = rgba(0xf2b84b, 1.0);
 const DIM: [f32; 4] = [0.0, 0.02, 0.03, 0.55];
 
 #[allow(clippy::cast_precision_loss)]
@@ -311,6 +312,25 @@ fn describe_error(err: &crate::api::Error) -> (&'static str, String) {
     }
 }
 
+/// What's wrong when other players can't reach this PC, and what to do about it.
+fn describe_unreachable(why: crate::hooks::nat::Unreachable) -> String {
+    use crate::hooks::nat::Unreachable;
+    let port = crate::hooks::nat::helper_port();
+    match why {
+        Unreachable::NoServer => String::from("The server's NAT helper can't be found, so matches with other players won't connect. Check this PC's internet connection."),
+        Unreachable::CantSend => {
+            format!("Windows won't let the game send to the server (UDP port {port}), so matches with other players won't connect. Allow the game in your firewall or antivirus.")
+        }
+        Unreachable::NoAnswer => {
+            let quiet = crate::hooks::nat::quiet_for().map(|d| format!(" for {} s", d.as_secs())).unwrap_or_default();
+            format!(
+                "The server hasn't heard from the game{quiet}, so matches with other players won't connect. A firewall or antivirus may be blocking the game's UDP traffic to the server (port {port}). If it lasts, restart the game."
+            )
+        }
+        Unreachable::NotRegistered => String::from("The server hasn't registered this game yet, so matches with other players won't connect. If it lasts, restart the game."),
+    }
+}
+
 impl MyRenderLoop {
     fn s(&self, v: f32) -> f32 {
         v * self.s
@@ -486,6 +506,9 @@ impl MyRenderLoop {
                 who
             };
             ui.text_colored(MUTED, sub);
+            if crate::hooks::nat::is_off() {
+                ui.text_colored(WARN, "Internet play is set to LAN or VPN only: players elsewhere can't join you.");
+            }
             ui.text_colored(MUTED, "Press");
             ui.same_line();
             self.key(ui, "F5");
@@ -529,10 +552,18 @@ impl MyRenderLoop {
     }
 
     fn show_error_banner(&self, ui: &Ui) {
-        let Some(err) = &self.connection_error else {
-            return;
+        // The server can't be reached at all: that says it. Otherwise, other players not
+        // reaching this PC: their matches won't connect, and nothing else would say why.
+        let (title, detail, colour) = match &self.connection_error {
+            Some(err) => {
+                let (title, detail) = describe_error(err);
+                (title.to_string(), detail.to_string(), BAD)
+            }
+            None => match crate::hooks::nat::unreachable() {
+                Some(why) => (String::from("Other players can't reach you"), describe_unreachable(why), WARN),
+                None => return,
+            },
         };
-        let (title, detail) = describe_error(err);
         let win = ui.io().display_size;
         let _p = ui.push_style_var(StyleVar::WindowPadding([self.s(22.0), self.s(14.0)]));
         ui.window("##fe-error")
@@ -548,8 +579,11 @@ impl MyRenderLoop {
             .build(|| {
                 let pos = ui.window_pos();
                 let size = ui.window_size();
-                ui.get_window_draw_list().add_rect(pos, [pos[0] + self.s(4.0), pos[1] + size[1]], BAD).filled(true).build();
-                self.with_font(ui, |f| f.heading, || ui.text_colored(BAD, title));
+                ui.get_window_draw_list()
+                    .add_rect(pos, [pos[0] + self.s(4.0), pos[1] + size[1]], colour)
+                    .filled(true)
+                    .build();
+                self.with_font(ui, |f| f.heading, || ui.text_colored(colour, &title));
                 let _c = ui.push_style_color(StyleColor::Text, MUTED);
                 ui.text_wrapped(detail);
             });

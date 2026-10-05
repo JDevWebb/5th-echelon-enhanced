@@ -132,6 +132,11 @@ struct State {
     /// The round trip to the server (see [`round_trip`]), and when it was last measured.
     rtt_ms: Option<u16>,
     rtt_at: Option<Instant>,
+    /// When the game signed in (took its ticket), and when the helper last forgot this game:
+    /// registering normally takes a second, so only after [`GRACE`] from either is not being
+    /// registered a problem.
+    signed_in_at: Option<Instant>,
+    lost_at: Option<Instant>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -157,11 +162,79 @@ static STATE: Mutex<State> = Mutex::new(State {
     send_failing: false,
     rtt_ms: None,
     rtt_at: None,
+    signed_in_at: None,
+    lost_at: None,
 });
 
 /// The helper not answering this long (three keepalives) is worth a line: it forgets a game
 /// after 90 s without a probe.
 const SILENCE: Duration = Duration::from_secs(60);
+
+/// How long a signed-in game may go unregistered before the player is told nobody can reach
+/// them (it registers within a second or two when the helper's packets get through).
+const GRACE: Duration = Duration::from_secs(30);
+
+/// Why other players can't reach this game: their matches can't connect to it, nor its to
+/// theirs through the relay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Unreachable {
+    /// The server's name doesn't resolve.
+    NoServer,
+    /// Windows won't send the probes.
+    CantSend,
+    /// The helper doesn't answer (or stopped answering): something blocks UDP to it.
+    NoAnswer,
+    /// The helper answers but hasn't taken this game.
+    NotRegistered,
+}
+
+/// Why other players can't reach this game, while they can't; None when they can, or when
+/// it isn't online (no Storm socket, not signed in) or NAT traversal is off.
+pub fn unreachable() -> Option<Unreachable> {
+    unreachable_at(&state(), STORM_SOCKET.load(Ordering::Relaxed) != NO_SOCKET, Instant::now())
+}
+
+fn unreachable_at(st: &State, socket_open: bool, now: Instant) -> Option<Unreachable> {
+    if st.mode.is_none_or(|m| m == NatMode::Off) || !socket_open || st.ticket == [0; 16] {
+        return None;
+    }
+    let since = |t: Option<Instant>| t.map(|t| now.saturating_duration_since(t));
+    let quiet = since(st.last_answer);
+    if st.tag != [0; 8] {
+        // Registered: until the helper stops answering (it forgets the game 30 s later).
+        return quiet.is_some_and(|q| q >= SILENCE).then_some(Unreachable::NoAnswer);
+    }
+    let unregistered = since(st.signed_in_at.max(st.lost_at)).unwrap_or_default();
+    if unregistered < GRACE {
+        return None;
+    }
+    Some(if st.server.is_none() {
+        Unreachable::NoServer
+    } else if st.send_failing {
+        Unreachable::CantSend
+    } else if quiet.is_none_or(|q| q >= GRACE) {
+        Unreachable::NoAnswer
+    } else {
+        Unreachable::NotRegistered
+    })
+}
+
+/// Whether NAT traversal is off (LAN or VPN only): players elsewhere can't join this PC.
+pub fn is_off() -> bool {
+    state().mode == Some(NatMode::Off)
+}
+
+/// The NAT helper's port, for telling the player what to let through.
+static HELPER_PORT: std::sync::atomic::AtomicU16 = std::sync::atomic::AtomicU16::new(nat_proto::DEFAULT_PORT);
+
+pub fn helper_port() -> u16 {
+    HELPER_PORT.load(Ordering::Relaxed)
+}
+
+/// How long since the server's NAT helper last answered this game, if it ever did.
+pub fn quiet_for() -> Option<Duration> {
+    state().last_answer.map(|t| t.elapsed())
+}
 
 /// Takes the ticket the server gave at sign-in (it names this account).
 pub fn set_ticket(ticket: &[u8]) {
@@ -169,6 +242,7 @@ pub fn set_ticket(ticket: &[u8]) {
         let mut st = state();
         if st.ticket != ticket {
             st.ticket = ticket;
+            st.signed_in_at = Some(Instant::now());
             // Register again with it.
             st.last_probe = None;
         }
@@ -185,6 +259,18 @@ pub fn status() -> Option<String> {
     let mode = st.mode?;
     if mode == NatMode::Off {
         return Some("Local address only (NAT traversal is off)".into());
+    }
+    let unreachable = unreachable_at(&st, STORM_SOCKET.load(Ordering::Relaxed) != NO_SOCKET, Instant::now());
+    if let Some(why) = unreachable {
+        return Some(
+            match why {
+                Unreachable::NoServer => "Nobody: the server's NAT helper can't be found",
+                Unreachable::CantSend => "Nobody: this PC can't send to the server's NAT helper",
+                Unreachable::NoAnswer => "Nobody: the server's NAT helper doesn't hear from this PC",
+                Unreachable::NotRegistered => "Nobody yet: the server hasn't registered this game",
+            }
+            .into(),
+        );
     }
     let Some(r) = st.reply else {
         return Some(
@@ -444,6 +530,7 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
                         if st.tag != [0; 8] {
                             info!("NAT: the server's NAT helper no longer knows this game; registering again");
                             st.tag = [0; 8];
+                            st.lost_at = Some(Instant::now());
                         }
                         // Not registered yet: come back at once with the cookie.
                         if cookie != [0; 16] && st.ticket != [0; 16] {
@@ -736,6 +823,7 @@ pub unsafe fn init_hooks(config: &Config, addr: &Addresses) {
         _ => warn!("NAT: this game version's NAT functions weren't found; the server corrects the address where it can"),
     }
     let port = config.networking.nat_port.unwrap_or(nat_proto::DEFAULT_PORT);
+    HELPER_PORT.store(port, Ordering::Relaxed);
     let _ = std::thread::Builder::new().name("fe-nat".into()).spawn(move || worker(host, port));
     if config.networking.port_mapping {
         // A pinned address is the one to map; otherwise this PC's address towards the
@@ -750,4 +838,71 @@ pub unsafe fn deinit_hooks() {
     let _ = SendToHook.disable();
     let _ = BindHook.disable();
     super::portmap::stop();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn online(now: Instant) -> State {
+        State {
+            mode: Some(NatMode::Auto),
+            server: Some(SocketAddrV4::new(Ipv4Addr::new(192, 0, 2, 1), nat_proto::DEFAULT_PORT)),
+            ticket: [1; 16],
+            signed_in_at: Some(now),
+            ..State::default()
+        }
+    }
+
+    #[test]
+    fn a_game_that_registers_is_reachable() {
+        let t0 = Instant::now();
+        let mut st = online(t0);
+        // Signing in: a moment to register.
+        assert_eq!(unreachable_at(&st, true, t0 + Duration::from_secs(5)), None);
+        st.tag = [7; 8];
+        st.last_answer = Some(t0 + Duration::from_secs(1));
+        assert_eq!(unreachable_at(&st, true, t0 + Duration::from_secs(50)), None);
+        // Not online, or NAT traversal off: nothing to say.
+        assert_eq!(unreachable_at(&State::default(), true, t0), None);
+        st.mode = Some(NatMode::Off);
+        assert_eq!(unreachable_at(&st, true, t0 + Duration::from_secs(600)), None);
+    }
+
+    #[test]
+    fn a_game_the_helper_never_hears_from_is_unreachable_and_says_why() {
+        let t0 = Instant::now();
+        let later = t0 + GRACE + Duration::from_secs(1);
+        let mut st = online(t0);
+        // Not signed in or no Storm socket: not online yet.
+        assert_eq!(unreachable_at(&st, false, later), None);
+        assert_eq!(unreachable_at(&State { ticket: [0; 16], ..online(t0) }, true, later), None);
+        // Probes go out, nothing comes back (a firewall).
+        assert_eq!(unreachable_at(&st, true, later), Some(Unreachable::NoAnswer));
+        // The helper answers but doesn't take the game.
+        st.last_answer = Some(later - Duration::from_secs(1));
+        assert_eq!(unreachable_at(&st, true, later), Some(Unreachable::NotRegistered));
+        st.send_failing = true;
+        assert_eq!(unreachable_at(&st, true, later), Some(Unreachable::CantSend));
+        st.server = None;
+        assert_eq!(unreachable_at(&st, true, later), Some(Unreachable::NoServer));
+    }
+
+    #[test]
+    fn a_registration_that_lapses_is_unreachable() {
+        let t0 = Instant::now();
+        let mut st = online(t0);
+        st.tag = [7; 8];
+        st.last_answer = Some(t0);
+        // The helper stops answering: three keepalives missed.
+        assert_eq!(unreachable_at(&st, true, t0 + SILENCE), Some(Unreachable::NoAnswer));
+        // It answers but forgot the game: registering again takes a moment.
+        let lost = t0 + Duration::from_secs(100);
+        st.tag = [0; 8];
+        st.lost_at = Some(lost);
+        st.last_answer = Some(lost);
+        assert_eq!(unreachable_at(&st, true, lost + Duration::from_secs(2)), None);
+        st.last_answer = Some(lost + GRACE);
+        assert_eq!(unreachable_at(&st, true, lost + GRACE + Duration::from_secs(1)), Some(Unreachable::NotRegistered));
+    }
 }
