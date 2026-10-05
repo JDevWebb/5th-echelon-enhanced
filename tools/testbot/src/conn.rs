@@ -25,8 +25,14 @@ use tokio::net::UdpSocket;
 /// How long a call waits for its response.
 pub const CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
-const LOCAL: VPort = VPort { port: 15, stream_type: StreamType::RVSec };
-const REMOTE: VPort = VPort { port: 1, stream_type: StreamType::RVSec };
+const LOCAL: VPort = VPort {
+    port: 15,
+    stream_type: StreamType::RVSec,
+};
+const REMOTE: VPort = VPort {
+    port: 1,
+    stream_type: StreamType::RVSec,
+};
 
 /// An RMC error answer (the server's error code).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -121,7 +127,9 @@ impl Conn {
         let mut connect_ack = None;
         let mut second_syn_ack = !slow;
         while connect_ack.is_none() || !second_syn_ack {
-            let p = c.expect(|p| is_syn_ack(p) || (p.packet_type == PacketType::Connect && p.flags.contains(PacketFlag::Ack))).await?;
+            let p = c
+                .expect(|p| is_syn_ack(p) || (p.packet_type == PacketType::Connect && p.flags.contains(PacketFlag::Ack)))
+                .await?;
             if is_syn_ack(&p) {
                 // The answer to the repeated SYN: like the game, use its signature from now on.
                 c.server_signature = p.conn_signature.ok_or_else(|| eyre!("SYN ack without a connection signature"))?;
@@ -248,7 +256,12 @@ impl Conn {
     async fn call_opts(&mut self, protocol_id: u16, method_id: u32, parameters: Vec<u8>, twice: bool) -> Result<Vec<u8>> {
         let call_id = self.next_call_id;
         self.next_call_id += 1;
-        let request = Packet::Request(Request { protocol_id, call_id, method_id, parameters });
+        let request = Packet::Request(Request {
+            protocol_id,
+            call_id,
+            method_id,
+            parameters,
+        });
         let packet = QPacket {
             packet_type: PacketType::Data,
             flags: PacketFlag::NeedAck | PacketFlag::Reliable | PacketFlag::HasSize,

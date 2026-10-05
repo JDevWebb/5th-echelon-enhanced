@@ -108,9 +108,7 @@ pub fn no_save_folder(game_dir: &Path) -> String {
             p.root.display()
         ),
         Some(p) if !p.ready() => format!("The game's Wine prefix has no drive_c: {}.", p.root.display()),
-        None if !cfg!(target_os = "windows") => {
-            "The game's folder isn't in a Steam library or a Wine prefix, so where it keeps its save can't be worked out.".to_string()
-        }
+        None if !cfg!(target_os = "windows") => "The game's folder isn't in a Steam library or a Wine prefix, so where it keeps its save can't be worked out.".to_string(),
         _ => "The save folder can't be found.".to_string(),
     }
 }

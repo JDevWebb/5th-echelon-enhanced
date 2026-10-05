@@ -19,7 +19,7 @@
 #                            (docs/friends.md)
 #   build/build.sh ui        the coordinator's admin UI (Vue, coordinator/admin-ui -> dist/,
 #                            embedded in the coordinator; the targets building it run this first)
-#   build/build.sh fmt       cargo fmt (the crates this project changes)
+#   build/build.sh fmt       cargo fmt (the whole workspace, as CI checks it)
 #   build/build.sh shell     interactive shell in the build container
 #
 # Caches (cargo registry, xwin SDK, target dirs) live in Docker volumes.
@@ -133,7 +133,7 @@ case "${1:-test}" in
     run "$IMAGE" sh -c 'cd dist && rm -f SHA256SUMS && find . -maxdepth 1 -type f ! -name SHA256SUMS ! -name ".*" | sed "s|^\./||" | sort | xargs sha256sum > SHA256SUMS && cat SHA256SUMS'
     ;;
   fmt)
-    run "$IMAGE" cargo fmt -p dedicated_server -p quazal -p launcher -p hooks -p hooks-config -p coordinator -p geo
+    run "$IMAGE" cargo fmt --all
     ;;
   shell)
     TTY=-it run "$IMAGE" bash

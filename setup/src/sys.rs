@@ -104,7 +104,10 @@ mod other {
     /// Where this user's application settings go: `$XDG_CONFIG_HOME` or
     /// `~/.config` (`%APPDATA%` on Windows).
     pub fn roaming_app_data() -> Option<PathBuf> {
-        std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from).filter(|p| p.is_absolute()).or_else(|| home().map(|h| h.join(".config")))
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .or_else(|| home().map(|h| h.join(".config")))
     }
 
     /// The game's `%APPDATA%`: inside the Wine prefix it runs in.

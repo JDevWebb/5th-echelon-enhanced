@@ -100,7 +100,9 @@ pub enum Stage {
 pub fn parse_rollout(json: &str) -> Option<Rollout> {
     let v: serde_json::Value = serde_json::from_str(json).ok()?;
     let r = v.get("rollout")?;
-    let release = r["release"].as_str().filter(|t| !t.is_empty() && t.len() <= 32 && t.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-')))?;
+    let release = r["release"]
+        .as_str()
+        .filter(|t| !t.is_empty() && t.len() <= 32 && t.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-')))?;
     let stage = match r["stage"].as_str()? {
         "canary" => Stage::Canary,
         "verifying" => Stage::Verifying,
@@ -125,7 +127,10 @@ const DAY: i64 = 86_400;
 /// A name that resolves into a private network is caught when it's used
 /// (the launcher checks the address it resolved to).
 pub fn listable_host(host: &str) -> bool {
-    crate::net::valid_host(host) && host.parse::<std::net::IpAddr>().map_or(host != "localhost" && !host.ends_with(".localhost"), crate::net::is_public)
+    crate::net::valid_host(host)
+        && host
+            .parse::<std::net::IpAddr>()
+            .map_or(host != "localhost" && !host.ends_with(".localhost"), crate::net::is_public)
 }
 
 /// One line, no characters that turn the text around it (see `hooks_config::text`).
@@ -244,10 +249,18 @@ pub fn fallback(dir: Option<&Path>, coordinator: &str, now: i64) -> Option<(Vec<
             .filter(|l| listable_host(&l.host))
             .map(|l| Listing { players_online: 0, ..l })
             .collect();
-        return Some((servers, format!("The server directory didn't answer, so these are the servers it listed {}.", ago(now - c.saved_at))));
+        return Some((
+            servers,
+            format!("The server directory didn't answer, so these are the servers it listed {}.", ago(now - c.saved_at)),
+        ));
     }
     let built_in = built_in(coordinator);
-    (!built_in.is_empty()).then(|| (built_in, "The server directory didn't answer, so these are the community servers the launcher knows.".to_string()))
+    (!built_in.is_empty()).then(|| {
+        (
+            built_in,
+            "The server directory didn't answer, so these are the community servers the launcher knows.".to_string(),
+        )
+    })
 }
 
 /// Whether `coordinator` is a directory known here (built in, or listed before), so an

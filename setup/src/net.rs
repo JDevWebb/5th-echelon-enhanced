@@ -33,11 +33,24 @@ pub fn is_public(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(v4) => {
             let [a, b, ..] = v4.octets();
-            !(v4.is_loopback() || v4.is_private() || v4.is_link_local() || v4.is_multicast() || v4.is_broadcast() || v4.is_unspecified() || a == 0 || (a == 100 && (64..128).contains(&b)) || a >= 240)
+            !(v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_multicast()
+                || v4.is_broadcast()
+                || v4.is_unspecified()
+                || a == 0
+                || (a == 100 && (64..128).contains(&b))
+                || a >= 240)
         }
         IpAddr::V6(v6) => {
             let first = v6.segments()[0];
-            !(v6.is_loopback() || v6.is_multicast() || v6.is_unspecified() || (first & 0xfe00) == 0xfc00 || (first & 0xffc0) == 0xfe80 || v6.to_ipv4_mapped().is_some_and(|v4| !is_public(IpAddr::V4(v4))))
+            !(v6.is_loopback()
+                || v6.is_multicast()
+                || v6.is_unspecified()
+                || (first & 0xfe00) == 0xfc00
+                || (first & 0xffc0) == 0xfe80
+                || v6.to_ipv4_mapped().is_some_and(|v4| !is_public(IpAddr::V4(v4))))
         }
     }
 }
@@ -178,7 +191,10 @@ mod tests {
 
     #[test]
     fn picks_the_adapter_the_server_is_routed_through() {
-        let adapters = vec![("Loopback".to_string(), IpAddr::from([127, 0, 0, 1])), ("Game VPN".to_string(), IpAddr::from([10, 8, 1, 2]))];
+        let adapters = vec![
+            ("Loopback".to_string(), IpAddr::from([127, 0, 0, 1])),
+            ("Game VPN".to_string(), IpAddr::from([10, 8, 1, 2])),
+        ];
         assert_eq!(adapter_with_ip(IpAddr::from([10, 8, 1, 2]), &adapters).as_deref(), Some("Game VPN"));
         assert_eq!(adapter_ip("game vpn", &adapters), Some(IpAddr::from([10, 8, 1, 2])));
         assert_eq!(adapter_for_server(IpAddr::from([127, 0, 0, 1]), &adapters), None, "no pin for a server on this PC");
@@ -194,7 +210,15 @@ mod tests {
             assert!(!valid_host(bad), "{bad:?}");
         }
         assert!(is_public(IpAddr::from([203, 0, 114, 5])));
-        for private in [[10, 0, 0, 1], [192, 168, 1, 1], [127, 0, 0, 1], [100, 64, 0, 1], [169, 254, 1, 1], [0, 0, 0, 0], [255, 255, 255, 255]] {
+        for private in [
+            [10, 0, 0, 1],
+            [192, 168, 1, 1],
+            [127, 0, 0, 1],
+            [100, 64, 0, 1],
+            [169, 254, 1, 1],
+            [0, 0, 0, 0],
+            [255, 255, 255, 255],
+        ] {
             assert!(!is_public(IpAddr::from(private)), "{private:?}");
         }
         assert!(is_local_server("10.8.0.10", IpAddr::from([10, 8, 0, 10])));
@@ -242,7 +266,19 @@ mod vpn_tests {
         assert_eq!(vpn("TAP-Windows Adapter V9", None).map(|v| v.name), Some("a VPN"));
         assert_eq!(vpn("OpenVPN Data Channel Offload", None).map(|v| v.name), Some("a VPN"));
         // Ordinary adapters aren't VPNs.
-        for name in ["Ethernet", "Wi-Fi", "eth0", "wlan0", "enp3s0", "Local Area Connection", "lo", "tunnel-broker", "wgadget", "Zte modem", "Pianet"] {
+        for name in [
+            "Ethernet",
+            "Wi-Fi",
+            "eth0",
+            "wlan0",
+            "enp3s0",
+            "Local Area Connection",
+            "lo",
+            "tunnel-broker",
+            "wgadget",
+            "Zte modem",
+            "Pianet",
+        ] {
             assert_eq!(vpn(name, ip([192, 168, 1, 20])), None, "{name}");
         }
     }

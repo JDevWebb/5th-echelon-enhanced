@@ -1872,7 +1872,10 @@ async fn servers_reporting_at_once_dont_lock_each_other_out() {
             let c = Arc::clone(&t.c);
             set.spawn(async move {
                 let players: Vec<Value> = (0..5).map(|p| json!({ "id": p, "name": format!("P{p}"), "matches": round })).collect();
-                c.record_players(&format!("s{i}"), &json!({ "full": true, "players": players })).await.err().map(|e| e.to_string())
+                c.record_players(&format!("s{i}"), &json!({ "full": true, "players": players }))
+                    .await
+                    .err()
+                    .map(|e| e.to_string())
             });
         }
     }

@@ -29,9 +29,7 @@ pub enum ClientState {
 pub enum InstallError {
     #[error("{DLL_NAME} is missing from the game folder. Verify the game's files in Steam or Ubisoft Connect, then try again.")]
     NoGameDll,
-    #[error(
-        "The game's own {DLL_NAME} was replaced before and no copy of it was kept. Verify the game's files in Steam or Ubisoft Connect, then try again."
-    )]
+    #[error("The game's own {DLL_NAME} was replaced before and no copy of it was kept. Verify the game's files in Steam or Ubisoft Connect, then try again.")]
     OriginalLost,
     #[error("The game is running. Close Splinter Cell: Blacklist and try again.")]
     GameRunning,

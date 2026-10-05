@@ -169,7 +169,11 @@ impl Config {
         let cd_keys = std::mem::take(&mut hook.user.cd_keys);
         hook.user = hooks_config::User {
             cd_keys: if profile.user.cd_keys.is_empty() { cd_keys } else { profile.user.cd_keys.clone() },
-            account_id: if profile.user.account_id.is_empty() { profile.user.username.clone() } else { profile.user.account_id.clone() },
+            account_id: if profile.user.account_id.is_empty() {
+                profile.user.username.clone()
+            } else {
+                profile.user.account_id.clone()
+            },
             ..profile.user.clone()
         };
         hook.networking.adapter = profile.adapter.clone();
@@ -341,20 +345,35 @@ mod tests {
             server: "blacklist.example.com".into(),
             ..Default::default()
         };
-        p.use_ports(&crate::server_info::Ports { api: 80, login: 31126, nat: Some(31128), api_tls: None });
+        p.use_ports(&crate::server_info::Ports {
+            api: 80,
+            login: 31126,
+            nat: Some(31128),
+            api_tls: None,
+        });
         assert_eq!(p.api_server_url().as_str(), "http://blacklist.example.com/");
         assert_eq!((p.api_port(), p.login_port(), p.nat_port), (80, 31126, Some(31128)));
         let mut cfg = Config::default();
         cfg.apply_profile(&p);
         assert_eq!(cfg.hook_config.networking.nat_port, Some(31128));
 
-        p.use_ports(&crate::server_info::Ports { api: 50051, login: 21126, nat: Some(21128), api_tls: None });
+        p.use_ports(&crate::server_info::Ports {
+            api: 50051,
+            login: 21126,
+            nat: Some(21128),
+            api_tls: None,
+        });
         assert_eq!((p.api_server_url.clone(), p.login_port, p.nat_port), (None, None, None));
         assert_eq!(p.api_server_url().as_str(), "http://blacklist.example.com:50051/");
 
         assert!(p.unencrypted());
         // HTTPS offered: used.
-        p.use_ports(&crate::server_info::Ports { api: 80, login: 21126, nat: None, api_tls: Some(443) });
+        p.use_ports(&crate::server_info::Ports {
+            api: 80,
+            login: 21126,
+            nat: None,
+            api_tls: Some(443),
+        });
         assert_eq!(p.api_server_url().as_str(), "https://blacklist.example.com/");
         assert!(!p.unencrypted());
     }

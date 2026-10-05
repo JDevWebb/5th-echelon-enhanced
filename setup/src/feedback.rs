@@ -166,7 +166,11 @@ fn attach_within(name: &str, text: &str, private: &Private, max: usize) -> std::
 pub fn prepare(game_dir: &Path, launcher_log: Option<&Path>, extra: &[(&str, String)], private: &Private) -> Vec<Attachment> {
     let mut files: Vec<(String, String)> = ["bl-tracing.log", "bl-tracing.prev.log", "bl-dataversion.txt"]
         .iter()
-        .filter_map(|name| std::fs::read(game_dir.join(name)).ok().map(|b| (name.to_string(), String::from_utf8_lossy(&b).into_owned())))
+        .filter_map(|name| {
+            std::fs::read(game_dir.join(name))
+                .ok()
+                .map(|b| (name.to_string(), String::from_utf8_lossy(&b).into_owned()))
+        })
         .collect();
     if let Some(text) = launcher_log.and_then(|p| std::fs::read(p).ok()) {
         files.push(("launcher.log".into(), String::from_utf8_lossy(&text).into_owned()));
@@ -240,6 +244,7 @@ mod tests {
         assert!(out[0].text.starts_with("(the first"));
     }
     use std::net::Ipv4Addr;
+
     use super::*;
 
     #[test]
@@ -255,11 +260,22 @@ mod tests {
 
     #[test]
     fn when_to_ask() {
-        let online = LogSignals { played_online: true, ..LogSignals::default() };
+        let online = LogSignals {
+            played_online: true,
+            ..LogSignals::default()
+        };
         assert_eq!(triggers(online, None, Some(0), false), Vec::<&str>::new());
         assert_eq!(triggers(online, None, Some(0), true), ["routine"]);
-        assert_eq!(triggers(LogSignals::default(), None, Some(0), true), Vec::<&str>::new(), "never online: nothing to ask about");
-        let saw = ServerSaw { failed_joins: 2, version_mismatches: 1, relayed: true };
+        assert_eq!(
+            triggers(LogSignals::default(), None, Some(0), true),
+            Vec::<&str>::new(),
+            "never online: nothing to ask about"
+        );
+        let saw = ServerSaw {
+            failed_joins: 2,
+            version_mismatches: 1,
+            relayed: true,
+        };
         assert_eq!(triggers(online, Some(saw), Some(0), true), ["version_mismatch", "failed_join", "relayed"]);
         #[allow(clippy::cast_possible_wrap)]
         let access_violation = 0xC000_0005_u32 as i32;
@@ -269,7 +285,14 @@ mod tests {
         let day = 86_400;
         let asked = Asked { last: 0, last_routine: 0 };
         assert!(asked.may_ask(&["failed_join"], 10 * day));
-        assert!(!Asked { last: 10 * day - 100, last_routine: 0 }.may_ask(&["failed_join"], 10 * day), "once a day");
+        assert!(
+            !Asked {
+                last: 10 * day - 100,
+                last_routine: 0
+            }
+            .may_ask(&["failed_join"], 10 * day),
+            "once a day"
+        );
         let routine_lately = Asked { last: 0, last_routine: 8 * day };
         assert!(!routine_lately.may_ask(&["routine"], 10 * day), "routine once a week");
         assert!(!routine_lately.may_ask(&["relayed"], 10 * day), "relayed alone is like routine");
@@ -283,7 +306,10 @@ mod tests {
 
     #[test]
     fn private_things_are_hidden() {
-        let private = Private { names: vec!["DESKTOP-NASN".into(), "msjou".into()], keep: vec![Ipv4Addr::new(139, 99, 171, 113)] };
+        let private = Private {
+            names: vec!["DESKTOP-NASN".into(), "msjou".into()],
+            keep: vec![Ipv4Addr::new(139, 99, 171, 113)],
+        };
         let text = r#"Save game name: "C:\\Users\\msjou\\AppData\\Roaming\\5th-Echelon"
 path="C:\Users\Jason\Documents" and /home/deck/.steam
 gethostbyname: called with "DESKTOP-NASN" by MSJOU
@@ -301,7 +327,10 @@ this PC is 122.58.93.144:13000; advertising 139.99.171.113:40000; LAN 192.168.0.
 
     #[test]
     fn names_with_spaces_and_other_alphabets_are_hidden() {
-        let private = Private { names: vec!["Jo Smith".into(), "DESKTOP-NASN".into()], keep: vec![] };
+        let private = Private {
+            names: vec!["Jo Smith".into(), "DESKTOP-NASN".into()],
+            keep: vec![],
+        };
         let text = "İstanbul: C:\\Users\\Jo Smith\\AppData and C:\\Users\\Other Name\\x; on desktop-nasn";
         let out = redact(text, &private);
         assert!(!out.contains("Smith") && !out.contains("Other Name") && !out.to_lowercase().contains("nasn"), "{out}");

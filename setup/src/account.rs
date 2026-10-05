@@ -112,9 +112,15 @@ pub fn create_account(service: &dyn AccountService, name: &str) -> Result<(Strin
 /// What became of a player whose identity has no account on a server yet.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NewAccount {
-    Created { username: String, password: String },
+    Created {
+        username: String,
+        password: String,
+    },
     /// The player chooses a name: `suggested` to start from, and whether it was taken there.
-    NeedsName { suggested: String, taken: bool },
+    NeedsName {
+        suggested: String,
+        taken: bool,
+    },
 }
 
 /// Makes the account for a player with none on a server: with the name they chose, or on a
@@ -148,7 +154,10 @@ pub fn new_account(service: &dyn AccountService, chosen: Option<&str>, usual: Op
 pub fn name_suggestions(name: &str, country: Option<&str>) -> Vec<String> {
     // Room for the longest ending, `_NZ`.
     let base: String = account_name(name).chars().take(MAX_NAME - 3).collect();
-    let country = country.map(str::trim).filter(|c| c.len() == 2 && c.bytes().all(|b| b.is_ascii_alphabetic())).map(str::to_ascii_uppercase);
+    let country = country
+        .map(str::trim)
+        .filter(|c| c.len() == 2 && c.bytes().all(|b| b.is_ascii_alphabetic()))
+        .map(str::to_ascii_uppercase);
     let mut names: Vec<String> = country.iter().map(|c| format!("{base}_{c}")).collect();
     names.extend((2..=6).map(|n| format!("{base}{n}")));
     names
@@ -237,18 +246,33 @@ mod tests {
         server.accounts.borrow_mut().insert("Kiwi".into(), "theirs-password".into());
         assert_eq!(
             new_account(&server, None, Some("Kiwi"), true),
-            Ok(NewAccount::NeedsName { suggested: "Kiwi".into(), taken: true })
+            Ok(NewAccount::NeedsName {
+                suggested: "Kiwi".into(),
+                taken: true
+            })
         );
         // The name the player chose, taken since they checked it.
         assert_eq!(
             new_account(&server, Some("Kiwi"), None, false),
-            Ok(NewAccount::NeedsName { suggested: "Kiwi".into(), taken: true })
+            Ok(NewAccount::NeedsName {
+                suggested: "Kiwi".into(),
+                taken: true
+            })
         );
         // No usual name yet, or a server of their own: asked, with the usual name to start from.
-        assert_eq!(new_account(&server, None, None, true), Ok(NewAccount::NeedsName { suggested: String::new(), taken: false }));
+        assert_eq!(
+            new_account(&server, None, None, true),
+            Ok(NewAccount::NeedsName {
+                suggested: String::new(),
+                taken: false
+            })
+        );
         assert_eq!(
             new_account(&server, None, Some("Kiwi"), false),
-            Ok(NewAccount::NeedsName { suggested: "Kiwi".into(), taken: false })
+            Ok(NewAccount::NeedsName {
+                suggested: "Kiwi".into(),
+                taken: false
+            })
         );
         // The name they chose, free: made.
         assert!(matches!(new_account(&server, Some("Kiwi_NZ"), Some("Kiwi"), false), Ok(NewAccount::Created { .. })));

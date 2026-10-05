@@ -198,7 +198,9 @@ pub fn parse_data_version(text: &str) -> Option<u32> {
 
 /// The last game's data version and the known mods in `game_dir` (the exe's folder).
 pub fn read_data(game_dir: &Path) -> DataFacts {
-    let version = std::fs::read(game_dir.join(DATA_VERSION_FILE)).ok().and_then(|t| parse_data_version(&String::from_utf8_lossy(&t)));
+    let version = std::fs::read(game_dir.join(DATA_VERSION_FILE))
+        .ok()
+        .and_then(|t| parse_data_version(&String::from_utf8_lossy(&t)));
     let mut mods = Vec::new();
     for known in KNOWN_MODS {
         // One name per file: the first entry that matches it (the specific ones come first).
@@ -240,7 +242,13 @@ fn data_check(data: &DataFacts) -> Option<Check> {
 pub fn checklist(f: &Facts) -> Vec<Check> {
     let mut checks = Vec::new();
     let Some(_) = &f.game_dir else {
-        checks.push(Check::new("game", Status::Fail, "Game not found", "Find Splinter Cell: Blacklist, or choose its folder.", Some(Fix::FindGame)));
+        checks.push(Check::new(
+            "game",
+            Status::Fail,
+            "Game not found",
+            "Find Splinter Cell: Blacklist, or choose its folder.",
+            Some(Fix::FindGame),
+        ));
         return checks;
     };
     checks.push(Check::new("game", Status::Ok, "Game found", "", None));
@@ -272,8 +280,20 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
 
     checks.push(match f.client {
         Some(ClientState::Installed) => Check::new("client", Status::Ok, "5th Echelon installed", "", None),
-        Some(ClientState::Different) => Check::new("client", Status::Fail, "Update 5th Echelon", "Another version is installed. Close the game so the launcher can replace it: servers refuse other versions.", Some(Fix::InstallClient)),
-        Some(ClientState::NotInstalled) => Check::new("client", Status::Fail, "Install 5th Echelon", "The game still has Ubisoft's online DLL.", Some(Fix::InstallClient)),
+        Some(ClientState::Different) => Check::new(
+            "client",
+            Status::Fail,
+            "Update 5th Echelon",
+            "Another version is installed. Close the game so the launcher can replace it: servers refuse other versions.",
+            Some(Fix::InstallClient),
+        ),
+        Some(ClientState::NotInstalled) => Check::new(
+            "client",
+            Status::Fail,
+            "Install 5th Echelon",
+            "The game still has Ubisoft's online DLL.",
+            Some(Fix::InstallClient),
+        ),
         Some(ClientState::NoGameDll) | None => Check::new(
             "client",
             Status::Fail,
@@ -289,7 +309,13 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
             None
         }
         Some((name, None)) => {
-            checks.push(Check::new("server", Status::Fail, "Server not found", format!("\"{name}\" doesn't resolve to an address."), Some(Fix::ChooseServer)));
+            checks.push(Check::new(
+                "server",
+                Status::Fail,
+                "Server not found",
+                format!("\"{name}\" doesn't resolve to an address."),
+                Some(Fix::ChooseServer),
+            ));
             None
         }
         Some((name, Some(ip))) => {
@@ -333,7 +359,13 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
                 Some(Fix::ChooseServer),
             ),
             Some(AccountFact::Unknown(why)) => Check::new("account", Status::Warn, "Couldn't check the account", why.clone(), None),
-            Some(AccountFact::None) | None => Check::new("account", Status::Fail, "No account on this server yet", "Connect finds yours, or makes one.", Some(Fix::SetUpAccount)),
+            Some(AccountFact::None) | None => Check::new(
+                "account",
+                Status::Fail,
+                "No account on this server yet",
+                "Connect finds yours, or makes one.",
+                Some(Fix::SetUpAccount),
+            ),
         });
     }
 
@@ -342,8 +374,20 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
         // each time the game starts. A pin is for groups playing over a VPN on purpose, and
         // only a pin can be wrong.
         checks.push(match (&f.pinned, &f.route_adapter) {
-            (None, Some(route)) => Check::new("network", Status::Ok, format!("Playing over \"{route}\""), "The adapter that reaches the server, chosen each time the game starts.", None),
-            (None, None) => Check::new("network", Status::Ok, "Network chosen automatically", "The game uses the address that reaches the server.", None),
+            (None, Some(route)) => Check::new(
+                "network",
+                Status::Ok,
+                format!("Playing over \"{route}\""),
+                "The adapter that reaches the server, chosen each time the game starts.",
+                None,
+            ),
+            (None, None) => Check::new(
+                "network",
+                Status::Ok,
+                "Network chosen automatically",
+                "The game uses the address that reaches the server.",
+                None,
+            ),
             (Some(pinned), _) if f.pinned_ip.is_none() => Check::new(
                 "network",
                 if f.require_adapter { Status::Fail } else { Status::Warn },
@@ -358,7 +402,9 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
                 "network",
                 Status::Warn,
                 "Pinned adapter doesn't reach the server",
-                format!("\"{pinned}\" is pinned in Settings, but {server_ip} is reached through \"{route}\". Let the launcher choose, unless you play over \"{pinned}\" on purpose."),
+                format!(
+                    "\"{pinned}\" is pinned in Settings, but {server_ip} is reached through \"{route}\". Let the launcher choose, unless you play over \"{pinned}\" on purpose."
+                ),
                 Some(Fix::AutoAdapter),
             ),
             (Some(pinned), _) => Check::new("network", Status::Ok, format!("Playing over \"{pinned}\""), "Pinned in Settings.", None),
@@ -370,7 +416,11 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
     // server inside the VPN (a group's Radmin network) is what the VPN is for.
     if let (Some(server_ip), Some(route)) = (server_ip.filter(|ip| crate::net::is_public(*ip)), &f.route_adapter) {
         if let Some(vpn) = crate::net::vpn(route, f.route_ip).filter(|v| !v.holds(server_ip)) {
-            let what = if vpn.virtual_lan { format!("{} (sending its traffic to the internet)", vpn.name) } else { vpn.name.to_string() };
+            let what = if vpn.virtual_lan {
+                format!("{} (sending its traffic to the internet)", vpn.name)
+            } else {
+                vpn.name.to_string()
+            };
             checks.push(Check::new(
                 "vpn",
                 Status::Warn,
@@ -420,7 +470,13 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
             checks.push(Check::new("hooks", Status::Warn, "Last game: some hooks failed", log.hook_errors.join("\n"), None));
         }
         if log.panicked {
-            checks.push(Check::new("crash", Status::Warn, "Last game: the client crashed", format!("See {LOG_FILE} in the game folder."), None));
+            checks.push(Check::new(
+                "crash",
+                Status::Warn,
+                "Last game: the client crashed",
+                format!("See {LOG_FILE} in the game folder."),
+                None,
+            ));
         }
     }
     checks
@@ -428,13 +484,9 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
 
 fn save_check(f: &Facts) -> Check {
     match &f.save {
-        Some(SaveState::Ok { xp }) if *xp < crate::save::RANK5_XP => Check::new(
-            "save",
-            Status::Fail,
-            "Save below rank 5",
-            "Co-op and Spies vs Mercs need rank 5.",
-            Some(Fix::RaiseSave),
-        ),
+        Some(SaveState::Ok { xp }) if *xp < crate::save::RANK5_XP => {
+            Check::new("save", Status::Fail, "Save below rank 5", "Co-op and Spies vs Mercs need rank 5.", Some(Fix::RaiseSave))
+        }
         Some(SaveState::Ok { .. }) => Check::new("save", Status::Ok, "Save game ready", "", None),
         // A save the launcher can't read (one changed by another tool, say) is still a save:
         // the check is only that there is one.
@@ -490,7 +542,10 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
             save: Some(SaveState::Ok { xp: 6600 }),
             log: None,
             wine: None,
-            data: Some(DataFacts { version: Some(STOCK_DATA_VERSION), mods: vec![] }),
+            data: Some(DataFacts {
+                version: Some(STOCK_DATA_VERSION),
+                mods: vec![],
+            }),
         }
     }
 
@@ -498,17 +553,44 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
     fn modified_game_data_is_a_warning_naming_the_mod() {
         assert_eq!(parse_data_version("data version: 0xdd55acd3\nengine[+0x64][+0x410]: 0x00000000\n"), Some(0xdd55_acd3));
         assert_eq!(parse_data_version("index\tvalue\n"), None);
-        let check = |data: DataFacts| checklist(&Facts { data: Some(data), ..ready_facts() }).into_iter().find(|c| c.id == "data");
-        assert_eq!(check(DataFacts { version: Some(STOCK_DATA_VERSION), mods: vec![] }), None);
+        let check = |data: DataFacts| {
+            checklist(&Facts {
+                data: Some(data),
+                ..ready_facts()
+            })
+            .into_iter()
+            .find(|c| c.id == "data")
+        };
+        assert_eq!(
+            check(DataFacts {
+                version: Some(STOCK_DATA_VERSION),
+                mods: vec![]
+            }),
+            None
+        );
         assert_eq!(check(DataFacts { version: None, mods: vec![] }), None, "no game started yet, no mod");
-        let c = check(DataFacts { version: Some(0xdd55_acd3), mods: vec![] }).unwrap();
+        let c = check(DataFacts {
+            version: Some(0xdd55_acd3),
+            mods: vec![],
+        })
+        .unwrap();
         assert_eq!(c.status, Status::Warn);
         assert!(c.detail.contains("0xdd55acd3") && c.detail.contains("same mods"), "{}", c.detail);
         assert!(!c.detail.contains("  "), "one space between words: {}", c.detail);
         // A mod in the folder is named even before the next game shows the version.
-        let c = check(DataFacts { version: None, mods: vec![(KNOWN_MODS[0].name, "PEC.ini")] }).unwrap();
+        let c = check(DataFacts {
+            version: None,
+            mods: vec![(KNOWN_MODS[0].name, "PEC.ini")],
+        })
+        .unwrap();
         assert!(c.detail.contains("balaclava") && c.detail.contains("PEC.ini"), "{}", c.detail);
-        let mut f = Facts { data: Some(DataFacts { version: Some(0xdd55_acd3), mods: vec![] }), ..ready_facts() };
+        let mut f = Facts {
+            data: Some(DataFacts {
+                version: Some(0xdd55_acd3),
+                mods: vec![],
+            }),
+            ..ready_facts()
+        };
         assert!(ready(&checklist(&f)), "a warning, never a failure");
         f.data = None;
         assert!(!checklist(&f).iter().any(|c| c.id == "data"));
@@ -540,35 +622,77 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
     fn each_problem_has_its_fix() {
         let fix = |f: Facts, id: &str| checklist(&f).into_iter().find(|c| c.id == id).map(|c| (c.status, c.fix));
         assert_eq!(fix(Facts::default(), "game"), Some((Status::Fail, Some(Fix::FindGame))));
-        let f = Facts { client: Some(ClientState::Different), ..ready_facts() };
+        let f = Facts {
+            client: Some(ClientState::Different),
+            ..ready_facts()
+        };
         assert_eq!(fix(f, "client"), Some((Status::Fail, Some(Fix::InstallClient))));
         let f = Facts { server: None, ..ready_facts() };
         assert_eq!(fix(f.clone(), "server"), Some((Status::Fail, Some(Fix::ChooseServer))));
         assert_eq!(fix(f, "account"), None, "no account check without a server");
-        let f = Facts { account: Some(AccountFact::Refused("wrong password".into())), ..ready_facts() };
+        let f = Facts {
+            account: Some(AccountFact::Refused("wrong password".into())),
+            ..ready_facts()
+        };
         assert_eq!(fix(f, "account"), Some((Status::Fail, Some(Fix::SetUpAccount))));
-        let f = Facts { account: Some(AccountFact::Banned("This account is banned on this server for 3 more days.".into())), ..ready_facts() };
+        let f = Facts {
+            account: Some(AccountFact::Banned("This account is banned on this server for 3 more days.".into())),
+            ..ready_facts()
+        };
         assert_eq!(fix(f, "account"), Some((Status::Fail, Some(Fix::ChooseServer))));
-        let f = Facts { account: Some(AccountFact::Outdated("update".into())), ..ready_facts() };
+        let f = Facts {
+            account: Some(AccountFact::Outdated("update".into())),
+            ..ready_facts()
+        };
         assert_eq!(fix(f, "account"), Some((Status::Fail, Some(Fix::UpdateLauncher))));
         // A pin is the only thing that can be wrong, and only a warning, unless the game
         // is set to refuse to start without it.
-        let f = Facts { route_adapter: Some("Ethernet".into()), ..ready_facts() };
+        let f = Facts {
+            route_adapter: Some("Ethernet".into()),
+            ..ready_facts()
+        };
         assert_eq!(fix(f, "network"), Some((Status::Warn, Some(Fix::AutoAdapter))));
         let f = Facts { pinned_ip: None, ..ready_facts() };
         assert_eq!(fix(f.clone(), "network"), Some((Status::Warn, Some(Fix::AutoAdapter))));
         assert_eq!(fix(Facts { require_adapter: true, ..f }, "network"), Some((Status::Fail, Some(Fix::AutoAdapter))));
-        let f = Facts { pinned: None, pinned_ip: None, route_adapter: Some("Wi-Fi".into()), ..ready_facts() };
+        let f = Facts {
+            pinned: None,
+            pinned_ip: None,
+            route_adapter: Some("Wi-Fi".into()),
+            ..ready_facts()
+        };
         assert_eq!(fix(f.clone(), "network"), Some((Status::Ok, None)), "automatic, the usual");
         // A last game without the pinned adapter, once the pin is gone: nothing to say.
-        let log = Some(LogFacts { adapter_missing: Some("Game VPN".into()), ..LogFacts::default() });
+        let log = Some(LogFacts {
+            adapter_missing: Some("Game VPN".into()),
+            ..LogFacts::default()
+        });
         assert_eq!(fix(Facts { log: log.clone(), ..f }, "session"), None);
-        assert_eq!(fix(Facts { log, pinned_ip: None, ..ready_facts() }, "session"), Some((Status::Warn, Some(Fix::AutoAdapter))));
-        let f = Facts { save: Some(SaveState::Unreadable), ..ready_facts() };
+        assert_eq!(
+            fix(
+                Facts {
+                    log,
+                    pinned_ip: None,
+                    ..ready_facts()
+                },
+                "session"
+            ),
+            Some((Status::Warn, Some(Fix::AutoAdapter)))
+        );
+        let f = Facts {
+            save: Some(SaveState::Unreadable),
+            ..ready_facts()
+        };
         assert_eq!(fix(f, "save"), Some((Status::Ok, None)), "a save it can't read is still a save");
-        let f = Facts { save: Some(SaveState::Ok { xp: 10 }), ..ready_facts() };
+        let f = Facts {
+            save: Some(SaveState::Ok { xp: 10 }),
+            ..ready_facts()
+        };
         assert_eq!(fix(f, "save"), Some((Status::Fail, Some(Fix::RaiseSave))));
-        let f = Facts { server_ports: Some((true, false)), ..ready_facts() };
+        let f = Facts {
+            server_ports: Some((true, false)),
+            ..ready_facts()
+        };
         assert_eq!(fix(f, "server"), Some((Status::Fail, None)));
         let f = Facts {
             server: Some(("localhost".into(), Some(IpAddr::from([127, 0, 0, 1])))),
@@ -581,7 +705,10 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
 
     #[test]
     fn plain_http_to_a_public_server_is_a_lasting_warning() {
-        let f = Facts { unencrypted: true, ..ready_facts() };
+        let f = Facts {
+            unencrypted: true,
+            ..ready_facts()
+        };
         let checks = checklist(&f);
         let check = checks.iter().find(|c| c.id == "encryption").unwrap();
         assert_eq!(check.status, Status::Warn);

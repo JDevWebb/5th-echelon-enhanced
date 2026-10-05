@@ -52,8 +52,9 @@ fn load_at(path: &Path) -> anyhow::Result<Option<Identity>> {
     };
     let text = text.trim();
     let secret = match text.strip_prefix("dpapi:") {
-        Some(blob) => hooks_config::protect::unprotect(blob)
-            .ok_or_else(|| anyhow::anyhow!("{} is encrypted for another Windows user or PC; import your identity again", path.display()))?,
+        Some(blob) => {
+            hooks_config::protect::unprotect(blob).ok_or_else(|| anyhow::anyhow!("{} is encrypted for another Windows user or PC; import your identity again", path.display()))?
+        }
         None => text.to_string(),
     };
     Ok(Some(parse_secret(&secret)?))

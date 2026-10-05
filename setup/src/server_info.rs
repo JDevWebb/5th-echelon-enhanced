@@ -159,10 +159,22 @@ mod tests {
         let body = r#"{"name":"5th Echelon Enhanced","version":"0.3.0","features":[],"ports":{"api":80,"login":31126,"secure":31127,"content":80,"nat":31128}}"#;
         let plain = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}", body.len());
         let info = parse_response(plain.as_bytes()).unwrap();
-        assert_eq!(info.ports, Some(Ports { api: 80, login: 31126, nat: Some(31128), api_tls: None }));
+        assert_eq!(
+            info.ports,
+            Some(Ports {
+                api: 80,
+                login: 31126,
+                nat: Some(31128),
+                api_tls: None
+            })
+        );
 
         let (a, b) = body.split_at(20);
-        let chunked = format!("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{a}\r\n{:x}\r\n{b}\r\n0\r\n\r\n", a.len(), b.len());
+        let chunked = format!(
+            "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n{:x}\r\n{a}\r\n{:x}\r\n{b}\r\n0\r\n\r\n",
+            a.len(),
+            b.len()
+        );
         assert_eq!(parse_response(chunked.as_bytes()), Some(info));
     }
 

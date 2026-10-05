@@ -155,7 +155,9 @@ pub fn usable_external(ip: Ipv4Addr) -> Result<(), String> {
     let [a, b, ..] = ip.octets();
     let shared = a == 100 && (64..128).contains(&b);
     if ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() || ip.is_broadcast() || ip.is_multicast() || shared || a == 0 || a >= 240 {
-        return Err(format!("the router's external address {ip} isn't a public one (another router or the ISP's NAT is in front)"));
+        return Err(format!(
+            "the router's external address {ip} isn't a public one (another router or the ISP's NAT is in front)"
+        ));
     }
     Ok(())
 }

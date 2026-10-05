@@ -93,7 +93,11 @@ pub fn link_message(host: &str, username: &str, time: i64) -> String {
 /// set `new_password` (a hash of it: the signature then can't be reused to set
 /// another).
 pub fn login_message(host: &str, username: &str, time: i64, new_password: &str) -> String {
-    let password = if new_password.is_empty() { String::from("-") } else { base32_encode(&sha256(new_password.as_bytes())) };
+    let password = if new_password.is_empty() {
+        String::from("-")
+    } else {
+        base32_encode(&sha256(new_password.as_bytes()))
+    };
     format!("5th-echelon/login/v2\n{}\n{username}\n{time}\n{password}", host_key(host))
 }
 
@@ -112,9 +116,7 @@ pub fn release_message(version: &str, sums: &str) -> String {
 /// Whether `version` can be a release's version: digits first, then only
 /// letters, digits, `.` and `-` (no `v`, no separators), at most 32 bytes.
 pub fn valid_release_version(version: &str) -> bool {
-    (1..=32).contains(&version.len())
-        && version.starts_with(|c: char| c.is_ascii_digit())
-        && version.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
+    (1..=32).contains(&version.len()) && version.starts_with(|c: char| c.is_ascii_digit()) && version.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
 }
 
 /// The public halves of the release keys: a release is installed (by the
@@ -243,7 +245,11 @@ mod tests {
         assert!(verify(&id, &release_message("0.4.0", sums), &sig));
         assert!(!verify(&id, &release_message("0.4.1", sums), &sig), "the same files under another version");
         assert!(!verify(&id, &release_message("0.4.0", "abd  launcher.exe\n"), &sig), "other files");
-        assert_eq!(release_message("0.4.0", sums), "5th-echelon/release/v2\n0.4.0\nabc  launcher.exe\n", "what the shell verifiers build");
+        assert_eq!(
+            release_message("0.4.0", sums),
+            "5th-echelon/release/v2\n0.4.0\nabc  launcher.exe\n",
+            "what the shell verifiers build"
+        );
         for v in ["0.4.0", "1.0.0-rc.1", "10.20.30"] {
             assert!(valid_release_version(v), "{v}");
         }

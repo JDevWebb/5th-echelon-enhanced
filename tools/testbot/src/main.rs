@@ -59,8 +59,14 @@ async fn friends(ctx: &mut Ctx) -> Result<()> {
     );
     ensure!(names(&b.relationships().await?.requests_received) == [a.name.as_str()], "the request isn't waiting");
     // By any case of the name.
-    ensure!(b.friend_change("accept", &a.name.to_uppercase()).await? == Relation::Friend, "accepting didn't make friends");
-    ensure!(a.poll_friend_event(Duration::from_secs(3)).await? == Some((Kind::Accepted, b.name.clone())), "no accepted notice");
+    ensure!(
+        b.friend_change("accept", &a.name.to_uppercase()).await? == Relation::Friend,
+        "accepting didn't make friends"
+    );
+    ensure!(
+        a.poll_friend_event(Duration::from_secs(3)).await? == Some((Kind::Accepted, b.name.clone())),
+        "no accepted notice"
+    );
     ensure!(names(&a.relationships().await?.friends) == [b.name.as_str()], "not in the friend list");
     let part = &b.name[..b.name.len() - 1];
     ensure!(a.search(part).await?.contains(&(b.name.clone(), Relation::Friend)), "search doesn't show the friend");
@@ -119,7 +125,9 @@ async fn identity_login(ctx: &mut Ctx) -> Result<()> {
     let name = a.name.clone();
     a.disconnect().await?;
     // A new PC that doesn't know the name: the key finds the account, as the launcher does.
-    let found = testbot::bot::key_login(ctx.server, &me, &id, "", now, "").await.map_err(|e| eyre!("key login without a name: {e}"))?;
+    let found = testbot::bot::key_login(ctx.server, &me, &id, "", now, "")
+        .await
+        .map_err(|e| eyre!("key login without a name: {e}"))?;
     ensure!(found == name, "the key found {found:?}, not {name:?}");
     let stranger = testbot::bot::key_login(ctx.server, &identity::Identity::generate(), &id, "", now, "").await;
     ensure!(
@@ -127,20 +135,26 @@ async fn identity_login(ctx: &mut Ctx) -> Result<()> {
         "an identity with no account here: {stranger:?}"
     );
     // A new PC: sign in with the key, set a new password.
-    testbot::bot::key_login(ctx.server, &me, &id, &name, now + 1, "a-new-password-1").await.map_err(|e| eyre!("key login: {e}"))?;
+    testbot::bot::key_login(ctx.server, &me, &id, &name, now + 1, "a-new-password-1")
+        .await
+        .map_err(|e| eyre!("key login: {e}"))?;
     ensure!(
         testbot::bot::key_login(ctx.server, &me, &id, &name, now + 1, "").await.is_err(),
         "the same signature worked twice"
     );
     ensure!(
-        testbot::bot::key_login(ctx.server, &identity::Identity::generate(), &id, &name, now + 2, "stolen-password").await.is_err(),
+        testbot::bot::key_login(ctx.server, &identity::Identity::generate(), &id, &name, now + 2, "stolen-password")
+            .await
+            .is_err(),
         "another key signed in"
     );
     // A server that got a key login signed for it can't reuse it here (another host), nor
     // change the password it sets.
     let for_elsewhere = me.sign_login("rogue.example", &name, now + 3, "a-new-password-1");
     let replayed = async {
-        let channel = tonic::transport::Channel::from_shared(format!("http://{}:{}", ctx.server, testbot::bot::target(ctx.server).api))?.connect().await?;
+        let channel = tonic::transport::Channel::from_shared(format!("http://{}:{}", ctx.server, testbot::bot::target(ctx.server).api))?
+            .connect()
+            .await?;
         server_api::users::users_client::UsersClient::new(channel)
             .key_login(server_api::users::KeyLoginRequest {
                 username: name.clone(),
@@ -183,8 +197,12 @@ async fn identity_required(ctx: &mut Ctx) -> Result<()> {
         matches!(testbot::bot::key_login(ctx.server, &me, &id, "", now, "").await, Err(s) if s.code() == tonic::Code::NotFound),
         "an identity found an account before it had one"
     );
-    Bot::register_as(ctx.server, &name, PASSWORD, Some((&me, &id))).await.map_err(|e| eyre!("registering with an identity: {e}"))?;
-    let found = testbot::bot::key_login(ctx.server, &me, &id, "", now + 1, "a-new-password-1").await.map_err(|e| eyre!("key login: {e}"))?;
+    Bot::register_as(ctx.server, &name, PASSWORD, Some((&me, &id)))
+        .await
+        .map_err(|e| eyre!("registering with an identity: {e}"))?;
+    let found = testbot::bot::key_login(ctx.server, &me, &id, "", now + 1, "a-new-password-1")
+        .await
+        .map_err(|e| eyre!("key login: {e}"))?;
     ensure!(found == name, "the key found {found:?}, not {name:?}");
     let a = Bot::login(ctx.server, &name, "a-new-password-1").await?;
     ensure!(a.unlink().await.is_err(), "an account was unlinked");
@@ -204,9 +222,15 @@ async fn direct_test(ctx: &mut Ctx) -> Result<()> {
         Ok::<_, eyre::Report>(challenge)
     });
     let challenge: Vec<u8> = (0..32).map(|_| rand::random::<u8>()).collect();
-    let back = a.test_direct(challenge.clone()).await.map_err(|e| eyre!("the server couldn't reach this machine: {}", e.message()))?;
+    let back = a
+        .test_direct(challenge.clone())
+        .await
+        .map_err(|e| eyre!("the server couldn't reach this machine: {}", e.message()))?;
     ensure!(back == challenge, "the challenge came back changed");
-    ensure!(tokio::time::timeout(std::time::Duration::from_secs(2), answer).await??? == challenge, "a different challenge arrived");
+    ensure!(
+        tokio::time::timeout(std::time::Duration::from_secs(2), answer).await??? == challenge,
+        "a different challenge arrived"
+    );
     a.disconnect().await
 }
 
@@ -253,7 +277,10 @@ async fn report(ctx: &mut Ctx) -> Result<()> {
     let id = a.report(request(vec![file("bl-tracing.log")])).await.map_err(|e| eyre!("the report: {}", e.message()))?;
     ensure!(id.len() == 32 && id.bytes().all(|b| b.is_ascii_hexdigit()), "a report id: {id:?}");
     let refused = a.report(request(vec![file("../uplay.toml")])).await;
-    ensure!(matches!(&refused, Err(s) if s.code() == tonic::Code::InvalidArgument), "a file named ../uplay.toml: {refused:?}");
+    ensure!(
+        matches!(&refused, Err(s) if s.code() == tonic::Code::InvalidArgument),
+        "a file named ../uplay.toml: {refused:?}"
+    );
     for _ in 0..4 {
         a.report(request(vec![])).await.map_err(|e| eyre!("another report: {}", e.message()))?;
     }
@@ -269,7 +296,9 @@ async fn slow_handshake(ctx: &mut Ctx) -> Result<()> {
     testbot::conn::SLOW_HANDSHAKE.store(true, std::sync::atomic::Ordering::Relaxed);
     let result = async {
         let mut a = ctx.player("Far").await?;
-        a.search_sessions("113 => 1;103 => 0").await.map_err(|e| eyre!("the game service didn't answer after a repeated handshake: {e}"))?;
+        a.search_sessions("113 => 1;103 => 0")
+            .await
+            .map_err(|e| eyre!("the game service didn't answer after a repeated handshake: {e}"))?;
         a.disconnect().await
     }
     .await;
@@ -304,7 +333,9 @@ async fn name_check(ctx: &mut Ctx) -> Result<()> {
     use server_api::users::name_available_response::Answer;
     let server = ctx.server;
     let check = |name: String| async move {
-        let channel = tonic::transport::Channel::from_shared(format!("http://{server}:{}", testbot::bot::target(server).api))?.connect().await?;
+        let channel = tonic::transport::Channel::from_shared(format!("http://{server}:{}", testbot::bot::target(server).api))?
+            .connect()
+            .await?;
         let answer = server_api::users::users_client::UsersClient::new(channel)
             .name_available(server_api::users::NameRequest { name })
             .await?
@@ -359,7 +390,10 @@ async fn friends_mutual(ctx: &mut Ctx) -> Result<()> {
     a.friend_change("request", &b.name).await?;
     b.friend_change("accept", &a.name).await?;
     ensure!(b.friends().await?.iter().any(|(n, _)| *n == a.name), "a friend is missing from the game's friend list");
-    ensure!(b.search_online("").await?.contains(&(a.name.clone(), true)), "an empty search doesn't list an online friend");
+    ensure!(
+        b.search_online("").await?.contains(&(a.name.clone(), true)),
+        "an empty search doesn't list an online friend"
+    );
     a.try_invite(&b.name).await.map_err(|e| eyre!("a friend couldn't invite: {e}"))?;
     ensure!(b.poll_invite(Duration::from_secs(3)).await?.as_deref() == Some(a.name.as_str()), "the invite didn't arrive");
     a.disconnect().await?;
@@ -373,7 +407,9 @@ async fn login_lockout(ctx: &mut Ctx) -> Result<()> {
     use testbot::bot::login_as_client;
     let owner = ctx.player("Owner").await?;
     let (home, stranger, travel) = ("198.51.100.10", "203.0.113.66", "192.0.2.77");
-    login_as_client(ctx.server, &owner.name, PASSWORD, home).await.map_err(|e| eyre!("the owner's first sign-in: {e}"))?;
+    login_as_client(ctx.server, &owner.name, PASSWORD, home)
+        .await
+        .map_err(|e| eyre!("the owner's first sign-in: {e}"))?;
     let mut refused = None;
     for i in 0..15 {
         match login_as_client(ctx.server, &owner.name, "not-the-password", stranger).await {
@@ -390,8 +426,12 @@ async fn login_lockout(ctx: &mut Ctx) -> Result<()> {
         login_as_client(ctx.server, &owner.name, PASSWORD, stranger).await.is_err(),
         "the guessing address still got in"
     );
-    login_as_client(ctx.server, &owner.name, PASSWORD, home).await.map_err(|e| eyre!("the owner was locked out at home: {e}"))?;
-    login_as_client(ctx.server, &owner.name, PASSWORD, travel).await.map_err(|e| eyre!("the owner was locked out elsewhere: {e}"))?;
+    login_as_client(ctx.server, &owner.name, PASSWORD, home)
+        .await
+        .map_err(|e| eyre!("the owner was locked out at home: {e}"))?;
+    login_as_client(ctx.server, &owner.name, PASSWORD, travel)
+        .await
+        .map_err(|e| eyre!("the owner was locked out elsewhere: {e}"))?;
     owner.disconnect().await
 }
 
@@ -431,7 +471,11 @@ async fn federation(ctx: &mut Ctx, other: IpAddr) -> Result<()> {
         if r.elsewhere.iter().any(|e| e.username == tank.name && !e.host.is_empty()) {
             break;
         }
-        ensure!(tokio::time::Instant::now() < deadline, "a friend online on the first server wasn't shown on the second: {:?}", r.elsewhere);
+        ensure!(
+            tokio::time::Instant::now() < deadline,
+            "a friend online on the first server wasn't shown on the second: {:?}",
+            r.elsewhere
+        );
         tokio::time::sleep(Duration::from_secs(1)).await;
     }
     // Names are reserved across the two servers: someone else can't be Kiwi on the second.
@@ -440,9 +484,15 @@ async fn federation(ctx: &mut Ctx, other: IpAddr) -> Result<()> {
         Bot::register_as(other, &kiwi.name.to_lowercase(), PASSWORD, Some((&impostor, &id_b))).await.is_err(),
         "another identity took a reserved name"
     );
-    ensure!(Bot::register(other, &kiwi.name, PASSWORD).await.is_err(), "an account without an identity took a reserved name");
+    ensure!(
+        Bot::register(other, &kiwi.name, PASSWORD).await.is_err(),
+        "an account without an identity took a reserved name"
+    );
     // Kiwi can take their own name there (renaming their account on the second server).
-    kiwi_b.rename(&kiwi.name, Some((&kiwi_key, &id_b))).await.map_err(|e| eyre!("Kiwi couldn't take their own name: {e}"))?;
+    kiwi_b
+        .rename(&kiwi.name, Some((&kiwi_key, &id_b)))
+        .await
+        .map_err(|e| eyre!("Kiwi couldn't take their own name: {e}"))?;
     // An account made on the second server before someone reserved its name elsewhere is
     // flagged when it links, and renaming clears it.
     let clash = format!("Clash{}", ctx.run);
@@ -559,7 +609,10 @@ async fn private_match_invite(ctx: &mut Ctx) -> Result<()> {
     b.abandon_session(own).await?;
     b.split_session(own).await?;
     b.add_participants(game, &[], &[b.pid]).await?;
-    let push = b.wait_notification(Duration::from_secs(3)).await?.ok_or_else(|| eyre!("no 'come in' push for the private match"))?;
+    let push = b
+        .wait_notification(Duration::from_secs(3))
+        .await?
+        .ok_or_else(|| eyre!("no 'come in' push for the private match"))?;
     ensure!(push.ui_type == 7003, "push type {} (want 7003)", push.ui_type);
     ensure!(push.ui_param_1 == b.pid, "push names player {} (want {})", push.ui_param_1, b.pid);
     ensure!(push.ui_param_2 == game, "push names session {} (want {game})", push.ui_param_2);
@@ -590,14 +643,34 @@ async fn private_room_join(ctx: &mut Ctx) -> Result<()> {
     host.add_participants(game, &[], &[host.pid]).await?;
     host.set_session(game, true).await?;
 
-    ensure!(stranger.add_participants(game, &[stranger.pid], &[stranger.pid]).await.is_err(), "[me, me] joined a private match uninvited");
-    ensure!(stranger.add_participants(game, &[], &[stranger.pid]).await.is_err(), "a stranger joined a private match uninvited");
-    ensure!(host.add_participants(game, &[], &[stranger.pid]).await.is_err(), "the host pulled a stranger into its private match");
-    ensure!(stranger.wait_notification(Duration::from_millis(500)).await?.is_none(), "the stranger was nudged into the match");
+    ensure!(
+        stranger.add_participants(game, &[stranger.pid], &[stranger.pid]).await.is_err(),
+        "[me, me] joined a private match uninvited"
+    );
+    ensure!(
+        stranger.add_participants(game, &[], &[stranger.pid]).await.is_err(),
+        "a stranger joined a private match uninvited"
+    );
+    ensure!(
+        host.add_participants(game, &[], &[stranger.pid]).await.is_err(),
+        "the host pulled a stranger into its private match"
+    );
+    ensure!(
+        stranger.wait_notification(Duration::from_millis(500)).await?.is_none(),
+        "the stranger was nudged into the match"
+    );
 
-    party.add_participants(game, &[], &[party.pid]).await.map_err(|e| eyre!("the host's party couldn't follow it: {e}"))?;
-    host.add_participants(game, &[], &[carried.pid]).await.map_err(|e| eyre!("the host couldn't take its party along: {e}"))?;
-    let push = carried.wait_notification(Duration::from_secs(3)).await?.ok_or_else(|| eyre!("no 'come in' push for the party"))?;
+    party
+        .add_participants(game, &[], &[party.pid])
+        .await
+        .map_err(|e| eyre!("the host's party couldn't follow it: {e}"))?;
+    host.add_participants(game, &[], &[carried.pid])
+        .await
+        .map_err(|e| eyre!("the host couldn't take its party along: {e}"))?;
+    let push = carried
+        .wait_notification(Duration::from_secs(3))
+        .await?
+        .ok_or_else(|| eyre!("no 'come in' push for the party"))?;
     ensure!(push.ui_type == 7003 && push.ui_param_2 == game, "wrong push: {push:?}");
     for p in [host, party, carried, stranger] {
         p.disconnect().await?;
@@ -637,13 +710,19 @@ async fn private_room_hidden(ctx: &mut Ctx) -> Result<()> {
     let game = host.create_session("113 => 0;103 => 0;3 => 0;4 => 8;102 => 7").await?;
     host.add_participants(game, &[], &[host.pid]).await?;
     host.set_session(game, true).await?;
-    ensure!(!stranger.search_sessions("113 => 0;102 => 7").await?.iter().any(|(s, _)| *s == game), "matchmaking offered a private match");
+    ensure!(
+        !stranger.search_sessions("113 => 0;102 => 7").await?.iter().any(|(s, _)| *s == game),
+        "matchmaking offered a private match"
+    );
     let found = stranger.search_with_participants(&[host.pid]).await?;
     ensure!(!has_session(&found, game), "a stranger found the private match by its host");
     ensure!(has_session(&found, lobby), "the host's public lobby went missing too");
     host.invite(&guest.name).await?;
     ensure!(guest.poll_invite(Duration::from_secs(3)).await?.is_some(), "invite not delivered");
-    ensure!(has_session(&guest.search_with_participants(&[host.pid]).await?, game), "the invited guest doesn't find the match");
+    ensure!(
+        has_session(&guest.search_with_participants(&[host.pid]).await?, game),
+        "the invited guest doesn't find the match"
+    );
     for p in [host, guest, stranger] {
         p.disconnect().await?;
     }
@@ -661,7 +740,10 @@ async fn cleanup(ctx: &mut Ctx) -> Result<()> {
     ensure!(has_session(&b.search_with_participants(&[host]).await?, lobby), "lobby not found while the host is there");
     a.disconnect().await?;
     tokio::time::sleep(Duration::from_millis(300)).await;
-    ensure!(!has_session(&b.search_with_participants(&[host]).await?, lobby), "the lobby of a host who quit is still found");
+    ensure!(
+        !has_session(&b.search_with_participants(&[host]).await?, lobby),
+        "the lobby of a host who quit is still found"
+    );
     b.disconnect().await
 }
 
@@ -691,7 +773,8 @@ async fn trusted_subnet(ctx: &mut Ctx) -> Result<()> {
 async fn station_url_schemes(ctx: &mut Ctx) -> Result<()> {
     let mut a = ctx.player("Host").await?;
     let mut b = ctx.player("Guest").await?;
-    a.register_urls(&["udp:/address=198.51.100.1;port=3074;type=2", "prudps:/address=victim.example;port=3074;type=3"]).await?;
+    a.register_urls(&["udp:/address=198.51.100.1;port=3074;type=2", "prudps:/address=victim.example;port=3074;type=3"])
+        .await?;
     let lobby = a.create_session(LOBBY).await?;
     a.add_participants(lobby, &[a.pid], &[]).await?;
     let found = b.search_with_participants(&[a.pid]).await?;
@@ -700,7 +783,10 @@ async fn station_url_schemes(ctx: &mut Ctx) -> Result<()> {
         .find(|r| r.game_session_search_result.session_key.session_id == lobby)
         .ok_or_else(|| eyre!("lobby not found"))?;
     let addrs: Vec<String> = room.game_session_search_result.host_urls.0.iter().map(|u| u.address.clone()).collect();
-    ensure!(!addrs.is_empty() && addrs.iter().all(|a| a.starts_with("127.")), "another address reached the friend: {addrs:?}");
+    ensure!(
+        !addrs.is_empty() && addrs.iter().all(|a| a.starts_with("127.")),
+        "another address reached the friend: {addrs:?}"
+    );
     a.disconnect().await?;
     b.disconnect().await
 }
@@ -714,7 +800,10 @@ async fn second_sign_in(ctx: &mut Ctx) -> Result<()> {
     first.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
     let lobby = first.create_session(LOBBY).await?;
     first.add_participants(lobby, &[first.pid], &[]).await?;
-    ensure!(has_session(&friend.search_with_participants(&[first.pid]).await?, lobby), "the first game's lobby isn't found");
+    ensure!(
+        has_session(&friend.search_with_participants(&[first.pid]).await?, lobby),
+        "the first game's lobby isn't found"
+    );
 
     // Another socket: another PC, as the server sees it.
     let mut second = Bot::login(ctx.server, &first.name, PASSWORD).await?;
@@ -726,7 +815,10 @@ async fn second_sign_in(ctx: &mut Ctx) -> Result<()> {
     second.register_urls(&["prudp:/address=127.0.0.1;port=3075;sid=15;type=3"]).await?;
     let again = second.create_session(LOBBY).await?;
     second.add_participants(again, &[second.pid], &[]).await?;
-    ensure!(has_session(&friend.search_with_participants(&[second.pid]).await?, again), "the second game's lobby isn't found");
+    ensure!(
+        has_session(&friend.search_with_participants(&[second.pid]).await?, again),
+        "the second game's lobby isn't found"
+    );
     second.disconnect().await?;
     friend.disconnect().await
 }
@@ -761,8 +853,14 @@ async fn syn_flood(ctx: &mut Ctx) -> Result<()> {
         let sock = UdpSocket::bind("0.0.0.0:0")?;
         for session in 0..50u8 {
             let syn = QPacket {
-                source: VPort { port: 15, stream_type: StreamType::RVSec },
-                destination: VPort { port: 1, stream_type: StreamType::RVSec },
+                source: VPort {
+                    port: 15,
+                    stream_type: StreamType::RVSec,
+                },
+                destination: VPort {
+                    port: 1,
+                    stream_type: StreamType::RVSec,
+                },
                 packet_type: PacketType::Syn,
                 flags: PacketFlag::NeedAck.into(),
                 conn_signature: Some(0),
@@ -808,9 +906,15 @@ async fn leave_session(ctx: &mut Ctx) -> Result<()> {
     b.add_participants(lobby, &[b.pid], &[]).await?;
     b.join_session(lobby).await?;
     let guest = b.pid;
-    ensure!(has_session(&a.search_with_participants(&[guest]).await?, lobby), "the guest isn't in the lobby after joining");
+    ensure!(
+        has_session(&a.search_with_participants(&[guest]).await?, lobby),
+        "the guest isn't in the lobby after joining"
+    );
     b.leave_session(lobby).await?;
-    ensure!(!has_session(&a.search_with_participants(&[guest]).await?, lobby), "the guest is still in the lobby after leaving");
+    ensure!(
+        !has_session(&a.search_with_participants(&[guest]).await?, lobby),
+        "the guest is still in the lobby after leaving"
+    );
     ensure!(has_session(&b.search_with_participants(&[a.pid]).await?, lobby), "the host's lobby went with the guest");
     a.disconnect().await?;
     b.disconnect().await
@@ -825,8 +929,14 @@ async fn abandon_empty(ctx: &mut Ctx) -> Result<()> {
     a.add_participants(lobby, &[a.pid], &[]).await?;
     ensure!(has_session(&b.search_with_participants(&[a.pid]).await?, lobby), "lobby not found");
     a.abandon_session(lobby).await?;
-    ensure!(!has_session(&b.search_with_participants(&[a.pid]).await?, lobby), "an abandoned, empty lobby is still found");
-    ensure!(!b.search_sessions("113 => 1;103 => 0").await?.iter().any(|(s, _)| *s == lobby), "an abandoned, empty lobby is still offered by matchmaking");
+    ensure!(
+        !has_session(&b.search_with_participants(&[a.pid]).await?, lobby),
+        "an abandoned, empty lobby is still found"
+    );
+    ensure!(
+        !b.search_sessions("113 => 1;103 => 0").await?.iter().any(|(s, _)| *s == lobby),
+        "an abandoned, empty lobby is still offered by matchmaking"
+    );
     a.disconnect().await?;
     b.disconnect().await
 }
@@ -839,7 +949,13 @@ async fn duplicate_request(ctx: &mut Ctx) -> Result<()> {
     let lobby = a.create_session_twice(LOBBY).await?;
     a.add_participants(lobby, &[a.pid], &[]).await?;
     tokio::time::sleep(Duration::from_millis(300)).await;
-    let mine: Vec<u32> = b.search_sessions("113 => 1;103 => 0").await?.into_iter().filter(|(_, host)| *host == a.pid).map(|(s, _)| s).collect();
+    let mine: Vec<u32> = b
+        .search_sessions("113 => 1;103 => 0")
+        .await?
+        .into_iter()
+        .filter(|(_, host)| *host == a.pid)
+        .map(|(s, _)| s)
+        .collect();
     ensure!(mine == [lobby], "a retransmitted request created {} sessions: {mine:?}", mine.len());
     a.disconnect().await?;
     b.disconnect().await
@@ -864,7 +980,10 @@ async fn lost_push(ctx: &mut Ctx) -> Result<()> {
     b.split_session(own).await?;
     b.drop_next_push();
     b.add_participants(game, &[], &[b.pid]).await?;
-    let push = b.wait_notification(Duration::from_secs(5)).await?.ok_or_else(|| eyre!("the lost push was never sent again"))?;
+    let push = b
+        .wait_notification(Duration::from_secs(5))
+        .await?
+        .ok_or_else(|| eyre!("the lost push was never sent again"))?;
     ensure!(push.ui_type == 7003 && push.ui_param_2 == game, "wrong push: {push:?}");
     a.disconnect().await?;
     b.disconnect().await
@@ -926,7 +1045,12 @@ async fn nat_probe_scenario(ctx: &mut Ctx) -> Result<()> {
 
     let player = ctx.player("Prober").await?;
     let r = testbot::bot::nat_register(&sock, nat_addr(ctx.server, false)?, 0, &player.name, player.nat_ticket).await?;
-    ensure!(r.advertise == r.observed && !r.relayed, "a local player is advertised as {} (relayed: {})", r.advertise, r.relayed);
+    ensure!(
+        r.advertise == r.observed && !r.relayed,
+        "a local player is advertised as {} (relayed: {})",
+        r.advertise,
+        r.relayed
+    );
     // Someone else's name, without its ticket, gets nowhere.
     let other = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
     ensure!(
@@ -993,7 +1117,10 @@ async fn nat_relay(ctx: &mut Ctx) -> Result<()> {
     );
     stranger.send_to(&send(rb.tag, ra.advertise, b"spam"), nat).await?;
     b.send_to(&send([1; 8], ra.advertise, b"wrong tag"), nat).await?;
-    ensure!(nat_wait_data(&a, Duration::from_millis(400)).await.is_none(), "a stranger's or an untagged packet was relayed");
+    ensure!(
+        nat_wait_data(&a, Duration::from_millis(400)).await.is_none(),
+        "a stranger's or an untagged packet was relayed"
+    );
     pa.disconnect().await?;
     pb.disconnect().await
 }
@@ -1038,20 +1165,31 @@ async fn outdated_client(ctx: &mut Ctx) -> Result<()> {
     ctx.n += 1;
     let name = format!("Outdated{}_{}", ctx.run, ctx.n);
     Bot::register(ctx.server, &name, PASSWORD).await?;
-    ensure!(Bot::game_sign_in_only(ctx.server, &name, PASSWORD).await.is_err(), "the game signed in with no client signing in first");
+    ensure!(
+        Bot::game_sign_in_only(ctx.server, &name, PASSWORD).await.is_err(),
+        "the game signed in with no client signing in first"
+    );
     for client in ["game/0.0.1", "", "launcher/0.1.0-dev"] {
         match api_sign_in(ctx.server, &name, PASSWORD, client).await {
             Err(e) if e.downcast_ref::<tonic::Status>().is_some_and(|s| s.code() == tonic::Code::FailedPrecondition) => {}
             other => return Err(eyre!("the client {client:?} wasn't refused: {:?}", other.map(|_| ()))),
         }
-        ensure!(Bot::game_sign_in_only(ctx.server, &name, PASSWORD).await.is_err(), "the game signed in after the client {client:?}");
+        ensure!(
+            Bot::game_sign_in_only(ctx.server, &name, PASSWORD).await.is_err(),
+            "the game signed in after the client {client:?}"
+        );
     }
     // A current client lets the game in; an outdated one trying after it shuts it out again.
     Bot::login(ctx.server, &name, PASSWORD).await.map_err(|e| eyre!("a current client couldn't play: {e}"))?;
     ensure!(api_sign_in(ctx.server, &name, PASSWORD, "game/0.0.1").await.is_err(), "an outdated client was let in");
-    ensure!(Bot::game_sign_in_only(ctx.server, &name, PASSWORD).await.is_err(), "the game signed in after an outdated client tried");
+    ensure!(
+        Bot::game_sign_in_only(ctx.server, &name, PASSWORD).await.is_err(),
+        "the game signed in after an outdated client tried"
+    );
     api_sign_in(ctx.server, &name, PASSWORD, testbot::bot::GAME_CLIENT).await?;
-    Bot::game_sign_in_only(ctx.server, &name, PASSWORD).await.map_err(|e| eyre!("the game couldn't sign in after a current client: {e}"))?;
+    Bot::game_sign_in_only(ctx.server, &name, PASSWORD)
+        .await
+        .map_err(|e| eyre!("the game couldn't sign in after a current client: {e}"))?;
     Ok(())
 }
 
@@ -1136,8 +1274,16 @@ async fn main() -> Result<()> {
         let options = testbot::load::Options::parse(&args[1..])?;
         return testbot::load::run(server, options).await;
     }
-    let names: Vec<&str> = if args.is_empty() { SCENARIOS.to_vec() } else { args.iter().map(String::as_str).collect() };
-    let mut ctx = Ctx { server, run: rand::random::<u16>().into(), n: 0 };
+    let names: Vec<&str> = if args.is_empty() {
+        SCENARIOS.to_vec()
+    } else {
+        args.iter().map(String::as_str).collect()
+    };
+    let mut ctx = Ctx {
+        server,
+        run: rand::random::<u16>().into(),
+        n: 0,
+    };
     let mut failed = 0;
     for name in names {
         let limit = if name == "federation" { 300 } else { 30 };

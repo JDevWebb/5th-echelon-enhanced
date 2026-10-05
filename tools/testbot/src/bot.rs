@@ -251,8 +251,11 @@ async fn request_ticket(server: IpAddr, name: &str, password: &str) -> Result<(u
             .to_bytes(),
         ),
     };
-    let resp: tg::LoginExResponse =
-        decode(&auth.call(tg::TICKET_GRANTING_PROTOCOL_ID, tg::TicketGrantingProtocolMethod::LoginEx as u32, login.to_bytes()).await?)?;
+    let resp: tg::LoginExResponse = decode(
+        &auth
+            .call(tg::TICKET_GRANTING_PROTOCOL_ID, tg::TicketGrantingProtocolMethod::LoginEx as u32, login.to_bytes())
+            .await?,
+    )?;
     let pid = resp.pid_principal;
     let url = &resp.p_connection_data.url_regular_protocols;
     let secure_addr = SocketAddr::new(if url.address == "0.0.0.0" { server } else { url.address.parse()? }, url.port);
@@ -261,7 +264,11 @@ async fn request_ticket(server: IpAddr, name: &str, password: &str) -> Result<(u
             .call(
                 tg::TICKET_GRANTING_PROTOCOL_ID,
                 tg::TicketGrantingProtocolMethod::RequestTicket as u32,
-                tg::RequestTicketRequest { id_source: pid, id_target: SERVER_PID }.to_bytes(),
+                tg::RequestTicketRequest {
+                    id_source: pid,
+                    id_target: SERVER_PID,
+                }
+                .to_bytes(),
             )
             .await?,
     )?;
@@ -337,7 +344,6 @@ impl Bot {
         ticket: tg::RequestTicketResponse,
         from: IpAddr,
     ) -> Result<Bot> {
-
         // The ticket: RC4 under the account's key (the dummy password for
         // accounts with only a hash), then an HMAC we don't need to check.
         let buf = &ticket.buf_response;
@@ -391,7 +397,8 @@ impl Bot {
     /// Registers where other players reach this one (the game's own station URLs).
     pub async fn register_urls(&mut self, urls: &[&str]) -> Result<()> {
         let station_urls = QList(urls.iter().map(|u| u.parse::<StationURL>().map_err(|e| eyre!("{u}: {e:?}"))).collect::<Result<_>>()?);
-        self.gs::<gs::RegisterUrLsResponse>(gs::GameSessionProtocolMethod::RegisterUrLs, gs::RegisterUrLsRequest { station_urls }).await?;
+        self.gs::<gs::RegisterUrLsResponse>(gs::GameSessionProtocolMethod::RegisterUrLs, gs::RegisterUrLsRequest { station_urls })
+            .await?;
         Ok(())
     }
 
@@ -400,7 +407,12 @@ impl Bot {
         let resp: gs::CreateSessionResponse = self
             .gs(
                 gs::GameSessionProtocolMethod::CreateSession,
-                gs::CreateSessionRequest { game_session: GameSession { type_id: SESSION_TYPE, attributes: properties(attrs) } },
+                gs::CreateSessionRequest {
+                    game_session: GameSession {
+                        type_id: SESSION_TYPE,
+                        attributes: properties(attrs),
+                    },
+                },
             )
             .await?;
         Ok(resp.game_session_key.session_id)
@@ -408,7 +420,12 @@ impl Bot {
 
     /// Creates a session, sending the request twice (a retransmission).
     pub async fn create_session_twice(&mut self, attrs: &str) -> Result<u32> {
-        let req = gs::CreateSessionRequest { game_session: GameSession { type_id: SESSION_TYPE, attributes: properties(attrs) } };
+        let req = gs::CreateSessionRequest {
+            game_session: GameSession {
+                type_id: SESSION_TYPE,
+                attributes: properties(attrs),
+            },
+        };
         let resp: gs::CreateSessionResponse = decode(
             &self
                 .secure
@@ -424,10 +441,18 @@ impl Bot {
         use sc_bl_protocols::game_session_ex_service::game_session_ex_protocol as gsx;
         use sc_bl_protocols::game_session_service::types::GameSessionQuery;
         let req = gsx::SearchSessionsRequest {
-            game_session_query: GameSessionQuery { type_id: SESSION_TYPE, query_id: 0, parameters: properties(attrs) },
+            game_session_query: GameSessionQuery {
+                type_id: SESSION_TYPE,
+                query_id: 0,
+                parameters: properties(attrs),
+            },
         };
-        let resp: gsx::SearchSessionsResponse =
-            decode(&self.secure.call(gsx::GAME_SESSION_EX_PROTOCOL_ID, gsx::GameSessionExProtocolMethod::SearchSessions as u32, req.to_bytes()).await?)?;
+        let resp: gsx::SearchSessionsResponse = decode(
+            &self
+                .secure
+                .call(gsx::GAME_SESSION_EX_PROTOCOL_ID, gsx::GameSessionExProtocolMethod::SearchSessions as u32, req.to_bytes())
+                .await?,
+        )?;
         Ok(resp
             .search_results
             .0
@@ -460,7 +485,10 @@ impl Bot {
         let resp: gs::SearchSessionsWithParticipantsResponse = self
             .gs(
                 gs::GameSessionProtocolMethod::SearchSessionsWithParticipants,
-                gs::SearchSessionsWithParticipantsRequest { game_session_type_id: SESSION_TYPE, participant_ids: QList(pids.to_vec()) },
+                gs::SearchSessionsWithParticipantsRequest {
+                    game_session_type_id: SESSION_TYPE,
+                    participant_ids: QList(pids.to_vec()),
+                },
             )
             .await?;
         Ok(resp.search_results.0)
@@ -479,11 +507,8 @@ impl Bot {
     }
 
     pub async fn abandon_session(&mut self, session: u32) -> Result<()> {
-        self.gs::<gs::AbandonSessionResponse>(
-            gs::GameSessionProtocolMethod::AbandonSession,
-            gs::AbandonSessionRequest { game_session_key: key(session) },
-        )
-        .await?;
+        self.gs::<gs::AbandonSessionResponse>(gs::GameSessionProtocolMethod::AbandonSession, gs::AbandonSessionRequest { game_session_key: key(session) })
+            .await?;
         Ok(())
     }
 
@@ -510,7 +535,9 @@ impl Bot {
 
     /// Invites a friend (by account name) as the game's DLL does.
     pub async fn invite(&self, friend: &str) -> Result<()> {
-        FriendsClient::new(self.api.clone()).invite(self.authed(server_api::friends::InviteRequest { id: friend.into() })).await?;
+        FriendsClient::new(self.api.clone())
+            .invite(self.authed(server_api::friends::InviteRequest { id: friend.into() }))
+            .await?;
         Ok(())
     }
 
@@ -532,13 +559,18 @@ impl Bot {
 
     /// Friends as the game's friend list shows them: (name, online).
     pub async fn friends(&self) -> Result<Vec<(String, bool)>> {
-        let resp = FriendsClient::new(self.api.clone()).list(self.authed(server_api::friends::ListRequest {})).await?.into_inner();
+        let resp = FriendsClient::new(self.api.clone())
+            .list(self.authed(server_api::friends::ListRequest {}))
+            .await?
+            .into_inner();
         Ok(resp.friends.into_iter().map(|f| (f.username, f.is_online)).collect())
     }
 
     /// Tries to invite a player, returning the server's refusal if any.
     pub async fn try_invite(&self, friend: &str) -> std::result::Result<(), tonic::Status> {
-        FriendsClient::new(self.api.clone()).invite(self.authed(server_api::friends::InviteRequest { id: friend.into() })).await?;
+        FriendsClient::new(self.api.clone())
+            .invite(self.authed(server_api::friends::InviteRequest { id: friend.into() }))
+            .await?;
         Ok(())
     }
 
@@ -631,7 +663,10 @@ impl Bot {
 
     /// What the server saw of this player's last game session.
     pub async fn session_summary(&self) -> std::result::Result<server_api::misc::SessionSummaryResponse, tonic::Status> {
-        Ok(MiscClient::new(self.api.clone()).session_summary(self.authed(server_api::misc::SessionSummaryRequest {})).await?.into_inner())
+        Ok(MiscClient::new(self.api.clone())
+            .session_summary(self.authed(server_api::misc::SessionSummaryRequest {}))
+            .await?
+            .into_inner())
     }
 
     /// Sends the game's diagnostic lines, as the hooks DLL does; answers how many were kept.
@@ -650,7 +685,9 @@ impl Bot {
 
     /// Unlinks this account from its identity.
     pub async fn unlink(&self) -> std::result::Result<(), tonic::Status> {
-        FriendsClient::new(self.api.clone()).unlink_identity(self.authed(server_api::friends::UnlinkIdentityRequest {})).await?;
+        FriendsClient::new(self.api.clone())
+            .unlink_identity(self.authed(server_api::friends::UnlinkIdentityRequest {}))
+            .await?;
         Ok(())
     }
 
@@ -704,10 +741,20 @@ impl NotificationEvent {
         let (pid_source, ui_type, ui_param_1, ui_param_2) = (next()?, next()?, next()?, next()?);
         let str_param: String = s.read().map_err(|e| eyre!("{e:?}"))?;
         let ui_param_3: u32 = s.read().map_err(|e| eyre!("{e:?}"))?;
-        Ok(Self { pid_source, ui_type, ui_param_1, ui_param_2, str_param, ui_param_3 })
+        Ok(Self {
+            pid_source,
+            ui_type,
+            ui_param_1,
+            ui_param_2,
+            str_param,
+            ui_param_3,
+        })
     }
 }
 
 fn key(session_id: u32) -> GameSessionKey {
-    GameSessionKey { type_id: SESSION_TYPE, session_id }
+    GameSessionKey {
+        type_id: SESSION_TYPE,
+        session_id,
+    }
 }

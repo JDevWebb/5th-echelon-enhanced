@@ -22,9 +22,9 @@ pub mod overrides;
 pub mod player_identity;
 pub mod save;
 pub mod server_info;
+mod sys;
 pub mod update;
 pub mod wine;
-mod sys;
 
 /// The server's gRPC API port (accounts, friends, invites, admin).
 pub const API_PORT: u16 = 50051;

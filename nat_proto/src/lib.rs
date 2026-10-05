@@ -240,7 +240,11 @@ impl Message {
             OP_DATA_TO | OP_DATA_FROM => {
                 let (tag, a, offset) = data_header(data)?;
                 let payload = data[offset..].to_vec();
-                Some(if data[5] == OP_DATA_TO { Message::DataTo { tag, to: a, payload } } else { Message::DataFrom { tag, from: a, payload } })
+                Some(if data[5] == OP_DATA_TO {
+                    Message::DataTo { tag, to: a, payload }
+                } else {
+                    Message::DataFrom { tag, from: a, payload }
+                })
             }
             _ => None,
         }
@@ -431,7 +435,16 @@ mod tests {
 
     #[test]
     fn private_addresses() {
-        for ip in ["10.1.2.3", "172.16.0.1", "192.168.1.20", "100.64.0.1", "100.127.255.254", "127.0.0.1", "169.254.1.1", "0.0.0.0"] {
+        for ip in [
+            "10.1.2.3",
+            "172.16.0.1",
+            "192.168.1.20",
+            "100.64.0.1",
+            "100.127.255.254",
+            "127.0.0.1",
+            "169.254.1.1",
+            "0.0.0.0",
+        ] {
             assert!(is_private(ip.parse().unwrap()), "{ip}");
         }
         for ip in ["203.0.113.7", "100.128.0.1", "8.8.8.8", "26.1.2.3"] {

@@ -35,7 +35,9 @@ pub enum SaveState {
     Missing,
     /// Not in the layout we know: left alone.
     Unreadable,
-    Ok { xp: u32 },
+    Ok {
+        xp: u32,
+    },
 }
 
 impl SaveState {
@@ -71,7 +73,11 @@ fn split(data: &[u8]) -> Option<(&[u8], &[u8])> {
 fn is_save(data: &[u8]) -> bool {
     split(data).is_some()
         || (data.first() == Some(&1)
-            && data.get(6..10).and_then(|b| b.try_into().ok()).map(u32::from_le_bytes).is_some_and(|n| n as usize == data.len() - 10 && n > 0))
+            && data
+                .get(6..10)
+                .and_then(|b| b.try_into().ok())
+                .map(u32::from_le_bytes)
+                .is_some_and(|n| n as usize == data.len() - 10 && n > 0))
 }
 
 fn xp(xml: &[u8]) -> Option<u32> {
@@ -206,7 +212,11 @@ pub fn import_ubisoft(from: &Path, to: &Path) -> std::io::Result<Option<PathBuf>
 /// `to` is backed up first; a file that isn't a Blacklist save changes nothing.
 pub fn import_file(from: &Path, to: &Path) -> std::io::Result<Option<PathBuf>> {
     let data = std::fs::read(from)?;
-    let save = if is_save(&data) { &data[..] } else { ubisoft_payload(&data).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "that file isn't a Blacklist save"))? };
+    let save = if is_save(&data) {
+        &data[..]
+    } else {
+        ubisoft_payload(&data).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, "that file isn't a Blacklist save"))?
+    };
     if std::fs::canonicalize(from).ok() == std::fs::canonicalize(to).ok() && to.exists() {
         return Ok(None);
     }
@@ -296,7 +306,9 @@ mod tests {
     }
 
     fn ubisoft_file(xp: u32) -> Vec<u8> {
-        let base = String::from_utf8(BASE_SAVE.to_vec()).unwrap().replacen("<m_iXP> 6600</m_iXP>", &format!("<m_iXP>{xp}</m_iXP>"), 1);
+        let base = String::from_utf8(BASE_SAVE.to_vec())
+            .unwrap()
+            .replacen("<m_iXP> 6600</m_iXP>", &format!("<m_iXP>{xp}</m_iXP>"), 1);
         let mut ubisoft = 3u32.to_le_bytes().to_vec();
         ubisoft.extend(b"abc");
         ubisoft.extend(assemble(&NEW_HEADER, base.as_bytes()));
@@ -354,13 +366,25 @@ mod tests {
         let dir = temp_dir("save-prepare");
         let path = dir.join("Saves").join("00000001.sav");
         std::fs::write(dir.join("1.save"), ubisoft_file(50_000)).unwrap();
-        assert_eq!(prepare_from(&path, Some(dir.join("1.save"))).unwrap(), Prepared::Imported { from: dir.join("1.save"), raised: false });
+        assert_eq!(
+            prepare_from(&path, Some(dir.join("1.save"))).unwrap(),
+            Prepared::Imported {
+                from: dir.join("1.save"),
+                raised: false
+            }
+        );
         assert_eq!(check(&path), SaveState::Ok { xp: 50_000 }, "the player's own progress, not rank 5");
         assert_eq!(prepare_from(&path, Some(dir.join("1.save"))).unwrap(), Prepared::Ready, "a save there is never replaced");
 
         std::fs::remove_dir_all(dir.join("Saves")).unwrap();
         std::fs::write(dir.join("1.save"), ubisoft_file(10)).unwrap();
-        assert_eq!(prepare_from(&path, Some(dir.join("1.save"))).unwrap(), Prepared::Imported { from: dir.join("1.save"), raised: true });
+        assert_eq!(
+            prepare_from(&path, Some(dir.join("1.save"))).unwrap(),
+            Prepared::Imported {
+                from: dir.join("1.save"),
+                raised: true
+            }
+        );
         assert_eq!(check(&path), SaveState::Ok { xp: RANK5_XP });
 
         std::fs::remove_dir_all(dir.join("Saves")).unwrap();

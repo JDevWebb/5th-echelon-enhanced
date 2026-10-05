@@ -204,7 +204,11 @@ mod sys {
             unsafe { std::ffi::CStr::from_ptr(tm.tm_zone) }.to_string_lossy().into_owned()
         };
         // Some zones have only numbers for a name ("+13").
-        let zone = if zone.is_empty() || zone.starts_with(['+', '-']) { super::offset_name(offset) } else { zone };
+        let zone = if zone.is_empty() || zone.starts_with(['+', '-']) {
+            super::offset_name(offset)
+        } else {
+            zone
+        };
         Some(Clock {
             offset,
             zone,

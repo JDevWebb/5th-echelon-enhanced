@@ -145,7 +145,9 @@ impl Config {
             backup: take("backup", "/opt/5th-echelon/backup.sh").into(),
             database: take("database", "/var/lib/5th-echelon-coordinator/coordinator.db").into(),
             api: take("api", "https://api.cloudflare.com/client/v4"),
-            peer_scheme: Some(take("peer-scheme", "https")).filter(|s| s == "https" || s == "http").ok_or("`peer-scheme` is https or http")?,
+            peer_scheme: Some(take("peer-scheme", "https"))
+                .filter(|s| s == "https" || s == "http")
+                .ok_or("`peer-scheme` is https or http")?,
             wait: match set.remove("wait") {
                 Some(secs) => Duration::from_secs(secs.parse::<u64>().ok().filter(|s| (10..=3600).contains(s)).ok_or("`wait` is 10 to 3600 seconds")?),
                 None => WAIT,

@@ -404,7 +404,10 @@ pub async fn run(server: IpAddr, o: Options) -> Result<()> {
             e.0 += n;
             e.1 += errors;
             if n > 0 || errors > 0 {
-                line.push_str(&format!(" | {label} {n} p50 {p50:.0} p99 {p99:.0} ms{}", if errors > 0 { format!(" {errors} err") } else { String::new() }));
+                line.push_str(&format!(
+                    " | {label} {n} p50 {p50:.0} p99 {p99:.0} ms{}",
+                    if errors > 0 { format!(" {errors} err") } else { String::new() }
+                ));
             }
         }
         println!("{line}");
@@ -419,7 +422,11 @@ pub async fn run(server: IpAddr, o: Options) -> Result<()> {
 
     lat_all.sort_unstable();
     let at = |p: f64| lat_all.get(((lat_all.len().max(1) - 1) as f64 * p) as usize).map_or(0.0, |v| f64::from(*v) / 1000.0);
-    let loss = if total_sent == 0 { 0.0 } else { 100.0 * (1.0 - total_received as f64 / total_sent as f64) };
+    let loss = if total_sent == 0 {
+        0.0
+    } else {
+        100.0 * (1.0 - total_received as f64 / total_sent as f64)
+    };
     println!("--- summary");
     println!(
         "relay: {total_sent} packets sent, {total_received} delivered ({loss:.2}% lost), latency p50 {:.1} ms, p99 {:.1} ms, max {:.1} ms",

@@ -25,7 +25,10 @@ pub enum Launched {
 pub fn launch(game_dir: &Path, version: GameVersion) -> std::io::Result<Launched> {
     let exe = version.full_path(game_dir);
     if !exe.is_file() {
-        return Err(std::io::Error::new(std::io::ErrorKind::NotFound, format!("{} isn't in {}", version.executable(), game_dir.display())));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("{} isn't in {}", version.executable(), game_dir.display()),
+        ));
     }
     if cfg!(target_os = "windows") {
         let mut cmd = Command::new(exe);
@@ -48,9 +51,9 @@ pub fn launch(game_dir: &Path, version: GameVersion) -> std::io::Result<Launched
             if crate::wine::cpu_threads() > crate::wine::MAX_THREADS {
                 cmd.env("WINE_CPU_TOPOLOGY", crate::wine::cpu_topology(crate::wine::MAX_THREADS));
             }
-            cmd.spawn().map(Launched::Game).map_err(|e| {
-                std::io::Error::new(e.kind(), format!("couldn't run wine ({e}); start the game from the app you installed it with"))
-            })
+            cmd.spawn()
+                .map(Launched::Game)
+                .map_err(|e| std::io::Error::new(e.kind(), format!("couldn't run wine ({e}); start the game from the app you installed it with")))
         }
     }
 }
