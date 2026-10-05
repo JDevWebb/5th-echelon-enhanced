@@ -324,7 +324,7 @@ pub fn pick_from_network(address: &str, log: &Log) -> Result<Option<String>, Str
     }
     say(log, format!("{address} is a network of servers: finding the best one for you…"));
     crate::app::Prefs::set_directory(Some(url.clone()));
-    let crate::network::Browsed { servers, note } = rt.block_on(crate::network::server_directory(&url))?;
+    let crate::network::Browsed { servers, note, .. } = rt.block_on(crate::network::server_directory(&url))?;
     if let Some(note) = note {
         say(log, note);
     }

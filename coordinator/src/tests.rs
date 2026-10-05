@@ -178,6 +178,53 @@ async fn directory_lists_live_listed_servers_busiest_first() {
 }
 
 #[tokio::test]
+async fn the_directory_carries_a_rollout_through_its_stages() {
+    let t = start("rollout").await;
+    let beat = |id: &str, version: &str, players: u32| json!({ "name": id, "host": id, "listed": true, "auto_update": true, "version": version, "players_online": players });
+    let (quiet, busy) = (t.join("quiet").await, t.join("busy").await);
+    t.call("POST", "/v1/heartbeat", Some(&quiet), Some(beat("quiet", "1.0.0", 0))).await;
+    t.call("POST", "/v1/heartbeat", Some(&busy), Some(beat("busy", "1.0.0", 3))).await;
+    let rollout = || async { t.call("GET", "/v1/servers", None, None).await.1 };
+    assert!(rollout().await.get("rollout").is_none(), "nothing going out");
+
+    // Canary: the quietest server first.
+    t.c.start_rollout("1.1.0", "a test").await.unwrap();
+    let v = rollout().await;
+    let r = &v["rollout"];
+    assert_eq!(
+        (r["release"].as_str(), r["stage"].as_str(), r["canary"].as_str()),
+        (Some("1.1.0"), Some("canary"), Some("quiet"))
+    );
+    assert_eq!((r["healthy_for"].as_i64(), r["quiet_wait"].as_i64()), (Some(600), Some(7200)));
+    let started = r["stage_started"].as_i64().unwrap();
+    assert!((identity::now() - started).abs() < 5, "Unix seconds, now");
+    // Each server's version and players stay in its listing.
+    let busy_listing = v["servers"].as_array().unwrap().iter().find(|s| s["id"] == "busy").cloned().unwrap();
+    assert_eq!((busy_listing["version"].as_str(), busy_listing["players_online"].as_u64()), (Some("1.0.0"), Some(3)));
+
+    // Verifying: the canary runs it.
+    t.call("POST", "/v1/heartbeat", Some(&quiet), Some(beat("quiet", "1.1.0", 0))).await;
+    t.c.tick_rollout().await.unwrap();
+    assert_eq!(rollout().await["rollout"]["stage"], "verifying");
+
+    // Rolling: healthy long enough.
+    sqlx::query("UPDATE rollout SET stage_since = stage_since - 601").execute(&t.c.pool).await.unwrap();
+    t.call("POST", "/v1/heartbeat", Some(&quiet), Some(beat("quiet", "1.1.0", 0))).await;
+    t.c.tick_rollout().await.unwrap();
+    assert_eq!(rollout().await["rollout"]["stage"], "rolling");
+
+    // Paused: not shown.
+    t.c.set_paused(true).await.unwrap();
+    assert!(rollout().await.get("rollout").is_none(), "paused");
+    t.c.set_paused(false).await.unwrap();
+
+    // Done: every server runs it, and the directory says nothing more.
+    t.call("POST", "/v1/heartbeat", Some(&busy), Some(beat("busy", "1.1.0", 3))).await;
+    t.c.tick_rollout().await.unwrap();
+    assert!(rollout().await.get("rollout").is_none(), "done");
+}
+
+#[tokio::test]
 async fn friends_made_on_one_server_reach_another() {
     let t = start("sync").await;
     let (a, b) = (t.join("server-a").await, t.join("server-b").await);

@@ -593,6 +593,9 @@ impl eframe::App for App {
             }
         }
         self.keep_up_to_date(ctx);
+        // The update notice offers a newer launcher (not when another tool updates it).
+        let managed = self.game.as_ref().is_some_and(|g| g.managed.is_some());
+        self.play.newer_launcher = self.latest.as_ref().filter(|l| l.newer() && !managed).map(|l| l.version.clone());
         if let Some((code, checks)) = self.play.take_closed() {
             if let Some(game) = &self.game {
                 self.feedback.game_closed(ctx, game.dir.clone(), code, checks);

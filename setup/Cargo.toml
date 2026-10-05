@@ -24,6 +24,7 @@ libc = { workspace = true }
 version = "0.54.0"
 features = [
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_Networking_WinSock",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",
@@ -32,6 +33,7 @@ features = [
     "Win32_System_Diagnostics_ToolHelp",
     "Win32_System_Memory",
     "Win32_System_Registry",
+    "Win32_System_Time",
     "Win32_UI_Shell",
     "Win32_System_Com",
 ]

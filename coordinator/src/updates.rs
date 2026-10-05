@@ -38,11 +38,11 @@ const SERVER_ASSET: &str = "dedicated_server-linux-x86_64";
 /// How often GitHub is asked for a new release.
 pub const CHECK_EVERY: Duration = Duration::from_secs(10 * 60);
 /// The canary must keep reporting in on the new release this long.
-const HEALTHY_FOR: i64 = 10 * 60;
+pub(crate) const HEALTHY_FOR: i64 = 10 * 60;
 /// A canary that hasn't updated after this long halts the rollout.
 const CANARY_TIMEOUT: i64 = 3 * 3600;
 /// Servers with players on are updated anyway this long into a stage.
-const QUIET_WAIT: i64 = 2 * 3600;
+pub(crate) const QUIET_WAIT: i64 = 2 * 3600;
 /// Seen this recently, a server counts as up.
 const FRESH: i64 = 180;
 /// A server still behind this long after a rollout finished is delisted.
@@ -504,6 +504,25 @@ fn release_page(version: &str, page: &str) -> String {
     } else {
         format!("https://github.com/{REPO}/releases/tag/v{version}")
     }
+}
+
+/// The rollout as launchers see it in the directory, while a release is going out (none
+/// when it's done, halted or paused): the release, the stage and when it began (Unix
+/// seconds, UTC), the canary, and the rule's times, so a launcher can tell its player when
+/// their server updates.
+pub fn public_rollout(r: &Rollout) -> Option<Value> {
+    let release = r.target.as_deref()?;
+    if r.paused || !matches!(r.stage.as_str(), "canary" | "verifying" | "rolling") {
+        return None;
+    }
+    Some(serde_json::json!({
+        "release": release,
+        "stage": r.stage,
+        "stage_started": r.stage_since,
+        "canary": r.canary,
+        "healthy_for": HEALTHY_FOR,
+        "quiet_wait": QUIET_WAIT,
+    }))
 }
 
 /// Why the directory leaves a server out, if it does: it doesn't install

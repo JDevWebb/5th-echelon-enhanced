@@ -19,6 +19,7 @@ mod services;
 mod settings;
 mod task;
 mod theme;
+mod update_notice;
 mod updater;
 
 /// The logo, as egui wants it.

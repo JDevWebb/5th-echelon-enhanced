@@ -63,6 +63,13 @@ pub struct Play {
     /// Why the directory couldn't be read, or that the servers are its last list,
     /// shown quietly with the servers.
     directory_error: Option<String>,
+    /// When the directory was last read, and the release it says is going out.
+    browsed_at: Option<Instant>,
+    rollout: Option<setup::directory::Rollout>,
+    /// The player's server as the directory last listed it (it leaves the list while it restarts).
+    my_listing: Option<setup::directory::Listing>,
+    /// A newer launcher, when the app found one (for the update notice).
+    pub(crate) newer_launcher: Option<String>,
 
     /// The setup: how it ended, the server it set up, and whether a network's directory chose it.
     setup: Slot<Result<(flow::Done, String, bool), String>>,
@@ -334,7 +341,7 @@ fn found_list(play: &mut Play, ui: &mut egui::Ui) {
 fn poll_directory(play: &mut Play) {
     if let Some(found) = play.browsing.poll() {
         match found {
-            Ok(crate::network::Browsed { servers, note }) => {
+            Ok(crate::network::Browsed { servers, note, rollout }) => {
                 if play.server.trim().is_empty() || play.server_picked {
                     if let Some(best) = setup::directory::best(&servers) {
                         play.server = servers[best].0.host.clone();
@@ -343,6 +350,7 @@ fn poll_directory(play: &mut Play) {
                 }
                 play.directory = Some(servers);
                 play.directory_error = note;
+                play.rollout = rollout;
             }
             Err(e) => play.directory_error = Some(format!("The server directory couldn't be read: {e}")),
         }
@@ -357,6 +365,7 @@ fn auto_browse(play: &mut Play, ctx: &egui::Context) {
     }
     if let Some(url) = crate::app::Prefs::directory() {
         play.browsed = true;
+        play.browsed_at = Some(Instant::now());
         play.browsing.start(ctx, move || crate::services::rt().block_on(crate::network::server_directory(&url)));
     }
 }
@@ -574,6 +583,7 @@ fn find_on_network(play: &mut Play, ctx: &egui::Context) {
 }
 
 fn ping_again(play: &mut Play, ctx: &egui::Context, url: String) {
+    play.browsed_at = Some(Instant::now());
     play.browsing.start(ctx, move || crate::services::rt().block_on(crate::network::server_directory(&url)));
 }
 
@@ -804,7 +814,21 @@ fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Con
             });
     }
     hero(play, game, &mut to, ui);
-    launch_bar(play, game, notices, &mut to, ui);
+    let notice = update_notice(play, game, ctx);
+    launch_bar(play, game, notices, notice.as_ref(), &mut to, ui);
+    if let Some(notice) = &notice {
+        match crate::update_notice::show(ui, notice) {
+            Some(crate::update_notice::Action::UpdateLauncher) => play.update_asked = true,
+            Some(crate::update_notice::Action::PlayOn { host, .. }) if !play.busy() => {
+                play.server = host;
+                play.server_picked = false;
+                play.needs_name = None;
+                let name = game.cfg.current_profile().map(|p| p.user.username.clone()).filter(|n| !n.is_empty());
+                start_setup(play, game, ctx, notices, name, true);
+            }
+            _ => {}
+        }
+    }
     theme::page().inner_margin(egui::Margin::symmetric(32, 22)).show(ui, |ui| {
         let gap = 16.0;
         let width = ((ui.available_width() - 2.0 * gap) / 3.0).floor();
@@ -816,6 +840,44 @@ fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Con
         });
     });
     to
+}
+
+/// The notice of a release going out to the network's servers, if there's one for this
+/// player; the directory is read again while it shows (every minute, or 15 s while their
+/// server restarts).
+fn update_notice(play: &mut Play, game: &Game, ctx: &egui::Context) -> Option<crate::update_notice::Notice> {
+    if game.managed.is_some() {
+        return None;
+    }
+    let current = game.cfg.current_profile().map(|p| p.server.clone()).filter(|s| !s.is_empty())?;
+    let servers = play.directory.clone().unwrap_or_default();
+    let listed = servers.iter().find(|(s, _)| s.host == current).cloned();
+    if let Some((listing, _)) = &listed {
+        play.my_listing = Some(listing.clone());
+    }
+    // Gone from the list while it restarts: as it was last listed, not answering.
+    let mine = listed.or_else(|| play.my_listing.clone().filter(|l| l.host == current && play.rollout.is_some()).map(|l| (l, None)));
+    let clock = setup::clock::Clock::local();
+    let notice = crate::update_notice::notice(&crate::update_notice::Input {
+        rollout: play.rollout.as_ref(),
+        servers: &servers,
+        mine: mine.as_ref().map(|(l, ping)| (l, *ping)),
+        launcher: env!("FE_RELEASE"),
+        newer_launcher: play.newer_launcher.as_deref(),
+        now: identity::now(),
+        clock: &clock,
+    });
+    if play.rollout.is_some() || notice.is_some() {
+        let every = notice.as_ref().map_or(std::time::Duration::from_secs(60), crate::update_notice::Notice::refresh_every);
+        let due = play.browsed_at.is_none_or(|t| t.elapsed() >= every);
+        if due && !play.browsing.running() && !play.setup.running() {
+            if let Some(url) = crate::app::Prefs::directory() {
+                ping_again(play, ctx, url);
+            }
+        }
+        ctx.request_repaint_after(every);
+    }
+    notice
 }
 
 /// Starts reading one of the game's loading screens for the banner (a
@@ -965,7 +1027,7 @@ fn readiness(play: &Play) -> (egui::Color32, String) {
 }
 
 /// The bar under the banner: the server you're on, how ready you are, and Play.
-fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, to: &mut Option<Go>, ui: &mut egui::Ui) {
+fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: Option<&crate::update_notice::Notice>, to: &mut Option<Go>, ui: &mut egui::Ui) {
     let profile = game.cfg.current_profile().cloned().unwrap_or_default();
     let listing = play.directory.as_ref().and_then(|d| d.iter().find(|(s, _)| s.host == profile.server)).cloned();
     let playing = play.game_seen || play.running.is_some();
@@ -1083,12 +1145,17 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, to: &mut 
             }
             play.menu_focus = focus;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                play_button(play, game, notices, ui);
+                play_button(play, game, notices, notice.and_then(|n| n.blocks_play.as_deref()), ui);
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    let (color, text) = readiness(play);
+                    // A release going out says what it means for playing now.
+                    let (color, text) = match notice {
+                        Some(n) if n.kind == crate::update_notice::Kind::Updating => (theme::WARN, n.status.clone()),
+                        Some(n) => (theme::BAD, n.status.clone()),
+                        None => readiness(play),
+                    };
                     let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
                     ui.painter().circle_filled(rect.center(), 5.0, color);
-                    ui.label(RichText::new(text).size(15.0));
+                    ui.add(egui::Label::new(RichText::new(&text).size(15.0)).truncate()).on_hover_text(&text);
                 });
             });
         });
@@ -1812,14 +1879,16 @@ fn support_row(play: &mut Play, game: &Game, notices: &mut Notices, ctx: &egui::
     });
 }
 
-fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
+fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked: Option<&str>, ui: &mut egui::Ui) {
     let ready = !play.checks.is_empty() && setup::diagnose::ready(&play.checks) && !matches!(play.support, Some(Support::Unsupported(_)));
     if play.running.is_some() || play.game_seen {
         ui.add_enabled(false, theme::play_button("Playing"));
         return;
     }
-    let button = ui.add_enabled(!play.busy(), theme::play_button("Play"));
-    let button = if !ready && !play.checks.is_empty() {
+    let button = ui.add_enabled(!play.busy() && blocked.is_none(), theme::play_button("Play"));
+    let button = if let Some(why) = blocked {
+        button.on_disabled_hover_text(why)
+    } else if !ready && !play.checks.is_empty() {
         button.on_hover_text("Some checks failed; the game may not connect.")
     } else {
         button

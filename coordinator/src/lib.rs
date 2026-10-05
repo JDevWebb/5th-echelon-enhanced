@@ -6,7 +6,8 @@
 //!
 //! * `POST /v1/heartbeat`: a server's directory entry (name, region, address,
 //!   ports, players online), every 30 seconds.
-//! * `GET /v1/servers`: the directory, for launchers (no sign-in).
+//! * `GET /v1/servers`: the directory, for launchers (no sign-in), with the rollout of a
+//!   release while one is going out.
 //! * `POST /v1/changes`: a server's friend changes, in order: links of
 //!   accounts to identities (signed by the player, checked here), friendships
 //!   and blocks between players linked on that server.
@@ -1456,7 +1457,12 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
         })
         .collect();
     list.sort_by_key(|v| std::cmp::Reverse(v["players_online"].as_u64().unwrap_or(0)));
-    ok(json!({ "servers": list }))
+    // A release going out: launchers tell their players when their server updates.
+    let mut answer = json!({ "servers": list });
+    if let Some(rollout) = updates::public_rollout(&rollout) {
+        answer["rollout"] = rollout;
+    }
+    ok(answer)
 }
 
 async fn changes(State(c): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {

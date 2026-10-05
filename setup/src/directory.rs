@@ -71,6 +71,55 @@ pub fn parse(json: &str) -> anyhow::Result<Vec<Listing>> {
         .collect())
 }
 
+/// A release going out to the network's servers, as the directory says while it lasts.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Rollout {
+    pub release: String,
+    pub stage: Stage,
+    /// When the stage began (Unix seconds).
+    pub stage_started: i64,
+    /// The server it's tried on first (its id).
+    pub canary: Option<String>,
+    /// How long the first server must run it fine before the rest update (seconds).
+    pub healthy_for: i64,
+    /// How long into the last stage a server with players on is updated anyway (seconds).
+    pub quiet_wait: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Stage {
+    /// The first server is installing it.
+    Canary,
+    /// The first server runs it, and must keep running fine for `healthy_for`.
+    Verifying,
+    /// Every other server updates, as soon as nobody is playing on it.
+    Rolling,
+}
+
+/// The rollout in a directory's answer, if one is going out (and it reads as one).
+pub fn parse_rollout(json: &str) -> Option<Rollout> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    let r = v.get("rollout")?;
+    let release = r["release"].as_str().filter(|t| !t.is_empty() && t.len() <= 32 && t.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-')))?;
+    let stage = match r["stage"].as_str()? {
+        "canary" => Stage::Canary,
+        "verifying" => Stage::Verifying,
+        "rolling" => Stage::Rolling,
+        _ => return None,
+    };
+    let within = |key: &str, max: i64| r[key].as_i64().filter(|n| (0..=max).contains(n));
+    Some(Rollout {
+        release: release.to_string(),
+        stage,
+        stage_started: within("stage_started", i64::MAX).filter(|t| *t > 0)?,
+        canary: r["canary"].as_str().map(|c| clean(c)).filter(|c| !c.is_empty()),
+        healthy_for: within("healthy_for", DAY)?,
+        quiet_wait: within("quiet_wait", 7 * DAY)?,
+    })
+}
+
+const DAY: i64 = 86_400;
+
 /// Whether `host` may be offered to players by a server or a directory: a
 /// host name, or an address on the internet (never this PC or its network).
 /// A name that resolves into a private network is caught when it's used
@@ -219,6 +268,31 @@ pub fn ago(secs: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rollouts_read_from_the_directory() {
+        let json = r#"{"servers":[],"rollout":{"release":"0.4.2","stage":"verifying","stage_started":1791189000,"canary":"eu","healthy_for":600,"quiet_wait":7200}}"#;
+        assert_eq!(
+            parse_rollout(json),
+            Some(Rollout {
+                release: "0.4.2".into(),
+                stage: Stage::Verifying,
+                stage_started: 1_791_189_000,
+                canary: Some("eu".into()),
+                healthy_for: 600,
+                quiet_wait: 7200,
+            })
+        );
+        assert_eq!(parse_rollout(r#"{"servers":[]}"#), None, "nothing going out");
+        for bad in [
+            r#"{"rollout":{"release":"0.4.2","stage":"done","stage_started":1,"healthy_for":600,"quiet_wait":7200}}"#,
+            r#"{"rollout":{"release":"<b>","stage":"rolling","stage_started":1,"healthy_for":600,"quiet_wait":7200}}"#,
+            r#"{"rollout":{"release":"0.4.2","stage":"rolling","stage_started":1,"healthy_for":-1,"quiet_wait":7200}}"#,
+            r#"{"rollout":{"release":"0.4.2","stage":"rolling","stage_started":"soon","healthy_for":600,"quiet_wait":7200}}"#,
+        ] {
+            assert_eq!(parse_rollout(bad), None, "{bad}");
+        }
+    }
 
     fn listing(name: &str, players: u32) -> Listing {
         Listing {

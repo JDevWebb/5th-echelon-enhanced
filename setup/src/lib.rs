@@ -8,6 +8,7 @@
 //! small stand-ins elsewhere.
 
 pub mod account;
+pub mod clock;
 pub mod config;
 pub mod diagnose;
 pub mod directory;
