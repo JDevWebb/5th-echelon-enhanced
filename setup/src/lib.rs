@@ -20,6 +20,7 @@ pub mod launch;
 pub mod net;
 pub mod overrides;
 pub mod player_identity;
+pub mod roadmap;
 pub mod save;
 pub mod server_info;
 mod sys;

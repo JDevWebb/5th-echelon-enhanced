@@ -13,6 +13,7 @@ mod logging;
 mod maintenance;
 mod network;
 mod play;
+mod roadmap;
 mod scale;
 mod server;
 mod server_menu;

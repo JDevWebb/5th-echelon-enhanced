@@ -312,6 +312,7 @@ pub enum Icon {
     Play,
     Servers,
     News,
+    Roadmap,
     Host,
     Settings,
 }
@@ -338,6 +339,18 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: Colo
             for (y, x) in [(8.0, 17.0), (11.0, 17.0), (14.5, 17.0), (17.0, 13.0)] {
                 let from = if y < 12.0 { 13.5 } else { 7.0 };
                 painter.line_segment([p(from, y), p(x, y)], s);
+            }
+        }
+        Icon::Roadmap => {
+            // A plan: three bars staggered in time, the first one filled (shipping).
+            for (i, (from, to)) in [(3.0, 12.0), (8.0, 17.0), (13.0, 21.0)].into_iter().enumerate() {
+                let y = 5.0 + 6.0 * i as f32;
+                let bar = egui::Rect::from_min_max(p(from, y - 1.8), p(to, y + 1.8));
+                if i == 0 {
+                    painter.rect_filled(bar, 2, color);
+                } else {
+                    painter.rect_stroke(bar, 2, s, egui::StrokeKind::Middle);
+                }
             }
         }
         Icon::Host => {

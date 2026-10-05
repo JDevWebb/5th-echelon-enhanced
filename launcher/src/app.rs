@@ -45,6 +45,8 @@ pub enum View {
     Servers,
     /// The server's news.
     News,
+    /// What's being built, and suggestions for it.
+    Roadmap,
     Settings,
     /// Hosting a server of your own.
     Server,
@@ -324,6 +326,7 @@ pub struct App {
     marks: Option<[egui::TextureHandle; 2]>,
     settings: Settings,
     server: Server,
+    roadmap: crate::roadmap::Roadmap,
     /// The latest release, once looked up.
     pub latest: Option<crate::updater::Latest>,
     pub checking: Slot<anyhow::Result<crate::updater::Latest>>,
@@ -360,6 +363,7 @@ impl App {
             marks: None,
             settings: Settings::default(),
             server: Server::default(),
+            roadmap: crate::roadmap::Roadmap::default(),
             latest: None,
             checking: Slot::default(),
             updating: Slot::default(),
@@ -532,6 +536,7 @@ impl App {
                         (View::Play, theme::Icon::Play, "Play"),
                         (View::Servers, theme::Icon::Servers, "Servers"),
                         (View::News, theme::Icon::News, "News"),
+                        (View::Roadmap, theme::Icon::Roadmap, "Roadmap"),
                         (View::Server, theme::Icon::Host, "Host"),
                         (View::Settings, theme::Icon::Settings, "Settings"),
                     ] {
@@ -671,6 +676,7 @@ impl eframe::App for App {
             self.view = View::Play;
         }
         crate::play::show_account_dialog(self, ctx);
+        self.roadmap.tick(ctx, &mut self.notices);
         if let Some(Err(e)) = self.updating.poll() {
             match self.updating_activity.take() {
                 Some(a) => {
@@ -689,6 +695,7 @@ impl eframe::App for App {
             View::Play => crate::play::show(self, ui),
             View::Servers => crate::play::show_servers(self, ui),
             View::News => crate::play::show_news(self, ui),
+            View::Roadmap => crate::roadmap::show(self, ui),
             View::Settings => crate::settings::show(self, ui),
             View::Server => {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -718,6 +725,10 @@ impl App {
 
     pub fn server_mut(&mut self) -> (&mut Server, &mut Notices) {
         (&mut self.server, &mut self.notices)
+    }
+
+    pub fn roadmap_mut(&mut self) -> (&mut crate::roadmap::Roadmap, &Option<Game>, &mut Notices) {
+        (&mut self.roadmap, &self.game, &mut self.notices)
     }
 }
 
