@@ -49,6 +49,11 @@ pub const RELEASES: &[Release] = &[Release {
             community: false,
         },
         Item {
+            title: "Know when other players can't reach you",
+            text: "If the server stops hearing from your game, the overlay says so, with what to do. F5 shows your ping to the server.",
+            community: false,
+        },
+        Item {
             title: "Your account is made for you",
             text: "On a community server you haven't played on, with the name you use everywhere.",
             community: true,
