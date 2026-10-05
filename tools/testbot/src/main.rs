@@ -1021,6 +1021,156 @@ async fn second_sign_in(ctx: &mut Ctx) -> Result<()> {
     friend.disconnect().await
 }
 
+/// How a test player reaches other players: no word with the NAT helper (a LAN, or a hook
+/// that never registered), a direct address, or through the server's relay.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Reach {
+    Unregistered,
+    Direct,
+    Relayed,
+}
+
+/// A game that loses the server mid-session signs in again from the same address and ports
+/// while its old connection is still open there (the server only notices it's gone after a
+/// minute): at once or after a few quiet seconds, with a new PRUDP session number or, by
+/// chance, the old one; for a player reached directly, through the relay, or not registered
+/// with the NAT helper at all. Each time it's signed in and served, registers with the NAT
+/// helper again, can be reached, and friends find the lobby it makes; once the old
+/// connections time out, the lobbies the dropped games made are gone and nothing of the new
+/// game's is. Every problem is listed, not just the first.
+async fn reconnect(ctx: &mut Ctx) -> Result<()> {
+    let mut cases = vec![];
+    for reach in [Reach::Unregistered, Reach::Direct, Reach::Relayed] {
+        cases.push((reach, ctx.player("Dropped").await?, ctx.player("Friend").await?));
+    }
+    let server = ctx.server;
+    let mut runs = cases.into_iter().map(|(reach, a, friend)| reconnect_case(server, reach, a, friend));
+    let (Some(x), Some(y), Some(z)) = (runs.next(), runs.next(), runs.next()) else {
+        unreachable!()
+    };
+    let (x, y, z) = tokio::join!(x, y, z);
+    let problems: Vec<String> = [x, y, z].into_iter().flat_map(|r| r.unwrap_or_else(|e| vec![format!("{e}")])).collect();
+    for p in &problems {
+        println!("  {p}");
+    }
+    ensure!(problems.is_empty(), "{} problem(s) reconnecting", problems.len());
+    Ok(())
+}
+
+/// The NAT helper registration of a player reached as `reach`, from `socket` (the game's
+/// Storm socket, the same port across restarts).
+async fn reconnect_register(server: IpAddr, reach: Reach, socket: &tokio::net::UdpSocket, bot: &Bot) -> Result<Option<testbot::bot::NatRegistration>> {
+    let flags = match reach {
+        Reach::Unregistered => return Ok(None),
+        Reach::Direct => 0,
+        Reach::Relayed => nat_proto::probe_flags::WANT_RELAY,
+    };
+    let r = testbot::bot::nat_register(socket, nat_addr(server, false)?, flags, &bot.name, bot.nat_ticket).await?;
+    ensure!(r.relayed == (reach == Reach::Relayed), "registered as relayed: {}", r.relayed);
+    Ok(Some(r))
+}
+
+/// Whether a packet `friend` sends through the relay to `to` reaches `socket`.
+async fn reconnect_relays(
+    server: IpAddr,
+    from: &tokio::net::UdpSocket,
+    from_reg: &testbot::bot::NatRegistration,
+    to: &tokio::net::UdpSocket,
+    to_reg: &testbot::bot::NatRegistration,
+) -> Result<bool> {
+    use nat_proto::Message;
+    let payload = rand::random::<u64>().to_be_bytes().to_vec();
+    let msg = Message::DataTo {
+        tag: from_reg.tag,
+        to: to_reg.advertise,
+        payload: payload.clone(),
+    };
+    from.send_to(&msg.encode(), nat_addr(server, false)?).await?;
+    Ok(matches!(nat_wait_data(to, Duration::from_secs(2)).await, Some(Message::DataFrom { payload: p, .. }) if p == payload))
+}
+
+async fn reconnect_case(server: IpAddr, reach: Reach, mut a: Bot, mut friend: Bot) -> Result<Vec<String>> {
+    let mut problems = vec![];
+    let a_nat = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+    let f_nat = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+    let mut a_reg = reconnect_register(server, reach, &a_nat, &a).await?;
+    // The friend is reached the same way (a relayed player's friends often are too).
+    let mut f_reg = reconnect_register(server, reach, &f_nat, &friend).await?;
+    a.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
+    let mut lobby = a.create_session(LOBBY).await?;
+    a.add_participants(lobby, &[a.pid], &[]).await?;
+    let mut lost = vec![];
+    for (quiet, same_session) in [(0, false), (0, true), (6, false), (6, true)] {
+        let how = format!(
+            "{reach:?}, reconnecting after {quiet} s with {} session number",
+            if same_session { "the same" } else { "a new" }
+        );
+        let name = a.name.clone();
+        a = match a.reconnect(server, PASSWORD, Duration::from_secs(quiet), same_session).await {
+            Ok(a) => a,
+            Err(e) => {
+                problems.push(format!("{how}: {e}"));
+                // Started again: another port, so the case goes on.
+                Bot::login(server, &name, PASSWORD).await?
+            }
+        };
+        if let Err(e) = a.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await {
+            problems.push(format!("{how}: the game service didn't serve the new connection: {e}"));
+            continue;
+        }
+        if reach != Reach::Unregistered {
+            match reconnect_register(server, reach, &a_nat, &a).await {
+                Ok(r) => a_reg = r,
+                Err(e) => problems.push(format!("{how}: registering with the NAT helper again: {e}")),
+            }
+        }
+        if let (Reach::Relayed, Some(ar), Some(fr)) = (reach, &a_reg, &f_reg) {
+            if !reconnect_relays(server, &f_nat, fr, &a_nat, ar).await? {
+                problems.push(format!("{how}: the relay doesn't reach the reconnected player"));
+            }
+            if !reconnect_relays(server, &a_nat, ar, &f_nat, fr).await? {
+                problems.push(format!("{how}: the reconnected player's packets aren't relayed"));
+            }
+        }
+        lost.push(lobby);
+        lobby = a.create_session(LOBBY).await?;
+        a.add_participants(lobby, &[a.pid], &[]).await?;
+        if !has_session(&friend.search_with_participants(&[a.pid]).await?, lobby) {
+            problems.push(format!("{how}: friends don't find the new lobby"));
+        }
+    }
+    // The old connections time out (a minute without a packet) and the old NAT helper
+    // registrations (90 s): the new game keeps talking, as a game's own traffic does.
+    let until = std::time::Instant::now() + Duration::from_secs(100);
+    while std::time::Instant::now() < until {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        a.search_sessions("113 => 1;103 => 0").await?;
+        friend.search_sessions("113 => 1;103 => 0").await?;
+        if reach != Reach::Unregistered {
+            a_reg = reconnect_register(server, reach, &a_nat, &a).await.map_err(|e| eyre!("{reach:?}: re-probing: {e}"))?;
+            f_reg = reconnect_register(server, reach, &f_nat, &friend).await.map_err(|e| eyre!("{reach:?}: re-probing: {e}"))?;
+        }
+    }
+    let found = friend.search_with_participants(&[a.pid]).await?;
+    if !has_session(&found, lobby) {
+        problems.push(format!("{reach:?}: the old connections timing out took the new game's lobby with them"));
+    }
+    let stale: Vec<u32> = lost.into_iter().filter(|l| has_session(&found, *l)).collect();
+    if !stale.is_empty() {
+        problems.push(format!(
+            "{reach:?}: the old connections timed out, but friends still find the lobbies the dropped games made ({stale:?})"
+        ));
+    }
+    if let (Reach::Relayed, Some(ar), Some(fr)) = (reach, &a_reg, &f_reg) {
+        if !reconnect_relays(server, &f_nat, fr, &a_nat, ar).await? || !reconnect_relays(server, &a_nat, ar, &f_nat, fr).await? {
+            problems.push(format!("{reach:?}: once the old registrations expired, the relay no longer carries the reconnected player"));
+        }
+    }
+    a.disconnect().await?;
+    friend.disconnect().await?;
+    Ok(problems)
+}
+
 /// A ticket works only from the address that asked for it: someone who saw it (and the
 /// CONNECT) on the way can't sign in with it from elsewhere. Needs a server on loopback,
 /// where 127.0.0.2 is another address.
@@ -1434,6 +1584,7 @@ const SCENARIOS: &[&str] = &[
     "presence",
     "slow-handshake",
     "second-sign-in",
+    "reconnect",
     "ticket-elsewhere",
     "private-room-join",
     "split-limits",
@@ -1508,7 +1659,11 @@ async fn main() -> Result<()> {
     };
     let mut failed = 0;
     for name in names {
-        let limit = if name == "federation" { 300 } else { 30 };
+        let limit = match name {
+            "federation" => 300,
+            "reconnect" => 180,
+            _ => 30,
+        };
         let result = tokio::time::timeout(Duration::from_secs(limit), async {
             match name {
                 "login" => login(&mut ctx).await,
@@ -1534,6 +1689,7 @@ async fn main() -> Result<()> {
                 "presence" => presence(&mut ctx).await,
                 "slow-handshake" => slow_handshake(&mut ctx).await,
                 "second-sign-in" => second_sign_in(&mut ctx).await,
+                "reconnect" => reconnect(&mut ctx).await,
                 "ticket-elsewhere" => ticket_elsewhere(&mut ctx).await,
                 "private-room-join" => private_room_join(&mut ctx).await,
                 "split-limits" => split_limits(&mut ctx).await,

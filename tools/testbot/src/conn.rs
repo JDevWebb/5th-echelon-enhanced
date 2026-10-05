@@ -83,12 +83,18 @@ impl Conn {
 
     /// [`Self::connect`] from a socket bound to `bind`.
     pub async fn connect_from(bind: SocketAddr, server: SocketAddr, connect_payload: Vec<u8>) -> Result<(Conn, Vec<u8>)> {
+        Self::connect_as(bind, server, connect_payload, rand::random()).await
+    }
+
+    /// [`Self::connect_from`] with PRUDP session number `session_id` (the game picks one at
+    /// random for each connection).
+    pub async fn connect_as(bind: SocketAddr, server: SocketAddr, connect_payload: Vec<u8>, session_id: u8) -> Result<(Conn, Vec<u8>)> {
         let socket = UdpSocket::bind(bind).await?;
         socket.connect(server).await?;
         let mut c = Conn {
             ctx: Context::splinter_cell_blacklist(),
             socket,
-            session_id: rand::random(),
+            session_id,
             server_signature: 0,
             sequence: 0,
             next_call_id: 1,
@@ -313,6 +319,16 @@ impl Conn {
             }
         }
         Ok(false)
+    }
+
+    /// The address and port this connection sends from.
+    pub fn local_addr(&self) -> Result<SocketAddr> {
+        Ok(self.socket.local_addr()?)
+    }
+
+    /// This connection's PRUDP session number.
+    pub fn session_id(&self) -> u8 {
+        self.session_id
     }
 
     /// Says goodbye (the server then cleans up this connection's state).

@@ -327,7 +327,22 @@ impl Bot {
     pub async fn login_from(server: IpAddr, name: &str, password: &str, secure_from: IpAddr) -> Result<Bot> {
         let (api, signed_in) = api_sign_in(server, name, password, GAME_CLIENT).await?;
         let (pid, secure_addr, ticket) = request_ticket(server, name, password).await?;
-        Self::connect_secure(api, signed_in, name, pid, secure_addr, ticket, secure_from).await
+        Self::connect_secure(api, signed_in, name, pid, secure_addr, ticket, SocketAddr::new(secure_from, 0), None).await
+    }
+
+    /// The game loses the server without a goodbye, stays quiet for `quiet`, then signs in
+    /// again (LoginEx, a ticket, the secure server) from the same address and port, as a game
+    /// does after a drop: its old connection is still open on the server. With
+    /// `same_session`, the new connection also has the old one's PRUDP session number.
+    pub async fn reconnect(self, server: IpAddr, password: &str, quiet: Duration, same_session: bool) -> Result<Bot> {
+        let from = self.secure.local_addr()?;
+        let session = same_session.then(|| self.secure.session_id());
+        let name = self.name.clone();
+        drop(self);
+        tokio::time::sleep(quiet).await;
+        let (api, signed_in) = api_sign_in(server, &name, password, GAME_CLIENT).await?;
+        let (pid, secure_addr, ticket) = request_ticket(server, &name, password).await?;
+        Self::connect_secure(api, signed_in, &name, pid, secure_addr, ticket, from, session).await
     }
 
     /// The game's own sign-in (LoginEx and a ticket) and nothing else: no client signing in
@@ -343,6 +358,7 @@ impl Bot {
         request_ticket(server, name, password).await.map(|_| ())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn connect_secure(
         api: Channel,
         login: server_api::users::LoginResponse,
@@ -350,7 +366,8 @@ impl Bot {
         pid: u32,
         secure_addr: SocketAddr,
         ticket: tg::RequestTicketResponse,
-        from: IpAddr,
+        from: SocketAddr,
+        session: Option<u8>,
     ) -> Result<Bot> {
         // The ticket: RC4 under the account's key (the dummy password for
         // accounts with only a hash), then an HMAC we don't need to check.
@@ -369,7 +386,7 @@ impl Bot {
         connect_data.extend(challenge.to_bytes());
         let mut payload = sealed.to_bytes();
         payload.extend(crypt_key(&session_key, &connect_data).to_bytes());
-        let (secure, answer) = Conn::connect_from(SocketAddr::new(from, 0), secure_addr, payload).await?;
+        let (secure, answer) = Conn::connect_as(from, secure_addr, payload, session.unwrap_or_else(rand::random)).await?;
         let answer: Vec<u8> = decode(&answer).map_err(|_| eyre!("the secure server rejected the ticket"))?;
         if decode::<u32>(&answer)? != challenge.wrapping_add(1) {
             bail!("the secure server answered the challenge wrongly");
