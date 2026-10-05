@@ -214,13 +214,87 @@ pub fn user_handle(credential: &Value) -> Option<Vec<u8>> {
     credential["response"]["userHandle"].as_str().filter(|h| !h.is_empty()).and_then(|h| from_b64url(h).ok())
 }
 
+/// A software authenticator with a P-256 key, as a browser's passkey would answer, for tests.
+#[cfg(test)]
+pub(crate) struct SoftAuthenticator {
+    key: ring::signature::EcdsaKeyPair,
+    pub id: Vec<u8>,
+    pub count: u32,
+}
+
+#[cfg(test)]
+impl SoftAuthenticator {
+    pub const VERIFIED: u8 = FLAG_UP | FLAG_UV;
+    pub const PRESENT_ONLY: u8 = FLAG_UP;
+
+    /// A new key, with credential id `id`.
+    pub fn new(id: &[u8]) -> Self {
+        use ring::signature::EcdsaKeyPair;
+        use ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING;
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = EcdsaKeyPair::generate_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
+        let key = EcdsaKeyPair::from_pkcs8(&ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng).unwrap();
+        Self { key, id: id.to_vec(), count: 0 }
+    }
+
+    /// The public key, uncompressed.
+    pub fn public_key(&self) -> Vec<u8> {
+        use ring::signature::KeyPair as _;
+        self.key.public_key().as_ref().to_vec()
+    }
+
+    fn auth_data(&self, rp_id: &str, flags: u8, with_key: bool) -> Vec<u8> {
+        use sha2::Digest as _;
+        let mut d = sha2::Sha256::digest(rp_id.as_bytes()).to_vec();
+        d.push(flags);
+        d.extend_from_slice(&self.count.to_be_bytes());
+        if with_key {
+            d.extend_from_slice(&[0; 16]);
+            d.extend_from_slice(&u16::try_from(self.id.len()).unwrap().to_be_bytes());
+            d.extend_from_slice(&self.id);
+            let point = self.public_key();
+            let cose = Cbor::Map(vec![
+                (Cbor::Integer(1.into()), Cbor::Integer(2.into())),
+                (Cbor::Integer(3.into()), Cbor::Integer((-7).into())),
+                (Cbor::Integer((-1).into()), Cbor::Integer(1.into())),
+                (Cbor::Integer((-2).into()), Cbor::Bytes(point[1..33].to_vec())),
+                (Cbor::Integer((-3).into()), Cbor::Bytes(point[33..].to_vec())),
+            ]);
+            ciborium::into_writer(&cose, &mut d).unwrap();
+        }
+        d
+    }
+
+    /// `navigator.credentials.create()`'s answer for `site`, to `challenge`.
+    pub fn create(&self, challenge: &str, site: &Site) -> Value {
+        let client = serde_json::json!({ "type": "webauthn.create", "challenge": challenge, "origin": site.origin }).to_string();
+        let att = Cbor::Map(vec![
+            (Cbor::Text("fmt".into()), Cbor::Text("none".into())),
+            (Cbor::Text("attStmt".into()), Cbor::Map(vec![])),
+            (Cbor::Text("authData".into()), Cbor::Bytes(self.auth_data(site.rp_id, FLAG_UP | FLAG_UV | FLAG_AT, true))),
+        ]);
+        let mut att_bytes = Vec::new();
+        ciborium::into_writer(&att, &mut att_bytes).unwrap();
+        serde_json::json!({ "id": b64url(&self.id), "response": { "clientDataJSON": b64url(client.as_bytes()), "attestationObject": b64url(&att_bytes) } })
+    }
+
+    /// `navigator.credentials.get()`'s answer for `site` (signed for the site `rp_id` claims,
+    /// which is `site`'s unless a test says otherwise), to `challenge`, with `flags`, for the
+    /// user `handle`.
+    pub fn get(&mut self, challenge: &str, site: &Site, rp_id: &str, flags: u8, handle: &[u8]) -> Value {
+        use sha2::Digest as _;
+        self.count += 1;
+        let client = serde_json::json!({ "type": "webauthn.get", "challenge": challenge, "origin": site.origin }).to_string();
+        let auth = self.auth_data(rp_id, flags, false);
+        let signed = [auth.as_slice(), &sha2::Sha256::digest(client.as_bytes())].concat();
+        let sig = self.key.sign(&ring::rand::SystemRandom::new(), &signed).unwrap();
+        serde_json::json!({ "id": b64url(&self.id), "response": {
+            "clientDataJSON": b64url(client.as_bytes()), "authenticatorData": b64url(&auth), "signature": b64url(sig.as_ref()), "userHandle": b64url(handle) } })
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use ring::rand::SystemRandom;
-    use ring::signature::EcdsaKeyPair;
-    use ring::signature::KeyPair as _;
-    use serde_json::json;
-
     use super::*;
 
     const SITE: Site = Site {
@@ -228,74 +302,20 @@ mod tests {
         origin: "https://metrics.example.org",
     };
 
-    /// A software authenticator with a P-256 key.
-    struct Authenticator {
-        key: EcdsaKeyPair,
-        id: Vec<u8>,
-        count: u32,
-    }
-
-    impl Authenticator {
-        fn new() -> Self {
-            let rng = SystemRandom::new();
-            let pkcs8 = EcdsaKeyPair::generate_pkcs8(&signature::ECDSA_P256_SHA256_ASN1_SIGNING, &rng).unwrap();
-            let key = EcdsaKeyPair::from_pkcs8(&signature::ECDSA_P256_SHA256_ASN1_SIGNING, pkcs8.as_ref(), &rng).unwrap();
-            Self { key, id: vec![7; 16], count: 0 }
-        }
-
-        fn auth_data(&self, rp_id: &str, flags: u8, with_key: bool) -> Vec<u8> {
-            let mut d = sha2::Sha256::digest(rp_id.as_bytes()).to_vec();
-            d.push(flags);
-            d.extend_from_slice(&self.count.to_be_bytes());
-            if with_key {
-                d.extend_from_slice(&[0; 16]);
-                d.extend_from_slice(&u16::try_from(self.id.len()).unwrap().to_be_bytes());
-                d.extend_from_slice(&self.id);
-                let point = self.key.public_key().as_ref();
-                let cose = Cbor::Map(vec![
-                    (Cbor::Integer(1.into()), Cbor::Integer(2.into())),
-                    (Cbor::Integer(3.into()), Cbor::Integer((-7).into())),
-                    (Cbor::Integer((-1).into()), Cbor::Integer(1.into())),
-                    (Cbor::Integer((-2).into()), Cbor::Bytes(point[1..33].to_vec())),
-                    (Cbor::Integer((-3).into()), Cbor::Bytes(point[33..].to_vec())),
-                ]);
-                ciborium::into_writer(&cose, &mut d).unwrap();
-            }
-            d
-        }
-
-        fn create(&self, challenge: &str, origin: &str) -> Value {
-            let client = json!({ "type": "webauthn.create", "challenge": challenge, "origin": origin }).to_string();
-            let att = Cbor::Map(vec![
-                (Cbor::Text("fmt".into()), Cbor::Text("none".into())),
-                (Cbor::Text("attStmt".into()), Cbor::Map(vec![])),
-                (Cbor::Text("authData".into()), Cbor::Bytes(self.auth_data(SITE.rp_id, FLAG_UP | FLAG_UV | FLAG_AT, true))),
-            ]);
-            let mut att_bytes = Vec::new();
-            ciborium::into_writer(&att, &mut att_bytes).unwrap();
-            json!({ "id": b64url(&self.id), "response": { "clientDataJSON": b64url(client.as_bytes()), "attestationObject": b64url(&att_bytes) } })
-        }
-
-        fn get(&mut self, challenge: &str, rp_id: &str, flags: u8) -> Value {
-            self.count += 1;
-            let client = json!({ "type": "webauthn.get", "challenge": challenge, "origin": SITE.origin }).to_string();
-            let auth = self.auth_data(rp_id, flags, false);
-            let signed = [auth.as_slice(), &sha2::Sha256::digest(client.as_bytes())].concat();
-            let sig = self.key.sign(&SystemRandom::new(), &signed).unwrap();
-            json!({ "id": b64url(&self.id), "response": {
-                "clientDataJSON": b64url(client.as_bytes()), "authenticatorData": b64url(&auth), "signature": b64url(sig.as_ref()), "userHandle": b64url(b"1") } })
-        }
-    }
-
     #[test]
     fn registers_and_signs_in() {
-        let mut a = Authenticator::new();
-        let cred = register(&a.create("abc", SITE.origin), "abc", &SITE).unwrap();
+        let mut a = SoftAuthenticator::new(&[7; 16]);
+        let get = |a: &mut SoftAuthenticator, challenge: &str, rp_id: &str, flags: u8| a.get(challenge, &SITE, rp_id, flags, b"1");
+        let cred = register(&a.create("abc", &SITE), "abc", &SITE).unwrap();
         assert_eq!((cred.alg, cred.id.as_str()), (ES256, b64url(&a.id).as_str()));
-        assert!(register(&a.create("abc", "https://evil.example"), "abc", &SITE).is_err(), "another origin");
-        assert!(register(&a.create("abc", SITE.origin), "xyz", &SITE).is_err(), "another challenge");
+        let evil = Site {
+            origin: "https://evil.example",
+            ..SITE
+        };
+        assert!(register(&a.create("abc", &evil), "abc", &SITE).is_err(), "another origin");
+        assert!(register(&a.create("abc", &SITE), "xyz", &SITE).is_err(), "another challenge");
 
-        let first = a.get("c1", SITE.rp_id, FLAG_UP | FLAG_UV);
+        let first = get(&mut a, "c1", SITE.rp_id, FLAG_UP | FLAG_UV);
         let count = authenticate(&first, &cred, "c1", &SITE).unwrap();
         assert_eq!(count, 1);
         let stored = Credential {
@@ -303,19 +323,25 @@ mod tests {
             ..cred.clone()
         };
         assert!(authenticate(&first, &stored, "c1", &SITE).is_err(), "a replay: the counter didn't go up");
-        assert!(authenticate(&a.get("c2", SITE.rp_id, FLAG_UP), &stored, "c2", &SITE).is_err(), "user not verified");
-        assert!(authenticate(&a.get("c3", "evil.example", FLAG_UP | FLAG_UV), &stored, "c3", &SITE).is_err(), "another site");
+        assert!(authenticate(&get(&mut a, "c2", SITE.rp_id, FLAG_UP), &stored, "c2", &SITE).is_err(), "user not verified");
         assert!(
-            authenticate(&a.get("c4", SITE.rp_id, FLAG_UP | FLAG_UV), &stored, "other", &SITE).is_err(),
+            authenticate(&get(&mut a, "c3", "evil.example", FLAG_UP | FLAG_UV), &stored, "c3", &SITE).is_err(),
+            "another site"
+        );
+        assert!(
+            authenticate(&get(&mut a, "c4", SITE.rp_id, FLAG_UP | FLAG_UV), &stored, "other", &SITE).is_err(),
             "another challenge"
         );
-        let other = Authenticator::new();
+        let other = SoftAuthenticator::new(&[8; 16]);
         let wrong_key = Credential {
-            public_key: other.key.public_key().as_ref().to_vec(),
+            public_key: other.public_key(),
             ..stored.clone()
         };
-        assert!(authenticate(&a.get("c5", SITE.rp_id, FLAG_UP | FLAG_UV), &wrong_key, "c5", &SITE).is_err(), "another key");
-        assert!(authenticate(&a.get("c6", SITE.rp_id, FLAG_UP | FLAG_UV), &stored, "c6", &SITE).is_ok());
+        assert!(
+            authenticate(&get(&mut a, "c5", SITE.rp_id, FLAG_UP | FLAG_UV), &wrong_key, "c5", &SITE).is_err(),
+            "another key"
+        );
+        assert!(authenticate(&get(&mut a, "c6", SITE.rp_id, FLAG_UP | FLAG_UV), &stored, "c6", &SITE).is_ok());
         assert_eq!(user_handle(&first), Some(b"1".to_vec()));
     }
 }

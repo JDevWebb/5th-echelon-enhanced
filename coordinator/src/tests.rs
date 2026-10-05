@@ -2387,3 +2387,357 @@ async fn failed_sign_ins_lock_an_account_and_admins_cant_lock_everyone_out() {
     let (status, ..) = admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": password }))).await;
     assert_eq!(status, StatusCode::UNAUTHORIZED, "a reset admin's old password");
 }
+
+/// The admin UI's own site, as its pages' passkeys are made for it.
+const ADMIN_SITE: admin::webauthn::Site<'static> = admin::webauthn::Site {
+    rp_id: "admin.example",
+    origin: "https://admin.example",
+};
+
+/// A passkey's `challenge_id` and challenge from a `begin` answer.
+fn passkey_challenge(v: &Value) -> (Value, String) {
+    (v["challenge_id"].clone(), v["options"]["challenge"].as_str().unwrap().to_string())
+}
+
+#[tokio::test]
+async fn an_admin_adds_a_passkey_and_signs_in_with_it_alone_or_after_a_password() {
+    use admin::webauthn::b64url;
+    use admin::webauthn::SoftAuthenticator;
+    let t = start("admin-passkeys").await;
+    let r = admin_router_at(&t, [192, 0, 2, 20]);
+    let token = t.c.admin_setup_link("kiwi", false).await.unwrap().split("#setup=").nth(1).unwrap().to_string();
+    let password = "correct horse battery staple";
+    let enroll = admin_send(&r, "POST", "/api/setup", "", Some(json!({ "token": token, "password": password })))
+        .await
+        .2
+        .unwrap();
+    let admin_id: i64 = sqlx::query_scalar("SELECT id FROM admins WHERE username = 'kiwi'").fetch_one(&t.c.pool).await.unwrap();
+    let handle = admin_id.to_string().into_bytes();
+
+    // A passkey as the first second factor: made for this site and this admin, then the session
+    // is a full one, with recovery codes.
+    let mut key = SoftAuthenticator::new(b"kiwi-laptop-key");
+    let (status, v, _) = admin_send(&r, "POST", "/api/me/passkeys/begin", &enroll, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["options"]["rp"]["id"].as_str(), v["options"]["user"]["id"].as_str()),
+        (Some("admin.example"), Some(b64url(&handle).as_str()))
+    );
+    let (id, challenge) = passkey_challenge(&v);
+    let finish = json!({ "challenge_id": id, "credential": key.create(&challenge, &ADMIN_SITE), "name": "Laptop\u{7}" });
+    let (status, v, full) = admin_send(&r, "POST", "/api/me/passkeys/finish", &enroll, Some(finish.clone())).await;
+    assert_eq!((status, v["stage"].as_str()), (StatusCode::OK, Some("full")), "{v}");
+    assert!(!v["recovery_codes"].as_array().unwrap().is_empty(), "{v}");
+    let full = full.unwrap();
+    let (_, me, _) = admin_send(&r, "GET", "/api/me", &full, None).await;
+    assert_eq!(me["passkeys"][0]["name"], "Laptop", "control characters are left out: {me}");
+    let key_id = me["passkeys"][0]["id"].as_str().unwrap().to_string();
+    assert_eq!(key_id, b64url(&key.id));
+    // A challenge is good once; the same passkey isn't added twice.
+    let (status, ..) = admin_send(&r, "POST", "/api/me/passkeys/finish", &full, Some(finish)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a used challenge");
+    let (_, v, _) = admin_send(&r, "POST", "/api/me/passkeys/begin", &full, None).await;
+    assert_eq!(v["options"]["excludeCredentials"][0]["id"], key_id.as_str(), "{v}");
+    let (id, challenge) = passkey_challenge(&v);
+    let again = json!({ "challenge_id": id, "credential": key.create(&challenge, &ADMIN_SITE) });
+    assert_eq!(admin_send(&r, "POST", "/api/me/passkeys/finish", &full, Some(again)).await.0, StatusCode::CONFLICT);
+
+    // Signed out, the passkey alone signs in (it proves the person, not just the device).
+    admin_send(&r, "POST", "/api/logout", &full, None).await;
+    let begin = || async { passkey_challenge(&admin_send(&r, "POST", "/api/login/passkey/begin", "", None).await.1) };
+    let (id, challenge) = begin().await;
+    let assertion = key.get(&challenge, &ADMIN_SITE, ADMIN_SITE.rp_id, SoftAuthenticator::VERIFIED, &handle);
+    let (status, v, cookie) = admin_send(&r, "POST", "/api/login/passkey/finish", "", Some(json!({ "challenge_id": id, "credential": assertion }))).await;
+    assert_eq!((status, v["stage"].as_str()), (StatusCode::OK, Some("full")), "{v}");
+    assert_eq!(admin_send(&r, "GET", "/api/overview", &cookie.unwrap(), None).await.0, StatusCode::OK);
+
+    // What doesn't sign in, each on a challenge of its own.
+    let refused = |what: &'static str, credential: Value, id: Value| {
+        let r = r.clone();
+        async move {
+            let (status, v, cookie) = admin_send(&r, "POST", "/api/login/passkey/finish", "", Some(json!({ "challenge_id": id, "credential": credential }))).await;
+            assert!(cookie.is_none() && status != StatusCode::OK, "{what}: {status} {v}");
+            v["error"].as_str().unwrap_or_default().to_string()
+        }
+    };
+    let (id, challenge) = begin().await;
+    let unverified = key.get(&challenge, &ADMIN_SITE, ADMIN_SITE.rp_id, SoftAuthenticator::PRESENT_ONLY, &handle);
+    refused("the user wasn't verified", unverified, id).await;
+    let (id, challenge) = begin().await;
+    key.count -= 2;
+    let replayed = key.get(&challenge, &ADMIN_SITE, ADMIN_SITE.rp_id, SoftAuthenticator::VERIFIED, &handle);
+    refused("a counter that didn't go up (a cloned key)", replayed, id).await;
+    key.count += 2;
+    let (id, challenge) = begin().await;
+    let someone_else = key.get(&challenge, &ADMIN_SITE, ADMIN_SITE.rp_id, SoftAuthenticator::VERIFIED, b"999");
+    assert!(refused("another admin's user handle", someone_else, id).await.contains("someone else"));
+    let (id, challenge) = begin().await;
+    let mut stranger = SoftAuthenticator::new(b"not-registered");
+    let unknown = stranger.get(&challenge, &ADMIN_SITE, ADMIN_SITE.rp_id, SoftAuthenticator::VERIFIED, &handle);
+    assert!(refused("a passkey that isn't registered", unknown, id).await.contains("isn't registered"));
+    let (id, challenge) = begin().await;
+    let elsewhere = key.get(&challenge, &ADMIN_SITE, "evil.example", SoftAuthenticator::VERIFIED, &handle);
+    refused("signed for another site", elsewhere, id.clone()).await;
+    let fine = key.get(&challenge, &ADMIN_SITE, ADMIN_SITE.rp_id, SoftAuthenticator::VERIFIED, &handle);
+    refused("a challenge already tried", fine, id).await;
+
+    // After the password, the passkey is the second factor, and only this admin's are offered.
+    let (_, v, half) = admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": password }))).await;
+    let half = half.unwrap_or_else(|| panic!("{v}"));
+    let (_, v, _) = admin_send(&r, "POST", "/api/login/passkey/begin", &half, None).await;
+    assert_eq!(v["options"]["allowCredentials"], json!([{ "type": "public-key", "id": key_id }]), "{v}");
+    let (id, challenge) = passkey_challenge(&v);
+    let assertion = key.get(&challenge, &ADMIN_SITE, ADMIN_SITE.rp_id, SoftAuthenticator::VERIFIED, &handle);
+    let (status, v, full) = admin_send(&r, "POST", "/api/login/passkey/finish", &half, Some(json!({ "challenge_id": id, "credential": assertion }))).await;
+    assert_eq!((status, v["stage"].as_str()), (StatusCode::OK, Some("full")), "{v}");
+    let full = full.unwrap();
+
+    // An account always keeps a second factor: the only passkey stays until there's an app too.
+    let path = format!("/api/me/passkeys/{key_id}");
+    let (status, v, _) = admin_send(&r, "DELETE", &path, &full, None).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+    let step = totp_step().await;
+    let secret = admin_send(&r, "POST", "/api/me/totp/begin", &full, None).await.1["secret"].as_str().unwrap().to_string();
+    let (status, v, _) = admin_send(&r, "POST", "/api/me/totp/confirm", &full, Some(json!({ "code": totp_code(&secret, step) }))).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(admin_send(&r, "DELETE", &path, &full, None).await.0, StatusCode::OK);
+    assert_eq!(admin_send(&r, "DELETE", &path, &full, None).await.0, StatusCode::NOT_FOUND, "gone already");
+    let (status, v, _) = admin_send(&r, "DELETE", "/api/me/totp", &full, None).await;
+    assert!(status == StatusCode::BAD_REQUEST && v["error"].as_str().unwrap().contains("passkey"), "{status} {v}");
+    assert_eq!(admin_send(&r, "GET", "/api/me", &full, None).await.1["passkeys"], json!([]));
+}
+
+#[tokio::test]
+async fn an_admin_changes_their_password_and_recovery_codes_and_ends_their_other_sessions() {
+    let step = totp_step().await;
+    let t = start("admin-account").await;
+    let r = admin_router_at(&t, [192, 0, 2, 21]);
+    let token = t.c.admin_setup_link("kiwi", false).await.unwrap().split("#setup=").nth(1).unwrap().to_string();
+    let password = "correct horse battery staple";
+    let enroll = admin_send(&r, "POST", "/api/setup", "", Some(json!({ "token": token, "password": password })))
+        .await
+        .2
+        .unwrap();
+    let secret = admin_send(&r, "POST", "/api/me/totp/begin", &enroll, None).await.1["secret"].as_str().unwrap().to_string();
+    let (_, v, here) = admin_send(&r, "POST", "/api/me/totp/confirm", &enroll, Some(json!({ "code": totp_code(&secret, step - 1) }))).await;
+    let old_codes: Vec<String> = v["recovery_codes"].as_array().unwrap().iter().map(|c| c.as_str().unwrap().to_string()).collect();
+    let here = here.unwrap();
+    let sign_in = |pass: &'static str, code: String| {
+        let r = r.clone();
+        async move {
+            let (status, v, half) = admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": pass }))).await;
+            let half = half.ok_or_else(|| format!("{status} {v}"))?;
+            let (status, v, full) = admin_send(&r, "POST", "/api/login/totp", &half, Some(json!({ "code": code }))).await;
+            full.ok_or_else(|| format!("{status} {v}"))
+        }
+    };
+
+    // Another session (another browser): listed, and ended from here.
+    let there = sign_in(password, totp_code(&secret, step)).await.unwrap();
+    let (_, me, _) = admin_send(&r, "GET", "/api/me", &here, None).await;
+    let sessions = me["sessions"].as_array().unwrap();
+    assert_eq!(sessions.len(), 2, "{me}");
+    let other = sessions.iter().find(|s| s["current"] == false).unwrap()["id"].as_str().unwrap().to_string();
+    assert_eq!(admin_send(&r, "DELETE", "/api/sessions/short", &here, None).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(admin_send(&r, "DELETE", &format!("/api/sessions/{other}"), &here, None).await.0, StatusCode::OK);
+    assert_eq!(admin_send(&r, "GET", "/api/me", &there, None).await.0, StatusCode::UNAUTHORIZED, "ended");
+
+    // A new password: the current one first, and a strong one; the other sessions end.
+    let there = sign_in(password, totp_code(&secret, step + 1)).await.unwrap();
+    let change = |current: &str, new: &str| json!({ "current": current, "new": new });
+    let (status, ..) = admin_send(&r, "POST", "/api/me/password", &here, Some(change("not it", "another long passphrase here"))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "the current password wrong");
+    let (status, ..) = admin_send(&r, "POST", "/api/me/password", &here, Some(change(password, "kiwi"))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a weak one");
+    let (status, v, _) = admin_send(&r, "POST", "/api/me/password", &here, Some(change(password, "another long passphrase here"))).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(admin_send(&r, "GET", "/api/me", &there, None).await.0, StatusCode::UNAUTHORIZED, "other sessions end");
+    assert_eq!(admin_send(&r, "GET", "/api/me", &here, None).await.0, StatusCode::OK, "this one stays");
+    let (status, ..) = admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": password }))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "the old password");
+
+    // New recovery codes: the old ones stop working.
+    let (status, v, _) = admin_send(&r, "POST", "/api/me/recovery", &here, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let new_codes: Vec<String> = v["recovery_codes"].as_array().unwrap().iter().map(|c| c.as_str().unwrap().to_string()).collect();
+    assert_eq!(new_codes.len(), old_codes.len());
+    let half = |r: Router| async move {
+        admin_send(
+            &r,
+            "POST",
+            "/api/login",
+            "",
+            Some(json!({ "username": "kiwi", "password": "another long passphrase here" })),
+        )
+        .await
+        .2
+        .unwrap()
+    };
+    let h = half(r.clone()).await;
+    assert_eq!(
+        admin_send(&r, "POST", "/api/login/recovery", &h, Some(json!({ "code": old_codes[0] }))).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let (status, v, _) = admin_send(&r, "POST", "/api/login/recovery", &h, Some(json!({ "code": new_codes[0] }))).await;
+    assert_eq!((status, v["stage"].as_str()), (StatusCode::OK, Some("full")), "{v}");
+}
+
+/// Every page of the admin UI answers a signed-in admin, nobody else, and says which ranges
+/// it takes.
+#[tokio::test]
+async fn every_admin_page_answers_a_signed_in_admin_and_no_one_else() {
+    let t = start("admin-pages").await;
+    let r = admin_router_at(&t, [192, 0, 2, 22]);
+    t.join("server-a").await;
+    let cookie = admin_cookie(&t, "kiwi", 3600).await;
+    for path in [
+        "/api/me",
+        "/api/admins",
+        "/api/restrictions",
+        "/api/audit",
+        "/api/overview",
+        "/api/online",
+        "/api/series?range=3600",
+        "/api/places?range=0",
+        "/api/activity?range=86400",
+        "/api/pings?range=86400",
+        "/api/bandwidth?range=86400&server=server-a",
+        "/api/players-report?range=604800",
+        "/api/matches-report?days=7",
+        "/api/alerts",
+        "/api/updates",
+        "/api/sessions",
+        "/api/leaderboards",
+        "/api/players",
+        "/api/reports",
+    ] {
+        let (status, v, _) = admin_send(&r, "GET", path, &cookie, None).await;
+        assert_eq!(status, StatusCode::OK, "{path}: {v}");
+        assert!(v.is_object(), "{path}: {v}");
+        assert_eq!(admin_send(&r, "GET", path, "", None).await.0, StatusCode::UNAUTHORIZED, "{path} signed out");
+        let wrong = "__Host-fes-admin=not-a-session";
+        assert_eq!(admin_send(&r, "GET", path, wrong, None).await.0, StatusCode::UNAUTHORIZED, "{path} with a made-up cookie");
+    }
+    let (_, v, _) = admin_send(&r, "GET", "/api/overview", &cookie, None).await;
+    assert!(v.to_string().contains("server-a"), "the joined server is on the overview: {v}");
+    for path in [
+        "/api/series?range=0",
+        "/api/series?range=5",
+        "/api/places?range=-1",
+        "/api/pings?range=0",
+        "/api/bandwidth?range=3600",
+        "/api/players-report?range=0",
+        "/api/matches-report?days=0",
+        "/api/matches-report?days=401",
+    ] {
+        assert_eq!(admin_send(&r, "GET", path, &cookie, None).await.0, StatusCode::BAD_REQUEST, "{path}");
+    }
+}
+
+/// The admin UI's settings: names for maps and modes, servers' traffic allowances, the alert
+/// webhook, the rollout's controls and removing a server; the sensitive ones want a second
+/// factor proved lately, and each is in the audit log.
+#[tokio::test]
+async fn admins_change_the_networks_settings_and_each_change_is_audited() {
+    let t = start("admin-settings").await;
+    let r = admin_router_at(&t, [192, 0, 2, 23]);
+    t.join("server-a").await;
+    t.join("server-b").await;
+    let cookie = admin_cookie(&t, "kiwi", 3600).await;
+    let send = |method: &'static str, path: &'static str, body: Value| {
+        let (r, cookie) = (r.clone(), cookie.clone());
+        async move { admin_send(&r, method, path, &cookie, Some(body)).await }
+    };
+
+    // A map's name: shown wherever the map is.
+    let label = |kind: &str, name: &str| json!({ "kind": kind, "id": 615_323_303, "name": name });
+    assert_eq!(send("PUT", "/api/labels", label("weapon", "Silo")).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(send("PUT", "/api/labels", label("map", &"x".repeat(49))).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        send("PUT", "/api/labels", label("map", "Silo\u{7}")).await.0,
+        StatusCode::BAD_REQUEST,
+        "a control character"
+    );
+    assert_eq!(send("PUT", "/api/labels", label("map", "Silo by night")).await.0, StatusCode::OK);
+    let (_, v, _) = admin_send(&r, "GET", "/api/activity?range=0", &cookie, None).await;
+    assert!(v["labels"].to_string().contains("Silo by night"), "{v}");
+
+    // A traffic allowance: for a server there is, 0 to 10,000 TB; 0 takes it away.
+    let allowance = |server: &str, tb: f64| json!({ "server": server, "tb": tb });
+    assert_eq!(send("PUT", "/api/allowances", allowance("nowhere", 1.0)).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(send("PUT", "/api/allowances", allowance("server-a", -1.0)).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(send("PUT", "/api/allowances", allowance("server-a", 10_001.0)).await.0, StatusCode::BAD_REQUEST);
+    assert_eq!(send("PUT", "/api/allowances", allowance("server-a", 2.5)).await.0, StatusCode::OK);
+    let allowance_of = || async {
+        let (_, v, _) = admin_send(&r, "GET", "/api/bandwidth?range=86400", &cookie, None).await;
+        v["allowances"].as_array().unwrap().iter().find(|a| a["server"] == "server-a").unwrap()["allowance"].clone()
+    };
+    assert_eq!(allowance_of().await, json!(2.5e12));
+    assert_eq!(send("PUT", "/api/allowances", allowance("server-a", 0.0)).await.0, StatusCode::OK);
+    assert_eq!(allowance_of().await, Value::Null);
+
+    // The alert webhook carries the network's alerts out: a second factor lately, and https.
+    let hook = |url: &str| json!({ "url": url });
+    let (status, v, _) = send("PUT", "/api/alerts/webhook", hook("https://hooks.example/alerts")).await;
+    assert_eq!((status, v["reverify"].as_bool()), (StatusCode::FORBIDDEN, Some(true)), "{v}");
+    assert_eq!(send("POST", "/api/alerts/test", json!({})).await.0, StatusCode::BAD_REQUEST, "no webhook to test");
+    sqlx::query("UPDATE admin_sessions SET verified_at = ?")
+        .bind(identity::now())
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    for bad in [
+        "http://hooks.example/alerts",
+        "https://user:pass@hooks.example/",
+        "not a url",
+        &format!("https://hooks.example/{}", "a".repeat(500)),
+    ] {
+        assert_eq!(send("PUT", "/api/alerts/webhook", hook(bad)).await.0, StatusCode::BAD_REQUEST, "{bad}");
+    }
+    assert_eq!(send("PUT", "/api/alerts/webhook", hook("https://hooks.example/alerts")).await.0, StatusCode::OK);
+    assert_eq!(admin_send(&r, "GET", "/api/alerts", &cookie, None).await.1["webhook_host"], "hooks.example");
+    assert_eq!(send("PUT", "/api/alerts/webhook", hook("")).await.0, StatusCode::OK, "empty takes it away");
+    assert_eq!(admin_send(&r, "GET", "/api/alerts", &cookie, None).await.1["webhook_host"], Value::Null);
+
+    // The rollout: paused and resumed, pinned and unpinned; nothing to roll back to yet.
+    let rollout = || async { admin_send(&r, "GET", "/api/updates", &cookie, None).await.1["rollout"].clone() };
+    for (action, field, value) in [("pause", "paused", true), ("resume", "paused", false), ("pin", "pinned", true), ("unpin", "pinned", false)] {
+        let (status, v, _) = admin_send(&r, "POST", &format!("/api/updates/{action}"), &cookie, Some(json!({}))).await;
+        assert_eq!(status, StatusCode::OK, "{action}: {v}");
+        assert_eq!(rollout().await[field], value, "{action}");
+    }
+    assert_eq!(send("POST", "/api/updates/explode", json!({})).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(send("POST", "/api/updates/rollback", json!({})).await.0, StatusCode::BAD_REQUEST, "nothing before");
+    assert_eq!(
+        send("POST", "/api/updates/release", json!({ "version": "9.9.9" })).await.0,
+        StatusCode::BAD_REQUEST,
+        "not a recorded release"
+    );
+
+    // Removing a server, and the names it reserved for nobody.
+    let (status, v, _) = send("POST", "/api/servers/server-b/purge-names", json!({})).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(admin_send(&r, "DELETE", "/api/servers/nowhere", &cookie, None).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(admin_send(&r, "DELETE", "/api/servers/server-b", &cookie, None).await.0, StatusCode::OK);
+    let (_, v, _) = admin_send(&r, "GET", "/api/overview", &cookie, None).await;
+    assert!(!v.to_string().contains("server-b") && v.to_string().contains("server-a"), "{v}");
+    // Ten minutes on, removing one wants the second factor again.
+    sqlx::query("UPDATE admin_sessions SET verified_at = verified_at - 601").execute(&t.c.pool).await.unwrap();
+    let (status, v, _) = admin_send(&r, "DELETE", "/api/servers/server-a", &cookie, None).await;
+    assert_eq!((status, v["reverify"].as_bool()), (StatusCode::FORBIDDEN, Some(true)), "{v}");
+
+    let (_, v, _) = admin_send(&r, "GET", "/api/audit", &cookie, None).await;
+    let events: Vec<&str> = v["events"].as_array().unwrap().iter().map(|e| e["event"].as_str().unwrap()).collect();
+    for event in [
+        "named a map or mode",
+        "set a traffic allowance",
+        "set the alert webhook",
+        "updates: pause",
+        "updates: unpin",
+        "released a server's unused names",
+        "removed a server",
+    ] {
+        assert!(events.contains(&event), "{event} isn't in the audit log: {events:?}");
+    }
+    assert!(v["events"].as_array().unwrap().iter().all(|e| e["admin"] == "kiwi"), "{v}");
+}
