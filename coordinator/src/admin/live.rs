@@ -97,6 +97,42 @@ fn plural(n: f64, one: &str, many: &str) -> String {
     format!("{n} {}", if (n - 1.0).abs() < f64::EPSILON { one } else { many })
 }
 
+/// Online players kept from one pulse at most, and the longest text kept of each field.
+const MAX_ONLINE: usize = 300;
+const MAX_FIELD: usize = 64;
+
+/// A pulse's list of who's online, checked: at most [`MAX_ONLINE`] players, each with only
+/// the fields the map shows, texts cut to [`MAX_FIELD`] characters, numbers in range.
+fn online_list(v: &Value) -> Value {
+    let text = |v: &Value| -> Value { json!(v.as_str().unwrap_or_default().chars().filter(|c| !c.is_control()).take(MAX_FIELD).collect::<String>()) };
+    let players = v
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|p| p.is_object())
+        .take(MAX_ONLINE)
+        .map(|p| {
+            let coord = |v: &Value, max: f64| json!(v.as_f64().filter(|x| x.is_finite() && x.abs() <= max).unwrap_or(0.0));
+            json!({
+                "id": p["id"].as_u64().unwrap_or(0),
+                "name": text(&p["name"]),
+                "country": text(&p["country"]),
+                "country_name": text(&p["country_name"]),
+                "region": text(&p["region"]),
+                "city": text(&p["city"]),
+                "lat": coord(&p["lat"], 90.0),
+                "lon": coord(&p["lon"], 180.0),
+                "status": text(&p["status"]),
+                "mode": text(&p["mode"]),
+                "with": p["with"].as_array().into_iter().flatten().take(16).map(text).collect::<Vec<_>>(),
+                "since": p["since"].as_i64(),
+                "network": text(&p["network"]),
+            })
+        })
+        .collect::<Vec<_>>();
+    Value::Array(players)
+}
+
 /// The live point a pulse makes, given the one before it (for rates), and what
 /// happened in between.
 fn point_from(at: i64, p: &Value, last: Option<&(i64, Value)>) -> (Value, Vec<(&'static str, &'static str, String)>) {
@@ -144,7 +180,11 @@ impl Coordinator {
             let mut pulses = self.pulses.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let entry = pulses.entry(server.to_string()).or_default();
             let (point, events) = point_from(at, p, entry.last.as_ref());
-            entry.last = Some((at, p.clone()));
+            // The raw pulse isn't kept: only its numbers and a checked, capped list of who's
+            // online (a server could send anything up to the request's limit).
+            let mut kept = p.clone();
+            kept["online"] = online_list(&p["online"]);
+            entry.last = Some((at, kept));
             entry.points.push_back(point.clone());
             while entry.points.len() > KEEP_POINTS {
                 entry.points.pop_front();
@@ -192,7 +232,7 @@ impl Coordinator {
             let Some((at, p)) = entry.last.as_ref().filter(|(at, _)| now - at <= 30) else {
                 continue;
             };
-            for player in p["online"].as_array().into_iter().flatten().take(1000) {
+            for player in p["online"].as_array().into_iter().flatten() {
                 let mut player = player.clone();
                 player["server"] = json!(server);
                 player["seen"] = json!(at);

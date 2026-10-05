@@ -1865,7 +1865,7 @@ async fn the_map_lists_who_is_online_from_the_last_pulse_only() {
     let a = t.join("server-a").await;
     let pulse = json!({ "players": { "online": 1, "total": 3 }, "online": [
         { "id": 1011, "name": "Viper", "country": "AR", "country_name": "Argentina", "region": "Buenos Aires", "city": "Buenos Aires",
-          "lat": -34.6, "lon": -58.4, "status": "match", "mode": "coop", "with": ["Theusma"], "since": 1, "network": "relayed" },
+          "lat": -34.6, "lon": -58.4, "status": "match", "mode": "coop", "with": ["Theusma"], "since": 1, "network": "relayed", "extra": "dropped" },
     ] });
     assert_eq!(t.call("POST", "/v1/pulse", Some(&a), Some(pulse)).await.0, StatusCode::OK);
     let cookie = admin_cookie(&t, "admin1", 3600).await;
@@ -1873,6 +1873,7 @@ async fn the_map_lists_who_is_online_from_the_last_pulse_only() {
     assert_eq!(status, StatusCode::OK, "{v}");
     let players = v["players"].as_array().unwrap();
     assert_eq!(players.len(), 1);
+    assert!(players[0].get("extra").is_none());
     assert_eq!(
         (players[0]["name"].as_str(), players[0]["server"].as_str(), players[0]["city"].as_str()),
         (Some("Viper"), Some("server-a"), Some("Buenos Aires"))
