@@ -6,7 +6,9 @@
 //!   lobby's player counts) and Server.
 //!
 //! Sizes are designed for 1080p and scale with the screen height. Fonts are
-//! rasterised at twice that size so they stay sharp up to 4K.
+//! rasterised at the size they're drawn at, and again when the screen's size
+//! changes: the renderer has no mipmaps, so shrinking a bigger font made text
+//! jagged below 1080p.
 
 use std::sync::mpsc;
 use std::sync::Mutex;
@@ -22,6 +24,7 @@ use imgui::Ui;
 use server_api::misc::InviteEvent;
 use server_api::users::User;
 use tracing::info;
+use tracing::warn;
 use windows::core::PCSTR;
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
@@ -46,8 +49,10 @@ static PANEL_REFRESH: Duration = Duration::from_secs(5);
 
 /// The screen height the sizes below are designed for.
 const DESIGN_HEIGHT: f32 = 1080.0;
-/// Fonts are rasterised at this multiple of their 1080p size.
-const FONT_OVERSAMPLE: f32 = 2.0;
+/// The font atlas is rebuilt when the screen scale moves to another step of
+/// this size, so dragging a window's edge doesn't rebuild it every frame. In
+/// between, the fonts are scaled by less than 3%.
+const FONT_SCALE_STEP: f32 = 0.05;
 const BODY_PX: f32 = 17.0;
 const HEADING_PX: f32 = 22.0;
 
@@ -142,11 +147,27 @@ struct Fonts {
 unsafe impl Send for Fonts {}
 unsafe impl Sync for Fonts {}
 
-fn add_fonts(ctx: &mut imgui::Context) -> Fonts {
+/// The screen scale for a screen this high (1.0 at 1080p).
+fn screen_scale(height: f32) -> f32 {
+    if height > 0.0 {
+        (height / DESIGN_HEIGHT).clamp(0.6, 3.0)
+    } else {
+        1.0
+    }
+}
+
+/// The scale the font atlas is built at for screen scale `s`.
+fn font_scale_for(s: f32) -> f32 {
+    (s / FONT_SCALE_STEP).round() * FONT_SCALE_STEP
+}
+
+/// Adds the fonts at `scale` times their 1080p size. The atlas still has to be
+/// built and uploaded.
+fn add_fonts(ctx: &mut imgui::Context, scale: f32) -> Fonts {
     let mut add = |data: &'static [u8], px: f32, name: &str| {
         ctx.fonts().add_font(&[imgui::FontSource::TtfData {
             data,
-            size_pixels: px * FONT_OVERSAMPLE,
+            size_pixels: (px * scale).round(),
             config: Some(imgui::FontConfig {
                 name: Some(String::from(name)),
                 ..imgui::FontConfig::default()
@@ -255,6 +276,10 @@ struct MyRenderLoop {
     fonts: Option<Fonts>,
     /// Screen scale for this frame (1.0 at 1080p).
     s: f32,
+    /// The scale the font atlas was built at.
+    font_scale: f32,
+    /// A new font atlas couldn't be uploaded: keep the one we have.
+    font_rebuild_failed: bool,
     data: community::Snapshot,
     local_notice: Option<LocalNotice>,
     relogin: Option<std::thread::JoinHandle<bool>>,
@@ -1232,18 +1257,54 @@ fn get_min_players_var() -> *mut i32 {
     }
 }
 
+impl MyRenderLoop {
+    /// Rasterises the fonts again at `scale` for a screen of another size.
+    ///
+    /// hudhook can't free a texture, so the old atlas stays in video memory;
+    /// that's a few hundred KB each time the resolution changes.
+    fn rebuild_fonts(&mut self, ctx: &mut imgui::Context, render_context: &mut dyn hudhook::RenderContext, scale: f32) {
+        ctx.fonts().clear();
+        let fonts = add_fonts(ctx, scale);
+        let atlas = ctx.fonts();
+        let texture = atlas.build_rgba32_texture();
+        match render_context.load_texture(texture.data, texture.width, texture.height) {
+            Ok(id) => {
+                atlas.tex_id = id;
+                self.fonts = Some(fonts);
+                info!("Overlay fonts rebuilt for screen scale {scale:.2}");
+                self.font_scale = scale;
+            }
+            Err(e) => {
+                warn!("Couldn't upload the overlay's fonts for screen scale {scale:.2}: {e:?}");
+                // Lay the old fonts out again so they match the texture that's
+                // still bound; the same fonts and sizes pack the same way.
+                atlas.clear();
+                self.fonts = Some(add_fonts(ctx, self.font_scale));
+                ctx.fonts().build_rgba32_texture();
+                self.font_rebuild_failed = true;
+            }
+        }
+    }
+}
+
 impl ImguiRenderLoop for MyRenderLoop {
     fn initialize(&mut self, ctx: &mut imgui::Context, _render_context: &mut dyn hudhook::RenderContext) {
         theme_colors(ctx.style_mut());
-        self.fonts = Some(add_fonts(ctx));
+        // hudhook has set the screen's size and builds the atlas after this.
+        self.s = screen_scale(ctx.io().display_size[1]);
+        self.font_scale = font_scale_for(self.s);
+        self.fonts = Some(add_fonts(ctx, self.font_scale));
         // Nothing to remember between games; don't write imgui.ini.
         ctx.set_ini_filename(None::<std::path::PathBuf>);
     }
 
-    fn before_render(&mut self, ctx: &mut imgui::Context, _render_context: &mut dyn hudhook::RenderContext) {
-        let height = ctx.io().display_size[1];
-        self.s = if height > 0.0 { (height / DESIGN_HEIGHT).clamp(0.6, 3.0) } else { 1.0 };
-        ctx.io_mut().font_global_scale = self.s / FONT_OVERSAMPLE;
+    fn before_render(&mut self, ctx: &mut imgui::Context, render_context: &mut dyn hudhook::RenderContext) {
+        self.s = screen_scale(ctx.io().display_size[1]);
+        let font_scale = font_scale_for(self.s);
+        if font_scale != self.font_scale && !self.font_rebuild_failed {
+            self.rebuild_fonts(ctx, render_context, font_scale);
+        }
+        ctx.io_mut().font_global_scale = self.s / self.font_scale;
         // The game hides the system's cursor in play: the overlay draws its own while open.
         ctx.io_mut().mouse_draw_cursor = self.ui_state == UiState::Show;
         theme_sizes(ctx.style_mut(), self.s);
@@ -1311,6 +1372,8 @@ fn init_hudhook<T: hudhook::Hooks + 'static>(invites: crossbeam_channel::Receive
             initial_popup: Instant::now() + INITIAL_POPUP_DURATION,
             fonts: None,
             s: 1.0,
+            font_scale: 1.0,
+            font_rebuild_failed: false,
             data: community::Snapshot::default(),
             local_notice: None,
             relogin: None,
