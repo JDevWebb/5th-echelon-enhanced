@@ -514,7 +514,8 @@ impl MyRenderLoop {
         let Some(left) = self.initial_popup.checked_duration_since(Instant::now()) else {
             return;
         };
-        if self.ui_state == UiState::Show || self.invite_notification.is_some() {
+        // The same corner: a maintenance warning matters more.
+        if self.ui_state == UiState::Show || self.invite_notification.is_some() || self.maintenance_warning().is_some() {
             return;
         }
         let progress = left.as_secs_f32() / INITIAL_POPUP_DURATION.as_secs_f32();
@@ -539,6 +540,27 @@ impl MyRenderLoop {
             self.key(ui, "F5");
             ui.same_line();
             ui.text_colored(MUTED, "for friends, invites and match settings");
+        });
+    }
+
+    /// The maintenance warning to show now, if any.
+    fn maintenance_warning(&self) -> Option<(String, String)> {
+        let server = self.data.server.as_ref()?;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        crate::community::maintenance_warning(&server.maintenance, i64::try_from(now).unwrap_or(i64::MAX))
+    }
+
+    /// From 10 minutes before a maintenance window (this server's or the network's): a toast,
+    /// under an invite's when both show.
+    fn show_maintenance(&self, ui: &Ui) {
+        if self.ui_state == UiState::Show || self.invite_notification.is_some() {
+            return;
+        }
+        let Some((heading, text)) = self.maintenance_warning() else { return };
+        self.toast(ui, "##fe-maintenance", None, || {
+            self.with_font(ui, |f| f.heading, || ui.text_colored(WARN, &heading));
+            let _c = ui.push_style_color(StyleColor::Text, MUTED);
+            ui.text_wrapped(&text);
         });
     }
 
@@ -1329,6 +1351,7 @@ impl ImguiRenderLoop for MyRenderLoop {
         }
         self.show_error_banner(ui);
         self.show_invite_toast(ui);
+        self.show_maintenance(ui);
         self.show_initial_info(ui);
         self.show_notice(ui);
     }

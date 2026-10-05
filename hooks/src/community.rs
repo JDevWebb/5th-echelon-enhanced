@@ -79,6 +79,61 @@ pub struct ServerInfo {
     pub version: String,
     #[serde(default)]
     pub revision: String,
+    /// Maintenance booked for this server or the whole network, not over yet.
+    #[serde(default)]
+    pub maintenance: Vec<Maintenance>,
+}
+
+/// A maintenance window (Unix seconds), as the server heard it from the coordinator.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Maintenance {
+    pub start: i64,
+    pub end: i64,
+    #[serde(default)]
+    pub note: String,
+    /// The whole network (the coordinator), not this server: games carry on.
+    #[serde(default)]
+    pub network: bool,
+}
+
+/// How long before a window the overlay warns.
+pub const MAINTENANCE_WARNING: i64 = 600;
+
+/// "about 1 hour", "about an hour and a half": a window's length (in words: the overlay's
+/// fonts may not have "½").
+fn length(secs: i64) -> String {
+    let minutes = (secs + 59) / 60;
+    if minutes < 60 {
+        let rounded = ((minutes + 4) / 5 * 5).max(5);
+        return format!("about {rounded} minutes");
+    }
+    let halves = (minutes + 15) / 30;
+    match (halves / 2, halves % 2) {
+        (1, 0) => String::from("about 1 hour"),
+        (1, _) => String::from("about an hour and a half"),
+        (h, 0) => format!("about {h} hours"),
+        (h, _) => format!("about {h} and a half hours"),
+    }
+}
+
+/// The warning the overlay shows `now` (Unix seconds), from 10 minutes before the next window
+/// until it starts: a heading and a line.
+pub fn maintenance_warning(windows: &[Maintenance], now: i64) -> Option<(String, String)> {
+    let w = windows.iter().filter(|w| w.start > now && w.start - now <= MAINTENANCE_WARNING).min_by_key(|w| w.start)?;
+    let minutes = ((w.start - now + 59) / 60).max(1);
+    let when = if minutes == 1 { String::from("1 min") } else { format!("{minutes} min") };
+    let note = if w.note.is_empty() { String::new() } else { format!(": {}", w.note) };
+    Some(if w.network {
+        (
+            format!("Network maintenance in {when}"),
+            format!("Friends and invites pause for {}{note}. Your match carries on.", length(w.end - w.start)),
+        )
+    } else {
+        (
+            format!("Server maintenance in {when}"),
+            format!("This server goes down for {}{note}. Finish your match before then.", length(w.end - w.start)),
+        )
+    })
 }
 
 /// A short message for the player about something they did, or something
@@ -416,6 +471,15 @@ fn refresh_now() {
         name: clip(&i.name, MAX_TEXT),
         version: clip(&i.version, MAX_NAME),
         revision: clip(&i.revision, MAX_NAME),
+        maintenance: i
+            .maintenance
+            .into_iter()
+            .take(4)
+            .map(|m| Maintenance {
+                note: clip(&m.note, MAX_TEXT),
+                ..m
+            })
+            .collect(),
     });
 
     update(|s| {
@@ -604,6 +668,45 @@ fn content_length(head: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn maintenance_is_warned_ten_minutes_before() {
+        use super::maintenance_warning;
+        use super::Maintenance;
+        let server = Maintenance {
+            start: 10_000,
+            end: 13_600,
+            note: String::from("Moving to a faster machine"),
+            network: false,
+        };
+        let network = Maintenance {
+            start: 20_000,
+            end: 21_800,
+            note: String::new(),
+            network: true,
+        };
+        let windows = [network.clone(), server];
+        assert_eq!(maintenance_warning(&windows, 10_000 - 601), None, "not yet");
+        assert_eq!(
+            maintenance_warning(&windows, 10_000 - 540),
+            Some((
+                "Server maintenance in 9 min".into(),
+                "This server goes down for about 1 hour: Moving to a faster machine. Finish your match before then.".into()
+            ))
+        );
+        assert_eq!(maintenance_warning(&windows, 10_000 - 20).map(|w| w.0), Some("Server maintenance in 1 min".into()));
+        assert_eq!(maintenance_warning(&windows, 10_000), None, "started: the server says the rest");
+        assert_eq!(
+            maintenance_warning(&windows, 20_000 - 300),
+            Some((
+                "Network maintenance in 5 min".into(),
+                "Friends and invites pause for about 30 minutes. Your match carries on.".into()
+            ))
+        );
+        assert_eq!(super::length(90 * 60), "about an hour and a half");
+        assert_eq!(super::length(120 * 60), "about 2 hours");
+        assert_eq!(super::length(14 * 60), "about 15 minutes");
+    }
+
     use super::*;
 
     fn test_player(name: &str, online: bool) -> Player {
