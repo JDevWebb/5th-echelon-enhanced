@@ -1229,13 +1229,26 @@ chmod 600 "$CONFIG"
 
 # The relay queues bursts of game traffic in 4 MB socket buffers; Linux
 # caps them at about 208 KB unless allowed more.
-cat > "$SYSCTL_FILE" <<'SYSCTL'
-# 5th Echelon: room for bursts of relayed game traffic (UDP).
-net.core.rmem_max = 4194304
-net.core.wmem_max = 4194304
-SYSCTL
+# BBR: Cloudflare reaches the admin UI from the edge nearest the admin (Auckland
+# to Falkenstein is 300 ms), and cubic crawls on a path that long once packets
+# are lost; the coordinator's links to the other servers are long too. Only
+# where the kernel has it, and never over someone else's choice.
+cc="$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null || true)"
+bbr=0
+if { [ "$cc" = cubic ] || [ "$cc" = reno ] || [ "$cc" = bbr ]; } && modprobe -q tcp_bbr 2>/dev/null \
+  && grep -qw bbr /proc/sys/net/ipv4/tcp_available_congestion_control 2>/dev/null; then bbr=1; fi
+{
+  echo "# 5th Echelon: room for bursts of relayed game traffic (UDP)."
+  echo "net.core.rmem_max = 4194304"
+  echo "net.core.wmem_max = 4194304"
+  if [ "$bbr" -eq 1 ]; then
+    echo "# TCP over long, lossy paths (Cloudflare's far edges, the other servers)."
+    echo "net.core.default_qdisc = fq"
+    echo "net.ipv4.tcp_congestion_control = bbr"
+  fi
+} > "$SYSCTL_FILE"
 if command -v sysctl >/dev/null && sysctl -q -p "$SYSCTL_FILE" >/dev/null 2>&1; then
-  say "Allowed 4 MB UDP buffers for the relay"
+  say "Allowed 4 MB UDP buffers for the relay$( [ "$bbr" -eq 1 ] && echo ", and BBR for TCP")"
 else
   warn "couldn't raise the UDP buffer limits now (a container?); $SYSCTL_FILE applies them at the next boot"
 fi
@@ -2407,6 +2420,8 @@ $metrics_domain {
 $(metrics_tls)
 	@direct not remote_ip $(cloudflare_ranges)
 	abort @direct
+	# Compressed on the way to Cloudflare: its edge can be half the world away.
+	encode zstd gzip
 	reverse_proxy $COORD_ADDR:8701 {
 		header_up X-Admin-Client-IP {http.request.header.CF-Connecting-IP}
 		header_up X-Admin-Country {http.request.header.CF-IPCountry}
