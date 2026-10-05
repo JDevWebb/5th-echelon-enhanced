@@ -262,7 +262,7 @@ while [ $# -gt 0 ]; do
     --standby) standby="${2:?}"; shift ;;
     --add-admin) command=add-admin; admin_name="${2:?}"; shift ;;
     --reset-admin) command=reset-admin; admin_name="${2:?}"; shift ;;
-    --admin-open-access) command=admin-open-access ;;
+    --admin-open-access) command="admin-open-access" ;;
     --no-auto-update) auto_update=false ;;
     --auto-update) auto_update=true ;;
     --allow-unsigned) allow_unsigned=1 ;;
@@ -1534,7 +1534,10 @@ if [ "$rollback" -eq 0 ]; then
   install -d -m 755 "$PROGRAM_DIR/previous.new"
   for p in "${parts[@]}"; do cp -p "$PROGRAM_DIR/$p" "$PROGRAM_DIR/previous.new/$p"; done
   echo "$current" > "$PROGRAM_DIR/previous.new/release"
-  rm -rf "$PROGRAM_DIR/previous"
+  # The copy kept until now stays aside until this update is healthy: if it isn't, it's
+  # put back, so a failed update doesn't take away going back to it.
+  rm -rf "$PROGRAM_DIR/previous.kept"
+  if [ -d "$PROGRAM_DIR/previous" ]; then mv "$PROGRAM_DIR/previous" "$PROGRAM_DIR/previous.kept"; fi
   mv "$PROGRAM_DIR/previous.new" "$PROGRAM_DIR/previous"
   for p in "${parts[@]}"; do install -m 755 "$work/$(asset "$p")" "$PROGRAM_DIR/$p.new" && mv -f "$PROGRAM_DIR/$p.new" "$PROGRAM_DIR/$p"; done
 else
@@ -1581,6 +1584,7 @@ if [ "$ok" -eq 1 ]; then
   else
     put "$ETC_DIR/rollback-until" 0
   fi
+  rm -rf "$PROGRAM_DIR/previous.kept"
   status done "$wanted"
   exit 0
 fi
@@ -1591,6 +1595,11 @@ for p in "${parts[@]}"; do
   if [ "$rollback" -eq 1 ]; then cp -p "$work/tried-$p" "$PROGRAM_DIR/previous/$p"; fi
 done
 if [ "$rollback" -eq 1 ]; then echo "$wanted" > "$PROGRAM_DIR/previous/release"; fi
+# After an update (not a rollback), the copy kept before it goes back in place.
+if [ "$rollback" -eq 0 ] && [ -d "$PROGRAM_DIR/previous.kept" ]; then
+  rm -rf "$PROGRAM_DIR/previous"
+  mv "$PROGRAM_DIR/previous.kept" "$PROGRAM_DIR/previous"
+fi
 echo "$current" > "$PROGRAM_DIR/release"
 # After an update (not a rollback), the databases as they were before it.
 restored=""
