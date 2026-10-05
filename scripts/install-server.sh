@@ -434,6 +434,7 @@ if [ -n "$standby" ]; then
   standby="${standby,,}"
   [ -n "$coord_domain" ] || die "--standby needs --coordinator-domain: the coordinator's name, the same on every server of the group"
   [ "$coord_only" -eq 0 ] || die "--standby is for game servers (each one asks the others whether they reach the coordinator)"
+  [ "$no_caddy" -eq 0 ] && [ "$https_api" -eq 1 ] || die "--standby needs the API over HTTPS (no --no-caddy or --no-https-api): the standbys ask each other's /api/info over HTTPS"
   [ -n "$coord_cert" ] || [ -f "$COORD_CERT" ] || die "--standby needs --coordinator-cert and --coordinator-key: the coordinator's record is proxied through Cloudflare, so it moves for everyone at once (docs/failover.md)"
   standby_names=" "
   IFS=, read -r -a standby_entries <<< "$standby"

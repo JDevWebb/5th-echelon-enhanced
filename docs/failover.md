@@ -19,7 +19,7 @@ The game servers themselves keep running throughout: players in matches aren't a
 
 ## Setting it up
 
-Every server of the group needs 0.4.2 or newer (the standby is part of the coordinator program, and servers say in `/api/info` whether they reach the coordinator).
+Every server of the group needs 0.4.2 or newer (the standby is part of the coordinator program, and servers say in `/api/info` whether they reach the coordinator), with the API over HTTPS (the installer's default; not `--no-caddy` or `--no-https-api`): the standbys ask each other's `/api/info` over HTTPS, so nobody between the servers can change the answer.
 
 The examples use `play.example.net` for the coordinator, `metrics.example.net` for the admin UI, and three servers `eu1`, `na1` and `oceania` (in the order they take over).
 

@@ -84,7 +84,8 @@ pub struct Config {
     pub api: String,
     /// Where the coordinator is asked for, through Cloudflare (`https://<record>/v1/info`).
     pub probe: String,
-    /// Peers' `/api/info` over this scheme (http: what the game itself speaks).
+    /// Peers' `/api/info` over this scheme: https (their certificates checked), so nobody
+    /// on the way can say a server does or doesn't reach the coordinator.
     pub peer_scheme: String,
     /// How long the first in line waits (`wait SECONDS`; [`WAIT`] unless set).
     pub wait: Duration,
@@ -144,7 +145,7 @@ impl Config {
             backup: take("backup", "/opt/5th-echelon/backup.sh").into(),
             database: take("database", "/var/lib/5th-echelon-coordinator/coordinator.db").into(),
             api: take("api", "https://api.cloudflare.com/client/v4"),
-            peer_scheme: take("peer-scheme", "http"),
+            peer_scheme: Some(take("peer-scheme", "https")).filter(|s| s == "https" || s == "http").ok_or("`peer-scheme` is https or http")?,
             wait: match set.remove("wait") {
                 Some(secs) => Duration::from_secs(secs.parse::<u64>().ok().filter(|s| (10..=3600).contains(s)).ok_or("`wait` is 10 to 3600 seconds")?),
                 None => WAIT,
@@ -807,6 +808,7 @@ server oceania oceania.example.net
         assert_eq!(cfg.records, ["play.example.net", "metrics.example.net"]);
         assert_eq!(cfg.probe, "https://play.example.net/v1/info");
         assert_eq!(cfg.database, PathBuf::from("/var/lib/5th-echelon-coordinator/coordinator.db"));
+        assert_eq!(cfg.peer_scheme, "https");
         // eu1 runs it: na1 is first in line, oceania after.
         assert_eq!(cfg.wait(0), Duration::from_secs(180));
         let oceania = Config::parse(&GROUP.replace("me na1", "me oceania")).unwrap();
@@ -820,6 +822,7 @@ server oceania oceania.example.net
             GROUP.replace("address 198.51.100.2", ""),
             GROUP.replace("server oceania oceania.example.net", "server eu1 oceania.example.net"),
             GROUP.replace("record metrics.example.net", "record metrics example"),
+            format!("{GROUP}peer-scheme ftp\n"),
             String::from("record play.example.net\nme na1\naddress 198.51.100.2\nserver na1 na1.example.net\n"),
         ] {
             assert!(Config::parse(&bad).is_err(), "{bad}");
