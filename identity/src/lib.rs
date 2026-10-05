@@ -101,6 +101,19 @@ pub fn login_message(host: &str, username: &str, time: i64, new_password: &str) 
     format!("5th-echelon/login/v2\n{}\n{username}\n{time}\n{password}", host_key(host))
 }
 
+/// What a player signs to send a suggestion for the roadmap (`POST /v1/suggestions`): when,
+/// and a hash of exactly what was sent, so the signature can't be moved to other text.
+/// `area` and `title` are one line each.
+pub fn suggestion_message(time: i64, area: &str, title: &str, text: &str) -> String {
+    let sent = base32_encode(&sha256(format!("{area}\n{title}\n{text}").as_bytes()));
+    format!("5th-echelon/suggestion/v1\n{time}\n{sent}")
+}
+
+/// What a player signs to read their own suggestions back (`GET /v1/suggestions/mine`).
+pub fn suggestions_message(time: i64) -> String {
+    format!("5th-echelon/suggestions/v1\n{time}")
+}
+
 /// What the release key signs: a release's version (its tag without the
 /// `v`, e.g. `0.4.0`) and its `SHA256SUMS`, as published. With the version
 /// signed, a release published again under another tag doesn't verify, so
@@ -234,6 +247,23 @@ pub fn base32_decode(text: &str) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_suggestion_signature_covers_its_text() {
+        let me = Identity::generate();
+        let message = suggestion_message(1_000, "Launcher", "Chat", "A chat to find players.");
+        let signature = me.sign(&message);
+        assert!(verify(&me.global_id(), &message, &signature));
+        // Other text, another time or another area: the same signature doesn't verify.
+        for other in [
+            suggestion_message(1_000, "Launcher", "Chat", "A chat to find players!"),
+            suggestion_message(1_001, "Launcher", "Chat", "A chat to find players."),
+            suggestion_message(1_000, "Overlay", "Chat", "A chat to find players."),
+        ] {
+            assert!(!verify(&me.global_id(), &other, &signature));
+        }
+        assert_ne!(suggestions_message(1_000), message);
+    }
+
     use super::*;
 
     #[test]
