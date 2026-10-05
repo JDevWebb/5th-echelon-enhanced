@@ -42,6 +42,9 @@ pub const EVERY: Duration = Duration::from_secs(15);
 pub const WAIT: Duration = Duration::from_secs(180);
 /// After a takeover that didn't work, the next try waits this long.
 pub const RETRY_AFTER: Duration = Duration::from_secs(300);
+/// How often the coordinator's machine checks the records that follow it (the admin UI's):
+/// Cloudflare's API allows a user 1,200 requests in 5 minutes, for everything they do.
+pub const FOLLOW_EVERY: Duration = Duration::from_secs(60);
 /// A server reaches the coordinator if its last heartbeat (every 30 s) is this recent.
 pub const REACHED_WITHIN: u64 = 90;
 /// What the coordinator's `/v1/info` calls itself.
@@ -466,6 +469,8 @@ pub struct Standby {
     addresses: HashMap<String, Vec<IpAddr>>,
     /// What was last logged about the coordinator, so a change is logged once.
     said: String,
+    /// When the records that follow the coordinator's were last checked.
+    followed: Option<Instant>,
 }
 
 impl Standby {
@@ -479,6 +484,7 @@ impl Standby {
             watch: Watch { was_here, ..Watch::default() },
             addresses: HashMap::new(),
             said: String::new(),
+            followed: None,
         }
     }
 
@@ -560,7 +566,9 @@ impl Standby {
             (Some(Where::Here), _) => {
                 self.remember(&self.cfg.me.clone());
                 self.say(String::from("The coordinator runs here"));
-                self.follow().await;
+                if self.followed.is_none_or(|t| t.elapsed() >= FOLLOW_EVERY) {
+                    self.follow().await;
+                }
             }
             (Some(Where::There(i)), _) => {
                 let name = self.cfg.servers[*i].name.clone();
@@ -613,6 +621,7 @@ impl Standby {
 
     /// Points the records that follow the coordinator's here.
     async fn follow(&mut self) {
+        self.followed = Some(Instant::now());
         for name in self.cfg.records.clone().into_iter().skip(1) {
             match self.cloudflare.record(&name).await {
                 Ok(r) if r.content == self.cfg.address => {}
