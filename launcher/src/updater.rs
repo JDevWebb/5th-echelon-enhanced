@@ -124,6 +124,37 @@ fn signed(version: &str, sums: &str, signature: &str) -> bool {
     identity::release_signed(version, sums, signature)
 }
 
+/// Whether `data` is release `version`'s `name`: `sums` signed as that version by one of
+/// `keys` (the release keys; a test's own in tests), and listing `data`'s checksum.
+fn checked(version: &str, sums: &str, signature: &str, name: &str, data: &[u8], keys: &[&str]) -> anyhow::Result<()> {
+    let message = identity::release_message(version, sums);
+    if !identity::valid_release_version(version) || !keys.iter().any(|k| identity::verify(k, &message, signature.trim())) {
+        anyhow::bail!("release {version} isn't signed by the project's release key as {version}; not installed");
+    }
+    let want = setup::update::checksum_for(sums, name).ok_or_else(|| anyhow::anyhow!("{SUMS_ASSET} doesn't list {name}"))?;
+    let got: [u8; 32] = sha2::Sha256::digest(data).into();
+    if got != want {
+        anyhow::bail!("{name} doesn't match its published checksum; not installed");
+    }
+    Ok(())
+}
+
+/// Writes `data` to `to` through a temporary file beside it, so a failed write leaves
+/// nothing behind (and the file is a program, on Linux).
+fn install(data: &[u8], to: &Path) -> anyhow::Result<()> {
+    let mut tmp = to.as_os_str().to_owned();
+    tmp.push(".download");
+    let tmp = PathBuf::from(tmp);
+    std::fs::write(&tmp, data)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+    }
+    std::fs::rename(&tmp, to)?;
+    Ok(())
+}
+
 /// Asks GitHub for the latest release.
 pub fn latest() -> anyhow::Result<Latest> {
     let body = crate::services::rt().block_on(get(&format!("https://api.github.com/repos/{REPO}/releases/latest"), Duration::from_secs(15), MAX_SMALL))?;
@@ -145,27 +176,13 @@ pub fn download(latest: &Latest, name: &str, to: &Path) -> anyhow::Result<()> {
         .map_err(|_| anyhow::anyhow!("release {} isn't signed yet; try again later", latest.version))?;
     let sig = String::from_utf8(rt.block_on(get(sig, Duration::from_secs(30), MAX_SMALL))?)?;
     // The tag's version, signed with the files: a signed release published
-    // again under another tag fails here.
+    // again under another tag fails here (before anything big is downloaded).
     if !signed(&latest.version, &sums, &sig) {
         anyhow::bail!("release {} isn't signed by the project's release key as {}; not installed", latest.version, latest.version);
     }
-    let want = setup::update::checksum_for(&sums, name).ok_or_else(|| anyhow::anyhow!("{SUMS_ASSET} doesn't list {name}"))?;
     let data = rt.block_on(get(latest.url(name)?, Duration::from_secs(300), MAX_DOWNLOAD))?;
-    let got: [u8; 32] = sha2::Sha256::digest(&data).into();
-    if got != want {
-        anyhow::bail!("{name} doesn't match its published checksum; not installed");
-    }
-    let mut tmp = to.as_os_str().to_owned();
-    tmp.push(".download");
-    let tmp = PathBuf::from(tmp);
-    std::fs::write(&tmp, &data)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt as _;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
-    }
-    std::fs::rename(&tmp, to)?;
-    Ok(())
+    checked(&latest.version, &sums, &sig, name, &data, identity::RELEASE_KEYS)?;
+    install(&data, to)
 }
 
 fn old_path(exe: &Path) -> PathBuf {
@@ -184,16 +201,23 @@ pub fn update_self(latest: &Latest) -> anyhow::Result<()> {
     new.push(".new");
     let new = PathBuf::from(new);
     download(latest, LAUNCHER_ASSET, &new)?;
-    let old = old_path(&exe);
-    let _ = std::fs::remove_file(&old);
-    std::fs::rename(&exe, &old)?;
-    if let Err(e) = std::fs::rename(&new, &exe) {
-        // Put ourselves back.
-        let _ = std::fs::rename(&old, &exe);
-        return Err(e.into());
-    }
+    swap_in(&exe, &new)?;
     std::process::Command::new(&exe).spawn()?;
     std::process::exit(0);
+}
+
+/// Puts `new` in `exe`'s place, keeping `exe` as `<exe>.old` (a running exe can be renamed,
+/// not overwritten, on Windows); if that fails, `exe` is put back.
+fn swap_in(exe: &Path, new: &Path) -> anyhow::Result<()> {
+    let old = old_path(exe);
+    let _ = std::fs::remove_file(&old);
+    std::fs::rename(exe, &old)?;
+    if let Err(e) = std::fs::rename(new, exe) {
+        // Put ourselves back.
+        let _ = std::fs::rename(&old, exe);
+        return Err(e.into());
+    }
+    Ok(())
 }
 
 /// Deletes the previous launcher left behind by an update.
@@ -223,5 +247,62 @@ mod tests {
         assert!(!signed("1.0.0", sums, &other.sign(&identity::release_message("1.0.0", sums))), "another key");
         assert!(!signed("1.0.0", sums, "not a signature"));
         assert!(identity::RELEASE_KEYS.iter().all(|k| identity::is_global_id(k)));
+    }
+
+    #[test]
+    fn a_download_is_installed_only_signed_as_its_release_and_matching_its_checksum() {
+        let key = identity::Identity::generate();
+        let keys = [key.global_id()];
+        let keys: Vec<&str> = keys.iter().map(String::as_str).collect();
+        let data = b"the new launcher";
+        let sums = format!("{}  {LAUNCHER_ASSET}\n", hex(&sha2::Sha256::digest(data)));
+        let sig = key.sign(&identity::release_message("1.2.0", &sums));
+        assert!(checked("1.2.0", &sums, &sig, LAUNCHER_ASSET, data, &keys).is_ok());
+        let refused = |r: anyhow::Result<()>, why: &str| {
+            let e = r.expect_err(why).to_string();
+            assert!(e.contains("not installed") || e.contains("doesn't list"), "{why}: {e}");
+        };
+        refused(checked("1.2.0", &sums, &sig, LAUNCHER_ASSET, b"something else", &keys), "another file");
+        refused(
+            checked("1.3.0", &sums, &sig, LAUNCHER_ASSET, data, &keys),
+            "signed as another release (an old one under a new tag)",
+        );
+        refused(checked("1.2.0", &sums, &sig, "dedicated_server.exe", data, &keys), "a file the sums don't list");
+        refused(checked("1.2.0", &sums, "not a signature", LAUNCHER_ASSET, data, &keys), "no signature");
+        refused(
+            checked("1.2.0", &sums, &sig, LAUNCHER_ASSET, data, identity::RELEASE_KEYS),
+            "a key that isn't a release key",
+        );
+        refused(checked("v1.2.0;", &sums, &sig, LAUNCHER_ASSET, data, &keys), "a version that isn't one");
+        // Sums changed after signing.
+        let tampered = format!("{sums}{}  extra.dll\n", "0".repeat(64));
+        refused(checked("1.2.0", &tampered, &sig, LAUNCHER_ASSET, data, &keys), "sums changed after signing");
+    }
+
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+
+    #[test]
+    fn an_update_takes_the_launchers_place_and_keeps_the_old_one() {
+        let dir = std::env::temp_dir().join(format!("fes-launcher-update-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (exe, new) = (dir.join("launcher.exe"), dir.join("launcher.exe.new"));
+        std::fs::write(&exe, "old").unwrap();
+        install(b"new", &new).unwrap();
+        assert!(!dir.join("launcher.exe.new.download").exists(), "nothing left beside it");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            assert_eq!(std::fs::metadata(&new).unwrap().permissions().mode() & 0o777, 0o755);
+        }
+        swap_in(&exe, &new).unwrap();
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new");
+        assert_eq!(std::fs::read_to_string(old_path(&exe)).unwrap(), "old", "kept, for clean_up to delete");
+        // Nothing to swap in: the launcher is put back as it was.
+        assert!(swap_in(&exe, &dir.join("missing")).is_err());
+        assert_eq!(std::fs::read_to_string(&exe).unwrap(), "new");
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
