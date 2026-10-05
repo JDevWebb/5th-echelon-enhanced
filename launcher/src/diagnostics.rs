@@ -33,6 +33,11 @@ impl Ask {
         game.is_some_and(|g| g.managed.is_none()) && !Prefs::diagnostics_asked()
     }
 
+    /// Whether the question is up now (other windows wait for it).
+    pub fn asking(&self) -> bool {
+        self.answered == Some(false)
+    }
+
     pub fn show(&mut self, ctx: &egui::Context, game: Option<&mut crate::app::Game>, notices: &mut Notices) {
         let Some(game) = game else { return };
         if game.managed.is_some() || *self.answered.get_or_insert_with(Prefs::diagnostics_asked) {

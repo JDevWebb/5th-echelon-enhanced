@@ -21,6 +21,7 @@ mod task;
 mod theme;
 mod update_notice;
 mod updater;
+mod whats_new;
 
 /// The logo, as egui wants it.
 fn logo() -> eframe::egui::ColorImage {

@@ -383,6 +383,19 @@ pub fn chevron(ui: &mut egui::Ui, left: bool) -> egui::Response {
 }
 
 /// One entry of the side menu: an icon over a small label.
+/// A small button in the side menu with another site's mark (white on clear, tinted here).
+pub fn mark_button(ui: &mut egui::Ui, mark: &egui::TextureHandle, label: &str) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(40.0, 40.0), egui::Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let (fill, tint) = if response.hovered() { (SURFACE, FG) } else { (Color32::TRANSPARENT, MUTED) };
+    let painter = ui.painter();
+    painter.rect_filled(rect, 8, fill);
+    let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+    painter.image(mark.id(), egui::Rect::from_center_size(rect.center(), egui::vec2(19.0, 19.0)), uv, tint);
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    response
+}
+
 pub fn nav_button(ui: &mut egui::Ui, icon: Icon, label: &str, selected: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(66.0, 60.0), egui::Sense::click());
     let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);

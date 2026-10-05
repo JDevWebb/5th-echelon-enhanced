@@ -140,6 +140,15 @@ struct Switch {
 }
 
 impl Play {
+    /// Back to the community network's directory: its servers fill the server menu again.
+    pub fn use_community_network(&mut self, notices: &mut Notices) {
+        crate::app::Prefs::use_community_network();
+        self.browsed = false;
+        self.directory = None;
+        self.directory_error = None;
+        notices.info("Back on the community network: its servers are in the server menu.");
+    }
+
     pub fn game_changed(&mut self) {
         self.art_started = false;
         self.art_texture = None;
@@ -1689,11 +1698,7 @@ fn network_card(play: &mut Play, notices: &mut Notices, ctx: &egui::Context, ui:
         ui.horizontal_wrapped(|ui| {
             ui.label(theme::muted("Another group's network of servers: its servers then fill the server menu on the Play screen.").small());
             if !community && ui.link(RichText::new("Back to the community network").color(theme::ACCENT).size(12.5)).clicked() {
-                crate::app::Prefs::use_community_network();
-                play.browsed = false;
-                play.directory = None;
-                play.directory_error = None;
-                notices.info("Back on the community network: its servers are in the server menu.");
+                play.use_community_network(notices);
             }
         });
     });

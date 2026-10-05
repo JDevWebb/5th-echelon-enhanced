@@ -21,6 +21,23 @@ use crate::theme;
 const PRODUCT: &str = env!("FE_PRODUCT");
 const RELEASE: &str = env!("FE_RELEASE");
 
+/// Where players find the project and its developer, from the side menu.
+const GITHUB: &str = "https://github.com/JDevWebb/5th-echelon-enhanced";
+const DISCORD_NAME: &str = "nexusx44";
+/// The developer's Discord profile: Discord has no link that opens a direct message.
+const DISCORD_PROFILE: &str = "https://discord.com/users/257386895418458132";
+
+/// The GitHub and Discord marks (white on clear, from launcher/assets), as textures.
+fn marks(ctx: &egui::Context) -> [egui::TextureHandle; 2] {
+    let size: usize = env!("MARK_SIZE").parse().unwrap_or(96);
+    let options = egui::TextureOptions::LINEAR.with_mipmap_mode(Some(egui::TextureFilter::Linear));
+    let load = |name: &str, rgba: &[u8]| ctx.load_texture(name, egui::ColorImage::from_rgba_unmultiplied([size, size], rgba), options);
+    [
+        load("github-mark", include_bytes!(concat!(env!("OUT_DIR"), "/github.dat"))),
+        load("discord-mark", include_bytes!(concat!(env!("OUT_DIR"), "/discord.dat"))),
+    ]
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Play,
@@ -99,6 +116,9 @@ pub struct Prefs {
     /// Servers of their own the player connected to (Servers › A server of your own), newest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     recent_servers: Vec<RecentServer>,
+    /// The release whose What's new was last shown, or noted on a fresh install (whats_new.rs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    whats_new_seen: Option<String>,
 }
 
 /// A server the player connected to by its address.
@@ -210,6 +230,17 @@ impl Prefs {
         prefs.save();
     }
 
+    /// The release whose What's new was last shown or noted.
+    pub fn whats_new_seen() -> Option<String> {
+        Self::load().whats_new_seen
+    }
+
+    pub fn set_whats_new_seen(release: &str) {
+        let mut prefs = Self::load();
+        prefs.whats_new_seen = Some(release.to_string());
+        prefs.save();
+    }
+
     pub fn set_feedback_off(off: bool) {
         let mut prefs = Self::load();
         prefs.feedback_off = off;
@@ -287,6 +318,10 @@ pub struct App {
     feedback: crate::feedback::Feedback,
     /// Asking once about the game's diagnostics (diagnostics.rs).
     diagnostics: crate::diagnostics::Ask,
+    /// What's new, once after an update (whats_new.rs).
+    whats_new: crate::whats_new::WhatsNew,
+    /// The side menu's GitHub and Discord marks.
+    marks: Option<[egui::TextureHandle; 2]>,
     settings: Settings,
     server: Server,
     /// The latest release, once looked up.
@@ -321,6 +356,8 @@ impl App {
             play: Play::default(),
             feedback: crate::feedback::Feedback::default(),
             diagnostics: crate::diagnostics::Ask::default(),
+            whats_new: crate::whats_new::WhatsNew::default(),
+            marks: None,
             settings: Settings::default(),
             server: Server::default(),
             latest: None,
@@ -505,8 +542,32 @@ impl App {
                     }
                 });
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
-                    ui.label(egui::RichText::new(RELEASE.split('-').next().unwrap_or(RELEASE)).monospace().size(10.5).color(theme::MUTED))
-                        .on_hover_text(format!("{PRODUCT} {RELEASE}"));
+                    let version = ui
+                        .add(
+                            egui::Label::new(egui::RichText::new(RELEASE.split('-').next().unwrap_or(RELEASE)).monospace().size(10.5).color(theme::MUTED))
+                                .sense(egui::Sense::click()),
+                        )
+                        .on_hover_cursor(egui::CursorIcon::PointingHand)
+                        .on_hover_text(format!("{PRODUCT} {RELEASE}: what's new"));
+                    if version.clicked() && !self.whats_new.reopen() {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(crate::updater::RELEASES_PAGE));
+                    }
+                    ui.add_space(8.0);
+                    let [github, discord] = self.marks.get_or_insert_with(|| marks(ui.ctx())).clone();
+                    let discord = theme::mark_button(ui, &discord, "Message the developer on Discord")
+                        .on_hover_text(format!("Message {DISCORD_NAME} on Discord: bugs, questions, or a game.\nRight-click to copy the name."));
+                    if discord.clicked() {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(DISCORD_PROFILE));
+                    }
+                    if discord.secondary_clicked() {
+                        ui.ctx().copy_text(DISCORD_NAME.to_string());
+                        self.notices.info(format!("Copied {DISCORD_NAME}: add it in Discord to message the developer."));
+                    }
+                    ui.add_space(2.0);
+                    let github = theme::mark_button(ui, &github, "5th Echelon Enhanced on GitHub").on_hover_text("5th Echelon Enhanced on GitHub: releases, issues and the code");
+                    if github.clicked() {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(GITHUB));
+                    }
                 });
             });
     }
@@ -603,6 +664,12 @@ impl eframe::App for App {
         }
         self.feedback.show(ctx, &mut self.notices);
         self.diagnostics.show(ctx, self.game.as_mut(), &mut self.notices);
+        self.whats_new.start(self.game.as_ref());
+        let community = Prefs::directory().is_some_and(|d| Prefs::is_community(&d));
+        if let Some(crate::whats_new::Action::UseCommunityNetwork) = self.whats_new.show(ctx, self.diagnostics.asking(), community) {
+            self.play.use_community_network(&mut self.notices);
+            self.view = View::Play;
+        }
         crate::play::show_account_dialog(self, ctx);
         if let Some(Err(e)) = self.updating.poll() {
             match self.updating_activity.take() {

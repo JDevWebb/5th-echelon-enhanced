@@ -207,4 +207,17 @@ fn main() {
     println!("cargo:rustc-env=LOGO_WIDTH={}", rgba.width());
     println!("cargo:rustc-env=LOGO_HEIGHT={}", rgba.height());
     println!("cargo:rerun-if-changed=../docs/logo.png");
+
+    // The side menu's GitHub and Discord marks: white on clear, the same square size,
+    // tinted by the launcher.
+    let mut size = None;
+    for name in ["github", "discord"] {
+        let path = format!("assets/{name}.png");
+        let img = image::open(&path).unwrap().to_rgba8();
+        assert_eq!(img.width(), img.height(), "{path} isn't square");
+        assert_eq!(*size.get_or_insert(img.width()), img.width(), "{path} isn't the same size as the other marks");
+        fs::write(PathBuf::from(env::var("OUT_DIR").unwrap()).join(format!("{name}.dat")), img.as_raw()).unwrap();
+        println!("cargo:rerun-if-changed={path}");
+    }
+    println!("cargo:rustc-env=MARK_SIZE={}", size.unwrap_or_default());
 }
