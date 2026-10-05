@@ -40,6 +40,7 @@ mod dll_utils;
 mod hooks;
 mod macros;
 mod overlay;
+mod overlay_input;
 mod uplay_r1_loader;
 
 use macros::fatal_error;

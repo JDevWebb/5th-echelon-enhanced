@@ -1210,11 +1210,14 @@ impl ImguiRenderLoop for MyRenderLoop {
         let height = ctx.io().display_size[1];
         self.s = if height > 0.0 { (height / DESIGN_HEIGHT).clamp(0.6, 3.0) } else { 1.0 };
         ctx.io_mut().font_global_scale = self.s / FONT_OVERSAMPLE;
+        // The game hides the system's cursor in play: the overlay draws its own while open.
+        ctx.io_mut().mouse_draw_cursor = self.ui_state == UiState::Show;
         theme_sizes(ctx.style_mut(), self.s);
     }
 
     fn render(&mut self, ui: &mut imgui::Ui) {
         self.poll_keys();
+        crate::overlay_input::set_open(self.ui_state == UiState::Show);
         self.poll_invites();
         self.poll_relogin();
         self.data = community::snapshot();
@@ -1258,6 +1261,7 @@ fn init_hudhook<T: hudhook::Hooks + 'static>(invites: crossbeam_channel::Receive
     EVENTS.get_or_init(|| Mutex::new(rx));
     crate::uplay_r1_loader::EVENT_SENDER.get_or_init(|| Mutex::new(tx.clone()));
     community::start();
+    crate::overlay_input::init();
     hudhook::Hudhook::builder()
         .with::<T>(MyRenderLoop {
             tx,
