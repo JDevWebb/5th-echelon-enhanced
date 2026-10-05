@@ -2153,3 +2153,237 @@ async fn the_map_lists_who_is_online_from_the_last_pulse_only() {
     let stored: String = sqlx::query_scalar("SELECT point FROM pulses").fetch_one(&t.c.pool).await.unwrap();
     assert!(!stored.contains("Viper"), "{stored}");
 }
+
+/// The admin router as a browser at `ip` reaches it (each test its own address: sign-in
+/// attempts are limited per address).
+fn admin_router_at(t: &Test, ip: [u8; 4]) -> Router {
+    let _ = t.c.admin.set(admin::Config::new("https://admin.example", false).unwrap());
+    admin::router(Arc::clone(&t.c)).layer(axum::extract::connect_info::MockConnectInfo(std::net::SocketAddr::from((ip, 1))))
+}
+
+/// A request from the admin UI's own pages, as a browser sends it: the status, the JSON, and
+/// the session cookie it set (if any).
+async fn admin_send(router: &Router, method: &str, path: &str, cookie: &str, body: Option<Value>) -> (StatusCode, Value, Option<String>) {
+    let req = Request::builder()
+        .method(method)
+        .uri(path)
+        .header("cookie", cookie)
+        .header("origin", "https://admin.example")
+        .header("x-fes-admin", "1")
+        .header("content-type", "application/json")
+        .body(body.map_or_else(Body::empty, |b| Body::from(b.to_string())))
+        .unwrap();
+    let resp = router.clone().oneshot(req).await.unwrap();
+    let status = resp.status();
+    let set = resp
+        .headers()
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .find(|v| v.starts_with("__Host-fes-admin=") && !v.contains("Max-Age=0"))
+        .map(|v| v.split(';').next().unwrap().to_string());
+    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+    (status, serde_json::from_slice(&bytes).unwrap_or(Value::Null), set)
+}
+
+/// The authenticator app's code for a 30-second step.
+fn totp_code(secret: &str, step: i64) -> String {
+    format!("{:06}", admin::auth::totp_at(&identity::base32_decode(secret).unwrap(), step))
+}
+
+/// The current 30-second step, waiting first if it's about to end: codes from the step
+/// before to the one after are taken, so a test that uses each of them once stays inside
+/// that window.
+async fn totp_step() -> i64 {
+    let into = identity::now().rem_euclid(30);
+    if into > 20 {
+        tokio::time::sleep(std::time::Duration::from_secs((31 - into) as u64)).await;
+    }
+    identity::now().div_euclid(30)
+}
+
+#[tokio::test]
+async fn an_admin_sets_up_and_signs_in_with_a_password_and_an_authenticator() {
+    let step = totp_step().await;
+    let t = start("admin-sign-in").await;
+    let r = admin_router_at(&t, [192, 0, 2, 10]);
+    let link = t.c.admin_setup_link("kiwi", false).await.unwrap();
+    let token = link.split("#setup=").nth(1).unwrap().to_string();
+    let password = "correct horse battery staple";
+
+    // The setup link: a weak password is refused and the link still works; then it's used up.
+    let (status, ..) = admin_send(&r, "POST", "/api/setup", "", Some(json!({ "token": token, "password": "kiwi" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a weak password");
+    let (status, v, enroll) = admin_send(&r, "POST", "/api/setup", "", Some(json!({ "token": token, "password": password }))).await;
+    assert_eq!((status, v["stage"].as_str()), (StatusCode::OK, Some("enroll")), "{v}");
+    let enroll = enroll.expect("a session to add a second factor in");
+    let (status, ..) = admin_send(&r, "POST", "/api/setup", "", Some(json!({ "token": token, "password": password }))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "a setup link works once");
+
+    // Before a second factor, nothing else.
+    assert_eq!(admin_send(&r, "GET", "/api/overview", &enroll, None).await.0, StatusCode::UNAUTHORIZED);
+    let (status, v, _) = admin_send(&r, "POST", "/api/me/totp/begin", &enroll, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let secret = v["secret"].as_str().unwrap().to_string();
+    assert!(v["uri"].as_str().unwrap().starts_with("otpauth://totp/"), "{v}");
+    let (status, ..) = admin_send(&r, "POST", "/api/me/totp/confirm", &enroll, Some(json!({ "code": "000000" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "a wrong code");
+    let (status, v, full) = admin_send(&r, "POST", "/api/me/totp/confirm", &enroll, Some(json!({ "code": totp_code(&secret, step - 1) }))).await;
+    assert_eq!((status, v["stage"].as_str()), (StatusCode::OK, Some("full")), "{v}");
+    let codes: Vec<String> = v["recovery_codes"].as_array().unwrap().iter().map(|c| c.as_str().unwrap().to_string()).collect();
+    assert!(codes.len() >= 8, "recovery codes, the first time: {v}");
+    let full = full.expect("a full session");
+    assert_eq!(
+        admin_send(&r, "GET", "/api/overview", &enroll, None).await.0,
+        StatusCode::UNAUTHORIZED,
+        "the enrolling session is gone"
+    );
+    let (status, v, _) = admin_send(&r, "GET", "/api/me", &full, None).await;
+    assert_eq!((status, v["username"].as_str(), v["totp"].as_bool()), (StatusCode::OK, Some("kiwi"), Some(true)), "{v}");
+
+    // Signing out ends the session.
+    admin_send(&r, "POST", "/api/logout", &full, None).await;
+    assert_eq!(admin_send(&r, "GET", "/api/me", &full, None).await.0, StatusCode::UNAUTHORIZED);
+
+    // Signing in: the password, then the code. A code used before isn't taken again.
+    let (status, ..) = admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": "wrong password here" }))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, v, half) = admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": password }))).await;
+    assert_eq!((status, v["stage"].as_str(), v["totp"].as_bool()), (StatusCode::OK, Some("password"), Some(true)), "{v}");
+    let half = half.unwrap();
+    assert_eq!(
+        admin_send(&r, "GET", "/api/me", &half, None).await.0,
+        StatusCode::UNAUTHORIZED,
+        "a password alone isn't enough"
+    );
+    let (status, ..) = admin_send(&r, "POST", "/api/login/totp", &half, Some(json!({ "code": totp_code(&secret, step - 1) }))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "the code used to enrol, again");
+    let (status, v, full) = admin_send(&r, "POST", "/api/login/totp", &half, Some(json!({ "code": totp_code(&secret, step) }))).await;
+    assert_eq!((status, v["stage"].as_str()), (StatusCode::OK, Some("full")), "{v}");
+    let full = full.unwrap();
+    assert_eq!(admin_send(&r, "GET", "/api/me", &full, None).await.0, StatusCode::OK);
+    assert_eq!(
+        admin_send(&r, "GET", "/api/me", &half, None).await.0,
+        StatusCode::UNAUTHORIZED,
+        "the half-way session is gone"
+    );
+
+    // Changes from other sites are refused, even with the cookie.
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/logout")
+        .header("cookie", &full)
+        .header("origin", "https://evil.example")
+        .header("x-fes-admin", "1")
+        .body(Body::empty())
+        .unwrap();
+    assert_eq!(r.clone().oneshot(req).await.unwrap().status(), StatusCode::FORBIDDEN);
+    let req = Request::builder().method("POST").uri("/api/logout").header("cookie", &full).body(Body::empty()).unwrap();
+    assert_eq!(r.clone().oneshot(req).await.unwrap().status(), StatusCode::FORBIDDEN, "without the admin UI's header");
+    assert_eq!(admin_send(&r, "GET", "/api/me", &full, None).await.0, StatusCode::OK, "still signed in");
+}
+
+#[tokio::test]
+async fn sensitive_changes_want_a_second_factor_lately_and_recovery_codes_work_once() {
+    let step = totp_step().await;
+    let t = start("admin-recent").await;
+    let r = admin_router_at(&t, [192, 0, 2, 11]);
+    let token = t.c.admin_setup_link("kiwi", false).await.unwrap().split("#setup=").nth(1).unwrap().to_string();
+    let password = "correct horse battery staple";
+    let enroll = admin_send(&r, "POST", "/api/setup", "", Some(json!({ "token": token, "password": password })))
+        .await
+        .2
+        .unwrap();
+    let secret = admin_send(&r, "POST", "/api/me/totp/begin", &enroll, None).await.1["secret"].as_str().unwrap().to_string();
+    let (_, v, full) = admin_send(&r, "POST", "/api/me/totp/confirm", &enroll, Some(json!({ "code": totp_code(&secret, step - 1) }))).await;
+    let codes: Vec<String> = v["recovery_codes"].as_array().unwrap().iter().map(|c| c.as_str().unwrap().to_string()).collect();
+    let full = full.unwrap();
+
+    // Just verified: adding an admin works. Ten minutes on, it wants the code again.
+    let (status, v, _) = admin_send(&r, "POST", "/api/admins", &full, Some(json!({ "username": "tank" }))).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert!(v["link"].as_str().unwrap().starts_with("https://admin.example/#setup="), "{v}");
+    sqlx::query("UPDATE admin_sessions SET verified_at = verified_at - 601").execute(&t.c.pool).await.unwrap();
+    for (method, path, body) in [
+        ("POST", "/api/admins", Some(json!({ "username": "tank2" }))),
+        ("DELETE", "/api/servers/nope", None),
+        ("POST", "/api/me/password", Some(json!({ "current": password, "new": "another long passphrase here" }))),
+        ("PUT", "/api/restrictions", Some(json!({ "networks": [], "countries": [] }))),
+    ] {
+        let (status, v, _) = admin_send(&r, method, path, &full, body).await;
+        assert_eq!((status, v["reverify"].as_bool()), (StatusCode::FORBIDDEN, Some(true)), "{method} {path}: {v}");
+    }
+    assert_eq!(admin_send(&r, "GET", "/api/me", &full, None).await.0, StatusCode::OK, "reading is fine");
+    let (status, v, _) = admin_send(&r, "POST", "/api/login/totp", &full, Some(json!({ "code": totp_code(&secret, step) }))).await;
+    assert_eq!((status, v["stage"].as_str()), (StatusCode::OK, Some("full")), "confirming it's them: {v}");
+    let (status, v, _) = admin_send(&r, "POST", "/api/admins", &full, Some(json!({ "username": "tank2" }))).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    // Rules that would lock out the admin making them are refused.
+    let (status, v, _) = admin_send(&r, "PUT", "/api/restrictions", &full, Some(json!({ "networks": ["198.51.100.0/24"], "countries": [] }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("lock you out"), "{v}");
+
+    // A recovery code instead of the app: once.
+    admin_send(&r, "POST", "/api/logout", &full, None).await;
+    let half = admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": password })))
+        .await
+        .2
+        .unwrap();
+    let (status, v, full) = admin_send(&r, "POST", "/api/login/recovery", &half, Some(json!({ "code": codes[0] }))).await;
+    assert_eq!((status, v["stage"].as_str()), (StatusCode::OK, Some("full")), "{v}");
+    let (_, v, _) = admin_send(&r, "GET", "/api/me", full.as_deref().unwrap(), None).await;
+    assert_eq!(v["recovery_left"].as_i64(), Some(codes.len() as i64 - 1), "{v}");
+    admin_send(&r, "POST", "/api/logout", full.as_deref().unwrap(), None).await;
+    let half = admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": password })))
+        .await
+        .2
+        .unwrap();
+    let (status, ..) = admin_send(&r, "POST", "/api/login/recovery", &half, Some(json!({ "code": codes[0] }))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "a used recovery code");
+}
+
+#[tokio::test]
+async fn failed_sign_ins_lock_an_account_and_admins_cant_lock_everyone_out() {
+    let t = start("admin-lockout").await;
+    let r = admin_router_at(&t, [192, 0, 2, 12]);
+    let token = t.c.admin_setup_link("kiwi", false).await.unwrap().split("#setup=").nth(1).unwrap().to_string();
+    let password = "correct horse battery staple";
+    admin_send(&r, "POST", "/api/setup", "", Some(json!({ "token": token, "password": password }))).await;
+
+    // Five wrong passwords: the account waits, even for the right one.
+    for _ in 0..5 {
+        let (status, ..) = admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": "not the password" }))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let (status, v, cookie) = admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": password }))).await;
+    assert_eq!((status, cookie), (StatusCode::TOO_MANY_REQUESTS, None), "{v}");
+    // A name that doesn't exist answers as a wrong password does.
+    let (status, v, _) = admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "nobody", "password": password }))).await;
+    assert_eq!((status, v["error"].as_str()), (StatusCode::UNAUTHORIZED, Some("wrong name or password")));
+
+    // Nobody disables, removes or resets themselves here (so an admin always remains);
+    // another admin's disable ends that admin's sessions.
+    let tank = admin_cookie(&t, "tank", 0).await;
+    let rata = admin_cookie(&t, "rata", 0).await;
+    let ids: Vec<(i64, String)> = sqlx::query_as("SELECT id, username FROM admins").fetch_all(&t.c.pool).await.unwrap();
+    let id_of = |name: &str| ids.iter().find(|(_, n)| n == name).unwrap().0;
+    for action in ["disable", "remove", "reset"] {
+        let (status, v, _) = admin_send(&r, "POST", &format!("/api/admins/{}/{action}", id_of("tank")), &tank, None).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{action} themselves: {v}");
+    }
+    let (status, v, _) = admin_send(&r, "POST", &format!("/api/admins/{}/disable", id_of("tank")), &rata, None).await;
+    assert_eq!(status, StatusCode::OK, "another admin disables tank: {v}");
+    assert_eq!(
+        admin_send(&r, "GET", "/api/me", &tank, None).await.0,
+        StatusCode::UNAUTHORIZED,
+        "a disabled admin's sessions end"
+    );
+    let (status, ..) = admin_send(&r, "POST", "/api/admins/99999/disable", &rata, None).await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "no such admin");
+    // Enabled again and reset: their sign-in is cleared, and a new setup link is the way back.
+    admin_send(&r, "POST", &format!("/api/admins/{}/enable", id_of("kiwi")), &rata, None).await;
+    let (status, v, _) = admin_send(&r, "POST", &format!("/api/admins/{}/reset", id_of("kiwi")), &rata, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let (status, ..) = admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "kiwi", "password": password }))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "a reset admin's old password");
+}
