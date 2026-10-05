@@ -10,6 +10,7 @@ mod dll_utils;
 mod feedback;
 mod flow;
 mod logging;
+mod maintenance;
 mod network;
 mod play;
 mod scale;

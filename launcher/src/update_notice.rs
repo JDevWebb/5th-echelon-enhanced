@@ -23,6 +23,12 @@ pub enum Kind {
     Restarting,
     /// The player's server runs a newer release than this launcher, and turns its game away.
     LauncherBehind,
+    /// The player's server has maintenance booked later today, or soon (maintenance.rs).
+    Maintenance,
+    /// The player's server is in its maintenance window, or not back after it.
+    MaintenanceNow,
+    /// The network itself (its coordinator) has maintenance booked, or under way.
+    NetworkMaintenance,
 }
 
 /// What a server is at, for its colour.
@@ -71,10 +77,30 @@ pub struct Notice {
 
 impl Notice {
     /// How often the directory is read again while this shows: every 15 s while the
-    /// player's server restarts, else every minute.
+    /// player's server restarts or is down for maintenance, else every minute.
     pub fn refresh_every(&self) -> std::time::Duration {
-        std::time::Duration::from_secs(if self.kind == Kind::Restarting { 15 } else { 60 })
+        let waiting = self.kind == Kind::Restarting || (self.kind == Kind::MaintenanceNow && self.blocks_play.is_some());
+        std::time::Duration::from_secs(if waiting { 15 } else { 60 })
     }
+
+    /// Which notice wins when there are several (lowest first): a launcher too old to play
+    /// at all, the player's server down for maintenance, restarting with a release,
+    /// maintenance coming up, a release going out, then the network's maintenance.
+    pub fn rank(&self) -> u8 {
+        match self.kind {
+            Kind::LauncherBehind => 0,
+            Kind::MaintenanceNow => 1,
+            Kind::Restarting => 2,
+            Kind::Maintenance => 3,
+            Kind::Updating => 4,
+            Kind::NetworkMaintenance => 5,
+        }
+    }
+}
+
+/// The notice to show of those there are: the one that matters most ([`Notice::rank`]).
+pub fn most_pressing(notices: impl IntoIterator<Item = Option<Notice>>) -> Option<Notice> {
+    notices.into_iter().flatten().min_by_key(Notice::rank)
 }
 
 /// What the notice is worked out from.
@@ -99,7 +125,7 @@ fn release(version: &str) -> Option<[u32; 3]> {
     parts.next().is_none().then_some(v)
 }
 
-fn place(s: &Listing) -> String {
+pub(crate) fn place(s: &Listing) -> String {
     if s.region.is_empty() {
         s.name.clone()
     } else {
@@ -108,7 +134,7 @@ fn place(s: &Listing) -> String {
 }
 
 /// The city alone ("Sydney" of "Sydney, Australia"), for the short lines.
-fn city(place: &str) -> &str {
+pub(crate) fn city(place: &str) -> &str {
     place.split(',').next().unwrap_or(place).trim()
 }
 
@@ -412,6 +438,7 @@ mod tests {
             players_online: players,
             players_total: 0,
             friends_mode: String::new(),
+            maintenance: Vec::new(),
         }
     }
 

@@ -22,6 +22,8 @@ pub struct Row {
     /// The player is on it.
     pub current: bool,
     pub best: bool,
+    /// Its maintenance, when a window shows ("Maintenance 8 pm", "Back 9 pm").
+    pub maintenance: Option<String>,
 }
 
 /// The servers in the order to offer them: the best first ([`setup::directory::best`]),
@@ -37,8 +39,8 @@ pub fn ranked(servers: &[(Listing, Option<u32>)]) -> Vec<usize> {
 }
 
 /// The menu's rows, best first, for the player on `current` (a host, as their settings
-/// have it).
-pub fn rows(servers: &[(Listing, Option<u32>)], current: &str) -> Vec<Row> {
+/// have it), with each server's maintenance as it shows `now` on `clock`.
+pub fn rows(servers: &[(Listing, Option<u32>)], current: &str, now: i64, clock: &setup::clock::Clock) -> Vec<Row> {
     let best = setup::directory::best(servers);
     let names = short_names(&servers.iter().map(|(s, _)| s.name.as_str()).collect::<Vec<_>>());
     ranked(servers)
@@ -53,6 +55,7 @@ pub fn rows(servers: &[(Listing, Option<u32>)], current: &str) -> Vec<Row> {
                 players: s.players_online,
                 current: s.host.eq_ignore_ascii_case(current.trim()),
                 best: best == Some(i),
+                maintenance: crate::maintenance::tag(s, *ping, now, clock),
             }
         })
         .collect()
@@ -211,22 +214,32 @@ fn row_ui(ui: &mut egui::Ui, row: &Row, focused: bool) -> egui::Response {
     p.galley(egui::pos2(x, top), title, theme::FG);
     p.galley(egui::pos2(x, rect.center().y + 1.0), sub, theme::MUTED);
     let tag = if row.best {
-        Some(("BEST FOR YOU", theme::ON_ACCENT, Some(theme::ACCENT)))
+        Some(("BEST FOR YOU".to_string(), theme::ON_ACCENT, Some(theme::ACCENT)))
     } else if row.current {
-        Some(("CURRENT", theme::OK, None))
+        Some(("CURRENT".to_string(), theme::OK, None))
     } else {
         None
     };
-    if let Some((text, color, fill)) = tag {
-        let tag = ui.fonts_mut(|f| f.layout_no_wrap(text.into(), egui::FontId::proportional(10.0), color));
-        let at = egui::pos2(x + title_width + 8.0, top + 3.0);
+    // Then its maintenance, outlined in amber.
+    let maintenance = row.maintenance.as_ref().map(|m| (m.to_uppercase(), theme::WARN, None));
+    let mut at = egui::pos2(x + title_width + 8.0, top + 3.0);
+    for (text, color, fill) in tag.into_iter().chain(maintenance) {
+        let tag = ui.fonts_mut(|f| f.layout_no_wrap(text, egui::FontId::proportional(10.0), color));
         let tag_rect = egui::Rect::from_min_size(at, tag.size() + egui::vec2(12.0, 4.0));
-        if tag_rect.right() < rect.right() - right_col {
-            if let Some(fill) = fill {
+        if tag_rect.right() >= rect.right() - right_col {
+            break;
+        }
+        match fill {
+            Some(fill) => {
                 p.rect_filled(tag_rect, 4, fill);
             }
-            p.galley(at + egui::vec2(6.0, 2.0), tag, color);
+            None if color == theme::WARN => {
+                p.rect_stroke(tag_rect, 4, egui::Stroke::new(1.0, color.linear_multiply(0.6)), egui::StrokeKind::Inside);
+            }
+            None => {}
         }
+        p.galley(at + egui::vec2(6.0, 2.0), tag, color);
+        at.x = tag_rect.right() + 6.0;
     }
     let ping = match row.ping {
         Some(ms) => (format!("{ms} ms"), ping_color(ms)),
@@ -265,7 +278,27 @@ mod tests {
             players_online: players,
             players_total: 0,
             friends_mode: String::new(),
+            maintenance: Vec::new(),
         }
+    }
+
+    fn utc() -> setup::clock::Clock {
+        setup::clock::Clock::utc()
+    }
+
+    #[test]
+    fn maintenance_tags_the_server() {
+        let mut servers = network();
+        // 20:00 to 21:00 UTC on the first day.
+        servers[2].0.maintenance = vec![setup::directory::Window {
+            start: 20 * 3600,
+            end: 21 * 3600,
+            note: String::new(),
+        }];
+        let tags = |now: i64| rows(&servers, "", now, &utc()).into_iter().map(|r| r.maintenance).collect::<Vec<_>>();
+        assert_eq!(tags(3600), [Some("Maintenance 20:00".to_string()), None, None, None]);
+        assert_eq!(tags(20 * 3600 + 60)[0].as_deref(), Some("Back 21:00"));
+        assert_eq!(tags(22 * 3600)[0], None, "it answers: back");
     }
 
     fn network() -> Vec<(Listing, Option<u32>)> {
@@ -279,7 +312,7 @@ mod tests {
 
     #[test]
     fn best_first_then_by_ping() {
-        let rows = rows(&network(), "na.example.net");
+        let rows = rows(&network(), "na.example.net", 0, &utc());
         let hosts: Vec<&str> = rows.iter().map(|r| r.host.as_str()).collect();
         assert_eq!(hosts, ["oce.example.net", "na.example.net", "eu.example.net", "asia.example.net"]);
         assert!(rows[0].best && !rows[1].best);
@@ -289,7 +322,7 @@ mod tests {
 
     #[test]
     fn labels_say_where_and_which() {
-        let rows = rows(&network(), "OCE.example.net ");
+        let rows = rows(&network(), "OCE.example.net ", 0, &utc());
         assert_eq!(rows[0].place, "Sydney, Australia");
         assert_eq!(rows[0].name, "Oceania");
         assert_eq!(rows[1].name, "North America");
@@ -302,7 +335,7 @@ mod tests {
     #[test]
     fn busier_server_wins_a_close_ping() {
         let servers = vec![(listing("A", "", "a.example.net", 0), Some(40)), (listing("B", "", "b.example.net", 5), Some(50))];
-        let rows = rows(&servers, "");
+        let rows = rows(&servers, "", 0, &utc());
         assert_eq!(rows[0].host, "b.example.net");
         assert!(rows[0].best);
     }

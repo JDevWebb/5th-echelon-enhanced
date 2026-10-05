@@ -39,6 +39,75 @@ pub struct Listing {
     /// "everyone" or "mutual".
     #[serde(default)]
     pub friends_mode: String,
+    /// Maintenance booked on it: the next few windows, by start (older coordinators
+    /// don't say).
+    #[serde(default, deserialize_with = "windows", skip_serializing_if = "Vec::is_empty")]
+    pub maintenance: Vec<Window>,
+}
+
+/// A time a server (or the whole network) is booked to be down, from `start` to `end`
+/// (Unix seconds), with a word for players. A notice only: nothing is stopped by it.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Window {
+    pub start: i64,
+    pub end: i64,
+    #[serde(default)]
+    pub note: String,
+}
+
+/// The most windows read for a server.
+const MAX_WINDOWS: usize = 3;
+/// The longest window believed (admins book up to a day).
+const MAX_WINDOW: i64 = 2 * DAY;
+
+impl Window {
+    /// The window as read, if it makes sense: its note on one line and cut.
+    fn checked(self) -> Option<Self> {
+        (self.start > 0 && self.end > self.start && self.end - self.start <= MAX_WINDOW).then(|| Self {
+            note: hooks_config::text::clip(&self.note, 100),
+            ..self
+        })
+    }
+}
+
+/// A server's windows: those that read as one, by start, at most [`MAX_WINDOWS`]. Anything
+/// else in the field is let go rather than losing the server.
+fn windows<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<Window>, D::Error> {
+    let list = match serde_json::Value::deserialize(d)? {
+        serde_json::Value::Array(list) => list,
+        _ => return Ok(Vec::new()),
+    };
+    let mut windows: Vec<Window> = list.into_iter().filter_map(|v| serde_json::from_value::<Window>(v).ok()?.checked()).collect();
+    windows.sort_by_key(|w| (w.start, w.end));
+    windows.truncate(MAX_WINDOWS);
+    Ok(windows)
+}
+
+/// The network's own window (its coordinator: friends across servers, the directory, new
+/// names), from the directory's answer.
+pub fn parse_network_maintenance(json: &str) -> Option<Window> {
+    let v: serde_json::Value = serde_json::from_str(json).ok()?;
+    serde_json::from_value::<Window>(v.get("network_maintenance")?.clone()).ok()?.checked()
+}
+
+/// How long after a window's end it's kept, for a server that isn't back.
+pub const ENDED_KEPT: i64 = 12 * 3600;
+
+/// Keeps the windows `previous` listed that have ended since (within [`ENDED_KEPT`]) on
+/// the same servers in `servers`: the directory stops listing a window when it ends, but
+/// a server that isn't back by then is overrunning it. A window gone before its end was
+/// cancelled, and stays gone.
+pub fn carry_ended(previous: &[Listing], servers: &mut [Listing], now: i64) {
+    for server in servers.iter_mut() {
+        let Some(before) = previous.iter().find(|p| p.host.eq_ignore_ascii_case(&server.host)) else {
+            continue;
+        };
+        for w in before.maintenance.iter().rev() {
+            if w.end <= now && now - w.end < ENDED_KEPT && !server.maintenance.contains(w) {
+                server.maintenance.insert(0, w.clone());
+            }
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -193,6 +262,7 @@ pub fn built_in(coordinator: &str) -> Vec<Listing> {
         players_online: 0,
         players_total: 0,
         friends_mode: "mutual".into(),
+        maintenance: Vec::new(),
     })
     .collect()
 }
@@ -209,6 +279,9 @@ struct Cached {
     /// Unix seconds.
     saved_at: i64,
     servers: Vec<Listing>,
+    /// The network's own window then, so it's still known while the coordinator is down.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    network_maintenance: Option<Window>,
 }
 
 fn read_cache(dir: &Path) -> Vec<Cached> {
@@ -218,8 +291,9 @@ fn read_cache(dir: &Path) -> Vec<Cached> {
         .unwrap_or_default()
 }
 
-/// Keeps `servers` as `coordinator`'s last list (players online and all, as they were then).
-pub fn save_cache(dir: &Path, coordinator: &str, servers: &[Listing], now: i64) {
+/// Keeps `servers` as `coordinator`'s last list (players online and all, as they were
+/// then), with the network's own maintenance window.
+pub fn save_cache(dir: &Path, coordinator: &str, servers: &[Listing], network: Option<&Window>, now: i64) {
     let mut cache = read_cache(dir);
     cache.retain(|c| !same_directory(&c.directory, coordinator));
     cache.insert(
@@ -228,6 +302,7 @@ pub fn save_cache(dir: &Path, coordinator: &str, servers: &[Listing], now: i64) 
             directory: coordinator.trim().trim_end_matches('/').to_string(),
             saved_at: now,
             servers: servers.iter().take(MAX_SERVERS).cloned().collect(),
+            network_maintenance: network.cloned(),
         },
     );
     cache.truncate(MAX_CACHED);
@@ -235,6 +310,15 @@ pub fn save_cache(dir: &Path, coordinator: &str, servers: &[Listing], now: i64) 
         let _ = std::fs::create_dir_all(dir);
         let _ = crate::write_atomic(&dir.join(CACHE_FILE), &json);
     }
+}
+
+/// `coordinator`'s last list as kept, for its windows: the servers then, and the network's
+/// own window.
+pub fn cached(dir: &Path, coordinator: &str) -> Option<(Vec<Listing>, Option<Window>)> {
+    read_cache(dir)
+        .into_iter()
+        .find(|c| same_directory(&c.directory, coordinator))
+        .map(|c| (c.servers, c.network_maintenance))
 }
 
 /// The servers to offer when `coordinator` doesn't answer: its last list, else the
@@ -318,7 +402,59 @@ mod tests {
             players_online: players,
             players_total: 0,
             friends_mode: String::new(),
+            maintenance: Vec::new(),
         }
+    }
+
+    #[test]
+    fn maintenance_read_from_the_directory() {
+        let json = r#"{"servers":[
+            {"id":"a","name":"A","host":"a.example.com","maintenance":[
+                {"start":1791273600,"end":1791277200,"note":"Moving\nto a faster machine"},
+                {"start":1791270000,"end":1791273600},
+                {"start":1791280000,"end":1791270000,"note":"ends before it starts"},
+                {"start":"soon","end":1791277200}]},
+            {"id":"b","name":"B","host":"b.example.com","maintenance":"tonight"},
+            {"id":"c","name":"C","host":"c.example.com"}],
+            "network_maintenance":{"start":1791270000,"end":1791273600,"note":"New coordinator"}}"#;
+        let list = parse(json).unwrap();
+        assert_eq!(list.len(), 3, "a field that doesn't read loses only the field");
+        let windows = &list[0].maintenance;
+        assert_eq!(windows.len(), 2);
+        assert_eq!((windows[0].start, windows[0].note.as_str()), (1_791_270_000, ""), "by start");
+        assert_eq!(windows[1].note, "Movingto a faster machine", "one line");
+        assert!(list[1].maintenance.is_empty() && list[2].maintenance.is_empty());
+        assert_eq!(parse_network_maintenance(json).map(|w| w.note), Some("New coordinator".into()));
+        assert_eq!(parse_network_maintenance(r#"{"servers":[]}"#), None);
+        // Kept in the cache with the list, and the network's window beside it.
+        let dir = std::env::temp_dir().join(format!("fe-dir-windows-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let network = parse_network_maintenance(json);
+        save_cache(&dir, COMMUNITY, &list, network.as_ref(), 1000);
+        let (servers, kept) = cached(&dir, COMMUNITY).unwrap();
+        assert_eq!((servers[0].maintenance.len(), kept), (2, network));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn ended_windows_stay_for_a_server_not_back() {
+        let window = |start: i64, end: i64| Window { start, end, note: String::new() };
+        let mut before = listing("a", 0);
+        before.maintenance = vec![window(1000, 2000), window(5000, 6000), window(9000, 9500)];
+        let mut now_listed = vec![listing("a", 0), listing("b", 0)];
+        now_listed[0].maintenance = vec![window(9000, 9500)];
+        // At 7000: the first two ended (the directory no longer lists them); the third is
+        // listed still.
+        carry_ended(std::slice::from_ref(&before), &mut now_listed, 7000);
+        assert_eq!(now_listed[0].maintenance, [window(1000, 2000), window(5000, 6000), window(9000, 9500)]);
+        assert!(now_listed[1].maintenance.is_empty());
+        // Not long after it ended: kept. Cancelled before its end: gone.
+        let mut later = vec![listing("a", 0)];
+        carry_ended(std::slice::from_ref(&before), &mut later, 2000 + ENDED_KEPT);
+        assert_eq!(later[0].maintenance, [window(5000, 6000), window(9000, 9500)]);
+        let mut cancelled = vec![listing("a", 0)];
+        carry_ended(std::slice::from_ref(&before), &mut cancelled, 9200);
+        assert_eq!(cancelled[0].maintenance, [window(1000, 2000), window(5000, 6000)]);
     }
 
     #[test]
@@ -333,13 +469,13 @@ mod tests {
         assert!(fallback(Some(&dir), "https://other.example.com", 1000).is_none());
         assert!(known_network(None, COMMUNITY) && !known_network(Some(&dir), "https://other.example.com"));
         // A list it gave is kept, and comes back (without the players online then).
-        save_cache(&dir, "https://other.example.com", &[listing("kiwi", 7)], 1000);
+        save_cache(&dir, "https://other.example.com", &[listing("kiwi", 7)], None, 1000);
         let (servers, note) = fallback(Some(&dir), "https://OTHER.example.com/", 1000 + 3 * 3600).unwrap();
         assert_eq!((servers[0].host.as_str(), servers[0].players_online), ("kiwi.example.com", 0));
         assert!(note.contains("3 hours ago"), "{note}");
         assert!(known_network(Some(&dir), "https://other.example.com"));
         // The community's own last list wins over the built-in one.
-        save_cache(&dir, COMMUNITY, &[listing("eu9", 1)], 1000);
+        save_cache(&dir, COMMUNITY, &[listing("eu9", 1)], None, 1000);
         assert_eq!(fallback(Some(&dir), COMMUNITY, 1000).unwrap().0[0].host, "eu9.example.com");
         std::fs::remove_dir_all(&dir).unwrap();
     }

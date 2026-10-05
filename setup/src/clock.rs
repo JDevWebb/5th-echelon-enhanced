@@ -42,17 +42,7 @@ impl Clock {
     pub fn time(&self, at: i64, now: i64) -> String {
         let local = at + i64::from(self.offset);
         let (day, today) = (local.div_euclid(DAY), (now + i64::from(self.offset)).div_euclid(DAY));
-        let secs = local.rem_euclid(DAY);
-        let (hour, minute) = (secs / 3600, secs % 3600 / 60);
-        let time = if self.twelve_hour {
-            let h = match hour % 12 {
-                0 => 12,
-                h => h,
-            };
-            format!("{h}:{minute:02} {}", if hour < 12 { "am" } else { "pm" })
-        } else {
-            format!("{hour:02}:{minute:02}")
-        };
+        let time = self.clock_time(at);
         match day - today {
             0 => format!("{time} {}", self.zone),
             1 => format!("{time} tomorrow {}", self.zone),
@@ -62,6 +52,63 @@ impl Clock {
                 format!("{weekday} {time} {}", self.zone)
             }
         }
+    }
+
+    /// The hour and minute of `at` alone: "8:00 pm", or "20:00" on a 24-hour PC.
+    pub fn clock_time(&self, at: i64) -> String {
+        let (hour, minute) = self.hour_minute(at);
+        if self.twelve_hour {
+            format!("{}:{minute:02} {}", twelve(hour), am_pm(hour))
+        } else {
+            format!("{hour:02}:{minute:02}")
+        }
+    }
+
+    /// Shorter still, for a tag: "8 pm" on the hour, "8:30 pm", or "20:00".
+    pub fn short_time(&self, at: i64) -> String {
+        match self.hour_minute(at) {
+            (hour, 0) if self.twelve_hour => format!("{} {}", twelve(hour), am_pm(hour)),
+            _ => self.clock_time(at),
+        }
+    }
+
+    /// From `start` to `end`, with the zone: "8:00–9:00 pm NZDT", "11:30 pm–12:30 am NZDT",
+    /// "20:00–21:00 CEST".
+    pub fn span(&self, start: i64, end: i64) -> String {
+        let (from, to) = (self.clock_time(start), self.clock_time(end));
+        // Both am or both pm: said once, at the end.
+        let from = if self.twelve_hour && self.hour_minute(start).0 / 12 == self.hour_minute(end).0 / 12 {
+            from.trim_end_matches(" am").trim_end_matches(" pm").to_string()
+        } else {
+            from
+        };
+        format!("{from}–{to} {}", self.zone)
+    }
+
+    /// The local midnight that begins `at`'s day (Unix seconds), by this clock's offset now.
+    pub fn day_start(&self, at: i64) -> i64 {
+        let local = at + i64::from(self.offset);
+        local - local.rem_euclid(DAY) - i64::from(self.offset)
+    }
+
+    fn hour_minute(&self, at: i64) -> (i64, i64) {
+        let secs = (at + i64::from(self.offset)).rem_euclid(DAY);
+        (secs / 3600, secs % 3600 / 60)
+    }
+}
+
+fn twelve(hour: i64) -> i64 {
+    match hour % 12 {
+        0 => 12,
+        h => h,
+    }
+}
+
+fn am_pm(hour: i64) -> &'static str {
+    if hour < 12 {
+        "am"
+    } else {
+        "pm"
     }
 }
 
@@ -269,6 +316,25 @@ mod tests {
         assert_eq!(edt.time(NOW, NOW), "4:30 am EDT");
         assert_eq!(edt.time(NOW + 8 * 3600, NOW), "12:30 pm EDT");
         assert_eq!(edt.time(NOW + 3 * DAY, NOW), "Thu 4:30 am EDT");
+    }
+
+    #[test]
+    fn times_alone_and_spans() {
+        assert_eq!(nz().clock_time(NOW), "9:30 pm");
+        assert_eq!(nz().short_time(NOW), "9:30 pm");
+        assert_eq!(nz().short_time(NOW - 30 * 60), "9 pm");
+        assert_eq!(nz().span(NOW - 30 * 60, NOW + 30 * 60), "9:00–10:00 pm NZDT");
+        assert_eq!(nz().span(NOW + 2 * 3600, NOW + 3 * 3600), "11:30 pm–12:30 am NZDT");
+        let cest = Clock {
+            offset: 2 * 3600,
+            zone: "CEST".into(),
+            twelve_hour: false,
+        };
+        assert_eq!(cest.short_time(NOW), "10:30");
+        assert_eq!(cest.span(NOW, NOW + 3600), "10:30–11:30 CEST");
+        // 9:30 pm in New Zealand: the day began 21½ hours before.
+        assert_eq!(nz().day_start(NOW), NOW - 21 * 3600 - 1800);
+        assert_eq!(nz().day_start(NOW + 3 * 3600), NOW + 2 * 3600 + 1800);
     }
 
     #[test]

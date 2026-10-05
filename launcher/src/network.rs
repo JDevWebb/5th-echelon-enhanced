@@ -162,7 +162,7 @@ pub async fn check_network(typed: &str) -> Result<(String, usize), String> {
     if !is_coordinator(&url).await {
         return Err(format!("{host} doesn't answer as a network of servers (its /v1/info)."));
     }
-    let (servers, _) = fetch_directory(&url).await.map_err(|e| format!("{host}'s list of servers didn't work: {e}."))?;
+    let Listed { servers, .. } = fetch_directory(&url).await.map_err(|e| format!("{host}'s list of servers didn't work: {e}."))?;
     Ok((url, servers.len()))
 }
 
@@ -174,6 +174,8 @@ pub struct Browsed {
     pub note: Option<String>,
     /// A release going out to the network's servers, while it lasts.
     pub rollout: Option<setup::directory::Rollout>,
+    /// The network's own maintenance window (its coordinator), when one is booked.
+    pub network_maintenance: Option<setup::directory::Window>,
 }
 
 /// The servers in a coordinator's directory, each with this PC's ping to it, measured in
@@ -185,17 +187,28 @@ pub async fn server_directory(coordinator: &str) -> Result<Browsed, String> {
     }
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
     let dir = setup::app_data_dir();
-    let (servers, note, rollout) = match fetch_directory(coordinator).await {
-        Ok((servers, rollout)) => {
+    let (servers, note, rollout, network_maintenance) = match fetch_directory(coordinator).await {
+        Ok(Listed {
+            mut servers,
+            rollout,
+            network_maintenance,
+        }) => {
             if let Some(dir) = &dir {
-                setup::directory::save_cache(dir, coordinator, &servers, now);
+                // Windows that just ended aren't listed any more, but a server not back from
+                // one is overrunning it.
+                if let Some((previous, _)) = setup::directory::cached(dir, coordinator) {
+                    setup::directory::carry_ended(&previous, &mut servers, now);
+                }
+                setup::directory::save_cache(dir, coordinator, &servers, network_maintenance.as_ref(), now);
             }
-            (servers, None, rollout)
+            (servers, None, rollout, network_maintenance)
         }
         Err(e) => match setup::directory::fallback(dir.as_deref(), coordinator, now) {
             Some((servers, note)) => {
                 tracing::warn!("Server directory {coordinator}: {e}; using {} servers it listed before", servers.len());
-                (servers, Some(note), None)
+                // The network's window as last listed: likely why it doesn't answer.
+                let network = dir.as_deref().and_then(|d| setup::directory::cached(d, coordinator)).and_then(|(_, w)| w);
+                (servers, Some(note), None, network)
             }
             None => return Err(e),
         },
@@ -225,18 +238,32 @@ pub async fn server_directory(coordinator: &str) -> Result<Browsed, String> {
         servers: servers.into_iter().zip(pings).collect(),
         note,
         rollout,
+        network_maintenance,
     })
 }
 
-/// The directory's list (`GET /v1/servers`), read and checked, and the rollout of a release
-/// if one is going out.
-async fn fetch_directory(coordinator: &str) -> Result<(Vec<setup::directory::Listing>, Option<setup::directory::Rollout>), String> {
+/// What a directory's answer says: its servers, the rollout of a release if one is going
+/// out, and the network's own maintenance window if one is booked.
+struct Listed {
+    servers: Vec<setup::directory::Listing>,
+    rollout: Option<setup::directory::Rollout>,
+    network_maintenance: Option<setup::directory::Window>,
+}
+
+fn listed(body: &str) -> Result<Listed, String> {
+    Ok(Listed {
+        servers: setup::directory::parse(body).map_err(|e| format!("the directory's answer isn't one: {e}"))?,
+        rollout: setup::directory::parse_rollout(body),
+        network_maintenance: setup::directory::parse_network_maintenance(body),
+    })
+}
+
+/// The directory's list (`GET /v1/servers`), read and checked.
+async fn fetch_directory(coordinator: &str) -> Result<Listed, String> {
     // Debug builds can read it from a file instead, for screenshots of a made-up network.
     #[cfg(debug_assertions)]
     if let Some(path) = std::env::var_os("FE_DIRECTORY_FILE") {
-        let body = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-        let servers = setup::directory::parse(&body).map_err(|e| format!("the directory's answer isn't one: {e}"))?;
-        return Ok((servers, setup::directory::parse_rollout(&body)));
+        return listed(&std::fs::read_to_string(path).map_err(|e| e.to_string())?);
     }
     let mut resp = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(8))
@@ -257,8 +284,7 @@ async fn fetch_directory(coordinator: &str) -> Result<(Vec<setup::directory::Lis
         body.extend_from_slice(&chunk);
     }
     let body = String::from_utf8(body).map_err(|_| "the directory's answer isn't text".to_string())?;
-    let servers = setup::directory::parse(&body).map_err(|e| format!("the directory's answer isn't one: {e}"))?;
-    Ok((servers, setup::directory::parse_rollout(&body)))
+    listed(&body)
 }
 
 /// How a directory's server answered [`ping`].

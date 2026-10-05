@@ -66,6 +66,8 @@ pub struct Play {
     /// When the directory was last read, and the release it says is going out.
     browsed_at: Option<Instant>,
     rollout: Option<setup::directory::Rollout>,
+    /// The network's own maintenance window, as the directory last said.
+    network_maintenance: Option<setup::directory::Window>,
     /// The player's server as the directory last listed it (it leaves the list while it restarts).
     my_listing: Option<setup::directory::Listing>,
     /// A newer launcher, when the app found one (for the update notice).
@@ -350,7 +352,12 @@ fn found_list(play: &mut Play, ui: &mut egui::Ui) {
 fn poll_directory(play: &mut Play) {
     if let Some(found) = play.browsing.poll() {
         match found {
-            Ok(crate::network::Browsed { servers, note, rollout }) => {
+            Ok(crate::network::Browsed {
+                servers,
+                note,
+                rollout,
+                network_maintenance,
+            }) => {
                 if play.server.trim().is_empty() || play.server_picked {
                     if let Some(best) = setup::directory::best(&servers) {
                         play.server = servers[best].0.host.clone();
@@ -360,6 +367,7 @@ fn poll_directory(play: &mut Play) {
                 play.directory = Some(servers);
                 play.directory_error = note;
                 play.rollout = rollout;
+                play.network_maintenance = network_maintenance;
             }
             Err(e) => play.directory_error = Some(format!("The server directory couldn't be read: {e}")),
         }
@@ -852,9 +860,10 @@ fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Con
     to
 }
 
-/// The notice of a release going out to the network's servers, if there's one for this
-/// player; the directory is read again while it shows (every minute, or 15 s while their
-/// server restarts).
+/// The notice under the launch bar, if there's one for this player: a release going out to
+/// the network's servers, or maintenance on theirs or on the network (the one that matters
+/// most). The directory is read again while it shows (every minute, or 15 s while their
+/// server restarts or is down).
 fn update_notice(play: &mut Play, game: &Game, ctx: &egui::Context) -> Option<crate::update_notice::Notice> {
     if game.managed.is_some() {
         return None;
@@ -865,18 +874,34 @@ fn update_notice(play: &mut Play, game: &Game, ctx: &egui::Context) -> Option<cr
     if let Some((listing, _)) = &listed {
         play.my_listing = Some(listing.clone());
     }
-    // Gone from the list while it restarts: as it was last listed, not answering.
-    let mine = listed.or_else(|| play.my_listing.clone().filter(|l| l.host == current && play.rollout.is_some()).map(|l| (l, None)));
+    // Gone from the list while it restarts or is down for maintenance: as it was last
+    // listed, not answering.
+    let mine = listed.or_else(|| {
+        play.my_listing
+            .clone()
+            .filter(|l| l.host == current && (play.rollout.is_some() || !l.maintenance.is_empty()))
+            .map(|l| (l, None))
+    });
     let clock = setup::clock::Clock::local();
-    let notice = crate::update_notice::notice(&crate::update_notice::Input {
+    let now = identity::now();
+    let mine = mine.as_ref().map(|(l, ping)| (l, *ping));
+    let release = crate::update_notice::notice(&crate::update_notice::Input {
         rollout: play.rollout.as_ref(),
         servers: &servers,
-        mine: mine.as_ref().map(|(l, ping)| (l, *ping)),
+        mine,
         launcher: env!("FE_RELEASE"),
         newer_launcher: play.newer_launcher.as_deref(),
-        now: identity::now(),
+        now,
         clock: &clock,
     });
+    let maintenance = crate::maintenance::notice(&crate::maintenance::Input {
+        servers: &servers,
+        mine,
+        now,
+        clock: &clock,
+    });
+    let network = crate::maintenance::network_notice(play.network_maintenance.as_ref(), now, &clock);
+    let notice = crate::update_notice::most_pressing([release, maintenance, network]);
     if play.rollout.is_some() || notice.is_some() {
         let every = notice.as_ref().map_or(std::time::Duration::from_secs(60), crate::update_notice::Notice::refresh_every);
         let due = play.browsed_at.is_none_or(|t| t.elapsed() >= every);
@@ -1166,7 +1191,12 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: O
                 Some(url) => format!("Servers · {}", url_host(url)),
                 None => "No network".to_string(),
             };
-            let rows = play.directory.as_ref().map(|d| crate::server_menu::rows(d, &profile.server)).unwrap_or_default();
+            let clock = setup::clock::Clock::local();
+            let rows = play
+                .directory
+                .as_ref()
+                .map(|d| crate::server_menu::rows(d, &profile.server, identity::now(), &clock))
+                .unwrap_or_default();
             let pinging = play.browsing.running();
             let note = play.directory_error.clone();
             let mut focus = play.menu_focus;
@@ -1197,9 +1227,9 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: O
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 play_button(play, game, notices, notice.and_then(|n| n.blocks_play.as_deref()), ui);
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    // A release going out says what it means for playing now.
+                    // A release going out, or maintenance, says what it means for playing now.
                     let (color, text) = match notice {
-                        Some(n) if n.kind == crate::update_notice::Kind::Updating => (theme::WARN, n.status.clone()),
+                        Some(n) if n.blocks_play.is_none() => (theme::WARN, n.status.clone()),
                         Some(n) => (theme::BAD, n.status.clone()),
                         None => readiness(play),
                     };
