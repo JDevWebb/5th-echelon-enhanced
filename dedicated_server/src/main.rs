@@ -175,6 +175,7 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
                 metrics::game_logout(user_id);
                 end_play(logger, storage, user_id);
                 session_events::note(session_events::Who::Id(user_id), "signout", serde_json::json!({ "how": "timed_out" }));
+                game_session::forget_rooms(user_id);
                 info!(logger, "Cleaning old session of user {user_id}");
                 if let Err(e) = storage.delete_user_session(user_id) {
                     error!(logger, "session clean error: {e}");
@@ -186,6 +187,7 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
                 metrics::game_logout(user_id);
                 end_play(logger, storage, user_id);
                 session_events::note(session_events::Who::Id(user_id), "signout", serde_json::json!({ "how": "closed" }));
+                game_session::forget_rooms(user_id);
                 info!(logger, "Cleaning closed session of user {user_id}");
                 if let Err(e) = storage.delete_user_session(user_id) {
                     error!(logger, "session clean error: {e}");
@@ -200,6 +202,22 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
         // An admin's kick or ban (players.rs).
         server.sign_outs = Some(players::sign_outs());
         server.user_handler = Some(handle_user_packet);
+        // A game that dropped and signed in again from the same address: when its old
+        // connection goes, so do the rooms it made (nobody hosts them now). The player, still
+        // connected, keeps the rest.
+        let (rooms_storage, rooms_logger) = (Arc::clone(storage), logger.clone());
+        server.stale_connection_handler = Some(Box::new(move |ci: ClientInfo| {
+            let (Some(user_id), Some(conn)) = (ci.user_id, ci.connection_id) else { return };
+            let rooms = game_session::rooms_of(user_id, conn);
+            if rooms.is_empty() {
+                return;
+            }
+            match rooms_storage.end_game_sessions(user_id, &rooms) {
+                Ok(0) => {}
+                Ok(n) => info!(rooms_logger, "User {user_id}'s earlier connection is gone; ending the {n} room(s) it made"),
+                Err(e) => error!(rooms_logger, "ending the rooms of {user_id}'s earlier connection failed: {e}"),
+            }
+        }));
         // Online means a signed-in connection here, not just a ticket from the auth server.
         let (storage, logger) = (Arc::clone(storage), logger.clone());
         server.login_handler = Some(Box::new(move |user_id, from: std::net::SocketAddr| {

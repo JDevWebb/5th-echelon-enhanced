@@ -470,6 +470,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             logger,
             "error creating game session"
         )?;
+        made(ci, user_id, session_id);
         crate::session_events::note(crate::session_events::Who::Id(user_id), "room", serde_json::json!({ "room": session_id }));
         Ok(CreateSessionResponse {
             game_session_key: GameSessionKey {
@@ -1090,6 +1091,9 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             logger,
             "error splitting game session"
         )?;
+        if let Some(session_id) = migrated {
+            made(ci, user_id, session_id);
+        }
         Ok(SplitSessionResponse {
             game_session_key_migrated: match migrated {
                 Some(session_id) => GameSessionKey { type_id: key.type_id, session_id },
@@ -1478,6 +1482,41 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         crate::session_events::joined(user_id, key.session_id, if invited { "invite" } else { "search" });
         Ok(JoinSessionResponse)
     }
+}
+
+/// The rooms each signed-in player's connections made, by connection: a game that dropped
+/// and signed in again from the same address (its old connection still open, as far as we
+/// know) leaves rooms nobody will host again, and they go when that old connection does
+/// ([`rooms_of`]), while the user, still connected, keeps everything else.
+static ROOMS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u32, Vec<(quazal::ConnectionID, u32)>>>> = std::sync::LazyLock::new(Default::default);
+
+/// Notes that `ci`'s connection made room `session_id`.
+fn made<CI>(ci: &ClientInfo<CI>, user_id: u32, session_id: u32) {
+    if let Some(conn) = ci.connection_id {
+        ROOMS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .entry(user_id)
+            .or_default()
+            .push((conn, session_id));
+    }
+}
+
+/// The rooms `conn` of `user_id` made, forgotten here: it's gone.
+pub fn rooms_of(user_id: u32, conn: quazal::ConnectionID) -> Vec<u32> {
+    let mut rooms = ROOMS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(made) = rooms.get_mut(&user_id) else { return Vec::new() };
+    let (gone, kept): (Vec<_>, Vec<_>) = made.drain(..).partition(|(c, _)| *c == conn);
+    *made = kept;
+    if made.is_empty() {
+        rooms.remove(&user_id);
+    }
+    gone.into_iter().map(|(_, room)| room).collect()
+}
+
+/// Forgets `user_id`'s rooms: they're signed out, and every room of theirs has ended.
+pub fn forget_rooms(user_id: u32) {
+    ROOMS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(&user_id);
 }
 
 /// Creates a new boxed `GameSessionProtocolServer` instance.

@@ -690,6 +690,21 @@ impl Storage {
         .rows_affected())
     }
 
+    /// Ends `creator_id`'s rooms `sessions` that are still open; answers how many were.
+    pub fn end_game_sessions(&self, creator_id: u32, sessions: &[u32]) -> Result<u64> {
+        let mut ended = 0;
+        for session_id in sessions {
+            ended += run(
+                sqlx::query("UPDATE game_sessions SET destroyed_at=CURRENT_TIMESTAMP WHERE creator_id = ? AND id = ? AND destroyed_at IS NULL")
+                    .bind(creator_id)
+                    .bind(session_id)
+                    .execute(&self.pool),
+            )??
+            .rows_affected();
+        }
+        Ok(ended)
+    }
+
     pub fn register_urls(&self, user_id: u32, urls: Vec<String>) -> Result<()> {
         if urls.is_empty() {
             warn!(self.logger, "Empty url list");

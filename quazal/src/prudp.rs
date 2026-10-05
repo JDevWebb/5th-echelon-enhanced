@@ -318,6 +318,10 @@ where
     /// user is signed in here (until their last connection closes or expires).
     /// Also given the address the connection came from.
     pub login_handler: Option<Box<dyn FnMut(u32, SocketAddr) + 'a>>,
+    /// Called with a connection that closed or expired while its user still has others (a
+    /// game that dropped and signed in again from the same address): their state stays, but
+    /// what that connection alone made can go.
+    pub stale_connection_handler: Option<Box<dyn FnMut(ClientInfo<T>) + 'a>>,
     /// Whether a user's newest sign-in closes their connections from elsewhere (see
     /// [`Self::sign_out_elsewhere`]): every user by default. Shared accounts (the server's
     /// own, whose passwords are public) must not.
@@ -356,6 +360,7 @@ where
             expired_client_handler: None,
             disconnect_handler: None,
             login_handler: None,
+            stale_connection_handler: None,
             newest_sign_in_wins: |_| true,
             sign_outs: None,
             next_conn_id: AtomicU32::new(0x3AAA_AAAA),
@@ -486,6 +491,9 @@ where
                 let ci = ci.into_inner();
                 if !self.client_registry.forget(&ci) {
                     info!(logger, "User {:?} is still connected; keeping their state", ci.user_id);
+                    if let Some(handler) = self.stale_connection_handler.as_mut() {
+                        handler(ci);
+                    }
                 } else if let Some(handler) = self.disconnect_handler.as_mut() {
                     (handler)(ci);
                 }
@@ -743,7 +751,13 @@ where
 
         // The same CONNECT again (our answer was slow, or lost): answer it again.
         if let Some(ci) = self.client_registry.clients.get(&packet.signature) {
-            if self.is_repeat(ci, client, packet.session_id) {
+            if !self.is_repeat(ci, client, packet.session_id) {
+                if let Some(skipped) = self.noise.allow() {
+                    warn!(logger, "CONNECT from {client} for connection {:x}, which isn't its own; ignored", packet.signature; "similar_skipped" => skipped);
+                }
+                return;
+            }
+            if ci.borrow().connect_request.as_deref() == Some(packet.payload.as_slice()) {
                 let ci = ci.borrow();
                 packet.payload = ci.connect_answer.clone().unwrap_or_default();
                 packet.conn_signature = Some(0);
@@ -751,10 +765,15 @@ where
                     error!(logger, "Error sending connect ack"; "error" => %e);
                 }
                 debug!(logger, "CONNECT repeated; answered again");
-            } else if let Some(skipped) = self.noise.allow() {
-                warn!(logger, "CONNECT from {client} for connection {:x}, which isn't its own; ignored", packet.signature; "similar_skipped" => skipped);
+                return;
             }
-            return;
+            // Another ticket: not a resend but a new game on this address that, by chance, has
+            // the session number of the connection before it, which went quiet seconds ago (a
+            // game that lost the server and signed in again). Answering with the old
+            // connection's answer would fail the new sign-in: the old connection goes instead.
+            let old = self.client_registry.clients.remove(&packet.signature).expect("just found").into_inner();
+            info!(logger, "A new connection from {client} has the session number of the one before it; replacing that one");
+            self.expire(old);
         }
         // The signature must be the one this address got for its SYN (the game sends back
         // what our SYN answer gave it).
@@ -773,6 +792,7 @@ where
         let mut ci: ClientInfo<T> = ClientInfo::new(client);
         ci.server_signature = packet.signature;
         ci.client_signature = Some(signature);
+        ci.connect_request = Some(packet.payload.clone());
         ci.server_session = rand::random();
         ci.client_session = packet.session_id;
         self.client_registry.insert(packet.signature, ci);
@@ -977,11 +997,19 @@ where
             .map(|(_, ci)| ci.into_inner())
             .collect();
         for ci in expired {
-            if self.client_registry.forget(&ci) {
-                if let Some(handler) = self.expired_client_handler.as_mut() {
-                    (handler)(ci);
-                }
+            self.expire(ci);
+        }
+    }
+
+    /// A connection that's gone without a goodbye: its user is signed out if it was their
+    /// last, else only what it alone made goes (see [`Self::stale_connection_handler`]).
+    fn expire(&mut self, ci: ClientInfo<T>) {
+        if self.client_registry.forget(&ci) {
+            if let Some(handler) = self.expired_client_handler.as_mut() {
+                (handler)(ci);
             }
+        } else if let Some(handler) = self.stale_connection_handler.as_mut() {
+            handler(ci);
         }
     }
 }
@@ -1263,6 +1291,39 @@ mod tests {
         // Repeated now, the SYN gets the new connection's signature.
         server.handle_syn(&logger, handshake(PacketType::Syn, 0, 9), from);
         assert_eq!(answer().conn_signature, Some(new));
+    }
+
+    /// A CONNECT on a fresh connection's signature and session is a resend when it's the
+    /// same, and a new game's sign-in when it carries another ticket: that one replaces the
+    /// old connection instead of getting its answer.
+    #[test]
+    fn a_new_ticket_on_a_fresh_connections_session_replaces_it() {
+        let ctx = Context::splinter_cell_blacklist();
+        let logger = Logger::root(slog::Discard, o!());
+        let mut server = test_server(&ctx);
+        let from = SocketAddr::from(([127, 0, 0, 1], 50003));
+        let sig = server.cookies.signature(from, 9, 0);
+        let connect = |payload: &[u8]| QPacket {
+            payload: payload.to_vec(),
+            ..handshake(PacketType::Connect, sig, 9)
+        };
+        server.handle_connect(&logger, connect(b"first ticket"), from);
+        server.handle_connect(&logger, connect(b"first ticket"), from);
+        assert_eq!(server.client_registry.clients.len(), 1);
+        assert_eq!(
+            server.client_registry.clients[&sig].borrow().connect_request.as_deref(),
+            Some(&b"first ticket"[..]),
+            "a resend changes nothing"
+        );
+
+        server.handle_connect(&logger, connect(b"second ticket"), from);
+        assert_eq!(server.client_registry.clients.len(), 1);
+        assert_eq!(
+            server.client_registry.clients[&sig].borrow().connect_request.as_deref(),
+            Some(&b"second ticket"[..]),
+            "the new game's connection"
+        );
+        assert_eq!(server.client_registry.connections_from(from.ip()), 1);
     }
 
     /// A connection that never says anything after its CONNECT goes after a few seconds.

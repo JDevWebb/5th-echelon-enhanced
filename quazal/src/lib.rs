@@ -103,6 +103,9 @@ pub struct ClientInfo<T = ()> {
     /// The answer to this connection's CONNECT, sent again if the CONNECT is
     /// (the client resends it when the answer is slow, or lost).
     pub(crate) connect_answer: Option<Vec<u8>>,
+    /// This connection's CONNECT (its ticket and challenge): a CONNECT that's the same is
+    /// a resend, one that isn't comes from another game.
+    pub(crate) connect_request: Option<Vec<u8>>,
 }
 
 /// A reliable packet waiting for the client's acknowledgement.
@@ -139,6 +142,7 @@ impl<T> ClientInfo<T> {
             replying: None,
             unacked: std::collections::BTreeMap::new(),
             connect_answer: None,
+            connect_request: None,
         }
     }
 
