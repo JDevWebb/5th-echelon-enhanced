@@ -23,6 +23,7 @@
 pub mod auth;
 mod leaderboards;
 pub mod live;
+mod planning;
 mod players;
 mod reports;
 mod sessions;
@@ -209,6 +210,7 @@ pub fn router(c: Shared) -> Router {
         .route("/alerts/test", post(test_webhook))
         .route("/alerts/reports", axum::routing::put(set_report_alerts))
         .route("/live", get(live::live))
+        .merge(planning::routes())
         .merge(players::routes())
         .merge(reports::routes())
         .merge(sessions::routes())

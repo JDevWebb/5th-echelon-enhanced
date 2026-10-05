@@ -369,6 +369,10 @@ impl Coordinator {
             return Ok(None);
         }
         let now = identity::now();
+        // Not during the server's maintenance window (or the network's).
+        if self.in_maintenance(server, now).await? {
+            return Ok(None);
+        }
         let asked = match r.stage.as_str() {
             "canary" => r.canary.as_deref() == Some(server),
             "rolling" | "done" => players_online == 0 || now - r.stage_since >= QUIET_WAIT,

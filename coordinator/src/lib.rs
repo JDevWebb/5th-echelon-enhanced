@@ -42,9 +42,11 @@
 pub mod admin;
 pub mod alerts;
 pub mod game_names;
+pub mod maintenance;
 pub mod metrics;
 pub mod players;
 pub mod reports;
+pub mod roadmap;
 pub mod sessions;
 pub mod standby;
 pub mod stats;
@@ -58,6 +60,7 @@ use std::time::Duration;
 use axum::extract::ConnectInfo;
 use axum::extract::DefaultBodyLimit;
 use axum::extract::Path;
+use axum::extract::Query;
 use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::http::StatusCode;
@@ -378,6 +381,8 @@ pub struct Coordinator {
     pub(crate) stats_cache: tokio::sync::Mutex<stats::Cache>,
     /// Per server: new reports (see [`reports`]).
     report_posts: Limit,
+    /// Per address: players' suggestions for the roadmap (see [`roadmap`]).
+    suggestion_posts: Limit,
     /// The folder the database is in: reports' files go under it.
     files_dir: std::path::PathBuf,
     /// The most the reports' files may take ([`reports::STORAGE_CAP`]; less in tests).
@@ -484,6 +489,7 @@ impl Coordinator {
             stat_reads: Limit::new(120),
             stats_cache: tokio::sync::Mutex::new(stats::Cache::default()),
             report_posts: Limit::per(reports::PER_HOUR, Duration::from_secs(3600)),
+            suggestion_posts: Limit::per(roadmap::PER_ADDRESS_A_DAY, Duration::from_secs(86_400)),
             files_dir: std::path::Path::new(path)
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
@@ -618,6 +624,9 @@ impl Coordinator {
             .route("/v1/join", post(join))
             .route("/v1/heartbeat", post(heartbeat))
             .route("/v1/servers", get(servers))
+            .route("/v1/roadmap", get(roadmap_public))
+            .route("/v1/suggestions", post(suggest))
+            .route("/v1/suggestions/mine", get(my_suggestions))
             .route("/v1/changes", post(changes))
             .route("/v1/relations/{global_id}", get(relations))
             .route("/v1/names/claim", post(claim_name))
@@ -1139,6 +1148,11 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, body: axum::body
         Ok(None) => {}
         Err(e) => return internal(e),
     }
+    // Its maintenance windows and the network's, for its games' overlay.
+    match c.heartbeat_maintenance(&server, identity::now()).await {
+        Ok(windows) => answer["maintenance"] = windows,
+        Err(e) => return internal(e),
+    }
     ok(answer)
 }
 
@@ -1440,6 +1454,11 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
         Ok(r) => r,
         Err(e) => return internal(e),
     };
+    // Maintenance booked: launchers warn the players of a server on the day.
+    let (mut maintenance, network_maintenance) = match c.directory_maintenance(now).await {
+        Ok(m) => m,
+        Err(e) => return internal(e),
+    };
     let mut list: Vec<Value> = rows
         .into_iter()
         .filter_map(|(id, listing, last_seen)| {
@@ -1452,6 +1471,9 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
             if updates::delisted(&rollout, version, auto_update, now).is_some() {
                 return None;
             }
+            if let Some(windows) = maintenance.remove(&id) {
+                v["maintenance"] = json!(windows);
+            }
             v["id"] = json!(id);
             v["seen_secs_ago"] = json!(now - last_seen.unwrap_or(now));
             Some(v)
@@ -1463,7 +1485,62 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
     if let Some(rollout) = updates::public_rollout(&rollout) {
         answer["rollout"] = rollout;
     }
+    if let Some(window) = network_maintenance {
+        answer["network_maintenance"] = json!(window);
+    }
     ok(answer)
+}
+
+/// The project's roadmap, as launchers show it (see [`roadmap`]).
+async fn roadmap_public(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap) -> Answer {
+    if !c.reads.check(&limit_key(client_ip(peer, &headers))) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "too many requests");
+    }
+    c.public_roadmap().await.map_or_else(internal, ok)
+}
+
+/// A player's suggestion for the roadmap, from their launcher, signed with their identity.
+async fn suggest(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {
+    if body.len() > 8 * 1024 {
+        return fail(StatusCode::PAYLOAD_TOO_LARGE, "too long");
+    }
+    let s: roadmap::Suggestion = match parse(&body) {
+        Ok(s) => s,
+        Err(a) => return a,
+    };
+    let now = identity::now();
+    if let Err(why) = s.check(now) {
+        return fail(StatusCode::BAD_REQUEST, why);
+    }
+    if !c.suggestion_posts.check(&limit_key(client_ip(peer, &headers))) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "Too many suggestions from this address today; try again tomorrow.");
+    }
+    match c.add_suggestion(&s, now).await {
+        Ok(Ok(id)) => {
+            c.publish(admin::live::Event::Roadmap);
+            ok(json!({ "id": id }))
+        }
+        Ok(Err(why)) => fail(StatusCode::TOO_MANY_REQUESTS, &why),
+        Err(e) => internal(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct Signed {
+    identity: String,
+    time: i64,
+    signature: String,
+}
+
+/// A player's own suggestions, with the admins' replies (signed: only they read them).
+async fn my_suggestions(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap, Query(q): Query<Signed>) -> Answer {
+    if !c.reads.check(&limit_key(client_ip(peer, &headers))) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "too many requests");
+    }
+    if !identity::fresh(q.time, identity::now()) || !identity::verify(&q.identity, &identity::suggestions_message(q.time), &q.signature) {
+        return fail(StatusCode::FORBIDDEN, "the signature doesn't match");
+    }
+    c.suggestions_of(&q.identity).await.map_or_else(internal, ok)
 }
 
 async fn changes(State(c): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {

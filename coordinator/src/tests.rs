@@ -2741,3 +2741,203 @@ async fn admins_change_the_networks_settings_and_each_change_is_audited() {
     }
     assert!(v["events"].as_array().unwrap().iter().all(|e| e["admin"] == "kiwi"), "{v}");
 }
+
+#[tokio::test]
+async fn maintenance_is_told_to_launchers_and_servers_and_holds_updates() {
+    let t = start("maintenance").await;
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    let b = t.join("server-b").await;
+    for (secret, name) in [(&a, "server-a"), (&b, "server-b")] {
+        let (status, v) = t
+            .call("POST", "/v1/heartbeat", Some(secret), Some(json!({ "name": name, "host": name, "listed": true })))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+    }
+    let now = identity::now();
+    let book = |body: Value| body;
+    assert_eq!(admin_call(&r, "GET", "/api/maintenance", "", None).await.0, StatusCode::UNAUTHORIZED);
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    // Checked: a target, a member, not in the past.
+    for (bad, why) in [
+        (json!({ "start": now + 60, "end": now + 120 }), "no target"),
+        (json!({ "servers": ["nobody"], "start": now + 60, "end": now + 120 }), "not a member"),
+        (json!({ "servers": ["server-a"], "start": now - 7200, "end": now - 3600 }), "in the past"),
+        (json!({ "servers": ["server-a"], "start": now + 60, "end": now + 60 + 25 * 3600 }), "too long"),
+    ] {
+        let (status, v) = admin_call(&r, "POST", "/api/maintenance", &cookie, Some(bad)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{why}: {v}");
+    }
+    let (status, v) = admin_call(
+        &r,
+        "POST",
+        "/api/maintenance",
+        &cookie,
+        Some(book(
+            json!({ "servers": ["server-a", "server-a"], "start": now + 3600, "end": now + 7200, "note": "Moving to a faster machine" }),
+        )),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["windows"].as_array().unwrap().len(), 1, "one per server: {v}");
+    assert_eq!(v["windows"][0]["server_name"], "server-a");
+    let a_window = v["windows"][0]["id"].as_i64().unwrap();
+    let (status, v) = admin_call(
+        &r,
+        "POST",
+        "/api/maintenance",
+        &cookie,
+        Some(json!({ "network": true, "start": now + 86_400, "end": now + 90_000 })),
+    )
+    .await;
+    assert_eq!((status, v["windows"][0]["server_name"].as_str()), (StatusCode::OK, Some("Whole network")), "{v}");
+
+    // Launchers: the server's windows and the network's.
+    let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
+    let server = |id: &str| dir["servers"].as_array().unwrap().iter().find(|s| s["id"] == id).cloned().unwrap();
+    assert_eq!(
+        server("server-a")["maintenance"],
+        json!([{ "start": now + 3600, "end": now + 7200, "note": "Moving to a faster machine" }])
+    );
+    assert!(server("server-b").get("maintenance").is_none());
+    assert_eq!(dir["network_maintenance"]["start"], json!(now + 86_400));
+
+    // Servers: their own and the network's, marked, for their games' overlay.
+    let (_, beat_a) = t
+        .call("POST", "/v1/heartbeat", Some(&a), Some(json!({ "name": "server-a", "host": "server-a", "listed": true })))
+        .await;
+    assert_eq!(beat_a["maintenance"].as_array().unwrap().len(), 2, "{beat_a}");
+    assert_eq!(
+        (beat_a["maintenance"][0]["network"].as_bool(), beat_a["maintenance"][1]["network"].as_bool()),
+        (Some(false), Some(true))
+    );
+    let (_, beat_b) = t
+        .call("POST", "/v1/heartbeat", Some(&b), Some(json!({ "name": "server-b", "host": "server-b", "listed": true })))
+        .await;
+    assert_eq!(beat_b["maintenance"], json!([{ "start": now + 86_400, "end": now + 90_000, "note": "", "network": true }]));
+
+    // No update starts on a server in its window, or anywhere in the network's.
+    assert!(!t.c.in_maintenance("server-a", now).await.unwrap());
+    assert!(t.c.in_maintenance("server-a", now + 3600).await.unwrap());
+    assert!(!t.c.in_maintenance("server-b", now + 3600).await.unwrap());
+    assert!(t.c.in_maintenance("server-b", now + 86_400).await.unwrap());
+
+    // Cancelled: gone from the directory, and audited.
+    assert_eq!(admin_call(&r, "DELETE", &format!("/api/maintenance/{a_window}"), &cookie, None).await.0, StatusCode::OK);
+    assert_eq!(
+        admin_call(&r, "DELETE", &format!("/api/maintenance/{a_window}"), &cookie, None).await.0,
+        StatusCode::NOT_FOUND
+    );
+    let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
+    assert!(dir["servers"].as_array().unwrap().iter().all(|s| s.get("maintenance").is_none()), "{dir}");
+    let (_, list) = admin_call(&r, "GET", "/api/maintenance", &cookie, None).await;
+    assert_eq!(list["windows"].as_array().unwrap().len(), 2, "cancelled ones stay listed: {list}");
+    let events: Vec<String> = sqlx::query_scalar("SELECT event FROM audit ORDER BY id").fetch_all(&t.c.pool).await.unwrap();
+    assert_eq!(events, ["maintenance: booked", "maintenance: booked", "maintenance: cancelled"]);
+}
+
+#[tokio::test]
+async fn players_suggest_from_the_launcher_and_admins_keep_the_roadmap() {
+    let t = start("roadmap").await;
+    let r = admin_router(&t);
+    let me = identity::Identity::generate();
+    let suggest = |who: &identity::Identity, time: i64, area: &str, title: &str, text: &str| {
+        json!({
+            "identity": who.global_id(), "name": "Kiwi", "area": area, "title": title, "text": text, "time": time,
+            "signature": who.sign(&identity::suggestion_message(time, area, title, text)), "server": "oceania.example.net", "launcher": "0.4.2",
+        })
+    };
+    let now = identity::now();
+    // Signed, fresh and in a known area.
+    let mut forged = suggest(&me, now, "Launcher", "Chat to find players", "A chat in the launcher.");
+    forged["text"] = json!("Something else.");
+    for (bad, why) in [
+        (forged, "the text changed after signing"),
+        (suggest(&me, now - 3600, "Launcher", "Chat", "Old."), "not fresh"),
+        (suggest(&me, now, "Toasters", "Chat", "Unknown area."), "unknown area"),
+        (suggest(&me, now, "Launcher", "Hi", "Too short a title."), "short title"),
+    ] {
+        let (status, v) = t.call("POST", "/v1/suggestions", None, Some(bad)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{why}: {v}");
+    }
+    let mut ids = Vec::new();
+    for title in ["Chat to find players", "Show who's in each match", "Favourite servers"] {
+        let (status, v) = t.call("POST", "/v1/suggestions", None, Some(suggest(&me, now, "Launcher", title, "Please."))).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        ids.push(v["id"].as_i64().unwrap());
+    }
+    // Three a day.
+    let (status, v) = t.call("POST", "/v1/suggestions", None, Some(suggest(&me, now, "Other", "A fourth one", "Too many."))).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "{v}");
+    assert!(v["error"].as_str().unwrap().contains("try again tomorrow"));
+
+    // The player reads theirs back, signed; nobody else can.
+    let mine = |who: &identity::Identity, signer: &identity::Identity| {
+        let time = identity::now();
+        format!(
+            "/v1/suggestions/mine?identity={}&time={time}&signature={}",
+            who.global_id(),
+            signer.sign(&identity::suggestions_message(time))
+        )
+    };
+    let (status, v) = t.call("GET", &mine(&me, &me), None, None).await;
+    assert_eq!((status, v["suggestions"].as_array().map(Vec::len)), (StatusCode::OK, Some(3)), "{v}");
+    assert!(v["suggestions"][0].get("identity").is_none(), "players don't get admin fields");
+    let other = identity::Identity::generate();
+    assert_eq!(t.call("GET", &mine(&me, &other), None, None).await.0, StatusCode::FORBIDDEN);
+
+    // Admins answer, decline or promote them.
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    let (status, v) = admin_call(&r, "GET", "/api/suggestions", &cookie, None).await;
+    assert_eq!((status, v["suggestions"].as_array().map(Vec::len)), (StatusCode::OK, Some(3)), "{v}");
+    assert_eq!(v["suggestions"][0]["identity"], json!(me.global_id()));
+    let (status, v) = admin_call(
+        &r,
+        "PUT",
+        &format!("/api/suggestions/{}", ids[2]),
+        &cookie,
+        Some(json!({ "status": "declined", "reply": "The menu already sorts by ping." })),
+    )
+    .await;
+    assert_eq!((status, v["status"].as_str()), (StatusCode::OK, Some("declined")), "{v}");
+    assert_eq!(
+        admin_call(&r, "PUT", &format!("/api/suggestions/{}", ids[2]), &cookie, Some(json!({ "status": "maybe" })))
+            .await
+            .0,
+        StatusCode::BAD_REQUEST
+    );
+    let (status, item) = admin_call(&r, "POST", &format!("/api/suggestions/{}/promote", ids[0]), &cookie, Some(json!({ "lane": "later" }))).await;
+    assert_eq!(status, StatusCode::OK, "{item}");
+    assert_eq!(
+        (item["lane"].as_str(), item["public"].as_bool(), item["source"].as_str()),
+        (Some("later"), Some(false), Some("Suggested by Kiwi"))
+    );
+    let (_, v) = t.call("GET", &mine(&me, &me), None, None).await;
+    let by_id = |id: i64| v["suggestions"].as_array().unwrap().iter().find(|s| s["id"] == id).cloned().unwrap();
+    assert_eq!(by_id(ids[0])["status"], "planned");
+    assert_eq!(by_id(ids[2])["reply"], "The menu already sorts by ping.");
+
+    // Only public items reach launchers, without the admins' fields.
+    let (_, road) = t.call("GET", "/v1/roadmap", None, None).await;
+    assert!(road["lanes"].as_array().unwrap().iter().all(|l| l["items"].as_array().unwrap().is_empty()), "{road}");
+    let id = item["id"].as_i64().unwrap();
+    let edit = json!({ "lane": "next", "title": "Chat and who's online", "body": "Find people to play with.", "tags": ["Launcher"], "status": "0.4.4", "public": true });
+    let (status, v) = admin_call(&r, "PUT", &format!("/api/roadmap/items/{id}"), &cookie, Some(edit)).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(
+        admin_call(&r, "PUT", "/api/roadmap/lanes/next", &cookie, Some(json!({ "release": "0.4.3" }))).await.0,
+        StatusCode::OK
+    );
+    let (status, v) = admin_call(&r, "POST", "/api/roadmap/items", &cookie, Some(json!({ "lane": "someday", "title": "X" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+    let (_, road) = t.call("GET", "/v1/roadmap", None, None).await;
+    let next = road["lanes"].as_array().unwrap().iter().find(|l| l["id"] == "next").cloned().unwrap();
+    assert_eq!(next["release"], "0.4.3");
+    assert_eq!(
+        next["items"],
+        json!([{ "id": id, "title": "Chat and who's online", "body": "Find people to play with.", "tags": ["Launcher"], "status": "0.4.4" }])
+    );
+    assert_eq!(admin_call(&r, "DELETE", &format!("/api/roadmap/items/{id}"), &cookie, None).await.0, StatusCode::OK);
+    let (_, v) = admin_call(&r, "GET", "/api/roadmap", &cookie, None).await;
+    assert_eq!((v["items"].as_array().map(Vec::len), v["suggestions"]["new"].as_i64()), (Some(0), Some(1)), "{v}");
+}

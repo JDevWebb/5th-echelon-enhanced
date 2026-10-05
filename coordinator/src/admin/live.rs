@@ -68,6 +68,10 @@ pub enum Event {
     Alert(Value),
     /// A player's report came, or an admin changed one.
     Report,
+    /// A maintenance window was booked or cancelled.
+    Maintenance,
+    /// The roadmap or a suggestion changed (or a player sent one).
+    Roadmap,
 }
 
 /// The live points kept per server: half an hour of them.
@@ -367,6 +371,16 @@ async fn serve(c: Arc<Coordinator>, mut socket: WebSocket, headers: HeaderMap, c
                 Ok(Event::Report) => {
                     dirty = true;
                     if !send(&mut socket, json!({ "type": "report" })).await {
+                        return;
+                    }
+                }
+                Ok(Event::Maintenance) => {
+                    if !send(&mut socket, json!({ "type": "maintenance" })).await {
+                        return;
+                    }
+                }
+                Ok(Event::Roadmap) => {
+                    if !send(&mut socket, json!({ "type": "roadmap" })).await {
                         return;
                     }
                 }
