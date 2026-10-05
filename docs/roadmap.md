@@ -4,11 +4,9 @@ What's being worked on next, roughly in order. Plans change as testing and the g
 
 ## Next
 
-### The first signed release
+### Code signing for Windows
 
-The launcher, the client and the servers update themselves from signed GitHub releases, but every build so far has been a development build, handed out by hand.
-- **Signed releases:** each release's checksums signed with the release key, so launchers and servers install it on their own ([Releases and CI](../README.md#releases-and-ci)).
-- **Code signing for Windows:** a signed `launcher.exe` and client DLL, so antivirus programs stop guessing (see [Antivirus warnings](../README.md#antivirus-warnings)). Until then, each release is sent to Microsoft for review.
+A signed `launcher.exe` and client DLL, so antivirus programs stop guessing (see [Antivirus warnings](../README.md#antivirus-warnings)). Until then, each release is sent to Microsoft for review.
 
 ### Friends list that keeps up: confirming in the game
 
@@ -52,6 +50,7 @@ The fix, if players ask for it:
 
 ## Done recently
 
+- Signed releases: since 0.4.0, every release's checksums carry the release key's signature, and launchers and servers install releases on their own ([Releases and CI](../README.md#releases-and-ci)).
 - Stats and leaderboards: the server keeps the stats the game writes after each match and mission (Spies vs Mercs per mode, weapon and gadget, medals, ladders, solo and co-op missions), added up as the game's stats configuration says, and answers the game's leaderboards: solo and co-op high scores and best times, Spies vs Mercs total score and the ladders, overall, around you and among your friends. Leaderboards are global: every server sends the stats to the coordinator, which ranks each player once across the network (by their identity), so your stats follow you between servers. Servers answer the game from what the coordinator last sent, and from their own stats while it can't be reached.
 - A VPN on the player's PC (Radmin VPN): when the game offers the VPN's address for connecting, the server uses the address the player connected from instead of refusing the game's request.
 - Co-op over the relay: missions failed to load when a player was relayed, because the relay dropped the game's largest packets. Confirmed in games with one and with both players relayed, in co-op and Spies vs Mercs.

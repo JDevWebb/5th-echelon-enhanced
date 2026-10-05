@@ -148,7 +148,7 @@ The **Status** card on the home screen keeps an eye on all of this. Anything tha
 > **VPNs and the community servers:**
 > - **Radmin VPN, Hamachi, ZeroTier, Tailscale** and other "virtual LAN" VPNs can stay installed: each time the game starts, it uses the adapter that actually reaches the server, so other players aren't given your VPN address. You don't need them for the community servers.
 > - **A VPN that sends all your traffic through it** (NordVPN, ProtonVPN, Mullvad and the like) works, but adds delay, and your matches go through the server's relay. The Status card notes it (**Playing through NordVPN**, say) without stopping you playing; turn it off while you play if you can, then press **Check again**.
-> - **Your group's own server inside a VPN** (a Radmin network address, say)? Turn the VPN on before starting the game: the game then plays over the VPN's adapter, as that's what reaches the server. To be sure it never uses another network, pin the VPN's adapter in **Settings › Network adapter** and tick **Don't start the game without this adapter**.
+> - **Your group's own server inside a VPN** (a Radmin network address, say)? Turn the VPN on before starting the game: the game then plays over the VPN's adapter, as that's what reaches the server. To be sure it never uses another network, pin the VPN's adapter in **Settings › Network** (the **Network adapter** card) and tick **Don't start the game without this adapter**.
 
 ### Playing over the internet
 
@@ -205,7 +205,7 @@ Some antivirus programs, Microsoft Defender included, may flag `launcher.exe` or
    Add-MpPreference -ExclusionPath "C:\Games\5th-Echelon"
    Add-MpPreference -ExclusionPath "C:\Program Files (x86)\Steam\steamapps\common\Splinter Cell Blacklist\src\SYSTEM"
    ```
-   Use your own paths. **Settings › Client** in the launcher shows the game folder.
+   Use your own paths. **Settings › Game** in the launcher shows the game folder.
 3. **Press Connect again** if the DLL was removed; it reinstalls it.
 4. **Report the false positive** to your antivirus: [Microsoft](https://www.microsoft.com/wdsi/filesubmission), [Avast/AVG](https://www.avast.com/false-positive-file-form.php), [Bitdefender](https://www.bitdefender.com/submit/), [Kaspersky](https://opentip.kaspersky.com/), [ESET](https://support.eset.com/en/kb141), [Norton](https://submit.norton.com/). Reports clear the detection for everyone, usually within days.
 
