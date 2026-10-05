@@ -1716,6 +1716,7 @@ async fn updates(State(c): State<Shared>, Extension(client): Extension<Client>, 
             "rollout": c.rollout().await?,
             "releases": releases.into_iter().map(|(v, page, published, seen)| json!({ "version": v, "page": page, "published_at": published, "seen_at": seen })).collect::<Vec<_>>(),
             "repo": crate::updates::REPO,
+            "verify": crate::updates::own_verify(),
         }))
     }
     .await;

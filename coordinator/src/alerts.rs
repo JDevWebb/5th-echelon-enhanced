@@ -12,6 +12,8 @@
 //! * a server's month of traffic against its allowance: 80% used, all of it used, or on
 //!   course to go over;
 //! * a server whose update failed or was rolled back, and a halted rollout.
+//! * a server whose program doesn't match the signed release it says it runs (its updater
+//!   checks before each start).
 
 use std::collections::BTreeMap;
 use std::collections::HashMap;
@@ -66,11 +68,14 @@ impl Coordinator {
             if let Some(seen) = last_seen.filter(|t| now - t > OFFLINE_AFTER && now - t < FORGET_AFTER) {
                 offline.push(("offline".to_string(), id.clone(), "bad", format!("{n} has sent no heartbeat for {} min", (now - seen) / 60)));
             }
-            let updater = status
-                .as_deref()
-                .and_then(|s| serde_json::from_str::<Value>(s).ok())
-                .map(|s| s["updater"].clone())
-                .unwrap_or_default();
+            let status = status.as_deref().and_then(|s| serde_json::from_str::<Value>(s).ok()).unwrap_or_default();
+            let updater = &status["updater"];
+            // Its program isn't the signed release it says it is (checked by the server's
+            // updater, as root, before the server started).
+            if status["verify"]["state"].as_str() == Some("mismatch") {
+                let detail = status["verify"]["detail"].as_str().unwrap_or("its program doesn't match the release");
+                found.push(("program".into(), id.clone(), "bad", format!("{n}: {}", detail.chars().take(200).collect::<String>())));
+            }
             if let Some(state) = updater["state"].as_str().filter(|s| *s == "failed" || *s == "rolled-back") {
                 let version = updater["version"].as_str().unwrap_or("?");
                 found.push((
@@ -80,6 +85,17 @@ impl Coordinator {
                     format!("{n}'s update to {version} {}", if state == "failed" { "failed" } else { "was rolled back" }),
                 ));
             }
+        }
+        // The coordinator's own machine, checked the same way at its last start.
+        let own = crate::updates::own_verify();
+        if own["state"].as_str() == Some("mismatch") {
+            let detail = own["detail"].as_str().unwrap_or("its program doesn't match the release");
+            found.push((
+                "program".into(),
+                String::new(),
+                "bad",
+                format!("The coordinator's machine: {}", detail.chars().take(200).collect::<String>()),
+            ));
         }
         // Every server silent at once: they can't reach the coordinator, more likely than all
         // of them going down together.

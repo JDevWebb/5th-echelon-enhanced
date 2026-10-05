@@ -1037,6 +1037,26 @@ fn readiness(play: &Play) -> (egui::Color32, String) {
 }
 
 /// The bar under the banner: the server you're on, how ready you are, and Play.
+/// The server card's note on a server the community network doesn't vouch for: one on
+/// another group's network, or on none (`listed`: in the directory in use; `loaded`: the
+/// directory is known, so a server missing from it really isn't there).
+fn standing(listed: bool, loaded: bool) -> Option<(&'static str, &'static str)> {
+    let community = crate::app::Prefs::directory().is_some_and(|d| crate::app::Prefs::is_community(&d));
+    if listed && !community {
+        Some((
+            "Other network",
+            "On another group's network, run by its admins. The community network doesn't vouch for its servers, and no launcher can check what a server runs.",
+        ))
+    } else if !listed && loaded {
+        Some((
+            "Independent",
+            "Not on a network: run by whoever hosts it. The community network doesn't vouch for it, and no launcher can check what a server runs. Play on servers whose hosts you trust.",
+        ))
+    } else {
+        None
+    }
+}
+
 fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: Option<&crate::update_notice::Notice>, to: &mut Option<Go>, ui: &mut egui::Ui) {
     let profile = game.cfg.current_profile().cloned().unwrap_or_default();
     let listing = play.directory.as_ref().and_then(|d| d.iter().find(|(s, _)| s.host == profile.server)).cloned();
@@ -1076,6 +1096,11 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: O
                                     if let Some((s, ping)) = &listing {
                                         ui.label(ping_text(*ping));
                                         ui.label(theme::muted(format!("{} online", s.players_online)).small());
+                                    }
+                                    // Who vouches for it: nobody can check what another machine runs,
+                                    // so a server off the community network says so.
+                                    if let Some((label, why)) = standing(listing.is_some(), play.directory.is_some()) {
+                                        ui.label(theme::muted(label).small()).on_hover_text(why);
                                     }
                                 });
                             });

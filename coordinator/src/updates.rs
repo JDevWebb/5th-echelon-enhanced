@@ -53,6 +53,20 @@ const MAX_SMALL: usize = 1024 * 1024;
 const OWN_UPDATE_BACKOFF: i64 = 6 * 3600;
 /// Where the installer's updater keeps its status (root's; read only here).
 const UPDATER_STATUS: &str = "/var/lib/5th-echelon-update/update-status.json";
+/// Whether this machine's programs matched the signed release at the coordinator's last
+/// start (the updater's `--verify`, as root).
+const VERIFY_STATUS: &str = "/var/lib/5th-echelon-update/verify.json";
+
+/// This machine's check of its programs against the signed release, if it has one.
+pub fn own_verify() -> Value {
+    let read = || {
+        let file = std::fs::File::open(VERIFY_STATUS).ok()?;
+        let mut text = String::new();
+        std::io::Read::read_to_string(&mut std::io::Read::take(file, 4096), &mut text).ok()?;
+        serde_json::from_str::<Value>(&text).ok()
+    };
+    read().unwrap_or(Value::Null)
+}
 /// Asked for, a release has this long to be installed before it's asked for again.
 const OWN_UPDATE_WAIT: i64 = 15 * 60;
 

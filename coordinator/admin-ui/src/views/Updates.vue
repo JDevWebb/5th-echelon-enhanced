@@ -30,14 +30,19 @@
       </div>
     </section>
     <section class="panel">
-      <header><h2>Servers</h2></header>
+      <header>
+        <h2>Servers</h2>
+        <span class="small muted">This machine's programs: <span class="pill" :class="verifyPill(u.verify)[0]" :title="verifyPill(u.verify)[2]">{{ verifyPill(u.verify)[1] }}</span></span>
+      </header>
+      <p class="small muted">Program: whether a server's programs were the signed release, byte for byte, when it last started (its updater checks, as root, before each start).</p>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Server</th><th>Runs</th><th>Updates</th><th>Updater</th><th>Directory</th></tr></thead>
+          <thead><tr><th>Server</th><th>Runs</th><th>Program</th><th>Updates</th><th>Updater</th><th>Directory</th></tr></thead>
           <tbody>
             <tr v-for="sv in o.servers" :key="sv.id">
               <td>{{ serverName(sv) }}</td>
               <td><span class="pill" :class="updatePill(sv, r)[0]">{{ updatePill(sv, r)[1] }}</span></td>
+              <td><span class="pill" :class="verifyPill(sv.update?.verify)[0]" :title="verifyPill(sv.update?.verify)[2]">{{ verifyPill(sv.update?.verify)[1] }}</span></td>
               <td><span class="pill" :class="sv.listing?.auto_update ? 'ok' : 'bad'">{{ sv.listing?.auto_update ? 'on' : 'off' }}</span></td>
               <td class="small muted">{{ updater(sv) }}</td>
               <td class="small"><span v-if="sv.delisted" class="pill warn" :title="sv.delisted">delisted</span><span v-else class="pill ok">listed</span></td>
@@ -72,7 +77,7 @@ import PageTop from '../components/PageTop.vue';
 import { api } from '../lib/api.js';
 import { ensureOverview, useLoad } from '../lib/data.js';
 import { confirmBox } from '../lib/dialogs.js';
-import { fmt, serverName, updatePill } from '../lib/fmt.js';
+import { fmt, serverName, updatePill, verifyPill } from '../lib/fmt.js';
 import { live } from '../lib/live.js';
 import { toast } from '../lib/ui.js';
 

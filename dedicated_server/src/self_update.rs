@@ -27,6 +27,10 @@ pub const STATUS_FILE: &str = "update-status.json";
 /// Where the installer's updater keeps its status; earlier updaters wrote
 /// `STATUS_FILE` in the server's folder.
 const UPDATER_STATUS: &str = "/var/lib/5th-echelon-update/update-status.json";
+/// Whether the programs here are the release installed here: the updater's `--verify`
+/// writes it as root before the server starts, checked against the release's signed
+/// SHA256SUMS. The server only reads it (it can't change its own program or this file).
+const VERIFY_STATUS: &str = "/var/lib/5th-echelon-update/verify.json";
 /// The unit the installer adds; without it, nothing would act on a request.
 const UPDATER_UNIT: &str = "/etc/systemd/system/5th-echelon-update.path";
 /// A failed update of one version isn't tried again for this long.
@@ -42,14 +46,15 @@ fn valid_version(version: &str) -> bool {
     (1..=32).contains(&version.len()) && version.starts_with(|c: char| c.is_ascii_digit()) && version.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-'))
 }
 
+fn read_json(path: &str) -> Option<Value> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut std::io::Read::take(file, 4096), &mut text).ok()?;
+    serde_json::from_str(&text).ok()
+}
+
 fn status_file() -> Value {
-    let read = |path: &str| {
-        let file = std::fs::File::open(path).ok()?;
-        let mut text = String::new();
-        std::io::Read::read_to_string(&mut std::io::Read::take(file, 4096), &mut text).ok()?;
-        serde_json::from_str(&text).ok()
-    };
-    read(UPDATER_STATUS).or_else(|| read(STATUS_FILE)).unwrap_or(Value::Null)
+    read_json(UPDATER_STATUS).or_else(|| read_json(STATUS_FILE)).unwrap_or(Value::Null)
 }
 
 /// The coordinator asks for `version`: asks the updater for it, unless it's
@@ -76,14 +81,16 @@ pub fn request(logger: &Logger, version: &str, enabled: bool) {
     }
 }
 
-/// What to report: whether updates are on, what's asked for, and what the
-/// updater last did.
+/// What to report: whether updates are on, what's asked for, what the updater last
+/// did, and whether the programs matched the signed release at the last start (null where
+/// nothing checks: Docker, Windows, an install from before the check).
 pub fn status(enabled: bool) -> Value {
     json!({
         "auto_update": enabled && updater_installed(),
         "running": crate::community_api::RELEASE,
         "requested": std::fs::read_to_string(REQUEST_FILE).ok().map(|v| v.trim().to_string()),
         "updater": status_file(),
+        "verify": if cfg!(target_os = "linux") { read_json(VERIFY_STATUS).unwrap_or(Value::Null) } else { Value::Null },
     })
 }
 

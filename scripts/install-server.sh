@@ -358,6 +358,8 @@ if [ "$command" = status ]; then
     echo "Updates:       installs the coordinator's rollouts ($(systemctl is-active 5th-echelon-update.path 2>/dev/null || true)); runs $(head -c 64 "$PROGRAM_DIR/release" 2>/dev/null | printable || echo "an unrecorded release")$( [ -s "$ETC_DIR/min-release" ] && echo ", never older than $(head -c 64 "$ETC_DIR/min-release" | printable)")"
     last="$(head -c 1024 "$UPDATE_DIR/update-status.json" 2>/dev/null | head -1 | printable || true)"
     [ -z "$last" ] || echo "               last: $last"
+    checked="$(head -c 1024 "$UPDATE_DIR/verify.json" 2>/dev/null | head -1 | printable || true)"
+    echo "Programs:      ${checked:-not checked yet (checked against the signed release at each start)}"
   else
     echo "Updates:       by hand (no updater installed)"
   fi
@@ -1127,6 +1129,7 @@ Wants=network-online.target
 User=$COORD_USER
 Group=$COORD_USER
 WorkingDirectory=$COORD_DIR
+ExecStartPre=-+$UPDATER --verify
 ExecStart=$PROGRAM_DIR/coordinator $coord_args
 Restart=always
 RestartSec=3
@@ -1251,6 +1254,9 @@ User=$USER_NAME
 Group=$USER_NAME
 WorkingDirectory=$STATE_DIR
 Environment=FE_PUBLIC_ADDRESS=$public_address
+# As root, before it starts: whether the program is the release installed here (never
+# stops it starting; see the updater's --verify).
+ExecStartPre=-+$UPDATER --verify
 ExecStart=$PROGRAM_DIR/dedicated_server
 Restart=always
 RestartSec=3
@@ -1344,6 +1350,73 @@ SMALL=(--max-filesize 1048576 --max-time 60)
 VERSION_RE='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$'
 # How long after an update the release it replaced can still be asked for.
 ROLLBACK_DAYS=14
+# Whether SHA256SUMS in folder $1 carries the release key's signature as release $2
+# (SHA256SUMS.sig beside it).
+release_signed() {
+  local dir="$1" version="$2" sig
+  [ -s "$dir/SHA256SUMS" ] && [ -s "$dir/SHA256SUMS.sig" ] || return 1
+  printf '%s\n' "$RELEASE_KEY_PEM" > "$dir/release.pem"
+  { printf '5th-echelon/release/v2\n%s\n' "$version"; cat "$dir/SHA256SUMS"; } > "$dir/signed"
+  sig="$(tr -d '[:space:]' < "$dir/SHA256SUMS.sig")"
+  while [ $(( ${#sig} % 8 )) -ne 0 ]; do sig="$sig="; done
+  printf '%s' "$sig" | base32 -d > "$dir/signature" 2>/dev/null \
+    && openssl pkeyutl -verify -pubin -inkey "$dir/release.pem" -rawin -in "$dir/signed" -sigfile "$dir/signature" >/dev/null 2>&1
+}
+asset() { case "$1" in dedicated_server) echo dedicated_server-linux-x86_64 ;; coordinator) echo coordinator-linux-x86_64 ;; esac; }
+
+# --verify (before the server or coordinator starts, as root): whether the programs here
+# are the release installed here, byte for byte, against its SHA256SUMS as signed by the
+# release key (kept from the install in $UPDATE_DIR/sums, or downloaded once). Recorded in
+# $UPDATE_DIR/verify.json, which the server reports; it never stops a service starting.
+if [ "${1:-}" = --verify ]; then
+  install -d -m 755 "$UPDATE_DIR"
+  verified() {
+    local detail
+    detail="$(printf '%s' "${3:-}" | tr -d '"\\\000-\037\177' | head -c 300)"
+    printf '{"state":"%s","version":"%s","at":%s,"detail":"%s"}\n' "$1" "$2" "$(date +%s)" "$detail" > "$UPDATE_DIR/verify.json.new"
+    chmod 644 "$UPDATE_DIR/verify.json.new" && mv -f "$UPDATE_DIR/verify.json.new" "$UPDATE_DIR/verify.json"
+    echo "verify: $1 $2${3:+: $3}"
+  }
+  release="$(head -c 64 "$PROGRAM_DIR/release" 2>/dev/null | head -1 || true)"
+  if ! [[ "$release" =~ $VERSION_RE ]]; then
+    verified unverified unknown "not installed from a release (a --binary install)"
+    exit 0
+  fi
+  check="$(mktemp -d)"
+  trap 'rm -rf "$check"' EXIT
+  sums="$UPDATE_DIR/sums/$release"
+  if [ -s "$sums/SHA256SUMS" ] && [ -s "$sums/SHA256SUMS.sig" ]; then
+    cp "$sums/SHA256SUMS" "$sums/SHA256SUMS.sig" "$check/"
+  else
+    base="https://github.com/$REPO/releases/download/v$release"
+    if ! "${CURL[@]}" "${SMALL[@]}" --max-time 20 -o "$check/SHA256SUMS" "$base/SHA256SUMS" 2>/dev/null \
+      || ! "${CURL[@]}" "${SMALL[@]}" --max-time 20 -o "$check/SHA256SUMS.sig" "$base/SHA256SUMS.sig" 2>/dev/null; then
+      verified unverified "$release" "couldn't download release $release's signed SHA256SUMS to check against"
+      exit 0
+    fi
+  fi
+  if ! release_signed "$check" "$release"; then
+    verified mismatch "$release" "the SHA256SUMS for $release isn't signed by the release key"
+    exit 0
+  fi
+  install -d -m 755 "$sums" && cp "$check/SHA256SUMS" "$check/SHA256SUMS.sig" "$sums/"
+  checked=() bad=()
+  for p in dedicated_server coordinator; do
+    [ -e "$PROGRAM_DIR/$p" ] || continue
+    want="$(grep " $(asset "$p")\$" "$check/SHA256SUMS" | head -1 | cut -d' ' -f1 || true)"
+    got="$(sha256sum "$PROGRAM_DIR/$p" | cut -d' ' -f1)"
+    if [ -n "$want" ] && [ "$want" = "$got" ]; then checked+=("$p"); else bad+=("$p"); fi
+  done
+  if [ "${#bad[@]}" -gt 0 ]; then
+    printf -v list '%s, ' "${bad[@]}"
+    verified mismatch "$release" "${list%, } doesn't match release $release"
+  elif [ "${#checked[@]}" -gt 0 ]; then
+    verified verified "$release" "${checked[*]}"
+  else
+    verified unverified "$release" "no program to check"
+  fi
+  exit 0
+fi
 # A version that failed isn't tried again for this long (each try restarts the services).
 RETRY_AFTER=3600
 install -d -m 755 "$UPDATE_DIR"
@@ -1409,7 +1482,6 @@ parts=()
 [ -x "$PROGRAM_DIR/dedicated_server" ] && parts+=(dedicated_server)
 [ -x "$PROGRAM_DIR/coordinator" ] && parts+=(coordinator)
 [ "${#parts[@]}" -gt 0 ] || exit 0
-asset() { case "$1" in dedicated_server) echo dedicated_server-linux-x86_64 ;; coordinator) echo coordinator-linux-x86_64 ;; esac; }
 # In a failover group, the coordinator runs on one server; the others keep its program up
 # to date, but don't start it.
 coord_running=0
@@ -1500,15 +1572,12 @@ if [ "$rollback" -eq 0 ]; then
     status failed "$wanted" "couldn't download the release's SHA256SUMS and signature"
     exit 0
   fi
-  printf '%s\n' "$RELEASE_KEY_PEM" > "$work/release.pem"
-  { printf '5th-echelon/release/v2\n%s\n' "$wanted"; cat "$work/SHA256SUMS"; } > "$work/signed"
-  sig="$(tr -d '[:space:]' < "$work/SHA256SUMS.sig")"
-  while [ $(( ${#sig} % 8 )) -ne 0 ]; do sig="$sig="; done
-  if ! printf '%s' "$sig" | base32 -d > "$work/signature" 2>/dev/null \
-    || ! openssl pkeyutl -verify -pubin -inkey "$work/release.pem" -rawin -in "$work/signed" -sigfile "$work/signature" >/dev/null 2>&1; then
+  if ! release_signed "$work" "$wanted"; then
     status failed "$wanted" "the release isn't signed by the release key as $wanted"
     exit 0
   fi
+  # Kept for --verify, which checks the programs against them at each start.
+  install -d -m 755 "$UPDATE_DIR/sums/$wanted" && cp "$work/SHA256SUMS" "$work/SHA256SUMS.sig" "$UPDATE_DIR/sums/$wanted/"
   for p in "${parts[@]}"; do
     a="$(asset "$p")"
     if ! "${CURL[@]}" -o "$work/$a" "$base/$a" || ! (cd "$work" && grep " $a\$" SHA256SUMS | sha256sum -c --quiet -); then
@@ -1585,6 +1654,10 @@ if [ "$ok" -eq 1 ]; then
     put "$ETC_DIR/rollback-until" 0
   fi
   rm -rf "$PROGRAM_DIR/previous.kept"
+  # Sums for this release and the one kept for a rollback; no others.
+  for d in "$UPDATE_DIR"/sums/*; do
+    case "${d##*/}" in "$wanted" | "$current") ;; *) rm -rf -- "$d" ;; esac
+  done
   status done "$wanted"
   exit 0
 fi
@@ -1638,6 +1711,11 @@ UPDATER
     fi
   fi
   [ -f "$PROGRAM_DIR/release" ] || echo unknown > "$PROGRAM_DIR/release"
+  # The signed sums just checked, for the updater's --verify at each start.
+  if [ -n "$release_version" ] && [ -s "$work/SHA256SUMS" ] && [ -s "$work/SHA256SUMS.sig" ]; then
+    install -d -m 755 "$UPDATE_DIR/sums/$release_version"
+    cp "$work/SHA256SUMS" "$work/SHA256SUMS.sig" "$UPDATE_DIR/sums/$release_version/"
+  fi
   # Where earlier updaters wrote their status, in the services' folders (the
   # server reads that only when root's file isn't there).
   rm -f "$STATE_DIR/update-status.json"

@@ -72,6 +72,15 @@ export function updatePill(sv, rollout) {
   return ['ok', v];
 }
 
+/** The pill for a machine's check of its programs against the signed release: [css class, text, title]. */
+export function verifyPill(v) {
+  const when = v?.at ? ` · checked ${fmt.ago(v.at)}` : '';
+  if (v?.state === 'verified') return ['ok', 'verified', `The signed release ${v.version}${when}`];
+  if (v?.state === 'mismatch') return ['bad', "doesn't match", `${v.detail || ''}${when}`];
+  if (v?.state === 'unverified') return ['', 'not checked', `${v.detail || ''}${when}`];
+  return ['', 'not checked', 'Nothing checks this machine: an install from before 0.4.2 (run install-server.sh again), Docker or Windows'];
+}
+
 export const PALETTE = ['#8fd14f', '#5aa9e6', '#f0b44c', '#c79bff', '#ff8f70', '#5fd7d0', '#e6e36a', '#f07cc4'];
 const known = new Map();
 export function colorFor(id) {
