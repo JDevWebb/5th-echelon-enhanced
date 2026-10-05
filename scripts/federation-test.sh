@@ -158,13 +158,26 @@ echo "--- relay ping"
 # A relayed player joins a direct one's match on server A: the join says how they reach each
 # other (both games' round trips to the server, and the relayed round trip).
 client "$bin/testbot" --server "$a" relay-ping || rc=1
-net=""
+path=""
 for _ in $(seq 30); do
-  net=$(coord_db "SELECT json_extract(detail, '$.relayed') || ' ' || json_extract(detail, '$.ping_ms') || ' ' || json_extract(detail, '$.host_ping_ms') || ' ' || json_extract(detail, '$.relay_ms') FROM session_events WHERE server_id = '$server_a' AND kind = 'join' AND json_extract(detail, '$.host_name') LIKE 'PingHost%'")
-  [ -n "$net" ] && break; sleep 1
+  path=$(coord_db "SELECT json_extract(detail, '$.relayed') || ' ' || json_extract(detail, '$.ping_ms') || ' ' || json_extract(detail, '$.host_ping_ms') || ' ' || json_extract(detail, '$.relay_ms') FROM session_events WHERE server_id = '$server_a' AND kind = 'join' AND json_extract(detail, '$.host_name') LIKE 'PingHost%'")
+  [ -n "$path" ] && break; sleep 1
 done
-case "$net" in "1 "[0-9]*" "[0-9]*" "[0-9]*) echo "PASS the relayed join reached the coordinator with its round trips (relayed, ping, host's, through the relay: $net)";;
-  *) echo "FAIL the relayed join's network detail: ${net:-no join}"; rc=1;; esac
+case "$path" in "1 "[0-9]*" "[0-9]*" "[0-9]*) echo "PASS the relayed join reached the coordinator with its round trips (relayed, ping, host's, through the relay: $path)";;
+  *) echo "FAIL the relayed join's network detail: ${path:-no join}"; rc=1;; esac
+echo "--- maintenance"
+# A window booked for server A (as the admin UI books it) reaches its games with the next
+# heartbeat, in /api/info, and the directory lists it for launchers; server B hears nothing.
+coord_write "INSERT INTO maintenance (server_id, starts, ends, note, created_by, created_at) VALUES ('$server_a', CAST(strftime('%s','now') AS INTEGER) + 3600, CAST(strftime('%s','now') AS INTEGER) + 7200, 'federation test', 'test', CAST(strftime('%s','now') AS INTEGER))" >/dev/null
+told=""
+for _ in $(seq 45); do
+  told=$(docker exec fes-fed-a curl -sf http://127.0.0.1/api/info | grep -o '"note":"federation test"' || true)
+  [ -n "$told" ] && break; sleep 1
+done
+listed=$(client curl -sf "http://$coord:8700/v1/servers" | grep -o '"note":"federation test"' | wc -l || true)
+b_told=$(docker exec fes-fed-b curl -sf http://127.0.0.1/api/info | grep -c '"maintenance"' || true)
+[ -n "$told" ] && [ "${listed:-0}" -eq 1 ] && [ "${b_told:-0}" -eq 0 ] && echo "PASS a maintenance window reached server A's games and the directory, not server B" \
+  || { echo "FAIL maintenance: server A ${told:-not told}, directory ${listed:-0}, server B ${b_told:-?}"; client curl -s "http://$coord:8700/v1/servers"; echo; rc=1; }
 if [ $rc -ne 0 ]; then
   for s in fes-fed-a fes-fed-b; do echo "--- $s"; docker exec "$s" grep -iE -A3 "federation|ERRO" /srv/fe/server.log | tail -40 || true; done
   echo "--- coordinator"; docker exec fes-fed-coord tail -30 /srv/c/log || true
