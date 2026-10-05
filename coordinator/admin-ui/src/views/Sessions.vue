@@ -121,7 +121,7 @@ import { live } from '../lib/live.js';
 const RANGES = [[6, '6 h'], [24, '24 h'], [72, '3 d'], [168, '7 d']];
 const LEVELS = [['bad', 'Problems'], ['warn', 'And warnings'], ['all', 'Everything']];
 const MODES = { coop: 'co-op', svm: 'Spies vs Mercs' };
-const PROBLEM_KINDS = new Set(['signin_refused', 'join_failed', 'relay_drop', 'request_error', 'nat_missing', 'nat_lost']);
+const PROBLEM_KINDS = new Set(['signin_refused', 'join_failed', 'relay_drop', 'request_error', 'nat_missing', 'nat_lost', 'report_refused']);
 
 const hours = ref(24);
 const server = ref('');
@@ -220,7 +220,7 @@ function netText(n) {
 }
 function markClass(m) {
   if (m.kind === 'client_log') return /^Game error/.test(m.text) ? 'bad' : /^Game warn/.test(m.text) ? 'warn' : 'muted';
-  if (PROBLEM_KINDS.has(m.kind)) return m.kind === 'request_error' ? 'warn' : 'bad';
+  if (PROBLEM_KINDS.has(m.kind)) return m.kind === 'request_error' || m.kind === 'report_refused' ? 'warn' : 'bad';
   if (m.kind === 'stats') return 'ok';
   if (m.kind === 'search') return 'info';
   return 'muted';

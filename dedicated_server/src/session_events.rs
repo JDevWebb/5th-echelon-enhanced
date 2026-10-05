@@ -36,6 +36,9 @@
 //! - `relay_drop`: `direction` (`sending`: the relay stopped getting this player's traffic;
 //!   `receiving`: stopped getting traffic for them), `before` and `after` (packets a second).
 //! - `request_error`: `call` (Protocol.Method), `error`.
+//! - `report_refused`: the player's report (the launcher's "how did it go") wasn't taken:
+//!   `reason` (`too_many` today, or `invalid`), `why` (what the player was told), `files`
+//!   and `bytes` (compressed) it carried.
 //! - `client_log`: `level` (`error`, `warn`, `info`), `target`, `message`: a line
 //!   of the game's own log (its warnings, errors and network events), sent by the game
 //!   (Misc.ClientLog) unless the player turned it off.

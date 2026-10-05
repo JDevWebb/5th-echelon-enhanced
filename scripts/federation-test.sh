@@ -132,6 +132,17 @@ done
 with_side=$(coord_db "SELECT COUNT(*) FROM player_reports r JOIN player_report_files f ON f.report_id = r.id WHERE r.server_id = '$server_a' AND r.server_log LIKE '%Reporter%' AND r.summary LIKE '%started%'")
 [ "${reports:-0}" -ge 5 ] && [ "${with_side:-0}" -ge 1 ] && echo "PASS server A's $reports reports reached the coordinator, with the server's side and the log" \
   || { echo "FAIL reports: ${reports:-0} arrived, ${with_side:-0} with the server's side and a file"; rc=1; }
+echo "--- refused reports"
+# The report scenario's refusals (a file named ../uplay.toml, a sixth report in a day) are
+# noted, and reach the coordinator.
+refused=""
+for _ in $(seq 30); do
+  refused=$(coord_db "SELECT group_concat(DISTINCT json_extract(detail, '$.reason')) FROM session_events WHERE server_id = '$server_a' AND kind = 'report_refused'")
+  case ",$refused," in *,invalid,*) case ",$refused," in *,too_many,*) break;; esac;; esac
+  sleep 1
+done
+case ",$refused," in *,invalid,*) case ",$refused," in *,too_many,*) ok_refused=1;; esac;; esac
+[ "${ok_refused:-0}" = 1 ] && echo "PASS server A's refused reports reached the coordinator ($refused)" || { echo "FAIL refused reports: ${refused:-none}"; rc=1; }
 echo "--- session events"
 # The test players signed in and out on server A: those events reach the coordinator (they're
 # sent every few seconds).

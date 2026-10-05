@@ -49,6 +49,7 @@ const KINDS: &[&str] = &[
     "client_log",
     "relay_drop",
     "request_error",
+    "report_refused",
 ];
 
 /// How long after a relay drop a player leaving their match counts as dropping out, and
@@ -563,6 +564,12 @@ fn describe(e: &Event) -> String {
             e.detail["after"]
         ),
         "request_error" => format!("A request failed: {} {}{times}", e.str("call"), e.str("error")),
+        "report_refused" => format!(
+            "A report from the launcher was refused: {} ({} files, {} KB){times}",
+            e.str("why"),
+            e.detail["files"].as_i64().unwrap_or(0),
+            e.detail["bytes"].as_i64().unwrap_or(0) / 1024
+        ),
         other => other.to_string(),
     }
 }
@@ -628,6 +635,8 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
                 out.push(p);
             }
             "join_failed" => out.push(problem(e, "bad", format!("{} couldn't join a room", e.name), describe(e))),
+            // What they wanted to tell the admins didn't arrive.
+            "report_refused" => out.push(problem(e, "warn", format!("{}'s report was refused", e.name), describe(e))),
             // Joins with them fail (CONNECTION_FAILED) until a restart registers it.
             "nat_missing" => out.push(problem(e, "bad", format!("{}'s game couldn't be reached", e.name), describe(e))),
             // Joins with them fail (CONNECTION_FAILED) until it registers again.
@@ -1006,6 +1015,30 @@ mod tests {
         let viper = t.iter().find(|p| p["name"] == "Viper").unwrap();
         assert_eq!((viper["rooms"][0]["to"].as_i64(), viper["rooms"][0]["host"].as_bool()), (Some(1356), Some(false)));
         assert_eq!(viper["online"][0], json!([120, 1400]));
+    }
+
+    /// A refused report is a warning: what the player wanted to tell the admins didn't arrive.
+    #[test]
+    fn a_refused_report_is_a_warning_saying_why() {
+        let mut refused = ev(
+            "na",
+            100,
+            10,
+            "NexusXDev25",
+            "report_refused",
+            json!({ "reason": "invalid", "why": "a file's name isn't one the launcher sends", "files": 5, "bytes": 2_100_000 }),
+        );
+        refused.count = 2;
+        let found = problems(&[refused]);
+        assert_eq!(found.len(), 1);
+        assert_eq!(
+            (found[0]["level"].as_str(), found[0]["title"].as_str()),
+            (Some("warn"), Some("NexusXDev25's report was refused"))
+        );
+        assert_eq!(
+            found[0]["text"],
+            "A report from the launcher was refused: a file's name isn't one the launcher sends (5 files, 2050 KB) (2 times)"
+        );
     }
 
     /// A join says how the guest's game reached the host's; the room on the timeline keeps

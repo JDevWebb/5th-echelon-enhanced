@@ -1225,6 +1225,8 @@ impl Misc for MyMisc {
         let user_id = caller(&request)?;
         let peer = client_addr(&request);
         let r = request.into_inner();
+        // What it carried, to say so if it's refused.
+        let (files, bytes) = (r.files.len(), r.files.iter().map(|f| f.gzip.len()).sum::<usize>());
         let incoming = crate::reports::Incoming {
             rating: r.rating,
             problems: r.problems,
@@ -1239,8 +1241,24 @@ impl Misc for MyMisc {
                 crate::federation::report_queued();
                 Ok(Response::new(misc::ReportResponse { id }))
             }
-            Err(crate::reports::Refused::TooMany) => Err(Status::resource_exhausted("You've sent a few reports today already; thanks, they're with the admins")),
-            Err(crate::reports::Refused::Invalid(why)) => Err(Status::invalid_argument(why)),
+            Err(refused) => {
+                // The player sees why; the admins see it here and on the Sessions page.
+                let (reason, why, status) = match refused {
+                    crate::reports::Refused::TooMany => (
+                        "too_many",
+                        "too many reports today",
+                        Status::resource_exhausted("You've sent a few reports today already; thanks, they're with the admins"),
+                    ),
+                    crate::reports::Refused::Invalid(why) => ("invalid", why, Status::invalid_argument(why)),
+                };
+                warn!(self.logger, "Refused a report from {user_id}: {why} ({files} files, {} KB)", bytes / 1024);
+                crate::session_events::note(
+                    crate::session_events::Who::Id(user_id),
+                    "report_refused",
+                    serde_json::json!({ "reason": reason, "why": why, "files": files, "bytes": bytes }),
+                );
+                Err(status)
+            }
         }
     }
 
