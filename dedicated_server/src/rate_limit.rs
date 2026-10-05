@@ -172,6 +172,13 @@ pub fn plain_login(peer: Option<IpAddr>) -> bool {
 /// are cut before they're used as keys).
 pub const MAX_NAME: usize = 64;
 
+/// Name checks per address (the launcher's, as a player types a name): as many as
+/// sign-ins, counted on their own.
+pub fn name_checks() -> &'static RateLimit {
+    static LIMIT: std::sync::OnceLock<RateLimit> = std::sync::OnceLock::new();
+    LIMIT.get_or_init(|| RateLimit::new((limits().logins_per_10_minutes, Duration::from_secs(10 * 60))))
+}
+
 /// The server's one limiter for new accounts.
 pub fn registrations() -> &'static RateLimit {
     static LIMIT: std::sync::OnceLock<RateLimit> = std::sync::OnceLock::new();

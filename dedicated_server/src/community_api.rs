@@ -49,6 +49,7 @@ const FEATURES: &[&str] = &[
     "identity",
     "identity-login",
     "rename",
+    "name-check",
 ];
 
 /// Session attributes (see game_session.rs): 101 map, 102 mode, 113 room kind

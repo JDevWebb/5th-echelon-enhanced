@@ -299,6 +299,34 @@ async fn presence(ctx: &mut Ctx) -> Result<()> {
     seer.disconnect().await
 }
 
+/// A name check answers free, taken or not allowed, and makes nothing.
+async fn name_check(ctx: &mut Ctx) -> Result<()> {
+    use server_api::users::name_available_response::Answer;
+    let server = ctx.server;
+    let check = |name: String| async move {
+        let channel = tonic::transport::Channel::from_shared(format!("http://{server}:{}", testbot::bot::target(server).api))?.connect().await?;
+        let answer = server_api::users::users_client::UsersClient::new(channel)
+            .name_available(server_api::users::NameRequest { name })
+            .await?
+            .into_inner();
+        Ok::<_, eyre::Report>((answer.answer(), answer.reason))
+    };
+    let a = ctx.player("Held").await?;
+    let (taken, why) = check(a.name.to_lowercase()).await?;
+    ensure!(taken == Answer::Taken && !why.is_empty(), "another player's name, in other case, answered {taken:?}");
+    let free = format!("Free{}_{}", ctx.run, ctx.n + 1);
+    ensure!(check(free.clone()).await?.0 == Answer::Free, "an unused name isn't free");
+    // Checking made nothing: the name is still free to register.
+    ensure!(check(free.clone()).await?.0 == Answer::Free, "a checked name was taken by the check");
+    Bot::register(ctx.server, &free, PASSWORD).await?;
+    ensure!(check(free).await?.0 == Answer::Taken, "a registered name is still free");
+    for bad in ["", "Admin", "has space", "x".repeat(33).as_str(), "Kiwі"] {
+        let (answer, why) = check(bad.to_string()).await?;
+        ensure!(answer == Answer::NotAllowed && !why.is_empty(), "{bad:?} answered {answer:?}");
+    }
+    a.disconnect().await
+}
+
 /// Renaming keeps the account (friends, id) and frees the old name.
 async fn rename(ctx: &mut Ctx) -> Result<()> {
     let a = ctx.player("Named").await?;
@@ -1060,6 +1088,7 @@ const SCENARIOS: &[&str] = &[
     "outdated-client",
     "report",
     "client-log",
+    "name-check",
 ];
 
 #[tokio::main]
@@ -1146,6 +1175,7 @@ async fn main() -> Result<()> {
                 "outdated-client" => outdated_client(&mut ctx).await,
                 "report" => report(&mut ctx).await,
                 "client-log" => client_log(&mut ctx).await,
+                "name-check" => name_check(&mut ctx).await,
                 // Not in the default list: a server in the "mutual" mode, one requiring
                 // identities, and two servers.
                 "friends-mutual" => friends_mutual(&mut ctx).await,

@@ -70,6 +70,8 @@ pub struct Play {
     switching: Option<Switch>,
     /// The server menu's row the arrow keys are on.
     menu_focus: usize,
+    /// Asking for a name for a new account (or confirming a server of the player's own).
+    account: Option<AccountDialog>,
     /// What's typed in Servers › Use another network, and its check.
     network_typed: String,
     checking_network: Slot<Result<(String, usize), String>>,
@@ -201,16 +203,23 @@ impl Play {
                     self.browsed = false;
                     self.directory = None;
                 }
-                Ok((flow::Done::NeedsName { server, suggested }, _, _)) => {
+                Ok((flow::Done::NeedsName { server, suggested, taken }, _, _)) => {
                     if let Some(a) = &activity {
                         a.finish_quietly();
                     }
-                    // The network's best server, or the one typed: the account is made there.
-                    self.server = server.clone();
-                    self.server_picked = false;
-                    self.nick = suggested;
-                    self.needs_name = Some(server);
-                    self.editing = true;
+                    let first_run = game.cfg.current_profile().is_none_or(|p| p.server.is_empty());
+                    if first_run {
+                        // The guided setup asks for the name in its own step.
+                        self.server = server.clone();
+                        self.server_picked = false;
+                        self.nick = suggested;
+                        self.needs_name = Some(server);
+                        self.editing = true;
+                    } else {
+                        // The network's server, or a friend's: the account dialog asks.
+                        let own = !asked.as_ref().is_some_and(|a| a.public_only);
+                        self.account = Some(AccountDialog::new(ctx, game, &server, suggested, taken, own, self.directory.as_deref()));
+                    }
                 }
                 Err(e) => match (&activity, &asked) {
                     (Some(a), Some(asked)) => {
@@ -1432,7 +1441,6 @@ pub fn show_news(app: &mut App, ui: &mut egui::Ui) {
 /// your own by its address, or one on this network.
 pub fn show_servers(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
-    let mut to = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         theme::page().show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -1445,14 +1453,12 @@ pub fn show_servers(app: &mut App, ui: &mut egui::Ui) {
             play.poll(&ctx, game, notices);
             poll_lookups(play, notices);
             auto_browse(play, &ctx);
-            to = servers_page(play, game, notices, &ctx, ui);
+            servers_page(play, game, notices, &ctx, ui);
         });
     });
-    go(app, to);
 }
 
-fn servers_page(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Context, ui: &mut egui::Ui) -> Option<Go> {
-    let mut to = None;
+fn servers_page(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Context, ui: &mut egui::Ui) {
     let locked = game.managed.is_some();
     let playing = play.game_seen || play.running.is_some();
     ui.label(theme::display("Servers", 32.0));
@@ -1460,7 +1466,7 @@ fn servers_page(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &e
     ui.add_space(14.0);
     if locked {
         ui.label(theme::muted("Another tool manages this install: change the server there."));
-        return to;
+        return;
     }
     // A friend's server, asked for on the home screen.
     confirm_switch(play, game, notices, ctx, ui);
@@ -1548,16 +1554,12 @@ fn servers_page(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &e
             }
         });
     });
+    // A server of the player's own: the account dialog, which is also the confirmation.
     if let Some(address) = connect {
         play.address = address.clone();
-        play.server = address;
-        play.server_picked = false;
-        play.needs_name = None;
-        let name = game.cfg.current_profile().map(|p| p.user.username.clone()).filter(|n| !n.is_empty());
-        start_setup(play, game, ctx, notices, name, false);
-        to = Some(Go::View(View::Play));
+        let usual = flow::usual_name(&game.dir).unwrap_or_else(flow::windows_user);
+        play.account = Some(AccountDialog::new(ctx, game, &address, usual, false, true, None));
     }
-    to
 }
 
 /// The network the server menu shows, and changing it.
@@ -1671,11 +1673,14 @@ fn start_setup(play: &mut Play, game: &Game, ctx: &egui::Context, notices: &mut 
             format!("Couldn't connect to {shown}"),
         ),
     };
+    // A community server: an account is made there with the player's usual name, without asking.
+    let listed = play.directory.as_ref().is_some_and(|d| d.iter().any(|(s, _)| s.host.eq_ignore_ascii_case(&server)));
     let mut plan = flow::Plan {
         game_dir: game.dir.clone(),
         server: server.clone(),
         new_name: new_name.clone(),
         public_only,
+        automatic: listed,
     };
     play.switching = None;
     if let Some(id) = play.setup_failed.take() {
@@ -1697,6 +1702,7 @@ fn start_setup(play: &mut Play, game: &Game, ctx: &egui::Context, notices: &mut 
             Some(host) => {
                 plan.server = host;
                 plan.public_only = true;
+                plan.automatic = true;
                 true
             }
             None => false,
@@ -1849,4 +1855,285 @@ fn launch(play: &mut Play, game: &mut Game, notices: &mut Notices) {
         Ok(setup::launch::Launched::Steam) => notices.info("Steam is starting the game."),
         Err(e) => notices.error(format!("Couldn't start the game: {e}")),
     }
+}
+
+/// How long after the last key a name is checked.
+const CHECK_AFTER: Duration = Duration::from_millis(400);
+
+/// The account dialog: the name for a new account on a server, checked as it's typed.
+pub(crate) struct AccountDialog {
+    server: String,
+    /// Where it is, and what it is ("North America · community server").
+    place: String,
+    kind: String,
+    /// A server of the player's own, from the Servers screen (the dialog is its confirmation).
+    own: bool,
+    /// The name that was tried there and is taken.
+    taken: Option<String>,
+    name: String,
+    typed_at: Instant,
+    ping: Option<u32>,
+    probing: Slot<Result<flow::Probe, String>>,
+    probe: Option<Result<flow::Probe, String>>,
+    checking: Slot<Result<(String, Result<flow::NameCheck, String>), String>>,
+    checks: std::collections::HashMap<String, Result<flow::NameCheck, String>>,
+    suggesting: Slot<Vec<String>>,
+    suggestions: Vec<String>,
+    suggested_for: Option<String>,
+}
+
+impl AccountDialog {
+    fn new(ctx: &egui::Context, game: &Game, server: &str, suggested: String, taken: bool, own: bool, directory: Option<&[(setup::directory::Listing, Option<u32>)]>) -> Self {
+        let listing = directory.and_then(|d| d.iter().find(|(s, _)| s.host.eq_ignore_ascii_case(server)));
+        let (place, kind) = match listing {
+            Some((s, _)) => (place(s), format!("{} · community server", s.name)),
+            None if own => (server.to_string(), "A server of your own".to_string()),
+            None => (server.to_string(), "A friend's server".to_string()),
+        };
+        let mut probing = Slot::default();
+        let (dir, host) = (game.dir.clone(), server.to_string());
+        probing.start(ctx, move || flow::probe(&dir, &host));
+        let mut checks = std::collections::HashMap::new();
+        if taken {
+            checks.insert(suggested.clone(), Ok(flow::NameCheck::Taken(String::new())));
+        }
+        Self {
+            server: server.to_string(),
+            place,
+            kind,
+            own,
+            taken: taken.then(|| suggested.clone()),
+            name: suggested,
+            typed_at: Instant::now(),
+            ping: listing.and_then(|(_, ping)| *ping),
+            probing,
+            probe: None,
+            checking: Slot::default(),
+            checks,
+            suggesting: Slot::default(),
+            suggestions: Vec::new(),
+            suggested_for: None,
+        }
+    }
+
+    /// The server's API, once looked at, when it checks names.
+    fn checker(&self) -> Option<String> {
+        self.probe.as_ref().and_then(|p| p.as_ref().ok()).filter(|p| p.name_check).map(|p| p.api.clone())
+    }
+
+    /// Picks up answers, and checks the name a moment after the last key.
+    fn poll(&mut self, ctx: &egui::Context) {
+        if let Some(probe) = self.probing.poll() {
+            if let Ok(p) = &probe {
+                self.ping = self.ping.or(p.ping);
+            }
+            self.probe = Some(probe);
+        }
+        if let Some(Ok((name, answer))) = self.checking.poll() {
+            self.checks.insert(name, answer);
+        }
+        if let Some(found) = self.suggesting.poll() {
+            self.suggestions = found;
+        }
+        let name = self.name.trim().to_string();
+        let Some(api) = self.checker() else { return };
+        if name.is_empty() || self.checks.contains_key(&name) || self.checking.running() {
+            return;
+        }
+        let wait = CHECK_AFTER.saturating_sub(self.typed_at.elapsed());
+        if !wait.is_zero() {
+            ctx.request_repaint_after(wait);
+            return;
+        }
+        self.checking.start(ctx, move || Ok((name.clone(), flow::check_name(&api, &name))));
+    }
+
+    /// Offers names when the one typed is taken.
+    fn suggest(&mut self, ctx: &egui::Context) {
+        let name = self.name.trim().to_string();
+        let taken = matches!(self.checks.get(&name), Some(Ok(flow::NameCheck::Taken(_))));
+        if !taken || self.suggested_for.as_deref() == Some(name.as_str()) || self.suggesting.running() {
+            return;
+        }
+        let Some(api) = self.checker() else { return };
+        self.suggested_for = Some(name.clone());
+        self.suggestions.clear();
+        self.suggesting.start(ctx, move || flow::free_suggestions(&api, &name));
+    }
+}
+
+/// What the player did in the account dialog.
+enum DialogChoice {
+    Create(String),
+    Close,
+}
+
+/// The account dialog, over whichever screen is open.
+pub fn show_account_dialog(app: &mut App, ctx: &egui::Context) {
+    if account_dialog_frame(app, ctx) {
+        app.set_view(View::Play);
+    }
+}
+
+/// Shows the dialog and acts on it; says whether a setup started (the Play screen shows it).
+fn account_dialog_frame(app: &mut App, ctx: &egui::Context) -> bool {
+    let (play, game, notices) = app.play_mut();
+    let (Some(dialog), Some(game)) = (play.account.as_mut(), game.as_mut()) else {
+        return false;
+    };
+    dialog.poll(ctx);
+    dialog.suggest(ctx);
+    let current = game
+        .cfg
+        .current_profile()
+        .map(|p| p.server.clone())
+        .filter(|s| !s.is_empty())
+        .map(|host| play.directory.as_ref().and_then(|d| d.iter().find(|(s, _)| s.host == host)).map_or(host, |(s, _)| place(s)));
+    let network = crate::app::Prefs::directory();
+    let choice = account_dialog(ctx, dialog, current.as_deref(), network.as_deref());
+    match choice {
+        Some(DialogChoice::Create(name)) => {
+            let dialog = play.account.take().expect("shown above");
+            play.server = dialog.server.clone();
+            play.server_picked = false;
+            play.needs_name = None;
+            start_setup(play, game, ctx, notices, Some(name), !dialog.own);
+            true
+        }
+        Some(DialogChoice::Close) => {
+            play.account = None;
+            false
+        }
+        None => false,
+    }
+}
+
+fn account_dialog(ctx: &egui::Context, dialog: &mut AccountDialog, current: Option<&str>, network: Option<&str>) -> Option<DialogChoice> {
+    let mut choice = None;
+    let modal = egui::Modal::new(egui::Id::new("account-dialog"))
+        .frame(
+            egui::Frame::new()
+                .fill(theme::SURFACE)
+                .stroke(egui::Stroke::new(1.0, theme::CONTROL_LINE))
+                .corner_radius(16)
+                .inner_margin(egui::Margin { left: 26, right: 26, top: 24, bottom: 22 }),
+        )
+        .show(ctx, |ui| {
+            ui.set_width(468.0);
+            ui.spacing_mut().item_spacing.y = 10.0;
+            let title = if dialog.own { format!("Connect to {}", dialog.server) } else { "Choose your name on this server".to_string() };
+            ui.label(theme::display(&title, 22.0));
+            // The server: where, what, and how far.
+            egui::Frame::new()
+                .fill(theme::SUNKEN)
+                .stroke(egui::Stroke::new(1.0, theme::LINE))
+                .corner_radius(10)
+                .inner_margin(egui::Margin::symmetric(14, 10))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.spacing_mut().item_spacing.y = 2.0;
+                            ui.label(RichText::new(&dialog.place).family(theme::strong()));
+                            let version = dialog.probe.as_ref().and_then(|p| p.as_ref().ok()).filter(|p| !p.version.is_empty()).map(|p| format!(" · 5th Echelon {}", p.version));
+                            ui.label(theme::muted(format!("{}{}", dialog.kind, version.unwrap_or_default())).small());
+                        });
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match (&dialog.probe, dialog.ping) {
+                            (_, Some(ms)) => {
+                                ui.label(ping_text(Some(ms)));
+                            }
+                            (None, None) => {
+                                ui.spinner();
+                            }
+                            (Some(_), None) => {
+                                ui.label(theme::muted("no answer"));
+                            }
+                        });
+                    });
+                });
+            let why = match &dialog.taken {
+                Some(name) => format!("Someone on this server already has the name {name} (an account from before names were kept for each player), so you need another one here. Your friends still see it's you."),
+                None => "You don't have an account here yet. Pick the name other players see. Your identity signs you in from now on: no password to remember.".to_string(),
+            };
+            ui.label(RichText::new(why).color(theme::SOFT));
+            if let Some(Err(e)) = &dialog.probe {
+                ui.label(RichText::new(e).color(theme::WARN).size(13.5));
+            }
+            ui.label(RichText::new("Your name").family(theme::strong()).size(14.0));
+            let field = ui.add(
+                egui::TextEdit::singleline(&mut dialog.name)
+                    .font(egui::FontId::new(16.0, theme::strong()))
+                    .char_limit(32)
+                    .desired_width(f32::INFINITY)
+                    .min_size(egui::vec2(0.0, 40.0)),
+            );
+            if field.changed() {
+                dialog.typed_at = Instant::now();
+            }
+            let name = dialog.name.trim().to_string();
+            let check = dialog.checks.get(&name).cloned();
+            ui.horizontal(|ui| match &check {
+                _ if name.is_empty() => {}
+                Some(Ok(flow::NameCheck::Free)) => {
+                    theme::status_marker(ui, Status::Ok);
+                    ui.label(RichText::new("Free").color(theme::OK).size(13.5));
+                }
+                Some(Ok(flow::NameCheck::Taken(_))) => {
+                    theme::status_marker(ui, Status::Fail);
+                    ui.label(RichText::new("Taken on this server").color(theme::BAD).size(13.5));
+                }
+                Some(Ok(flow::NameCheck::NotAllowed(why))) => {
+                    theme::status_marker(ui, Status::Fail);
+                    ui.label(RichText::new(why).color(theme::BAD).size(13.5));
+                }
+                Some(Err(_)) | None if dialog.checker().is_none() => {}
+                Some(Err(e)) => {
+                    ui.label(theme::muted(format!("Couldn't check it: {e}")).small());
+                }
+                None => {
+                    ui.spinner();
+                    ui.label(theme::muted("Checking…").small());
+                }
+            });
+            if matches!(check, Some(Ok(flow::NameCheck::Taken(_)))) && !dialog.suggestions.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    for s in dialog.suggestions.clone() {
+                        if ui.add(egui::Button::new(RichText::new(&s).family(theme::strong()).size(13.0)).corner_radius(99)).clicked() {
+                            dialog.name = s.clone();
+                            dialog.checks.insert(s, Ok(flow::NameCheck::Free));
+                        }
+                    }
+                });
+            }
+            if dialog.own {
+                let leaving = match network {
+                    Some(url) if crate::app::Prefs::is_community(url) => "the community network".to_string(),
+                    Some(url) => url_host(url).to_string(),
+                    None => "your network".to_string(),
+                };
+                ui.label(theme::muted(format!(
+                    "This leaves {leaving}: your friends and stats there stay there. The server menu on the Play screen takes you back."
+                )).small());
+            }
+            let ready = !name.is_empty() && !matches!(check, Some(Ok(flow::NameCheck::Taken(_) | flow::NameCheck::NotAllowed(_))));
+            ui.add_space(4.0);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let create = if dialog.own { "Create account and connect" } else { "Create account" };
+                let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if ui.add_enabled(ready, theme::primary(create).min_size(egui::vec2(0.0, 38.0))).clicked() || (enter && ready) {
+                    choice = Some(DialogChoice::Create(name.clone()));
+                }
+                let stay = match (dialog.own, current) {
+                    (false, Some(place)) => format!("Stay on {place}"),
+                    _ => "Cancel".to_string(),
+                };
+                if ui.add(theme::secondary(&stay).min_size(egui::vec2(0.0, 38.0))).clicked() {
+                    choice = Some(DialogChoice::Close);
+                }
+            });
+        });
+    if modal.should_close() && choice.is_none() {
+        choice = Some(DialogChoice::Close);
+    }
+    choice
 }

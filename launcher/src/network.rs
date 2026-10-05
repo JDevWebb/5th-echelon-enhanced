@@ -22,6 +22,7 @@ pub use quazal::test_quazal_login;
 pub use rpc::account_id;
 pub use rpc::identity_login;
 pub use rpc::link_identity;
+pub use rpc::name_available;
 pub use rpc::register;
 pub use rpc::relationships;
 pub use rpc::rename;

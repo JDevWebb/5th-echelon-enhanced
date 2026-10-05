@@ -600,6 +600,7 @@ impl eframe::App for App {
         }
         self.feedback.show(ctx, &mut self.notices);
         self.diagnostics.show(ctx, self.game.as_mut(), &mut self.notices);
+        crate::play::show_account_dialog(self, ctx);
         if let Some(Err(e)) = self.updating.poll() {
             match self.updating_activity.take() {
                 Some(a) => {

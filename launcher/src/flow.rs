@@ -269,6 +269,9 @@ pub struct Plan {
     /// not from the player: it must be on the internet, never this PC or its
     /// network.
     pub public_only: bool,
+    /// A community server (in the network's directory): an account is made there with the
+    /// player's usual name, without asking (see [`account::new_account`]).
+    pub automatic: bool,
 }
 
 /// How a setup ended.
@@ -280,6 +283,8 @@ pub enum Done {
     NeedsName {
         server: String,
         suggested: String,
+        /// The name was tried, and someone there has it.
+        taken: bool,
     },
 }
 
@@ -468,29 +473,40 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
     let saved_secret = profile.user.secret();
     let saved = saved_secret.as_deref().filter(|_| profile.has_account()).map(|p| (profile.user.username.as_str(), p));
     let found = account::find_account(&accounts, saved).map_err(|e| format!("Couldn't look for your account: {e}."))?;
-    let (username, password, how) = match (found, &plan.new_name) {
-        (Some(found), _) => found,
-        (None, Some(name)) => {
-            say(log, format!("Creating your account {}…", account::account_name(name)));
-            let (u, p) = account::create_account(&accounts, name).map_err(|e| match e {
-                account::AccountError::Taken => format!("Someone already has the name {}. Choose another.", account::account_name(name)),
-                e => format!("Couldn't create your account: {e}."),
-            })?;
-            (u, p, account::Outcome::Created)
-        }
-        (None, None) => {
-            // The name the player goes by elsewhere, or on this PC.
-            let suggested = Config::load(dir)
-                .profiles
-                .iter()
-                .map(|p| p.user.username.clone())
-                .find(|u| !u.is_empty())
-                .unwrap_or_else(windows_user);
-            say(log, format!("You don't have an account on {} yet.", plan.server));
-            return Ok(Done::NeedsName {
-                server: plan.server.clone(),
-                suggested,
-            });
+    let (username, password, how) = match found {
+        Some(found) => found,
+        None => {
+            let usual = usual_name(dir);
+            match (&plan.new_name, &usual) {
+                (Some(name), _) => say(log, format!("Creating your account {}…", account::account_name(name))),
+                (None, Some(name)) if plan.automatic => say(
+                    log,
+                    format!(
+                        "Creating your account {}: your name is held for you on every community server…",
+                        account::account_name(name)
+                    ),
+                ),
+                _ => {}
+            }
+            match account::new_account(&accounts, plan.new_name.as_deref(), usual.as_deref(), plan.automatic) {
+                Ok(account::NewAccount::Created { username, password }) => (username, password, account::Outcome::Created),
+                Ok(account::NewAccount::NeedsName { suggested, taken }) => {
+                    say(
+                        log,
+                        if taken {
+                            format!("Someone on {} already has the name {suggested}.", plan.server)
+                        } else {
+                            format!("You don't have an account on {} yet.", plan.server)
+                        },
+                    );
+                    return Ok(Done::NeedsName {
+                        server: plan.server.clone(),
+                        suggested: if suggested.is_empty() { windows_user() } else { suggested },
+                        taken,
+                    });
+                }
+                Err(e) => return Err(format!("Couldn't create your account: {e}.")),
+            }
         }
     };
     say(
@@ -670,6 +686,124 @@ pub fn install_client(game_dir: &Path, bundled: Option<&[u8]>) -> Result<String,
     Ok("5th Echelon is installed.".into())
 }
 
+/// The name the player goes by on the servers set up on this PC, if any (see [`most_used`]).
+pub fn usual_name(game_dir: &Path) -> Option<String> {
+    most_used(Config::load(game_dir).profiles.iter().map(|p| p.user.username.as_str()))
+}
+
+/// The name on the most servers; on a tie the shortest, so a server's stand-in ("Kiwi2", made
+/// where "Kiwi" was taken) never wins over the name itself.
+fn most_used<'a>(names: impl Iterator<Item = &'a str>) -> Option<String> {
+    let mut counts: Vec<(&str, usize)> = Vec::new();
+    for name in names.map(str::trim).filter(|n| !n.is_empty()) {
+        match counts.iter_mut().find(|(n, _)| *n == name) {
+            Some((_, count)) => *count += 1,
+            None => counts.push((name, 1)),
+        }
+    }
+    counts
+        .into_iter()
+        .min_by_key(|(name, count)| (std::cmp::Reverse(*count), name.len()))
+        .map(|(name, _)| name.to_string())
+}
+
+/// What the account dialog needs to know about a server before making an account there.
+#[derive(Debug, Clone)]
+pub struct Probe {
+    /// Its API, for checking names.
+    pub api: String,
+    /// The 5th Echelon release it runs.
+    pub version: String,
+    /// The time to open its API port.
+    pub ping: Option<u32>,
+    /// It answers name checks (`NameAvailable`).
+    pub name_check: bool,
+}
+
+/// Looks at `server` for the account dialog: its API (over HTTPS when it has it), its
+/// release, and how far it is.
+pub fn probe(game_dir: &Path, server: &str) -> Result<Probe, String> {
+    if !net::valid_host(server) {
+        return Err(format!("\"{server}\" isn't a server address."));
+    }
+    let mut profile = Config::load(game_dir).profiles.iter().find(|p| p.server == server).cloned().unwrap_or_else(|| Profile {
+        name: server.to_string(),
+        server: server.to_string(),
+        ..Default::default()
+    });
+    let (info, _) = server_info(server, profile.https)?;
+    let info = info.ok_or_else(|| format!("{server} doesn't answer as a 5th Echelon server."))?;
+    if let Some(ports) = info.ports {
+        profile.use_ports(&ports);
+    }
+    let ip = net::resolve(server).ok_or_else(|| format!("\"{server}\" isn't an address this PC can find."))?;
+    let started = Instant::now();
+    let ping = net::port_open(ip, profile.api_port(), Duration::from_secs(3)).then(|| u32::try_from(started.elapsed().as_millis()).unwrap_or(u32::MAX));
+    Ok(Probe {
+        api: profile.api_server_url().to_string(),
+        version: info.version.clone(),
+        ping,
+        name_check: info.features.iter().any(|f| f == "name-check"),
+    })
+}
+
+/// What a server says of a name for a new account.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NameCheck {
+    Free,
+    Taken(String),
+    NotAllowed(String),
+}
+
+/// Asks the server at `api` whether `name` is free.
+pub fn check_name(api: &str, name: &str) -> Result<NameCheck, String> {
+    use server_api::users::name_available_response::Answer;
+    let (answer, reason) = crate::services::rt()
+        .block_on(async { tokio::time::timeout(Duration::from_secs(5), crate::network::name_available(api.to_string(), name)).await })
+        .map_err(|_| "the server didn't answer in time".to_string())?
+        .map_err(|e| e.to_string())?;
+    Ok(match answer {
+        Answer::Free => NameCheck::Free,
+        Answer::Taken => NameCheck::Taken(reason),
+        Answer::NotAllowed => NameCheck::NotAllowed(reason),
+        Answer::Unknown => return Err("the server didn't say".into()),
+    })
+}
+
+/// Up to three names to offer when `name` is taken on the server at `api`: with the
+/// player's country, then numbered, each checked free there.
+pub fn free_suggestions(api: &str, name: &str) -> Vec<String> {
+    account::name_suggestions(name, country().as_deref())
+        .into_iter()
+        .filter(|n| check_name(api, n) == Ok(NameCheck::Free))
+        .take(3)
+        .collect()
+}
+
+/// The player's country, from their PC's region ("NZ" from en-NZ), if it says.
+pub fn country() -> Option<String> {
+    #[cfg(target_os = "windows")]
+    let locale = {
+        let mut buffer = [0u16; 85];
+        // SAFETY: the buffer is LOCALE_NAME_MAX_LENGTH long, as the call wants.
+        let n = unsafe { windows::Win32::Globalization::GetUserDefaultLocaleName(&mut buffer) };
+        (n > 1).then(|| String::from_utf16_lossy(&buffer[..n as usize - 1]))
+    };
+    #[cfg(not(target_os = "windows"))]
+    let locale = ["LC_ALL", "LC_CTYPE", "LANG"].iter().find_map(|v| std::env::var(v).ok().filter(|l| !l.is_empty()));
+    country_of(&locale?)
+}
+
+/// The country in a locale name: "en-NZ", "en_NZ.UTF-8", "mi-Latn-NZ".
+fn country_of(locale: &str) -> Option<String> {
+    let locale = locale.split(['.', '@']).next()?;
+    locale
+        .split(['-', '_'])
+        .skip(1)
+        .find(|part| part.len() == 2 && part.bytes().all(|b| b.is_ascii_alphabetic()))
+        .map(str::to_ascii_uppercase)
+}
+
 /// The player's user name, as a default account name.
 pub fn windows_user() -> String {
     std::env::var("USERNAME").or_else(|_| std::env::var("USER")).unwrap_or_default()
@@ -715,6 +849,24 @@ fn explorer_path(dir: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::explorer_path;
+
+    #[test]
+    fn the_usual_name_is_the_most_used() {
+        use super::most_used;
+        assert_eq!(most_used(["Kiwi2", "Kiwi"].into_iter()).as_deref(), Some("Kiwi"));
+        assert_eq!(most_used(["Kiwi2", "Kiwi2", "Kiwi", ""].into_iter()).as_deref(), Some("Kiwi2"));
+        assert_eq!(most_used(["", " "].into_iter()), None);
+    }
+
+    #[test]
+    fn countries_from_locales() {
+        use super::country_of;
+        assert_eq!(country_of("en-NZ").as_deref(), Some("NZ"));
+        assert_eq!(country_of("en_NZ.UTF-8").as_deref(), Some("NZ"));
+        assert_eq!(country_of("mi-Latn-NZ").as_deref(), Some("NZ"));
+        assert_eq!(country_of("C.UTF-8"), None);
+        assert_eq!(country_of("de"), None);
+    }
 
     #[test]
     fn explorer_gets_backslashes() {

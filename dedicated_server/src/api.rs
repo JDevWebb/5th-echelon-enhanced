@@ -927,6 +927,32 @@ impl Users for MyUsers {
         }))
     }
 
+    /// Whether a name is free for a new account, without making one: checked as
+    /// [`Self::register`] would, here and across the servers sharing friends.
+    async fn name_available(&self, request: Request<users::NameRequest>) -> Result<Response<users::NameAvailableResponse>, Status> {
+        use users::name_available_response::Answer;
+        if !crate::rate_limit::name_checks().check(client_addr(&request)) {
+            return Err(Status::resource_exhausted("Too many name checks from this address; try again later"));
+        }
+        let name = request.into_inner().name.trim().to_string();
+        let answer = |answer: Answer, reason: &str| {
+            Ok(Response::new(users::NameAvailableResponse {
+                answer: answer.into(),
+                reason: reason.to_string(),
+            }))
+        };
+        if let Err(why) = check_username(&name) {
+            return answer(Answer::NotAllowed, &format!("{}{}", why[..1].to_uppercase(), &why[1..]));
+        }
+        if self.storage.find_person_by_name(&name).await.map_err(internal)?.is_some() {
+            return answer(Answer::Taken, "Someone here already has that name");
+        }
+        if federation::name_holder(&name).await == federation::NameCheck::Taken {
+            return answer(Answer::Taken, NAME_HELD_ELSEWHERE);
+        }
+        answer(Answer::Free, "")
+    }
+
     /// Signs in with the identity key the account is linked to (see `identity`).
     /// Without a username: to whichever account here is linked to the identity
     /// (the launcher finding a player's account), or `NotFound` when none is.

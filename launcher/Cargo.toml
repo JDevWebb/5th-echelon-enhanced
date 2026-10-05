@@ -65,6 +65,7 @@ rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "a
 version = "0.54.0" # hudhook
 features = [
     "Win32_Foundation",
+    "Win32_Globalization",
     "Win32_Networking_WinSock",
     "Win32_NetworkManagement_IpHelper",
     "Win32_NetworkManagement_Ndis",

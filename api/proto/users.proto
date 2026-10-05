@@ -9,6 +9,10 @@ service Users {
   // Signs in with the identity key an account is linked to, instead of its password: for a
   // new PC, or an account whose password is lost. Optionally sets a new password.
   rpc KeyLogin(KeyLoginRequest) returns (LoginResponse);
+  // Whether a name is free for a new account here (and across the servers sharing friends),
+  // without making anything: the launcher checks names as they're typed. Rate limited per
+  // address, as sign-ins are.
+  rpc NameAvailable(NameRequest) returns (NameAvailableResponse);
 }
 
 service UsersAdmin {
@@ -110,4 +114,21 @@ message KeyLoginRequest {
 message RegisterResponse {
   string error = 1;
   User user = 2;
+}
+
+message NameRequest { string name = 1; }
+
+message NameAvailableResponse {
+  enum Answer {
+    UNKNOWN = 0;
+    // Nobody has it here, nor across the servers sharing friends.
+    FREE = 1;
+    // An account here, or another player across the servers sharing friends, has it.
+    TAKEN = 2;
+    // It can't be a name: its length, its characters, or a reserved name.
+    NOT_ALLOWED = 3;
+  }
+  Answer answer = 1;
+  // Why, for TAKEN and NOT_ALLOWED, as a player reads it.
+  string reason = 2;
 }

@@ -301,6 +301,15 @@ pub async fn send_report(
     Ok(client.report(report).await?.into_inner().id)
 }
 
+/// Whether `name` is free for a new account on the server (`NameAvailable`): its answer, and why.
+pub async fn name_available(api_url: String, name: &str) -> Result<(server_api::users::name_available_response::Answer, String), Error> {
+    let Ok(mut client) = super::endpoint(&api_url)?.connect().await.map(UsersClient::new) else {
+        return Err(Error::ConnectionFailed);
+    };
+    let answer = client.name_available(server_api::users::NameRequest { name: name.to_string() }).await?.into_inner();
+    Ok((answer.answer(), answer.reason))
+}
+
 /// The bytes a report takes on the wire: the message and gRPC's 5-byte frame header.
 pub fn report_size(report: &server_api::misc::ReportRequest) -> u64 {
     use prost::Message as _;
