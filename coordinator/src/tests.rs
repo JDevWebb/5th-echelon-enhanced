@@ -2755,7 +2755,6 @@ async fn maintenance_is_told_to_launchers_and_servers_and_holds_updates() {
         assert_eq!(status, StatusCode::OK, "{v}");
     }
     let now = identity::now();
-    let book = |body: Value| body;
     assert_eq!(admin_call(&r, "GET", "/api/maintenance", "", None).await.0, StatusCode::UNAUTHORIZED);
     let cookie = admin_cookie(&t, "admin1", 3600).await;
     // Checked: a target, a member, not in the past.
@@ -2773,9 +2772,7 @@ async fn maintenance_is_told_to_launchers_and_servers_and_holds_updates() {
         "POST",
         "/api/maintenance",
         &cookie,
-        Some(book(
-            json!({ "servers": ["server-a", "server-a"], "start": now + 3600, "end": now + 7200, "note": "Moving to a faster machine" }),
-        )),
+        Some(json!({ "servers": ["server-a", "server-a"], "start": now + 3600, "end": now + 7200, "note": "Moving to a faster machine" })),
     )
     .await;
     assert_eq!(status, StatusCode::OK, "{v}");
