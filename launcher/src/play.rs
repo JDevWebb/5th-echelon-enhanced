@@ -1037,23 +1037,28 @@ fn readiness(play: &Play) -> (egui::Color32, String) {
 }
 
 /// The bar under the banner: the server you're on, how ready you are, and Play.
-/// The server card's note on a server the community network doesn't vouch for: one on
-/// another group's network, or on none (`listed`: in the directory in use; `loaded`: the
-/// directory is known, so a server missing from it really isn't there).
-fn standing(listed: bool, loaded: bool) -> Option<(&'static str, &'static str)> {
-    let community = crate::app::Prefs::directory().is_some_and(|d| crate::app::Prefs::is_community(&d));
-    if listed && !community {
-        Some((
-            "Other network",
-            "On another group's network, run by its admins. The community network doesn't vouch for its servers, and no launcher can check what a server runs.",
-        ))
-    } else if !listed && loaded {
-        Some((
-            "Independent",
-            "Not on a network: run by whoever hosts it. The community network doesn't vouch for it, and no launcher can check what a server runs. Play on servers whose hosts you trust.",
-        ))
-    } else {
-        None
+/// Who runs the server, for the server card's caption, when it isn't the community
+/// network: "Self-hosted" for a server on no network, or the other network's name, with
+/// a line saying so (`listed`: in the directory in use; `loaded`: the directory is known,
+/// so a server missing from it really isn't there, and the label doesn't flash).
+fn run_by(listed: bool, loaded: bool) -> Option<(String, String)> {
+    let network = crate::app::Prefs::directory();
+    // With no network there's no list to wait for.
+    let loaded = loaded || network.is_none();
+    if network.as_deref().is_some_and(crate::app::Prefs::is_community) && listed {
+        return None;
+    }
+    match network {
+        Some(url) if listed => {
+            let host = url_host(&url).to_string();
+            let why = format!("On {host}'s network, run by its admins, not by the community network.");
+            Some((hooks_config::text::clip(&host, 22), why))
+        }
+        _ if !listed && loaded => Some((
+            "Self-hosted".to_string(),
+            "Run by whoever hosts it, not by the community network. Fine for your own or a friend's server.".to_string(),
+        )),
+        _ => None,
     }
 }
 
@@ -1063,6 +1068,8 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: O
     let playing = play.game_seen || play.running.is_some();
     let menu_id = egui::Id::new("server-menu");
     let menu_open = egui::Popup::is_id_open(ui.ctx(), menu_id);
+    let run_by = run_by(listing.is_some(), play.directory.is_some());
+    let mut caption_rect = None;
     egui::Frame::new().fill(theme::SUNKEN).inner_margin(egui::Margin::symmetric(32, 16)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.horizontal(|ui| {
@@ -1084,7 +1091,12 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: O
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
                                 ui.spacing_mut().item_spacing.y = 2.0;
-                                ui.label(theme::caps("Server"));
+                                // Who runs it, when it isn't the community network: hovered, says so.
+                                let caption = match &run_by {
+                                    Some((who, _)) => format!("Server · {who}"),
+                                    None => "Server".to_string(),
+                                };
+                                caption_rect = Some(ui.label(theme::caps(&caption)).rect);
                                 // Its region is enough here ("Sydney, Australia").
                                 let name = listing.as_ref().map(|(s, _)| place(s)).unwrap_or_else(|| profile.server.clone());
                                 ui.label(RichText::new(hooks_config::text::clip(&name, 24)).family(theme::strong()));
@@ -1096,11 +1108,6 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: O
                                     if let Some((s, ping)) = &listing {
                                         ui.label(ping_text(*ping));
                                         ui.label(theme::muted(format!("{} online", s.players_online)).small());
-                                    }
-                                    // Who vouches for it: nobody can check what another machine runs,
-                                    // so a server off the community network says so.
-                                    if let Some((label, why)) = standing(listing.is_some(), play.directory.is_some()) {
-                                        ui.label(theme::muted(label).small()).on_hover_text(why);
                                     }
                                 });
                             });
@@ -1124,7 +1131,15 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: O
             );
             let chip = match blocked {
                 Some(why) => chip.on_hover_text(why),
-                None => chip.on_hover_cursor(egui::CursorIcon::PointingHand),
+                None => {
+                    let chip = chip.on_hover_cursor(egui::CursorIcon::PointingHand);
+                    // The caption's line, over the caption only (the card itself opens the menu).
+                    let over_caption = caption_rect.is_some_and(|r| chip.hover_pos().is_some_and(|p| r.contains(p)));
+                    match &run_by {
+                        Some((_, why)) if over_caption => chip.on_hover_text(why.as_str()),
+                        _ => chip,
+                    }
+                }
             };
             let popup = egui::Popup::from_toggle_button_response(&chip)
                 .id(menu_id)
