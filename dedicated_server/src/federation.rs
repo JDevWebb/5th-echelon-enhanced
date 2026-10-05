@@ -27,6 +27,8 @@ use std::time::Instant;
 
 use serde::Deserialize;
 use serde::Serialize;
+use serde_json::json;
+use serde_json::Value;
 use slog::Logger;
 
 use crate::config::FederationConfig;
@@ -270,6 +272,37 @@ static COORDINATOR_SEEN: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomi
 fn coordinator_seen_now() {
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
     COORDINATOR_SEEN.store(now, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The maintenance windows the coordinator last told this server of (its own, and the
+/// network's), for `/api/info`: the game's overlay warns players before one starts.
+static MAINTENANCE: Mutex<Vec<Value>> = Mutex::new(Vec::new());
+
+/// Keeps a heartbeat answer's maintenance windows (none when it has none: cancelled, or an
+/// older coordinator), checked.
+fn note_maintenance(answer: &Value) {
+    let windows: Vec<Value> = answer["maintenance"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .take(4)
+        .filter_map(|w| {
+            let (start, end) = (w["start"].as_i64()?, w["end"].as_i64()?);
+            (end > start).then(|| {
+                json!({
+                    "start": start, "end": end, "note": printable(w["note"].as_str().unwrap_or_default(), 100),
+                    "network": w["network"].as_bool().unwrap_or(false),
+                })
+            })
+        })
+        .collect();
+    *MAINTENANCE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = windows;
+}
+
+/// The maintenance windows not over yet at `now`, for `/api/info`.
+pub fn maintenance(now: i64) -> Vec<Value> {
+    let windows = MAINTENANCE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    windows.iter().filter(|w| w["end"].as_i64().is_some_and(|end| end > now)).cloned().collect()
 }
 
 /// How long ago a heartbeat last reached the coordinator, in seconds, for `/api/info`:
@@ -633,6 +666,7 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                         heartbeats.worked(&logger, "the heartbeat");
                         last_heartbeat = Some(Instant::now());
                         coordinator_seen_now();
+                        note_maintenance(&answer);
                         // The release the coordinator is rolling out to this server.
                         if let Some(version) = answer["update"]["version"].as_str() {
                             crate::self_update::request(&logger, version, cfg.auto_update);
@@ -1187,6 +1221,27 @@ async fn pull(logger: &Logger, storage: &Storage, client: &Coordinator<'_>, user
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn maintenance_windows_from_the_heartbeat_are_checked_and_expire() {
+        use super::maintenance;
+        use super::note_maintenance;
+        super::note_maintenance(&serde_json::json!({ "maintenance": [
+            { "start": 100, "end": 200, "note": "Moving\u{202e}", "network": false },
+            { "start": 300, "end": 250, "note": "ends before it starts" },
+            { "start": 400, "end": 500 },
+        ] }));
+        assert_eq!(
+            maintenance(0),
+            [
+                serde_json::json!({ "start": 100, "end": 200, "note": "Moving", "network": false }),
+                serde_json::json!({ "start": 400, "end": 500, "note": "", "network": false }),
+            ]
+        );
+        assert_eq!(maintenance(200).len(), 1, "over at its end");
+        // An answer without any (cancelled, or an older coordinator) clears them.
+        note_maintenance(&serde_json::json!({}));
+        assert!(maintenance(0).is_empty());
+    }
 
     #[test]
     fn info_says_how_long_ago_the_coordinator_was_reached() {

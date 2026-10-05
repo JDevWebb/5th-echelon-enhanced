@@ -186,6 +186,12 @@ fn info(cfg: CommunityApiConfig) -> Value {
             if let Some(ago) = crate::federation::coordinator_seen_ago() {
                 info["coordinator_seen"] = json!(ago);
             }
+            // Maintenance booked for this server or the network: the game's overlay warns.
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            let windows = crate::federation::maintenance(i64::try_from(now).unwrap_or(i64::MAX));
+            if !windows.is_empty() {
+                info["maintenance"] = json!(windows);
+            }
         }
     }
     if let Some((ports, host)) = PUBLIC.get() {
