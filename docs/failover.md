@@ -23,6 +23,8 @@ Every server of the group needs 0.4.2 or newer (the standby is part of the coord
 
 The examples use `play.example.net` for the coordinator, `metrics.example.net` for the admin UI, and three servers `eu1`, `na1` and `oceania` (in the order they take over).
 
+**The coordinator's name and the admin UI's must be one level below your domain** (`play.example.net`, not `play.scbl.example.net`). Both are proxied, and Cloudflare's free edge certificate covers only `example.net` and `*.example.net`: a name two levels deep fails with a TLS error before Cloudflare answers, and every launcher and server loses the coordinator. A deeper name needs Cloudflare's Advanced Certificate Manager (paid). If your coordinator already has a deeper name, set up the group under a new one-level name and move servers and players to it, rather than proxying the old one.
+
 **1. Backups on every server of the group.** The standbys restore the coordinator from its live backup, so it must be running on the coordinator's machine, and each standby needs the keys to read it. Set up [backups.md](backups.md) on each server, with the same R2 bucket. Leave `BACKUP_NAME` out: each server's backups are then kept under its name in the group, which is where the others look.
 
 **2. In Cloudflare:**
@@ -30,7 +32,7 @@ The examples use `play.example.net` for the coordinator, `metrics.example.net` f
 - **SSL/TLS mode: Full (strict).**
 - **The coordinator's record proxied** (orange cloud), one A record, no AAAA. Do this before step 4: with the Origin certificate, Caddy refuses everything that doesn't come through Cloudflare, and the installer stops if the name doesn't answer through Cloudflare. The coordinator's current certificate (Let's Encrypt) works with Full (strict) until then.
 - **An API token** (My Profile › API Tokens › Create Token › *Edit zone DNS*), for the zone only. Under *Client IP Address Filtering*, allow only the group's servers' addresses: the token can change any record in the zone. Note the **zone ID** too (the zone's Overview page).
-- **Security:** keep **Bot Fight Mode** off, and no *I'm Under Attack* mode or WAF rule that challenges the coordinator's name. Servers and launchers can't answer a challenge, and their requests would fail. Rate limiting is the coordinator's own.
+- **Security:** keep **Bot Fight Mode** off, and no *I'm Under Attack* mode, WAF rule or security level that challenges or blocks the coordinator's name. Servers and launchers can't answer a challenge, and their requests would fail. Servers run in data centres, which Cloudflare's bot and security settings often block outright ("Sorry, you have been blocked"): from each server, `curl -sI https://play.example.net/v1/info` should answer 200. Rate limiting is the coordinator's own.
 
 **3. `/etc/5th-echelon/standby.env` on each server**, root's only (`sudo install -m 600 /dev/null /etc/5th-echelon/standby.env`, then edit it):
 
