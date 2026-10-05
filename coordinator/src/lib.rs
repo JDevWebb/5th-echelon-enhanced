@@ -46,6 +46,7 @@ pub mod metrics;
 pub mod players;
 pub mod reports;
 pub mod sessions;
+pub mod standby;
 pub mod stats;
 pub mod updates;
 

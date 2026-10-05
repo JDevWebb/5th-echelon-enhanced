@@ -37,6 +37,24 @@ enum Command {
     PurgeNames(PurgeNames),
     NewToken(NewToken),
     Admin(Admin),
+    Standby(Standby),
+}
+
+#[derive(argh::FromArgs)]
+#[argh(subcommand, name = "standby")]
+/// a standby coordinator for a failover group (as root; docs/failover.md):
+/// runs the coordinator here when its record points here, and takes over
+/// when the coordinator is down
+struct Standby {
+    /// the group's settings (written by install-server.sh)
+    #[argh(option, default = "PathBuf::from(\"/etc/5th-echelon/standby.conf\")")]
+    config: PathBuf,
+    /// say what this standby sees, and stop
+    #[argh(switch)]
+    status: bool,
+    /// move the coordinator here now (from the server it runs on), and stop
+    #[argh(switch)]
+    take_over: bool,
 }
 
 #[derive(argh::FromArgs)]
@@ -238,6 +256,9 @@ async fn main() -> eyre::Result<()> {
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
     let args: Args = argh::from_env();
+    if let Some(Command::Standby(s)) = &args.command {
+        return coordinator::standby::main(&s.config, s.status, s.take_over).await;
+    }
     std::fs::create_dir_all(&args.data)?;
     let db = args.data.join("coordinator.db");
     match args.command {
@@ -304,7 +325,7 @@ async fn main() -> eyre::Result<()> {
             println!("Removed {n} unused links of {}, and the names only they held.", p.id);
             return Ok(());
         }
-        None => {}
+        Some(Command::Standby(_)) | None => {}
     }
     let token = join_token(&args.data)?;
     let coordinator = Arc::new(coordinator::Coordinator::open(&db.to_string_lossy(), token).await?);

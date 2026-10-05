@@ -183,6 +183,9 @@ fn info(cfg: CommunityApiConfig) -> Value {
         info["friends_mode"] = json!(mode);
         if let Some(coordinator) = coordinator {
             info["coordinator"] = json!(coordinator);
+            if let Some(ago) = crate::federation::coordinator_seen_ago() {
+                info["coordinator_seen"] = json!(ago);
+            }
         }
     }
     if let Some((ports, host)) = PUBLIC.get() {

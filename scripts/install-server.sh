@@ -78,6 +78,19 @@
 #                         certificate and its key (SSL/TLS > Origin Server)
 #                         instead of Let's Encrypt, which can't validate a
 #                         proxied name reliably. Kept for later runs
+#   --coordinator-cert FILE, --coordinator-key FILE
+#                         with --coordinator-domain: a Cloudflare Origin CA
+#                         certificate and its key for it. The coordinator is
+#                         then reached only through Cloudflare (its record
+#                         proxied, orange cloud). Kept for later runs
+#   --standby NAME=HOST,NAME=HOST,...
+#                         a failover group (docs/failover.md): each server
+#                         listed runs a standby coordinator, and they take
+#                         over in this order if the coordinator goes down.
+#                         NAME is a server's backup name, HOST its --domain.
+#                         Needs --coordinator-domain (the same on each) with
+#                         --coordinator-cert, backups, and
+#                         /etc/5th-echelon/standby.env. Kept for later runs
 #   --add-admin NAME      print a one-time setup link for a new admin of the
 #                         admin UI
 #   --reset-admin NAME    for an admin who lost their second factor: a new
@@ -156,6 +169,16 @@ UPDATE_DIR="/var/lib/5th-echelon-update"
 RELEASE_KEY_PEM="-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEANX9q9hOdzlNhVlSPEtmjJbbdJyOktGgQkPw4ep2KCLI=
 -----END PUBLIC KEY-----"
+# A failover group (see install_standby and docs/failover.md): its servers, as given; the
+# standby's settings; and Cloudflare's API token and zone, root's only (the operator writes it).
+STANDBY_LIST="$ETC_DIR/standby"
+STANDBY_CONF="$ETC_DIR/standby.conf"
+STANDBY_ENV="$ETC_DIR/standby.env"
+STANDBY_SERVICE="5th-echelon-standby"
+STANDBY_UNIT="/etc/systemd/system/$STANDBY_SERVICE.service"
+# The coordinator's Cloudflare Origin CA certificate, when its record is proxied.
+COORD_CERT="/etc/caddy/5th-echelon-coordinator.crt"
+COORD_KEY="/etc/caddy/5th-echelon-coordinator.key"
 # Backups (see install_backups and docs/backups.md): on when this file exists. Root's only.
 BACKUP_ENV="$ETC_DIR/backup.env"
 BACKUP_SCRIPT="$PROGRAM_DIR/backup.sh"
@@ -179,6 +202,7 @@ firewall=1 yes=0 force=0 uninstall=0 purge=0 use_systemd=1
 friends="" server_name="" region="" coordinator="" join_token="" coord_domain="" coord_binary=""
 https_api=1 allow_unsigned=0 coord_only=0 admin="" registration="" listed="" command=""
 metrics_cert="" metrics_key="" metrics_domain="" origin_pull=0 admin_name="" auto_update="" release_version=""
+coord_cert="" coord_key="" standby="" standby_me=""
 aliases=()
 # Only HTTPS, and TLS 1.2 or newer, for every download, and none larger
 # than a release's binaries could be (SMALL: for listings, checksums and
@@ -233,6 +257,9 @@ while [ $# -gt 0 ]; do
     --cloudflare-origin-pull) origin_pull=1 ;;
     --metrics-cert) metrics_cert="${2:?}"; shift ;;
     --metrics-key) metrics_key="${2:?}"; shift ;;
+    --coordinator-cert) coord_cert="${2:?}"; shift ;;
+    --coordinator-key) coord_key="${2:?}"; shift ;;
+    --standby) standby="${2:?}"; shift ;;
     --add-admin) command=add-admin; admin_name="${2:?}"; shift ;;
     --reset-admin) command=reset-admin; admin_name="${2:?}"; shift ;;
     --admin-open-access) command=admin-open-access ;;
@@ -302,7 +329,7 @@ fi
 
 if [ "$command" = status ]; then
   printf '%-30s %s\n' "Service" "State"
-  for s in "$SERVICE" "$COORD_SERVICE" caddy; do
+  for s in "$SERVICE" "$COORD_SERVICE" "$STANDBY_SERVICE" caddy; do
     if systemctl cat "$s" >/dev/null 2>&1; then printf '%-30s %s\n' "$s" "$(systemctl is-active "$s" 2>/dev/null || true)"; fi
   done
   if [ -f "$CONFIG" ]; then
@@ -341,6 +368,11 @@ if [ "$command" = status ]; then
     echo "Coordinator:   https://$(cat "$ETC_DIR/coordinator-domain") ${cinfo:+($cinfo)}"
     listed_now="$(curl -fsS --max-time 3 "http://$COORD_ADDR:8700/v1/servers" 2>/dev/null | grep -o '"id":' | wc -l || true)"
     echo "Directory:     ${listed_now:-0} server(s) seen in the last 2 minutes"
+  fi
+  if [ -s "$STANDBY_CONF" ]; then
+    echo
+    echo "Failover:      a standby in $(head -c 2048 "$STANDBY_LIST" 2>/dev/null | printable) (docs/failover.md)"
+    if [ -f "$STANDBY_ENV" ]; then "$PROGRAM_DIR/coordinator" standby --config "$STANDBY_CONF" --status 2>&1 | tr -d '\000-\011\013-\037\177' | sed 's/^/               /' || true; fi
   fi
   exit 0
 fi
@@ -392,6 +424,26 @@ if [ -n "$metrics_cert" ] || [ -n "$metrics_key" ]; then
   [ -n "$metrics_cert" ] && [ -n "$metrics_key" ] || die "--metrics-cert and --metrics-key go together"
 fi
 [ -z "$metrics_cert" ] || [ -n "$metrics_domain" ] || die "--metrics-cert goes with --metrics-domain"
+if [ -n "$coord_cert" ] || [ -n "$coord_key" ]; then
+  [ -n "$coord_cert" ] && [ -n "$coord_key" ] || die "--coordinator-cert and --coordinator-key go together"
+  [ -n "$coord_domain" ] || die "--coordinator-cert goes with --coordinator-domain"
+fi
+# A failover group stays once joined (docs/failover.md says how to leave one).
+if [ -z "$standby" ] && [ -s "$STANDBY_LIST" ]; then standby="$(head -c 2048 "$STANDBY_LIST" | tr -d '[:space:]')"; fi
+if [ -n "$standby" ]; then
+  standby="${standby,,}"
+  [ -n "$coord_domain" ] || die "--standby needs --coordinator-domain: the coordinator's name, the same on every server of the group"
+  [ "$coord_only" -eq 0 ] || die "--standby is for game servers (each one asks the others whether they reach the coordinator)"
+  [ -n "$coord_cert" ] || [ -f "$COORD_CERT" ] || die "--standby needs --coordinator-cert and --coordinator-key: the coordinator's record is proxied through Cloudflare, so it moves for everyone at once (docs/failover.md)"
+  standby_names=" "
+  IFS=, read -r -a standby_entries <<< "$standby"
+  [ "${#standby_entries[@]}" -ge 2 ] || die "--standby lists two servers or more: NAME=HOST,NAME=HOST"
+  for entry in "${standby_entries[@]}"; do
+    [[ "$entry" =~ ^[a-z0-9-]{1,64}=.+$ ]] && [[ "${entry#*=}" =~ $DOMAIN_RE ]] || die "--standby: \"$entry\" isn't NAME=HOST (a backup name of letters, digits and -, then the server's domain)"
+    [[ "$standby_names" != *" ${entry%%=*} "* ]] || die "--standby: ${entry%%=*} is in the list twice"
+    standby_names="$standby_names${entry%%=*} "
+  done
+fi
 if [ "$coord_only" -eq 1 ]; then
   [ -n "$coord_domain" ] || die "--coordinator-only needs --coordinator-domain"
   [ -z "$domain" ] && [ "$no_caddy" -eq 0 ] && [ -z "$coordinator" ] || die "--coordinator-only runs no game server: leave out --domain, --no-caddy and --coordinator"
@@ -533,6 +585,8 @@ if [ "$uninstall" -eq 1 ]; then
       rm -f "/etc/systemd/system/$u" "/etc/systemd/system/${u%.timer}.service"
     done
     rm -f "$BACKUP_SCRIPT" "$ETC_DIR"/litestream-*.yml
+    systemctl disable --now "$STANDBY_SERVICE" 2>/dev/null || true
+    rm -f "$STANDBY_UNIT" "$STANDBY_CONF" "$STANDBY_LIST"
     rm -f "$UNIT" "$COORD_UNIT" "$UPDATE_PATH_UNIT" "$UPDATE_SERVICE_UNIT" "$CADDY_DROPIN"
     systemctl daemon-reload
   fi
@@ -699,7 +753,28 @@ if [ "$coord_only" -eq 0 ] && [ "$no_caddy" -eq 0 ] && [ -z "$coordinator" ] && 
     [ -z "$region" ] || [[ "$region" =~ $NAME_RE ]] || die "the region is up to 64 letters, digits, spaces and . _ ( ) , ' -"
   fi
 fi
-if [ -n "$coord_domain" ] && [ "${coord_dns_checked:-0}" -eq 0 ]; then check_dns "$coord_domain"; fi
+# A coordinator behind Cloudflare (an Origin certificate): its record must be proxied before
+# Caddy refuses everyone but Cloudflare, or nobody reaches it.
+check_proxied() {
+  local name="$1"
+  if curl -sS -o /dev/null -D - --max-time 10 "https://$name/v1/info" 2>/dev/null | grep -qi '^cf-ray:'; then
+    say "$name is proxied through Cloudflare"
+  elif [ "$force" -eq 1 ]; then
+    warn "$name doesn't answer through Cloudflare; going on (--force)"
+  else
+    die "$name doesn't answer through Cloudflare. Make its record proxied (orange cloud) first, with SSL/TLS set to Full (strict): with --coordinator-cert, Caddy refuses everything that doesn't come through Cloudflare (docs/failover.md). --force goes on anyway"
+  fi
+}
+if [ -n "$coord_domain" ] && [ "${coord_dns_checked:-0}" -eq 0 ]; then
+  if [ -n "$coord_cert" ] || [ -f "$COORD_CERT" ]; then check_proxied "$coord_domain"; else check_dns "$coord_domain"; fi
+fi
+# This server in its failover group: the one listed by its domain.
+if [ -n "$standby" ]; then
+  for entry in "${standby_entries[@]}"; do
+    if [ "${entry#*=}" = "$domain" ]; then standby_me="${entry%%=*}"; fi
+  done
+  [ -n "$standby_me" ] || die "--standby doesn't list this server ($domain): each server is NAME=its --domain"
+fi
 
 # --- The program --------------------------------------------------------
 
@@ -1086,17 +1161,39 @@ UMask=0077
 WantedBy=multi-user.target
 UNIT
     systemctl daemon-reload
-    systemctl enable "$COORD_SERVICE" >/dev/null 2>&1
-    systemctl restart "$COORD_SERVICE"
-    for _ in $(seq 40); do [ -s "$COORD_DIR/join-token.txt" ] && break; sleep 0.25; done
-    [ -s "$COORD_DIR/join-token.txt" ] || { journalctl -u "$COORD_SERVICE" -n 20 --no-pager >&2 || true; die "the coordinator didn't start (its log is above)"; }
+    if [ -n "$standby" ] && ! systemctl is-active --quiet "$COORD_SERVICE"; then
+      # A standby: its coordinator starts when the coordinator's record points here, and
+      # never on its own (an empty database would have none of the servers' secrets).
+      systemctl disable "$COORD_SERVICE" >/dev/null 2>&1 || true
+      say "The coordinator here is a standby: $STANDBY_SERVICE starts it if it takes over"
+    else
+      # A new, empty coordinator on a server that already shares friends through one would
+      # split the group (e.g. a standby that left its failover group).
+      if [ -z "$standby" ] && [ ! -f "$COORD_DIR/coordinator.db" ] && [ -s "$STATE_DIR/federation.key" ] && ! systemctl is-active --quiet "$COORD_SERVICE"; then
+        die "this server already shares friends through a coordinator, and none runs here: a new, empty one would split the group. In a failover group, give --standby (docs/failover.md); to only join, remove $ETC_DIR/coordinator-domain and run this again with --coordinator https://$coord_domain"
+      fi
+      # In a failover group, the standby starts it at boot (if the record points here).
+      if [ -n "$standby" ] && [ -f "$STANDBY_ENV" ]; then
+        systemctl disable "$COORD_SERVICE" >/dev/null 2>&1 || true
+      else
+        systemctl enable "$COORD_SERVICE" >/dev/null 2>&1
+      fi
+      systemctl restart "$COORD_SERVICE"
+      for _ in $(seq 40); do [ -s "$COORD_DIR/join-token.txt" ] && break; sleep 0.25; done
+      [ -s "$COORD_DIR/join-token.txt" ] || { journalctl -u "$COORD_SERVICE" -n 20 --no-pager >&2 || true; die "the coordinator didn't start (its log is above)"; }
+    fi
   else
     ( cd "$COORD_DIR" && runuser -u "$COORD_USER" -- "$PROGRAM_DIR/coordinator" --listen "$COORD_ADDR:8700" --data "$COORD_DIR" >/dev/null 2>&1 & sleep 1; kill $! 2>/dev/null || true )
   fi
   coordinator="https://$coord_domain"
   [ ! -L "$COORD_DIR/join-token.txt" ] || die "$COORD_DIR/join-token.txt isn't a plain file"
-  join_token="$(head -c 256 "$COORD_DIR/join-token.txt" | tr -d '[:space:]')"
-  [[ "$join_token" =~ ^[A-Z2-7]{16,128}$ ]] || die "the coordinator's join token isn't one"
+  if [ -s "$COORD_DIR/join-token.txt" ] || [ -z "$standby" ]; then
+    join_token="$(head -c 256 "$COORD_DIR/join-token.txt" | tr -d '[:space:]')"
+    [[ "$join_token" =~ ^[A-Z2-7]{16,128}$ ]] || die "the coordinator's join token isn't one"
+  else
+    # A standby that never ran the coordinator joins it like any server.
+    [ -n "$join_token" ] || [ -f "$STATE_DIR/federation.key" ] || die "this standby's server hasn't joined the coordinator yet: give --join-token (from $coordinator's machine: $0 --show-join-token)"
+  fi
 fi
 
 if [ "$coord_only" -eq 0 ]; then
@@ -1237,8 +1334,8 @@ install_updater() {
     echo '# Written by install-server.sh: installs the release a coordinator rolls out.'
     echo 'set -euo pipefail'
     echo 'umask 022'
-    printf 'REPO=%q\nPROGRAM_DIR=%q\nSTATE_DIR=%q\nCOORD_DIR=%q\nCOORD_ADDR=%q\nSERVICE=%q\nCOORD_SERVICE=%q\nCONFIG=%q\nETC_DIR=%q\nUPDATE_DIR=%q\n' \
-      "$REPO" "$PROGRAM_DIR" "$STATE_DIR" "$COORD_DIR" "$COORD_ADDR" "$SERVICE" "$COORD_SERVICE" "$CONFIG" "$ETC_DIR" "$UPDATE_DIR"
+    printf 'REPO=%q\nPROGRAM_DIR=%q\nSTATE_DIR=%q\nCOORD_DIR=%q\nCOORD_ADDR=%q\nSERVICE=%q\nCOORD_SERVICE=%q\nSTANDBY_SERVICE=%q\nCONFIG=%q\nETC_DIR=%q\nUPDATE_DIR=%q\n' \
+      "$REPO" "$PROGRAM_DIR" "$STATE_DIR" "$COORD_DIR" "$COORD_ADDR" "$SERVICE" "$COORD_SERVICE" "$STANDBY_SERVICE" "$CONFIG" "$ETC_DIR" "$UPDATE_DIR"
     printf 'RELEASE_KEY_PEM=%q\n' "$RELEASE_KEY_PEM"
     cat <<'UPDATER'
 CURL=(curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --connect-timeout 20 --max-time 600 --max-filesize 268435456)
@@ -1312,6 +1409,10 @@ parts=()
 [ -x "$PROGRAM_DIR/coordinator" ] && parts+=(coordinator)
 [ "${#parts[@]}" -gt 0 ] || exit 0
 asset() { case "$1" in dedicated_server) echo dedicated_server-linux-x86_64 ;; coordinator) echo coordinator-linux-x86_64 ;; esac; }
+# In a failover group, the coordinator runs on one server; the others keep its program up
+# to date, but don't start it.
+coord_running=0
+if systemctl is-active --quiet "$COORD_SERVICE" 2>/dev/null; then coord_running=1; fi
 
 # The oldest release this machine may run (root's; the installer sets it).
 min="$(head -c 64 "$ETC_DIR/min-release" 2>/dev/null | head -1 || true)"
@@ -1345,14 +1446,17 @@ databases() {
   done
 }
 stop_all() {
+  # The standby (failover) would start the coordinator again part way.
+  systemctl stop "$STANDBY_SERVICE" 2>/dev/null || true
   for p in "${parts[@]}"; do
     case "$p" in dedicated_server) systemctl stop "$SERVICE" ;; coordinator) systemctl stop "$COORD_SERVICE" ;; esac
   done
 }
 restart_all() {
   for p in "${parts[@]}"; do
-    case "$p" in dedicated_server) systemctl restart "$SERVICE" ;; coordinator) systemctl restart "$COORD_SERVICE" ;; esac
+    case "$p" in dedicated_server) systemctl restart "$SERVICE" ;; coordinator) [ "$coord_running" -eq 0 ] || systemctl restart "$COORD_SERVICE" ;; esac
   done
+  if systemctl is-enabled --quiet "$STANDBY_SERVICE" 2>/dev/null; then systemctl start "$STANDBY_SERVICE" || true; fi
 }
 # Copies each database (and its WAL) into $UPDATE_DIR/databases, root's
 # only. Links aren't followed: the services own their folders.
@@ -1455,6 +1559,7 @@ healthy() {
         host="$(dd if="$CONFIG" iflag=nofollow status=none 2>/dev/null | sed -n '/^\[public\]$/,/^\[/ s/^host = "\([a-z0-9.-]*\)"$/\1/p' | head -1)"
         curl -fsS --max-time 3 ${host:+-H "Host: $host"} http://127.0.0.1/api/info 2>/dev/null | grep -q "\"version\":\"$wanted\"" || return 1 ;;
       coordinator)
+        [ "$coord_running" -eq 1 ] || continue
         systemctl is-active --quiet "$COORD_SERVICE" || return 1
         curl -fsS --max-time 3 "http://$COORD_ADDR:8700/v1/info" 2>/dev/null | grep -q "\"version\":\"$wanted\"" || return 1 ;;
     esac
@@ -1724,11 +1829,13 @@ UNIT
   fi
   say "Backups: live to R2 (${#units[@]} database(s), as $(backup_name)), daily archive to B2. Check: $BACKUP_SCRIPT status"
 }
-# What this machine's backups are kept under: BACKUP_NAME in $BACKUP_ENV, else the game
+# What this machine's backups are kept under: BACKUP_NAME in $BACKUP_ENV, else its name in
+# a failover group (where the other standbys restore the coordinator from), else the game
 # server's id, else the host name.
 backup_name() {
   local n
   n="$(sed -n 's/^BACKUP_NAME=//p' "$BACKUP_ENV" 2>/dev/null | tr -d "\"' " | head -1)"
+  [ -n "$n" ] || n="$standby_me"
   [ -n "$n" ] || n="$(head -c 64 "$STATE_DIR/server-id.txt" 2>/dev/null | tr -cd 'a-z0-9-')"
   [ -n "$n" ] || n="$(hostname -s | tr -cd 'a-z0-9-')"
   printf '%s' "$n"
@@ -1747,8 +1854,10 @@ write_backup_script() {
 #   backup.sh files                     the coordinator's join token and reports to R2 (hourly)
 #   backup.sh restore game|coordinator [--time 2026-10-05T03:00:00Z] [--archive 2026-10-05|2026-10]
 #                     [--from NAME]     put a copy back: the live copy (now, or as it was at
-#                                       --time), or an archive (a day, or a month's), from this
-#                                       machine's backups or another's (--from)
+#                     [--with-files]    --time), or an archive (a day, or a month's), from this
+#                                       machine's backups or another's (--from); the
+#                                       coordinator's join token and reports too (--with-files,
+#                                       from the live copy)
 set -euo pipefail
 umask 077
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -1777,6 +1886,9 @@ RCLONE=(/usr/local/bin/rclone --config /dev/null --retries 3 --low-level-retries
 database() { case "$1" in game) echo "$STATE_DIR/5th-echelon.db" ;; coordinator) echo "$COORD_DIR/coordinator.db" ;; *) die "game or coordinator, not $1" ;; esac; }
 service() { case "$1" in game) echo "$SERVICE" ;; coordinator) echo "$COORD_SERVICE" ;; esac; }
 here() { [ -f "/etc/systemd/system/$(service "$1").service" ]; }
+# Whether it runs here: a standby coordinator (docs/failover.md) has nothing of its own to
+# back up.
+runs() { here "$1" && { [ "$1" != coordinator ] || systemctl is-active --quiet "$COORD_SERVICE"; }; }
 # Restores the live copy kept under NAME (this machine's, or another's) to FILE, as it is
 # now or as it was at TIME.
 restore_live() {
@@ -1829,7 +1941,7 @@ case "${1:-status}" in
     # From the live copy, not the database: nothing touches the running service, and each
     # day proves the live copy restores.
     for what in game coordinator; do
-      here "$what" || continue
+      runs "$what" || continue
       restore_live "$what" "$BACKUP_NAME" "$work/$what.db"
       sound "$work/$what.db" || die "the live copy of $what didn't restore whole"
       gzip -9 "$work/$what.db"
@@ -1840,7 +1952,7 @@ case "${1:-status}" in
     done
     files=()
     for f in join-token.txt reports; do [ -e "$COORD_DIR/$f" ] && files+=("$f"); done
-    if here coordinator && [ "${#files[@]}" -gt 0 ]; then
+    if runs coordinator && [ "${#files[@]}" -gt 0 ]; then
       tar -czf "$work/coordinator-files.tar.gz" -C "$COORD_DIR" "${files[@]}"
       "${RCLONE[@]}" copyto "$work/coordinator-files.tar.gz" "$base/daily/$day-coordinator-files.tar.gz"
       if [ "$(date -u +%d)" = 01 ]; then
@@ -1853,7 +1965,7 @@ case "${1:-status}" in
     echo "Archived $BACKUP_NAME for $day"
     ;;
   files)
-    here coordinator || exit 0
+    runs coordinator || exit 0
     for f in join-token.txt; do
       [ -f "$COORD_DIR/$f" ] && "${RCLONE[@]}" copyto "$COORD_DIR/$f" "R2:$BACKUP_R2_BUCKET/live/$BACKUP_NAME/coordinator-files/$f"
     done
@@ -1864,12 +1976,13 @@ case "${1:-status}" in
     ;;
   restore)
     what="${2:-}"; shift 2 || die "restore game|coordinator"
-    time="" archive="" from="$BACKUP_NAME"
+    time="" archive="" from="$BACKUP_NAME" with_files=0
     while [ $# -gt 0 ]; do
       case "$1" in
         --time) time="${2:?}"; shift ;;
         --archive) archive="${2:?}"; shift ;;
         --from) from="${2:?}"; shift ;;
+        --with-files) with_files=1 ;;
         *) die "unknown option $1" ;;
       esac
       shift
@@ -1891,6 +2004,12 @@ case "${1:-status}" in
       restore_live "$what" "$from" "$work/restored.db" "$time"
     fi
     sound "$work/restored.db" || die "the copy isn't a whole database; nothing changed"
+    if [ "$with_files" -eq 1 ]; then
+      [ "$what" = coordinator ] && [ -z "$archive" ] || die "--with-files is the coordinator's, from the live copy (an archive's are in its coordinator-files.tar.gz)"
+      install -d -m 700 "$work/files"
+      "${RCLONE[@]}" copy "R2:$BACKUP_R2_BUCKET/live/$from/coordinator-files" "$work/files"
+      [ -s "$work/files/join-token.txt" ] || die "there's no join token in $from's live copy; nothing changed"
+    fi
     svc="$(service "$what")"
     echo "Stopping $svc to put the copy in place…"
     systemctl stop "$svc"
@@ -1899,9 +2018,21 @@ case "${1:-status}" in
     for f in "$db" "$db-wal" "$db-shm"; do
       if [ -f "$f" ]; then mv -f -- "$f" "$f.before-restore-$stamp"; fi
     done
-    install -m 600 -o "$(stat -c %U "$(dirname "$db")")" -g "$(stat -c %G "$(dirname "$db")")" "$work/restored.db" "$db"
+    owner="$(stat -c %U "$(dirname "$db")")" group="$(stat -c %G "$(dirname "$db")")"
+    install -m 600 -o "$owner" -g "$group" "$work/restored.db" "$db"
+    if [ "$with_files" -eq 1 ]; then
+      install -m 600 -o "$owner" -g "$group" "$work/files/join-token.txt" "$COORD_DIR/join-token.txt"
+      if [ -d "$work/files/reports" ]; then
+        rm -rf "$COORD_DIR/reports.restoring"
+        cp -r "$work/files/reports" "$COORD_DIR/reports.restoring"
+        chown -R "$owner:$group" "$COORD_DIR/reports.restoring"
+        chmod -R go-rwx "$COORD_DIR/reports.restoring"
+        if [ -d "$COORD_DIR/reports" ]; then mv -f -- "$COORD_DIR/reports" "$COORD_DIR/reports.before-restore-$stamp"; fi
+        mv "$COORD_DIR/reports.restoring" "$COORD_DIR/reports"
+      fi
+    fi
     systemctl start "$svc"
-    echo "Restored $what from $( [ -n "$archive" ] && echo "the $kind archive $archive" || echo "the live copy${time:+ as at $time}" ) of $from."
+    echo "Restored $what from $( [ -n "$archive" ] && echo "the $kind archive $archive" || echo "the live copy${time:+ as at $time}" ) of $from$( [ "$with_files" -eq 1 ] && echo ", with its join token and reports")."
     echo "The one it replaced: $db.before-restore-$stamp"
     ;;
   *) die "status, archive, files or restore (see the top of $0)" ;;
@@ -1923,6 +2054,71 @@ running_version() {
 }
 if [ "$use_systemd" -eq 1 ]; then install_updater; fi
 if [ "$use_systemd" -eq 1 ]; then install_backups; fi
+
+# A failover group's standby (docs/failover.md): the coordinator binary, as root, watching
+# the coordinator's record through Cloudflare's API.
+install_standby() {
+  [ -n "$standby" ] || return 0
+  if [ "$(backup_name)" != "$standby_me" ]; then
+    warn "BACKUP_NAME in $BACKUP_ENV is $(backup_name), not $standby_me: the other standbys restore the coordinator from live/$standby_me. Remove BACKUP_NAME (or make it $standby_me)"
+  fi
+  printf '%s\n' "$standby" > "$STANDBY_LIST"
+  {
+    echo "# Written by install-server.sh: this server's failover group (docs/failover.md)."
+    echo "# The coordinator's record first; the records that move with it after."
+    echo "record $coord_domain"
+    [ -z "$metrics_domain" ] || echo "record $metrics_domain"
+    echo "me $standby_me"
+    echo "address $public_address"
+    echo "# The group, in the order they take over: backup name, then game server."
+    for entry in "${standby_entries[@]}"; do echo "server ${entry%%=*} ${entry#*=}"; done
+    echo "secrets $STANDBY_ENV"
+    echo "service $COORD_SERVICE"
+    echo "local http://$COORD_ADDR:8700"
+    echo "database $COORD_DIR/coordinator.db"
+    echo "backup $BACKUP_SCRIPT"
+  } > "$STANDBY_CONF.new"
+  chmod 644 "$STANDBY_CONF.new" && mv -f "$STANDBY_CONF.new" "$STANDBY_CONF"
+  cat > "$STANDBY_UNIT.new" <<UNIT
+# Written by install-server.sh (docs/failover.md).
+[Unit]
+Description=5th Echelon: standby coordinator (runs it here when its record points here; takes over if it's down)
+Documentation=https://github.com/$REPO/blob/main/docs/failover.md
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=$STANDBY_ENV
+
+[Service]
+ExecStart=$PROGRAM_DIR/coordinator standby --config $STANDBY_CONF
+Restart=always
+RestartSec=10
+StateDirectory=5th-echelon-standby
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  chmod 644 "$STANDBY_UNIT.new" && mv -f "$STANDBY_UNIT.new" "$STANDBY_UNIT"
+  systemctl daemon-reload
+  systemctl enable "$STANDBY_SERVICE" >/dev/null 2>&1
+  [ -f "$BACKUP_ENV" ] || notes+=("Failover needs backups: the standbys restore the coordinator from its live backup. Write $BACKUP_ENV (docs/backups.md) and run this again.")
+  if [ -f "$STANDBY_ENV" ]; then
+    [ "$(stat -c '%u %a' "$STANDBY_ENV")" = "0 600" ] || die "$STANDBY_ENV must be root's, mode 600"
+    systemctl restart "$STANDBY_SERVICE"
+    say "Standby coordinator: $standby_me, in a group of$standby_names(in that order). Check: $PROGRAM_DIR/coordinator standby --status"
+  else
+    notes+=("The standby waits for $STANDBY_ENV (Cloudflare's API token and zone; docs/failover.md). Until then nothing takes over, and the coordinator runs where it runs now.")
+  fi
+}
+if [ "$use_systemd" -eq 1 ]; then install_standby; fi
 
 # --- Firewall -----------------------------------------------------------
 
@@ -2085,7 +2281,24 @@ site_block() {
       echo "}"
     fi
   fi
-  if [ -n "$coord_domain" ]; then
+  if [ -n "$coord_domain" ] && [ -f "$COORD_CERT" ]; then
+    cat <<SITE
+
+# The 5th Echelon coordinator: friends across servers and the server
+# directory, only through Cloudflare (the record proxied, so it can move
+# between the servers of a failover group at once; docs/failover.md). Any
+# other address is refused but this machine's, and the client's address is
+# Cloudflare's CF-Connecting-IP.
+$coord_domain {
+	tls $COORD_CERT $COORD_KEY
+	@direct not remote_ip $(cloudflare_ranges) 127.0.0.0/8 ::1
+	abort @direct
+	reverse_proxy $COORD_ADDR:8700 {
+		header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}
+	}
+}
+SITE
+  elif [ -n "$coord_domain" ]; then
     cat <<SITE
 
 # The 5th Echelon coordinator: friends across servers and the server
@@ -2239,6 +2452,16 @@ if [ "$no_caddy" -eq 0 ]; then
     install -m 640 -o root -g "$(id -gn caddy 2>/dev/null || echo root)" "$metrics_key" "$METRICS_KEY"
     say "Using the Origin CA certificate for $metrics_domain"
   fi
+  if [ -n "$coord_cert" ]; then
+    openssl x509 -noout -in "$coord_cert" 2>/dev/null || die "$coord_cert isn't a certificate (PEM)"
+    openssl pkey -noout -in "$coord_key" 2>/dev/null || die "$coord_key isn't a private key (PEM)"
+    [ "$(openssl x509 -noout -pubkey -in "$coord_cert" | openssl sha256)" = "$(openssl pkey -pubout -in "$coord_key" | openssl sha256)" ] \
+      || die "$coord_key isn't the key of $coord_cert"
+    openssl x509 -noout -checkhost "$coord_domain" -in "$coord_cert" | grep -q 'does match' || die "$coord_cert isn't for $coord_domain"
+    install -m 644 "$coord_cert" "$COORD_CERT"
+    install -m 640 -o root -g "$(id -gn caddy 2>/dev/null || echo root)" "$coord_key" "$COORD_KEY"
+    say "Using the Origin CA certificate for $coord_domain"
+  fi
   if [ "$origin_pull" -eq 1 ]; then
     case "$caddy_version" in v2.[6-7].*) die "--cloudflare-origin-pull needs Caddy 2.8 or newer (this is $caddy_version)" ;; esac
     "${CURL[@]}" -fsSL --retry 3 -o "$work/origin-pull-ca.pem" https://developers.cloudflare.com/ssl/static/authenticated_origin_pull_ca.pem \
@@ -2304,16 +2527,24 @@ if [ "$no_caddy" -eq 0 ]; then
     # sandbox did, Caddy needs a restart instead.
     if [ "$caddy_unit_changed" -eq 1 ] || ! systemctl reload caddy 2>/dev/null; then systemctl restart caddy; fi
   fi
-  if [ "$use_systemd" -eq 1 ] && [ -n "$coord_domain" ]; then
+  if [ "$use_systemd" -eq 1 ] && [ -n "$coord_domain" ] && [ -n "$standby" ] && ! systemctl is-active --quiet "$COORD_SERVICE"; then
+    say "Caddy serves $coord_domain here too, for when this standby takes over"
+  elif [ "$use_systemd" -eq 1 ] && [ -n "$coord_domain" ]; then
     coord_ok=0
+    # An Origin CA certificate is only trusted by Cloudflare: not checked here.
+    coord_insecure=""; [ ! -f "$COORD_CERT" ] || coord_insecure=-k
     for _ in $(seq 60); do
-      if curl -fsS --max-time 3 --resolve "$coord_domain:443:127.0.0.1" "https://$coord_domain/v1/info" >/dev/null 2>&1; then coord_ok=1; break; fi
+      if curl -fsS $coord_insecure --max-time 3 --resolve "$coord_domain:443:127.0.0.1" "https://$coord_domain/v1/info" >/dev/null 2>&1; then coord_ok=1; break; fi
       sleep 1
     done
     if [ "$coord_ok" -eq 1 ]; then
       say "The coordinator answers at https://$coord_domain"
     else
-      notes+=("Caddy has no certificate for $coord_domain yet, so other servers can't reach the coordinator. Check its A record (DNS only, not proxied) and that TCP 80 and 443 are open, then run this script again.")
+      if [ -f "$COORD_CERT" ]; then
+        notes+=("The coordinator doesn't answer at https://$coord_domain on this machine; see journalctl -u $COORD_SERVICE -u caddy")
+      else
+        notes+=("Caddy has no certificate for $coord_domain yet, so other servers can't reach the coordinator. Check its A record (DNS only, not proxied) and that TCP 80 and 443 are open, then run this script again.")
+      fi
     fi
   fi
   if [ "$use_systemd" -eq 1 ] && [ -n "$metrics_domain" ]; then

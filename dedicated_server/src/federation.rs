@@ -264,6 +264,22 @@ pub fn is_own_host(host: &str) -> bool {
     identity::valid_field(host) && own_names().contains(&identity::host_key(host))
 }
 
+/// When a heartbeat last reached the coordinator (Unix seconds; 0: not yet).
+static COORDINATOR_SEEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn coordinator_seen_now() {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    COORDINATOR_SEEN.store(now, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// How long ago a heartbeat last reached the coordinator, in seconds, for `/api/info`:
+/// the standby coordinators on other servers ask before taking over (docs/failover.md).
+pub fn coordinator_seen_ago() -> Option<u64> {
+    let seen = COORDINATOR_SEEN.load(std::sync::atomic::Ordering::Relaxed);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).ok()?.as_secs();
+    (seen > 0).then(|| now.saturating_sub(seen))
+}
+
 /// This server's id; "local" until [`init`] (tests).
 pub fn server_id() -> &'static str {
     STATE.get().map_or("local", |s| s.server_id.as_str())
@@ -616,6 +632,7 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                     Ok(answer) => {
                         heartbeats.worked(&logger, "the heartbeat");
                         last_heartbeat = Some(Instant::now());
+                        coordinator_seen_now();
                         // The release the coordinator is rolling out to this server.
                         if let Some(version) = answer["update"]["version"].as_str() {
                             crate::self_update::request(&logger, version, cfg.auto_update);
@@ -1170,6 +1187,17 @@ async fn pull(logger: &Logger, storage: &Storage, client: &Coordinator<'_>, user
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn info_says_how_long_ago_the_coordinator_was_reached() {
+        // Before a heartbeat has reached it, nothing is said (a standby elsewhere takes that
+        // as not reaching it).
+        if COORDINATOR_SEEN.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+            assert_eq!(super::coordinator_seen_ago(), None);
+        }
+        super::coordinator_seen_now();
+        assert!(super::coordinator_seen_ago().is_some_and(|ago| ago <= 1));
+    }
 
     #[test]
     fn a_sign_in_sends_the_roster_within_seconds_not_minutes() {

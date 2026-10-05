@@ -13,7 +13,7 @@ What's backed up:
 | The coordinator's database (where one runs): links, names, global stats, admins, server secrets | `live/NAME/coordinator` | `archive/NAME/daily/DAY-coordinator.db.gz` |
 | The coordinator's join token and players' reports (hourly) | `live/NAME/coordinator-files/` | `archive/NAME/daily/DAY-coordinator-files.tar.gz` |
 
-`NAME` is the game server's id (`/var/lib/5th-echelon/server-id.txt`) unless you set `BACKUP_NAME`. Monthly copies are under `archive/NAME/monthly/MONTH-…`.
+`NAME` is `BACKUP_NAME` if you set it, else the server's name in its [failover group](failover.md), else the game server's id (`/var/lib/5th-echelon/server-id.txt`). Monthly copies are under `archive/NAME/monthly/MONTH-…`.
 
 Backups need the databases in SQLite's WAL mode, which the server and coordinator use from 0.4.2. On an older release, the installer says so and starts the live copy once the server is updated and the installer runs again.
 
@@ -76,4 +76,10 @@ sudo /opt/5th-echelon/backup.sh restore game --from OLDNAME
 sudo /opt/5th-echelon/backup.sh restore coordinator --from OLDNAME
 ```
 
-The coordinator's join token and reports are in the day's `coordinator-files.tar.gz` (B2) and under `live/NAME/coordinator-files/` (R2).
+The coordinator's join token and reports are in the day's `coordinator-files.tar.gz` (B2) and under `live/NAME/coordinator-files/` (R2). `--with-files` puts them back with the coordinator's database, from the live copy:
+
+```sh
+sudo /opt/5th-echelon/backup.sh restore coordinator --from OLDNAME --with-files
+```
+
+This is what a standby does when it takes over ([failover.md](failover.md)). On a standby, where the coordinator doesn't run, there's nothing of the coordinator's to back up: the live copy, the hourly files and the archive are the coordinator's machine's.
