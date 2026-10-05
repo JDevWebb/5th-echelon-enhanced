@@ -224,6 +224,195 @@ async fn the_directory_carries_a_rollout_through_its_stages() {
     assert!(rollout().await.get("rollout").is_none(), "done");
 }
 
+/// A heartbeat from a server that installs updates (unless `manual`), and what the
+/// coordinator answers it to install, if anything.
+async fn heartbeat_asks(t: &Test, secret: &str, id: &str, version: &str, players: u32, manual: bool) -> Option<String> {
+    let body = json!({ "name": id, "host": id, "listed": true, "auto_update": !manual, "version": version, "players_online": players });
+    // More heartbeats than a server may send in a minute: the limit isn't what's tested here.
+    t.c.heartbeats.seen.lock().unwrap().clear();
+    let (status, answer) = t.call("POST", "/v1/heartbeat", Some(secret), Some(body)).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    answer["update"]["version"].as_str().map(str::to_string)
+}
+
+async fn stage(t: &Test) -> (String, String) {
+    let r = t.c.rollout().await.unwrap();
+    (r.stage, r.note)
+}
+
+#[tokio::test]
+async fn heartbeats_tell_each_server_when_to_update() {
+    let t = start("rollout-asks").await;
+    let (quiet, busy, manual) = (t.join("quiet").await, t.join("busy").await, t.join("manual").await);
+    heartbeat_asks(&t, &quiet, "quiet", "1.0.0", 0, false).await;
+    heartbeat_asks(&t, &busy, "busy", "1.0.0", 3, false).await;
+    heartbeat_asks(&t, &manual, "manual", "1.0.0", 0, true).await;
+    t.c.start_rollout("1.1.0", "a test").await.unwrap();
+    assert_eq!(t.c.rollout().await.unwrap().previous.as_deref(), Some("1.0.0"), "what the network ran");
+
+    // The canary (the quietest that installs updates) is asked; nobody else yet.
+    assert_eq!(heartbeat_asks(&t, &quiet, "quiet", "1.0.0", 0, false).await.as_deref(), Some("1.1.0"));
+    assert_eq!(heartbeat_asks(&t, &busy, "busy", "1.0.0", 3, false).await, None);
+    assert_eq!(
+        heartbeat_asks(&t, &manual, "manual", "1.0.0", 0, true).await,
+        None,
+        "a server that doesn't install updates is never picked"
+    );
+
+    // Verifying: nobody else is asked while the canary proves it.
+    assert_eq!(heartbeat_asks(&t, &quiet, "quiet", "1.1.0", 0, false).await, None, "it runs it already");
+    t.c.tick_rollout().await.unwrap();
+    assert_eq!(stage(&t).await.0, "verifying");
+    assert_eq!(heartbeat_asks(&t, &busy, "busy", "1.0.0", 3, false).await, None);
+
+    // Rolling: a server with players on waits for them, up to QUIET_WAIT.
+    sqlx::query("UPDATE rollout SET stage_since = stage_since - 601").execute(&t.c.pool).await.unwrap();
+    t.c.tick_rollout().await.unwrap();
+    assert_eq!(stage(&t).await.0, "rolling");
+    assert_eq!(heartbeat_asks(&t, &busy, "busy", "1.0.0", 3, false).await, None, "players are on");
+    assert_eq!(heartbeat_asks(&t, &busy, "busy", "1.0.0", 0, false).await.as_deref(), Some("1.1.0"), "they left");
+    sqlx::query("UPDATE rollout SET stage_since = stage_since - ?")
+        .bind(updates::QUIET_WAIT)
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        heartbeat_asks(&t, &busy, "busy", "1.0.0", 3, false).await.as_deref(),
+        Some("1.1.0"),
+        "after QUIET_WAIT, whatever"
+    );
+    // Offered to a server that doesn't install updates too: its own setting declines it
+    // (dedicated_server's self_update::request), and it can update by hand.
+    assert_eq!(heartbeat_asks(&t, &manual, "manual", "1.0.0", 0, true).await.as_deref(), Some("1.1.0"));
+
+    // Done once every server that installs updates runs it (the manual one aside).
+    heartbeat_asks(&t, &busy, "busy", "1.1.0", 3, false).await;
+    t.c.tick_rollout().await.unwrap();
+    assert_eq!(stage(&t).await.0, "done");
+    // Paused or halted: nobody is asked.
+    t.c.set_paused(true).await.unwrap();
+    assert_eq!(heartbeat_asks(&t, &manual, "manual", "1.0.0", 0, false).await, None, "paused");
+    t.c.set_paused(false).await.unwrap();
+    t.c.halt("an admin's test").await.unwrap();
+    assert_eq!(heartbeat_asks(&t, &manual, "manual", "1.0.0", 0, false).await, None, "halted");
+    assert_eq!(stage(&t).await, ("halted".to_string(), "an admin's test".to_string()));
+}
+
+#[tokio::test]
+async fn a_canary_that_rolls_back_or_never_updates_halts_the_rollout() {
+    let t = start("rollout-halts").await;
+    let (a, b) = (t.join("a").await, t.join("b").await);
+    heartbeat_asks(&t, &a, "a", "1.0.0", 0, false).await;
+    heartbeat_asks(&t, &b, "b", "1.0.0", 1, false).await;
+    t.c.start_rollout("1.1.0", "a test").await.unwrap();
+    assert_eq!(t.c.rollout().await.unwrap().canary.as_deref(), Some("a"));
+
+    // Its updater rolled the release back (it didn't come back healthy there).
+    let report = json!({ "metrics": {}, "update": { "auto_update": true, "running": "1.0.0", "updater": { "state": "rolled-back", "version": "1.1.0" } } });
+    let (status, _) = t.call("POST", "/v1/metrics", Some(&a), Some(report)).await;
+    assert_eq!(status, StatusCode::OK);
+    t.c.tick_rollout().await.unwrap();
+    let (stage_now, note) = stage(&t).await;
+    assert_eq!(stage_now, "halted");
+    assert!(note.contains("a couldn't install 1.1.0 (rolled-back)"), "{note}");
+    assert_eq!(heartbeat_asks(&t, &b, "b", "1.0.0", 0, false).await, None, "nobody else is asked");
+
+    // A canary that never installs it halts the rollout after CANARY_TIMEOUT.
+    t.c.start_rollout("1.2.0", "a test").await.unwrap();
+    let canary = t.c.rollout().await.unwrap().canary.unwrap();
+    sqlx::query("UPDATE rollout SET stage_since = stage_since - 3 * 3600 - 1").execute(&t.c.pool).await.unwrap();
+    t.c.tick_rollout().await.unwrap();
+    let (stage_now, note) = stage(&t).await;
+    assert_eq!(stage_now, "halted");
+    assert!(note.contains(&format!("{canary} hasn't installed 1.2.0")), "{note}");
+
+    // One that stops reporting in while it's verified halts it too.
+    t.c.start_rollout("1.3.0", "a test").await.unwrap();
+    let canary = t.c.rollout().await.unwrap().canary.unwrap();
+    let secret = if canary == "a" { &a } else { &b };
+    heartbeat_asks(&t, secret, &canary, "1.3.0", 0, false).await;
+    t.c.tick_rollout().await.unwrap();
+    assert_eq!(stage(&t).await.0, "verifying");
+    sqlx::query("UPDATE servers SET last_seen = last_seen - 600 WHERE id = ?")
+        .bind(&canary)
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    t.c.tick_rollout().await.unwrap();
+    let (stage_now, note) = stage(&t).await;
+    assert_eq!(stage_now, "halted");
+    assert!(note.contains("stopped reporting in on 1.3.0"), "{note}");
+}
+
+#[tokio::test]
+async fn new_releases_start_a_rollout_unless_pinned_or_held_back() {
+    let t = start("rollout-found").await;
+    let found = |v: &'static str| {
+        let c = std::sync::Arc::clone(&t.c);
+        async move { c.release_found(v, "https://github.com/x/y/releases/tag/v1", "2026-01-01T00:00:00Z").await.unwrap() }
+    };
+    // This coordinator runs 0.x: the next major version is fine, two ahead isn't.
+    assert!(matches!(found("2.0.0").await, updates::Found::Held(why) if why.contains("skips a major version")));
+    assert_eq!(found("1.1.0").await, updates::Found::Started);
+    assert_eq!(t.c.rollout().await.unwrap().target.as_deref(), Some("1.1.0"));
+    assert_eq!(found("1.1.0").await, updates::Found::Kept, "the target already");
+    assert!(matches!(found("1.0.5").await, updates::Found::Held(why) if why.contains("isn't newer than 1.1.0")));
+    // Pinned: a newer release is only recorded, for an admin to roll out.
+    t.c.set_pinned(true).await.unwrap();
+    assert_eq!(found("1.2.0").await, updates::Found::Kept);
+    assert_eq!(t.c.rollout().await.unwrap().target.as_deref(), Some("1.1.0"));
+    let versions: Vec<String> = t.c.releases().await.unwrap().into_iter().map(|r| r.0).collect();
+    assert_eq!(versions, ["2.0.0", "1.2.0", "1.1.0", "1.0.5"], "every signed release is recorded, newest first");
+}
+
+#[tokio::test]
+async fn rolling_back_goes_to_the_release_before_everywhere_at_once() {
+    let t = start("rollout-back").await;
+    assert!(t.c.roll_back().await.unwrap_err().contains("no release before"), "nothing to go back to yet");
+    let (a, b) = (t.join("a").await, t.join("b").await);
+    heartbeat_asks(&t, &a, "a", "1.0.0", 0, false).await;
+    heartbeat_asks(&t, &b, "b", "1.0.0", 0, false).await;
+    t.c.start_rollout("1.1.0", "a test").await.unwrap();
+    t.c.promote().await.unwrap();
+    heartbeat_asks(&t, &a, "a", "1.1.0", 0, false).await;
+    heartbeat_asks(&t, &b, "b", "1.1.0", 0, false).await;
+
+    assert_eq!(t.c.roll_back().await.unwrap(), "1.0.0");
+    let r = t.c.rollout().await.unwrap();
+    assert_eq!(
+        (r.target.as_deref(), r.previous.as_deref(), r.stage.as_str(), r.pinned),
+        (Some("1.0.0"), Some("1.1.0"), "rolling", true)
+    );
+    // Every server is asked now, players on or not, with no canary.
+    assert_eq!(heartbeat_asks(&t, &a, "a", "1.1.0", 9, false).await.as_deref(), Some("1.0.0"));
+    assert_eq!(heartbeat_asks(&t, &b, "b", "1.1.0", 0, false).await.as_deref(), Some("1.0.0"));
+    // Pinned: the release it went back from isn't rolled out again on its own.
+    assert_eq!(t.c.release_found("1.1.0", "", "").await.unwrap(), updates::Found::Kept);
+}
+
+#[tokio::test]
+async fn an_admin_rolls_out_a_recorded_release_and_promotes_it() {
+    let t = start("rollout-admin").await;
+    let (quiet, busy) = (t.join("quiet").await, t.join("busy").await);
+    heartbeat_asks(&t, &quiet, "quiet", "1.1.0", 0, false).await;
+    heartbeat_asks(&t, &busy, "busy", "1.1.0", 2, false).await;
+    assert!(
+        t.c.roll_out("1.0.9").await.unwrap_err().contains("isn't a signed release"),
+        "only releases the coordinator has seen"
+    );
+    t.c.release_found("1.0.9", "", "").await.unwrap();
+    // An older release, by hand: a canary first, and pinned.
+    t.c.roll_out("1.0.9").await.unwrap();
+    let r = t.c.rollout().await.unwrap();
+    assert_eq!((r.target.as_deref(), r.stage.as_str(), r.pinned), (Some("1.0.9"), "canary", true));
+    assert_eq!(t.c.rollout().await.unwrap().canary.as_deref(), Some("quiet"), "the one without players");
+    assert_eq!(heartbeat_asks(&t, &busy, "busy", "1.1.0", 0, false).await, None, "not the canary");
+    // Promoted: no canary, every quiet server now.
+    t.c.promote().await.unwrap();
+    assert_eq!(stage(&t).await.0, "rolling");
+    assert_eq!(heartbeat_asks(&t, &busy, "busy", "1.1.0", 0, false).await.as_deref(), Some("1.0.9"));
+}
+
 #[tokio::test]
 async fn friends_made_on_one_server_reach_another() {
     let t = start("sync").await;
