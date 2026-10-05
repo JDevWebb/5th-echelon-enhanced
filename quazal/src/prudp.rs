@@ -846,17 +846,24 @@ where
         packet.conn_signature = Some(0);
         ci.borrow_mut().connect_answer = Some(packet.payload.clone());
 
-        if let Err(e) = self.send_ack(logger, &client, &packet, &ci.borrow(), !packet.payload.is_empty()) {
-            error!(logger, "Error sending syn ack packet"; "error" => %e);
-        }
-        info!(logger, "New client connected"; "signature" => packet.signature, "session" => packet.session_id);
+        // The sign-in is taken in (the player online, their other games signed out) before
+        // it's answered: once the game is signed in, everyone sees it online.
         let signed_in = ci.borrow().user_id;
+        let answered = !packet.payload.is_empty();
         if let Some(user_id) = signed_in.filter(|id| (self.newest_sign_in_wins)(*id)) {
             self.sign_out_elsewhere(logger, user_id, client);
         }
         if let (Some(user_id), Some(handler)) = (signed_in, self.login_handler.as_mut()) {
             handler(user_id, client);
         }
+        // Signing out its other games leaves this connection (another address's are closed).
+        let Some(ci) = self.client_registry.clients.get(&packet.signature) else {
+            return;
+        };
+        if let Err(e) = self.send_ack(logger, &client, &packet, &ci.borrow(), answered) {
+            error!(logger, "Error sending syn ack packet"; "error" => %e);
+        }
+        info!(logger, "New client connected"; "signature" => packet.signature, "session" => packet.session_id);
     }
 
     /// The newest sign-in wins: `user_id` just signed in from `from`, so their connections

@@ -213,6 +213,10 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
                 players::sign_out(user_id);
                 return;
             }
+            // First: friends and searches see them online as soon as they're signed in.
+            if let Err(e) = storage.set_online(user_id) {
+                error!(logger, "marking user {user_id} online failed: {e}");
+            }
             let new_session = storage.start_play(user_id).unwrap_or_else(|e| {
                 error!(logger, "starting the play session of {user_id} failed: {e}");
                 false
@@ -224,9 +228,6 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
             }
             players::changed(user_id);
             federation::stats_soon(user_id);
-            if let Err(e) = storage.set_online(user_id) {
-                error!(logger, "marking user {user_id} online failed: {e}");
-            }
         }));
     }
     server.bind(ctx.listen)?;
