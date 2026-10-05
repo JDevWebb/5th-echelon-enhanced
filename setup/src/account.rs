@@ -15,6 +15,9 @@ pub enum AccountError {
     /// The server refuses this launcher's version; what it says to do.
     #[error("{0}")]
     Outdated(String),
+    /// The server bans this account; its message says for how long, and why.
+    #[error("{0}")]
+    Banned(String),
     #[error("{0}")]
     Other(String),
 }
@@ -44,10 +47,13 @@ pub enum Outcome {
     Created,
 }
 
+/// The longest account name servers accept (and the overlay shows).
+pub const MAX_NAME: usize = 32;
+
 /// A username for a new account from `nick` (the player's chosen name, or
 /// their Windows user name): letters A-Z, digits, `_`, `-` and `.` (what
-/// servers accept), spaces as `_`, at most 24 characters, "Agent" if nothing
-/// is left.
+/// servers accept), spaces as `_`, at most [`MAX_NAME`] characters, "Agent"
+/// if nothing is left.
 pub fn account_name(nick: &str) -> String {
     let name: String = nick
         .trim()
@@ -57,7 +63,7 @@ pub fn account_name(nick: &str) -> String {
             c if c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.') => Some(c),
             _ => None,
         })
-        .take(24)
+        .take(MAX_NAME)
         .collect();
     if name.is_empty() {
         String::from("Agent")
@@ -140,7 +146,8 @@ pub fn new_account(service: &dyn AccountService, chosen: Option<&str>, usual: Op
 /// Names to offer when `name` is taken: with the player's country (`Kiwi_NZ`) when it's
 /// known, then numbered (`Kiwi2`, `Kiwi3`…), each a valid account name.
 pub fn name_suggestions(name: &str, country: Option<&str>) -> Vec<String> {
-    let base: String = account_name(name).chars().take(21).collect();
+    // Room for the longest ending, `_NZ`.
+    let base: String = account_name(name).chars().take(MAX_NAME - 3).collect();
     let country = country.map(str::trim).filter(|c| c.len() == 2 && c.bytes().all(|b| b.is_ascii_alphabetic())).map(str::to_ascii_uppercase);
     let mut names: Vec<String> = country.iter().map(|c| format!("{base}_{c}")).collect();
     names.extend((2..=6).map(|n| format!("{base}{n}")));
@@ -194,7 +201,7 @@ mod tests {
         assert_eq!(account_name("  Sam Fisher! "), "Sam_Fisher");
         assert_eq!(account_name("???"), "Agent");
         assert_eq!(account_name("Zoë Kiwi"), "Zo_Kiwi", "ASCII only");
-        assert_eq!(account_name(&"x".repeat(40)).len(), 24);
+        assert_eq!(account_name(&"x".repeat(40)).len(), MAX_NAME);
         let pw = new_password();
         assert_eq!(pw.len(), 24);
         assert!(pw.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()));
@@ -253,7 +260,7 @@ mod tests {
         assert_eq!(name_suggestions("Kiwi", None)[0], "Kiwi2");
         assert_eq!(name_suggestions("Kiwi", Some("Aotearoa"))[0], "Kiwi2", "not a country code");
         let long = name_suggestions(&"x".repeat(40), Some("NZ"));
-        assert!(long.iter().all(|n| n.len() <= 24 && account_name(n) == *n));
+        assert!(long.iter().all(|n| n.len() <= MAX_NAME && account_name(n) == *n));
     }
 
     #[test]

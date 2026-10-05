@@ -51,6 +51,8 @@ impl AccountService for Accounts {
             Ok(Err(network::Error::InvalidPassword)) => Err(AccountError::WrongPassword),
             Ok(Err(network::Error::UserNotFound)) => Err(AccountError::NotFound),
             Ok(Err(network::Error::Rpc(status))) if status.code() == tonic::Code::FailedPrecondition => Err(AccountError::Outdated(status.message().to_string())),
+            Ok(Err(network::Error::Rpc(status))) if status.code() == tonic::Code::PermissionDenied => Err(AccountError::Banned(status.message().to_string())),
+            Ok(Err(network::Error::Rpc(status))) => Err(AccountError::Other(status.message().to_string())),
             Ok(Err(network::Error::ConnectionFailed)) => Err(AccountError::Other("couldn't connect to the server".into())),
             Ok(Err(e)) => Err(AccountError::Other(e.to_string())),
         }

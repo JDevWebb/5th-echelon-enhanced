@@ -92,6 +92,7 @@ pub fn gather(game_dir: &Path, cfg: &Config, bundled: Option<&[u8]>) -> (Facts, 
                         Ok(()) => AccountFact::Ok(profile.user.username.clone()),
                         Err(e @ (account::AccountError::WrongPassword | account::AccountError::NotFound)) => AccountFact::Refused(e.to_string()),
                         Err(account::AccountError::Outdated(why)) => AccountFact::Outdated(why),
+                        Err(account::AccountError::Banned(why)) => AccountFact::Banned(why),
                         Err(e) => AccountFact::Unknown(e.to_string()),
                     }
                 })

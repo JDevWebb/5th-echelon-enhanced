@@ -960,14 +960,22 @@ fn client(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui: &mut eg
             }
         });
         if settings.confirm_uninstall {
+            // Only the DLL changes: settings, accounts, saves and the identity
+            // stay, so Install puts everything back as it was.
+            ui.label(
+                RichText::new(
+                    "Put the game's own online DLL back? The game then won't connect to 5th Echelon servers. \
+                     Your 5th Echelon settings, accounts, saves and identity stay on this PC, so Install brings it all back.",
+                )
+                .color(theme::WARN),
+            );
             ui.horizontal(|ui| {
-                ui.label(RichText::new("Put the game's own online DLL back? The game then won't connect to 5th Echelon servers.").color(theme::WARN));
                 if ui.button("Uninstall").clicked() {
                     settings.confirm_uninstall = false;
                     let dir = game.dir.clone();
                     settings.work(ctx, "Putting the game's own DLL back", move || {
                         setup::install::uninstall(&dir)
-                            .map(|()| "The game's own DLL is back.".to_string())
+                            .map(|()| "The game's own DLL is back. Your 5th Echelon settings and saves are still here.".to_string())
                             .map_err(|e| e.to_string())
                     });
                 }

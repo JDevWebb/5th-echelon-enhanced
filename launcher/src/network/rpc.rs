@@ -41,8 +41,9 @@ pub async fn test_login(api_url: String, username: &str, password: &str) -> Resu
             }
             if matches!(status.code(), tonic::Code::NotFound) {
                 return Err(Error::UserNotFound);
-            } else if matches!(status.code(), tonic::Code::FailedPrecondition) {
-                // An outdated launcher: the server says what to do.
+            } else if matches!(status.code(), tonic::Code::FailedPrecondition | tonic::Code::PermissionDenied | tonic::Code::ResourceExhausted) {
+                // An outdated launcher, a banned account or too many sign-ins: the
+                // server says what's wrong and what to do.
                 return Err(Error::Rpc(status));
             } else {
                 return Err(Error::SendingRequestFailed);

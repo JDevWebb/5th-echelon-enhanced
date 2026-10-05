@@ -630,6 +630,7 @@ fn setup_screen(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &e
                 ui.add(
                     egui::TextEdit::singleline(&mut play.nick)
                         .hint_text("what other players see")
+                        .char_limit(setup::account::MAX_NAME)
                         .desired_width(320.0)
                         .min_size(egui::vec2(0.0, 40.0)),
                 );
@@ -2132,7 +2133,7 @@ fn account_dialog(ctx: &egui::Context, dialog: &mut AccountDialog, current: Opti
             let field = ui.add(
                 egui::TextEdit::singleline(&mut dialog.name)
                     .font(egui::FontId::new(16.0, theme::strong()))
-                    .char_limit(32)
+                    .char_limit(setup::account::MAX_NAME)
                     .desired_width(f32::INFINITY)
                     .min_size(egui::vec2(0.0, 40.0)),
             );

@@ -92,6 +92,8 @@ pub enum AccountFact {
     Refused(String),
     /// The server refuses this launcher's version: what it says to do.
     Outdated(String),
+    /// The server bans the account: its message, with how long and why.
+    Banned(String),
     Unknown(String),
 }
 
@@ -323,6 +325,13 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
             Some(AccountFact::Ok(name)) => Check::new("account", Status::Ok, format!("Signed in as {name}"), "", None),
             Some(AccountFact::Refused(why)) => Check::new("account", Status::Fail, "Account refused", why.clone(), Some(Fix::SetUpAccount)),
             Some(AccountFact::Outdated(why)) => Check::new("account", Status::Fail, "Update the launcher", why.clone(), Some(Fix::UpdateLauncher)),
+            Some(AccountFact::Banned(why)) => Check::new(
+                "account",
+                Status::Fail,
+                "Banned on this server",
+                format!("{why} Ask the server's admins about it, or choose another server."),
+                Some(Fix::ChooseServer),
+            ),
             Some(AccountFact::Unknown(why)) => Check::new("account", Status::Warn, "Couldn't check the account", why.clone(), None),
             Some(AccountFact::None) | None => Check::new("account", Status::Fail, "No account on this server yet", "Connect finds yours, or makes one.", Some(Fix::SetUpAccount)),
         });
@@ -538,6 +547,8 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
         assert_eq!(fix(f, "account"), None, "no account check without a server");
         let f = Facts { account: Some(AccountFact::Refused("wrong password".into())), ..ready_facts() };
         assert_eq!(fix(f, "account"), Some((Status::Fail, Some(Fix::SetUpAccount))));
+        let f = Facts { account: Some(AccountFact::Banned("This account is banned on this server for 3 more days.".into())), ..ready_facts() };
+        assert_eq!(fix(f, "account"), Some((Status::Fail, Some(Fix::ChooseServer))));
         let f = Facts { account: Some(AccountFact::Outdated("update".into())), ..ready_facts() };
         assert_eq!(fix(f, "account"), Some((Status::Fail, Some(Fix::UpdateLauncher))));
         // A pin is the only thing that can be wrong, and only a warning, unless the game
