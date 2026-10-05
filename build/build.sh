@@ -105,6 +105,12 @@ case "${1:-test}" in
     run "$IMAGE" cargo build -q --release -p dedicated_server -p testbot
     IMAGE="$IMAGE" scripts/load-test.sh /target/native/release "$@"
     ;;
+  ops-test)
+    # What install-server.sh writes and runs as root (the updater, backups, failover), in a
+    # throwaway container.
+    run "$IMAGE" cargo build -q -p coordinator
+    IMAGE="$IMAGE" scripts/ops-test.sh /target/native/debug
+    ;;
   proxy-test)
     run "$IMAGE" cargo build -q -p dedicated_server -p testbot
     IMAGE="$IMAGE" scripts/proxy-test.sh /target/native/debug
@@ -133,6 +139,6 @@ case "${1:-test}" in
     TTY=-it run "$IMAGE" bash
     ;;
   *)
-    echo "usage: $0 test|server|windows|shell" >&2; exit 2
+    echo "usage: $0 test|server|windows|linux|bots|federation-test|proxy-test|ops-test|load|fmt|sums|shell" >&2; exit 2
     ;;
 esac

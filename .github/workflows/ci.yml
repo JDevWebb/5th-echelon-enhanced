@@ -32,12 +32,32 @@ jobs:
         run: npm ci --no-audit --no-fund && npm run build
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Tests
-        run: cargo test --locked --workspace --exclude hooks --exclude launcher --exclude umd_browser
+        run: cargo test --locked --workspace --exclude hooks --exclude umd_browser
       - name: Test players against a fresh server
         run: |
           cargo build --locked -p dedicated_server -p testbot
           scripts/bots.sh target/debug
+          FRIENDS_MODE=mutual scripts/bots.sh target/debug friends-mutual
           REQUIRE_IDENTITY=1 scripts/bots.sh target/debug identity-required
+      - name: Shell scripts (ShellCheck comes with the runner)
+        run: |
+          shellcheck -S warning scripts/install-server.sh scripts/harden-host.sh scripts/bots.sh \
+            scripts/federation-test.sh scripts/proxy-test.sh scripts/ops-test.sh \
+            scripts/release.sh scripts/sign-release.sh build/build.sh
+      - name: Servers sharing friends, a server behind a proxy, and what the installer runs as root
+        run: |
+          cargo build --locked -p coordinator
+          # A small image with what the tests use inside their containers; the programs
+          # are this job's, mounted in.
+          docker build -q -t fes-ci - <<'EOF'
+          FROM debian:bookworm-slim
+          RUN apt-get update && apt-get install -y --no-install-recommends bash curl python3 openssl unzip ca-certificates procps \
+            && rm -rf /var/lib/apt/lists/*
+          EOF
+          export IMAGE=fes-ci BIN_MOUNT="-v $PWD/target/debug:/ci-bin:ro"
+          scripts/federation-test.sh /ci-bin
+          scripts/proxy-test.sh /ci-bin
+          scripts/ops-test.sh /ci-bin
       - name: The Linux launcher builds
         run: cargo build --locked -p launcher
 
@@ -54,6 +74,8 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
       - name: Client DLL
         run: cargo build --locked -p hooks --target i686-pc-windows-msvc
+      - name: Client DLL tests
+        run: cargo test --locked -p hooks --target i686-pc-windows-msvc
       - name: Launcher with the client inside, server and test players
         shell: bash
         run: |

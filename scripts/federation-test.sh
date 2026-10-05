@@ -13,20 +13,23 @@
 set -euo pipefail
 bin=${1:?folder with dedicated_server, testbot and coordinator}
 image=${IMAGE:-fes-build:local}
+# Where the containers find the programs: the build volume (build.sh), or BIN_MOUNT, e.g.
+# "-v $PWD/target/debug:/bin-ci:ro" with the folder /bin-ci (CI).
+mount=${BIN_MOUNT:--v fes-target:/target:ro}
 net=fes-fed-test
 cleanup() { docker rm -f fes-fed-coord fes-fed-a fes-fed-b >/dev/null 2>&1 || true; docker network rm "$net" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 cleanup
 docker network create "$net" >/dev/null
 
-docker run -d --name fes-fed-coord --network "$net" -v fes-target:/target:ro "$image" \
+docker run -d --name fes-fed-coord --network "$net" $mount "$image" \
   bash -c "mkdir -p /srv/c && exec $bin/coordinator --listen 0.0.0.0:8700 --data /srv/c >/srv/c/log 2>&1" >/dev/null
 for _ in $(seq 100); do docker exec fes-fed-coord test -s /srv/c/join-token.txt 2>/dev/null && break; sleep 0.2; done
 token=$(docker exec fes-fed-coord cat /srv/c/join-token.txt | tr -d '[:space:]')
 coord=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$net\").IPAddress}}" fes-fed-coord)
 
 server() { # server <name> <label>
-  docker run -d --name "$1" --network "$net" -v fes-target:/target:ro "$image" bash -c "
+  docker run -d --name "$1" --network "$net" $mount "$image" bash -c "
     set -e; mkdir -p /srv/fe && cd /srv/fe && cp $bin/dedicated_server .
     ./dedicated_server >gen.log 2>&1 & gen=\$!
     for _ in \$(seq 100); do [ -s service.toml ] && break; sleep 0.1; done
@@ -43,7 +46,7 @@ for s in fes-fed-a fes-fed-b; do
   for _ in $(seq 100); do docker exec "$s" bash -c 'exec 3<>/dev/tcp/127.0.0.1/50051' 2>/dev/null && break; sleep 0.2; done
 done
 
-client() { docker run --rm --network "$net" -v fes-target:/target:ro "$image" "$@"; }
+client() { docker run --rm --network "$net" $mount "$image" "$@"; }
 rc=0
 echo "--- directory"
 for _ in $(seq 30); do
@@ -94,7 +97,7 @@ if [ -n "$player" ]; then
     [ "$status" != pending ] && break; sleep 1
   done
   banned=$(db fes-fed-a /srv/fe/5th-echelon.db "SELECT COUNT(*) FROM bans WHERE user_id = $player AND reason = 'federation test'")
-  [ "$status" = done ] && [ "${banned:-0}" -eq 1 ] && echo "PASS an admin's ban reached server A and came back done" \
+  [ "$status" = "done" ] && [ "${banned:-0}" -eq 1 ] && echo "PASS an admin's ban reached server A and came back done" \
     || { echo "FAIL the ban: status ${status:-none}, banned ${banned:-0}"; rc=1; }
 fi
 echo "--- global stats"

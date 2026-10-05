@@ -10,6 +10,9 @@
 set -euo pipefail
 bin=${1:?folder with dedicated_server and testbot}
 image=${IMAGE:-fes-build:local}
+# Where the containers find the programs: the build volume (build.sh), or BIN_MOUNT, e.g.
+# "-v $PWD/target/debug:/bin-ci:ro" with the folder /bin-ci (CI).
+mount=${BIN_MOUNT:--v fes-target:/target:ro}
 net=fes-proxy-test
 host=blacklist.example.com
 here=$(cd "$(dirname "$0")/.." && pwd)
@@ -21,7 +24,7 @@ docker network create "$net" >/dev/null
 # The server: ports moved off the defaults (as when other services hold
 # them), HTTP on loopback only, reachable through Caddy. Every test player
 # comes from one address (Caddy passes it on), so new accounts get more room.
-docker run -d --name fes-proxy-srv --network "$net" -v fes-target:/target:ro "$image" bash -c "
+docker run -d --name fes-proxy-srv --network "$net" $mount "$image" bash -c "
   set -e; mkdir -p /srv/fe && cd /srv/fe
   # Run from its own folder, apart from the program, as the Linux installer's service does.
   $bin/dedicated_server >gen.log 2>&1 & gen=\$!
@@ -46,7 +49,7 @@ for _ in $(seq 100); do docker exec fes-proxy-srv test -s /srv/fe/server.log 2>/
 docker run -d --name fes-proxy-caddy --network container:fes-proxy-srv \
   -v "$here/docs/reverse-proxy/Caddyfile:/etc/caddy/Caddyfile:ro" caddy:2 >/dev/null
 
-client() { docker run --rm --network "$net" --add-host "$host:$ip" -v fes-target:/target:ro "$image" "$@"; }
+client() { docker run --rm --network "$net" --add-host "$host:$ip" $mount "$image" "$@"; }
 for _ in $(seq 60); do client curl -sf -o /dev/null "http://$host/api/info" && break; sleep 0.5; done
 
 rc=0
