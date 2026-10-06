@@ -104,8 +104,6 @@ Only the community network's coordinator keeps a roadmap: the installer starts i
 
 Players on the community network see the public items in the launcher's **Roadmap** screen (it's not shown on other networks) and send suggestions from it: an area, a title and the details, signed with their identity, three a day. Their suggestions land in the page's inbox with their name, server and launcher version; admins reply (the player sees the reply in their launcher), set the status (new, planned, done or declined), or promote one to a lane, where it starts hidden from players.
 
-Every item and suggestion has **Prompt**: a ready-to-paste prompt for Claude Code in this repository to research it, mock it up and list the decisions, without pushing or deploying anything.
-
 ## Metrics
 
 **Every minute, each server sends its coordinator:**

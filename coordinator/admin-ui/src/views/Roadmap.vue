@@ -1,5 +1,5 @@
 <template>
-  <PageTop title="Roadmap" sub="What's shipping, what's next, and what players and admins have asked for. Each item can hand you a prompt to research and build it.">
+  <PageTop title="Roadmap" sub="What's shipping, what's next, and what players and admins have asked for.">
     <template v-if="road" #stats>
       <Stat :value="laneOf('shipping')?.release || '–'" label="Releasing" :sub="`${count('shipping')} shipping`" />
       <Stat :value="fmt.n(count('next'))" :label="laneOf('next')?.release ? `Next, ${laneOf('next').release}` : 'Next'" />
@@ -36,7 +36,7 @@
       </div>
       <RoadmapItem
         v-for="(item, i) in lane.items" :key="item.id" :item="item" :lanes="road.lanes" :first="i === 0" :last="i === lane.items.length - 1"
-        :next-position="nextPosition" @prompt="showPrompt('item', $event)" @move="move(lane, i, $event)" @changed="reload" />
+        :next-position="nextPosition" @move="move(lane, i, $event)" @changed="reload" />
       <p v-if="!lane.items.length" class="lane-empty">Nothing here.</p>
     </section>
   </div>
@@ -44,7 +44,7 @@
   <section id="suggest" class="panel suggest" aria-labelledby="suggest-h">
     <div>
       <h2 id="suggest-h" class="big-title">Suggest a feature or improvement</h2>
-      <p class="lead">Write down what a player or admin asked for. It goes under Requested, and you get a prompt to start on it.</p>
+      <p class="lead">Write down what a player or admin asked for. It goes under Requested.</p>
       <form class="stack" @submit.prevent="suggest">
         <label class="field"><span>What</span><input id="s-title" v-model="form.title" required maxlength="80" placeholder="Show who's in each match on the server card"></label>
         <label class="field"><span>Why, or in their words</span><textarea v-model="form.body" required maxlength="600" placeholder="&quot;I can't tell which server my friends are on before I join.&quot;"></textarea></label>
@@ -58,15 +58,6 @@
           <span class="small faint">Saved for every admin, and in the audit log.</span>
         </div>
       </form>
-    </div>
-    <div id="prompt" class="prompt">
-      <span class="label">Prompt{{ promptTitle ? ` · ${promptTitle}` : '' }}</span>
-      <pre ref="pre" tabindex="0" aria-label="Prompt for Claude Code">{{ promptText || 'Pick Prompt on any item or suggestion, or add a request, and the prompt to start on it appears here.' }}</pre>
-      <div class="row">
-        <button type="button" :disabled="!promptText" @click="copy">Copy prompt</button>
-        <span v-if="copied" class="copied" role="status">{{ copied }}</span>
-        <span class="small faint">Paste it into Claude Code in the repository.</span>
-      </div>
     </div>
   </section>
 
@@ -86,14 +77,14 @@
     <div v-else-if="!sugs" class="empty">Loading…</div>
     <div v-else-if="!sugs.suggestions.length" class="empty">{{ filter === 'new' ? 'No new suggestions.' : 'No suggestions yet. Players send them from the launcher\'s roadmap.' }}</div>
     <div v-else class="inbox">
-      <SuggestionCard v-for="s in sugs.suggestions" :key="s.id" :s="s" @prompt="showPrompt('suggestion', $event)" @changed="reloadAll" />
+      <SuggestionCard v-for="s in sugs.suggestions" :key="s.id" :s="s" @changed="reloadAll" />
     </div>
   </section>
 </template>
 
 <script setup>
 // The roadmap (four lanes of items admins keep, the public ones shown in launchers), the
-// players' suggestions, and a prompt for Claude Code to start on any of them.
+// players' suggestions.
 import { computed, nextTick, reactive, ref, watch } from 'vue';
 import PageTop from '../components/PageTop.vue';
 import Stat from '../components/Stat.vue';
@@ -103,7 +94,7 @@ import { api } from '../lib/api.js';
 import { useLoad } from '../lib/data.js';
 import { fmt } from '../lib/fmt.js';
 import { live } from '../lib/live.js';
-import { AREAS, itemPrompt, LANE_IDS, STARTING_ITEMS, STARTING_RELEASES, suggestionPrompt } from '../lib/roadmap.js';
+import { AREAS, LANE_IDS, STARTING_ITEMS, STARTING_RELEASES } from '../lib/roadmap.js';
 import { toast } from '../lib/ui.js';
 
 const { data: road, error, reload } = useLoad(() => api('GET', '/roadmap'), () => null, { refresh: false });
@@ -190,42 +181,11 @@ async function suggest() {
     const item = await api('POST', '/roadmap/items', fields);
     toast('Added under Requested.');
     Object.assign(form, { title: '', body: '', from: '', public: false });
-    showPrompt('item', item?.title ? item : fields, false);
     reload();
   } catch (e) {
     toast(e.message, true);
   } finally {
     adding.value = false;
-  }
-}
-
-// The prompt panel.
-const promptFor = ref(null);
-const pre = ref(null);
-const copied = ref('');
-const promptTitle = computed(() => promptFor.value?.what.title || '');
-const promptText = computed(() => {
-  const p = promptFor.value;
-  if (!p) return '';
-  return p.kind === 'suggestion' ? suggestionPrompt(p.what) : itemPrompt(p.what);
-});
-function showPrompt(kind, what, scroll = true) {
-  promptFor.value = { kind, what };
-  copied.value = '';
-  if (scroll) jump('prompt');
-}
-async function copy() {
-  try {
-    await navigator.clipboard.writeText(promptText.value);
-    copied.value = 'Copied';
-  } catch {
-    // No clipboard here (an older browser, or not allowed): select it to copy by hand.
-    const range = document.createRange();
-    range.selectNodeContents(pre.value);
-    const sel = getSelection();
-    sel.removeAllRanges();
-    sel.addRange(range);
-    copied.value = 'Selected: press Ctrl+C or ⌘C to copy';
   }
 }
 
@@ -249,22 +209,16 @@ function jump(id, focus) {
 .release-form input { width: 80px; padding: 5px 8px; font-size: 13px; }
 .lane-empty { color: var(--faint); font-size: 13px; border: 1px dashed var(--line); border-radius: 12px; padding: 14px 16px; }
 .start { display: flex; flex-direction: column; gap: 12px; }
-.suggest { display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr); gap: 22px; padding: 20px 22px; scroll-margin-top: 16px; }
+.suggest { max-width: 720px; padding: 20px 22px; scroll-margin-top: 16px; }
 .suggest .lead { color: var(--soft); margin: 4px 0 14px; }
 .suggest textarea { font-family: var(--sans); font-size: 14px; min-height: 84px; }
 .two { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 .tick { display: inline-flex; gap: 8px; align-items: center; color: var(--soft); font-size: 13px; }
-.prompt { display: flex; flex-direction: column; gap: 8px; min-width: 0; scroll-margin-top: 16px; }
-.prompt pre {
-  margin: 0; background: var(--rail); border: 1px solid var(--line); border-radius: 10px; padding: 14px;
-  font: 13px/1.55 var(--mono); color: var(--soft); white-space: pre-wrap; word-break: break-word; min-height: 220px;
-}
-.copied { color: var(--ok); font: 12px var(--mono); }
 .inbox-lead { margin: -4px 0 14px; max-width: 80ch; }
 .inbox { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 @media (max-width: 1200px) { .lanes { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 900px) { .inbox { grid-template-columns: minmax(0, 1fr); } }
 @media (max-width: 760px) {
-  .lanes, .suggest, .two { grid-template-columns: minmax(0, 1fr); }
+  .lanes, .two { grid-template-columns: minmax(0, 1fr); }
 }
 </style>

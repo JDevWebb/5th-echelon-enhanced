@@ -19,7 +19,6 @@
         <textarea v-model="reply" maxlength="300" rows="2" placeholder="Thanks! It's planned for 0.4.3."></textarea>
       </label>
       <div class="row end buttons">
-        <button class="small" type="button" @click="$emit('prompt', s)">Prompt</button>
         <template v-if="s.item == null">
           <select v-model="lane" class="small-select" :aria-label="`Lane to promote ${s.title} to`">
             <option v-for="[id, label] in PROMOTE_LANES" :key="id" :value="id">{{ label }}</option>
@@ -41,7 +40,7 @@ import { PROMOTE_LANES, SUGGESTION_STATUSES } from '../lib/roadmap.js';
 import { toast } from '../lib/ui.js';
 
 const props = defineProps({ s: Object });
-const emit = defineEmits(['prompt', 'changed']);
+const emit = defineEmits(['changed']);
 const STATUS_CLASS = { new: 'info', planned: 'warn', done: 'ok', declined: '' };
 const statusLabel = id => SUGGESTION_STATUSES.find(([x]) => x === id)?.[1] || id;
 

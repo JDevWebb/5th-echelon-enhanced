@@ -35,7 +35,6 @@
       </div>
       <div v-else class="acts">
         <button class="small" type="button" @click="startEdit">Edit</button>
-        <button class="small" type="button" @click="$emit('prompt', item)">Prompt</button>
         <button class="ghost small" type="button" :aria-pressed="String(item.public)" :disabled="busy" :title="item.public ? 'Shown on the public roadmap' : 'Only admins see it'" @click="togglePublic">{{ item.public ? 'Public' : 'Hidden' }}</button>
         <span class="spacer"></span>
         <button class="ghost small icon" type="button" :disabled="first || busy" :aria-label="`Move ${item.title} up`" title="Move up" @click="$emit('move', -1)">↑</button>
@@ -55,7 +54,7 @@ import { STATUS_HINTS, statusClass } from '../lib/roadmap.js';
 import { toast } from '../lib/ui.js';
 
 const props = defineProps({ item: Object, lanes: Array, first: Boolean, last: Boolean, nextPosition: Object });
-const emit = defineEmits(['prompt', 'move', 'changed']);
+const emit = defineEmits(['move', 'changed']);
 
 const editing = ref(false);
 const deleting = ref(false);
