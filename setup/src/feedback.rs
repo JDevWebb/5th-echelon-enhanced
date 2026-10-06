@@ -338,6 +338,16 @@ this PC is 122.58.93.144:13000; advertising 139.99.171.113:40000; LAN 192.168.0.
     }
 
     #[test]
+    fn a_pc_name_holding_the_account_name_is_hidden_whole() {
+        // As Windows lists them (USERNAME before COMPUTERNAME), and the other way round.
+        for names in [vec!["Jon".to_string(), "Jons-Aero15KD".to_string()], vec!["Jons-Aero15KD".to_string(), "jon".to_string()]] {
+            let private = Private { names, keep: vec![] };
+            let out = redact(r#"gethostbyname: called with "Jons-Aero15KD" by JON"#, &private);
+            assert_eq!(out, r#"gethostbyname: called with "<private>" by <private>"#);
+        }
+    }
+
+    #[test]
     fn long_files_keep_their_end() {
         let text = format!("{}THE END", "x".repeat(MAX_FILE + 10));
         let a = attach("bl-tracing.log", &text, &Private::default()).unwrap();

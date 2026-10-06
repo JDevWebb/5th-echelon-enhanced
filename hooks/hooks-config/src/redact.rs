@@ -31,8 +31,13 @@ impl Private {
 /// wherever they appear, and public IPv4 addresses (`203.0.x.x`) other than those kept.
 pub fn redact(text: &str, private: &Private) -> String {
     // The names first: a home folder may be the whole of one ("C:\Users\Jo Smith").
+    // Longest first: a PC name often holds the account's ("Jons-Laptop" for "Jon"), and
+    // hiding the account's first would leave the rest of the PC's ("<private>s-Laptop").
+    let mut names: Vec<&str> = private.names.iter().map(String::as_str).collect();
+    names.sort_by_key(|n| std::cmp::Reverse(n.len()));
+    names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
     let mut out = text.to_string();
-    for name in &private.names {
+    for name in names {
         out = replace_ignoring_case(&out, name, "<private>");
     }
     hide_public_addresses(&hide_homes(&out), &private.keep)
