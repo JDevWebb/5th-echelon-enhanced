@@ -131,12 +131,19 @@ pub fn forget_account_check() {
 /// `check`'s answer for this server, name and password, reusing one from the
 /// last [`ACCOUNT_CHECK_HOLDS`]. A changed server, name or password checks
 /// again at once; so does a check that couldn't reach the server.
+///
+/// A refusal that signing in again won't change (this launcher is outdated, the
+/// account banned) holds until something does: an update (a new launcher starts
+/// afresh), a new setup or account, or the player's **Check again**. Asking every
+/// ten minutes only added to the server's log (Wingduck, Oceania, 2026-10-06:
+/// refused 17 times in two and a half hours).
 fn checked_account(url: &str, username: &str, secret: &str, check: impl FnOnce() -> AccountFact) -> AccountFact {
     use sha2::Digest as _;
     let key = format!("{url}\n{username}\n{:x}", sha2::Sha256::digest(secret.as_bytes()));
     let mut last = LAST_ACCOUNT_CHECK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if let Some((k, at, fact)) = last.as_ref() {
-        if *k == key && at.elapsed() < ACCOUNT_CHECK_HOLDS {
+        let settled = matches!(fact, AccountFact::Outdated(_) | AccountFact::Banned(_));
+        if *k == key && (settled || at.elapsed() < ACCOUNT_CHECK_HOLDS) {
             return fact.clone();
         }
     }
@@ -875,6 +882,26 @@ fn explorer_path(dir: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::explorer_path;
+
+    #[test]
+    fn a_refusal_that_wont_change_holds_until_checked_again() {
+        use super::*;
+        let ok = || AccountFact::Ok("n".into());
+        let outdated = || AccountFact::Outdated("update the launcher".into());
+        forget_account_check();
+        assert!(matches!(checked_account("u", "n", "p", outdated), AccountFact::Outdated(_)));
+        // Long after the usual hold: still the refusal, no sign-in.
+        {
+            let mut last = LAST_ACCOUNT_CHECK.lock().unwrap();
+            let (_, at, _) = last.as_mut().unwrap();
+            *at = Instant::now().checked_sub(ACCOUNT_CHECK_HOLDS * 3).unwrap();
+        }
+        assert!(matches!(checked_account("u", "n", "p", || panic!("signed in again")), AccountFact::Outdated(_)));
+        // Check again (or a setup) asks the server again.
+        forget_account_check();
+        assert!(matches!(checked_account("u", "n", "p", ok), AccountFact::Ok(_)));
+        forget_account_check();
+    }
 
     #[test]
     fn the_usual_name_is_the_most_used() {

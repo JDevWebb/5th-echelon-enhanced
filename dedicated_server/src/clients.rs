@@ -134,9 +134,34 @@ pub fn admitted(user_id: u32) {
     }
 }
 
+/// Whether a refusal of `who` is worth a line in the log: once an hour each. A game or
+/// launcher not yet updated retries every few seconds (Renegade's 0.4.1 game: 494 times in
+/// half an hour, eu1, 2026-10-06), and each was a warning; the Sessions page still counts them.
+pub fn worth_saying(who: &str) -> bool {
+    static SAID: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
+    let mut said = SAID.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let map = said.get_or_insert_with(HashMap::new);
+    map.retain(|_, at| at.elapsed() < SAY_REFUSALS_EVERY);
+    let key = who.to_lowercase();
+    if map.contains_key(&key) || map.len() >= 10_000 {
+        return false;
+    }
+    map.insert(key, Instant::now());
+    true
+}
+
+const SAY_REFUSALS_EVERY: Duration = Duration::from_secs(3600);
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refusal_is_said_once_an_hour() {
+        assert!(worth_saying("Clients-Test-Renegade"));
+        assert!(!worth_saying("clients-test-renegade"), "the same player, any case");
+        assert!(worth_saying("Clients-Test-Other"));
+    }
 
     #[test]
     fn versions_parse() {

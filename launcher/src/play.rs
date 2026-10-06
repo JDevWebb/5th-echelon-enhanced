@@ -1374,6 +1374,8 @@ fn status_card(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &eg
         play.show_all_checks = !play.show_all_checks;
     }
     if again {
+        // Asked for: signs in again, even after a refusal that otherwise holds.
+        crate::flow::forget_account_check();
         play.refresh(ctx, game);
     }
     if fix_all {

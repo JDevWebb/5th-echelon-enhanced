@@ -46,6 +46,28 @@ pub enum Error {
     InvalidToken(#[from] tonic::metadata::errors::InvalidMetadataValue),
     #[error("Not connected")]
     NotConnected,
+    #[error("The server refused this game: {0}")]
+    Refused(String),
+}
+
+/// Why the server refused this game's sign-in (an outdated client, a ban): nothing is sent
+/// to it again until the game restarts (after the launcher updates it). Retrying only got
+/// the same answer: Renegade's 0.4.1 game was refused 494 times in half an hour (eu1,
+/// 2026-10-06), every call it made adding to the server's log.
+static REFUSED: Mutex<Option<String>> = Mutex::new(None);
+/// Too many sign-ins: none again until then.
+static BACK_OFF_UNTIL: Mutex<Option<std::time::Instant>> = Mutex::new(None);
+const BACK_OFF: std::time::Duration = std::time::Duration::from_secs(600);
+
+/// The refusal standing, if any: calls give up before reaching the server.
+fn refusal() -> Result<(), Error> {
+    if let Some(why) = REFUSED.lock().unwrap().clone() {
+        return Err(Error::Refused(why));
+    }
+    if BACK_OFF_UNTIL.lock().unwrap().is_some_and(|t| std::time::Instant::now() < t) {
+        return Err(Error::Refused("too many sign-ins; trying again later".into()));
+    }
+    Ok(())
 }
 
 static CONNECTION: OnceLock<tonic::transport::Channel> = OnceLock::new();
@@ -80,6 +102,7 @@ async fn create_channel() -> std::result::Result<tonic::transport::Channel, Erro
 
 macro_rules! connect {
     ($client:ident) => {{
+        refusal()?;
         let channel = create_channel().await?;
         $client::with_interceptor(channel, move |mut req: tonic::Request<_>| {
             let guard = TOKEN.lock().unwrap();
@@ -265,10 +288,17 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
     debug!("logging in");
     let response = match client.login(request).await {
         Ok(response) => response.into_inner(),
-        // This client is older than the server allows: the game won't be let in either.
-        Err(status) if status.code() == tonic::Code::FailedPrecondition => {
-            error!("The server refused this client: {}", status.message());
+        // This client is older than the server allows (the game won't be let in either), or
+        // the account is banned: asking again changes nothing until the game restarts.
+        Err(status) if matches!(status.code(), tonic::Code::FailedPrecondition | tonic::Code::PermissionDenied) => {
+            error!("The server refused this client: {}; not signing in again until the game restarts", status.message());
             crate::community::say(status.message().to_string(), true);
+            *REFUSED.lock().unwrap() = Some(status.message().to_string());
+            return Err(status.into());
+        }
+        Err(status) if status.code() == tonic::Code::ResourceExhausted => {
+            error!("Sign-in refused: {}; trying again in {} minutes", status.message(), BACK_OFF.as_secs() / 60);
+            *BACK_OFF_UNTIL.lock().unwrap() = Some(std::time::Instant::now() + BACK_OFF);
             return Err(status.into());
         }
         Err(status) => {

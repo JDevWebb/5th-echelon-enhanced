@@ -224,7 +224,13 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
         info!(logger, "LoginEx attempt by {:?} ({:?})", ubi_username, username);
         let peer = Some(ci.address().ip());
         if !crate::rate_limit::begin_login(peer, ubi_username) {
-            warn!(logger, "too many logins from {} or failures for {ubi_username:?}; refused", ci.address().ip());
+            if crate::clients::worth_saying(&format!("too-many/{ubi_username}")) {
+                warn!(
+                    logger,
+                    "too many logins from {} or failures for {ubi_username:?}; refused (said once an hour)",
+                    ci.address().ip()
+                );
+            }
             crate::session_events::refused(crate::session_events::Who::Name(ubi_username.clone()), "too_many", "game", None);
             return Err(quazal::rmc::Error::AccessDenied);
         }
@@ -239,7 +245,12 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
         };
         crate::rate_limit::login_succeeded(peer, ubi_username);
         if !self.has_current_client(logger, user_id)? {
-            warn!(logger, "login refused for {:?}: its game client is outdated (or didn't sign in to the API)", ubi_username);
+            if crate::clients::worth_saying(&format!("game/{ubi_username}")) {
+                warn!(
+                    logger,
+                    "login refused for {:?}: its game client is outdated (or didn't sign in to the API) (said once an hour)", ubi_username
+                );
+            }
             crate::session_events::refused(crate::session_events::Who::Id(user_id), "no_current_client", "game", None);
             return Err(quazal::rmc::Error::AccessDenied);
         }

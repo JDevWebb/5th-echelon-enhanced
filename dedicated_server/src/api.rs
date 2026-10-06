@@ -1043,7 +1043,9 @@ impl MyUsers {
             crate::clients::admitted(user_id);
         }
         verdict.map_err(|why| {
-            warn!(self.logger, "Refused {username}'s outdated client {client:?}");
+            if crate::clients::worth_saying(username) {
+                warn!(self.logger, "Refused {username}'s outdated client {client:?} (said once an hour; Sessions counts them all)");
+            }
             crate::session_events::refused(crate::session_events::Who::Id(user_id), "outdated", "api", Some(client));
             Status::failed_precondition(why)
         })
