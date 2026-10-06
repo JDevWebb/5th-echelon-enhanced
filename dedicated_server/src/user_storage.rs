@@ -180,11 +180,16 @@ impl<CI> UserStorageProtocolServerTrait<CI> for UserStorageProtocolServerImpl {
         _logger: &Logger,
         ctx: &Context,
         ci: &mut ClientInfo<CI>,
-        _request: GetContentUrlRequest,
+        request: GetContentUrlRequest,
         _client_registry: &ClientRegistry<CI>,
         _socket: &std::net::UdpSocket,
     ) -> Result<GetContentUrlResponse, Error> {
         login_required(&*ci)?;
+        // A player's upload is never handed back (the game doesn't ask for it, and the address
+        // below is the published balancing file's).
+        if request.content_key.type_id == crate::uploads::SHADOWNET {
+            return Err(Error::AccessDenied);
+        }
         let protocol = ctx.settings.get("content_protocol").map_or("http://", String::as_str).to_owned();
         let host = ctx.settings.get("storage_host").expect("missing storage_host setting").to_owned();
         let path = ctx.settings.get("storage_path").expect("missing storage_path setting").to_owned();

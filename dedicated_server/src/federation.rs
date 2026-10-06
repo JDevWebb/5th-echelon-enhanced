@@ -636,6 +636,9 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
     // When the coordinator last said it takes no reports.
     // When reports may be sent again, after a failure.
     let mut reports_after: Option<Instant> = None;
+    // Players' uploads (uploads.rs) wait on their own, so a coordinator refusing or not
+    // taking them never holds up reports.
+    let mut content_after: Option<Instant> = None;
     // When session events may be sent again, after a failure.
     let mut events_after: Option<Instant> = None;
     let mut actions_done: Vec<(u64, crate::players::Outcome)> = Vec::new();
@@ -730,12 +733,23 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                 }
             }
             if reports_after.is_none_or(|t| Instant::now() >= t) {
-                match send_reports(&storage, &client).await.and(send_content(&storage, &client).await) {
+                match send_reports(&storage, &client).await {
                     Ok(()) => reports_after = None,
                     Err(e) if e.to_string().starts_with("404") => reports_after = Some(Instant::now() + REPORTS_UNSUPPORTED_WAIT),
                     Err(e) => {
                         debug!(logger, "Federation: sending a report failed (will retry): {e:#}");
                         reports_after = Some(Instant::now() + REPORTS_RETRY_WAIT);
+                    }
+                }
+            }
+            if content_after.is_none_or(|t| Instant::now() >= t) {
+                match send_content(&storage, &client).await {
+                    Ok(()) => content_after = None,
+                    // A coordinator from before 0.4.3: they wait, and go once it takes them.
+                    Err(e) if e.to_string().starts_with("404") => content_after = Some(Instant::now() + REPORTS_UNSUPPORTED_WAIT),
+                    Err(e) => {
+                        debug!(logger, "Federation: sending a player's upload failed (will retry): {e:#}");
+                        content_after = Some(Instant::now() + REPORTS_RETRY_WAIT);
                     }
                 }
             }
@@ -861,8 +875,8 @@ async fn send_content(storage: &Storage, client: &Coordinator<'_>) -> eyre::Resu
         });
         match client.post("/v1/content", &body).await {
             Ok(_) => storage.content_sent(user, type_id, updated_at).await?,
-            // A coordinator from before this: kept, and tried again later.
-            Err(e) if e.to_string().starts_with("404") => return Ok(()),
+            // A coordinator from before this answers 404: kept, and tried again in an hour.
+            Err(e) if e.to_string().starts_with("404") => return Err(e),
             Err(e) if refused_for_good(&e) => {
                 storage.content_sent(user, type_id, updated_at).await?;
                 return Err(e.wrap_err(format!("the coordinator refused {user}'s content; dropped")));

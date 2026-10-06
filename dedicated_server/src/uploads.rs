@@ -17,7 +17,9 @@ use std::time::Instant;
 /// The ShadowNet companion snapshot.
 pub const SHADOWNET: u32 = 0x8000_0003;
 /// The most an upload may be (the snapshot is ~135 KB).
-pub const MAX_UPLOAD: usize = 1024 * 1024;
+pub const MAX_UPLOAD: usize = 512 * 1024;
+/// Received bodies waiting for their UploadEnd, at most, in all.
+const MAX_HELD: usize = 64 * 1024 * 1024;
 /// An upload not finished by then is let go.
 const LASTS: Duration = Duration::from_secs(600);
 /// Uploads waiting at most (everyone's).
@@ -94,18 +96,45 @@ pub fn path(id: u64, secret: &str) -> String {
     format!("/ugc/{id}-{secret}")
 }
 
+fn parse_path(path: &str) -> Option<(u64, &str)> {
+    let (id, secret) = path.strip_prefix("/ugc/")?.split_once('-')?;
+    Some((id.parse().ok()?, secret))
+}
+
+/// Before the body of a PUT to `path` is read: whether it's an upload waiting for exactly
+/// `length` bytes, and there's room to hold them. Anything else is answered at once
+/// (`Err(status)`), so a stray PUT holds no buffer and no connection for long.
+pub fn expects(path: &str, length: usize) -> Result<(), &'static str> {
+    let Some((id, secret)) = parse_path(path) else { return Err("404 Not Found") };
+    let mut st = state();
+    st.pending.retain(|_, p| p.at.elapsed() < LASTS);
+    let held: usize = st.pending.values().filter_map(|p| p.body.as_ref().map(Vec::len)).sum();
+    match st.pending.get(&id) {
+        Some(p) if p.secret == secret && p.body.is_none() => {
+            if length != p.size {
+                Err("400 Bad Request")
+            } else if held + length > MAX_HELD {
+                Err("503 Service Unavailable")
+            } else {
+                Ok(())
+            }
+        }
+        _ => Err("404 Not Found"),
+    }
+}
+
 /// The content server got a PUT to `path`: the HTTP status to answer.
 pub fn receive(path: &str, body: Vec<u8>) -> &'static str {
-    let Some((id, secret)) = path.strip_prefix("/ugc/").and_then(|rest| rest.split_once('-')) else {
-        return "404 Not Found";
-    };
-    let Ok(id) = id.parse::<u64>() else { return "404 Not Found" };
+    let Some((id, secret)) = parse_path(path) else { return "404 Not Found" };
+    // The snapshot is a JSON object: anything else isn't what was asked for (checked before
+    // the lock: up to half a megabyte to parse).
+    let json = serde_json::from_slice::<serde_json::Value>(&body).is_ok_and(|v| v.is_object());
     let mut st = state();
-    let Some(p) = st.pending.get_mut(&id).filter(|p| p.secret == secret && p.at.elapsed() < LASTS && p.body.is_none()) else {
+    st.pending.retain(|_, p| p.at.elapsed() < LASTS);
+    let Some(p) = st.pending.get_mut(&id).filter(|p| p.secret == secret && p.body.is_none()) else {
         return "404 Not Found";
     };
-    // The snapshot is JSON text: anything else isn't what was asked for.
-    if body.len() != p.size || std::str::from_utf8(&body).map_or(true, |t| !t.trim_start().starts_with('{')) {
+    if body.len() != p.size || !json {
         return "400 Bad Request";
     }
     p.body = Some(body);
@@ -138,6 +167,12 @@ mod tests {
         assert_eq!(receive(&path(id, "0000"), body.clone()), "404 Not Found", "the secret");
         assert_eq!(receive(&path(id, &secret), b"{short".to_vec()), "400 Bad Request", "the size asked for");
         assert_eq!(receive(&path(id, &secret), vec![0xff; body.len()]), "400 Bad Request", "JSON text only");
+        let mut junk = b"{".to_vec();
+        junk.resize(body.len(), b'x');
+        assert_eq!(receive(&path(id, &secret), junk), "400 Bad Request", "a JSON object, not just a brace");
+        assert_eq!(expects(&path(id, "0000"), body.len()), Err("404 Not Found"));
+        assert_eq!(expects(&path(id, &secret), body.len() + 1), Err("400 Bad Request"));
+        assert_eq!(expects(&path(id, &secret), body.len()), Ok(()));
         assert_eq!(receive(&path(id, &secret), body.clone()), "200 OK");
         assert_eq!(receive(&path(id, &secret), body.clone()), "404 Not Found", "once");
         assert_eq!(finish(user + 1, id, true), None, "someone else's");

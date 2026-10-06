@@ -25,9 +25,15 @@ const MAX_BODY: usize = 16 * 1024;
 /// How long an upload's body may take (a PUT of the game's content, uploads.rs).
 const UPLOAD_DEADLINE: Duration = Duration::from_secs(60);
 
-/// Whether a PUT to `path` is taken: the game's uploads (uploads.rs), nothing else.
+/// Whether a PUT to `path` is taken: the game's uploads (uploads.rs), on the content server
+/// only (`serve_many`).
 fn takes_put(path: &str) -> bool {
     path.starts_with("/ugc/")
+}
+
+/// No PUTs (the config server).
+fn no_put(_: &str) -> bool {
+    false
 }
 
 /// A request: the raw request line (as upstream matched on it), its method
@@ -136,7 +142,7 @@ pub type Routes = Arc<dyn Fn(&Request) -> Option<Response> + Send + Sync>;
 /// the paths `takes_body` names; others are refused before their body.
 pub fn serve(logger: &slog::Logger, addr: SocketAddr, content: &str, routes: Option<Routes>, takes_body: fn(&str) -> bool) -> std::io::Result<()> {
     let content = content.as_bytes().to_vec();
-    serve_listener(logger, TcpListener::bind(addr)?, takes_body, move |req| {
+    serve_listener(logger, TcpListener::bind(addr)?, takes_body, no_put, move |req| {
         routes.as_ref().and_then(|r| r(req)).unwrap_or_else(|| Response::ok(content.clone()))
     })
 }
@@ -153,6 +159,7 @@ pub fn serve_many(logger: &slog::Logger, addr: SocketAddr, files: &HashMap<Strin
         logger,
         TcpListener::bind(addr)?,
         |_| false,
+        takes_put,
         move |req| {
             if req.method == "PUT" {
                 return Response::status(crate::uploads::receive(&req.path, req.body.clone()));
@@ -182,7 +189,7 @@ pub fn serve_many(logger: &slog::Logger, addr: SocketAddr, files: &HashMap<Strin
 /// Accepts connections forever, answering each on its own thread, so one slow
 /// or idle client can't hold up everyone else (upstream served one connection
 /// at a time without timeouts).
-fn serve_listener<H>(logger: &slog::Logger, listener: TcpListener, takes_body: fn(&str) -> bool, handler: H) -> std::io::Result<()>
+fn serve_listener<H>(logger: &slog::Logger, listener: TcpListener, takes_body: fn(&str) -> bool, takes_put: fn(&str) -> bool, handler: H) -> std::io::Result<()>
 where
     H: Fn(&Request) -> Response + Send + Sync + 'static,
 {
@@ -217,7 +224,7 @@ where
                 Some(client) if proxied => open.take(Some(client), false).map(Some),
                 _ => Some(None),
             };
-            if let Err(e) = handle(&logger, stream, takes_body, client_slot, &*handler) {
+            if let Err(e) = handle(&logger, stream, takes_body, takes_put, client_slot, &*handler) {
                 debug!(logger, "simple_http: {e}");
             }
         });
@@ -311,6 +318,7 @@ fn handle(
     logger: &slog::Logger,
     mut stream: TcpStream,
     takes_body: fn(&str) -> bool,
+    takes_put: fn(&str) -> bool,
     client_slot: impl FnOnce(Option<std::net::IpAddr>) -> Option<Option<Slot>>,
     handler: &dyn Fn(&Request) -> Response,
 ) -> std::io::Result<()> {
@@ -363,6 +371,12 @@ fn handle(
         }
         if length > if upload { crate::uploads::MAX_UPLOAD } else { MAX_BODY } {
             return stream.write_all(&Response::status("413 Payload Too Large").to_bytes());
+        }
+        // An upload's address, secret and size are checked before anything is held for it.
+        if upload {
+            if let Err(status) = crate::uploads::expects(&req.path, length) {
+                return stream.write_all(&Response::status(status).to_bytes());
+            }
         }
         // Through a proxy, the client it names now has a place of its own, so one
         // client's slow bodies can't use up everyone's.

@@ -272,6 +272,12 @@ impl Coordinator {
                     .bind(id)
                     .execute(&mut *tx)
                     .await?;
+                // Their game's uploads go with them (ids come again on the server).
+                sqlx::query("DELETE FROM player_content WHERE server_id = ? AND player_id = ?")
+                    .bind(server)
+                    .bind(id)
+                    .execute(&mut *tx)
+                    .await?;
                 removed += 1;
             }
             known.retain(|id| listed.contains(id));
@@ -453,6 +459,11 @@ impl Coordinator {
             }
             "delete" => {
                 sqlx::query("DELETE FROM players WHERE server_id = ? AND id = ?")
+                    .bind(server)
+                    .bind(player)
+                    .execute(&self.pool)
+                    .await?;
+                sqlx::query("DELETE FROM player_content WHERE server_id = ? AND player_id = ?")
                     .bind(server)
                     .bind(player)
                     .execute(&self.pool)

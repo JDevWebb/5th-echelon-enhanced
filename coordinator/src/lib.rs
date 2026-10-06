@@ -527,6 +527,7 @@ impl Coordinator {
     /// operator (`coordinator remove-server`).
     pub async fn remove_server(&self, server_id: &str) -> sqlx::Result<bool> {
         let done = sqlx::query("DELETE FROM servers WHERE id = ?").bind(server_id).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM player_content WHERE server_id = ?").bind(server_id).execute(&self.pool).await?;
         self.sweep().await?;
         Ok(done.rows_affected() > 0)
     }
