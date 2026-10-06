@@ -68,6 +68,10 @@ pub const RELEASES: &[Release] = &[
                 lead: "Reports aren't lost",
                 rest: " when you close the launcher too soon.",
             },
+            Fix {
+                lead: "The overlay's key works only in the game",
+                rest: ", not in a browser in front of it.",
+            },
         ],
     },
     Release {
