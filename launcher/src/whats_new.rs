@@ -86,6 +86,14 @@ pub const RELEASES: &[Release] = &[Release {
             lead: "Bans and sign-in limits say why",
             rest: ", not \"Error when sending request\".",
         },
+        Fix {
+            lead: "No dead lobbies after a drop",
+            rest: ": friends see only the lobby your game is in now.",
+        },
+        Fix {
+            lead: "Faraway servers get longer to answer",
+            rest: ", instead of a port error.",
+        },
     ],
 }];
 
