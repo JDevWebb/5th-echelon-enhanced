@@ -26,8 +26,16 @@ pub use crate::api::FriendChange;
 
 /// How often the lists refresh on their own.
 const REFRESH_EVERY: Duration = Duration::from_secs(15);
-/// Timeout for the server's HTTP API (port 80).
-const HTTP_TIMEOUT: Duration = Duration::from_secs(3);
+/// Timeout for the server's HTTP API (port 80), to connect and for each read. Mobile
+/// connections stall for a few seconds now and then: at 3 s, PlaySkill's game (eu1,
+/// 2026-10-06) timed out on about 1 request in 100.
+const HTTP_TIMEOUT: Duration = Duration::from_secs(8);
+/// A request may take this long in all (a server dripping bytes mustn't hold the thread).
+const HTTP_DEADLINE: Duration = Duration::from_secs(12);
+/// Failed requests in a row before it's worth a line (one stall misses one refresh, and the
+/// overlay keeps what it had).
+const FAILURES_TOLD: u32 = 3;
+static FAILURES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// How a player stands to us.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -598,11 +606,22 @@ fn describe(a: &friends::Activity) -> String {
 
 /// A GET to the server's HTTP API (port 80), decoded as JSON. Errors are
 /// logged and give `None`: the overlay shows what it has.
+/// A request failing is said once it has failed [`FAILURES_TOLD`] times in a row, and its
+/// answering again after that.
 fn http_get_json<T: for<'de> Deserialize<'de>>(host: &str, path: &str) -> Option<T> {
+    use std::sync::atomic::Ordering;
     match http_get(host, path) {
-        Ok(body) => serde_json::from_slice(&body).map_err(|e| warn!("{path}: {e}")).ok(),
+        Ok(body) => {
+            let failed = FAILURES.swap(0, Ordering::Relaxed);
+            if failed >= FAILURES_TOLD {
+                info!("{path}: the server answers again (after {failed} failed requests)");
+            }
+            serde_json::from_slice(&body).map_err(|e| warn!("{path}: {e}")).ok()
+        }
         Err(e) => {
-            warn!("{path}: {e}");
+            if FAILURES.fetch_add(1, Ordering::Relaxed) + 1 == FAILURES_TOLD {
+                warn!("{path}: {e} ({FAILURES_TOLD} times in a row)");
+            }
             None
         }
     }
@@ -619,8 +638,7 @@ fn http_get(host: &str, path: &str) -> std::io::Result<Vec<u8>> {
     write!(stream, "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")?;
     let mut buf = Vec::new();
     let mut chunk = [0u8; 4096];
-    // A server dripping bytes mustn't hold this thread: 3 s per read, 8 s in all.
-    let deadline = Instant::now() + Duration::from_secs(8);
+    let deadline = Instant::now() + HTTP_DEADLINE;
     // The server answers HTTP/1.0 with a Content-Length; read up to it.
     loop {
         if Instant::now() >= deadline {
