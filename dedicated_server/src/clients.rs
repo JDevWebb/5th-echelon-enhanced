@@ -152,9 +152,59 @@ pub fn worth_saying(who: &str) -> bool {
 
 const SAY_REFUSALS_EVERY: Duration = Duration::from_secs(3600);
 
+/// How long an API sign-in vouches for its address (see [`address_proven`]).
+const API_ADDRESS_FOR: Duration = Duration::from_secs(600);
+/// Addresses kept per player (a VPN rotating through a few).
+const API_ADDRESSES_KEPT: usize = 4;
+
+fn api_addresses() -> std::sync::MutexGuard<'static, HashMap<u32, Vec<(std::net::IpAddr, Instant)>>> {
+    static ADDRESSES: std::sync::LazyLock<Mutex<HashMap<u32, Vec<(std::net::IpAddr, Instant)>>>> = std::sync::LazyLock::new(Mutex::default);
+    ADDRESSES.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `user` signed in to the API (over TLS, with their password or identity key) from `ip`.
+pub fn note_api_address(user: u32, ip: std::net::IpAddr) {
+    let ip = ip.to_canonical();
+    let mut all = api_addresses();
+    if all.len() >= 100_000 {
+        all.retain(|_, list| list.iter().any(|(_, at)| at.elapsed() < API_ADDRESS_FOR));
+    }
+    let list = all.entry(user).or_default();
+    list.retain(|(a, at)| *a != ip && at.elapsed() < API_ADDRESS_FOR);
+    if list.len() >= API_ADDRESSES_KEPT {
+        list.remove(0);
+    }
+    list.push((ip, Instant::now()));
+}
+
+/// Whether `ip` is `user`'s by their API sign-in from there in the last ten minutes: the game's
+/// ticket is good from there, wherever it was issued. A sign-in over TLS can't be replayed by
+/// someone who saw the game's readable one (quazal's `TICKET_ADDRESS_PROVEN`).
+pub fn address_proven(user: u32, ip: std::net::IpAddr) -> bool {
+    let ip = ip.to_canonical();
+    api_addresses()
+        .get(&user)
+        .is_some_and(|list| list.iter().any(|(a, at)| *a == ip && at.elapsed() < API_ADDRESS_FOR))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_api_sign_in_vouches_for_its_address() {
+        let (me, other) = (930_001, 930_002);
+        let here: std::net::IpAddr = "198.51.100.20".parse().unwrap();
+        assert!(!address_proven(me, here));
+        note_api_address(me, "::ffff:198.51.100.20".parse().unwrap());
+        assert!(address_proven(me, here), "either way of writing it");
+        assert!(!address_proven(other, here), "only for the account that signed in");
+        assert!(!address_proven(me, "198.51.100.21".parse().unwrap()));
+        for i in 0..5u8 {
+            note_api_address(me, std::net::IpAddr::from([203, 0, 113, i]));
+        }
+        assert!(!address_proven(me, here), "a few addresses kept, the oldest go");
+    }
 
     #[test]
     fn a_refusal_is_said_once_an_hour() {

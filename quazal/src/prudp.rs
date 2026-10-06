@@ -77,6 +77,16 @@ fn max_connections_per_ip() -> usize {
 
 /// An address as 16 bytes (IPv4 as IPv4-mapped IPv6), the same for both ways of
 /// writing an IPv4 address.
+/// Whether the server knows `ip` to be the player `pid`'s (their API sign-in over TLS came from
+/// there lately): a ticket used from there is theirs, wherever it was issued. Set once by the
+/// server; without it only the ticket's own address and its neighbours are.
+static TICKET_ADDRESS_PROVEN: std::sync::OnceLock<fn(u32, std::net::IpAddr) -> bool> = std::sync::OnceLock::new();
+
+/// Sets [`TICKET_ADDRESS_PROVEN`].
+pub fn set_ticket_address_proven(check: fn(u32, std::net::IpAddr) -> bool) {
+    let _ = TICKET_ADDRESS_PROVEN.set(check);
+}
+
 pub(crate) fn address_bytes(ip: std::net::IpAddr) -> [u8; 16] {
     match ip.to_canonical() {
         std::net::IpAddr::V4(v4) => v4.to_ipv6_mapped().octets(),
@@ -820,13 +830,26 @@ where
                 }
                 // Only from the address that asked for it. Someone who saw the ticket and the
                 // CONNECT on the way can't use them from anywhere else (behind a NAT, the game
-                // reaches the auth and secure services from the same public address).
+                // reaches the auth and secure services from the same public address). A VPN's or
+                // carrier's neighbouring address is let in, and so is one the player proved
+                // theirs over TLS (their API sign-in), as the relay takes a player's other port
+                // on the strength of their tag.
                 if !ti.is_for(client.ip()) {
-                    warn!(
-                        logger,
-                        "Ticket of user {} used from {client}, not the address it was issued to; not signed in", ti.principle_id
-                    );
-                    return Ok(vec![]);
+                    let proven = TICKET_ADDRESS_PROVEN.get().is_some_and(|check| check(ti.principle_id, client.ip()));
+                    if ti.is_near(client.ip()) || proven {
+                        info!(
+                            logger,
+                            "Ticket of user {} used from {client}, {} the address it was issued to; signed in",
+                            ti.principle_id,
+                            if proven { "where they signed in to the API, not" } else { "next to" }
+                        );
+                    } else {
+                        warn!(
+                            logger,
+                            "Ticket of user {} used from {client}, not the address it was issued to nor one they proved theirs; not signed in", ti.principle_id
+                        );
+                        return Ok(vec![]);
+                    }
                 }
                 // The ticket alone proves nothing: it travels readably, and anyone who saw one
                 // could replay it. The client proves it has the session key inside by

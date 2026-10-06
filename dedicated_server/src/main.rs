@@ -526,6 +526,10 @@ fn main() -> color_eyre::Result<()> {
         }));
     }
 
+    // A game's ticket is good from an address its player signed in to the API from over TLS
+    // (a VPN's other exit), as well as its own and its neighbours (quazal's prudp.rs).
+    quazal::prudp::set_ticket_address_proven(clients::address_proven);
+
     let storage = Arc::new(Storage::init(logger.clone())?);
 
     let config_filename = args.config_path.unwrap_or_else(|| PathBuf::from("service.toml"));

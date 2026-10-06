@@ -46,6 +46,22 @@ impl KerberosTicketInternal {
         self.issued_to == crate::prudp::address_bytes(ip)
     }
 
+    /// Whether `ip` is next to the address the ticket was issued to: the same /24 (IPv4) or
+    /// /64 (IPv6). A VPN or a carrier's NAT sends a PC's connections out of neighbouring
+    /// addresses (Cloudflare WARP: Mailz on eu1, 2026-10-05, asked for the ticket from
+    /// 104.28.198.246 and used it from .247), so their game couldn't sign in. Someone replaying
+    /// a ticket they saw would have to send from inside the player's own range too.
+    #[must_use]
+    pub fn is_near(&self, ip: std::net::IpAddr) -> bool {
+        let other = crate::prudp::address_bytes(ip);
+        let v4_mapped = |a: &[u8; 16]| a[..10] == [0; 10] && a[10..12] == [0xff, 0xff];
+        match (v4_mapped(&self.issued_to), v4_mapped(&other)) {
+            (true, true) => self.issued_to[..15] == other[..15],
+            (false, false) => self.issued_to[..8] == other[..8],
+            _ => false,
+        }
+    }
+
     /// Seals the ticket using a secret key.
     fn seal(&self, key: &secretbox::Key) -> Vec<u8> {
         let n = secretbox::gen_nonce();
@@ -154,5 +170,27 @@ mod tests {
         assert!(opened.is_for("203.0.113.5".parse().unwrap()));
         assert!(opened.is_for("::ffff:203.0.113.5".parse().unwrap()), "either way of writing it");
         assert!(!opened.is_for("203.0.113.6".parse().unwrap()));
+    }
+
+    #[test]
+    fn a_neighbouring_address_is_near() {
+        let t = |ip: &str| {
+            KerberosTicketInternal {
+                principle_id: 1,
+                valid_until: 1,
+                session_key: [0; SESSION_KEY_SIZE],
+                issued_to: [0; 16],
+            }
+            .for_address(ip.parse().unwrap())
+        };
+        // Mailz behind Cloudflare WARP.
+        let warp = t("104.28.198.246");
+        assert!(warp.is_near("104.28.198.247".parse().unwrap()));
+        assert!(warp.is_near("::ffff:104.28.198.1".parse().unwrap()));
+        assert!(!warp.is_near("104.28.199.246".parse().unwrap()), "another /24");
+        assert!(!warp.is_near("2001:db8::1".parse().unwrap()), "v4 and v6 aren't neighbours");
+        let v6 = t("2001:db8:1:2::10");
+        assert!(v6.is_near("2001:db8:1:2:ffff::1".parse().unwrap()));
+        assert!(!v6.is_near("2001:db8:1:3::10".parse().unwrap()), "another /64");
     }
 }

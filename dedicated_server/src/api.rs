@@ -822,6 +822,10 @@ impl Users for MyUsers {
 
         info!(self.logger, "Login successful for {username}");
         crate::metrics::api_login();
+        // Over TLS with the password: the game's ticket is good from this address too.
+        if let Some(ip) = peer {
+            crate::clients::note_api_address(user_id, ip);
+        }
         self.signed_in(user_id).await
     }
 
@@ -1028,6 +1032,9 @@ impl Users for MyUsers {
         crate::rate_limit::login_succeeded(peer, &limit_key);
         info!(self.logger, "Key login successful for {}", person.username);
         crate::metrics::api_login();
+        if let Some(ip) = peer {
+            crate::clients::note_api_address(person.id, ip);
+        }
         self.signed_in(person.id).await
     }
 }
