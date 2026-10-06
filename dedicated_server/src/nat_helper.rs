@@ -37,6 +37,10 @@ use slog::Logger;
 /// A player is forgotten after this long without a probe or relayed packet
 /// (the hook probes every 20 s).
 const EXPIRY: Duration = Duration::from_secs(90);
+/// Other ports a player's relayed data may come from (see [`Peer::aliases`]); the oldest goes.
+const MAX_ALIASES: usize = 4;
+/// Packets for a player go back to where their data last came from, for this long after.
+const DATA_FROM_FRESH: Duration = Duration::from_secs(30);
 /// Players registered at once, and from one address (a LAN party shares one).
 const MAX_PEERS: usize = 20_000;
 const MAX_PEERS_PER_IP: usize = 64;
@@ -142,6 +146,13 @@ struct Peer {
     probed_at: Instant,
     /// The game's round trip to this server, as it last measured it.
     rtt_ms: Option<u16>,
+    /// Other ports on `real`'s address this player's relayed data came from, with its tag:
+    /// the game's second Storm socket, or a NAT that gives each socket (or destination) its
+    /// own port. Relayed data from them is theirs.
+    aliases: Vec<SocketAddrV4>,
+    /// Where this player's relayed data last came from, and when: packets for them go back
+    /// there (the socket that sent), not to `real` (the one that probes).
+    data_from: Option<(SocketAddrV4, Instant)>,
 }
 
 /// How long a direct player's address must stand before the address echo gives it out: the
@@ -161,6 +172,8 @@ pub struct Table {
     peers: HashMap<Id, Peer>,
     by_name: HashMap<String, Id>,
     by_real: HashMap<SocketAddrV4, Id>,
+    /// [`Peer::aliases`], indexed.
+    by_alias: HashMap<SocketAddrV4, Id>,
     by_vport: HashMap<u16, Id>,
     by_advertise: HashMap<SocketAddrV4, Id>,
 }
@@ -174,6 +187,7 @@ impl Table {
             peers: HashMap::new(),
             by_name: HashMap::new(),
             by_real: HashMap::new(),
+            by_alias: HashMap::new(),
             by_vport: HashMap::new(),
             by_advertise: HashMap::new(),
         }
@@ -215,6 +229,11 @@ impl Table {
         self.by_name.remove(&p.name);
         if self.by_real.get(&p.real) == Some(&id) {
             self.by_real.remove(&p.real);
+        }
+        for a in &p.aliases {
+            if self.by_alias.get(a) == Some(&id) {
+                self.by_alias.remove(a);
+            }
         }
         if self.by_advertise.get(&p.advertise) == Some(&id) {
             self.by_advertise.remove(&p.advertise);
@@ -293,8 +312,17 @@ impl Table {
             received: old.as_ref().map_or(0, |(_, o)| o.received),
             probed_at: now,
             rtt_ms: old.as_ref().and_then(|(_, o)| o.rtt_ms),
+            // The other ports stay theirs while the address does.
+            aliases: old
+                .as_ref()
+                .map(|(_, o)| o.aliases.iter().copied().filter(|a| a.ip() == src.ip() && *a != src).collect())
+                .unwrap_or_default(),
+            data_from: old.as_ref().and_then(|(_, o)| o.data_from).filter(|(a, _)| a.ip() == src.ip()),
         };
         let tag = peer.tag;
+        for a in &peer.aliases {
+            self.by_alias.insert(*a, id);
+        }
         self.by_name.insert(key, id);
         self.by_real.insert(src, id);
         if !taken(self, &advertise) {
@@ -317,14 +345,40 @@ impl Table {
     }
 
     /// [`Self::route`], for a packet that must carry its sender's `tag`.
+    ///
+    /// From a port the player didn't register on, their tag proves it's theirs as long as it
+    /// comes from their address: the game's other Storm socket, or a NAT that maps each socket
+    /// (or destination) to its own port, as PlaySkill's mobile carrier did (eu1, 2026-10-06:
+    /// registered from 47868, the match's traffic from 47861, dropped until the game happened
+    /// to register again). That port is theirs from then on. Someone else at the address
+    /// (carrier-grade NAT) doesn't have the tag.
     pub fn route_tagged(&mut self, src: SocketAddrV4, tag: nat_proto::Tag, to: SocketAddrV4, len: usize, now: Instant) -> Option<(SocketAddrV4, SocketAddrV4, nat_proto::Tag)> {
-        let sender = self.peers.get(self.by_real.get(&src)?)?;
-        if !same(&sender.tag, &tag) {
+        let sender_id = match self.by_real.get(&src).or_else(|| self.by_alias.get(&src)) {
+            Some(id) => *id,
+            None => self.adopt_port(src, &tag)?,
+        };
+        if !same(&self.peers.get(&sender_id)?.tag, &tag) {
             return None;
         }
-        let (target, from) = self.route(src, to, len, now)?;
-        let target_tag = self.peers.get(self.by_real.get(&target)?)?.tag;
+        let (target, from, target_id) = self.route_from(sender_id, to, len, now)?;
+        if let Some(sender) = self.peers.get_mut(&sender_id) {
+            sender.data_from = Some((src, now));
+        }
+        let target_tag = self.peers.get(&target_id)?.tag;
         Some((target, from, target_tag))
+    }
+
+    /// The player registered from `src`'s address with `tag`, taking `src` as theirs too.
+    fn adopt_port(&mut self, src: SocketAddrV4, tag: &nat_proto::Tag) -> Option<Id> {
+        let id = *self.peers.iter().find(|(_, p)| p.real.ip() == src.ip() && same(&p.tag, tag))?.0;
+        let peer = self.peers.get_mut(&id)?;
+        if peer.aliases.len() >= MAX_ALIASES {
+            let old = peer.aliases.remove(0);
+            self.by_alias.remove(&old);
+        }
+        peer.aliases.push(src);
+        self.by_alias.insert(src, id);
+        Some(id)
     }
 
     /// Where a relayed packet from `src` to `to` goes: the receiver's real
@@ -332,6 +386,11 @@ impl Table {
     /// (unknown sender or receiver, or the sender is over its rate).
     pub fn route(&mut self, src: SocketAddrV4, to: SocketAddrV4, len: usize, now: Instant) -> Option<(SocketAddrV4, SocketAddrV4)> {
         let sender_id = *self.by_real.get(&src)?;
+        self.route_from(sender_id, to, len, now).map(|(target, from, _)| (target, from))
+    }
+
+    /// [`Self::route`] for the player `sender_id`; also the receiver's id.
+    fn route_from(&mut self, sender_id: Id, to: SocketAddrV4, len: usize, now: Instant) -> Option<(SocketAddrV4, SocketAddrV4, Id)> {
         let (first, last) = self.cfg.relay_ports;
         let target_id = *if *to.ip() == self.relay_ip && (first..=last).contains(&to.port()) {
             self.by_vport.get(&to.port())
@@ -341,7 +400,12 @@ impl Table {
         if target_id == sender_id {
             return None;
         }
-        let target = self.peers.get(&target_id)?.real;
+        // Back to the socket their data last came from, while it's recent; else the one that
+        // probes (it keeps its own mapping alive).
+        let target = self
+            .peers
+            .get(&target_id)
+            .map(|p| p.data_from.filter(|(_, at)| now.duration_since(*at) < DATA_FROM_FRESH).map_or(p.real, |(a, _)| a))?;
         let limit = self.cfg.relay_kbps_per_player as usize * 1024;
         let sender = self.peers.get_mut(&sender_id)?;
         sender.last_seen = now;
@@ -361,7 +425,7 @@ impl Table {
         if let Some(receiver) = self.peers.get_mut(&target_id) {
             receiver.received += 1;
         }
-        Some((target, from))
+        Some((target, from, target_id))
     }
 
     /// Notes `name`'s round trip to this server, as its game measured it.
@@ -406,7 +470,7 @@ impl Table {
     /// the address a player registered from (a game sending from a port it didn't register),
     /// or nobody known.
     fn who_sent(&self, src: SocketAddrV4) -> String {
-        if let Some(p) = self.by_real.get(&src).and_then(|id| self.peers.get(id)) {
+        if let Some(p) = self.by_real.get(&src).or_else(|| self.by_alias.get(&src)).and_then(|id| self.peers.get(id)) {
             return p.name.clone();
         }
         let same_ip: Vec<String> = self
@@ -1277,6 +1341,39 @@ mod tests {
         assert_eq!((target, target_tag), (a("198.51.100.8:1"), tag(&b_reply)), "delivered with the receiver's tag");
         // A refresh keeps the tag (the game relays with it).
         assert_eq!(tag(&t.probe(a("198.51.100.7:1"), 0, 2, None, "a", now)), tag(&a_reply));
+    }
+
+    /// PlaySkill's case (eu1, 2026-10-06): registered from one port, the match's traffic from
+    /// another (the game's other Storm socket, or a NAT giving each its own port).
+    #[test]
+    fn relayed_data_from_another_port_of_the_player_is_theirs() {
+        let now = Instant::now();
+        let mut t = table(RelayMode::All);
+        let ps = t.probe(a("176.0.198.61:47868"), 0, 1, None, "PlaySkill", now);
+        let th = t.probe(a("177.23.180.245:42401"), 0, 1, None, "Theusma01", now);
+        let ((ps_adv, _), (th_adv, _)) = (advertise(&ps), advertise(&th));
+        // Someone else behind the same carrier address, without the tag: nothing.
+        assert_eq!(t.route_tagged(a("176.0.198.61:5555"), [0; 8], th_adv, 10, now), None);
+        assert_eq!(t.route_tagged(a("176.0.198.61:5555"), tag(&th), th_adv, 10, now), None, "another player's tag");
+        // Their tag from another port of their address: theirs, and delivered as from them.
+        let (target, from, _) = t.route_tagged(a("176.0.198.61:47861"), tag(&ps), th_adv, 10, now).unwrap();
+        assert_eq!((target, from), (a("177.23.180.245:42401"), ps_adv));
+        assert_eq!(t.who_sent(a("176.0.198.61:47861")), "playskill");
+        // The answer goes back to the socket that sent, not the one that probes.
+        let (back, _, _) = t.route_tagged(a("177.23.180.245:42401"), tag(&th), ps_adv, 10, now).unwrap();
+        assert_eq!(back, a("176.0.198.61:47861"));
+        // A keepalive from the probing socket keeps that port theirs.
+        t.probe(a("176.0.198.61:47868"), 0, 2, None, "PlaySkill", now);
+        assert!(t.route_tagged(a("176.0.198.61:47861"), tag(&ps), th_adv, 10, now).is_some());
+        // Quiet a while: back to the probing socket.
+        let later = now + DATA_FROM_FRESH + Duration::from_secs(1);
+        let (back, _, _) = t.route_tagged(a("177.23.180.245:42401"), tag(&th), ps_adv, 10, later).unwrap();
+        assert_eq!(back, a("176.0.198.61:47868"));
+        // At most a few ports each; the oldest goes.
+        for port in 1..=MAX_ALIASES as u16 {
+            assert!(t.route_tagged(a(&format!("176.0.198.61:{port}")), tag(&ps), th_adv, 10, later).is_some());
+        }
+        assert_eq!(t.who_sent(a("176.0.198.61:47861")), "an unregistered port of playskill (registered from port 47868)");
     }
 
     #[test]
