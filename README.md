@@ -40,7 +40,7 @@
 **To play:**
 1. Download **`launcher.exe`** (Windows) or **`launcher-linux-x86_64`** (Linux, Steam Deck) from the [latest release](https://github.com/JDevWebb/5th-echelon-enhanced/releases/latest).
 2. Run it. Under **Choose a server** it lists the community servers with your ping to each, the closest already picked.
-3. Press **Connect** (the first time, pick the name other players will see), then **Play**. Press <kbd>F5</kbd> in the game to add friends.
+3. Press **Connect** (the first time, pick the name other players will see), then **Play**. Press <kbd>F5</kbd> in the game to add friends (<kbd>Fn</kbd>+<kbd>F5</kbd> on most laptops and some keyboards).
 
 The launcher pings every server in the network and sets you up on the one with the lowest ping (its steps, under **Steps** in the bar along the bottom, say which). Afterwards the server card on the Play screen lists them all with your ping to each, and picking one moves you there in one click, with the same name and friends.
 
@@ -162,7 +162,7 @@ Matches run peer to peer: your game talks straight to the other players' games. 
 
 ### In the game
 
-Press <kbd>F5</kbd> for the overlay:
+Press <kbd>F5</kbd> for the overlay. On most laptops and some keyboards, the top row controls brightness or volume, so press <kbd>Fn</kbd>+<kbd>F5</kbd> (or turn on Fn Lock):
 - **Friends:**
   - your friends and what they're playing, with invite buttons;
   - friend requests to answer, and who you've blocked.
