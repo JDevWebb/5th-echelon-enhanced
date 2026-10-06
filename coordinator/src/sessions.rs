@@ -293,7 +293,9 @@ impl Coordinator {
             !played.iter().any(|(sv, started)| p["server"] == json!(sv) && (started - since).abs() <= 5)
         });
         problems.sort_by_key(|p| std::cmp::Reverse(p["at"].as_i64()));
+        let labels: Vec<(String, i64, String)> = sqlx::query_as("SELECT kind, id, name FROM labels").fetch_all(&self.pool).await?;
         Ok(json!({
+            "labels": crate::game_names::labels(labels),
             "from": from,
             "to": to,
             "servers": servers.into_iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>(),
@@ -356,6 +358,11 @@ struct Stay {
     mode: String,
     private: bool,
     host: bool,
+    /// Whose room it is (empty when the event didn't say).
+    host_name: String,
+    /// The map and game mode the room said (session attributes 101 and 102), if any.
+    map: Option<i64>,
+    game_mode: Option<i64>,
     /// How the player's game reached the host's, when they joined: [`NET_KEYS`].
     net: Value,
 }
@@ -366,24 +373,23 @@ struct Stay {
 /// take.
 const NET_KEYS: &[&str] = &["ping_ms", "host_ping_ms", "relayed", "relay_ms", "direct_ms"];
 
-/// Each player's timeline: when they were online, the rooms they were in (party or match,
-/// whose, with whom), and the events worth a mark (searches, stats, refusals...).
-fn timelines(events: &[Event], sessions: &[(String, i64, i64, Option<i64>)], names: &HashMap<(String, i64), String>, from: i64, to: i64) -> Vec<Value> {
-    // Who was in each room (per server, and per server start: ids come again after one).
-    let mut epoch: HashMap<&str, i64> = HashMap::new();
-    let mut members: HashMap<(String, i64, (i64, i64)), HashSet<String>> = HashMap::new();
-    for e in events {
-        if e.kind == "server_start" {
-            epoch.insert(&e.server, e.at);
-        }
-        if let (Some(room), "room" | "join") = (e.room(), e.kind.as_str()) {
-            let ep = epoch.get(e.server.as_str()).copied().unwrap_or(0);
-            members.entry((e.server.clone(), ep, room)).or_default().insert(e.name.clone());
-        }
-    }
+/// A stay that ended (or the range did): who, and how it ended.
+struct Closed {
+    who: (String, String),
+    name: String,
+    epoch: i64,
+    stay: Stay,
+    to: i64,
+    /// How it ended: `how` (`left`, `removed` with `by_name`, `abandoned`, `dropped`,
+    /// `restarted`, `signed_out`, `server_restart`, `still`) and whether the room `ended`.
+    end: Value,
+}
 
+/// Each player's timeline: when they were online, the rooms they were in (party or match,
+/// whose, which map, with whom and for how long, how they left), and the events worth a mark
+/// (searches, stats, refusals, a game that restarted...).
+fn timelines(events: &[Event], sessions: &[(String, i64, i64, Option<i64>)], names: &HashMap<(String, i64), String>, from: i64, to: i64) -> Vec<Value> {
     let mut players: BTreeMap<(String, String), Value> = BTreeMap::new();
-    let mut open: HashMap<(String, String), Vec<Stay>> = HashMap::new();
     let entry = |players: &mut BTreeMap<(String, String), Value>, who: (String, String), name: &str| {
         players
             .entry(who.clone())
@@ -397,46 +403,33 @@ fn timelines(events: &[Event], sessions: &[(String, i64, i64, Option<i64>)], nam
         let p = players.get_mut(&who).expect("just added");
         p["online"].as_array_mut().expect("an array").push(json!([started.max(&from), ended.map(|e| e.min(to))]));
     }
+
     let mut epoch: HashMap<&str, i64> = HashMap::new();
-    let close = |players: &mut BTreeMap<(String, String), Value>,
-                 who: &(String, String),
-                 stay: Stay,
-                 until: i64,
-                 ep: i64,
-                 members: &HashMap<(String, i64, (i64, i64)), HashSet<String>>,
-                 me: &str| {
-        if until < from {
-            return;
-        }
-        let mut with: Vec<String> = members
-            .get(&(who.0.clone(), ep, stay.room))
-            .map(|m| m.iter().filter(|n| n.as_str() != me).cloned().collect())
-            .unwrap_or_default();
-        with.sort();
-        if let Some(p) = players.get_mut(who) {
-            p["rooms"].as_array_mut().expect("an array").push(json!({
-                "room": stay.room.0, "from": stay.from.max(from), "to": until.min(to), "kind": stay.kind,
-                "mode": stay.mode, "private": stay.private, "host": stay.host, "with": with, "net": stay.net,
-            }));
+    let mut open: HashMap<(String, String), Vec<(Stay, String, i64)>> = HashMap::new();
+    let mut closed: Vec<Closed> = Vec::new();
+    // When each player's game was last heard from (any event), for a restart's time.
+    let mut heard: HashMap<(String, String), i64> = HashMap::new();
+    let close_all = |open: &mut HashMap<(String, String), Vec<(Stay, String, i64)>>, closed: &mut Vec<Closed>, who: &(String, String), at: i64, end: Value| {
+        for (stay, name, ep) in open.remove(who).unwrap_or_default() {
+            closed.push(Closed {
+                who: who.clone(),
+                name,
+                epoch: ep,
+                stay,
+                to: at,
+                end: end.clone(),
+            });
         }
     };
     for e in events {
         let who = e.who();
         if e.kind == "server_start" {
-            let before = epoch.insert(&e.server, e.at).unwrap_or(0);
+            epoch.insert(&e.server, e.at);
             // Everyone on that server is out of every room.
-            for (w, stays) in &mut open {
-                if w.0 == e.server {
-                    let me = players.get(w).and_then(|p| p["name"].as_str().map(str::to_string)).unwrap_or_default();
-                    for stay in stays.drain(..) {
-                        close(&mut players, w, stay, e.at, before, &members, &me);
-                    }
-                }
+            let on: Vec<_> = open.keys().filter(|w| w.0 == e.server).cloned().collect();
+            for w in on {
+                close_all(&mut open, &mut closed, &w, e.at, json!({ "how": "server_restart" }));
             }
-            continue;
-        }
-        let ep = epoch.get(e.server.as_str()).copied().unwrap_or(0);
-        if e.player.is_none() && e.name.is_empty() {
             continue;
         }
         entry(&mut players, who.clone(), &e.name);
@@ -445,60 +438,131 @@ fn timelines(events: &[Event], sessions: &[(String, i64, i64, Option<i64>)], nam
                 p["name"] = json!(e.name);
             }
         }
+        let ep = epoch.get(e.server.as_str()).copied().unwrap_or(0);
+        let mut mark: Option<Value> = None;
         match e.kind.as_str() {
+            // Signed in with rooms still open: the game before stopped without a word (it
+            // restarted, or crashed), and its rooms ended when it was last heard from.
+            "signin" if open.get(&who).is_some_and(|o| !o.is_empty()) => {
+                let last = heard.get(&who).copied().unwrap_or(e.at).min(e.at);
+                let in_match = open.get(&who).is_some_and(|o| o.iter().any(|(s, _, _)| s.kind == "match"));
+                close_all(&mut open, &mut closed, &who, last, json!({ "how": "restarted" }));
+                mark = Some(json!({
+                    "at": e.at, "last_at": e.at, "kind": "restart", "count": 1, "last_heard": last, "in_match": in_match,
+                    "text": format!(
+                        "Signed in again: the game before stopped without signing out (restarted, or crashed) {}",
+                        if e.at - last < 60 { format!("{} s earlier", e.at - last) } else { format!("{} min earlier", (e.at - last) / 60) }
+                    ),
+                }));
+            }
             "room" | "join" => {
                 if let Some(room) = e.room() {
                     let stays = open.entry(who.clone()).or_default();
-                    if !stays.iter().any(|s| s.room == room) {
-                        stays.push(Stay {
-                            room,
-                            from: e.at,
-                            kind: e.str("room_kind").to_string(),
-                            mode: e.str("mode").to_string(),
-                            private: e.detail["private"].as_bool().unwrap_or(false),
-                            host: e.kind == "room",
-                            net: NET_KEYS
-                                .iter()
-                                .filter_map(|k| e.detail.get(*k).filter(|v| v.is_number() || v.is_boolean()).map(|v| ((*k).to_string(), v.clone())))
-                                .collect::<serde_json::Map<_, _>>()
-                                .into(),
-                        });
+                    if !stays.iter().any(|(s, _, _)| s.room == room) {
+                        stays.push((
+                            Stay {
+                                room,
+                                from: e.at,
+                                kind: e.str("room_kind").to_string(),
+                                mode: e.str("mode").to_string(),
+                                private: e.detail["private"].as_bool().unwrap_or(false),
+                                host: e.kind == "room",
+                                host_name: e.str("host_name").to_string(),
+                                map: e.detail["map"].as_i64(),
+                                game_mode: e.detail["game_mode"].as_i64(),
+                                net: NET_KEYS
+                                    .iter()
+                                    .filter_map(|k| e.detail.get(*k).filter(|v| v.is_number() || v.is_boolean()).map(|v| ((*k).to_string(), v.clone())))
+                                    .collect::<serde_json::Map<_, _>>()
+                                    .into(),
+                            },
+                            e.name.clone(),
+                            ep,
+                        ));
                     }
                 }
             }
             "leave" => {
                 if let (Some(room), Some(stays)) = (e.room(), open.get_mut(&who)) {
-                    if let Some(i) = stays.iter().position(|s| s.room == room) {
-                        let stay = stays.remove(i);
-                        close(&mut players, &who, stay, e.at, ep, &members, &e.name);
+                    if let Some(i) = stays.iter().position(|(s, _, _)| s.room == room) {
+                        let (stay, name, ep) = stays.remove(i);
+                        let mut end = serde_json::Map::new();
+                        end.insert("how".into(), json!(e.str("how")));
+                        for k in ["by_name", "ended"] {
+                            if let Some(v) = e.detail.get(k) {
+                                end.insert(k.into(), v.clone());
+                            }
+                        }
+                        closed.push(Closed {
+                            who: who.clone(),
+                            name,
+                            epoch: ep,
+                            stay,
+                            to: e.at,
+                            end: end.into(),
+                        });
                     }
                 }
             }
-            "signout" => {
-                for stay in open.remove(&who).unwrap_or_default() {
-                    close(&mut players, &who, stay, e.at, ep, &members, &e.name);
-                }
-            }
+            "signout" => close_all(&mut open, &mut closed, &who, e.at, json!({ "how": "signed_out", "signout": e.str("how") })),
             _ => {}
         }
-        if e.last_at >= from && e.kind != "room" && e.kind != "leave" && e.kind != "join" && e.kind != "signout" {
-            if let Some(p) = players.get_mut(&who) {
-                p["marks"].as_array_mut().expect("an array").push(json!({
-                    "at": e.at.max(from), "last_at": e.last_at, "kind": e.kind, "count": e.count, "text": describe(e),
-                }));
+        heard.insert(who.clone(), heard.get(&who).copied().unwrap_or(0).max(e.last_at.max(e.at)));
+        let mark = mark.or_else(|| {
+            (e.last_at >= from && !matches!(e.kind.as_str(), "room" | "leave" | "join" | "signout"))
+                .then(|| json!({ "at": e.at.max(from), "last_at": e.last_at, "kind": e.kind, "count": e.count, "text": describe(e) }))
+        });
+        if let (Some(mark), Some(p)) = (mark, players.get_mut(&who)) {
+            if mark["last_at"].as_i64().is_some_and(|t| t >= from) {
+                p["marks"].as_array_mut().expect("an array").push(mark);
             }
         }
     }
     // Still in a room at the end of the range.
-    for (who, stays) in open {
-        let ep = epoch.get(who.0.as_str()).copied().unwrap_or(0);
-        let me = players.get(&who).and_then(|p| p["name"].as_str().map(str::to_string)).unwrap_or_default();
-        for stay in stays {
-            close(&mut players, &who, stay, to, ep, &members, &me);
+    let still: Vec<_> = open.keys().cloned().collect();
+    for who in still {
+        close_all(&mut open, &mut closed, &who, to, json!({ "how": "still" }));
+    }
+
+    // With whom: who else was in the same room at the same time, and for how long together.
+    for c in &closed {
+        if c.to < from {
+            continue;
+        }
+        let mut with: Vec<(String, i64)> = closed
+            .iter()
+            .filter(|o| o.who != c.who && o.who.0 == c.who.0 && o.epoch == c.epoch && o.stay.room == c.stay.room)
+            .map(|o| (o.name.clone(), c.to.min(o.to) - c.stay.from.max(o.stay.from)))
+            .filter(|(_, together)| *together > 0)
+            .collect();
+        with.sort();
+        with.dedup_by(|a, b| {
+            let same = a.0 == b.0;
+            if same {
+                b.1 += a.1;
+            }
+            same
+        });
+        let stayed = c.to - c.stay.from;
+        // Only for someone there for part of it: the 1 s a removed player spent in a match.
+        let together: serde_json::Map<String, Value> = with.iter().filter(|(_, t)| *t < stayed).map(|(n, t)| (n.clone(), json!(t))).collect();
+        if let Some(p) = players.get_mut(&c.who) {
+            p["rooms"].as_array_mut().expect("an array").push(json!({
+                "room": c.stay.room.0, "since": c.stay.room.1, "from": c.stay.from.max(from), "to": c.to.min(to), "kind": c.stay.kind,
+                "mode": c.stay.mode, "private": c.stay.private, "host": c.stay.host, "host_name": c.stay.host_name,
+                "map": c.stay.map, "game_mode": c.stay.game_mode,
+                "with": with.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>(), "together": together, "net": c.stay.net, "end": c.end,
+            }));
         }
     }
     players
         .into_values()
+        .map(|mut p| {
+            if let Some(rooms) = p["rooms"].as_array_mut() {
+                rooms.sort_by_key(|r| r["from"].as_i64());
+            }
+            p
+        })
         .filter(|p| ["online", "rooms", "marks"].iter().any(|k| p[*k].as_array().is_some_and(|a| !a.is_empty())))
         .collect()
 }
@@ -557,12 +621,15 @@ fn describe(e: &Event) -> String {
             "In a room, but the game hadn't registered for online play {} s later: nobody could reach it",
             e.detail["after_secs"]
         ),
-        "relay_drop" => format!(
-            "Relayed traffic {} fell from {} to {} packets/s",
-            if e.str("direction") == "sending" { "from them" } else { "to them" },
-            e.detail["before"],
-            e.detail["after"]
-        ),
+        "relay_drop" => {
+            let pps = |k: &str| e.detail[k].as_f64().map_or_else(|| "?".into(), |v| format!("{v:.0}"));
+            let which = if e.str("direction") == "sending" { "from them" } else { "to them" };
+            if e.detail["after"].as_f64() == Some(0.0) {
+                format!("Relayed traffic {which} stopped ({} packets/s before)", pps("before"))
+            } else {
+                format!("Relayed traffic {which} fell: {} → {} packets/s", pps("before"), pps("after"))
+            }
+        }
         "request_error" => format!("A request failed: {} {}{times}", e.str("call"), e.str("error")),
         "report_refused" => format!(
             "A report from the launcher was refused: {} ({} files, {} KB){times}",
@@ -833,6 +900,34 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
             out.push(p);
         }
     }
+
+    // A game that signed in again while still in a match: the one before stopped without a
+    // word (restarted, or crashed), and the match went on without it (tacit_danger and
+    // Ghost_Leader on eu1, 2026-10-06 17:36, when their host's game removed them).
+    for list in by_who.values() {
+        let mut in_match: Vec<(i64, i64)> = Vec::new();
+        for e in list {
+            match e.kind.as_str() {
+                "room" | "join" if e.str("room_kind") == "match" => in_match.extend(e.room()),
+                "leave" => in_match.retain(|r| Some(*r) != e.room()),
+                "signout" => in_match.clear(),
+                "signin" if !in_match.is_empty() => {
+                    let last = list.iter().filter(|o| o.at < e.at).map(|o| o.last_at).max().unwrap_or(e.at);
+                    out.push(problem(
+                        e,
+                        "warn",
+                        format!("{}'s game restarted in a match", e.name),
+                        format!(
+                            "Signed in again {} s after the game was last heard, without leaving the match or signing out: it restarted or crashed",
+                            e.at - last
+                        ),
+                    ));
+                    in_match.clear();
+                }
+                _ => {}
+            }
+        }
+    }
     out
 }
 
@@ -1015,6 +1110,69 @@ mod tests {
         let viper = t.iter().find(|p| p["name"] == "Viper").unwrap();
         assert_eq!((viper["rooms"][0]["to"].as_i64(), viper["rooms"][0]["host"].as_bool()), (Some(1356), Some(false)));
         assert_eq!(viper["online"][0], json!([120, 1400]));
+    }
+
+    /// Oni's match on eu1 (2026-10-06): tacit_danger in it with Renegade for one second,
+    /// removed by the host, a restart with rooms still open, and a room still open at the end.
+    #[test]
+    fn timelines_say_how_each_stay_ended_and_with_whom() {
+        let m = |extra: serde_json::Value| {
+            let mut v = json!({ "room": 102, "since": 90, "room_kind": "match", "mode": "coop", "host_name": "Oni", "map": 2573003522_u32, "game_mode": 4 });
+            v.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            v
+        };
+        let party = |room: i64| json!({ "room": room, "since": room, "room_kind": "party" });
+        let events = vec![
+            ev("eu", 90, 1032, "Oni", "room", m(json!({}))),
+            ev("eu", 100, 1006, "tacit_danger", "join", m(json!({}))),
+            ev("eu", 400, 1007, "Renegade", "join", m(json!({}))),
+            ev("eu", 401, 1007, "Renegade", "leave", m(json!({ "how": "removed", "by_name": "Oni" }))),
+            ev("eu", 500, 1006, "tacit_danger", "room", party(97)),
+            ev(
+                "eu",
+                2900,
+                1006,
+                "tacit_danger",
+                "relay_drop",
+                json!({ "direction": "sending", "before": 30.0, "after": 0.0 }),
+            ),
+            ev("eu", 2940, 1006, "tacit_danger", "signin", json!({})),
+            ev("eu", 2960, 1006, "tacit_danger", "join", m(json!({ "since": 90 }))),
+            ev("eu", 2980, 1006, "tacit_danger", "leave", m(json!({ "how": "removed", "by_name": "Oni" }))),
+        ];
+        let t = super::timelines(&events, &[], &std::collections::HashMap::new(), 0, 3000);
+        let tacit = t.iter().find(|p| p["name"] == "tacit_danger").unwrap();
+        let rooms = tacit["rooms"].as_array().unwrap();
+        // The first stay in the match: with Oni throughout, Renegade for 1 s; ended by the restart.
+        let first = &rooms[0];
+        assert_eq!((first["from"].as_i64(), first["to"].as_i64()), (Some(100), Some(2900)), "ends when last heard");
+        assert_eq!(first["with"], json!(["Oni", "Renegade"]));
+        assert_eq!(first["together"], json!({ "Renegade": 1 }));
+        assert_eq!(first["end"]["how"], "restarted");
+        assert_eq!(
+            (first["map"].as_i64(), first["game_mode"].as_i64(), first["host_name"].as_str()),
+            (Some(2573003522), Some(4), Some("Oni"))
+        );
+        // The party opened meanwhile went with the restart too.
+        assert_eq!(rooms.iter().filter(|r| r["end"]["how"] == "restarted").count(), 2);
+        // Back in, and removed 20 s later.
+        let last = rooms.last().unwrap();
+        assert_eq!(
+            (last["to"].as_i64(), last["end"]["how"].as_str(), last["end"]["by_name"].as_str()),
+            (Some(2980), Some("removed"), Some("Oni"))
+        );
+        let restart = tacit["marks"].as_array().unwrap().iter().find(|m| m["kind"] == "restart").unwrap();
+        assert_eq!(
+            (restart["at"].as_i64(), restart["last_heard"].as_i64(), restart["in_match"].as_bool()),
+            (Some(2940), Some(2900), Some(true))
+        );
+        let drop = tacit["marks"].as_array().unwrap().iter().find(|m| m["kind"] == "relay_drop").unwrap();
+        assert_eq!(drop["text"], "Relayed traffic from them stopped (30 packets/s before)");
+        // Oni's match is still open at the end of the range.
+        let oni = t.iter().find(|p| p["name"] == "Oni").unwrap();
+        assert_eq!(oni["rooms"][0]["end"]["how"], "still");
+        assert_eq!(oni["rooms"][0]["to"].as_i64(), Some(3000));
+        assert!(titles(&events).contains(&"tacit_danger's game restarted in a match".to_string()), "{:?}", titles(&events));
     }
 
     /// A refused report is a warning: what the player wanted to tell the admins didn't arrive.
