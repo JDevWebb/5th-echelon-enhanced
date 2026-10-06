@@ -609,6 +609,12 @@ pub fn relay_ip() -> Option<Ipv4Addr> {
     TABLE.get().map(|t| t.lock().unwrap_or_else(std::sync::PoisonError::into_inner).relay_ip)
 }
 
+/// `name`'s round trip to this server, as their game last measured it.
+pub fn ping_of(name: &str) -> Option<u16> {
+    let t = TABLE.get()?.lock().ok()?;
+    t.peers.get(t.by_name.get(&name.to_lowercase())?)?.rtt_ms
+}
+
 /// The address `name` should advertise, when the NAT helper runs and that
 /// player probed it from `ip`.
 pub fn advertised_for(name: &str, ip: IpAddr) -> Option<SocketAddrV4> {

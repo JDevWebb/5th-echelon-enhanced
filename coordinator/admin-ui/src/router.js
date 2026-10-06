@@ -5,6 +5,7 @@ export const ROUTES = [
   ['overview', 'Overview', '<rect x="3" y="3" width="7" height="8" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/><rect x="3" y="15" width="7" height="6" rx="1.5"/>'],
   ['servers', 'Servers', '<rect x="3" y="4" width="18" height="6" rx="2"/><rect x="3" y="14" width="18" height="6" rx="2"/><path d="M7 7h.01M7 17h.01"/>'],
   ['players', 'Players', '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.8-3.6 3.4-5.5 6.5-5.5s5.7 1.9 6.5 5.5"/><path d="M16 4.5a3.5 3.5 0 0 1 0 7M18.5 14.8c1.6.8 2.6 2.5 3 5.2"/>'],
+  ['live', 'Live', '<circle cx="12" cy="12" r="2.5"/><path d="M7.8 7.8a6 6 0 0 0 0 8.4M16.2 7.8a6 6 0 0 1 0 8.4M4.9 4.9a10 10 0 0 0 0 14.2M19.1 4.9a10 10 0 0 1 0 14.2"/>'],
   ['sessions', 'Sessions', '<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.5 2"/>'],
   ['reports', 'Reports', '<path d="M5 4h10l4 4v12H5z"/><path d="M15 4v4h4M8.5 12.5h7M8.5 16h5"/>'],
   ['alerts', 'Alerts', '<path d="M12 3.5 21.5 20h-19z"/><path d="M12 10v4.5M12 17.5h.01"/>'],
@@ -17,7 +18,7 @@ export const ROUTES = [
 
 /** Pages shown as tabs of another page in the rail: Bandwidth and Activity under Network,
  * the audit log under Security. */
-export const PARENT = { bandwidth: 'network', activity: 'network', audit: 'security' };
+export const PARENT = { bandwidth: 'network', activity: 'network', audit: 'security', match: 'sessions' };
 export const NETWORK_TABS = [['/network', 'Traffic'], ['/bandwidth', 'Bandwidth'], ['/activity', 'Activity']];
 export const SECURITY_TABS = [['/security', 'Sign-in and admins'], ['/audit', 'Audit log']];
 
@@ -29,6 +30,8 @@ export const router = createRouter({
     { path: '/servers', component: () => import('./views/Servers.vue') },
     { path: '/servers/:id', component: () => import('./views/ServerDetail.vue'), props: true },
     { path: '/bandwidth', component: () => import('./views/Bandwidth.vue') },
+    { path: '/live', component: () => import('./views/Live.vue') },
+    { path: '/match/:server/:room/:since', component: () => import('./views/Match.vue'), props: true },
     { path: '/sessions', component: () => import('./views/Sessions.vue') },
     { path: '/players', component: () => import('./views/Players.vue') },
     { path: '/players/:server/:id', component: () => import('./views/Players.vue') },

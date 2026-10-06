@@ -101,6 +101,37 @@ fn plural(n: f64, one: &str, many: &str) -> String {
     format!("{n} {}", if (n - 1.0).abs() < f64::EPSILON { one } else { many })
 }
 
+/// Rooms kept from one pulse at most.
+const MAX_GAMES: usize = 100;
+
+/// A pulse's list of the rooms open now, checked as [`online_list`] is: at most
+/// [`MAX_GAMES`], each with only the fields the Live page shows.
+fn games_list(v: &Value) -> Value {
+    let text = |v: &Value| -> Value { json!(v.as_str().unwrap_or_default().chars().filter(|c| !c.is_control()).take(MAX_FIELD).collect::<String>()) };
+    let id = |v: &Value| v.as_u64().filter(|n| *n <= u64::from(u32::MAX));
+    let games = v
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|g| g.is_object())
+        .take(MAX_GAMES)
+        .map(|g| {
+            json!({
+                "id": id(&g["id"]).unwrap_or(0),
+                "host": text(&g["host"]),
+                "players": g["players"].as_array().into_iter().flatten().take(16).map(text).collect::<Vec<_>>(),
+                "room_kind": text(&g["room_kind"]),
+                "mode": text(&g["mode"]),
+                "private": g["private"].as_bool().unwrap_or(false),
+                "map": id(&g["map"]),
+                "game_mode": id(&g["game_mode"]),
+                "since": g["since"].as_i64(),
+            })
+        })
+        .collect();
+    Value::Array(games)
+}
+
 /// Online players kept from one pulse at most, and the longest text kept of each field.
 const MAX_ONLINE: usize = 300;
 const MAX_FIELD: usize = 64;
@@ -131,6 +162,7 @@ fn online_list(v: &Value) -> Value {
                 "with": p["with"].as_array().into_iter().flatten().take(16).map(text).collect::<Vec<_>>(),
                 "since": p["since"].as_i64(),
                 "network": text(&p["network"]),
+                "ping_ms": p["ping_ms"].as_u64().filter(|ms| *ms < 10_000),
             })
         })
         .collect::<Vec<_>>();
@@ -188,6 +220,7 @@ impl Coordinator {
             // online (a server could send anything up to the request's limit).
             let mut kept = p.clone();
             kept["online"] = online_list(&p["online"]);
+            kept["games"] = games_list(&p["games"]);
             entry.last = Some((at, kept));
             entry.points.push_back(point.clone());
             while entry.points.len() > KEEP_POINTS {
@@ -241,6 +274,25 @@ impl Coordinator {
                 player["server"] = json!(server);
                 player["seen"] = json!(at);
                 out.push(player);
+            }
+        }
+        Value::Array(out)
+    }
+
+    /// The rooms open now on each server that pulsed in the last half minute, as its last
+    /// pulse listed them (in memory only): `[{server, id, host, players, map, ...}]`.
+    pub(crate) fn games_now(&self) -> Value {
+        let now = identity::now();
+        let pulses = self.pulses.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut out = Vec::new();
+        for (server, entry) in pulses.iter() {
+            let Some((_, p)) = entry.last.as_ref().filter(|(at, _)| now - at <= 30) else {
+                continue;
+            };
+            for game in p["games"].as_array().into_iter().flatten() {
+                let mut game = game.clone();
+                game["server"] = json!(server);
+                out.push(game);
             }
         }
         Value::Array(out)
@@ -433,6 +485,23 @@ async fn send(socket: &mut WebSocket, v: Value) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_games_are_checked_and_capped() {
+        let one = json!({ "id": 102, "host": "Oni", "players": ["Oni", "tacit_danger", "Ghost_Leader"], "room_kind": "match", "mode": "coop",
+            "private": false, "map": 2573003522_u32, "game_mode": 4, "since": 1791305206, "extra": "dropped" });
+        let mut many = vec![one.clone(); MAX_GAMES + 5];
+        many.push(json!("not a game"));
+        let kept = games_list(&json!(many));
+        assert_eq!(kept.as_array().unwrap().len(), MAX_GAMES);
+        let g = &kept[0];
+        assert_eq!((g["host"].as_str(), g["map"].as_u64(), g["game_mode"].as_u64()), (Some("Oni"), Some(2573003522), Some(4)));
+        assert_eq!(g["players"], json!(["Oni", "tacit_danger", "Ghost_Leader"]));
+        assert!(g.get("extra").is_none());
+        let odd = games_list(&json!([{ "id": -1, "host": "x\u{7}y", "map": 1u64 << 40, "players": "nope" }]));
+        assert_eq!((odd[0]["id"].as_u64(), odd[0]["host"].as_str(), odd[0]["map"].as_u64()), (Some(0), Some("xy"), None));
+        assert_eq!(odd[0]["players"], json!([]));
+    }
 
     #[test]
     fn pulses_make_rates_and_events() {

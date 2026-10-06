@@ -195,12 +195,18 @@ pub struct Pulse {
     /// Who's online and what they're doing, for the admin UI's map (at most
     /// [`MAX_ONLINE_LISTED`]): where by city, never their address.
     pub online: Vec<OnlinePlayer>,
+    /// The rooms open now, for the admin UI's live games (at most [`MAX_GAMES_LISTED`]):
+    /// each one's id, host, players, since when, and what it is ([`crate::session_events::room_detail`]).
+    pub games: Vec<serde_json::Value>,
     pub matches: u32,
     pub lobbies: u32,
     pub counters: CounterValues,
     pub net_rx_bytes: u64,
     pub net_tx_bytes: u64,
 }
+
+/// Rooms listed in a pulse at most.
+const MAX_GAMES_LISTED: usize = 100;
 
 /// Online players listed in a pulse at most.
 const MAX_ONLINE_LISTED: u32 = 300;
@@ -228,6 +234,8 @@ pub struct OnlinePlayer {
     /// "relayed", "direct" or "unregistered" (no NAT helper registration: nobody can reach
     /// them); empty when the server runs no NAT helper.
     pub network: &'static str,
+    /// Their game's round trip to this server, as it last measured it.
+    pub ping_ms: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Default)]
@@ -403,6 +411,7 @@ pub async fn pulse(storage: &Storage) -> Pulse {
         if let Ok(online) = storage.online_players_async(MAX_ONLINE_LISTED).await {
             p.online = online.into_iter().map(|(id, name, since)| online_player(id, name, since, &sessions)).collect();
         }
+        p.games = sessions.iter().take(MAX_GAMES_LISTED).map(live_game).collect();
     }
     p.counters = counter_values();
     (p.net_rx_bytes, p.net_tx_bytes) = tokio::task::spawn_blocking(net_bytes).await.unwrap_or_default();
@@ -427,6 +436,16 @@ fn net_bytes() -> (u64, u64) {
 /// Online players per city.
 /// An online player as the map shows them: where (by city), what they're doing, and how
 /// their game is reached.
+/// A room open now, for the admin UI.
+fn live_game(s: &crate::storage::LiveSession) -> serde_json::Value {
+    let mut game = crate::session_events::room_detail(&s.attributes);
+    game["id"] = s.id.into();
+    game["host"] = s.host.clone().into();
+    game["players"] = s.players.clone().into();
+    game["since"] = s.created.into();
+    game
+}
+
 fn online_player(id: u32, name: String, since: Option<i64>, sessions: &[crate::storage::LiveSession]) -> OnlinePlayer {
     let ip = address_of(id);
     let place = ip.and_then(|ip| GEO.get().and_then(|g| g.lookup(ip))).unwrap_or_default();
@@ -452,6 +471,7 @@ fn online_player(id: u32, name: String, since: Option<i64>, sessions: &[crate::s
         with: activity.map(|a| a.with).unwrap_or_default(),
         since,
         network,
+        ping_ms: crate::nat_helper::ping_of(&name),
         name,
     }
 }

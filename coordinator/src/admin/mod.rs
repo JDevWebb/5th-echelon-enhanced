@@ -197,6 +197,7 @@ pub fn router(c: Shared) -> Router {
         .route("/activity", get(activity))
         .route("/pings", get(pings))
         .route("/online", get(online))
+        .route("/games", get(games))
         .route("/labels", axum::routing::put(set_label))
         .route("/updates", get(updates))
         .route("/updates/{action}", post(update_action))
@@ -1409,6 +1410,18 @@ async fn online(State(c): State<Shared>, Extension(client): Extension<Client>, h
         return r;
     }
     ok(json!({ "players": c.online_now() }))
+}
+
+/// The rooms open now on every server, who's in them and who's online: the Live page.
+async fn games(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap) -> Response {
+    if let Err(r) = c.full(&headers, &client).await {
+        return r;
+    }
+    let labels: Vec<(String, i64, String)> = match sqlx::query_as("SELECT kind, id, name FROM labels").fetch_all(&c.pool).await {
+        Ok(l) => l,
+        Err(e) => return internal(e),
+    };
+    ok(json!({ "games": c.games_now(), "players": c.online_now(), "labels": crate::game_names::labels(labels) }))
 }
 
 async fn overview(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap) -> Response {

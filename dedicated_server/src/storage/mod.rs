@@ -1450,11 +1450,14 @@ pub struct Invite {
 }
 
 /// A live game session and who is in it, for the presence feed.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LiveSession {
     pub id: u32,
     pub attributes: String,
     pub players: Vec<String>,
+    /// Its host's name, and when it was made (Unix seconds).
+    pub host: String,
+    pub created: i64,
 }
 
 impl Storage {
@@ -1468,9 +1471,12 @@ impl Storage {
         let players: Vec<(String, bool)> = sqlx::query_as("SELECT username, is_online FROM users WHERE ubi_id IS NOT NULL ORDER BY username COLLATE NOCASE")
             .fetch_all(&self.pool)
             .await?;
-        let sessions: Vec<(u32, String)> = sqlx::query_as("SELECT id, attributes FROM game_sessions WHERE destroyed_at IS NULL ORDER BY id DESC")
-            .fetch_all(&self.pool)
-            .await?;
+        let sessions: Vec<(u32, String, String, i64)> = sqlx::query_as(
+            "SELECT g.id, COALESCE(g.attributes, ''), COALESCE(u.username, ''), COALESCE(unixepoch(g.created_at), 0)
+             FROM game_sessions g LEFT JOIN users u ON u.id = g.creator_id WHERE g.destroyed_at IS NULL ORDER BY g.id DESC",
+        )
+        .fetch_all(&self.pool)
+        .await?;
         // Participants and guests (who joined a public match: its host never adds them).
         let members: Vec<(u32, String)> = sqlx::query_as(
             "SELECT p.game_id, u.username FROM participants p JOIN users u ON u.id = p.user_id
@@ -1480,9 +1486,11 @@ impl Storage {
         .await?;
         let live = sessions
             .into_iter()
-            .map(|(id, attributes)| LiveSession {
+            .map(|(id, attributes, host, created)| LiveSession {
                 id,
                 attributes,
+                host,
+                created,
                 players: members.iter().filter(|(g, _)| *g == id).map(|(_, name)| name.clone()).collect(),
             })
             .filter(|s| !s.players.is_empty())

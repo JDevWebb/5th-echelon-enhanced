@@ -511,16 +511,19 @@ mod tests {
                 id: 9,
                 attributes: "113 => 1;103 => 1;101 => 4".into(),
                 players: vec!["Kiwi".into()],
+                ..Default::default()
             },
             LiveSession {
                 id: 8,
                 attributes: "113 => 0;103 => 1;101 => 7".into(),
                 players: vec!["Kiwi".into(), "Tank".into()],
+                ..Default::default()
             },
             LiveSession {
                 id: 3,
                 attributes: "113 => 1;101 => 2".into(),
                 players: vec!["Nexus".into()],
+                ..Default::default()
             },
         ];
         let players = vec![
