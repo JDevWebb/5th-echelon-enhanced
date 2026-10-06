@@ -11,6 +11,14 @@
           <b v-if="r[0] === 'reports' && reportCount" class="badge info" :aria-label="`${reportCount} open`">{{ reportCount }}</b>
         </RouterLink>
       </template>
+      <button type="button" class="theme" :title="`Colours: ${themeLabel}. Click for ${nextLabel}.`" :aria-label="`Colours: ${themeLabel}; switch to ${nextLabel}`" @click="nextTheme">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <template v-if="theme === 'light'"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></template>
+          <path v-else-if="theme === 'dark'" d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z" />
+          <template v-else><rect x="3" y="4" width="18" height="13" rx="2" /><path d="M8 21h8M12 17v4" /></template>
+        </svg>
+        <span>{{ themeLabel }}</span>
+      </button>
       <span v-if="version" class="ver" :title="`Coordinator ${version}`">{{ version }}</span>
     </nav>
     <main class="main">
@@ -28,6 +36,12 @@ import { useRoute } from 'vue-router';
 import { PARENT, ROUTES } from '../router.js';
 import { api } from '../lib/api.js';
 import { live } from '../lib/live.js';
+import { THEMES, nextTheme, theme } from '../lib/theme.js';
+
+// Colours: System, Light or Dark, a click stepping through them.
+const label = id => THEMES.find(([t]) => t === id)?.[1] || 'System';
+const themeLabel = computed(() => label(theme.value));
+const nextLabel = computed(() => label(THEMES[(THEMES.findIndex(([t]) => t === theme.value) + 1) % THEMES.length][0]));
 
 // The Roadmap page only where the coordinator keeps the roadmap (the community network's).
 const hasRoadmap = ref(false);

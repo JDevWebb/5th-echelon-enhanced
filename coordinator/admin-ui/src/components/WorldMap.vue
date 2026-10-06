@@ -26,7 +26,7 @@
     <div v-if="hover" class="tip" :style="tipStyle" role="tooltip">
       <div class="tip-place">
         <span>{{ flag(hover.country) }} {{ hover.place }}</span>
-        <span class="muted" title="Sun time, from the longitude: within an hour or so of the clocks there">about {{ hover.time }} there · {{ hover.daylight }}</span>
+        <span class="muted" :title="hover.exact ? `The clocks there (${hover.zone})` : 'Sun time, from the longitude: within an hour or so of the clocks there'">{{ hover.exact ? '' : 'about ' }}{{ hover.time }} there<template v-if="hover.exact"> ({{ hover.zone }})</template> · {{ hover.daylight }}</span>
       </div>
       <div v-for="p in hover.players.slice(0, 8)" :key="p.server + p.id" class="tip-player">
         <div class="row" style="justify-content: space-between; gap: 8px">
@@ -49,7 +49,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue';
 import { api } from '../lib/api.js';
 import { LAND } from '../lib/world.js';
 import { flag, fmt, serverName } from '../lib/fmt.js';
-import { darkPath, elevation, solarTime, subsolar } from '../lib/sun.js';
+import { darkPath, elevation, localTime, subsolar } from '../lib/sun.js';
 
 const props = defineProps({
   places: { type: Array, default: () => [] },
@@ -135,9 +135,12 @@ function show(g, event) {
   const x = target.left + target.width / 2 - rect.left;
   const y = target.top + target.height / 2 - rect.top;
   const e = elevation(g.lat, g.lon, sun.value);
+  const clock = localTime(g.country, g.lat, g.lon, new Date(now.value * 1000));
   hover.value = {
     ...g,
-    time: solarTime(g.lon, new Date(now.value * 1000)),
+    time: clock.time,
+    zone: clock.zone,
+    exact: clock.exact,
     daylight: e > 0 ? 'day' : e > -6 ? 'twilight' : 'night',
   };
   tipAt.value = { x, y, right: x > rect.width / 2 };
@@ -148,8 +151,8 @@ const tipStyle = computed(() => (tipAt.value.right
 </script>
 
 <style scoped>
-.night { fill: #02070a; fill-opacity: 0.12; pointer-events: none; }
-@media (prefers-color-scheme: light) { .night { fill: #1b2a33; fill-opacity: 0.07; } }
+/* The theme's night (styles.css), a layer per twilight: deepest where all four overlap. */
+.night { fill: var(--night); fill-opacity: var(--night-alpha); pointer-events: none; }
 .sun circle { fill: #ffd166; stroke: rgba(255, 209, 102, 0.35); stroke-width: 1.6; }
 .player { cursor: pointer; outline: none; }
 .player .ring { fill: var(--info); fill-opacity: 0.22; stroke: var(--info); stroke-width: 0.3; }

@@ -2,6 +2,8 @@ import { createApp } from 'vue';
 import App from './App.vue';
 import { router } from './router.js';
 import { session } from './lib/session.js';
+// Before anything shows: the colours the admin chose (or the system's).
+import './lib/theme.js';
 import './styles.css';
 
 // A setup link (#setup=…) opened in a tab already showing the admin UI only changes the

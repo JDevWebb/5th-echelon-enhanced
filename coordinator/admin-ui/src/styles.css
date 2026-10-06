@@ -1,6 +1,7 @@
 /* SCBL Network Ops: the coordinator's admin UI, in the launcher's frame (an icon rail, a
    hero with an uppercase condensed title, a band with the page's key numbers, then cards).
-   Dark only, in the launcher's Echelon palette (launcher/src/theme.rs) and IBM Plex. */
+   Dark by default, in the launcher's Echelon palette (launcher/src/theme.rs), with a light
+   one beside it (lib/theme.js picks: the admin's choice, or the system's), and IBM Plex. */
 
 @font-face { font-family: "IBM Plex Sans"; src: url("./assets/fonts/IBMPlexSans-Regular.ttf") format("truetype"); font-weight: 400; font-display: swap; }
 @font-face { font-family: "IBM Plex Sans"; src: url("./assets/fonts/IBMPlexSans-SemiBold.ttf") format("truetype"); font-weight: 600; font-display: swap; }
@@ -31,8 +32,11 @@
   --bad-soft: rgba(255, 107, 107, 0.12);
   --info: #5aa9e6;
   --info-soft: rgba(90, 169, 230, 0.14);
-  --land: #1a2428;
-  --land-line: #2b363c;
+  --land: #26333a;
+  --land-line: #35444c;
+  /* the world map's night, a layer per twilight (four deep at midnight) */
+  --night: #000000;
+  --night-alpha: 0.2;
   --shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
   --radius: 12px;
   --gutter: 36px;
@@ -40,6 +44,38 @@
   --sans: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --display: "IBM Plex Sans Condensed", "IBM Plex Sans", system-ui, sans-serif;
   color-scheme: dark;
+}
+
+/* Light: the same roles, for daylight; the accents darkened to read on white. */
+:root[data-theme="light"] {
+  --bg: #eef2f4;
+  --rail: #e3e9ec;
+  --panel: #ffffff;
+  --panel-2: #f3f6f7;
+  --control: #e1e7ea;
+  --control-hover: #d3dce0;
+  --line: #d6dee2;
+  --line-2: #bfcbd1;
+  --text: #13202a;
+  --soft: #33454f;
+  --muted: #566871;
+  --faint: #7f8e96;
+  --accent: #3f7f12;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(63, 127, 18, 0.12);
+  --ok: #0f7f59;
+  --warn: #9a6200;
+  --warn-soft: rgba(154, 98, 0, 0.12);
+  --bad: #c4302b;
+  --bad-soft: rgba(196, 48, 43, 0.1);
+  --info: #1d6aab;
+  --info-soft: rgba(29, 106, 171, 0.12);
+  --land: #d4dee3;
+  --land-line: #b9c7ce;
+  --night: #0d2238;
+  --night-alpha: 0.13;
+  --shadow: 0 12px 40px rgba(16, 32, 42, 0.14);
+  color-scheme: light;
 }
 
 * { box-sizing: border-box; }
@@ -119,7 +155,15 @@ code, .mono { font-family: var(--mono); font-size: 12.5px; }
 .rail .badge.bad { background: var(--bad); }
 .rail .badge.info { background: var(--info); }
 .rail .sep { height: 1px; background: var(--line); margin: 8px 6px; flex: none; }
-.rail .ver { margin-top: auto; padding-top: 12px; text-align: center; color: var(--faint); font: 11px var(--mono); }
+.rail .theme {
+  margin-top: auto; display: flex; flex-direction: column; align-items: center; gap: 5px;
+  padding: 9px 4px; border: 0; border-radius: 10px; background: none; cursor: pointer;
+  color: var(--muted); font: 400 10px/1.1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase;
+}
+.rail .theme svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.rail .theme:hover { color: var(--soft); background: var(--panel); }
+.rail .theme:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
+.rail .ver { padding-top: 8px; text-align: center; color: var(--faint); font: 11px var(--mono); }
 
 /* A page: its head (hero and band), then cards. Each page's top-level blocks sit in the gutter. */
 .main { min-width: 0; display: flex; flex-direction: column; gap: 22px; padding-bottom: 48px; }
@@ -369,6 +413,7 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(2px); 
   .shell { grid-template-columns: minmax(0, 1fr); }
   .rail { position: static; height: auto; flex-direction: row; overflow-x: auto; padding: 8px 10px; border-right: 0; border-bottom: 1px solid var(--line); }
   .rail > .mark, .rail .sep, .rail .ver { display: none; }
+  .rail .theme { margin-top: 0; flex: none; min-width: 64px; }
   .rail .nav { flex: none; min-width: 64px; }
   .hero { grid-template-columns: minmax(0, 1fr); }
   .hero-side { align-items: flex-start; flex-direction: row; flex-wrap: wrap; }

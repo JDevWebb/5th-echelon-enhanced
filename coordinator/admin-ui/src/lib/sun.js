@@ -2,6 +2,8 @@
 // x = longitude + 180, y = 90 - latitude). Accurate to a fraction of a degree, plenty
 // for a map: the low-precision formulas of the Astronomical Almanac.
 
+import { ZONES } from './zones.js';
+
 const RAD = Math.PI / 180;
 
 /** The point the sun is overhead at `date`: { lat, lon } in degrees. */
@@ -82,4 +84,36 @@ export function darkPath(sun, below = 0, step = 2) {
 export function solarTime(lon, date = new Date()) {
   const minutes = ((date.getUTCHours() * 60 + date.getUTCMinutes() + lon * 4) % 1440 + 1440) % 1440;
   return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(Math.floor(minutes % 60)).padStart(2, '0')}`;
+}
+
+/** The time zone a place in `country` (ISO code) keeps: its country's zone nearest to it. */
+export function zoneOf(country, lat, lon) {
+  const zones = ZONES[(country || '').toUpperCase()];
+  if (!zones) return null;
+  let best = null;
+  let bestD = Infinity;
+  for (const [zlat, zlon, zone] of zones) {
+    // Near enough as degrees (a country's zones are far apart), longitude scaled by latitude.
+    const dlon = (((lon - zlon) % 360) + 540) % 360 - 180;
+    const d = (lat - zlat) ** 2 + (dlon * Math.cos(lat * RAD)) ** 2;
+    if (d < bestD) [best, bestD] = [zone, d];
+  }
+  return best;
+}
+
+/** The clock time at a place, as its clocks show it (summer time too): { time: 'HH:MM',
+ * zone: 'NZDT' }; or, where its time zone isn't known, the sun's time there, marked so. */
+export function localTime(country, lat, lon, date = new Date()) {
+  const zone = zoneOf(country, lat, lon);
+  if (zone) {
+    try {
+      const parts = new Intl.DateTimeFormat('en-GB', { timeZone: zone, hour: '2-digit', minute: '2-digit', hourCycle: 'h23', timeZoneName: 'short' }).formatToParts(date);
+      const part = type => parts.find(p => p.type === type)?.value || '';
+      // A named zone where there's one in English (BST, CEST), else its offset from UTC.
+      return { time: `${part('hour')}:${part('minute')}`, zone: part('timeZoneName').replace(/^GMT(?=[+-])/, 'UTC'), exact: true };
+    } catch {
+      // A zone this browser doesn't know: the sun's time below.
+    }
+  }
+  return { time: solarTime(lon, date), zone: 'sun time', exact: false };
 }
