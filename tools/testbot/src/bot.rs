@@ -972,7 +972,11 @@ impl Bot {
     /// Sends the game's diagnostic lines, as the hooks DLL does; answers how many were kept.
     pub async fn client_log(&self, lines: Vec<server_api::misc::ClientLogLine>) -> std::result::Result<u32, tonic::Status> {
         Ok(MiscClient::new(self.api.clone())
-            .client_log(self.authed(server_api::misc::ClientLogRequest { lines, dropped: 0, full_logs: false }))
+            .client_log(self.authed(server_api::misc::ClientLogRequest {
+                lines,
+                dropped: 0,
+                full_logs: false,
+            }))
             .await?
             .into_inner()
             .kept)
