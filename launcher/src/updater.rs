@@ -82,12 +82,25 @@ impl Latest {
         Release::parse(&self.version).is_some_and(|r| r.newer_than(&current()))
     }
 
+    /// Not older than this launcher: what's downloaded beside it (the server) is never
+    /// an older release than it, whatever GitHub's listing says is the latest.
+    pub fn not_older(&self) -> bool {
+        Release::parse(&self.version).is_some_and(|r| !current().newer_than(&r))
+    }
+
     fn url(&self, name: &str) -> anyhow::Result<&str> {
-        self.assets
+        let url = self
+            .assets
             .iter()
             .find(|a| a.name == name)
             .map(|a| a.browser_download_url.as_str())
-            .ok_or_else(|| anyhow::anyhow!("release {} has no {name}", self.version))
+            .ok_or_else(|| anyhow::anyhow!("release {} has no {name}", self.version))?;
+        // What's downloaded is checked against the signed checksums anyway; this keeps the
+        // asking itself to GitHub (the listing isn't signed).
+        if !from_github(url) {
+            anyhow::bail!("release {}'s {name} isn't on GitHub", self.version);
+        }
+        Ok(url)
     }
 }
 
@@ -155,13 +168,28 @@ fn install(data: &[u8], to: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Whether `url` is an HTTPS address on GitHub, where releases and their files are.
+fn from_github(url: &str) -> bool {
+    url::Url::parse(url).is_ok_and(|u| {
+        u.scheme() == "https"
+            && u.port().is_none()
+            && u.host_str()
+                .is_some_and(|h| h == "github.com" || h == "objects.githubusercontent.com" || h == "release-assets.githubusercontent.com")
+    })
+}
+
 /// Asks GitHub for the latest release.
 pub fn latest() -> anyhow::Result<Latest> {
     let body = crate::services::rt().block_on(get(&format!("https://api.github.com/repos/{REPO}/releases/latest"), Duration::from_secs(15), MAX_SMALL))?;
     let r: GhRelease = serde_json::from_slice(&body)?;
     Ok(Latest {
         version: r.tag_name.trim_start_matches('v').to_string(),
-        page: r.html_url,
+        // Opened when the player clicks it, and not signed: only the project's own pages.
+        page: if r.html_url.starts_with(&format!("https://github.com/{REPO}/")) {
+            r.html_url
+        } else {
+            RELEASES_PAGE.to_string()
+        },
         assets: r.assets,
     })
 }

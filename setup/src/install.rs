@@ -71,11 +71,24 @@ pub fn install(game_dir: &Path, bundled: &[u8]) -> Result<(), InstallError> {
     if installed == bundled {
         return Ok(());
     }
-    if !orig.exists() {
+    // The game's own DLL, kept once. A copy cut short (a full disk, a crash while writing)
+    // isn't one: kept again while the game's own is still there to keep.
+    let kept = std::fs::read(&orig).ok().filter(|o| looks_like_dll(o));
+    if kept.is_none() {
         if is_5th_echelon_dll(&installed) {
             return Err(InstallError::OriginalLost);
         }
-        std::fs::write(&orig, &installed)?;
+        // Written whole, then renamed into place: never a half-written copy under its name.
+        let tmp = game_dir.join(format!("{ORIG_DLL_NAME}.tmp"));
+        {
+            use std::io::Write as _;
+            let mut f = std::fs::File::create(&tmp)?;
+            f.write_all(&installed)?;
+            f.sync_all()?;
+        }
+        std::fs::rename(&tmp, &orig).inspect_err(|_| {
+            let _ = std::fs::remove_file(&tmp);
+        })?;
     }
     let new = game_dir.join(format!("{DLL_NAME}.new"));
     std::fs::write(&new, bundled)?;
@@ -87,6 +100,12 @@ pub fn install(game_dir: &Path, bundled: &[u8]) -> Result<(), InstallError> {
             e.into()
         }
     })
+}
+
+/// Whether `data` could be a Windows DLL: the DOS header, and the PE header where it says.
+fn looks_like_dll(data: &[u8]) -> bool {
+    let pe = data.get(0x3c..0x40).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize);
+    data.starts_with(b"MZ") && pe.is_some_and(|at| data.get(at..at.saturating_add(4)) == Some(b"PE\0\0"))
 }
 
 /// Puts the game's own DLL back (uninstalls the client).
@@ -111,6 +130,15 @@ mod tests {
     use super::*;
     use crate::testutil::temp_dir;
 
+    /// The game's own DLL, as far as the checks look: a DOS header pointing at a PE one.
+    fn theirs() -> Vec<u8> {
+        let mut data = b"MZ".to_vec();
+        data.resize(0x3c, 0);
+        data.extend(64u32.to_le_bytes());
+        data.extend(b"PE\0\0 ubisoft");
+        data
+    }
+
     fn ours(tag: &str) -> Vec<u8> {
         let mut data = format!("MZ {tag} ").into_bytes();
         data.extend("UPlay R1 Loader for 5th Echelon Enhanced".encode_utf16().flat_map(u16::to_le_bytes));
@@ -120,22 +148,33 @@ mod tests {
     #[test]
     fn installs_and_keeps_the_original_once() {
         let dir = temp_dir("install");
-        std::fs::write(dir.join(DLL_NAME), b"MZ ubisoft").unwrap();
+        std::fs::write(dir.join(DLL_NAME), theirs()).unwrap();
         assert_eq!(client_state(&dir, &ours("v1")), ClientState::NotInstalled);
 
         install(&dir, &ours("v1")).unwrap();
         assert_eq!(client_state(&dir, &ours("v1")), ClientState::Installed);
-        assert_eq!(std::fs::read(dir.join(ORIG_DLL_NAME)).unwrap(), b"MZ ubisoft");
+        assert_eq!(std::fs::read(dir.join(ORIG_DLL_NAME)).unwrap(), theirs());
 
         // An update replaces ours and leaves the original alone.
         assert_eq!(client_state(&dir, &ours("v2")), ClientState::Different);
         install(&dir, &ours("v2")).unwrap();
         assert_eq!(std::fs::read(dir.join(DLL_NAME)).unwrap(), ours("v2"));
-        assert_eq!(std::fs::read(dir.join(ORIG_DLL_NAME)).unwrap(), b"MZ ubisoft");
+        assert_eq!(std::fs::read(dir.join(ORIG_DLL_NAME)).unwrap(), theirs());
 
         uninstall(&dir).unwrap();
-        assert_eq!(std::fs::read(dir.join(DLL_NAME)).unwrap(), b"MZ ubisoft");
+        assert_eq!(std::fs::read(dir.join(DLL_NAME)).unwrap(), theirs());
         assert!(!dir.join(ORIG_DLL_NAME).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_backup_cut_short_is_kept_again() {
+        let dir = temp_dir("install-cut");
+        std::fs::write(dir.join(DLL_NAME), theirs()).unwrap();
+        std::fs::write(dir.join(ORIG_DLL_NAME), b"MZ").unwrap();
+        install(&dir, &ours("v1")).unwrap();
+        assert_eq!(std::fs::read(dir.join(ORIG_DLL_NAME)).unwrap(), theirs());
+        assert!(!dir.join(format!("{ORIG_DLL_NAME}.tmp")).exists());
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -483,6 +483,11 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
             );
         } else if crate::app::Prefs::adopt_directory(&coordinator) {
             say(log, format!("Using the server directory at {shown}."));
+        } else if crate::app::Prefs::directory().is_none_or(|d| d.trim().trim_end_matches('/') != coordinator.trim().trim_end_matches('/')) {
+            say(
+                log,
+                format!("The server names the server directory {shown}. Yours stays as it is; if you trust it, set it in Settings."),
+            );
         }
     }
 

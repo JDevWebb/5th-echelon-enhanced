@@ -72,7 +72,7 @@ impl Package {
         }
         let (chunk_size, total, flags) = (u32_at(4), u32_at(8), head[16]);
         let (packed, size, packed_again) = (u32_at(17), u32_at(21), u32_at(25));
-        if chunk_size == 0 || packed > 64 << 20 || size > 64 << 20 {
+        if chunk_size == 0 || chunk_size > 64 << 20 || packed > 64 << 20 || size > 64 << 20 {
             bail!("{PACKAGE} has an implausible chunk table");
         }
         let mut raw = vec![0u8; usize::try_from(packed)?];
@@ -92,6 +92,11 @@ impl Package {
             let full = chunk_size.min(total.saturating_sub(unpacked));
             // A stored chunk of size 0 is a whole raw chunk.
             let packed = if packed == 0 { full } else { packed };
+            // Packed, a chunk is about its unpacked size: anything far bigger is a broken
+            // table, not memory to set aside.
+            if packed > full + 4096 {
+                bail!("{PACKAGE}'s chunk of {packed} bytes is larger than a chunk");
+            }
             chunks.push((at, packed, zlib, unpacked));
             at += packed;
             unpacked += full;

@@ -258,6 +258,7 @@ fn local_server(server: &mut Server, notices: &mut Notices, ctx: &egui::Context,
                 } else if ui.add(theme::primary("Download the server")).clicked() {
                     server.downloading.start(ctx, || {
                         let latest = crate::updater::latest()?;
+                        anyhow::ensure!(latest.not_older(), "the latest release ({}) is older than this launcher", latest.version);
                         let to = std::env::current_exe()?.with_file_name(SERVER_EXE);
                         crate::updater::download(&latest, crate::updater::SERVER_ASSET, &to)
                     });

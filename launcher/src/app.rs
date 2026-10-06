@@ -316,12 +316,14 @@ impl Prefs {
         Self::forget_cached_directory();
     }
 
-    /// Uses the directory a server reports, when none is set yet (one the
-    /// player chose is never replaced). Only `https://` ones. Says whether it
-    /// was adopted.
+    /// Uses the directory a server reports, only when the player has none (they cleared
+    /// it): never in place of the community network's, which is the default, nor one they
+    /// chose. Any HTTPS server can name one, and it decides the server list, the automatic
+    /// pick and the notices, so taking it unasked would hand all that to whoever runs the
+    /// server. Only `https://` ones. Says whether it was adopted.
     pub fn adopt_directory(url: &str) -> bool {
         let mut prefs = Self::load();
-        if prefs.directory.is_some() || prefs.directory_set || !setup::directory::valid_coordinator(url) {
+        if prefs.directory.is_some() || !prefs.directory_set || !setup::directory::valid_coordinator(url) {
             return false;
         }
         prefs.directory = Some(url.trim().to_string());
