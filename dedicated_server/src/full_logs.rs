@@ -1,4 +1,5 @@
-//! The game's whole log when something goes wrong, for players who send the game's
+//! The game's log around a problem (the 15 minutes before it, never the whole log), for
+//! players who send the game's
 //! diagnostics (launcher Settings › Feedback): the game says so with them
 //! (`Misc.ClientLog`, `full_logs`), and when a problem is noted for that player here (a failed
 //! join, a lapsed registration, their relayed traffic stopping, a game that dropped and came

@@ -242,7 +242,7 @@ fn feedback(app: &mut App, ui: &mut egui::Ui) {
                 Prefs::set_diagnostics_asked();
             }
             ui.label(theme::muted(
-                "With it on, when the server sees a problem in your game (a join that failed, your connection dropping, the game restarting in a match), it can also ask for the last 15 minutes of the game's log, at most once an hour, private details hidden the same way.",
+                "With it on, when the server sees a problem in your game (a join that failed, your connection dropping, the game restarting in a match), it can also ask for the 15 minutes of the game's log before it, at most once an hour (never the whole log), private details hidden the same way.",
             ));
         });
     }

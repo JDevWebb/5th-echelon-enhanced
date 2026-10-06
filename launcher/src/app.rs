@@ -115,6 +115,10 @@ pub struct Prefs {
     /// The player answered whether the game may send its diagnostics (diagnostics.rs).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     diagnostics_asked: bool,
+    /// The player knows the diagnostics include the 15 minutes of the game's log before a
+    /// problem (from 0.4.3): told once, or asked with that wording.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    log_excerpt_told: bool,
     /// Servers of their own the player connected to (Servers › A server of your own), newest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     recent_servers: Vec<RecentServer>,
@@ -233,7 +237,20 @@ impl Prefs {
     pub fn set_diagnostics_asked() {
         let mut prefs = Self::load();
         prefs.diagnostics_asked = true;
+        prefs.log_excerpt_told = true;
         prefs.save();
+    }
+
+    /// Whether a player who agreed before 0.4.3 still has to be told that the diagnostics
+    /// now include the 15 minutes of the game's log before a problem; noted as told.
+    pub fn tell_log_excerpt() -> bool {
+        let mut prefs = Self::load();
+        if !prefs.diagnostics_asked || prefs.log_excerpt_told {
+            return false;
+        }
+        prefs.log_excerpt_told = true;
+        prefs.save();
+        true
     }
 
     /// The release whose What's new was last shown or noted.
@@ -699,6 +716,12 @@ impl eframe::App for App {
             self.feedback.resume(ctx, &mut self.notices, &game.cfg);
         }
         self.feedback.show(ctx, &mut self.notices);
+        // Agreed before 0.4.3: told once what the diagnostics now include (not asked again).
+        if self.game.as_ref().is_some_and(|g| g.cfg.hook_config.send_diagnostics) && Prefs::tell_log_excerpt() {
+            self.notices.info(
+                "New in the game's diagnostics: when something goes wrong, the server can ask for the 15 minutes of the game's log before it (at most once an hour, never the whole log, private details hidden). Settings › Feedback turns the diagnostics off.",
+            );
+        }
         self.diagnostics.show(ctx, self.game.as_mut(), &mut self.notices);
         self.whats_new.start(self.game.as_ref());
         let community = Prefs::directory().is_some_and(|d| Prefs::is_community(&d));

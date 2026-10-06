@@ -35,7 +35,42 @@ pub struct Release {
 }
 
 /// Newest first. A release with nothing a player would notice has no entry.
-pub const RELEASES: &[Release] = &[Release {
+pub const RELEASES: &[Release] = &[
+    Release {
+        version: "0.4.3",
+        new: &[
+            Item {
+                title: "Replies to your reports",
+                text: "The admins can answer a report you sent. See it under Settings › Feedback › Your reports.",
+                community: false,
+            },
+            Item {
+                title: "Choose the overlay's key",
+                text: "F5 does nothing on most laptops unless you hold Fn. Pick another key in Settings › Game.",
+                community: false,
+            },
+            Item {
+                title: "The 15 minutes before a problem",
+                text: "When the server sees a problem in your game, it can ask for the 15 minutes of the game's log before it, at most once an hour, never the whole log. Settings › Feedback turns it off with the diagnostics.",
+                community: false,
+            },
+        ],
+        fixed: &[
+            Fix {
+                lead: "No false \"Other players can't reach you\"",
+                rest: " when you're back in the menus.",
+            },
+            Fix {
+                lead: "Relayed matches keep their connection",
+                rest: " on mobile and shared connections.",
+            },
+            Fix {
+                lead: "Reports aren't lost",
+                rest: " when you close the launcher too soon.",
+            },
+        ],
+    },
+    Release {
     version: "0.4.2",
     new: &[
         Item {
@@ -95,7 +130,8 @@ pub const RELEASES: &[Release] = &[Release {
             rest: ", instead of a port error.",
         },
     ],
-}];
+    },
+];
 
 /// Older releases shown under the newest, for a player who skipped some.
 const OLDER_SHOWN: usize = 2;
