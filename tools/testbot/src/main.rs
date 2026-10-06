@@ -1194,9 +1194,10 @@ async fn reconnect_case(server: IpAddr, reach: Reach, mut a: Bot, mut friend: Bo
     Ok(problems)
 }
 
-/// A ticket works only from the address that asked for it: someone who saw it (and the
-/// CONNECT) on the way can't sign in with it from elsewhere. Needs a server on loopback,
-/// where 127.0.0.2 is another address.
+/// A ticket works only from the address that asked for it, or one next to it (a VPN's other
+/// exit, the same /24): someone who saw it (and the CONNECT) on the way can't sign in with it
+/// from elsewhere. Needs a server on loopback, where 127.0.0.2 is a neighbouring address and
+/// 127.0.2.1 a farther one.
 async fn ticket_elsewhere(ctx: &mut Ctx) -> Result<()> {
     if !ctx.server.is_loopback() {
         println!("  (skipped: needs a server on 127.0.0.1)");
@@ -1205,8 +1206,11 @@ async fn ticket_elsewhere(ctx: &mut Ctx) -> Result<()> {
     ctx.n += 1;
     let name = format!("Ticket{}_{}", ctx.run, ctx.n);
     Bot::register(ctx.server, &name, PASSWORD).await?;
-    let stolen = Bot::login_from(ctx.server, &name, PASSWORD, "127.0.0.2".parse()?).await;
+    let stolen = Bot::login_from(ctx.server, &name, PASSWORD, "127.0.2.1".parse()?).await;
     ensure!(stolen.is_err(), "a ticket was used from another address");
+    let neighbour = Bot::login_from(ctx.server, &name, PASSWORD, "127.0.0.2".parse()?).await;
+    ensure!(neighbour.is_ok(), "a ticket from the next address (a VPN's other exit) was refused");
+    neighbour?.disconnect().await?;
     Bot::login(ctx.server, &name, PASSWORD).await?.disconnect().await
 }
 
@@ -1441,7 +1445,9 @@ async fn nat_relay(ctx: &mut Ctx) -> Result<()> {
     let (pa, pb) = (ctx.player("Relayed").await?, ctx.player("Direct").await?);
     let a = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
     let b = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
-    let stranger = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+    // Someone at another address (on loopback, 127.0.0.3): the same address with the tag is the
+    // player's own other port, which the relay takes (see below).
+    let stranger = tokio::net::UdpSocket::bind(if ctx.server.is_loopback() { "127.0.0.3:0" } else { "0.0.0.0:0" }).await?;
     let ra = testbot::bot::nat_register(&a, nat, nat_proto::probe_flags::WANT_RELAY, &pa.name, pa.nat_ticket).await?;
     let rb = testbot::bot::nat_register(&b, nat, 0, &pb.name, pb.nat_ticket).await?;
     ensure!(ra.relayed && !rb.relayed, "relayed: a {}, b {}", ra.relayed, rb.relayed);
@@ -1487,11 +1493,36 @@ async fn nat_relay(ctx: &mut Ctx) -> Result<()> {
             }),
         "a full-size game packet wasn't relayed"
     );
-    stranger.send_to(&send(rb.tag, ra.advertise, b"spam"), nat).await?;
+    if ctx.server.is_loopback() {
+        stranger.send_to(&send(rb.tag, ra.advertise, b"spam"), nat).await?;
+    }
     b.send_to(&send([1; 8], ra.advertise, b"wrong tag"), nat).await?;
     ensure!(
         nat_wait_data(&a, Duration::from_millis(400)).await.is_none(),
         "a stranger's or an untagged packet was relayed"
+    );
+    // The player's game sending from another port of its address (its second Storm socket,
+    // or a NAT giving each its own), with its tag: theirs, and the answer comes back there.
+    let b2 = tokio::net::UdpSocket::bind(b.local_addr()?.ip().to_string() + ":0").await?;
+    b2.send_to(&send(rb.tag, ra.advertise, b"from my other port"), nat).await?;
+    ensure!(
+        nat_wait_data(&a, Duration::from_secs(2)).await
+            == Some(Message::DataFrom {
+                tag: ra.tag,
+                from: rb.advertise,
+                payload: b"from my other port".to_vec()
+            }),
+        "the player's traffic from another port of its address wasn't relayed"
+    );
+    a.send_to(&send(ra.tag, rb.advertise, b"back to the other port"), nat).await?;
+    ensure!(
+        nat_wait_data(&b2, Duration::from_secs(2)).await
+            == Some(Message::DataFrom {
+                tag: rb.tag,
+                from: ra.advertise,
+                payload: b"back to the other port".to_vec()
+            }),
+        "the answer didn't go back to the port that sent"
     );
     pa.disconnect().await?;
     pb.disconnect().await
