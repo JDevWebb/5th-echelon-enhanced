@@ -1508,9 +1508,15 @@ fn authenticated<S>(
         let logger = logger.clone();
         let key = key.clone();
         async move {
+            let peer = client_addr(&req);
             let this = check_token(&logger, &key, &storage, req).await;
             if let Err(ref e) = this {
-                error!(logger, "Auth failure: {e}");
+                // An outdated game whose sign-in was refused keeps calling without a token
+                // (857 in two days on eu1, nearly all from two outdated games): once an hour per
+                // address and reason.
+                if crate::clients::worth_saying(&format!("auth/{peer:?}/{}", e.message())) {
+                    error!(logger, "Auth failure from {peer:?}: {e} (said once an hour)");
+                }
             }
             this
         }
