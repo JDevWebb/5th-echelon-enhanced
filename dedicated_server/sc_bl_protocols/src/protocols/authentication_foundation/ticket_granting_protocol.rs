@@ -125,44 +125,50 @@ impl<T: TicketGrantingProtocolServerTrait<CI>, CI> Protocol<CI> for TicketGranti
             None => Err(Error::UnknownMethod),
             Some(TicketGrantingProtocolMethod::Login) => {
                 let req = LoginRequest::from_bytes(&request.parameters)?;
-                debug!(logger, "Request: {:?}", req);
+                // Not its contents: a password, or a ticket with its session key.
+                debug!(logger, "Request: {}", std::any::type_name_of_val(&req));
                 let resp = self.0.login(logger, ctx, ci, req, client_registry, socket);
-                debug!(logger, "Response: {:?}", resp);
+                debug!(logger, "Response: {}", if resp.is_ok() { "ok" } else { "an error" });
                 Ok(resp?.to_bytes())
             }
             Some(TicketGrantingProtocolMethod::LoginEx) => {
                 let req = LoginExRequest::from_bytes(&request.parameters)?;
-                debug!(logger, "Request: {:?}", req);
+                // Not its contents: a password, or a ticket with its session key.
+                debug!(logger, "Request: {}", std::any::type_name_of_val(&req));
                 let resp = self.0.login_ex(logger, ctx, ci, req, client_registry, socket);
-                debug!(logger, "Response: {:?}", resp);
+                debug!(logger, "Response: {}", if resp.is_ok() { "ok" } else { "an error" });
                 Ok(resp?.to_bytes())
             }
             Some(TicketGrantingProtocolMethod::RequestTicket) => {
                 let req = RequestTicketRequest::from_bytes(&request.parameters)?;
-                debug!(logger, "Request: {:?}", req);
+                // Not its contents: a password, or a ticket with its session key.
+                debug!(logger, "Request: {}", std::any::type_name_of_val(&req));
                 let resp = self.0.request_ticket(logger, ctx, ci, req, client_registry, socket);
-                debug!(logger, "Response: {:?}", resp);
+                debug!(logger, "Response: {}", if resp.is_ok() { "ok" } else { "an error" });
                 Ok(resp?.to_bytes())
             }
             Some(TicketGrantingProtocolMethod::GetPid) => {
                 let req = GetPidRequest::from_bytes(&request.parameters)?;
-                debug!(logger, "Request: {:?}", req);
+                // Not its contents: a password, or a ticket with its session key.
+                debug!(logger, "Request: {}", std::any::type_name_of_val(&req));
                 let resp = self.0.get_pid(logger, ctx, ci, req, client_registry, socket);
-                debug!(logger, "Response: {:?}", resp);
+                debug!(logger, "Response: {}", if resp.is_ok() { "ok" } else { "an error" });
                 Ok(resp?.to_bytes())
             }
             Some(TicketGrantingProtocolMethod::GetName) => {
                 let req = GetNameRequest::from_bytes(&request.parameters)?;
-                debug!(logger, "Request: {:?}", req);
+                // Not its contents: a password, or a ticket with its session key.
+                debug!(logger, "Request: {}", std::any::type_name_of_val(&req));
                 let resp = self.0.get_name(logger, ctx, ci, req, client_registry, socket);
-                debug!(logger, "Response: {:?}", resp);
+                debug!(logger, "Response: {}", if resp.is_ok() { "ok" } else { "an error" });
                 Ok(resp?.to_bytes())
             }
             Some(TicketGrantingProtocolMethod::LoginWithContext) => {
                 let req = LoginWithContextRequest::from_bytes(&request.parameters)?;
-                debug!(logger, "Request: {:?}", req);
+                // Not its contents: a password, or a ticket with its session key.
+                debug!(logger, "Request: {}", std::any::type_name_of_val(&req));
                 let resp = self.0.login_with_context(logger, ctx, ci, req, client_registry, socket);
-                debug!(logger, "Response: {:?}", resp);
+                debug!(logger, "Response: {}", if resp.is_ok() { "ok" } else { "an error" });
                 Ok(resp?.to_bytes())
             }
         }

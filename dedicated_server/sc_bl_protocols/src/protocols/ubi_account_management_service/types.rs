@@ -14,7 +14,7 @@ pub struct UbiAccountStatus {
     pub recovering_password: bool,
     pub pending_deactivation: bool,
 }
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct UbiAccount {
     pub ubi_account_id: String,
     pub username: String,
@@ -30,6 +30,27 @@ pub struct UbiAccount {
     pub last_name: String,
     pub preferred_language: String,
     pub external_accounts: Vec<ExternalAccount>,
+}
+// Debug by hand (not derived): a password is never written to a log.
+impl std::fmt::Debug for UbiAccount {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UbiAccount")
+            .field("ubi_account_id", &self.ubi_account_id)
+            .field("username", &self.username)
+            .field("password", &"<hidden>")
+            .field("status", &self.status)
+            .field("email", &self.email)
+            .field("date_of_birth", &self.date_of_birth)
+            .field("gender", &self.gender)
+            .field("country_code", &self.country_code)
+            .field("opt_in", &self.opt_in)
+            .field("third_party_opt_in", &self.third_party_opt_in)
+            .field("first_name", &self.first_name)
+            .field("last_name", &self.last_name)
+            .field("preferred_language", &self.preferred_language)
+            .field("external_accounts", &self.external_accounts)
+            .finish()
+    }
 }
 #[derive(Debug, ToStream, FromStream)]
 pub struct TOS {

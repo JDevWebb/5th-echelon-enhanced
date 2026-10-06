@@ -532,6 +532,13 @@ fn main() -> color_eyre::Result<()> {
     quazal::prudp::set_ticket_address_proven(clients::address_proven);
 
     let storage = Arc::new(Storage::init(logger.clone())?);
+    {
+        let storage = Arc::clone(&storage);
+        quazal::prudp::set_ticket_accepted(move |user, valid_until| {
+            // Unreadable (the database busy): let it in, as before; a ban still signs it out.
+            storage.ticket_accepted(user, valid_until, ticket::TICKET_LIFETIME.as_secs()).unwrap_or(true)
+        });
+    }
 
     let config_filename = args.config_path.unwrap_or_else(|| PathBuf::from("service.toml"));
 

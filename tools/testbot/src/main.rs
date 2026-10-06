@@ -1472,14 +1472,14 @@ async fn nat_relay(ctx: &mut Ctx) -> Result<()> {
         "the relayed player got something else"
     );
     a.send_to(&send(ra.tag, rb.advertise, b"and back"), nat).await?;
+    let got = nat_wait_data(&b, Duration::from_secs(2)).await;
     ensure!(
-        nat_wait_data(&b, Duration::from_secs(2)).await
-            == Some(Message::DataFrom {
-                tag: rb.tag,
-                from: ra.advertise,
-                payload: b"and back".to_vec()
-            }),
-        "the direct player got something else"
+        got == Some(Message::DataFrom {
+            tag: rb.tag,
+            from: ra.advertise,
+            payload: b"and back".to_vec()
+        }),
+        "the direct player got something else: {got:?} (a: {ra:?}, b: {rb:?})"
     );
     // The largest game packet, as Storm sends them while a co-op mission loads.
     let full = vec![0x33; nat_proto::MAX_PAYLOAD];

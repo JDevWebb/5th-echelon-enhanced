@@ -845,18 +845,19 @@ async fn passkey_login_finish(State(c): State<Shared>, Extension(client): Extens
         return fail(StatusCode::BAD_REQUEST, "that sign-in expired; try again");
     };
     let cred_id = req.credential["id"].as_str().unwrap_or_default().to_string();
-    let row: Option<(i64, i64, Vec<u8>, i64, String, i64, i64)> = sqlx::query_as(
-        "SELECT p.admin_id, p.alg, p.public_key, p.sign_count, a.username, a.disabled, a.locked_until FROM passkeys p JOIN admins a ON a.id = p.admin_id WHERE p.id = ?",
-    )
-    .bind(&cred_id)
-    .fetch_optional(&c.pool)
-    .await
-    .unwrap_or(None);
-    let Some((admin_id, alg, public_key, sign_count, username, disabled, locked_until)) = row else {
+    let row: Option<(i64, i64, Vec<u8>, i64, String, i64)> =
+        sqlx::query_as("SELECT p.admin_id, p.alg, p.public_key, p.sign_count, a.username, a.disabled FROM passkeys p JOIN admins a ON a.id = p.admin_id WHERE p.id = ?")
+            .bind(&cred_id)
+            .fetch_optional(&c.pool)
+            .await
+            .unwrap_or(None);
+    let Some((admin_id, alg, public_key, sign_count, username, disabled)) = row else {
         c.audit("", Some(&client), "sign-in failed", "unknown passkey").await;
         return fail(StatusCode::UNAUTHORIZED, "this passkey isn't registered here");
     };
-    if for_admin.is_some_and(|a| a != admin_id) || disabled != 0 || identity::now() < locked_until {
+    // The lock after wrong passwords doesn't stop a passkey: anyone who knows an admin's name
+    // could keep it locked, and a passkey can't be guessed.
+    if for_admin.is_some_and(|a| a != admin_id) || disabled != 0 {
         return fail(StatusCode::UNAUTHORIZED, "this passkey can't sign in now");
     }
     if webauthn::user_handle(&req.credential).is_some_and(|h| h != admin_id.to_string().into_bytes()) {

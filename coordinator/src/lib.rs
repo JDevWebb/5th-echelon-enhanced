@@ -129,6 +129,8 @@ pub(crate) fn public_ip(ip: std::net::IpAddr) -> bool {
                 || a == 0
                 || a >= 240
                 || (a == 100 && (64..128).contains(&b))
+                // Benchmarking (198.18.0.0/15), often used inside networks.
+                || (a == 198 && (b & 0xfe) == 18)
                 || (a == 192 && b == 0 && c == 0))
         }
         std::net::IpAddr::V6(v6) => {
@@ -136,6 +138,12 @@ pub(crate) fn public_ip(ip: std::net::IpAddr) -> bool {
                 return public_ip(std::net::IpAddr::V4(v4));
             }
             let [first, second, ..] = v6.segments();
+            // NAT64 (64:ff9b::/96) reaches IPv4 addresses, private ones too: as the one inside.
+            if let [0x0064, 0xff9b, 0, 0, 0, 0, hi, lo] = v6.segments() {
+                let [a, b] = hi.to_be_bytes();
+                let [c, d] = lo.to_be_bytes();
+                return public_ip(std::net::IpAddr::V4(std::net::Ipv4Addr::new(a, b, c, d)));
+            }
             !(v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() || first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80 || (first == 0x2001 && second == 0x0db8))
         }
     }
@@ -144,7 +152,7 @@ pub(crate) fn public_ip(ip: std::net::IpAddr) -> bool {
 /// A request's source address: the peer, or, from a proxy on this machine,
 /// the last address in `X-Forwarded-For`.
 fn client_ip(peer: std::net::SocketAddr, headers: &HeaderMap) -> std::net::IpAddr {
-    if peer.ip().is_loopback() {
+    if peer.ip().to_canonical().is_loopback() {
         if let Some(ip) = headers
             .get("x-forwarded-for")
             .and_then(|v| v.to_str().ok())
@@ -1345,7 +1353,10 @@ async fn player_content(State(c): State<Shared>, headers: HeaderMap, body: axum:
         }
     };
     match c.store_content(&server, &content).await {
-        Ok(()) => ok(json!({ "ok": true })),
+        Ok(content::Stored::Kept) => ok(json!({ "ok": true })),
+        // Both sent again later (a 5xx), not dropped: the player list catches up, or room is made.
+        Ok(content::Stored::UnknownPlayer) => fail(StatusCode::SERVICE_UNAVAILABLE, "that player isn't known here yet; send it later"),
+        Ok(content::Stored::Full) => fail(StatusCode::INSUFFICIENT_STORAGE, "this server's snapshots take all the room they may"),
         Err(e) => internal(e),
     }
 }
@@ -1604,7 +1615,7 @@ async fn my_suggestions(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<
     if !c.reads.check(&limit_key(client_ip(peer, &headers))) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many requests");
     }
-    if !identity::fresh(q.time, identity::now()) || !identity::verify(&q.identity, &identity::suggestions_message(q.time), &q.signature) {
+    if !identity::is_global_id(&q.identity) || !identity::fresh(q.time, identity::now()) || !identity::verify(&q.identity, &identity::suggestions_message(q.time), &q.signature) {
         return fail(StatusCode::FORBIDDEN, "the signature doesn't match");
     }
     c.suggestions_of(&q.identity).await.map_or_else(internal, ok)
@@ -1618,7 +1629,7 @@ async fn my_reports(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std:
     }
     // Signed for this coordinator, by the name it was reached at.
     let host = headers.get(axum::http::header::HOST).and_then(|h| h.to_str().ok()).unwrap_or_default();
-    if !identity::fresh(q.time, identity::now()) || !identity::verify(&q.identity, &identity::reports_message(host, q.time), &q.signature) {
+    if !identity::is_global_id(&q.identity) || !identity::fresh(q.time, identity::now()) || !identity::verify(&q.identity, &identity::reports_message(host, q.time), &q.signature) {
         return fail(StatusCode::FORBIDDEN, "the signature doesn't match");
     }
     c.reports_of(&q.identity).await.map_or_else(internal, ok)

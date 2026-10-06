@@ -70,10 +70,19 @@ pub struct LoginWithTokenExResponse {
     pub p_connection_data: RVConnectionData,
     pub str_return_msg: String,
 }
-#[derive(Debug, ToStream, FromStream)]
+#[derive(ToStream, FromStream)]
 pub struct LoginRequest {
     pub str_username: String,
     pub str_password: String,
+}
+// Debug by hand (not derived): a password is never written to a log.
+impl std::fmt::Debug for LoginRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LoginRequest")
+            .field("str_username", &self.str_username)
+            .field("str_password", &"<hidden>")
+            .finish()
+    }
 }
 #[derive(Debug, ToStream, FromStream)]
 pub struct LoginResponse {

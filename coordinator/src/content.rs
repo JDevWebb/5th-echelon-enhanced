@@ -20,8 +20,21 @@ pub const MAX_SIZE: usize = 1024 * 1024;
 pub const MAX_BODY: usize = 2 * 1024 * 1024;
 /// Snapshots a server may send an hour.
 pub const PER_HOUR: usize = 600;
-/// A snapshot not updated for this long goes (with the daily cleanup).
+/// A snapshot not received for this long goes (with the daily cleanup).
 const KEEP_FOR: i64 = 90 * 86_400;
+/// The most one server's snapshots may take here (gzipped): a new player's isn't kept past
+/// it (their updates are). A few thousand players' at ~20 KB each.
+const MAX_PER_SERVER: i64 = 256 * 1024 * 1024;
+
+/// What became of a snapshot sent.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Stored {
+    Kept,
+    /// The server hasn't told of that player (its player list): sent again later.
+    UnknownPlayer,
+    /// The server's snapshots take all the room they may.
+    Full,
+}
 
 /// A checked snapshot.
 pub struct Content {
@@ -84,8 +97,32 @@ pub fn summary(snapshot: &Value) -> Value {
 }
 
 impl Coordinator {
-    /// Keeps `server`'s player's snapshot, replacing an older one.
-    pub(crate) async fn store_content(&self, server: &str, c: &Content) -> sqlx::Result<()> {
+    /// Keeps `server`'s player's snapshot, replacing an older one: only a player the server
+    /// has told of, and within [`MAX_PER_SERVER`].
+    pub(crate) async fn store_content(&self, server: &str, c: &Content) -> sqlx::Result<Stored> {
+        let known: Option<i64> = sqlx::query_scalar("SELECT 1 FROM players WHERE server_id = ? AND id = ?")
+            .bind(server)
+            .bind(c.player_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        if known.is_none() {
+            return Ok(Stored::UnknownPlayer);
+        }
+        let had: Option<i64> = sqlx::query_scalar("SELECT 1 FROM player_content WHERE server_id = ? AND player_id = ? AND type_id = ?")
+            .bind(server)
+            .bind(c.player_id)
+            .bind(c.type_id)
+            .fetch_optional(&self.pool)
+            .await?;
+        if had.is_none() {
+            let used: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(length(gzip)), 0) FROM player_content WHERE server_id = ?")
+                .bind(server)
+                .fetch_one(&self.pool)
+                .await?;
+            if used + i64::try_from(c.gzip.len()).unwrap_or(i64::MAX) > MAX_PER_SERVER {
+                return Ok(Stored::Full);
+            }
+        }
         sqlx::query(
             "INSERT INTO player_content (server_id, player_id, type_id, player_name, player_identity, size, gzip, updated_at, received_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
@@ -105,7 +142,7 @@ impl Coordinator {
         .bind(identity::now())
         .execute(&self.pool)
         .await?;
-        Ok(())
+        Ok(Stored::Kept)
     }
 
     /// A player's snapshot for the admin UI: when, how big, what it holds, and the JSON.
@@ -134,7 +171,8 @@ impl Coordinator {
 
     /// Deletes snapshots past [`KEEP_FOR`] (with the daily cleanup).
     pub(crate) async fn prune_content(&self) -> sqlx::Result<()> {
-        sqlx::query("DELETE FROM player_content WHERE updated_at < ?")
+        // By when it arrived: the time it says it was made is the sender's.
+        sqlx::query("DELETE FROM player_content WHERE received_at < ?")
             .bind(identity::now() - KEEP_FOR)
             .execute(&self.pool)
             .await?;

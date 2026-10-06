@@ -79,11 +79,18 @@ pub struct Busy;
 /// most [`HASHING_WAIT`]; past that it's [`Busy`], so a flood of sign-ins
 /// can't hold up everyone's for minutes, nor pile up without end.
 async fn hashing<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T> {
+    hashing_or_busy(true, f).await
+}
+
+/// [`hashing`], or with `wait` false, [`Busy`] at once when no turn is free: for the game's
+/// own sign-in, which holds its service's only thread while it waits.
+async fn hashing_or_busy<T: Send + 'static>(wait: bool, f: impl FnOnce() -> T + Send + 'static) -> Result<T> {
     static LIMIT: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
     static WAITING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let limit = LIMIT.get_or_init(|| tokio::sync::Semaphore::new(std::thread::available_parallelism().map_or(2, |n| n.get()).clamp(2, 4)));
     let _permit = match limit.try_acquire() {
         Ok(permit) => permit,
+        Err(_) if !wait => return Err(Busy.into()),
         Err(_) => {
             use std::sync::atomic::Ordering;
             if WAITING.fetch_add(1, Ordering::SeqCst) >= MAX_HASHING_QUEUE {
@@ -233,7 +240,8 @@ impl Storage {
     /// Replaces the account's token epoch: every token issued before stops working.
     pub async fn new_token_epoch(&self, user_id: u32) -> Result<()> {
         let epoch = (rand::random::<i64>() & i64::MAX).max(1);
-        sqlx::query("UPDATE users SET token_epoch = ? WHERE id = ?")
+        // The game's tickets go with the launcher's tokens.
+        sqlx::query("UPDATE users SET token_epoch = ?, tickets_after = unixepoch() WHERE id = ?")
             .bind(epoch)
             .bind(user_id)
             .execute(&self.pool)
@@ -259,6 +267,10 @@ impl Storage {
     }
 
     pub async fn login_user_async(&self, username: &str, password: &str) -> Result<std::result::Result<u32, LoginError>> {
+        self.login_user_waiting(true, username, password).await
+    }
+
+    async fn login_user_waiting(&self, wait: bool, username: &str, password: &str) -> Result<std::result::Result<u32, LoginError>> {
         let Some((id, db_password, password_hash)) = sqlx::query_as::<_, (u32, Option<String>, Option<String>)>("SELECT id, password, password_hash FROM users WHERE username = ?")
             .bind(username)
             .fetch_optional(&self.pool)
@@ -267,7 +279,10 @@ impl Storage {
             warn!(self.logger, "User {:?} not found", username.chars().take(32).collect::<String>());
             // As long as a real check, so the time taken doesn't tell which names exist.
             let password = password.to_owned();
-            let _ = hashing(move || Argon2::default().verify_password(password.as_bytes(), &PasswordHash::new(DUMMY_HASH).expect("valid dummy hash"))).await?;
+            let _ = hashing_or_busy(wait, move || {
+                Argon2::default().verify_password(password.as_bytes(), &PasswordHash::new(DUMMY_HASH).expect("valid dummy hash"))
+            })
+            .await?;
             return Ok(Err(LoginError::NotFound));
         };
 
@@ -277,7 +292,14 @@ impl Storage {
             (Some(_), Some(_)) => Err(eyre!("password and password_hash set for user {}", id)),
             (Some(db_password), None) => {
                 info!(self.logger, "Verify plain password of {}", username);
-                if db_password == password {
+                // Compared in constant time, and on success a player's is hashed like every
+                // other account's, so the plain password isn't kept. (The server's own accounts
+                // keep theirs: the game's plain Login, which they use, needs it.)
+                if crate::api::constant_time_eq(db_password.as_bytes(), password.as_bytes()) {
+                    let player = self.is_player_account(id).await.unwrap_or(false);
+                    if let Err(e) = if player { self.set_password(id, password).await } else { Ok(()) } {
+                        warn!(self.logger, "Couldn't hash {username}'s plain password: {e}");
+                    }
                     Ok(Ok(id))
                 } else {
                     Ok(Err(LoginError::InvalidPassword))
@@ -287,7 +309,10 @@ impl Storage {
                 info!(self.logger, "Verify password hash of {}", username);
                 PasswordHash::new(&password_hash).map_err(|_| eyre!("password hash parsing failed"))?;
                 let password = password.to_owned();
-                let ok = hashing(move || PasswordHash::new(&password_hash).is_ok_and(|parsed| Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok())).await?;
+                let ok = hashing_or_busy(wait, move || {
+                    PasswordHash::new(&password_hash).is_ok_and(|parsed| Argon2::default().verify_password(password.as_bytes(), &parsed).is_ok())
+                })
+                .await?;
                 Ok(if ok { Ok(id) } else { Err(LoginError::InvalidPassword) })
             }
         }?;
@@ -313,6 +338,12 @@ impl Storage {
         run(self.login_user_async(username, password))?
     }
 
+    /// [`Self::login_user`] for the game's own sign-in (LoginEx), which holds its service's
+    /// only thread: [`Busy`] at once when the password checks are all taken, not a wait.
+    pub fn login_user_now(&self, username: &str, password: &str) -> Result<std::result::Result<u32, LoginError>> {
+        run(self.login_user_waiting(false, username, password))?
+    }
+
     pub fn register_user(&self, username: &str, password: &str, ubi_id: Option<&str>) -> Result<()> {
         run(self.register_user_async(username, password, ubi_id))?
     }
@@ -329,7 +360,7 @@ impl Storage {
     }
 
     async fn register_user_unsafe_async(&self, username: &str, password: &str, ubi_id: Option<&str>) -> sqlx::Result<()> {
-        sqlx::query("INSERT INTO users (username, password_hash, ubi_id, name_key, token_epoch) VALUES (?, ?, ?, ?, ?)")
+        sqlx::query("INSERT INTO users (username, password_hash, ubi_id, name_key, token_epoch, tickets_after) VALUES (?, ?, ?, ?, ?, unixepoch())")
             .bind(username)
             .bind(password)
             .bind(ubi_id)
@@ -338,6 +369,16 @@ impl Storage {
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Whether a game ticket for `user_id` that's good until `valid_until` (and so was issued
+    /// `lifetime` seconds before) may still connect: the account is there, not banned, and
+    /// the ticket isn't from before its password changed or it was banned.
+    pub fn ticket_accepted(&self, user_id: u32, valid_until: u64, lifetime: u64) -> Result<bool> {
+        let after: Option<i64> = run(sqlx::query_scalar("SELECT tickets_after FROM users WHERE id = ?").bind(user_id).fetch_optional(&self.pool))??;
+        let Some(after) = after else { return Ok(false) };
+        let issued = valid_until.saturating_sub(lifetime);
+        Ok(issued >= u64::try_from(after).unwrap_or(0) && !self.banned(user_id)?)
     }
 
     pub fn find_password_for_user(&self, user_id: u32) -> Result<Option<String>> {
@@ -1835,6 +1876,24 @@ pub(crate) mod tests {
         assert!(matches!(storage.login_user("Kiwi", "wrong").unwrap(), Err(LoginError::InvalidPassword)));
         let id = storage.find_user_id_by_name("Kiwi").unwrap().unwrap();
         assert_eq!(storage.find_password_for_user(id).unwrap(), None, "new accounts keep no plaintext password");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_new_password_ends_the_games_old_tickets() {
+        let (storage, dir) = temp_storage("tickets");
+        storage.register_user("Kiwi", "hunter2", Some("KIWI-UBI")).unwrap();
+        let id = storage.find_user_id_by_name("Kiwi").unwrap().unwrap();
+        let day = 86_400;
+        let now = u64::try_from(identity::now()).unwrap();
+        // A ticket issued now: good. One for an account that isn't there: not.
+        assert!(storage.ticket_accepted(id, now + day, day).unwrap());
+        assert!(!storage.ticket_accepted(id + 1000, now + day, day).unwrap());
+        // Issued a minute ago, then the password changed: that ticket no longer connects,
+        // while one issued after does.
+        run(storage.set_password(id, "a-new-one")).unwrap().unwrap();
+        assert!(!storage.ticket_accepted(id, now - 60 + day, day).unwrap());
+        assert!(storage.ticket_accepted(id, now + 1 + day, day).unwrap());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -73,6 +73,10 @@ impl Suggestion {
         if self.name.trim().is_empty() || !one_line(&self.name, 32) || !one_line(&self.server, 253) || !one_line(&self.launcher, 32) {
             return Err("not a valid request");
         }
+        // One spelling of a key (upper case): another would count as another player.
+        if !identity::is_global_id(&self.identity) {
+            return Err("not a valid request");
+        }
         if !identity::fresh(self.time, now) {
             return Err("this PC's clock is off; set it right and send again");
         }

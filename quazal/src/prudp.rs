@@ -82,6 +82,21 @@ fn max_connections_per_ip() -> usize {
 /// server; without it only the ticket's own address and its neighbours are.
 static TICKET_ADDRESS_PROVEN: std::sync::OnceLock<fn(u32, std::net::IpAddr) -> bool> = std::sync::OnceLock::new();
 
+/// Whether a ticket (its user, and the time it's good until) may still connect: one from
+/// before a password change or a ban, or for an account that's gone, mayn't. Set once by
+/// the server; without it every unexpired ticket may.
+#[allow(clippy::type_complexity)]
+static TICKET_ACCEPTED: std::sync::OnceLock<Box<dyn Fn(u32, u64) -> bool + Send + Sync>> = std::sync::OnceLock::new();
+
+/// The least time between two resends of replies to retransmitted packets, per connection:
+/// a game resends after about a second, so this never holds up a real one.
+const REPLAY_GAP: Duration = Duration::from_millis(250);
+
+/// Sets [`TICKET_ACCEPTED`].
+pub fn set_ticket_accepted(check: impl Fn(u32, u64) -> bool + Send + Sync + 'static) {
+    let _ = TICKET_ACCEPTED.set(Box::new(check));
+}
+
 /// Sets [`TICKET_ADDRESS_PROVEN`].
 pub fn set_ticket_address_proven(check: fn(u32, std::net::IpAddr) -> bool) {
     let _ = TICKET_ADDRESS_PROVEN.set(check);
@@ -428,6 +443,22 @@ where
             let mut data = &buf[..nread];
 
             while !data.is_empty() {
+                // Data, Disconnect and Ping only count for a connection from this address (see
+                // `handle_packet`): anything else is dropped from its header, before its payload
+                // is decrypted and inflated, which anyone could otherwise ask of the server with
+                // a few bytes (the key is public). Header: ports (2), type (1), session (1),
+                // signature (4).
+                if data.len() >= 8 && matches!(data[2] & 0x7, 2..=4) {
+                    let signature = u32::from_le_bytes([data[4], data[5], data[6], data[7]]);
+                    let ours = self
+                        .client_registry
+                        .clients
+                        .get(&signature)
+                        .is_some_and(|ci| ci.try_borrow().is_ok_and(|ci| *ci.address() == client));
+                    if !ours {
+                        continue 'outer;
+                    }
+                }
                 let (packet, nparsed) = match QPacket::from_bytes(self.ctx, data) {
                     Ok(p) => p,
                     Err(e) => {
@@ -512,7 +543,11 @@ where
                 let Some(ci) = self.client_registry.clients.get(&packet.signature) else {
                     return;
                 };
-                ci.borrow_mut().seen();
+                // Pings keep a signed-in connection; one that never signed in goes when its
+                // time is up, pinged or not (or a few addresses could hold every place).
+                if ci.borrow().user_id.is_some() {
+                    ci.borrow_mut().seen();
+                }
                 if self.send_ack(logger, &client, &packet, &ci.borrow(), false).is_err() {
                     // ignore
                 }
@@ -589,9 +624,13 @@ where
         }
         // A retransmission (our acknowledgement was lost): answer it again, but
         // don't handle it twice (a repeated CreateSession made a second lobby).
-        if let Some((_, replies)) = ci.handled.iter().find(|(seq, _)| *seq == packet.sequence) {
+        if let Some(replies) = ci.handled.iter().find(|(seq, _)| *seq == packet.sequence).map(|(_, replies)| replies.clone()) {
+            if ci.last_replay.is_some_and(|at| at.elapsed() < REPLAY_GAP) {
+                return;
+            }
+            ci.last_replay = Some(Instant::now());
             info!(logger, "Duplicate packet {}; resending {} replies", packet.sequence, replies.len());
-            for data in replies.clone() {
+            for data in replies {
                 if let Err(e) = self.socket.as_ref().unwrap().send_to(&data, client) {
                     error!(logger, "Error resending reply"; "error" => %e);
                 }
@@ -644,11 +683,16 @@ where
                     }
                 }
             }
+            // At most now and then: a connection that never signed in can send these at will.
             None => {
-                error!(logger, "No handler found");
+                if let Some(skipped) = self.noise.allow() {
+                    error!(logger, "No handler found"; "similar_skipped" => skipped);
+                }
             }
             Some(Err(_)) => {
-                error!(logger, "Handler failed");
+                if let Some(skipped) = self.noise.allow() {
+                    error!(logger, "Handler failed"; "similar_skipped" => skipped);
+                }
             }
         }
         // Keep the replies for this sequence number, for a retransmission.
@@ -867,6 +911,15 @@ where
                 let cd: ConnectData = ReadStream::from_bytes(&data).read()?;
                 if cd.user_pid != ti.principle_id {
                     // Not signed in: the connection stays anonymous and can do nothing.
+                    return Ok(vec![]);
+                }
+                // A good ticket the account no longer stands behind (a new password, a ban):
+                // refused before the connection is anyone's, not signed out after.
+                if TICKET_ACCEPTED.get().is_some_and(|accepted| !accepted(ti.principle_id, ti.valid_until)) {
+                    warn!(
+                        logger,
+                        "Ticket of user {} from before a password change or a ban, or for an account that's gone; not signed in", ti.principle_id
+                    );
                     return Ok(vec![]);
                 }
                 let id = next_conn_id.fetch_add(1, std::sync::atomic::Ordering::AcqRel);

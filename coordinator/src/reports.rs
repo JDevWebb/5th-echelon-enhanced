@@ -45,6 +45,9 @@ pub const MAX_REPLY: usize = 1000;
 pub const KEEP_FOR: i64 = 90 * 86_400;
 /// The most the reports' files may take on disk (as stored, compressed).
 pub const STORAGE_CAP: u64 = 2 * 1024 * 1024 * 1024;
+/// The most one server's reports may take in the database (their server logs, mostly): past
+/// it, a new report is kept without its server log.
+const TEXT_CAP_PER_SERVER: i64 = 512 * 1024 * 1024;
 /// New reports one server may send in an hour.
 pub const PER_HOUR: usize = 30;
 /// Rows on a page of the report list.
@@ -151,7 +154,9 @@ pub(crate) fn check(v: &Value, now: i64) -> Result<Report, String> {
     };
     let identity = match &player["identity"] {
         Value::Null => None,
-        Value::String(s) if (1..=128).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric()) => Some(s.clone()),
+        // A player's global id, in its one spelling (upper case): who may read the report back
+        // (`reports_of`). Anything else isn't one, and the report is kept without it.
+        Value::String(s) if (1..=128).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_alphanumeric()) => Some(s.to_ascii_uppercase()).filter(|id| identity::is_global_id(id)),
         _ => return bad("player.identity is null or 1-128 letters and digits"),
     };
     let rating = match &v["rating"] {
@@ -346,6 +351,17 @@ impl Coordinator {
     pub(crate) async fn store_report(&self, server: &str, r: &Report) -> Result<bool, String> {
         let now = identity::now();
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| e.to_string())?;
+        let used: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(length(server_log) + length(summary) + length(comment)), 0) FROM player_reports WHERE server_id = ?")
+            .bind(server)
+            .fetch_one(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+        let server_log = if used + i64::try_from(r.server_log.len()).unwrap_or(i64::MAX) > TEXT_CAP_PER_SERVER {
+            tracing::warn!("server {server}: its reports take {} MB here; report {} kept without its server log", used >> 20, r.id);
+            ""
+        } else {
+            r.server_log.as_str()
+        };
         let added = sqlx::query(
             "INSERT OR IGNORE INTO player_reports (id, server_id, created_at, received_at, player_id, player_name, player_identity, rating,
                                                    problems, triggers, client, summary, comment, server_log, status)
@@ -364,7 +380,7 @@ impl Coordinator {
         .bind(Value::Object(r.client.clone()).to_string())
         .bind(r.summary.to_string())
         .bind(&r.comment)
-        .bind(&r.server_log)
+        .bind(server_log)
         // The game's log its server asked for when something went wrong: kept and shown as
         // reports are, but no one's to resolve (see `is_auto`).
         .bind(if is_auto(&r.triggers) { "auto" } else { "open" })

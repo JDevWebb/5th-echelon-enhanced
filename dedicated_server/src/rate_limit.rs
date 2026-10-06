@@ -64,6 +64,8 @@ pub fn trust_proxies(list: &[String]) -> Vec<String> {
 
 /// Whether `ip` is this machine or a trusted reverse proxy (`[public] proxies`).
 pub(crate) fn is_proxy(ip: IpAddr) -> bool {
+    // As one address whichever way it's written (::ffff:127.0.0.1 is 127.0.0.1).
+    let ip = ip.to_canonical();
     ip.is_loopback() || PROXIES.get().is_some_and(|list| list.iter().any(|p| p.contains(ip)))
 }
 

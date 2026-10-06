@@ -184,7 +184,8 @@ pub fn name_key(name: &str) -> String {
 
 /// Whether a signed `time` is close enough to `now` (both Unix seconds).
 pub fn fresh(time: i64, now: i64) -> bool {
-    (now - time).abs() <= MAX_CLOCK_SKEW
+    // abs_diff: a time far from now (i64::MIN) can't wrap round into "close".
+    now.abs_diff(time) <= MAX_CLOCK_SKEW.unsigned_abs()
 }
 
 /// Whether `s` is a global id: 52 upper-case base32 characters (one spelling

@@ -1652,12 +1652,15 @@ fn gz64(text: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(e.finish().unwrap())
 }
 
+/// Player 1011's identity (a real one: reports keep only those).
+static GV7: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| identity::Identity::generate().global_id());
+
 /// A report from player 1011 on its server, with one file.
 fn report_body(id: &str) -> Value {
     json!({
         "id": id,
         "created_at": identity::now() - 60,
-        "player": { "id": 1011, "name": "ijsman5530", "identity": "GV7ABC" },
+        "player": { "id": 1011, "name": "ijsman5530", "identity": *GV7 },
         "rating": "bad",
         "problems": ["join", "lag"],
         "comment": "couldn't join my friend",
@@ -1779,7 +1782,7 @@ async fn admins_read_resolve_and_delete_reports() {
         "POST",
         "/v1/players",
         Some(&a),
-        Some(json!({ "full": true, "players": [player(1011, "ijsman5530", Some("GV7ABC"))] })),
+        Some(json!({ "full": true, "players": [player(1011, "ijsman5530", Some(GV7.as_str()))] })),
     )
     .await;
     let (one, two, three, four) = (report_id(1), report_id(2), report_id(3), report_id(4));
@@ -1790,7 +1793,7 @@ async fn admins_read_resolve_and_delete_reports() {
     t.call("POST", "/v1/reports", Some(&a), Some(report_body(&two))).await;
     // The same person on another server (their identity), and someone else.
     let mut elsewhere = report_body(&three);
-    elsewhere["player"] = json!({ "id": 7, "name": "ijsman", "identity": "GV7ABC" });
+    elsewhere["player"] = json!({ "id": 7, "name": "ijsman", "identity": *GV7 });
     elsewhere["problems"] = json!(["crash"]);
     elsewhere["created_at"] = json!(identity::now() - 30);
     t.call("POST", "/v1/reports", Some(&b), Some(elsewhere)).await;
@@ -1807,7 +1810,7 @@ async fn admins_read_resolve_and_delete_reports() {
     assert_eq!((status, v["total"].as_i64(), v["per_page"].as_i64()), (StatusCode::OK, Some(4), Some(reports::PAGE)), "{v}");
     let row = v["reports"].as_array().unwrap().iter().find(|x| x["id"] == json!(one)).unwrap();
     assert_eq!(row["comment"].as_str().unwrap().chars().count(), 200);
-    assert_eq!(row["player"], json!({ "id": 1011, "name": "ijsman5530", "identity": "GV7ABC" }));
+    assert_eq!(row["player"], json!({ "id": 1011, "name": "ijsman5530", "identity": *GV7 }));
     assert_eq!(row["files"], json!([{ "name": "bl-tracing.log", "size": 18, "dropped": false }]));
     assert_eq!((row["status"].as_str(), row["server"].as_str()), (Some("open"), Some("server-a")));
     assert!(row.get("server_log").is_none() && row.get("summary").is_none(), "only in the detail");
@@ -1818,7 +1821,7 @@ async fn admins_read_resolve_and_delete_reports() {
         ("problem=join", 2),
         ("q=kiwi", 1),
         ("q=great", 1),
-        ("q=GV7ABC", 3),
+        (&*format!("q={}", *GV7), 3),
         (by_id.as_str(), 1),
         ("status=resolved", 0),
         ("status=all", 4),
@@ -1995,6 +1998,15 @@ async fn players_shadownet_snapshots_are_kept_for_admins() {
     let body = |updated_at: i64, text: &str| json!({ "player": { "id": 1020, "name": "PlaySkill" }, "type": content::SHADOWNET, "size": text.len(), "updated_at": updated_at, "gzip_base64": gz(text) });
     let now = identity::now();
     let first = r#"{"Loadout:Items":{"1":["2"]},"Purchase":{},"Challenges":{"9":{"T":1,"P":5}}}"#;
+    // Only for a player the server has told of (any id could be sent): later, not dropped.
+    assert_eq!(
+        t.call("POST", "/v1/content", Some(&a), Some(body(now - 60, first))).await.0,
+        StatusCode::SERVICE_UNAVAILABLE
+    );
+    sqlx::query("INSERT INTO players (server_id, id, name, updated_at) VALUES ('server-a', 1020, 'PlaySkill', 0)")
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
     assert_eq!(t.call("POST", "/v1/content", Some(&a), Some(body(now - 60, first))).await.0, StatusCode::OK);
     assert_eq!(t.call("POST", "/v1/content", None, Some(body(now, first))).await.0, StatusCode::UNAUTHORIZED);
     // Not JSON, or another type: refused.

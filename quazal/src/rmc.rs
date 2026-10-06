@@ -480,7 +480,12 @@ impl<T> StreamHandler<T> for RVSecHandler<T> {
 
         let Ok(rmc_packet) = rmc_packet else {
             let err = rmc_packet.err().unwrap();
-            error!(logger, "Parsing RMC packet failed"; "error" => %err);
+            // Anyone can connect without signing in and send this: logged quietly then.
+            if ci.user_id.is_some() {
+                error!(logger, "Parsing RMC packet failed"; "error" => %err);
+            } else {
+                debug!(logger, "Parsing RMC packet failed"; "error" => %err);
+            }
             failures::report(failures::Failure {
                 user_id: ci.user_id,
                 protocol: None,
@@ -494,7 +499,12 @@ impl<T> StreamHandler<T> for RVSecHandler<T> {
         let rmc_packet = match rmc_packet {
             Packet::Request(r) => r,
             Packet::Response(_r) => {
-                error!(logger, "RMC response not supported here. Data: {:#?}", data);
+                // Its size, not its bytes: one line per byte made a packet hundreds of lines.
+                if ci.user_id.is_some() {
+                    error!(logger, "RMC response not supported here ({} bytes)", data.len());
+                } else {
+                    debug!(logger, "RMC response not supported here ({} bytes)", data.len());
+                }
                 failures::report(failures::Failure {
                     user_id: ci.user_id,
                     protocol: None,

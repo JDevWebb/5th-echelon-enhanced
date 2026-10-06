@@ -407,11 +407,12 @@ impl Table {
     /// [`Self::route`] for the player `sender_id`; also the receiver's id.
     fn route_from(&mut self, sender_id: Id, to: SocketAddrV4, len: usize, now: Instant) -> Option<(SocketAddrV4, SocketAddrV4, Id)> {
         let (first, last) = self.cfg.relay_ports;
-        let target_id = *if *to.ip() == self.relay_ip && (first..=last).contains(&to.port()) {
-            self.by_vport.get(&to.port())
-        } else {
-            self.by_advertise.get(&to).or_else(|| self.by_real.get(&to))
-        }?;
+        // A relay port, or else a player's own address (one on the relay's address whose port
+        // happens to be in the relay's range: a player on the server's own machine).
+        let relayed = (*to.ip() == self.relay_ip && (first..=last).contains(&to.port()))
+            .then(|| self.by_vport.get(&to.port()))
+            .flatten();
+        let target_id = *relayed.or_else(|| self.by_advertise.get(&to)).or_else(|| self.by_real.get(&to))?;
         if target_id == sender_id {
             return None;
         }
@@ -780,8 +781,22 @@ pub fn start(logger: &Logger, cfg: NatConfig, relay_ip: Ipv4Addr) -> std::io::Re
 fn detect_loop(logger: &Logger, socket: &UdpSocket) {
     let mut buf = [0u8; 256];
     loop {
-        let Ok((len, src)) = socket.recv_from(&mut buf) else {
-            continue;
+        let (len, src) = match socket.recv_from(&mut buf) {
+            Ok(r) => r,
+            // An ICMP error for an earlier send, or the read timeout: nothing wrong here.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut | std::io::ErrorKind::ConnectionReset
+                ) =>
+            {
+                continue
+            }
+            // Anything else may come again at once: not round and round at full speed.
+            Err(_) => {
+                std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
         };
         let (Some(src), Some(Message::Probe { nonce, .. })) = (v4(src), Message::decode(&buf[..len])) else {
             continue;

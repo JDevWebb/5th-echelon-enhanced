@@ -374,8 +374,10 @@ fn handle(
                 if name.trim().eq_ignore_ascii_case("content-length") {
                     length = value.trim().parse().unwrap_or(usize::MAX);
                 }
+                // Each from the connection's own address, so the last header line counts (a
+                // proxy's), not a client's own earlier one.
                 if name.trim().eq_ignore_ascii_case("x-forwarded-for") {
-                    req.peer = crate::rate_limit::client_ip(req.peer, Some(value.trim()));
+                    req.peer = crate::rate_limit::client_ip(req.conn_peer, Some(value.trim()));
                 }
                 if name.trim().eq_ignore_ascii_case("x-forwarded-proto") {
                     req.forwarded_proto = Some(value.trim().chars().take(16).collect());

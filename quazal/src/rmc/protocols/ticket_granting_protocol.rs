@@ -74,7 +74,8 @@ impl Protocol for TicketGrantingProtocol {
             Some(TicketGrantingProtocolMethod::Login) => self.handle_login(request, LoginRequest::from_bytes(&request.parameters)),
             Some(TicketGrantingProtocolMethod::LoginEx) => {
                 let data = LoginExRequest::from_bytes(&request.parameters);
-                debug!(logger, "Request data: {:?}", data);
+                // Not its contents: the password.
+                debug!(logger, "Request data: {}", if data.is_ok() { "read" } else { "unreadable" });
                 match self.handle_login_ex(logger, ci, request, data) {
                     Err(r) => return r,
                     Ok(r) => Response {

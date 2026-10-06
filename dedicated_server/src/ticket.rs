@@ -83,7 +83,7 @@ impl TicketGrantingProtocolServerImpl {
     #[allow(unreachable_code)]
     fn login(&self, logger: &slog::Logger, username: &str, password: &str) -> quazal::rmc::Result<Option<u32>> {
         self.storage
-            .login_user(username, password)
+            .login_user_now(username, password)
             .map_err(|e| {
                 eprintln!("Error finding user password: {e}");
                 error!(logger, "Error finding user password: {e}");
@@ -97,7 +97,7 @@ impl TicketGrantingProtocolServerImpl {
 /// server checks it only when the game connects (right after login), so it
 /// never cuts off a game in progress; it just stops a copied ticket working
 /// forever (upstream's never expired).
-const TICKET_LIFETIME: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+pub(crate) const TICKET_LIFETIME: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
 fn ticket_expiry() -> u64 {
     (std::time::SystemTime::now() + TICKET_LIFETIME)

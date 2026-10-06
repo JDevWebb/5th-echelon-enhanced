@@ -995,7 +995,7 @@ plain_config() {
 # section, when missing. Values are this script's own or checked ones; they
 # reach awk through its environment, never as part of a program, and the
 # file is rewritten in place, so it stays the server's.
-toml_edit() {
+toml_edit_() {
   local tmp="$work/service.toml.new"
   plain_config
   MODE="$1" SECTION="$2" KEY="$3" VALUE="$4" awk '
@@ -1011,6 +1011,9 @@ toml_edit() {
   cat "$tmp" > "$CONFIG"
   rm -f "$tmp"
 }
+# The copy holds the whole settings file (the join token among them): made readable by root
+# only, whatever the umask.
+toml_edit() { ( umask 077; toml_edit_ "$@" ); }
 toml_set() { toml_edit set "$@"; }
 toml_put() { toml_edit add "$@"; }
 if [ -n "$relay" ]; then
@@ -1665,11 +1668,18 @@ for _ in $(seq 45); do
 done
 if [ "$ok" -eq 1 ]; then
   if [ "$rollback" -eq 0 ]; then
-    # Never below the release this one replaced; back to it only for a while.
+    # Never below the release this one replaced; back to it only for a while. Not again
+    # after a release already rolled back from (back, then forward to it again): a request
+    # can come from a service, so this can't be made to flip between two releases.
     put "$ETC_DIR/min-release" "$current"
-    put "$ETC_DIR/rollback-until" "$(( now + ROLLBACK_DAYS * 86400 ))"
+    if [ "$(head -c 64 "$ETC_DIR/rolled-back-from" 2>/dev/null | head -1 || true)" = "$wanted" ]; then
+      put "$ETC_DIR/rollback-until" 0
+    else
+      put "$ETC_DIR/rollback-until" "$(( now + ROLLBACK_DAYS * 86400 ))"
+    fi
   else
     put "$ETC_DIR/rollback-until" 0
+    put "$ETC_DIR/rolled-back-from" "$current"
   fi
   rm -rf "$PROGRAM_DIR/previous.kept"
   # Sums for this release and the one kept for a rollback; no others.
@@ -1911,6 +1921,24 @@ ConditionPathExists=$BACKUP_ENV
 [Service]
 Type=oneshot
 ExecStart=$BACKUP_SCRIPT $t
+# Root (it reads both services' folders), so fenced in: it only copies them out.
+NoNewPrivileges=yes
+ProtectSystem=full
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
 UNIT
     cat > "/etc/systemd/system/5th-echelon-backup-$t.timer" <<UNIT
 # Written by install-server.sh (docs/backups.md).
@@ -1945,7 +1973,7 @@ backup_name() {
   local n
   n="$(sed -n 's/^BACKUP_NAME=//p' "$BACKUP_ENV" 2>/dev/null | tr -d "\"' " | head -1)"
   [ -n "$n" ] || n="$standby_me"
-  [ -n "$n" ] || n="$(head -c 64 "$STATE_DIR/server-id.txt" 2>/dev/null | tr -cd 'a-z0-9-')"
+  [ -n "$n" ] || n="$(dd if="$STATE_DIR/server-id.txt" bs=64 count=1 iflag=nofollow,nonblock status=none 2>/dev/null | tr -cd 'a-z0-9-')"
   [ -n "$n" ] || n="$(hostname -s | tr -cd 'a-z0-9-')"
   printf '%s' "$n"
 }
@@ -2396,6 +2424,8 @@ site_block() {
     fi
   fi
   if [ -n "$coord_domain" ] && [ -f "$COORD_CERT" ]; then
+    # Fetched once here: each cloudflare_ranges call below runs in a subshell of its own.
+    [ -n "${CF_RANGES:-}" ] || CF_RANGES="$(cloudflare_ranges)"
     cat <<SITE
 
 # The 5th Echelon coordinator: friends across servers and the server
@@ -2407,8 +2437,16 @@ $coord_domain {
 	tls $COORD_CERT $COORD_KEY
 	@direct not remote_ip $(cloudflare_ranges) 127.0.0.0/8 ::1
 	abort @direct
-	reverse_proxy $COORD_ADDR:8700 {
-		header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}
+	# Cloudflare's CF-Connecting-IP only from Cloudflare: from this machine (the installer's
+	# own check), the address is the connection's, so a local program can't name another.
+	@cloudflare remote_ip $(cloudflare_ranges)
+	handle @cloudflare {
+		reverse_proxy $COORD_ADDR:8700 {
+			header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}
+		}
+	}
+	handle {
+		reverse_proxy $COORD_ADDR:8700
 	}
 }
 SITE
@@ -2623,6 +2661,20 @@ if [ "$no_caddy" -eq 0 ]; then
     site_block > "$CADDY_SITE"
     grep -qxF "import $CADDY_SITE" "$CADDYFILE" || printf '\nimport %s\n' "$CADDY_SITE" >> "$CADDYFILE"
     say "Added the site as $CADDY_SITE, imported by your $CADDYFILE"
+    # Caddy's admin API on localhost:2019 lets any local process (a game server among
+    # them) rewrite the config: on a socket only Caddy's group reaches, as in our own block.
+    if ! grep -qE '^[[:space:]]*admin[[:space:]]' "$CADDYFILE"; then
+      if [ "$(grep -vE '^[[:space:]]*(#|$)' "$CADDYFILE" | head -n1 | tr -d '[:space:]')" = "{" ]; then
+        # Its global options block comes first: the line goes in it.
+        awk 'done || !/^[[:space:]]*\{[[:space:]]*$/ { print; next } { print; print "\tadmin unix//run/caddy/admin.sock"; done = 1 }' "$CADDYFILE" > "$CADDYFILE.new"
+      else
+        { printf '{\n\tadmin unix//run/caddy/admin.sock\n}\n\n'; cat "$CADDYFILE"; } > "$CADDYFILE.new"
+      fi
+      cat "$CADDYFILE.new" > "$CADDYFILE" && rm -f "$CADDYFILE.new"
+      say "Moved Caddy's admin API to a socket in your $CADDYFILE (it listened on localhost:2019, open to every local program)"
+    elif ! grep -qE '^[[:space:]]*admin[[:space:]]+(off|unix//)' "$CADDYFILE"; then
+      warn "Your $CADDYFILE sets Caddy's admin API to a network address: any program on this machine (a game server among them) can rewrite Caddy's config through it. Use 'admin unix//run/caddy/admin.sock' or 'admin off'."
+    fi
   fi
   # Caddy runs as its own user and must be able to read them (an existing file
   # keeps its mode when rewritten).

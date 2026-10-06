@@ -95,6 +95,10 @@ pub struct ClientInfo<T = ()> {
     /// the packets sent in reply, so a retransmission is answered again
     /// instead of being handled twice.
     pub(crate) handled: std::collections::VecDeque<(u16, Vec<Vec<u8>>)>,
+    /// When the replies to a retransmission were last sent again: at most one resend in
+    /// [`REPLAY_GAP`](crate::prudp), so repeating a few-byte packet can't ask for a large
+    /// reply over and over.
+    pub(crate) last_replay: Option<std::time::Instant>,
     /// Replies being collected for the packet being handled.
     pub(crate) replying: Option<Vec<Vec<u8>>>,
     /// Reliable packets sent to this client and not yet acknowledged, by
@@ -139,6 +143,7 @@ impl<T> ClientInfo<T> {
             last_vports: None,
             connection_id: None,
             handled: std::collections::VecDeque::new(),
+            last_replay: None,
             replying: None,
             unacked: std::collections::BTreeMap::new(),
             connect_answer: None,

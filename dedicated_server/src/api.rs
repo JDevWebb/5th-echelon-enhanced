@@ -1017,6 +1017,11 @@ impl Users for MyUsers {
         if !self.storage.is_player_account(person.id).await.map_err(internal)? {
             return Err(refused("Not a player's account"));
         }
+        // Before anything changes: a banned account's key changes nothing either (not its
+        // password, nor where it last signed in from).
+        if let Some(ban) = self.storage.active_ban(person.id).await.map_err(internal)? {
+            return Err(Status::permission_denied(crate::players::banned_message(&ban)));
+        }
         // Before the password changes: an outdated launcher changes nothing.
         self.admit(person.id, &person.username, &request.client).await?;
         if !self.storage.use_key_login(person.id, request.time).await.map_err(internal)? {
@@ -1552,7 +1557,7 @@ const ADMIN_KEY_TEXT_FILE: &str = "admin-key.txt";
 
 /// Compares two secrets without the time taken depending on where they
 /// differ, so the admin key can't be guessed a character at a time.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+pub(crate) fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
     a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
