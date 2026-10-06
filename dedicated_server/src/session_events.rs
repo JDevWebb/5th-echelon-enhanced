@@ -149,6 +149,12 @@ pub fn joined(user: u32, room: u32, via: &'static str) {
     note(Who::Id(user), "join", json!({ "room": room, "via": via }));
 }
 
+/// Forgets `user`'s joins: their game signed in again (a restart, or a crash), and its join
+/// of the room the game before was in is a join of its own, to note.
+pub fn forget_joins(user: u32) {
+    queue().lock().unwrap_or_else(std::sync::PoisonError::into_inner).joins.retain(|(u, _), _| *u != user);
+}
+
 /// Forgets the joins of a room that ended (its id may come again after a restart).
 pub fn room_ended(room: u32) {
     queue().lock().unwrap_or_else(std::sync::PoisonError::into_inner).joins.retain(|(_, r), _| *r != room);

@@ -256,6 +256,7 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
             }
             // A new game: the rooms an earlier one joined are left once its connection goes.
             game_session::signed_in(user_id);
+            session_events::forget_joins(user_id);
             // First: friends and searches see them online as soon as they're signed in.
             if let Err(e) = storage.set_online(user_id) {
                 error!(logger, "marking user {user_id} online failed: {e}");
