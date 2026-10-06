@@ -398,13 +398,18 @@ impl MyRenderLoop {
         #[allow(clippy::cast_possible_wrap)]
         let down = |vk: u16| unsafe { GetAsyncKeyState(vk.into()) & 0x8000u16 as i16 != 0 };
         let f5 = down(overlay_key().1);
-        if f5 && !self.f5_down {
+        let in_front = crate::overlay_input::game_in_front();
+        // Another program came in front with the panel open: it closes, freeing the mouse.
+        if !in_front && self.ui_state == UiState::Show {
+            self.ui_state = UiState::Hide;
+        }
+        if f5 && !self.f5_down && in_front {
             self.toggle();
             crate::game_state::overlay(self.ui_state == UiState::Show, &overlay_key().0);
         }
         self.f5_down = f5;
         let esc = down(VK_ESCAPE.0);
-        if esc && !self.esc_down && self.ui_state == UiState::Show {
+        if esc && !self.esc_down && in_front && self.ui_state == UiState::Show {
             self.ui_state = UiState::Hide;
         }
         self.esc_down = esc;

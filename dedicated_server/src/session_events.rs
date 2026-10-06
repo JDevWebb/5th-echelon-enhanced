@@ -234,8 +234,17 @@ pub fn refused(who: Who, reason: &str, via: &str, client: Option<&str>) {
 /// Hands the request failures quazal reports to [`note`].
 pub fn watch_request_failures() {
     quazal::rmc::failures::set_hook(|f| {
+        if !crate::rate_limit::request_errors().check(f.user_id.unwrap_or(0)) {
+            return;
+        }
         let who = f.user_id.map_or(Who::Server, Who::Id);
-        let mut detail = json!({ "error": f.error.chars().take(200).collect::<String>() });
+        let mut error: String = f.error.chars().take(200).collect();
+        // Not signed in: anyone's packets, whose numbers ("12 bytes missing") would make every
+        // event a new one; without them, repeats are counted as one.
+        if f.user_id.is_none() {
+            error = error.chars().map(|c| if c.is_ascii_digit() { '#' } else { c }).collect();
+        }
+        let mut detail = json!({ "error": error });
         if let Some(call) = f.call {
             detail["call"] = json!(call);
         } else if let (Some(p), Some(m)) = (f.protocol, f.method) {

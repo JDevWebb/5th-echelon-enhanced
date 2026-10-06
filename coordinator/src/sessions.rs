@@ -25,8 +25,13 @@ pub const MAX_EVENTS: usize = 500;
 pub const MAX_BODY: usize = 1024 * 1024;
 /// Events are kept this long.
 pub(crate) const KEEP_FOR: i64 = 30 * 86_400;
-/// Events one server may have here: past this, new ones are dropped.
-const EVENTS_PER_SERVER: i64 = 2_000_000;
+/// Events one server may have here: past this, new ones are dropped (a busy server sends a
+/// few thousand a day).
+const EVENTS_PER_SERVER: i64 = 500_000;
+/// The most events the Sessions page reads for one range: past this it says to narrow it.
+const MOST_SHOWN: i64 = 100_000;
+/// The longest an event's detail may be, as stored.
+const MAX_DETAIL: usize = 2048;
 /// The longest range the page shows at once.
 const LONGEST_RANGE: i64 = 7 * 86_400;
 /// The kinds a server may send.
@@ -174,7 +179,9 @@ impl Coordinator {
             let Some(kind) = e["kind"].as_str().and_then(|k| KINDS.iter().find(|known| **known == k)) else {
                 continue;
             };
-            let Some(detail) = clean_detail(&e["detail"]) else { continue };
+            let Some(detail) = clean_detail(&e["detail"]).map(|d| d.to_string()).filter(|d| d.len() <= MAX_DETAIL) else {
+                continue;
+            };
             let player = e["player"].as_i64().filter(|n| (0..=i64::from(u32::MAX)).contains(n));
             let name = clean(e["name"].as_str().unwrap_or_default(), 40);
             let count = e["count"].as_i64().unwrap_or(1).clamp(1, 1_000_000);
@@ -192,7 +199,7 @@ impl Coordinator {
                 .bind(player)
                 .bind(&name)
                 .bind(*kind)
-                .bind(detail.to_string())
+                .bind(detail)
                 .bind(count)
                 .bind(at)
                 .execute(&mut *tx)
@@ -216,15 +223,18 @@ impl Coordinator {
         // A little before the range too: what a player was doing when it starts.
         let rows: Vec<(String, i64, i64, Option<i64>, Option<String>, String, String, i64)> = sqlx::query_as(
             "SELECT server_id, at, last_at, player, name, kind, detail, count FROM session_events
-             WHERE last_at >= ?1 AND at <= ?2 AND (?3 = '' OR server_id = ?3) ORDER BY at, id",
+             WHERE last_at >= ?1 AND at <= ?2 AND (?3 = '' OR server_id = ?3) ORDER BY at, id LIMIT ?4",
         )
         .bind(from - 3600)
         .bind(to)
         .bind(server)
+        .bind(MOST_SHOWN + 1)
         .fetch_all(&self.pool)
         .await?;
+        let cut = rows.len() as i64 > MOST_SHOWN;
         let events: Vec<Event> = rows
             .into_iter()
+            .take(MOST_SHOWN as usize)
             .map(|(server, at, last_at, player, name, kind, detail, count)| Event {
                 server,
                 at,
@@ -303,6 +313,7 @@ impl Coordinator {
             "players": timelines,
             "problems": problems,
             "outages": outages,
+            "cut": cut,
         }))
     }
 
@@ -684,6 +695,19 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
         }
         m
     };
+    // Each room's events, and the invitations each player picked up: what the checks below
+    // look through, rather than every event for each (a busy week is many thousands).
+    let mut by_room: HashMap<(&str, Option<(i64, i64)>), Vec<&Event>> = HashMap::new();
+    let mut delivered_to: HashMap<(&str, Option<i64>), Vec<&Event>> = HashMap::new();
+    for e in events {
+        if e.room().is_some() {
+            by_room.entry((e.server.as_str(), e.room())).or_default().push(e);
+        }
+        if e.kind == "invite_delivered" {
+            delivered_to.entry((e.server.as_str(), e.player)).or_default().push(e);
+        }
+    }
+    let in_room = |server: &str, room: Option<(i64, i64)>| by_room.get(&(server, room)).cloned().unwrap_or_default();
 
     for e in events {
         match e.kind.as_str() {
@@ -742,12 +766,9 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
                     out.push(problem(e, "warn", format!("{}'s invitation had no room", e.name), describe(e)));
                     continue;
                 }
-                let delivered = events.iter().any(|o| {
-                    o.kind == "invite_delivered"
-                        && o.server == e.server
-                        && o.player == to
-                        && o.detail["from"].as_i64() == e.player
-                        && (e.at..=e.at + DELIVERY_WITHIN).contains(&o.at)
+                let delivered = delivered_to.get(&(e.server.as_str(), to)).is_some_and(|list| {
+                    list.iter()
+                        .any(|o| o.detail["from"].as_i64() == e.player && (e.at..=e.at + DELIVERY_WITHIN).contains(&o.at))
                 });
                 if !delivered {
                     let to = e.detail["to_name"].as_str().unwrap_or("someone");
@@ -773,9 +794,9 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
                 if ended_normally || earlier_drop {
                     continue;
                 }
-                let others: Vec<&str> = events
+                let others: Vec<&str> = in_room(&e.server, left.room())
                     .iter()
-                    .filter(|o| o.server == e.server && o.room() == left.room() && o.kind == "leave" && o.who() != e.who() && (left.at..=left.at + DROPOUT_WITHIN).contains(&o.at))
+                    .filter(|o| o.kind == "leave" && o.who() != e.who() && (left.at..=left.at + DROPOUT_WITHIN).contains(&o.at))
                     .map(|o| o.name.as_str())
                     .collect();
                 let mode = mode_name(left.str("mode"));
@@ -816,21 +837,13 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
                 let with_others = |m: &Event| {
                     let room = m.room();
                     // Since the room was made (its id comes again after a restart).
-                    let made = events
-                        .iter()
-                        .filter(|o| o.server == e.server && o.kind == "room" && o.room() == room && o.at <= m.at)
-                        .map(|o| o.at)
-                        .max()
-                        .unwrap_or(m.at);
-                    events.iter().any(|o| {
-                        o.server == e.server
-                            && o.who() != e.who()
-                            && o.room() == room
+                    let here = in_room(&e.server, room);
+                    let made = here.iter().filter(|o| o.kind == "room" && o.at <= m.at).map(|o| o.at).max().unwrap_or(m.at);
+                    here.iter().any(|o| {
+                        o.who() != e.who()
                             && matches!(o.kind.as_str(), "room" | "join")
                             && (made..=e.at).contains(&o.at)
-                            && !events
-                                .iter()
-                                .any(|l| l.who() == o.who() && l.kind == "leave" && l.room() == room && (o.at..e.at).contains(&l.at))
+                            && !here.iter().any(|l| l.who() == o.who() && l.kind == "leave" && (o.at..e.at).contains(&l.at))
                     })
                 };
                 if let Some(m) = rooms.values().find(|o| o.str("room_kind") == "match" && with_others(o)) {

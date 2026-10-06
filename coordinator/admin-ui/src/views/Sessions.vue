@@ -16,6 +16,7 @@
   <div v-if="error && !data" class="panel"><p class="err">{{ error }}</p></div>
   <div v-else-if="!data" class="empty">Loading…</div>
   <template v-else>
+    <div v-if="data.cut" class="panel"><p class="err">This range has more events than the page reads at once, so its later ones are left out. Pick a shorter range, or one server.</p></div>
     <section class="panel">
       <header>
         <h2>Problems</h2>

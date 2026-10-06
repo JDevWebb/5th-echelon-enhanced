@@ -344,7 +344,26 @@ pub async fn post_webhook(url: &str, text: &str) -> Result<(), String> {
     if addrs.is_empty() || !addrs.iter().all(|a| crate::public_ip(a.ip())) {
         return Err("the webhook isn't on a public address".into());
     }
-    let resp = crate::http()
+    // To the addresses just checked (not a second lookup, which could answer differently),
+    // and no redirects, which could lead anywhere.
+    let client = reqwest::Client::builder()
+        .user_agent(concat!("5th-echelon-coordinator/", env!("FE_RELEASE")))
+        .resolve_to_addrs(&host, &addrs)
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| e.to_string())?;
+    // Slack's links and mentions (`<!channel>`, `<https://…|text>`) are written in angle
+    // brackets, and an alert can carry a server's or a player's words.
+    let text: String = text
+        .chars()
+        .map(|c| match c {
+            '<' => '‹',
+            '>' => '›',
+            c => c,
+        })
+        .collect();
+    let resp = client
         .post(u)
         .timeout(std::time::Duration::from_secs(10))
         // No @everyone, @here or role pings, whatever the text says (Slack ignores this).

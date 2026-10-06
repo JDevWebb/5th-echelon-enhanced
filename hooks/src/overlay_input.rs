@@ -34,6 +34,7 @@ use windows::Win32::System::LibraryLoader::GetProcAddress;
 use windows::Win32::System::LibraryLoader::LoadLibraryA;
 use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
 use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+use windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
 
 /// DirectInput 8, as the game uses it (`DIRECTINPUT_VERSION`).
 const DIRECTINPUT_VERSION: u32 = 0x0800;
@@ -166,6 +167,14 @@ unsafe fn enable<T: retour::Function + Copy>(
     }
 }
 
+/// Whether the window in front is the game's: the overlay's key is read from the whole
+/// keyboard, so it means the overlay only then, not in a browser over a windowed game.
+pub fn game_in_front() -> bool {
+    let mut pid = 0u32;
+    unsafe { GetWindowThreadProcessId(GetForegroundWindow(), Some(&mut pid)) };
+    pid == std::process::id()
+}
+
 /// The panel opened or closed (checked every frame).
 pub fn set_open(open: bool) {
     if OPEN.swap(open, Ordering::SeqCst) == open {
@@ -195,8 +204,10 @@ pub fn set_open(open: bool) {
             };
             original_clip(free.as_ref());
         } else {
+            // The game's own clip again, but only while it's in front: another program's
+            // window mustn't be fenced in.
             let clip = *GAME_CLIP.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-            original_clip(clip.as_ref());
+            original_clip(if game_in_front() { clip.as_ref() } else { None });
         }
     }
 }

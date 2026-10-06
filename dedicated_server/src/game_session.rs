@@ -1501,8 +1501,10 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 Ok(false) => {}
                 Err(e) => warn!(logger, "Couldn't note {user_id} in session {}: {e}", key.session_id),
             }
+            // Sessions' join event too, at the same pace: each is kept, and remembered for
+            // ten minutes to match the join with how it went.
+            crate::session_events::joined(user_id, key.session_id, if invited { "invite" } else { "search" });
         }
-        crate::session_events::joined(user_id, key.session_id, if invited { "invite" } else { "search" });
         self.went_online(user_id);
         Ok(JoinSessionResponse)
     }

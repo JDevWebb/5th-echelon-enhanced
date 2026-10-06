@@ -348,8 +348,8 @@ pub fn pick_from_network(address: &str, log: &Log) -> Result<Option<String>, Str
 ///
 /// HTTPS is asked first: on 443, then on the port the plain answer gives the HTTPS API.
 /// The plain answer could come from anyone on the way, so it's only taken as it is from a
-/// server that never had HTTPS here (`had_https`). From one that did, it's taken only
-/// when it still offers its API over HTTPS (whose certificate is checked when used);
+/// server that never had HTTPS here and isn't one of the network's (`had_https`). From
+/// one that did, it's taken only when it still offers its API over HTTPS (whose certificate is checked when used);
 /// otherwise this fails rather than switch the player to plain HTTP.
 fn server_info(server: &str, had_https: bool) -> Result<(Option<setup::server_info::ServerInfo>, bool), String> {
     // Twice: one lost packet on a long way shouldn't fail the setup.
@@ -376,7 +376,7 @@ fn server_info_once(server: &str, had_https: bool) -> Result<(Option<setup::serv
     }
     if had_https && api_tls.is_none() {
         return Err(format!(
-            "{server} answered over HTTPS before but doesn't now, so your password isn't sent to it unencrypted. Try again later. If its operator turned HTTPS off, remove {server} under Settings › Servers and accounts, then connect again."
+            "{server} should answer over HTTPS but doesn't now, so your password isn't sent to it unencrypted. Try again later. If its operator turned HTTPS off, remove {server} under Settings › Servers and accounts, then connect again."
         ));
     }
     Ok((plain, false))
@@ -430,7 +430,10 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
         ..Default::default()
     });
     // A server behind a proxy, or with remapped ports, says which it uses; over HTTPS when it can.
-    let (info, over_tls) = server_info(&plan.server, profile.https)?;
+    // The network's own servers all have HTTPS (the directory lists them so), so one that
+    // doesn't answer over it isn't taken over plain HTTP either, even the first time.
+    let must_https = profile.https || plan.automatic;
+    let (info, over_tls) = server_info(&plan.server, must_https)?;
     if let Some(ports) = info.as_ref().and_then(|i| i.ports) {
         profile.use_ports(&ports);
         if profile.api_server_url.is_some() || profile.login_port.is_some() || profile.nat_port.is_some() {
@@ -442,7 +445,7 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
     // keeps warning).
     if let Some(ports) = info.as_ref().and_then(|i| i.ports).filter(|p| p.api_tls.is_some()) {
         if !net::port_open(ip, profile.api_port(), Duration::from_secs(4)) {
-            if profile.https {
+            if must_https {
                 return Err(format!(
                     "{}'s HTTPS API doesn't answer, and it had one before, so your password isn't sent to it unencrypted. Try again later.",
                     plan.server

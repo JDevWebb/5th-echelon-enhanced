@@ -3,6 +3,7 @@
 //! (`setup::feedback`) and the game's diagnostics sent to the server (the hooks DLL).
 
 use std::net::Ipv4Addr;
+use std::net::Ipv6Addr;
 
 /// What to hide in the logs sent: the names of the player's Windows (or Linux) account and
 /// PC. Folders under a user's home are hidden whatever the name; so are public addresses
@@ -28,7 +29,8 @@ impl Private {
 
 /// `text` with the private parts hidden: home folders (`C:\Users\<name>`, `/home/<name>`,
 /// also with doubled backslashes as debug output writes them), the names in `private`
-/// wherever they appear, and public IPv4 addresses (`203.0.x.x`) other than those kept.
+/// wherever they appear, public IPv4 addresses (`203.0.x.x`) other than those kept, and
+/// public IPv6 ones (`2001:db8:x`).
 pub fn redact(text: &str, private: &Private) -> String {
     // The names first: a home folder may be the whole of one ("C:\Users\Jo Smith").
     // Longest first: a PC name often holds the account's ("Jons-Laptop" for "Jon"), and
@@ -40,7 +42,38 @@ pub fn redact(text: &str, private: &Private) -> String {
     for name in names {
         out = replace_ignoring_case(&out, name, "<private>");
     }
-    hide_public_addresses(&hide_homes(&out), &private.keep)
+    hide_public_v6(&hide_public_addresses(&hide_homes(&out), &private.keep))
+}
+
+/// Public IPv6 addresses, as `2001:db8:x` (the first two groups say the network, as an
+/// IPv4 address's first two numbers do). Local ones (loopback, link-local `fe80::`, unique
+/// local `fd00::`) stay, as LAN addresses do.
+fn hide_public_v6(text: &str) -> String {
+    let is_part = |c: char| c.is_ascii_hexdigit() || c == ':';
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(is_part) {
+        out.push_str(&rest[..start]);
+        let token = &rest[start..];
+        let len = token.find(|c: char| !is_part(c)).unwrap_or(token.len());
+        let word = &token[..len];
+        // Part of a longer word ("deadbeef:" in a hash, "ab:cd" in a name) isn't an address.
+        let joined = out.chars().last().is_some_and(|c| c.is_alphanumeric() || c == '.');
+        let public = |ip: Ipv6Addr| {
+            let first = ip.segments()[0];
+            !(ip.is_loopback() || ip.is_unspecified() || ip.is_multicast() || first & 0xffc0 == 0xfe80 || first & 0xfe00 == 0xfc00)
+        };
+        match word.parse::<Ipv6Addr>() {
+            Ok(ip) if !joined && word.matches(':').count() >= 2 && public(ip) => {
+                let [a, b, ..] = ip.segments();
+                out.push_str(&format!("{a:x}:{b:x}:x"));
+            }
+            _ => out.push_str(word),
+        }
+        rest = &token[len..];
+    }
+    out.push_str(rest);
+    out
 }
 
 fn hide_homes(text: &str) -> String {
@@ -116,4 +149,17 @@ fn hide_public_addresses(text: &str, keep: &[Ipv4Addr]) -> String {
         i += c.len_utf8();
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn public_ipv6_addresses_are_hidden_and_local_ones_stay() {
+        let text = "peer [2001:db8:85a3::8a2e:370:7334]:13000, lan fe80::1%3, fd12:3456::1, ::1, at 12:34:56";
+        let out = super::hide_public_v6(text);
+        assert!(out.contains("peer [2001:db8:x]:13000"), "{out}");
+        assert!(!out.contains("7334"), "{out}");
+        assert!(out.contains("fe80::1%3") && out.contains("fd12:3456::1") && out.contains("::1,"), "{out}");
+        assert!(out.contains("at 12:34:56"), "{out}");
+    }
 }

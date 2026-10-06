@@ -248,6 +248,14 @@ pub fn game_requests() -> &'static PlayerLimit {
     LIMIT.get_or_init(|| PlayerLimit::new(120, Duration::from_secs(60)))
 }
 
+/// Requests that failed (a call the server couldn't read, or one that went wrong) kept as
+/// session events per player: 20 a minute; and 20 a minute among everyone not signed in,
+/// as player 0, since the sign-in service takes anyone's packets.
+pub fn request_errors() -> &'static PlayerLimit {
+    static LIMIT: std::sync::OnceLock<PlayerLimit> = std::sync::OnceLock::new();
+    LIMIT.get_or_init(|| PlayerLimit::new(20, Duration::from_secs(60)))
+}
+
 /// The game's diagnostic log lines (Misc.ClientLog) kept per player: 60 a minute, a few
 /// times what a game in trouble sends; the rest are counted, not kept.
 pub fn client_log_lines() -> &'static PlayerLimit {

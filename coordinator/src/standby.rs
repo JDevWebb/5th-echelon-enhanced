@@ -392,6 +392,11 @@ pub async fn probe(http: &reqwest::Client, url: &str) -> Health {
         Err(e) => return Health::Unknown(e.without_url().to_string()),
     };
     let status = response.status();
+    // Cloudflare's own challenge or block, whatever its status: the probe was stopped on the
+    // way, which says nothing about the coordinator.
+    if response.headers().contains_key("cf-mitigated") {
+        return Health::Unknown(format!("stopped by Cloudflare (HTTP {})", status.as_u16()));
+    }
     if status.is_server_error() {
         return Health::Down(format!("HTTP {}", status.as_u16()));
     }
@@ -400,7 +405,9 @@ pub async fn probe(http: &reqwest::Client, url: &str) -> Health {
     }
     match response.json::<Value>().await {
         Ok(v) if v["name"] == COORDINATOR_NAME => Health::Up,
-        _ => Health::Down(String::from("an answer that isn't the coordinator's")),
+        // Something else answered for it (a page put up in front, a redirect, an answer cut
+        // short): not a sign the coordinator is down, so not a reason to take over.
+        _ => Health::Unknown(String::from("an answer that isn't the coordinator's")),
     }
 }
 
@@ -606,7 +613,7 @@ impl Standby {
                 let primary = *primary;
                 let by = self.reached_by(primary).await;
                 if by.is_empty() {
-                    if let Err(e) = self.take_over(primary).await {
+                    if let Err(e) = self.take_over(primary, true).await {
                         tracing::error!("Taking over didn't work: {e}; trying again in {} min", RETRY_AFTER.as_secs() / 60);
                         self.watch.retry_after = Some(Instant::now() + RETRY_AFTER);
                     }
@@ -639,7 +646,8 @@ impl Standby {
 
     /// Replaces the coordinator on `primary`: restores it here from that server's live
     /// backup, starts it, and points the records here if they still point there.
-    pub async fn take_over(&mut self, primary: usize) -> Result<(), String> {
+    /// `because_down`: it was found down (not `--take-over`), so it mustn't be answering again.
+    pub async fn take_over(&mut self, primary: usize, because_down: bool) -> Result<(), String> {
         let from = self.cfg.servers[primary].name.clone();
         let still = |r: &Record, place: &Where| match place {
             Where::There(i) if *i == primary => Ok(()),
@@ -673,6 +681,15 @@ impl Standby {
             still(&record, &place)
         } else {
             Err(String::from("the restored coordinator doesn't answer"))
+        };
+        // And the coordinator itself, which may have come back while this one restored: it
+        // has taken writes since the backup, which moving the record here would lose.
+        let ready = match ready {
+            Ok(()) if because_down => match probe(&self.http, &self.cfg.probe).await {
+                Health::Up => Err(format!("the coordinator on {from} answers again")),
+                _ => Ok(()),
+            },
+            other => other,
         };
         if let Err(e) = ready {
             let _ = self.blocking(|m| m.stop()).await;
@@ -778,7 +795,7 @@ async fn take_over_here(standby: &mut Standby) -> eyre::Result<()> {
         Where::Here => Ok(println!("The coordinator already runs here.")),
         Where::Elsewhere(ip) => Err(eyre::eyre!("{} points at {ip}, none of the group's servers", record.name)),
         Where::There(i) => {
-            standby.take_over(i).await.map_err(|e| eyre::eyre!(e))?;
+            standby.take_over(i, false).await.map_err(|e| eyre::eyre!(e))?;
             println!("The coordinator runs here now; {} stands down within a minute.", standby.cfg.servers[i].name);
             Ok(())
         }
