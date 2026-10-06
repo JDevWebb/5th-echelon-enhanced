@@ -218,37 +218,7 @@ fn attach_within(name: &str, text: &str, private: &Private, max: usize) -> std::
     })
 }
 
-/// The game's log without the lines that only trace its calls into the Uplay loader: each
-/// call writes the call, "Running the hook" and "result: true", and the game polls its
-/// overlapped operations constantly. In PlaySkill's 1 MB log (2 h 40 min) they were 98% of
-/// it; the calls themselves stay, so does any result but `true`.
-fn without_call_tracing(text: &str) -> String {
-    let noise = |line: &str| {
-        line.contains("uplay_r1_loader")
-            && (line.ends_with(": Running the hook")
-                || line.ends_with(": result: true")
-                || line.contains("UPLAY_HasOverlappedOperationCompleted")
-                || line.contains("UPLAY_GetOverlappedOperationResult"))
-    };
-    let mut out = String::with_capacity(text.len() / 3);
-    let mut left_out = 0usize;
-    for line in text.lines() {
-        if noise(line.trim_end()) {
-            left_out += 1;
-        } else {
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    if left_out == 0 {
-        return text.to_string();
-    }
-    if !text.ends_with('\n') {
-        out.pop();
-    }
-    out.insert_str(0, &format!("({left_out} lines tracing the game's calls left out)\n"));
-    out
-}
+use hooks_config::diagnostics::without_call_tracing;
 
 /// The files that go with a report from `game_dir` (the client's log, the one before, the
 /// data version's makeup) and the launcher's log, those that exist, plus `extra` texts

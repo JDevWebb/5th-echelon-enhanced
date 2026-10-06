@@ -412,7 +412,7 @@ pub async fn event() -> Result<EventResponse, Error> {
 
 /// Sends the game's diagnostics (diagnostics.rs). Not before the game signed in: there's
 /// nobody to send them as.
-pub async fn client_log(lines: Vec<ClientLogLine>, dropped: u32) -> Result<(), Error> {
+pub async fn client_log(lines: Vec<ClientLogLine>, dropped: u32, full_logs: bool) -> Result<server_api::misc::ClientLogResponse, Error> {
     if TOKEN.lock().unwrap().is_none() {
         return Err(Error::NotConnected);
     }
@@ -420,8 +420,19 @@ pub async fn client_log(lines: Vec<ClientLogLine>, dropped: u32) -> Result<(), E
         let lines = lines.clone();
         async move {
             let mut client = connect!(MiscClient);
-            client.client_log(tonic::Request::new(ClientLogRequest { lines, dropped })).await?;
-            Ok(())
+            Ok(client.client_log(tonic::Request::new(ClientLogRequest { lines, dropped, full_logs })).await?.into_inner())
+        }
+    })
+    .await
+}
+
+/// Sends a report as the game (its log, when the server asked for it: diagnostics.rs).
+pub async fn report(report: server_api::misc::ReportRequest) -> Result<String, Error> {
+    signed_in(|| {
+        let report = report.clone();
+        async move {
+            let mut client = connect!(MiscClient);
+            Ok(client.report(tonic::Request::new(report)).await?.into_inner().id)
         }
     })
     .await

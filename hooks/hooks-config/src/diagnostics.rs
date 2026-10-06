@@ -23,6 +23,77 @@ pub fn wanted(level: &str, target: &str, message: &str) -> bool {
     }
 }
 
+/// The game's log without the lines that only trace its calls into the Uplay loader: each
+/// call writes the call, "Running the hook" and "result: true", and the game polls its
+/// overlapped operations constantly. In PlaySkill's 1 MB log (2 h 40 min) they were 98% of
+/// it; the calls themselves stay, so does any result but `true`.
+pub fn without_call_tracing(text: &str) -> String {
+    let noise = |line: &str| {
+        line.contains("uplay_r1_loader")
+            && (line.ends_with(": Running the hook")
+                || line.ends_with(": result: true")
+                || line.contains("UPLAY_HasOverlappedOperationCompleted")
+                || line.contains("UPLAY_GetOverlappedOperationResult"))
+    };
+    let mut out = String::with_capacity(text.len() / 3);
+    let mut left_out = 0usize;
+    for line in text.lines() {
+        if noise(line.trim_end()) {
+            left_out += 1;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if left_out == 0 {
+        return text.to_string();
+    }
+    if !text.ends_with('\n') {
+        out.pop();
+    }
+    out.insert_str(0, &format!("({left_out} lines tracing the game's calls left out)\n"));
+    out
+}
+
+/// The lines of the game's log (`bl-tracing.log`) written at or after `since` (Unix seconds,
+/// as the log's UTC times say), for the log the server asks for when something went wrong.
+/// A line without a time of its own (the rest of one that spans lines) goes with the one
+/// before it.
+#[must_use]
+pub fn log_since(text: &str, since: i64) -> String {
+    let mut out = String::new();
+    let mut keep = false;
+    for line in text.lines() {
+        if let Some(at) = line_time(line) {
+            keep = at >= since;
+        }
+        if keep {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// A log line's time, from its start (`2026-10-06T06:36:50.793543Z`), in Unix seconds.
+fn line_time(line: &str) -> Option<i64> {
+    let t = line.get(..19)?;
+    let b = t.as_bytes();
+    if b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let n = |r: std::ops::Range<usize>| t.get(r)?.parse::<i64>().ok();
+    let (y, mo, d, h, mi, s) = (n(0..4)?, n(5..7)?, n(8..10)?, n(11..13)?, n(14..16)?, n(17..19)?);
+    // Days since 1970-01-01 (the civil calendar, from Howard Hinnant's days_from_civil).
+    let y = if mo <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let doy = (153 * (if mo > 2 { mo - 3 } else { mo + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(days * 86_400 + h * 3600 + mi * 60 + s)
+}
+
 /// A line of the game's log (`bl-tracing.log`) taken apart: its level, target and message.
 /// The log writes the time, the level, the thread, spans, the target with a colon, the source
 /// file and line, then the message.
@@ -83,6 +154,19 @@ pub fn example(log: &str, count: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_log_since_a_time_and_its_times() {
+        assert_eq!(line_time("2026-10-06T06:36:50.793543Z  INFO x"), Some(1_791_268_610));
+        assert_eq!(line_time("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(line_time("not a time"), None);
+        let log = "2026-10-06T06:36:49Z  INFO before\n2026-10-06T06:36:50Z  WARN after\n  more of it\n2026-10-06T06:36:51Z  INFO later\n";
+        assert_eq!(
+            log_since(log, 1_791_268_610),
+            "2026-10-06T06:36:50Z  WARN after\n  more of it\n2026-10-06T06:36:51Z  INFO later\n"
+        );
+        assert_eq!(log_since(log, 1_791_268_700), "");
+    }
 
     #[test]
     fn what_the_game_is_doing_goes_too() {

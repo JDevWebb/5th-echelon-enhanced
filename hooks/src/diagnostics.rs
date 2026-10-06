@@ -27,6 +27,11 @@ const BATCH: usize = 50;
 const EVERY: Duration = Duration::from_secs(5);
 /// After a failed send (the server out of reach).
 const RETRY: Duration = Duration::from_secs(30);
+/// With the player's agreement to send the whole log, the game checks in this often even
+/// with nothing to say, so the server can ask for it.
+const CHECK_IN: Duration = Duration::from_secs(30);
+/// The most of the game's log sent when the server asks (its end kept), before gzip.
+const MAX_FULL_LOG: usize = 3 * 1024 * 1024;
 /// The most of one line sent.
 const MAX_LINE: usize = 300;
 struct Queue {
@@ -102,6 +107,7 @@ pub fn start(config: &hooks_config::Config) {
     }
     let Ok(rt) = crate::api::runtime() else { return };
     let server = config.api_server.clone();
+    let full_logs = config.send_full_logs;
     rt.spawn(async move {
         // The server's own addresses aren't the player's: kept, the rest hidden.
         let mut keep = Vec::new();
@@ -114,15 +120,17 @@ pub fn start(config: &hooks_config::Config) {
             }
         }
         let private = Private::of_this_pc(keep);
+        let mut last_sent = std::time::Instant::now();
         loop {
             tokio::time::sleep(EVERY).await;
             let (batch, dropped) = {
                 let q = QUEUE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 (q.lines.iter().take(BATCH).cloned().collect::<Vec<_>>(), q.dropped)
             };
-            if batch.is_empty() && dropped == 0 {
+            if batch.is_empty() && dropped == 0 && !(full_logs && last_sent.elapsed() >= CHECK_IN) {
                 continue;
             }
+            last_sent = std::time::Instant::now();
             let sent = batch.len();
             let lines = batch
                 .into_iter()
@@ -131,12 +139,19 @@ pub fn start(config: &hooks_config::Config) {
                     l
                 })
                 .collect();
-            match crate::api::client_log(lines, dropped).await {
-                Ok(()) => {
-                    let mut q = QUEUE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let n = sent.min(q.lines.len());
-                    q.lines.drain(..n);
-                    q.dropped = q.dropped.saturating_sub(dropped);
+            match crate::api::client_log(lines, dropped, full_logs).await {
+                Ok(answer) => {
+                    {
+                        let mut q = QUEUE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                        let n = sent.min(q.lines.len());
+                        q.lines.drain(..n);
+                        q.dropped = q.dropped.saturating_sub(dropped);
+                    }
+                    // Something went wrong and the player agreed: the log it asks for.
+                    if full_logs && answer.send_log_since > 0 {
+                        let private = private.clone();
+                        tokio::spawn(send_full_log(answer.send_log_since, answer.send_log_problem, private));
+                    }
                 }
                 // A server from before this: nothing to send to.
                 Err(crate::api::Error::GRPCStatus(s)) if s.code() == tonic::Code::Unimplemented => {
@@ -148,4 +163,52 @@ pub fn start(config: &hooks_config::Config) {
             }
         }
     });
+}
+
+/// Sends the game's log from `since` (Unix seconds) as the report the server asked for:
+/// without the call tracing, redacted, its end kept within [`MAX_FULL_LOG`].
+async fn send_full_log(since: i64, problem: String, private: Private) {
+    use std::io::Write as _;
+    let Some(path) = crate::LOG_PATH.get().cloned() else { return };
+    let read = tokio::task::spawn_blocking(move || std::fs::read(&path)).await;
+    let text = match read.unwrap_or_else(|e| Err(std::io::Error::other(e.to_string()))) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(e) => {
+            tracing::warn!("The server asked for the game's log, which can't be read: {e}");
+            return;
+        }
+    };
+    let mut text = hooks_config::redact::redact(
+        &hooks_config::diagnostics::without_call_tracing(&hooks_config::diagnostics::log_since(&text, since)),
+        &private,
+    );
+    if text.len() > MAX_FULL_LOG {
+        let mut start = text.len() - MAX_FULL_LOG;
+        while !text.is_char_boundary(start) {
+            start += 1;
+        }
+        text = format!("(the first {start} bytes left out)\n{}", &text[start..]);
+    }
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    if gz.write_all(text.as_bytes()).is_err() {
+        return;
+    }
+    let Ok(gzip) = gz.finish() else { return };
+    let problem: String = problem.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '_').take(30).collect();
+    let report = server_api::misc::ReportRequest {
+        rating: String::new(),
+        problems: vec![],
+        comment: String::new(),
+        triggers: vec!["auto".into(), format!("auto:{problem}")],
+        client: [("game".to_string(), env!("FE_RELEASE").to_string())].into_iter().collect(),
+        files: vec![server_api::misc::ReportFile {
+            name: "bl-tracing.log".into(),
+            size: text.len() as u64,
+            gzip,
+        }],
+    };
+    match crate::api::report(report).await {
+        Ok(id) => tracing::info!("Sent the game's log as the server asked ({problem}): report {id}"),
+        Err(e) => tracing::warn!("Couldn't send the game's log the server asked for: {e}"),
+    }
 }

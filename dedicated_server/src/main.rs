@@ -76,6 +76,7 @@ mod community_api;
 mod config;
 mod federation;
 mod friends_policy;
+mod full_logs;
 mod game_session;
 mod game_session_ex;
 mod keys;

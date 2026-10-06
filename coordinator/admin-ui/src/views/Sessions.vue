@@ -99,7 +99,7 @@
           <tbody>
             <tr v-for="(row, i) in pickedRows" :key="i">
               <td class="small muted nowrap">{{ time(row.at) }}</td>
-              <td><span class="dot" :class="row.cls"></span> {{ row.text }} <RouterLink v-if="row.link" :to="row.link" class="small">The match →</RouterLink></td>
+              <td><span class="dot" :class="row.cls"></span> {{ row.text }} <RouterLink v-if="row.link" :to="row.link" class="small">{{ row.link.startsWith('/reports') ? 'The log →' : 'The match →' }}</RouterLink></td>
             </tr>
           </tbody>
         </table>
@@ -219,7 +219,7 @@ const pickedRows = computed(() => {
       { at: r.from, text: `${stayTitle(r)}${netText(r.net) ? ' · ' + netText(r.net) : ''}`, cls: r.kind === 'match' ? 'ok' : '', link: r.kind === 'match' ? matchLink(p.server, r.room, r.since) : null },
       { at: r.to, text: endText(r), cls: endClass(r) },
     ]),
-    ...p.marks.map(m => ({ at: m.at, text: m.text, cls: markClass(m) })),
+    ...p.marks.map(m => ({ at: m.at, text: m.text, cls: markClass(m), link: m.kind === 'log_sent' && m.report ? `/reports/${m.report}` : null })),
   ];
   return rows.sort((a, b) => a.at - b.at);
 });

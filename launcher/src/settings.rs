@@ -241,6 +241,16 @@ fn feedback(app: &mut App, ui: &mut egui::Ui) {
                 game.update(notices, |c| c.hook_config.send_diagnostics = send);
                 Prefs::set_diagnostics_asked();
             }
+            ui.add_space(6.0);
+            let mut full = game.cfg.hook_config.send_full_logs;
+            ui.add_enabled_ui(send, |ui| {
+                if ui.checkbox(&mut full, "Send my full game log when something goes wrong").changed() {
+                    game.update(notices, |c| c.hook_config.send_full_logs = full);
+                }
+            });
+            ui.label(theme::muted(
+                "When the server sees a problem in your game (a join that failed, your connection dropping, the game restarting in a match), it can ask for the last 15 minutes of the game's log, at most once an hour. Your PC's name, your user folder and your internet address are hidden first, as in a report. Off unless you turn it on.",
+            ));
         });
     }
     section(ui, "After a game", |ui| {

@@ -70,7 +70,8 @@ import { ensureOverview, useLoad } from '../lib/data.js';
 import { fmt, PROBLEMS, serverName } from '../lib/fmt.js';
 import { live } from '../lib/live.js';
 
-const STATUSES = [['open', 'Open'], ['resolved', 'Resolved'], ['all', 'All']];
+// Game logs: the logs games sent on their own when something went wrong (players who agreed).
+const STATUSES = [['open', 'Open'], ['resolved', 'Resolved'], ['auto', 'Game logs'], ['all', 'All']];
 const route = useRoute();
 const router = useRouter();
 onMounted(() => ensureOverview().catch(() => {}));

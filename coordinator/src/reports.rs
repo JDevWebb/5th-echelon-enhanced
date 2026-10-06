@@ -269,6 +269,12 @@ pub(crate) fn check(v: &Value, now: i64) -> Result<Report, String> {
     })
 }
 
+/// Whether a report is the game's log its server asked for when something went wrong
+/// (the server's `full_logs`), not one the player wrote.
+pub fn is_auto(triggers: &[String]) -> bool {
+    triggers.iter().any(|t| t == "auto")
+}
+
 /// A report's list columns.
 const COLUMNS: &str = "r.id, r.server_id, r.created_at, r.received_at, r.player_id, r.player_name, r.player_identity, r.rating, r.problems,
        r.triggers, r.client, r.comment, r.status, r.note, r.resolved_by, r.resolved_at, r.reply, r.replied_by, r.replied_at,
@@ -342,8 +348,8 @@ impl Coordinator {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await.map_err(|e| e.to_string())?;
         let added = sqlx::query(
             "INSERT OR IGNORE INTO player_reports (id, server_id, created_at, received_at, player_id, player_name, player_identity, rating,
-                                                   problems, triggers, client, summary, comment, server_log)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                                                   problems, triggers, client, summary, comment, server_log, status)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&r.id)
         .bind(server)
@@ -359,6 +365,9 @@ impl Coordinator {
         .bind(r.summary.to_string())
         .bind(&r.comment)
         .bind(&r.server_log)
+        // The game's log its server asked for when something went wrong: kept and shown as
+        // reports are, but no one's to resolve (see `is_auto`).
+        .bind(if is_auto(&r.triggers) { "auto" } else { "open" })
         .execute(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
@@ -448,6 +457,7 @@ impl Coordinator {
     pub async fn report_list(&self, q: &ListQuery) -> sqlx::Result<Value> {
         let status = match q.status.as_str() {
             "resolved" => "resolved",
+            "auto" => "auto",
             "all" => "",
             _ => "open",
         };
@@ -648,10 +658,11 @@ impl Coordinator {
     }
 
     /// Posts a new report to the alert webhook, as the setting says: now, or (past
-    /// [`BATCH_AFTER`] in a minute) with the others in one message a minute later.
+    /// [`BATCH_AFTER`] in a minute) with the others in one message a minute later. Not the
+    /// game logs sent on their own (`auto`): the problem is on the Sessions page already.
     pub(crate) async fn alert_report(self: &Arc<Self>, server: &str, r: &Report) {
         let mode = self.report_alert_mode().await.unwrap_or_default();
-        if !wanted(&mode, r.rating.as_deref(), &r.problems) {
+        if is_auto(&r.triggers) || !wanted(&mode, r.rating.as_deref(), &r.problems) {
             return;
         }
         let listing: Option<Option<String>> = sqlx::query_scalar("SELECT listing FROM servers WHERE id = ?")

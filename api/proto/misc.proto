@@ -21,6 +21,9 @@ message ClientLogRequest {
     repeated ClientLogLine lines = 1;
     // Lines the game had to leave out since the last request (too many at once).
     uint32 dropped = 2;
+    // The player agreed to send the game's whole log when something goes wrong (launcher
+    // Settings › Feedback): the server may ask for it in its answer.
+    bool full_logs = 3;
 }
 message ClientLogLine {
     // Unix milliseconds on the player's PC.
@@ -34,6 +37,12 @@ message ClientLogLine {
 message ClientLogResponse {
     // Lines the server kept; the rest went over its limit.
     uint32 kept = 1;
+    // Something went wrong for this player (and they agreed): send the game's log from this
+    // time on (Unix seconds) as a report with the triggers "auto" and "auto:<problem>".
+    // 0: nothing wanted.
+    int64 send_log_since = 2;
+    // What went wrong: join_failed, nat_lost, relay_stopped, restarted.
+    string send_log_problem = 3;
 }
 
 message EventRequest {}

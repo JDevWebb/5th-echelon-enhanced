@@ -1186,6 +1186,13 @@ impl Misc for MyMisc {
     async fn client_log(&self, request: Request<misc::ClientLogRequest>) -> Result<Response<misc::ClientLogResponse>, Status> {
         let user_id = caller(&request)?;
         let request = request.into_inner();
+        // Whether the player agreed to send the whole log when something goes wrong.
+        let name = if request.full_logs {
+            self.storage.find_username_by_user_id_async(user_id).await.ok().flatten()
+        } else {
+            None
+        };
+        crate::full_logs::diagnostics(user_id, name.as_deref(), request.full_logs);
         let mut kept = 0u32;
         let mut over = request.dropped;
         for line in request.lines.iter().take(CLIENT_LOG_LINES) {
@@ -1218,7 +1225,12 @@ impl Misc for MyMisc {
                 serde_json::json!({ "level": "info", "target": "", "message": "some lines were left out (too many at once)" }),
             );
         }
-        Ok(Response::new(misc::ClientLogResponse { kept }))
+        let (send_log_since, send_log_problem) = crate::full_logs::ask(user_id).map_or((0, String::new()), |(since, problem)| (since, problem.to_string()));
+        Ok(Response::new(misc::ClientLogResponse {
+            kept,
+            send_log_since,
+            send_log_problem,
+        }))
     }
 
     /// A player's feedback, with their logs if they agreed: queued for the coordinator with
@@ -1229,6 +1241,13 @@ impl Misc for MyMisc {
         let r = request.into_inner();
         // What it carried, to say so if it's refused.
         let (files, bytes) = (r.files.len(), r.files.iter().map(|f| f.gzip.len()).sum::<usize>());
+        // The game's log the server asked for (full_logs.rs): only then, and not counted
+        // with the player's own reports.
+        let auto = r.triggers.iter().any(|t| t == "auto");
+        let asked = auto.then(|| crate::full_logs::answered(user_id)).flatten();
+        if auto && asked.is_none() {
+            return Err(Status::failed_precondition("The server didn't ask for this game's log"));
+        }
         let incoming = crate::reports::Incoming {
             rating: r.rating,
             problems: r.problems,
@@ -1237,9 +1256,16 @@ impl Misc for MyMisc {
             client: r.client.into_iter().collect(),
             files: r.files.into_iter().map(|f| (f.name, f.gzip, f.size)).collect(),
         };
-        match crate::reports::accept(&self.storage, user_id, peer, incoming).await.map_err(internal)? {
+        match crate::reports::accept(&self.storage, user_id, peer, incoming, auto).await.map_err(internal)? {
             Ok(id) => {
                 info!(self.logger, "Report {id} from {user_id}, for the coordinator");
+                if let Some(problem) = asked {
+                    crate::session_events::note(
+                        crate::session_events::Who::Id(user_id),
+                        "log_sent",
+                        serde_json::json!({ "report": id, "problem": problem, "files": files, "bytes": bytes }),
+                    );
+                }
                 crate::federation::report_queued();
                 Ok(Response::new(misc::ReportResponse { id }))
             }

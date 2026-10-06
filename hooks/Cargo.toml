@@ -20,6 +20,7 @@ patch-free = []
 
 [dependencies]
 anyhow = { workspace = true }
+flate2 = { workspace = true }
 crossbeam-channel = { workspace = true }
 goblin = { workspace = true }
 hooks-addresses = { path = "hooks-addresses" }

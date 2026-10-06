@@ -219,8 +219,10 @@ pub fn body(report: Incoming, player: Value, summary: &Value, server_log: String
 
 /// Takes `user`'s report, adds this server's side and queues it for the coordinator.
 /// Answers the report's id.
-pub async fn accept(storage: &Storage, user: u32, peer: Option<std::net::IpAddr>, report: Incoming) -> eyre::Result<Result<String, Refused>> {
-    if storage.reports_today(user).await? >= PER_DAY || storage.report_outbox_bytes().await? > MAX_OUTBOX {
+/// `auto`: the game's log the server asked for, which doesn't count towards the player's
+/// own reports a day (full_logs.rs limits those).
+pub async fn accept(storage: &Storage, user: u32, peer: Option<std::net::IpAddr>, report: Incoming, auto: bool) -> eyre::Result<Result<String, Refused>> {
+    if (!auto && storage.reports_today(user).await? >= PER_DAY) || storage.report_outbox_bytes().await? > MAX_OUTBOX {
         return Ok(Err(Refused::TooMany));
     }
     let person = storage.find_person(user).await?.ok_or_else(|| eyre::eyre!("no such player"))?;
@@ -237,7 +239,7 @@ pub async fn accept(storage: &Storage, user: u32, peer: Option<std::net::IpAddr>
         Ok(b) => b,
         Err(refused) => return Ok(Err(refused)),
     };
-    storage.queue_report(user, &id, &body.to_string()).await?;
+    storage.queue_report(user, &id, &body.to_string(), !auto).await?;
     Ok(Ok(id))
 }
 

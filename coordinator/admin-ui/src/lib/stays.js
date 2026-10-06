@@ -77,7 +77,7 @@ export function markClass(m) {
   if (m.kind === 'client_log') return /^Game error/.test(m.text) ? 'bad' : /^Game warn/.test(m.text) ? 'warn' : 'muted';
   if (m.kind === 'restart') return 'warn';
   if (PROBLEM_KINDS.has(m.kind)) return m.kind === 'request_error' || m.kind === 'report_refused' ? 'warn' : 'bad';
-  if (m.kind === 'stats') return 'ok';
+  if (m.kind === 'stats' || m.kind === 'log_sent') return 'ok';
   if (m.kind === 'search') return 'info';
   return 'muted';
 }

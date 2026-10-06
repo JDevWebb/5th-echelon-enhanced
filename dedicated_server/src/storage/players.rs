@@ -135,18 +135,21 @@ impl Storage {
         Ok(sqlx::query_scalar("SELECT COALESCE(SUM(length(body)), 0) FROM report_outbox").fetch_one(&self.pool).await?)
     }
 
-    /// Queues `user_id`'s report for the coordinator, and notes they sent one.
-    pub async fn queue_report(&self, user_id: u32, id: &str, body: &str) -> Result<()> {
+    /// Queues `user_id`'s report for the coordinator, and notes they sent one (not for the
+    /// game's log the server asked for, `counted` false: that's limited apart).
+    pub async fn queue_report(&self, user_id: u32, id: &str, body: &str, counted: bool) -> Result<()> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query(&format!("INSERT INTO report_outbox (id, body, created_at) VALUES (?, ?, {NOW})"))
             .bind(id)
             .bind(body)
             .execute(&mut *tx)
             .await?;
-        sqlx::query(&format!("INSERT INTO report_log (user_id, at) VALUES (?, {NOW})"))
-            .bind(user_id)
-            .execute(&mut *tx)
-            .await?;
+        if counted {
+            sqlx::query(&format!("INSERT INTO report_log (user_id, at) VALUES (?, {NOW})"))
+                .bind(user_id)
+                .execute(&mut *tx)
+                .await?;
+        }
         sqlx::query(&format!("DELETE FROM report_log WHERE at < {NOW} - 86400")).execute(&mut *tx).await?;
         tx.commit().await?;
         Ok(())

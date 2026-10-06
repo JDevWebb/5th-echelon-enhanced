@@ -510,7 +510,7 @@ fn timelines(events: &[Event], sessions: &[(String, i64, i64, Option<i64>)], nam
         heard.insert(who.clone(), heard.get(&who).copied().unwrap_or(0).max(e.last_at.max(e.at)));
         let mark = mark.or_else(|| {
             (e.last_at >= from && !matches!(e.kind.as_str(), "room" | "leave" | "join" | "signout"))
-                .then(|| json!({ "at": e.at.max(from), "last_at": e.last_at, "kind": e.kind, "count": e.count, "text": describe(e) }))
+                .then(|| json!({ "at": e.at.max(from), "last_at": e.last_at, "kind": e.kind, "count": e.count, "text": describe(e), "report": e.detail.get("report") }))
         });
         if let (Some(mark), Some(p)) = (mark, players.get_mut(&who)) {
             if mark["last_at"].as_i64().is_some_and(|t| t >= from) {
@@ -631,6 +631,16 @@ fn describe(e: &Event) -> String {
             }
         }
         "request_error" => format!("A request failed: {} {}{times}", e.str("call"), e.str("error")),
+        "log_sent" => format!(
+            "Sent its game log, as asked after {} (in Reports, Game logs)",
+            match e.str("problem") {
+                "join_failed" => "a failed join",
+                "nat_lost" => "its registration lapsed",
+                "relay_stopped" => "its relayed traffic stopped",
+                "restarted" => "it dropped and came back",
+                other => other,
+            }
+        ),
         "report_refused" => format!(
             "A report from the launcher was refused: {} ({} files, {} KB){times}",
             e.str("why"),

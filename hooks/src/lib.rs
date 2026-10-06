@@ -424,8 +424,12 @@ type ReconfigurableLogger = tracing_subscriber::reload::Handle<
     >,
 >;
 
+/// The game's log, for the server asking for it when something went wrong (diagnostics.rs).
+pub(crate) static LOG_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+
 fn init_log(target_dir: &Path) -> ReconfigurableLogger {
     let path = target_dir.join("bl-tracing.log");
+    let _ = LOG_PATH.set(path.clone());
     // Keep the previous run's log: that's usually the one with the problem.
     let _ = std::fs::rename(&path, target_dir.join("bl-tracing.prev.log"));
     let subscriber_builder = tracing_subscriber::FmtSubscriber::builder()

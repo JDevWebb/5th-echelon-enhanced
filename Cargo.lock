@@ -2394,6 +2394,7 @@ dependencies = [
  "api",
  "crossbeam-channel",
  "dll-syringe",
+ "flate2",
  "goblin",
  "hooks-addresses",
  "hooks-config",

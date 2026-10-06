@@ -1951,6 +1951,31 @@ async fn admins_read_resolve_and_delete_reports() {
 }
 
 #[tokio::test]
+async fn game_logs_sent_on_their_own_are_kept_apart_from_reports() {
+    let t = start("reports-auto").await;
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    let (log, mine) = (report_id(1), report_id(2));
+    let mut auto = report_body(&log);
+    auto["triggers"] = json!(["auto", "auto:join_failed"]);
+    auto["rating"] = json!(null);
+    auto["problems"] = json!([]);
+    auto["comment"] = json!("");
+    assert_eq!(t.call("POST", "/v1/reports", Some(&a), Some(auto)).await.0, StatusCode::OK);
+    assert_eq!(t.call("POST", "/v1/reports", Some(&a), Some(report_body(&mine))).await.0, StatusCode::OK);
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    let (_, v) = admin_call(&r, "GET", "/api/reports", &cookie, None).await;
+    assert_eq!(
+        (v["total"].as_i64(), v["reports"][0]["id"].as_str()),
+        (Some(1), Some(mine.as_str())),
+        "only the player's own are open: {v}"
+    );
+    let (_, v) = admin_call(&r, "GET", "/api/reports?status=auto", &cookie, None).await;
+    assert_eq!((v["total"].as_i64(), v["reports"][0]["status"].as_str()), (Some(1), Some("auto")), "{v}");
+    assert_eq!(t.c.open_reports().await.unwrap(), 1);
+}
+
+#[tokio::test]
 async fn players_read_the_admins_replies_to_their_reports() {
     let t = start("reports-replies").await;
     let r = admin_router(&t);

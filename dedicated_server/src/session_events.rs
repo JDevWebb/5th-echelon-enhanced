@@ -103,6 +103,15 @@ fn now() -> i64 {
 
 /// Notes an event; [`run`] saves it in a moment.
 pub fn note(who: Who, kind: &'static str, detail: Value) {
+    // Worth the game's whole log, for a player who agreed (full_logs.rs).
+    if let Some(problem) = crate::full_logs::problem_of(kind, &detail) {
+        let (id, name) = match &who {
+            Who::Id(id) => (Some(*id), None),
+            Who::Name(name) => (None, Some(name.as_str())),
+            _ => (None, None),
+        };
+        crate::full_logs::noted(id, name, problem, now());
+    }
     let event = NewSessionEvent {
         at: now(),
         user_id: match who {
