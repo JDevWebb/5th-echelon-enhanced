@@ -2362,6 +2362,11 @@ site_routes() {
 	handle /mp_balancing.ini {
 		reverse_proxy 127.0.0.1:8000
 	}
+	# The game's uploads (its ShadowNet snapshot, 0.4.3): a PUT to the one-time address
+	# the server gave it, which only the content server takes.
+	handle /ugc/* {
+		reverse_proxy 127.0.0.1:8000
+	}
 	handle {
 		reverse_proxy 127.0.0.1:8080
 	}

@@ -24,6 +24,8 @@ const MAX_REQUEST_LINE: u64 = 8 * 1024;
 const MAX_BODY: usize = 16 * 1024;
 /// How long an upload's body may take (a PUT of the game's content, uploads.rs).
 const UPLOAD_DEADLINE: Duration = Duration::from_secs(60);
+/// How long a refused POST or PUT may go on sending before the connection closes.
+const REFUSED_DRAIN: Duration = Duration::from_secs(2);
 
 /// Whether a PUT to `path` is taken: the game's uploads (uploads.rs), on the content server
 /// only (`serve_many`).
@@ -311,6 +313,20 @@ impl<R: Read> Read for Deadline<R> {
     }
 }
 
+/// Answers a POST or PUT before its body is read, then reads (and drops) what the client
+/// still sends for a moment: closing with it unread resets the connection, and the client
+/// (or a proxy in front) would see the reset instead of the answer.
+fn refuse(stream: &TcpStream, status: &'static str) -> std::io::Result<()> {
+    let mut stream = stream;
+    stream.write_all(&Response::status(status).to_bytes())?;
+    let _ = stream.shutdown(std::net::Shutdown::Write);
+    let until = std::time::Instant::now() + REFUSED_DRAIN;
+    stream.set_read_timeout(Some(REFUSED_DRAIN))?;
+    let mut rest = Deadline { inner: stream, until }.take(crate::uploads::MAX_UPLOAD as u64 + MAX_BODY as u64);
+    let _ = std::io::copy(&mut rest, &mut std::io::sink());
+    Ok(())
+}
+
 /// Answers one request. `client_slot` takes the place of the client a trusted
 /// proxy names (`None` inside: the connection's own place is enough), or
 /// says it has too many open.
@@ -338,10 +354,10 @@ fn handle(
     // doesn't need its headers read). A POST's headers and body are read, if
     // it's to a path that takes one.
     if req.method == "POST" && !takes_body(req.path.split('?').next().unwrap_or_default()) {
-        return stream.write_all(&Response::status("405 Method Not Allowed").to_bytes());
+        return refuse(&stream, "405 Method Not Allowed");
     }
     if req.method == "PUT" && !takes_put(&req.path) {
-        return stream.write_all(&Response::status("405 Method Not Allowed").to_bytes());
+        return refuse(&stream, "405 Method Not Allowed");
     }
     let upload = req.method == "PUT";
     if req.method == "POST" || upload {
@@ -370,19 +386,19 @@ fn handle(
             }
         }
         if length > if upload { crate::uploads::MAX_UPLOAD } else { MAX_BODY } {
-            return stream.write_all(&Response::status("413 Payload Too Large").to_bytes());
+            return refuse(&stream, "413 Payload Too Large");
         }
         // An upload's address, secret and size are checked before anything is held for it.
         if upload {
             if let Err(status) = crate::uploads::expects(&req.path, length) {
-                return stream.write_all(&Response::status(status).to_bytes());
+                return refuse(&stream, status);
             }
         }
         // Through a proxy, the client it names now has a place of its own, so one
         // client's slow bodies can't use up everyone's.
         let Some(_client_slot) = client_slot(req.peer) else {
             debug!(logger, "simple_http: too many connections from {:?}; refusing one", req.peer);
-            return stream.write_all(&Response::status("429 Too Many Requests").to_bytes());
+            return refuse(&stream, "429 Too Many Requests");
         };
         let deadline = if upload { UPLOAD_DEADLINE } else { BODY_DEADLINE };
         let until = std::time::Instant::now() + deadline;

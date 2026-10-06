@@ -83,6 +83,9 @@ http://blacklist.example.com {
 	handle /mp_balancing.ini {
 		reverse_proxy 127.0.0.1:8000
 	}
+	handle /ugc/* {
+		reverse_proxy 127.0.0.1:8000
+	}
 	handle {
 		reverse_proxy 127.0.0.1:8080
 	}
@@ -93,6 +96,7 @@ http://blacklist.example.com {
 - **`protocols h1 h2c`** lets the launcher and overlay speak gRPC over plain HTTP on port 80. It applies to every site on port 80, and changes nothing for the others.
 - **`@admin`** keeps the admin API (accounts and games) off the internet. Manage the server on its own machine, or through an SSH tunnel (`ssh -L 50051:127.0.0.1:50051 you@server`, then the launcher's "Manage a server" at `localhost`).
 - **`flush_interval -1`** passes invites on the moment they arrive; they come over a stream that stays open.
+- **`/mp_balancing.ini` and `/ugc/*`** go to the content server: the multiplayer balancing file the game downloads, and the uploads it sends (its ShadowNet snapshot, from 0.4.3). Without the `/ugc/*` route the game's uploads fail.
 - **The API over HTTPS**, so passwords and sign-in tokens never travel readable: add the same routes as an `https://blacklist.example.com { … }` site (Caddy gets the certificate; TCP 443 must be open), then set `api_tls = 443` in `[public]`. Launchers use it from then on. The Linux installer does all of this.
 - If Caddy runs in Docker, use the server's address instead of `127.0.0.1`. Also add Caddy's network to `[public] proxies` (see below).
 

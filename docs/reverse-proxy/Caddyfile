@@ -40,6 +40,9 @@ http://blacklist.example.com {
 	handle /mp_balancing.ini {
 		reverse_proxy 127.0.0.1:8000
 	}
+	handle /ugc/* {
+		reverse_proxy 127.0.0.1:8000
+	}
 
 	# The game's online config, and the community API (/api/...).
 	handle {

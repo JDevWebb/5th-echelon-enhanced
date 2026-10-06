@@ -59,6 +59,10 @@ client sh -c "
   curl -sf http://$host/api/info; echo
   curl -sf http://$host/OnlineConfigService.svc/GetOnlineConfig | grep -q 'port=31126' && echo 'online config: login on 31126'
   curl -sf http://$host/mp_balancing.ini | head -c 40 | grep -q . && echo 'content: served'
+  # An upload reaches the content server (which knows no such upload: 404), not the
+  # config server (which takes no PUTs: 405).
+  code=\$(curl -s -o /dev/null -w '%{http_code}' -X PUT --data '{}' http://$host/ugc/1-0)
+  [ \"\$code\" = 404 ] && echo 'uploads: reach the content server' || { echo \"an upload got \$code, not 404 from the content server\"; exit 1; }
   code=\$(curl -s -o /dev/null -w '%{http_code}' --http2-prior-knowledge -X POST -H 'Content-Type: application/grpc' http://$host/users.UsersAdmin/List)
   [ \"\$code\" = 403 ] && echo 'admin API: refused (403)' || { echo \"admin API answered \$code, not 403\"; exit 1; }
 " || rc=1
