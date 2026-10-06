@@ -81,6 +81,13 @@ pub struct Feedback {
     sent: Option<(crate::activity::Handle, Ask)>,
     /// A report that couldn't be sent, by its activity, for Try again and Without logs.
     failed: Option<(u64, Ask)>,
+    /// The report left unsent last time, being sent (see [`pending`]).
+    resumed: bool,
+    resending: Slot<Result<String, String>>,
+    resent: Option<crate::activity::Handle>,
+    /// The player closed the launcher while a report was sending: asking whether to wait
+    /// (`Some(true)`), or waiting to close once it's sent (`Some(false)`).
+    closing: Option<bool>,
 }
 
 impl crate::task::FromPanic for Option<Ask> {
@@ -176,11 +183,16 @@ fn send(ask: &Ask, activity: &crate::activity::Handle) -> Result<String, String>
         .user
         .secret()
         .ok_or("The saved password can't be read here; press Connect on the server again.")?;
+    send_report_to(&ask.profile.api_server_url().to_string(), &ask.profile.user.username, &password, report_of(ask), activity)
+}
+
+/// The report `ask` makes.
+fn report_of(ask: &Ask) -> server_api::misc::ReportRequest {
     let client = [
         ("launcher".to_string(), env!("FE_RELEASE").to_string()),
         ("os".to_string(), std::env::consts::OS.to_string()),
     ];
-    let report = server_api::misc::ReportRequest {
+    server_api::misc::ReportRequest {
         rating: match ask.good {
             Some(true) => "good".into(),
             Some(false) => "bad".into(),
@@ -202,7 +214,11 @@ fn send(ask: &Ask, activity: &crate::activity::Handle) -> Result<String, String>
         } else {
             vec![]
         },
-    };
+    }
+}
+
+/// Sends `report` to `server` as `username`, reporting the bytes sent.
+fn send_report_to(server: &str, username: &str, password: &str, report: server_api::misc::ReportRequest, activity: &crate::activity::Handle) -> Result<String, String> {
     let total = crate::network::report_size(&report);
     activity.progress(crate::activity::Progress::Bytes { sent: 0, total });
     let progress = activity.clone();
@@ -212,7 +228,7 @@ fn send(ask: &Ask, activity: &crate::activity::Handle) -> Result<String, String>
             // A few MB of logs can take minutes from far away.
             tokio::time::timeout(
                 Duration::from_secs(240),
-                crate::network::send_report(ask.profile.api_server_url().to_string(), &ask.profile.user.username, &password, report, on_sent),
+                crate::network::send_report(server.to_string(), username, password, report, on_sent),
             )
             .await
         })
@@ -229,7 +245,97 @@ fn send(ask: &Ask, activity: &crate::activity::Handle) -> Result<String, String>
         })
 }
 
+/// A report that was sending when the launcher closed (or couldn't be sent): kept in the
+/// launcher's folder and sent when it next starts. PlaySkill's report (eu1, 2026-10-06) never
+/// arrived: the upload runs after **Send**, and closing the launcher before it finished
+/// dropped it without a word. The server and account it's for, never the password (the
+/// saved profile's is used).
+mod pending {
+    use std::path::PathBuf;
+
+    use prost::Message as _;
+    use serde::Deserialize;
+    use serde::Serialize;
+
+    /// Older than this, it's let go: the session it's about is long past.
+    const KEEP_FOR: i64 = 7 * 86_400;
+
+    #[derive(Serialize, Deserialize)]
+    pub struct Header {
+        pub server: String,
+        pub username: String,
+        pub saved_at: i64,
+    }
+
+    fn paths() -> Option<(PathBuf, PathBuf)> {
+        let dir = setup::app_data_dir()?;
+        Some((dir.join("unsent-report.json"), dir.join("unsent-report.bin")))
+    }
+
+    pub fn save(server: &str, username: &str, report: &server_api::misc::ReportRequest) {
+        let Some((head, body)) = paths() else { return };
+        let header = Header {
+            server: server.to_string(),
+            username: username.to_string(),
+            saved_at: identity::now(),
+        };
+        let saved = head.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| {
+            std::fs::write(&body, report.encode_to_vec())?;
+            std::fs::write(&head, serde_json::to_vec(&header).unwrap_or_default())
+        });
+        if let Err(e) = saved {
+            tracing::warn!("Couldn't keep the report to send later: {e}");
+        }
+    }
+
+    pub fn clear() {
+        if let Some((head, body)) = paths() {
+            let _ = std::fs::remove_file(head);
+            let _ = std::fs::remove_file(body);
+        }
+    }
+
+    /// The report left unsent, if there's one still worth sending.
+    pub fn load() -> Option<(Header, server_api::misc::ReportRequest)> {
+        let (head, body) = paths()?;
+        let header: Header = serde_json::from_slice(&std::fs::read(head).ok()?).ok()?;
+        let report = std::fs::read(body).ok().and_then(|b| server_api::misc::ReportRequest::decode(b.as_slice()).ok());
+        match report {
+            Some(report) if identity::now() - header.saved_at < KEEP_FOR => Some((header, report)),
+            _ => {
+                clear();
+                None
+            }
+        }
+    }
+}
+
 impl Feedback {
+    /// At start: sends the report left unsent last time, if the account it's for is still
+    /// set up here (its saved password signs in); else lets it go.
+    pub fn resume(&mut self, ctx: &egui::Context, notices: &mut Notices, cfg: &Config) {
+        if self.resumed {
+            return;
+        }
+        self.resumed = true;
+        let Some((header, report)) = pending::load() else { return };
+        let password = cfg
+            .profiles
+            .iter()
+            .find(|p| p.api_server_url().as_str() == header.server && p.user.username.eq_ignore_ascii_case(&header.username))
+            .and_then(|p| p.user.secret());
+        let Some(password) = password else {
+            tracing::info!("A report left unsent is for an account no longer here; let go");
+            pending::clear();
+            return;
+        };
+        let activity = notices.start(ctx, "Sending the report you left unsent");
+        let handle = activity.clone();
+        self.resending
+            .start(ctx, move || send_report_to(&header.server, &header.username, &password, report, &handle));
+        self.resent = Some(activity);
+    }
+
     /// The game closed: looks at what happened, in the background.
     pub fn game_closed(&mut self, ctx: &egui::Context, game_dir: PathBuf, exit_code: Option<i32>, checks: String) {
         if self.asking.is_some() || self.checking.running() || Prefs::feedback().1 {
@@ -249,6 +355,51 @@ impl Feedback {
         self.checking.running() || self.sending.running()
     }
 
+    /// Closing the launcher while a report is sending: wait for it, or close and send it
+    /// next time (it's kept either way).
+    fn ask_before_closing(&mut self, ctx: &egui::Context) {
+        let sending = self.sending.running() || self.resending.running();
+        if sending && self.closing.is_none() && ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.closing = Some(true);
+        }
+        let Some(asking) = self.closing else { return };
+        if !sending {
+            // Sent meanwhile: close as asked.
+            self.closing = None;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            return;
+        }
+        if !asking {
+            ctx.request_repaint_after(Duration::from_millis(500));
+            return;
+        }
+        let modal = egui::Modal::new(egui::Id::new("closing-while-sending")).show(ctx, |ui| {
+            ui.set_max_width(420.0);
+            ui.heading("Your report is still sending");
+            ui.label("Wait and the launcher closes as soon as it's sent, or close now and it's sent the next time you start the launcher.");
+            ui.add_space(8.0);
+            ui.horizontal(|ui| {
+                if ui.add(theme::primary("Wait, then close")).clicked() {
+                    return Some(false);
+                }
+                ui.button("Close now, send it next time").clicked().then_some(true)
+            })
+            .inner
+        });
+        match modal.inner {
+            Some(true) => {
+                self.closing = None;
+                // The report is kept on disk; let the window go.
+                self.sending = Slot::default();
+                self.resending = Slot::default();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            Some(false) => self.closing = Some(false),
+            None => {}
+        }
+    }
+
     /// Sends `ask` in the background, in the activity bar.
     fn start_sending(&mut self, ctx: &egui::Context, notices: &mut Notices, ask: Ask) {
         let files = if ask.attach { ask.files.len() } else { 0 };
@@ -258,6 +409,8 @@ impl Feedback {
             1 => activity.step("with 1 log file"),
             n => activity.step(format!("with {n} log files")),
         }
+        // Kept until the server has it: closing the launcher meanwhile loses nothing.
+        pending::save(&ask.profile.api_server_url().to_string(), &ask.profile.user.username, &report_of(&ask));
         let handle = activity.clone();
         let sending = ask.clone();
         self.sending.start(ctx, move || send(&sending, &handle));
@@ -274,7 +427,10 @@ impl Feedback {
         if let Some(result) = self.sending.poll() {
             if let Some((activity, ask)) = self.sent.take() {
                 match result {
-                    Ok(_) => activity.done("Thanks! Your report is with the server's admins."),
+                    Ok(_) => {
+                        pending::clear();
+                        activity.done("Thanks! Your report is with the server's admins.");
+                    }
                     Err(e) => {
                         activity.title("Couldn't send your report");
                         let actions: &[Action] = if ask.attach && !ask.files.is_empty() {
@@ -288,6 +444,19 @@ impl Feedback {
                 }
             }
         }
+        if let Some(result) = self.resending.poll() {
+            if let Some(activity) = self.resent.take() {
+                match result {
+                    Ok(_) => {
+                        pending::clear();
+                        activity.done("Your report from last time is with the server's admins.");
+                    }
+                    // Kept: it goes again next time (for a week).
+                    Err(e) => activity.fail(format!("{e} It'll be sent again next time."), &[crate::activity::Action::CopyDetails]),
+                }
+            }
+        }
+        self.ask_before_closing(ctx);
         if let Some((id, ask)) = self.failed.clone() {
             match notices.take_action(id) {
                 Some(Action::Retry) => {

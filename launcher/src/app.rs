@@ -672,6 +672,9 @@ impl eframe::App for App {
                 self.feedback.game_closed(ctx, game.dir.clone(), code, checks);
             }
         }
+        if let Some(game) = &self.game {
+            self.feedback.resume(ctx, &mut self.notices, &game.cfg);
+        }
         self.feedback.show(ctx, &mut self.notices);
         self.diagnostics.show(ctx, self.game.as_mut(), &mut self.notices);
         self.whats_new.start(self.game.as_ref());
