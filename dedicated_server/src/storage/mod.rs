@@ -475,6 +475,7 @@ impl Storage {
             // pending invite points at one that's gone. Upstream only marked
             // sessions destroyed, so the tables grew forever.
             sqlx::query("DELETE FROM participants").execute(&self.pool).await?;
+            sqlx::query("DELETE FROM guests").execute(&self.pool).await?;
             sqlx::query("DELETE FROM game_session_invites").execute(&self.pool).await?;
             sqlx::query("DELETE FROM advertised_sessions").execute(&self.pool).await?;
             // Matches the coordinator hasn't taken stay (ended now), until it has.
@@ -669,10 +670,34 @@ impl Storage {
     pub async fn remove_participants_async(&self, _type_id: u32, session_id: u32, participants: Vec<u32>) -> Result<()> {
         let stmt = self.pool.prepare("DELETE FROM participants WHERE game_id = ? AND user_id = ?").await?;
 
+        let guest = self.pool.prepare("DELETE FROM guests WHERE game_id = ? AND user_id = ?").await?;
         for p in participants {
             stmt.query().bind(session_id).bind(p).execute(&self.pool).await?;
+            guest.query().bind(session_id).bind(p).execute(&self.pool).await?;
         }
         Ok(())
+    }
+
+    /// Notes that `user_id` joined `session_id` with JoinSession (see the `guests` table).
+    /// Not for its host or a participant, nor a session that's over; whether it was noted.
+    pub fn add_guest(&self, session_id: u32, user_id: u32) -> Result<bool> {
+        run(async {
+            let added = sqlx::query(
+                "INSERT OR IGNORE INTO guests (game_id, user_id, joined_at)
+                 SELECT g.id, ?, unixepoch() FROM game_sessions g
+                 WHERE g.id = ? AND g.destroyed_at IS NULL AND g.creator_id != ?
+                   AND NOT EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?)",
+            )
+            .bind(user_id)
+            .bind(session_id)
+            .bind(user_id)
+            .bind(user_id)
+            .execute(&self.pool)
+            .await?
+            .rows_affected()
+                > 0;
+            Ok::<_, eyre::Error>(added)
+        })?
     }
 
     pub fn remove_participants(&self, type_id: u32, session_id: u32, participants: Vec<u32>) -> Result<()> {
@@ -1101,12 +1126,20 @@ impl Storage {
                 .await?
                 .rows_affected()
                 > 0;
+            let was_guest = sqlx::query("DELETE FROM guests WHERE game_id = ? AND user_id = ?")
+                .bind(session_id)
+                .bind(user_id)
+                .execute(&self.pool)
+                .await?
+                .rows_affected()
+                > 0;
             let host: Option<u32> = sqlx::query_scalar("SELECT creator_id FROM game_sessions WHERE id = ?")
                 .bind(session_id)
                 .fetch_optional(&self.pool)
                 .await?;
             if !was_in && host != Some(user_id) {
-                return Ok::<_, eyre::Error>(None);
+                // A guest leaving ends nothing: the session lives as long as its participants.
+                return Ok::<_, eyre::Error>(was_guest.then_some(false));
             }
             let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM participants WHERE game_id = ?")
                 .bind(session_id)
@@ -1438,9 +1471,13 @@ impl Storage {
         let sessions: Vec<(u32, String)> = sqlx::query_as("SELECT id, attributes FROM game_sessions WHERE destroyed_at IS NULL ORDER BY id DESC")
             .fetch_all(&self.pool)
             .await?;
-        let members: Vec<(u32, String)> = sqlx::query_as("SELECT p.game_id, u.username FROM participants p JOIN users u ON u.id = p.user_id")
-            .fetch_all(&self.pool)
-            .await?;
+        // Participants and guests (who joined a public match: its host never adds them).
+        let members: Vec<(u32, String)> = sqlx::query_as(
+            "SELECT p.game_id, u.username FROM participants p JOIN users u ON u.id = p.user_id
+             UNION SELECT gu.game_id, u.username FROM guests gu JOIN users u ON u.id = gu.user_id",
+        )
+        .fetch_all(&self.pool)
+        .await?;
         let live = sessions
             .into_iter()
             .map(|(id, attributes)| LiveSession {
@@ -1593,6 +1630,39 @@ pub(crate) mod tests {
         run(storage.purge_stale_async()).unwrap().unwrap();
         let next = storage.create_game_session(host, 1, "113 => 1".into()).unwrap();
         assert!(next > last && last > first, "{first} {last} {next}: ids keep climbing");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn guests_who_joined_a_public_match_are_in_it_until_they_go() {
+        let (storage, dir) = temp_storage("guests");
+        for (name, ubi) in [("Host", "HOST"), ("Found", "FOUND"), ("Asked", "ASKED")] {
+            storage.register_user(name, "pw", Some(ubi)).unwrap();
+        }
+        let id = |n: &str| storage.find_user_id_by_name(n).unwrap().unwrap();
+        let (host, found, asked) = (id("Host"), id("Found"), id("Asked"));
+        let game = storage.create_game_session(host, 1, "113 => 0".into()).unwrap();
+        storage.add_participants(1, game, vec![], vec![host]).unwrap();
+        let players = |storage: &Storage| {
+            let (_, live) = storage.presence().unwrap();
+            let mut p = live.into_iter().find(|s| s.id == game).map(|s| s.players).unwrap_or_default();
+            p.sort();
+            p
+        };
+
+        assert!(storage.add_guest(game, found).unwrap());
+        assert!(storage.add_guest(game, asked).unwrap());
+        assert!(!storage.add_guest(game, found).unwrap(), "joining twice is one guest");
+        assert!(!storage.add_guest(game, host).unwrap(), "the host is no guest");
+        assert_eq!(players(&storage), ["Asked", "Found", "Host"]);
+        assert_eq!(storage.session_members(game).unwrap().unwrap().1, [host], "guests get no say over the session");
+
+        assert_eq!(storage.leave_game_session(found, game).unwrap(), Some(false), "a guest leaving ends nothing");
+        storage.remove_participants(1, game, vec![asked]).unwrap();
+        assert_eq!(players(&storage), ["Host"], "left, and removed by the host");
+
+        assert_eq!(storage.leave_game_session(host, game).unwrap(), Some(true), "the host alone kept it going");
+        assert!(!storage.add_guest(game, found).unwrap(), "no joining a match that's over");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

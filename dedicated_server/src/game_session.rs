@@ -1491,6 +1491,16 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
 /// and signed in again from the same address (its old connection still open, as far as we
 /// know) leaves rooms nobody will host again, and they go when that old connection does
 /// ([`rooms_of`]), while the user, still connected, keeps everything else.
+        // Who's in it: the host never adds a guest who joins this way, so note them here, or
+        // they show as in no game at all. A private room only by invitation (the game sends
+        // no JoinSession for one otherwise).
+        if invited || !self.is_private_room(key.type_id, key.session_id) {
+            match self.storage.add_guest(key.session_id, user_id) {
+                Ok(true) => joined([user_id], key.session_id),
+                Ok(false) => {}
+                Err(e) => warn!(logger, "Couldn't note {user_id} in session {}: {e}", key.session_id),
+            }
+        }
 static ROOMS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u32, Vec<(quazal::ConnectionID, u32)>>>> = std::sync::LazyLock::new(Default::default);
 
 /// Notes that `ci`'s connection made room `session_id`.
