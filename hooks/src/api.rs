@@ -58,6 +58,7 @@ static REFUSED: Mutex<Option<String>> = Mutex::new(None);
 /// Too many sign-ins: none again until then.
 static BACK_OFF_UNTIL: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 const BACK_OFF: std::time::Duration = std::time::Duration::from_secs(600);
+const BUSY_BACK_OFF: std::time::Duration = std::time::Duration::from_secs(20);
 
 /// The refusal standing, if any: calls give up before reaching the server.
 fn refusal() -> Result<(), Error> {
@@ -297,9 +298,16 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
             *REFUSED.lock().unwrap() = Some(status.message().to_string());
             return Err(status.into());
         }
+        // Too many sign-ins: a long wait. The server merely busy (its database, for a moment)
+        // answers the same code: a short one, or a hiccup would silence the game for minutes.
         Err(status) if status.code() == tonic::Code::ResourceExhausted => {
-            error!("Sign-in refused: {}; trying again in {} minutes", status.message(), BACK_OFF.as_secs() / 60);
-            *BACK_OFF_UNTIL.lock().unwrap() = Some(std::time::Instant::now() + BACK_OFF);
+            let wait = if status.message().to_lowercase().contains("too many") {
+                BACK_OFF
+            } else {
+                BUSY_BACK_OFF
+            };
+            error!("Sign-in refused: {}; trying again in {} s", status.message(), wait.as_secs());
+            *BACK_OFF_UNTIL.lock().unwrap() = Some(std::time::Instant::now() + wait);
             return Err(status.into());
         }
         Err(status) => {

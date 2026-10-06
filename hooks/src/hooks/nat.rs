@@ -391,10 +391,18 @@ fn bind(s: usize, name: *const u8, namelen: i32) -> i32 {
 /// stop probing: nobody can join a game that's offline, and that's nothing to warn about.
 fn closesocket(s: usize) -> i32 {
     if s != NO_SOCKET && is_storm_socket(s) {
+        // Held until the socket is closed: the probing worker checks the socket and sends
+        // under it, so it never sends on a closed one (whose handle Windows may already have
+        // given to another socket), nor a probe after the Bye.
+        let _sending = SEND_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         storm_socket_closing(s);
+        return unsafe { CloseSocketHook.call(s) };
     }
     unsafe { CloseSocketHook.call(s) }
 }
+
+/// Taken to check the Storm socket and send on it (the worker), and to close it.
+static SEND_LOCK: Mutex<()> = Mutex::new(());
 
 fn storm_socket_closing(s: usize) {
     for slot in &OTHER_STORM_SOCKETS {
@@ -411,10 +419,18 @@ fn storm_socket_closing(s: usize) {
     if let Some((server, data)) = bye {
         send_raw(s, &data, server);
     }
-    // The game binds two sockets; one it keeps (should it) carries on, registering anew.
+    drop_storm_socket(s);
+}
+
+/// `s`, the Storm socket, is gone: the game's other one (should it keep it) carries on,
+/// registering anew; else it's offline. Nothing if `s` isn't the Storm socket (any more).
+fn drop_storm_socket(s: usize) {
+    let mut st = state();
+    if STORM_SOCKET.load(Ordering::SeqCst) != s {
+        return;
+    }
     let next = OTHER_STORM_SOCKETS.iter().map(|o| o.swap(NO_SOCKET, Ordering::SeqCst)).find(|o| *o != NO_SOCKET);
     STORM_SOCKET.store(next.unwrap_or(NO_SOCKET), Ordering::SeqCst);
-    let mut st = state();
     if next.is_none() && st.reply.is_some() {
         info!("NAT: the game closed its Storm socket (offline until it goes online again)");
     }
@@ -837,9 +853,18 @@ fn worker(host: String, port: u16) {
         }
         for (data, to) in probes {
             if let Some(to) = to {
-                let sent = send_raw(socket, &data, to);
+                // Only on the Storm socket as it is now (see `SEND_LOCK`).
+                let (sent, gone) = {
+                    let _sending = SEND_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if STORM_SOCKET.load(Ordering::SeqCst) != socket {
+                        break;
+                    }
+                    let sent = send_raw(socket, &data, to);
+                    (sent, sent < 0 && socket_gone())
+                };
                 // Closed meanwhile (the game went offline, or is quitting): not a failure.
-                if sent < 0 && (STORM_SOCKET.load(Ordering::SeqCst) != socket || socket_gone()) {
+                if gone {
+                    drop_storm_socket(socket);
                     break;
                 }
                 let mut st = state();
@@ -855,21 +880,14 @@ fn worker(host: String, port: u16) {
     }
 }
 
-/// Whether the last failed send was on a socket that's no longer there (closed, or Winsock
-/// shut down as the game quits) rather than one Windows wouldn't send on.
+/// Whether the send that just failed (on this thread) was on a socket that's no longer there
+/// (closed, or Winsock shut down as the game quits) rather than one Windows wouldn't send on.
 fn socket_gone() -> bool {
     use windows::Win32::Networking::WinSock::WSAGetLastError;
     use windows::Win32::Networking::WinSock::WSAENOTSOCK;
     use windows::Win32::Networking::WinSock::WSANOTINITIALISED;
     let e = unsafe { WSAGetLastError() };
-    if e == WSAENOTSOCK || e == WSANOTINITIALISED {
-        let mut st = state();
-        if STORM_SOCKET.swap(NO_SOCKET, Ordering::SeqCst) != NO_SOCKET {
-            forget_registration(&mut st);
-        }
-        return true;
-    }
-    false
+    e == WSAENOTSOCK || e == WSANOTINITIALISED
 }
 
 pub unsafe fn init_hooks(config: &Config, addr: &Addresses) {

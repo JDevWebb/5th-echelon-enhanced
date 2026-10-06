@@ -76,7 +76,8 @@ pub fn log_since(text: &str, since: i64) -> String {
 }
 
 /// A log line's time, from its start (`2026-10-06T06:36:50.793543Z`), in Unix seconds.
-fn line_time(line: &str) -> Option<i64> {
+#[must_use]
+pub fn line_time(line: &str) -> Option<i64> {
     let t = line.get(..19)?;
     let b = t.as_bytes();
     if b[4] != b'-' || b[7] != b'-' || b[10] != b'T' || b[13] != b':' || b[16] != b':' {

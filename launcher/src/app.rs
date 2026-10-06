@@ -358,6 +358,8 @@ pub struct App {
     settings: Settings,
     server: Server,
     roadmap: crate::roadmap::Roadmap,
+    /// Whether the diagnostics notice for players who agreed before 0.4.3 was looked at.
+    log_excerpt_checked: bool,
     /// The latest release, once looked up.
     pub latest: Option<crate::updater::Latest>,
     pub checking: Slot<anyhow::Result<crate::updater::Latest>>,
@@ -395,6 +397,7 @@ impl App {
             settings: Settings::default(),
             server: Server::default(),
             roadmap: crate::roadmap::Roadmap::default(),
+            log_excerpt_checked: false,
             latest: None,
             checking: Slot::default(),
             updating: Slot::default(),
@@ -717,7 +720,8 @@ impl eframe::App for App {
         }
         self.feedback.show(ctx, &mut self.notices);
         // Agreed before 0.4.3: told once what the diagnostics now include (not asked again).
-        if self.game.as_ref().is_some_and(|g| g.cfg.hook_config.send_diagnostics) && Prefs::tell_log_excerpt() {
+        // Looked at once a run (it reads the prefs file).
+        if !std::mem::replace(&mut self.log_excerpt_checked, true) && self.game.as_ref().is_some_and(|g| g.cfg.hook_config.send_diagnostics) && Prefs::tell_log_excerpt() {
             self.notices.info(
                 "New in the game's diagnostics: when something goes wrong, the server can ask for the 15 minutes of the game's log before it (at most once an hour, never the whole log, private details hidden). Settings › Feedback turns the diagnostics off.",
             );

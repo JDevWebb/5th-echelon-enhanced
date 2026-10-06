@@ -84,7 +84,7 @@ pub struct Feedback {
     /// The report left unsent last time, being sent (see [`pending`]).
     resumed: bool,
     resending: Slot<Result<String, String>>,
-    resent: Option<crate::activity::Handle>,
+    resent: Option<(crate::activity::Handle, i64)>,
     /// The player's reports with the admins' replies (`GET /v1/reports/mine`): read once a
     /// run, and again from Settings › Feedback.
     reading_mine: Slot<Result<Vec<setup::feedback::MyReport>, String>>,
@@ -270,7 +270,13 @@ mod pending {
         pub server: String,
         pub username: String,
         pub saved_at: i64,
+        /// Sends tried at start: after [`TRIES`] it's let go (a report the server refuses
+        /// would otherwise come back every start for a week).
+        #[serde(default)]
+        pub tries: u32,
     }
+
+    const TRIES: u32 = 3;
 
     fn paths() -> Option<(PathBuf, PathBuf)> {
         let dir = setup::app_data_dir()?;
@@ -283,6 +289,7 @@ mod pending {
             server: server.to_string(),
             username: username.to_string(),
             saved_at: identity::now(),
+            tries: 0,
         };
         let saved = head.parent().map_or(Ok(()), std::fs::create_dir_all).and_then(|()| {
             std::fs::write(&body, report.encode_to_vec())?;
@@ -298,6 +305,30 @@ mod pending {
             let _ = std::fs::remove_file(head);
             let _ = std::fs::remove_file(body);
         }
+    }
+
+    /// [`clear`], only if the report kept is still the one saved at `saved_at` (a report sent
+    /// since has replaced it).
+    pub fn clear_if(saved_at: i64) {
+        let still = paths()
+            .and_then(|(head, _)| std::fs::read(head).ok())
+            .and_then(|h| serde_json::from_slice::<Header>(&h).ok())
+            .is_some_and(|h| h.saved_at == saved_at);
+        if still {
+            clear();
+        }
+    }
+
+    /// Notes a try at sending the report kept; whether it may be tried (else it's let go).
+    pub fn try_again(mut header: Header) -> Option<Header> {
+        if header.tries >= TRIES {
+            clear();
+            return None;
+        }
+        header.tries += 1;
+        let (head, _) = paths()?;
+        let _ = std::fs::write(head, serde_json::to_vec(&header).unwrap_or_default());
+        Some(header)
     }
 
     /// The report left unsent, if there's one still worth sending.
@@ -349,6 +380,10 @@ impl Feedback {
         }
         self.resumed = true;
         let Some((header, report)) = pending::load() else { return };
+        let Some(header) = pending::try_again(header) else {
+            tracing::info!("A report left unsent was tried {} times; let go", 3);
+            return;
+        };
         let password = cfg
             .profiles
             .iter()
@@ -361,9 +396,10 @@ impl Feedback {
         };
         let activity = notices.start(ctx, "Sending the report you left unsent");
         let handle = activity.clone();
+        let saved_at = header.saved_at;
         self.resending
             .start(ctx, move || send_report_to(&header.server, &header.username, &password, report, &handle));
-        self.resent = Some(activity);
+        self.resent = Some((activity, saved_at));
     }
 
     /// The game closed: looks at what happened, in the background.
@@ -475,14 +511,14 @@ impl Feedback {
             }
         }
         if let Some(result) = self.resending.poll() {
-            if let Some(activity) = self.resent.take() {
+            if let Some((activity, saved_at)) = self.resent.take() {
                 match result {
                     Ok(_) => {
-                        pending::clear();
+                        pending::clear_if(saved_at);
                         activity.done("Your report from last time is with the server's admins.");
                     }
-                    // Kept: it goes again next time (for a week).
-                    Err(e) => activity.fail(format!("{e} It'll be sent again next time."), &[crate::activity::Action::CopyDetails]),
+                    // Kept: it goes again next time (three tries, for a week at most).
+                    Err(e) => activity.fail(format!("{e} It'll be tried again next time."), &[crate::activity::Action::CopyDetails]),
                 }
             }
         }

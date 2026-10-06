@@ -267,6 +267,10 @@ fn feedback(app: &mut App, ui: &mut egui::Ui) {
         ui.label(theme::muted("What you sent, and what the admins replied."));
         let mut refresh = false;
         match app.my_reports() {
+            // No identity yet (made when the player first connects): nothing to read with.
+            None if !crate::roadmap::has_identity() => {
+                ui.label(theme::muted("Connect to a server first: your reports are read with the identity made then."));
+            }
             None => {
                 ui.spinner();
             }

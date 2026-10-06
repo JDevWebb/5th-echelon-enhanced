@@ -167,23 +167,70 @@ pub fn start(config: &hooks_config::Config) {
     });
 }
 
+/// How far back the game's log is ever sent from (the server asks for 15 minutes).
+const FULL_LOG_SPAN: i64 = 20 * 60;
+/// The most of a log file read (its end): the log can grow large (packet logging), and the
+/// game is a 32-bit process.
+const MAX_LOG_READ: u64 = 16 * 1024 * 1024;
+
+/// The end of a log file, at most [`MAX_LOG_READ`], from its first whole line.
+fn tail(path: &std::path::Path) -> Option<String> {
+    use std::io::Read as _;
+    use std::io::Seek as _;
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let start = len.saturating_sub(MAX_LOG_READ);
+    f.seek(std::io::SeekFrom::Start(start)).ok()?;
+    let mut bytes = Vec::new();
+    f.take(MAX_LOG_READ).read_to_end(&mut bytes).ok()?;
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    Some(if start > 0 {
+        text.split_once('\n').map_or(String::new(), |(_, rest)| rest.to_string())
+    } else {
+        text
+    })
+}
+
+/// The game's log from `since`: this run's, and the run before's (`bl-tracing.prev.log`)
+/// when this one started after `since` (the game restarted, or crashed, since the problem).
+fn log_text(path: &std::path::Path, since: i64) -> Option<String> {
+    let now = tail(path)?;
+    let first = now.lines().find_map(hooks_config::diagnostics::line_time);
+    let before = if first.is_some_and(|t| t > since) {
+        tail(&path.with_file_name("bl-tracing.prev.log"))
+    } else {
+        None
+    };
+    let mut text = String::new();
+    if let Some(before) = before {
+        text.push_str(&hooks_config::diagnostics::log_since(&before, since));
+        text.push_str("(the game started again here)\n");
+    }
+    text.push_str(&hooks_config::diagnostics::log_since(&now, since));
+    Some(text)
+}
+
 /// Sends the game's log from `since` (Unix seconds) as the report the server asked for:
 /// without the call tracing, redacted, its end kept within [`MAX_FULL_LOG`].
 async fn send_full_log(since: i64, problem: String, private: Private) {
     use std::io::Write as _;
     let Some(path) = crate::LOG_PATH.get().cloned() else { return };
-    let read = tokio::task::spawn_blocking(move || std::fs::read(&path)).await;
-    let text = match read.unwrap_or_else(|e| Err(std::io::Error::other(e.to_string()))) {
-        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-        Err(e) => {
-            tracing::warn!("The server asked for the game's log, which can't be read: {e}");
-            return;
-        }
+    // Never more than the 15 minutes or so before the problem, whatever the server says.
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_secs()).unwrap_or(0));
+    let since = since.clamp(now - FULL_LOG_SPAN, now);
+    // Reading and filtering a large log is work for a blocking thread, not the API's.
+    let built = tokio::task::spawn_blocking(move || {
+        let text = log_text(&path, since)?;
+        let text = hooks_config::redact::redact(&hooks_config::diagnostics::without_call_tracing(&text), &private);
+        Some(text)
+    })
+    .await;
+    let Ok(Some(mut text)) = built else {
+        tracing::warn!("The server asked for the game's log, which can't be read");
+        return;
     };
-    let mut text = hooks_config::redact::redact(
-        &hooks_config::diagnostics::without_call_tracing(&hooks_config::diagnostics::log_since(&text, since)),
-        &private,
-    );
     if text.len() > MAX_FULL_LOG {
         let mut start = text.len() - MAX_FULL_LOG;
         while !text.is_char_boundary(start) {
