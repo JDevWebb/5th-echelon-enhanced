@@ -983,6 +983,8 @@ async fn me(State(c): State<Shared>, Extension(client): Extension<Client>, heade
     let (totp, _, recovery) = c.factors(s.admin_id).await.unwrap_or_default();
     ok(json!({
         "username": s.username,
+        // The Roadmap page is only for the coordinator that keeps it.
+        "roadmap": c.has_roadmap(),
         "totp": totp,
         "recovery_left": recovery,
         "passkeys": passkeys.into_iter().map(|(id, name, created, used)| json!({ "id": id, "name": name, "created_at": created, "last_used": used })).collect::<Vec<_>>(),

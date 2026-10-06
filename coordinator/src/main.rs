@@ -26,6 +26,10 @@ struct Args {
     /// proxy on this machine passing on the client's address and country
     #[argh(switch)]
     admin_direct: bool,
+    /// keep the roadmap and take players' suggestions for it: the community
+    /// network's coordinator only, whose roadmap every launcher reads
+    #[argh(switch)]
+    roadmap: bool,
     #[argh(subcommand)]
     command: Option<Command>,
 }
@@ -330,6 +334,9 @@ async fn main() -> eyre::Result<()> {
     let token = join_token(&args.data)?;
     let coordinator = Arc::new(coordinator::Coordinator::open(&db.to_string_lossy(), token).await?);
     let _ = coordinator.data_dir.set(std::fs::canonicalize(&args.data).unwrap_or_else(|_| args.data.clone()));
+    if args.roadmap {
+        coordinator.enable_roadmap();
+    }
     // Where launchers' ping reports and admins come from: DB-IP's city database, kept current.
     let geo = Arc::new(geo::Geo::new(args.data.join("geoip")));
     let _ = coordinator.geo.set(Arc::clone(&geo));

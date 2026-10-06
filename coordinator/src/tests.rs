@@ -2845,6 +2845,17 @@ async fn players_suggest_from_the_launcher_and_admins_keep_the_roadmap() {
         })
     };
     let now = identity::now();
+    // Only the coordinator started with --roadmap (the community network's) keeps one.
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    assert_eq!(t.call("GET", "/v1/roadmap", None, None).await.0, StatusCode::NOT_FOUND);
+    let (status, _) = t
+        .call("POST", "/v1/suggestions", None, Some(suggest(&me, now, "Launcher", "Chat to find players", "Please.")))
+        .await;
+    assert_eq!(status, StatusCode::NOT_FOUND, "no suggestions taken without a roadmap");
+    assert_eq!(admin_call(&r, "GET", "/api/roadmap", &cookie, None).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(admin_call(&r, "GET", "/api/me", &cookie, None).await.1["roadmap"], json!(false));
+    t.c.enable_roadmap();
+    assert_eq!(admin_call(&r, "GET", "/api/me", &cookie, None).await.1["roadmap"], json!(true));
     // Signed, fresh and in a known area.
     let mut forged = suggest(&me, now, "Launcher", "Chat to find players", "A chat in the launcher.");
     forged["text"] = json!("Something else.");
@@ -2884,7 +2895,6 @@ async fn players_suggest_from_the_launcher_and_admins_keep_the_roadmap() {
     assert_eq!(t.call("GET", &mine(&me, &other), None, None).await.0, StatusCode::FORBIDDEN);
 
     // Admins answer, decline or promote them.
-    let cookie = admin_cookie(&t, "admin1", 3600).await;
     let (status, v) = admin_call(&r, "GET", "/api/suggestions", &cookie, None).await;
     assert_eq!((status, v["suggestions"].as_array().map(Vec::len)), (StatusCode::OK, Some(3)), "{v}");
     assert_eq!(v["suggestions"][0]["identity"], json!(me.global_id()));

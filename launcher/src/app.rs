@@ -532,6 +532,8 @@ impl App {
                 ui.vertical_centered(|ui| {
                     theme::mark(ui, 34.0);
                     ui.add_space(22.0);
+                    // The roadmap is the community network's: shown to its players only.
+                    let community = Prefs::directory().is_some_and(|d| Prefs::is_community(&d));
                     for (view, icon, label) in [
                         (View::Play, theme::Icon::Play, "Play"),
                         (View::Servers, theme::Icon::Servers, "Servers"),
@@ -540,6 +542,9 @@ impl App {
                         (View::Server, theme::Icon::Host, "Host"),
                         (View::Settings, theme::Icon::Settings, "Settings"),
                     ] {
+                        if view == View::Roadmap && !community {
+                            continue;
+                        }
                         if theme::nav_button(ui, icon, label, self.view == view).clicked() {
                             self.view = view;
                         }
@@ -695,7 +700,9 @@ impl eframe::App for App {
             View::Play => crate::play::show(self, ui),
             View::Servers => crate::play::show_servers(self, ui),
             View::News => crate::play::show_news(self, ui),
-            View::Roadmap => crate::roadmap::show(self, ui),
+            View::Roadmap if Prefs::directory().is_some_and(|d| Prefs::is_community(&d)) => crate::roadmap::show(self, ui),
+            // Left the community network while on it: back to Play.
+            View::Roadmap => self.view = View::Play,
             View::Settings => crate::settings::show(self, ui),
             View::Server => {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {

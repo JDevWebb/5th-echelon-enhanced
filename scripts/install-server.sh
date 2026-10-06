@@ -199,6 +199,8 @@ domain="" no_caddy=0 public_address="" version="latest" binary="" relay=""
 # What to tell the operator at the end (added to along the way).
 notes=()
 firewall=1 yes=0 force=0 uninstall=0 purge=0 use_systemd=1
+# The community network's coordinator, by the names it has had (setup/src/directory.rs).
+COMMUNITY_COORDINATORS="play.scbl.jdevwebb.net"
 friends="" server_name="" region="" coordinator="" join_token="" coord_domain="" coord_binary=""
 https_api=1 allow_unsigned=0 coord_only=0 admin="" registration="" listed="" command=""
 metrics_cert="" metrics_key="" metrics_domain="" origin_pull=0 admin_name="" auto_update="" release_version=""
@@ -1116,6 +1118,9 @@ if [ -n "$coord_domain" ]; then
   coord_args="--listen $COORD_ADDR:8700 --data $COORD_DIR"
   # The admin UI on its own port, for Caddy to serve at the metrics name.
   if [ -n "$metrics_domain" ]; then coord_args="$coord_args --admin-listen $COORD_ADDR:8701 --admin-origin https://$metrics_domain"; fi
+  # The roadmap and players' suggestions: every launcher reads the community network's, so
+  # only its coordinator keeps one.
+  case " $COMMUNITY_COORDINATORS " in *" $coord_domain "*) coord_args="$coord_args --roadmap" ;; esac
   rm -f "$COORD_DIR/domain"
   if [ "$use_systemd" -eq 1 ]; then
     cat > "$COORD_UNIT" <<UNIT

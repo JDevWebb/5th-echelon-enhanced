@@ -61,7 +61,7 @@ pub const RELEASES: &[Release] = &[Release {
         Item {
             title: "The roadmap, and your ideas",
             text: "See what's coming under Roadmap, and send a suggestion. The admins' answer shows there too.",
-            community: false,
+            community: true,
         },
         Item {
             title: "One bar for everything that takes a while",

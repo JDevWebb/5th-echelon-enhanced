@@ -383,6 +383,10 @@ pub struct Coordinator {
     report_posts: Limit,
     /// Per address: players' suggestions for the roadmap (see [`roadmap`]).
     suggestion_posts: Limit,
+    /// The roadmap and players' suggestions are kept here: on the community network's
+    /// coordinator only, whose roadmap every launcher reads (`--roadmap`). Off, its routes
+    /// and the admin UI's page aren't there.
+    roadmap: std::sync::atomic::AtomicBool,
     /// The folder the database is in: reports' files go under it.
     files_dir: std::path::PathBuf,
     /// The most the reports' files may take ([`reports::STORAGE_CAP`]; less in tests).
@@ -490,6 +494,7 @@ impl Coordinator {
             stats_cache: tokio::sync::Mutex::new(stats::Cache::default()),
             report_posts: Limit::per(reports::PER_HOUR, Duration::from_secs(3600)),
             suggestion_posts: Limit::per(roadmap::PER_ADDRESS_A_DAY, Duration::from_secs(86_400)),
+            roadmap: std::sync::atomic::AtomicBool::new(false),
             files_dir: std::path::Path::new(path)
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
@@ -1492,7 +1497,27 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
 }
 
 /// The project's roadmap, as launchers show it (see [`roadmap`]).
+impl Coordinator {
+    /// Keeps the roadmap and players' suggestions here (see [`Coordinator::roadmap`]).
+    pub fn enable_roadmap(&self) {
+        self.roadmap.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Whether this coordinator keeps the roadmap.
+    pub fn has_roadmap(&self) -> bool {
+        self.roadmap.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+/// What a coordinator without the roadmap answers its routes.
+fn no_roadmap() -> Answer {
+    fail(StatusCode::NOT_FOUND, "no roadmap here")
+}
+
 async fn roadmap_public(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap) -> Answer {
+    if !c.has_roadmap() {
+        return no_roadmap();
+    }
     if !c.reads.check(&limit_key(client_ip(peer, &headers))) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many requests");
     }
@@ -1501,6 +1526,9 @@ async fn roadmap_public(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<
 
 /// A player's suggestion for the roadmap, from their launcher, signed with their identity.
 async fn suggest(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {
+    if !c.has_roadmap() {
+        return no_roadmap();
+    }
     if body.len() > 8 * 1024 {
         return fail(StatusCode::PAYLOAD_TOO_LARGE, "too long");
     }
@@ -1534,6 +1562,9 @@ struct Signed {
 
 /// A player's own suggestions, with the admins' replies (signed: only they read them).
 async fn my_suggestions(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap, Query(q): Query<Signed>) -> Answer {
+    if !c.has_roadmap() {
+        return no_roadmap();
+    }
     if !c.reads.check(&limit_key(client_ip(peer, &headers))) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many requests");
     }

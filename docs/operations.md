@@ -100,9 +100,9 @@ Admins book a time a server will be down, or the whole network (the coordinator 
 
 ## Roadmap and suggestions
 
-The **Roadmap** page of the admin UI keeps the project's roadmap in four lanes: **Shipping**, **Next**, **Later** and **Requested**, each with the release it's for. Items are edited in place, shown to players or kept for admins, moved and deleted, and every change is in the audit log. An empty roadmap can start from the project's as it stood for 0.4.2.
+Only the community network's coordinator keeps a roadmap: the installer starts it with `--roadmap`, and on any other coordinator the page, and the routes launchers use, aren't there. Its **Roadmap** page of the admin UI keeps the project's roadmap in four lanes: **Shipping**, **Next**, **Later** and **Requested**, each with the release it's for. Items are edited in place, shown to players or kept for admins, moved and deleted, and every change is in the audit log. An empty roadmap can start from the project's as it stood for 0.4.2.
 
-Players see the public items in the launcher's **Roadmap** screen, which always reads the community network's coordinator (the roadmap is the project's, whatever network they play on), and send suggestions from it: an area, a title and the details, signed with their identity, three a day. Their suggestions land in the page's inbox with their name, server and launcher version; admins reply (the player sees the reply in their launcher), set the status (new, planned, done or declined), or promote one to a lane, where it starts hidden from players.
+Players on the community network see the public items in the launcher's **Roadmap** screen (it's not shown on other networks) and send suggestions from it: an area, a title and the details, signed with their identity, three a day. Their suggestions land in the page's inbox with their name, server and launcher version; admins reply (the player sees the reply in their launcher), set the status (new, planned, done or declined), or promote one to a lane, where it starts hidden from players.
 
 Every item and suggestion has **Prompt**: a ready-to-paste prompt for Claude Code in this repository to research it, mock it up and list the decisions, without pushing or deploying anything.
 

@@ -9,7 +9,8 @@
 //! * `GET /api/suggestions?status=new|all`; `PUT /api/suggestions/<id>` `{status, reply}`;
 //!   `POST /api/suggestions/<id>/promote` `{lane}`: players' suggestions.
 //!
-//! Every change is audited, and the admin UI's live connections hear of it.
+//! Every change is audited, and the admin UI's live connections hear of it. The roadmap's
+//! routes answer only on a coordinator started with `--roadmap` (the community network's).
 
 use axum::extract::Path;
 use axum::extract::Query;
@@ -110,6 +111,9 @@ async fn cancel(State(c): State<Shared>, Extension(client): Extension<Client>, h
 }
 
 async fn roadmap_get(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap) -> Response {
+    if !c.has_roadmap() {
+        return fail(StatusCode::NOT_FOUND, "no roadmap on this network");
+    }
     if let Err(r) = c.full(&headers, &client).await {
         return r;
     }
@@ -117,6 +121,9 @@ async fn roadmap_get(State(c): State<Shared>, Extension(client): Extension<Clien
 }
 
 async fn add_item(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Json(e): Json<roadmap::ItemEdit>) -> Response {
+    if !c.has_roadmap() {
+        return fail(StatusCode::NOT_FOUND, "no roadmap on this network");
+    }
     let s = match c.full(&headers, &client).await {
         Ok(s) => s,
         Err(r) => return r,
@@ -135,6 +142,9 @@ async fn add_item(State(c): State<Shared>, Extension(client): Extension<Client>,
 }
 
 async fn edit_item(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Path(id): Path<i64>, Json(e): Json<roadmap::ItemEdit>) -> Response {
+    if !c.has_roadmap() {
+        return fail(StatusCode::NOT_FOUND, "no roadmap on this network");
+    }
     let s = match c.full(&headers, &client).await {
         Ok(s) => s,
         Err(r) => return r,
@@ -156,6 +166,9 @@ async fn edit_item(State(c): State<Shared>, Extension(client): Extension<Client>
 }
 
 async fn remove_item(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Path(id): Path<i64>) -> Response {
+    if !c.has_roadmap() {
+        return fail(StatusCode::NOT_FOUND, "no roadmap on this network");
+    }
     let s = match c.full(&headers, &client).await {
         Ok(s) => s,
         Err(r) => return r,
@@ -178,6 +191,9 @@ struct LaneRelease {
 }
 
 async fn set_lane(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Path(lane): Path<String>, Json(r): Json<LaneRelease>) -> Response {
+    if !c.has_roadmap() {
+        return fail(StatusCode::NOT_FOUND, "no roadmap on this network");
+    }
     let s = match c.full(&headers, &client).await {
         Ok(s) => s,
         Err(r) => return r,
@@ -205,6 +221,9 @@ struct SuggestionQuery {
 }
 
 async fn suggestions(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Query(q): Query<SuggestionQuery>) -> Response {
+    if !c.has_roadmap() {
+        return fail(StatusCode::NOT_FOUND, "no roadmap on this network");
+    }
     if let Err(r) = c.full(&headers, &client).await {
         return r;
     }
@@ -219,6 +238,9 @@ struct Answer {
 }
 
 async fn answer(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Path(id): Path<i64>, Json(a): Json<Answer>) -> Response {
+    if !c.has_roadmap() {
+        return fail(StatusCode::NOT_FOUND, "no roadmap on this network");
+    }
     let s = match c.full(&headers, &client).await {
         Ok(s) => s,
         Err(r) => return r,
@@ -244,6 +266,9 @@ struct Promote {
 }
 
 async fn promote(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Path(id): Path<i64>, Json(p): Json<Promote>) -> Response {
+    if !c.has_roadmap() {
+        return fail(StatusCode::NOT_FOUND, "no roadmap on this network");
+    }
     let s = match c.full(&headers, &client).await {
         Ok(s) => s,
         Err(r) => return r,

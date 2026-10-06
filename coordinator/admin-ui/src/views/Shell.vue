@@ -2,7 +2,7 @@
   <div class="shell">
     <nav class="rail" aria-label="Pages">
       <span class="mark" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
-      <template v-for="(r, i) in ROUTES" :key="r ? r[0] : `sep-${i}`">
+      <template v-for="(r, i) in rail" :key="r ? r[0] : `sep-${i}`">
         <div v-if="!r" class="sep" aria-hidden="true"></div>
         <RouterLink v-else :to="`/${r[0]}`" class="nav" :aria-current="current === r[0] ? 'page' : null">
           <svg viewBox="0 0 24 24" aria-hidden="true" v-html="r[2]"></svg>
@@ -23,10 +23,22 @@
 
 <script setup>
 // The frame: the rail (the icons are router.js's own constants, hence v-html), and the page.
-import { computed } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { useRoute } from 'vue-router';
 import { PARENT, ROUTES } from '../router.js';
+import { api } from '../lib/api.js';
 import { live } from '../lib/live.js';
+
+// The Roadmap page only where the coordinator keeps the roadmap (the community network's).
+const hasRoadmap = ref(false);
+onMounted(async () => {
+  try {
+    hasRoadmap.value = (await api('GET', '/me')).roadmap === true;
+  } catch {
+    // Left out: the page answers nothing without it.
+  }
+});
+const rail = computed(() => ROUTES.filter(r => !r || r[0] !== 'roadmap' || hasRoadmap.value));
 
 const route = useRoute();
 const current = computed(() => {
