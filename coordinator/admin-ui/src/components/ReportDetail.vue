@@ -22,7 +22,7 @@
       <div class="status" :class="{ resolved: r.status === 'resolved' }">
         <div class="row" style="justify-content: space-between">
           <span>
-            <span class="pill" :class="r.status === 'resolved' ? 'ok' : 'warn'">{{ r.status }}</span>
+            <span class="pill" :class="r.status === 'resolved' ? 'ok' : r.status === 'auto' ? '' : 'warn'">{{ r.status === 'auto' ? 'game log' : r.status }}</span>
             <span v-if="r.status === 'resolved'" class="small muted"> by {{ r.resolved_by }} · {{ fmt.ago(r.resolved_at) }}</span>
           </span>
           <button class="small danger" type="button" @click="remove">Delete</button>
@@ -35,8 +35,10 @@
         <p v-if="r.reply && r.replied_at" class="small muted">Replied by {{ r.replied_by }} · {{ fmt.ago(r.replied_at) }}</p>
         <div class="row end">
           <button v-if="note.trim() !== r.note || reply.trim() !== (r.reply || '')" class="small" type="button" :disabled="busy" @click="setStatus(r.status)">Save</button>
-          <button v-if="r.status === 'open'" class="small primary" type="button" :disabled="busy" @click="setStatus('resolved')">Resolve</button>
-          <button v-else class="small" type="button" :disabled="busy" @click="setStatus('open')">Reopen</button>
+          <template v-if="r.status !== 'auto'">
+            <button v-if="r.status === 'open'" class="small primary" type="button" :disabled="busy" @click="setStatus('resolved')">Resolve</button>
+            <button v-else class="small" type="button" :disabled="busy" @click="setStatus('open')">Reopen</button>
+          </template>
         </div>
       </div>
 
@@ -156,7 +158,10 @@ async function setStatus(status) {
   busy.value = true;
   const was = r.value.status;
   try {
-    const row = await api('POST', `/reports/${props.id}`, { status, note: note.value.trim(), reply: reply.value.trim() });
+    // The reply only when it changed here: another admin's reply since isn't wiped.
+    const body = { status, note: note.value.trim() };
+    if (reply.value.trim() !== (r.value.reply || '')) body.reply = reply.value.trim();
+    const row = await api('POST', `/reports/${props.id}`, body);
     Object.assign(r.value, { status: row.status, note: row.note, resolved_by: row.resolved_by, resolved_at: row.resolved_at, reply: row.reply, replied_by: row.replied_by, replied_at: row.replied_at });
     note.value = row.note;
     reply.value = row.reply || '';

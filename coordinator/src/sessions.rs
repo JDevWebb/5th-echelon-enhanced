@@ -50,6 +50,7 @@ const KINDS: &[&str] = &[
     "relay_drop",
     "request_error",
     "report_refused",
+    "log_sent",
 ];
 
 /// How long after a relay drop a player leaving their match counts as dropping out, and
@@ -446,7 +447,10 @@ fn timelines(events: &[Event], sessions: &[(String, i64, i64, Option<i64>)], nam
             "signin" if open.get(&who).is_some_and(|o| !o.is_empty()) => {
                 let last = heard.get(&who).copied().unwrap_or(e.at).min(e.at);
                 let in_match = open.get(&who).is_some_and(|o| o.iter().any(|(s, _, _)| s.kind == "match"));
-                close_all(&mut open, &mut closed, &who, last, json!({ "how": "restarted" }));
+                // Ended by the sign-in: a game in a match sends next to nothing, so the last
+                // thing heard is often its join, and ending there would make a 40-minute match
+                // read "<1 s, alone". When it was last heard goes with it.
+                close_all(&mut open, &mut closed, &who, e.at, json!({ "how": "restarted", "last_heard": last }));
                 mark = Some(json!({
                     "at": e.at, "last_at": e.at, "kind": "restart", "count": 1, "last_heard": last, "in_match": in_match,
                     "text": format!(
@@ -525,13 +529,19 @@ fn timelines(events: &[Event], sessions: &[(String, i64, i64, Option<i64>)], nam
     }
 
     // With whom: who else was in the same room at the same time, and for how long together.
+    let mut by_room: HashMap<(&str, i64, (i64, i64)), Vec<&Closed>> = HashMap::new();
+    for c in &closed {
+        by_room.entry((c.who.0.as_str(), c.epoch, c.stay.room)).or_default().push(c);
+    }
     for c in &closed {
         if c.to < from {
             continue;
         }
-        let mut with: Vec<(String, i64)> = closed
-            .iter()
-            .filter(|o| o.who != c.who && o.who.0 == c.who.0 && o.epoch == c.epoch && o.stay.room == c.stay.room)
+        let mut with: Vec<(String, i64)> = by_room
+            .get(&(c.who.0.as_str(), c.epoch, c.stay.room))
+            .into_iter()
+            .flatten()
+            .filter(|o| o.who != c.who)
             .map(|o| (o.name.clone(), c.to.min(o.to) - c.stay.from.max(o.stay.from)))
             .filter(|(_, together)| *together > 0)
             .collect();
@@ -914,15 +924,23 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
     // A game that signed in again while still in a match: the one before stopped without a
     // word (restarted, or crashed), and the match went on without it (tacit_danger and
     // Ghost_Leader on eu1, 2026-10-06 17:36, when their host's game removed them).
+    // A server restart takes everyone out of every room: signing in again after one is no
+    // restart of the game.
+    let restarts: Vec<(&str, i64)> = events.iter().filter(|e| e.kind == "server_start").map(|e| (e.server.as_str(), e.at)).collect();
     for list in by_who.values() {
         let mut in_match: Vec<(i64, i64)> = Vec::new();
+        let mut since = 0;
         for e in list {
             match e.kind.as_str() {
-                "room" | "join" if e.str("room_kind") == "match" => in_match.extend(e.room()),
+                "room" | "join" if e.str("room_kind") == "match" => {
+                    in_match.extend(e.room());
+                    since = e.at;
+                }
                 "leave" => in_match.retain(|r| Some(*r) != e.room()),
                 "signout" => in_match.clear(),
+                "signin" if !in_match.is_empty() && restarts.iter().any(|(sv, at)| *sv == e.server && (since..=e.at).contains(at)) => in_match.clear(),
                 "signin" if !in_match.is_empty() => {
-                    let last = list.iter().filter(|o| o.at < e.at).map(|o| o.last_at).max().unwrap_or(e.at);
+                    let last = list.iter().filter(|o| o.at < e.at).map(|o| o.last_at.min(e.at)).max().unwrap_or(e.at);
                     out.push(problem(
                         e,
                         "warn",
@@ -1155,7 +1173,8 @@ mod tests {
         let rooms = tacit["rooms"].as_array().unwrap();
         // The first stay in the match: with Oni throughout, Renegade for 1 s; ended by the restart.
         let first = &rooms[0];
-        assert_eq!((first["from"].as_i64(), first["to"].as_i64()), (Some(100), Some(2900)), "ends when last heard");
+        assert_eq!((first["from"].as_i64(), first["to"].as_i64()), (Some(100), Some(2940)), "ends at the sign-in");
+        assert_eq!(first["end"]["last_heard"].as_i64(), Some(2900), "with when it was last heard");
         assert_eq!(first["with"], json!(["Oni", "Renegade"]));
         assert_eq!(first["together"], json!({ "Renegade": 1 }));
         assert_eq!(first["end"]["how"], "restarted");
@@ -1183,6 +1202,22 @@ mod tests {
         assert_eq!(oni["rooms"][0]["end"]["how"], "still");
         assert_eq!(oni["rooms"][0]["to"].as_i64(), Some(3000));
         assert!(titles(&events).contains(&"tacit_danger's game restarted in a match".to_string()), "{:?}", titles(&events));
+        // A server restart in between: everyone signs in again, and no game restarted.
+        let mut after_restart = events.clone();
+        after_restart.insert(
+            5,
+            Event {
+                server: "eu".into(),
+                at: 2930,
+                last_at: 2930,
+                player: None,
+                name: String::new(),
+                kind: "server_start".into(),
+                detail: json!({}),
+                count: 1,
+            },
+        );
+        assert!(!titles(&after_restart).iter().any(|t| t.contains("restarted in a match")), "{:?}", titles(&after_restart));
     }
 
     /// A refused report is a warning: what the player wanted to tell the admins didn't arrive.

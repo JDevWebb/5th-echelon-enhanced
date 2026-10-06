@@ -93,7 +93,8 @@ async fn set_status(State(c): State<Shared>, Extension(client): Extension<Client
         Ok(s) => s,
         Err(r) => return r,
     };
-    if req.status != "open" && req.status != "resolved" {
+    // A game log (`auto`) stays one: a note or reply is saved with that status.
+    if !["open", "resolved", "auto"].contains(&req.status.as_str()) {
         return fail(StatusCode::BAD_REQUEST, "a report is open or resolved");
     }
     let note = req.note.as_deref().map(str::trim);

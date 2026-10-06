@@ -119,10 +119,11 @@ pub use hooks_config::redact::Private;
 pub fn my_reports_url(coordinator: &str, identity: &identity::Identity, time: i64) -> String {
     let base = format!("{}/v1/reports/mine", coordinator.trim().trim_end_matches('/'));
     let Ok(mut url) = url::Url::parse(&base) else { return base };
+    let host = url.host_str().unwrap_or_default().to_string();
     url.query_pairs_mut()
         .append_pair("identity", &identity.global_id())
         .append_pair("time", &time.to_string())
-        .append_pair("signature", &identity.sign(&identity::reports_message(time)));
+        .append_pair("signature", &identity.sign(&identity::reports_message(&host, time)));
     url.into()
 }
 

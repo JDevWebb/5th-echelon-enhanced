@@ -611,7 +611,7 @@ impl Coordinator {
     pub(crate) async fn reports_of(&self, identity: &str) -> sqlx::Result<Value> {
         let rows: Vec<(String, String, i64, Option<String>, String, String, String, String, Option<i64>)> = sqlx::query_as(
             "SELECT id, server_id, created_at, rating, problems, comment, status, reply, replied_at FROM player_reports
-              WHERE player_identity = ? ORDER BY created_at DESC LIMIT 20",
+              WHERE player_identity = ? AND status != 'auto' ORDER BY created_at DESC LIMIT 20",
         )
         .bind(identity)
         .fetch_all(&self.pool)

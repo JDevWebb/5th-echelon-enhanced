@@ -115,9 +115,10 @@ pub fn suggestions_message(time: i64) -> String {
 }
 
 /// What a player signs to read their own reports back, with the admins' replies
-/// (`GET /v1/reports/mine`).
-pub fn reports_message(time: i64) -> String {
-    format!("5th-echelon/reports/v1\n{time}")
+/// (`GET /v1/reports/mine`), from the coordinator at `host`: a signature made for one
+/// coordinator can't be replayed at another.
+pub fn reports_message(host: &str, time: i64) -> String {
+    format!("5th-echelon/reports/v2\n{}\n{time}", host_key(host))
 }
 
 /// What the release key signs: a release's version (its tag without the

@@ -33,7 +33,11 @@ async fn start(name: &str) -> Test {
 
 impl Test {
     async fn call(&self, method: &str, path: &str, secret: Option<&str>, body: Option<Value>) -> (StatusCode, Value) {
-        let mut req = Request::builder().method(method).uri(path).header("content-type", "application/json");
+        let mut req = Request::builder()
+            .method(method)
+            .uri(path)
+            .header("content-type", "application/json")
+            .header("host", "coordinator.test");
         if let Some(s) = secret {
             req = req.header("authorization", format!("Bearer {s}"));
         }
@@ -2029,7 +2033,7 @@ async fn players_read_the_admins_replies_to_their_reports() {
         format!(
             "/v1/reports/mine?identity={}&time={time}&signature={}",
             who.global_id(),
-            signer.sign(&identity::reports_message(time))
+            signer.sign(&identity::reports_message("coordinator.test", time))
         )
     };
     let (status, v) = t.call("GET", &mine(&me, &me), None, None).await;

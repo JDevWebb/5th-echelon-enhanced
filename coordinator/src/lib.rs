@@ -1616,7 +1616,9 @@ async fn my_reports(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std:
     if !c.reads.check(&limit_key(client_ip(peer, &headers))) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many requests");
     }
-    if !identity::fresh(q.time, identity::now()) || !identity::verify(&q.identity, &identity::reports_message(q.time), &q.signature) {
+    // Signed for this coordinator, by the name it was reached at.
+    let host = headers.get(axum::http::header::HOST).and_then(|h| h.to_str().ok()).unwrap_or_default();
+    if !identity::fresh(q.time, identity::now()) || !identity::verify(&q.identity, &identity::reports_message(host, q.time), &q.signature) {
         return fail(StatusCode::FORBIDDEN, "the signature doesn't match");
     }
     c.reports_of(&q.identity).await.map_or_else(internal, ok)
