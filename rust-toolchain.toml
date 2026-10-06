@@ -1,5 +1,7 @@
 [toolchain]
 channel = "nightly-2025-10-15"
+# CI checks the formatting; the toolchain alone has no rustfmt.
+components = ["rustfmt"]
 targets = [
     # for the hooks dll
     "i686-pc-windows-msvc",

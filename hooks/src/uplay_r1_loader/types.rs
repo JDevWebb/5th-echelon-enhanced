@@ -613,11 +613,11 @@ mod tests {
             friend("short", "ShortData", 3),
         ]);
         let converted: List = list.into();
-        assert_eq!(converted.count, 3, "the NUL and the overlong id are left out");
+        assert_eq!(converted.count, 2, "the NUL and the overlong id are left out");
         let array = unsafe { std::slice::from_raw_parts(converted.list.cast::<*mut Friend>(), converted.count) };
         let data = |i: usize| unsafe { (*(*array[i]).details).unknown4 };
         assert!(!data(0).is_null(), "496 bytes are passed on");
-        assert!(data(2).is_null(), "a short payload isn't: the game would read past it");
+        assert!(data(1).is_null(), "a short payload isn't: the game would read past it");
         // The same friend again reuses its entry.
         let again: List = UplayList::Friends(vec![friend("ok", "Fine", 496)]).into();
         let again = unsafe { std::slice::from_raw_parts(again.list.cast::<*mut Friend>(), 1) };
