@@ -28,9 +28,9 @@ struct State {
     /// Players whose game said they agree, when it last said so, by id; and their names.
     agreed: HashMap<u32, Instant>,
     names: HashMap<String, u32>,
-    /// What's wanted of whom: since when (Unix seconds), the problem, when it was asked
-    /// (`None`: not yet told).
-    wanted: HashMap<u32, (i64, &'static str, Option<Instant>)>,
+    /// What's wanted of whom: since when (Unix seconds), the problem, when it was noted, and
+    /// when it was asked (`None`: not yet told).
+    wanted: HashMap<u32, (i64, &'static str, Instant, Option<Instant>)>,
     /// When each player was asked, the last day.
     asked: HashMap<u32, Vec<Instant>>,
 }
@@ -80,22 +80,24 @@ pub fn noted(user: Option<u32>, name: Option<&str>, problem: &'static str, now_u
     if asked.len() >= PER_DAY || asked.iter().any(|at| at.elapsed() < EVERY) {
         return;
     }
-    st.wanted.insert(user, (now_unix - BEFORE, problem, None));
+    st.wanted.insert(user, (now_unix - BEFORE, problem, Instant::now(), None));
 }
 
 /// What to ask `user`'s game for in this answer to its diagnostics: its log since then, and
 /// why. Asked once; the ask lasts [`ASK_LASTS`].
 pub fn ask(user: u32) -> Option<(i64, &'static str)> {
     let mut st = state();
-    let (since, problem, told) = *st.wanted.get(&user)?;
+    let (since, problem, noted, told) = *st.wanted.get(&user)?;
+    // An ask the game didn't come back for in time is let go: a game that checks in much
+    // later (another run) mustn't be asked for a stretch that's no longer "just before".
+    if told.map_or(noted, |at| at).elapsed() >= ASK_LASTS {
+        st.wanted.remove(&user);
+        return None;
+    }
     match told {
-        Some(at) if at.elapsed() >= ASK_LASTS => {
-            st.wanted.remove(&user);
-            None
-        }
         Some(_) => None,
         None => {
-            st.wanted.insert(user, (since, problem, Some(Instant::now())));
+            st.wanted.insert(user, (since, problem, noted, Some(Instant::now())));
             st.asked.entry(user).or_default().push(Instant::now());
             Some((since, problem))
         }
@@ -107,7 +109,7 @@ pub fn ask(user: u32) -> Option<(i64, &'static str)> {
 pub fn answered(user: u32) -> Option<&'static str> {
     let mut st = state();
     match st.wanted.get(&user) {
-        Some((_, problem, Some(at))) if at.elapsed() < ASK_LASTS => {
+        Some((_, problem, _, Some(at))) if at.elapsed() < ASK_LASTS => {
             let problem = *problem;
             st.wanted.remove(&user);
             Some(problem)

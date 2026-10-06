@@ -141,10 +141,16 @@ pub fn worth_saying(who: &str) -> bool {
     static SAID: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
     let mut said = SAID.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let map = said.get_or_insert_with(HashMap::new);
-    map.retain(|_, at| at.elapsed() < SAY_REFUSALS_EVERY);
     let key = who.to_lowercase();
-    if map.contains_key(&key) || map.len() >= 10_000 {
+    if map.get(&key).is_some_and(|at| at.elapsed() < SAY_REFUSALS_EVERY) {
         return false;
+    }
+    if map.len() >= 10_000 {
+        map.retain(|_, at| at.elapsed() < SAY_REFUSALS_EVERY);
+        // Still full (someone filling it with names): say it, rather than hide refusals.
+        if map.len() >= 10_000 {
+            return true;
+        }
     }
     map.insert(key, Instant::now());
     true

@@ -174,6 +174,12 @@ pub struct Table {
     by_real: HashMap<SocketAddrV4, Id>,
     /// [`Peer::aliases`], indexed.
     by_alias: HashMap<SocketAddrV4, Id>,
+    /// Who registered from each address (at most [`MAX_PEERS_PER_IP`] each): what an unknown
+    /// port's tag is checked against, without a scan of everyone.
+    by_ip: HashMap<Ipv4Addr, Vec<Id>>,
+    /// Relay ports given back by a Bye, and when: not handed out again for [`EXPIRY`], as
+    /// the departed player's peers may still be sending to them.
+    retired: HashMap<u16, Instant>,
     by_vport: HashMap<u16, Id>,
     by_advertise: HashMap<SocketAddrV4, Id>,
 }
@@ -188,6 +194,8 @@ impl Table {
             by_name: HashMap::new(),
             by_real: HashMap::new(),
             by_alias: HashMap::new(),
+            by_ip: HashMap::new(),
+            retired: HashMap::new(),
             by_vport: HashMap::new(),
             by_advertise: HashMap::new(),
         }
@@ -220,12 +228,18 @@ impl Table {
 
     fn free_vport(&self) -> Option<u16> {
         let (first, last) = self.cfg.relay_ports;
-        (first..=last).find(|p| !self.by_vport.contains_key(p))
+        (first..=last).find(|p| !self.by_vport.contains_key(p) && self.retired.get(p).is_none_or(|at| at.elapsed() > EXPIRY))
     }
 
     /// Takes a player out of the table, indexes and all.
     fn take(&mut self, id: Id) -> Option<Peer> {
         let p = self.peers.remove(&id)?;
+        if let Some(ids) = self.by_ip.get_mut(p.real.ip()) {
+            ids.retain(|i| *i != id);
+            if ids.is_empty() {
+                self.by_ip.remove(p.real.ip());
+            }
+        }
         self.by_name.remove(&p.name);
         if self.by_real.get(&p.real) == Some(&id) {
             self.by_real.remove(&p.real);
@@ -325,6 +339,7 @@ impl Table {
         }
         self.by_name.insert(key, id);
         self.by_real.insert(src, id);
+        self.by_ip.entry(*src.ip()).or_default().push(id);
         if !taken(self, &advertise) {
             self.by_advertise.insert(advertise, id);
         }
@@ -370,7 +385,7 @@ impl Table {
 
     /// The player registered from `src`'s address with `tag`, taking `src` as theirs too.
     fn adopt_port(&mut self, src: SocketAddrV4, tag: &nat_proto::Tag) -> Option<Id> {
-        let id = *self.peers.iter().find(|(_, p)| p.real.ip() == src.ip() && same(&p.tag, tag))?.0;
+        let id = *self.by_ip.get(src.ip())?.iter().find(|id| self.peers.get(id).is_some_and(|p| same(&p.tag, tag)))?;
         let peer = self.peers.get_mut(&id)?;
         if peer.aliases.len() >= MAX_ALIASES {
             let old = peer.aliases.remove(0);
@@ -499,10 +514,17 @@ impl Table {
     /// tag, or another address, changes nothing.
     pub fn bye(&mut self, src: SocketAddrV4, tag: nat_proto::Tag) -> Option<String> {
         let id = *self.by_real.get(&src)?;
-        if self.peers.get(&id)?.tag != tag {
+        if !same(&self.peers.get(&id)?.tag, &tag) {
             return None;
         }
-        self.take(id).map(|p| p.name)
+        let p = self.take(id)?;
+        if let Some(v) = p.vport {
+            if self.retired.len() > 4096 {
+                self.retired.retain(|_, at| at.elapsed() <= EXPIRY);
+            }
+            self.retired.insert(v, Instant::now());
+        }
+        Some(p.name)
     }
 
     /// The players [`Self::expire`] would forget now, with their game's last probe.
@@ -1458,9 +1480,22 @@ mod tests {
         assert_eq!(t.bye(a("198.51.100.7:1"), [9; 8]), None, "someone else's tag");
         assert_eq!(t.bye(a("198.51.100.7:2"), tag), None, "another address");
         assert_eq!(t.len(), 1);
+        let (gone, _) = advertise(&t.probe(a("198.51.100.8:1"), 0, 1, None, "y", now));
         assert_eq!(t.bye(a("198.51.100.7:1"), tag).as_deref(), Some("x"));
-        assert_eq!(t.len(), 0);
-        assert!(t.expiring(now + EXPIRY + Duration::from_secs(1)).is_empty(), "so it never lapses");
+        assert_eq!(t.len(), 1);
+        assert!(t.expiring(now + EXPIRY + Duration::from_secs(1)).iter().all(|(n, _)| n != "x"), "so it never lapses");
+        // Its relay port isn't handed to the next player at once: its peers may still send.
+        let Message::ProbeReply { tag: y_tag, .. } = t.probe(a("198.51.100.8:1"), 0, 2, None, "y", now) else {
+            panic!()
+        };
+        let x_port = {
+            let mut t2 = table(RelayMode::All);
+            advertise(&t2.probe(a("198.51.100.7:1"), 0, 1, None, "x", now)).0
+        };
+        let (next, _) = advertise(&t.probe(a("198.51.100.9:1"), 0, 1, None, "z", now));
+        assert_ne!(next, x_port, "the departed player's relay port waits");
+        assert_ne!(next, gone);
+        let _ = y_tag;
     }
 
     #[test]

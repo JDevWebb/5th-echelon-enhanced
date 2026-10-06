@@ -452,6 +452,8 @@ impl Storage {
     pub fn delete_user_session(&self, user_id: u32) -> Result<()> {
         run(async {
             sqlx::query("DELETE FROM station_urls WHERE user_id = ?").bind(user_id).execute(&self.pool).await?;
+            // Their game is gone: it's in nobody's match now.
+            sqlx::query("DELETE FROM guests WHERE user_id = ?").bind(user_id).execute(&self.pool).await?;
             // Only the sessions still open: one that ended keeps its end (a finished match's length).
             sqlx::query("UPDATE game_sessions SET destroyed_at=CURRENT_TIMESTAMP WHERE creator_id = ? AND destroyed_at IS NULL")
                 .bind(user_id)
@@ -560,7 +562,7 @@ impl Storage {
             FROM game_sessions g
             WHERE g.type_id = ? AND g.creator_id != ? AND g.destroyed_at IS NULL
               AND EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = g.creator_id)
-              AND NOT EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.invite_only = 1)
+              AND NOT EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.user_id = g.creator_id AND a.invite_only = 1)
               AND NOT {PRIVATE_SEATS_ONLY}
             ORDER BY g.id DESC
             LIMIT ?
@@ -585,7 +587,7 @@ impl Storage {
         // Participants, then guests (who joined a public match: the game sees them in it, as it
         // did on the original servers, where a join made a participant).
         let mut query = sqlx::QueryBuilder::new(
-            "SELECT game_id, user_id, username FROM (
+            "SELECT game_id, user_id, username, k FROM (
                SELECT p.game_id, p.user_id, u.username, 0 AS k, p.rowid AS o FROM participants p JOIN users u ON u.id = p.user_id WHERE p.game_id IN (",
         );
         let mut ids = query.separated(",");
@@ -598,8 +600,11 @@ impl Storage {
             ids.push_bind(session.session_id);
         }
         query.push(")) ORDER BY k, o, user_id");
-        let members: Vec<(u32, u32, String)> = query.build_query_as().fetch_all(&self.pool).await?;
-        for (game_id, user_id, name) in members {
+        let members: Vec<(u32, u32, String, i64)> = query.build_query_as().fetch_all(&self.pool).await?;
+        // Guests are listed, never with their addresses: whoever searches gets the host's (and
+        // the participants', as before); a guest's reach the others through the host.
+        let guests: std::collections::HashSet<(u32, u32)> = members.iter().filter(|m| m.3 == 1).map(|m| (m.0, m.1)).collect();
+        for (game_id, user_id, name, _) in members {
             if let Some(session) = sessions.iter_mut().find(|s| s.session_id == game_id) {
                 session.participants.push(Participant {
                     user_id,
@@ -609,9 +614,12 @@ impl Storage {
             }
         }
 
-        let wanted = |session: &GameSession, p: &Participant| match urls {
-            UrlsFor::Hosts => p.user_id == session.creator_id,
-            UrlsFor::AllBut(user) => p.user_id != user,
+        let wanted = |session: &GameSession, p: &Participant| {
+            !guests.contains(&(session.session_id, p.user_id))
+                && match urls {
+                    UrlsFor::Hosts => p.user_id == session.creator_id,
+                    UrlsFor::AllBut(user) => p.user_id != user,
+                }
         };
         let mut users: Vec<u32> = sessions.iter().flat_map(|s| s.participants.iter().filter(|p| wanted(s, p)).map(|p| p.user_id)).collect();
         users.sort_unstable();
@@ -629,10 +637,11 @@ impl Storage {
         for session in &mut sessions {
             let creator = session.creator_id;
             for p in &mut session.participants {
-                let keep = match urls {
-                    UrlsFor::Hosts => p.user_id == creator,
-                    UrlsFor::AllBut(user) => p.user_id != user,
-                };
+                let keep = !guests.contains(&(session.session_id, p.user_id))
+                    && match urls {
+                        UrlsFor::Hosts => p.user_id == creator,
+                        UrlsFor::AllBut(user) => p.user_id != user,
+                    };
                 if keep {
                     p.station_urls = rows.iter().filter(|(u, _)| *u == p.user_id).map(|(_, url)| url.clone()).collect();
                 }
@@ -648,7 +657,7 @@ impl Storage {
             return Ok(vec![]);
         }
         let mut query = sqlx::QueryBuilder::new(format!(
-            "SELECT g.id FROM game_sessions g WHERE (EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.invite_only = 1) OR {PRIVATE_SEATS_ONLY}) AND g.id IN ("
+            "SELECT g.id FROM game_sessions g WHERE (EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.user_id = g.creator_id AND a.invite_only = 1) OR {PRIVATE_SEATS_ONLY}) AND g.id IN ("
         ));
         let mut ids = query.separated(",");
         for id in session_ids {
@@ -663,6 +672,8 @@ impl Storage {
             warn!(self.logger, "Empty participant list");
             return Ok(());
         }
+        // A guest made a participant is one, listed once.
+        let added: Vec<u32> = private_participants.iter().chain(&public_participants).copied().collect();
         let mut builder = sqlx::QueryBuilder::new("INSERT OR REPLACE INTO participants (game_id, user_id) ");
 
         builder.push_values(
@@ -674,6 +685,12 @@ impl Storage {
         let query = builder.build();
         debug!(self.logger, "SQL: {}", query.sql());
         run(query.execute(&self.pool))??;
+        for user_id in added {
+            run(sqlx::query("DELETE FROM guests WHERE game_id = ? AND user_id = ?")
+                .bind(session_id)
+                .bind(user_id)
+                .execute(&self.pool))??;
+        }
         Ok(())
     }
 
@@ -689,19 +706,24 @@ impl Storage {
     }
 
     /// Notes that `user_id` joined `session_id` with JoinSession (see the `guests` table).
-    /// Not for its host or a participant, nor a session that's over; whether it was noted.
-    pub fn add_guest(&self, session_id: u32, user_id: u32) -> Result<bool> {
+    /// Not for its host or a participant, nor a session that's over; and, unless `invited`,
+    /// only a session matchmaking lists (its host in it, not invite-only as its host
+    /// announced, not private seats only): JoinSession names any id, and a guest may be
+    /// probed to the others. Whether it was noted.
+    pub fn add_guest(&self, session_id: u32, user_id: u32, invited: bool) -> Result<bool> {
         run(async {
-            let added = sqlx::query(
+            let added = sqlx::query(&format!(
                 "INSERT OR IGNORE INTO guests (game_id, user_id, joined_at)
-                 SELECT g.id, ?, unixepoch() FROM game_sessions g
-                 WHERE g.id = ? AND g.destroyed_at IS NULL AND g.creator_id != ?
-                   AND NOT EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?)",
-            )
+                 SELECT g.id, ?1, unixepoch() FROM game_sessions g
+                 WHERE g.id = ?2 AND g.destroyed_at IS NULL AND g.creator_id != ?1
+                   AND NOT EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?1)
+                   AND (?3 OR (EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = g.creator_id)
+                        AND NOT EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.user_id = g.creator_id AND a.invite_only = 1)
+                        AND NOT {PRIVATE_SEATS_ONLY}))"
+            ))
             .bind(user_id)
             .bind(session_id)
-            .bind(user_id)
-            .bind(user_id)
+            .bind(invited)
             .execute(&self.pool)
             .await?
             .rows_affected()
@@ -1244,7 +1266,7 @@ impl Storage {
         let n: i64 = run(sqlx::query_scalar(&format!(
             "SELECT COUNT(*) FROM game_sessions g WHERE g.creator_id = ? AND g.destroyed_at IS NULL
                AND EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = g.creator_id)
-               AND NOT EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.invite_only = 1)
+               AND NOT EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.user_id = g.creator_id AND a.invite_only = 1)
                AND NOT {PRIVATE_SEATS_ONLY}"
         ))
         .bind(host)
@@ -1677,10 +1699,10 @@ pub(crate) mod tests {
             p
         };
 
-        assert!(storage.add_guest(game, found).unwrap());
-        assert!(storage.add_guest(game, asked).unwrap());
-        assert!(!storage.add_guest(game, found).unwrap(), "joining twice is one guest");
-        assert!(!storage.add_guest(game, host).unwrap(), "the host is no guest");
+        assert!(storage.add_guest(game, found, false).unwrap());
+        assert!(storage.add_guest(game, asked, false).unwrap());
+        assert!(!storage.add_guest(game, found, false).unwrap(), "joining twice is one guest");
+        assert!(!storage.add_guest(game, host, false).unwrap(), "the host is no guest");
         assert_eq!(players(&storage), ["Asked", "Found", "Host"]);
         assert_eq!(storage.session_members(game).unwrap().unwrap().1, [host], "guests get no say over the session");
         assert!(storage.share_session(found, asked).unwrap(), "two guests share the match (NAT probes between them)");
@@ -1696,7 +1718,21 @@ pub(crate) mod tests {
         assert_eq!(players(&storage), ["Host"], "left, and removed by the host");
 
         assert_eq!(storage.leave_game_session(host, game).unwrap(), Some(true), "the host alone kept it going");
-        assert!(!storage.add_guest(game, found).unwrap(), "no joining a match that's over");
+        assert!(!storage.add_guest(game, found, false).unwrap(), "no joining a match that's over");
+        // A room matchmaking doesn't list (private seats only): only by invitation.
+        let private = storage.create_game_session(host, 1, "113 => 0;3 => 0;4 => 2".into()).unwrap();
+        storage.add_participants(1, private, vec![], vec![host]).unwrap();
+        assert!(!storage.add_guest(private, found, false).unwrap(), "a private room isn't joined from a search");
+        assert!(storage.add_guest(private, found, true).unwrap(), "invited, it is");
+        // Made a participant: listed once, and the guest row goes.
+        storage.add_participants(1, private, vec![found], vec![]).unwrap();
+        let (_, live) = storage.presence().unwrap();
+        let p = live.into_iter().find(|s| s.id == private).unwrap().players;
+        assert_eq!(p.iter().filter(|n| *n == "Found").count(), 1, "{p:?}");
+        // Their game gone: in nobody's match.
+        storage.add_guest(private, asked, true).unwrap();
+        storage.delete_user_session(asked).unwrap();
+        assert!(!storage.share_session(asked, host).unwrap());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
