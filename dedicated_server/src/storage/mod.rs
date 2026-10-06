@@ -582,12 +582,22 @@ impl Storage {
         if sessions.is_empty() {
             return Ok(sessions);
         }
-        let mut query = sqlx::QueryBuilder::new("SELECT p.game_id, p.user_id, u.username FROM participants p JOIN users u ON u.id = p.user_id WHERE p.game_id IN (");
+        // Participants, then guests (who joined a public match: the game sees them in it, as it
+        // did on the original servers, where a join made a participant).
+        let mut query = sqlx::QueryBuilder::new(
+            "SELECT game_id, user_id, username FROM (
+               SELECT p.game_id, p.user_id, u.username, 0 AS k, p.rowid AS o FROM participants p JOIN users u ON u.id = p.user_id WHERE p.game_id IN (",
+        );
         let mut ids = query.separated(",");
         for session in &sessions {
             ids.push_bind(session.session_id);
         }
-        query.push(") ORDER BY p.rowid");
+        query.push(") UNION ALL SELECT gu.game_id, gu.user_id, u.username, 1, gu.joined_at FROM guests gu JOIN users u ON u.id = gu.user_id WHERE gu.game_id IN (");
+        let mut ids = query.separated(",");
+        for session in &sessions {
+            ids.push_bind(session.session_id);
+        }
+        query.push(")) ORDER BY k, o, user_id");
         let members: Vec<(u32, u32, String)> = query.build_query_as().fetch_all(&self.pool).await?;
         for (game_id, user_id, name) in members {
             if let Some(session) = sessions.iter_mut().find(|s| s.session_id == game_id) {
@@ -1174,12 +1184,18 @@ impl Storage {
              WHERE g.type_id = ",
         );
         query.push_bind(type_id);
-        query.push(" AND g.destroyed_at IS NULL AND g.id IN (SELECT game_id FROM participants WHERE user_id IN (");
+        // A friend in a public match they joined (a guest) is found there too.
+        query.push(" AND g.destroyed_at IS NULL AND (g.id IN (SELECT game_id FROM participants WHERE user_id IN (");
         let mut ids = query.separated(",");
         for id in participant_ids {
             ids.push_bind(*id);
         }
-        query.push(")) ORDER BY g.id DESC LIMIT ");
+        query.push(")) OR g.id IN (SELECT game_id FROM guests WHERE user_id IN (");
+        let mut ids = query.separated(",");
+        for id in participant_ids {
+            ids.push_bind(*id);
+        }
+        query.push("))) ORDER BY g.id DESC LIMIT ");
         query.push_bind(i64::from(limit));
         debug!(self.logger, "Searching sessions with participants: {}", query.sql());
         let sessions: Vec<GameSession> = query.build_query_as().fetch_all(&self.pool).await?;
@@ -1260,14 +1276,14 @@ impl Storage {
         )
     }
 
-    /// Whether `user_id` hosts or takes part in live session `session_id`.
+    /// Whether `user_id` hosts, takes part in or joined (a guest) live session `session_id`.
     pub async fn is_in_session(&self, user_id: u32, session_id: u32) -> Result<bool> {
         let n: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM game_sessions g WHERE g.id = ? AND g.destroyed_at IS NULL
-               AND (g.creator_id = ? OR EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?))",
+            "SELECT COUNT(*) FROM game_sessions g WHERE g.id = ?1 AND g.destroyed_at IS NULL
+               AND (g.creator_id = ?2 OR EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?2)
+                    OR EXISTS (SELECT 1 FROM guests gu WHERE gu.game_id = g.id AND gu.user_id = ?2))",
         )
         .bind(session_id)
-        .bind(user_id)
         .bind(user_id)
         .fetch_one(&self.pool)
         .await?;
@@ -1669,6 +1685,11 @@ pub(crate) mod tests {
         assert_eq!(storage.session_members(game).unwrap().unwrap().1, [host], "guests get no say over the session");
         assert!(storage.share_session(found, asked).unwrap(), "two guests share the match (NAT probes between them)");
         assert!(storage.share_session(host, found).unwrap());
+        assert!(run(storage.is_in_session(found, game)).unwrap().unwrap(), "a guest may announce the match to friends");
+        // What the game sees: the host, then the guests; and a friend found in the match.
+        let seen = storage.search_sessions_with_participants(1, &[asked], 50).unwrap();
+        assert_eq!(seen.len(), 1, "a guest's friends find the match");
+        assert_eq!(seen[0].participants.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Host", "Found", "Asked"]);
 
         assert_eq!(storage.leave_game_session(found, game).unwrap(), Some(false), "a guest leaving ends nothing");
         storage.remove_participants(1, game, vec![asked]).unwrap();
