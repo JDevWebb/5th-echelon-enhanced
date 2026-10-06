@@ -121,6 +121,30 @@ pub fn reports_message(host: &str, time: i64) -> String {
     format!("5th-echelon/reports/v2\n{}\n{time}", host_key(host))
 }
 
+/// What a player signs to send the admins a support message (`POST /v1/support`) at the
+/// coordinator at `host`: when, and a hash of exactly what was sent, the text and each
+/// attachment (`files`: name and the SHA-256 of its gzip, in order), so the signature can't be
+/// moved to other words or other files, nor to another coordinator.
+pub fn support_message(host: &str, time: i64, text: &str, files: &[(&str, [u8; 32])]) -> String {
+    let mut sent = format!("{text}\n");
+    for (name, digest) in files {
+        sent.push_str(&format!("{name} {}\n", base32_encode(digest)));
+    }
+    let sent = base32_encode(&sha256(sent.as_bytes()));
+    format!("5th-echelon/support/v1\n{}\n{time}\n{sent}", host_key(host))
+}
+
+/// What a player signs to read their support conversation (`GET /v1/support/mine`) at the
+/// coordinator at `host`.
+pub fn support_read_message(host: &str, time: i64) -> String {
+    format!("5th-echelon/support-read/v1\n{}\n{time}", host_key(host))
+}
+
+/// The SHA-256 of `data`, for [`support_message`]'s files.
+pub fn digest(data: &[u8]) -> [u8; 32] {
+    sha256(data)
+}
+
 /// What the release key signs: a release's version (its tag without the
 /// `v`, e.g. `0.4.0`) and its `SHA256SUMS`, as published. With the version
 /// signed, a release published again under another tag doesn't verify, so

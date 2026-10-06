@@ -27,6 +27,7 @@ mod planning;
 mod players;
 mod reports;
 mod sessions;
+mod support;
 pub mod webauthn;
 
 use std::net::IpAddr;
@@ -214,6 +215,7 @@ pub fn router(c: Shared) -> Router {
         .merge(planning::routes())
         .merge(players::routes())
         .merge(reports::routes())
+        .merge(support::routes())
         .merge(sessions::routes())
         .merge(leaderboards::routes());
     Router::new()
@@ -1483,6 +1485,8 @@ impl Coordinator {
             "peak_24h": peak,
             "alerts": self.open_alerts().await?,
             "open_reports": self.open_reports().await?,
+            // Support conversations with a player's message no admin has read (the rail's badge).
+            "support_unread": if self.has_roadmap() { self.support_unread_threads().await? } else { 0 },
             "attribution": geo::ATTRIBUTION,
         }))
     }

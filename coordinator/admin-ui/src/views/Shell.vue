@@ -9,6 +9,7 @@
           <span>{{ r[1] }}</span>
           <b v-if="r[0] === 'alerts' && alertCount" class="badge" :class="{ bad: alertsBad }" :aria-label="`${alertCount} open`">{{ alertCount }}</b>
           <b v-if="r[0] === 'reports' && reportCount" class="badge info" :aria-label="`${reportCount} open`">{{ reportCount }}</b>
+          <b v-if="r[0] === 'support' && supportCount" class="badge info" :aria-label="`${supportCount} unread`">{{ supportCount }}</b>
         </RouterLink>
       </template>
       <button type="button" class="theme" :title="`Colours: ${themeLabel}. Click for ${nextLabel}.`" :aria-label="`Colours: ${themeLabel}; switch to ${nextLabel}`" @click="nextTheme">
@@ -43,7 +44,7 @@ const label = id => THEMES.find(([t]) => t === id)?.[1] || 'System';
 const themeLabel = computed(() => label(theme.value));
 const nextLabel = computed(() => label(THEMES[(THEMES.findIndex(([t]) => t === theme.value) + 1) % THEMES.length][0]));
 
-// The Roadmap page only where the coordinator keeps the roadmap (the community network's).
+// The Roadmap and Support pages only where the coordinator keeps them (the community network's).
 const hasRoadmap = ref(false);
 onMounted(async () => {
   try {
@@ -52,7 +53,7 @@ onMounted(async () => {
     // Left out: the page answers nothing without it.
   }
 });
-const rail = computed(() => ROUTES.filter(r => !r || r[0] !== 'roadmap' || hasRoadmap.value));
+const rail = computed(() => ROUTES.filter(r => !r || !['roadmap', 'support'].includes(r[0]) || hasRoadmap.value));
 
 const route = useRoute();
 const current = computed(() => {
@@ -61,6 +62,7 @@ const current = computed(() => {
 });
 const alertCount = computed(() => live.overview?.alerts?.length || 0);
 const reportCount = computed(() => live.overview?.open_reports || 0);
+const supportCount = computed(() => live.overview?.support_unread || 0);
 const alertsBad = computed(() => (live.overview?.alerts || []).some(a => a.level === 'bad'));
 const version = computed(() => live.overview?.coordinator?.version || '');
 </script>

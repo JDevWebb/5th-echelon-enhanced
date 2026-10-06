@@ -40,6 +40,11 @@ pub const RELEASES: &[Release] = &[
         version: "0.4.3",
         new: &[
             Item {
+                title: "Support, in the launcher",
+                text: "Write to the admins from the new Support page, with your logs if you like. Their answer shows there, and the game tells you when one comes.",
+                community: true,
+            },
+            Item {
                 title: "Replies to your reports",
                 text: "The admins can answer a report you sent. See it under Settings › Feedback › Your reports.",
                 community: false,

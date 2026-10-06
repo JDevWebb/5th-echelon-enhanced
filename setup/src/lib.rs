@@ -23,6 +23,7 @@ pub mod player_identity;
 pub mod roadmap;
 pub mod save;
 pub mod server_info;
+pub mod support;
 mod sys;
 pub mod update;
 pub mod wine;

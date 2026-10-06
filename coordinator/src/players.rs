@@ -267,11 +267,21 @@ impl Coordinator {
         let mut removed = 0;
         if full {
             for id in known.iter().filter(|id| !listed.contains(*id)) {
+                let identity: Option<String> = sqlx::query_scalar("SELECT identity FROM players WHERE server_id = ? AND id = ?")
+                    .bind(server)
+                    .bind(id)
+                    .fetch_optional(&mut *tx)
+                    .await?
+                    .flatten();
                 sqlx::query("DELETE FROM players WHERE server_id = ? AND id = ?")
                     .bind(server)
                     .bind(id)
                     .execute(&mut *tx)
                     .await?;
+                // Their support conversation too, once no account of theirs is left anywhere.
+                if let Some(identity) = identity {
+                    sqlx::query(crate::support::FORGET).bind(identity).execute(&mut *tx).await?;
+                }
                 // Their game's uploads go with them (ids come again on the server).
                 sqlx::query("DELETE FROM player_content WHERE server_id = ? AND player_id = ?")
                     .bind(server)
@@ -458,11 +468,20 @@ impl Coordinator {
                     .await?;
             }
             "delete" => {
+                let identity: Option<String> = sqlx::query_scalar("SELECT identity FROM players WHERE server_id = ? AND id = ?")
+                    .bind(server)
+                    .bind(player)
+                    .fetch_optional(&self.pool)
+                    .await?
+                    .flatten();
                 sqlx::query("DELETE FROM players WHERE server_id = ? AND id = ?")
                     .bind(server)
                     .bind(player)
                     .execute(&self.pool)
                     .await?;
+                if let Some(identity) = identity {
+                    sqlx::query(crate::support::FORGET).bind(identity).execute(&self.pool).await?;
+                }
                 sqlx::query("DELETE FROM player_content WHERE server_id = ? AND player_id = ?")
                     .bind(server)
                     .bind(player)

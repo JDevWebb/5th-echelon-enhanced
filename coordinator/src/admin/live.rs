@@ -72,6 +72,8 @@ pub enum Event {
     Maintenance,
     /// The roadmap or a suggestion changed (or a player sent one).
     Roadmap,
+    /// A support conversation changed (a player wrote, or an admin answered).
+    Support,
 }
 
 /// The live points kept per server: half an hour of them.
@@ -433,6 +435,12 @@ async fn serve(c: Arc<Coordinator>, mut socket: WebSocket, headers: HeaderMap, c
                 }
                 Ok(Event::Roadmap) => {
                     if !send(&mut socket, json!({ "type": "roadmap" })).await {
+                        return;
+                    }
+                }
+                Ok(Event::Support) => {
+                    dirty = true;
+                    if !send(&mut socket, json!({ "type": "support" })).await {
                         return;
                     }
                 }

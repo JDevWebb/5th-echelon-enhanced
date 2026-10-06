@@ -388,6 +388,19 @@ pub fn friend_event(event: &server_api::misc::FriendEvent) {
     refresh();
 }
 
+/// Answers from the network's admins the player hasn't read, as the server last said.
+static SUPPORT_UNREAD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The server's count of the player's unread support answers, from each event poll: a
+/// notice when it goes up (a new answer), none while it stays (they've been told).
+pub fn support_unread(count: u32) {
+    let before = SUPPORT_UNREAD.swap(count, std::sync::atomic::Ordering::Relaxed);
+    if count > before {
+        info!("Support: {count} answer(s) from the admins unread");
+        say("The admins answered your support message. Read it on the launcher's Support page.".into(), false);
+    }
+}
+
 /// Starts the background thread. Safe to call more than once.
 pub fn start() {
     if ACTIONS.get().is_some() {

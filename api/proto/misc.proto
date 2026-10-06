@@ -49,6 +49,9 @@ message EventRequest {}
 message EventResponse {
     InviteEvent invite = 1;
     FriendEvent friend = 2;
+    // Answers from the network's admins (the launcher's Support page) the player hasn't read:
+    // the overlay says so. 0 from servers before 0.4.3, or off the community network.
+    uint32 support_unread = 3;
 }
 
 message FriendEvent {

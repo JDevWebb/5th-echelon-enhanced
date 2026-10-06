@@ -98,6 +98,14 @@ Admins book a time a server will be down, or the whole network (the coordinator 
 
 **Updates wait:** no rollout starts an update on a server during its window or the network's. Cancelling a window takes it off launchers within a minute.
 
+## Support
+
+On the community network's coordinator only (with the roadmap, `--roadmap`), players write to the admins from the launcher's **Support** page: one conversation per player (their identity), with the game's log and the launcher's log if they tick them (private details hidden on their PC, as reports' are). Only a player with an account on a member server can write: 20 messages an hour, 2,000 characters each, files up to 4 MB together.
+
+The admin UI's **Support** page lists the conversations, unread first in the rail's badge. Opening one marks it read; it shows the player's accounts and their files to download. An answer is signed with the admin's name and the conversation then waits on the player; **Resolved** closes it until they write again. Players read answers on their Support page, a notice tells them when the launcher starts, and the game's overlay says so (the coordinator tells the player's server in its pulse answer). A new message from a player is posted to the alert webhook (name and first line, never files) unless report alerts are off.
+
+Conversations go 180 days after they were last written in, and with the player's last account on the network.
+
 ## Roadmap and suggestions
 
 Only the community network's coordinator keeps a roadmap: the installer starts it with `--roadmap`, and on any other coordinator the page, and the routes launchers use, aren't there. Its **Roadmap** page of the admin UI keeps the project's roadmap in four lanes: **Shipping**, **Next**, **Later** and **Requested**, each with the release it's for. Items are edited in place, shown to players or kept for admins, moved and deleted, and every change is in the audit log. An empty roadmap can start from the project's as it stood for 0.4.2.
@@ -349,7 +357,8 @@ The badge at the top right says whether it's live. The connection uses the same 
 - Players' session events (sign-ins, rooms, searches, joins, invitations, problems), with their names but no addresses, for 30 days on the coordinator (a few days on each server), and their game's warnings, errors, network lines and game-state lines (session, saves, achievements), redacted on their PC, unless they turned that off.
 - The per-minute "who played" ids are a per-server keyed hash of the account number, with minutes played per day; the reports count players per server, so someone playing on two servers counts twice.
 - Launchers' ping reports keep only the city and the round trip.
-- Each player's latest ShadowNet snapshot (loadouts, owned items, purchases, challenge progress; game ids only), admins only, for 90 days after its last update.
+- Each player's latest ShadowNet snapshot (loadouts, owned items, purchases, challenge progress; game ids only), admins only, for 90 days after it last arrived.
+- Players' support conversations (what they wrote, the admins' answers, the logs they chose to send), admins only, for 180 days after the last message, and deleted with the player's last account on the network.
 - The game logs players' games sent when something went wrong, unless they turned the diagnostics off (kept as reports are).
 - Players' reports, with the logs they chose to attach (redacted on their PC) and their server's log lines about them, for 90 days (see [Player reports](#player-reports)).
 

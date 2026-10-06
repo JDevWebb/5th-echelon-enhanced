@@ -1123,7 +1123,11 @@ impl Misc for MyMisc {
                 });
                 event
             });
-            return Ok(Response::new(misc::EventResponse { invite: None, friend }));
+            return Ok(Response::new(misc::EventResponse {
+                invite: None,
+                friend,
+                support_unread: crate::support::unread(user_id),
+            }));
         };
 
         let Some(sender) = self.storage.find_user_by_id_async(invite.sender).await.map_err(|e| {
@@ -1153,6 +1157,7 @@ impl Misc for MyMisc {
         );
 
         Ok(Response::new(misc::EventResponse {
+            support_unread: crate::support::unread(user_id),
             invite: Some(misc::InviteEvent {
                 id: invite.id,
                 sender: Some(User {

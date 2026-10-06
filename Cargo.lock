@@ -4947,6 +4947,7 @@ name = "setup"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "base64",
  "flate2",
  "hooks-config",
  "identity",

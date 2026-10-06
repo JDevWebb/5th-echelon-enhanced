@@ -99,6 +99,7 @@ mod self_update;
 mod session_events;
 mod simple_http;
 mod storage;
+mod support;
 mod ticket;
 mod tracking;
 mod tracking_ext;

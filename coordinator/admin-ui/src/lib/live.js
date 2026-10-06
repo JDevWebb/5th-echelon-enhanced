@@ -26,6 +26,8 @@ export const live = reactive({
   maintenanceTick: 0,
   /** Goes up when the roadmap or a suggestion changes. */
   roadmapTick: 0,
+  /** Goes up when a support conversation changes (a player wrote, or an admin answered). */
+  supportTick: 0,
 });
 
 const KEEP_POINTS = 180;
@@ -70,6 +72,8 @@ export function connectLive() {
       live.maintenanceTick++;
     } else if (msg.type === 'roadmap') {
       live.roadmapTick++;
+    } else if (msg.type === 'support') {
+      live.supportTick++;
     } else if (msg.type === 'bye') {
       wanted = false;
       session.signedOut();

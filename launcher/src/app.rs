@@ -47,6 +47,8 @@ pub enum View {
     News,
     /// What's being built, and suggestions for it.
     Roadmap,
+    /// A conversation with the community network's admins.
+    Support,
     Settings,
     /// Hosting a server of your own.
     Server,
@@ -129,6 +131,9 @@ pub struct Prefs {
     /// (feedback.rs): newer ones get a notice.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     replies_seen: Option<i64>,
+    /// The newest support answer the player was told of (support.rs), by its id.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    support_seen: Option<i64>,
 }
 
 /// A server the player connected to by its address.
@@ -274,6 +279,18 @@ impl Prefs {
         prefs.save();
     }
 
+    pub fn support_seen() -> Option<i64> {
+        Self::load().support_seen
+    }
+
+    pub fn set_support_seen(id: i64) {
+        let mut prefs = Self::load();
+        if prefs.support_seen.is_none_or(|seen| id > seen) {
+            prefs.support_seen = Some(id);
+            prefs.save();
+        }
+    }
+
     pub fn set_feedback_off(off: bool) {
         let mut prefs = Self::load();
         prefs.feedback_off = off;
@@ -360,6 +377,7 @@ pub struct App {
     settings: Settings,
     server: Server,
     roadmap: crate::roadmap::Roadmap,
+    support: crate::support::Support,
     /// Whether the diagnostics notice for players who agreed before 0.4.3 was looked at.
     log_excerpt_checked: bool,
     /// The latest release, once looked up.
@@ -399,6 +417,7 @@ impl App {
             settings: Settings::default(),
             server: Server::default(),
             roadmap: crate::roadmap::Roadmap::default(),
+            support: crate::support::Support::default(),
             log_excerpt_checked: false,
             latest: None,
             checking: Slot::default(),
@@ -575,13 +594,19 @@ impl App {
                         (View::Servers, theme::Icon::Servers, "Servers"),
                         (View::News, theme::Icon::News, "News"),
                         (View::Roadmap, theme::Icon::Roadmap, "Roadmap"),
+                        (View::Support, theme::Icon::Support, "Support"),
                         (View::Server, theme::Icon::Host, "Host"),
                         (View::Settings, theme::Icon::Settings, "Settings"),
                     ] {
-                        if view == View::Roadmap && !community {
+                        if matches!(view, View::Roadmap | View::Support) && !community {
                             continue;
                         }
-                        if theme::nav_button(ui, icon, label, self.view == view).clicked() {
+                        let button = theme::nav_button(ui, icon, label, self.view == view);
+                        // Answers from support not seen yet: a dot on its button.
+                        if view == View::Support && self.support.unread() > 0 {
+                            ui.painter().circle_filled(button.rect.right_top() + egui::vec2(-14.0, 10.0), 4.5, theme::ACCENT);
+                        }
+                        if button.clicked() {
                             self.view = view;
                         }
                         ui.add_space(2.0);
@@ -737,6 +762,7 @@ impl eframe::App for App {
         }
         crate::play::show_account_dialog(self, ctx);
         self.roadmap.tick(ctx, &mut self.notices);
+        self.support.tick(ctx, &mut self.notices, self.view == View::Support);
         if let Some(Err(e)) = self.updating.poll() {
             match self.updating_activity.take() {
                 Some(a) => {
@@ -756,8 +782,9 @@ impl eframe::App for App {
             View::Servers => crate::play::show_servers(self, ui),
             View::News => crate::play::show_news(self, ui),
             View::Roadmap if Prefs::directory().is_some_and(|d| Prefs::is_community(&d)) => crate::roadmap::show(self, ui),
+            View::Support if Prefs::directory().is_some_and(|d| Prefs::is_community(&d)) => crate::support::show(self, ui),
             // Left the community network while on it: back to Play.
-            View::Roadmap => self.view = View::Play,
+            View::Roadmap | View::Support => self.view = View::Play,
             View::Settings => crate::settings::show(self, ui),
             View::Server => {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -791,6 +818,10 @@ impl App {
 
     pub fn roadmap_mut(&mut self) -> (&mut crate::roadmap::Roadmap, &Option<Game>, &mut Notices) {
         (&mut self.roadmap, &self.game, &mut self.notices)
+    }
+
+    pub fn support_mut(&mut self) -> (&mut crate::support::Support, &Option<Game>, &mut Notices) {
+        (&mut self.support, &self.game, &mut self.notices)
     }
 }
 

@@ -304,6 +304,8 @@ unsafe extern "cdecl" fn UPLAY_Startup(uplay_id: usize, game_version: usize, lan
                                     if let Some(friend) = resp.friend.as_ref() {
                                         crate::community::friend_event(friend);
                                     }
+                                    // An answer from support: a notice too.
+                                    crate::community::support_unread(resp.support_unread);
                                     resp.invite
                                 })
                                 .transpose();

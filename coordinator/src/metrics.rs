@@ -379,6 +379,7 @@ impl Coordinator {
         self.prune_reports().await?;
         self.prune_session_events().await?;
         self.prune_content().await?;
+        self.prune_support().await?;
         self.expire_actions().await
     }
 

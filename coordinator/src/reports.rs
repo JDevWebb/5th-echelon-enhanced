@@ -100,7 +100,7 @@ pub(crate) fn valid_file_name(name: &str) -> bool {
 }
 
 /// Printable text of at most `max` characters (line breaks and tabs only when `lines`).
-fn printable(text: &str, max: usize, lines: bool) -> bool {
+pub(crate) fn printable(text: &str, max: usize, lines: bool) -> bool {
     text.chars().count() <= max
         && !text
             .chars()
@@ -718,7 +718,7 @@ impl Coordinator {
     }
 
     /// Where admins open the admin UI, if known.
-    async fn admin_origin(&self) -> Option<String> {
+    pub(crate) async fn admin_origin(&self) -> Option<String> {
         match self.admin.get() {
             Some(c) => Some(c.origin.clone()),
             None => self.setting("admin_origin").await.ok().flatten(),
@@ -762,7 +762,7 @@ fn problem_label(p: &str) -> &str {
 
 /// Text from a player, safe in a chat message: one line, no mentions (`@everyone` pings
 /// nobody), at most `max` characters.
-fn chat_safe(text: &str, max: usize) -> String {
+pub(crate) fn chat_safe(text: &str, max: usize) -> String {
     let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut out: String = one_line.chars().take(max).collect::<String>().replace('@', "@\u{200b}").replace('`', "'");
     if one_line.chars().count() > max {

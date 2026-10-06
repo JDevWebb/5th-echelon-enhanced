@@ -714,6 +714,7 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                 pulse_wait = match client.post("/v1/pulse", &pulse).await {
                     Ok(answer) => {
                         carry_out_actions(&logger, &storage, &client, &answer, &mut actions_done).await;
+                        crate::support::from_pulse(&answer);
                         PULSE_EVERY
                     }
                     // An older coordinator: not every ten seconds, then.

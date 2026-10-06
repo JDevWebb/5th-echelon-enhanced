@@ -51,6 +51,7 @@ pub mod roadmap;
 pub mod sessions;
 pub mod standby;
 pub mod stats;
+pub mod support;
 pub mod updates;
 
 use std::collections::BTreeMap;
@@ -393,6 +394,9 @@ pub struct Coordinator {
     content_posts: Limit,
     /// Per address: players' suggestions for the roadmap (see [`roadmap`]).
     suggestion_posts: Limit,
+    /// Players' support messages: per player and per address (see [`support`]).
+    support_posts: Limit,
+    support_address_posts: Limit,
     /// The roadmap and players' suggestions are kept here: on the community network's
     /// coordinator only, whose roadmap every launcher reads (`--roadmap`). Off, its routes
     /// and the admin UI's page aren't there.
@@ -505,6 +509,8 @@ impl Coordinator {
             report_posts: Limit::per(reports::PER_HOUR, Duration::from_secs(3600)),
             content_posts: Limit::per(content::PER_HOUR, Duration::from_secs(3600)),
             suggestion_posts: Limit::per(roadmap::PER_ADDRESS_A_DAY, Duration::from_secs(86_400)),
+            support_posts: Limit::per(support::PER_PLAYER_AN_HOUR, Duration::from_secs(3600)),
+            support_address_posts: Limit::per(support::PER_ADDRESS_AN_HOUR, Duration::from_secs(3600)),
             roadmap: std::sync::atomic::AtomicBool::new(false),
             files_dir: std::path::Path::new(path)
                 .parent()
@@ -645,6 +651,8 @@ impl Coordinator {
             .route("/v1/suggestions", post(suggest))
             .route("/v1/suggestions/mine", get(my_suggestions))
             .route("/v1/reports/mine", get(my_reports))
+            .route("/v1/support", post(support_send).layer(DefaultBodyLimit::max(support::MAX_BODY)))
+            .route("/v1/support/mine", get(my_support))
             .route("/v1/changes", post(changes))
             .route("/v1/relations/{global_id}", get(relations))
             .route("/v1/names/claim", post(claim_name))
@@ -1222,10 +1230,18 @@ async fn pulse(State(c): State<Shared>, headers: HeaderMap, body: axum::body::By
     if let Err(e) = c.record_pulse(&server, &p).await {
         return internal(e);
     }
-    match c.pending_actions(&server).await {
-        Ok(actions) => ok(json!({ "actions": actions })),
-        Err(e) => internal(e),
-    }
+    let actions = match c.pending_actions(&server).await {
+        Ok(actions) => actions,
+        Err(e) => return internal(e),
+    };
+    // Its players online with answers from support they haven't read: the overlay says so.
+    let online: Vec<i64> = p["online"].as_array().into_iter().flatten().filter_map(|o| o["id"].as_i64()).collect();
+    let support = if c.has_roadmap() {
+        c.support_unread_for(&server, &online).await.unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    ok(json!({ "actions": actions, "support": support }))
 }
 
 /// A server's players' session events (see [`sessions`]).
@@ -1619,6 +1635,83 @@ async fn my_suggestions(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<
         return fail(StatusCode::FORBIDDEN, "the signature doesn't match");
     }
     c.suggestions_of(&q.identity).await.map_or_else(internal, ok)
+}
+
+/// A player's message to the admins (see [`support`]), from their launcher, signed with
+/// their identity for this coordinator.
+async fn support_send(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {
+    if !c.has_roadmap() {
+        return no_roadmap();
+    }
+    if !c.support_address_posts.check(&limit_key(client_ip(peer, &headers))) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "Too many messages from this address; try again in an hour.");
+    }
+    let sent: support::Sent = match parse(&body) {
+        Ok(s) => s,
+        Err(a) => return a,
+    };
+    let host = headers.get(axum::http::header::HOST).and_then(|h| h.to_str().ok()).unwrap_or_default().to_string();
+    let now = identity::now();
+    // Unpacking the files to check them: off the async workers.
+    let checked = tokio::task::spawn_blocking(move || sent.check(&host, now).map(|files| (sent, files))).await;
+    let (sent, files) = match checked {
+        Ok(Ok(v)) => v,
+        Ok(Err(why)) => return fail(StatusCode::BAD_REQUEST, why),
+        Err(e) => return internal(e),
+    };
+    match c.is_linked_player(&sent.identity).await {
+        Ok(true) => {}
+        Ok(false) => {
+            return fail(
+                StatusCode::FORBIDDEN,
+                "Support is for players of the community network: connect to one of its servers first.",
+            )
+        }
+        Err(e) => return internal(e),
+    }
+    if !c.support_posts.check(&sent.identity) {
+        return fail(
+            StatusCode::TOO_MANY_REQUESTS,
+            "That's a lot of messages in an hour; the admins will answer what you sent. Try again later.",
+        );
+    }
+    match c.add_support_message(&sent, &files, now).await {
+        Ok((id, files_kept)) => {
+            c.publish(admin::live::Event::Support);
+            let first = sent.text.lines().next().unwrap_or_default();
+            c.notify_support(&sent.name, first).await;
+            ok(json!({ "id": id, "files_kept": files_kept }))
+        }
+        Err(e) => internal(e),
+    }
+}
+
+#[derive(Deserialize)]
+struct SupportRead {
+    identity: String,
+    time: i64,
+    signature: String,
+    /// "1": the player's Support page shows it, so the answers are read.
+    #[serde(default)]
+    read: String,
+}
+
+/// A player's conversation with the admins (signed for this coordinator: only they read it).
+async fn my_support(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap, Query(q): Query<SupportRead>) -> Answer {
+    if !c.has_roadmap() {
+        return no_roadmap();
+    }
+    if !c.reads.check(&limit_key(client_ip(peer, &headers))) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "too many requests");
+    }
+    let host = headers.get(axum::http::header::HOST).and_then(|h| h.to_str().ok()).unwrap_or_default();
+    if !identity::is_global_id(&q.identity)
+        || !identity::fresh(q.time, identity::now())
+        || !identity::verify(&q.identity, &identity::support_read_message(host, q.time), &q.signature)
+    {
+        return fail(StatusCode::FORBIDDEN, "the signature doesn't match");
+    }
+    c.support_of(&q.identity, q.read == "1").await.map_or_else(internal, ok)
 }
 
 /// A player's own reports, with the admins' replies (signed: only they read them). On any

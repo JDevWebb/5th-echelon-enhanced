@@ -3093,3 +3093,146 @@ async fn players_suggest_from_the_launcher_and_admins_keep_the_roadmap() {
     let (_, v) = admin_call(&r, "GET", "/api/roadmap", &cookie, None).await;
     assert_eq!((v["items"].as_array().map(Vec::len), v["suggestions"]["new"].as_i64()), (Some(0), Some(1)), "{v}");
 }
+
+#[tokio::test]
+async fn players_write_to_support_and_read_the_admins_answers() {
+    use std::io::Write as _;
+
+    use base64::Engine as _;
+    let t = start("support").await;
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    let me = identity::Identity::generate();
+    let gz = |text: &str| {
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(text.as_bytes()).unwrap();
+        e.finish().unwrap()
+    };
+    let message = |who: &identity::Identity, signer: &identity::Identity, text: &str, files: &[(&str, Vec<u8>, usize)]| {
+        let time = identity::now();
+        let digests: Vec<(&str, [u8; 32])> = files.iter().map(|(n, g, _)| (*n, identity::digest(g))).collect();
+        json!({
+            "identity": who.global_id(), "name": "Oni", "server": "server-a", "launcher": "0.4.3", "time": time, "text": text,
+            "files": files.iter().map(|(n, g, size)| json!({ "name": n, "size": size, "gzip_base64": base64::engine::general_purpose::STANDARD.encode(g) })).collect::<Vec<_>>(),
+            "signature": signer.sign(&identity::support_message("coordinator.test", time, text, &digests)),
+        })
+    };
+    let mine = |who: &identity::Identity, read: bool| {
+        let time = identity::now();
+        format!(
+            "/v1/support/mine?identity={}&time={time}&signature={}{}",
+            who.global_id(),
+            who.sign(&identity::support_read_message("coordinator.test", time)),
+            if read { "&read=1" } else { "" }
+        )
+    };
+    let log = "12:00 joined\n12:01 dropped\n";
+
+    // Only the community network's coordinator has it.
+    assert_eq!(t.call("POST", "/v1/support", None, Some(message(&me, &me, "hi", &[]))).await.0, StatusCode::NOT_FOUND);
+    t.c.enable_roadmap();
+    // A key no member server knows isn't a player: refused.
+    let (status, v) = t.call("POST", "/v1/support", None, Some(message(&me, &me, "hi", &[]))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN, "{v}");
+    t.changes(&a, json!([link(&me, "server-a", "Oni")])).await;
+    // Signed by someone else, or for other text: refused.
+    assert_eq!(
+        t.call("POST", "/v1/support", None, Some(message(&me, &identity::Identity::generate(), "hi", &[]))).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    let mut moved = message(&me, &me, "hi", &[]);
+    moved["text"] = json!("something else");
+    assert_eq!(t.call("POST", "/v1/support", None, Some(moved)).await.0, StatusCode::BAD_REQUEST);
+    // A file whose size isn't what it says: refused.
+    let (status, _) = t.call("POST", "/v1/support", None, Some(message(&me, &me, "hi", &[("launcher.log", gz(log), 3)]))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+
+    let (status, v) = t
+        .call(
+            "POST",
+            "/v1/support",
+            None,
+            Some(message(&me, &me, "My game drops every match.\nOn eu1.", &[("launcher.log", gz(log), log.len())])),
+        )
+        .await;
+    assert_eq!((status, v["files_kept"].as_bool()), (StatusCode::OK, Some(true)), "{v}");
+    let first = v["id"].as_i64().unwrap();
+
+    // The admins see it, unread, and read it with the player's account beside it.
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    let (_, v) = admin_call(&r, "GET", "/api/support", &cookie, None).await;
+    assert_eq!(
+        (v["threads"][0]["name"].as_str(), v["threads"][0]["unread"].as_i64(), v["threads"][0]["status"].as_str()),
+        (Some("Oni"), Some(1), Some("open")),
+        "{v}"
+    );
+    assert_eq!(t.c.support_unread_threads().await.unwrap(), 1);
+    let path = format!("/api/support/{}", me.global_id());
+    let (status, v) = admin_call(&r, "GET", &path, &cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["messages"][0]["files"][0]["name"].as_str(), Some("launcher.log"), "{v}");
+    assert_eq!(t.c.support_unread_threads().await.unwrap(), 0, "read once opened");
+    let (status, _) = admin_call(&r, "GET", &format!("{path}/files/{first}/launcher.log"), &cookie, None).await;
+    assert_eq!(status, StatusCode::OK);
+    // Another conversation's message number doesn't open this file.
+    let (status, _) = admin_call(
+        &r,
+        "GET",
+        &format!("/api/support/{}/files/{first}/launcher.log", identity::Identity::generate().global_id()),
+        &cookie,
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // An admin answers: the player sees it (unread until their Support page shows it).
+    let (status, v) = admin_call(
+        &r,
+        "POST",
+        &path,
+        &cookie,
+        Some(json!({ "text": "Thanks Oni, can you send the game's log after the next drop?" })),
+    )
+    .await;
+    assert_eq!((status, v["status"].as_str()), (StatusCode::OK, Some("waiting")), "{v}");
+    let (status, v) = t.call("GET", &mine(&me, false), None, None).await;
+    assert_eq!(
+        (status, v["unread"].as_i64(), v["messages"][1]["admin"].as_str()),
+        (StatusCode::OK, Some(1), Some("admin1")),
+        "{v}"
+    );
+    assert_eq!(v["messages"][1]["from"].as_str(), Some("admin"));
+
+    // Its server's pulse says so while the player's online there (for the overlay).
+    let roster = json!({ "full": false, "players": [player(1032, "Oni", Some(&me.global_id()))] });
+    assert_eq!(t.call("POST", "/v1/players", Some(&a), Some(roster)).await.0, StatusCode::OK);
+    let pulse = json!({ "players": { "online": 1 }, "counters": {}, "online": [{ "id": 1032, "name": "Oni" }] });
+    let (_, v) = t.call("POST", "/v1/pulse", Some(&a), Some(pulse.clone())).await;
+    assert_eq!(v["support"], json!([{ "player": 1032, "unread": 1 }]), "{v}");
+
+    // Read on the Support page: nothing unread, in the launcher or the pulse.
+    let (_, v) = t.call("GET", &mine(&me, true), None, None).await;
+    assert_eq!(v["unread"].as_i64(), Some(0));
+    let (_, v) = t.call("GET", &mine(&me, false), None, None).await;
+    assert_eq!(v["unread"].as_i64(), Some(0));
+    let (_, v) = t.call("POST", "/v1/pulse", Some(&a), Some(pulse)).await;
+    assert_eq!(v["support"], json!([]), "{v}");
+
+    // Writing again reopens it; resolving is the admins' call.
+    assert_eq!(
+        t.call("POST", "/v1/support", None, Some(message(&me, &me, "It dropped again.", &[]))).await.0,
+        StatusCode::OK
+    );
+    let (_, v) = admin_call(&r, "GET", "/api/support?status=open", &cookie, None).await;
+    assert_eq!(v["threads"].as_array().map(Vec::len), Some(1), "{v}");
+    let (status, _) = admin_call(&r, "PUT", &format!("{path}/status"), &cookie, Some(json!({ "status": "resolved" }))).await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, v) = admin_call(&r, "GET", "/api/support", &cookie, None).await;
+    assert_eq!(v["threads"].as_array().map(Vec::len), Some(0), "resolved isn't active: {v}");
+
+    // The player's account deleted on its server: the conversation goes with it.
+    let roster = json!({ "full": true, "players": [] });
+    assert_eq!(t.call("POST", "/v1/players", Some(&a), Some(roster)).await.0, StatusCode::OK);
+    let (_, v) = admin_call(&r, "GET", "/api/support?status=all", &cookie, None).await;
+    assert_eq!(v["threads"].as_array().map(Vec::len), Some(0), "{v}");
+}

@@ -19,6 +19,7 @@ mod server;
 mod server_menu;
 mod services;
 mod settings;
+mod support;
 mod task;
 mod theme;
 mod update_notice;

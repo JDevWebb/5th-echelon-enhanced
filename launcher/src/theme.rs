@@ -313,6 +313,7 @@ pub enum Icon {
     Servers,
     News,
     Roadmap,
+    Support,
     Host,
     Settings,
 }
@@ -352,6 +353,13 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: Colo
                     painter.rect_stroke(bar, 2, s, egui::StrokeKind::Middle);
                 }
             }
+        }
+        Icon::Support => {
+            // A speech bubble: a rounded box with a tail, and two lines of words in it.
+            painter.rect_stroke(egui::Rect::from_min_max(p(3.0, 4.0), p(21.0, 16.0)), 3, s, egui::StrokeKind::Middle);
+            painter.add(egui::Shape::line(vec![p(8.0, 16.0), p(7.0, 21.0), p(13.0, 16.0)], s));
+            painter.line_segment([p(7.0, 8.5), p(17.0, 8.5)], s);
+            painter.line_segment([p(7.0, 12.0), p(14.0, 12.0)], s);
         }
         Icon::Host => {
             // A broadcast: a mast with waves either side.
