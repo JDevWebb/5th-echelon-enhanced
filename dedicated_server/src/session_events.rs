@@ -29,8 +29,8 @@
 //! - `invite_delivered`: `from`, `room`.
 //! - `stats`: the game wrote stats (it does at the end of a mission or match).
 //! - `nat`: `relayed` (the player's game traffic goes through the server's relay).
-//! - `nat_missing`: `after_secs`: the game signed in and hadn't registered with the NAT helper
-//!   that long after; nobody can reach it.
+//! - `nat_missing`: `after_secs`: the game went online (opened or joined a room) and hadn't
+//!   registered with the NAT helper that long after; nobody can reach it.
 //! - `nat_lost`: `probe_secs`: the game's registration lapsed (no probe that long) while it
 //!   was still signed in; nobody can reach it until it registers again.
 //! - `relay_drop`: `direction` (`sending`: the relay stopped getting this player's traffic;

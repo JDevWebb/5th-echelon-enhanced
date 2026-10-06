@@ -554,7 +554,7 @@ fn describe(e: &Event) -> String {
             e.detail["probe_secs"]
         ),
         "nat_missing" => format!(
-            "Signed in, but the game hadn't registered for online play {} s later: nobody could reach it",
+            "In a room, but the game hadn't registered for online play {} s later: nobody could reach it",
             e.detail["after_secs"]
         ),
         "relay_drop" => format!(

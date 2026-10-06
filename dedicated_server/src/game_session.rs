@@ -337,6 +337,14 @@ impl GameSessionProtocolServerImpl {
         self.storage.is_invite_only_session(session_id).unwrap_or(false)
     }
 
+    /// The player's game is online (it opened or joined a room): it should be registered with
+    /// the NAT helper, and is noticed when it isn't.
+    fn went_online(&self, user_id: u32) {
+        if let Ok(Some(name)) = self.storage.find_username_by_user_id(user_id) {
+            crate::nat_helper::game_went_online(&name);
+        }
+    }
+
     /// Notes who is in a match (for the players count of finished matches and each
     /// player's matches); a lobby is left alone.
     fn note_match_players(&self, logger: &Logger, session_id: u32, users: impl IntoIterator<Item = u32>) {
@@ -472,6 +480,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         )?;
         made(ci, user_id, session_id);
         crate::session_events::note(crate::session_events::Who::Id(user_id), "room", serde_json::json!({ "room": session_id }));
+        self.went_online(user_id);
         Ok(CreateSessionResponse {
             game_session_key: GameSessionKey {
                 type_id: request.game_session.type_id,
@@ -1482,15 +1491,6 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         if invited {
             info!(logger, "User {user_id} joined session {} through an invitation", key.session_id);
         }
-        crate::session_events::joined(user_id, key.session_id, if invited { "invite" } else { "search" });
-        Ok(JoinSessionResponse)
-    }
-}
-
-/// The rooms each signed-in player's connections made, by connection: a game that dropped
-/// and signed in again from the same address (its old connection still open, as far as we
-/// know) leaves rooms nobody will host again, and they go when that old connection does
-/// ([`rooms_of`]), while the user, still connected, keeps everything else.
         // Who's in it: the host never adds a guest who joins this way, so note them here, or
         // they show as in no game at all. A private room only by invitation (the game sends
         // no JoinSession for one otherwise).
@@ -1501,6 +1501,16 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 Err(e) => warn!(logger, "Couldn't note {user_id} in session {}: {e}", key.session_id),
             }
         }
+        crate::session_events::joined(user_id, key.session_id, if invited { "invite" } else { "search" });
+        self.went_online(user_id);
+        Ok(JoinSessionResponse)
+    }
+}
+
+/// The rooms each signed-in player's connections made, by connection: a game that dropped
+/// and signed in again from the same address (its old connection still open, as far as we
+/// know) leaves rooms nobody will host again, and they go when that old connection does
+/// ([`rooms_of`]), while the user, still connected, keeps everything else.
 static ROOMS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u32, Vec<(quazal::ConnectionID, u32)>>>> = std::sync::LazyLock::new(Default::default);
 
 /// Notes that `ci`'s connection made room `session_id`.

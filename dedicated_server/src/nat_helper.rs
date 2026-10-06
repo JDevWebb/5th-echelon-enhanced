@@ -716,28 +716,37 @@ fn address_only(nonce: u32, src: SocketAddrV4, cookie: nat_proto::Cookie) -> Mes
     }
 }
 
-/// A game that signed in should probe the helper within this (it does in seconds; up to
-/// a minute seen): one that hasn't can't be reached by anyone, relayed or direct.
+/// A game that went online (opened or joined a room) should probe the helper within this (it
+/// does in a second or two): one that hasn't can't be reached by anyone, relayed or direct.
+/// Not from signing in: a game in the menus has no Storm socket, so nothing to register.
 const PROBE_WITHIN: Duration = Duration::from_secs(90);
 
-/// Games that signed in and haven't probed since: when they signed in, by name.
+/// Games online and not yet probed since: when they went online, by name.
 fn awaiting() -> std::sync::MutexGuard<'static, HashMap<String, Instant>> {
     static AWAITING: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
     AWAITING.get_or_init(Mutex::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Games signed in to the server now, by name: a registration that lapses while its game is
-/// still signed in leaves it unreachable.
-fn signed_in() -> std::sync::MutexGuard<'static, std::collections::HashSet<String>> {
-    static SIGNED_IN: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+/// Games signed in to the server now, by name, with when they signed in: a registration
+/// that lapses while its game is still signed in leaves it unreachable.
+fn signed_in() -> std::sync::MutexGuard<'static, HashMap<String, Instant>> {
+    static SIGNED_IN: OnceLock<Mutex<HashMap<String, Instant>>> = OnceLock::new();
     SIGNED_IN.get_or_init(Mutex::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// `name`'s game signed in: it should register with the helper soon (see [`PROBE_WITHIN`]).
+/// `name`'s game signed in.
 pub fn game_signed_in(name: &str) {
     if TABLE.get().is_some() {
-        awaiting().insert(name.to_lowercase(), Instant::now());
-        signed_in().insert(name.to_lowercase());
+        signed_in().insert(name.to_lowercase(), Instant::now());
+    }
+}
+
+/// `name`'s game went online (opened or joined a room): it should be registered with the
+/// helper soon (see [`PROBE_WITHIN`]).
+pub fn game_went_online(name: &str) {
+    let key = name.to_lowercase();
+    if TABLE.get().is_some() && signed_in().contains_key(&key) {
+        awaiting().entry(key).or_insert_with(Instant::now);
     }
 }
 
@@ -751,10 +760,13 @@ pub fn game_signed_out(name: &str) {
 /// is still signed in, with how long since it last probed. Their game stopped probing (the
 /// hook every 20 s) though it still talks to the server: nobody can reach it, relayed or
 /// direct, until it registers again (a restart of the game did, on NA1 on 2026-10-04).
+///
+/// Not when the game signed in again since its last probe: that's the game before a restart,
+/// whose registration lapsing says nothing about the new one.
 fn lapsed_while_signed_in(gone: &[(String, Instant)], now: Instant) -> Vec<(String, u64)> {
     let signed_in = signed_in();
     gone.iter()
-        .filter(|(name, _)| signed_in.contains(&name.to_lowercase()))
+        .filter(|(name, probed)| signed_in.get(&name.to_lowercase()).is_some_and(|since| since <= probed))
         .map(|(name, probed)| (name.clone(), now.duration_since(*probed).as_secs()))
         .collect()
 }
@@ -856,7 +868,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
             for (name, secs) in late {
                 warn!(
                     logger,
-                    "NAT helper: {name}'s game signed in {secs} s ago and hasn't registered with the helper: nobody can reach it until it does"
+                    "NAT helper: {name}'s game went online {secs} s ago (opened or joined a room) and hasn't registered with the helper: nobody can reach it until it does"
                 );
                 crate::session_events::note(crate::session_events::Who::Name(name), "nat_missing", serde_json::json!({ "after_secs": secs }));
             }
@@ -925,6 +937,14 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
             continue;
         }
 
+        if let Some(Message::Bye { tag }) = Message::decode(data) {
+            // The game went offline (or quit): nobody can join it now, and that's no fault.
+            if let Some(name) = table.lock().ok().and_then(|mut t| t.bye(src, tag)) {
+                info!(logger, "NAT helper: {name}'s game went offline");
+            }
+            continue;
+        }
+
         if let Some(Message::Probe {
             flags,
             nonce,
@@ -937,14 +957,6 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
         {
             if flags & probe_flags::SECOND_PORT != 0 {
                 continue;
-        if let Some(Message::Bye { tag }) = Message::decode(data) {
-            // The game went offline (or quit): nobody can join it now, and that's no fault.
-            if let Some(name) = table.lock().ok().and_then(|mut t| t.bye(src, tag)) {
-                info!(logger, "NAT helper: {name}'s game went offline");
-            }
-            continue;
-        }
-
             }
             let Some(keys) = KEYS.get() else { continue };
             // No ticket for this name: it only learns its address (the launcher's test).
@@ -1046,12 +1058,15 @@ mod tests {
         let ago = |s| now.checked_sub(Duration::from_secs(s)).unwrap();
         t.probe(a("198.51.100.30:13000"), 0, 1, None, "NAT-Lapse-On", ago(120));
         t.probe(a("198.51.100.31:13000"), 0, 1, None, "NAT-Lapse-Off", ago(120));
-        signed_in().insert("nat-lapse-on".into());
+        signed_in().insert("nat-lapse-on".into(), ago(600));
         let lapsed = lapsed_while_signed_in(&t.expiring(now), now);
         assert_eq!(lapsed.len(), 1, "{lapsed:?}");
         assert_eq!(lapsed[0].0, "nat-lapse-on");
         assert!(lapsed[0].1 >= 120);
         assert_eq!(t.expire(now).len(), 2);
+        // The game restarted (signed in again) after its last probe: the old game's lapse.
+        signed_in().insert("nat-lapse-on".into(), ago(60));
+        assert!(lapsed_while_signed_in(&[("nat-lapse-on".into(), ago(100))], now).is_empty());
         game_signed_out("NAT-Lapse-On");
         assert!(lapsed_while_signed_in(&[("nat-lapse-on".into(), ago(100))], now).is_empty());
     }
@@ -1330,21 +1345,6 @@ mod tests {
     }
 
     #[test]
-    fn the_one_player_at_an_address_is_found_by_it() {
-        let mut t = table(RelayMode::Auto);
-        let now = Instant::now();
-        let ip = Ipv4Addr::new(198, 51, 100, 7);
-        assert_eq!(t.advertised_for_ip(ip, now), None);
-        // First a direct registration (a router mapping): not final until it has stood a while.
-        let (direct, _) = advertise(&t.probe(a("198.51.100.7:25676"), probe_flags::HAS_MAPPING, 1, Some(a("198.51.100.7:25676")), "Solo", now));
-        assert_eq!(t.advertised_for_ip(ip, now), None, "the player may still move to the relay");
-        assert_eq!(t.advertised_for_ip(ip, now + SETTLE), Some(direct));
-        // Then its hook asks for the relay: final at once.
-        let (relay, relayed) = advertise(&t.probe(a("198.51.100.7:25676"), nat_proto::probe_flags::WANT_RELAY, 2, None, "Solo", now));
-        assert!(relayed);
-        assert_eq!(t.advertised_for_ip(ip, now), Some(relay), "a relayed player is reached on the relay");
-        t.probe(a("198.51.100.7:51000"), 0, 3, None, "Flatmate", now);
-    #[test]
     fn a_game_going_offline_is_forgotten_at_once() {
         let now = Instant::now();
         let mut t = table(RelayMode::All);
@@ -1360,6 +1360,21 @@ mod tests {
         assert!(t.expiring(now + EXPIRY + Duration::from_secs(1)).is_empty(), "so it never lapses");
     }
 
+    #[test]
+    fn the_one_player_at_an_address_is_found_by_it() {
+        let mut t = table(RelayMode::Auto);
+        let now = Instant::now();
+        let ip = Ipv4Addr::new(198, 51, 100, 7);
+        assert_eq!(t.advertised_for_ip(ip, now), None);
+        // First a direct registration (a router mapping): not final until it has stood a while.
+        let (direct, _) = advertise(&t.probe(a("198.51.100.7:25676"), probe_flags::HAS_MAPPING, 1, Some(a("198.51.100.7:25676")), "Solo", now));
+        assert_eq!(t.advertised_for_ip(ip, now), None, "the player may still move to the relay");
+        assert_eq!(t.advertised_for_ip(ip, now + SETTLE), Some(direct));
+        // Then its hook asks for the relay: final at once.
+        let (relay, relayed) = advertise(&t.probe(a("198.51.100.7:25676"), nat_proto::probe_flags::WANT_RELAY, 2, None, "Solo", now));
+        assert!(relayed);
+        assert_eq!(t.advertised_for_ip(ip, now), Some(relay), "a relayed player is reached on the relay");
+        t.probe(a("198.51.100.7:51000"), 0, 3, None, "Flatmate", now);
         assert_eq!(t.advertised_for_ip(ip, now + SETTLE), None, "two players behind one address can't be told apart");
     }
 
