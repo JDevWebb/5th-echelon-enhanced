@@ -430,6 +430,17 @@ impl Table {
             .map_or_else(|| "nobody's".into(), |p| format!("{}'s", p.name))
     }
 
+    /// Forgets the player registered from `src` with `tag`, whose game says it's going
+    /// offline (it closed its Storm socket); their name, if that was one. Anyone else's
+    /// tag, or another address, changes nothing.
+    pub fn bye(&mut self, src: SocketAddrV4, tag: nat_proto::Tag) -> Option<String> {
+        let id = *self.by_real.get(&src)?;
+        if self.peers.get(&id)?.tag != tag {
+            return None;
+        }
+        self.take(id).map(|p| p.name)
+    }
+
     /// The players [`Self::expire`] would forget now, with their game's last probe.
     fn expiring(&self, now: Instant) -> Vec<(String, Instant)> {
         self.peers
@@ -926,6 +937,14 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
         {
             if flags & probe_flags::SECOND_PORT != 0 {
                 continue;
+        if let Some(Message::Bye { tag }) = Message::decode(data) {
+            // The game went offline (or quit): nobody can join it now, and that's no fault.
+            if let Some(name) = table.lock().ok().and_then(|mut t| t.bye(src, tag)) {
+                info!(logger, "NAT helper: {name}'s game went offline");
+            }
+            continue;
+        }
+
             }
             let Some(keys) = KEYS.get() else { continue };
             // No ticket for this name: it only learns its address (the launcher's test).
@@ -1325,6 +1344,22 @@ mod tests {
         assert!(relayed);
         assert_eq!(t.advertised_for_ip(ip, now), Some(relay), "a relayed player is reached on the relay");
         t.probe(a("198.51.100.7:51000"), 0, 3, None, "Flatmate", now);
+    #[test]
+    fn a_game_going_offline_is_forgotten_at_once() {
+        let now = Instant::now();
+        let mut t = table(RelayMode::All);
+        let Message::ProbeReply { tag, .. } = t.probe(a("198.51.100.7:1"), 0, 1, None, "x", now) else {
+            panic!()
+        };
+        assert_ne!(tag, [0; 8]);
+        assert_eq!(t.bye(a("198.51.100.7:1"), [9; 8]), None, "someone else's tag");
+        assert_eq!(t.bye(a("198.51.100.7:2"), tag), None, "another address");
+        assert_eq!(t.len(), 1);
+        assert_eq!(t.bye(a("198.51.100.7:1"), tag).as_deref(), Some("x"));
+        assert_eq!(t.len(), 0);
+        assert!(t.expiring(now + EXPIRY + Duration::from_secs(1)).is_empty(), "so it never lapses");
+    }
+
         assert_eq!(t.advertised_for_ip(ip, now + SETTLE), None, "two players behind one address can't be told apart");
     }
 

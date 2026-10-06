@@ -128,12 +128,18 @@ pub enum Message {
     /// Server → hook: a game packet relayed from `from`, the sender's
     /// advertised address.
     DataFrom { tag: Tag, from: SocketAddrV4, payload: Vec<u8> },
+    /// Hook → server, from the Storm socket as the game closes it (going offline, or
+    /// quitting): forget this registration now rather than when its probes stop. Only from
+    /// the address registered, with its tag. A server from before it ignores it, and the
+    /// registration lapses as before.
+    Bye { tag: Tag },
 }
 
 const OP_PROBE: u8 = 1;
 const OP_PROBE_REPLY: u8 = 2;
 const OP_DATA_TO: u8 = 3;
 const OP_DATA_FROM: u8 = 4;
+const OP_BYE: u8 = 5;
 
 /// Whether `data` looks like one of these messages (and not a game packet).
 pub fn is_nat_message(data: &[u8]) -> bool {
@@ -199,6 +205,10 @@ impl Message {
             }
             Message::DataTo { tag, to, payload } => encode_data_to(&mut out, *tag, *to, payload),
             Message::DataFrom { tag, from, payload } => encode_data_from(&mut out, *tag, *from, payload),
+            Message::Bye { tag } => {
+                out.push(OP_BYE);
+                out.extend_from_slice(tag);
+            }
         }
         out
     }
@@ -256,6 +266,9 @@ impl Message {
                     Message::DataFrom { tag, from: a, payload }
                 })
             }
+            OP_BYE => Some(Message::Bye {
+                tag: body.get(..8)?.try_into().ok()?,
+            }),
             _ => None,
         }
     }
@@ -383,6 +396,7 @@ mod tests {
                 from: a("198.51.100.9:13000"),
                 payload: vec![],
             },
+            Message::Bye { tag: [5; 8] },
         ];
         for m in messages {
             assert_eq!(Message::decode(&m.encode()), Some(m));

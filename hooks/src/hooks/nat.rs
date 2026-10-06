@@ -50,6 +50,7 @@ use crate::config::NatMode;
 
 static_detour! {
     static BindHook: unsafe extern "system" fn(usize, *const u8, i32) -> i32;
+    static CloseSocketHook: unsafe extern "system" fn(usize) -> i32;
     static SendToHook: unsafe extern "system" fn(usize, *const u8, i32, i32, *const u8, i32) -> i32;
     static RecvFromHook: unsafe extern "system" fn(usize, *mut u8, i32, i32, *mut u8, *mut i32) -> i32;
     static EchoSendHook: unsafe extern "thiscall" fn(*mut c_void);
@@ -375,11 +376,65 @@ fn bind(s: usize, name: *const u8, namelen: i32) -> i32 {
                     st.second_observed = None;
                     st.symmetric = false;
                     st.last_probe = None;
+                    // Online again: registering takes a moment, not a warning.
+                    st.lost_at = Some(Instant::now());
                 }
             }
         }
     }
     res
+}
+
+/// The game closes its Storm socket when it goes offline (no party left: back to the main
+/// menu) and when it quits, and binds a new one when it goes online again. Tell the helper
+/// it's gone, so the server forgets the registration quietly (not as a game it lost), and
+/// stop probing: nobody can join a game that's offline, and that's nothing to warn about.
+fn closesocket(s: usize) -> i32 {
+    if s != NO_SOCKET && is_storm_socket(s) {
+        storm_socket_closing(s);
+    }
+    unsafe { CloseSocketHook.call(s) }
+}
+
+fn storm_socket_closing(s: usize) {
+    for slot in &OTHER_STORM_SOCKETS {
+        let _ = slot.compare_exchange(s, NO_SOCKET, Ordering::SeqCst, Ordering::SeqCst);
+    }
+    if STORM_SOCKET.load(Ordering::SeqCst) != s {
+        return;
+    }
+    // While it's still open: from the address the helper knows, with the tag it gave.
+    let bye = {
+        let st = state();
+        st.server.filter(|_| st.tag != [0; 8]).map(|server| (server, Message::Bye { tag: st.tag }.encode()))
+    };
+    if let Some((server, data)) = bye {
+        send_raw(s, &data, server);
+    }
+    // The game binds two sockets; one it keeps (should it) carries on, registering anew.
+    let next = OTHER_STORM_SOCKETS.iter().map(|o| o.swap(NO_SOCKET, Ordering::SeqCst)).find(|o| *o != NO_SOCKET);
+    STORM_SOCKET.store(next.unwrap_or(NO_SOCKET), Ordering::SeqCst);
+    let mut st = state();
+    if next.is_none() && st.reply.is_some() {
+        info!("NAT: the game closed its Storm socket (offline until it goes online again)");
+    }
+    forget_registration(&mut st);
+}
+
+/// Back to before the helper first answered: the next socket registers from scratch.
+fn forget_registration(st: &mut State) {
+    st.reply = None;
+    st.first_reply_at = None;
+    st.second_observed = None;
+    st.symmetric = false;
+    st.last_probe = None;
+    st.tag = [0; 8];
+    st.last_answer = None;
+    st.silence_said = false;
+    st.send_failing = false;
+    st.told_game = None;
+    st.echo_requests = 0;
+    st.lost_at = Some(Instant::now());
 }
 
 fn sendto(s: usize, buf: *const u8, len: i32, flags: i32, to: *const u8, tolen: i32) -> i32 {
@@ -720,9 +775,13 @@ fn worker(host: String, port: u16) {
             if let (Some(quiet), false) = (quiet, st.silence_said) {
                 if quiet >= SILENCE {
                     warn!(
-                        "NAT: no answer from the server's NAT helper for {} s (probing every {} s); it forgets this game after 90 s, and nobody can join it then",
+                        "NAT: no answer from the server's NAT helper for {} s (probing every {}); it forgets this game after 90 s, and nobody can join it then",
                         quiet.as_secs(),
-                        interval.as_secs()
+                        if interval < Duration::from_secs(1) {
+                            format!("{} ms", interval.as_millis())
+                        } else {
+                            format!("{} s", interval.as_secs())
+                        }
                     );
                     st.silence_said = true;
                 }
@@ -779,6 +838,10 @@ fn worker(host: String, port: u16) {
         for (data, to) in probes {
             if let Some(to) = to {
                 let sent = send_raw(socket, &data, to);
+                // Closed meanwhile (the game went offline, or is quitting): not a failure.
+                if sent < 0 && (STORM_SOCKET.load(Ordering::SeqCst) != socket || socket_gone()) {
+                    break;
+                }
                 let mut st = state();
                 if sent < 0 && !st.send_failing {
                     warn!("NAT: sending a probe to the server's NAT helper {to} failed ({sent})");
@@ -792,6 +855,23 @@ fn worker(host: String, port: u16) {
     }
 }
 
+/// Whether the last failed send was on a socket that's no longer there (closed, or Winsock
+/// shut down as the game quits) rather than one Windows wouldn't send on.
+fn socket_gone() -> bool {
+    use windows::Win32::Networking::WinSock::WSAGetLastError;
+    use windows::Win32::Networking::WinSock::WSAENOTSOCK;
+    use windows::Win32::Networking::WinSock::WSANOTINITIALISED;
+    let e = unsafe { WSAGetLastError() };
+    if e == WSAENOTSOCK || e == WSANOTINITIALISED {
+        let mut st = state();
+        if STORM_SOCKET.swap(NO_SOCKET, Ordering::SeqCst) != NO_SOCKET {
+            forget_registration(&mut st);
+        }
+        return true;
+    }
+    false
+}
+
 pub unsafe fn init_hooks(config: &Config, addr: &Addresses) {
     LOG_PACKETS.store(config.enable_all_hooks || config.enable_hooks.contains(&Hook::StormPackets), Ordering::Relaxed);
     let mode = config.networking.nat;
@@ -803,6 +883,7 @@ pub unsafe fn init_hooks(config: &Config, addr: &Addresses) {
 
     if let Ok(lib) = LoadLibraryA(s!("ws2_32.dll")) {
         super::hook!(BindHook, GetProcAddress(lib, s!("bind")), bind);
+        super::hook!(CloseSocketHook, GetProcAddress(lib, s!("closesocket")), closesocket);
         super::hook!(SendToHook, GetProcAddress(lib, s!("sendto")), sendto);
         super::hook!(RecvFromHook, GetProcAddress(lib, s!("recvfrom")), recvfrom);
     }
@@ -836,6 +917,7 @@ pub unsafe fn deinit_hooks() {
     let _ = EchoSendHook.disable();
     let _ = RecvFromHook.disable();
     let _ = SendToHook.disable();
+    let _ = CloseSocketHook.disable();
     let _ = BindHook.disable();
     super::portmap::stop();
 }
@@ -886,6 +968,24 @@ mod tests {
         assert_eq!(unreachable_at(&st, true, later), Some(Unreachable::CantSend));
         st.server = None;
         assert_eq!(unreachable_at(&st, true, later), Some(Unreachable::NoServer));
+    }
+
+    #[test]
+    fn a_game_that_goes_offline_and_back_is_never_unreachable_for_it() {
+        let t0 = Instant::now();
+        let mut st = online(t0);
+        st.tag = [7; 8];
+        st.last_answer = Some(t0);
+        // Leaving its last party, the game closes its socket: offline, nothing to say,
+        // however long it stays in the menus.
+        forget_registration(&mut st);
+        assert_eq!(st.tag, [0; 8]);
+        assert_eq!(unreachable_at(&st, false, t0 + Duration::from_secs(600)), None);
+        // Online again (a new socket): a moment to register, as at signing in.
+        let back = t0 + Duration::from_secs(100);
+        st.lost_at = Some(back);
+        assert_eq!(unreachable_at(&st, true, back + Duration::from_secs(5)), None);
+        assert_eq!(unreachable_at(&st, true, back + GRACE + Duration::from_secs(1)), Some(Unreachable::NoAnswer));
     }
 
     #[test]
