@@ -136,6 +136,13 @@ pub fn attach(name: &str, text: &str, private: &Private) -> std::io::Result<Atta
 
 /// [`attach`], cut to `max` bytes.
 fn attach_within(name: &str, text: &str, private: &Private, max: usize) -> std::io::Result<Attachment> {
+    let stripped;
+    let text = if name.starts_with("bl-tracing") {
+        stripped = without_call_tracing(text);
+        &stripped
+    } else {
+        text
+    };
     let mut text = redact(text, private);
     if text.len() > max && name == "bl-dataversion.txt" {
         let mut end = max;
@@ -158,6 +165,38 @@ fn attach_within(name: &str, text: &str, private: &Private, max: usize) -> std::
         size: text.len() as u64,
         text,
     })
+}
+
+/// The game's log without the lines that only trace its calls into the Uplay loader: each
+/// call writes the call, "Running the hook" and "result: true", and the game polls its
+/// overlapped operations constantly. In PlaySkill's 1 MB log (2 h 40 min) they were 98% of
+/// it; the calls themselves stay, so does any result but `true`.
+fn without_call_tracing(text: &str) -> String {
+    let noise = |line: &str| {
+        line.contains("uplay_r1_loader")
+            && (line.ends_with(": Running the hook")
+                || line.ends_with(": result: true")
+                || line.contains("UPLAY_HasOverlappedOperationCompleted")
+                || line.contains("UPLAY_GetOverlappedOperationResult"))
+    };
+    let mut out = String::with_capacity(text.len() / 3);
+    let mut left_out = 0usize;
+    for line in text.lines() {
+        if noise(line.trim_end()) {
+            left_out += 1;
+        } else {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    if left_out == 0 {
+        return text.to_string();
+    }
+    if !text.ends_with('\n') {
+        out.pop();
+    }
+    out.insert_str(0, &format!("({left_out} lines tracing the game's calls left out)\n"));
+    out
 }
 
 /// The files that go with a report from `game_dir` (the client's log, the one before, the
@@ -345,6 +384,24 @@ this PC is 122.58.93.144:13000; advertising 139.99.171.113:40000; LAN 192.168.0.
             let out = redact(r#"gethostbyname: called with "Jons-Aero15KD" by JON"#, &private);
             assert_eq!(out, r#"gethostbyname: called with "<private>" by <private>"#);
         }
+    }
+
+    #[test]
+    fn the_games_log_goes_without_its_call_tracing() {
+        let log = "\
+2026-10-06T06:36:50Z  INFO ThreadId(01) UPLAY_SAVE_Write{save_handle=0x1}: hooks::uplay_r1_loader::save: 218: UPLAY_SAVE_Write
+2026-10-06T06:36:50Z  INFO ThreadId(01) UPLAY_SAVE_Write{save_handle=0x1}: hooks::uplay_r1_loader::save: 218: Running the hook
+2026-10-06T06:36:50Z  INFO ThreadId(01) UPLAY_SAVE_Write{save_handle=0x1}: hooks::uplay_r1_loader::save: 218: result: true
+2026-10-06T06:36:50Z  INFO ThreadId(01) UPLAY_HasOverlappedOperationCompleted{overlapped=0x2}: hooks::uplay_r1_loader: 245: UPLAY_HasOverlappedOperationCompleted
+2026-10-06T06:36:51Z  INFO ThreadId(01) UPLAY_ACH_EarnAchievement{achievement_id=0x25}: hooks::uplay_r1_loader::ach: 8: result: false
+2026-10-06T06:59:14Z  WARN fe-nat ThreadId(04) hooks::hooks::nat: 784: NAT: sending a probe failed (-1)
+";
+        let a = attach("bl-tracing.log", log, &Private::default()).unwrap();
+        assert!(a.text.starts_with("(3 lines tracing the game's calls left out)"), "{}", a.text);
+        assert!(a.text.contains("218: UPLAY_SAVE_Write\n") && a.text.contains("result: false") && a.text.contains("NAT: sending"));
+        assert!(!a.text.contains("Running the hook") && !a.text.contains("result: true") && !a.text.contains("HasOverlapped"));
+        // Other files are as they were.
+        assert_eq!(attach("launcher.log", log, &Private::default()).unwrap().text, log);
     }
 
     #[test]
