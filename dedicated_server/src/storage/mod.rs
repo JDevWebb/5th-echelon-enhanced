@@ -1207,13 +1207,16 @@ impl Storage {
     /// Whether two players are in a live session together (either hosting).
     pub fn share_session(&self, a: u32, b: u32) -> Result<bool> {
         let n: i64 = run(sqlx::query_scalar(
+            // Participants and guests (who joined a public match: the `guests` table), so two
+            // guests of one match may be probed to each other (eu1, 2026-10-06: tacit_danger's
+            // game asked to probe Ghost_Leader's, both guests in a match, and was refused).
             "SELECT COUNT(*) FROM game_sessions g WHERE g.destroyed_at IS NULL
-               AND (g.creator_id = ? OR EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?))
-               AND (g.creator_id = ? OR EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?))",
+               AND (g.creator_id = ?1 OR EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?1)
+                    OR EXISTS (SELECT 1 FROM guests gu WHERE gu.game_id = g.id AND gu.user_id = ?1))
+               AND (g.creator_id = ?2 OR EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?2)
+                    OR EXISTS (SELECT 1 FROM guests gu WHERE gu.game_id = g.id AND gu.user_id = ?2))",
         )
         .bind(a)
-        .bind(a)
-        .bind(b)
         .bind(b)
         .fetch_one(&self.pool))??;
         Ok(n > 0)
@@ -1664,6 +1667,8 @@ pub(crate) mod tests {
         assert!(!storage.add_guest(game, host).unwrap(), "the host is no guest");
         assert_eq!(players(&storage), ["Asked", "Found", "Host"]);
         assert_eq!(storage.session_members(game).unwrap().unwrap().1, [host], "guests get no say over the session");
+        assert!(storage.share_session(found, asked).unwrap(), "two guests share the match (NAT probes between them)");
+        assert!(storage.share_session(host, found).unwrap());
 
         assert_eq!(storage.leave_game_session(found, game).unwrap(), Some(false), "a guest leaving ends nothing");
         storage.remove_participants(1, game, vec![asked]).unwrap();
