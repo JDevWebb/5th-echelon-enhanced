@@ -228,6 +228,7 @@ type Announcement = (Option<u32>, bool, Vec<u8>);
 /// thread, in order, so the game thread that calls `UPLAY_USER_SetGameSession`
 /// never waits on the network.
 pub fn announce_game_session(session_id: Option<u32>, invite_only: bool, session_data: &[u8]) {
+    crate::game_state::session(session_id, invite_only);
     static QUEUE: OnceLock<std::sync::Mutex<std::sync::mpsc::Sender<Announcement>>> = OnceLock::new();
     let queue = QUEUE.get_or_init(|| {
         let (tx, rx) = std::sync::mpsc::channel::<Announcement>();

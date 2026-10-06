@@ -4,6 +4,8 @@
 
 /// Modules whose ordinary (INFO) lines go too: the network code.
 const NETWORK: &[&str] = &["hooks::hooks::nat", "hooks::hooks::portmap", "hooks::hooks::nla"];
+/// What the game is doing: its session, saves, achievements and the overlay (`hooks::game_state`).
+const GAME_STATE: &str = "hooks::game_state";
 
 /// Whether a log line goes to the server: this client's warnings and errors, and the network
 /// code's lines but its packet dumps (those are for the player's own packet logging).
@@ -15,6 +17,7 @@ pub fn wanted(level: &str, target: &str, message: &str) -> bool {
     }
     match level {
         "ERROR" | "WARN" => true,
+        "INFO" if target.starts_with(GAME_STATE) => true,
         "INFO" => NETWORK.iter().any(|m| target.starts_with(m)) && !message.starts_with("sendto ") && !message.starts_with("recvfrom "),
         _ => false,
     }
@@ -80,6 +83,13 @@ pub fn example(log: &str, count: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn what_the_game_is_doing_goes_too() {
+        assert!(wanted("INFO", "hooks::game_state", "Saved the game (422 KB): a checkpoint, or a mission's end"));
+        assert!(!wanted("INFO", "hooks::uplay_r1_loader::save", "UPLAY_SAVE_Write"), "not the calls themselves");
+        assert!(!wanted("DEBUG", "hooks::game_state", "anything"));
+    }
 
     #[test]
     fn warnings_errors_and_network_lines_go_packet_dumps_dont() {

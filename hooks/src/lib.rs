@@ -37,6 +37,7 @@ mod community;
 mod dataversion;
 mod diagnostics;
 mod dll_utils;
+mod game_state;
 mod hooks;
 mod macros;
 mod overlay;

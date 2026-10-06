@@ -7,6 +7,8 @@ use super::UplayOverlapped;
 
 #[forwardable_export]
 unsafe extern "cdecl" fn UPLAY_ACH_EarnAchievement(achievement_id: *const c_void, overlapped: *mut UplayOverlapped) -> bool {
+    // The id is a small number passed as a pointer.
+    crate::game_state::achievement(achievement_id as usize);
     false
 }
 

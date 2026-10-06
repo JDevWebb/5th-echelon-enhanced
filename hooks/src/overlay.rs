@@ -400,7 +400,7 @@ impl MyRenderLoop {
         let f5 = down(overlay_key().1);
         if f5 && !self.f5_down {
             self.toggle();
-            info!("Overlay: {} ({})", if self.ui_state == UiState::Show { "opened" } else { "closed" }, overlay_key().0);
+            crate::game_state::overlay(self.ui_state == UiState::Show, &overlay_key().0);
         }
         self.f5_down = f5;
         let esc = down(VK_ESCAPE.0);

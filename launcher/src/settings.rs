@@ -234,7 +234,7 @@ fn feedback(app: &mut App, ui: &mut egui::Ui) {
     if let Some(game) = game.as_mut() {
         section(ui, "While you play", |ui| {
             ui.label(theme::muted(
-                "The game sends the server it's signed in to its warnings, errors and network events as they happen, so the server's admins can see why a join or a connection failed. Your PC's name, your user folder and your internet address are hidden first.",
+                "The game sends the server it's signed in to its warnings, errors and network events as they happen, and what it's doing (the game session it's in, its checkpoint saves), so the server's admins can see why a join, a connection or a mission failed. Your PC's name, your user folder and your internet address are hidden first.",
             ));
             let mut send = game.cfg.hook_config.send_diagnostics;
             if ui.checkbox(&mut send, "Send the game's diagnostics to the server").changed() {

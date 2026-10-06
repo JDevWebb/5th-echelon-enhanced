@@ -237,6 +237,9 @@ unsafe extern "cdecl" fn UPLAY_SAVE_Write(save_handle: *mut SaveHandle, num_of_b
         Ok(())
     };
     let exit_code = res.is_ok();
+    if exit_code {
+        crate::game_state::saved(num_of_bytes_to_write);
+    }
     if !overlapped.is_null() {
         if let Err(e) = res {
             error!("Couldn't write to file: {e}");
