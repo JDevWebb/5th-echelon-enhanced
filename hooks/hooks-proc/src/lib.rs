@@ -122,7 +122,9 @@ pub fn forwardable_export(attr: TokenStream, input: TokenStream) -> TokenStream 
                 }
                 if #always_call {
                     if #with_logging {
-                        ::tracing::warn!("Hook is marked as always execute, so calling it before forwarding the call.");
+                        // Expected for these hooks, not a fault: info, so it isn't sent as a
+                        // warning with the game's diagnostics (it was on every game start).
+                        ::tracing::info!("Hook is marked as always execute, so calling it before forwarding the call.");
                     }
                     // consuming any must_use
                     let _ = #body;

@@ -408,7 +408,8 @@ fn get_adapters_info(adapter_info: *mut IP_ADAPTER_INFO, sizepointer: *mut u32) 
             if adapter.is_aligned() {
                 std::ptr::copy(adapter, adapter_info, 1);
             } else {
-                warn!(
+                // Handled (copied byte by byte), and usual on Windows: not a warning.
+                tracing::debug!(
                     "adapter structs are unaligned. {:?} should align to {}. Trying to copy from {:?} as u8",
                     adapter,
                     std::mem::align_of::<IP_ADAPTER_INFO>(),
