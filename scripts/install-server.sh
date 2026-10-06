@@ -1734,6 +1734,9 @@ UPDATER
     install -d -m 755 "$UPDATE_DIR/sums/$release_version"
     cp "$work/SHA256SUMS" "$work/SHA256SUMS.sig" "$UPDATE_DIR/sums/$release_version/"
   fi
+  # The programs checked now too: the services were started before this updater was in
+  # place, so on an upgrade their start ran the one before it, which has no --verify.
+  "$UPDATER" --verify >/dev/null 2>&1 || true
   # Where earlier updaters wrote their status, in the services' folders (the
   # server reads that only when root's file isn't there).
   rm -f "$STATE_DIR/update-status.json"
