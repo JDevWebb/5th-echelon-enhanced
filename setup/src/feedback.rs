@@ -114,6 +114,57 @@ impl Asked {
 pub use hooks_config::redact::redact;
 pub use hooks_config::redact::Private;
 
+/// The address of a coordinator's `GET /v1/reports/mine`, signed with `identity` at `time`:
+/// the player's own reports, with the admins' replies.
+pub fn my_reports_url(coordinator: &str, identity: &identity::Identity, time: i64) -> String {
+    let base = format!("{}/v1/reports/mine", coordinator.trim().trim_end_matches('/'));
+    let Ok(mut url) = url::Url::parse(&base) else { return base };
+    url.query_pairs_mut()
+        .append_pair("identity", &identity.global_id())
+        .append_pair("time", &time.to_string())
+        .append_pair("signature", &identity.sign(&identity::reports_message(time)));
+    url.into()
+}
+
+/// One of the player's reports, with the admins' reply if there is one.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+pub struct MyReport {
+    pub id: String,
+    #[serde(default)]
+    pub server: String,
+    #[serde(default)]
+    pub created_at: i64,
+    #[serde(default)]
+    pub rating: Option<String>,
+    #[serde(default)]
+    pub problems: Vec<String>,
+    #[serde(default)]
+    pub comment: String,
+    #[serde(default)]
+    pub status: String,
+    #[serde(default)]
+    pub reply: String,
+    #[serde(default)]
+    pub replied_at: Option<i64>,
+}
+
+/// The player's reports from the coordinator's answer, newest first as it gives them; their
+/// texts cut and cleaned as any server's.
+pub fn parse_my_reports(json: &str) -> anyhow::Result<Vec<MyReport>> {
+    #[derive(serde::Deserialize)]
+    struct Answer {
+        reports: Vec<MyReport>,
+    }
+    let mut reports = serde_json::from_str::<Answer>(json)?.reports;
+    reports.truncate(20);
+    for r in &mut reports {
+        r.server = hooks_config::text::clip(&r.server, 64);
+        r.comment = hooks_config::text::clip(&r.comment, 200);
+        r.reply = hooks_config::text::clip_keeping_lines(&r.reply, 1000);
+    }
+    Ok(reports)
+}
+
 /// A file going with a report: what's sent (gzip) and what the player can look at first.
 #[derive(Debug, Clone)]
 pub struct Attachment {
@@ -402,6 +453,19 @@ this PC is 122.58.93.144:13000; advertising 139.99.171.113:40000; LAN 192.168.0.
         assert!(!a.text.contains("Running the hook") && !a.text.contains("result: true") && !a.text.contains("HasOverlapped"));
         // Other files are as they were.
         assert_eq!(attach("launcher.log", log, &Private::default()).unwrap().text, log);
+    }
+
+    #[test]
+    fn my_reports_are_read_signed_and_cleaned() {
+        let me = identity::Identity::generate();
+        let url = my_reports_url("https://play.example.net/", &me, 1_791_300_000);
+        assert!(url.starts_with("https://play.example.net/v1/reports/mine?identity="), "{url}");
+        assert!(url.contains("&time=1791300000&signature="));
+        let json = r#"{"reports":[{"id":"0ac6","server":"EU","created_at":5,"rating":"bad","problems":["join"],"comment":"Said no other players can see you","status":"resolved","reply":"Thanks!\nFixed in 0.4.3.\u0007","replied_at":9,"extra":1}]}"#;
+        let r = &parse_my_reports(json).unwrap()[0];
+        assert_eq!((r.id.as_str(), r.status.as_str(), r.replied_at), ("0ac6", "resolved", Some(9)));
+        assert_eq!(r.reply, "Thanks!\nFixed in 0.4.3.");
+        assert!(parse_my_reports("{}").is_err());
     }
 
     #[test]

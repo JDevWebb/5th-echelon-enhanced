@@ -121,6 +121,10 @@ pub struct Prefs {
     /// The release whose What's new was last shown, or noted on a fresh install (whats_new.rs).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     whats_new_seen: Option<String>,
+    /// When the newest reply to the player's reports that they were told of was written
+    /// (feedback.rs): newer ones get a notice.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    replies_seen: Option<i64>,
 }
 
 /// A server the player connected to by its address.
@@ -240,6 +244,16 @@ impl Prefs {
     pub fn set_whats_new_seen(release: &str) {
         let mut prefs = Self::load();
         prefs.whats_new_seen = Some(release.to_string());
+        prefs.save();
+    }
+
+    pub fn replies_seen() -> Option<i64> {
+        Self::load().replies_seen
+    }
+
+    pub fn set_replies_seen(at: i64) {
+        let mut prefs = Self::load();
+        prefs.replies_seen = Some(at);
         prefs.save();
     }
 
@@ -603,6 +617,15 @@ impl App {
 
     pub fn feedback_busy(&self) -> bool {
         self.feedback.busy()
+    }
+
+    /// The player's reports with the admins' replies, as last read.
+    pub fn my_reports(&self) -> Option<&Result<Vec<setup::feedback::MyReport>, String>> {
+        self.feedback.mine.as_ref()
+    }
+
+    pub fn read_my_reports(&mut self, ctx: &egui::Context) {
+        self.feedback.read_mine(ctx);
     }
 
     pub fn open_settings(&mut self, section: crate::settings::Section) {

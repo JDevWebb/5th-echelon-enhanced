@@ -39,6 +39,8 @@ const MAX_CLIENT_FIELDS: usize = 16;
 const MAX_CLIENT_FIELD: usize = 64;
 /// The longest note an admin may leave on a report.
 pub const MAX_NOTE: usize = 500;
+/// The longest reply to a player, in characters.
+pub const MAX_REPLY: usize = 1000;
 /// Reports (and their files) are kept this long.
 pub const KEEP_FOR: i64 = 90 * 86_400;
 /// The most the reports' files may take on disk (as stored, compressed).
@@ -269,7 +271,7 @@ pub(crate) fn check(v: &Value, now: i64) -> Result<Report, String> {
 
 /// A report's list columns.
 const COLUMNS: &str = "r.id, r.server_id, r.created_at, r.received_at, r.player_id, r.player_name, r.player_identity, r.rating, r.problems,
-       r.triggers, r.client, r.comment, r.status, r.note, r.resolved_by, r.resolved_at,
+       r.triggers, r.client, r.comment, r.status, r.note, r.resolved_by, r.resolved_at, r.reply, r.replied_by, r.replied_at,
        (SELECT json_group_array(json_object('name', f.name, 'size', f.size, 'dropped', json(CASE WHEN f.dropped = 1 THEN 'true' ELSE 'false' END))) FROM player_report_files f WHERE f.report_id = r.id) AS files";
 
 fn parsed(text: &str) -> Value {
@@ -297,6 +299,9 @@ fn row_json(r: &sqlx::sqlite::SqliteRow, comment_max: usize) -> Value {
         "note": r.get::<String, _>("note"),
         "resolved_by": r.get::<Option<String>, _>("resolved_by"),
         "resolved_at": r.get::<Option<i64>, _>("resolved_at"),
+        "reply": r.get::<String, _>("reply"),
+        "replied_by": r.get::<Option<String>, _>("replied_by"),
+        "replied_at": r.get::<Option<i64>, _>("replied_at"),
     })
 }
 
@@ -546,7 +551,7 @@ impl Coordinator {
 
     /// Opens or resolves a report (resolving notes who, unless it was resolved already), with
     /// a new note if given. Answers its status before, and its row; None for no such report.
-    pub async fn set_report_status(&self, id: &str, status: &str, note: Option<&str>, by: &str) -> sqlx::Result<Option<(String, Value)>> {
+    pub async fn set_report_status(&self, id: &str, status: &str, note: Option<&str>, reply: Option<&str>, by: &str) -> sqlx::Result<Option<(String, Value)>> {
         let id = id.to_ascii_lowercase();
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let before: Option<String> = sqlx::query_scalar("SELECT status FROM player_reports WHERE id = ?")
@@ -568,12 +573,56 @@ impl Coordinator {
         .bind(&id)
         .execute(&mut *tx)
         .await?;
+        // A reply the player reads: who wrote it and when, if it changed.
+        if let Some(reply) = reply {
+            sqlx::query(
+                "UPDATE player_reports SET replied_by = CASE WHEN ?1 = '' THEN NULL ELSE ?2 END, replied_at = CASE WHEN ?1 = '' THEN NULL ELSE ?3 END,
+                        reply = ?1
+                  WHERE id = ?4 AND reply != ?1",
+            )
+            .bind(reply)
+            .bind(by)
+            .bind(identity::now())
+            .bind(&id)
+            .execute(&mut *tx)
+            .await?;
+        }
         let row = sqlx::query(&format!("SELECT {COLUMNS} FROM player_reports r WHERE r.id = ?1"))
             .bind(&id)
             .fetch_one(&mut *tx)
             .await?;
         tx.commit().await?;
         Ok(Some((before, row_json(&row, 200))))
+    }
+
+    /// The reports a player sent with `identity` (any server, any account), newest first, with
+    /// the admins' replies: what their launcher shows (`GET /v1/reports/mine`). Not the note,
+    /// the logs or what the server said.
+    pub(crate) async fn reports_of(&self, identity: &str) -> sqlx::Result<Value> {
+        let rows: Vec<(String, String, i64, Option<String>, String, String, String, String, Option<i64>)> = sqlx::query_as(
+            "SELECT id, server_id, created_at, rating, problems, comment, status, reply, replied_at FROM player_reports
+              WHERE player_identity = ? ORDER BY created_at DESC LIMIT 20",
+        )
+        .bind(identity)
+        .fetch_all(&self.pool)
+        .await?;
+        let names: std::collections::HashMap<String, String> = sqlx::query_as::<_, (String, Option<String>)>("SELECT id, json_extract(listing, '$.name') FROM servers")
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .filter_map(|(id, name)| Some((id, name?)))
+            .collect();
+        let reports: Vec<Value> = rows
+            .into_iter()
+            .map(|(id, server, created_at, rating, problems, comment, status, reply, replied_at)| {
+                json!({
+                    "id": id, "server": names.get(&server).cloned().unwrap_or(server), "created_at": created_at, "rating": rating,
+                    "problems": parsed(&problems), "comment": comment.chars().take(200).collect::<String>(), "status": status,
+                    "reply": reply, "replied_at": replied_at,
+                })
+            })
+            .collect();
+        Ok(json!({ "reports": reports }))
     }
 
     /// Deletes a report and its files. Answers who it was from, or None for no such report.

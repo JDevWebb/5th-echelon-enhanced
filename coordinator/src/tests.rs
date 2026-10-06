@@ -1951,6 +1951,72 @@ async fn admins_read_resolve_and_delete_reports() {
 }
 
 #[tokio::test]
+async fn players_read_the_admins_replies_to_their_reports() {
+    let t = start("reports-replies").await;
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    let me = identity::Identity::generate();
+    let one = report_id(1);
+    let mut body = report_body(&one);
+    body["player"] = json!({ "id": 1032, "name": "Oni", "identity": me.global_id() });
+    assert_eq!(t.call("POST", "/v1/reports", Some(&a), Some(body)).await.0, StatusCode::OK);
+
+    let mine = |who: &identity::Identity, signer: &identity::Identity| {
+        let time = identity::now();
+        format!(
+            "/v1/reports/mine?identity={}&time={time}&signature={}",
+            who.global_id(),
+            signer.sign(&identity::reports_message(time))
+        )
+    };
+    let (status, v) = t.call("GET", &mine(&me, &me), None, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!((v["reports"][0]["id"].as_str(), v["reports"][0]["reply"].as_str()), (Some(one.as_str()), Some("")));
+    assert!(
+        v["reports"][0].get("note").is_none() && v["reports"][0].get("files").is_none(),
+        "only what the player said, and the reply"
+    );
+    // Someone else's signature, or the suggestions' message, reads nothing.
+    assert_eq!(t.call("GET", &mine(&me, &identity::Identity::generate()), None, None).await.0, StatusCode::FORBIDDEN);
+    let time = identity::now();
+    let wrong = format!(
+        "/v1/reports/mine?identity={}&time={time}&signature={}",
+        me.global_id(),
+        me.sign(&identity::suggestions_message(time))
+    );
+    assert_eq!(t.call("GET", &wrong, None, None).await.0, StatusCode::FORBIDDEN);
+
+    // An admin replies (and notes something only admins see).
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    let (status, v) = admin_call(
+        &r,
+        "POST",
+        &format!("/api/reports/{one}"),
+        &cookie,
+        Some(json!({ "status": "resolved", "note": "false banner", "reply": "Thanks Oni! That warning was wrong; 0.4.3 fixes it." })),
+    )
+    .await;
+    assert_eq!((status, v["replied_by"].as_str()), (StatusCode::OK, Some("admin1")), "{v}");
+    let (_, v) = t.call("GET", &mine(&me, &me), None, None).await;
+    let r0 = &v["reports"][0];
+    assert_eq!(
+        (r0["reply"].as_str(), r0["status"].as_str()),
+        (Some("Thanks Oni! That warning was wrong; 0.4.3 fixes it."), Some("resolved"))
+    );
+    assert!(r0["replied_at"].as_i64().is_some());
+    // Too long a reply is refused.
+    let (status, _) = admin_call(
+        &r,
+        "POST",
+        &format!("/api/reports/{one}"),
+        &cookie,
+        Some(json!({ "status": "resolved", "reply": "r".repeat(1001) })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
 async fn reports_files_keep_under_the_cap_and_reports_go_after_90_days() {
     let t = start("reports-storage").await;
     let a = t.join("server-a").await;

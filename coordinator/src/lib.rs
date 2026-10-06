@@ -632,6 +632,7 @@ impl Coordinator {
             .route("/v1/roadmap", get(roadmap_public))
             .route("/v1/suggestions", post(suggest))
             .route("/v1/suggestions/mine", get(my_suggestions))
+            .route("/v1/reports/mine", get(my_reports))
             .route("/v1/changes", post(changes))
             .route("/v1/relations/{global_id}", get(relations))
             .route("/v1/names/claim", post(claim_name))
@@ -1572,6 +1573,18 @@ async fn my_suggestions(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<
         return fail(StatusCode::FORBIDDEN, "the signature doesn't match");
     }
     c.suggestions_of(&q.identity).await.map_or_else(internal, ok)
+}
+
+/// A player's own reports, with the admins' replies (signed: only they read them). On any
+/// network, unlike suggestions: every coordinator takes reports.
+async fn my_reports(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap, Query(q): Query<Signed>) -> Answer {
+    if !c.reads.check(&limit_key(client_ip(peer, &headers))) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "too many requests");
+    }
+    if !identity::fresh(q.time, identity::now()) || !identity::verify(&q.identity, &identity::reports_message(q.time), &q.signature) {
+        return fail(StatusCode::FORBIDDEN, "the signature doesn't match");
+    }
+    c.reports_of(&q.identity).await.map_or_else(internal, ok)
 }
 
 async fn changes(State(c): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {

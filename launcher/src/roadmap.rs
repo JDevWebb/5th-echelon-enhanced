@@ -60,7 +60,7 @@ pub struct Roadmap {
 }
 
 /// The project's server: a client that waits 10 s at most and follows no redirects.
-fn client() -> Result<reqwest::Client, String> {
+pub(crate) fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
@@ -70,7 +70,7 @@ fn client() -> Result<reqwest::Client, String> {
 
 /// The answer's body, as text, up to [`setup::roadmap::MAX_BYTES`]; or the server's own words
 /// when it said no.
-async fn body(resp: reqwest::Response) -> Result<String, String> {
+pub(crate) async fn body(resp: reqwest::Response) -> Result<String, String> {
     let status = resp.status();
     let mut resp = resp;
     let mut body = Vec::new();
@@ -87,7 +87,7 @@ async fn body(resp: reqwest::Response) -> Result<String, String> {
     Ok(body)
 }
 
-fn unreachable(e: reqwest::Error) -> String {
+pub(crate) fn unreachable(e: reqwest::Error) -> String {
     if e.is_timeout() {
         "The project's server didn't answer in time.".into()
     } else {
@@ -114,7 +114,7 @@ fn fetch_roadmap() -> Result<setup::roadmap::Roadmap, String> {
 }
 
 /// The player's identity, which signs what they send.
-fn load_identity() -> Result<identity::Identity, String> {
+pub(crate) fn load_identity() -> Result<identity::Identity, String> {
     match setup::player_identity::load() {
         Ok(Some(identity)) => Ok(identity),
         Ok(None) => Err("Connect to a server first: your identity, which signs suggestions, is made then.".into()),
@@ -123,7 +123,7 @@ fn load_identity() -> Result<identity::Identity, String> {
 }
 
 /// Whether this PC has an identity yet (made when the player first connects).
-fn has_identity() -> bool {
+pub(crate) fn has_identity() -> bool {
     setup::player_identity::path().is_some_and(|p| p.exists())
 }
 

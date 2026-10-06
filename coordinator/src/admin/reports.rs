@@ -4,7 +4,8 @@
 //! * `GET /api/reports/<id>`: one report, with its summary, the server's log lines and the
 //!   player's other reports.
 //! * `GET /api/reports/<id>/files/<name>`: a file, decompressed, as a plain-text download.
-//! * `POST /api/reports/<id>` `{status, note?}`: resolves or reopens it.
+//! * `POST /api/reports/<id>` `{status, note?, reply?}`: resolves or reopens it; `reply` is
+//!   for the player, who reads it in their launcher.
 //! * `DELETE /api/reports/<id>`: deletes it with its files (a second factor proved lately).
 
 use axum::extract::Path;
@@ -83,6 +84,8 @@ struct StatusChange {
     status: String,
     #[serde(default)]
     note: Option<String>,
+    #[serde(default)]
+    reply: Option<String>,
 }
 
 async fn set_status(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Path(id): Path<String>, Json(req): Json<StatusChange>) -> Response {
@@ -97,7 +100,11 @@ async fn set_status(State(c): State<Shared>, Extension(client): Extension<Client
     if note.is_some_and(|n| n.chars().count() > reports::MAX_NOTE || n.chars().any(|ch| (ch.is_control() && ch != '\n') || crate::hidden_char(ch))) {
         return fail(StatusCode::BAD_REQUEST, "a note is up to 500 printable characters");
     }
-    match c.set_report_status(&id, &req.status, note, &s.username).await {
+    let reply = req.reply.as_deref().map(str::trim);
+    if reply.is_some_and(|r| r.chars().count() > reports::MAX_REPLY || r.chars().any(|ch| (ch.is_control() && ch != '\n') || crate::hidden_char(ch))) {
+        return fail(StatusCode::BAD_REQUEST, "a reply is up to 1000 printable characters");
+    }
+    match c.set_report_status(&id, &req.status, note, reply, &s.username).await {
         Ok(Some((before, row))) => {
             let who = row["player"]["name"].as_str().unwrap_or_default();
             let server = row["server"].as_str().unwrap_or_default();
@@ -107,6 +114,11 @@ async fn set_status(State(c): State<Shared>, Extension(client): Extension<Client
                 (false, _) => "reopened",
             };
             let note = note.filter(|n| !n.is_empty()).map(|n| format!(": {n}")).unwrap_or_default();
+            let what = if reply.is_some_and(|r| !r.is_empty()) {
+                format!("{what}, replied")
+            } else {
+                what.to_string()
+            };
             c.audit(
                 &s.username,
                 Some(&client),

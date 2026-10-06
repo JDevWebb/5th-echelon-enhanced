@@ -85,6 +85,11 @@ pub struct Feedback {
     resumed: bool,
     resending: Slot<Result<String, String>>,
     resent: Option<crate::activity::Handle>,
+    /// The player's reports with the admins' replies (`GET /v1/reports/mine`): read once a
+    /// run, and again from Settings › Feedback.
+    reading_mine: Slot<Result<Vec<setup::feedback::MyReport>, String>>,
+    pub(crate) mine: Option<Result<Vec<setup::feedback::MyReport>, String>>,
+    asked_mine: bool,
     /// The player closed the launcher while a report was sending: asking whether to wait
     /// (`Some(true)`), or waiting to close once it's sent (`Some(false)`).
     closing: Option<bool>,
@@ -310,7 +315,32 @@ mod pending {
     }
 }
 
+/// The player's reports, from the coordinator the launcher uses (the community network's
+/// unless they set another), signed with their identity.
+fn fetch_mine() -> Result<Vec<setup::feedback::MyReport>, String> {
+    let identity = crate::roadmap::load_identity()?;
+    let coordinator = Prefs::directory().unwrap_or_else(|| setup::directory::COMMUNITY.to_string());
+    let url = setup::feedback::my_reports_url(&coordinator, &identity, identity::now());
+    crate::services::rt().block_on(async {
+        let resp = crate::roadmap::client()?
+            .get(url)
+            .header("accept", "application/json")
+            .send()
+            .await
+            .map_err(crate::roadmap::unreachable)?;
+        let body = crate::roadmap::body(resp).await?;
+        setup::feedback::parse_my_reports(&body).map_err(|_| "The server sent an answer the launcher can't read.".to_string())
+    })
+}
+
 impl Feedback {
+    /// Reads the player's reports and the admins' replies (in the background).
+    pub fn read_mine(&mut self, ctx: &egui::Context) {
+        if !self.reading_mine.running() && crate::roadmap::has_identity() {
+            self.reading_mine.start(ctx, fetch_mine);
+        }
+    }
+
     /// At start: sends the report left unsent last time, if the account it's for is still
     /// set up here (its saved password signs in); else lets it go.
     pub fn resume(&mut self, ctx: &egui::Context, notices: &mut Notices, cfg: &Config) {
@@ -457,6 +487,26 @@ impl Feedback {
             }
         }
         self.ask_before_closing(ctx);
+        // Once a run: the admins' replies, and a notice for any new since the player last saw.
+        if !self.asked_mine {
+            self.asked_mine = true;
+            self.read_mine(ctx);
+        }
+        if let Some(result) = self.reading_mine.poll() {
+            if let Ok(mine) = &result {
+                let seen = Prefs::replies_seen();
+                let newest = mine.iter().filter(|r| !r.reply.is_empty()).max_by_key(|r| r.replied_at.unwrap_or(0));
+                if let Some(r) = newest.filter(|r| seen.is_none_or(|s| r.replied_at.unwrap_or(0) > s)) {
+                    notices.info(format!(
+                        "The admins of {} replied to your report: \"{}\" (Settings › Feedback)",
+                        if r.server.is_empty() { "your server" } else { &r.server },
+                        r.reply.lines().next().unwrap_or_default()
+                    ));
+                    Prefs::set_replies_seen(r.replied_at.unwrap_or(0));
+                }
+            }
+            self.mine = Some(result);
+        }
         if let Some((id, ask)) = self.failed.clone() {
             match notices.take_action(id) {
                 Some(Action::Retry) => {

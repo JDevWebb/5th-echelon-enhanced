@@ -260,6 +260,49 @@ fn feedback(app: &mut App, ui: &mut egui::Ui) {
             app.ask_feedback(&ctx);
         }
     });
+    section(ui, "Your reports", |ui| {
+        ui.label(theme::muted("What you sent, and what the admins replied."));
+        let mut refresh = false;
+        match app.my_reports() {
+            None => {
+                ui.spinner();
+            }
+            Some(Err(e)) => {
+                ui.label(theme::muted(e.as_str()));
+            }
+            Some(Ok(mine)) if mine.is_empty() => {
+                ui.label(theme::muted("None yet."));
+            }
+            Some(Ok(mine)) => {
+                for r in mine {
+                    ui.add_space(6.0);
+                    let when = setup::clock::Clock::local().date(r.created_at);
+                    let said = if r.comment.is_empty() {
+                        "(no comment)".to_string()
+                    } else {
+                        format!("\u{201c}{}\u{201d}", r.comment)
+                    };
+                    ui.label(format!(
+                        "{when} · {} · {}",
+                        if r.server.is_empty() { "a server" } else { &r.server },
+                        if r.status == "resolved" { "resolved" } else { "open" }
+                    ));
+                    ui.label(theme::muted(said));
+                    if !r.reply.is_empty() {
+                        ui.label(egui::RichText::new(format!("Reply: {}", r.reply)).color(theme::ACCENT));
+                    }
+                }
+            }
+        }
+        ui.add_space(6.0);
+        if ui.link("Check again").clicked() {
+            refresh = true;
+        }
+        if refresh {
+            let ctx = ui.ctx().clone();
+            app.read_my_reports(&ctx);
+        }
+    });
 }
 
 /// The launcher's size: it fits its window, and the player's size comes on top.

@@ -16,9 +16,20 @@ pub fn clip(text: &str, max: usize) -> String {
     kept.trim().to_string()
 }
 
+/// [`clip`], keeping line breaks (`\n`): for a reply of a few lines.
+pub fn clip_keeping_lines(text: &str, max: usize) -> String {
+    let kept: String = text.chars().filter(|c| (*c == '\n' || !c.is_control()) && !sneaky(*c)).take(max).collect();
+    kept.trim().to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_reply_keeps_its_lines() {
+        assert_eq!(clip_keeping_lines("Thanks!\nFixed.\r\u{7}\u{202e} ", 100), "Thanks!\nFixed.");
+    }
 
     #[test]
     fn clips_and_cleans() {

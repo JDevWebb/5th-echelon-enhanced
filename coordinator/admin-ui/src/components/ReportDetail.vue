@@ -27,9 +27,14 @@
           </span>
           <button class="small danger" type="button" @click="remove">Delete</button>
         </div>
-        <label class="field"><span>Note</span><textarea v-model="note" maxlength="500" rows="2" placeholder="What it was, what was done"></textarea></label>
+        <label class="field"><span>Note <span class="muted">(admins only)</span></span><textarea v-model="note" maxlength="500" rows="2" placeholder="What it was, what was done"></textarea></label>
+        <label class="field">
+          <span>Reply to {{ r.player.name }} <span class="muted">(they read it in their launcher, under Settings › Feedback)</span></span>
+          <textarea v-model="reply" maxlength="1000" rows="3" :placeholder="r.player.identity ? 'Thanks, what we found, what to try' : 'Their launcher didn\'t send an identity: they won\'t see a reply'" :disabled="!r.player.identity"></textarea>
+        </label>
+        <p v-if="r.reply && r.replied_at" class="small muted">Replied by {{ r.replied_by }} · {{ fmt.ago(r.replied_at) }}</p>
         <div class="row end">
-          <button v-if="note.trim() !== r.note" class="small" type="button" :disabled="busy" @click="setStatus(r.status)">Save note</button>
+          <button v-if="note.trim() !== r.note || reply.trim() !== (r.reply || '')" class="small" type="button" :disabled="busy" @click="setStatus(r.status)">Save</button>
           <button v-if="r.status === 'open'" class="small primary" type="button" :disabled="busy" @click="setStatus('resolved')">Resolve</button>
           <button v-else class="small" type="button" :disabled="busy" @click="setStatus('open')">Reopen</button>
         </div>
@@ -105,6 +110,7 @@ const emit = defineEmits(['close', 'changed', 'open']);
 const r = ref(null);
 const error = ref('');
 const note = ref('');
+const reply = ref('');
 const busy = ref(false);
 const viewing = reactive({});
 
@@ -112,6 +118,7 @@ async function load() {
   try {
     r.value = await api('GET', `/reports/${props.id}`);
     note.value = r.value.note;
+    reply.value = r.value.reply || '';
     error.value = '';
   } catch (e) {
     error.value = e.status === 404 ? 'This report is gone (deleted, or past 90 days).' : e.message;
@@ -126,8 +133,10 @@ watch(() => props.id, () => {
 // Another admin resolving it shows here too (a note being typed stays).
 watch(() => live.reportTick, async () => {
   const typed = r.value && note.value.trim() !== r.value.note ? note.value : null;
+  const replying = r.value && reply.value.trim() !== (r.value.reply || '') ? reply.value : null;
   await load();
   if (typed !== null && r.value) note.value = typed;
+  if (replying !== null && r.value) reply.value = replying;
 });
 
 const fileUrl = name => `/api/reports/${props.id}/files/${encodeURIComponent(name)}`;
@@ -147,9 +156,10 @@ async function setStatus(status) {
   busy.value = true;
   const was = r.value.status;
   try {
-    const row = await api('POST', `/reports/${props.id}`, { status, note: note.value.trim() });
-    Object.assign(r.value, { status: row.status, note: row.note, resolved_by: row.resolved_by, resolved_at: row.resolved_at });
+    const row = await api('POST', `/reports/${props.id}`, { status, note: note.value.trim(), reply: reply.value.trim() });
+    Object.assign(r.value, { status: row.status, note: row.note, resolved_by: row.resolved_by, resolved_at: row.resolved_at, reply: row.reply, replied_by: row.replied_by, replied_at: row.replied_at });
     note.value = row.note;
+    reply.value = row.reply || '';
     toast(status === was ? 'Saved.' : status === 'resolved' ? 'Resolved.' : 'Reopened.');
     emit('changed');
   } catch (e) { toast(e.message, true); }

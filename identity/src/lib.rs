@@ -114,6 +114,12 @@ pub fn suggestions_message(time: i64) -> String {
     format!("5th-echelon/suggestions/v1\n{time}")
 }
 
+/// What a player signs to read their own reports back, with the admins' replies
+/// (`GET /v1/reports/mine`).
+pub fn reports_message(time: i64) -> String {
+    format!("5th-echelon/reports/v1\n{time}")
+}
+
 /// What the release key signs: a release's version (its tag without the
 /// `v`, e.g. `0.4.0`) and its `SHA256SUMS`, as published. With the version
 /// signed, a release published again under another tag doesn't verify, so
