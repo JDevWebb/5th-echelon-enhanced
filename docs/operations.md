@@ -185,6 +185,10 @@ Servers record these as they happen and send them to the coordinator every few s
 
 **Live** shows every room open now on every server, refreshed every 10 seconds: each match's map and game mode, public or private, its host, every player in it (with their ping to the server; blue when the relay carries them, red when their game isn't registered for online play), and how long it's been open, then the parties. Players online but in no room are listed under their server as in the menus. **Timeline** opens the match's page. Servers send these with their pulse (0.4.3 servers; older ones show nobody's rooms).
 
+### Loadouts and progress
+
+From 0.4.3 the game uploads its **ShadowNet snapshot** about once an hour, when it's back in the menus: the player's owned items and attachments, their loadouts, their store purchases and their challenge progress (JSON, about 135 KB; the game's own ids for items and challenges). The game never reads it back; it was for Ubisoft's ShadowNet companion app. The server keeps each player's latest and passes it to the coordinator, where an admin sees it on the player's page (**Players**, the player, **Loadouts and progress**): counts of each, and the snapshot itself. Players don't see it anywhere yet. Snapshots not updated for 90 days go.
+
 ### Leaderboards
 
 Servers forward every stat the game writes to the coordinator, which keeps each person's stats across the network: one entry per identity, however many servers they play on (see [friends.md](friends.md#the-coordinators-api)). The stats are kept for good.
@@ -347,6 +351,7 @@ The badge at the top right says whether it's live. The connection uses the same 
 - Players' session events (sign-ins, rooms, searches, joins, invitations, problems), with their names but no addresses, for 30 days on the coordinator (a few days on each server), and their game's warnings, errors, network lines and game-state lines (session, saves, achievements), redacted on their PC, unless they turned that off.
 - The per-minute "who played" ids are a per-server keyed hash of the account number, with minutes played per day; the reports count players per server, so someone playing on two servers counts twice.
 - Launchers' ping reports keep only the city and the round trip.
+- Each player's latest ShadowNet snapshot (loadouts, owned items, purchases, challenge progress; game ids only), admins only, for 90 days after its last update.
 - The game logs players' games sent when something went wrong, unless they turned the diagnostics off (kept as reports are).
 - Players' reports, with the logs they chose to attach (redacted on their PC) and their server's log lines about them, for 90 days (see [Player reports](#player-reports)).
 

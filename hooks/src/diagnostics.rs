@@ -202,7 +202,7 @@ async fn send_full_log(since: i64, problem: String, private: Private) {
         problems: vec![],
         comment: String::new(),
         triggers: vec!["auto".into(), format!("auto:{problem}")],
-        client: [("game".to_string(), env!("FE_RELEASE").to_string())].into_iter().collect(),
+        client: [("client".to_string(), concat!("game/", env!("FE_RELEASE")).to_string())].into_iter().collect(),
         files: vec![server_api::misc::ReportFile {
             name: "bl-tracing.log".into(),
             size: text.len() as u64,

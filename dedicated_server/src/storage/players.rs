@@ -135,6 +135,53 @@ impl Storage {
         Ok(sqlx::query_scalar("SELECT COALESCE(SUM(length(body)), 0) FROM report_outbox").fetch_one(&self.pool).await?)
     }
 
+    /// Keeps what `user_id`'s game uploaded of `type_id` (gzip), replacing the last, for the
+    /// coordinator.
+    pub async fn save_content(&self, user_id: u32, type_id: u32, gzip: &[u8], size: usize) -> Result<()> {
+        sqlx::query(&format!(
+            "INSERT INTO player_content (user_id, type_id, size, gzip, updated_at, sent) VALUES (?, ?, ?, ?, {NOW}, 0)
+             ON CONFLICT (user_id, type_id) DO UPDATE SET size = excluded.size, gzip = excluded.gzip, updated_at = excluded.updated_at, sent = 0"
+        ))
+        .bind(user_id)
+        .bind(type_id)
+        .bind(i64::try_from(size).unwrap_or(i64::MAX))
+        .bind(gzip)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    /// Whether `user_id` has content of `type_id` here.
+    pub async fn has_content(&self, user_id: u32, type_id: u32) -> Result<bool> {
+        Ok(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM player_content WHERE user_id = ? AND type_id = ?")
+            .bind(user_id)
+            .bind(type_id)
+            .fetch_one(&self.pool)
+            .await?
+            > 0)
+    }
+
+    /// The oldest content the coordinator hasn't got: (user, type, size, gzip, updated_at).
+    pub async fn next_unsent_content(&self) -> Result<Option<(u32, u32, i64, Vec<u8>, i64)>> {
+        Ok(
+            sqlx::query_as("SELECT user_id, type_id, size, gzip, updated_at FROM player_content WHERE sent = 0 ORDER BY updated_at LIMIT 1")
+                .fetch_optional(&self.pool)
+                .await?,
+        )
+    }
+
+    /// The coordinator has `user_id`'s content of `type_id` as of `updated_at` (a newer one
+    /// since still goes).
+    pub async fn content_sent(&self, user_id: u32, type_id: u32, updated_at: i64) -> Result<()> {
+        sqlx::query("UPDATE player_content SET sent = 1 WHERE user_id = ? AND type_id = ? AND updated_at = ?")
+            .bind(user_id)
+            .bind(type_id)
+            .bind(updated_at)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
     /// Queues `user_id`'s report for the coordinator, and notes they sent one (not for the
     /// game's log the server asked for, `counted` false: that's limited apart).
     pub async fn queue_report(&self, user_id: u32, id: &str, body: &str, counted: bool) -> Result<()> {

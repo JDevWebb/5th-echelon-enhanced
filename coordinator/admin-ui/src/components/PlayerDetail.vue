@@ -61,6 +61,22 @@
       </div>
       <div v-else class="empty">No sessions reported (older servers don't send them).</div>
 
+      <h3 class="sub">Loadouts and progress <span class="muted">(admins only)</span></h3>
+      <div v-if="snap" class="snap">
+        <p class="small muted">The game's ShadowNet snapshot, as of {{ fmt.when(snap.updated_at) }} ({{ Math.round(snap.size / 1024) }} KB). Items and challenges are the game's ids for now.</p>
+        <div class="row tags">
+          <span class="pill">{{ fmt.n(snap.summary.items) }} items owned</span>
+          <span class="pill">{{ fmt.n(snap.summary.loadouts) }} loadouts</span>
+          <span class="pill">{{ fmt.n(snap.summary.purchases) }} purchases</span>
+          <span class="pill">{{ fmt.n(snap.summary.challenges_started) }} of {{ fmt.n(snap.summary.challenges) }} challenges started</span>
+        </div>
+        <details>
+          <summary class="small">The snapshot</summary>
+          <pre class="json">{{ JSON.stringify(snap.snapshot, null, 1) }}</pre>
+        </details>
+      </div>
+      <div v-else class="empty">{{ snapError || 'Nothing uploaded by this player\'s game yet (0.4.3 servers keep it).' }}</div>
+
       <h3 class="sub">Admin actions</h3>
       <div v-if="d.actions.length" class="table-wrap">
         <table>
@@ -101,6 +117,11 @@ const p = computed(() => d.value?.player);
 const mineIds = ref([]);
 const mine = computed(() => Object.fromEntries(mineIds.value.filter(aid => following[aid]).map(aid => [aid, following[aid]])));
 
+// The player's ShadowNet snapshot (loadouts, purchases, challenge progress), if their game
+// uploaded one.
+const snap = ref(null);
+const snapError = ref('');
+
 async function load() {
   try {
     d.value = await api('GET', `/players/${encodeURIComponent(props.server)}/${props.id}`);
@@ -108,6 +129,13 @@ async function load() {
   } catch (e) {
     error.value = e.status === 404 ? 'This player is gone (deleted on their server).' : e.message;
     d.value = null;
+  }
+  try {
+    snap.value = await api('GET', `/players/${encodeURIComponent(props.server)}/${props.id}/content`);
+    snapError.value = '';
+  } catch (e) {
+    snap.value = null;
+    snapError.value = e.status === 404 ? '' : e.message;
   }
 }
 watch(() => [props.server, props.id], () => { d.value = null; mineIds.value = []; load(); }, { immediate: true });
@@ -147,5 +175,7 @@ async function act(kind) {
 .callout { margin-top: 10px; }
 .list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
 .list li { display: flex; align-items: center; gap: 8px; }
+.json { max-height: 320px; overflow: auto; font-size: 11px; background: var(--panel-2); padding: 8px; border-radius: 6px; }
+.snap .tags { gap: 6px; flex-wrap: wrap; margin: 6px 0; }
 @media (max-width: 1100px) { .detail { position: static; max-height: none; } }
 </style>

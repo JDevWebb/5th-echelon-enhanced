@@ -37,6 +37,7 @@ pub(super) fn routes() -> Router<Shared> {
         .route("/players", get(list))
         .route("/players/{server}/{id}", get(detail))
         .route("/players/{server}/{id}/actions", post(act))
+        .route("/players/{server}/{id}/content", get(content))
         .route("/actions/{id}", get(action))
         .route("/matches-report", get(matches_report))
 }
@@ -55,6 +56,18 @@ async fn detail(State(c): State<Shared>, Extension(client): Extension<Client>, h
     match c.player_detail(&server, id).await {
         Ok(Some(v)) => ok(v),
         Ok(None) => fail(StatusCode::NOT_FOUND, "no such player"),
+        Err(e) => internal(e),
+    }
+}
+
+/// The player's latest ShadowNet snapshot (content.rs): admins only.
+async fn content(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Path((server, id)): Path<(String, i64)>) -> Response {
+    if let Err(r) = c.full(&headers, &client).await {
+        return r;
+    }
+    match c.player_content(&server, id).await {
+        Ok(Some(v)) => ok(v),
+        Ok(None) => fail(StatusCode::NOT_FOUND, "nothing uploaded by this player's game"),
         Err(e) => internal(e),
     }
 }

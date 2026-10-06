@@ -24,10 +24,7 @@ Also worth an experiment: switching servers without restarting the game.
 
 ## Game features the server doesn't have yet
 
-The game calls a service the server doesn't implement, seen in the community servers' logs:
-- **Uploading content** (`UserStorage.SaveContentAndGetUploadInfo`), at the end of some matches. The server now logs what the game wants to upload, to work out what it is; the game is still told no.
-
-It needs the game's side worked out first, from the protocol and the game's code, without shipping anything of the game's.
+- **Uploading content** (`UserStorage`) works from 0.4.3: what the game uploads is its ShadowNet companion snapshot (loadouts, owned items, purchases, challenge progress), which it never reads back. Servers keep each player's latest for their admins; what to do with it for players (a profile, challenge leaderboards) is open.
 
 ## Running servers
 

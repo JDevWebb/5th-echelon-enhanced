@@ -730,7 +730,7 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                 }
             }
             if reports_after.is_none_or(|t| Instant::now() >= t) {
-                match send_reports(&storage, &client).await {
+                match send_reports(&storage, &client).await.and(send_content(&storage, &client).await) {
                     Ok(()) => reports_after = None,
                     Err(e) if e.to_string().starts_with("404") => reports_after = Some(Instant::now() + REPORTS_UNSUPPORTED_WAIT),
                     Err(e) => {
@@ -834,6 +834,38 @@ async fn send_reports(storage: &Storage, client: &Coordinator<'_>) -> eyre::Resu
             Err(e) if refused_for_good(&e) => {
                 storage.report_sent(&id).await?;
                 return Err(e.wrap_err(format!("the coordinator refused report {id}; dropped")));
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+/// Sends what players' games uploaded that the coordinator hasn't got (`POST /v1/content`):
+/// each player's latest ShadowNet snapshot (uploads.rs), for the admins.
+async fn send_content(storage: &Storage, client: &Coordinator<'_>) -> eyre::Result<()> {
+    for _ in 0..5 {
+        let Some((user, type_id, size, gzip, updated_at)) = storage.next_unsent_content().await? else {
+            return Ok(());
+        };
+        let Some(person) = storage.find_person(user).await? else {
+            storage.content_sent(user, type_id, updated_at).await?;
+            continue;
+        };
+        let body = serde_json::json!({
+            "player": { "id": user, "name": person.username, "identity": person.global_id },
+            "type": type_id,
+            "size": size,
+            "updated_at": updated_at,
+            "gzip_base64": sodiumoxide::base64::encode(&gzip, sodiumoxide::base64::Variant::Original),
+        });
+        match client.post("/v1/content", &body).await {
+            Ok(_) => storage.content_sent(user, type_id, updated_at).await?,
+            // A coordinator from before this: kept, and tried again later.
+            Err(e) if e.to_string().starts_with("404") => return Ok(()),
+            Err(e) if refused_for_good(&e) => {
+                storage.content_sent(user, type_id, updated_at).await?;
+                return Err(e.wrap_err(format!("the coordinator refused {user}'s content; dropped")));
             }
             Err(e) => return Err(e),
         }

@@ -19,11 +19,16 @@ use crate::protocols::user_storage::user_storage_protocol::SaveContentAndGetUplo
 use crate::protocols::user_storage::user_storage_protocol::SaveContentAndGetUploadInfoResponse;
 use crate::protocols::user_storage::user_storage_protocol::SearchContentsRequest;
 use crate::protocols::user_storage::user_storage_protocol::SearchContentsResponse;
+use crate::protocols::user_storage::user_storage_protocol::UploadEndRequest;
+use crate::protocols::user_storage::user_storage_protocol::UploadEndResponse;
 use crate::protocols::user_storage::user_storage_protocol::UserStorageProtocolServer;
 use crate::protocols::user_storage::user_storage_protocol::UserStorageProtocolServerTrait;
+use crate::storage::Storage;
 
 /// Implementation of the `UserStorageProtocolServerTrait` for handling user storage requests.
-struct UserStorageProtocolServerImpl;
+struct UserStorageProtocolServerImpl {
+    storage: std::sync::Arc<Storage>,
+}
 
 impl<CI> UserStorageProtocolServerTrait<CI> for UserStorageProtocolServerImpl {
     /// Handles the `SearchContents` request, returning a list of user content.
@@ -41,7 +46,28 @@ impl<CI> UserStorageProtocolServerTrait<CI> for UserStorageProtocolServerImpl {
     ) -> Result<SearchContentsResponse, Error> {
         #![allow(clippy::unreadable_literal)]
 
-        login_required(&*ci)?;
+        let user_id = login_required(&*ci)?;
+        // The player's own ShadowNet snapshot, if there's one: the game overwrites it then,
+        // instead of adding one (uploads.rs). Only ever the caller's.
+        if request.query.type_id == crate::uploads::SHADOWNET {
+            let mine = crate::storage::run(self.storage.has_content(user_id, crate::uploads::SHADOWNET))
+                .ok()
+                .and_then(Result::ok)
+                .unwrap_or(false);
+            let search_results = if mine {
+                QList(vec![UserContent {
+                    key: UserContentKey {
+                        type_id: crate::uploads::SHADOWNET,
+                        content_id: u64::from(user_id),
+                    },
+                    pid: user_id,
+                    properties: QList::default(),
+                }])
+            } else {
+                QList::default()
+            };
+            return Ok(SearchContentsResponse { search_results });
+        }
         if request.query.type_id == 0x8000_0002 {
             let search_results = QList(vec![UserContent {
                 key: UserContentKey {
@@ -74,28 +100,75 @@ impl<CI> UserStorageProtocolServerTrait<CI> for UserStorageProtocolServerImpl {
         }
     }
 
-    /// The game asking where to upload a player's content. Nothing is kept yet: the
-    /// game is told no, as before, but what it wanted to upload is logged, to work out
-    /// what it is.
+    /// The game asking where to upload a player's content: for its ShadowNet snapshot, a
+    /// one-time address on the content server (uploads.rs); anything else is refused.
     fn save_content_and_get_upload_info(
         &self,
         logger: &Logger,
-        _ctx: &Context,
+        ctx: &Context,
         ci: &mut ClientInfo<CI>,
         request: SaveContentAndGetUploadInfoRequest,
         _client_registry: &ClientRegistry<CI>,
         _socket: &std::net::UdpSocket,
     ) -> Result<SaveContentAndGetUploadInfoResponse, Error> {
         let user_id = login_required(&*ci)?;
-        info!(
-            logger,
-            "User {user_id} wants to upload {} bytes of content type {:#x} (id {}), properties {:?}; uploads aren't kept",
-            request.size,
-            request.content_key.type_id,
-            request.content_key.content_id,
-            request.properties
-        );
-        Err(Error::AccessDenied)
+        let Some(host) = ctx.settings.get("storage_host").cloned() else {
+            return Err(Error::AccessDenied);
+        };
+        match crate::uploads::begin(user_id, request.content_key.type_id, request.size) {
+            Ok((pending_id, secret)) => {
+                info!(logger, "User {user_id} uploads {} bytes of content type {:#x}", request.size, request.content_key.type_id);
+                Ok(SaveContentAndGetUploadInfoResponse {
+                    upload_info: UserContentURL {
+                        protocol: ctx.settings.get("content_protocol").map_or("http://", String::as_str).to_owned(),
+                        host,
+                        path: crate::uploads::path(pending_id, &secret),
+                    },
+                    pending_id,
+                    headers: vec![],
+                })
+            }
+            Err(why) => {
+                info!(
+                    logger,
+                    "User {user_id}'s upload of {} bytes of content type {:#x} refused ({why:?})", request.size, request.content_key.type_id
+                );
+                Err(Error::AccessDenied)
+            }
+        }
+    }
+
+    /// The game says how its upload went: kept when it arrived (the player's latest, for the
+    /// admins), with the key the game's next search finds.
+    fn upload_end(
+        &self,
+        logger: &Logger,
+        _ctx: &Context,
+        ci: &mut ClientInfo<CI>,
+        request: UploadEndRequest,
+        _client_registry: &ClientRegistry<CI>,
+        _socket: &std::net::UdpSocket,
+    ) -> Result<UploadEndResponse, Error> {
+        use std::io::Write as _;
+        let user_id = login_required(&*ci)?;
+        let Some(body) = crate::uploads::finish(user_id, request.pending_id, request.result) else {
+            info!(logger, "User {user_id}'s upload {} didn't arrive (it says {})", request.pending_id, request.result);
+            return Err(Error::AccessDenied);
+        };
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        let gzip = gz.write_all(&body).and_then(|()| gz.finish()).map_err(|_| Error::InternalError)?;
+        if let Err(e) = crate::storage::run(self.storage.save_content(user_id, crate::uploads::SHADOWNET, &gzip, body.len())).and_then(|r| r) {
+            slog::error!(logger, "keeping {user_id}'s upload failed: {e}");
+            return Err(Error::InternalError);
+        }
+        info!(logger, "User {user_id}'s ShadowNet snapshot kept ({} KB, {} KB gzip)", body.len() / 1024, gzip.len() / 1024);
+        crate::federation::report_queued();
+        Ok(UploadEndResponse {
+            content_key: UserContentKey {
+                type_id: crate::uploads::SHADOWNET,
+                content_id: u64::from(user_id),
+            },
+        })
     }
 
     /// Handles the `GetContentUrl` request, returning the URL for a piece of user content.
@@ -126,6 +199,6 @@ impl<CI> UserStorageProtocolServerTrait<CI> for UserStorageProtocolServerImpl {
 ///
 /// This function is typically used to register the user storage protocol
 /// with the server's protocol dispatcher.
-pub fn new_protocol<T: 'static>() -> Box<dyn Protocol<T>> {
-    Box::new(UserStorageProtocolServer::new(UserStorageProtocolServerImpl))
+pub fn new_protocol<T: 'static>(storage: std::sync::Arc<Storage>) -> Box<dyn Protocol<T>> {
+    Box::new(UserStorageProtocolServer::new(UserStorageProtocolServerImpl { storage }))
 }

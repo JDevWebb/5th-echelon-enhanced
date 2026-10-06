@@ -41,6 +41,7 @@
 
 pub mod admin;
 pub mod alerts;
+pub mod content;
 pub mod game_names;
 pub mod maintenance;
 pub mod metrics;
@@ -381,6 +382,7 @@ pub struct Coordinator {
     pub(crate) stats_cache: tokio::sync::Mutex<stats::Cache>,
     /// Per server: new reports (see [`reports`]).
     report_posts: Limit,
+    content_posts: Limit,
     /// Per address: players' suggestions for the roadmap (see [`roadmap`]).
     suggestion_posts: Limit,
     /// The roadmap and players' suggestions are kept here: on the community network's
@@ -493,6 +495,7 @@ impl Coordinator {
             stat_reads: Limit::new(120),
             stats_cache: tokio::sync::Mutex::new(stats::Cache::default()),
             report_posts: Limit::per(reports::PER_HOUR, Duration::from_secs(3600)),
+            content_posts: Limit::per(content::PER_HOUR, Duration::from_secs(3600)),
             suggestion_posts: Limit::per(roadmap::PER_ADDRESS_A_DAY, Duration::from_secs(86_400)),
             roadmap: std::sync::atomic::AtomicBool::new(false),
             files_dir: std::path::Path::new(path)
@@ -647,6 +650,7 @@ impl Coordinator {
             .route("/v1/leaderboards", get(leaderboards))
             .route("/v1/leaderboards/players", post(leaderboard_players))
             .route("/v1/reports", post(report).layer(DefaultBodyLimit::max(reports::MAX_BODY)))
+            .route("/v1/content", post(player_content).layer(DefaultBodyLimit::max(content::MAX_BODY)))
             .route("/v1/events", post(events_report).layer(DefaultBodyLimit::max(sessions::MAX_BODY)))
             .layer(DefaultBodyLimit::max(MAX_BODY))
             .with_state(self)
@@ -1315,6 +1319,36 @@ async fn stats_report(State(c): State<Shared>, headers: HeaderMap, body: axum::b
 }
 
 /// A player's report, forwarded by their server (see [`reports`]).
+/// What a player's game uploaded (content.rs): kept, the latest each, for the admins.
+async fn player_content(State(c): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {
+    let server = match c.server(&headers).await {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    let v: Value = match parse(&body) {
+        Ok(v) => v,
+        Err(e) => return e,
+    };
+    if !c.content_posts.check(&server) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "too much content this hour; send the rest later");
+    }
+    let checked = match tokio::task::spawn_blocking(move || content::check(&v, identity::now())).await {
+        Ok(r) => r,
+        Err(e) => return internal(e),
+    };
+    let content = match checked {
+        Ok(c) => c,
+        Err(why) => {
+            tracing::warn!("server {server}: refused content: {why}");
+            return fail(StatusCode::BAD_REQUEST, &why);
+        }
+    };
+    match c.store_content(&server, &content).await {
+        Ok(()) => ok(json!({ "ok": true })),
+        Err(e) => internal(e),
+    }
+}
+
 async fn report(State(c): State<Shared>, headers: HeaderMap, body: axum::body::Bytes) -> Answer {
     let server = match c.server(&headers).await {
         Ok(s) => s,

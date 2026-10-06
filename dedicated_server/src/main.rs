@@ -104,6 +104,7 @@ mod tracking;
 mod tracking_ext;
 mod ubi_acc_mgmt;
 mod uplay_win;
+mod uploads;
 mod user_storage;
 
 use crate::config::Config;
@@ -151,7 +152,7 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
         handler.register_protocol(tracking::new_protocol());
         handler.register_protocol(ubi_acc_mgmt::new_protocol(Arc::clone(storage)));
         handler.register_protocol(uplay_win::new_protocol());
-        handler.register_protocol(user_storage::new_protocol());
+        handler.register_protocol(user_storage::new_protocol(Arc::clone(storage)));
     } else {
         handler.register_protocol(ticket::new_protocol(Arc::clone(storage)));
     }

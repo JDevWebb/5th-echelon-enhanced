@@ -9,6 +9,7 @@ default-run = "dedicated_server"
 tracking = []
 
 [dependencies]
+flate2 = { workspace = true }
 argh = { workspace = true }
 argon2 = { workspace = true }
 byteorder = { workspace = true }
@@ -50,7 +51,6 @@ workspace = true
 
 [dev-dependencies]
 diff = { workspace = true }
-flate2 = { workspace = true }
 
 [package.metadata.winres]
 ProductName = "5th Echelon Server"

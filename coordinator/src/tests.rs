@@ -1976,6 +1976,44 @@ async fn game_logs_sent_on_their_own_are_kept_apart_from_reports() {
 }
 
 #[tokio::test]
+async fn players_shadownet_snapshots_are_kept_for_admins() {
+    use std::io::Write as _;
+
+    use base64::Engine as _;
+    let t = start("content").await;
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    let gz = |text: &str| {
+        let mut e = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        e.write_all(text.as_bytes()).unwrap();
+        base64::engine::general_purpose::STANDARD.encode(e.finish().unwrap())
+    };
+    let body = |updated_at: i64, text: &str| json!({ "player": { "id": 1020, "name": "PlaySkill" }, "type": content::SHADOWNET, "size": text.len(), "updated_at": updated_at, "gzip_base64": gz(text) });
+    let now = identity::now();
+    let first = r#"{"Loadout:Items":{"1":["2"]},"Purchase":{},"Challenges":{"9":{"T":1,"P":5}}}"#;
+    assert_eq!(t.call("POST", "/v1/content", Some(&a), Some(body(now - 60, first))).await.0, StatusCode::OK);
+    assert_eq!(t.call("POST", "/v1/content", None, Some(body(now, first))).await.0, StatusCode::UNAUTHORIZED);
+    // Not JSON, or another type: refused.
+    assert_eq!(t.call("POST", "/v1/content", Some(&a), Some(body(now, "not json"))).await.0, StatusCode::BAD_REQUEST);
+    let mut other = body(now, first);
+    other["type"] = json!(0x8000_0002_i64);
+    assert_eq!(t.call("POST", "/v1/content", Some(&a), Some(other)).await.0, StatusCode::BAD_REQUEST);
+    // An older one doesn't replace a newer.
+    assert_eq!(
+        t.call("POST", "/v1/content", Some(&a), Some(body(now - 600, r#"{"Purchase":{"x":1}}"#))).await.0,
+        StatusCode::OK
+    );
+
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    assert_eq!(admin_call(&r, "GET", "/api/players/server-a/1020/content", "", None).await.0, StatusCode::UNAUTHORIZED);
+    let (status, v) = admin_call(&r, "GET", "/api/players/server-a/1020/content", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!((v["summary"]["items"].as_u64(), v["summary"]["challenges_started"].as_u64()), (Some(1), Some(1)));
+    assert_eq!(v["snapshot"]["Challenges"]["9"]["P"], 5);
+    assert_eq!(admin_call(&r, "GET", "/api/players/server-a/7/content", &cookie, None).await.0, StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn players_read_the_admins_replies_to_their_reports() {
     let t = start("reports-replies").await;
     let r = admin_router(&t);

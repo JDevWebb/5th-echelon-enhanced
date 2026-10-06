@@ -22,6 +22,13 @@ const BODY_DEADLINE: Duration = Duration::from_secs(5);
 const MAX_REQUEST_LINE: u64 = 8 * 1024;
 /// Largest POST body accepted (the community API's small JSON requests).
 const MAX_BODY: usize = 16 * 1024;
+/// How long an upload's body may take (a PUT of the game's content, uploads.rs).
+const UPLOAD_DEADLINE: Duration = Duration::from_secs(60);
+
+/// Whether a PUT to `path` is taken: the game's uploads (uploads.rs), nothing else.
+fn takes_put(path: &str) -> bool {
+    path.starts_with("/ugc/")
+}
 
 /// A request: the raw request line (as upstream matched on it), its method
 /// and path, for POST the body, and the client's address.
@@ -147,6 +154,9 @@ pub fn serve_many(logger: &slog::Logger, addr: SocketAddr, files: &HashMap<Strin
         TcpListener::bind(addr)?,
         |_| false,
         move |req| {
+            if req.method == "PUT" {
+                return Response::status(crate::uploads::receive(&req.path, req.body.clone()));
+            }
             let line = req.line.as_str();
             let prefix = "GET ";
             let suffix = " HTTP/1.1\r\n";
@@ -322,8 +332,13 @@ fn handle(
     if req.method == "POST" && !takes_body(req.path.split('?').next().unwrap_or_default()) {
         return stream.write_all(&Response::status("405 Method Not Allowed").to_bytes());
     }
-    if req.method == "POST" {
+    if req.method == "PUT" && !takes_put(&req.path) {
+        return stream.write_all(&Response::status("405 Method Not Allowed").to_bytes());
+    }
+    let upload = req.method == "PUT";
+    if req.method == "POST" || upload {
         let mut length = 0usize;
+        let mut expects = false;
         for _ in 0..64 {
             let mut header = String::new();
             (&mut rdr).take(MAX_REQUEST_LINE).read_line(&mut header)?;
@@ -341,9 +356,12 @@ fn handle(
                 if name.trim().eq_ignore_ascii_case("x-forwarded-proto") {
                     req.forwarded_proto = Some(value.trim().chars().take(16).collect());
                 }
+                if name.trim().eq_ignore_ascii_case("expect") && value.trim().eq_ignore_ascii_case("100-continue") {
+                    expects = true;
+                }
             }
         }
-        if length > MAX_BODY {
+        if length > if upload { crate::uploads::MAX_UPLOAD } else { MAX_BODY } {
             return stream.write_all(&Response::status("413 Payload Too Large").to_bytes());
         }
         // Through a proxy, the client it names now has a place of its own, so one
@@ -352,9 +370,14 @@ fn handle(
             debug!(logger, "simple_http: too many connections from {:?}; refusing one", req.peer);
             return stream.write_all(&Response::status("429 Too Many Requests").to_bytes());
         };
-        let until = std::time::Instant::now() + BODY_DEADLINE;
-        rdr.get_mut().until = rdr.get_ref().until.min(until);
-        stream.set_read_timeout(Some(BODY_DEADLINE))?;
+        let deadline = if upload { UPLOAD_DEADLINE } else { BODY_DEADLINE };
+        let until = std::time::Instant::now() + deadline;
+        rdr.get_mut().until = if upload { until } else { rdr.get_ref().until.min(until) };
+        stream.set_read_timeout(Some(deadline.min(IO_TIMEOUT)))?;
+        // curl waits for this before sending a large body (the game's uploads).
+        if expects {
+            (&stream).write_all(b"HTTP/1.1 100 Continue\r\n\r\n")?;
+        }
         req.body = vec![0; length];
         rdr.read_exact(&mut req.body)?;
         let resp = handler(&req);
@@ -385,6 +408,31 @@ mod tests {
 
     fn logger() -> slog::Logger {
         slog::Logger::root(slog::Discard, slog::o!())
+    }
+
+    #[test]
+    fn the_games_upload_is_taken_by_put_on_its_address() {
+        let addr = free_addr();
+        std::thread::spawn(move || serve_many(&logger(), addr, &HashMap::new()));
+        std::thread::sleep(Duration::from_millis(100));
+        let body = r#"{"Challenges":{}}"#;
+        let (id, secret) = crate::uploads::begin(920_001, crate::uploads::SHADOWNET, body.len() as u32).unwrap();
+        let path = crate::uploads::path(id, &secret);
+        // As curl sends it: waits for 100 Continue, then the raw body.
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        write!(s, "PUT {path} HTTP/1.1\r\nHost: x\r\nContent-Length: {}\r\nExpect: 100-continue\r\n\r\n", body.len()).unwrap();
+        let mut first = [0u8; 25];
+        s.read_exact(&mut first).unwrap();
+        assert_eq!(&first, b"HTTP/1.1 100 Continue\r\n\r\n");
+        s.write_all(body.as_bytes()).unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).unwrap();
+        assert!(out.starts_with("HTTP/1.0 200 OK"), "{out}");
+        assert_eq!(crate::uploads::finish(920_001, id, true).as_deref(), Some(body.as_bytes()));
+        // Elsewhere, or too big: no.
+        assert!(get(addr, "PUT /mp_balancing.ini HTTP/1.1\r\nContent-Length: 2\r\n\r\n{}").starts_with("HTTP/1.0 405"));
+        assert!(get(addr, &format!("PUT /ugc/1-x HTTP/1.1\r\nContent-Length: {}\r\n\r\n", crate::uploads::MAX_UPLOAD + 1)).starts_with("HTTP/1.0 413"));
     }
 
     #[test]
