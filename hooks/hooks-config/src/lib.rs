@@ -340,10 +340,6 @@ pub struct Config {
     /// Settings › Feedback changes it.
     #[serde(default = "default_send_diagnostics")]
     pub send_diagnostics: bool,
-    /// The player agreed to send the game's whole log (its last 15 minutes) when something
-    /// goes wrong and the server asks for it. Off unless they turned it on.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub send_full_logs: bool,
 
     /// Writes what the game's data version is made of to `bl-dataversion.txt` (and, with
     /// `bl-dataversion.full` in the game's folder, every name to `bl-dataversion-full.txt`),

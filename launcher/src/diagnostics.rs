@@ -13,7 +13,7 @@ use crate::theme;
 const EXAMPLE_LINES: usize = 12;
 
 const TITLE: &str = "Help us fix connection problems";
-const WHAT: &str = "5th Echelon now sends the server you play on a short diagnostic log while you play: the game's warnings, errors and network messages (a few lines a minute at most, never the whole log). It lets the server's admins see why a join failed or a connection dropped on your side, not just theirs.";
+const WHAT: &str = "5th Echelon now sends the server you play on a short diagnostic log while you play: the game's warnings, errors and network messages, and what it's doing (a few lines a minute at most). When something goes wrong (a join that fails, your connection dropping), the server can also ask for the last 15 minutes of the game's log, at most once an hour. It lets the server's admins see why a join failed or a connection dropped on your side, not just theirs.";
 const PRIVATE: &str = "Before anything leaves your PC, your PC's name, your Windows account name, your user folder and your internet address are removed. It goes only to the server you're playing on and is kept for at most 30 days.";
 const LATER: &str = "You can change this any time in Settings › Feedback.";
 

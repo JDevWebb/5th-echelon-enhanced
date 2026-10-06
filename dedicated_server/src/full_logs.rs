@@ -1,5 +1,5 @@
-//! The game's whole log when something goes wrong, for players who agreed (launcher
-//! Settings › Feedback, off by default): the game says so with its diagnostics
+//! The game's whole log when something goes wrong, for players who send the game's
+//! diagnostics (launcher Settings › Feedback): the game says so with them
 //! (`Misc.ClientLog`, `full_logs`), and when a problem is noted for that player here (a failed
 //! join, a lapsed registration, their relayed traffic stopping, a game that dropped and came
 //! back), the next answer to its diagnostics asks for its log from 15 minutes before. The

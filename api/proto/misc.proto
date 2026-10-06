@@ -21,8 +21,8 @@ message ClientLogRequest {
     repeated ClientLogLine lines = 1;
     // Lines the game had to leave out since the last request (too many at once).
     uint32 dropped = 2;
-    // The player agreed to send the game's whole log when something goes wrong (launcher
-    // Settings › Feedback): the server may ask for it in its answer.
+    // The player's diagnostics agreement covers the game's whole log when something goes
+    // wrong (launcher Settings › Feedback): the server may ask for it in its answer.
     bool full_logs = 3;
 }
 message ClientLogLine {

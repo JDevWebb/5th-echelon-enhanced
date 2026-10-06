@@ -107,7 +107,9 @@ pub fn start(config: &hooks_config::Config) {
     }
     let Ok(rt) = crate::api::runtime() else { return };
     let server = config.api_server.clone();
-    let full_logs = config.send_full_logs;
+    // The same agreement covers the game's log when something goes wrong (the launcher's
+    // question says so): the server may ask for it.
+    let full_logs = true;
     rt.spawn(async move {
         // The server's own addresses aren't the player's: kept, the rest hidden.
         let mut keep = Vec::new();
