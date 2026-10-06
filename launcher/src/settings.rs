@@ -480,7 +480,22 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
         ui.add_space(4.0);
     }
     let mut hook = game.cfg.hook_config.clone();
-    ui.checkbox(&mut hook.enable_overlay, "In-game overlay (F5)");
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut hook.enable_overlay, "In-game overlay, opened with");
+        ui.add_enabled_ui(hook.enable_overlay, |ui| {
+            egui::ComboBox::from_id_salt("overlay_key").selected_text(hook.overlay_key.clone()).show_ui(ui, |ui| {
+                for (name, _) in hooks_config::OVERLAY_KEYS {
+                    ui.selectable_value(&mut hook.overlay_key, (*name).to_string(), *name);
+                }
+            });
+        });
+    });
+    if hook.enable_overlay && hook.overlay_key.starts_with('F') && hook.overlay_key.len() > 1 {
+        ui.label(theme::muted(format!(
+            "On most laptops, and some keyboards, hold Fn and press {}. If nothing happens, pick another key here.",
+            hook.overlay_key
+        )));
+    }
     ui.checkbox(&mut hook.auto_join_invite, "Join invites automatically");
     ui.horizontal(|ui| {
         ui.label("Client log detail");

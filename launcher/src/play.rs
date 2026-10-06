@@ -1401,9 +1401,9 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
         |ui| {
             if game.managed.is_some() || (friends.online.is_empty() && friends.elsewhere.is_empty()) {
                 let text = if friends.offline > 0 {
-                    "None of your friends are online right now."
+                    "None of your friends are online right now.".to_string()
                 } else {
-                    "No friends yet. Add some in the game: press F5 for the overlay."
+                    format!("No friends yet. Add some in the game: press {} for the overlay.", game.cfg.hook_config.overlay_key)
                 };
                 ui.label(RichText::new(text).color(theme::SOFT));
             }
@@ -1437,7 +1437,7 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
             } else {
                 String::new()
             };
-            ui.label(theme::muted(format!("{offline}Add and invite friends in game with F5")).small());
+            ui.label(theme::muted(format!("{offline}Add and invite friends in game with {}", game.cfg.hook_config.overlay_key)).small());
             if friends.requests > 0 {
                 let s = if friends.requests == 1 { "" } else { "s" };
                 ui.label(RichText::new(format!("{} friend request{s} waiting", friends.requests)).color(theme::ACCENT).size(13.0));

@@ -60,6 +60,54 @@ fn default_account_id() -> String {
 fn default_overlay() -> bool {
     true
 }
+fn default_overlay_key() -> String {
+    String::from("F5")
+}
+fn is_default_overlay_key(key: &String) -> bool {
+    *key == default_overlay_key()
+}
+
+/// The keys the overlay can open with, by name, with their Windows virtual-key codes. The
+/// function keys first: on most laptops (and some keyboards) they need Fn held, which is why
+/// the key can be changed (Icky's report, eu1, 2026-10-06: "my F5 key does nothing").
+pub const OVERLAY_KEYS: &[(&str, u16)] = &[
+    ("F1", 0x70),
+    ("F2", 0x71),
+    ("F3", 0x72),
+    ("F4", 0x73),
+    ("F5", 0x74),
+    ("F6", 0x75),
+    ("F7", 0x76),
+    ("F8", 0x77),
+    ("F9", 0x78),
+    ("F10", 0x79),
+    ("F11", 0x7A),
+    ("F12", 0x7B),
+    ("Insert", 0x2D),
+    ("Home", 0x24),
+    ("End", 0x23),
+    ("Page Up", 0x21),
+    ("Page Down", 0x22),
+    ("Pause", 0x13),
+    ("Scroll Lock", 0x91),
+    ("`", 0xC0),
+];
+
+/// The virtual-key code of the overlay key named `key`; F5's for a name not in
+/// [`OVERLAY_KEYS`].
+pub fn overlay_key_code(key: &str) -> u16 {
+    OVERLAY_KEYS.iter().find(|(name, _)| name.eq_ignore_ascii_case(key)).map_or(0x74, |(_, vk)| *vk)
+}
+
+/// How to say the overlay key to a player: "F5 (Fn+F5 on most laptops)" for a function key.
+pub fn overlay_key_hint(key: &str) -> String {
+    let key = OVERLAY_KEYS.iter().find(|(name, _)| name.eq_ignore_ascii_case(key)).map_or("F5", |(name, _)| name);
+    if key.starts_with('F') && key.len() > 1 {
+        format!("{key} (Fn+{key} on most laptops)")
+    } else {
+        key.to_string()
+    }
+}
 
 macro_rules! enum_gui {
     (
@@ -232,6 +280,9 @@ pub struct Config {
     pub enable_all_hooks: bool,
     #[serde(default = "default_overlay")]
     pub enable_overlay: bool,
+    /// The key that opens the overlay's panel: a name in [`OVERLAY_KEYS`].
+    #[serde(default = "default_overlay_key", skip_serializing_if = "is_default_overlay_key")]
+    pub overlay_key: String,
     /// Shows the overlay's developer window (send test invite events). Off for
     /// players.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1065,6 +1116,21 @@ pub fn default() -> Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_overlay_key_is_f5_unless_chosen() {
+        assert_eq!(overlay_key_code("F5"), 0x74);
+        assert_eq!(overlay_key_code("insert"), 0x2D);
+        assert_eq!(overlay_key_code("nonsense"), 0x74, "an unknown name opens with F5");
+        assert_eq!(overlay_key_hint("F6"), "F6 (Fn+F6 on most laptops)");
+        assert_eq!(overlay_key_hint("Insert"), "Insert");
+        let mut cfg = super::default();
+        assert_eq!(cfg.overlay_key, "F5");
+        assert!(!toml::to_string(&cfg).unwrap().contains("OverlayKey"), "the default isn't written");
+        cfg.overlay_key = "F8".into();
+        let back: Config = toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(back.overlay_key, "F8");
+    }
 
     #[test]
     fn adapter_names_match_like_windows_would() {

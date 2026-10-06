@@ -376,7 +376,11 @@ pub fn friend_event(event: &server_api::misc::FriendEvent) {
         return;
     };
     let text = match event.kind() {
-        server_api::misc::friend_event::Kind::Request => format!("{} wants to be friends. Press F5 to answer.", clip(&from.username, MAX_NAME)),
+        server_api::misc::friend_event::Kind::Request => format!(
+            "{} wants to be friends. Press {} to answer.",
+            clip(&from.username, MAX_NAME),
+            hooks_config::get().map_or_else(|| "F5".into(), |c| hooks_config::overlay_key_hint(&c.overlay_key))
+        ),
         server_api::misc::friend_event::Kind::Accepted => format!("{} accepted your friend request.", clip(&from.username, MAX_NAME)),
     };
     info!("Friend event: {text}");

@@ -2,7 +2,7 @@
 //!
 //! - A toast when the game starts (how to open the overlay), one for each
 //!   invite, and a banner when the server can't be reached.
-//! - F5 opens a panel (F5 or Esc closes it) with Players, Invites, Match (the
+//! - F5 (or the key the player chose in the launcher) opens a panel (it or Esc closes it) with Players, Invites, Match (the
 //!   lobby's player counts) and Server.
 //!
 //! Sizes are designed for 1080p and scale with the screen height. Fonts are
@@ -29,7 +29,6 @@ use windows::core::PCSTR;
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
-use windows::Win32::UI::Input::KeyboardAndMouse::VK_F5;
 use windows::Win32::UI::WindowsAndMessaging::DefWindowProcA;
 
 use crate::community;
@@ -398,9 +397,10 @@ impl MyRenderLoop {
     fn poll_keys(&mut self) {
         #[allow(clippy::cast_possible_wrap)]
         let down = |vk: u16| unsafe { GetAsyncKeyState(vk.into()) & 0x8000u16 as i16 != 0 };
-        let f5 = down(VK_F5.0);
+        let f5 = down(overlay_key().1);
         if f5 && !self.f5_down {
             self.toggle();
+            info!("Overlay: {} ({})", if self.ui_state == UiState::Show { "opened" } else { "closed" }, overlay_key().0);
         }
         self.f5_down = f5;
         let esc = down(VK_ESCAPE.0);
@@ -537,9 +537,12 @@ impl MyRenderLoop {
             }
             ui.text_colored(MUTED, "Press");
             ui.same_line();
-            self.key(ui, "F5");
+            self.key(ui, &overlay_key().0);
             ui.same_line();
             ui.text_colored(MUTED, "for friends, invites and match settings");
+            if is_function_key() {
+                ui.text_colored(MUTED, format!("(on most laptops, hold Fn and press {})", overlay_key().0));
+            }
         });
     }
 
@@ -589,7 +592,7 @@ impl MyRenderLoop {
                 ui.text_colored(MUTED, activity);
             }
             if pending {
-                self.key(ui, "F5");
+                self.key(ui, &overlay_key().0);
                 ui.same_line();
                 ui.text_colored(MUTED, format!("accept or decline  ·  {} s", left.as_secs()));
             } else {
@@ -799,7 +802,7 @@ impl MyRenderLoop {
         ui.get_window_draw_list().add_line([pos[0], pos[1] + top], [pos[0] + size[0], pos[1] + top], LINE).build();
         let line_h = ui.text_line_height() + self.s(4.0);
         ui.set_cursor_pos([self.s(24.0), top + (h - line_h) / 2.0]);
-        self.key(ui, "F5");
+        self.key(ui, &overlay_key().0);
         ui.same_line();
         ui.text_colored(MUTED, "or");
         ui.same_line();
@@ -1423,4 +1426,19 @@ pub fn init(engine: Engine, invites: crossbeam_channel::Receiver<Result<Option<I
         Engine::DX9 => init_dx9(invites),
         Engine::DX11 => init_dx11(invites),
     }
+}
+
+/// The overlay's key (as the player chose it in the launcher; F5 unless they did): its name
+/// and virtual-key code.
+fn overlay_key() -> (String, u16) {
+    let name = hooks_config::get().map_or_else(|| "F5".to_string(), |c| c.overlay_key.clone());
+    let vk = hooks_config::overlay_key_code(&name);
+    let name = hooks_config::OVERLAY_KEYS.iter().find(|(_, code)| *code == vk).map_or("F5", |(n, _)| n).to_string();
+    (name, vk)
+}
+
+/// Whether the overlay key is a function key (laptops need Fn for those).
+fn is_function_key() -> bool {
+    let (name, _) = overlay_key();
+    name.starts_with('F') && name.len() > 1
 }
