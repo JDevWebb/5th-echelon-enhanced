@@ -177,8 +177,24 @@ impl Coordinator {
     }
 
     /// An admin's answer: the player sees it in their launcher (and is told in the overlay).
+    /// An admin writing first (asking a player for something) opens the conversation: only
+    /// with a player the network knows (an account with that identity on a member server),
+    /// named as their newest account is.
     pub(crate) async fn answer_support(&self, identity: &str, admin: &str, text: &str, now: i64) -> sqlx::Result<Option<i64>> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let account: Option<(String, String)> = sqlx::query_as("SELECT name, server_id FROM players WHERE identity = ? ORDER BY last_seen DESC LIMIT 1")
+            .bind(identity)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if let Some((name, server)) = account {
+            sqlx::query("INSERT INTO support_threads (identity, name, server, status, updated_at) VALUES (?, ?, ?, 'waiting', ?) ON CONFLICT (identity) DO NOTHING")
+                .bind(identity)
+                .bind(name)
+                .bind(server)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
+        }
         let found = sqlx::query("UPDATE support_threads SET status = 'waiting', updated_at = ? WHERE identity = ?")
             .bind(now)
             .bind(identity)

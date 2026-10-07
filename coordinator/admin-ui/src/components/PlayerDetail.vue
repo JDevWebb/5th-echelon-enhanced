@@ -27,6 +27,7 @@
         <button v-else class="small" type="button" @click="act('unban')">Unban</button>
         <button class="small" type="button" @click="act('reset_password')">Reset password</button>
         <button class="small" type="button" @click="act('rename')">Rename</button>
+        <RouterLink v-if="features.roadmap && p.identity" class="btn small" :to="{ path: `/support/${p.identity}`, query: { name: p.name } }" title="Write to them: they read it on their launcher's Support page, and the game's overlay tells them">Message</RouterLink>
         <button class="small danger" type="button" @click="act('delete')">Delete</button>
       </div>
       <p v-for="(f, aid) in mine" :key="aid" class="callout" :class="{ bad: f.status === 'failed' || f.status === 'expired' }">
@@ -107,6 +108,7 @@ import { ACTION_LABELS, follow, following } from '../lib/actions.js';
 import { confirmBox } from '../lib/dialogs.js';
 import { fmt, PALETTE } from '../lib/fmt.js';
 import { openModal, toast } from '../lib/ui.js';
+import { features } from '../lib/features.js';
 
 const props = defineProps({ server: String, id: Number, names: Map });
 const emit = defineEmits(['close', 'changed', 'open']);

@@ -5,7 +5,8 @@
 //!   first, with what's unread for the admins.
 //! * `GET /api/support/<identity>`: one conversation (marked read), with the player's accounts.
 //! * `POST /api/support/<identity>` `{text}`: an answer, which the player reads in their
-//!   launcher (and is told of in the overlay); the conversation then waits on them.
+//!   launcher (and is told of in the overlay); the conversation then waits on them. With no
+//!   conversation yet, it starts one: an admin asking a player for something.
 //! * `PUT /api/support/<identity>/status` `{status}`: open, waiting or resolved.
 //! * `GET /api/support/<identity>/files/<message>/<name>`: a file, unpacked, to save.
 
@@ -105,11 +106,11 @@ async fn answer(State(c): State<Shared>, Extension(client): Extension<Client>, h
     }
     match c.answer_support(&identity, &s.username, text, identity::now()).await {
         Ok(Some(_)) => {
-            c.audit(&s.username, Some(&client), "support: answered", &identity::short(&identity)).await;
+            c.audit(&s.username, Some(&client), "support: wrote to the player", &identity::short(&identity)).await;
             c.publish(Event::Support);
             c.support_thread(&identity).await.map_or_else(internal, |t| ok(t.map(|(v, _)| v).unwrap_or_default()))
         }
-        Ok(None) => fail(StatusCode::NOT_FOUND, "no such conversation"),
+        Ok(None) => fail(StatusCode::NOT_FOUND, "no player with that identity here: nobody to write to"),
         Err(e) => internal(e),
     }
 }

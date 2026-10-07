@@ -33,7 +33,16 @@
     </section>
 
     <section v-if="openId" class="panel conversation">
-      <div v-if="!thread" class="empty">{{ threadError || 'Loading…' }}</div>
+      <!-- No conversation yet: an admin writes first (from the player's page). -->
+      <template v-if="!thread && fresh">
+        <header>
+          <div>
+            <h2>{{ fresh }} <span class="muted small mono" :title="openId">{{ openId.slice(0, 4) }}-{{ openId.slice(-4) }}</span></h2>
+            <p class="small muted">No conversation yet. What you write starts one: they read it on their launcher's Support page (0.4.3 and later), and the game's overlay tells them.</p>
+          </div>
+        </header>
+      </template>
+      <div v-else-if="!thread" class="empty">{{ threadError || 'Loading…' }}</div>
       <template v-else>
         <header>
           <div>
@@ -59,9 +68,11 @@
             </div>
           </div>
         </div>
+      </template>
+      <template v-if="thread || fresh">
         <form class="answer" @submit.prevent="answer">
           <label class="field">
-            <span>Answer ({{ text.length }}/2000)</span>
+            <span>{{ thread ? 'Answer' : 'Message' }} ({{ text.length }}/2000)</span>
             <textarea v-model="text" maxlength="2000" rows="4" placeholder="They read it in the launcher; the game's overlay tells them an answer came."></textarea>
           </label>
           <div class="row">
@@ -105,6 +116,8 @@ const { data: list, error: listError, reload: reloadList } = useLoad(() => api('
 
 const thread = ref(null);
 const threadError = ref('');
+// Starting a conversation: no thread yet, and the player's name from their page's link.
+const fresh = ref('');
 const text = ref('');
 const busy = ref(false);
 const scroller = ref(null);
@@ -113,10 +126,13 @@ async function loadThread() {
   try {
     thread.value = await api('GET', `/support/${openId.value}`);
     threadError.value = '';
+    fresh.value = '';
     await nextTick();
     if (scroller.value) scroller.value.scrollTop = scroller.value.scrollHeight;
   } catch (e) {
-    threadError.value = e.message;
+    const name = typeof route.query.name === 'string' ? route.query.name.slice(0, 40) : '';
+    if (e.status === 404 && name) fresh.value = name;
+    else threadError.value = e.message;
   }
 }
 watch(openId, () => { thread.value = null; text.value = ''; loadThread(); }, { immediate: true });

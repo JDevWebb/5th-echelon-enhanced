@@ -37,6 +37,7 @@ import { useRoute } from 'vue-router';
 import { PARENT, ROUTES } from '../router.js';
 import { api } from '../lib/api.js';
 import { live } from '../lib/live.js';
+import { features } from '../lib/features.js';
 import { THEMES, nextTheme, theme } from '../lib/theme.js';
 
 // Colours: System, Light or Dark, a click stepping through them.
@@ -49,6 +50,7 @@ const hasRoadmap = ref(false);
 onMounted(async () => {
   try {
     hasRoadmap.value = (await api('GET', '/me')).roadmap === true;
+    features.roadmap = hasRoadmap.value;
   } catch {
     // Left out: the page answers nothing without it.
   }

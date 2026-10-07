@@ -3236,3 +3236,37 @@ async fn players_write_to_support_and_read_the_admins_answers() {
     let (_, v) = admin_call(&r, "GET", "/api/support?status=all", &cookie, None).await;
     assert_eq!(v["threads"].as_array().map(Vec::len), Some(0), "{v}");
 }
+
+#[tokio::test]
+async fn admins_write_first_to_a_player_the_network_knows() {
+    let t = start("support-first").await;
+    t.c.enable_roadmap();
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    let neutron = identity::Identity::generate();
+    let ask = json!({ "text": "Hi Neutron, could you send your game's log from the Support page?" });
+    // Nobody with that identity: nobody to write to.
+    let (status, _) = admin_call(&r, "POST", &format!("/api/support/{}", neutron.global_id()), &cookie, Some(ask.clone())).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let roster = json!({ "full": false, "players": [player(1026, "Neutron", Some(&neutron.global_id()))] });
+    assert_eq!(t.call("POST", "/v1/players", Some(&a), Some(roster)).await.0, StatusCode::OK);
+    let (status, v) = admin_call(&r, "POST", &format!("/api/support/{}", neutron.global_id()), &cookie, Some(ask)).await;
+    assert_eq!(
+        (status, v["name"].as_str(), v["status"].as_str()),
+        (StatusCode::OK, Some("Neutron"), Some("waiting")),
+        "{v}"
+    );
+    // The player's launcher sees it, unread, and so does the overlay (through the pulse).
+    let time = identity::now();
+    let mine = format!(
+        "/v1/support/mine?identity={}&time={time}&signature={}",
+        neutron.global_id(),
+        neutron.sign(&identity::support_read_message("coordinator.test", time))
+    );
+    let (_, v) = t.call("GET", &mine, None, None).await;
+    assert_eq!((v["unread"].as_i64(), v["messages"][0]["admin"].as_str()), (Some(1), Some("admin1")), "{v}");
+    let pulse = json!({ "players": { "online": 1 }, "counters": {}, "online": [{ "id": 1026, "name": "Neutron" }] });
+    let (_, v) = t.call("POST", "/v1/pulse", Some(&a), Some(pulse)).await;
+    assert_eq!(v["support"], json!([{ "player": 1026, "unread": 1 }]), "{v}");
+}
