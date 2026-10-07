@@ -240,12 +240,15 @@ pub(crate) struct Open {
     max_per_ip: usize,
 }
 
-/// Most connections at once, and from one address.
-const MAX_OPEN: usize = 256;
+/// Most connections at once, and from one address. (256 in all were held by 17 addresses
+/// sending nothing, and the game's config went unanswered.)
+const MAX_OPEN: usize = 1024;
 const MAX_OPEN_PER_IP: usize = 16;
 /// How long one request's line and headers may take in all (each read has
-/// its own timeout too).
+/// its own timeout too), and the request line alone: a client that holds a
+/// connection open without asking gives its place back soon.
 const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
+const REQUEST_LINE_DEADLINE: Duration = Duration::from_secs(3);
 
 impl Open {
     /// At most `max` connections at once, and `max_per_ip` from one address.
@@ -350,12 +353,14 @@ fn handle(
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
+    let started = std::time::Instant::now();
     let mut rdr = std::io::BufReader::new(Deadline {
         inner: &stream,
-        until: std::time::Instant::now() + REQUEST_DEADLINE,
+        until: started + REQUEST_LINE_DEADLINE,
     });
     let mut line = String::new();
     (&mut rdr).take(MAX_REQUEST_LINE).read_line(&mut line)?;
+    rdr.get_mut().until = started + REQUEST_DEADLINE;
     debug!(logger, "Request: {}", line);
     let mut req = Request::parse_line(&line);
     req.peer = stream.peer_addr().ok().map(|a| a.ip());
