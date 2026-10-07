@@ -712,12 +712,12 @@ impl Storage {
         }
         // A guest made a participant is one, listed once.
         let added: Vec<u32> = private_participants.iter().chain(&public_participants).copied().collect();
-        let mut builder = sqlx::QueryBuilder::new("INSERT OR REPLACE INTO participants (game_id, user_id) ");
+        let mut builder = sqlx::QueryBuilder::new("INSERT OR REPLACE INTO participants (game_id, user_id, joined_after) ");
 
         builder.push_values(
             private_participants.into_iter().chain(public_participants).map(|user_id| (session_id, user_id)),
             |mut b, (session_id, user_id)| {
-                b.push_bind(session_id).push_bind(user_id);
+                b.push_bind(session_id).push_bind(user_id).push("(SELECT COALESCE(MAX(id), 0) FROM game_sessions)");
             },
         );
         let query = builder.build();
@@ -1322,6 +1322,22 @@ impl Storage {
         .bind(host)
         .bind(host)
         .bind(member)
+        .fetch_all(&self.pool))??;
+        Ok(rows.into_iter().map(Option::unwrap_or_default).collect())
+    }
+
+    /// [`Self::rooms_of_host_with`], counting only rooms `member` joined before session
+    /// `before` was made (or, joined before that was recorded, any).
+    pub fn rooms_of_host_with_before(&self, host: u32, member: u32, before: u32) -> Result<Vec<String>> {
+        let rows: Vec<Option<String>> = run(sqlx::query_scalar(
+            "SELECT g.attributes FROM game_sessions g JOIN participants m ON m.game_id = g.id AND m.user_id = ?2
+              WHERE g.destroyed_at IS NULL AND g.creator_id = ?1
+                AND EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?1)
+                AND (m.joined_after IS NULL OR m.joined_after < ?3)",
+        )
+        .bind(host)
+        .bind(member)
+        .bind(before)
         .fetch_all(&self.pool))??;
         Ok(rows.into_iter().map(Option::unwrap_or_default).collect())
     }

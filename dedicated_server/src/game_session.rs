@@ -371,6 +371,17 @@ impl GameSessionProtocolServerImpl {
                 .is_ok_and(|rooms| rooms.iter().any(|a| attribute_value(a, PROPERTY_ROOM_KIND) == Some(ROOM_KIND_ANTEROOM)))
     }
 
+    /// [`Self::in_party_of`] since before the host made `match_id`: who follows the host into
+    /// a private match. A stranger can add themselves to a host's public party and then
+    /// find and join the match they made; the party that was there when it was made follows.
+    fn in_party_before(&self, member: u32, host: u32, match_id: u32) -> bool {
+        member != host
+            && self
+                .storage
+                .rooms_of_host_with_before(host, member, match_id)
+                .is_ok_and(|rooms| rooms.iter().any(|a| attribute_value(a, PROPERTY_ROOM_KIND) == Some(ROOM_KIND_ANTEROOM)))
+    }
+
     /// LeaveSession and AbandonSession: the player is no longer in the
     /// session, and one nobody is left in ends. Upstream answered both
     /// without doing anything, so players stayed listed in rooms they had
@@ -615,7 +626,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             let invited = rmc_err!(self.storage.is_invited(user_id, session_id), logger, "error checking invitations")?;
             let party_of_host = members
                 .as_ref()
-                .is_some_and(|(creator, _)| self.in_party_of(user_id, *creator) && !crate::friends_policy::blocked_blocking(&self.storage, user_id, *creator));
+                .is_some_and(|(creator, _)| self.in_party_before(user_id, *creator, session_id) && !crate::friends_policy::blocked_blocking(&self.storage, user_id, *creator));
             if !invited && !party_of_host {
                 warn!(logger, "User {user_id} tried to join private room {session_id} without an invitation; refused");
                 return Err(Error::AccessDenied);
@@ -979,7 +990,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 || session.creator_id == user_id
                 || session.participants.iter().any(|p| p.user_id == user_id)
                 || self.storage.is_invited(user_id, session.session_id).unwrap_or(false)
-                || self.in_party_of(user_id, session.creator_id)
+                || self.in_party_before(user_id, session.creator_id, session.session_id)
                 || invited_by == Some(session.creator_id)
         });
 

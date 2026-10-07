@@ -870,6 +870,13 @@ async fn private_room_join(ctx: &mut Ctx) -> Result<()> {
         .await?
         .ok_or_else(|| eyre!("no 'come in' push for the party"))?;
     ensure!(push.ui_type == 7003 && push.ui_param_2 == game, "wrong push: {push:?}");
+    // A stranger who adds themselves to the host's (public) party after the match was made
+    // isn't the party that follows it: they can't walk in that way either.
+    stranger.add_participants(lobby, &[stranger.pid], &[]).await?;
+    ensure!(
+        stranger.add_participants(game, &[], &[stranger.pid]).await.is_err(),
+        "a stranger joined a private match through the host's party, after the match was made"
+    );
     for p in [host, party, carried, stranger] {
         p.disconnect().await?;
     }
