@@ -33,11 +33,14 @@ pub const MAX_BODY: usize = 6 * 1024 * 1024;
 /// Messages a player may send an hour, and from one address.
 pub const PER_PLAYER_AN_HOUR: usize = 20;
 pub const PER_ADDRESS_AN_HOUR: usize = 40;
-/// The most the files may take here in all: past it, the oldest go to make room.
+/// The most the files may take here in all: past it, spare ones go to make room
+/// ([`SPARE_AFTER`]), or a new message keeps its text only.
 const FILES_CAP: i64 = 1024 * 1024 * 1024;
 /// The most one player's files may take (8 messages' worth at the most each): past it, their
 /// message keeps its text only. One player can't fill [`FILES_CAP`] for everyone.
 const PLAYER_FILES_CAP: i64 = 32 * 1024 * 1024;
+/// Past [`FILES_CAP`], files this old (or a resolved conversation's) may go to make room.
+const SPARE_AFTER: i64 = 30 * 86_400;
 /// Files one address may send in a day, all its players together (as sent, gzipped).
 pub const ADDRESS_FILES_A_DAY: i64 = 32 * 1024 * 1024;
 /// A conversation quiet this long goes (with the daily cleanup).
@@ -171,18 +174,32 @@ impl Coordinator {
             .bind(&s.identity)
             .fetch_one(&mut *tx)
             .await?;
-        let keep = theirs + size <= player_cap;
+        let mut keep = theirs + size <= player_cap;
         if keep && size > 0 {
-            // Room for them: the oldest messages' files go first (their text stays).
+            // Room for them: files admins are done with go first, oldest first (their text
+            // stays): a resolved conversation's, or over [`SPARE_AFTER`] old. Never recent
+            // ones still open, or whoever filled the space could push out other players' logs
+            // before the admins saw them; then this message keeps its text only.
             loop {
                 let used: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(length(gzip)), 0) FROM support_files").fetch_one(&mut *tx).await?;
                 if used + size <= files_cap {
                     break;
                 }
-                let oldest: Option<i64> = sqlx::query_scalar("SELECT MIN(message_id) FROM support_files").fetch_one(&mut *tx).await?;
-                let Some(oldest) = oldest else { break };
-                sqlx::query("DELETE FROM support_files WHERE message_id = ?").bind(oldest).execute(&mut *tx).await?;
-                tracing::warn!("support: files take {} MB here; message {oldest}'s went to make room", used >> 20);
+                let spare: Option<i64> = sqlx::query_scalar(
+                    "SELECT MIN(f.message_id) FROM support_files f JOIN support_messages m ON m.id = f.message_id
+                       JOIN support_threads t ON t.identity = m.identity
+                      WHERE t.status = 'resolved' OR m.at < ?",
+                )
+                .bind(now - SPARE_AFTER)
+                .fetch_one(&mut *tx)
+                .await?;
+                let Some(spare) = spare else {
+                    tracing::warn!("support: files take {} MB here, none of them spare; message kept without its files", used >> 20);
+                    keep = false;
+                    break;
+                };
+                sqlx::query("DELETE FROM support_files WHERE message_id = ?").bind(spare).execute(&mut *tx).await?;
+                tracing::warn!("support: files take {} MB here; message {spare}'s went to make room", used >> 20);
             }
         }
         if keep {
@@ -358,10 +375,14 @@ impl Coordinator {
                 .rows_affected()
                 > 0;
         }
-        let accounts: Vec<(String, i64, String)> = sqlx::query_as("SELECT server_id, id, name FROM players WHERE identity = ? ORDER BY server_id")
-            .bind(identity)
-            .fetch_all(&self.pool)
-            .await?;
+        // Accounts whose server has the identity linked: one a server merely names isn't theirs.
+        let accounts: Vec<(String, i64, String)> = sqlx::query_as(
+            "SELECT p.server_id, p.id, p.name FROM players p JOIN links l ON l.server_id = p.server_id AND l.global_id = p.identity
+              WHERE p.identity = ? ORDER BY p.server_id",
+        )
+        .bind(identity)
+        .fetch_all(&self.pool)
+        .await?;
         let thread = json!({
             "identity": identity, "short": identity::short(identity), "name": name, "server": server, "launcher": launcher, "status": status, "updated_at": updated_at,
             "messages": messages,
@@ -390,6 +411,7 @@ impl Coordinator {
         let rows: Vec<(i64, i64)> = sqlx::query_as(&format!(
             "SELECT p.id, (SELECT COUNT(*) FROM support_messages m WHERE m.identity = t.identity AND m.admin IS NOT NULL AND m.id > t.player_read)
              FROM players p JOIN support_threads t ON t.identity = p.identity
+             JOIN links l ON l.server_id = p.server_id AND l.global_id = p.identity
              WHERE p.server_id = ? AND p.id IN ({list})"
         ))
         .bind(server)
@@ -435,4 +457,9 @@ impl Coordinator {
 
 /// Deletes a player's conversation (bound to their identity) once no account of theirs is
 /// left on any server.
-pub(crate) const FORGET: &str = "DELETE FROM support_threads WHERE identity = ?1 AND NOT EXISTS (SELECT 1 FROM players WHERE identity = ?1)";
+///
+/// Only when the server whose account went (`?2`) had the identity linked: any server can
+/// name any identity on an account of its own, and dropping that account mustn't take another
+/// player's conversation with it.
+pub(crate) const FORGET: &str = "DELETE FROM support_threads WHERE identity = ?1 AND NOT EXISTS (SELECT 1 FROM players WHERE identity = ?1)
+     AND EXISTS (SELECT 1 FROM links WHERE global_id = ?1 AND server_id = ?2)";

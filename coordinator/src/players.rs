@@ -280,7 +280,7 @@ impl Coordinator {
                     .await?;
                 // Their support conversation too, once no account of theirs is left anywhere.
                 if let Some(identity) = identity {
-                    sqlx::query(crate::support::FORGET).bind(identity).execute(&mut *tx).await?;
+                    sqlx::query(crate::support::FORGET).bind(identity).bind(server).execute(&mut *tx).await?;
                 }
                 // Their game's uploads go with them (ids come again on the server).
                 sqlx::query("DELETE FROM player_content WHERE server_id = ? AND player_id = ?")
@@ -480,7 +480,7 @@ impl Coordinator {
                     .execute(&self.pool)
                     .await?;
                 if let Some(identity) = identity {
-                    sqlx::query(crate::support::FORGET).bind(identity).execute(&self.pool).await?;
+                    sqlx::query(crate::support::FORGET).bind(identity).bind(server).execute(&self.pool).await?;
                 }
                 sqlx::query("DELETE FROM player_content WHERE server_id = ? AND player_id = ?")
                     .bind(server)

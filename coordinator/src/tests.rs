@@ -3251,6 +3251,7 @@ async fn admins_write_first_to_a_player_the_network_knows() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     let roster = json!({ "full": false, "players": [player(1026, "Neutron", Some(&neutron.global_id()))] });
     assert_eq!(t.call("POST", "/v1/players", Some(&a), Some(roster)).await.0, StatusCode::OK);
+    t.changes(&a, json!([link(&neutron, "server-a", "Neutron")])).await;
     let (status, v) = admin_call(&r, "POST", &format!("/api/support/{}", neutron.global_id()), &cookie, Some(ask)).await;
     assert_eq!(
         (status, v["name"].as_str(), v["status"].as_str()),
@@ -3327,7 +3328,12 @@ async fn support_files_are_capped_per_player_and_the_oldest_make_room() {
     }
     let (_, kept) = t.c.add_support_message_within(&sent(&oni), &[file(100)], now, caps).await.unwrap();
     assert!(!kept, "over the player's cap: text only");
-    // Kiwi's 150 KiB is past the 300 KiB in all: Oni's oldest file goes, Kiwi's is kept.
+    // Kiwi's 150 KiB is past the 300 KiB in all, and Oni's files are recent and open: none
+    // go, and Kiwi's message keeps its text only.
+    let (_, kept) = t.c.add_support_message_within(&sent(&kiwi), &[file(150)], now, caps).await.unwrap();
+    assert!(!kept, "recent files of an open conversation aren't pushed out");
+    // Once Oni's conversation is resolved, its oldest file goes to make room.
+    assert!(t.c.set_support_status(&oni.global_id(), "resolved").await.unwrap());
     let (_, kept) = t.c.add_support_message_within(&sent(&kiwi), &[file(150)], now, caps).await.unwrap();
     assert!(kept);
     let files: Vec<(String, i64)> = sqlx::query_as("SELECT m.identity, length(f.gzip) FROM support_files f JOIN support_messages m ON m.id = f.message_id ORDER BY f.message_id")
@@ -3352,4 +3358,41 @@ async fn support_files_are_capped_per_player_and_the_oldest_make_room() {
     let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM support_files").fetch_one(&t.c.pool).await.unwrap();
     assert_eq!(left, 1, "Kiwi's file only");
     assert_eq!(admin_call(&r, "DELETE", &path, &fresh, None).await.0, StatusCode::NOT_FOUND);
+}
+
+/// A member server can name any identity on an account of its own, but it isn't that player's:
+/// it isn't listed beside their conversation, its pulse isn't told of their unread answers,
+/// and dropping the account doesn't delete their conversation (before, it was deleted once no
+/// account named the identity: here Oni is linked on A, which hasn't sent its roster yet).
+#[tokio::test]
+async fn a_server_naming_someone_elses_identity_gets_nothing_of_theirs() {
+    let t = start("support-claimed").await;
+    t.c.enable_roadmap();
+    let r = admin_router(&t);
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    let oni = identity::Identity::generate();
+    t.changes(&a, json!([link(&oni, "server-a", "Oni")])).await;
+    // Server B names Oni's identity on an account of its own.
+    let claim = json!({ "full": true, "players": [player(7, "Oni-alt", Some(&oni.global_id()))] });
+    assert_eq!(t.call("POST", "/v1/players", Some(&b), Some(claim)).await.0, StatusCode::OK);
+    let path = format!("/api/support/{}", oni.global_id());
+    assert_eq!(admin_call(&r, "POST", &path, &cookie, Some(json!({ "text": "Hi Oni" }))).await.0, StatusCode::OK);
+    let (_, v) = admin_call(&r, "GET", &path, &cookie, None).await;
+    assert_eq!(v["accounts"], json!([]), "B's account isn't Oni's: {v}");
+    let pulse = json!({ "players": { "online": 1 }, "counters": {}, "online": [{ "id": 7, "name": "Oni-alt" }] });
+    let (_, v) = t.call("POST", "/v1/pulse", Some(&b), Some(pulse)).await;
+    assert_eq!(v["support"], json!([]), "{v}");
+    // B drops its account: Oni's conversation stays.
+    let empty = json!({ "full": true, "players": [] });
+    assert_eq!(t.call("POST", "/v1/players", Some(&b), Some(empty)).await.0, StatusCode::OK);
+    assert_eq!(admin_call(&r, "GET", &path, &cookie, None).await.0, StatusCode::OK);
+    // A server that had them linked letting their last account go still deletes it.
+    let roster = json!({ "full": true, "players": [player(1, "Oni", Some(&oni.global_id()))] });
+    assert_eq!(t.call("POST", "/v1/players", Some(&a), Some(roster)).await.0, StatusCode::OK);
+    assert_eq!(
+        t.call("POST", "/v1/players", Some(&a), Some(json!({ "full": true, "players": [] }))).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(admin_call(&r, "GET", &path, &cookie, None).await.0, StatusCode::NOT_FOUND);
 }
