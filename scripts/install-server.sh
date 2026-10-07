@@ -2120,12 +2120,19 @@ case "${1:-status}" in
     install -d -m 700 "$mirror"
     take=()
     for f in join-token.txt reports; do if [ -e "$COORD_DIR/$f" ] || [ -L "$COORD_DIR/$f" ]; then take+=("$f"); fi; done
-    if [ "${#take[@]}" -gt 0 ]; then
-      rc=0
+    # 1 is a file that changed while it was read: the next hour's copy has it whole. Worse
+    # (a folder there became a link, which can't replace the folder in the copy): once more,
+    # into a new copy.
+    copy() {
+      local rc=0
       tar -C "$COORD_DIR" --listed-incremental="$snapshot" -cf - "${take[@]}" 2>"$mirror.err" \
-        | tar -C "$mirror" --listed-incremental=/dev/null --no-same-owner -xf - || rc=$?
-      # 1 is a file that changed while it was read: the next hour's copy has it whole.
-      if [ "$rc" -gt 1 ]; then cat "$mirror.err" >&2; rm -rf "$mirror" "$snapshot"; die "couldn't copy the coordinator's files"; fi
+        | tar -C "$mirror" --listed-incremental=/dev/null --no-same-owner -xf - 2>>"$mirror.err" || rc=$?
+      [ "$rc" -le 1 ]
+    }
+    if [ "${#take[@]}" -gt 0 ] && ! copy; then
+      rm -rf "$mirror" "$snapshot"
+      install -d -m 700 "$mirror"
+      if ! copy; then cat "$mirror.err" >&2; rm -rf "$mirror" "$snapshot"; die "couldn't copy the coordinator's files"; fi
     fi
     rm -f "$mirror.err"
     if [ -L "$mirror/join-token.txt" ]; then
@@ -2525,6 +2532,11 @@ harden_caddy() {
   caddy_home="${caddy_home:-/var/lib/caddy}"
   want="$(cat <<UNIT
 # Written by install-server.sh: Caddy in a sandbox.
+[Unit]
+# However often it crashes: systemd otherwise gives up after 5 starts in 10 s, and one
+# connection crashed Caddy 2.11.6 (the streams of an HTTP/2 upload reset under it), so someone
+# repeating that would keep it down.
+StartLimitIntervalSec=0
 [Service]
 # Started again if it stops on its own (a crash took the sites down once).
 Restart=on-failure
@@ -2626,6 +2638,11 @@ if [ "$no_caddy" -eq 0 ]; then
   case "$caddy_version" in
     v2.[0-5].*) die "Caddy $caddy_version is too old (2.6 or newer speaks the launcher's gRPC); update it and run this again" ;;
   esac
+  # Older ones crash on one connection's HTTP/2 uploads cut short (2.11.6 did; 2.11.7 held).
+  have="${caddy_version#v}"
+  if [[ "$have" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$have" != "$CADDY_VERSION" ] && [ "$(printf '%s\n%s\n' "$have" "$CADDY_VERSION" | sort -V | head -1)" = "$have" ]; then
+    warn "Caddy $caddy_version is older than $CADDY_VERSION: one connection can crash it (it's started again, but the sites drop meanwhile). Update it (apt upgrade caddy) and run this again"
+  fi
   install -d -m 755 /etc/caddy
   if [ -n "$metrics_cert" ]; then
     openssl x509 -noout -in "$metrics_cert" 2>/dev/null || die "$metrics_cert isn't a certificate (PEM)"
