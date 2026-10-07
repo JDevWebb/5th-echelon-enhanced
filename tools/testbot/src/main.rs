@@ -1449,7 +1449,7 @@ async fn nat_probe_scenario(ctx: &mut Ctx) -> Result<()> {
 async fn nat_relay(ctx: &mut Ctx) -> Result<()> {
     use nat_proto::Message;
     let nat = nat_addr(ctx.server, false)?;
-    let (pa, pb) = (ctx.player("Relayed").await?, ctx.player("Direct").await?);
+    let (mut pa, mut pb) = (ctx.player("Relayed").await?, ctx.player("Direct").await?);
     let a = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
     let b = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
     // Someone at another address (on loopback, 127.0.0.3): the same address with the tag is the
@@ -1468,6 +1468,17 @@ async fn nat_relay(ctx: &mut Ctx) -> Result<()> {
         }
         .encode()
     };
+    // Strangers: the relay carries game traffic only between players the server put together.
+    b.send_to(&send(rb.tag, ra.advertise, b"from a stranger"), nat).await?;
+    ensure!(
+        nat_wait_data(&a, Duration::from_millis(600)).await.is_none(),
+        "the relay carried a packet between two players in no room together"
+    );
+    let room = pa.create_session(LOBBY).await?;
+    pa.add_participants(room, &[pa.pid], &[]).await?;
+    pb.add_participants(room, &[pb.pid], &[]).await?;
+    // The refusal stands a second (the game retries; its join may come a moment later).
+    tokio::time::sleep(Duration::from_millis(1100)).await;
     b.send_to(&send(rb.tag, ra.advertise, b"to the relayed player"), nat).await?;
     ensure!(
         nat_wait_data(&a, Duration::from_secs(2)).await

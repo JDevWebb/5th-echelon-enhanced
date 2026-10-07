@@ -621,7 +621,9 @@ fn main() -> color_eyre::Result<()> {
 
     let mut threads = vec![];
     if nat.enabled {
-        match nat_helper::start(&logger.new(o!("service" => "nat")), nat, relay_ip) {
+        let pairs = Arc::clone(&storage);
+        let may_relay: nat_helper::MayRelay = Box::new(move |a, b| pairs.may_relay(a, b).unwrap_or(false));
+        match nat_helper::start(&logger.new(o!("service" => "nat")), nat, relay_ip, may_relay) {
             Ok(t) => threads.extend(t),
             Err(e) => crit!(logger, "Couldn't start the NAT helper on UDP {}: {e}", nat.listen),
         }

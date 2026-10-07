@@ -1298,6 +1298,32 @@ impl Storage {
         Ok(n > 0)
     }
 
+    /// Whether the relay may carry `sender`'s game traffic to `receiver` (names, any case):
+    /// they're in a live session together, `receiver` hosts one anyone may join (matchmaking
+    /// reaches the host before its join does), or one invited the other (unanswered).
+    pub fn may_relay(&self, sender: &str, receiver: &str) -> Result<bool> {
+        let ids: Vec<(u32, String)> = run(sqlx::query_as("SELECT id, name_key FROM users WHERE name_key IN (?, ?)")
+            .bind(sender.to_lowercase())
+            .bind(receiver.to_lowercase())
+            .fetch_all(&self.pool))??;
+        let id = |name: &str| ids.iter().find(|(_, k)| *k == name.to_lowercase()).map(|(id, _)| *id);
+        let (Some(a), Some(b)) = (id(sender), id(receiver)) else {
+            return Ok(false);
+        };
+        if self.share_session(a, b)? || self.hosts_public_session(b)? {
+            return Ok(true);
+        }
+        let n: i64 = run(sqlx::query_scalar(
+            "SELECT (SELECT COUNT(*) FROM invites WHERE ((sender = ?1 AND receiver = ?2) OR (sender = ?2 AND receiver = ?1))
+                       AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP)
+                  + (SELECT COUNT(*) FROM game_session_invites WHERE (sender = ?1 AND receiver = ?2) OR (sender = ?2 AND receiver = ?1))",
+        )
+        .bind(a)
+        .bind(b)
+        .fetch_one(&self.pool))??;
+        Ok(n > 0)
+    }
+
     /// Whether `host` hosts a session anyone may join: one public matchmaking finds
     /// ([`Self::search_sessions`]), not an invite-only or private one.
     pub fn hosts_public_session(&self, host: u32) -> Result<bool> {
@@ -1787,6 +1813,36 @@ pub(crate) mod tests {
         storage.add_guest(private, asked, true).unwrap();
         storage.delete_user_session(asked).unwrap();
         assert!(!storage.share_session(asked, host).unwrap());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_relay_carries_only_players_the_server_put_together() {
+        let (storage, dir) = temp_storage("relay_pairs");
+        for name in ["Host", "Guest", "Stranger", "Friend"] {
+            storage.register_user(name, "pw", Some(name)).unwrap();
+        }
+        let id = |n: &str| storage.find_user_id_by_name(n).unwrap().unwrap();
+        let (host, guest, friend) = (id("Host"), id("Guest"), id("Friend"));
+        assert!(!storage.may_relay("guest", "host").unwrap(), "no room yet");
+        // A private room: its host is reached only by who's in it, or invited.
+        let private = storage.create_game_session(host, 1, "113 => 0;3 => 0;4 => 2".into()).unwrap();
+        storage.add_participants(1, private, vec![], vec![host]).unwrap();
+        assert!(!storage.may_relay("Guest", "Host").unwrap(), "a private room isn't for strangers");
+        storage.add_game_session_invites(1, private, host, &[friend], "").unwrap();
+        assert!(storage.may_relay("friend", "HOST").unwrap(), "invited");
+        assert!(storage.may_relay("host", "friend").unwrap(), "and the other way");
+        assert!(!storage.may_relay("Stranger", "Friend").unwrap());
+        // A public match: anyone may reach its host (matchmaking does before the join), and
+        // the host its guests once they're in.
+        let public = storage.create_game_session(host, 1, "113 => 0".into()).unwrap();
+        storage.add_participants(1, public, vec![], vec![host]).unwrap();
+        assert!(storage.may_relay("Stranger", "Host").unwrap());
+        assert!(!storage.may_relay("Host", "Stranger").unwrap(), "not the other way: they may not have joined");
+        assert!(storage.add_guest(public, guest, false).unwrap());
+        assert!(storage.may_relay("Host", "Guest").unwrap());
+        assert!(!storage.may_relay("Stranger", "Guest").unwrap(), "a guest isn't a host");
+        assert!(!storage.may_relay("Nobody", "Host").unwrap(), "no such player");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
