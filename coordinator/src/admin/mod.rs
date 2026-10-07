@@ -571,6 +571,33 @@ impl Coordinator {
         .await
     }
 
+    /// One more try at a code (TOTP or recovery) on this session: refused past [`TOTP_TRIES`]
+    /// (the session ends), and while signing in, refused while the account waits after
+    /// failures (a correct code used to get through the lock, and clear it). A signed-in
+    /// admin confirming it's them isn't held up by others' failures.
+    async fn code_try(&self, s: &Session) -> Result<(), Response> {
+        if s.stage != "full" {
+            let locked_until: i64 = sqlx::query_scalar("SELECT locked_until FROM admins WHERE id = ?")
+                .bind(s.admin_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(internal)?;
+            if identity::now() < locked_until {
+                return Err(fail(StatusCode::TOO_MANY_REQUESTS, "too many failed sign-ins; this account waits a while"));
+            }
+        }
+        let tries: i64 = sqlx::query_scalar("UPDATE admin_sessions SET totp_tries = totp_tries + 1 WHERE token_hash = ? RETURNING totp_tries")
+            .bind(&s.token_hash)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(TOTP_TRIES + 1);
+        if tries > TOTP_TRIES {
+            let _ = sqlx::query("DELETE FROM admin_sessions WHERE token_hash = ?").bind(&s.token_hash).execute(&self.pool).await;
+            return Err(without_cookie(self, fail(StatusCode::UNAUTHORIZED, "too many wrong codes; sign in again")));
+        }
+        Ok(())
+    }
+
     /// A failed sign-in for `admin_id`: after a few, the account waits.
     async fn failed(&self, admin_id: i64, username: &str, client: &Client, what: &str) {
         let now = identity::now();
@@ -729,6 +756,15 @@ async fn login(State(c): State<Shared>, Extension(client): Extension<Client>, Js
         Err(e) => return internal(e),
     };
     let stage = if totp || passkeys > 0 { "password" } else { "enroll" };
+    // One sign-in under way at a time: each has its few tries at a code, and many at once
+    // (all opened with the password) were many more.
+    if let Err(e) = sqlx::query("DELETE FROM admin_sessions WHERE admin_id = ? AND stage IN ('password', 'enroll')")
+        .bind(id)
+        .execute(&c.pool)
+        .await
+    {
+        return internal(e);
+    }
     match c.new_session(id, stage, &client, false, None).await {
         Ok(token) => with_cookie(&c, &token, ok(json!({ "stage": stage, "totp": totp, "passkeys": passkeys }))),
         Err(e) => internal(e),
@@ -750,14 +786,8 @@ async fn login_totp(State(c): State<Shared>, Extension(client): Extension<Client
         Ok(_) => return fail(StatusCode::UNAUTHORIZED, "sign in with your password first"),
         Err(e) => return internal(e),
     };
-    let tries: i64 = sqlx::query_scalar("UPDATE admin_sessions SET totp_tries = totp_tries + 1 WHERE token_hash = ? RETURNING totp_tries")
-        .bind(&s.token_hash)
-        .fetch_one(&c.pool)
-        .await
-        .unwrap_or(TOTP_TRIES + 1);
-    if tries > TOTP_TRIES {
-        let _ = sqlx::query("DELETE FROM admin_sessions WHERE token_hash = ?").bind(&s.token_hash).execute(&c.pool).await;
-        return without_cookie(&c, fail(StatusCode::UNAUTHORIZED, "too many wrong codes; sign in again"));
+    if let Err(r) = c.code_try(&s).await {
+        return r;
     }
     let row: Option<(Option<String>, i64)> = sqlx::query_as("SELECT totp_secret, totp_last_step FROM admins WHERE id = ?")
         .bind(s.admin_id)
@@ -788,6 +818,9 @@ async fn login_recovery(State(c): State<Shared>, Extension(client): Extension<Cl
         Ok(_) => return fail(StatusCode::UNAUTHORIZED, "sign in with your password first"),
         Err(e) => return internal(e),
     };
+    if let Err(r) = c.code_try(&s).await {
+        return r;
+    }
     let used = sqlx::query("UPDATE recovery_codes SET used_at = ? WHERE admin_id = ? AND code_hash = ? AND used_at IS NULL")
         .bind(identity::now())
         .bind(s.admin_id)

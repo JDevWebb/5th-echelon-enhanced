@@ -3413,3 +3413,50 @@ async fn a_server_naming_someone_elses_identity_gets_nothing_of_theirs() {
     );
     assert_eq!(admin_call(&r, "GET", &path, &cookie, None).await.0, StatusCode::NOT_FOUND);
 }
+
+/// Codes while signing in: one sign-in under way per admin (a new one ends the last, so a
+/// password can't open many to try codes on), and none taken while the account waits after
+/// failures, the right one included.
+#[tokio::test]
+async fn second_factor_codes_wait_with_the_account() {
+    let step = totp_step().await;
+    let t = start("admin-code-lock").await;
+    let r = admin_router_at(&t, [192, 0, 2, 11]);
+    let link = t.c.admin_setup_link("tui", false).await.unwrap();
+    let token = link.split("#setup=").nth(1).unwrap().to_string();
+    let password = "correct horse battery staple";
+    let (_, _, enroll) = admin_send(&r, "POST", "/api/setup", "", Some(json!({ "token": token, "password": password }))).await;
+    let enroll = enroll.unwrap();
+    let (_, v, _) = admin_send(&r, "POST", "/api/me/totp/begin", &enroll, None).await;
+    let secret = v["secret"].as_str().unwrap().to_string();
+    let (status, ..) = admin_send(&r, "POST", "/api/me/totp/confirm", &enroll, Some(json!({ "code": totp_code(&secret, step - 1) }))).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let sign_in = || async {
+        admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "tui", "password": password })))
+            .await
+            .2
+            .unwrap()
+    };
+    let first = sign_in().await;
+    let second = sign_in().await;
+    let (status, ..) = admin_send(&r, "POST", "/api/login/totp", &first, Some(json!({ "code": "000000" }))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "the first sign-in ended with the second");
+    sqlx::query("UPDATE admins SET locked_until = ? WHERE username = 'tui'")
+        .bind(identity::now() + 900)
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    let (status, ..) = admin_send(&r, "POST", "/api/login/totp", &second, Some(json!({ "code": totp_code(&secret, step) }))).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "the right code, while the account waits");
+    let (status, ..) = admin_send(&r, "POST", "/api/login/recovery", &second, Some(json!({ "code": "aaaa-bbbb-cccc" }))).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    let locked: i64 = sqlx::query_scalar("SELECT locked_until FROM admins WHERE username = 'tui'")
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+    assert!(locked > identity::now(), "still waiting");
+    sqlx::query("UPDATE admins SET locked_until = 0 WHERE username = 'tui'").execute(&t.c.pool).await.unwrap();
+    let (status, v, _) = admin_send(&r, "POST", "/api/login/totp", &second, Some(json!({ "code": totp_code(&secret, step) }))).await;
+    assert_eq!((status, v["stage"].as_str()), (StatusCode::OK, Some("full")), "{v}");
+}
