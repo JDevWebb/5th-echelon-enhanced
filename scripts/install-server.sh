@@ -794,7 +794,9 @@ trap 'rm -rf "$work"' EXIT
 verify_release() {
   local base="$1" release="$2"
   if ! "${CURL[@]}" -fsSL --retry 3 "${SMALL[@]}" -o "$work/SHA256SUMS.sig" "$base/SHA256SUMS.sig" 2>/dev/null; then
-    [ "$allow_unsigned" -eq 1 ] || die "this release isn't signed (no SHA256SUMS.sig). --allow-unsigned installs it anyway, checked by its checksum only"
+    # Not a nudge to --allow-unsigned: a release missing its signature is just what someone
+    # who changed it on GitHub would leave.
+    [ "$allow_unsigned" -eq 1 ] || die "this release isn't signed (no SHA256SUMS.sig): releases are, so don't install it unless you know why this one isn't"
     warn "the release isn't signed; installing it on its checksum alone (--allow-unsigned)"
     return 0
   fi
