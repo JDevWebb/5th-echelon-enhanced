@@ -77,6 +77,14 @@ pub const RELEASES: &[Release] = &[
                 lead: "The overlay's key works only in the game",
                 rest: ", not in a browser in front of it.",
             },
+            Fix {
+                lead: "Signing in holds",
+                rest: " when many players start at once.",
+            },
+            Fix {
+                lead: "The relay carries only your game's players",
+                rest: ": nobody else can reach you through it.",
+            },
         ],
     },
     Release {

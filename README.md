@@ -40,7 +40,7 @@
 **To play:**
 1. Download **`launcher.exe`** (Windows) or **`launcher-linux-x86_64`** (Linux, Steam Deck) from the [latest release](https://github.com/JDevWebb/5th-echelon-enhanced/releases/latest).
 2. Run it. Under **Choose a server** it lists the community servers with your ping to each, the closest already picked.
-3. Press **Connect** (the first time, pick the name other players will see), then **Play**. Press <kbd>F5</kbd> in the game to add friends (<kbd>Fn</kbd>+<kbd>F5</kbd> on most laptops and some keyboards).
+3. Press **Connect** (the first time, pick the name other players will see), then **Play**. Press <kbd>F5</kbd> in the game to add friends (<kbd>Fn</kbd>+<kbd>F5</kbd> on most laptops and some keyboards, or pick another key in **Settings › Game**).
 
 The launcher pings every server in the network and sets you up on the one with the lowest ping (its steps, under **Steps** in the bar along the bottom, say which). Afterwards the server card on the Play screen lists them all with your ping to each, and picking one moves you there in one click, with the same name and friends.
 
@@ -134,7 +134,9 @@ The **Status** card on the home screen keeps an eye on all of this. Anything tha
 
 **Along the bottom,** one bar shows whatever the launcher is doing (switching servers, with its steps; creating your account; sending a report, with how much has gone up; installing; updating) and anything that went wrong, with **Try again** and **Copy details**. **While a new release goes out** to the servers, a notice under the launch bar says when your server updates and is back, in your own time zone, and that you can keep playing until then.
 
-**How did that go?** When the game closes after something went wrong (a join that failed, a crash, a refused sign-in), and about once a week after a normal online game, the launcher asks how it went: good or not, what went wrong, and a comment. If you agree, your logs go with it to the admins of the server you play on, who see them in the admin UI's Reports. Before anything leaves your PC, your user folder, your PC's and Windows account's names and your internet address are hidden, and **What's sent** shows exactly what goes. It asks at most once a day; **Don't ask again** (or **Settings › Feedback**) turns it off, and **Settings › Feedback › Send feedback** sends one any time.
+**How did that go?** When the game closes after something went wrong (a join that failed, a crash, a refused sign-in), and about once a week after a normal online game, the launcher asks how it went: good or not, what went wrong, and a comment. If you agree, your logs go with it to the admins of the server you play on, who see them in the admin UI's Reports. Before anything leaves your PC, your user folder, your PC's and Windows account's names and your internet address are hidden, and **What's sent** shows exactly what goes. It asks at most once a day; **Don't ask again** (or **Settings › Feedback**) turns it off, and **Settings › Feedback › Send feedback** sends one any time. A report being sent when you close the launcher goes the next time you start it. The admins can reply: their answer shows under **Settings › Feedback › Your reports**, with a notice when it comes.
+
+**Support:** on the community network, the **Support** page writes to its admins about anything, with the game's or the launcher's log if you tick them (hidden the same way first). Their answers show there, and the game's overlay tells you when one comes.
 
 **While you play,** the game sends the server it's signed in to its warnings, errors and network events, and what it's doing (the game session it's in, its checkpoint saves; a few lines a minute at most), so the server's admins can see why a join or a connection failed. The same private details are hidden first. When something goes wrong (a join that fails, your connection dropping), the server can also ask for the 15 minutes of the game's log before it, at most once an hour (never the whole log), private details hidden the same way. **Settings › Feedback › Send the game's diagnostics to the server** turns all of it off.
 
@@ -162,7 +164,7 @@ Matches run peer to peer: your game talks straight to the other players' games. 
 
 ### In the game
 
-Press <kbd>F5</kbd> for the overlay. On most laptops and some keyboards, the top row controls brightness or volume, so press <kbd>Fn</kbd>+<kbd>F5</kbd> (or turn on Fn Lock):
+Press <kbd>F5</kbd> for the overlay. On most laptops and some keyboards, the top row controls brightness or volume, so press <kbd>Fn</kbd>+<kbd>F5</kbd>, turn on Fn Lock, or choose another key in **Settings › Game** (it opens only while the game is in front). It has:
 - **Friends:**
   - your friends and what they're playing, with invite buttons;
   - friend requests to answer, and who you've blocked.
@@ -269,7 +271,7 @@ Everything the launcher does can be done by hand:
   - **invites into private matches**.
 - **Internet play without a VPN:** public addresses from the server, router port forwarding (UPnP / NAT-PMP), and a relay through the server when a router can't be reached.
 - **An automatic setup:** game detection, client install, your account found (or made) with your identity, the network adapter chosen at every start, and your save (your Ubisoft Connect one, or a new rank 5 one), then a Status card with a fix for each problem.
-- **An in-game overlay** (<kbd>F5</kbd>): friends and what they're playing, friend requests, player search and blocking, invites, lobby player limits, and server status.
+- **An in-game overlay** (<kbd>F5</kbd>, or a key you choose): friends and what they're playing, friend requests, player search and blocking, invites, lobby player limits, and server status.
 - **One identity, every server:** the launcher makes you an identity (a key that stays on your PC) and links every account to it. It finds your account on a server by itself, with no username or password to remember, and asks for a name only the first time. Friends made on one server show up on every other server that shares a coordinator, and friends playing on another of them are listed in the overlay and the launcher, which joins you to their server in one click. Moving PCs? Copy your identity across in **Settings**, before connecting on the new PC ([how](docs/friends.md#your-identity)).
 - **Your name is yours:** servers that share a coordinator reserve each name for one player. Elsewhere, the overlay warns when someone has a friend's name but isn't them. You can rename your account from the launcher.
 - **A server directory:** joining a server that shares a coordinator brings in its directory. The launcher pings every server in it, preselects the best (the lowest ping, then the busiest), and its server menu moves you to another in one click.
@@ -287,6 +289,7 @@ Everything the launcher does can be done by hand:
   - **One release:** the launcher and the client DLL it installs are always the same version; the launcher replaces any other version in the game folder. Servers refuse launchers and clients older than they allow (by default, their own release).
 - **Your details stay yours:**
   - the launcher and overlay use HTTPS where the server offers it, so passwords and sign-ins never travel unencrypted;
+  - the server's relay carries only your game's players: those in your party or match, a public match's host you're joining, and players you invited or who invited you;
   - a network's admin UI sees counts and cities, never your name or address; your launcher reports its ping to each server in a directory, from which only your city is noted;
   - a server directory is used only over `https://`, never replaces one you chose, and lists only public hosts, each shown by name;
   - on Windows, saved passwords and your identity key are encrypted for your Windows user.
@@ -309,7 +312,9 @@ Everything the launcher does can be done by hand:
     - players over time, play time and when people play, and the matches played (by mode, map, length and players);
     - the players on every server, by name, with their play time, sessions and matches, and actions on them: kick, ban, a new password, rename, delete (never their addresses);
     - alerts (a server offline, CPU, memory, disk, refused sign-ins, the traffic allowance, failed updates), optionally posted to Discord or Slack;
-    - players' reports after their sessions (what went wrong, their logs, redacted on their PC, and the server's), to read and resolve, each posted to the alert chat;
+    - players' reports after their sessions (what went wrong, their logs, redacted on their PC, and the server's), to read, reply to and resolve, each posted to the alert chat;
+    - every game open now (**Live**), and each player's sessions: how each stay ended, where, and with whom;
+    - on the community network, **Support**: each player's conversation with the admins, their logs and accounts;
     - the update rollout.
   - **How it's protected:**
     - it's served only through Cloudflare;
@@ -332,7 +337,9 @@ Everything the launcher does can be done by hand:
   - rate limits on logins (per address and per account), new accounts, invites, searches and friend requests;
   - login tickets that expire, and API tokens that end when the password changes;
   - private matches need an invite, are never offered to Find Teammate or Quick Match, and only a match's own players can change them;
-  - caps on packets, fragments, connections per address, sessions and lookups;
+  - caps on packets, fragments, connections per address, sessions and lookups, and on the API's and the coordinator's connections, streams and message sizes;
+  - a relay that carries traffic only between players the server put together;
+  - a directory that lists a server only where the server answering gives its id;
   - the admin API never reachable from the internet;
   - a malformed packet can't crash it.
 - **Internet play for everyone:** a NAT helper tells each game its public address, and relays matches for players whose routers can't be reached directly.
@@ -568,6 +575,7 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
   - **identity:** signatures name the server you actually connected to, and a key login signs the password it sets, so a malicious server can't replay them elsewhere;
   - **NAT helper:** registrations need a ticket from your login, replies carry a cookie, relayed packets a tag, with caps per address and a packet rate limit;
   - **coordinator:** a server can't take over another's place, typed and checked listings, rate limits, `remove-server` and `new-token`.
+- A third review attacked a copy of a whole network (a coordinator and servers, as the installer sets them up), then real servers on the internet, and every way it found to take a server down, lock players out or reach them through the relay is fixed: connection and message caps, limits on connections that haven't signed in, a relay only between players the server put together, a directory checked against what answers at each address, and the server's Docker image signed with each release. The fixes were tested in real games across two networks.
 - **The launcher's API over HTTPS** where the server has a domain; the admin API is never reachable from the internet, and the launcher warns before sending an admin key unencrypted.
 - **Signed releases:** the launcher and the installer install only releases whose checksums carry the release key's signature; downloads are size-capped; CI pins its actions and attests every download's provenance.
 - **Installer and Docker:** inputs checked, the join token never printed, sandboxed services (Caddy too, with its admin API off the network), Caddy from its own package repository or a static build pinned by checksum (updated on reruns), the server image without root.

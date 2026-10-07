@@ -46,6 +46,7 @@ Measured on a MacBook (Docker Desktop, 10 cores shared by the server and the tes
 | 1,000 | 2 | 28/s | 33k pkt/s | 0% | 1.9 ms | 59 of 3,800 | 70% | 57 MB (81) |
 
 - **Sign-ins are the peak.** Each costs one Argon2 hash, about 50 ms of one core, so a server signs in about 18 players a second per core. A burst after a restart takes a minute for 1,000 players on one core.
+- **Since 0.4.3, 13 a second on one core** (200 players, the same settings; the table above is from before). Each test player costs three password checks (its new account, the launcher's sign-in and the game's), and password checks now take turns, two at once on one core, with the game's sign-in a turn of its own: on 0.4.2 a burst of new accounts held both turns and the game's sign-ins failed at once (2 of 200 signed in). The relay matched the table: 0.03% lost, p99 2.9 ms, 93 MB at most.
 - **Memory is small.** Under 100 MB at 1,000 players.
 - **Up to 500 players, one core is plenty.** The relay forwards 15,000 packets a second with no loss worth noting, at a third of a core.
 - **At 1,000 players, use two cores.** One core relays everything, but it runs near its limit: the relay's p99 latency rises to 15 ms, and about 8% of friend and lobby searches time out. With two, searches failing drop to under 2% and the relay's p99 is back under 2 ms.
