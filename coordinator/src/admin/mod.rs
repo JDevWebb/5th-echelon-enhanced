@@ -170,15 +170,22 @@ fn cfg(c: &Coordinator) -> &Config {
 /// The largest request body.
 const MAX_BODY: usize = 64 * 1024;
 
-/// Request bodies the admin UI reads at once, across every connection (128 at the largest).
+/// Request bodies the admin UI reads at once, across every connection (128 at the largest),
+/// and from one address (the client's, as [`guard`] found it).
 static BODIES: std::sync::LazyLock<crate::limits::BodyBudget> = std::sync::LazyLock::new(|| crate::limits::BodyBudget::new(8 * 1024 * 1024));
+static IN_FLIGHT: std::sync::LazyLock<crate::limits::InFlight> = std::sync::LazyLock::new(|| crate::limits::InFlight::new(8));
 
-/// Every request's body is read within the budget ([`BODIES`]) and the deadline, so streams
-/// of half-sent bodies on many connections can't fill the memory.
+/// Every request's body is read within the budget ([`BODIES`]) and the deadline, a few at
+/// once per address, so streams of half-sent bodies can't fill the memory, nor one client
+/// take the whole budget. After [`guard`], which says who the client is.
 async fn bounded(request: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
     if matches!(*request.method(), axum::http::Method::GET | axum::http::Method::HEAD) {
         return next.run(request).await;
     }
+    let ip = request.extensions().get::<Client>().map_or(IpAddr::from([0, 0, 0, 0]), |c| c.ip);
+    let Some(_slot) = IN_FLIGHT.take(ip) else {
+        return crate::limits::too_many();
+    };
     BODIES.run(MAX_BODY, next.run(request)).await
 }
 

@@ -154,8 +154,15 @@ pub(crate) fn public_ip(ip: std::net::IpAddr) -> bool {
 /// A request's source address: the peer, or, from a proxy on this machine,
 /// the last address in `X-Forwarded-For`.
 /// Request bodies the API reads at once, across every connection: each request reserves its
-/// route's largest body first (8 reports at once, or 250 small requests).
-static API_BODIES: std::sync::LazyLock<limits::BodyBudget> = std::sync::LazyLock::new(|| limits::BodyBudget::new(64 * 1024 * 1024));
+/// route's largest body first. Member servers (their secret checked before the body is read)
+/// have their own, so no stranger's slow uploads hold up their pulses and reports. Players'
+/// support messages (up to 6 MB) have theirs, one in progress per address, so they don't
+/// crowd out everyone else's small requests (64 at once, a few per address).
+static MEMBER_BODIES: std::sync::LazyLock<limits::BodyBudget> = std::sync::LazyLock::new(|| limits::BodyBudget::new(64 * 1024 * 1024));
+static SUPPORT_BODIES: std::sync::LazyLock<limits::BodyBudget> = std::sync::LazyLock::new(|| limits::BodyBudget::new(36 * 1024 * 1024));
+static SUPPORT_IN_FLIGHT: std::sync::LazyLock<limits::InFlight> = std::sync::LazyLock::new(|| limits::InFlight::new(1));
+static PUBLIC_BODIES: std::sync::LazyLock<limits::BodyBudget> = std::sync::LazyLock::new(|| limits::BodyBudget::new(16 * 1024 * 1024));
+static PUBLIC_IN_FLIGHT: std::sync::LazyLock<limits::InFlight> = std::sync::LazyLock::new(|| limits::InFlight::new(4));
 
 /// The largest body a request to `path` may have, and whether only a member server may send
 /// it (as `DefaultBodyLimit` on the routes).
@@ -171,21 +178,38 @@ fn body_rule(path: &str) -> (usize, bool) {
     }
 }
 
-/// Every API request: a member server's large uploads are refused before their body is read
-/// unless they carry a member's secret, and every body is read within the budget
-/// ([`API_BODIES`]) and the deadline, so streams of half-sent bodies can't fill the memory.
+/// Every API request with a body: a member server's (its secret checked first, before the
+/// body is read) within [`MEMBER_BODIES`]; anyone else's within [`SUPPORT_BODIES`] or
+/// [`PUBLIC_BODIES`], a few at once per address, and refused for routes only members may use.
+/// Each within the deadline, so streams of half-sent bodies can't fill the memory.
 async fn bounded(State(c): State<Shared>, request: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
     use axum::response::IntoResponse;
     if matches!(*request.method(), axum::http::Method::GET | axum::http::Method::HEAD) {
         return next.run(request).await;
     }
-    let (limit, member) = body_rule(request.uri().path());
-    if member {
-        if let Err(refused) = c.server(request.headers()).await {
-            return refused.into_response();
+    let (limit, members_only) = body_rule(request.uri().path());
+    let member = if request.headers().contains_key(axum::http::header::AUTHORIZATION) {
+        c.server(request.headers()).await
+    } else {
+        Err(fail(StatusCode::UNAUTHORIZED, "sign in with the server's secret"))
+    };
+    match member {
+        Ok(_) => MEMBER_BODIES.run(limit, next.run(request)).await,
+        Err(refused) if members_only => refused.into_response(),
+        Err(_) => {
+            let peer = request.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|ci| ci.0);
+            let ip = peer.map_or(std::net::IpAddr::from([0, 0, 0, 0]), |peer| client_ip(peer, request.headers()));
+            let (in_flight, budget) = if request.uri().path() == "/v1/support" {
+                (&*SUPPORT_IN_FLIGHT, &*SUPPORT_BODIES)
+            } else {
+                (&*PUBLIC_IN_FLIGHT, &*PUBLIC_BODIES)
+            };
+            let Some(_slot) = in_flight.take(ip) else {
+                return limits::too_many();
+            };
+            budget.run(limit, next.run(request)).await
         }
     }
-    API_BODIES.run(limit, next.run(request)).await
 }
 
 fn client_ip(peer: std::net::SocketAddr, headers: &HeaderMap) -> std::net::IpAddr {

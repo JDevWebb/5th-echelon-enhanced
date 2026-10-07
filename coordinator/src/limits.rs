@@ -185,6 +185,57 @@ impl AsyncWrite for Connection {
     }
 }
 
+/// Requests with a body in progress per address (IPv6 by /64), so one client can't take a
+/// whole [`BodyBudget`] with slow uploads while everyone else waits.
+pub struct InFlight {
+    per_ip: Arc<Mutex<HashMap<IpAddr, usize>>>,
+    max: usize,
+}
+
+/// A request's place among its address's [`InFlight`], given back when it's done.
+pub struct InFlightSlot {
+    per_ip: Arc<Mutex<HashMap<IpAddr, usize>>>,
+    ip: IpAddr,
+}
+
+impl InFlight {
+    pub fn new(max: usize) -> Self {
+        Self { per_ip: Arc::default(), max }
+    }
+
+    /// A place for one more request from `ip`, or none (it has `max` in progress).
+    pub fn take(&self, ip: IpAddr) -> Option<InFlightSlot> {
+        let ip = bucket(ip.to_canonical());
+        let mut per_ip = self.per_ip.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let n = per_ip.entry(ip).or_default();
+        if *n >= self.max {
+            return None;
+        }
+        *n += 1;
+        Some(InFlightSlot {
+            per_ip: Arc::clone(&self.per_ip),
+            ip,
+        })
+    }
+}
+
+impl Drop for InFlightSlot {
+    fn drop(&mut self) {
+        let mut per_ip = self.per_ip.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(n) = per_ip.get_mut(&self.ip) {
+            *n -= 1;
+            if *n == 0 {
+                per_ip.remove(&self.ip);
+            }
+        }
+    }
+}
+
+/// Too many requests in progress from one address.
+pub fn too_many() -> Response {
+    (StatusCode::TOO_MANY_REQUESTS, "too many requests at once; try again in a moment").into_response()
+}
+
 /// Bytes of request bodies that may be read at once, across every connection (in KiB).
 pub struct BodyBudget(Arc<tokio::sync::Semaphore>);
 
@@ -240,6 +291,19 @@ mod tests {
         // A proxy on this machine isn't counted per address.
         let _p1 = limited.take("127.0.0.1:1".parse().unwrap()).unwrap();
         assert!(limited.take("127.0.0.1:2".parse().unwrap()).is_some());
+    }
+
+    #[test]
+    fn requests_in_progress_are_capped_per_address() {
+        let in_flight = InFlight::new(2);
+        let a: IpAddr = "203.0.113.1".parse().unwrap();
+        let first = in_flight.take(a).unwrap();
+        let _second = in_flight.take(a).unwrap();
+        assert!(in_flight.take(a).is_none());
+        assert!(in_flight.take("203.0.113.2".parse().unwrap()).is_some(), "another address");
+        assert!(in_flight.take("::ffff:203.0.113.1".parse().unwrap()).is_none(), "the same address written as IPv6");
+        drop(first);
+        assert!(in_flight.take(a).is_some());
     }
 
     #[tokio::test]
