@@ -30,6 +30,8 @@ pub struct Fix {
 
 pub struct Release {
     pub version: &'static str,
+    /// The players who sent reports from the launcher for this release (thanked at the top).
+    pub thanks: &'static [&'static str],
     pub new: &'static [Item],
     pub fixed: &'static [Fix],
 }
@@ -38,6 +40,7 @@ pub struct Release {
 pub const RELEASES: &[Release] = &[
     Release {
         version: "0.4.3",
+        thanks: &["Oni", "PlaySkill", "Icky", "tacit_danger", "SirCooms", "Daramos", "Renegade"],
         new: &[
             Item {
                 title: "Support, in the launcher",
@@ -89,6 +92,7 @@ pub const RELEASES: &[Release] = &[
     },
     Release {
     version: "0.4.2",
+    thanks: &[],
     new: &[
         Item {
             title: "Pick a server from the Play screen",
@@ -276,6 +280,9 @@ impl WhatsNew {
                     ui.spacing_mut().item_spacing.y = 12.0;
                     let newest = self.open[0];
                     let skipped = self.open.len() > 1;
+                    if !newest.thanks.is_empty() {
+                        thanks_box(ui, newest.thanks);
+                    }
                     if skipped {
                         version_caps(ui, "In", newest.version, None);
                     } else {
@@ -369,6 +376,37 @@ fn tick(ui: &mut egui::Ui) {
     let s = egui::Stroke::new(2.0, theme::OK);
     ui.painter().line_segment([p(2.5, 7.5), p(5.5, 10.5)], s);
     ui.painter().line_segment([p(5.5, 10.5), p(11.5, 3.5)], s);
+}
+
+/// The players who sent reports for a release, thanked in a box above its changes.
+fn thanks_box(ui: &mut egui::Ui, names: &[&str]) {
+    egui::Frame::new()
+        .fill(theme::ACCENT.linear_multiply(0.10))
+        .stroke(egui::Stroke::new(1.0, theme::ACCENT.linear_multiply(0.35)))
+        .corner_radius(10)
+        .inner_margin(egui::Margin::symmetric(14, 12))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.spacing_mut().item_spacing.y = 4.0;
+            ui.label(
+                RichText::new("THANKS TO YOUR REPORTS")
+                    .family(theme::strong())
+                    .size(11.5)
+                    .extra_letter_spacing(1.2)
+                    .color(theme::ACCENT),
+            );
+            ui.label(RichText::new(format!("{} sent reports from the launcher: much of this release came from them.", and_list(names))).color(theme::FG));
+            ui.label(theme::muted("Send yours from Settings › Feedback."));
+        });
+}
+
+/// "A", "A and B", "A, B and C".
+fn and_list(names: &[&str]) -> String {
+    match names {
+        [] => String::new(),
+        [one] => (*one).to_string(),
+        [rest @ .., last] => format!("{} and {last}", rest.join(", ")),
+    }
 }
 
 /// "COMMUNITY NETWORK", beside a change only the community network has.
@@ -465,21 +503,25 @@ mod tests {
     static TEST: &[Release] = &[
         Release {
             version: "0.4.4",
+            thanks: &[],
             new: &[ITEM],
             fixed: &[],
         },
         Release {
             version: "0.4.3",
+            thanks: &[],
             new: &[ITEM],
             fixed: &[],
         },
         Release {
             version: "0.4.1",
+            thanks: &[],
             new: &[ITEM],
             fixed: &[],
         },
         Release {
             version: "0.4.0",
+            thanks: &[],
             new: &[ITEM],
             fixed: &[],
         },
@@ -491,6 +533,14 @@ mod tests {
         // Seen already, or not newer.
         assert_eq!(on_start(TEST, Some("0.4.4"), "0.4.4", true), Start::Nothing);
         assert_eq!(on_start(TEST, Some("0.5.0"), "0.4.4", true), Start::Nothing);
+    }
+
+    #[test]
+    fn names_read_as_a_list() {
+        assert_eq!(and_list(&[]), "");
+        assert_eq!(and_list(&["Oni"]), "Oni");
+        assert_eq!(and_list(&["Oni", "Icky"]), "Oni and Icky");
+        assert_eq!(and_list(&["Oni", "PlaySkill", "Icky"]), "Oni, PlaySkill and Icky");
     }
 
     #[test]
