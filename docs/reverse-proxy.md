@@ -62,6 +62,8 @@ Any port `[public]` leaves unset is the one its service listens on. So moving a 
 
 ## 2. Caddy
 
+Use Caddy 2.11.7 or newer. One connection uploading over HTTP/2 crashed Caddy 2.11.6 in our tests, which takes every site it serves down until it's restarted. The Linux installer warns about an older Caddy, and has systemd restart it after a crash however often that happens.
+
 ```caddyfile
 {
 	servers :80 {
