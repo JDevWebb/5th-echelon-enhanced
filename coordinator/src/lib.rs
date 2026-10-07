@@ -464,6 +464,8 @@ pub struct Coordinator {
     /// Whether a listing is in the directory only once the server at its host answered with
     /// its id ([`host_check`]); on in the coordinator program ([`Self::check_hosts`]).
     host_checks: std::sync::atomic::AtomicBool,
+    /// Whether hosts on private addresses are checked too (a LAN or test network).
+    host_checks_private: std::sync::atomic::AtomicBool,
     /// The servers whose host is being checked now, and what's checked ([`host_check::target`]).
     host_checks_running: std::sync::Mutex<HashMap<String, String>>,
     /// Request bodies being read at once (see [`limits::Budgets`]).
@@ -583,6 +585,7 @@ impl Coordinator {
             roadmap: std::sync::atomic::AtomicBool::new(false),
             names: std::sync::OnceLock::new(),
             host_checks: std::sync::atomic::AtomicBool::new(false),
+            host_checks_private: std::sync::atomic::AtomicBool::new(false),
             host_checks_running: std::sync::Mutex::default(),
             budgets: limits::Budgets::default(),
             files_dir: std::path::Path::new(path)
@@ -1662,6 +1665,11 @@ impl Coordinator {
         self.host_checks.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Checks hosts on private addresses too: for a LAN or test network.
+    pub fn check_private_hosts(&self) {
+        self.host_checks_private.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
     fn checks_hosts(&self) -> bool {
         self.host_checks.load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -1686,8 +1694,7 @@ impl Coordinator {
         let failed = kept
             .as_deref()
             .and_then(|k| serde_json::from_str::<host_check::Checked>(k).ok())
-            .filter(|k| !k.ok && k.target == host_check::target(listing))
-            .map(|k| k.why);
+            .is_some_and(|k| !k.ok && k.target == host_check::target(listing));
         let target = host_check::target(listing);
         // One check at a time per address: a slow one (a name that doesn't resolve) doesn't
         // hold up the check of a new address.
@@ -1698,7 +1705,8 @@ impl Coordinator {
         if start {
             let (c, server, listing) = (Arc::clone(self), server.to_string(), listing.clone());
             tokio::spawn(async move {
-                let checked = host_check::check(&server, &listing, now).await;
+                let private = c.host_checks_private.load(std::sync::atomic::Ordering::Relaxed);
+                let checked = host_check::check(&server, &listing, now, private).await;
                 if checked.ok {
                     tracing::info!("server {server}: {} answers as it", listing.host);
                 } else {
@@ -1727,7 +1735,13 @@ impl Coordinator {
                 c.publish(admin::live::Event::Network);
             });
         }
-        Ok(failed.map(|why| format!("not in the directory: the coordinator can't confirm this server is at {} ({why})", listing.host)))
+        // Only that it failed: what answered where is for the coordinator's admins.
+        Ok(failed.then(|| {
+            format!(
+                "not in the directory: the server at {} (its /api/info, on the API ports listed) didn't answer as this one; its admins see why",
+                listing.host
+            )
+        }))
     }
 }
 

@@ -42,6 +42,10 @@ struct Args {
     /// coordinator can't reach)
     #[argh(switch)]
     no_host_check: bool,
+    /// check member servers on private addresses too (a LAN or test network);
+    /// without it, only public addresses are asked, and others aren't listed
+    #[argh(switch)]
+    check_private_hosts: bool,
     #[argh(subcommand)]
     command: Option<Command>,
 }
@@ -365,6 +369,9 @@ async fn main() -> eyre::Result<()> {
         tracing::warn!("--no-host-check: member servers are listed at whatever host they say, unchecked");
     } else {
         coordinator.check_hosts();
+        if args.check_private_hosts {
+            coordinator.check_private_hosts();
+        }
     }
     // Where launchers' ping reports and admins come from: DB-IP's city database, kept current.
     let geo = Arc::new(geo::Geo::new(args.data.join("geoip")));

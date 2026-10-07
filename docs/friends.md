@@ -155,7 +155,13 @@ Ruling it out takes friendships signed by both players, which the game can't do:
 
 Every member server appears in the coordinator's **server directory**, unless `listed = false`, with its name, region, address and players online. Launchers ping each server through its NAT helper, the path game traffic takes, and rank them: the lowest ping first, and among servers within 15 ms of it, the busiest.
 
-A server is listed only where it really is. The coordinator asks the host and ports in its listing for `/api/info`, over HTTPS on its `api_tls` port when the host is a name, else over HTTP on its `api` port. The server must answer there with its own id, so a member can't list itself at another server's address. This happens when a server first sends its listing and whenever its host or ports change, again every 6 hours, and every 2 minutes while the check fails. A failing server hears why in its heartbeat's warnings and is shown in the admin UI. A server with `[community_api] info = false` can't be checked, so it isn't listed. `coordinator --no-host-check` turns the check off, for a test network whose servers the coordinator can't reach.
+A server is listed only where it really is. The coordinator asks the host and ports in its listing for `/api/info`, over HTTPS on its `api_tls` port when the host is a name, else over HTTP on its `api` port. The server must answer there with its own id, at every address its name resolves to, so a member can't list itself at another server's address.
+
+- **When:** when a server first sends its listing and whenever its host or ports change, again every 6 hours, and every 2 minutes while the check fails.
+- **A failed check:** the server only hears that it failed, in its heartbeat's warnings. What answered where is in the coordinator's log and the admin UI.
+- **Public addresses only:** the coordinator asks only public addresses, never its own machine or network. Start it with `--check-private-hosts` for a LAN or test network.
+- **No `/api/info`:** a server with `[community_api] info = false` can't be checked, so it isn't listed.
+- **Turning it off:** `coordinator --no-host-check` lists servers unchecked.
 
 You can also type a coordinator's address where you'd type a server's (the community's is `play.scbl.jdevwebb.net`): the launcher uses its directory, pings every server, and sets you up on the best one.
 

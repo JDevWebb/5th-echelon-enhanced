@@ -3504,6 +3504,24 @@ async fn listings_keep_to_a_believable_count() {
     assert_eq!(a_listed["players_online"], json!(MAX_LISTED_PLAYERS));
 }
 
+/// Waits until every server's host check is of `target`; their results by id.
+async fn checked(t: &Test, target: &str) -> HashMap<String, Value> {
+    for _ in 0..100 {
+        let o = t.c.admin_overview().await.unwrap();
+        let checks: HashMap<String, Value> = o["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| (s["id"].as_str().unwrap().to_string(), s["host_check"].clone()))
+            .collect();
+        if checks.values().all(|c| c["target"] == target) {
+            return checks;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the checks of {target} didn't finish");
+}
+
 /// A game server's `/api/info` on loopback, saying it's `id`; its port.
 async fn info_server(id: &'static str) -> u16 {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -3520,6 +3538,8 @@ async fn info_server(id: &'static str) -> u16 {
 async fn a_server_is_listed_only_where_it_answers_as_itself() {
     let t = start("host-check").await;
     t.c.check_hosts();
+    // The test's servers are on loopback.
+    t.c.check_private_hosts();
     let (honest, liar) = (t.join("honest").await, t.join("liar").await);
     let port = info_server("honest").await;
     let beat = |name: &str, port: u16| json!({ "name": name, "host": "127.0.0.1", "listed": true, "ports": { "api": port, "login": 21126 } });
@@ -3532,18 +3552,9 @@ async fn a_server_is_listed_only_where_it_answers_as_itself() {
     // Both say they're at the honest server's address.
     t.call("POST", "/v1/heartbeat", Some(&honest), Some(beat("Honest", port))).await;
     t.call("POST", "/v1/heartbeat", Some(&liar), Some(beat("Honest (official)", port))).await;
-    let mut ids = Vec::new();
-    for _ in 0..50 {
-        ids = listed().await;
-        if !ids.is_empty() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    checked(&t, &format!("127.0.0.1 {port} -")).await;
     assert_eq!(listed().await, ["honest"], "the liar's listing names another server's address");
-    assert_eq!(ids, ["honest"]);
-    // The liar hears why, on its next heartbeat.
+    // The liar hears that, on its next heartbeat.
     let (_, v) = t.call("POST", "/v1/heartbeat", Some(&liar), Some(beat("Honest (official)", port))).await;
     assert!(v["warnings"].to_string().contains("not in the directory"), "{v}");
     // Moving to an address nobody answers at: out of the directory until checked there.
@@ -3567,4 +3578,34 @@ async fn a_server_is_listed_only_where_it_answers_as_itself() {
     }
     assert_eq!(found["ok"], false, "{found}");
     assert!(found["why"].as_str().unwrap().contains("\"honest\""), "{found}");
+    // The liar hears only that it failed, not what answered there.
+    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&liar), Some(beat("Honest (official)", port))).await;
+    assert!(!v["warnings"].to_string().contains("honest\\\""), "{v}");
+}
+
+#[tokio::test]
+async fn a_host_on_this_machine_or_its_network_isnt_asked() {
+    let t = start("host-check-private").await;
+    t.c.check_hosts();
+    let secret = t.join("local").await;
+    let port = info_server("local").await;
+    t.call(
+        "POST",
+        "/v1/heartbeat",
+        Some(&secret),
+        Some(json!({ "name": "Local", "host": "127.0.0.1", "listed": true, "ports": { "api": port, "login": 21126 } })),
+    )
+    .await;
+    let mut found = Value::Null;
+    for _ in 0..50 {
+        found = t.c.admin_overview().await.unwrap()["servers"][0]["host_check"].clone();
+        if found["target"].as_str().is_some_and(|t| t.starts_with("127.0.0.1")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(found["ok"], false, "{found}");
+    assert!(found["why"].as_str().unwrap().contains("not a public address"), "{found}");
+    let (_, v) = t.call("GET", "/v1/servers", None, None).await;
+    assert!(v["servers"].as_array().unwrap().is_empty());
 }

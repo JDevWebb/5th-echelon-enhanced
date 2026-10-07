@@ -13,10 +13,14 @@
 //! doesn't empty the directory. A listing is checked when its host or ports change, again
 //! every [`CHECK_AGAIN`], and every [`RETRY`] while the check fails.
 //!
-//! The coordinator may be pointed at any address this way, but only asks one path, follows
-//! no redirect, reads at most [`MAX_ANSWER`] bytes and keeps only whether the id matched.
-//! Addresses that never mean a server (unspecified, multicast, link-local, where cloud
-//! machines keep their metadata service) aren't asked.
+//! A member can point the coordinator at any host this way, so it only asks public addresses
+//! (as for its pings, [`crate::public_ip`]): never this machine or its network, unless the
+//! network is a LAN or test one (`--check-private-hosts`; addresses that never mean a server,
+//! such as link-local where cloud machines keep their metadata service, still aren't asked).
+//! It asks one path, follows no redirect, reads at most [`MAX_ANSWER`] bytes, and tells the
+//! member only that the check failed: the details (which could map what answers where) are
+//! for the coordinator's log and its admins. Every address a name resolves to must answer as
+//! the server, so a name that also points at another server's address doesn't pass.
 
 use std::net::IpAddr;
 use std::net::SocketAddr;
@@ -85,55 +89,82 @@ fn urls(listing: &Listing) -> Vec<(bool, String, u16)> {
     out
 }
 
-/// Whether the coordinator may ask `ip` at all (see the module's notes).
-fn askable(ip: IpAddr) -> bool {
-    let ip = ip.to_canonical();
-    match ip {
-        IpAddr::V4(v4) => !(v4.is_unspecified() || v4.is_multicast() || v4.is_link_local() || v4.is_broadcast()),
-        IpAddr::V6(v6) => !(v6.is_unspecified() || v6.is_multicast() || (v6.segments()[0] & 0xffc0) == 0xfe80),
-    }
+/// The most addresses of one name asked.
+const MAX_ADDRESSES: usize = 4;
+
+/// Whether the coordinator may ask `ip` (see the module's notes): a public address, or with
+/// `private`, any but those that never mean a server.
+fn askable(ip: IpAddr, private: bool) -> bool {
+    let special = match ip.to_canonical() {
+        IpAddr::V4(v4) => v4.is_unspecified() || v4.is_multicast() || v4.is_link_local() || v4.is_broadcast(),
+        IpAddr::V6(v6) => v6.is_unspecified() || v6.is_multicast() || (v6.segments()[0] & 0xffc0) == 0xfe80,
+    };
+    !special && (private || crate::public_ip(ip))
 }
 
-/// Asks one address for the id of the server there.
-async fn ask(https: bool, host: &str, port: u16) -> Result<String, String> {
-    let addrs: Vec<SocketAddr> = tokio::time::timeout(TIMEOUT, tokio::net::lookup_host((host, port)))
+/// Asks `host` (each of its addresses) for the id of the server there: the one they all
+/// give.
+async fn ask(https: bool, host: &str, port: u16, private: bool) -> Result<String, String> {
+    let mut addrs: Vec<SocketAddr> = tokio::time::timeout(TIMEOUT, tokio::net::lookup_host((host, port)))
         .await
         .map_err(|_| "its name didn't resolve in time".to_string())?
         .map_err(|e| format!("its name doesn't resolve ({e})"))?
         .collect();
-    let Some(addr) = addrs.iter().copied().find(|a| askable(a.ip())) else {
-        return Err("it has no address the coordinator may ask".into());
-    };
+    addrs.sort();
+    addrs.dedup();
+    if addrs.is_empty() || addrs.len() > MAX_ADDRESSES {
+        return Err(format!("{host} has {} addresses", addrs.len()));
+    }
+    if let Some(a) = addrs.iter().find(|a| !askable(a.ip(), private)) {
+        return Err(format!("{host} is at {}, not a public address", a.ip()));
+    }
+    let mut id = None;
+    for addr in addrs {
+        let theirs = ask_at(https, host, port, addr).await?;
+        match &id {
+            None => id = Some(theirs),
+            Some(first) if *first == theirs => {}
+            Some(first) => return Err(format!("{host}'s addresses are different servers ({first:?} and {theirs:?})")),
+        }
+    }
+    id.ok_or_else(|| format!("{host} has no address"))
+}
+
+/// Asks one of `host`'s addresses for the id of the server there.
+async fn ask_at(https: bool, host: &str, port: u16, addr: SocketAddr) -> Result<String, String> {
     let shown = if host.contains(':') { format!("[{host}]") } else { host.to_string() };
     let url = format!("{}://{shown}:{port}/api/info", if https { "https" } else { "http" });
     let client = reqwest::Client::builder()
         .user_agent(concat!("5th-echelon-coordinator/", env!("FE_RELEASE")))
         .timeout(TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
-        // The address checked above, not another the name might resolve to next time.
+        // This address, not another the name might resolve to next time.
         .resolve(host, addr)
         .build()
         .map_err(|e| e.to_string())?;
-    let mut resp = client.get(&url).header("accept", "application/json").send().await.map_err(|e| format!("{url}: {e}"))?;
+    let url_at = format!("{url} ({})", addr.ip());
+    let url = url.as_str();
+    let mut resp = client.get(url).header("accept", "application/json").send().await.map_err(|e| format!("{url_at}: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("{url} answered {}", resp.status()));
+        return Err(format!("{url_at} answered {}", resp.status()));
     }
     let mut body = Vec::new();
-    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("{url}: {e}"))? {
+    while let Some(chunk) = resp.chunk().await.map_err(|e| format!("{url_at}: {e}"))? {
         if body.len() + chunk.len() > MAX_ANSWER {
-            return Err(format!("{url} answered with too much"));
+            return Err(format!("{url_at} answered with too much"));
         }
         body.extend_from_slice(&chunk);
     }
-    let info: serde_json::Value = serde_json::from_slice(&body).map_err(|_| format!("{url} isn't a game server's answer"))?;
-    info["id"].as_str().map(str::to_string).ok_or_else(|| format!("{url} gives no server id"))
+    let info: serde_json::Value = serde_json::from_slice(&body).map_err(|_| format!("{url_at} isn't a game server's answer"))?;
+    info["id"].as_str().map(str::to_string).ok_or_else(|| format!("{url_at} gives no server id"))
 }
 
-/// Checks that the server answering where `listing` says is `server`.
-pub async fn check(server: &str, listing: &Listing, now: i64) -> Checked {
+/// Checks that the server answering where `listing` says is `server` (on a private address
+/// too, with `private`).
+pub async fn check(server: &str, listing: &Listing, now: i64, private: bool) -> Checked {
     let mut why = Vec::new();
     for (https, host, port) in urls(listing) {
-        match ask(https, &host, port).await {
+        match ask(https, &host, port, private).await {
             Ok(id) if id == server => {
                 return Checked {
                     target: target(listing),
@@ -206,12 +237,16 @@ mod tests {
     }
 
     #[test]
-    fn addresses_that_never_mean_a_server_arent_asked() {
+    fn only_public_addresses_are_asked() {
         for ip in ["169.254.169.254", "0.0.0.0", "224.0.0.1", "255.255.255.255", "fe80::1", "::", "::ffff:169.254.169.254"] {
-            assert!(!askable(ip.parse().unwrap()), "{ip}");
+            assert!(!askable(ip.parse().unwrap(), true), "{ip}: never");
         }
-        for ip in ["203.0.113.5", "10.0.0.5", "127.0.0.1", "2001:db8::1"] {
-            assert!(askable(ip.parse().unwrap()), "{ip}");
+        for ip in ["10.0.0.5", "127.0.0.1", "192.168.1.2", "100.64.0.1", "::1", "fd00::1"] {
+            assert!(!askable(ip.parse().unwrap(), false), "{ip}: this machine or its network");
+            assert!(askable(ip.parse().unwrap(), true), "{ip}: on a LAN or test network");
+        }
+        for ip in ["8.8.8.8", "2606:4700::1111"] {
+            assert!(askable(ip.parse().unwrap(), false), "{ip}");
         }
     }
 }
