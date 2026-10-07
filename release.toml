@@ -10,4 +10,4 @@
 # upstream's last release; 5th Echelon Enhanced continued from 0.3.0, and 0.4.0 is its
 # first public release.
 name = "5th Echelon Enhanced"
-version = "0.4.3"
+version = "0.4.4-dev"
