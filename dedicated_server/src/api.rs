@@ -965,11 +965,13 @@ impl Users for MyUsers {
         require_tls(&request)?;
         let peer = client_addr(&request);
         let request = request.into_inner();
-        // Failures count against the account, or the identity when there's no name.
+        // Failures count against the account, or the identity when there's no name: as key
+        // sign-ins, apart from passwords, so password guesses on a name (anyone's to make)
+        // don't lock its owner's key out. A signature can't be guessed.
         let limit_key = if request.username.is_empty() {
-            request.global_id.clone()
+            format!("key:{}", request.global_id)
         } else {
-            request.username.clone()
+            format!("key:{}", request.username)
         };
         if request.username.chars().count() > 32 || request.global_id.len() > 64 || !crate::rate_limit::begin_login(peer, &limit_key) {
             return Err(Status::resource_exhausted("Too many failed logins; try again later"));
