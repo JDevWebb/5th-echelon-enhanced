@@ -166,9 +166,10 @@ async fn set_status(State(c): State<Shared>, Extension(client): Extension<Client
 
 /// A file a player sent, as text to save: never shown as a page.
 async fn file(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Path((identity, message, name)): Path<(String, i64, String)>) -> Response {
-    if let Err(r) = c.full(&headers, &client).await {
-        return r;
-    }
+    let s = match c.full(&headers, &client).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
     if !c.has_roadmap() {
         return no_support();
     }
@@ -190,6 +191,14 @@ async fn file(State(c): State<Shared>, Extension(client): Extension<Client>, hea
     }
     match c.support_file(message, &name).await {
         Ok(Some(data)) => {
+            // A player's logs: who read them is on record.
+            c.audit(
+                &s.username,
+                Some(&client),
+                "support: downloaded a file",
+                &format!("{name} from {}", identity::short(&identity)),
+            )
+            .await;
             let mut resp = data.into_response();
             let h = resp.headers_mut();
             h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8"));

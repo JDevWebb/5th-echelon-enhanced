@@ -279,6 +279,9 @@ async fn main() -> eyre::Result<()> {
     match args.command {
         Some(Command::NewToken(_)) => {
             new_token(&args.data.join(JOIN_TOKEN_FILE))?;
+            if let Ok(c) = coordinator::Coordinator::open(&db.to_string_lossy(), String::new()).await {
+                c.audit("console", None, "made a new join token", "").await;
+            }
             println!("A new join token is in {}; restart the coordinator to use it.", args.data.join(JOIN_TOKEN_FILE).display());
             return Ok(());
         }
@@ -327,6 +330,7 @@ async fn main() -> eyre::Result<()> {
         Some(Command::RemoveServer(r)) => {
             let c = coordinator::Coordinator::open(&db.to_string_lossy(), String::new()).await?;
             if c.remove_server(&r.id).await? {
+                c.audit("console", None, "removed a server", &r.id).await;
                 println!("Removed server {} with its links. Rotate the join token (new-token) if it could join again.", r.id);
             } else {
                 println!("No server {}.", r.id);

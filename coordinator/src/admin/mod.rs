@@ -614,6 +614,13 @@ impl Coordinator {
                 .bind(admin_id)
                 .execute(&self.pool)
                 .await;
+            self.audit(
+                username,
+                Some(client),
+                "account locked",
+                &format!("{failures} failed sign-ins; waits {} minutes", wait.min(86_400) / 60),
+            )
+            .await;
         }
         self.audit(username, Some(client), "sign-in failed", what).await;
     }
