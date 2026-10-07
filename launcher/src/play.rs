@@ -1115,24 +1115,28 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: O
                         ui.set_width(300.0 - 26.0);
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
+                                // Room left for the ping, players and chevron on the right: a long
+                                // network name is cut short ("…"), not given the whole card.
+                                ui.set_max_width(300.0 - 26.0 - 96.0);
                                 ui.spacing_mut().item_spacing.y = 2.0;
                                 // Who runs it, when it isn't the community network: hovered, says so.
                                 let caption = match &run_by {
                                     Some((who, _)) => format!("Server · {who}"),
                                     None => "Server".to_string(),
                                 };
-                                caption_rect = Some(ui.label(theme::caps(&caption)).rect);
+                                caption_rect = Some(ui.add(egui::Label::new(theme::caps(&caption)).truncate()).rect);
                                 // Its region is enough here ("Sydney, Australia").
                                 let name = listing.as_ref().map(|(s, _)| place(s)).unwrap_or_else(|| profile.server.clone());
-                                ui.label(RichText::new(hooks_config::text::clip(&name, 24)).family(theme::strong()));
+                                ui.add(egui::Label::new(RichText::new(hooks_config::text::clip(&name, 24)).family(theme::strong())).truncate());
                             });
                             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                                 chevron_down(ui, menu_open);
                                 ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
                                     ui.spacing_mut().item_spacing.y = 2.0;
                                     if let Some((s, ping)) = &listing {
-                                        ui.label(ping_text(*ping));
-                                        ui.label(theme::muted(format!("{} online", s.players_online)).small());
+                                        // Never wrapped: squeezed, they'd stand a letter to a line.
+                                        ui.add(egui::Label::new(ping_text(*ping)).wrap_mode(egui::TextWrapMode::Extend));
+                                        ui.add(egui::Label::new(theme::muted(format!("{} online", s.players_online)).small()).wrap_mode(egui::TextWrapMode::Extend));
                                     }
                                 });
                             });
