@@ -3,7 +3,9 @@
 //! A member's listing names the host and ports players connect to, and a member can write
 //! anything there: a compromised one could list itself at another server's address, under
 //! its own name. So the coordinator asks the listed host for `/api/info` (over HTTPS on the
-//! listed `api_tls` port when the host is a name, else over HTTP on the `api` port) and
+//! listed `api_tls` port when the host is a name, then over HTTP on port 80, where every
+//! server's config server answers it, behind Caddy or not; the listed `api` port is the
+//! launcher's gRPC, 50051 without Caddy, which doesn't) and
 //! lists the member only when the server answering there gives the member's own id. Every
 //! server says its id there (players sign it into their links), so this needs nothing new
 //! of them. The server at another's address answers with its own id, which isn't the
@@ -53,10 +55,10 @@ pub struct Checked {
     pub why: String,
 }
 
-/// What a listing's check covers: its host (as names compare) and the ports it's asked on.
+/// What a listing's check covers: its host (as names compare) and its HTTPS port, if any.
 pub fn target(listing: &Listing) -> String {
-    let (api, tls) = listing.ports.as_ref().map_or((80, None), |p| (p.api, p.api_tls));
-    format!("{} {api} {}", identity::host_key(&listing.host), tls.map_or_else(|| "-".to_string(), |p| p.to_string()))
+    let tls = listing.ports.as_ref().and_then(|p| p.api_tls);
+    format!("{} {}", identity::host_key(&listing.host), tls.map_or_else(|| "-".to_string(), |p| p.to_string()))
 }
 
 /// Whether `checked` (the kept result, as text) says `listing` is where it says.
@@ -76,16 +78,16 @@ pub fn due(checked: Option<&str>, listing: &Listing, now: i64) -> bool {
 }
 
 /// The addresses `/api/info` is asked at, in order: HTTPS first (only a host name has a
-/// certificate), then plain HTTP.
-fn urls(listing: &Listing) -> Vec<(bool, String, u16)> {
+/// certificate), then plain HTTP on `http_port` (80; another in tests).
+fn urls(listing: &Listing, http_port: u16) -> Vec<(bool, String, u16)> {
     let host = listing.host.trim_start_matches('[').trim_end_matches(']').to_string();
     let is_ip = host.parse::<IpAddr>().is_ok();
-    let (api, tls) = listing.ports.as_ref().map_or((80, None), |p| (p.api, p.api_tls));
+    let tls = listing.ports.as_ref().and_then(|p| p.api_tls);
     let mut out = Vec::new();
     if let (Some(tls), false) = (tls, is_ip) {
         out.push((true, host.clone(), tls));
     }
-    out.push((false, host, api));
+    out.push((false, host, http_port));
     out
 }
 
@@ -160,10 +162,10 @@ async fn ask_at(https: bool, host: &str, port: u16, addr: SocketAddr) -> Result<
 }
 
 /// Checks that the server answering where `listing` says is `server` (on a private address
-/// too, with `private`).
-pub async fn check(server: &str, listing: &Listing, now: i64, private: bool) -> Checked {
+/// too, with `private`), its plain HTTP on `http_port` (80).
+pub async fn check(server: &str, listing: &Listing, now: i64, private: bool, http_port: u16) -> Checked {
     let mut why = Vec::new();
-    for (https, host, port) in urls(listing) {
+    for (https, host, port) in urls(listing, http_port) {
         match ask(https, &host, port, private).await {
             Ok(id) if id == server => {
                 return Checked {
@@ -210,7 +212,8 @@ mod tests {
         assert!(passed(Some(&ok), &l));
         assert!(passed(Some(&ok), &listing("PLAY.example.ORG", 80, Some(443))), "the same name, spelled otherwise");
         assert!(!passed(Some(&ok), &listing("other.example.org", 80, Some(443))), "another host");
-        assert!(!passed(Some(&ok), &listing("play.example.org", 8080, Some(443))), "another port");
+        assert!(!passed(Some(&ok), &listing("play.example.org", 80, Some(8443))), "another HTTPS port");
+        assert!(passed(Some(&ok), &listing("play.example.org", 50051, Some(443))), "the gRPC port isn't asked");
         assert!(!passed(None, &l));
         assert!(!due(Some(&ok), &l, 100 + CHECK_AGAIN - 1));
         assert!(due(Some(&ok), &l, 100 + CHECK_AGAIN));
@@ -229,11 +232,12 @@ mod tests {
     #[test]
     fn https_only_for_a_host_name() {
         assert_eq!(
-            urls(&listing("play.example.org", 80, Some(443))),
+            urls(&listing("play.example.org", 80, Some(443)), 80),
             [(true, "play.example.org".into(), 443), (false, "play.example.org".into(), 80)]
         );
-        assert_eq!(urls(&listing("203.0.113.5", 8000, Some(443))), [(false, "203.0.113.5".into(), 8000)]);
-        assert_eq!(urls(&listing("[2001:db8::1]", 80, None)), [(false, "2001:db8::1".into(), 80)]);
+        // The API port is the launcher's gRPC (50051 without Caddy): /api/info is on 80.
+        assert_eq!(urls(&listing("203.0.113.5", 50051, Some(443)), 80), [(false, "203.0.113.5".into(), 80)]);
+        assert_eq!(urls(&listing("[2001:db8::1]", 80, None), 80), [(false, "2001:db8::1".into(), 80)]);
     }
 
     #[test]

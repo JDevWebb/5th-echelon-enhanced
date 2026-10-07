@@ -466,6 +466,8 @@ pub struct Coordinator {
     host_checks: std::sync::atomic::AtomicBool,
     /// Whether hosts on private addresses are checked too (a LAN or test network).
     host_checks_private: std::sync::atomic::AtomicBool,
+    /// Where servers' plain HTTP is asked (80; a test's own server's port in tests).
+    host_check_http_port: std::sync::atomic::AtomicU16,
     /// The servers whose host is being checked now, and what's checked ([`host_check::target`]).
     host_checks_running: std::sync::Mutex<HashMap<String, String>>,
     /// Request bodies being read at once (see [`limits::Budgets`]).
@@ -586,6 +588,7 @@ impl Coordinator {
             names: std::sync::OnceLock::new(),
             host_checks: std::sync::atomic::AtomicBool::new(false),
             host_checks_private: std::sync::atomic::AtomicBool::new(false),
+            host_check_http_port: std::sync::atomic::AtomicU16::new(80),
             host_checks_running: std::sync::Mutex::default(),
             budgets: limits::Budgets::default(),
             files_dir: std::path::Path::new(path)
@@ -1706,7 +1709,8 @@ impl Coordinator {
             let (c, server, listing) = (Arc::clone(self), server.to_string(), listing.clone());
             tokio::spawn(async move {
                 let private = c.host_checks_private.load(std::sync::atomic::Ordering::Relaxed);
-                let checked = host_check::check(&server, &listing, now, private).await;
+                let http_port = c.host_check_http_port.load(std::sync::atomic::Ordering::Relaxed);
+                let checked = host_check::check(&server, &listing, now, private, http_port).await;
                 if checked.ok {
                     tracing::info!("server {server}: {} answers as it", listing.host);
                 } else {

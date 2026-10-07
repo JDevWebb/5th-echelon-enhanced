@@ -3542,8 +3542,10 @@ async fn a_server_is_listed_only_where_it_answers_as_itself() {
     // The test's servers are on loopback.
     t.c.check_private_hosts();
     let (honest, liar) = (t.join("honest").await, t.join("liar").await);
+    // Its config server (port 80 on a real one); the listed API port is the launcher's gRPC.
     let port = info_server("honest").await;
-    let beat = |name: &str, port: u16| json!({ "name": name, "host": "127.0.0.1", "listed": true, "ports": { "api": port, "login": 21126 } });
+    t.c.host_check_http_port.store(port, std::sync::atomic::Ordering::Relaxed);
+    let beat = |name: &str, host: &str| json!({ "name": name, "host": host, "listed": true, "ports": { "api": 50051, "login": 21126 } });
     let listed = || async {
         let (_, v) = t.call("GET", "/v1/servers", None, None).await;
         let mut ids: Vec<String> = v["servers"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap().to_string()).collect();
@@ -3551,15 +3553,15 @@ async fn a_server_is_listed_only_where_it_answers_as_itself() {
         ids
     };
     // Both say they're at the honest server's address.
-    t.call("POST", "/v1/heartbeat", Some(&honest), Some(beat("Honest", port))).await;
-    t.call("POST", "/v1/heartbeat", Some(&liar), Some(beat("Honest (official)", port))).await;
-    checked(&t, &format!("127.0.0.1 {port} -")).await;
+    t.call("POST", "/v1/heartbeat", Some(&honest), Some(beat("Honest", "127.0.0.1"))).await;
+    t.call("POST", "/v1/heartbeat", Some(&liar), Some(beat("Honest (official)", "127.0.0.1"))).await;
+    checked(&t, "127.0.0.1 -").await;
     assert_eq!(listed().await, ["honest"], "the liar's listing names another server's address");
     // The liar hears that, on its next heartbeat.
-    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&liar), Some(beat("Honest (official)", port))).await;
+    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&liar), Some(beat("Honest (official)", "127.0.0.1"))).await;
     assert!(v["warnings"].to_string().contains("not in the directory"), "{v}");
     // Moving to an address nobody answers at: out of the directory until checked there.
-    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&honest), Some(beat("Honest", 9))).await;
+    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&honest), Some(beat("Honest", "127.0.0.2"))).await;
     assert!(v.get("warnings").is_none(), "{v}");
     assert!(listed().await.is_empty(), "not checked at the new address yet");
     // The admin UI says what the check found.
@@ -3580,7 +3582,7 @@ async fn a_server_is_listed_only_where_it_answers_as_itself() {
     assert_eq!(found["ok"], false, "{found}");
     assert!(found["why"].as_str().unwrap().contains("\"honest\""), "{found}");
     // The liar hears only that it failed, not what answered there.
-    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&liar), Some(beat("Honest (official)", port))).await;
+    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&liar), Some(beat("Honest (official)", "127.0.0.1"))).await;
     assert!(!v["warnings"].to_string().contains("honest\\\""), "{v}");
 }
 
@@ -3590,11 +3592,12 @@ async fn a_host_on_this_machine_or_its_network_isnt_asked() {
     t.c.check_hosts();
     let secret = t.join("local").await;
     let port = info_server("local").await;
+    t.c.host_check_http_port.store(port, std::sync::atomic::Ordering::Relaxed);
     t.call(
         "POST",
         "/v1/heartbeat",
         Some(&secret),
-        Some(json!({ "name": "Local", "host": "127.0.0.1", "listed": true, "ports": { "api": port, "login": 21126 } })),
+        Some(json!({ "name": "Local", "host": "127.0.0.1", "listed": true, "ports": { "api": 50051, "login": 21126 } })),
     )
     .await;
     let mut found = Value::Null;
