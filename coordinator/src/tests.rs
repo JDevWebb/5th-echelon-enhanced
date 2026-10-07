@@ -1425,6 +1425,15 @@ async fn stat_writes_add_up_as_the_board_says() {
         .await
         .unwrap();
     assert_eq!(name, "NameEXO");
+    // A write naming them otherwise doesn't rename them: the name is the one they linked by.
+    let mut posing = sw(10, "EXO", 17, 2, 100, 1.0);
+    posing["name"] = json!("JDevWebb (admin)");
+    t.stats(&a, EPOCH, vec![posing]).await;
+    let name: String = sqlx::query_scalar("SELECT name FROM global_names WHERE global_id = 'EXO'")
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(name, "NameEXO");
 }
 
 #[tokio::test]

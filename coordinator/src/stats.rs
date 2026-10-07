@@ -213,7 +213,19 @@ impl Coordinator {
                 names.insert(w.global_id, name.to_string());
             }
         }
-        for (global_id, name) in names {
+        for (global_id, said) in names {
+            // The name the player linked by on this server, not what the write says: a member
+            // put "JDevWebb (admin)" at the top of a leaderboard. (Writes are only for players
+            // linked there.)
+            let linked: Option<String> = sqlx::query_scalar("SELECT username FROM links WHERE global_id = ? AND server_id = ?")
+                .bind(&global_id)
+                .bind(server)
+                .fetch_optional(&mut *tx)
+                .await?;
+            let Some(name) = linked.filter(|n| valid_display_name(n)) else { continue };
+            if name != said {
+                tracing::debug!("stats: {server} named {} {said:?}; kept {name:?}", identity::short(&global_id));
+            }
             sqlx::query(
                 "INSERT INTO global_names (global_id, name, updated_at) VALUES (?, ?, ?)
                  ON CONFLICT (global_id) DO UPDATE SET name = excluded.name, updated_at = excluded.updated_at WHERE name != excluded.name",
