@@ -972,7 +972,10 @@ async fn players_and_sessions_are_taken_and_a_full_roster_deletes() {
         })
         .await
         .unwrap();
-    assert_eq!(found["players"][0]["also_on"], json!(["server-b"]));
+    // The row is the account seen last (server B's, if its roster came a second later).
+    let shown = &found["players"][0];
+    let other = if shown["server"] == "server-a" { "server-b" } else { "server-a" };
+    assert_eq!(shown["also_on"], json!([other]), "{shown}");
     // One row for the person: both servers, their numbers added up; before the links, two.
     let all = t.c.player_list(&players::ListQuery::default()).await.unwrap();
     let exo: Vec<&Value> = all["players"].as_array().unwrap().iter().filter(|p| p["name"] == "Exo").collect();
@@ -1417,6 +1420,15 @@ async fn stat_writes_add_up_as_the_board_says() {
     assert_eq!(t.stat("EXO", 10, 228, 212).await, Some(50.0));
     assert_eq!(t.stat("EXO", 10, 228, 213).await, Some(30.0));
     assert_eq!(t.stat("EXO", 22, 100, 153).await, Some(700.0));
+    let name: String = sqlx::query_scalar("SELECT name FROM global_names WHERE global_id = 'EXO'")
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(name, "NameEXO");
+    // A write naming them otherwise doesn't rename them: the name is the one they linked by.
+    let mut posing = sw(10, "EXO", 17, 2, 100, 1.0);
+    posing["name"] = json!("JDevWebb (admin)");
+    t.stats(&a, EPOCH, vec![posing]).await;
     let name: String = sqlx::query_scalar("SELECT name FROM global_names WHERE global_id = 'EXO'")
         .fetch_one(&t.c.pool)
         .await
@@ -3001,6 +3013,20 @@ async fn players_suggest_from_the_launcher_and_admins_keep_the_roadmap() {
     assert_eq!(admin_call(&r, "GET", "/api/me", &cookie, None).await.1["roadmap"], json!(false));
     t.c.enable_roadmap();
     assert_eq!(admin_call(&r, "GET", "/api/me", &cookie, None).await.1["roadmap"], json!(true));
+    let a = t.join("server-a").await;
+    t.changes(&a, json!([link(&me, "server-a", "Kiwi")])).await;
+    // The name isn't signed: someone not linked anywhere is "a player", whatever they say.
+    let stranger = identity::Identity::generate();
+    let mut posing = suggest(&stranger, now, "Other", "Free admin rights", "From the developer.");
+    posing["name"] = json!("JDevWebb");
+    assert_eq!(t.call("POST", "/v1/suggestions", None, Some(posing)).await.0, StatusCode::OK);
+    let name: String = sqlx::query_scalar("SELECT name FROM suggestions WHERE global_id = ?")
+        .bind(stranger.global_id())
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(name, "a player");
+    sqlx::query("DELETE FROM suggestions").execute(&t.c.pool).await.unwrap();
     // Signed, fresh and in a known area.
     let mut forged = suggest(&me, now, "Launcher", "Chat to find players", "A chat in the launcher.");
     forged["text"] = json!("Something else.");
@@ -3235,4 +3261,355 @@ async fn players_write_to_support_and_read_the_admins_answers() {
     assert_eq!(t.call("POST", "/v1/players", Some(&a), Some(roster)).await.0, StatusCode::OK);
     let (_, v) = admin_call(&r, "GET", "/api/support?status=all", &cookie, None).await;
     assert_eq!(v["threads"].as_array().map(Vec::len), Some(0), "{v}");
+}
+
+#[tokio::test]
+async fn admins_write_first_to_a_player_the_network_knows() {
+    let t = start("support-first").await;
+    t.c.enable_roadmap();
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    let neutron = identity::Identity::generate();
+    let ask = json!({ "text": "Hi Neutron, could you send your game's log from the Support page?" });
+    // Nobody with that identity: nobody to write to.
+    let (status, _) = admin_call(&r, "POST", &format!("/api/support/{}", neutron.global_id()), &cookie, Some(ask.clone())).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let roster = json!({ "full": false, "players": [player(1026, "Neutron", Some(&neutron.global_id()))] });
+    assert_eq!(t.call("POST", "/v1/players", Some(&a), Some(roster)).await.0, StatusCode::OK);
+    t.changes(&a, json!([link(&neutron, "server-a", "Neutron")])).await;
+    let (status, v) = admin_call(&r, "POST", &format!("/api/support/{}", neutron.global_id()), &cookie, Some(ask)).await;
+    assert_eq!(
+        (status, v["name"].as_str(), v["status"].as_str()),
+        (StatusCode::OK, Some("Neutron"), Some("waiting")),
+        "{v}"
+    );
+    // The player's launcher sees it, unread, and so does the overlay (through the pulse).
+    let time = identity::now();
+    let mine = format!(
+        "/v1/support/mine?identity={}&time={time}&signature={}",
+        neutron.global_id(),
+        neutron.sign(&identity::support_read_message("coordinator.test", time))
+    );
+    let (_, v) = t.call("GET", &mine, None, None).await;
+    assert_eq!((v["unread"].as_i64(), v["messages"][0]["admin"].as_str()), (Some(1), Some("admin1")), "{v}");
+    let pulse = json!({ "players": { "online": 1 }, "counters": {}, "online": [{ "id": 1026, "name": "Neutron" }] });
+    let (_, v) = t.call("POST", "/v1/pulse", Some(&a), Some(pulse)).await;
+    assert_eq!(v["support"], json!([{ "player": 1026, "unread": 1 }]), "{v}");
+}
+
+/// With its names set (`--name`), a coordinator takes players' signatures made for one of
+/// them only: one made for another coordinator, replayed here with that one's name as the
+/// Host, reads nothing.
+#[tokio::test]
+async fn signed_reads_are_for_this_coordinators_names() {
+    let t = start("signed-names").await;
+    let _ = t.c.names.set(vec!["coordinator.test".into()]);
+    let me = identity::Identity::generate();
+    let read = |host: &str, signed_for: &str| {
+        let time = identity::now();
+        let path = format!(
+            "/v1/reports/mine?identity={}&time={time}&signature={}",
+            me.global_id(),
+            me.sign(&identity::reports_message(signed_for, time))
+        );
+        let req = Request::builder().method("GET").uri(path).header("host", host).body(Body::empty()).unwrap();
+        let router = t.router.clone();
+        async move { router.oneshot(req).await.unwrap().status() }
+    };
+    assert_eq!(read("coordinator.test", "coordinator.test").await, StatusCode::OK);
+    assert_eq!(read("Coordinator.test:443", "coordinator.test").await, StatusCode::OK, "the same name, another way");
+    assert_eq!(read("evil.example", "evil.example").await, StatusCode::FORBIDDEN);
+}
+
+/// Support files: one player's are capped (their message keeps its text), and past the cap in
+/// all the oldest go to make room for new ones, not the new ones dropped. An address's files
+/// for the day are capped too. Admins delete a conversation (a second factor proved lately).
+#[tokio::test]
+async fn support_files_are_capped_per_player_and_the_oldest_make_room() {
+    let t = start("support-caps").await;
+    let r = admin_router(&t);
+    t.c.enable_roadmap();
+    let sent = |who: &identity::Identity| crate::support::Sent {
+        identity: who.global_id(),
+        name: "Oni".into(),
+        server: String::new(),
+        launcher: String::new(),
+        time: identity::now(),
+        text: "hi".into(),
+        files: vec![],
+        signature: String::new(),
+    };
+    let file = |kib: usize| crate::support::File {
+        name: "game.log".into(),
+        size: 1,
+        gzip: vec![7; kib * 1024],
+    };
+    let caps = (300 * 1024, 200 * 1024);
+    let (oni, kiwi) = (identity::Identity::generate(), identity::Identity::generate());
+    let now = identity::now();
+    // Oni: two of 100 KiB, then a third over their 200 KiB.
+    for _ in 0..2 {
+        assert!(t.c.add_support_message_within(&sent(&oni), &[file(100)], now, caps).await.unwrap().1);
+    }
+    let (_, kept) = t.c.add_support_message_within(&sent(&oni), &[file(100)], now, caps).await.unwrap();
+    assert!(!kept, "over the player's cap: text only");
+    // Kiwi's 150 KiB is past the 300 KiB in all, and Oni's files are recent and open: none
+    // go, and Kiwi's message keeps its text only.
+    let (_, kept) = t.c.add_support_message_within(&sent(&kiwi), &[file(150)], now, caps).await.unwrap();
+    assert!(!kept, "recent files of an open conversation aren't pushed out");
+    // Once Oni's conversation is resolved, its oldest file goes to make room.
+    assert!(t.c.set_support_status(&oni.global_id(), "resolved").await.unwrap());
+    let (_, kept) = t.c.add_support_message_within(&sent(&kiwi), &[file(150)], now, caps).await.unwrap();
+    assert!(kept);
+    let files: Vec<(String, i64)> = sqlx::query_as("SELECT m.identity, length(f.gzip) FROM support_files f JOIN support_messages m ON m.id = f.message_id ORDER BY f.message_id")
+        .fetch_all(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(files, vec![(oni.global_id(), 100 * 1024), (kiwi.global_id(), 150 * 1024)]);
+
+    // An address's files for the day.
+    assert!(t.c.support_bytes_allowed("192.0.2.9", crate::support::ADDRESS_FILES_A_DAY - 10, now));
+    assert!(!t.c.support_bytes_allowed("192.0.2.9", 11, now));
+    assert!(t.c.support_bytes_allowed("192.0.2.9", 11, now + 86_400), "the next day");
+    assert!(t.c.support_bytes_allowed("192.0.2.10", 11, now), "another address");
+
+    // Deleting a conversation takes a second factor proved lately, and takes its files.
+    let path = format!("/api/support/{}", oni.global_id());
+    let stale = admin_cookie(&t, "admin1", 3600).await;
+    assert_eq!(admin_call(&r, "DELETE", &path, &stale, None).await.0, StatusCode::FORBIDDEN);
+    let fresh = admin_cookie(&t, "admin2", 0).await;
+    assert_eq!(admin_call(&r, "DELETE", &path, &fresh, None).await.0, StatusCode::OK);
+    assert_eq!(admin_call(&r, "GET", &path, &fresh, None).await.0, StatusCode::NOT_FOUND);
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM support_files").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(left, 1, "Kiwi's file only");
+    assert_eq!(admin_call(&r, "DELETE", &path, &fresh, None).await.0, StatusCode::NOT_FOUND);
+}
+
+/// A member server can name any identity on an account of its own, but it isn't that player's:
+/// it isn't listed beside their conversation, its pulse isn't told of their unread answers,
+/// and dropping the account doesn't delete their conversation (before, it was deleted once no
+/// account named the identity: here Oni is linked on A, which hasn't sent its roster yet).
+#[tokio::test]
+async fn a_server_naming_someone_elses_identity_gets_nothing_of_theirs() {
+    let t = start("support-claimed").await;
+    t.c.enable_roadmap();
+    let r = admin_router(&t);
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    let oni = identity::Identity::generate();
+    t.changes(&a, json!([link(&oni, "server-a", "Oni")])).await;
+    // Server B names Oni's identity on an account of its own.
+    let claim = json!({ "full": true, "players": [player(7, "Oni-alt", Some(&oni.global_id()))] });
+    assert_eq!(t.call("POST", "/v1/players", Some(&b), Some(claim)).await.0, StatusCode::OK);
+    let path = format!("/api/support/{}", oni.global_id());
+    assert_eq!(admin_call(&r, "POST", &path, &cookie, Some(json!({ "text": "Hi Oni" }))).await.0, StatusCode::OK);
+    let (_, v) = admin_call(&r, "GET", &path, &cookie, None).await;
+    assert_eq!(v["accounts"], json!([]), "B's account isn't Oni's: {v}");
+    let pulse = json!({ "players": { "online": 1 }, "counters": {}, "online": [{ "id": 7, "name": "Oni-alt" }] });
+    let (_, v) = t.call("POST", "/v1/pulse", Some(&b), Some(pulse)).await;
+    assert_eq!(v["support"], json!([]), "{v}");
+    // B drops its account: Oni's conversation stays.
+    let empty = json!({ "full": true, "players": [] });
+    assert_eq!(t.call("POST", "/v1/players", Some(&b), Some(empty)).await.0, StatusCode::OK);
+    assert_eq!(admin_call(&r, "GET", &path, &cookie, None).await.0, StatusCode::OK);
+    // A server that had them linked letting their last account go still deletes it.
+    let roster = json!({ "full": true, "players": [player(1, "Oni", Some(&oni.global_id()))] });
+    assert_eq!(t.call("POST", "/v1/players", Some(&a), Some(roster)).await.0, StatusCode::OK);
+    assert_eq!(
+        t.call("POST", "/v1/players", Some(&a), Some(json!({ "full": true, "players": [] }))).await.0,
+        StatusCode::OK
+    );
+    assert_eq!(admin_call(&r, "GET", &path, &cookie, None).await.0, StatusCode::NOT_FOUND);
+}
+
+/// Codes while signing in: one sign-in under way per admin (a new one ends the last, so a
+/// password can't open many to try codes on), and none taken while the account waits after
+/// failures, the right one included.
+#[tokio::test]
+async fn second_factor_codes_wait_with_the_account() {
+    let step = totp_step().await;
+    let t = start("admin-code-lock").await;
+    let r = admin_router_at(&t, [192, 0, 2, 11]);
+    let link = t.c.admin_setup_link("tui", false).await.unwrap();
+    let token = link.split("#setup=").nth(1).unwrap().to_string();
+    let password = "correct horse battery staple";
+    let (_, _, enroll) = admin_send(&r, "POST", "/api/setup", "", Some(json!({ "token": token, "password": password }))).await;
+    let enroll = enroll.unwrap();
+    let (_, v, _) = admin_send(&r, "POST", "/api/me/totp/begin", &enroll, None).await;
+    let secret = v["secret"].as_str().unwrap().to_string();
+    let (status, ..) = admin_send(&r, "POST", "/api/me/totp/confirm", &enroll, Some(json!({ "code": totp_code(&secret, step - 1) }))).await;
+    assert_eq!(status, StatusCode::OK);
+
+    let sign_in = || async {
+        admin_send(&r, "POST", "/api/login", "", Some(json!({ "username": "tui", "password": password })))
+            .await
+            .2
+            .unwrap()
+    };
+    let first = sign_in().await;
+    let second = sign_in().await;
+    let (status, ..) = admin_send(&r, "POST", "/api/login/totp", &first, Some(json!({ "code": "000000" }))).await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED, "the first sign-in ended with the second");
+    sqlx::query("UPDATE admins SET locked_until = ? WHERE username = 'tui'")
+        .bind(identity::now() + 900)
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    let (status, ..) = admin_send(&r, "POST", "/api/login/totp", &second, Some(json!({ "code": totp_code(&secret, step) }))).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS, "the right code, while the account waits");
+    let (status, ..) = admin_send(&r, "POST", "/api/login/recovery", &second, Some(json!({ "code": "aaaa-bbbb-cccc" }))).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    let locked: i64 = sqlx::query_scalar("SELECT locked_until FROM admins WHERE username = 'tui'")
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+    assert!(locked > identity::now(), "still waiting");
+    sqlx::query("UPDATE admins SET locked_until = 0 WHERE username = 'tui'").execute(&t.c.pool).await.unwrap();
+    let (status, v, _) = admin_send(&r, "POST", "/api/login/totp", &second, Some(json!({ "code": totp_code(&secret, step) }))).await;
+    assert_eq!((status, v["stage"].as_str()), (StatusCode::OK, Some("full")), "{v}");
+}
+
+/// A weak password at a setup link leaves the link usable, but no longer than it was.
+#[tokio::test]
+async fn a_setup_link_keeps_its_expiry_through_weak_passwords() {
+    let t = start("setup-expiry").await;
+    let r = admin_router_at(&t, [192, 0, 2, 12]);
+    let link = t.c.admin_setup_link("weka", false).await.unwrap();
+    let token = link.split("#setup=").nth(1).unwrap().to_string();
+    let soon = identity::now() + 60;
+    sqlx::query("UPDATE setup_tokens SET expires_at = ?").bind(soon).execute(&t.c.pool).await.unwrap();
+    let (status, ..) = admin_send(&r, "POST", "/api/setup", "", Some(json!({ "token": token, "password": "weka" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let expires: i64 = sqlx::query_scalar("SELECT expires_at FROM setup_tokens").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(expires, soon);
+}
+
+/// A listing can't top the directory with a made-up count.
+#[tokio::test]
+async fn listings_keep_to_a_believable_count() {
+    let t = start("listing-bounds").await;
+    let a = t.join("server-a").await;
+    let (status, _) = t
+        .call(
+            "POST",
+            "/v1/heartbeat",
+            Some(&a),
+            Some(json!({ "name": "Server A", "host": "server-a", "names": ["server-a"], "players_online": u32::MAX, "players_total": u32::MAX })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, v) = t.call("GET", "/v1/servers", None, None).await;
+    let a_listed = v["servers"].as_array().unwrap().iter().find(|s| s["name"] == "Server A").cloned().unwrap();
+    assert_eq!(a_listed["players_online"], json!(MAX_LISTED_PLAYERS));
+}
+
+/// Waits until every server's host check is of `target`; their results by id.
+async fn checked(t: &Test, target: &str) -> HashMap<String, Value> {
+    let mut checks = HashMap::new();
+    for _ in 0..300 {
+        let o = t.c.admin_overview().await.unwrap();
+        checks = o["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| (s["id"].as_str().unwrap().to_string(), s["host_check"].clone()))
+            .collect();
+        if checks.values().all(|c| c["target"] == target) {
+            return checks;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    panic!("the checks of {target} didn't finish: {checks:?}");
+}
+
+/// A game server's `/api/info` on loopback, saying it's `id`; its port.
+async fn info_server(id: &'static str) -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let app = Router::new().route(
+        "/api/info",
+        get(move || async move { axum::Json(json!({ "name": "5th Echelon", "version": "1.0.0", "id": id })) }),
+    );
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    port
+}
+
+#[tokio::test]
+async fn a_server_is_listed_only_where_it_answers_as_itself() {
+    let t = start("host-check").await;
+    t.c.check_hosts();
+    // The test's servers are on loopback.
+    t.c.check_private_hosts();
+    let (honest, liar) = (t.join("honest").await, t.join("liar").await);
+    // Its config server (port 80 on a real one); the listed API port is the launcher's gRPC.
+    let port = info_server("honest").await;
+    t.c.host_check_http_port.store(port, std::sync::atomic::Ordering::Relaxed);
+    let beat = |name: &str, host: &str| json!({ "name": name, "host": host, "listed": true, "ports": { "api": 50051, "login": 21126 } });
+    let listed = || async {
+        let (_, v) = t.call("GET", "/v1/servers", None, None).await;
+        let mut ids: Vec<String> = v["servers"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap().to_string()).collect();
+        ids.sort();
+        ids
+    };
+    // Both say they're at the honest server's address.
+    t.call("POST", "/v1/heartbeat", Some(&honest), Some(beat("Honest", "127.0.0.1"))).await;
+    t.call("POST", "/v1/heartbeat", Some(&liar), Some(beat("Honest (official)", "127.0.0.1"))).await;
+    checked(&t, "127.0.0.1 -").await;
+    assert_eq!(listed().await, ["honest"], "the liar's listing names another server's address");
+    // The liar hears that, on its next heartbeat.
+    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&liar), Some(beat("Honest (official)", "127.0.0.1"))).await;
+    assert!(v["warnings"].to_string().contains("not in the directory"), "{v}");
+    // Moving to an address nobody answers at: out of the directory until checked there.
+    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&honest), Some(beat("Honest", "127.0.0.2"))).await;
+    assert!(v.get("warnings").is_none(), "{v}");
+    assert!(listed().await.is_empty(), "not checked at the new address yet");
+    // The admin UI says what the check found.
+    let mut found = Value::Null;
+    for _ in 0..50 {
+        found = t.c.admin_overview().await.unwrap()["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == "liar")
+            .unwrap()["host_check"]
+            .clone();
+        if !found.is_null() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(found["ok"], false, "{found}");
+    assert!(found["why"].as_str().unwrap().contains("\"honest\""), "{found}");
+    // The liar hears only that it failed, not what answered there.
+    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&liar), Some(beat("Honest (official)", "127.0.0.1"))).await;
+    assert!(!v["warnings"].to_string().contains("honest\\\""), "{v}");
+}
+
+#[tokio::test]
+async fn a_host_on_this_machine_or_its_network_isnt_asked() {
+    let t = start("host-check-private").await;
+    t.c.check_hosts();
+    let secret = t.join("local").await;
+    let port = info_server("local").await;
+    t.c.host_check_http_port.store(port, std::sync::atomic::Ordering::Relaxed);
+    t.call(
+        "POST",
+        "/v1/heartbeat",
+        Some(&secret),
+        Some(json!({ "name": "Local", "host": "127.0.0.1", "listed": true, "ports": { "api": 50051, "login": 21126 } })),
+    )
+    .await;
+    let mut found = Value::Null;
+    for _ in 0..50 {
+        found = t.c.admin_overview().await.unwrap()["servers"][0]["host_check"].clone();
+        if found["target"].as_str().is_some_and(|t| t.starts_with("127.0.0.1")) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(found["ok"], false, "{found}");
+    assert!(found["why"].as_str().unwrap().contains("not a public address"), "{found}");
+    let (_, v) = t.call("GET", "/v1/servers", None, None).await;
+    assert!(v["servers"].as_array().unwrap().is_empty());
 }

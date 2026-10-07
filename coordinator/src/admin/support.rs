@@ -5,9 +5,12 @@
 //!   first, with what's unread for the admins.
 //! * `GET /api/support/<identity>`: one conversation (marked read), with the player's accounts.
 //! * `POST /api/support/<identity>` `{text}`: an answer, which the player reads in their
-//!   launcher (and is told of in the overlay); the conversation then waits on them.
+//!   launcher (and is told of in the overlay); the conversation then waits on them. With no
+//!   conversation yet, it starts one: an admin asking a player for something.
 //! * `PUT /api/support/<identity>/status` `{status}`: open, waiting or resolved.
 //! * `GET /api/support/<identity>/files/<message>/<name>`: a file, unpacked, to save.
+//! * `DELETE /api/support/<identity>`: deletes the conversation with its files (a second
+//!   factor proved lately); the player can write again.
 
 use axum::extract::Path;
 use axum::extract::Query;
@@ -36,7 +39,7 @@ use crate::support;
 pub(super) fn routes() -> Router<Shared> {
     Router::new()
         .route("/support", get(list))
-        .route("/support/{identity}", get(thread).post(answer))
+        .route("/support/{identity}", get(thread).post(answer).delete(remove))
         .route("/support/{identity}/status", put(set_status))
         .route("/support/{identity}/files/{message}/{name}", get(file))
 }
@@ -105,11 +108,30 @@ async fn answer(State(c): State<Shared>, Extension(client): Extension<Client>, h
     }
     match c.answer_support(&identity, &s.username, text, identity::now()).await {
         Ok(Some(_)) => {
-            c.audit(&s.username, Some(&client), "support: answered", &identity::short(&identity)).await;
+            c.audit(&s.username, Some(&client), "support: wrote to the player", &identity::short(&identity)).await;
             c.publish(Event::Support);
             c.support_thread(&identity).await.map_or_else(internal, |t| ok(t.map(|(v, _)| v).unwrap_or_default()))
         }
-        Ok(None) => fail(StatusCode::NOT_FOUND, "no such conversation"),
+        Ok(None) => fail(StatusCode::NOT_FOUND, "no player with that identity here: nobody to write to"),
+        Err(e) => internal(e),
+    }
+}
+
+async fn remove(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Path(identity): Path<String>) -> Response {
+    let s = match c.recent(&headers, &client).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    if !c.has_roadmap() {
+        return no_support();
+    }
+    match c.delete_support(&identity).await {
+        Ok(true) => {
+            c.audit(&s.username, Some(&client), "support: deleted the conversation", &identity::short(&identity)).await;
+            c.publish(Event::Support);
+            ok(serde_json::json!({}))
+        }
+        Ok(false) => fail(StatusCode::NOT_FOUND, "no such conversation"),
         Err(e) => internal(e),
     }
 }
@@ -144,9 +166,10 @@ async fn set_status(State(c): State<Shared>, Extension(client): Extension<Client
 
 /// A file a player sent, as text to save: never shown as a page.
 async fn file(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Path((identity, message, name)): Path<(String, i64, String)>) -> Response {
-    if let Err(r) = c.full(&headers, &client).await {
-        return r;
-    }
+    let s = match c.full(&headers, &client).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
     if !c.has_roadmap() {
         return no_support();
     }
@@ -168,6 +191,14 @@ async fn file(State(c): State<Shared>, Extension(client): Extension<Client>, hea
     }
     match c.support_file(message, &name).await {
         Ok(Some(data)) => {
+            // A player's logs: who read them is on record.
+            c.audit(
+                &s.username,
+                Some(&client),
+                "support: downloaded a file",
+                &format!("{name} from {}", identity::short(&identity)),
+            )
+            .await;
             let mut resp = data.into_response();
             let h = resp.headers_mut();
             h.insert(header::CONTENT_TYPE, HeaderValue::from_static("text/plain; charset=utf-8"));

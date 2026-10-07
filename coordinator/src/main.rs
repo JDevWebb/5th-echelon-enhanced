@@ -4,6 +4,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::serve::ListenerExt;
+
 #[derive(argh::FromArgs)]
 /// Shares friends between 5th Echelon servers and lists them in a server directory.
 struct Args {
@@ -30,6 +32,20 @@ struct Args {
     /// network's coordinator only, whose roadmap every launcher reads
     #[argh(switch)]
     roadmap: bool,
+    /// a name launchers reach this coordinator by, e.g. play.scbl.jdevwebb.net
+    /// (repeat for more): players' signed requests must be made for one of them.
+    /// Without it, for whatever name a request says
+    #[argh(option)]
+    name: Vec<String>,
+    /// list member servers without checking that the server at each listed
+    /// host answers as that member (a test network whose servers the
+    /// coordinator can't reach)
+    #[argh(switch)]
+    no_host_check: bool,
+    /// check member servers on private addresses too (a LAN or test network);
+    /// without it, only public addresses are asked, and others aren't listed
+    #[argh(switch)]
+    check_private_hosts: bool,
     #[argh(subcommand)]
     command: Option<Command>,
 }
@@ -136,6 +152,10 @@ struct NewToken {}
 /// The file with the join token that servers need to join. Made on the first
 /// start; `new-token` replaces it (servers that joined keep working).
 const JOIN_TOKEN_FILE: &str = "join-token.txt";
+/// Connections at once on each listener, and from one address (a proxy on this machine
+/// isn't counted per address).
+const MAX_CONNECTIONS: usize = 2048;
+const MAX_CONNECTIONS_PER_IP: usize = 64;
 
 fn new_token(path: &std::path::Path) -> eyre::Result<String> {
     let mut bytes = [0u8; 20];
@@ -268,6 +288,9 @@ async fn main() -> eyre::Result<()> {
     match args.command {
         Some(Command::NewToken(_)) => {
             new_token(&args.data.join(JOIN_TOKEN_FILE))?;
+            if let Ok(c) = coordinator::Coordinator::open(&db.to_string_lossy(), String::new()).await {
+                c.audit("console", None, "made a new join token", "").await;
+            }
             println!("A new join token is in {}; restart the coordinator to use it.", args.data.join(JOIN_TOKEN_FILE).display());
             return Ok(());
         }
@@ -316,6 +339,7 @@ async fn main() -> eyre::Result<()> {
         Some(Command::RemoveServer(r)) => {
             let c = coordinator::Coordinator::open(&db.to_string_lossy(), String::new()).await?;
             if c.remove_server(&r.id).await? {
+                c.audit("console", None, "removed a server", &r.id).await;
                 println!("Removed server {} with its links. Rotate the join token (new-token) if it could join again.", r.id);
             } else {
                 println!("No server {}.", r.id);
@@ -336,6 +360,18 @@ async fn main() -> eyre::Result<()> {
     let _ = coordinator.data_dir.set(std::fs::canonicalize(&args.data).unwrap_or_else(|_| args.data.clone()));
     if args.roadmap {
         coordinator.enable_roadmap();
+        if args.name.is_empty() {
+            tracing::warn!("--roadmap without --name: players' signed requests are checked against the name each request says, which a replay can set");
+        }
+    }
+    let _ = coordinator.names.set(args.name.iter().map(|n| identity::host_key(n)).collect());
+    if args.no_host_check {
+        tracing::warn!("--no-host-check: member servers are listed at whatever host they say, unchecked");
+    } else {
+        coordinator.check_hosts();
+        if args.check_private_hosts {
+            coordinator.check_private_hosts();
+        }
     }
     // Where launchers' ping reports and admins come from: DB-IP's city database, kept current.
     let geo = Arc::new(geo::Geo::new(args.data.join("geoip")));
@@ -368,6 +404,7 @@ async fn main() -> eyre::Result<()> {
         tracing::info!("Admin UI on {listen}, for {origin}");
         let app = coordinator::admin::router(Arc::clone(&coordinator)).into_make_service_with_connect_info::<std::net::SocketAddr>();
         tokio::spawn(async move {
+            let admin = coordinator::limits::Limited::new(admin, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP).tap_io(|_| {});
             if let Err(e) = axum::serve(admin, app).await {
                 tracing::error!("admin UI: {e}");
             }
@@ -375,6 +412,7 @@ async fn main() -> eyre::Result<()> {
     }
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
     tracing::info!("Listening on {}; servers join with the token in {}", args.listen, args.data.join(JOIN_TOKEN_FILE).display());
+    let listener = coordinator::limits::Limited::new(listener, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP).tap_io(|_| {});
     axum::serve(listener, Arc::clone(&coordinator).router().into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;

@@ -304,6 +304,17 @@ kiwi_back() { [ "$(users)" = Kiwi ]; }
 missing_archive_refused() { ! /tmp/eu1-backup.sh restore game --archive 2001-01-01 >/dev/null 2>&1 && kiwi_back; }
 check "the coordinator's files go to R2 where it runs" bash -c "/tmp/eu1-backup.sh files >/dev/null && rclone --config /dev/null lsf -R T:live/live/eu1/coordinator-files | grep -q join-token.txt"
 check "  and nowhere on a standby (it isn't running there)" bash -c "/tmp/na1-backup.sh files && ! rclone --config /dev/null lsf T:live/live/na1 2>/dev/null | grep -q ."
+# The coordinator's user owns its folder; the backup runs as root. Links there never take
+# root's files (the backup keys) to R2, whenever they're made.
+mkdir -p /var/lib/eu1-coord/reports/4 && echo "a report that goes" > /var/lib/eu1-coord/reports/4/report.txt
+mkdir -p /var/lib/eu1-coord/reports/2 && ln -s /etc/5th-echelon /var/lib/eu1-coord/reports/2/keys && ln -s "$BACKUP_ENV" /var/lib/eu1-coord/reports/2/env
+check "  links in the reports are copied as links, never what they point at" bash -c "/tmp/eu1-backup.sh files >/dev/null 2>&1 && rclone --config /dev/null lsf -R T:live/live/eu1/coordinator-files | grep -q report.txt && ! rclone --config /dev/null cat T:live/live/eu1/coordinator-files 2>/dev/null | grep -q BACKUP_R2"
+rm -rf /var/lib/eu1-coord/reports/2 /var/lib/eu1-coord/reports/4
+mv /var/lib/eu1-coord/reports /var/lib/eu1-coord/reports.real && ln -s /etc/5th-echelon /var/lib/eu1-coord/reports
+check "  a reports folder that is a link isn't followed" bash -c "/tmp/eu1-backup.sh files 2>&1 | grep -q 'is a link; not backed up' && ! rclone --config /dev/null cat T:live/live/eu1/coordinator-files 2>/dev/null | grep -q BACKUP_R2"
+rm /var/lib/eu1-coord/reports && mv /var/lib/eu1-coord/reports.real /var/lib/eu1-coord/reports
+mkdir -p /var/lib/eu1-coord/reports/3 && echo "another report" > /var/lib/eu1-coord/reports/3/report.txt
+check "  and once it's a folder again, the reports go up, the deleted one gone" bash -c "/tmp/eu1-backup.sh files >/dev/null && rclone --config /dev/null lsf -R T:live/live/eu1/coordinator-files | grep -q '^reports/3/report.txt' && ! rclone --config /dev/null lsf -R T:live/live/eu1/coordinator-files | grep -q '^reports/4/'"
 check "the daily archive goes to B2" bash -c "/tmp/eu1-backup.sh archive >/dev/null && rclone --config /dev/null lsf -R T:archive | grep -q \"$(date -u +%F)-game.db.gz\""
 before="$(date -u +%FT%TZ)"
 sleep 2

@@ -23,7 +23,7 @@ cleanup
 docker network create "$net" >/dev/null
 
 docker run -d --name fes-fed-coord --network "$net" $mount "$image" \
-  bash -c "mkdir -p /srv/c && exec $bin/coordinator --listen 0.0.0.0:8700 --data /srv/c >/srv/c/log 2>&1" >/dev/null
+  bash -c "mkdir -p /srv/c && exec $bin/coordinator --listen 0.0.0.0:8700 --data /srv/c --check-private-hosts >/srv/c/log 2>&1" >/dev/null
 for _ in $(seq 100); do docker exec fes-fed-coord test -s /srv/c/join-token.txt 2>/dev/null && break; sleep 0.2; done
 token=$(docker exec fes-fed-coord cat /srv/c/join-token.txt | tr -d '[:space:]')
 coord=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$net\").IPAddress}}" fes-fed-coord)

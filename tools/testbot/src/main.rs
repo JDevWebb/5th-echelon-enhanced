@@ -154,9 +154,7 @@ async fn identity_login(ctx: &mut Ctx) -> Result<()> {
     // change the password it sets.
     let for_elsewhere = me.sign_login("rogue.example", &name, now + 3, "a-new-password-1");
     let replayed = async {
-        let channel = tonic::transport::Channel::from_shared(format!("http://{}:{}", ctx.server, testbot::bot::target(ctx.server).api))?
-            .connect()
-            .await?;
+        let channel = testbot::bot::api_endpoint(ctx.server).map_err(|e| eyre!(e))?.connect().await?;
         server_api::users::users_client::UsersClient::new(channel)
             .key_login(server_api::users::KeyLoginRequest {
                 username: name.clone(),
@@ -531,9 +529,7 @@ async fn name_check(ctx: &mut Ctx) -> Result<()> {
     use server_api::users::name_available_response::Answer;
     let server = ctx.server;
     let check = |name: String| async move {
-        let channel = tonic::transport::Channel::from_shared(format!("http://{server}:{}", testbot::bot::target(server).api))?
-            .connect()
-            .await?;
+        let channel = testbot::bot::api_endpoint(server).map_err(|e| eyre!(e))?.connect().await?;
         let answer = server_api::users::users_client::UsersClient::new(channel)
             .name_available(server_api::users::NameRequest { name })
             .await?
@@ -870,6 +866,13 @@ async fn private_room_join(ctx: &mut Ctx) -> Result<()> {
         .await?
         .ok_or_else(|| eyre!("no 'come in' push for the party"))?;
     ensure!(push.ui_type == 7003 && push.ui_param_2 == game, "wrong push: {push:?}");
+    // A stranger who adds themselves to the host's (public) party after the match was made
+    // isn't the party that follows it: they can't walk in that way either.
+    stranger.add_participants(lobby, &[stranger.pid], &[]).await?;
+    ensure!(
+        stranger.add_participants(game, &[], &[stranger.pid]).await.is_err(),
+        "a stranger joined a private match through the host's party, after the match was made"
+    );
     for p in [host, party, carried, stranger] {
         p.disconnect().await?;
     }
@@ -1442,7 +1445,7 @@ async fn nat_probe_scenario(ctx: &mut Ctx) -> Result<()> {
 async fn nat_relay(ctx: &mut Ctx) -> Result<()> {
     use nat_proto::Message;
     let nat = nat_addr(ctx.server, false)?;
-    let (pa, pb) = (ctx.player("Relayed").await?, ctx.player("Direct").await?);
+    let (mut pa, mut pb) = (ctx.player("Relayed").await?, ctx.player("Direct").await?);
     let a = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
     let b = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
     // Someone at another address (on loopback, 127.0.0.3): the same address with the tag is the
@@ -1461,6 +1464,17 @@ async fn nat_relay(ctx: &mut Ctx) -> Result<()> {
         }
         .encode()
     };
+    // Strangers: the relay carries game traffic only between players the server put together.
+    b.send_to(&send(rb.tag, ra.advertise, b"from a stranger"), nat).await?;
+    ensure!(
+        nat_wait_data(&a, Duration::from_millis(600)).await.is_none(),
+        "the relay carried a packet between two players in no room together"
+    );
+    let room = pa.create_session(LOBBY).await?;
+    pa.add_participants(room, &[pa.pid], &[]).await?;
+    pb.add_participants(room, &[pb.pid], &[]).await?;
+    // The refusal stands a second (the game retries; its join may come a moment later).
+    tokio::time::sleep(Duration::from_millis(1100)).await;
     b.send_to(&send(rb.tag, ra.advertise, b"to the relayed player"), nat).await?;
     ensure!(
         nat_wait_data(&a, Duration::from_secs(2)).await
@@ -1693,6 +1707,9 @@ async fn main() -> Result<()> {
                     api: ports.api,
                     auth: ports.login,
                     nat: ports.nat.ok_or_else(|| eyre!("the NAT helper is off"))?,
+                    // HTTPS by name, as the launcher uses it.
+                    api_tls: ports.api_tls.filter(|_| name.parse::<IpAddr>().is_err()),
+                    identity_required: info.features.iter().any(|f| f == "identity-required"),
                 },
             );
         }

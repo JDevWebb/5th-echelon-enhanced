@@ -33,8 +33,16 @@ pub const MAX_BODY: usize = 6 * 1024 * 1024;
 /// Messages a player may send an hour, and from one address.
 pub const PER_PLAYER_AN_HOUR: usize = 20;
 pub const PER_ADDRESS_AN_HOUR: usize = 40;
-/// The most the files may take here in all: past it, a message keeps its text only.
+/// The most the files may take here in all: past it, spare ones go to make room
+/// ([`SPARE_AFTER`]), or a new message keeps its text only.
 const FILES_CAP: i64 = 1024 * 1024 * 1024;
+/// The most one player's files may take (8 messages' worth at the most each): past it, their
+/// message keeps its text only. One player can't fill [`FILES_CAP`] for everyone.
+const PLAYER_FILES_CAP: i64 = 32 * 1024 * 1024;
+/// Past [`FILES_CAP`], files this old (or a resolved conversation's) may go to make room.
+const SPARE_AFTER: i64 = 30 * 86_400;
+/// Files one address may send in a day, all its players together (as sent, gzipped).
+pub const ADDRESS_FILES_A_DAY: i64 = 32 * 1024 * 1024;
 /// A conversation quiet this long goes (with the daily cleanup).
 pub const KEEP_FOR: i64 = 180 * 86_400;
 /// Messages a conversation shows (the newest).
@@ -126,18 +134,24 @@ impl Sent {
 }
 
 impl Coordinator {
-    /// Whether `identity` has an account on a member server: only a real player writes in.
-    pub(crate) async fn is_linked_player(&self, identity: &str) -> sqlx::Result<bool> {
-        Ok(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM links WHERE global_id = ?")
+    /// The name `identity` was last linked by on a member server, if it's linked anywhere (only
+    /// a real player writes in): what admins see for a player, not the name their launcher
+    /// says (anyone could say anyone's).
+    pub(crate) async fn linked_name(&self, identity: &str) -> sqlx::Result<Option<String>> {
+        sqlx::query_scalar("SELECT username FROM links WHERE global_id = ? ORDER BY linked_at DESC LIMIT 1")
             .bind(identity)
-            .fetch_one(&self.pool)
-            .await?
-            > 0)
+            .fetch_optional(&self.pool)
+            .await
     }
 
     /// Keeps a player's message (reopening their conversation). Answers its id, and whether
     /// its files were kept (not past the files' cap).
     pub(crate) async fn add_support_message(&self, s: &Sent, files: &[File], now: i64) -> sqlx::Result<(i64, bool)> {
+        self.add_support_message_within(s, files, now, (FILES_CAP, PLAYER_FILES_CAP)).await
+    }
+
+    /// [`Self::add_support_message`] with the caps on files in all and per player given.
+    pub(crate) async fn add_support_message_within(&self, s: &Sent, files: &[File], now: i64, (files_cap, player_cap): (i64, i64)) -> sqlx::Result<(i64, bool)> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query(
             "INSERT INTO support_threads (identity, name, server, launcher, status, updated_at) VALUES (?1, ?2, ?3, ?4, 'open', ?5)
@@ -156,9 +170,39 @@ impl Coordinator {
             .bind(s.text.trim())
             .fetch_one(&mut *tx)
             .await?;
-        let used: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(length(gzip)), 0) FROM support_files").fetch_one(&mut *tx).await?;
         let size: i64 = files.iter().map(|f| f.gzip.len() as i64).sum();
-        let keep = used + size <= FILES_CAP;
+        let theirs: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(length(f.gzip)), 0) FROM support_files f JOIN support_messages m ON m.id = f.message_id WHERE m.identity = ?")
+            .bind(&s.identity)
+            .fetch_one(&mut *tx)
+            .await?;
+        let mut keep = theirs + size <= player_cap;
+        if keep && size > 0 {
+            // Room for them: files admins are done with go first, oldest first (their text
+            // stays): a resolved conversation's, or over [`SPARE_AFTER`] old. Never recent
+            // ones still open, or whoever filled the space could push out other players' logs
+            // before the admins saw them; then this message keeps its text only.
+            loop {
+                let used: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(length(gzip)), 0) FROM support_files").fetch_one(&mut *tx).await?;
+                if used + size <= files_cap {
+                    break;
+                }
+                let spare: Option<i64> = sqlx::query_scalar(
+                    "SELECT MIN(f.message_id) FROM support_files f JOIN support_messages m ON m.id = f.message_id
+                       JOIN support_threads t ON t.identity = m.identity
+                      WHERE t.status = 'resolved' OR m.at < ?",
+                )
+                .bind(now - SPARE_AFTER)
+                .fetch_one(&mut *tx)
+                .await?;
+                let Some(spare) = spare else {
+                    tracing::warn!("support: files take {} MB here, none of them spare; message kept without its files", used >> 20);
+                    keep = false;
+                    break;
+                };
+                sqlx::query("DELETE FROM support_files WHERE message_id = ?").bind(spare).execute(&mut *tx).await?;
+                tracing::warn!("support: files take {} MB here; message {spare}'s went to make room", used >> 20);
+            }
+        }
         if keep {
             for f in files {
                 sqlx::query("INSERT INTO support_files (message_id, name, size, gzip) VALUES (?, ?, ?, ?)")
@@ -170,15 +214,35 @@ impl Coordinator {
                     .await?;
             }
         } else if !files.is_empty() {
-            tracing::warn!("support: files take {} MB here; message {id} kept without its files", used >> 20);
+            tracing::warn!(
+                "support: {}'s files take {} MB; message {id} kept without its files",
+                identity::short(&s.identity),
+                theirs >> 20
+            );
         }
         tx.commit().await?;
         Ok((id, keep))
     }
 
     /// An admin's answer: the player sees it in their launcher (and is told in the overlay).
+    /// An admin writing first (asking a player for something) opens the conversation: only
+    /// with a player the network knows (an account with that identity on a member server),
+    /// named as their newest account is.
     pub(crate) async fn answer_support(&self, identity: &str, admin: &str, text: &str, now: i64) -> sqlx::Result<Option<i64>> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let account: Option<(String, String)> = sqlx::query_as("SELECT name, server_id FROM players WHERE identity = ? ORDER BY last_seen DESC LIMIT 1")
+            .bind(identity)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if let Some((name, server)) = account {
+            sqlx::query("INSERT INTO support_threads (identity, name, server, status, updated_at) VALUES (?, ?, ?, 'waiting', ?) ON CONFLICT (identity) DO NOTHING")
+                .bind(identity)
+                .bind(name)
+                .bind(server)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
+        }
         let found = sqlx::query("UPDATE support_threads SET status = 'waiting', updated_at = ? WHERE identity = ?")
             .bind(now)
             .bind(identity)
@@ -312,10 +376,14 @@ impl Coordinator {
                 .rows_affected()
                 > 0;
         }
-        let accounts: Vec<(String, i64, String)> = sqlx::query_as("SELECT server_id, id, name FROM players WHERE identity = ? ORDER BY server_id")
-            .bind(identity)
-            .fetch_all(&self.pool)
-            .await?;
+        // Accounts whose server has the identity linked: one a server merely names isn't theirs.
+        let accounts: Vec<(String, i64, String)> = sqlx::query_as(
+            "SELECT p.server_id, p.id, p.name FROM players p JOIN links l ON l.server_id = p.server_id AND l.global_id = p.identity
+              WHERE p.identity = ? ORDER BY p.server_id",
+        )
+        .bind(identity)
+        .fetch_all(&self.pool)
+        .await?;
         let thread = json!({
             "identity": identity, "short": identity::short(identity), "name": name, "server": server, "launcher": launcher, "status": status, "updated_at": updated_at,
             "messages": messages,
@@ -344,6 +412,7 @@ impl Coordinator {
         let rows: Vec<(i64, i64)> = sqlx::query_as(&format!(
             "SELECT p.id, (SELECT COUNT(*) FROM support_messages m WHERE m.identity = t.identity AND m.admin IS NOT NULL AND m.id > t.player_read)
              FROM players p JOIN support_threads t ON t.identity = p.identity
+             JOIN links l ON l.server_id = p.server_id AND l.global_id = p.identity
              WHERE p.server_id = ? AND p.id IN ({list})"
         ))
         .bind(server)
@@ -357,6 +426,12 @@ impl Coordinator {
     }
 
     /// Deletes conversations quiet past [`KEEP_FOR`] (with the daily cleanup).
+    /// Deletes a player's conversation with its files (an admin's; they can write again).
+    pub(crate) async fn delete_support(&self, identity: &str) -> sqlx::Result<bool> {
+        let done = sqlx::query("DELETE FROM support_threads WHERE identity = ?").bind(identity).execute(&self.pool).await?;
+        Ok(done.rows_affected() > 0)
+    }
+
     pub(crate) async fn prune_support(&self) -> sqlx::Result<()> {
         sqlx::query("DELETE FROM support_threads WHERE updated_at < ?")
             .bind(identity::now() - KEEP_FOR)
@@ -383,4 +458,9 @@ impl Coordinator {
 
 /// Deletes a player's conversation (bound to their identity) once no account of theirs is
 /// left on any server.
-pub(crate) const FORGET: &str = "DELETE FROM support_threads WHERE identity = ?1 AND NOT EXISTS (SELECT 1 FROM players WHERE identity = ?1)";
+///
+/// Only when the server whose account went (`?2`) had the identity linked: any server can
+/// name any identity on an account of its own, and dropping that account mustn't take another
+/// player's conversation with it.
+pub(crate) const FORGET: &str = "DELETE FROM support_threads WHERE identity = ?1 AND NOT EXISTS (SELECT 1 FROM players WHERE identity = ?1)
+     AND EXISTS (SELECT 1 FROM links WHERE global_id = ?1 AND server_id = ?2)";

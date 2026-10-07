@@ -157,6 +157,16 @@ pub fn release_message(version: &str, sums: &str) -> String {
     format!("5th-echelon/release/v2\n{version}\n{sums}")
 }
 
+/// What the release key signs for a release's server image: its version and the `IMAGE`
+/// file published with it (`ghcr.io/<owner>/5th-echelon-server@sha256:<digest>`). A domain of
+/// its own, so an image's signature never passes for a release's, nor the other way.
+///
+/// `scripts/verify-image.sh` builds the same text with `printf '5th-echelon/image/v1\n%s\n'`
+/// followed by the file.
+pub fn image_message(version: &str, image: &str) -> String {
+    format!("5th-echelon/image/v1\n{version}\n{image}")
+}
+
 /// Whether `version` can be a release's version: digits first, then only
 /// letters, digits, `.` and `-` (no `v`, no separators), at most 32 bytes.
 pub fn valid_release_version(version: &str) -> bool {
@@ -312,6 +322,12 @@ mod tests {
             "5th-echelon/release/v2\n0.4.0\nabc  launcher.exe\n",
             "what the shell verifiers build"
         );
+        let image = "ghcr.io/x/5th-echelon-server@sha256:abc\n";
+        let image_sig = key.sign(&image_message("0.4.0", image));
+        assert!(verify(&id, &image_message("0.4.0", image), &image_sig));
+        assert!(!verify(&id, &release_message("0.4.0", image), &image_sig), "an image's signature isn't a release's");
+        assert!(!verify(&id, &image_message("0.4.0", sums), &sig), "nor a release's an image's");
+        assert_eq!(image_message("0.4.0", image), "5th-echelon/image/v1\n0.4.0\nghcr.io/x/5th-echelon-server@sha256:abc\n");
         for v in ["0.4.0", "1.0.0-rc.1", "10.20.30"] {
             assert!(valid_release_version(v), "{v}");
         }

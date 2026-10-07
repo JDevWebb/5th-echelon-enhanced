@@ -34,15 +34,40 @@ impl Release {
 
 /// The SHA-256 of `file` in a `SHA256SUMS` file (`<hex>  <name>` per line,
 /// as `sha256sum` writes it).
+///
+/// Strict: one line that isn't exactly that (a leading space, a tab, upper-case hex, a
+/// name with a path) refuses the whole file, and so does `file` listed twice. Some
+/// `sha256sum -c` skip a loose line with only a warning, so it could pass the signer's
+/// check while a looser reading here took it.
 pub fn checksum_for(sums: &str, file: &str) -> Option<[u8; 32]> {
-    sums.lines().find_map(|line| {
-        let (hex, name) = line.trim().split_once(char::is_whitespace)?;
-        if name.trim().trim_start_matches('*') != file {
-            return None;
+    let mut found = None;
+    // Not `lines()`, which takes "\r\n" for a line ending too.
+    for line in sums.strip_suffix('\n').unwrap_or(sums).split('\n') {
+        let (hash, name) = sums_line(line)?;
+        if name == file {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(hash);
         }
-        let bytes: Vec<u8> = (0..hex.len()).step_by(2).map(|i| u8::from_str_radix(hex.get(i..i + 2)?, 16).ok()).collect::<Option<_>>()?;
-        bytes.try_into().ok()
-    })
+    }
+    found
+}
+
+/// One `SHA256SUMS` line: 64 lower-case hex digits, two spaces (or a space and `*`, binary
+/// mode), and a file name of letters, digits, `.`, `_` and `-`.
+fn sums_line(line: &str) -> Option<([u8; 32], &str)> {
+    let (hex, rest) = line.split_at_checked(64)?;
+    let name = rest.strip_prefix("  ").or_else(|| rest.strip_prefix(" *"))?;
+    let name_ok = !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b".-_".contains(&b));
+    if !name_ok || !hex.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return None;
+    }
+    let mut hash = [0; 32];
+    for (i, byte) in hash.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).ok()?;
+    }
+    Some((hash, name))
 }
 
 #[cfg(test)]
@@ -69,5 +94,26 @@ mod tests {
         assert_eq!(checksum_for(sums, "uplay_r1_loader.dll").unwrap()[31], 1);
         assert_eq!(checksum_for(sums, "dedicated_server.exe"), None);
         assert_eq!(checksum_for("zz  launcher.exe", "launcher.exe"), None);
+    }
+
+    /// Lines some `sha256sum -c` skip with a warning refuse the whole file here, and so does
+    /// a file listed twice (the first line used to win).
+    #[test]
+    fn loose_checksum_lines_refuse_the_file() {
+        let good = "ab00000000000000000000000000000000000000000000000000000000000002  launcher.exe\n";
+        let evil = "cd00000000000000000000000000000000000000000000000000000000000003";
+        assert!(checksum_for(good, "launcher.exe").is_some());
+        for loose in [
+            format!(" {evil}  launcher.exe\n{good}"),
+            format!("{evil}\tlauncher.exe\n{good}"),
+            format!("{}  launcher.exe\n{good}", evil.to_uppercase()),
+            format!("{evil}  launcher.exe\n{good}"),
+            format!("{evil}  ../launcher.exe\n{good}"),
+            format!("{good}{evil}  launcher.exe \n"),
+            format!("{good}\n"),
+            good.replace('\n', "\r\n"),
+        ] {
+            assert_eq!(checksum_for(&loose, "launcher.exe"), None, "{loose:?}");
+        }
     }
 }

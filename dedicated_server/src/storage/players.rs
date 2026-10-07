@@ -183,9 +183,20 @@ impl Storage {
     }
 
     /// Queues `user_id`'s report for the coordinator, and notes they sent one (not for the
-    /// game's log the server asked for, `counted` false: that's limited apart).
-    pub async fn queue_report(&self, user_id: u32, id: &str, body: &str, counted: bool) -> Result<()> {
+    /// game's log the server asked for, `counted` false: that's limited apart). Answers false,
+    /// queuing nothing, when they've sent `per_day` today (if counted) or the outbox would pass
+    /// `max_outbox` bytes: checked in the same transaction as the insert, so reports sent at
+    /// once can't all pass the check before any is counted.
+    pub async fn queue_report(&self, user_id: u32, id: &str, body: &str, counted: bool, per_day: i64, max_outbox: i64) -> Result<bool> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let today: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM report_log WHERE user_id = ? AND at > {NOW} - 86400"))
+            .bind(user_id)
+            .fetch_one(&mut *tx)
+            .await?;
+        let waiting: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(length(body)), 0) FROM report_outbox").fetch_one(&mut *tx).await?;
+        if (counted && today >= per_day) || waiting + body.len() as i64 > max_outbox {
+            return Ok(false);
+        }
         sqlx::query(&format!("INSERT INTO report_outbox (id, body, created_at) VALUES (?, ?, {NOW})"))
             .bind(id)
             .bind(body)
@@ -199,7 +210,7 @@ impl Storage {
         }
         sqlx::query(&format!("DELETE FROM report_log WHERE at < {NOW} - 86400")).execute(&mut *tx).await?;
         tx.commit().await?;
-        Ok(())
+        Ok(true)
     }
 
     /// The oldest report waiting for the coordinator; ones waiting over a week are dropped.
@@ -434,6 +445,34 @@ mod tests {
     fn player(storage: &crate::storage::Storage, name: &str) -> u32 {
         storage.register_user(name, "pw", Some(&format!("{name}-UBI"))).unwrap();
         storage.find_user_id_by_name(name).unwrap().unwrap()
+    }
+
+    /// A player's reports a day, and the outbox's size, hold when many are sent at once:
+    /// checked with the insert, not before it.
+    #[test]
+    fn reports_sent_at_once_keep_to_the_limits() {
+        let (storage, dir) = temp_storage("report-limits");
+        let a = player(&storage, "Racer");
+        let queued = std::thread::scope(|scope| {
+            let sends: Vec<_> = (0..20)
+                .map(|i| {
+                    let storage = &storage;
+                    scope.spawn(move || crate::storage::run(storage.queue_report(a, &format!("{i:032x}"), "{}", true, 5, 1 << 20)).unwrap().unwrap())
+                })
+                .collect();
+            sends.into_iter().map(|s| s.join().unwrap()).filter(|queued| *queued).count()
+        });
+        assert_eq!(queued, 5);
+        // The game's own logs don't count a day, but the outbox's size holds them too.
+        let big = "x".repeat(600 * 1024);
+        assert!(crate::storage::run(storage.queue_report(a, &format!("{:032x}", 100), &big, false, 5, 1 << 20))
+            .unwrap()
+            .unwrap());
+        assert!(!crate::storage::run(storage.queue_report(a, &format!("{:032x}", 101), &big, false, 5, 1 << 20))
+            .unwrap()
+            .unwrap());
+        drop(storage);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

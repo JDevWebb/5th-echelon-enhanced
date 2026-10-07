@@ -371,7 +371,7 @@ if [ "$command" = status ]; then
     cinfo="$(curl -fsS --max-time 3 "http://$COORD_ADDR:8700/v1/info" 2>/dev/null | head -c 300 | printable || true)"
     echo "Coordinator:   https://$(cat "$ETC_DIR/coordinator-domain") ${cinfo:+($cinfo)}"
     listed_now="$(curl -fsS --max-time 3 "http://$COORD_ADDR:8700/v1/servers" 2>/dev/null | grep -o '"id":' | wc -l || true)"
-    echo "Directory:     ${listed_now:-0} server(s) seen in the last 2 minutes"
+    echo "Directory:     ${listed_now:-0} server(s) listed (seen in the last 2 minutes, at an address that answered as them)"
   fi
   if [ -s "$STANDBY_CONF" ]; then
     echo
@@ -794,7 +794,9 @@ trap 'rm -rf "$work"' EXIT
 verify_release() {
   local base="$1" release="$2"
   if ! "${CURL[@]}" -fsSL --retry 3 "${SMALL[@]}" -o "$work/SHA256SUMS.sig" "$base/SHA256SUMS.sig" 2>/dev/null; then
-    [ "$allow_unsigned" -eq 1 ] || die "this release isn't signed (no SHA256SUMS.sig). --allow-unsigned installs it anyway, checked by its checksum only"
+    # Not a nudge to --allow-unsigned: a release missing its signature is just what someone
+    # who changed it on GitHub would leave.
+    [ "$allow_unsigned" -eq 1 ] || die "this release isn't signed (no SHA256SUMS.sig): releases are, so don't install it unless you know why this one isn't"
     warn "the release isn't signed; installing it on its checksum alone (--allow-unsigned)"
     return 0
   fi
@@ -1118,7 +1120,9 @@ if [ -n "$coord_domain" ]; then
   echo "$coord_domain" > "$ETC_DIR/coordinator-domain"
   if [ -n "$metrics_domain" ]; then echo "$metrics_domain" > "$ETC_DIR/metrics-domain"; else rm -f "$ETC_DIR/metrics-domain"; fi
   if [ "$origin_pull" -eq 1 ]; then touch "$ETC_DIR/metrics-origin-pull"; else rm -f "$ETC_DIR/metrics-origin-pull"; fi
-  coord_args="--listen $COORD_ADDR:8700 --data $COORD_DIR"
+  # Players sign their support messages and reads for the coordinator's name: one made for
+  # another coordinator mustn't count here.
+  coord_args="--listen $COORD_ADDR:8700 --data $COORD_DIR --name $coord_domain"
   # The admin UI on its own port, for Caddy to serve at the metrics name.
   if [ -n "$metrics_domain" ]; then coord_args="$coord_args --admin-listen $COORD_ADDR:8701 --admin-origin https://$metrics_domain"; fi
   # The roadmap and players' suggestions: every launcher reads the community network's, so
@@ -2103,11 +2107,43 @@ case "${1:-status}" in
     ;;
   files)
     runs coordinator || exit 0
-    for f in join-token.txt; do
-      [ -f "$COORD_DIR/$f" ] && "${RCLONE[@]}" copyto "$COORD_DIR/$f" "R2:$BACKUP_R2_BUCKET/live/$BACKUP_NAME/coordinator-files/$f"
-    done
-    if [ -d "$COORD_DIR/reports" ]; then
-      "${RCLONE[@]}" sync "$COORD_DIR/reports" "R2:$BACKUP_R2_BUCKET/live/$BACKUP_NAME/coordinator-files/reports"
+    # Never through a symbolic link: the coordinator's user owns its folder, and this runs as
+    # root, so a link there (reports -> /etc/5th-echelon) would copy root's files (the backup
+    # and DNS keys) to R2, and a failover restore would hand them to that user. A check
+    # before the copy can't close that (the link can be made between the two), so the files
+    # go through a copy only root can touch first: GNU tar opens every file and folder
+    # without following links (a link is copied as a link, which rclone then skips), and
+    # copies only what changed since the last hour (its snapshot), deleting what went.
+    mirror="$BACKUP_STATE/coordinator-files"
+    snapshot="$BACKUP_STATE/coordinator-files.snar"
+    if [ ! -d "$mirror" ] || [ -L "$mirror" ]; then rm -rf "$mirror" "$snapshot"; fi
+    install -d -m 700 "$mirror"
+    take=()
+    for f in join-token.txt reports; do if [ -e "$COORD_DIR/$f" ] || [ -L "$COORD_DIR/$f" ]; then take+=("$f"); fi; done
+    # 1 is a file that changed while it was read: the next hour's copy has it whole. Worse
+    # (a folder there became a link, which can't replace the folder in the copy): once more,
+    # into a new copy.
+    copy() {
+      local rc=0
+      tar -C "$COORD_DIR" --listed-incremental="$snapshot" -cf - "${take[@]}" 2>"$mirror.err" \
+        | tar -C "$mirror" --listed-incremental=/dev/null --no-same-owner -xf - 2>>"$mirror.err" || rc=$?
+      [ "$rc" -le 1 ]
+    }
+    if [ "${#take[@]}" -gt 0 ] && ! copy; then
+      rm -rf "$mirror" "$snapshot"
+      install -d -m 700 "$mirror"
+      if ! copy; then cat "$mirror.err" >&2; rm -rf "$mirror" "$snapshot"; die "couldn't copy the coordinator's files"; fi
+    fi
+    rm -f "$mirror.err"
+    if [ -L "$mirror/join-token.txt" ]; then
+      echo "warning: $COORD_DIR/join-token.txt is a link; not backed up" >&2
+    elif [ -f "$mirror/join-token.txt" ]; then
+      "${RCLONE[@]}" copyto "$mirror/join-token.txt" "R2:$BACKUP_R2_BUCKET/live/$BACKUP_NAME/coordinator-files/join-token.txt"
+    fi
+    if [ -L "$mirror/reports" ]; then
+      echo "warning: $COORD_DIR/reports is a link; not backed up" >&2
+    elif [ -d "$mirror/reports" ]; then
+      "${RCLONE[@]}" sync "$mirror/reports" "R2:$BACKUP_R2_BUCKET/live/$BACKUP_NAME/coordinator-files/reports"
     fi
     date -u +%FT%TZ > "$BACKUP_STATE/last-files"
     ;;
@@ -2158,6 +2194,9 @@ case "${1:-status}" in
     owner="$(stat -c %U "$(dirname "$db")")" group="$(stat -c %G "$(dirname "$db")")"
     install -m 600 -o "$owner" -g "$group" "$work/restored.db" "$db"
     if [ "$with_files" -eq 1 ]; then
+      # Whatever is there goes first: root writing through a link the coordinator's user left
+      # would write where it points.
+      rm -f -- "$COORD_DIR/join-token.txt"
       install -m 600 -o "$owner" -g "$group" "$work/files/join-token.txt" "$COORD_DIR/join-token.txt"
       if [ -d "$work/files/reports" ]; then
         rm -rf "$COORD_DIR/reports.restoring"
@@ -2493,6 +2532,11 @@ harden_caddy() {
   caddy_home="${caddy_home:-/var/lib/caddy}"
   want="$(cat <<UNIT
 # Written by install-server.sh: Caddy in a sandbox.
+[Unit]
+# However often it crashes: systemd otherwise gives up after 5 starts in 10 s, and one
+# connection crashed Caddy 2.11.6 (the streams of an HTTP/2 upload reset under it), so someone
+# repeating that would keep it down.
+StartLimitIntervalSec=0
 [Service]
 # Started again if it stops on its own (a crash took the sites down once).
 Restart=on-failure
@@ -2594,6 +2638,11 @@ if [ "$no_caddy" -eq 0 ]; then
   case "$caddy_version" in
     v2.[0-5].*) die "Caddy $caddy_version is too old (2.6 or newer speaks the launcher's gRPC); update it and run this again" ;;
   esac
+  # Older ones crash on one connection's HTTP/2 uploads cut short (2.11.6 did; 2.11.7 held).
+  have="${caddy_version#v}"
+  if [[ "$have" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$have" != "$CADDY_VERSION" ] && [ "$(printf '%s\n%s\n' "$have" "$CADDY_VERSION" | sort -V | head -1)" = "$have" ]; then
+    warn "Caddy $caddy_version is older than $CADDY_VERSION: one connection can crash it (it's started again, but the sites drop meanwhile). Update it (apt upgrade caddy) and run this again"
+  fi
   install -d -m 755 /etc/caddy
   if [ -n "$metrics_cert" ]; then
     openssl x509 -noout -in "$metrics_cert" 2>/dev/null || die "$metrics_cert isn't a certificate (PEM)"

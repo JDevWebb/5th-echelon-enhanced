@@ -149,6 +149,13 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
                 continue;
             }
             info!(logger, "Sending probe to {url} ({addr})\n{payload:x?}");
+            // The two games are about to send to each other: through the relay, too.
+            if let (Ok(Some(me)), Some(Ok(Some(them)))) = (
+                self.storage.find_username_by_user_id(user_id),
+                target.user_id.map(|id| self.storage.find_username_by_user_id(id)),
+            ) {
+                crate::nat_helper::introduce(&me, &them);
+            }
 
             // Create a QPacket for sending the probe.
             let qpacket = QPacket {

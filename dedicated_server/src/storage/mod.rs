@@ -39,10 +39,6 @@ pub use stats::StoredStats;
 
 type Result<T> = eyre::Result<T>;
 
-/// An Argon2 hash of nothing in particular, checked against for unknown
-/// users so their logins take as long as real ones.
-const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$ak/934K3+OsQ71Dogbr+Iw$Fy3aLbg2bQFXrnucys2gsBqiy2Jgv9QMBWWiPzS7VTk";
-
 /// Invitations one player can have waiting at once (one per sender).
 const MAX_PENDING_INVITES: i64 = 5;
 
@@ -82,13 +78,16 @@ async fn hashing<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> R
     hashing_or_busy(true, f).await
 }
 
-/// [`hashing`], or with `wait` false, [`Busy`] at once when no turn is free: for the game's
-/// own sign-in, which holds its service's only thread while it waits.
+/// [`hashing`], or with `wait` false the game's own sign-in, which holds its service's only
+/// thread: it has a turn of its own, so API sign-ins taking every other turn (anyone can
+/// send them, from many addresses) can't make the game's fail. That service checks one
+/// password at a time, so its turn is free whenever it asks; [`Busy`] if it ever isn't.
 async fn hashing_or_busy<T: Send + 'static>(wait: bool, f: impl FnOnce() -> T + Send + 'static) -> Result<T> {
     static LIMIT: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    static GAME: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
     static WAITING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let limit = LIMIT.get_or_init(|| tokio::sync::Semaphore::new(std::thread::available_parallelism().map_or(2, |n| n.get()).clamp(2, 4)));
-    let _permit = match limit.try_acquire() {
+    let _permit = match if wait { limit.try_acquire() } else { GAME.try_acquire() } {
         Ok(permit) => permit,
         Err(_) if !wait => return Err(Busy.into()),
         Err(_) => {
@@ -277,12 +276,10 @@ impl Storage {
             .await?
         else {
             warn!(self.logger, "User {:?} not found", username.chars().take(32).collect::<String>());
-            // As long as a real check, so the time taken doesn't tell which names exist.
-            let password = password.to_owned();
-            let _ = hashing_or_busy(wait, move || {
-                Argon2::default().verify_password(password.as_bytes(), &PasswordHash::new(DUMMY_HASH).expect("valid dummy hash"))
-            })
-            .await?;
+            // No password check for a name that doesn't exist: the answer says so anyway
+            // ("Unknown user"), and anyone can look names up, so a check as long as a real one
+            // hid nothing, and sign-ins for made-up names took every turn (a stranger from a
+            // few hundred addresses kept every game from signing in).
             return Ok(Err(LoginError::NotFound));
         };
 
@@ -715,12 +712,12 @@ impl Storage {
         }
         // A guest made a participant is one, listed once.
         let added: Vec<u32> = private_participants.iter().chain(&public_participants).copied().collect();
-        let mut builder = sqlx::QueryBuilder::new("INSERT OR REPLACE INTO participants (game_id, user_id) ");
+        let mut builder = sqlx::QueryBuilder::new("INSERT OR REPLACE INTO participants (game_id, user_id, joined_after) ");
 
         builder.push_values(
             private_participants.into_iter().chain(public_participants).map(|user_id| (session_id, user_id)),
             |mut b, (session_id, user_id)| {
-                b.push_bind(session_id).push_bind(user_id);
+                b.push_bind(session_id).push_bind(user_id).push("(SELECT COALESCE(MAX(id), 0) FROM game_sessions)");
             },
         );
         let query = builder.build();
@@ -1301,6 +1298,32 @@ impl Storage {
         Ok(n > 0)
     }
 
+    /// Whether the relay may carry `sender`'s game traffic to `receiver` (names, any case):
+    /// they're in a live session together, `receiver` hosts one anyone may join (matchmaking
+    /// reaches the host before its join does), or one invited the other (unanswered).
+    pub fn may_relay(&self, sender: &str, receiver: &str) -> Result<bool> {
+        let ids: Vec<(u32, String)> = run(sqlx::query_as("SELECT id, name_key FROM users WHERE name_key IN (?, ?)")
+            .bind(sender.to_lowercase())
+            .bind(receiver.to_lowercase())
+            .fetch_all(&self.pool))??;
+        let id = |name: &str| ids.iter().find(|(_, k)| *k == name.to_lowercase()).map(|(id, _)| *id);
+        let (Some(a), Some(b)) = (id(sender), id(receiver)) else {
+            return Ok(false);
+        };
+        if self.share_session(a, b)? || self.hosts_public_session(b)? {
+            return Ok(true);
+        }
+        let n: i64 = run(sqlx::query_scalar(
+            "SELECT (SELECT COUNT(*) FROM invites WHERE ((sender = ?1 AND receiver = ?2) OR (sender = ?2 AND receiver = ?1))
+                       AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP)
+                  + (SELECT COUNT(*) FROM game_session_invites WHERE (sender = ?1 AND receiver = ?2) OR (sender = ?2 AND receiver = ?1))",
+        )
+        .bind(a)
+        .bind(b)
+        .fetch_one(&self.pool))??;
+        Ok(n > 0)
+    }
+
     /// Whether `host` hosts a session anyone may join: one public matchmaking finds
     /// ([`Self::search_sessions`]), not an invite-only or private one.
     pub fn hosts_public_session(&self, host: u32) -> Result<bool> {
@@ -1325,6 +1348,22 @@ impl Storage {
         .bind(host)
         .bind(host)
         .bind(member)
+        .fetch_all(&self.pool))??;
+        Ok(rows.into_iter().map(Option::unwrap_or_default).collect())
+    }
+
+    /// [`Self::rooms_of_host_with`], counting only rooms `member` joined before session
+    /// `before` was made (or, joined before that was recorded, any).
+    pub fn rooms_of_host_with_before(&self, host: u32, member: u32, before: u32) -> Result<Vec<String>> {
+        let rows: Vec<Option<String>> = run(sqlx::query_scalar(
+            "SELECT g.attributes FROM game_sessions g JOIN participants m ON m.game_id = g.id AND m.user_id = ?2
+              WHERE g.destroyed_at IS NULL AND g.creator_id = ?1
+                AND EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?1)
+                AND (m.joined_after IS NULL OR m.joined_after < ?3)",
+        )
+        .bind(host)
+        .bind(member)
+        .bind(before)
         .fetch_all(&self.pool))??;
         Ok(rows.into_iter().map(Option::unwrap_or_default).collect())
     }
@@ -1774,6 +1813,36 @@ pub(crate) mod tests {
         storage.add_guest(private, asked, true).unwrap();
         storage.delete_user_session(asked).unwrap();
         assert!(!storage.share_session(asked, host).unwrap());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn the_relay_carries_only_players_the_server_put_together() {
+        let (storage, dir) = temp_storage("relay_pairs");
+        for name in ["Host", "Guest", "Stranger", "Friend"] {
+            storage.register_user(name, "pw", Some(name)).unwrap();
+        }
+        let id = |n: &str| storage.find_user_id_by_name(n).unwrap().unwrap();
+        let (host, guest, friend) = (id("Host"), id("Guest"), id("Friend"));
+        assert!(!storage.may_relay("guest", "host").unwrap(), "no room yet");
+        // A private room: its host is reached only by who's in it, or invited.
+        let private = storage.create_game_session(host, 1, "113 => 0;3 => 0;4 => 2".into()).unwrap();
+        storage.add_participants(1, private, vec![], vec![host]).unwrap();
+        assert!(!storage.may_relay("Guest", "Host").unwrap(), "a private room isn't for strangers");
+        storage.add_game_session_invites(1, private, host, &[friend], "").unwrap();
+        assert!(storage.may_relay("friend", "HOST").unwrap(), "invited");
+        assert!(storage.may_relay("host", "friend").unwrap(), "and the other way");
+        assert!(!storage.may_relay("Stranger", "Friend").unwrap());
+        // A public match: anyone may reach its host (matchmaking does before the join), and
+        // the host its guests once they're in.
+        let public = storage.create_game_session(host, 1, "113 => 0".into()).unwrap();
+        storage.add_participants(1, public, vec![], vec![host]).unwrap();
+        assert!(storage.may_relay("Stranger", "Host").unwrap());
+        assert!(!storage.may_relay("Host", "Stranger").unwrap(), "not the other way: they may not have joined");
+        assert!(storage.add_guest(public, guest, false).unwrap());
+        assert!(storage.may_relay("Host", "Guest").unwrap());
+        assert!(!storage.may_relay("Stranger", "Guest").unwrap(), "a guest isn't a host");
+        assert!(!storage.may_relay("Nobody", "Host").unwrap(), "no such player");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

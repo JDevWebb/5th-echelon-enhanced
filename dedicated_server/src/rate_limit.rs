@@ -148,7 +148,39 @@ pub const TLS_REQUIRED: &str = "This server takes passwords and sign-ins over HT
 /// first failure is recorded; false when the address is over either of its
 /// limits, or the account is closed to this address (see [`AccountLimit`]).
 pub fn begin_login(peer: Option<IpAddr>, name: &str) -> bool {
-    !accounts().blocked(name, peer) && attempts().check(peer) && logins().check(peer)
+    begin_login_vouched(peer, name, false)
+}
+
+/// [`begin_login`], for an address `vouched` for as the account's (its player's launcher
+/// signed in from there): it isn't held up by failures from elsewhere, which anyone could
+/// cause with a few addresses, only by its own.
+pub fn begin_login_vouched(peer: Option<IpAddr>, name: &str, vouched: bool) -> bool {
+    let blocked = if vouched { accounts().blocked_here(name, peer) } else { accounts().blocked(name, peer) };
+    !blocked && attempts().check(peer) && logins().check(peer)
+}
+
+/// Sign-ins with an identity key (a signature, which can't be guessed): their failures are
+/// counted apart from passwords', so anyone's password guesses for a name don't lock its
+/// owner's key out (a prefix on the name didn't keep them apart: a password sign-in can
+/// name anything).
+pub fn begin_key_login(peer: Option<IpAddr>, name: &str) -> bool {
+    !key_accounts().blocked(name, peer) && attempts().check(peer) && logins().check(peer)
+}
+
+/// A key sign-in worked (see [`begin_key_login`]).
+pub fn key_login_succeeded(peer: Option<IpAddr>, name: &str) {
+    logins().refund(peer);
+    key_accounts().succeeded(name, peer);
+}
+
+/// A key sign-in failed (see [`begin_key_login`]).
+pub fn key_login_failed(peer: Option<IpAddr>, name: &str) {
+    key_accounts().record(name, peer);
+}
+
+fn key_accounts() -> &'static AccountLimit {
+    static LIMIT: std::sync::OnceLock<AccountLimit> = std::sync::OnceLock::new();
+    LIMIT.get_or_init(AccountLimit::new)
 }
 
 /// The sign-in worked: it isn't a failure after all (it still counts as an
@@ -380,6 +412,20 @@ impl AccountLimit {
             .known
             .get(&key)
             .is_some_and(|known| known.iter().any(|(ip, t)| *ip == addr && now.duration_since(*t) < Self::KNOWN_FOR))
+    }
+
+    /// Whether `peer` may not try `name` now for its own failures (not counting those from
+    /// anywhere else).
+    pub fn blocked_here(&self, name: &str, peer: Option<IpAddr>) -> bool {
+        if peer.is_some_and(|p| p.is_loopback()) {
+            return false;
+        }
+        let now = Instant::now();
+        let mut seen = self.seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        seen.failures.get_mut(&(Self::key(name), bucket(peer))).is_some_and(|times| {
+            Self::trim(times, now);
+            times.len() >= Self::MAX
+        })
     }
 
     /// Counts a failed sign-in for `name` from `peer`.
@@ -614,6 +660,23 @@ mod tests {
         let v6 = Some("2001:db8:1:2::1".parse().unwrap());
         limit.succeeded_at("Kiwi", v6, t0);
         assert!(!limit.blocked_at("Kiwi", Some("2001:db8:1:2::9".parse().unwrap()), t0));
+    }
+
+    /// An address vouched for (the player's launcher signed in there) is held up only by its
+    /// own failures, not by guesses from everywhere else.
+    #[test]
+    fn a_vouched_address_counts_only_its_own_failures() {
+        let limit = AccountLimit::new();
+        let player = Some(IpAddr::from([203, 0, 113, 7]));
+        for i in 0..AccountLimit::MAX_ANYWHERE {
+            limit.record("Moa", Some(IpAddr::from([198, 51, 100, i as u8])));
+        }
+        assert!(limit.blocked("Moa", player), "a new address waits");
+        assert!(!limit.blocked_here("Moa", player), "unless vouched for");
+        for _ in 0..AccountLimit::MAX {
+            limit.record("Moa", player);
+        }
+        assert!(limit.blocked_here("Moa", player), "its own failures still count");
     }
 
     #[test]

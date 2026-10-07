@@ -224,7 +224,32 @@ pub async fn run(server: IpAddr, o: Options) -> Result<()> {
     }
     let pids: Arc<Vec<u32>> = Arc::new(bots.iter().map(|b| b.pid).collect());
 
-    // --- Matches: game sockets, probed like the hook does.
+    // --- Matches: a room per match, its players in it (the relay carries traffic only
+    // between players the server put together), and game sockets, probed like the hook does.
+    let mut unjoined = 0usize;
+    for group in bots.chunks_mut(o.match_size) {
+        let Some((host, guests)) = group.split_first_mut() else { continue };
+        let room = match host.create_session(LOBBY).await {
+            Ok(room) => room,
+            Err(_) => {
+                unjoined += 1 + guests.len();
+                continue;
+            }
+        };
+        let pid = host.pid;
+        if host.add_participants(room, &[pid], &[]).await.is_err() {
+            unjoined += 1;
+        }
+        for guest in guests {
+            let pid = guest.pid;
+            if guest.add_participants(room, &[pid], &[]).await.is_err() {
+                unjoined += 1;
+            }
+        }
+    }
+    if unjoined > 0 {
+        println!("matches: {unjoined} players couldn't join their match's room (their relayed traffic is dropped)");
+    }
     let epoch = Instant::now();
     let mut peers = Vec::new();
     for bot in &bots {

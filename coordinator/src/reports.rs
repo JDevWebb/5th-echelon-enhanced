@@ -764,11 +764,32 @@ fn problem_label(p: &str) -> &str {
 /// nobody), at most `max` characters.
 pub(crate) fn chat_safe(text: &str, max: usize) -> String {
     let one_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut out: String = one_line.chars().take(max).collect::<String>().replace('@', "@\u{200b}").replace('`', "'");
+    // No mentions, code or Markdown from players: a "[sign in again](https://…)" in a message
+    // was a clickable link in the admins' channel, under any text. Links not linked either.
+    let mut out = String::new();
+    for c in one_line.chars().take(max) {
+        match c {
+            '`' => out.push('\''),
+            '@' => out.push_str("@\u{200b}"),
+            '[' | ']' | '(' | ')' | '*' | '_' | '~' | '|' | '>' | '<' | '#' | '\\' => {
+                out.push('\\');
+                out.push(c);
+            }
+            _ => out.push(c),
+        }
+    }
+    let mut out = out.replace("://", ":\u{200b}//");
     if one_line.chars().count() > max {
         out.push('…');
     }
     out
+}
+
+#[cfg(test)]
+#[test]
+fn players_text_is_neither_markdown_nor_a_link_in_chat() {
+    let said = chat_safe("[sign in again](https://evil.example/login) @everyone `x`", 200);
+    assert_eq!(said, "\\[sign in again\\]\\(https:\u{200b}//evil.example/login\\) @\u{200b}everyone 'x'");
 }
 
 fn what(a: &Alerted) -> String {

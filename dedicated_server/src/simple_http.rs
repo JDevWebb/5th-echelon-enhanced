@@ -196,7 +196,7 @@ where
     H: Fn(&Request) -> Response + Send + Sync + 'static,
 {
     let handler = Arc::new(handler);
-    let open = Arc::new(Open::default());
+    let open = Arc::new(Open::new(MAX_OPEN, MAX_OPEN_PER_IP));
     loop {
         let stream = match listener.accept() {
             Ok((stream, _addr)) => stream,
@@ -233,29 +233,42 @@ where
     }
 }
 
-/// Connections open now, in all and per address.
-#[derive(Default)]
-struct Open {
+/// Connections open now, in all and per address (also the API's, api.rs).
+pub(crate) struct Open {
     all: std::sync::Mutex<(usize, std::collections::HashMap<std::net::IpAddr, usize>)>,
+    max: usize,
+    max_per_ip: usize,
 }
 
-/// Most connections at once, and from one address.
-const MAX_OPEN: usize = 256;
+/// Most connections at once, and from one address. (256 in all were held by 17 addresses
+/// sending nothing, and the game's config went unanswered.)
+const MAX_OPEN: usize = 1024;
 const MAX_OPEN_PER_IP: usize = 16;
 /// How long one request's line and headers may take in all (each read has
-/// its own timeout too).
+/// its own timeout too), and the request line alone: a client that holds a
+/// connection open without asking gives its place back soon.
 const REQUEST_DEADLINE: Duration = Duration::from_secs(10);
+const REQUEST_LINE_DEADLINE: Duration = Duration::from_secs(3);
 
 impl Open {
+    /// At most `max` connections at once, and `max_per_ip` from one address.
+    pub(crate) fn new(max: usize, max_per_ip: usize) -> Self {
+        Self {
+            all: std::sync::Mutex::default(),
+            max,
+            max_per_ip,
+        }
+    }
+
     /// A place for a connection from `ip` (per address; IPv6 by /64), and
-    /// with `total` one of the [`MAX_OPEN`] (a proxied client's second
-    /// place, in its own name, doesn't count there again).
-    fn take(self: &Arc<Self>, ip: Option<std::net::IpAddr>, total: bool) -> Option<Slot> {
+    /// with `total` one of the `max` (a proxied client's second place, in its
+    /// own name, doesn't count there again).
+    pub(crate) fn take(self: &Arc<Self>, ip: Option<std::net::IpAddr>, total: bool) -> Option<Slot> {
         let ip = ip.map(crate::rate_limit::bucket_of);
         let mut guard = self.all.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let (open, per_ip) = &mut *guard;
         let mine = ip.map_or(0, |ip| per_ip.get(&ip).copied().unwrap_or(0));
-        if (total && *open >= MAX_OPEN) || mine >= MAX_OPEN_PER_IP {
+        if (total && *open >= self.max) || mine >= self.max_per_ip {
             return None;
         }
         if total {
@@ -273,7 +286,7 @@ impl Open {
 }
 
 /// One connection's place, given back when it ends.
-struct Slot {
+pub(crate) struct Slot {
     open: Arc<Open>,
     ip: Option<std::net::IpAddr>,
     total: bool,
@@ -340,12 +353,14 @@ fn handle(
 ) -> std::io::Result<()> {
     stream.set_read_timeout(Some(IO_TIMEOUT))?;
     stream.set_write_timeout(Some(IO_TIMEOUT))?;
+    let started = std::time::Instant::now();
     let mut rdr = std::io::BufReader::new(Deadline {
         inner: &stream,
-        until: std::time::Instant::now() + REQUEST_DEADLINE,
+        until: started + REQUEST_LINE_DEADLINE,
     });
     let mut line = String::new();
     (&mut rdr).take(MAX_REQUEST_LINE).read_line(&mut line)?;
+    rdr.get_mut().until = started + REQUEST_DEADLINE;
     debug!(logger, "Request: {}", line);
     let mut req = Request::parse_line(&line);
     req.peer = stream.peer_addr().ok().map(|a| a.ip());

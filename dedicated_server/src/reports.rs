@@ -239,7 +239,10 @@ pub async fn accept(storage: &Storage, user: u32, peer: Option<std::net::IpAddr>
         Ok(b) => b,
         Err(refused) => return Ok(Err(refused)),
     };
-    storage.queue_report(user, &id, &body.to_string(), !auto).await?;
+    // Checked again with the insert: the check above is only a quick refusal.
+    if !storage.queue_report(user, &id, &body.to_string(), !auto, PER_DAY, MAX_OUTBOX).await? {
+        return Ok(Err(Refused::TooMany));
+    }
     Ok(Ok(id))
 }
 

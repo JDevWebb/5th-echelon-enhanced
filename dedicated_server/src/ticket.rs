@@ -223,7 +223,15 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
         }
         info!(logger, "LoginEx attempt by {:?} ({:?})", ubi_username, username);
         let peer = Some(ci.address().ip());
-        if !crate::rate_limit::begin_login(peer, ubi_username) {
+        // The game signs in where its launcher just did (over TLS): that address is the
+        // player's, and others' failures for the name don't hold it up.
+        let vouched = self
+            .storage
+            .find_user_id_by_name(ubi_username)
+            .ok()
+            .flatten()
+            .is_some_and(|id| crate::clients::address_proven(id, ci.address().ip()));
+        if !crate::rate_limit::begin_login_vouched(peer, ubi_username, vouched) {
             if crate::clients::worth_saying(&format!("too-many/{ubi_username}")) {
                 warn!(
                     logger,

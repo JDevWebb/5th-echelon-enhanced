@@ -110,6 +110,11 @@ pub struct ClientInfo<T = ()> {
     /// This connection's CONNECT (its ticket and challenge): a CONNECT that's the same is
     /// a resend, one that isn't comes from another game.
     pub(crate) connect_request: Option<Vec<u8>>,
+    /// When the connection was made: one that never signs in only lasts so long.
+    pub connected: std::time::Instant,
+    /// Whether it's counted among its address's connections that haven't signed in (the
+    /// registry's count, settled when it signs in or goes).
+    pub(crate) counted_anonymous: bool,
 }
 
 /// A reliable packet waiting for the client's acknowledgement.
@@ -148,6 +153,8 @@ impl<T> ClientInfo<T> {
             unacked: std::collections::BTreeMap::new(),
             connect_answer: None,
             connect_request: None,
+            connected: std::time::Instant::now(),
+            counted_anonymous: false,
         }
     }
 

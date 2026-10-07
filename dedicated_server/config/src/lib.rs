@@ -290,6 +290,11 @@ pub struct NatConfig {
     /// The most one player may send through the relay, in KB/s.
     #[serde(default = "default_relay_kbps")]
     pub relay_kbps_per_player: u32,
+    /// Relay only between players the server put together (a session or match they share,
+    /// one the receiver hosts publicly, an invitation, a probe it asked for). Off relays
+    /// between any registered players, as before 0.4.3.
+    #[serde(default = "default_true")]
+    pub relay_pairs: bool,
     /// The address players reach this server on; set with --public-address.
     /// Without it, the secure service's address is used.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -320,6 +325,7 @@ impl Default for NatConfig {
             relay: RelayMode::default(),
             relay_ports: default_relay_ports(),
             relay_kbps_per_player: default_relay_kbps(),
+            relay_pairs: true,
             public_address: None,
         }
     }

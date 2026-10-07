@@ -48,6 +48,7 @@ listen = "0.0.0.0:21128"
 relay = "auto"               # "auto", "all" or "off"
 relay_ports = [40000, 40999]
 relay_kbps_per_player = 2048
+relay_pairs = true
 # public_address = "203.0.113.10"   (written by --public-address)
 ```
 
@@ -66,6 +67,14 @@ Relayed players advertise an address on this server with a port from **`relay_po
 The relay carries game packets of up to 1,472 bytes, the largest a 1,500-byte link carries, so every packet the game sends. Wrapping adds 20 bytes, so the largest ones (a co-op mission sends packets of about 1,460 bytes while it loads) travel as two IP fragments. Until 0.3.175 the limit was 1,400 bytes, and a co-op mission with a relayed player often failed to load. Each relayed player uses roughly 20–60 KB/s in each direction during a match. **`relay_kbps_per_player`** caps it, and packets over the cap are dropped.
 
 The helper only relays between players who probed it, so it can't be used to send traffic elsewhere. Probes are padded so an answer is never bigger than the question.
+
+**`relay_pairs`** (on by default) relays only between players the server put together:
+- players in a room or match together;
+- a player and someone hosting a public match (matchmaking reaches the host before the join reaches the server);
+- a player and someone who invited them, or whom they invited;
+- two players the server told to probe each other.
+
+A pair stays open while traffic flows, and for 5 minutes after. Anyone else's packets are dropped, so a stranger can't send game traffic to a player through the relay. A new pair is checked at most 8 times a second per player. Turning it off (`false`) relays between any registered players, as before 0.4.3.
 
 **`public_address`** is the address relay addresses use. It's written by `--public-address` / `FE_PUBLIC_ADDRESS`; without it, the secure service's address is used.
 

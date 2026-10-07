@@ -43,6 +43,8 @@ pub mod admin;
 pub mod alerts;
 pub mod content;
 pub mod game_names;
+mod host_check;
+pub mod limits;
 pub mod maintenance;
 pub mod metrics;
 pub mod players;
@@ -89,6 +91,8 @@ const CLAIM_GRACE_SECS: i64 = 60 * 60;
 const MAX_UNLINKED_CLAIMS_PER_HOUR: i64 = 200;
 /// The largest request body.
 const MAX_BODY: usize = 256 * 1024;
+/// The most players online a listing says (the load test ran 1,000 on one core).
+const MAX_LISTED_PLAYERS: u32 = 5_000;
 /// New links one server may make in an hour, and links it may have in all: a member can't
 /// reserve names by the thousand with throwaway identities.
 const MAX_NEW_LINKS_PER_HOUR: i64 = 120;
@@ -152,6 +156,54 @@ pub(crate) fn public_ip(ip: std::net::IpAddr) -> bool {
 
 /// A request's source address: the peer, or, from a proxy on this machine,
 /// the last address in `X-Forwarded-For`.
+/// The largest body a request to `path` may have, and whether only a member server may send
+/// it (as `DefaultBodyLimit` on the routes).
+fn body_rule(path: &str) -> (usize, bool) {
+    match path {
+        "/v1/reports" => (reports::MAX_BODY, true),
+        "/v1/content" => (content::MAX_BODY, true),
+        "/v1/players" => (players::MAX_BODY, true),
+        "/v1/stats" => (stats::MAX_BODY, true),
+        "/v1/events" => (sessions::MAX_BODY, true),
+        "/v1/support" => (support::MAX_BODY, false),
+        _ => (MAX_BODY, false),
+    }
+}
+
+/// Every API request with a body: a member server's (its secret checked first, before the
+/// body is read) within its budget; anyone else's within the support or public one, a few at
+/// once per address, and refused for routes only members may use (see [`limits::Budgets`]).
+/// Each within the deadline, so streams of half-sent bodies can't fill the memory.
+async fn bounded(State(c): State<Shared>, request: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if matches!(*request.method(), axum::http::Method::GET | axum::http::Method::HEAD) {
+        return next.run(request).await;
+    }
+    let (limit, members_only) = body_rule(request.uri().path());
+    let member = if request.headers().contains_key(axum::http::header::AUTHORIZATION) {
+        c.server(request.headers()).await
+    } else {
+        Err(fail(StatusCode::UNAUTHORIZED, "sign in with the server's secret"))
+    };
+    match member {
+        Ok(_) => c.budgets.member.run(limit, next.run(request)).await,
+        Err(refused) if members_only => refused.into_response(),
+        Err(_) => {
+            let peer = request.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|ci| ci.0);
+            let ip = peer.map_or(std::net::IpAddr::from([0, 0, 0, 0]), |peer| client_ip(peer, request.headers()));
+            let (in_flight, budget) = if request.uri().path() == "/v1/support" {
+                (&c.budgets.support_in_flight, &c.budgets.support)
+            } else {
+                (&c.budgets.public_in_flight, &c.budgets.public)
+            };
+            let Some(_slot) = in_flight.take(ip) else {
+                return limits::too_many();
+            };
+            budget.run(limit, next.run(request)).await
+        }
+    }
+}
+
 fn client_ip(peer: std::net::SocketAddr, headers: &HeaderMap) -> std::net::IpAddr {
     if peer.ip().to_canonical().is_loopback() {
         if let Some(ip) = headers
@@ -397,10 +449,29 @@ pub struct Coordinator {
     /// Players' support messages: per player and per address (see [`support`]).
     support_posts: Limit,
     support_address_posts: Limit,
+    /// Support files each address sent today (the day, and bytes as sent), and when a refusal
+    /// was last said in the log (once an hour each).
+    support_address_bytes: std::sync::Mutex<HashMap<String, (i64, i64)>>,
+    support_refusals_said: Limit,
     /// The roadmap and players' suggestions are kept here: on the community network's
     /// coordinator only, whose roadmap every launcher reads (`--roadmap`). Off, its routes
     /// and the admin UI's page aren't there.
     roadmap: std::sync::atomic::AtomicBool,
+    /// The names launchers reach this coordinator by (`--name`): what players' signed
+    /// requests must be made for. Unset, the request's own Host is taken, which anyone
+    /// replaying a signature made for another coordinator can set to that one's name.
+    pub names: std::sync::OnceLock<Vec<String>>,
+    /// Whether a listing is in the directory only once the server at its host answered with
+    /// its id ([`host_check`]); on in the coordinator program ([`Self::check_hosts`]).
+    host_checks: std::sync::atomic::AtomicBool,
+    /// Whether hosts on private addresses are checked too (a LAN or test network).
+    host_checks_private: std::sync::atomic::AtomicBool,
+    /// Where servers' plain HTTP is asked (80; a test's own server's port in tests).
+    host_check_http_port: std::sync::atomic::AtomicU16,
+    /// The servers whose host is being checked now, and what's checked ([`host_check::target`]).
+    host_checks_running: std::sync::Mutex<HashMap<String, String>>,
+    /// Request bodies being read at once (see [`limits::Budgets`]).
+    pub(crate) budgets: limits::Budgets,
     /// The folder the database is in: reports' files go under it.
     files_dir: std::path::PathBuf,
     /// The most the reports' files may take ([`reports::STORAGE_CAP`]; less in tests).
@@ -511,7 +582,15 @@ impl Coordinator {
             suggestion_posts: Limit::per(roadmap::PER_ADDRESS_A_DAY, Duration::from_secs(86_400)),
             support_posts: Limit::per(support::PER_PLAYER_AN_HOUR, Duration::from_secs(3600)),
             support_address_posts: Limit::per(support::PER_ADDRESS_AN_HOUR, Duration::from_secs(3600)),
+            support_address_bytes: std::sync::Mutex::default(),
+            support_refusals_said: Limit::per(1, Duration::from_secs(3600)),
             roadmap: std::sync::atomic::AtomicBool::new(false),
+            names: std::sync::OnceLock::new(),
+            host_checks: std::sync::atomic::AtomicBool::new(false),
+            host_checks_private: std::sync::atomic::AtomicBool::new(false),
+            host_check_http_port: std::sync::atomic::AtomicU16::new(80),
+            host_checks_running: std::sync::Mutex::default(),
+            budgets: limits::Budgets::default(),
             files_dir: std::path::Path::new(path)
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
@@ -670,6 +749,7 @@ impl Coordinator {
             .route("/v1/content", post(player_content).layer(DefaultBodyLimit::max(content::MAX_BODY)))
             .route("/v1/events", post(events_report).layer(DefaultBodyLimit::max(sessions::MAX_BODY)))
             .layer(DefaultBodyLimit::max(MAX_BODY))
+            .layer(axum::middleware::from_fn_with_state(Arc::clone(&self), bounded))
             .with_state(self)
     }
 
@@ -789,16 +869,20 @@ impl Coordinator {
         if on.is_empty() || !self.vouched(me, friend).await? {
             return Ok(None);
         }
-        let links: Vec<(String, Option<String>, String, i64)> =
-            sqlx::query_as("SELECT s.id, s.listing, l.username, l.linked_at FROM links l JOIN servers s ON s.id = l.server_id WHERE l.global_id = ?")
+        let links: Vec<(String, Option<String>, String, i64, Option<String>)> =
+            sqlx::query_as("SELECT s.id, s.listing, l.username, l.linked_at, s.host_check FROM links l JOIN servers s ON s.id = l.server_id WHERE l.global_id = ?")
                 .bind(friend)
                 .fetch_all(&self.pool)
                 .await?;
         let best = links
             .into_iter()
-            .filter_map(|(id, listing, username, linked_at)| {
+            .filter_map(|(id, listing, username, linked_at, checked)| {
                 let since = on.iter().find(|(s, _)| *s == id)?.1;
                 let listing = serde_json::from_str::<Listing>(&listing?).ok().filter(|l| l.listed)?;
+                // A host its server didn't answer at isn't given out.
+                if !self.host_passed(checked.as_deref(), &listing) {
+                    return None;
+                }
                 Some(((linked_at, since), listing, username))
             })
             .max_by_key(|(order, ..)| *order);
@@ -1132,7 +1216,7 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, body: axum::body
         Ok(s) => s,
         Err(e) => return e,
     };
-    let listing: Listing = match parse(&body) {
+    let mut listing: Listing = match parse(&body) {
         Ok(v) => v,
         Err(e) => return e,
     };
@@ -1148,6 +1232,13 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, body: axum::body
         Ok(clashes) => clashes,
         Err(e) => return internal(e),
     };
+    // A count the directory can sort by, but not past the server's own players, nor more than
+    // any server here holds (one said 4,294,967,295 to top the list).
+    // (A server too old to say its total says 0.)
+    if listing.players_total > 0 {
+        listing.players_online = listing.players_online.min(listing.players_total);
+    }
+    listing.players_online = listing.players_online.min(MAX_LISTED_PLAYERS);
     let text = match serde_json::to_string(&listing) {
         Ok(t) => t,
         Err(e) => return internal(e),
@@ -1165,9 +1256,15 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, body: axum::body
         return internal(e);
     }
     c.publish(admin::live::Event::Network);
+    let mut warnings = clashes;
+    match c.host_check_after_heartbeat(&server, &listing).await {
+        Ok(Some(why)) => warnings.push(why),
+        Ok(None) => {}
+        Err(e) => return internal(e),
+    }
     let mut answer = json!({});
-    if !clashes.is_empty() {
-        answer["warnings"] = json!(clashes);
+    if !warnings.is_empty() {
+        answer["warnings"] = json!(warnings);
     }
     // The release this server should install now, if any.
     match c.update_for(&server, &listing.version, u64::from(listing.players_online)).await {
@@ -1509,7 +1606,7 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many requests");
     }
     let since = identity::now() - i64::try_from(LISTED_FOR.as_secs()).unwrap_or(120);
-    let rows: Vec<(String, Option<String>, Option<i64>)> = match sqlx::query_as("SELECT id, listing, last_seen FROM servers WHERE last_seen >= ?")
+    let rows: Vec<(String, Option<String>, Option<i64>, Option<String>)> = match sqlx::query_as("SELECT id, listing, last_seen, host_check FROM servers WHERE last_seen >= ?")
         .bind(since)
         .fetch_all(&c.pool)
         .await
@@ -1529,9 +1626,14 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
     };
     let mut list: Vec<Value> = rows
         .into_iter()
-        .filter_map(|(id, listing, last_seen)| {
-            let mut v: Value = serde_json::from_str(&listing?).ok()?;
+        .filter_map(|(id, listing, last_seen, checked)| {
+            let listing = listing?;
+            let mut v: Value = serde_json::from_str(&listing).ok()?;
             if !v.is_object() || !v["listed"].as_bool().unwrap_or(true) {
+                return None;
+            }
+            // Only once the server at its host said it's this one.
+            if !c.host_passed(checked.as_deref(), &serde_json::from_str::<Listing>(&listing).ok()?) {
                 return None;
             }
             // Members keep up with the network's releases, or leave the directory.
@@ -1559,6 +1661,94 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
     ok(answer)
 }
 
+impl Coordinator {
+    /// Lists a server only once the server at its listed host answers with its id
+    /// ([`host_check`]).
+    pub fn check_hosts(&self) {
+        self.host_checks.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Checks hosts on private addresses too: for a LAN or test network.
+    pub fn check_private_hosts(&self) {
+        self.host_checks_private.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn checks_hosts(&self) -> bool {
+        self.host_checks.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether `listing` may be given out, by the kept result of its host's check.
+    fn host_passed(&self, checked: Option<&str>, listing: &Listing) -> bool {
+        !self.checks_hosts() || host_check::passed(checked, listing)
+    }
+
+    /// Checks `server`'s host when it's due (in the background), and says why its last check
+    /// failed, if it did.
+    async fn host_check_after_heartbeat(self: &Arc<Self>, server: &str, listing: &Listing) -> sqlx::Result<Option<String>> {
+        if !self.checks_hosts() {
+            return Ok(None);
+        }
+        let kept: Option<String> = sqlx::query_scalar("SELECT host_check FROM servers WHERE id = ?")
+            .bind(server)
+            .fetch_optional(&self.pool)
+            .await?
+            .flatten();
+        let now = identity::now();
+        let failed = kept
+            .as_deref()
+            .and_then(|k| serde_json::from_str::<host_check::Checked>(k).ok())
+            .is_some_and(|k| !k.ok && k.target == host_check::target(listing));
+        let target = host_check::target(listing);
+        // One check at a time per address: a slow one (a name that doesn't resolve) doesn't
+        // hold up the check of a new address.
+        let start = host_check::due(kept.as_deref(), listing, now) && {
+            let mut running = self.host_checks_running.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            running.insert(server.to_string(), target.clone()).as_ref() != Some(&target)
+        };
+        if start {
+            let (c, server, listing) = (Arc::clone(self), server.to_string(), listing.clone());
+            tokio::spawn(async move {
+                let private = c.host_checks_private.load(std::sync::atomic::Ordering::Relaxed);
+                let http_port = c.host_check_http_port.load(std::sync::atomic::Ordering::Relaxed);
+                let checked = host_check::check(&server, &listing, now, private, http_port).await;
+                if checked.ok {
+                    tracing::info!("server {server}: {} answers as it", listing.host);
+                } else {
+                    tracing::warn!("server {server} lists {}, but isn't there: {}; not in the directory", listing.host, checked.why);
+                }
+                // Kept only if it's still the latest check of the server: one of an address it
+                // moved from since says nothing about where it is now.
+                let latest = {
+                    let mut running = c.host_checks_running.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let latest = running.get(&server) == Some(&checked.target);
+                    if latest {
+                        running.remove(&server);
+                    }
+                    latest
+                };
+                if let (true, Ok(text)) = (latest, serde_json::to_string(&checked)) {
+                    if let Err(e) = sqlx::query("UPDATE servers SET host_check = ? WHERE id = ?")
+                        .bind(text)
+                        .bind(&server)
+                        .execute(&c.pool)
+                        .await
+                    {
+                        tracing::warn!("server {server}: keeping its host check: {e}");
+                    }
+                }
+                c.publish(admin::live::Event::Network);
+            });
+        }
+        // Only that it failed: what answered where is for the coordinator's admins.
+        Ok(failed.then(|| {
+            format!(
+                "not in the directory: the server at {} (its /api/info, on the API ports listed) didn't answer as this one; its admins see why",
+                listing.host
+            )
+        }))
+    }
+}
+
 /// The project's roadmap, as launchers show it (see [`roadmap`]).
 impl Coordinator {
     /// Keeps the roadmap and players' suggestions here (see [`Coordinator::roadmap`]).
@@ -1566,9 +1756,42 @@ impl Coordinator {
         self.roadmap.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Whether `address` may send `bytes` more of support files today
+    /// ([`support::ADDRESS_FILES_A_DAY`]); if so, they're counted.
+    fn support_bytes_allowed(&self, address: &str, bytes: i64, now: i64) -> bool {
+        if bytes == 0 {
+            return true;
+        }
+        let day = now / 86_400;
+        let mut sent = self.support_address_bytes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if sent.len() > 50_000 {
+            sent.retain(|_, (d, _)| *d == day);
+        }
+        let today = sent.entry(address.to_string()).or_insert((day, 0));
+        if today.0 != day {
+            *today = (day, 0);
+        }
+        if today.1 + bytes > support::ADDRESS_FILES_A_DAY {
+            return false;
+        }
+        today.1 += bytes;
+        true
+    }
+
     /// Whether this coordinator keeps the roadmap.
     pub fn has_roadmap(&self) -> bool {
         self.roadmap.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// The name a player's signed request was made for: the request's Host, if it's one of
+    /// this coordinator's [`names`](Self::names) (or there are none set); else none, and the
+    /// signature is for another coordinator.
+    fn signed_for(&self, headers: &HeaderMap) -> Option<String> {
+        let host = headers.get(axum::http::header::HOST).and_then(|h| h.to_str().ok()).unwrap_or_default();
+        match self.names.get() {
+            Some(names) if !names.is_empty() => names.contains(&identity::host_key(host)).then(|| host.to_string()),
+            _ => Some(host.to_string()),
+        }
     }
 }
 
@@ -1595,7 +1818,7 @@ async fn suggest(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
     if body.len() > 8 * 1024 {
         return fail(StatusCode::PAYLOAD_TOO_LARGE, "too long");
     }
-    let s: roadmap::Suggestion = match parse(&body) {
+    let mut s: roadmap::Suggestion = match parse(&body) {
         Ok(s) => s,
         Err(a) => return a,
     };
@@ -1603,6 +1826,13 @@ async fn suggest(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
     if let Err(why) = s.check(now) {
         return fail(StatusCode::BAD_REQUEST, why);
     }
+    // The name isn't signed: a linked player's is the one they linked by, anyone else is "a
+    // player", so nobody can suggest as somebody else.
+    s.name = match c.linked_name(&s.identity).await {
+        Ok(Some(name)) => name,
+        Ok(None) => "a player".into(),
+        Err(e) => return internal(e),
+    };
     if !c.suggestion_posts.check(&limit_key(client_ip(peer, &headers))) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "Too many suggestions from this address today; try again tomorrow.");
     }
@@ -1643,25 +1873,32 @@ async fn support_send(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<st
     if !c.has_roadmap() {
         return no_roadmap();
     }
-    if !c.support_address_posts.check(&limit_key(client_ip(peer, &headers))) {
+    let address = limit_key(client_ip(peer, &headers));
+    if !c.support_address_posts.check(&address) {
+        if c.support_refusals_said.check(&format!("address/{address}")) {
+            tracing::warn!("support: refused messages from {address}: too many this hour (said once an hour)");
+        }
         return fail(StatusCode::TOO_MANY_REQUESTS, "Too many messages from this address; try again in an hour.");
     }
     let sent: support::Sent = match parse(&body) {
         Ok(s) => s,
         Err(a) => return a,
     };
-    let host = headers.get(axum::http::header::HOST).and_then(|h| h.to_str().ok()).unwrap_or_default().to_string();
+    let Some(host) = c.signed_for(&headers) else {
+        return fail(StatusCode::FORBIDDEN, "the signature doesn't match");
+    };
     let now = identity::now();
     // Unpacking the files to check them: off the async workers.
     let checked = tokio::task::spawn_blocking(move || sent.check(&host, now).map(|files| (sent, files))).await;
-    let (sent, files) = match checked {
+    let (mut sent, files) = match checked {
         Ok(Ok(v)) => v,
         Ok(Err(why)) => return fail(StatusCode::BAD_REQUEST, why),
         Err(e) => return internal(e),
     };
-    match c.is_linked_player(&sent.identity).await {
-        Ok(true) => {}
-        Ok(false) => {
+    // The name isn't signed: the one they linked by, not what the launcher says.
+    match c.linked_name(&sent.identity).await {
+        Ok(Some(name)) => sent.name = name,
+        Ok(None) => {
             return fail(
                 StatusCode::FORBIDDEN,
                 "Support is for players of the community network: connect to one of its servers first.",
@@ -1670,13 +1907,25 @@ async fn support_send(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<st
         Err(e) => return internal(e),
     }
     if !c.support_posts.check(&sent.identity) {
+        if c.support_refusals_said.check(&format!("player/{}", sent.identity)) {
+            tracing::warn!("support: refused messages from {}: too many this hour (said once an hour)", identity::short(&sent.identity));
+        }
         return fail(
             StatusCode::TOO_MANY_REQUESTS,
             "That's a lot of messages in an hour; the admins will answer what you sent. Try again later.",
         );
     }
+    // Past its address's files for the day, a message keeps its text only.
+    let size: i64 = files.iter().map(|f| f.gzip.len() as i64).sum();
+    let address_allows = c.support_bytes_allowed(&address, size, now);
+    if !address_allows && c.support_refusals_said.check(&format!("bytes/{address}")) {
+        tracing::warn!("support: {address} sent its files for the day; messages from it keep their text only (said once an hour)");
+    }
+    let files = if address_allows { files } else { vec![] };
+    let dropped = !address_allows && size > 0;
     match c.add_support_message(&sent, &files, now).await {
         Ok((id, files_kept)) => {
+            let files_kept = files_kept && !dropped;
             c.publish(admin::live::Event::Support);
             let first = sent.text.lines().next().unwrap_or_default();
             c.notify_support(&sent.name, first).await;
@@ -1704,7 +1953,10 @@ async fn my_support(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std:
     if !c.reads.check(&limit_key(client_ip(peer, &headers))) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many requests");
     }
-    let host = headers.get(axum::http::header::HOST).and_then(|h| h.to_str().ok()).unwrap_or_default();
+    let Some(host) = c.signed_for(&headers) else {
+        return fail(StatusCode::FORBIDDEN, "the signature doesn't match");
+    };
+    let host = host.as_str();
     if !identity::is_global_id(&q.identity)
         || !identity::fresh(q.time, identity::now())
         || !identity::verify(&q.identity, &identity::support_read_message(host, q.time), &q.signature)
@@ -1721,7 +1973,10 @@ async fn my_reports(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std:
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many requests");
     }
     // Signed for this coordinator, by the name it was reached at.
-    let host = headers.get(axum::http::header::HOST).and_then(|h| h.to_str().ok()).unwrap_or_default();
+    let Some(host) = c.signed_for(&headers) else {
+        return fail(StatusCode::FORBIDDEN, "the signature doesn't match");
+    };
+    let host = host.as_str();
     if !identity::is_global_id(&q.identity) || !identity::fresh(q.time, identity::now()) || !identity::verify(&q.identity, &identity::reports_message(host, q.time), &q.signature) {
         return fail(StatusCode::FORBIDDEN, "the signature doesn't match");
     }

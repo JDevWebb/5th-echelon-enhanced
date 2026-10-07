@@ -167,6 +167,24 @@ fn cfg(c: &Coordinator) -> &Config {
     c.admin.get().expect("the admin UI is configured before it serves")
 }
 
+/// The largest request body.
+const MAX_BODY: usize = 64 * 1024;
+
+/// Every request's body is read within the admin UI's budget and the deadline, a few at
+/// once per address (see [`crate::limits::Budgets`]), so streams of half-sent bodies can't
+/// fill the memory, nor one client take the whole budget. After [`guard`], which says who
+/// the client is.
+async fn bounded(State(c): State<Shared>, request: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    if matches!(*request.method(), axum::http::Method::GET | axum::http::Method::HEAD) {
+        return next.run(request).await;
+    }
+    let ip = request.extensions().get::<Client>().map_or(IpAddr::from([0, 0, 0, 0]), |c| c.ip);
+    let Some(_slot) = c.budgets.admin_in_flight.take(ip) else {
+        return crate::limits::too_many();
+    };
+    c.budgets.admin.run(MAX_BODY, next.run(request)).await
+}
+
 /// The admin UI.
 pub fn router(c: Shared) -> Router {
     let api = Router::new()
@@ -222,7 +240,8 @@ pub fn router(c: Shared) -> Router {
         .route("/", get(page))
         .nest("/api", api)
         .fallback(asset)
-        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY))
+        .layer(axum::middleware::from_fn_with_state(Arc::clone(&c), bounded))
         .layer(axum::middleware::from_fn_with_state(Arc::clone(&c), guard))
         .with_state(c)
 }
@@ -552,6 +571,33 @@ impl Coordinator {
         .await
     }
 
+    /// One more try at a code (TOTP or recovery) on this session: refused past [`TOTP_TRIES`]
+    /// (the session ends), and while signing in, refused while the account waits after
+    /// failures (a correct code used to get through the lock, and clear it). A signed-in
+    /// admin confirming it's them isn't held up by others' failures.
+    async fn code_try(&self, s: &Session) -> Result<(), Response> {
+        if s.stage != "full" {
+            let locked_until: i64 = sqlx::query_scalar("SELECT locked_until FROM admins WHERE id = ?")
+                .bind(s.admin_id)
+                .fetch_one(&self.pool)
+                .await
+                .map_err(internal)?;
+            if identity::now() < locked_until {
+                return Err(fail(StatusCode::TOO_MANY_REQUESTS, "too many failed sign-ins; this account waits a while"));
+            }
+        }
+        let tries: i64 = sqlx::query_scalar("UPDATE admin_sessions SET totp_tries = totp_tries + 1 WHERE token_hash = ? RETURNING totp_tries")
+            .bind(&s.token_hash)
+            .fetch_one(&self.pool)
+            .await
+            .unwrap_or(TOTP_TRIES + 1);
+        if tries > TOTP_TRIES {
+            let _ = sqlx::query("DELETE FROM admin_sessions WHERE token_hash = ?").bind(&s.token_hash).execute(&self.pool).await;
+            return Err(without_cookie(self, fail(StatusCode::UNAUTHORIZED, "too many wrong codes; sign in again")));
+        }
+        Ok(())
+    }
+
     /// A failed sign-in for `admin_id`: after a few, the account waits.
     async fn failed(&self, admin_id: i64, username: &str, client: &Client, what: &str) {
         let now = identity::now();
@@ -568,6 +614,13 @@ impl Coordinator {
                 .bind(admin_id)
                 .execute(&self.pool)
                 .await;
+            self.audit(
+                username,
+                Some(client),
+                "account locked",
+                &format!("{failures} failed sign-ins; waits {} minutes", wait.min(86_400) / 60),
+            )
+            .await;
         }
         self.audit(username, Some(client), "sign-in failed", what).await;
     }
@@ -690,17 +743,22 @@ async fn login(State(c): State<Shared>, Extension(client): Extension<Client>, Js
     let refused = || fail(StatusCode::UNAUTHORIZED, "wrong name or password");
     let Some((id, hash, disabled, locked_until)) = row else {
         // As slow as a real check, so names can't be told from timing.
-        let _ = auth::check_password(
-            &req.password,
-            "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$k8xR2o1fpLwqgMB0ZDzR2X0Hr7nCMuq1H1IMpJzSo4o",
-        );
+        let _ = auth::check_password(&req.password, DUMMY_HASH);
         c.audit(&username, Some(&client), "sign-in failed", "no such admin").await;
         return refused();
     };
     if identity::now() < locked_until {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many failed sign-ins; this account waits a while");
     }
-    let valid = hash.as_deref().is_some_and(|h| auth::check_password(&req.password, h));
+    // An admin still setting up has no password yet: checked against a hash all the same, or
+    // their answer came back many times faster and told their name.
+    let valid = match hash.as_deref() {
+        Some(h) => auth::check_password(&req.password, h),
+        None => {
+            let _ = auth::check_password(&req.password, DUMMY_HASH);
+            false
+        }
+    };
     if !valid || disabled != 0 {
         c.failed(id, &username, &client, "password").await;
         return refused();
@@ -710,6 +768,15 @@ async fn login(State(c): State<Shared>, Extension(client): Extension<Client>, Js
         Err(e) => return internal(e),
     };
     let stage = if totp || passkeys > 0 { "password" } else { "enroll" };
+    // One sign-in under way at a time: each has its few tries at a code, and many at once
+    // (all opened with the password) were many more.
+    if let Err(e) = sqlx::query("DELETE FROM admin_sessions WHERE admin_id = ? AND stage IN ('password', 'enroll')")
+        .bind(id)
+        .execute(&c.pool)
+        .await
+    {
+        return internal(e);
+    }
     match c.new_session(id, stage, &client, false, None).await {
         Ok(token) => with_cookie(&c, &token, ok(json!({ "stage": stage, "totp": totp, "passkeys": passkeys }))),
         Err(e) => internal(e),
@@ -731,14 +798,8 @@ async fn login_totp(State(c): State<Shared>, Extension(client): Extension<Client
         Ok(_) => return fail(StatusCode::UNAUTHORIZED, "sign in with your password first"),
         Err(e) => return internal(e),
     };
-    let tries: i64 = sqlx::query_scalar("UPDATE admin_sessions SET totp_tries = totp_tries + 1 WHERE token_hash = ? RETURNING totp_tries")
-        .bind(&s.token_hash)
-        .fetch_one(&c.pool)
-        .await
-        .unwrap_or(TOTP_TRIES + 1);
-    if tries > TOTP_TRIES {
-        let _ = sqlx::query("DELETE FROM admin_sessions WHERE token_hash = ?").bind(&s.token_hash).execute(&c.pool).await;
-        return without_cookie(&c, fail(StatusCode::UNAUTHORIZED, "too many wrong codes; sign in again"));
+    if let Err(r) = c.code_try(&s).await {
+        return r;
     }
     let row: Option<(Option<String>, i64)> = sqlx::query_as("SELECT totp_secret, totp_last_step FROM admins WHERE id = ?")
         .bind(s.admin_id)
@@ -769,6 +830,9 @@ async fn login_recovery(State(c): State<Shared>, Extension(client): Extension<Cl
         Ok(_) => return fail(StatusCode::UNAUTHORIZED, "sign in with your password first"),
         Err(e) => return internal(e),
     };
+    if let Err(r) = c.code_try(&s).await {
+        return r;
+    }
     let used = sqlx::query("UPDATE recovery_codes SET used_at = ? WHERE admin_id = ? AND code_hash = ? AND used_at IS NULL")
         .bind(identity::now())
         .bind(s.admin_id)
@@ -912,27 +976,32 @@ struct SetupRequest {
     password: String,
 }
 
+/// A hash of nothing in particular: checked against where there's no password to check, so
+/// the time taken doesn't tell.
+const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$k8xR2o1fpLwqgMB0ZDzR2X0Hr7nCMuq1H1IMpJzSo4o";
+
 /// A setup link: the admin chooses a password, then must add a second factor.
 async fn setup(State(c): State<Shared>, Extension(client): Extension<Client>, Json(req): Json<SetupRequest>) -> Response {
     if !limits().0.check(&crate::limit_key(client.ip)) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many attempts; wait a minute");
     }
-    let row: Option<(i64, String)> =
-        sqlx::query_as("DELETE FROM setup_tokens WHERE token_hash = ? AND expires_at >= ? RETURNING admin_id, (SELECT username FROM admins WHERE id = admin_id)")
+    let row: Option<(i64, String, i64)> =
+        sqlx::query_as("DELETE FROM setup_tokens WHERE token_hash = ? AND expires_at >= ? RETURNING admin_id, (SELECT username FROM admins WHERE id = admin_id), expires_at")
             .bind(auth::digest(&req.token))
             .bind(identity::now())
             .fetch_optional(&c.pool)
             .await
             .unwrap_or(None);
-    let Some((admin_id, username)) = row else {
+    let Some((admin_id, username, expires_at)) = row else {
         return fail(StatusCode::UNAUTHORIZED, "this setup link expired or was used; ask for a new one");
     };
     if let Some(why) = auth::weak_password(&req.password, &username) {
-        // The link stays usable for another try.
+        // The link stays usable for another try, until it expires as it would have (each
+        // try used to give it another hour, so a link could be kept alive for good).
         let _ = sqlx::query("INSERT INTO setup_tokens (token_hash, admin_id, expires_at) VALUES (?, ?, ?)")
             .bind(auth::digest(&req.token))
             .bind(admin_id)
-            .bind(identity::now() + 3600)
+            .bind(expires_at)
             .execute(&c.pool)
             .await;
         return fail(StatusCode::BAD_REQUEST, why);
@@ -1442,8 +1511,8 @@ impl Coordinator {
         let now = identity::now();
         let rollout = self.rollout().await?;
         let latest: std::collections::HashMap<String, Value> = self.latest_metrics().await?.into_iter().collect();
-        let rows: Vec<(String, Option<String>, Option<i64>, Option<String>, i64)> =
-            sqlx::query_as("SELECT id, listing, last_seen, update_status, joined_at FROM servers ORDER BY id")
+        let rows: Vec<(String, Option<String>, Option<i64>, Option<String>, i64, Option<String>)> =
+            sqlx::query_as("SELECT id, listing, last_seen, update_status, joined_at, host_check FROM servers ORDER BY id")
                 .fetch_all(&self.pool)
                 .await?;
         let pings: Vec<(String, Option<f64>)> = sqlx::query_as(
@@ -1454,7 +1523,7 @@ impl Coordinator {
         let pings: std::collections::HashMap<String, Option<f64>> = pings.into_iter().collect();
         let clashes = self.name_clashes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         let mut servers = Vec::new();
-        for (id, listing, last_seen, status, joined_at) in rows {
+        for (id, listing, last_seen, status, joined_at, host_check) in rows {
             let l: Value = listing.and_then(|l| serde_json::from_str(&l).ok()).unwrap_or_default();
             let place = server_place(self, l["host"].as_str().unwrap_or_default()).await;
             let version = l["version"].as_str().unwrap_or_default();
@@ -1471,6 +1540,8 @@ impl Coordinator {
                 "ping_ms": pings.get(&id).copied().flatten(),
                 "place": place,
                 "name_clashes": clashes.get(&id).cloned().unwrap_or_default(),
+                // Whether the server at its listed host said it's this one (host_check.rs).
+                "host_check": host_check.and_then(|h| serde_json::from_str::<Value>(&h).ok()),
             }));
         }
         let peak: Option<f64> = sqlx::query_scalar("SELECT MAX(json_extract(data, '$.max_players')) FROM hourly WHERE hour >= ?")

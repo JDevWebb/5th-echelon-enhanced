@@ -41,11 +41,34 @@ const EXPIRY: Duration = Duration::from_secs(90);
 const MAX_ALIASES: usize = 4;
 /// Packets for a player go back to where their data last came from, for this long after.
 const DATA_FROM_FRESH: Duration = Duration::from_secs(30);
-/// Players registered at once, and from one address (a LAN party shares one).
+/// Players registered at once, and from one address (a LAN party shares one;
+/// `FE_MAX_CONNECTIONS_PER_IP` lifts it, as for the load test's players).
 const MAX_PEERS: usize = 20_000;
 const MAX_PEERS_PER_IP: usize = 64;
 /// Relayed packets one player may send a second (a match is ~30 per peer).
 const MAX_PACKETS_PER_SECOND: u32 = 600;
+/// Two players the relay forwards between stay paired this long after their last packet
+/// either way, or after the server put them together ([`introduce`]).
+const PAIR_FRESH: Duration = Duration::from_secs(300);
+/// A pair the server said no to isn't asked about again for this long: the game retries
+/// a connection, and its join may reach the server a moment after its first packets.
+const REFUSED_FOR: Duration = Duration::from_secs(1);
+/// New pairs one player may have checked a second: a sweep of the relay's ports costs the
+/// server no more than a few lookups. And from one address (many registrations there), and
+/// in all: the lookups are the server's database's, made beside the relay
+/// ([`pair_worker`]), and a flood of them must not crowd out the real ones for long.
+const MAX_ASKS_PER_SECOND: u32 = 8;
+const MAX_ASKS_PER_IP: u32 = 16;
+const MAX_ASKS_ALL: u32 = 200;
+/// A pair being looked up isn't asked about again for this long (an answer is lost when the
+/// lookups fall behind).
+const ASKING_FOR: Duration = Duration::from_secs(2);
+/// Lookups waiting at most; more are dropped (and asked again when the game retries).
+const ASKS_QUEUED: usize = 256;
+
+/// Whether two players (by name) may reach each other through the relay: see
+/// [`dedicated_server_config::NatConfig::relay_pairs`].
+pub type MayRelay = Box<dyn Fn(&str, &str) -> bool + Send + Sync>;
 
 /// The helper's secrets: the ticket key (kept in [`KEY_FILE`], so tickets
 /// survive a restart) and the cookie key (new at every start).
@@ -135,6 +158,8 @@ struct Peer {
     window_start: Instant,
     window_bytes: usize,
     window_packets: u32,
+    /// New pairs asked about in this window ([`MAX_ASKS_PER_SECOND`]).
+    window_asks: u32,
     /// The registration's secret: relayed data must carry it, both ways.
     tag: nat_proto::Tag,
     /// Since when `advertise` has been what it is.
@@ -182,6 +207,22 @@ pub struct Table {
     retired: HashMap<u16, Instant>,
     by_vport: HashMap<u16, Id>,
     by_advertise: HashMap<SocketAddrV4, Id>,
+    /// Who may reach whom ([`NatConfig::relay_pairs`]), by [`pair`], and when last used.
+    pairs: HashMap<(Id, Id), Instant>,
+    /// Pairs the server said no to, and when ([`REFUSED_FOR`]).
+    refused: HashMap<(Id, Id), Instant>,
+    /// Pairs to ask the server about ([`Self::asks`]): (sender, receiver).
+    asks: Vec<(Id, Id)>,
+    /// Pairs being asked about, by [`pair`], since when ([`ASKING_FOR`]).
+    asking: HashMap<(Id, Id), Instant>,
+    /// Asks this second, per address ([`MAX_ASKS_PER_IP`]) and in all ([`MAX_ASKS_ALL`]).
+    asks_by_ip: HashMap<Ipv4Addr, (Instant, u32)>,
+    asks_all: (Instant, u32),
+}
+
+/// The key of two players' pair, the same either way round.
+fn pair(a: Id, b: Id) -> (Id, Id) {
+    (a.min(b), a.max(b))
 }
 
 impl Table {
@@ -198,6 +239,12 @@ impl Table {
             retired: HashMap::new(),
             by_vport: HashMap::new(),
             by_advertise: HashMap::new(),
+            pairs: HashMap::new(),
+            refused: HashMap::new(),
+            asks: Vec::new(),
+            asking: HashMap::new(),
+            asks_by_ip: HashMap::new(),
+            asks_all: (Instant::now(), 0),
         }
     }
 
@@ -265,7 +312,7 @@ impl Table {
             return true;
         }
         let here = self.peers.values().filter(|p| p.real.ip() == src.ip()).count();
-        self.peers.len() < MAX_PEERS && here < MAX_PEERS_PER_IP
+        self.peers.len() < MAX_PEERS && here < quazal::prudp::many_per_ip().unwrap_or(MAX_PEERS_PER_IP)
     }
 
     /// Registers (or refreshes) the player behind `src` and answers its probe.
@@ -319,6 +366,7 @@ impl Table {
             window_start: old.as_ref().map_or(now, |(_, o)| o.window_start),
             window_bytes: old.as_ref().map_or(0, |(_, o)| o.window_bytes),
             window_packets: old.as_ref().map_or(0, |(_, o)| o.window_packets),
+            window_asks: old.as_ref().map_or(0, |(_, o)| o.window_asks),
             // Kept while the registration lives: the game already relays with it.
             tag: old.as_ref().map_or_else(rand::random, |(_, o)| o.tag),
             settled_since: old.as_ref().filter(|(_, o)| o.advertise == advertise).map_or(now, |(_, o)| o.settled_since),
@@ -416,6 +464,9 @@ impl Table {
         if target_id == sender_id {
             return None;
         }
+        if self.cfg.relay_pairs && !self.paired(sender_id, target_id, now) {
+            return None;
+        }
         // Back to the socket their data last came from, while it's recent; else the one that
         // probes (it keeps its own mapping alive).
         let target = self
@@ -429,6 +480,7 @@ impl Table {
             sender.window_start = now;
             sender.window_bytes = 0;
             sender.window_packets = 0;
+            sender.window_asks = 0;
         }
         // Headers count too, and packets: empty payloads must not slip past the byte limit.
         sender.window_bytes += len + nat_proto::DATA_OVERHEAD;
@@ -442,6 +494,77 @@ impl Table {
             receiver.received += 1;
         }
         Some((target, from, target_id))
+    }
+
+    /// Whether `sender` may reach `receiver` now; when nobody knows yet, the pair is queued
+    /// for the server to be asked ([`Self::asks`]), within the sender's allowance.
+    fn paired(&mut self, sender: Id, receiver: Id, now: Instant) -> bool {
+        let key = pair(sender, receiver);
+        if let Some(at) = self.pairs.get_mut(&key) {
+            if now.duration_since(*at) < PAIR_FRESH {
+                *at = now;
+                return true;
+            }
+            self.pairs.remove(&key);
+        }
+        if self.refused.get(&key).is_some_and(|at| now.duration_since(*at) < REFUSED_FOR) || self.asking.get(&key).is_some_and(|at| now.duration_since(*at) < ASKING_FOR) {
+            return false;
+        }
+        let Some(p) = self.peers.get_mut(&sender) else { return false };
+        if now.duration_since(p.window_start) >= Duration::from_secs(1) {
+            p.window_start = now;
+            p.window_bytes = 0;
+            p.window_packets = 0;
+            p.window_asks = 0;
+        }
+        let fresh = |w: &mut (Instant, u32)| {
+            if now.duration_since(w.0) >= Duration::from_secs(1) {
+                *w = (now, 0);
+            }
+        };
+        let by_ip = self.asks_by_ip.entry(*p.real.ip()).or_insert((now, 0));
+        fresh(by_ip);
+        fresh(&mut self.asks_all);
+        // Lifted where registrations per address are (a load test's players share one).
+        let per_ip = if quazal::prudp::many_per_ip().is_some() { MAX_ASKS_ALL } else { MAX_ASKS_PER_IP };
+        if p.window_asks < MAX_ASKS_PER_SECOND && by_ip.1 < per_ip && self.asks_all.1 < MAX_ASKS_ALL {
+            p.window_asks += 1;
+            by_ip.1 += 1;
+            self.asks_all.1 += 1;
+            self.asks.push((sender, receiver));
+            self.asking.insert(key, now);
+        }
+        false
+    }
+
+    /// The pairs to ask the server about, by name: (sender's, receiver's, and the ids for
+    /// [`Self::decided`]).
+    pub fn asks(&mut self) -> Vec<(Id, Id, String, String)> {
+        std::mem::take(&mut self.asks)
+            .into_iter()
+            .filter_map(|(a, b)| Some((a, b, self.peers.get(&a)?.name.clone(), self.peers.get(&b)?.name.clone())))
+            .collect()
+    }
+
+    /// What the server said about a pair from [`Self::asks`].
+    pub fn decided(&mut self, a: Id, b: Id, may: bool, now: Instant) {
+        self.asking.remove(&pair(a, b));
+        if may {
+            self.refused.remove(&pair(a, b));
+            self.pairs.insert(pair(a, b), now);
+        } else {
+            self.refused.insert(pair(a, b), now);
+        }
+    }
+
+    /// Pairs two registered players: the server put them together (it had one probe the other).
+    pub fn introduce(&mut self, a: &str, b: &str, now: Instant) {
+        let (Some(a), Some(b)) = (self.by_name.get(&a.to_lowercase()).copied(), self.by_name.get(&b.to_lowercase()).copied()) else {
+            return;
+        };
+        if a != b {
+            self.decided(a, b, true, now);
+        }
     }
 
     /// Notes `name`'s round trip to this server, as its game measured it.
@@ -540,7 +663,14 @@ impl Table {
     /// Forgets players not heard from in [`EXPIRY`].
     pub fn expire(&mut self, now: Instant) -> Vec<String> {
         let stale: Vec<Id> = self.peers.iter().filter(|(_, p)| now.duration_since(p.last_seen) > EXPIRY).map(|(id, _)| *id).collect();
-        stale.into_iter().filter_map(|id| self.take(id).map(|p| p.name)).collect()
+        let gone = stale.into_iter().filter_map(|id| self.take(id).map(|p| p.name)).collect();
+        let peers = &self.peers;
+        self.pairs
+            .retain(|(a, b), at| now.duration_since(*at) < PAIR_FRESH && peers.contains_key(a) && peers.contains_key(b));
+        self.refused.retain(|_, at| now.duration_since(*at) < REFUSED_FOR);
+        self.asking.retain(|_, at| now.duration_since(*at) < ASKING_FOR);
+        self.asks_by_ip.retain(|_, (at, _)| now.duration_since(*at) < Duration::from_secs(1));
+        gone
     }
 
     /// The address `name`'s game should advertise, if it probed from `ip`
@@ -626,6 +756,14 @@ pub fn path_detail(guest: &str, host: &str) -> Option<serde_json::Value> {
 }
 
 static TABLE: OnceLock<Arc<Mutex<Table>>> = OnceLock::new();
+
+/// Pairs `a` and `b` for the relay ([`Table::introduce`]): the server had one's game probe
+/// the other's, which it does before a join reaches it.
+pub fn introduce(a: &str, b: &str) {
+    if let Some(mut t) = TABLE.get().and_then(|t| t.lock().ok()) {
+        t.introduce(a, b, Instant::now());
+    }
+}
 
 /// The address relayed players are given (this server's), once the helper runs.
 pub fn relay_ip() -> Option<Ipv4Addr> {
@@ -745,7 +883,7 @@ fn bind_with_buffers(logger: &Logger, addr: SocketAddr) -> std::io::Result<UdpSo
 /// Starts the helper's threads: the main port (probes and relay) and the
 /// port after it (probes only, to spot NATs that change ports per
 /// destination).
-pub fn start(logger: &Logger, cfg: NatConfig, relay_ip: Ipv4Addr) -> std::io::Result<Vec<std::thread::JoinHandle<()>>> {
+pub fn start(logger: &Logger, cfg: NatConfig, relay_ip: Ipv4Addr, may_relay: MayRelay) -> std::io::Result<Vec<std::thread::JoinHandle<()>>> {
     let ticket = crate::keys::load_or_create(std::path::Path::new(KEY_FILE)).map_err(|e| std::io::Error::other(e.to_string()))?;
     let _ = KEYS.set(Keys {
         ticket: ticket.0,
@@ -756,7 +894,13 @@ pub fn start(logger: &Logger, cfg: NatConfig, relay_ip: Ipv4Addr) -> std::io::Re
     let table = Arc::clone(TABLE.get_or_init(|| Arc::new(Mutex::new(Table::new(cfg, relay_ip)))));
     info!(
         logger,
-        "NAT helper on UDP {} (relay {:?}, relay addresses {}:{}-{})", cfg.listen, cfg.relay, relay_ip, cfg.relay_ports.0, cfg.relay_ports.1
+        "NAT helper on UDP {} (relay {:?}, relay addresses {}:{}-{}{})",
+        cfg.listen,
+        cfg.relay,
+        relay_ip,
+        cfg.relay_ports.0,
+        cfg.relay_ports.1,
+        if cfg.relay_pairs { "" } else { ", between any players" }
     );
     let mut threads = Vec::new();
 
@@ -773,8 +917,19 @@ pub fn start(logger: &Logger, cfg: NatConfig, relay_ip: Ipv4Addr) -> std::io::Re
         ),
     }
 
+    // New pairs are looked up beside the relay, so a slow (or flooded) database never holds
+    // up the packets of pairs already known.
+    let (asks, asked) = std::sync::mpsc::sync_channel(ASKS_QUEUED);
+    {
+        let (logger, socket, table) = (logger.clone(), socket.try_clone()?, Arc::clone(&table));
+        threads.push(
+            std::thread::Builder::new()
+                .name("nat-pairs".into())
+                .spawn(move || pair_worker(&logger, &socket, &table, &may_relay, &asked))?,
+        );
+    }
     let logger = logger.clone();
-    threads.push(std::thread::Builder::new().name("nat".into()).spawn(move || main_loop(&logger, &socket, &table))?);
+    threads.push(std::thread::Builder::new().name("nat".into()).spawn(move || main_loop(&logger, &socket, &table, &asks))?);
     Ok(threads)
 }
 
@@ -935,7 +1090,52 @@ impl RelayWatch {
     }
 }
 
-fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
+/// A packet between players the relay hasn't seen together, waiting on the server's word.
+struct Ask {
+    sender: Id,
+    receiver: Id,
+    sender_name: String,
+    receiver_name: String,
+    src: SocketAddrV4,
+    tag: nat_proto::Tag,
+    to: SocketAddrV4,
+    payload: Vec<u8>,
+}
+
+/// Asks the server about new pairs ([`MayRelay`]), one at a time, and sends on the packet
+/// that brought each one it allows.
+fn pair_worker(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, may_relay: &MayRelay, asked: &std::sync::mpsc::Receiver<Ask>) {
+    let mut out = Vec::with_capacity(2048);
+    while let Ok(ask) = asked.recv() {
+        let may = may_relay(&ask.sender_name, &ask.receiver_name);
+        if may {
+            debug!(logger, "NAT relay: {} may reach {}", ask.sender_name, ask.receiver_name);
+        } else {
+            debug!(
+                logger,
+                "NAT relay: {} isn't with {} (no shared room, public room or invitation); not relayed", ask.sender_name, ask.receiver_name
+            );
+        }
+        let now = Instant::now();
+        let route = table.lock().ok().and_then(|mut t| {
+            t.decided(ask.sender, ask.receiver, may, now);
+            if may {
+                t.route_tagged(ask.src, ask.tag, ask.to, ask.payload.len(), now)
+            } else {
+                None
+            }
+        });
+        if let Some((target, from, target_tag)) = route {
+            nat_proto::encode_data_from(&mut out, target_tag, from, &ask.payload);
+            match socket.send_to(&out, target) {
+                Ok(n) => crate::metrics::relayed(n),
+                Err(e) => debug!(logger, "NAT relay to {target} failed: {e}"),
+            }
+        }
+    }
+}
+
+fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &std::sync::mpsc::SyncSender<Ask>) {
     let mut buf = vec![0u8; 2048];
     let mut out = Vec::with_capacity(2048);
     let mut last_expiry = Instant::now();
@@ -1000,7 +1200,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
             if forwarded + dropped + failed > 0 {
                 info!(
                     logger,
-                    "NAT relay: {:.0} packets/s forwarded, {dropped} dropped (unknown player or over the rate), {failed} failed to send; {players} players, {relayed} relayed",
+                    "NAT relay: {:.0} packets/s forwarded, {dropped} dropped (unknown player, over the rate, or players the server didn't put together), {failed} failed to send; {players} players, {relayed} relayed",
                     forwarded as f64 / secs
                 );
             }
@@ -1020,9 +1220,25 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>) {
         };
         let Some(src) = v4(src) else { continue };
         let data = &buf[..len];
+        // When it came, not when the wait for it began (up to the read timeout before).
+        let now = Instant::now();
 
         if let Some((tag, to, offset)) = nat_proto::data_to(data) {
-            let route = table.lock().ok().and_then(|mut t| t.route_tagged(src, tag, to, len - offset, now));
+            let (route, new_pairs) = table.lock().map(|mut t| (t.route_tagged(src, tag, to, len - offset, now), t.asks())).unwrap_or_default();
+            // Players the relay hasn't seen together: the server is asked beside the relay
+            // ([`pair_worker`]), which sends this packet on if it allows them.
+            for (sender, receiver, sender_name, receiver_name) in new_pairs {
+                let _ = asks.try_send(Ask {
+                    sender,
+                    receiver,
+                    sender_name,
+                    receiver_name,
+                    src,
+                    tag,
+                    to,
+                    payload: data[offset..].to_vec(),
+                });
+            }
             if let Some((target, from, target_tag)) = route {
                 nat_proto::encode_data_from(&mut out, target_tag, from, &data[offset..]);
                 match socket.send_to(&out, target) {
@@ -1122,8 +1338,16 @@ mod tests {
         s.parse().unwrap()
     }
 
+    /// A table relaying between any players (pairing has tests of its own).
     fn table(relay: RelayMode) -> Table {
-        Table::new(NatConfig { relay, ..NatConfig::default() }, Ipv4Addr::new(192, 0, 2, 1))
+        Table::new(
+            NatConfig {
+                relay,
+                relay_pairs: false,
+                ..NatConfig::default()
+            },
+            Ipv4Addr::new(192, 0, 2, 1),
+        )
     }
 
     fn advertise(m: &Message) -> (SocketAddrV4, bool) {
@@ -1353,6 +1577,7 @@ mod tests {
         let mut t = Table::new(
             NatConfig {
                 relay_kbps_per_player: 1,
+                relay_pairs: false,
                 ..NatConfig::default()
             },
             Ipv4Addr::new(192, 0, 2, 1),
@@ -1384,6 +1609,88 @@ mod tests {
         assert_eq!((target, target_tag), (a("198.51.100.8:1"), tag(&b_reply)), "delivered with the receiver's tag");
         // A refresh keeps the tag (the game relays with it).
         assert_eq!(tag(&t.probe(a("198.51.100.7:1"), 0, 2, None, "a", now)), tag(&a_reply));
+    }
+
+    #[test]
+    fn the_relay_forwards_only_between_players_the_server_put_together() {
+        let now = Instant::now();
+        let mut t = Table::new(
+            NatConfig {
+                relay: RelayMode::All,
+                ..NatConfig::default()
+            },
+            Ipv4Addr::new(192, 0, 2, 1),
+        );
+        let a_reply = t.probe(a("198.51.100.7:1"), 0, 1, None, "Ann", now);
+        let b_reply = t.probe(a("198.51.100.8:1"), 0, 1, None, "bob", now);
+        let c_reply = t.probe(a("198.51.100.9:1"), 0, 1, None, "cat", now);
+        let (a_adv, b_adv, c_adv) = (advertise(&a_reply).0, advertise(&b_reply).0, advertise(&c_reply).0);
+
+        // Not yet known: dropped, and the server asked once (not again while it's asked).
+        assert_eq!(t.route_tagged(a("198.51.100.7:1"), tag(&a_reply), b_adv, 10, now), None);
+        assert_eq!(t.route_tagged(a("198.51.100.7:1"), tag(&a_reply), b_adv, 10, now), None);
+        let asks = t.asks();
+        assert_eq!(asks.iter().map(|(_, _, x, y)| (x.as_str(), y.as_str())).collect::<Vec<_>>(), [("ann", "bob")]);
+        let (ann, bob) = (asks[0].0, asks[0].1);
+        t.decided(ann, bob, true, now);
+        assert!(t.route_tagged(a("198.51.100.7:1"), tag(&a_reply), b_adv, 10, now).is_some());
+        assert!(t.route_tagged(a("198.51.100.8:1"), tag(&b_reply), a_adv, 10, now).is_some(), "and back");
+
+        // Refused: not asked again for a moment.
+        assert_eq!(t.route_tagged(a("198.51.100.9:1"), tag(&c_reply), a_adv, 10, now), None);
+        let (cat, _, _, _) = t.asks().pop().unwrap();
+        t.decided(cat, ann, false, now);
+        assert_eq!(t.route_tagged(a("198.51.100.9:1"), tag(&c_reply), a_adv, 10, now), None);
+        assert!(t.asks().is_empty());
+        let later = now + REFUSED_FOR;
+        assert_eq!(t.route_tagged(a("198.51.100.9:1"), tag(&c_reply), a_adv, 10, later), None);
+        assert_eq!(t.asks().len(), 1, "asked again once it may have joined");
+
+        // A probe the server had sent pairs them at once.
+        t.introduce("CAT", "bob", now);
+        assert!(t.route_tagged(a("198.51.100.8:1"), tag(&b_reply), c_adv, 10, now).is_some());
+
+        // A pair goes quiet and is forgotten.
+        let quiet = now + PAIR_FRESH;
+        assert_eq!(t.route_tagged(a("198.51.100.7:1"), tag(&a_reply), b_adv, 10, quiet), None);
+    }
+
+    #[test]
+    fn a_sweep_of_the_relay_ports_costs_a_few_lookups() {
+        let now = Instant::now();
+        let mut t = Table::new(
+            NatConfig {
+                relay: RelayMode::All,
+                ..NatConfig::default()
+            },
+            Ipv4Addr::new(192, 0, 2, 1),
+        );
+        let me = t.probe(a("198.51.100.7:1"), 0, 1, None, "sweeper", now);
+        let others: Vec<SocketAddrV4> = (0..40u8)
+            .map(|i| advertise(&t.probe(SocketAddrV4::new(Ipv4Addr::new(203, 0, 113, i), 1), 0, 1, None, &format!("p{i}"), now)).0)
+            .collect();
+        for to in &others {
+            assert_eq!(t.route_tagged(a("198.51.100.7:1"), tag(&me), *to, 10, now), None);
+        }
+        assert_eq!(t.asks().len(), MAX_ASKS_PER_SECOND as usize);
+        for to in &others {
+            t.route_tagged(a("198.51.100.7:1"), tag(&me), *to, 10, now + Duration::from_secs(1));
+        }
+        assert_eq!(t.asks().len(), MAX_ASKS_PER_SECOND as usize, "a few more the next second");
+
+        // Many players at one address, each asking about one: a few from there a second.
+        let later = now + Duration::from_secs(5);
+        let at = |i: usize| SocketAddrV4::new(Ipv4Addr::new(198, 51, 100, 9), 1000 + u16::try_from(i).unwrap());
+        let many: Vec<Message> = (0..40).map(|i| t.probe(at(i), 0, 1, None, &format!("m{i}"), later)).collect();
+        for (i, m) in many.iter().enumerate() {
+            t.route_tagged(at(i), tag(m), others[i], 10, later);
+        }
+        assert_eq!(t.asks().len(), MAX_ASKS_PER_IP as usize);
+        // A pair being asked about isn't asked about again until it's answered (or lost).
+        t.route_tagged(at(0), tag(&many[0]), others[0], 10, later + Duration::from_secs(1));
+        assert!(t.asks().is_empty());
+        t.route_tagged(at(0), tag(&many[0]), others[0], 10, later + ASKING_FOR);
+        assert_eq!(t.asks().len(), 1, "lost: asked again");
     }
 
     /// PlaySkill's case (eu1, 2026-10-06): registered from one port, the match's traffic from

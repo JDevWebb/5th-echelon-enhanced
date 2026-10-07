@@ -21,6 +21,7 @@
         <p v-if="sv.delisted" class="callout warn">Delisted: {{ sv.delisted }}</p>
         <p v-if="!sv.online" class="callout bad">Offline since {{ fmt.when(sv.last_seen) }}</p>
         <p v-for="clash in sv.name_clashes || []" :key="clash" class="callout warn">Name: {{ clash }}</p>
+        <p v-if="sv.host_check && !sv.host_check.ok" class="callout warn">Not in the directory: the server at its host didn't answer as this one ({{ sv.host_check.why }})</p>
         <div class="bars">
           <Bar label="CPU" :frac="(sys(sv).cpu_percent || 0) / 100" :text="fmt.pct(sys(sv).cpu_percent)" />
           <Bar label="Memory" :frac="sys(sv).mem_total ? (sys(sv).mem_total - sys(sv).mem_available) / sys(sv).mem_total : 0" :text="sys(sv).mem_total ? fmt.bytes(sys(sv).mem_total - sys(sv).mem_available) : '–'" />

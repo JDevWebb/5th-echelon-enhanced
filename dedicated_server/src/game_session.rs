@@ -371,6 +371,17 @@ impl GameSessionProtocolServerImpl {
                 .is_ok_and(|rooms| rooms.iter().any(|a| attribute_value(a, PROPERTY_ROOM_KIND) == Some(ROOM_KIND_ANTEROOM)))
     }
 
+    /// [`Self::in_party_of`] since before the host made `match_id`: who follows the host into
+    /// a private match. A stranger can add themselves to a host's public party and then
+    /// find and join the match they made; the party that was there when it was made follows.
+    fn in_party_before(&self, member: u32, host: u32, match_id: u32) -> bool {
+        member != host
+            && self
+                .storage
+                .rooms_of_host_with_before(host, member, match_id)
+                .is_ok_and(|rooms| rooms.iter().any(|a| attribute_value(a, PROPERTY_ROOM_KIND) == Some(ROOM_KIND_ANTEROOM)))
+    }
+
     /// LeaveSession and AbandonSession: the player is no longer in the
     /// session, and one nobody is left in ends. Upstream answered both
     /// without doing anything, so players stayed listed in rooms they had
@@ -615,7 +626,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             let invited = rmc_err!(self.storage.is_invited(user_id, session_id), logger, "error checking invitations")?;
             let party_of_host = members
                 .as_ref()
-                .is_some_and(|(creator, _)| self.in_party_of(user_id, *creator) && !crate::friends_policy::blocked_blocking(&self.storage, user_id, *creator));
+                .is_some_and(|(creator, _)| self.in_party_before(user_id, *creator, session_id) && !crate::friends_policy::blocked_blocking(&self.storage, user_id, *creator));
             if !invited && !party_of_host {
                 warn!(logger, "User {user_id} tried to join private room {session_id} without an invitation; refused");
                 return Err(Error::AccessDenied);
@@ -979,7 +990,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 || session.creator_id == user_id
                 || session.participants.iter().any(|p| p.user_id == user_id)
                 || self.storage.is_invited(user_id, session.session_id).unwrap_or(false)
-                || self.in_party_of(user_id, session.creator_id)
+                || self.in_party_before(user_id, session.creator_id, session.session_id)
                 || invited_by == Some(session.creator_id)
         });
 
@@ -1129,7 +1140,15 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         _socket: &std::net::UdpSocket,
     ) -> Result<ReportUnsuccessfulJoinSessionsResponse, Error> {
         let user_id = login_required(&*ci)?;
-        for failed in &request.unsuccessful_join_sessions.0 {
+        // A game reports the join it just failed; one call listed 1,900, and calls came by
+        // the thousand, each entry a warning and a report's worth of work. A few per call, and
+        // a few a minute per player.
+        let listed = request.unsuccessful_join_sessions.0.len();
+        let taken = failed_joins_allowed(user_id, listed.min(MAX_FAILED_JOINS_PER_CALL));
+        if taken < listed {
+            debug!(logger, "Join failures from {user_id}: {listed} listed, {taken} taken (too many)");
+        }
+        for failed in request.unsuccessful_join_sessions.0.iter().take(taken) {
             crate::metrics::failed_join();
             #[allow(clippy::cast_sign_loss)]
             crate::reports::join_failed(user_id, failed.session_key.session_id, failed.error_code as u32);
@@ -1482,7 +1501,6 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // knowing that the join happened: only now may a pending invitation be retired, so
         // that a client repeating its search in the meantime still finds the room.
         let key = request.game_session_key;
-        self.note_match_players(logger, key.session_id, [user_id]);
         let invited = rmc_err!(
             self.storage.consume_invite_for_session(user_id, key.type_id, key.session_id),
             logger,
@@ -1495,15 +1513,28 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // they show as in no game at all. Only a room matchmaking lists, or one they were
         // invited to (storage checks), and not faster than a game joins (JoinSession names any
         // id: a client looping over them would be a guest of every match).
+        let mut admitted = invited;
         if crate::rate_limit::game_requests().check(user_id) {
             match self.storage.add_guest(key.session_id, user_id, invited) {
-                Ok(true) => joined([user_id], key.session_id),
+                Ok(true) => {
+                    joined([user_id], key.session_id);
+                    admitted = true;
+                }
                 Ok(false) => {}
                 Err(e) => warn!(logger, "Couldn't note {user_id} in session {}: {e}", key.session_id),
             }
             // Sessions' join event too, at the same pace: each is kept, and remembered for
             // ten minutes to match the join with how it went.
             crate::session_events::joined(user_id, key.session_id, if invited { "invite" } else { "search" });
+        }
+        // In the match's players (their matches played) only if they're in it: JoinSession
+        // names any id, and a stranger's joins of a private match counted for them and the
+        // host alike.
+        if !admitted {
+            admitted = crate::storage::run(self.storage.is_in_session(user_id, key.session_id)).is_ok_and(|r| r.unwrap_or(false));
+        }
+        if admitted {
+            self.note_match_players(logger, key.session_id, [user_id]);
         }
         self.went_online(user_id);
         Ok(JoinSessionResponse)
@@ -1611,6 +1642,31 @@ pub fn new_protocol<T: 'static>(storage: Arc<Storage>, debug_config: Arc<DebugCo
         debug_config,
         left: std::sync::Mutex::default(),
     }))
+}
+
+/// Join failures taken from one call, and from one player a minute (see
+/// `report_unsuccessful_join_sessions`).
+const MAX_FAILED_JOINS_PER_CALL: usize = 8;
+const MAX_FAILED_JOINS_A_MINUTE: u32 = 30;
+
+/// How many of `wanted` join failures `user_id` may report now, counting them.
+fn failed_joins_allowed(user_id: u32, wanted: usize) -> usize {
+    static SEEN: std::sync::Mutex<Option<std::collections::HashMap<u32, (std::time::Instant, u32)>>> = std::sync::Mutex::new(None);
+    let mut seen = SEEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let seen = seen.get_or_insert_with(std::collections::HashMap::new);
+    let now = std::time::Instant::now();
+    let minute = std::time::Duration::from_secs(60);
+    if seen.len() >= 10_000 {
+        seen.retain(|_, (since, _)| now.duration_since(*since) < minute);
+    }
+    let entry = seen.entry(user_id).or_insert((now, 0));
+    if now.duration_since(entry.0) >= minute {
+        *entry = (now, 0);
+    }
+    let room = MAX_FAILED_JOINS_A_MINUTE.saturating_sub(entry.1) as usize;
+    let taken = wanted.min(room);
+    entry.1 += taken as u32;
+    taken
 }
 
 #[cfg(test)]
@@ -1843,5 +1899,17 @@ mod tests {
         assert_eq!(attribute_value("113 => 0;3 => 8", PROPERTY_ROOM_KIND), Some(0));
         assert_eq!(attribute_value("3 => 8;4 => 0", PROPERTY_ROOM_KIND), None);
         assert_eq!(attribute_value("", PROPERTY_ROOM_KIND), None);
+    }
+
+    /// A few join failures per call and a few a minute per player are taken.
+    #[test]
+    fn join_failures_are_limited_per_player() {
+        let user = 4_000_001;
+        assert_eq!(super::failed_joins_allowed(user, 8), 8);
+        assert_eq!(super::failed_joins_allowed(user, 8), 8);
+        assert_eq!(super::failed_joins_allowed(user, 8), 8);
+        assert_eq!(super::failed_joins_allowed(user, 8), 6, "30 a minute");
+        assert_eq!(super::failed_joins_allowed(user, 1), 0);
+        assert_eq!(super::failed_joins_allowed(user + 1, 1), 1, "another player");
     }
 }
