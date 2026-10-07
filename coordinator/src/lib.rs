@@ -1236,18 +1236,18 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, body: axum::body
     // Listed under its own address only: one another member holds would send players to
     // that server under this one's name. Compared written one way ([`canonical_host`]), so
     // "server-a." or "[::1]:80" isn't another name for the same place.
-    let names: Vec<(String, String)> = match sqlx::query_as("SELECT name, server_id FROM server_names").fetch_all(&c.pool).await {
+    // Several members' names may come down to one place ("server-a" and "server-a."): it's
+    // the first to claim one's (names are kept in the order they were claimed), so a later
+    // spelling can't take a member's address from it.
+    let names: Vec<(String, String)> = match sqlx::query_as("SELECT name, server_id FROM server_names ORDER BY rowid").fetch_all(&c.pool).await {
         Ok(n) => n,
         Err(e) => return internal(e),
     };
     let host = canonical_host(&listing.host);
-    let ours = host
+    let owner = host
         .as_ref()
-        .is_some_and(|h| names.iter().any(|(n, owner)| *owner == server && canonical_host(n).as_ref() == Some(h)));
-    let theirs = host
-        .as_ref()
-        .is_some_and(|h| names.iter().any(|(n, owner)| *owner != server && canonical_host(n).as_ref() == Some(h)));
-    if listing.listed && (!ours || theirs) {
+        .and_then(|h| names.iter().find(|(n, _)| canonical_host(n).as_ref() == Some(h)).map(|(_, owner)| owner));
+    if listing.listed && owner != Some(&server) {
         listing.listed = false;
         clashes.push(format!("{} isn't this server's name: not listed in the directory", listing.host));
     }

@@ -3529,6 +3529,18 @@ async fn listings_keep_to_their_own_address_and_a_believable_count() {
             .await;
         assert!(v["warnings"].to_string().contains("not listed"), "{host}: {v}");
     }
+    // Nor can B, by claiming another spelling of A's address first, get A delisted.
+    let (status, _) = t
+        .call(
+            "POST",
+            "/v1/heartbeat",
+            Some(&a),
+            Some(json!({ "name": "Server A", "host": "server-a", "names": ["server-a"], "players_online": 1, "players_total": 5 })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, v) = t.call("GET", "/v1/servers", None, None).await;
+    assert!(v["servers"].to_string().contains("\"Server A\""), "A still listed: {v}");
     assert_eq!(canonical_host("[2001:DB8::1]:80"), Some("2001:db8::1".into()));
     assert_eq!(canonical_host("::ffff:10.0.0.1"), Some("10.0.0.1".into()));
     assert_eq!(canonical_host("167772161"), None);
