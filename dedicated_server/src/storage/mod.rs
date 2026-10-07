@@ -39,10 +39,6 @@ pub use stats::StoredStats;
 
 type Result<T> = eyre::Result<T>;
 
-/// An Argon2 hash of nothing in particular, checked against for unknown
-/// users so their logins take as long as real ones.
-const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$ak/934K3+OsQ71Dogbr+Iw$Fy3aLbg2bQFXrnucys2gsBqiy2Jgv9QMBWWiPzS7VTk";
-
 /// Invitations one player can have waiting at once (one per sender).
 const MAX_PENDING_INVITES: i64 = 5;
 
@@ -82,13 +78,16 @@ async fn hashing<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> R
     hashing_or_busy(true, f).await
 }
 
-/// [`hashing`], or with `wait` false, [`Busy`] at once when no turn is free: for the game's
-/// own sign-in, which holds its service's only thread while it waits.
+/// [`hashing`], or with `wait` false the game's own sign-in, which holds its service's only
+/// thread: it has a turn of its own, so API sign-ins taking every other turn (anyone can
+/// send them, from many addresses) can't make the game's fail. That service checks one
+/// password at a time, so its turn is free whenever it asks; [`Busy`] if it ever isn't.
 async fn hashing_or_busy<T: Send + 'static>(wait: bool, f: impl FnOnce() -> T + Send + 'static) -> Result<T> {
     static LIMIT: std::sync::OnceLock<tokio::sync::Semaphore> = std::sync::OnceLock::new();
+    static GAME: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(1);
     static WAITING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let limit = LIMIT.get_or_init(|| tokio::sync::Semaphore::new(std::thread::available_parallelism().map_or(2, |n| n.get()).clamp(2, 4)));
-    let _permit = match limit.try_acquire() {
+    let _permit = match if wait { limit.try_acquire() } else { GAME.try_acquire() } {
         Ok(permit) => permit,
         Err(_) if !wait => return Err(Busy.into()),
         Err(_) => {
@@ -277,12 +276,10 @@ impl Storage {
             .await?
         else {
             warn!(self.logger, "User {:?} not found", username.chars().take(32).collect::<String>());
-            // As long as a real check, so the time taken doesn't tell which names exist.
-            let password = password.to_owned();
-            let _ = hashing_or_busy(wait, move || {
-                Argon2::default().verify_password(password.as_bytes(), &PasswordHash::new(DUMMY_HASH).expect("valid dummy hash"))
-            })
-            .await?;
+            // No password check for a name that doesn't exist: the answer says so anyway
+            // ("Unknown user"), and anyone can look names up, so a check as long as a real one
+            // hid nothing, and sign-ins for made-up names took every turn (a stranger from a
+            // few hundred addresses kept every game from signing in).
             return Ok(Err(LoginError::NotFound));
         };
 

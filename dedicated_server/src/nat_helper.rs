@@ -41,7 +41,8 @@ const EXPIRY: Duration = Duration::from_secs(90);
 const MAX_ALIASES: usize = 4;
 /// Packets for a player go back to where their data last came from, for this long after.
 const DATA_FROM_FRESH: Duration = Duration::from_secs(30);
-/// Players registered at once, and from one address (a LAN party shares one).
+/// Players registered at once, and from one address (a LAN party shares one;
+/// `FE_MAX_CONNECTIONS_PER_IP` lifts it, as for the load test's players).
 const MAX_PEERS: usize = 20_000;
 const MAX_PEERS_PER_IP: usize = 64;
 /// Relayed packets one player may send a second (a match is ~30 per peer).
@@ -265,7 +266,7 @@ impl Table {
             return true;
         }
         let here = self.peers.values().filter(|p| p.real.ip() == src.ip()).count();
-        self.peers.len() < MAX_PEERS && here < MAX_PEERS_PER_IP
+        self.peers.len() < MAX_PEERS && here < quazal::prudp::many_per_ip().unwrap_or(MAX_PEERS_PER_IP)
     }
 
     /// Registers (or refreshes) the player behind `src` and answers its probe.
