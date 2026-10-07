@@ -3517,4 +3517,20 @@ async fn listings_keep_to_their_own_address_and_a_believable_count() {
     assert!(v["warnings"].to_string().contains("not listed"), "{v}");
     let (_, v) = t.call("GET", "/v1/servers", None, None).await;
     assert!(!v["servers"].to_string().contains("official"), "{v}");
+    // Nor at another way of writing it.
+    for host in ["SERVER-A.", "server-a:7777", "server-a."] {
+        let (_, v) = t
+            .call(
+                "POST",
+                "/v1/heartbeat",
+                Some(&b),
+                Some(json!({ "name": "Server A (official)", "host": host, "names": ["server-b", host] })),
+            )
+            .await;
+        assert!(v["warnings"].to_string().contains("not listed"), "{host}: {v}");
+    }
+    assert_eq!(canonical_host("[2001:DB8::1]:80"), Some("2001:db8::1".into()));
+    assert_eq!(canonical_host("::ffff:10.0.0.1"), Some("10.0.0.1".into()));
+    assert_eq!(canonical_host("167772161"), None);
+    assert_eq!(canonical_host("010.0.0.1"), None);
 }
