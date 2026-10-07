@@ -736,17 +736,22 @@ async fn login(State(c): State<Shared>, Extension(client): Extension<Client>, Js
     let refused = || fail(StatusCode::UNAUTHORIZED, "wrong name or password");
     let Some((id, hash, disabled, locked_until)) = row else {
         // As slow as a real check, so names can't be told from timing.
-        let _ = auth::check_password(
-            &req.password,
-            "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$k8xR2o1fpLwqgMB0ZDzR2X0Hr7nCMuq1H1IMpJzSo4o",
-        );
+        let _ = auth::check_password(&req.password, DUMMY_HASH);
         c.audit(&username, Some(&client), "sign-in failed", "no such admin").await;
         return refused();
     };
     if identity::now() < locked_until {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many failed sign-ins; this account waits a while");
     }
-    let valid = hash.as_deref().is_some_and(|h| auth::check_password(&req.password, h));
+    // An admin still setting up has no password yet: checked against a hash all the same, or
+    // their answer came back many times faster and told their name.
+    let valid = match hash.as_deref() {
+        Some(h) => auth::check_password(&req.password, h),
+        None => {
+            let _ = auth::check_password(&req.password, DUMMY_HASH);
+            false
+        }
+    };
     if !valid || disabled != 0 {
         c.failed(id, &username, &client, "password").await;
         return refused();
@@ -964,27 +969,32 @@ struct SetupRequest {
     password: String,
 }
 
+/// A hash of nothing in particular: checked against where there's no password to check, so
+/// the time taken doesn't tell.
+const DUMMY_HASH: &str = "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$k8xR2o1fpLwqgMB0ZDzR2X0Hr7nCMuq1H1IMpJzSo4o";
+
 /// A setup link: the admin chooses a password, then must add a second factor.
 async fn setup(State(c): State<Shared>, Extension(client): Extension<Client>, Json(req): Json<SetupRequest>) -> Response {
     if !limits().0.check(&crate::limit_key(client.ip)) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many attempts; wait a minute");
     }
-    let row: Option<(i64, String)> =
-        sqlx::query_as("DELETE FROM setup_tokens WHERE token_hash = ? AND expires_at >= ? RETURNING admin_id, (SELECT username FROM admins WHERE id = admin_id)")
+    let row: Option<(i64, String, i64)> =
+        sqlx::query_as("DELETE FROM setup_tokens WHERE token_hash = ? AND expires_at >= ? RETURNING admin_id, (SELECT username FROM admins WHERE id = admin_id), expires_at")
             .bind(auth::digest(&req.token))
             .bind(identity::now())
             .fetch_optional(&c.pool)
             .await
             .unwrap_or(None);
-    let Some((admin_id, username)) = row else {
+    let Some((admin_id, username, expires_at)) = row else {
         return fail(StatusCode::UNAUTHORIZED, "this setup link expired or was used; ask for a new one");
     };
     if let Some(why) = auth::weak_password(&req.password, &username) {
-        // The link stays usable for another try.
+        // The link stays usable for another try, until it expires as it would have (each
+        // try used to give it another hour, so a link could be kept alive for good).
         let _ = sqlx::query("INSERT INTO setup_tokens (token_hash, admin_id, expires_at) VALUES (?, ?, ?)")
             .bind(auth::digest(&req.token))
             .bind(admin_id)
-            .bind(identity::now() + 3600)
+            .bind(expires_at)
             .execute(&c.pool)
             .await;
         return fail(StatusCode::BAD_REQUEST, why);

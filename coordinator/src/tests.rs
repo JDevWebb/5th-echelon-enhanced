@@ -3460,3 +3460,18 @@ async fn second_factor_codes_wait_with_the_account() {
     let (status, v, _) = admin_send(&r, "POST", "/api/login/totp", &second, Some(json!({ "code": totp_code(&secret, step) }))).await;
     assert_eq!((status, v["stage"].as_str()), (StatusCode::OK, Some("full")), "{v}");
 }
+
+/// A weak password at a setup link leaves the link usable, but no longer than it was.
+#[tokio::test]
+async fn a_setup_link_keeps_its_expiry_through_weak_passwords() {
+    let t = start("setup-expiry").await;
+    let r = admin_router_at(&t, [192, 0, 2, 12]);
+    let link = t.c.admin_setup_link("weka", false).await.unwrap();
+    let token = link.split("#setup=").nth(1).unwrap().to_string();
+    let soon = identity::now() + 60;
+    sqlx::query("UPDATE setup_tokens SET expires_at = ?").bind(soon).execute(&t.c.pool).await.unwrap();
+    let (status, ..) = admin_send(&r, "POST", "/api/setup", "", Some(json!({ "token": token, "password": "weka" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    let expires: i64 = sqlx::query_scalar("SELECT expires_at FROM setup_tokens").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(expires, soon);
+}
