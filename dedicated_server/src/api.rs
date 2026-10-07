@@ -966,20 +966,19 @@ impl Users for MyUsers {
         let peer = client_addr(&request);
         let request = request.into_inner();
         // Failures count against the account, or the identity when there's no name: as key
-        // sign-ins, apart from passwords, so password guesses on a name (anyone's to make)
-        // don't lock its owner's key out. A signature can't be guessed.
+        // sign-ins, apart from passwords (see `rate_limit::begin_key_login`).
         let limit_key = if request.username.is_empty() {
-            format!("key:{}", request.global_id)
+            request.global_id.clone()
         } else {
-            format!("key:{}", request.username)
+            request.username.clone()
         };
-        if request.username.chars().count() > 32 || request.global_id.len() > 64 || !crate::rate_limit::begin_login(peer, &limit_key) {
+        if request.username.chars().count() > 32 || request.global_id.len() > 64 || !crate::rate_limit::begin_key_login(peer, &limit_key) {
             return Err(Status::resource_exhausted("Too many failed logins; try again later"));
         }
         // One answer for every failure: which accounts are linked to which identity isn't
         // anyone's business.
         let refused = |_why: &str| {
-            crate::rate_limit::login_failed(peer, &limit_key);
+            crate::rate_limit::key_login_failed(peer, &limit_key);
             Status::unauthenticated("Signing in with this identity didn't work")
         };
         if !identity::fresh(request.time, identity::now()) {
@@ -997,7 +996,7 @@ impl Users for MyUsers {
                 Some(person) => person,
                 // Not a failed sign-in: a player new here.
                 None => {
-                    crate::rate_limit::login_succeeded(peer, &limit_key);
+                    crate::rate_limit::key_login_succeeded(peer, &limit_key);
                     return Err(Status::not_found("No account here is linked to this identity"));
                 }
             }
@@ -1037,7 +1036,7 @@ impl Users for MyUsers {
             self.storage.set_password(person.id, &request.new_password).await.map_err(storage_error)?;
             info!(self.logger, "{} set a new password with their identity key", person.username);
         }
-        crate::rate_limit::login_succeeded(peer, &limit_key);
+        crate::rate_limit::key_login_succeeded(peer, &limit_key);
         info!(self.logger, "Key login successful for {}", person.username);
         crate::metrics::api_login();
         if let Some(ip) = peer {

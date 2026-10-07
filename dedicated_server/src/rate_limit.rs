@@ -159,6 +159,30 @@ pub fn begin_login_vouched(peer: Option<IpAddr>, name: &str, vouched: bool) -> b
     !blocked && attempts().check(peer) && logins().check(peer)
 }
 
+/// Sign-ins with an identity key (a signature, which can't be guessed): their failures are
+/// counted apart from passwords', so anyone's password guesses for a name don't lock its
+/// owner's key out (a prefix on the name didn't keep them apart: a password sign-in can
+/// name anything).
+pub fn begin_key_login(peer: Option<IpAddr>, name: &str) -> bool {
+    !key_accounts().blocked(name, peer) && attempts().check(peer) && logins().check(peer)
+}
+
+/// A key sign-in worked (see [`begin_key_login`]).
+pub fn key_login_succeeded(peer: Option<IpAddr>, name: &str) {
+    logins().refund(peer);
+    key_accounts().succeeded(name, peer);
+}
+
+/// A key sign-in failed (see [`begin_key_login`]).
+pub fn key_login_failed(peer: Option<IpAddr>, name: &str) {
+    key_accounts().record(name, peer);
+}
+
+fn key_accounts() -> &'static AccountLimit {
+    static LIMIT: std::sync::OnceLock<AccountLimit> = std::sync::OnceLock::new();
+    LIMIT.get_or_init(AccountLimit::new)
+}
+
 /// The sign-in worked: it isn't a failure after all (it still counts as an
 /// attempt), and the address is one this account signs in from.
 pub fn login_succeeded(peer: Option<IpAddr>, name: &str) {
