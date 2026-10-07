@@ -282,25 +282,6 @@ pub fn http() -> reqwest::Client {
 }
 
 /// Whether `host` may be a server's host name or address.
-/// `host` written one way, for telling whether two names are one place: lower case, without
-/// a port, brackets or a trailing dot, an address as `IpAddr` writes it. None for a name made
-/// only of digits and dots that isn't an address (some resolvers read "167772161" as one).
-fn canonical_host(host: &str) -> Option<String> {
-    // "[v6]" and "[v6]:port": the address inside; anything else as names are keyed.
-    let host = match host.trim().strip_prefix('[').and_then(|rest| rest.split_once(']')) {
-        Some((inside, _)) => inside.to_lowercase(),
-        None => identity::host_key(host),
-    };
-    let host = host.trim_end_matches('.');
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        return Some(ip.to_canonical().to_string());
-    }
-    if host.is_empty() || host.bytes().all(|b| b.is_ascii_digit() || b == b'.') {
-        return None;
-    }
-    Some(host.to_string())
-}
-
 fn valid_host(host: &str) -> bool {
     (1..=253).contains(&host.len()) && host.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b':' | b'[' | b']'))
 }
@@ -1229,28 +1210,10 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, body: axum::body
     }
     // Its names, first come, first served: a name another server has stays theirs, and the
     // server hears about it (newer servers log it).
-    let mut clashes = match c.claim_server_names(&server, &listing).await {
+    let clashes = match c.claim_server_names(&server, &listing).await {
         Ok(clashes) => clashes,
         Err(e) => return internal(e),
     };
-    // Listed under its own address only: one another member holds would send players to
-    // that server under this one's name. Compared written one way ([`canonical_host`]), so
-    // "server-a." or "[::1]:80" isn't another name for the same place.
-    // Several members' names may come down to one place ("server-a" and "server-a."): it's
-    // the first to claim one's (names are kept in the order they were claimed), so a later
-    // spelling can't take a member's address from it.
-    let names: Vec<(String, String)> = match sqlx::query_as("SELECT name, server_id FROM server_names ORDER BY rowid").fetch_all(&c.pool).await {
-        Ok(n) => n,
-        Err(e) => return internal(e),
-    };
-    let host = canonical_host(&listing.host);
-    let owner = host
-        .as_ref()
-        .and_then(|h| names.iter().find(|(n, _)| canonical_host(n).as_ref() == Some(h)).map(|(_, owner)| owner));
-    if listing.listed && owner != Some(&server) {
-        listing.listed = false;
-        clashes.push(format!("{} isn't this server's name: not listed in the directory", listing.host));
-    }
     // A count the directory can sort by, but not past the server's own players, nor more than
     // any server here holds (one said 4,294,967,295 to top the list).
     // (A server too old to say its total says 0.)
