@@ -21,8 +21,9 @@
 //! such as link-local where cloud machines keep their metadata service, still aren't asked).
 //! It asks one path, follows no redirect, reads at most [`MAX_ANSWER`] bytes, and tells the
 //! member only that the check failed: the details (which could map what answers where) are
-//! for the coordinator's log and its admins. Every address a name resolves to must answer as
-//! the server, so a name that also points at another server's address doesn't pass.
+//! for the coordinator's log and its admins. Every address a name resolves to that answers
+//! must answer as the server, so a name that also points at another server's address doesn't
+//! pass; one that doesn't answer (IPv6 the coordinator's machine can't reach) is passed over.
 
 use std::net::IpAddr;
 use std::net::SocketAddr;
@@ -104,8 +105,8 @@ fn askable(ip: IpAddr, private: bool) -> bool {
     !special && (private || crate::public_ip(ip))
 }
 
-/// Asks `host` (each of its addresses) for the id of the server there: the one they all
-/// give.
+/// Asks `host` (each of its addresses) for the id of the server there: the one all that
+/// answer give.
 async fn ask(https: bool, host: &str, port: u16, private: bool) -> Result<String, String> {
     let mut addrs: Vec<SocketAddr> = tokio::time::timeout(TIMEOUT, tokio::net::lookup_host((host, port)))
         .await
@@ -120,16 +121,24 @@ async fn ask(https: bool, host: &str, port: u16, private: bool) -> Result<String
     if let Some(a) = addrs.iter().find(|a| !askable(a.ip(), private)) {
         return Err(format!("{host} is at {}, not a public address", a.ip()));
     }
-    let mut id = None;
+    ask_each(https, host, port, addrs).await
+}
+
+/// [`ask`], at these addresses of `host`. One that doesn't answer (IPv6 this machine can't
+/// reach, say) says nothing; one answering as another server does.
+async fn ask_each(https: bool, host: &str, port: u16, addrs: Vec<SocketAddr>) -> Result<String, String> {
+    let (mut id, mut failed) = (None, Vec::new());
     for addr in addrs {
-        let theirs = ask_at(https, host, port, addr).await?;
-        match &id {
-            None => id = Some(theirs),
-            Some(first) if *first == theirs => {}
-            Some(first) => return Err(format!("{host}'s addresses are different servers ({first:?} and {theirs:?})")),
+        match ask_at(https, host, port, addr).await {
+            Ok(theirs) => match &id {
+                None => id = Some(theirs),
+                Some(first) if *first == theirs => {}
+                Some(first) => return Err(format!("{host}'s addresses are different servers ({first:?} and {theirs:?})")),
+            },
+            Err(e) => failed.push(e),
         }
     }
-    id.ok_or_else(|| format!("{host} has no address"))
+    id.ok_or_else(|| failed.join("; "))
 }
 
 /// Asks one of `host`'s addresses for the id of the server there.
@@ -238,6 +247,26 @@ mod tests {
         // The API port is the launcher's gRPC (50051 without Caddy): /api/info is on 80.
         assert_eq!(urls(&listing("203.0.113.5", 50051, Some(443)), 80), [(false, "203.0.113.5".into(), 80)]);
         assert_eq!(urls(&listing("[2001:db8::1]", 80, None), 80), [(false, "2001:db8::1".into(), 80)]);
+    }
+
+    #[tokio::test]
+    async fn an_address_that_doesnt_answer_is_passed_over_but_another_server_isnt() {
+        let serve = |id: &'static str, at: SocketAddr| async move {
+            let listener = tokio::net::TcpListener::bind(at).await.unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let app = axum::Router::new().route("/api/info", axum::routing::get(move || async move { axum::Json(serde_json::json!({ "id": id })) }));
+            tokio::spawn(async move { axum::serve(listener, app).await });
+            port
+        };
+        let port = serve("me", "127.0.0.1:0".parse().unwrap()).await;
+        let at = |ip: &str| SocketAddr::new(ip.parse().unwrap(), port);
+        // 127.0.0.2: nothing listens there.
+        assert_eq!(ask_each(false, "x.test", port, vec![at("127.0.0.1"), at("127.0.0.2")]).await, Ok("me".into()));
+        assert!(ask_each(false, "x.test", port, vec![at("127.0.0.2")]).await.is_err(), "nobody answering isn't a pass");
+        // Another server at the name's other address.
+        serve("someone else", at("127.0.0.3")).await;
+        let both = vec![at("127.0.0.1"), at("127.0.0.3")];
+        assert!(ask_each(false, "x.test", port, both).await.unwrap_err().contains("different servers"));
     }
 
     #[test]
