@@ -290,11 +290,14 @@ impl Coordinator {
                 let canary = r.canary.as_ref().and_then(|c| fresh.iter().find(|m| &m.id == c)).copied();
                 match canary {
                     None => {
-                        // The quietest server that installs updates and isn't on the target yet.
+                        // The quietest server that installs updates and isn't on the target yet;
+                        // among as quiet ones, an order made from each id and the release, not
+                        // the ids themselves (a member that joined as "---" sorted first, and
+                        // was the canary every time).
                         let pick = fresh
                             .iter()
                             .filter(|m| m.auto_update && m.version != target)
-                            .min_by_key(|m| (m.players_online, m.id.clone()));
+                            .min_by_key(|m| (m.players_online, identity::digest(format!("{target}\n{}", m.id).as_bytes())));
                         match pick {
                             Some(m) => {
                                 r.canary = Some(m.id.clone());
