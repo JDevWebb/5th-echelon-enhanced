@@ -1501,7 +1501,6 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // knowing that the join happened: only now may a pending invitation be retired, so
         // that a client repeating its search in the meantime still finds the room.
         let key = request.game_session_key;
-        self.note_match_players(logger, key.session_id, [user_id]);
         let invited = rmc_err!(
             self.storage.consume_invite_for_session(user_id, key.type_id, key.session_id),
             logger,
@@ -1514,15 +1513,28 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // they show as in no game at all. Only a room matchmaking lists, or one they were
         // invited to (storage checks), and not faster than a game joins (JoinSession names any
         // id: a client looping over them would be a guest of every match).
+        let mut admitted = invited;
         if crate::rate_limit::game_requests().check(user_id) {
             match self.storage.add_guest(key.session_id, user_id, invited) {
-                Ok(true) => joined([user_id], key.session_id),
+                Ok(true) => {
+                    joined([user_id], key.session_id);
+                    admitted = true;
+                }
                 Ok(false) => {}
                 Err(e) => warn!(logger, "Couldn't note {user_id} in session {}: {e}", key.session_id),
             }
             // Sessions' join event too, at the same pace: each is kept, and remembered for
             // ten minutes to match the join with how it went.
             crate::session_events::joined(user_id, key.session_id, if invited { "invite" } else { "search" });
+        }
+        // In the match's players (their matches played) only if they're in it: JoinSession
+        // names any id, and a stranger's joins of a private match counted for them and the
+        // host alike.
+        if !admitted {
+            admitted = crate::storage::run(self.storage.is_in_session(user_id, key.session_id)).is_ok_and(|r| r.unwrap_or(false));
+        }
+        if admitted {
+            self.note_match_players(logger, key.session_id, [user_id]);
         }
         self.went_online(user_id);
         Ok(JoinSessionResponse)
