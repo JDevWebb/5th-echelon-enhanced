@@ -1140,7 +1140,15 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         _socket: &std::net::UdpSocket,
     ) -> Result<ReportUnsuccessfulJoinSessionsResponse, Error> {
         let user_id = login_required(&*ci)?;
-        for failed in &request.unsuccessful_join_sessions.0 {
+        // A game reports the join it just failed; one call listed 1,900, and calls came by
+        // the thousand, each entry a warning and a report's worth of work. A few per call, and
+        // a few a minute per player.
+        let listed = request.unsuccessful_join_sessions.0.len();
+        let taken = failed_joins_allowed(user_id, listed.min(MAX_FAILED_JOINS_PER_CALL));
+        if taken < listed {
+            debug!(logger, "Join failures from {user_id}: {listed} listed, {taken} taken (too many)");
+        }
+        for failed in request.unsuccessful_join_sessions.0.iter().take(taken) {
             crate::metrics::failed_join();
             #[allow(clippy::cast_sign_loss)]
             crate::reports::join_failed(user_id, failed.session_key.session_id, failed.error_code as u32);
@@ -1624,6 +1632,31 @@ pub fn new_protocol<T: 'static>(storage: Arc<Storage>, debug_config: Arc<DebugCo
     }))
 }
 
+/// Join failures taken from one call, and from one player a minute (see
+/// `report_unsuccessful_join_sessions`).
+const MAX_FAILED_JOINS_PER_CALL: usize = 8;
+const MAX_FAILED_JOINS_A_MINUTE: u32 = 30;
+
+/// How many of `wanted` join failures `user_id` may report now, counting them.
+fn failed_joins_allowed(user_id: u32, wanted: usize) -> usize {
+    static SEEN: std::sync::Mutex<Option<std::collections::HashMap<u32, (std::time::Instant, u32)>>> = std::sync::Mutex::new(None);
+    let mut seen = SEEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let seen = seen.get_or_insert_with(std::collections::HashMap::new);
+    let now = std::time::Instant::now();
+    let minute = std::time::Duration::from_secs(60);
+    if seen.len() >= 10_000 {
+        seen.retain(|_, (since, _)| now.duration_since(*since) < minute);
+    }
+    let entry = seen.entry(user_id).or_insert((now, 0));
+    if now.duration_since(entry.0) >= minute {
+        *entry = (now, 0);
+    }
+    let room = MAX_FAILED_JOINS_A_MINUTE.saturating_sub(entry.1) as usize;
+    let taken = wanted.min(room);
+    entry.1 += taken as u32;
+    taken
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -1854,5 +1887,17 @@ mod tests {
         assert_eq!(attribute_value("113 => 0;3 => 8", PROPERTY_ROOM_KIND), Some(0));
         assert_eq!(attribute_value("3 => 8;4 => 0", PROPERTY_ROOM_KIND), None);
         assert_eq!(attribute_value("", PROPERTY_ROOM_KIND), None);
+    }
+
+    /// A few join failures per call and a few a minute per player are taken.
+    #[test]
+    fn join_failures_are_limited_per_player() {
+        let user = 4_000_001;
+        assert_eq!(super::failed_joins_allowed(user, 8), 8);
+        assert_eq!(super::failed_joins_allowed(user, 8), 8);
+        assert_eq!(super::failed_joins_allowed(user, 8), 8);
+        assert_eq!(super::failed_joins_allowed(user, 8), 6, "30 a minute");
+        assert_eq!(super::failed_joins_allowed(user, 1), 0);
+        assert_eq!(super::failed_joins_allowed(user + 1, 1), 1, "another player");
     }
 }
