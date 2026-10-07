@@ -458,7 +458,7 @@ The server exits if one of its services stops, so systemd's `Restart=always` bri
 
 ### With Docker
 
-Every signed release publishes the server's image to GitHub's container registry (`:latest`, or a release's version; `-unsigned` tags are builds nobody has signed off yet):
+Every signed release publishes the server's image to GitHub's container registry (`:latest`, or a release's version; `-unsigned` tags are builds nobody has signed off yet). The release key signs the image's digest along with the release (`IMAGE` and `IMAGE.sig` among its downloads), after checking it was built by this repository's release workflow from the release's tag. To run exactly the image that was signed, whatever its tags say, check it and run it by its digest: `scripts/verify-image.sh v0.4.3` prints `ghcr.io/jdevwebb/5th-echelon-server@sha256:…` once the signature checks out (on Linux, with curl and OpenSSL 3).
 
 ```sh
 docker run -d --name 5th-echelon --restart unless-stopped \

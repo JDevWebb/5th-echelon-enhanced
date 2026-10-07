@@ -19,9 +19,14 @@
 # SHA256SUMS. Its signature is then checked with OpenSSL against the public
 # key install-server.sh carries, as the installer checks it.
 #
-# Once published, the server's Docker image, which the release workflow
-# pushed only as :<version>-unsigned, gets its real tags (:<version>, and
-# :latest for a release). That needs gh signed in with the write:packages
+# The server's Docker image, which the release workflow pushed only as
+# :<version>-unsigned, is signed with the release too: its digest (the image
+# exactly, whatever the tag points at later) is checked against its build
+# provenance (this repository's workflow, at the tag), written to IMAGE and
+# signed with the same key, for its own purpose (identity::image_message), as
+# IMAGE.sig; both go up with the release (scripts/verify-image.sh checks
+# them). Once published, that digest gets the image's real tags (:<version>,
+# and :latest for a release). That needs gh signed in with the write:packages
 # scope (gh auth refresh -s write:packages); otherwise it prints how.
 #
 # The key lives outside the repo, in RELEASE_KEY
@@ -57,7 +62,8 @@ esac
 echo "$TAG is commit $commit, on main."
 
 gh release download "$TAG" --repo "$REPO" --dir "$work/release"
-rm -f "$work/release/SHA256SUMS.sig"
+# What signing adds (from a run before that didn't publish): made again below.
+rm -f "$work/release/SHA256SUMS.sig" "$work/release/IMAGE" "$work/release/IMAGE.sig"
 # SHA256SUMS exactly as sha256sum writes it, as launchers read it: every line
 # "<sha256>  <file>", each download once, and nothing else. A loose line (a
 # leading space, a tab) is skipped by some sha256sum -c with only a warning,
@@ -89,6 +95,29 @@ if gh attestation verify --help 2>/dev/null | grep -q -- '--source-ref'; then
 else
   echo "This gh can't check build provenance (gh attestation verify --source-ref); skipped."
 fi
+# The server's image, by digest, built by this repository's workflow from this tag.
+owner=$(printf '%s' "${REPO%%/*}" | tr '[:upper:]' '[:lower:]')
+image="ghcr.io/$owner/5th-echelon-server"
+digest=$(docker buildx imagetools inspect "$image:$VERSION-unsigned" --format '{{json .Manifest}}' 2>/dev/null \
+  | grep -o '"digest":"sha256:[0-9a-f]\{64\}"' | head -1 | cut -d'"' -f4 || true)
+if [ -z "$digest" ]; then
+  printf '%s:%s-unsigned isn'"'"'t there. Sign the release without its server image? [y/N] ' "$image" "$VERSION"
+  read -r answer
+  case "$answer" in y|Y) ;; *) echo "Not signed."; exit 1 ;; esac
+else
+  if gh attestation verify --help 2>/dev/null | grep -q -- '--source-ref'; then
+    gh attestation verify "oci://$image@$digest" --repo "$REPO" --source-ref "refs/tags/$TAG" >/dev/null \
+      || die "$image@$digest has no build provenance from $REPO's workflow at $TAG; not signing it"
+    echo "The server image $image@$digest: built by this repository's workflow, at $TAG."
+  else
+    # Without gh's check, its revision label, exactly (the workflow sets it to the commit).
+    revision=$(docker buildx imagetools inspect "$image@$digest" --format '{{json .Image}}' 2>/dev/null \
+      | grep -o '"org.opencontainers.image.revision":"[0-9a-f]\{40\}"' | head -1 | cut -d'"' -f4 || true)
+    [ "$revision" = "$commit" ] || die "$image@$digest says it was built from ${revision:-no commit}, not $commit; not signing it"
+    echo "The server image $image@$digest: labelled with $commit (this gh can't check its provenance)."
+  fi
+  printf '%s@%s\n' "$image" "$digest" > "$work/sign/IMAGE"
+fi
 printf 'Sign %s (commit %s)? [y/N] ' "$TAG" "$commit"
 read -r answer
 case "$answer" in y|Y) ;; *) echo "Not signed."; exit 1 ;; esac
@@ -100,12 +129,14 @@ docker run --rm -v "$PWD":/src:ro -w /src -e CARGO_TARGET_DIR=/tmp/target -v "$w
 # Only that binary runs with the key: no network, no caches or sources, and
 # nothing to write but the signature.
 cp "$work/release/SHA256SUMS" "$work/sign/SHA256SUMS"
+# shellcheck disable=SC2016
 docker run --rm --network none --read-only --cap-drop ALL --security-opt no-new-privileges \
   -v "$work/bin/release-sign":/release-sign:ro -v "$KEY":/key:ro -v "$work/sign":/release \
-  "$IMAGE" /release-sign sign /key /release/SHA256SUMS "$VERSION"
+  "$IMAGE" sh -c '/release-sign sign /key /release/SHA256SUMS "$1" && if [ -f /release/IMAGE ]; then /release-sign sign-image /key /release/IMAGE "$1"; fi' sign "$VERSION"
 # A signature, and nothing else, for this version and SHA256SUMS, by the key
 # install-server.sh carries: checked with OpenSSL, as the installer does.
 grep -Eqx '[A-Z2-7]{103}' "$work/sign/SHA256SUMS.sig" || die "the signer wrote something that isn't a signature; not uploading it"
+[ ! -f "$work/sign/IMAGE" ] || grep -Eqx '[A-Z2-7]{103}' "$work/sign/IMAGE.sig" || die "the signer wrote something that isn't the image's signature; not uploading it"
 sed -n '/^RELEASE_KEY_PEM="/,/END PUBLIC KEY/p' scripts/install-server.sh | sed 's/^RELEASE_KEY_PEM="//; s/"$//' > "$work/sign/release.pem"
 # shellcheck disable=SC2016
 docker run --rm --network none -v "$work/sign":/release:ro "$IMAGE" sh -c '
@@ -115,11 +146,22 @@ docker run --rm --network none -v "$work/sign":/release:ro "$IMAGE" sh -c '
   sig=$(tr -d "[:space:]" < /release/SHA256SUMS.sig)
   while [ $(( ${#sig} % 8 )) -ne 0 ]; do sig="$sig="; done
   printf "%s" "$sig" | base32 -d > signature
-  openssl pkeyutl -verify -pubin -inkey /release/release.pem -rawin -in signed -sigfile signature >/dev/null' verify "$VERSION" \
+  openssl pkeyutl -verify -pubin -inkey /release/release.pem -rawin -in signed -sigfile signature >/dev/null
+  if [ -f /release/IMAGE ]; then
+    { printf "5th-echelon/image/v1\n%s\n" "$1"; cat /release/IMAGE; } > signed
+    sig=$(tr -d "[:space:]" < /release/IMAGE.sig)
+    while [ $(( ${#sig} % 8 )) -ne 0 ]; do sig="$sig="; done
+    printf "%s" "$sig" | base32 -d > signature
+    openssl pkeyutl -verify -pubin -inkey /release/release.pem -rawin -in signed -sigfile signature >/dev/null
+  fi' verify "$VERSION" \
   || die "the signature doesn't verify against install-server.sh's release key; not uploading it"
 echo "Signed $TAG ($VERSION), and checked the signature."
 
-gh release upload "$TAG" "$work/sign/SHA256SUMS.sig" --repo "$REPO" --clobber
+if [ -f "$work/sign/IMAGE" ]; then
+  gh release upload "$TAG" "$work/sign/SHA256SUMS.sig" "$work/sign/IMAGE" "$work/sign/IMAGE.sig" --repo "$REPO" --clobber
+else
+  gh release upload "$TAG" "$work/sign/SHA256SUMS.sig" --repo "$REPO" --clobber
+fi
 # PUBLISH=yes (scripts/release.sh) publishes without asking again.
 if [ "${PUBLISH:-}" = yes ]; then
   answer=y
@@ -132,24 +174,18 @@ case "$answer" in
   *) echo "Signed; still a draft. Run this again to publish it (and tag its image)."; exit 0 ;;
 esac
 
-# The server's image, which the release workflow built from the same commit.
-owner=$(printf '%s' "${REPO%%/*}" | tr '[:upper:]' '[:lower:]')
-image="ghcr.io/$owner/5th-echelon-server"
+# The server's image: the digest signed above gets its real tags.
+[ -n "$digest" ] || exit 0
 case "$VERSION" in *-*) latest="" ;; *) latest="$image:latest" ;; esac
 image_help="Tag it by hand once gh has the scope (gh auth refresh -s write:packages):
   gh auth token | docker login ghcr.io -u \$(gh api user --jq .login) --password-stdin
-  docker buildx imagetools create --tag $image:$VERSION${latest:+ --tag $latest} $image:$VERSION-unsigned"
+  docker buildx imagetools create --tag $image:$VERSION${latest:+ --tag $latest} $image@$digest"
 if ! gh auth token | docker login ghcr.io -u "$(gh api user --jq .login)" --password-stdin >/dev/null 2>&1; then
   echo "Couldn't sign in to ghcr.io with gh's token, so the server image isn't tagged. $image_help"
   exit 0
 fi
-# Its provenance (and OCI labels) name the commit it was built from.
-if ! docker buildx imagetools inspect "$image:$VERSION-unsigned" --format '{{json .}}' 2>/dev/null | grep -q "$commit"; then
-  echo "$image:$VERSION-unsigned isn't there, or wasn't built from $commit, so it isn't tagged."
-  exit 0
-fi
-if docker buildx imagetools create --tag "$image:$VERSION" ${latest:+--tag "$latest"} "$image:$VERSION-unsigned"; then
-  echo "Tagged the server image $image:$VERSION${latest:+ and :latest}."
+if docker buildx imagetools create --tag "$image:$VERSION" ${latest:+--tag "$latest"} "$image@$digest"; then
+  echo "Tagged the server image $image@$digest as :$VERSION${latest:+ and :latest}."
 else
   echo "Couldn't tag the server image (gh's token needs write:packages). $image_help"
 fi

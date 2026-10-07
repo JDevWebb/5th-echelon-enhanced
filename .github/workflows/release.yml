@@ -209,6 +209,8 @@ jobs:
     permissions:
       contents: read
       packages: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
@@ -220,10 +222,11 @@ jobs:
         env:
           OWNER: ${{ github.repository_owner }}
         run: echo "image=ghcr.io/$(printf '%s' "$OWNER" | tr '[:upper:]' '[:lower:]')/5th-echelon-server" >> "$GITHUB_OUTPUT"
-      # Only :<version>-unsigned: scripts/sign-release.sh tags it :<version>
-      # (and :latest) once the release is signed, after checking it was built
-      # from the tag's commit (the revision label).
+      # Only :<version>-unsigned: scripts/sign-release.sh signs its digest with
+      # the release, after checking it was built here from the tag (its
+      # provenance, below), and tags that digest :<version> (and :latest).
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        id: push
         with:
           context: .
           file: docker/Dockerfile
@@ -233,3 +236,11 @@ jobs:
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
           tags: |
             ${{ steps.name.outputs.image }}:${{ needs.version.outputs.version }}-unsigned
+      # Build provenance for the image, by its digest: scripts/sign-release.sh
+      # checks it (gh attestation verify oci://<image>@<digest>) before signing
+      # that digest with the release.
+      - uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-name: ${{ steps.name.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
