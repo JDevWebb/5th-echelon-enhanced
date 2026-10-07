@@ -108,7 +108,7 @@ Conversations go 180 days after they were last written in, and with the player's
 
 ## Roadmap and suggestions
 
-Only the community network's coordinator keeps a roadmap: the installer starts it with `--roadmap`, and on any other coordinator the page, and the routes launchers use, aren't there. Its **Roadmap** page of the admin UI keeps the project's roadmap in four lanes: **Shipping**, **Next**, **Later** and **Requested**, each with the release it's for. Items are edited in place, shown to players or kept for admins, moved and deleted, and every change is in the audit log. An empty roadmap can start from the project's as it stood for 0.4.2.
+Only the community network's coordinator keeps a roadmap: the installer starts it with `--roadmap`, and on any other coordinator the page, and the routes launchers use, aren't there. Its **Roadmap** page of the admin UI keeps the project's roadmap in four lanes: **Shipping**, **Next**, **Later** and **Requested**, each with the release it's for. Items are edited in place, shown to players or kept for admins, moved and deleted, and every change is in the audit log. An empty roadmap can start from the project's as it stood for 0.4.3 (delete every item to start over from it; that drops players' requested items too).
 
 Players on the community network see the public items in the launcher's **Roadmap** screen (it's not shown on other networks) and send suggestions from it: an area, a title and the details, signed with their identity, three a day. Their suggestions land in the page's inbox with their name, server and launcher version; admins reply (the player sees the reply in their launcher), set the status (new, planned, done or declined), or promote one to a lane, where it starts hidden from players.
 
