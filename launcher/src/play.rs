@@ -1113,11 +1113,26 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: O
                     })
                     .show(ui, |ui| {
                         ui.set_width(300.0 - 26.0);
+                        // The ping and players on the right, as wide as they are ("no answer" is
+                        // wider than "53 ms"): the server's caption and name get the rest.
+                        let right = listing
+                            .as_ref()
+                            .map(|(s, ping)| (ping_text(*ping), theme::muted(format!("{} online", s.players_online)).small()));
+                        let right_width = right.as_ref().map_or(0.0, |(a, b)| {
+                            let width = |t: &RichText| {
+                                egui::WidgetText::from(t.clone())
+                                    .into_galley(ui, Some(egui::TextWrapMode::Extend), f32::INFINITY, egui::TextStyle::Body)
+                                    .size()
+                                    .x
+                            };
+                            width(a).max(width(b))
+                        });
+                        let spacing = ui.spacing().item_spacing.x;
+                        let left_width = (ui.available_width() - right_width - 18.0 - 3.0 * spacing - 6.0).max(60.0);
                         ui.horizontal(|ui| {
                             ui.vertical(|ui| {
-                                // Room left for the ping, players and chevron on the right: a long
-                                // network name is cut short ("…"), not given the whole card.
-                                ui.set_max_width(300.0 - 26.0 - 96.0);
+                                // A long network name is cut short ("…"), not given the whole card.
+                                ui.set_max_width(left_width);
                                 ui.spacing_mut().item_spacing.y = 2.0;
                                 // Who runs it, when it isn't the community network: hovered, says so.
                                 let caption = match &run_by {
@@ -1133,10 +1148,10 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: O
                                 chevron_down(ui, menu_open);
                                 ui.with_layout(egui::Layout::top_down(egui::Align::RIGHT), |ui| {
                                     ui.spacing_mut().item_spacing.y = 2.0;
-                                    if let Some((s, ping)) = &listing {
+                                    if let Some((ping, online)) = right {
                                         // Never wrapped: squeezed, they'd stand a letter to a line.
-                                        ui.add(egui::Label::new(ping_text(*ping)).wrap_mode(egui::TextWrapMode::Extend));
-                                        ui.add(egui::Label::new(theme::muted(format!("{} online", s.players_online)).small()).wrap_mode(egui::TextWrapMode::Extend));
+                                        ui.add(egui::Label::new(ping).wrap_mode(egui::TextWrapMode::Extend));
+                                        ui.add(egui::Label::new(online).wrap_mode(egui::TextWrapMode::Extend));
                                     }
                                 });
                             });
