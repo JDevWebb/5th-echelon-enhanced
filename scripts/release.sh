@@ -5,7 +5,8 @@
 #   scripts/release.sh 0.4.1
 #
 #   1. checks main is clean, up to date with GitHub, and that CI passed on it
-#      (pushing main first, and waiting for CI, when it's ahead);
+#      (pushing main first, and waiting for CI, when it's ahead); CI doesn't run
+#      again for the version commits below, nor for release notes;
 #   2. sets release.toml's version to 0.4.1 (dropping -dev), commits, and tags
 #      v0.4.1;
 #   3. pushes main and that one tag (never --tags: other local tags stay local);
@@ -69,7 +70,10 @@ if [ "$(git rev-parse HEAD)" != "$remote" ]; then
   say "Pushing main ($(git rev-list --count "$remote..HEAD") commits) and waiting for CI"
   git push "$PUSH_URL" HEAD:refs/heads/main
 fi
-wait_for CI "$(git rev-parse HEAD)"
+# CI skips pushes that only change release.toml or release notes (ci.yml): what it checked
+# is the newest commit that changed anything else.
+tested=$(git log -1 --format=%H -- . ':(exclude)release.toml' ':(exclude)docs/releases')
+wait_for CI "$tested"
 
 say "Tagging $TAG"
 sed -i.bak "s/^version = \".*\"$/version = \"$VERSION\"/" release.toml && rm -f release.toml.bak

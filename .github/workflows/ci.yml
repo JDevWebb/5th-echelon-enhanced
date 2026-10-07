@@ -1,9 +1,15 @@
-# Tests and builds every push to main and every pull request.
+# Tests and builds every push to main and every pull request. A push that only changes
+# release.toml (scripts/release.sh's "Release vX" and "Version X-dev" commits, after CI has
+# passed on what they version: the release workflow builds the tag itself) or release notes
+# doesn't run it again.
 name: CI
 
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - release.toml
+      - docs/releases/**
   pull_request:
   workflow_dispatch:
 

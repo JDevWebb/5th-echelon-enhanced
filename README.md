@@ -676,7 +676,7 @@ On the machine with the release key, one command does it all:
 ```sh
 scripts/release.sh 0.4.1
 ```
-It checks `main` is clean and that CI passed on it, drops the suffix in `release.toml`, commits and tags `v0.4.1`, pushes `main` and that tag, waits for the release workflow, runs `sign-release.sh` (which asks once before signing), publishes, and moves `main` on to `0.4.2-dev`. Release notes go in `docs/releases/v0.4.1.md`; the workflow puts them first.
+It checks `main` is clean and that CI passed on it, drops the suffix in `release.toml`, commits and tags `v0.4.1`, pushes `main` and that tag, waits for the release workflow, runs `sign-release.sh` (which asks once before signing), publishes, and moves `main` on to `0.4.2-dev`. Release notes go in `docs/releases/v0.4.1.md`; the workflow puts them first. CI doesn't run again for the two version commits, or for a push that only changes release notes: the release workflow builds the tag itself.
 
 By hand, the same steps are:
 1. Drop the suffix in `release.toml` (e.g. `0.4.1`) and commit it.
