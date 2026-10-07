@@ -154,9 +154,7 @@ async fn identity_login(ctx: &mut Ctx) -> Result<()> {
     // change the password it sets.
     let for_elsewhere = me.sign_login("rogue.example", &name, now + 3, "a-new-password-1");
     let replayed = async {
-        let channel = tonic::transport::Channel::from_shared(format!("http://{}:{}", ctx.server, testbot::bot::target(ctx.server).api))?
-            .connect()
-            .await?;
+        let channel = testbot::bot::api_endpoint(ctx.server).map_err(|e| eyre!(e))?.connect().await?;
         server_api::users::users_client::UsersClient::new(channel)
             .key_login(server_api::users::KeyLoginRequest {
                 username: name.clone(),
@@ -531,9 +529,7 @@ async fn name_check(ctx: &mut Ctx) -> Result<()> {
     use server_api::users::name_available_response::Answer;
     let server = ctx.server;
     let check = |name: String| async move {
-        let channel = tonic::transport::Channel::from_shared(format!("http://{server}:{}", testbot::bot::target(server).api))?
-            .connect()
-            .await?;
+        let channel = testbot::bot::api_endpoint(server).map_err(|e| eyre!(e))?.connect().await?;
         let answer = server_api::users::users_client::UsersClient::new(channel)
             .name_available(server_api::users::NameRequest { name })
             .await?
@@ -1711,6 +1707,9 @@ async fn main() -> Result<()> {
                     api: ports.api,
                     auth: ports.login,
                     nat: ports.nat.ok_or_else(|| eyre!("the NAT helper is off"))?,
+                    // HTTPS by name, as the launcher uses it.
+                    api_tls: ports.api_tls.filter(|_| name.parse::<IpAddr>().is_err()),
+                    identity_required: info.features.iter().any(|f| f == "identity-required"),
                 },
             );
         }

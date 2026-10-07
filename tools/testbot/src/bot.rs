@@ -53,6 +53,11 @@ pub struct Target {
     pub api: u16,
     pub auth: u16,
     pub nat: u16,
+    /// The API's HTTPS port, when the server offers it (by name): used then, as the
+    /// launcher does (a server that takes passwords only over HTTPS).
+    pub api_tls: Option<u16>,
+    /// The server makes new accounts only with a player identity: each bot gets one.
+    pub identity_required: bool,
 }
 
 /// Where each server's services are, when they aren't on the default ports
@@ -72,12 +77,29 @@ pub fn target(server: IpAddr) -> Target {
         api: API_PORT,
         auth: AUTH_PORT,
         nat: nat_proto::DEFAULT_PORT,
+        api_tls: None,
+        identity_required: false,
     })
 }
 
 fn api_url(server: IpAddr) -> String {
     let t = target(server);
-    format!("http://{}:{}", t.host, t.api)
+    match t.api_tls {
+        Some(port) => format!("https://{}:{port}", t.host),
+        None => format!("http://{}:{}", t.host, t.api),
+    }
+}
+
+/// The API's endpoint for `server`: over HTTPS (the usual root certificates) when it offers
+/// it, as the launcher reaches it.
+pub fn api_endpoint(server: IpAddr) -> std::result::Result<tonic::transport::Endpoint, String> {
+    let url = api_url(server);
+    let endpoint = Channel::from_shared(url.clone()).map_err(|e| e.to_string())?;
+    if url.starts_with("https://") {
+        endpoint.tls_config(tonic::transport::ClientTlsConfig::new().with_webpki_roots()).map_err(|e| e.to_string())
+    } else {
+        Ok(endpoint)
+    }
 }
 /// The secure server's principal id (tickets are issued for it).
 const SERVER_PID: u32 = 0x1000;
@@ -120,8 +142,8 @@ fn ticket_key(pid: u32, password: &str) -> Vec<u8> {
 /// setting a new password; an empty `name` is whichever account the identity
 /// has there. Answers the account's name.
 pub async fn key_login(server: IpAddr, identity: &identity::Identity, host: &str, name: &str, time: i64, new_password: &str) -> std::result::Result<String, tonic::Status> {
-    let channel = Channel::from_shared(api_url(server))
-        .map_err(|e| tonic::Status::internal(e.to_string()))?
+    let channel = api_endpoint(server)
+        .map_err(tonic::Status::internal)?
         .connect()
         .await
         .map_err(|e| tonic::Status::unavailable(e.to_string()))?;
@@ -143,8 +165,8 @@ pub async fn key_login(server: IpAddr, identity: &identity::Identity, host: &str
 /// server's machine that names `client` in `X-Forwarded-For` (believed only
 /// from loopback, so only against a server on this machine).
 pub async fn login_as_client(server: IpAddr, name: &str, password: &str, client: &str) -> std::result::Result<server_api::users::LoginResponse, tonic::Status> {
-    let channel = Channel::from_shared(api_url(server))
-        .map_err(|e| tonic::Status::internal(e.to_string()))?
+    let channel = api_endpoint(server)
+        .map_err(tonic::Status::internal)?
         .connect()
         .await
         .map_err(|e| tonic::Status::unavailable(e.to_string()))?;
@@ -177,12 +199,16 @@ pub async fn nat_register(socket: &tokio::net::UdpSocket, nat: std::net::SocketA
     let mut buf = [0u8; 256];
     // The round trip of the last exchange, sent with the next probe as the hook does.
     let mut rtt_ms = None;
+    // A player not asking for the relay, seen at a public address, has a router port mapping
+    // there (as with UPnP), so it stays direct over the internet as on a LAN.
+    let mut mapping = None;
+    let want_relay = flags & nat_proto::probe_flags::WANT_RELAY != 0;
     for _ in 0..10 {
         let nonce: u32 = rand::random::<u32>() | 1;
         let msg = Message::Probe {
             flags,
             nonce,
-            mapping: None,
+            mapping,
             name: name.into(),
             ticket,
             cookie,
@@ -207,6 +233,9 @@ pub async fn nat_register(socket: &tokio::net::UdpSocket, nat: std::net::SocketA
                     continue;
                 }
                 cookie = c;
+                if !want_relay && !nat_proto::is_private(*observed.ip()) {
+                    mapping = Some(observed);
+                }
                 if tag != [0; 8] {
                     return Ok(NatRegistration {
                         observed,
@@ -231,7 +260,7 @@ pub fn properties(attrs: &str) -> QList<Property> {
 /// server. Returns the player's pid, the secure server's address and the ticket.
 /// Signs in to the gRPC API as `client` ("game/…" for the DLL, "launcher/…").
 pub async fn api_sign_in(server: IpAddr, name: &str, password: &str, client: &str) -> Result<(Channel, server_api::users::LoginResponse)> {
-    let api = Channel::from_shared(api_url(server))?.connect().await?;
+    let api = api_endpoint(server).map_err(|e| eyre!(e))?.connect().await?;
     let login = UsersClient::new(api.clone())
         .login(server_api::users::LoginRequest {
             username: name.into(),
@@ -287,14 +316,20 @@ async fn request_ticket(server: IpAddr, name: &str, password: &str) -> Result<(u
 impl Bot {
     /// Creates an account through the gRPC API (as the launcher's Register).
     pub async fn register(server: IpAddr, name: &str, password: &str) -> Result<()> {
+        // A server that wants an identity for new accounts: a new one, signed for its name.
+        let t = target(server);
+        if t.identity_required {
+            let id = identity::Identity::generate();
+            return Ok(Self::register_as(server, name, password, Some((&id, &t.host))).await?);
+        }
         Ok(Self::register_as(server, name, password, None).await?)
     }
 
     /// Creates an account, linked to `identity` (signed for the server with
     /// id `server_id`) when given, as the launcher does.
     pub async fn register_as(server: IpAddr, name: &str, password: &str, identity: Option<(&identity::Identity, &str)>) -> std::result::Result<(), tonic::Status> {
-        let channel = Channel::from_shared(api_url(server))
-            .map_err(|e| tonic::Status::internal(e.to_string()))?
+        let channel = api_endpoint(server)
+            .map_err(tonic::Status::internal)?
             .connect()
             .await
             .map_err(|e| tonic::Status::unavailable(e.to_string()))?;
