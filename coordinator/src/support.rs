@@ -33,8 +33,13 @@ pub const MAX_BODY: usize = 6 * 1024 * 1024;
 /// Messages a player may send an hour, and from one address.
 pub const PER_PLAYER_AN_HOUR: usize = 20;
 pub const PER_ADDRESS_AN_HOUR: usize = 40;
-/// The most the files may take here in all: past it, a message keeps its text only.
+/// The most the files may take here in all: past it, the oldest go to make room.
 const FILES_CAP: i64 = 1024 * 1024 * 1024;
+/// The most one player's files may take (8 messages' worth at the most each): past it, their
+/// message keeps its text only. One player can't fill [`FILES_CAP`] for everyone.
+const PLAYER_FILES_CAP: i64 = 32 * 1024 * 1024;
+/// Files one address may send in a day, all its players together (as sent, gzipped).
+pub const ADDRESS_FILES_A_DAY: i64 = 32 * 1024 * 1024;
 /// A conversation quiet this long goes (with the daily cleanup).
 pub const KEEP_FOR: i64 = 180 * 86_400;
 /// Messages a conversation shows (the newest).
@@ -138,6 +143,11 @@ impl Coordinator {
     /// Keeps a player's message (reopening their conversation). Answers its id, and whether
     /// its files were kept (not past the files' cap).
     pub(crate) async fn add_support_message(&self, s: &Sent, files: &[File], now: i64) -> sqlx::Result<(i64, bool)> {
+        self.add_support_message_within(s, files, now, (FILES_CAP, PLAYER_FILES_CAP)).await
+    }
+
+    /// [`Self::add_support_message`] with the caps on files in all and per player given.
+    pub(crate) async fn add_support_message_within(&self, s: &Sent, files: &[File], now: i64, (files_cap, player_cap): (i64, i64)) -> sqlx::Result<(i64, bool)> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query(
             "INSERT INTO support_threads (identity, name, server, launcher, status, updated_at) VALUES (?1, ?2, ?3, ?4, 'open', ?5)
@@ -156,9 +166,25 @@ impl Coordinator {
             .bind(s.text.trim())
             .fetch_one(&mut *tx)
             .await?;
-        let used: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(length(gzip)), 0) FROM support_files").fetch_one(&mut *tx).await?;
         let size: i64 = files.iter().map(|f| f.gzip.len() as i64).sum();
-        let keep = used + size <= FILES_CAP;
+        let theirs: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(length(f.gzip)), 0) FROM support_files f JOIN support_messages m ON m.id = f.message_id WHERE m.identity = ?")
+            .bind(&s.identity)
+            .fetch_one(&mut *tx)
+            .await?;
+        let keep = theirs + size <= player_cap;
+        if keep && size > 0 {
+            // Room for them: the oldest messages' files go first (their text stays).
+            loop {
+                let used: i64 = sqlx::query_scalar("SELECT COALESCE(SUM(length(gzip)), 0) FROM support_files").fetch_one(&mut *tx).await?;
+                if used + size <= files_cap {
+                    break;
+                }
+                let oldest: Option<i64> = sqlx::query_scalar("SELECT MIN(message_id) FROM support_files").fetch_one(&mut *tx).await?;
+                let Some(oldest) = oldest else { break };
+                sqlx::query("DELETE FROM support_files WHERE message_id = ?").bind(oldest).execute(&mut *tx).await?;
+                tracing::warn!("support: files take {} MB here; message {oldest}'s went to make room", used >> 20);
+            }
+        }
         if keep {
             for f in files {
                 sqlx::query("INSERT INTO support_files (message_id, name, size, gzip) VALUES (?, ?, ?, ?)")
@@ -170,7 +196,11 @@ impl Coordinator {
                     .await?;
             }
         } else if !files.is_empty() {
-            tracing::warn!("support: files take {} MB here; message {id} kept without its files", used >> 20);
+            tracing::warn!(
+                "support: {}'s files take {} MB; message {id} kept without its files",
+                identity::short(&s.identity),
+                theirs >> 20
+            );
         }
         tx.commit().await?;
         Ok((id, keep))
@@ -373,6 +403,12 @@ impl Coordinator {
     }
 
     /// Deletes conversations quiet past [`KEEP_FOR`] (with the daily cleanup).
+    /// Deletes a player's conversation with its files (an admin's; they can write again).
+    pub(crate) async fn delete_support(&self, identity: &str) -> sqlx::Result<bool> {
+        let done = sqlx::query("DELETE FROM support_threads WHERE identity = ?").bind(identity).execute(&self.pool).await?;
+        Ok(done.rows_affected() > 0)
+    }
+
     pub(crate) async fn prune_support(&self) -> sqlx::Result<()> {
         sqlx::query("DELETE FROM support_threads WHERE updated_at < ?")
             .bind(identity::now() - KEEP_FOR)

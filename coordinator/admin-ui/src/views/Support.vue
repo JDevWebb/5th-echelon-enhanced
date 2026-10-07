@@ -52,8 +52,11 @@
               <template v-for="a in thread.accounts" :key="a.server + a.id"> · <RouterLink :to="`/players/${a.server}/${a.id}`">{{ a.name }} on {{ names.get(a.server) || a.server }}</RouterLink></template>
             </p>
           </div>
-          <div class="seg" role="group" aria-label="Status">
-            <button v-for="s in ['open', 'waiting', 'resolved']" :key="s" type="button" :aria-pressed="String(thread.status === s)" :disabled="busy" @click="setStatus(s)">{{ STATUS_LABEL[s] }}</button>
+          <div class="thread-actions">
+            <div class="seg" role="group" aria-label="Status">
+              <button v-for="s in ['open', 'waiting', 'resolved']" :key="s" type="button" :aria-pressed="String(thread.status === s)" :disabled="busy" @click="setStatus(s)">{{ STATUS_LABEL[s] }}</button>
+            </div>
+            <button class="small danger" type="button" :disabled="busy" @click="remove">Delete</button>
           </div>
         </header>
         <div ref="scroller" class="messages">
@@ -94,6 +97,7 @@ import { useRoute, useRouter } from 'vue-router';
 import PageTop from '../components/PageTop.vue';
 import Stat from '../components/Stat.vue';
 import { api } from '../lib/api.js';
+import { confirmBox } from '../lib/dialogs.js';
 import { ensureOverview, useLoad } from '../lib/data.js';
 import { fmt, serverName } from '../lib/fmt.js';
 import { live } from '../lib/live.js';
@@ -157,6 +161,21 @@ async function answer() {
     busy.value = false;
   }
 }
+async function remove() {
+  const ok = await confirmBox('Delete this conversation?', 'Every message both ways and the files the player sent are deleted for good. They can write again.', 'Delete', true);
+  if (!ok) return;
+  busy.value = true;
+  try {
+    await api('DELETE', `/support/${openId.value}`);
+    toast('Deleted.');
+    reloadList();
+    router.push('/support');
+  } catch (e) {
+    toast(e.message, true);
+  } finally {
+    busy.value = false;
+  }
+}
 async function setStatus(status) {
   busy.value = true;
   try {
@@ -187,6 +206,7 @@ async function setStatus(status) {
 .nowrap { white-space: nowrap; }
 .mono { font-family: var(--mono); }
 .conversation header { align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.thread-actions { display: flex; align-items: center; gap: 8px; }
 .messages { display: flex; flex-direction: column; gap: 10px; max-height: 60vh; overflow-y: auto; padding: 4px 2px 12px; }
 .msg { max-width: 82%; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel-2); }
 .msg.admin { align-self: flex-end; border-color: var(--accent); background: var(--accent-soft); }

@@ -3294,3 +3294,62 @@ async fn signed_reads_are_for_this_coordinators_names() {
     assert_eq!(read("Coordinator.test:443", "coordinator.test").await, StatusCode::OK, "the same name, another way");
     assert_eq!(read("evil.example", "evil.example").await, StatusCode::FORBIDDEN);
 }
+
+/// Support files: one player's are capped (their message keeps its text), and past the cap in
+/// all the oldest go to make room for new ones, not the new ones dropped. An address's files
+/// for the day are capped too. Admins delete a conversation (a second factor proved lately).
+#[tokio::test]
+async fn support_files_are_capped_per_player_and_the_oldest_make_room() {
+    let t = start("support-caps").await;
+    let r = admin_router(&t);
+    t.c.enable_roadmap();
+    let sent = |who: &identity::Identity| crate::support::Sent {
+        identity: who.global_id(),
+        name: "Oni".into(),
+        server: String::new(),
+        launcher: String::new(),
+        time: identity::now(),
+        text: "hi".into(),
+        files: vec![],
+        signature: String::new(),
+    };
+    let file = |kib: usize| crate::support::File {
+        name: "game.log".into(),
+        size: 1,
+        gzip: vec![7; kib * 1024],
+    };
+    let caps = (300 * 1024, 200 * 1024);
+    let (oni, kiwi) = (identity::Identity::generate(), identity::Identity::generate());
+    let now = identity::now();
+    // Oni: two of 100 KiB, then a third over their 200 KiB.
+    for _ in 0..2 {
+        assert!(t.c.add_support_message_within(&sent(&oni), &[file(100)], now, caps).await.unwrap().1);
+    }
+    let (_, kept) = t.c.add_support_message_within(&sent(&oni), &[file(100)], now, caps).await.unwrap();
+    assert!(!kept, "over the player's cap: text only");
+    // Kiwi's 150 KiB is past the 300 KiB in all: Oni's oldest file goes, Kiwi's is kept.
+    let (_, kept) = t.c.add_support_message_within(&sent(&kiwi), &[file(150)], now, caps).await.unwrap();
+    assert!(kept);
+    let files: Vec<(String, i64)> = sqlx::query_as("SELECT m.identity, length(f.gzip) FROM support_files f JOIN support_messages m ON m.id = f.message_id ORDER BY f.message_id")
+        .fetch_all(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(files, vec![(oni.global_id(), 100 * 1024), (kiwi.global_id(), 150 * 1024)]);
+
+    // An address's files for the day.
+    assert!(t.c.support_bytes_allowed("192.0.2.9", crate::support::ADDRESS_FILES_A_DAY - 10, now));
+    assert!(!t.c.support_bytes_allowed("192.0.2.9", 11, now));
+    assert!(t.c.support_bytes_allowed("192.0.2.9", 11, now + 86_400), "the next day");
+    assert!(t.c.support_bytes_allowed("192.0.2.10", 11, now), "another address");
+
+    // Deleting a conversation takes a second factor proved lately, and takes its files.
+    let path = format!("/api/support/{}", oni.global_id());
+    let stale = admin_cookie(&t, "admin1", 3600).await;
+    assert_eq!(admin_call(&r, "DELETE", &path, &stale, None).await.0, StatusCode::FORBIDDEN);
+    let fresh = admin_cookie(&t, "admin2", 0).await;
+    assert_eq!(admin_call(&r, "DELETE", &path, &fresh, None).await.0, StatusCode::OK);
+    assert_eq!(admin_call(&r, "GET", &path, &fresh, None).await.0, StatusCode::NOT_FOUND);
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM support_files").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(left, 1, "Kiwi's file only");
+    assert_eq!(admin_call(&r, "DELETE", &path, &fresh, None).await.0, StatusCode::NOT_FOUND);
+}

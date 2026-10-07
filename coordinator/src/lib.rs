@@ -153,17 +153,6 @@ pub(crate) fn public_ip(ip: std::net::IpAddr) -> bool {
 
 /// A request's source address: the peer, or, from a proxy on this machine,
 /// the last address in `X-Forwarded-For`.
-/// Request bodies the API reads at once, across every connection: each request reserves its
-/// route's largest body first. Member servers (their secret checked before the body is read)
-/// have their own, so no stranger's slow uploads hold up their pulses and reports. Players'
-/// support messages (up to 6 MB) have theirs, one in progress per address, so they don't
-/// crowd out everyone else's small requests (64 at once, a few per address).
-static MEMBER_BODIES: std::sync::LazyLock<limits::BodyBudget> = std::sync::LazyLock::new(|| limits::BodyBudget::new(64 * 1024 * 1024));
-static SUPPORT_BODIES: std::sync::LazyLock<limits::BodyBudget> = std::sync::LazyLock::new(|| limits::BodyBudget::new(36 * 1024 * 1024));
-static SUPPORT_IN_FLIGHT: std::sync::LazyLock<limits::InFlight> = std::sync::LazyLock::new(|| limits::InFlight::new(1));
-static PUBLIC_BODIES: std::sync::LazyLock<limits::BodyBudget> = std::sync::LazyLock::new(|| limits::BodyBudget::new(16 * 1024 * 1024));
-static PUBLIC_IN_FLIGHT: std::sync::LazyLock<limits::InFlight> = std::sync::LazyLock::new(|| limits::InFlight::new(4));
-
 /// The largest body a request to `path` may have, and whether only a member server may send
 /// it (as `DefaultBodyLimit` on the routes).
 fn body_rule(path: &str) -> (usize, bool) {
@@ -179,8 +168,8 @@ fn body_rule(path: &str) -> (usize, bool) {
 }
 
 /// Every API request with a body: a member server's (its secret checked first, before the
-/// body is read) within [`MEMBER_BODIES`]; anyone else's within [`SUPPORT_BODIES`] or
-/// [`PUBLIC_BODIES`], a few at once per address, and refused for routes only members may use.
+/// body is read) within its budget; anyone else's within the support or public one, a few at
+/// once per address, and refused for routes only members may use (see [`limits::Budgets`]).
 /// Each within the deadline, so streams of half-sent bodies can't fill the memory.
 async fn bounded(State(c): State<Shared>, request: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
     use axum::response::IntoResponse;
@@ -194,15 +183,15 @@ async fn bounded(State(c): State<Shared>, request: axum::extract::Request, next:
         Err(fail(StatusCode::UNAUTHORIZED, "sign in with the server's secret"))
     };
     match member {
-        Ok(_) => MEMBER_BODIES.run(limit, next.run(request)).await,
+        Ok(_) => c.budgets.member.run(limit, next.run(request)).await,
         Err(refused) if members_only => refused.into_response(),
         Err(_) => {
             let peer = request.extensions().get::<axum::extract::ConnectInfo<std::net::SocketAddr>>().map(|ci| ci.0);
             let ip = peer.map_or(std::net::IpAddr::from([0, 0, 0, 0]), |peer| client_ip(peer, request.headers()));
             let (in_flight, budget) = if request.uri().path() == "/v1/support" {
-                (&*SUPPORT_IN_FLIGHT, &*SUPPORT_BODIES)
+                (&c.budgets.support_in_flight, &c.budgets.support)
             } else {
-                (&*PUBLIC_IN_FLIGHT, &*PUBLIC_BODIES)
+                (&c.budgets.public_in_flight, &c.budgets.public)
             };
             let Some(_slot) = in_flight.take(ip) else {
                 return limits::too_many();
@@ -457,6 +446,10 @@ pub struct Coordinator {
     /// Players' support messages: per player and per address (see [`support`]).
     support_posts: Limit,
     support_address_posts: Limit,
+    /// Support files each address sent today (the day, and bytes as sent), and when a refusal
+    /// was last said in the log (once an hour each).
+    support_address_bytes: std::sync::Mutex<HashMap<String, (i64, i64)>>,
+    support_refusals_said: Limit,
     /// The roadmap and players' suggestions are kept here: on the community network's
     /// coordinator only, whose roadmap every launcher reads (`--roadmap`). Off, its routes
     /// and the admin UI's page aren't there.
@@ -465,6 +458,8 @@ pub struct Coordinator {
     /// requests must be made for. Unset, the request's own Host is taken, which anyone
     /// replaying a signature made for another coordinator can set to that one's name.
     pub names: std::sync::OnceLock<Vec<String>>,
+    /// Request bodies being read at once (see [`limits::Budgets`]).
+    pub(crate) budgets: limits::Budgets,
     /// The folder the database is in: reports' files go under it.
     files_dir: std::path::PathBuf,
     /// The most the reports' files may take ([`reports::STORAGE_CAP`]; less in tests).
@@ -575,8 +570,11 @@ impl Coordinator {
             suggestion_posts: Limit::per(roadmap::PER_ADDRESS_A_DAY, Duration::from_secs(86_400)),
             support_posts: Limit::per(support::PER_PLAYER_AN_HOUR, Duration::from_secs(3600)),
             support_address_posts: Limit::per(support::PER_ADDRESS_AN_HOUR, Duration::from_secs(3600)),
+            support_address_bytes: std::sync::Mutex::default(),
+            support_refusals_said: Limit::per(1, Duration::from_secs(3600)),
             roadmap: std::sync::atomic::AtomicBool::new(false),
             names: std::sync::OnceLock::new(),
+            budgets: limits::Budgets::default(),
             files_dir: std::path::Path::new(path)
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
@@ -1632,6 +1630,28 @@ impl Coordinator {
         self.roadmap.store(true, std::sync::atomic::Ordering::Relaxed);
     }
 
+    /// Whether `address` may send `bytes` more of support files today
+    /// ([`support::ADDRESS_FILES_A_DAY`]); if so, they're counted.
+    fn support_bytes_allowed(&self, address: &str, bytes: i64, now: i64) -> bool {
+        if bytes == 0 {
+            return true;
+        }
+        let day = now / 86_400;
+        let mut sent = self.support_address_bytes.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if sent.len() > 50_000 {
+            sent.retain(|_, (d, _)| *d == day);
+        }
+        let today = sent.entry(address.to_string()).or_insert((day, 0));
+        if today.0 != day {
+            *today = (day, 0);
+        }
+        if today.1 + bytes > support::ADDRESS_FILES_A_DAY {
+            return false;
+        }
+        today.1 += bytes;
+        true
+    }
+
     /// Whether this coordinator keeps the roadmap.
     pub fn has_roadmap(&self) -> bool {
         self.roadmap.load(std::sync::atomic::Ordering::Relaxed)
@@ -1720,7 +1740,11 @@ async fn support_send(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<st
     if !c.has_roadmap() {
         return no_roadmap();
     }
-    if !c.support_address_posts.check(&limit_key(client_ip(peer, &headers))) {
+    let address = limit_key(client_ip(peer, &headers));
+    if !c.support_address_posts.check(&address) {
+        if c.support_refusals_said.check(&format!("address/{address}")) {
+            tracing::warn!("support: refused messages from {address}: too many this hour (said once an hour)");
+        }
         return fail(StatusCode::TOO_MANY_REQUESTS, "Too many messages from this address; try again in an hour.");
     }
     let sent: support::Sent = match parse(&body) {
@@ -1749,13 +1773,25 @@ async fn support_send(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<st
         Err(e) => return internal(e),
     }
     if !c.support_posts.check(&sent.identity) {
+        if c.support_refusals_said.check(&format!("player/{}", sent.identity)) {
+            tracing::warn!("support: refused messages from {}: too many this hour (said once an hour)", identity::short(&sent.identity));
+        }
         return fail(
             StatusCode::TOO_MANY_REQUESTS,
             "That's a lot of messages in an hour; the admins will answer what you sent. Try again later.",
         );
     }
+    // Past its address's files for the day, a message keeps its text only.
+    let size: i64 = files.iter().map(|f| f.gzip.len() as i64).sum();
+    let address_allows = c.support_bytes_allowed(&address, size, now);
+    if !address_allows && c.support_refusals_said.check(&format!("bytes/{address}")) {
+        tracing::warn!("support: {address} sent its files for the day; messages from it keep their text only (said once an hour)");
+    }
+    let files = if address_allows { files } else { vec![] };
+    let dropped = !address_allows && size > 0;
     match c.add_support_message(&sent, &files, now).await {
         Ok((id, files_kept)) => {
+            let files_kept = files_kept && !dropped;
             c.publish(admin::live::Event::Support);
             let first = sent.text.lines().next().unwrap_or_default();
             c.notify_support(&sent.name, first).await;

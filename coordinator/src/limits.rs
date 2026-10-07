@@ -236,6 +236,34 @@ pub fn too_many() -> Response {
     (StatusCode::TOO_MANY_REQUESTS, "too many requests at once; try again in a moment").into_response()
 }
 
+/// The coordinator's request body budgets: member servers' (their secret checked before the
+/// body is read), so no stranger's slow uploads hold up their pulses and reports; players'
+/// support messages (up to 6 MB), one in progress per address, so they don't crowd out
+/// everyone else's small requests (a few per address); and the admin UI's.
+pub struct Budgets {
+    pub member: BodyBudget,
+    pub support: BodyBudget,
+    pub support_in_flight: InFlight,
+    pub public: BodyBudget,
+    pub public_in_flight: InFlight,
+    pub admin: BodyBudget,
+    pub admin_in_flight: InFlight,
+}
+
+impl Default for Budgets {
+    fn default() -> Self {
+        Self {
+            member: BodyBudget::new(64 * 1024 * 1024),
+            support: BodyBudget::new(36 * 1024 * 1024),
+            support_in_flight: InFlight::new(1),
+            public: BodyBudget::new(16 * 1024 * 1024),
+            public_in_flight: InFlight::new(4),
+            admin: BodyBudget::new(8 * 1024 * 1024),
+            admin_in_flight: InFlight::new(8),
+        }
+    }
+}
+
 /// Bytes of request bodies that may be read at once, across every connection (in KiB).
 pub struct BodyBudget(Arc<tokio::sync::Semaphore>);
 
