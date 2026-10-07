@@ -73,10 +73,10 @@ sums="$work/release/SHA256SUMS"
 if LC_ALL=C grep -Evx '[0-9a-f]{64}  [A-Za-z0-9._-]+' "$sums" | grep -q .; then
   die "SHA256SUMS has a line that isn't \"<sha256>  <file>\"; not signing it"
 fi
-LC_ALL=C grep -c $'\r' "$sums" >/dev/null && die "SHA256SUMS has Windows line endings; not signing it"
+if LC_ALL=C grep -q "$(printf '\r')" "$sums"; then die "SHA256SUMS has Windows line endings; not signing it"; fi
 listed=$(cut -c67- "$sums" | LC_ALL=C sort)
 [ -z "$(printf '%s\n' "$listed" | uniq -d)" ] || die "SHA256SUMS lists a file twice; not signing it"
-present=$(cd "$work/release" && ls -A | grep -vx SHA256SUMS | LC_ALL=C sort)
+present=$(cd "$work/release" && find . -mindepth 1 -maxdepth 1 ! -name SHA256SUMS -exec basename {} \; | LC_ALL=C sort)
 [ "$listed" = "$present" ] || die "SHA256SUMS doesn't list exactly the release's downloads; not signing it"
 # Check every download against SHA256SUMS before vouching for it, with GNU
 # sha256sum (the build image), which refuses what it can't read.
