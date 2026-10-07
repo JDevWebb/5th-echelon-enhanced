@@ -23,7 +23,8 @@
 //! member only that the check failed: the details (which could map what answers where) are
 //! for the coordinator's log and its admins. Every address a name resolves to that answers
 //! must answer as the server, so a name that also points at another server's address doesn't
-//! pass; one that doesn't answer (IPv6 the coordinator's machine can't reach) is passed over.
+//! pass. One this machine has no route to at all (IPv6, on a machine without it) is passed
+//! over; one it can route to must answer.
 
 use std::net::IpAddr;
 use std::net::SocketAddr;
@@ -124,11 +125,25 @@ async fn ask(https: bool, host: &str, port: u16, private: bool) -> Result<String
     ask_each(https, host, port, addrs).await
 }
 
-/// [`ask`], at these addresses of `host`. One that doesn't answer (IPv6 this machine can't
-/// reach, say) says nothing; one answering as another server does.
+/// Whether this machine has a route to `addr` (an IPv6 address on a machine without IPv6
+/// hasn't): asked of the system, nothing is sent.
+fn routable(addr: SocketAddr) -> bool {
+    let any: SocketAddr = if addr.is_ipv4() {
+        ([0, 0, 0, 0], 0).into()
+    } else {
+        (std::net::Ipv6Addr::UNSPECIFIED, 0).into()
+    };
+    std::net::UdpSocket::bind(any).and_then(|s| s.connect(addr)).is_ok()
+}
+
+/// [`ask`], at these addresses of `host`. One this machine has no route to says nothing (the
+/// machine's own network, not the server's doing); any other must answer, as the server.
 async fn ask_each(https: bool, host: &str, port: u16, addrs: Vec<SocketAddr>) -> Result<String, String> {
     let (mut id, mut failed) = (None, Vec::new());
     for addr in addrs {
+        if !routable(addr) {
+            continue;
+        }
         match ask_at(https, host, port, addr).await {
             Ok(theirs) => match &id {
                 None => id = Some(theirs),
@@ -138,7 +153,11 @@ async fn ask_each(https: bool, host: &str, port: u16, addrs: Vec<SocketAddr>) ->
             Err(e) => failed.push(e),
         }
     }
-    id.ok_or_else(|| failed.join("; "))
+    match (id, failed.is_empty()) {
+        (Some(id), true) => Ok(id),
+        (None, true) => Err(format!("{host} has no address this machine can reach")),
+        (_, false) => Err(failed.join("; ")),
+    }
 }
 
 /// Asks one of `host`'s addresses for the id of the server there.
@@ -250,7 +269,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_address_that_doesnt_answer_is_passed_over_but_another_server_isnt() {
+    async fn every_address_this_machine_reaches_must_answer_as_the_server() {
         let serve = |id: &'static str, at: SocketAddr| async move {
             let listener = tokio::net::TcpListener::bind(at).await.unwrap();
             let port = listener.local_addr().unwrap().port();
@@ -260,8 +279,10 @@ mod tests {
         };
         let port = serve("me", "127.0.0.1:0".parse().unwrap()).await;
         let at = |ip: &str| SocketAddr::new(ip.parse().unwrap(), port);
-        // 127.0.0.2: nothing listens there.
-        assert_eq!(ask_each(false, "x.test", port, vec![at("127.0.0.1"), at("127.0.0.2")]).await, Ok("me".into()));
+        assert_eq!(ask_each(false, "x.test", port, vec![at("127.0.0.1")]).await, Ok("me".into()));
+        // 127.0.0.2: nothing listens there, but this machine reaches it: no pass, or another
+        // server's address that's down for the check would let a name that includes it pass.
+        assert!(ask_each(false, "x.test", port, vec![at("127.0.0.1"), at("127.0.0.2")]).await.is_err());
         assert!(ask_each(false, "x.test", port, vec![at("127.0.0.2")]).await.is_err(), "nobody answering isn't a pass");
         // Another server at the name's other address.
         serve("someone else", at("127.0.0.3")).await;
