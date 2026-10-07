@@ -167,6 +167,21 @@ fn cfg(c: &Coordinator) -> &Config {
     c.admin.get().expect("the admin UI is configured before it serves")
 }
 
+/// The largest request body.
+const MAX_BODY: usize = 64 * 1024;
+
+/// Request bodies the admin UI reads at once, across every connection (128 at the largest).
+static BODIES: std::sync::LazyLock<crate::limits::BodyBudget> = std::sync::LazyLock::new(|| crate::limits::BodyBudget::new(8 * 1024 * 1024));
+
+/// Every request's body is read within the budget ([`BODIES`]) and the deadline, so streams
+/// of half-sent bodies on many connections can't fill the memory.
+async fn bounded(request: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    if matches!(*request.method(), axum::http::Method::GET | axum::http::Method::HEAD) {
+        return next.run(request).await;
+    }
+    BODIES.run(MAX_BODY, next.run(request)).await
+}
+
 /// The admin UI.
 pub fn router(c: Shared) -> Router {
     let api = Router::new()
@@ -222,7 +237,8 @@ pub fn router(c: Shared) -> Router {
         .route("/", get(page))
         .nest("/api", api)
         .fallback(asset)
-        .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
+        .layer(axum::extract::DefaultBodyLimit::max(MAX_BODY))
+        .layer(axum::middleware::from_fn(bounded))
         .layer(axum::middleware::from_fn_with_state(Arc::clone(&c), guard))
         .with_state(c)
 }

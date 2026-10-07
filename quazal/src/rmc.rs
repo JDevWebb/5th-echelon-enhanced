@@ -516,7 +516,14 @@ impl<T> StreamHandler<T> for RVSecHandler<T> {
             }
         };
 
-        info!(logger, "Looking for protocol {}, method {}", rmc_packet.protocol_id, rmc_packet.method_id);
+        // A connection that hasn't signed in (anyone's) only at debug: its calls are refused,
+        // and a stranger's flood of them filled the log.
+        let signed_in = ci.user_id.is_some();
+        if signed_in {
+            info!(logger, "Looking for protocol {}, method {}", rmc_packet.protocol_id, rmc_packet.method_id);
+        } else {
+            debug!(logger, "Looking for protocol {}, method {}", rmc_packet.protocol_id, rmc_packet.method_id);
+        }
 
         let logger = logger.new(o!(
             "protocol_id" => rmc_packet.protocol_id,
@@ -527,7 +534,11 @@ impl<T> StreamHandler<T> for RVSecHandler<T> {
         let protocol = self.rmc_registry.get(&rmc_packet.protocol_id);
 
         let maybe_protocol = if let Some(protocol) = protocol {
-            info!(logger, "Calling {}.{}", protocol.name(), protocol.method_name(rmc_packet.method_id).unwrap_or_default(),);
+            if signed_in {
+                info!(logger, "Calling {}.{}", protocol.name(), protocol.method_name(rmc_packet.method_id).unwrap_or_default());
+            } else {
+                debug!(logger, "Calling {}.{}", protocol.name(), protocol.method_name(rmc_packet.method_id).unwrap_or_default());
+            }
 
             let result = protocol.handle(&logger, ctx, ci, &rmc_packet, client_registry, socket);
             let kind = match result {
@@ -547,7 +558,12 @@ impl<T> StreamHandler<T> for RVSecHandler<T> {
 
         let result = match maybe_protocol {
             Err(e) => {
-                error!(logger, "handling request failed"; "error" => %e);
+                // Signed in by now (a sign-in call), or a refused call from a stranger.
+                if ci.user_id.is_some() {
+                    error!(logger, "handling request failed"; "error" => %e);
+                } else {
+                    debug!(logger, "handling request failed"; "error" => %e);
+                }
                 if failures::is_failure(&e) {
                     let name = protocol.map(|p| format!("{}.{}", p.name(), p.method_name(rmc_packet.method_id).unwrap_or_default()));
                     failures::report(failures::Failure {

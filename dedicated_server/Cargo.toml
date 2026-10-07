@@ -39,11 +39,13 @@ sloggers = { workspace = true, features = ["json"] }
 sodiumoxide = { workspace = true }
 sqlx = { workspace = true, features = ["runtime-tokio", "sqlite"] }
 thiserror = { workspace = true }
-tokio = { workspace = true, features = ["rt-multi-thread"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "net", "time", "sync", "io-util"] }
+tokio-stream = { version = "0.1", default-features = false }
 toml = { workspace = true }
 tonic = { workspace = true }
 tonic-async-interceptor = { workspace = true }
 tonic-reflection = { workspace = true }
+tower = { version = "0.5", features = ["limit"] }
 
 [target.'cfg(target_os = "windows")'.build-dependencies.winres]
 workspace = true

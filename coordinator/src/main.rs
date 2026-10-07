@@ -4,6 +4,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use axum::serve::ListenerExt;
+
 #[derive(argh::FromArgs)]
 /// Shares friends between 5th Echelon servers and lists them in a server directory.
 struct Args {
@@ -136,6 +138,10 @@ struct NewToken {}
 /// The file with the join token that servers need to join. Made on the first
 /// start; `new-token` replaces it (servers that joined keep working).
 const JOIN_TOKEN_FILE: &str = "join-token.txt";
+/// Connections at once on each listener, and from one address (a proxy on this machine
+/// isn't counted per address).
+const MAX_CONNECTIONS: usize = 2048;
+const MAX_CONNECTIONS_PER_IP: usize = 64;
 
 fn new_token(path: &std::path::Path) -> eyre::Result<String> {
     let mut bytes = [0u8; 20];
@@ -368,6 +374,7 @@ async fn main() -> eyre::Result<()> {
         tracing::info!("Admin UI on {listen}, for {origin}");
         let app = coordinator::admin::router(Arc::clone(&coordinator)).into_make_service_with_connect_info::<std::net::SocketAddr>();
         tokio::spawn(async move {
+            let admin = coordinator::limits::Limited::new(admin, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP).tap_io(|_| {});
             if let Err(e) = axum::serve(admin, app).await {
                 tracing::error!("admin UI: {e}");
             }
@@ -375,6 +382,7 @@ async fn main() -> eyre::Result<()> {
     }
     let listener = tokio::net::TcpListener::bind(&args.listen).await?;
     tracing::info!("Listening on {}; servers join with the token in {}", args.listen, args.data.join(JOIN_TOKEN_FILE).display());
+    let listener = coordinator::limits::Limited::new(listener, MAX_CONNECTIONS, MAX_CONNECTIONS_PER_IP).tap_io(|_| {});
     axum::serve(listener, Arc::clone(&coordinator).router().into_make_service_with_connect_info::<std::net::SocketAddr>())
         .with_graceful_shutdown(async {
             let _ = tokio::signal::ctrl_c().await;

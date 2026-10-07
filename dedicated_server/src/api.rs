@@ -31,6 +31,7 @@ use sodiumoxide::base64;
 use sodiumoxide::crypto::secretbox;
 use sodiumoxide::crypto::secretbox::Key;
 use sodiumoxide::crypto::secretbox::Nonce;
+use tonic::service::LayerExt;
 use tonic::transport::Server;
 use tonic::Request;
 use tonic::Response;
@@ -1613,6 +1614,7 @@ pub async fn start_server(
     // Kept across restarts, so logged-in launchers and games stay logged in.
     let key = crate::keys::load_or_create(std::path::Path::new(crate::keys::API_KEY_FILE))?;
     info!(logger, "Listening on {server_addr}");
+    let logger_for_incoming = logger.clone();
     // Reflection lists every call to anyone who asks; only for debugging.
     let (reflection_v1alpha, reflection_v1) = if reflection {
         (
@@ -1636,7 +1638,19 @@ pub async fn start_server(
     } else {
         (None, None)
     };
+    // Bounded, so connections from strangers can't hold the server's memory: a request
+    // body is only read by a running call, and a connection runs a few at a time (each
+    // waiting one holds no more than the HTTP/2 window); a call has a deadline, and a
+    // connection that sends nothing is closed (see `incoming`).
     let builder = Server::builder()
+        .max_concurrent_streams(MAX_STREAMS_PER_CONNECTION)
+        .initial_connection_window_size(WINDOW)
+        .initial_stream_window_size(WINDOW)
+        .concurrency_limit_per_connection(MAX_CALLS_PER_CONNECTION)
+        .timeout(CALL_DEADLINE)
+        .http2_keepalive_interval(Some(KEEPALIVE_INTERVAL))
+        .http2_keepalive_timeout(Some(KEEPALIVE_TIMEOUT))
+        .http2_max_header_list_size(MAX_HEADERS)
         .add_optional_service(reflection_v1alpha)
         .add_optional_service(reflection_v1)
         .add_service(authenticated(
@@ -1645,28 +1659,37 @@ pub async fn start_server(
                 storage: Arc::clone(&storage),
                 debug_config: Arc::clone(&debug_config),
                 mode: friends_mode,
-            }),
+            })
+            .max_decoding_message_size(MAX_MESSAGE),
             logger.clone(),
             key.clone(),
             Arc::clone(&storage),
         ))
         .add_service(authenticated(
-            MiscServer::new(MyMisc {
-                logger: logger.clone(),
-                storage: Arc::clone(&storage),
-                debug_config,
-            })
-            // A player's report carries their logs (reports.rs keeps them under 6 MB).
-            .max_decoding_message_size(8 * 1024 * 1024),
+            // A player's report carries their logs (reports.rs keeps them under 6 MB): only
+            // a few calls at once, across every connection, read a body that size (after
+            // the token is checked, which comes first).
+            tower::limit::GlobalConcurrencyLimitLayer::new(MAX_MISC_CALLS).named_layer(
+                MiscServer::new(MyMisc {
+                    logger: logger.clone(),
+                    storage: Arc::clone(&storage),
+                    debug_config,
+                })
+                .max_decoding_message_size(8 * 1024 * 1024),
+            ),
             logger.clone(),
             key.clone(),
             Arc::clone(&storage),
         ))
-        .add_service(UsersServer::new(MyUsers {
-            logger: logger.clone(),
-            storage: Arc::clone(&storage),
-            key,
-        }));
+        .add_service(
+            // Signing in and registering, before any token: small messages only.
+            UsersServer::new(MyUsers {
+                logger: logger.clone(),
+                storage: Arc::clone(&storage),
+                key,
+            })
+            .max_decoding_message_size(MAX_SIGN_IN_MESSAGE),
+        );
 
     let builder = if enable_admin_services {
         warn!(logger, "Enabling admin services");
@@ -1691,6 +1714,133 @@ pub async fn start_server(
         builder
     };
 
-    builder.serve(server_addr).await?;
+    builder.serve_with_incoming(incoming(logger_for_incoming, server_addr).await?).await?;
     Ok(())
+}
+
+/// Calls running at once on one connection (more wait, without their bodies being read).
+const MAX_CALLS_PER_CONNECTION: usize = 4;
+/// What a client may send ahead of what's read, per connection and per stream (HTTP/2 flow
+/// control; hyper's default is 1 MB). With the above, a connection that hasn't signed in
+/// holds at most about 512 KB.
+const WINDOW: u32 = 256 * 1024;
+/// Streams open at once on one connection (HTTP/2 refuses more).
+const MAX_STREAMS_PER_CONNECTION: u32 = 16;
+/// How long a call may take, reading its request included (a report's 6 MB on a slow line).
+const CALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(60);
+/// HTTP/2 pings, so a connection whose client is gone is closed, and a live one isn't
+/// taken for idle (see `IDLE`).
+const KEEPALIVE_INTERVAL: std::time::Duration = std::time::Duration::from_secs(30);
+const KEEPALIVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+/// A connection that sends nothing for this long (not even the answer to a ping) is closed.
+const IDLE: std::time::Duration = std::time::Duration::from_secs(90);
+const MAX_HEADERS: u32 = 16 * 1024;
+/// Largest message for friends calls, and for signing in and registering.
+const MAX_MESSAGE: usize = 256 * 1024;
+const MAX_SIGN_IN_MESSAGE: usize = 64 * 1024;
+/// `Misc` calls (reports, logs) running at once, across every connection.
+const MAX_MISC_CALLS: usize = 16;
+/// Connections at once, and from one address (not counted per address for a reverse proxy
+/// on this machine: everything through it comes from its address).
+const MAX_CONNECTIONS: usize = 1024;
+const MAX_CONNECTIONS_PER_IP: usize = 64;
+
+/// The API's connections: refused beyond [`MAX_CONNECTIONS`] (or [`MAX_CONNECTIONS_PER_IP`]
+/// from one address), and closed after [`IDLE`] without a byte from the client.
+async fn incoming(logger: Logger, addr: SocketAddr) -> std::io::Result<tokio_stream::wrappers::ReceiverStream<std::io::Result<Limited>>> {
+    let listener = tokio::net::TcpListener::bind(addr).await?;
+    let per_ip = quazal::prudp::many_per_ip().unwrap_or(MAX_CONNECTIONS_PER_IP);
+    let open = Arc::new(crate::simple_http::Open::new(MAX_CONNECTIONS.max(per_ip), per_ip));
+    let (tx, rx) = tokio::sync::mpsc::channel(64);
+    tokio::spawn(async move {
+        loop {
+            let (stream, peer) = match listener.accept().await {
+                Ok(accepted) => accepted,
+                Err(e) => {
+                    // E.g. out of file descriptors: back off instead of stopping.
+                    warn!(logger, "API: accept failed: {e}");
+                    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+                    continue;
+                }
+            };
+            let ip = peer.ip();
+            let per_ip = Some(ip).filter(|ip| !crate::rate_limit::is_proxy(*ip));
+            let Some(slot) = open.take(per_ip, true) else {
+                if crate::clients::worth_saying(&format!("api-connections/{}", crate::rate_limit::bucket_of(ip))) {
+                    warn!(logger, "API: too many connections; refusing {ip}'s (said once an hour)");
+                }
+                continue;
+            };
+            let _ = stream.set_nodelay(true);
+            let limited = Limited {
+                inner: stream,
+                idle: Box::pin(tokio::time::sleep(IDLE)),
+                _slot: slot,
+            };
+            if tx.send(Ok(limited)).await.is_err() {
+                return;
+            }
+        }
+    });
+    Ok(tokio_stream::wrappers::ReceiverStream::new(rx))
+}
+
+/// An API connection: holds its place among the [`MAX_CONNECTIONS`], and fails once the
+/// client has sent nothing for [`IDLE`].
+struct Limited {
+    inner: tokio::net::TcpStream,
+    idle: std::pin::Pin<Box<tokio::time::Sleep>>,
+    _slot: crate::simple_http::Slot,
+}
+
+impl tokio::io::AsyncRead for Limited {
+    fn poll_read(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> std::task::Poll<std::io::Result<()>> {
+        use std::task::Poll;
+        let before = buf.filled().len();
+        match std::pin::Pin::new(&mut self.inner).poll_read(cx, buf) {
+            Poll::Ready(Ok(())) => {
+                if buf.filled().len() > before {
+                    let until = tokio::time::Instant::now() + IDLE;
+                    self.idle.as_mut().reset(until);
+                }
+                Poll::Ready(Ok(()))
+            }
+            Poll::Pending => match self.idle.as_mut().poll(cx) {
+                Poll::Ready(()) => Poll::Ready(Err(std::io::Error::new(std::io::ErrorKind::TimedOut, "idle connection"))),
+                Poll::Pending => Poll::Pending,
+            },
+            other => other,
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for Limited {
+    fn poll_write(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, buf: &[u8]) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> std::task::Poll<std::io::Result<()>> {
+        std::pin::Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+
+    fn poll_write_vectored(mut self: std::pin::Pin<&mut Self>, cx: &mut std::task::Context<'_>, bufs: &[std::io::IoSlice<'_>]) -> std::task::Poll<std::io::Result<usize>> {
+        std::pin::Pin::new(&mut self.inner).poll_write_vectored(cx, bufs)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.inner.is_write_vectored()
+    }
+}
+
+/// So calls see the client's address (`Request::remote_addr`), as with tonic's own listener.
+impl tonic::transport::server::Connected for Limited {
+    type ConnectInfo = tonic::transport::server::TcpConnectInfo;
+
+    fn connect_info(&self) -> Self::ConnectInfo {
+        self.inner.connect_info()
+    }
 }

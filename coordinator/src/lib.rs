@@ -43,6 +43,7 @@ pub mod admin;
 pub mod alerts;
 pub mod content;
 pub mod game_names;
+pub mod limits;
 pub mod maintenance;
 pub mod metrics;
 pub mod players;
@@ -152,6 +153,41 @@ pub(crate) fn public_ip(ip: std::net::IpAddr) -> bool {
 
 /// A request's source address: the peer, or, from a proxy on this machine,
 /// the last address in `X-Forwarded-For`.
+/// Request bodies the API reads at once, across every connection: each request reserves its
+/// route's largest body first (8 reports at once, or 250 small requests).
+static API_BODIES: std::sync::LazyLock<limits::BodyBudget> = std::sync::LazyLock::new(|| limits::BodyBudget::new(64 * 1024 * 1024));
+
+/// The largest body a request to `path` may have, and whether only a member server may send
+/// it (as `DefaultBodyLimit` on the routes).
+fn body_rule(path: &str) -> (usize, bool) {
+    match path {
+        "/v1/reports" => (reports::MAX_BODY, true),
+        "/v1/content" => (content::MAX_BODY, true),
+        "/v1/players" => (players::MAX_BODY, true),
+        "/v1/stats" => (stats::MAX_BODY, true),
+        "/v1/events" => (sessions::MAX_BODY, true),
+        "/v1/support" => (support::MAX_BODY, false),
+        _ => (MAX_BODY, false),
+    }
+}
+
+/// Every API request: a member server's large uploads are refused before their body is read
+/// unless they carry a member's secret, and every body is read within the budget
+/// ([`API_BODIES`]) and the deadline, so streams of half-sent bodies can't fill the memory.
+async fn bounded(State(c): State<Shared>, request: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    if matches!(*request.method(), axum::http::Method::GET | axum::http::Method::HEAD) {
+        return next.run(request).await;
+    }
+    let (limit, member) = body_rule(request.uri().path());
+    if member {
+        if let Err(refused) = c.server(request.headers()).await {
+            return refused.into_response();
+        }
+    }
+    API_BODIES.run(limit, next.run(request)).await
+}
+
 fn client_ip(peer: std::net::SocketAddr, headers: &HeaderMap) -> std::net::IpAddr {
     if peer.ip().to_canonical().is_loopback() {
         if let Some(ip) = headers
@@ -670,6 +706,7 @@ impl Coordinator {
             .route("/v1/content", post(player_content).layer(DefaultBodyLimit::max(content::MAX_BODY)))
             .route("/v1/events", post(events_report).layer(DefaultBodyLimit::max(sessions::MAX_BODY)))
             .layer(DefaultBodyLimit::max(MAX_BODY))
+            .layer(axum::middleware::from_fn_with_state(Arc::clone(&self), bounded))
             .with_state(self)
     }
 

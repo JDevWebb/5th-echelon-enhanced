@@ -52,6 +52,22 @@ const MAX_HELD_MESSAGES: usize = 4;
 const FRAGMENT_WINDOW: u16 = 256;
 /// Connections in all (per address: [`max_connections_per_ip`]).
 const MAX_CONNECTIONS: usize = 16384;
+/// Connections that haven't signed in (on the authentication service, everyone's while they
+/// sign in): in all, from one address, and how long one lasts. A game signs in within
+/// seconds; strangers holding connections open can't fill the table.
+const MAX_ANONYMOUS: usize = 4096;
+const MAX_ANONYMOUS_PER_IP: usize = 32;
+const ANONYMOUS_LIFETIME: Duration = Duration::from_secs(120);
+/// Calls from connections that haven't signed in, per address: a game signing in makes a
+/// few, so a burst for a LAN party signing in together, then a steady rate. Each one is
+/// handled, so they're bounded per address rather than per connection (a new connection
+/// costs nothing).
+const ANONYMOUS_CALLS_PER_SECOND: f32 = 20.0;
+const ANONYMOUS_CALL_BURST: f32 = 200.0;
+const MAX_ANONYMOUS_SOURCES: usize = 10_000;
+/// What a connection that hasn't signed in may keep of a message in fragments, held last
+/// fragments included (a sign-in fits one packet or a few).
+const MAX_ANONYMOUS_REASSEMBLED: usize = 8 * 1024;
 /// A connection that has neither signed in nor sent anything since its
 /// CONNECT is dropped after this long without a packet (others after
 /// [`SESSION_TIMEOUT`]): a game always says something right away.
@@ -71,8 +87,14 @@ const REPEAT_WINDOW: Duration = Duration::from_secs(5);
 /// Connections one address may hold: 256 (a LAN party behind one router), or
 /// `FE_MAX_CONNECTIONS_PER_IP` (the load test's players all share one).
 fn max_connections_per_ip() -> usize {
-    static MAX: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *MAX.get_or_init(|| std::env::var("FE_MAX_CONNECTIONS_PER_IP").ok().and_then(|v| v.parse().ok()).unwrap_or(256))
+    many_per_ip().unwrap_or(256)
+}
+
+/// `FE_MAX_CONNECTIONS_PER_IP`, which lifts the per-address limits (the load test's
+/// players all share one address).
+pub fn many_per_ip() -> Option<usize> {
+    static MAX: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+    *MAX.get_or_init(|| std::env::var("FE_MAX_CONNECTIONS_PER_IP").ok().and_then(|v| v.parse().ok()))
 }
 
 /// An address as 16 bytes (IPv4 as IPv4-mapped IPv6), the same for both ways of
@@ -138,6 +160,20 @@ fn add_fragment<T>(ci: &mut ClientInfo<T>, packet: QPacket) -> Assembled {
     };
     ci.packet_fragments.retain(|s, _| near(s));
     ci.held_last_fragments.retain(|s, _| near(s));
+    // Before signing in, little is kept: no stranger can fill the memory with fragments.
+    let (max_held, max_bytes) = if ci.user_id.is_some() {
+        (MAX_HELD_MESSAGES, MAX_REASSEMBLED)
+    } else {
+        (1, MAX_ANONYMOUS_REASSEMBLED)
+    };
+    if ci.user_id.is_none() {
+        let kept: usize = ci.packet_fragments.values().map(|(_, p)| p.len()).sum::<usize>() + ci.held_last_fragments.values().map(|p| p.payload.len()).sum::<usize>();
+        if kept + packet.payload.len() > max_bytes {
+            ci.packet_fragments.clear();
+            ci.held_last_fragments.clear();
+            return Assembled::TooMuch;
+        }
+    }
     if packet.fragment_id == Some(0) {
         // Nothing of an earlier fragment just before it: a message in one packet. (If every
         // leading fragment is still on its way, there is no telling it apart.)
@@ -146,7 +182,7 @@ fn add_fragment<T>(ci: &mut ClientInfo<T>, packet: QPacket) -> Assembled {
             let payload = std::mem::take(&mut packet.payload);
             return Assembled::Whole(packet, payload, 1);
         }
-        if ci.held_last_fragments.len() >= MAX_HELD_MESSAGES {
+        if ci.held_last_fragments.len() >= max_held {
             ci.packet_fragments.clear();
             ci.held_last_fragments.clear();
             return Assembled::TooMuch;
@@ -154,7 +190,7 @@ fn add_fragment<T>(ci: &mut ClientInfo<T>, packet: QPacket) -> Assembled {
         ci.held_last_fragments.insert(seq, packet);
     } else {
         let cached: usize = ci.packet_fragments.values().map(|(_, p)| p.len()).sum();
-        if ci.packet_fragments.len() >= MAX_FRAGMENTS || cached + packet.payload.len() > MAX_REASSEMBLED {
+        if ci.packet_fragments.len() >= MAX_FRAGMENTS || cached + packet.payload.len() > max_bytes {
             ci.packet_fragments.clear();
             ci.held_last_fragments.clear();
             return Assembled::TooMuch;
@@ -249,6 +285,32 @@ impl Throttle {
     }
 }
 
+/// A token bucket: `burst` at once, refilled at `rate` a second.
+struct Bucket {
+    at: Instant,
+    tokens: f32,
+}
+
+impl Bucket {
+    fn full(burst: f32) -> Self {
+        Self {
+            at: Instant::now(),
+            tokens: burst,
+        }
+    }
+
+    fn take(&mut self, rate: f32, burst: f32) -> bool {
+        let now = Instant::now();
+        self.tokens = (self.tokens + now.duration_since(self.at).as_secs_f32() * rate).min(burst);
+        self.at = now;
+        if self.tokens < 1.0 {
+            return false;
+        }
+        self.tokens -= 1.0;
+        true
+    }
+}
+
 /// A registry for clients.
 #[derive(Default)]
 pub struct ClientRegistry<T> {
@@ -257,18 +319,55 @@ pub struct ClientRegistry<T> {
     /// Connections per address, kept with `clients` (counting them took a scan of every
     /// connection for each SYN).
     per_ip: HashMap<std::net::IpAddr, usize>,
+    /// Connections that haven't signed in, in all and per address (see
+    /// [`ClientInfo::counted_anonymous`]).
+    anonymous: usize,
+    anonymous_per_ip: HashMap<std::net::IpAddr, usize>,
 }
 
 impl<T> ClientRegistry<T> {
-    /// Adds a new connection under its signature.
-    fn insert(&mut self, signature: u32, ci: ClientInfo<T>) {
+    /// Adds a new connection under its signature (not signed in yet).
+    fn insert(&mut self, signature: u32, mut ci: ClientInfo<T>) {
         *self.per_ip.entry(ci.address().ip()).or_default() += 1;
+        if ci.user_id.is_none() {
+            ci.counted_anonymous = true;
+            self.anonymous += 1;
+            *self.anonymous_per_ip.entry(ci.address().ip()).or_default() += 1;
+        }
         self.clients.insert(signature, RefCell::new(ci));
     }
 
     /// Connections from `ip`.
     fn connections_from(&self, ip: std::net::IpAddr) -> usize {
         self.per_ip.get(&ip).copied().unwrap_or(0)
+    }
+
+    /// Connections from `ip` that haven't signed in, and in all.
+    fn anonymous_from(&self, ip: std::net::IpAddr) -> (usize, usize) {
+        (self.anonymous_per_ip.get(&ip).copied().unwrap_or(0), self.anonymous)
+    }
+
+    /// Takes a connection that has signed in (on CONNECT with a ticket, or by a sign-in call)
+    /// off the count of those that haven't.
+    fn settle(&mut self, signature: u32) {
+        let Some(ci) = self.clients.get_mut(&signature).map(RefCell::get_mut) else {
+            return;
+        };
+        if ci.counted_anonymous && ci.user_id.is_some() {
+            ci.counted_anonymous = false;
+            let ip = ci.address().ip();
+            self.uncount_anonymous(ip);
+        }
+    }
+
+    fn uncount_anonymous(&mut self, ip: std::net::IpAddr) {
+        self.anonymous = self.anonymous.saturating_sub(1);
+        if let std::collections::hash_map::Entry::Occupied(mut n) = self.anonymous_per_ip.entry(ip) {
+            *n.get_mut() -= 1;
+            if *n.get() == 0 {
+                n.remove();
+            }
+        }
     }
 
     /// Forgets a client that is gone (already taken out of `clients`). Returns whether its
@@ -284,6 +383,9 @@ impl<T> ClientRegistry<T> {
             if *n.get() == 0 {
                 n.remove();
             }
+        }
+        if ci.counted_anonymous {
+            self.uncount_anonymous(ci.address().ip());
         }
         match ci.user_id {
             Some(uid) => !self.clients.values().any(|c| c.try_borrow().map_or(true, |c| c.user_id == Some(uid))),
@@ -360,6 +462,13 @@ where
     echo_sweep: Instant,
     /// Log lines for what anyone can send.
     noise: Throttle,
+    /// Whether only connections that signed in (with a ticket) are handled: the secure
+    /// service's. Everyone else's data is dropped unread.
+    pub sign_in_required: bool,
+    /// Calls from connections that haven't signed in, per address (see
+    /// [`ANONYMOUS_CALLS_PER_SECOND`]), and when the table was last swept.
+    anonymous_calls: HashMap<std::net::IpAddr, Bucket>,
+    anonymous_sweep: Instant,
 }
 
 impl<ECH, DH, T> Server<'_, ECH, DH, T>
@@ -380,6 +489,9 @@ where
             echoes: HashMap::default(),
             echo_sweep: Instant::now(),
             noise: Throttle::default(),
+            sign_in_required: false,
+            anonymous_calls: HashMap::default(),
+            anonymous_sweep: Instant::now(),
             client_registry: ClientRegistry::default(),
             user_handler: None,
             expired_client_handler: None,
@@ -614,8 +726,23 @@ where
             }
             return;
         };
+        let signed_in = ci.borrow().user_id.is_some();
+        // Nothing from a connection without a ticket on the secure service, nor more than
+        // the rate from an address's connections that haven't signed in: each call is
+        // handled and logged, and a flood of them from one stranger stopped every sign-in.
+        // Not acknowledged, and it doesn't keep the connection alive.
+        if !signed_in && (self.sign_in_required || !self.anonymous_call_allowed(client.ip())) {
+            if let Some(skipped) = self.noise.allow() {
+                debug!(logger, "Data from a connection that hasn't signed in dropped"; "similar_skipped" => skipped);
+            }
+            return;
+        }
+        let Some(ci) = self.client_registry.clients.get(&packet.signature) else {
+            return;
+        };
         let logger = logger.new(o!("pid" => ci.borrow().user_id));
-        let ci = &mut ci.borrow_mut();
+        let mut guard = ci.borrow_mut();
+        let ci = &mut *guard;
         ci.seen();
         if let Err(e) = self.send_ack(&logger, &client, &packet, &*ci, false) {
             error!(logger, "Error sending ack"; "error" => %e);
@@ -700,6 +827,37 @@ where
         if let Some(entry) = ci.handled.iter_mut().find(|(seq, _)| *seq == packet.sequence) {
             entry.1 = replies;
         }
+        drop(guard);
+        if !signed_in {
+            self.client_registry.settle(packet.signature);
+        }
+    }
+
+    /// Whether a connection from `ip` that hasn't signed in may make another call now (see
+    /// [`ANONYMOUS_CALLS_PER_SECOND`]).
+    fn anonymous_call_allowed(&mut self, ip: std::net::IpAddr) -> bool {
+        if many_per_ip().is_some() {
+            return true;
+        }
+        if let Some(bucket) = self.anonymous_calls.get_mut(&ip) {
+            return bucket.take(ANONYMOUS_CALLS_PER_SECOND, ANONYMOUS_CALL_BURST);
+        }
+        let now = Instant::now();
+        if self.anonymous_calls.len() >= MAX_ANONYMOUS_SOURCES && now.duration_since(self.anonymous_sweep) >= Duration::from_secs(1) {
+            // Those that would be full again by now: forgetting them changes nothing.
+            let refilled = Duration::from_secs_f32(ANONYMOUS_CALL_BURST / ANONYMOUS_CALLS_PER_SECOND);
+            self.anonymous_calls.retain(|_, b| now.duration_since(b.at) < refilled);
+            self.anonymous_sweep = now;
+        }
+        // Still full: someone with thousands of addresses. Each is let through rather than
+        // every newcomer refused.
+        if self.anonymous_calls.len() >= MAX_ANONYMOUS_SOURCES {
+            return true;
+        }
+        let mut bucket = Bucket::full(ANONYMOUS_CALL_BURST);
+        let allowed = bucket.take(ANONYMOUS_CALLS_PER_SECOND, ANONYMOUS_CALL_BURST);
+        self.anonymous_calls.insert(ip, bucket);
+        allowed
     }
 
     /// Resends reliable packets clients haven't acknowledged, with backoff,
@@ -770,7 +928,12 @@ where
         };
         // Bounded connections, per address and in all (checked again at CONNECT, where
         // they are made; here it saves answering).
-        if self.client_registry.connections_from(client.ip()) >= max_connections_per_ip() || self.client_registry.clients.len() >= MAX_CONNECTIONS {
+        let (anonymous_here, anonymous) = self.client_registry.anonymous_from(client.ip());
+        if self.client_registry.connections_from(client.ip()) >= max_connections_per_ip()
+            || self.client_registry.clients.len() >= MAX_CONNECTIONS
+            || anonymous_here >= many_per_ip().unwrap_or(MAX_ANONYMOUS_PER_IP)
+            || anonymous >= MAX_ANONYMOUS
+        {
             if let Some(skipped) = self.noise.allow() {
                 warn!(logger, "Refusing a handshake from {client}: too many connections"; "similar_skipped" => skipped);
             }
@@ -837,7 +1000,12 @@ where
             }
             return;
         }
-        if self.client_registry.connections_from(client.ip()) >= max_connections_per_ip() || self.client_registry.clients.len() >= MAX_CONNECTIONS {
+        let (anonymous_here, anonymous) = self.client_registry.anonymous_from(client.ip());
+        if self.client_registry.connections_from(client.ip()) >= max_connections_per_ip()
+            || self.client_registry.clients.len() >= MAX_CONNECTIONS
+            || anonymous_here >= many_per_ip().unwrap_or(MAX_ANONYMOUS_PER_IP)
+            || anonymous >= MAX_ANONYMOUS
+        {
             if let Some(skipped) = self.noise.allow() {
                 warn!(logger, "Refusing a connection from {client}: too many connections"; "similar_skipped" => skipped);
             }
@@ -945,6 +1113,7 @@ where
         // The sign-in is taken in (the player online, their other games signed out) before
         // it's answered: once the game is signed in, everyone sees it online.
         let signed_in = ci.borrow().user_id;
+        self.client_registry.settle(packet.signature);
         let answered = !packet.payload.is_empty();
         if let Some(user_id) = signed_in.filter(|id| (self.newest_sign_in_wins)(*id)) {
             self.sign_out_elsewhere(logger, user_id, client);
@@ -1061,10 +1230,11 @@ where
     fn clear_clients(&mut self) {
         let now = Instant::now();
         // A connection that never signed in nor sent anything goes sooner: a game always does
-        // straight away, so it's a handshake someone left open.
+        // straight away, so it's a handshake someone left open. One that hasn't signed in
+        // goes after [`ANONYMOUS_LIFETIME`] whatever it sends.
         let expired = |ci: &ClientInfo<T>| {
             let quiet = now - ci.last_seen;
-            quiet > SESSION_TIMEOUT || (quiet > SILENT_TIMEOUT && ci.user_id.is_none() && ci.handled.is_empty())
+            quiet > SESSION_TIMEOUT || (ci.user_id.is_none() && ((quiet > SILENT_TIMEOUT && ci.handled.is_empty()) || now.duration_since(ci.connected) > ANONYMOUS_LIFETIME))
         };
         let expired: Vec<_> = self
             .client_registry
@@ -1173,6 +1343,8 @@ fn encode_packet(logger: &Logger, ctx: &Context, mut resp: QPacket) -> Vec<u8> {
 
 #[cfg(test)]
 mod tests {
+    use std::net::Ipv4Addr;
+
     use super::*;
 
     fn client(user_id: Option<u32>, port: u16) -> ClientInfo<()> {
@@ -1432,5 +1604,96 @@ mod tests {
             *since -= Duration::from_secs(2);
         }
         assert!(server.echo_allowed(ip(u32::MAX >> 8)), "swept, there is room again");
+    }
+
+    /// Connections that haven't signed in: a few per address, and not for long, however
+    /// busy they keep.
+    #[test]
+    fn anonymous_connections_are_capped_per_address_and_expire() {
+        let ctx = Context::splinter_cell_blacklist();
+        let logger = Logger::root(slog::Discard, o!());
+        let mut server = test_server(&ctx);
+        let connect = |server: &mut Server<'_, fn(ClientInfo<()>), fn(ClientInfo<()>), ()>, port: u16| {
+            let from = SocketAddr::from(([10, 1, 2, 3], port));
+            let sig = server.cookies.signature(from, 1, 0);
+            server.handle_connect(&logger, handshake(PacketType::Connect, sig, 1), from);
+            sig
+        };
+        let first = connect(&mut server, 40000);
+        for port in 40001..40100 {
+            connect(&mut server, port);
+        }
+        assert_eq!(server.client_registry.clients.len(), MAX_ANONYMOUS_PER_IP);
+        // Busy, but past its lifetime without signing in.
+        {
+            let mut ci = server.client_registry.clients[&first].borrow_mut();
+            ci.connected = Instant::now() - ANONYMOUS_LIFETIME - Duration::from_secs(1);
+            ci.handled.push_back((1, vec![]));
+        }
+        server.clear_clients();
+        assert_eq!(server.client_registry.clients.len(), MAX_ANONYMOUS_PER_IP - 1);
+        assert_eq!(
+            server.client_registry.anonymous_from(Ipv4Addr::new(10, 1, 2, 3).into()),
+            (MAX_ANONYMOUS_PER_IP - 1, MAX_ANONYMOUS_PER_IP - 1)
+        );
+        // One signing in no longer counts.
+        let other = *server.client_registry.clients.keys().next().unwrap();
+        server.client_registry.clients[&other].borrow_mut().user_id = Some(1234);
+        server.client_registry.settle(other);
+        assert_eq!(server.client_registry.anonymous_from(Ipv4Addr::new(10, 1, 2, 3).into()).0, MAX_ANONYMOUS_PER_IP - 2);
+        connect(&mut server, 41000);
+        connect(&mut server, 41001);
+        assert_eq!(server.client_registry.clients.len(), MAX_ANONYMOUS_PER_IP + 1);
+    }
+
+    /// Calls from connections that haven't signed in: a burst, then the rate, per address.
+    #[test]
+    fn anonymous_calls_are_limited_per_address() {
+        let ctx = Context::splinter_cell_blacklist();
+        let mut server = test_server(&ctx);
+        let ip = std::net::IpAddr::from(Ipv4Addr::new(10, 9, 9, 9));
+        let allowed = (0..1000).filter(|_| server.anonymous_call_allowed(ip)).count();
+        assert!((ANONYMOUS_CALL_BURST as usize..ANONYMOUS_CALL_BURST as usize + 5).contains(&allowed), "{allowed}");
+        assert!(server.anonymous_call_allowed(Ipv4Addr::new(10, 9, 9, 10).into()), "another address has its own");
+    }
+
+    /// The secure service drops data from a connection that came without a ticket, unread,
+    /// and it doesn't keep the connection alive.
+    #[test]
+    fn data_without_a_sign_in_is_dropped_where_one_is_required() {
+        let ctx = Context::splinter_cell_blacklist();
+        let logger = Logger::root(slog::Discard, o!());
+        for required in [true, false] {
+            let mut server = test_server(&ctx);
+            server.sign_in_required = required;
+            let from = SocketAddr::from(([10, 1, 2, 4], 40000));
+            let sig = server.cookies.signature(from, 1, 0);
+            server.handle_connect(&logger, handshake(PacketType::Connect, sig, 1), from);
+            let data = QPacket {
+                packet_type: PacketType::Data,
+                signature: sig,
+                sequence: 1,
+                fragment_id: Some(0),
+                payload: vec![1, 2, 3],
+                ..Default::default()
+            };
+            server.handle_data(&logger, data, from);
+            assert_eq!(server.client_registry.clients[&sig].borrow().handled.is_empty(), required);
+        }
+    }
+
+    /// Before signing in, little of a message in fragments is kept.
+    #[test]
+    fn anonymous_fragments_are_capped() {
+        let mut anonymous = client(None, 3078);
+        let mut signed_in = client(Some(7), 3079);
+        let part = vec![0; 900];
+        let mut too_much = false;
+        for seq in 1..20u16 {
+            let fid = u8::try_from(seq).unwrap();
+            too_much |= matches!(add_fragment(&mut anonymous, fragment(seq, fid, &part)), Assembled::TooMuch);
+            assert!(matches!(add_fragment(&mut signed_in, fragment(seq, fid, &part)), Assembled::Waiting));
+        }
+        assert!(too_much, "over 8 KiB before signing in");
     }
 }

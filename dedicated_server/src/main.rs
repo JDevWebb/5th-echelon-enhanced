@@ -201,6 +201,8 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
     // The service accounts are shared (Tracking's password is the game's own): signing in to
     // one must not close everyone else's connections to it.
     server.newest_sign_in_wins = |user_id| !SERVICE_ACCOUNTS.contains(&user_id);
+    // Every game connects to the secure service with its ticket; nothing else is handled.
+    server.sign_in_required = is_secure;
     if is_secure {
         // An admin's kick or ban (players.rs).
         server.sign_outs = Some(players::sign_outs());

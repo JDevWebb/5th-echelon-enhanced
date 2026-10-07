@@ -1300,10 +1300,12 @@ dependencies = [
  "stat_boards",
  "thiserror 2.0.17",
  "tokio",
+ "tokio-stream",
  "toml 0.9.8",
  "tonic",
  "tonic-async-interceptor",
  "tonic-reflection",
+ "tower",
  "winres",
 ]
 
