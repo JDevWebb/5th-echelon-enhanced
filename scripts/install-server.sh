@@ -2105,10 +2105,16 @@ case "${1:-status}" in
     ;;
   files)
     runs coordinator || exit 0
+    # Never through a symbolic link: the coordinator's user owns its folder, and this runs as
+    # root, so a link there (reports -> /etc/5th-echelon) would copy root's files (the backup
+    # and DNS keys) to R2, and a failover restore would hand them to that user.
     for f in join-token.txt; do
-      [ -f "$COORD_DIR/$f" ] && "${RCLONE[@]}" copyto "$COORD_DIR/$f" "R2:$BACKUP_R2_BUCKET/live/$BACKUP_NAME/coordinator-files/$f"
+      if [ -L "$COORD_DIR/$f" ]; then echo "warning: $COORD_DIR/$f is a link; not backed up" >&2; continue; fi
+      if [ -f "$COORD_DIR/$f" ]; then "${RCLONE[@]}" copyto "$COORD_DIR/$f" "R2:$BACKUP_R2_BUCKET/live/$BACKUP_NAME/coordinator-files/$f"; fi
     done
-    if [ -d "$COORD_DIR/reports" ]; then
+    if [ -L "$COORD_DIR/reports" ]; then
+      echo "warning: $COORD_DIR/reports is a link; not backed up" >&2
+    elif [ -d "$COORD_DIR/reports" ]; then
       "${RCLONE[@]}" sync "$COORD_DIR/reports" "R2:$BACKUP_R2_BUCKET/live/$BACKUP_NAME/coordinator-files/reports"
     fi
     date -u +%FT%TZ > "$BACKUP_STATE/last-files"
