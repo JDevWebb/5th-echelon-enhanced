@@ -134,13 +134,14 @@ impl Sent {
 }
 
 impl Coordinator {
-    /// Whether `identity` has an account on a member server: only a real player writes in.
-    pub(crate) async fn is_linked_player(&self, identity: &str) -> sqlx::Result<bool> {
-        Ok(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM links WHERE global_id = ?")
+    /// The name `identity` was last linked by on a member server, if it's linked anywhere (only
+    /// a real player writes in): what admins see for a player, not the name their launcher
+    /// says (anyone could say anyone's).
+    pub(crate) async fn linked_name(&self, identity: &str) -> sqlx::Result<Option<String>> {
+        sqlx::query_scalar("SELECT username FROM links WHERE global_id = ? ORDER BY linked_at DESC LIMIT 1")
             .bind(identity)
-            .fetch_one(&self.pool)
-            .await?
-            > 0)
+            .fetch_optional(&self.pool)
+            .await
     }
 
     /// Keeps a player's message (reopening their conversation). Answers its id, and whether

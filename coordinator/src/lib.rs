@@ -1692,7 +1692,7 @@ async fn suggest(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
     if body.len() > 8 * 1024 {
         return fail(StatusCode::PAYLOAD_TOO_LARGE, "too long");
     }
-    let s: roadmap::Suggestion = match parse(&body) {
+    let mut s: roadmap::Suggestion = match parse(&body) {
         Ok(s) => s,
         Err(a) => return a,
     };
@@ -1700,6 +1700,13 @@ async fn suggest(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
     if let Err(why) = s.check(now) {
         return fail(StatusCode::BAD_REQUEST, why);
     }
+    // The name isn't signed: a linked player's is the one they linked by, anyone else is "a
+    // player", so nobody can suggest as somebody else.
+    s.name = match c.linked_name(&s.identity).await {
+        Ok(Some(name)) => name,
+        Ok(None) => "a player".into(),
+        Err(e) => return internal(e),
+    };
     if !c.suggestion_posts.check(&limit_key(client_ip(peer, &headers))) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "Too many suggestions from this address today; try again tomorrow.");
     }
@@ -1757,14 +1764,15 @@ async fn support_send(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<st
     let now = identity::now();
     // Unpacking the files to check them: off the async workers.
     let checked = tokio::task::spawn_blocking(move || sent.check(&host, now).map(|files| (sent, files))).await;
-    let (sent, files) = match checked {
+    let (mut sent, files) = match checked {
         Ok(Ok(v)) => v,
         Ok(Err(why)) => return fail(StatusCode::BAD_REQUEST, why),
         Err(e) => return internal(e),
     };
-    match c.is_linked_player(&sent.identity).await {
-        Ok(true) => {}
-        Ok(false) => {
+    // The name isn't signed: the one they linked by, not what the launcher says.
+    match c.linked_name(&sent.identity).await {
+        Ok(Some(name)) => sent.name = name,
+        Ok(None) => {
             return fail(
                 StatusCode::FORBIDDEN,
                 "Support is for players of the community network: connect to one of its servers first.",

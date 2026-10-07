@@ -972,7 +972,10 @@ async fn players_and_sessions_are_taken_and_a_full_roster_deletes() {
         })
         .await
         .unwrap();
-    assert_eq!(found["players"][0]["also_on"], json!(["server-b"]));
+    // The row is the account seen last (server B's, if its roster came a second later).
+    let shown = &found["players"][0];
+    let other = if shown["server"] == "server-a" { "server-b" } else { "server-a" };
+    assert_eq!(shown["also_on"], json!([other]), "{shown}");
     // One row for the person: both servers, their numbers added up; before the links, two.
     let all = t.c.player_list(&players::ListQuery::default()).await.unwrap();
     let exo: Vec<&Value> = all["players"].as_array().unwrap().iter().filter(|p| p["name"] == "Exo").collect();
@@ -3001,6 +3004,20 @@ async fn players_suggest_from_the_launcher_and_admins_keep_the_roadmap() {
     assert_eq!(admin_call(&r, "GET", "/api/me", &cookie, None).await.1["roadmap"], json!(false));
     t.c.enable_roadmap();
     assert_eq!(admin_call(&r, "GET", "/api/me", &cookie, None).await.1["roadmap"], json!(true));
+    let a = t.join("server-a").await;
+    t.changes(&a, json!([link(&me, "server-a", "Kiwi")])).await;
+    // The name isn't signed: someone not linked anywhere is "a player", whatever they say.
+    let stranger = identity::Identity::generate();
+    let mut posing = suggest(&stranger, now, "Other", "Free admin rights", "From the developer.");
+    posing["name"] = json!("JDevWebb");
+    assert_eq!(t.call("POST", "/v1/suggestions", None, Some(posing)).await.0, StatusCode::OK);
+    let name: String = sqlx::query_scalar("SELECT name FROM suggestions WHERE global_id = ?")
+        .bind(stranger.global_id())
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(name, "a player");
+    sqlx::query("DELETE FROM suggestions").execute(&t.c.pool).await.unwrap();
     // Signed, fresh and in a known area.
     let mut forged = suggest(&me, now, "Launcher", "Chat to find players", "A chat in the launcher.");
     forged["text"] = json!("Something else.");
