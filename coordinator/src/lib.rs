@@ -90,6 +90,8 @@ const CLAIM_GRACE_SECS: i64 = 60 * 60;
 const MAX_UNLINKED_CLAIMS_PER_HOUR: i64 = 200;
 /// The largest request body.
 const MAX_BODY: usize = 256 * 1024;
+/// The most players online a listing says (the load test ran 1,000 on one core).
+const MAX_LISTED_PLAYERS: u32 = 5_000;
 /// New links one server may make in an hour, and links it may have in all: a member can't
 /// reserve names by the thousand with throwaway identities.
 const MAX_NEW_LINKS_PER_HOUR: i64 = 120;
@@ -1196,7 +1198,7 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, body: axum::body
         Ok(s) => s,
         Err(e) => return e,
     };
-    let listing: Listing = match parse(&body) {
+    let mut listing: Listing = match parse(&body) {
         Ok(v) => v,
         Err(e) => return e,
     };
@@ -1208,10 +1210,31 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, body: axum::body
     }
     // Its names, first come, first served: a name another server has stays theirs, and the
     // server hears about it (newer servers log it).
-    let clashes = match c.claim_server_names(&server, &listing).await {
+    let mut clashes = match c.claim_server_names(&server, &listing).await {
         Ok(clashes) => clashes,
         Err(e) => return internal(e),
     };
+    // Listed under its own address only: one another member holds would send players to
+    // that server under this one's name.
+    let host_owner: Option<String> = match sqlx::query_scalar("SELECT server_id FROM server_names WHERE name = ?")
+        .bind(identity::host_key(&listing.host))
+        .fetch_optional(&c.pool)
+        .await
+    {
+        Ok(o) => o,
+        Err(e) => return internal(e),
+    };
+    if listing.listed && host_owner.as_deref() != Some(server.as_str()) {
+        listing.listed = false;
+        clashes.push(format!("{} isn't this server's name: not listed in the directory", listing.host));
+    }
+    // A count the directory can sort by, but not past the server's own players, nor more than
+    // any server here holds (one said 4,294,967,295 to top the list).
+    // (A server too old to say its total says 0.)
+    if listing.players_total > 0 {
+        listing.players_online = listing.players_online.min(listing.players_total);
+    }
+    listing.players_online = listing.players_online.min(MAX_LISTED_PLAYERS);
     let text = match serde_json::to_string(&listing) {
         Ok(t) => t,
         Err(e) => return internal(e),

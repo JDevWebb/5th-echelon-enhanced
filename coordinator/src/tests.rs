@@ -3484,3 +3484,37 @@ async fn a_setup_link_keeps_its_expiry_through_weak_passwords() {
     let expires: i64 = sqlx::query_scalar("SELECT expires_at FROM setup_tokens").fetch_one(&t.c.pool).await.unwrap();
     assert_eq!(expires, soon);
 }
+
+/// A listing can't top the directory with a made-up count, nor be listed under another
+/// member's address.
+#[tokio::test]
+async fn listings_keep_to_their_own_address_and_a_believable_count() {
+    let t = start("listing-bounds").await;
+    let a = t.join("server-a").await;
+    let b = t.join("server-b").await;
+    let (status, _) = t
+        .call(
+            "POST",
+            "/v1/heartbeat",
+            Some(&a),
+            Some(json!({ "name": "Server A", "host": "server-a", "names": ["server-a"], "players_online": u32::MAX, "players_total": u32::MAX })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, v) = t.call("GET", "/v1/servers", None, None).await;
+    let a_listed = v["servers"].as_array().unwrap().iter().find(|s| s["name"] == "Server A").cloned().unwrap();
+    assert_eq!(a_listed["players_online"], json!(MAX_LISTED_PLAYERS));
+    // B says it's at A's address.
+    let (status, v) = t
+        .call(
+            "POST",
+            "/v1/heartbeat",
+            Some(&b),
+            Some(json!({ "name": "Server A (official)", "host": "server-a", "names": ["server-b"] })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(v["warnings"].to_string().contains("not listed"), "{v}");
+    let (_, v) = t.call("GET", "/v1/servers", None, None).await;
+    assert!(!v["servers"].to_string().contains("official"), "{v}");
+}
