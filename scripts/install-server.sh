@@ -1118,7 +1118,9 @@ if [ -n "$coord_domain" ]; then
   echo "$coord_domain" > "$ETC_DIR/coordinator-domain"
   if [ -n "$metrics_domain" ]; then echo "$metrics_domain" > "$ETC_DIR/metrics-domain"; else rm -f "$ETC_DIR/metrics-domain"; fi
   if [ "$origin_pull" -eq 1 ]; then touch "$ETC_DIR/metrics-origin-pull"; else rm -f "$ETC_DIR/metrics-origin-pull"; fi
-  coord_args="--listen $COORD_ADDR:8700 --data $COORD_DIR"
+  # Players sign their support messages and reads for the coordinator's name: one made for
+  # another coordinator mustn't count here.
+  coord_args="--listen $COORD_ADDR:8700 --data $COORD_DIR --name $coord_domain"
   # The admin UI on its own port, for Caddy to serve at the metrics name.
   if [ -n "$metrics_domain" ]; then coord_args="$coord_args --admin-listen $COORD_ADDR:8701 --admin-origin https://$metrics_domain"; fi
   # The roadmap and players' suggestions: every launcher reads the community network's, so

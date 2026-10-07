@@ -32,6 +32,11 @@ struct Args {
     /// network's coordinator only, whose roadmap every launcher reads
     #[argh(switch)]
     roadmap: bool,
+    /// a name launchers reach this coordinator by, e.g. play.scbl.jdevwebb.net
+    /// (repeat for more): players' signed requests must be made for one of them.
+    /// Without it, for whatever name a request says
+    #[argh(option)]
+    name: Vec<String>,
     #[argh(subcommand)]
     command: Option<Command>,
 }
@@ -342,7 +347,11 @@ async fn main() -> eyre::Result<()> {
     let _ = coordinator.data_dir.set(std::fs::canonicalize(&args.data).unwrap_or_else(|_| args.data.clone()));
     if args.roadmap {
         coordinator.enable_roadmap();
+        if args.name.is_empty() {
+            tracing::warn!("--roadmap without --name: players' signed requests are checked against the name each request says, which a replay can set");
+        }
     }
+    let _ = coordinator.names.set(args.name.iter().map(|n| identity::host_key(n)).collect());
     // Where launchers' ping reports and admins come from: DB-IP's city database, kept current.
     let geo = Arc::new(geo::Geo::new(args.data.join("geoip")));
     let _ = coordinator.geo.set(Arc::clone(&geo));

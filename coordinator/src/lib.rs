@@ -461,6 +461,10 @@ pub struct Coordinator {
     /// coordinator only, whose roadmap every launcher reads (`--roadmap`). Off, its routes
     /// and the admin UI's page aren't there.
     roadmap: std::sync::atomic::AtomicBool,
+    /// The names launchers reach this coordinator by (`--name`): what players' signed
+    /// requests must be made for. Unset, the request's own Host is taken, which anyone
+    /// replaying a signature made for another coordinator can set to that one's name.
+    pub names: std::sync::OnceLock<Vec<String>>,
     /// The folder the database is in: reports' files go under it.
     files_dir: std::path::PathBuf,
     /// The most the reports' files may take ([`reports::STORAGE_CAP`]; less in tests).
@@ -572,6 +576,7 @@ impl Coordinator {
             support_posts: Limit::per(support::PER_PLAYER_AN_HOUR, Duration::from_secs(3600)),
             support_address_posts: Limit::per(support::PER_ADDRESS_AN_HOUR, Duration::from_secs(3600)),
             roadmap: std::sync::atomic::AtomicBool::new(false),
+            names: std::sync::OnceLock::new(),
             files_dir: std::path::Path::new(path)
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
@@ -1631,6 +1636,17 @@ impl Coordinator {
     pub fn has_roadmap(&self) -> bool {
         self.roadmap.load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    /// The name a player's signed request was made for: the request's Host, if it's one of
+    /// this coordinator's [`names`](Self::names) (or there are none set); else none, and the
+    /// signature is for another coordinator.
+    fn signed_for(&self, headers: &HeaderMap) -> Option<String> {
+        let host = headers.get(axum::http::header::HOST).and_then(|h| h.to_str().ok()).unwrap_or_default();
+        match self.names.get() {
+            Some(names) if !names.is_empty() => names.contains(&identity::host_key(host)).then(|| host.to_string()),
+            _ => Some(host.to_string()),
+        }
+    }
 }
 
 /// What a coordinator without the roadmap answers its routes.
@@ -1711,7 +1727,9 @@ async fn support_send(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<st
         Ok(s) => s,
         Err(a) => return a,
     };
-    let host = headers.get(axum::http::header::HOST).and_then(|h| h.to_str().ok()).unwrap_or_default().to_string();
+    let Some(host) = c.signed_for(&headers) else {
+        return fail(StatusCode::FORBIDDEN, "the signature doesn't match");
+    };
     let now = identity::now();
     // Unpacking the files to check them: off the async workers.
     let checked = tokio::task::spawn_blocking(move || sent.check(&host, now).map(|files| (sent, files))).await;
@@ -1765,7 +1783,10 @@ async fn my_support(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std:
     if !c.reads.check(&limit_key(client_ip(peer, &headers))) {
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many requests");
     }
-    let host = headers.get(axum::http::header::HOST).and_then(|h| h.to_str().ok()).unwrap_or_default();
+    let Some(host) = c.signed_for(&headers) else {
+        return fail(StatusCode::FORBIDDEN, "the signature doesn't match");
+    };
+    let host = host.as_str();
     if !identity::is_global_id(&q.identity)
         || !identity::fresh(q.time, identity::now())
         || !identity::verify(&q.identity, &identity::support_read_message(host, q.time), &q.signature)
@@ -1782,7 +1803,10 @@ async fn my_reports(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std:
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many requests");
     }
     // Signed for this coordinator, by the name it was reached at.
-    let host = headers.get(axum::http::header::HOST).and_then(|h| h.to_str().ok()).unwrap_or_default();
+    let Some(host) = c.signed_for(&headers) else {
+        return fail(StatusCode::FORBIDDEN, "the signature doesn't match");
+    };
+    let host = host.as_str();
     if !identity::is_global_id(&q.identity) || !identity::fresh(q.time, identity::now()) || !identity::verify(&q.identity, &identity::reports_message(host, q.time), &q.signature) {
         return fail(StatusCode::FORBIDDEN, "the signature doesn't match");
     }

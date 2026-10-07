@@ -3270,3 +3270,27 @@ async fn admins_write_first_to_a_player_the_network_knows() {
     let (_, v) = t.call("POST", "/v1/pulse", Some(&a), Some(pulse)).await;
     assert_eq!(v["support"], json!([{ "player": 1026, "unread": 1 }]), "{v}");
 }
+
+/// With its names set (`--name`), a coordinator takes players' signatures made for one of
+/// them only: one made for another coordinator, replayed here with that one's name as the
+/// Host, reads nothing.
+#[tokio::test]
+async fn signed_reads_are_for_this_coordinators_names() {
+    let t = start("signed-names").await;
+    let _ = t.c.names.set(vec!["coordinator.test".into()]);
+    let me = identity::Identity::generate();
+    let read = |host: &str, signed_for: &str| {
+        let time = identity::now();
+        let path = format!(
+            "/v1/reports/mine?identity={}&time={time}&signature={}",
+            me.global_id(),
+            me.sign(&identity::reports_message(signed_for, time))
+        );
+        let req = Request::builder().method("GET").uri(path).header("host", host).body(Body::empty()).unwrap();
+        let router = t.router.clone();
+        async move { router.oneshot(req).await.unwrap().status() }
+    };
+    assert_eq!(read("coordinator.test", "coordinator.test").await, StatusCode::OK);
+    assert_eq!(read("Coordinator.test:443", "coordinator.test").await, StatusCode::OK, "the same name, another way");
+    assert_eq!(read("evil.example", "evil.example").await, StatusCode::FORBIDDEN);
+}
