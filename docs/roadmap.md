@@ -8,9 +8,17 @@ What's being worked on next, roughly in order. Plans change as testing and the g
 
 A signed `launcher.exe` and client DLL, so antivirus programs stop guessing (see [Antivirus warnings](../README.md#antivirus-warnings)). Until then, each release is sent to Microsoft for review.
 
-### Friends list that keeps up: confirming in the game
+### Global matchmaking
 
-The game asks for its friends list once, when it reaches the online menu, so a friend added mid-session only appeared after a restart. The client now tells the game the list changed, the way Ubisoft's service did, and the game fetches it again ([friends.md](friends.md)). It's in the code; next is confirming it in real games.
+One matchmaking server for everyone, relays kept near players, hosts ranked by ping: the second step of [cross-region play](#cross-region-play) below.
+
+### Coordinator failover
+
+Moving the community network's coordinator to a one-level name, so Cloudflare can proxy it, then turning [failover](failover.md) on.
+
+### When a public match's host leaves
+
+When the host of a public match leaves, the match ends for everyone else, since the 0.4.0 rule on who may take a session over doesn't count the players who joined from a search. Next: count them, and find out whether the game hands hosting over.
 
 ## Cross-region play
 
@@ -47,6 +55,10 @@ The fix, if players ask for it:
 
 ## Done recently
 
+- **0.4.3:** a security review of the whole network, attacking a copy of it and then real servers, and every finding fixed: caps on the API's and the coordinator's connections and messages, limits on game connections that haven't signed in, a relay that carries only the players the server put together, and a directory that lists a server only where it answers as itself. Tested in real games across two networks, co-op and Spies vs Mercs, relayed and direct, over half-hour matches.
+- **0.4.3:** Support in the launcher (the community network's), replies to reports, the overlay's key yours to choose, the 15 minutes of the game's log before a problem, and in the admin UI a **Live** page and how each stay ended.
+- **0.4.3:** the server's Docker image signed with each release (`scripts/verify-image.sh`).
+- Friends list that keeps up: a friend added mid-session shows in the game's own friends list without a restart (the client tells the game the list changed, as Ubisoft's service did). Confirmed in real games.
 - Signed releases: since 0.4.0, every release's checksums carry the release key's signature, and launchers and servers install releases on their own ([Releases and CI](../README.md#releases-and-ci)).
 - Stats and leaderboards: the server keeps the stats the game writes after each match and mission (Spies vs Mercs per mode, weapon and gadget, medals, ladders, solo and co-op missions), added up as the game's stats configuration says, and answers the game's leaderboards: solo and co-op high scores and best times, Spies vs Mercs total score and the ladders, overall, around you and among your friends. Leaderboards are global: every server sends the stats to the coordinator, which ranks each player once across the network (by their identity), so your stats follow you between servers. Servers answer the game from what the coordinator last sent, and from their own stats while it can't be reached.
 - A VPN on the player's PC (Radmin VPN): when the game offers the VPN's address for connecting, the server uses the address the player connected from instead of refusing the game's request.
