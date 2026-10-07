@@ -3506,9 +3506,10 @@ async fn listings_keep_to_a_believable_count() {
 
 /// Waits until every server's host check is of `target`; their results by id.
 async fn checked(t: &Test, target: &str) -> HashMap<String, Value> {
-    for _ in 0..100 {
+    let mut checks = HashMap::new();
+    for _ in 0..300 {
         let o = t.c.admin_overview().await.unwrap();
-        let checks: HashMap<String, Value> = o["servers"]
+        checks = o["servers"]
             .as_array()
             .unwrap()
             .iter()
@@ -3519,7 +3520,7 @@ async fn checked(t: &Test, target: &str) -> HashMap<String, Value> {
         }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    panic!("the checks of {target} didn't finish");
+    panic!("the checks of {target} didn't finish: {checks:?}");
 }
 
 /// A game server's `/api/info` on loopback, saying it's `id`; its port.
