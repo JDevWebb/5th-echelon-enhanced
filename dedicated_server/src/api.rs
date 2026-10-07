@@ -132,6 +132,11 @@ pub fn check_username(name: &str) -> Result<(), &'static str> {
     if !name.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.')) {
         return Err("names can have letters A-Z, digits, _, - and . only");
     }
+    // At least one letter or digit: "-" or ".." named nobody, and ".." in a path to the
+    // coordinator (`/v1/names/..`) made the check across the network fail open.
+    if !name.bytes().any(|c| c.is_ascii_alphanumeric()) {
+        return Err("names need a letter or digit");
+    }
     let key: String = identity::name_key(name).chars().filter(char::is_ascii_alphanumeric).collect();
     if RESERVED_NAMES.contains(&key.as_str()) {
         return Err("that name is reserved");
@@ -1843,5 +1848,19 @@ impl tonic::transport::server::Connected for Limited {
 
     fn connect_info(&self) -> Self::ConnectInfo {
         self.inner.connect_info()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::check_username;
+
+    #[test]
+    fn names_need_a_letter_or_digit() {
+        assert!(check_username("Kiwi_2").is_ok());
+        assert!(check_username("k.").is_ok());
+        for name in ["-", "..", "_", "._-", ""] {
+            assert!(check_username(name).is_err(), "{name:?}");
+        }
     }
 }
