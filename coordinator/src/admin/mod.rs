@@ -1511,8 +1511,8 @@ impl Coordinator {
         let now = identity::now();
         let rollout = self.rollout().await?;
         let latest: std::collections::HashMap<String, Value> = self.latest_metrics().await?.into_iter().collect();
-        let rows: Vec<(String, Option<String>, Option<i64>, Option<String>, i64)> =
-            sqlx::query_as("SELECT id, listing, last_seen, update_status, joined_at FROM servers ORDER BY id")
+        let rows: Vec<(String, Option<String>, Option<i64>, Option<String>, i64, Option<String>)> =
+            sqlx::query_as("SELECT id, listing, last_seen, update_status, joined_at, host_check FROM servers ORDER BY id")
                 .fetch_all(&self.pool)
                 .await?;
         let pings: Vec<(String, Option<f64>)> = sqlx::query_as(
@@ -1523,7 +1523,7 @@ impl Coordinator {
         let pings: std::collections::HashMap<String, Option<f64>> = pings.into_iter().collect();
         let clashes = self.name_clashes.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
         let mut servers = Vec::new();
-        for (id, listing, last_seen, status, joined_at) in rows {
+        for (id, listing, last_seen, status, joined_at, host_check) in rows {
             let l: Value = listing.and_then(|l| serde_json::from_str(&l).ok()).unwrap_or_default();
             let place = server_place(self, l["host"].as_str().unwrap_or_default()).await;
             let version = l["version"].as_str().unwrap_or_default();
@@ -1540,6 +1540,8 @@ impl Coordinator {
                 "ping_ms": pings.get(&id).copied().flatten(),
                 "place": place,
                 "name_clashes": clashes.get(&id).cloned().unwrap_or_default(),
+                // Whether the server at its listed host said it's this one (host_check.rs).
+                "host_check": host_check.and_then(|h| serde_json::from_str::<Value>(&h).ok()),
             }));
         }
         let peak: Option<f64> = sqlx::query_scalar("SELECT MAX(json_extract(data, '$.max_players')) FROM hourly WHERE hour >= ?")

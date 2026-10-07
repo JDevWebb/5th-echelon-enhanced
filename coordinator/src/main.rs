@@ -37,6 +37,11 @@ struct Args {
     /// Without it, for whatever name a request says
     #[argh(option)]
     name: Vec<String>,
+    /// list member servers without checking that the server at each listed
+    /// host answers as that member (a test network whose servers the
+    /// coordinator can't reach)
+    #[argh(switch)]
+    no_host_check: bool,
     #[argh(subcommand)]
     command: Option<Command>,
 }
@@ -356,6 +361,11 @@ async fn main() -> eyre::Result<()> {
         }
     }
     let _ = coordinator.names.set(args.name.iter().map(|n| identity::host_key(n)).collect());
+    if args.no_host_check {
+        tracing::warn!("--no-host-check: member servers are listed at whatever host they say, unchecked");
+    } else {
+        coordinator.check_hosts();
+    }
     // Where launchers' ping reports and admins come from: DB-IP's city database, kept current.
     let geo = Arc::new(geo::Geo::new(args.data.join("geoip")));
     let _ = coordinator.geo.set(Arc::clone(&geo));

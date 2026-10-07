@@ -3503,3 +3503,68 @@ async fn listings_keep_to_a_believable_count() {
     let a_listed = v["servers"].as_array().unwrap().iter().find(|s| s["name"] == "Server A").cloned().unwrap();
     assert_eq!(a_listed["players_online"], json!(MAX_LISTED_PLAYERS));
 }
+
+/// A game server's `/api/info` on loopback, saying it's `id`; its port.
+async fn info_server(id: &'static str) -> u16 {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let app = Router::new().route(
+        "/api/info",
+        get(move || async move { axum::Json(json!({ "name": "5th Echelon", "version": "1.0.0", "id": id })) }),
+    );
+    tokio::spawn(async move { axum::serve(listener, app).await });
+    port
+}
+
+#[tokio::test]
+async fn a_server_is_listed_only_where_it_answers_as_itself() {
+    let t = start("host-check").await;
+    t.c.check_hosts();
+    let (honest, liar) = (t.join("honest").await, t.join("liar").await);
+    let port = info_server("honest").await;
+    let beat = |name: &str, port: u16| json!({ "name": name, "host": "127.0.0.1", "listed": true, "ports": { "api": port, "login": 21126 } });
+    let listed = || async {
+        let (_, v) = t.call("GET", "/v1/servers", None, None).await;
+        let mut ids: Vec<String> = v["servers"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap().to_string()).collect();
+        ids.sort();
+        ids
+    };
+    // Both say they're at the honest server's address.
+    t.call("POST", "/v1/heartbeat", Some(&honest), Some(beat("Honest", port))).await;
+    t.call("POST", "/v1/heartbeat", Some(&liar), Some(beat("Honest (official)", port))).await;
+    let mut ids = Vec::new();
+    for _ in 0..50 {
+        ids = listed().await;
+        if !ids.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(listed().await, ["honest"], "the liar's listing names another server's address");
+    assert_eq!(ids, ["honest"]);
+    // The liar hears why, on its next heartbeat.
+    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&liar), Some(beat("Honest (official)", port))).await;
+    assert!(v["warnings"].to_string().contains("not in the directory"), "{v}");
+    // Moving to an address nobody answers at: out of the directory until checked there.
+    let (_, v) = t.call("POST", "/v1/heartbeat", Some(&honest), Some(beat("Honest", 9))).await;
+    assert!(v.get("warnings").is_none(), "{v}");
+    assert!(listed().await.is_empty(), "not checked at the new address yet");
+    // The admin UI says what the check found.
+    let mut found = Value::Null;
+    for _ in 0..50 {
+        found = t.c.admin_overview().await.unwrap()["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|s| s["id"] == "liar")
+            .unwrap()["host_check"]
+            .clone();
+        if !found.is_null() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert_eq!(found["ok"], false, "{found}");
+    assert!(found["why"].as_str().unwrap().contains("\"honest\""), "{found}");
+}

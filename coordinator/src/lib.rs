@@ -43,6 +43,7 @@ pub mod admin;
 pub mod alerts;
 pub mod content;
 pub mod game_names;
+mod host_check;
 pub mod limits;
 pub mod maintenance;
 pub mod metrics;
@@ -460,6 +461,11 @@ pub struct Coordinator {
     /// requests must be made for. Unset, the request's own Host is taken, which anyone
     /// replaying a signature made for another coordinator can set to that one's name.
     pub names: std::sync::OnceLock<Vec<String>>,
+    /// Whether a listing is in the directory only once the server at its host answered with
+    /// its id ([`host_check`]); on in the coordinator program ([`Self::check_hosts`]).
+    host_checks: std::sync::atomic::AtomicBool,
+    /// The servers whose host is being checked now, and what's checked ([`host_check::target`]).
+    host_checks_running: std::sync::Mutex<HashMap<String, String>>,
     /// Request bodies being read at once (see [`limits::Budgets`]).
     pub(crate) budgets: limits::Budgets,
     /// The folder the database is in: reports' files go under it.
@@ -576,6 +582,8 @@ impl Coordinator {
             support_refusals_said: Limit::per(1, Duration::from_secs(3600)),
             roadmap: std::sync::atomic::AtomicBool::new(false),
             names: std::sync::OnceLock::new(),
+            host_checks: std::sync::atomic::AtomicBool::new(false),
+            host_checks_running: std::sync::Mutex::default(),
             budgets: limits::Budgets::default(),
             files_dir: std::path::Path::new(path)
                 .parent()
@@ -855,16 +863,20 @@ impl Coordinator {
         if on.is_empty() || !self.vouched(me, friend).await? {
             return Ok(None);
         }
-        let links: Vec<(String, Option<String>, String, i64)> =
-            sqlx::query_as("SELECT s.id, s.listing, l.username, l.linked_at FROM links l JOIN servers s ON s.id = l.server_id WHERE l.global_id = ?")
+        let links: Vec<(String, Option<String>, String, i64, Option<String>)> =
+            sqlx::query_as("SELECT s.id, s.listing, l.username, l.linked_at, s.host_check FROM links l JOIN servers s ON s.id = l.server_id WHERE l.global_id = ?")
                 .bind(friend)
                 .fetch_all(&self.pool)
                 .await?;
         let best = links
             .into_iter()
-            .filter_map(|(id, listing, username, linked_at)| {
+            .filter_map(|(id, listing, username, linked_at, checked)| {
                 let since = on.iter().find(|(s, _)| *s == id)?.1;
                 let listing = serde_json::from_str::<Listing>(&listing?).ok().filter(|l| l.listed)?;
+                // A host its server didn't answer at isn't given out.
+                if !self.host_passed(checked.as_deref(), &listing) {
+                    return None;
+                }
                 Some(((linked_at, since), listing, username))
             })
             .max_by_key(|(order, ..)| *order);
@@ -1238,9 +1250,15 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, body: axum::body
         return internal(e);
     }
     c.publish(admin::live::Event::Network);
+    let mut warnings = clashes;
+    match c.host_check_after_heartbeat(&server, &listing).await {
+        Ok(Some(why)) => warnings.push(why),
+        Ok(None) => {}
+        Err(e) => return internal(e),
+    }
     let mut answer = json!({});
-    if !clashes.is_empty() {
-        answer["warnings"] = json!(clashes);
+    if !warnings.is_empty() {
+        answer["warnings"] = json!(warnings);
     }
     // The release this server should install now, if any.
     match c.update_for(&server, &listing.version, u64::from(listing.players_online)).await {
@@ -1582,7 +1600,7 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
         return fail(StatusCode::TOO_MANY_REQUESTS, "too many requests");
     }
     let since = identity::now() - i64::try_from(LISTED_FOR.as_secs()).unwrap_or(120);
-    let rows: Vec<(String, Option<String>, Option<i64>)> = match sqlx::query_as("SELECT id, listing, last_seen FROM servers WHERE last_seen >= ?")
+    let rows: Vec<(String, Option<String>, Option<i64>, Option<String>)> = match sqlx::query_as("SELECT id, listing, last_seen, host_check FROM servers WHERE last_seen >= ?")
         .bind(since)
         .fetch_all(&c.pool)
         .await
@@ -1602,9 +1620,14 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
     };
     let mut list: Vec<Value> = rows
         .into_iter()
-        .filter_map(|(id, listing, last_seen)| {
-            let mut v: Value = serde_json::from_str(&listing?).ok()?;
+        .filter_map(|(id, listing, last_seen, checked)| {
+            let listing = listing?;
+            let mut v: Value = serde_json::from_str(&listing).ok()?;
             if !v.is_object() || !v["listed"].as_bool().unwrap_or(true) {
+                return None;
+            }
+            // Only once the server at its host said it's this one.
+            if !c.host_passed(checked.as_deref(), &serde_json::from_str::<Listing>(&listing).ok()?) {
                 return None;
             }
             // Members keep up with the network's releases, or leave the directory.
@@ -1630,6 +1653,82 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
         answer["network_maintenance"] = json!(window);
     }
     ok(answer)
+}
+
+impl Coordinator {
+    /// Lists a server only once the server at its listed host answers with its id
+    /// ([`host_check`]).
+    pub fn check_hosts(&self) {
+        self.host_checks.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    fn checks_hosts(&self) -> bool {
+        self.host_checks.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Whether `listing` may be given out, by the kept result of its host's check.
+    fn host_passed(&self, checked: Option<&str>, listing: &Listing) -> bool {
+        !self.checks_hosts() || host_check::passed(checked, listing)
+    }
+
+    /// Checks `server`'s host when it's due (in the background), and says why its last check
+    /// failed, if it did.
+    async fn host_check_after_heartbeat(self: &Arc<Self>, server: &str, listing: &Listing) -> sqlx::Result<Option<String>> {
+        if !self.checks_hosts() {
+            return Ok(None);
+        }
+        let kept: Option<String> = sqlx::query_scalar("SELECT host_check FROM servers WHERE id = ?")
+            .bind(server)
+            .fetch_optional(&self.pool)
+            .await?
+            .flatten();
+        let now = identity::now();
+        let failed = kept
+            .as_deref()
+            .and_then(|k| serde_json::from_str::<host_check::Checked>(k).ok())
+            .filter(|k| !k.ok && k.target == host_check::target(listing))
+            .map(|k| k.why);
+        let target = host_check::target(listing);
+        // One check at a time per address: a slow one (a name that doesn't resolve) doesn't
+        // hold up the check of a new address.
+        let start = host_check::due(kept.as_deref(), listing, now) && {
+            let mut running = self.host_checks_running.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            running.insert(server.to_string(), target.clone()).as_ref() != Some(&target)
+        };
+        if start {
+            let (c, server, listing) = (Arc::clone(self), server.to_string(), listing.clone());
+            tokio::spawn(async move {
+                let checked = host_check::check(&server, &listing, now).await;
+                if checked.ok {
+                    tracing::info!("server {server}: {} answers as it", listing.host);
+                } else {
+                    tracing::warn!("server {server} lists {}, but isn't there: {}; not in the directory", listing.host, checked.why);
+                }
+                // Kept only if it's still the latest check of the server: one of an address it
+                // moved from since says nothing about where it is now.
+                let latest = {
+                    let mut running = c.host_checks_running.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                    let latest = running.get(&server) == Some(&checked.target);
+                    if latest {
+                        running.remove(&server);
+                    }
+                    latest
+                };
+                if let (true, Ok(text)) = (latest, serde_json::to_string(&checked)) {
+                    if let Err(e) = sqlx::query("UPDATE servers SET host_check = ? WHERE id = ?")
+                        .bind(text)
+                        .bind(&server)
+                        .execute(&c.pool)
+                        .await
+                    {
+                        tracing::warn!("server {server}: keeping its host check: {e}");
+                    }
+                }
+                c.publish(admin::live::Event::Network);
+            });
+        }
+        Ok(failed.map(|why| format!("not in the directory: the coordinator can't confirm this server is at {} ({why})", listing.host)))
+    }
 }
 
 /// The project's roadmap, as launchers show it (see [`roadmap`]).
