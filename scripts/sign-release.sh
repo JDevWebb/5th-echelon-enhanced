@@ -99,7 +99,7 @@ fi
 owner=$(printf '%s' "${REPO%%/*}" | tr '[:upper:]' '[:lower:]')
 image="ghcr.io/$owner/5th-echelon-server"
 digest=$(docker buildx imagetools inspect "$image:$VERSION-unsigned" --format '{{json .Manifest}}' 2>/dev/null \
-  | grep -o '"digest":"sha256:[0-9a-f]\{64\}"' | head -1 | cut -d'"' -f4 || true)
+  | grep -o '"digest": *"sha256:[0-9a-f]\{64\}"' | head -1 | cut -d'"' -f4 || true)
 if [ -z "$digest" ]; then
   printf '%s:%s-unsigned isn'"'"'t there. Sign the release without its server image? [y/N] ' "$image" "$VERSION"
   read -r answer
@@ -112,7 +112,7 @@ else
   else
     # Without gh's check, its revision label, exactly (the workflow sets it to the commit).
     revision=$(docker buildx imagetools inspect "$image@$digest" --format '{{json .Image}}' 2>/dev/null \
-      | grep -o '"org.opencontainers.image.revision":"[0-9a-f]\{40\}"' | head -1 | cut -d'"' -f4 || true)
+      | grep -o '"org.opencontainers.image.revision": *"[0-9a-f]\{40\}"' | head -1 | cut -d'"' -f4 || true)
     [ "$revision" = "$commit" ] || die "$image@$digest says it was built from ${revision:-no commit}, not $commit; not signing it"
     echo "The server image $image@$digest: labelled with $commit (this gh can't check its provenance)."
   fi
