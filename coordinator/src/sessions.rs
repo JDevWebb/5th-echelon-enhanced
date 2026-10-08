@@ -62,6 +62,9 @@ const KINDS: &[&str] = &[
 /// how close to that a stats write means the match had simply ended.
 const DROPOUT_WITHIN: i64 = 180;
 const STATS_NEAR: i64 = 180;
+/// How soon after a player left their match it ending, or everyone else leaving it, makes
+/// that the match's end rather than their dropout (see [`match_ended_around`]).
+const MATCH_END_WITHIN: i64 = 120;
 /// How long an invitation may take to reach its receiver.
 const DELIVERY_WITHIN: i64 = 120;
 /// Searches on different servers this close together could have found each other.
@@ -685,6 +688,30 @@ fn join_error(code: &str) -> String {
     format!("{name}, {code}")
 }
 
+/// Whether the match `left` was left from ended then: it ended (its host closed it, or its
+/// last player left), or everyone else in it then left too, within [`MATCH_END_WITHIN`].
+/// The game goes quiet on the results screen and few matches write stats, so traffic
+/// falling and then a leave is a match's end as often as a dropout; a dropout leaves the
+/// others playing.
+fn match_ended_around(room: &[&Event], left: &Event) -> bool {
+    let window = left.at..=left.at + MATCH_END_WITHIN;
+    if room.iter().any(|o| o.kind == "leave" && o.detail["ended"] == true && window.contains(&o.at)) {
+        return true;
+    }
+    // Everyone else in it when they left: came in by then, and hadn't gone yet.
+    let mut others: Vec<(String, String)> = Vec::new();
+    for o in room
+        .iter()
+        .filter(|o| matches!(o.kind.as_str(), "room" | "join") && o.at <= left.at && o.who() != left.who())
+    {
+        let gone_before = room.iter().any(|l| l.kind == "leave" && l.who() == o.who() && (o.at..left.at).contains(&l.at));
+        if !gone_before && !others.contains(&o.who()) {
+            others.push(o.who());
+        }
+    }
+    !others.is_empty() && others.iter().all(|who| room.iter().any(|l| l.kind == "leave" && &l.who() == who && window.contains(&l.at)))
+}
+
 pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
     let mut out = Vec::new();
     let problem = |e: &Event, level: &str, title: String, text: String| json!({ "at": e.at, "server": e.server, "level": level, "player": e.player, "name": e.name, "title": title, "text": text });
@@ -791,14 +818,15 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
                 let earlier_drop = list
                     .iter()
                     .any(|o| o.kind == "relay_drop" && o.at < e.at && (o.at..=o.at + DROPOUT_WITHIN).contains(&left.at));
-                if ended_normally || earlier_drop {
+                if ended_normally || earlier_drop || match_ended_around(&in_room(&e.server, left.room()), left) {
                     continue;
                 }
-                let others: Vec<&str> = in_room(&e.server, left.room())
-                    .iter()
-                    .filter(|o| o.kind == "leave" && o.who() != e.who() && (left.at..=left.at + DROPOUT_WITHIN).contains(&o.at))
-                    .map(|o| o.name.as_str())
-                    .collect();
+                let mut others: Vec<&str> = Vec::new();
+                for o in in_room(&e.server, left.room()) {
+                    if o.kind == "leave" && o.who() != e.who() && (left.at..=left.at + DROPOUT_WITHIN).contains(&o.at) && !others.contains(&o.name.as_str()) {
+                        others.push(o.name.as_str());
+                    }
+                }
                 let mode = mode_name(left.str("mode"));
                 out.push(problem(
                     e,
@@ -978,6 +1006,7 @@ mod tests {
 
     use super::problems;
     use super::Event;
+    use super::MATCH_END_WITHIN;
 
     fn ev(server: &str, at: i64, player: i64, name: &str, kind: &str, detail: serde_json::Value) -> Event {
         Event {
@@ -1017,6 +1046,63 @@ mod tests {
         // A match that ended (stats written) isn't.
         events.push(ev("na", 1350, 2, "Viper", "stats", json!({})));
         assert!(titles(&events).is_empty());
+    }
+
+    /// NA1's private SvM of 8 October: kelpie's traffic fell to the game's idle rate on the
+    /// results screen, they left 18 s later, the others a few seconds after, and the host
+    /// closed the match. No stats (private matches rarely write them): the match's end, not
+    /// a dropout. With the others still playing, it is one.
+    #[test]
+    fn a_match_that_ended_around_the_player_isnt_a_dropout() {
+        let svm = |how: &str| json!({ "room": 10, "since": 1000, "how": how, "ended": false, "room_kind": "match", "mode": "svm", "private": true });
+        let room = json!({ "room": 10, "since": 1000, "room_kind": "match", "mode": "svm", "private": true });
+        let start = vec![
+            ev("na", 1000, 1, "Scorcho", "room", room.clone()),
+            ev("na", 1001, 2, "kelpie", "join", room.clone()),
+            ev("na", 1001, 3, "Green_and_Sneaky", "join", room.clone()),
+            ev("na", 1001, 4, "ariawhitemage", "join", room.clone()),
+            ev("na", 2860, 2, "kelpie", "relay_drop", json!({ "direction": "sending", "before": 31, "after": 7 })),
+            ev("na", 2878, 2, "kelpie", "leave", svm("left")),
+            // The host's game removes them too: not noted any more, but older events have it.
+            ev("na", 2878, 2, "kelpie", "leave", svm("removed")),
+            ev("na", 2888, 3, "Green_and_Sneaky", "leave", svm("left")),
+            ev("na", 2888, 3, "Green_and_Sneaky", "leave", svm("removed")),
+        ];
+        // The others still in it (so far): a dropout, each who left named once.
+        let problems = problems(&start);
+        assert_eq!(problems.len(), 1, "{problems:?}");
+        assert_eq!(problems[0]["title"], "kelpie dropped out of a Spies vs Mercs match");
+        assert!(problems[0]["text"].as_str().unwrap().ends_with("Also left: Green_and_Sneaky"), "{problems:?}");
+
+        // The host closed it.
+        let mut closed = start.clone();
+        closed.push(ev(
+            "na",
+            2916,
+            1,
+            "Scorcho",
+            "leave",
+            json!({ "room": 10, "since": 1000, "how": "left", "ended": true, "room_kind": "match" }),
+        ));
+        assert!(titles(&closed).is_empty(), "{:?}", titles(&closed));
+
+        // Everyone else left too.
+        let mut emptied = start.clone();
+        emptied.push(ev("na", 2916, 4, "ariawhitemage", "leave", svm("left")));
+        emptied.push(ev("na", 2920, 1, "Scorcho", "leave", svm("left")));
+        assert!(titles(&emptied).is_empty(), "{:?}", titles(&emptied));
+
+        // But not when it ended long after (they dropped; the others played on).
+        let mut later = start;
+        later.push(ev(
+            "na",
+            2878 + MATCH_END_WITHIN + 60,
+            1,
+            "Scorcho",
+            "leave",
+            json!({ "room": 10, "since": 1000, "how": "left", "ended": true, "room_kind": "match" }),
+        ));
+        assert_eq!(titles(&later), ["kelpie dropped out of a Spies vs Mercs match"]);
     }
 
     /// Tonight's on NA1: a game that signed in and never registered for online play, and

@@ -559,15 +559,25 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
     ) -> Result<DeleteSessionResponse, Error> {
         // Ensure the client is logged in.
         let user_id = login_required(&*ci)?;
+        let session_id = request.game_session_key.session_id;
         if rmc_err!(
-            self.storage
-                .delete_game_session(user_id, request.game_session_key.type_id, request.game_session_key.session_id),
+            self.storage.delete_game_session(user_id, request.game_session_key.type_id, session_id),
             logger,
             "error deleting session"
         )? != 1
         {
             warn!(logger, "Unexpected amount of sessions deleted");
+            return Ok(DeleteSessionResponse);
         }
+        // The host ended it (a match's end): Sessions has their stay end here, not when their
+        // game next times out, and the match as ended for whoever was still in it.
+        info!(logger, "User {user_id} ends session {session_id}");
+        crate::session_events::note(
+            crate::session_events::Who::Id(user_id),
+            "leave",
+            serde_json::json!({ "room": session_id, "how": "left", "ended": true }),
+        );
+        crate::session_events::room_ended(session_id);
         Ok(DeleteSessionResponse)
     }
 
@@ -823,9 +833,10 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             "remove participants from",
         )?;
         // Removing anyone but yourself is the host's call alone.
+        let mut members = None;
         if request.participant_ids.0.iter().any(|&t| t != user_id) {
-            let members = rmc_err!(self.storage.session_members(request.game_session_key.session_id), logger, "error reading session members")?;
-            if members.is_some_and(|(creator, _)| creator != user_id) && self.debug_config.session_owner_checks {
+            members = rmc_err!(self.storage.session_members(request.game_session_key.session_id), logger, "error reading session members")?;
+            if members.as_ref().is_some_and(|(creator, _)| *creator != user_id) && self.debug_config.session_owner_checks {
                 warn!(logger, "User {user_id} isn't the host of {}; may not remove others", request.game_session_key.session_id);
                 return Err(Error::AccessDenied);
             }
@@ -836,7 +847,10 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             logger,
             "error removing participants"
         )?;
-        for &removed in request.participant_ids.0.iter().filter(|&&t| t != user_id) {
+        // Only those still in it: the host's game also removes a guest who just left, which
+        // isn't the host removing them (their leave is noted already).
+        let still_in = |id: u32| members.as_ref().is_none_or(|(_, participants)| participants.contains(&id));
+        for &removed in request.participant_ids.0.iter().filter(|&&t| t != user_id && still_in(t)) {
             crate::session_events::note(
                 crate::session_events::Who::Id(removed),
                 "leave",
