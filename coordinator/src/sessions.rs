@@ -815,9 +815,12 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
                     .find(|o| o.kind == "leave" && o.str("room_kind") == "match" && (e.at..=e.at + DROPOUT_WITHIN).contains(&o.at));
                 let Some(left) = left else { continue };
                 let ended_normally = list.iter().any(|o| o.kind == "stats" && (left.at - STATS_NEAR..=left.at + STATS_NEAR).contains(&o.at));
-                let earlier_drop = list
-                    .iter()
-                    .any(|o| o.kind == "relay_drop" && o.at < e.at && (o.at..=o.at + DROPOUT_WITHIN).contains(&left.at));
+                // One dropout, one problem: its first fall (both ways at once: the sending one).
+                let earlier_drop = list.iter().any(|o| {
+                    o.kind == "relay_drop"
+                        && (o.at < e.at || (o.at == e.at && o.str("direction") == "sending" && e.str("direction") != "sending"))
+                        && (o.at..=o.at + DROPOUT_WITHIN).contains(&left.at)
+                });
                 if ended_normally || earlier_drop || match_ended_around(&in_room(&e.server, left.room()), left) {
                     continue;
                 }
@@ -1062,6 +1065,7 @@ mod tests {
             ev("na", 1001, 3, "Green_and_Sneaky", "join", room.clone()),
             ev("na", 1001, 4, "ariawhitemage", "join", room.clone()),
             ev("na", 2860, 2, "kelpie", "relay_drop", json!({ "direction": "sending", "before": 31, "after": 7 })),
+            ev("na", 2860, 2, "kelpie", "relay_drop", json!({ "direction": "receiving", "before": 28, "after": 7 })),
             ev("na", 2878, 2, "kelpie", "leave", svm("left")),
             // The host's game removes them too: not noted any more, but older events have it.
             ev("na", 2878, 2, "kelpie", "leave", svm("removed")),
