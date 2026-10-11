@@ -121,6 +121,8 @@ pub struct ClientInfo<T = ()> {
 #[derive(Debug)]
 pub(crate) struct Unacked {
     pub data: Vec<u8>,
+    /// When it was first sent, and last.
+    pub first: std::time::Instant,
     pub sent: std::time::Instant,
     pub tries: u32,
 }
