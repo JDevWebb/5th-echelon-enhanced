@@ -335,7 +335,31 @@ fn init(hmodule: Option<HMODULE>) {
         .unwrap();
 }
 
-fn deinit(hmodule: Option<HMODULE>) {
+/// The game's log's last line, as the DLL unloads: `exiting`, the game closing normally
+/// (`ExitProcess`, which runs DLL detach; a crash or Task Manager ending the game don't), else
+/// the DLL unloaded from a running game. So a log that ends without it ended in a crash or a
+/// kill. Written straight to the file, as tracing can't be used here (see [`deinit`]); under
+/// the loader lock, so nothing but a file append: no threads, nothing that waits on another.
+fn log_closing(exiting: bool) {
+    use std::io::Write as _;
+
+    use tracing_subscriber::fmt::time::FormatTime as _;
+    let Some(path) = LOG_PATH.get() else { return };
+    let mut line = String::new();
+    // The time as the log's other lines have it.
+    let _ = tracing_subscriber::fmt::time::SystemTime.format_time(&mut tracing_subscriber::fmt::format::Writer::new(&mut line));
+    line.push_str(if exiting {
+        "  INFO hooks: The game is closing (a normal exit)\n"
+    } else {
+        "  INFO hooks: Unloaded from a running game\n"
+    });
+    if let Ok(mut file) = File::options().append(true).open(path) {
+        let _ = file.write_all(line.as_bytes());
+    }
+}
+
+fn deinit(hmodule: Option<HMODULE>, exiting: bool) {
+    log_closing(exiting);
     // disable tracing as TLS is already destroyed at this point.
     // No tracing calls/instruments are allowed before this point!!
     let _guard = tracing::dispatcher::set_default(&tracing::dispatcher::Dispatch::none());
@@ -485,10 +509,11 @@ fn init_log(target_dir: &Path) -> ReconfigurableLogger {
 }
 
 #[no_mangle]
-unsafe extern "system" fn DllMain(hinst: HMODULE, reason: u32, _reserved: *mut c_void) -> BOOL {
+unsafe extern "system" fn DllMain(hinst: HMODULE, reason: u32, reserved: *mut c_void) -> BOOL {
     match reason {
         DLL_PROCESS_ATTACH => init(Some(hinst)),
-        DLL_PROCESS_DETACH => deinit(Some(hinst)),
+        // `reserved` is set when the process is exiting, null for FreeLibrary.
+        DLL_PROCESS_DETACH => deinit(Some(hinst), !reserved.is_null()),
         DLL_THREAD_ATTACH | DLL_THREAD_DETACH => {}
         _ => {
             fatal_error!("Unexpected reason: {reason}");

@@ -193,7 +193,7 @@ pub fn body(report: Incoming, player: Value, summary: &Value, server_log: String
     let client: serde_json::Map<String, Value> = report
         .client
         .iter()
-        .filter(|(k, _)| ["launcher", "client", "build", "os", "language"].contains(&k.as_str()))
+        .filter(|(k, _)| ["launcher", "client", "build", "os", "language", "exit_code"].contains(&k.as_str()))
         .map(|(k, v)| (k.clone(), json!(printable(v, 64))))
         .collect();
     let id: String = {
@@ -263,7 +263,11 @@ mod tests {
             problems: vec!["join".into(), "nonsense".into(), "lag".into()],
             comment: "couldn't join\\u{7}my friend".into(),
             triggers: vec!["failed_join".into()],
-            client: HashMap::from([("launcher".into(), "0.4.1".into()), ("secret".into(), "x".into())]),
+            client: HashMap::from([
+                ("launcher".into(), "0.4.1".into()),
+                ("exit_code".into(), "0xC0000005".into()),
+                ("secret".into(), "x".into()),
+            ]),
             files,
         }
     }
@@ -275,7 +279,7 @@ mod tests {
         assert_eq!(id.len(), 32);
         assert_eq!(b["id"], json!(id));
         assert_eq!(b["problems"], json!(["join", "lag"]), "only the known problems");
-        assert_eq!(b["client"], json!({ "launcher": "0.4.1" }), "only the known client fields");
+        assert_eq!(b["client"], json!({ "launcher": "0.4.1", "exit_code": "0xC0000005" }), "only the known client fields");
         assert_eq!(b["rating"], json!("bad"));
         assert_eq!(b["files"][0]["name"], json!("bl-tracing.log"));
         assert!(b["files"][0]["gzip_base64"].as_str().unwrap().starts_with("H4sI"), "gzip, base64");
