@@ -149,6 +149,10 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
                 continue;
             }
             info!(logger, "Sending probe to {url} ({addr})\n{payload:x?}");
+            // Which room a join that then fails was for (join_targets.rs).
+            if let Some(other) = target.user_id {
+                crate::join_targets::probed(user_id, other);
+            }
             // The two games are about to send to each other: through the relay, too.
             if let (Ok(Some(me)), Some(Ok(Some(them)))) = (
                 self.storage.find_username_by_user_id(user_id),

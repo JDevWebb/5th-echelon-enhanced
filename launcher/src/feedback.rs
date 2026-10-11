@@ -62,6 +62,9 @@ fn ticked(triggers: &[&'static str]) -> BTreeSet<&'static str> {
 #[derive(Clone)]
 pub struct Ask {
     triggers: Vec<&'static str>,
+    /// Whose game data differs, after a join refused as a different version, when the
+    /// server could tell.
+    mismatch: Option<String>,
     profile: Profile,
     files: Vec<Attachment>,
     /// 👍 or 👎, if picked.
@@ -174,7 +177,12 @@ fn check(game_dir: PathBuf, exit: GameExit, checks: String, manual: bool) -> Res
         extra.push(("server-summary.json", s.json.clone()));
     }
     let files = setup::feedback::prepare(&game_dir, crate::logging::log_path().as_deref(), &extra, &private);
+    let mismatch = server
+        .as_ref()
+        .filter(|_| triggers.contains(&"version_mismatch"))
+        .and_then(|s| setup::feedback::mismatch_line(&s.mismatch_host, &s.mismatch_mine, &s.mismatch_theirs));
     Ok(Some(Ask {
+        mismatch,
         problems: ticked(&triggers),
         triggers,
         profile,
@@ -585,6 +593,9 @@ impl Feedback {
             ui.set_max_width(560.0);
             ui.label(theme::heading("How did that go?"));
             ui.label(theme::muted(why(&ask.triggers)));
+            if let Some(mismatch) = &ask.mismatch {
+                ui.label(theme::muted(mismatch));
+            }
             ui.add_space(8.0);
             // A scroll bar beside the content, not over the comment box.
             ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();

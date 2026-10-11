@@ -106,6 +106,9 @@ const SPLIT_AFTER_LEAVING: std::time::Duration = std::time::Duration::from_secs(
 /// host and live in the same session type - this property is the only thing distinguishing
 /// them.
 const PROPERTY_ROOM_KIND: u32 = 113;
+/// The game's data version (`server_api::data_versions`): games whose versions differ can't
+/// join each other.
+const PROPERTY_DATA_VERSION: u32 = 107;
 
 /// Value of [`PROPERTY_ROOM_KIND`] for the anteroom every client opens for itself.
 const ROOM_KIND_ANTEROOM: u32 = 1;
@@ -1044,6 +1047,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                     invited.session_id,
                     rooms.join(", ")
                 );
+                crate::join_targets::invited(user_id, invited.session_id);
 
                 // Slot counts stay untouched. A private match carries `3 => 0; 4 => 8`: no
                 // public seats, eight private ones - and a private seat is exactly what an
@@ -1163,21 +1167,25 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             debug!(logger, "Join failures from {user_id}: {listed} listed, {taken} taken (too many)");
         }
         for failed in request.unsuccessful_join_sessions.0.iter().take(taken) {
-            crate::metrics::failed_join();
             #[allow(clippy::cast_sign_loss)]
-            crate::reports::join_failed(user_id, failed.session_key.session_id, failed.error_code as u32);
-            crate::session_events::note(
-                crate::session_events::Who::Id(user_id),
-                "join_failed",
-                serde_json::json!({ "room": failed.session_key.session_id, "code": format!("{:#010x}", failed.error_code) }),
-            );
+            let code = failed.error_code as u32;
+            let join = failed_join(&self.storage, user_id, failed.session_key.session_id, code);
+            if !join.own {
+                crate::metrics::failed_join();
+            }
+            if join.counts() {
+                crate::reports::join_failed(user_id, join.room, code, join.mismatch.clone());
+            }
+            crate::session_events::note(crate::session_events::Who::Id(user_id), "join_failed", join.detail(code));
             warn!(
                 logger,
-                "Join failed: {user_id} did not get into session {} (type {}) - category {}, code {:#010x}",
-                failed.session_key.session_id,
+                "Join failed: {user_id} did not get into session {} (type {}) - category {}, code {code:#010x}: {}{}{}",
+                join.room,
                 failed.session_key.type_id,
                 failed.error_category,
-                failed.error_code
+                join.outcome.as_str(),
+                if join.own { ", the game's own room or one that had ended" } else { "" },
+                join.reported_room.map(|r| format!(" (the game said session {r})")).unwrap_or_default()
             );
         }
         Ok(ReportUnsuccessfulJoinSessionsResponse)
@@ -1658,6 +1666,95 @@ pub fn new_protocol<T: 'static>(storage: Arc<Storage>, debug_config: Arc<DebugCo
     }))
 }
 
+/// What the server makes of a join the game reported failing (`report_unsuccessful_join_sessions`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FailedJoin {
+    /// The room the join was for.
+    room: u32,
+    /// What the game said, when that was another room: session 0, or the party it had just
+    /// split off for itself. `room` is then the one the server had just given the player
+    /// (join_targets.rs).
+    reported_room: Option<u32>,
+    outcome: crate::reports::JoinOutcome,
+    /// The room is the player's own, or had already ended: the game's own churn as it
+    /// leaves one room for another, not a join that failed.
+    own: bool,
+    /// For a data mismatch: both sides' data.
+    mismatch: Option<crate::reports::Mismatch>,
+}
+
+impl FailedJoin {
+    /// Whether it counts as the player's failed join, for their report prompt.
+    fn counts(&self) -> bool {
+        !self.own && self.outcome.counts()
+    }
+
+    /// The `join_failed` session event's detail.
+    fn detail(&self, code: u32) -> serde_json::Value {
+        let mut detail = serde_json::json!({ "room": self.room, "code": format!("{code:#010x}"), "outcome": self.outcome.as_str() });
+        if self.own {
+            detail["own"] = true.into();
+        }
+        if let Some(reported) = self.reported_room {
+            detail["reported_room"] = reported.into();
+        }
+        if let Some(m) = &self.mismatch {
+            let mut data = serde_json::Map::new();
+            for (side, version) in [("mine", m.mine), ("theirs", m.theirs)] {
+                if let Some(v) = version {
+                    data.insert(side.into(), format!("{v:#010x}").into());
+                }
+            }
+            detail["data"] = data.into();
+            detail["mine_name"] = m.mine.and_then(server_api::data_versions::name).into();
+            detail["theirs_name"] = m.theirs.and_then(server_api::data_versions::name).into();
+        }
+        detail
+    }
+}
+
+/// Works out which room `user`'s failed join (reported against `reported`, with `code`) was
+/// for, and how it went.
+fn failed_join(storage: &Storage, user: u32, reported: u32, code: u32) -> FailedJoin {
+    use crate::reports::JoinOutcome;
+    let outcome = JoinOutcome::of(code);
+    let room_of = |room: u32| storage.room_of_failed_join(room).ok().flatten();
+    let reported_facts = room_of(reported);
+    // The game names session 0, or the party it just split off for itself, for a join to
+    // someone else's room (PlaySkill's refused join to Theusma01's room came in against
+    // his own party). A party of its own locked or closed, though, is the game reopening a
+    // party it had just left (Renegade's, 3 s after it closed): its own churn.
+    let own_party = reported_facts.as_ref().is_some_and(|(creator, _, _)| *creator == user);
+    let elsewhere = reported == 0 || (own_party && !matches!(outcome, JoinOutcome::Locked | JoinOutcome::Closed));
+    let target = elsewhere
+        .then(|| crate::join_targets::target(user, |host| storage.public_room_for(host, user).ok().flatten()))
+        .flatten()
+        .filter(|&room| room != reported)
+        .and_then(|room| room_of(room).filter(|(creator, _, _)| *creator != user).map(|facts| (room, facts)));
+    let (room, reported_room, facts) = match target {
+        Some((room, facts)) => (room, Some(reported), Some(facts)),
+        None => (reported, None, reported_facts),
+    };
+    let (creator, ended, attributes) = facts.map_or((None, false, String::new()), |(c, e, a)| (Some(c), e, a));
+    let own = creator == Some(user) || ended;
+    let mismatch = (outcome == JoinOutcome::DataMismatch).then(|| {
+        // Someone else's room: theirs is the data its host's game has.
+        let host = creator.filter(|&c| c != user);
+        crate::reports::Mismatch {
+            host: host.and_then(|h| storage.find_username_by_user_id(h).ok().flatten()),
+            mine: storage.newest_room_attributes(user).ok().flatten().and_then(|a| attribute_value(&a, PROPERTY_DATA_VERSION)),
+            theirs: host.and_then(|_| attribute_value(&attributes, PROPERTY_DATA_VERSION)),
+        }
+    });
+    FailedJoin {
+        room,
+        reported_room,
+        outcome,
+        own,
+        mismatch,
+    }
+}
+
 /// Join failures taken from one call, and from one player a minute (see
 /// `report_unsuccessful_join_sessions`).
 const MAX_FAILED_JOINS_PER_CALL: usize = 8;
@@ -1913,6 +2010,78 @@ mod tests {
         assert_eq!(attribute_value("113 => 0;3 => 8", PROPERTY_ROOM_KIND), Some(0));
         assert_eq!(attribute_value("3 => 8;4 => 0", PROPERTY_ROOM_KIND), None);
         assert_eq!(attribute_value("", PROPERTY_ROOM_KIND), None);
+    }
+
+    /// A failed join is put on the room the player was trying to reach, says how it went,
+    /// and tells the game's own churn apart (the 8–9 October reports).
+    #[test]
+    fn failed_joins_are_put_on_the_right_room() {
+        use super::failed_join;
+        use crate::reports::JoinOutcome;
+        let (storage, dir) = crate::storage::tests::temp_storage("failed-joins");
+        let mut ids = vec![];
+        for name in ["Theusma01", "PlaySkill", "Renegade", "D15hb", "Tacit"] {
+            storage.register_user(name, "pw", Some(name)).unwrap();
+            ids.push(storage.find_user_id_by_name(name).unwrap().unwrap());
+        }
+        let [theusma, playskill, renegade, d15, tacit] = ids[..] else { unreachable!() };
+        let stock = "113 => 0;107 => 3909881133;3 => 0;4 => 2";
+        let balaclava = "113 => 1;107 => 3713379539;3 => 2;4 => 0";
+
+        // PlaySkill's game, refused by Theusma01's for its balaclava mod, names its own split
+        // party: the failure goes on Theusma01's room, the one the invitation gave.
+        let invited = storage.create_game_session(theusma, 1, stock.into()).unwrap();
+        let split = storage.create_game_session(playskill, 1, balaclava.into()).unwrap();
+        crate::join_targets::invited(playskill, invited);
+        let join = failed_join(&storage, playskill, split, crate::reports::VERSION_MISMATCH);
+        assert_eq!(
+            (join.room, join.reported_room, join.outcome, join.own),
+            (invited, Some(split), JoinOutcome::DataMismatch, false)
+        );
+        assert!(join.counts());
+        let mismatch = join.mismatch.clone().unwrap();
+        assert_eq!(mismatch.host.as_deref(), Some("Theusma01"));
+        assert_eq!((mismatch.mine, mismatch.theirs), (Some(0xdd55_acd3), Some(0xe90c_0d2d)));
+        let detail = join.detail(crate::reports::VERSION_MISMATCH);
+        assert_eq!(
+            detail,
+            serde_json::json!({
+                "room": invited, "code": "0xeea440ee", "outcome": "data_mismatch", "reported_room": split,
+                "data": { "mine": "0xdd55acd3", "theirs": "0xe90c0d2d" },
+                "mine_name": "balaclava mod", "theirs_name": "unmodified",
+            })
+        );
+
+        // Renegade's game reports its own party, closed 3 s earlier, as locked, while an
+        // invitation is pending: its own churn, not a failed join.
+        let party = storage.create_game_session(renegade, 1, balaclava.into()).unwrap();
+        storage.delete_game_session(renegade, 1, party).unwrap();
+        crate::join_targets::invited(renegade, invited);
+        let join = failed_join(&storage, renegade, party, crate::reports::LOCKED_SESSION);
+        assert_eq!((join.room, join.reported_room, join.own), (party, None, true));
+        assert!(!join.counts());
+        assert_eq!(join.detail(crate::reports::LOCKED_SESSION)["own"], true);
+        // With nothing given lately, their own room is theirs.
+        let own = storage.create_game_session(tacit, 1, stock.into()).unwrap();
+        let join = failed_join(&storage, tacit, own, 0xb08a_1a05);
+        assert_eq!((join.room, join.own, join.outcome), (own, true, JoinOutcome::Failed));
+        // Someone else's room that had ended.
+        let join = failed_join(&storage, d15, party, crate::reports::ROOM_CLOSED);
+        assert!(join.own && !join.counts());
+
+        // d15_HB's quick match found one full room, and the game said session 0.
+        let full = storage.create_game_session(tacit, 1, "113 => 0;107 => 3909881133;3 => 2;4 => 0".into()).unwrap();
+        crate::join_targets::searched(d15, [(full, tacit)]);
+        let join = failed_join(&storage, d15, 0, crate::reports::ROOM_FULL);
+        assert_eq!((join.room, join.reported_room, join.outcome, join.own), (full, Some(0), JoinOutcome::Full, false));
+        assert!(!join.counts(), "a full lobby isn't a failed join");
+        assert_eq!(join.mismatch, None);
+        // Nothing given: session 0 stays, and isn't the player's own.
+        let join = failed_join(&storage, theusma, 0, 0xb08a_1a05);
+        assert_eq!((join.room, join.reported_room, join.own), (0, None, false));
+        assert!(join.counts());
+        assert_eq!(join.detail(0xb08a_1a05), serde_json::json!({ "room": 0, "code": "0xb08a1a05", "outcome": "failed" }));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     /// A few join failures per call and a few a minute per player are taken.

@@ -41,6 +41,30 @@ pub struct ServerSaw {
     pub relayed: bool,
 }
 
+/// Whose game data differs, for a join refused as "a different version", from the server's
+/// summary (`mismatch_host`, `mismatch_mine`, `mismatch_theirs`: each side's data by what
+/// makes it, "unmodified", "balaclava mod", or as hex). None when the server didn't say
+/// (servers before 0.4.4).
+pub fn mismatch_line(host: &str, mine: &str, theirs: &str) -> Option<String> {
+    fn has(data: &str) -> String {
+        match data {
+            "unmodified" => "is unmodified".to_string(),
+            hex if hex.starts_with("0x") => format!("has other game data ({hex})"),
+            name => format!("has the {name}"),
+        }
+    }
+    let host = host.trim();
+    let theirs_game = if host.is_empty() { "The host's game".to_string() } else { format!("{host}'s game") };
+    let said = match (mine.trim(), theirs.trim()) {
+        ("", "") => return None,
+        (mine, theirs) if mine == theirs => return None,
+        ("", theirs) => format!("{theirs_game} {}.", has(theirs)),
+        (mine, "") => format!("Your game {}.", has(mine)),
+        (mine, theirs) => format!("{theirs_game} {}; yours {}.", has(theirs), has(mine)),
+    };
+    Some(format!("{said} Everyone in a match needs the same mods."))
+}
+
 /// Whether a game's exit code means it crashed: Windows' exception codes (0xC0000005 and
 /// the like). A plain exit, 0 or otherwise, isn't taken for one.
 pub fn crashed(code: Option<i32>) -> bool {
@@ -386,6 +410,24 @@ mod tests {
         assert!(read_log("ERROR The server refused this client: update").signin_refused);
         assert!(read_log("thread 'main' panicked at src/x.rs").panicked);
         assert_eq!(read_log(""), LogSignals::default());
+    }
+
+    #[test]
+    fn a_mismatch_says_whose_data_differs() {
+        assert_eq!(
+            mismatch_line("Theusma01", "balaclava mod", "unmodified").as_deref(),
+            Some("Theusma01's game is unmodified; yours has the balaclava mod. Everyone in a match needs the same mods.")
+        );
+        assert_eq!(
+            mismatch_line("", "unmodified", "0x12345678").as_deref(),
+            Some("The host's game has other game data (0x12345678); yours is unmodified. Everyone in a match needs the same mods.")
+        );
+        assert_eq!(
+            mismatch_line("Host", "balaclava mod", "").as_deref(),
+            Some("Your game has the balaclava mod. Everyone in a match needs the same mods.")
+        );
+        assert_eq!(mismatch_line("Host", "", ""), None, "an older server's");
+        assert_eq!(mismatch_line("Host", "unmodified", "unmodified"), None, "no difference to tell");
     }
 
     #[test]

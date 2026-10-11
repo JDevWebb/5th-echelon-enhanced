@@ -92,6 +92,12 @@ message SessionSummaryResponse {
     int32 matches = 6;
     // All of it, and more, as JSON (sent along with a report).
     string json = 7;
+    // The last join refused as a different version: the host whose game refused it, and
+    // each side's game data, by what makes it when known ("unmodified", "balaclava mod"),
+    // else as hex. Empty when not known (and from servers before 0.4.4).
+    string mismatch_host = 8;
+    string mismatch_mine = 9;
+    string mismatch_theirs = 10;
 }
 
 message ReportFile {

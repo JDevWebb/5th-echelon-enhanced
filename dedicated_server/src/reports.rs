@@ -18,6 +18,88 @@ use crate::storage::Storage;
 /// What the game reports when the host refuses a join as another version of the game
 /// (`DATA_VERSION_MISMATCH`).
 pub const VERSION_MISMATCH: u32 = 0xeea4_40ee;
+/// The room is full at its current lobby size (hosts can raise it): seen on co-op rooms
+/// still at their 2 seats.
+pub const ROOM_FULL: u32 = 0xcf96_4066;
+/// `LOCKED_SESSION`: seen when the game reports its own just-closed party, or a match that
+/// had started.
+pub const LOCKED_SESSION: u32 = 0x9718_2b1b;
+/// `INVALID_SESSION_ID`: the room had just been closed.
+pub const ROOM_CLOSED: u32 = 0xe92f_bc33;
+
+/// How a join the game reported failing went, from its error code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JoinOutcome {
+    Full,
+    Locked,
+    Closed,
+    DataMismatch,
+    Failed,
+}
+
+impl JoinOutcome {
+    pub fn of(code: u32) -> Self {
+        match code {
+            ROOM_FULL => Self::Full,
+            LOCKED_SESSION => Self::Locked,
+            ROOM_CLOSED => Self::Closed,
+            VERSION_MISMATCH => Self::DataMismatch,
+            _ => Self::Failed,
+        }
+    }
+
+    /// As session events name it (`join_failed`'s `outcome`).
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Locked => "locked",
+            Self::Closed => "closed",
+            Self::DataMismatch => "data_mismatch",
+            Self::Failed => "failed",
+        }
+    }
+
+    /// Whether it counts as the player's failed join (for the launcher's "how did it go"):
+    /// a full lobby is the host's choice of size, and a retry gets in once a seat frees up.
+    pub fn counts(self) -> bool {
+        self != Self::Full
+    }
+
+    /// Whether it's worth the game's log: a full, locked or closed room says all there is.
+    pub fn wants_log(self) -> bool {
+        matches!(self, Self::DataMismatch | Self::Failed)
+    }
+
+    /// From a `join_failed` event's detail: its outcome, or the code's for events noted
+    /// before outcomes were.
+    pub fn of_detail(detail: &Value) -> Self {
+        match detail["outcome"].as_str() {
+            Some("full") => Self::Full,
+            Some("locked") => Self::Locked,
+            Some("closed") => Self::Closed,
+            Some("data_mismatch") => Self::DataMismatch,
+            Some(_) => Self::Failed,
+            None => detail["code"]
+                .as_str()
+                .and_then(|c| u32::from_str_radix(c.trim_start_matches("0x"), 16).ok())
+                .map_or(Self::Failed, Self::of),
+        }
+    }
+}
+
+/// Both sides' game data (attribute 107) in a join refused as a different version.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Mismatch {
+    /// The name of the player whose game refused the join, if known.
+    pub host: Option<String>,
+    pub mine: Option<u32>,
+    pub theirs: Option<u32>,
+}
+
+/// A data version as a player reads it: what makes it when known, else hex.
+fn data_shown(version: Option<u32>) -> String {
+    version.map_or_else(String::new, |v| server_api::data_versions::name(v).map_or_else(|| format!("{v:#010x}"), str::to_string))
+}
 /// The problems a player can tick.
 pub const PROBLEMS: [&str; 7] = ["join", "lag", "crash", "connection", "version", "signin", "other"];
 /// The most files, of each and of all of them (compressed), and the longest comment.
@@ -43,6 +125,7 @@ struct Event {
     at: i64,
     kind: &'static str,
     detail: String,
+    mismatch: Option<Mismatch>,
 }
 
 fn events() -> &'static Mutex<HashMap<u32, VecDeque<Event>>> {
@@ -56,26 +139,30 @@ fn relayed_names() -> &'static Mutex<HashMap<String, (i64, bool)>> {
     RELAYED.get_or_init(Mutex::default)
 }
 
-fn note(user: u32, kind: &'static str, detail: String) {
+fn note(user: u32, kind: &'static str, detail: String, mismatch: Option<Mismatch>) {
     let now = identity::now();
     let mut all = events().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let list = all.entry(user).or_default();
     while list.len() >= EVENTS_KEPT || list.front().is_some_and(|e| now - e.at > EVENTS_FOR_SECS) {
         list.pop_front();
     }
-    list.push_back(Event { at: now, kind, detail });
+    list.push_back(Event { at: now, kind, detail, mismatch });
     // Now and then, players gone for a while.
     if all.len() > 2000 {
         all.retain(|_, l| l.back().is_some_and(|e| now - e.at <= EVENTS_FOR_SECS));
     }
 }
 
-/// `user`'s game reported a join failing with `code`.
-pub fn join_failed(user: u32, session: u32, code: u32) {
+/// `user`'s game reported a join failing with `code`: one that counts as theirs (not their
+/// game's own churn, see `game_session.rs`, nor a full lobby, [`JoinOutcome::counts`]).
+/// `mismatch`: both sides' data, for a join refused as a different version.
+pub fn join_failed(user: u32, session: u32, code: u32, mismatch: Option<Mismatch>) {
+    let version = code == VERSION_MISMATCH;
     note(
         user,
-        if code == VERSION_MISMATCH { "version_mismatch" } else { "failed_join" },
+        if version { "version_mismatch" } else { "failed_join" },
         format!("session {session}, code {code:#010x}"),
+        mismatch.filter(|_| version),
     );
 }
 
@@ -97,6 +184,8 @@ pub struct Summary {
     pub version_mismatches: i32,
     pub relayed: bool,
     pub matches: i32,
+    /// The last join refused as a different version, with both sides' data.
+    pub mismatch: Option<Mismatch>,
     pub json: Value,
 }
 
@@ -123,6 +212,7 @@ pub fn summary(storage: &Storage, user: u32) -> eyre::Result<Summary> {
     let failed_joins = count("failed_join") + count("version_mismatch");
     let version_mismatches = count("version_mismatch");
     let matches = record.as_ref().map_or(0, |r| i32::try_from(r.matches).unwrap_or(i32::MAX));
+    let mismatch = list.iter().rev().find_map(|e| e.mismatch.clone());
     let json = json!({
         "server_version": crate::community_api::RELEASE,
         "player": record.as_ref().map(|r| json!({ "id": r.id, "name": r.name, "online": r.online, "play_seconds": r.play_seconds, "sessions": r.sessions, "matches": r.matches, "banned": r.banned.is_some() })),
@@ -130,6 +220,13 @@ pub fn summary(storage: &Storage, user: u32) -> eyre::Result<Summary> {
         "relayed": relayed,
         "failed_joins": failed_joins,
         "version_mismatches": version_mismatches,
+        "mismatch": mismatch.as_ref().map(|m| json!({
+            "host": m.host,
+            "mine": m.mine.map(|v| format!("{v:#010x}")),
+            "theirs": m.theirs.map(|v| format!("{v:#010x}")),
+            "mine_name": m.mine.and_then(server_api::data_versions::name),
+            "theirs_name": m.theirs.and_then(server_api::data_versions::name),
+        })),
         "events": list.iter().map(|e| json!({ "at": e.at, "kind": e.kind, "detail": e.detail })).collect::<Vec<_>>(),
     });
     Ok(Summary {
@@ -139,8 +236,19 @@ pub fn summary(storage: &Storage, user: u32) -> eyre::Result<Summary> {
         version_mismatches,
         relayed,
         matches,
+        mismatch,
         json,
     })
+}
+
+impl Summary {
+    /// The last mismatch for the launcher (`SessionSummaryResponse`): the host's name and
+    /// each side's data as a player reads it; empty where not known.
+    pub fn mismatch_shown(&self) -> (String, String, String) {
+        self.mismatch
+            .as_ref()
+            .map_or_else(Default::default, |m| (m.host.clone().unwrap_or_default(), data_shown(m.mine), data_shown(m.theirs)))
+    }
 }
 
 /// A report as the launcher sent it.
@@ -297,9 +405,50 @@ mod tests {
 
     #[test]
     fn a_version_mismatch_is_told_apart() {
-        join_failed(424_242, 9, VERSION_MISMATCH);
-        join_failed(424_242, 9, 0xb08a_1a05);
+        let mismatch = Mismatch {
+            host: Some("Theusma01".into()),
+            mine: Some(0xdd55_acd3),
+            theirs: Some(0xe90c_0d2d),
+        };
+        join_failed(424_242, 9, VERSION_MISMATCH, Some(mismatch.clone()));
+        join_failed(424_242, 9, 0xb08a_1a05, Some(mismatch.clone()));
         let list = events().lock().unwrap().get(&424_242).cloned().unwrap();
         assert_eq!(list.iter().map(|e| e.kind).collect::<Vec<_>>(), ["version_mismatch", "failed_join"]);
+        assert_eq!(list[0].mismatch, Some(mismatch.clone()));
+        assert_eq!(list[1].mismatch, None, "only a version mismatch has one");
+        let summary = Summary {
+            mismatch: Some(mismatch),
+            ..Summary::default()
+        };
+        assert_eq!(summary.mismatch_shown(), ("Theusma01".to_string(), "balaclava mod".to_string(), "unmodified".to_string()));
+        let unknown = Summary {
+            mismatch: Some(Mismatch {
+                host: None,
+                mine: Some(0x1234),
+                theirs: None,
+            }),
+            ..Summary::default()
+        };
+        assert_eq!(unknown.mismatch_shown(), (String::new(), "0x00001234".to_string(), String::new()));
+        assert_eq!(Summary::default().mismatch_shown(), Default::default());
+    }
+
+    #[test]
+    fn join_failures_are_classified_by_their_code() {
+        assert_eq!(JoinOutcome::of(ROOM_FULL), JoinOutcome::Full);
+        assert_eq!(JoinOutcome::of(LOCKED_SESSION), JoinOutcome::Locked);
+        assert_eq!(JoinOutcome::of(ROOM_CLOSED), JoinOutcome::Closed);
+        assert_eq!(JoinOutcome::of(VERSION_MISMATCH), JoinOutcome::DataMismatch);
+        assert_eq!(JoinOutcome::of(0xb08a_1a05), JoinOutcome::Failed);
+        assert!(!JoinOutcome::Full.counts() && JoinOutcome::Locked.counts() && JoinOutcome::Failed.counts());
+        let logged: Vec<_> = [JoinOutcome::Full, JoinOutcome::Locked, JoinOutcome::Closed, JoinOutcome::DataMismatch, JoinOutcome::Failed]
+            .into_iter()
+            .filter(|o| o.wants_log())
+            .map(JoinOutcome::as_str)
+            .collect();
+        assert_eq!(logged, ["data_mismatch", "failed"]);
+        assert_eq!(JoinOutcome::of_detail(&json!({ "outcome": "full", "code": "0xeea440ee" })), JoinOutcome::Full);
+        assert_eq!(JoinOutcome::of_detail(&json!({ "code": "0xcf964066" })), JoinOutcome::Full, "a 0.4.3 server's");
+        assert_eq!(JoinOutcome::of_detail(&json!({})), JoinOutcome::Failed);
     }
 }

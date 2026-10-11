@@ -1194,6 +1194,7 @@ impl Misc for MyMisc {
             .await
             .map_err(internal)?
             .map_err(internal)?;
+        let (mismatch_host, mismatch_mine, mismatch_theirs) = summary.mismatch_shown();
         Ok(Response::new(misc::SessionSummaryResponse {
             started: summary.started,
             ended: summary.ended,
@@ -1202,6 +1203,9 @@ impl Misc for MyMisc {
             relayed: summary.relayed,
             matches: summary.matches,
             json: summary.json.to_string(),
+            mismatch_host,
+            mismatch_mine,
+            mismatch_theirs,
         }))
     }
 

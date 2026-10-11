@@ -15,8 +15,9 @@ pub const LOG_FILE: &str = "bl-tracing.log";
 pub const DATA_VERSION_FILE: &str = "bl-dataversion.txt";
 /// The data version of the unmodified game (DX11, build V2425.0), the same for the Steam
 /// and Ubisoft editions in every language. Players whose versions differ can't play a match
-/// together; the same mods (the same version) play fine.
-pub const STOCK_DATA_VERSION: u32 = 0xe90c_0d2d;
+/// together; the same mods (the same version) play fine. The known versions are shared with
+/// the server (`server_api::data_versions`).
+pub const STOCK_DATA_VERSION: u32 = server_api::data_versions::STOCK;
 
 /// A mod known to change the game's data version: the file it puts in the game folder, a
 /// line of the file that only that mod has (none: any copy of the file), and its name.

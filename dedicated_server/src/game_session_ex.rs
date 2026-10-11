@@ -83,6 +83,7 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
                 logger,
                 "Answering invitation search of {user_id} with session {} of host {}", session.session_id, session.creator_id
             );
+            crate::join_targets::invited(user_id, session.session_id);
             vec![session]
         } else {
             // Without participants: the attributes decide first, and only the answer's few
@@ -159,6 +160,9 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
             "search",
             serde_json::json!({ "query": request.game_session_query.query_id, "found": sessions.len() }),
         );
+        if !invitation_search {
+            crate::join_targets::searched(user_id, sessions.iter().map(|s| (s.session_id, s.creator_id)));
+        }
         Ok(SearchSessionsResponse {
             search_results: QList(
                 sessions
