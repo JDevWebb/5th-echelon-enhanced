@@ -631,8 +631,9 @@ fn describe(e: &Event) -> String {
         }
         "search" => {
             let found = e.detail["found"].as_i64().unwrap_or(0);
+            let hidden = other_data(e).map_or_else(String::new, |hidden| format!(" ({hidden})"));
             format!(
-                "Searched for {}: {}",
+                "Searched for {}: {}{hidden}",
                 query_name(e.detail["query"].as_i64().unwrap_or(0)),
                 if found == 0 { "nothing found".into() } else { format!("{found} found") }
             )
@@ -806,6 +807,27 @@ fn data_mismatch(e: &Event) -> Option<String> {
     (!said.is_empty()).then(|| said.join("; "))
 }
 
+/// The lobbies a search that found nothing would have found but for their game data (0.4.4
+/// servers say so in `other_data`): "2 open lobbies have other game data: theirs are
+/// unmodified, this game's is 0xc37ed697".
+fn other_data(e: &Event) -> Option<String> {
+    let hidden = &e.detail["other_data"];
+    let lobbies = hidden["lobbies"].as_i64().filter(|n| *n > 0)?;
+    let data = |name: &str, hex: &str| {
+        hidden[name]
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| hidden[hex].as_str().map(str::to_string))
+            .unwrap_or_else(|| "unknown".into())
+    };
+    Some(format!(
+        "{lobbies} open {} other game data: theirs {}, this game's {}",
+        if lobbies == 1 { "lobby has" } else { "lobbies have" },
+        data("theirs_name", "theirs"),
+        data("mine_name", "mine")
+    ))
+}
+
 /// A timeline mark's level, where it isn't the kind's own (the admin UI colours the rest by
 /// kind): failed joins that are the game's churn or a full lobby, a player's own connection
 /// stalling, and a sign-in whose replies were lost.
@@ -819,6 +841,7 @@ fn mark_level(e: &Event) -> Option<&'static str> {
         },
         "relay_drop" if e.detail["player_quiet"] == true => Some("warn"),
         "login_stalled" => Some("warn"),
+        "search" if other_data(e).is_some() => Some("warn"),
         _ => None,
     }
 }
@@ -952,6 +975,30 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
                     ),
                 );
                 p["until"] = json!(stalls.iter().map(|o| o.last_at).max().unwrap_or(e.last_at));
+                out.push(p);
+            }
+            // Searches their game data kept lobbies from, one problem a player (from their
+            // first): the game says nothing of it (ijsman on na1, 2026-10-10).
+            "search" if other_data(e).is_some() => {
+                let Some(list) = by_who.get(&e.who()) else { continue };
+                let hidden: Vec<&&Event> = list.iter().filter(|o| o.kind == "search" && other_data(o).is_some()).collect();
+                if !hidden.first().is_some_and(|first| std::ptr::eq(**first, e)) {
+                    continue;
+                }
+                let searches: i64 = hidden.iter().map(|o| o.count).sum();
+                let last = hidden.last().copied().unwrap_or(&e);
+                let mut p = problem(
+                    e,
+                    "warn",
+                    format!("{}'s game data hid the open lobbies", e.name),
+                    format!(
+                        "{} search{} found nothing; the last: {}. The game shows only lobbies with the same data as its own",
+                        searches,
+                        if searches == 1 { "" } else { "es" },
+                        other_data(last).unwrap_or_default()
+                    ),
+                );
+                p["until"] = json!(hidden.iter().map(|o| o.last_at).max().unwrap_or(e.last_at));
                 out.push(p);
             }
             // What they wanted to tell the admins didn't arrive.
@@ -1219,6 +1266,8 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
 mod tests {
     use serde_json::json;
 
+    use super::describe;
+    use super::mark_level;
     use super::problems;
     use super::Event;
     use super::MATCH_END_WITHIN;
@@ -1669,6 +1718,27 @@ mod tests {
 
     /// PlaySkill's balaclava mod against Theusma01's unmodified game: whose data is the odd
     /// one out, when the server could tell.
+    #[test]
+    fn lobbies_hidden_by_game_data_are_a_problem_once_a_player() {
+        let hidden = json!({ "query": 8, "found": 0, "other_data": {
+            "lobbies": 2, "mine": "0xc37ed697", "theirs": "0xe90c0d2d", "mine_name": null, "theirs_name": "unmodified" } });
+        let events = vec![
+            ev("na", 1000, 1022, "ijsman", "search", hidden.clone()),
+            ev("na", 1012, 1022, "ijsman", "search", hidden),
+            ev("na", 1020, 1043, "Poekie", "search", json!({ "query": 8, "found": 0 })),
+        ];
+        assert_eq!(
+            describe(&events[0]),
+            "Searched for Spies vs Mercs (or an invited room): nothing found (2 open lobbies have other game data: theirs unmodified, this game's 0xc37ed697)"
+        );
+        assert_eq!(mark_level(&events[0]), Some("warn"));
+        assert_eq!(mark_level(&events[2]), None);
+        let found = problems(&events);
+        let titles: Vec<&str> = found.iter().filter_map(|p| p["title"].as_str()).collect();
+        assert_eq!(titles, ["ijsman's game data hid the open lobbies"]);
+        assert!(found[0]["text"].as_str().unwrap().starts_with("2 searches found nothing"), "{}", found[0]["text"]);
+    }
+
     #[test]
     fn a_data_mismatch_says_whose_game_has_what() {
         let mismatch = |detail: serde_json::Value| ev("na", 10, 1, "PlaySkill", "join_failed", detail);

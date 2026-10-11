@@ -98,6 +98,12 @@ message SessionSummaryResponse {
     string mismatch_host = 8;
     string mismatch_mine = 9;
     string mismatch_theirs = 10;
+    // Matchmaking searches that found nothing while lobbies with other game data were open
+    // (each counted once a minute), and the last one's data: this game's and what most of
+    // those lobbies had, named as above. 0 and empty from servers before 0.4.4.
+    int32 searches_other_data = 11;
+    string other_data_mine = 12;
+    string other_data_theirs = 13;
 }
 
 message ReportFile {
@@ -116,7 +122,7 @@ message ReportRequest {
     repeated string problems = 2;
     string comment = 3;
     // Why the launcher asked: failed_join, relayed, panic, exit_code, signin_refused,
-    // version_mismatch, disconnect, routine.
+    // version_mismatch, search_mismatch, disconnect, routine.
     repeated string triggers = 4;
     // launcher, client, build, os, language.
     map<string, string> client = 5;

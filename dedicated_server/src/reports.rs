@@ -166,6 +166,36 @@ pub fn join_failed(user: u32, session: u32, code: u32, mismatch: Option<Mismatch
     );
 }
 
+/// How long one note of lobbies hidden by game data stands for the searches after it: the
+/// game searches every few seconds while it looks for a match, which would crowd everything
+/// else out of the player's events.
+const SEARCH_NOTED_FOR: i64 = 60;
+
+/// `user`'s matchmaking search found nothing, but `lobbies` open lobbies would have answered
+/// it but for their game data: `mine`, theirs most often `theirs`.
+pub fn search_other_data(user: u32, mine: u32, theirs: u32, lobbies: usize) {
+    let now = identity::now();
+    {
+        let all = events().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let lately = all
+            .get(&user)
+            .is_some_and(|l| l.iter().rev().any(|e| e.kind == "search_mismatch" && now - e.at < SEARCH_NOTED_FOR));
+        if lately {
+            return;
+        }
+    }
+    note(
+        user,
+        "search_mismatch",
+        format!("{lobbies} lobbies with data {theirs:#010x}, this game's {mine:#010x}"),
+        Some(Mismatch {
+            host: None,
+            mine: Some(mine),
+            theirs: Some(theirs),
+        }),
+    );
+}
+
 /// The NAT helper registered `name`, relayed or not.
 pub fn nat_registered(name: &str, relayed: bool) {
     let mut all = relayed_names().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -186,6 +216,10 @@ pub struct Summary {
     pub matches: i32,
     /// The last join refused as a different version, with both sides' data.
     pub mismatch: Option<Mismatch>,
+    /// Matchmaking searches that found nothing while lobbies with other game data were open
+    /// (each counted once a minute), and the last one's data: theirs, the lobbies'.
+    pub searches_other_data: i32,
+    pub search_mismatch: Option<Mismatch>,
     pub json: Value,
 }
 
@@ -212,7 +246,10 @@ pub fn summary(storage: &Storage, user: u32) -> eyre::Result<Summary> {
     let failed_joins = count("failed_join") + count("version_mismatch");
     let version_mismatches = count("version_mismatch");
     let matches = record.as_ref().map_or(0, |r| i32::try_from(r.matches).unwrap_or(i32::MAX));
-    let mismatch = list.iter().rev().find_map(|e| e.mismatch.clone());
+    let last_mismatch = |kind: &str| list.iter().rev().filter(|e| e.kind == kind).find_map(|e| e.mismatch.clone());
+    let mismatch = last_mismatch("version_mismatch");
+    let searches_other_data = count("search_mismatch");
+    let search_mismatch = last_mismatch("search_mismatch");
     let json = json!({
         "server_version": crate::community_api::RELEASE,
         "player": record.as_ref().map(|r| json!({ "id": r.id, "name": r.name, "online": r.online, "play_seconds": r.play_seconds, "sessions": r.sessions, "matches": r.matches, "banned": r.banned.is_some() })),
@@ -222,6 +259,13 @@ pub fn summary(storage: &Storage, user: u32) -> eyre::Result<Summary> {
         "version_mismatches": version_mismatches,
         "mismatch": mismatch.as_ref().map(|m| json!({
             "host": m.host,
+            "mine": m.mine.map(|v| format!("{v:#010x}")),
+            "theirs": m.theirs.map(|v| format!("{v:#010x}")),
+            "mine_name": m.mine.and_then(server_api::data_versions::name),
+            "theirs_name": m.theirs.and_then(server_api::data_versions::name),
+        })),
+        "searches_other_data": searches_other_data,
+        "search_mismatch": search_mismatch.as_ref().map(|m| json!({
             "mine": m.mine.map(|v| format!("{v:#010x}")),
             "theirs": m.theirs.map(|v| format!("{v:#010x}")),
             "mine_name": m.mine.and_then(server_api::data_versions::name),
@@ -237,6 +281,8 @@ pub fn summary(storage: &Storage, user: u32) -> eyre::Result<Summary> {
         relayed,
         matches,
         mismatch,
+        searches_other_data,
+        search_mismatch,
         json,
     })
 }
@@ -248,6 +294,12 @@ impl Summary {
         self.mismatch
             .as_ref()
             .map_or_else(Default::default, |m| (m.host.clone().unwrap_or_default(), data_shown(m.mine), data_shown(m.theirs)))
+    }
+
+    /// The last search's hidden lobbies for the launcher: this game's data and theirs, as a
+    /// player reads them; empty where not known.
+    pub fn search_mismatch_shown(&self) -> (String, String) {
+        self.search_mismatch.as_ref().map_or_else(Default::default, |m| (data_shown(m.mine), data_shown(m.theirs)))
     }
 }
 
@@ -431,6 +483,30 @@ mod tests {
         };
         assert_eq!(unknown.mismatch_shown(), (String::new(), "0x00001234".to_string(), String::new()));
         assert_eq!(Summary::default().mismatch_shown(), Default::default());
+    }
+
+    #[test]
+    fn lobbies_hidden_by_game_data_are_noted_once_a_minute() {
+        let user = 424_243;
+        search_other_data(user, 0xc37e_d697, 0xe90c_0d2d, 2);
+        search_other_data(user, 0xc37e_d697, 0xe90c_0d2d, 2);
+        join_failed(user, 9, VERSION_MISMATCH, None);
+        let list = events().lock().unwrap().get(&user).cloned().unwrap();
+        assert_eq!(
+            list.iter().map(|e| e.kind).collect::<Vec<_>>(),
+            ["search_mismatch", "version_mismatch"],
+            "the game searches every few seconds"
+        );
+        events().lock().unwrap().get_mut(&user).unwrap()[0].at -= SEARCH_NOTED_FOR;
+        search_other_data(user, 0xc37e_d697, 0xe90c_0d2d, 1);
+        let list = events().lock().unwrap().get(&user).cloned().unwrap();
+        assert_eq!(list.iter().filter(|e| e.kind == "search_mismatch").count(), 2);
+        let summary = Summary {
+            search_mismatch: list[2].mismatch.clone(),
+            ..Summary::default()
+        };
+        assert_eq!(summary.search_mismatch_shown(), ("0xc37ed697".to_string(), "unmodified".to_string()));
+        assert_eq!(Summary::default().search_mismatch_shown(), Default::default());
     }
 
     #[test]

@@ -1197,6 +1197,7 @@ impl Misc for MyMisc {
             .map_err(internal)?
             .map_err(internal)?;
         let (mismatch_host, mismatch_mine, mismatch_theirs) = summary.mismatch_shown();
+        let (other_data_mine, other_data_theirs) = summary.search_mismatch_shown();
         Ok(Response::new(misc::SessionSummaryResponse {
             started: summary.started,
             ended: summary.ended,
@@ -1208,6 +1209,9 @@ impl Misc for MyMisc {
             mismatch_host,
             mismatch_mine,
             mismatch_theirs,
+            searches_other_data: summary.searches_other_data,
+            other_data_mine,
+            other_data_theirs,
         }))
     }
 

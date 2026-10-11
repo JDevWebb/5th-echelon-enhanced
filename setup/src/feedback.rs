@@ -39,6 +39,8 @@ pub struct ServerSaw {
     pub failed_joins: i32,
     pub version_mismatches: i32,
     pub relayed: bool,
+    /// Searches that found nothing while lobbies with other game data were open.
+    pub searches_other_data: i32,
 }
 
 /// Whose game data differs, for a join refused as "a different version", from the server's
@@ -63,6 +65,34 @@ pub fn mismatch_line(host: &str, mine: &str, theirs: &str) -> Option<String> {
         (mine, theirs) => format!("{theirs_game} {}; yours {}.", has(theirs), has(mine)),
     };
     Some(format!("{said} Everyone in a match needs the same mods."))
+}
+
+/// Why searches found no lobbies, when the open ones have other game data (the server's
+/// `other_data_mine`, `other_data_theirs`, named as for [`mismatch_line`]). The game shows
+/// only lobbies whose data is the same as its own, and says nothing of the others. None when
+/// the server didn't say (servers before 0.4.4).
+pub fn search_mismatch_line(mine: &str, theirs: &str) -> Option<String> {
+    let (mine, theirs) = (mine.trim(), theirs.trim());
+    if theirs.is_empty() || mine == theirs {
+        return None;
+    }
+    let lobbies = match theirs {
+        "unmodified" => "The open lobbies were unmodified games".to_string(),
+        hex if hex.starts_with("0x") => format!("The open lobbies had other game data ({hex})"),
+        name => format!("The open lobbies had the {name}"),
+    };
+    let yours = match mine {
+        "" => String::new(),
+        "unmodified" => ", and yours is unmodified".to_string(),
+        hex if hex.starts_with("0x") => format!(", and yours has other game data ({hex})"),
+        name => format!(", and yours has the {name}"),
+    };
+    let fix = if mine == "unmodified" {
+        "they need the same game files as you to show up"
+    } else {
+        "remove your mods (or verify the game files in Steam or Ubisoft Connect) to see them"
+    };
+    Some(format!("{lobbies}{yours}: the game only shows lobbies with the same game data, so {fix}."))
 }
 
 /// Whether a game's exit code means it crashed: Windows' exception codes (0xC0000005 and
@@ -160,6 +190,9 @@ pub fn triggers(log: LogSignals, server: Option<ServerSaw>, exit_code: Option<i3
     }
     if server.failed_joins > server.version_mismatches {
         t.push("failed_join");
+    }
+    if server.searches_other_data > 0 {
+        t.push("search_mismatch");
     }
     if log.relayed || server.relayed {
         t.push("relayed");
@@ -431,6 +464,26 @@ mod tests {
     }
 
     #[test]
+    fn lobbies_hidden_by_game_data_are_explained() {
+        assert_eq!(
+            search_mismatch_line("0xc37ed697", "unmodified").as_deref(),
+            Some(
+                "The open lobbies were unmodified games, and yours has other game data (0xc37ed697): the game only shows lobbies \
+                 with the same game data, so remove your mods (or verify the game files in Steam or Ubisoft Connect) to see them."
+            )
+        );
+        assert_eq!(
+            search_mismatch_line("unmodified", "balaclava mod").as_deref(),
+            Some(
+                "The open lobbies had the balaclava mod, and yours is unmodified: the game only shows lobbies with the same game \
+                 data, so they need the same game files as you to show up."
+            )
+        );
+        assert_eq!(search_mismatch_line("", ""), None, "a server before 0.4.4");
+        assert_eq!(search_mismatch_line("unmodified", "unmodified"), None);
+    }
+
+    #[test]
     fn when_to_ask() {
         let online = LogSignals {
             played_online: true,
@@ -447,8 +500,15 @@ mod tests {
             failed_joins: 2,
             version_mismatches: 1,
             relayed: true,
+            searches_other_data: 0,
         };
         assert_eq!(triggers(online, Some(saw), Some(0), true), ["version_mismatch", "failed_join", "relayed"]);
+        let hidden = ServerSaw {
+            searches_other_data: 3,
+            ..ServerSaw::default()
+        };
+        assert_eq!(triggers(online, Some(hidden), Some(0), true), ["search_mismatch"]);
+        assert!(Asked::default().may_ask(&["search_mismatch"], 10 * 86_400), "not a mild one");
         #[allow(clippy::cast_possible_wrap)]
         let access_violation = 0xC000_0005_u32 as i32;
         assert_eq!(triggers(online, None, Some(access_violation), false), ["exit_code"]);

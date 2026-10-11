@@ -108,7 +108,7 @@ const SPLIT_AFTER_LEAVING: std::time::Duration = std::time::Duration::from_secs(
 const PROPERTY_ROOM_KIND: u32 = 113;
 /// The game's data version (`server_api::data_versions`): games whose versions differ can't
 /// join each other.
-const PROPERTY_DATA_VERSION: u32 = 107;
+pub(crate) const PROPERTY_DATA_VERSION: u32 = 107;
 
 /// Value of [`PROPERTY_ROOM_KIND`] for the anteroom every client opens for itself.
 const ROOM_KIND_ANTEROOM: u32 = 1;

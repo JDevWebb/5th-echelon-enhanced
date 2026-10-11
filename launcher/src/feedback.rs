@@ -38,6 +38,7 @@ fn why(triggers: &[&'static str]) -> &'static str {
         Some("signin_refused") => "The server didn't let the game sign in.",
         Some("version_mismatch") => "A join was refused as \"a different version of the game\".",
         Some("failed_join") => "A join didn't work.",
+        Some("search_mismatch") => "Searching found no lobbies, though some were open: their game data differs from yours.",
         Some("relayed") => "Your matches went through the server's relay.",
         Some("manual") => "Tell the server's admins what happened.",
         _ => "Help us make the community servers better.",
@@ -52,7 +53,7 @@ fn ticked(triggers: &[&'static str]) -> BTreeSet<&'static str> {
             "panic" | "exit_code" => Some("crash"),
             "signin_refused" => Some("signin"),
             "version_mismatch" => Some("version"),
-            "failed_join" => Some("join"),
+            "failed_join" | "search_mismatch" => Some("join"),
             _ => None,
         })
         .collect()
@@ -142,6 +143,7 @@ fn check(game_dir: PathBuf, exit: GameExit, checks: String, manual: bool) -> Res
         failed_joins: s.failed_joins,
         version_mismatches: s.version_mismatches,
         relayed: s.relayed,
+        searches_other_data: s.searches_other_data,
     });
     let triggers = if manual {
         vec!["manual"]
@@ -177,10 +179,15 @@ fn check(game_dir: PathBuf, exit: GameExit, checks: String, manual: bool) -> Res
         extra.push(("server-summary.json", s.json.clone()));
     }
     let files = setup::feedback::prepare(&game_dir, crate::logging::log_path().as_deref(), &extra, &private);
-    let mismatch = server
-        .as_ref()
-        .filter(|_| triggers.contains(&"version_mismatch"))
-        .and_then(|s| setup::feedback::mismatch_line(&s.mismatch_host, &s.mismatch_mine, &s.mismatch_theirs));
+    let mismatch = server.as_ref().and_then(|s| {
+        if triggers.contains(&"version_mismatch") {
+            setup::feedback::mismatch_line(&s.mismatch_host, &s.mismatch_mine, &s.mismatch_theirs)
+        } else if triggers.contains(&"search_mismatch") {
+            setup::feedback::search_mismatch_line(&s.other_data_mine, &s.other_data_theirs)
+        } else {
+            None
+        }
+    });
     Ok(Some(Ask {
         mismatch,
         problems: ticked(&triggers),
@@ -685,6 +692,7 @@ mod tests {
     #[test]
     fn what_went_wrong_is_ticked_for_the_player() {
         assert_eq!(ticked(&["version_mismatch", "failed_join", "relayed"]), BTreeSet::from(["version", "join"]));
+        assert_eq!(ticked(&["search_mismatch"]), BTreeSet::from(["join"]));
         assert!(ticked(&["routine"]).is_empty());
         assert_eq!(why(&["exit_code"]), "The game seems to have crashed.");
         assert!(PROBLEMS
