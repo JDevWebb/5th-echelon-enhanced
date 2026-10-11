@@ -745,6 +745,8 @@ async fn check_token<T>(logger: &Logger, key: &Key, storage: &Arc<Storage>, mut 
     };
 
     debug!(logger, "Valid token for user {user_id}: {user}");
+    // The player's launcher is talking to the server (a relay drop says whether it stopped).
+    crate::clients::note_api_call(id);
 
     req.metadata_mut().insert("user_id", user_id.parse().map_err(|_| Status::unauthenticated("Invalid user"))?);
 

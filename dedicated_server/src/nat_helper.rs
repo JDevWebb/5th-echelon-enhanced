@@ -67,8 +67,12 @@ const ASKING_FOR: Duration = Duration::from_secs(2);
 const ASKS_QUEUED: usize = 256;
 
 /// Whether two players (by name) may reach each other through the relay: see
-/// [`dedicated_server_config::NatConfig::relay_pairs`].
-pub type MayRelay = Box<dyn Fn(&str, &str) -> bool + Send + Sync>;
+/// [`dedicated_server_config::NatConfig::relay_pairs`]. When not, which rule said no.
+pub type MayRelay = Box<dyn Fn(&str, &str) -> Result<(), String> + Send + Sync>;
+
+/// A refused pair is logged at most once in this long: a game keeps sending (the relay asks
+/// again every [`REFUSED_FOR`]).
+const REFUSAL_TOLD_EVERY: Duration = Duration::from_secs(60);
 
 /// The helper's secrets: the ticket key (kept in [`KEY_FILE`], so tickets
 /// survive a restart) and the cookie key (new at every start).
@@ -625,12 +629,21 @@ impl Table {
         }
     }
 
-    /// Whose relay port (or advertised address) `to` is.
+    /// Whose address `to` is: a player's relay port, the address they advertise, or their
+    /// real one (where the relay sends them their packets: a game told it directly).
     fn who_has(&self, to: SocketAddrV4) -> String {
-        self.by_advertise
-            .get(&to)
-            .and_then(|id| self.peers.get(id))
-            .map_or_else(|| "nobody's".into(), |p| format!("{}'s", p.name))
+        if let Some(p) = self.by_advertise.get(&to).and_then(|id| self.peers.get(id)) {
+            return format!("{}'s {}", p.name, if p.relayed { "relay port" } else { "address" });
+        }
+        if let Some(p) = self.by_real.get(&to).or_else(|| self.by_alias.get(&to)).and_then(|id| self.peers.get(id)) {
+            return format!("{}'s real address", p.name);
+        }
+        let (first, last) = self.cfg.relay_ports;
+        if *to.ip() == self.relay_ip && (first..=last).contains(&to.port()) {
+            "nobody's relay port".into()
+        } else {
+            "nobody's address".into()
+        }
     }
 
     /// Forgets the player registered from `src` with `tag`, whose game says it's going
@@ -996,10 +1009,18 @@ fn signed_in() -> std::sync::MutexGuard<'static, HashMap<String, Instant>> {
     SIGNED_IN.get_or_init(Mutex::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// `name`'s game signed in.
-pub fn game_signed_in(name: &str) {
+/// The account ids of the games in [`signed_in`], by name: what the server last heard from
+/// them is kept by id ([`player_quiet`]).
+fn ids() -> std::sync::MutexGuard<'static, HashMap<String, u32>> {
+    static IDS: OnceLock<Mutex<HashMap<String, u32>>> = OnceLock::new();
+    IDS.get_or_init(Mutex::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `name`'s game (account `user_id`) signed in.
+pub fn game_signed_in(name: &str, user_id: u32) {
     if TABLE.get().is_some() {
         signed_in().insert(name.to_lowercase(), Instant::now());
+        ids().insert(name.to_lowercase(), user_id);
     }
 }
 
@@ -1016,6 +1037,21 @@ pub fn game_went_online(name: &str) {
 pub fn game_signed_out(name: &str) {
     awaiting().remove(&name.to_lowercase());
     signed_in().remove(&name.to_lowercase());
+    ids().remove(&name.to_lowercase());
+}
+
+/// Whether nothing came from either of a player's connections to the server (`heard`: their
+/// game's last packet, their launcher's last API call) after `since`.
+fn went_quiet(heard: [Option<Instant>; 2], since: Instant) -> bool {
+    heard.iter().all(|at| at.is_none_or(|at| at <= since))
+}
+
+/// Whether signed-in `name`'s game and launcher both said nothing to the server after `since`:
+/// their own connection stalled, not just the relayed traffic. False when the server can't
+/// tell (their game isn't signed in here).
+fn player_quiet(name: &str, since: Instant) -> bool {
+    let Some(id) = ids().get(&name.to_lowercase()).copied() else { return false };
+    went_quiet([quazal::last_heard(id), crate::clients::last_api_call(id)], since)
 }
 
 /// Of the players whose registration just lapsed (with their last probe), those whose game
@@ -1106,17 +1142,28 @@ struct Ask {
 /// that brought each one it allows.
 fn pair_worker(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, may_relay: &MayRelay, asked: &std::sync::mpsc::Receiver<Ask>) {
     let mut out = Vec::with_capacity(2048);
+    // Refused pairs logged lately, by [`pair`].
+    let mut told: HashMap<(Id, Id), Instant> = HashMap::new();
     while let Ok(ask) = asked.recv() {
-        let may = may_relay(&ask.sender_name, &ask.receiver_name);
-        if may {
-            debug!(logger, "NAT relay: {} may reach {}", ask.sender_name, ask.receiver_name);
-        } else {
-            debug!(
-                logger,
-                "NAT relay: {} isn't with {} (no shared room, public room or invitation); not relayed", ask.sender_name, ask.receiver_name
-            );
-        }
+        let verdict = may_relay(&ask.sender_name, &ask.receiver_name);
         let now = Instant::now();
+        match &verdict {
+            Ok(()) => debug!(logger, "NAT relay: {} may reach {}", ask.sender_name, ask.receiver_name),
+            Err(rule) => {
+                if told.len() >= 1024 {
+                    told.retain(|_, at| now.duration_since(*at) < REFUSAL_TOLD_EVERY);
+                }
+                let key = pair(ask.sender, ask.receiver);
+                if told.get(&key).is_none_or(|at| now.duration_since(*at) >= REFUSAL_TOLD_EVERY) {
+                    told.insert(key, now);
+                    info!(
+                        logger,
+                        "NAT relay: {}'s game sent to {}'s, refused: {rule}; not relayed (said once a minute per pair)", ask.sender_name, ask.receiver_name
+                    );
+                }
+            }
+        }
+        let may = verdict.is_ok();
         let route = table.lock().ok().and_then(|mut t| {
             t.decided(ask.sender, ask.receiver, may, now);
             if may {
@@ -1148,6 +1195,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
         let now = Instant::now();
         if now.duration_since(last_expiry) > Duration::from_secs(10) {
             let secs = now.duration_since(last_expiry).as_secs_f64();
+            let since = last_expiry;
             last_expiry = now;
             let (gone, players, relayed, flows, late, dropped_from, lapsed) = table
                 .lock()
@@ -1160,7 +1208,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                         busiest
                             .iter()
                             .take(DROPS_TOLD)
-                            .map(|((src, to), n)| format!("{n} from {src} ({}) to {to} ({} relay port)", t.who_sent(*src), t.who_has(*to)))
+                            .map(|((src, to), n)| format!("{n} from {src} ({}) to {to} ({})", t.who_sent(*src), t.who_has(*to)))
                             .collect()
                     } else {
                         Vec::new()
@@ -1180,11 +1228,17 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                 crate::session_events::note(crate::session_events::Who::Name(name), "nat_missing", serde_json::json!({ "after_secs": secs }));
             }
             for (name, direction, before, after) in watch.tick(&flows, secs) {
-                info!(logger, "NAT relay: {name}'s traffic {direction} fell from {before:.0} to {after:.0} packets/s");
+                // Their game and launcher silent too: their own connection stalled.
+                let quiet = player_quiet(&name, since);
+                info!(
+                    logger,
+                    "NAT relay: {name}'s traffic {direction} fell from {before:.0} to {after:.0} packets/s{}",
+                    if quiet { " (and their game and launcher went quiet too)" } else { "" }
+                );
                 crate::session_events::note(
                     crate::session_events::Who::Name(name),
                     "relay_drop",
-                    serde_json::json!({ "direction": direction, "before": before.round(), "after": after.round() }),
+                    serde_json::json!({ "direction": direction, "before": before.round(), "after": after.round(), "player_quiet": quiet }),
                 );
             }
             for name in gone.iter().filter(|n| !lapsed.iter().any(|(l, _)| l == *n)) {
@@ -1413,8 +1467,34 @@ mod tests {
         assert_eq!(t.who_sent(a("198.51.100.7:13000")), "sam");
         assert_eq!(t.who_sent(a("198.51.100.7:3074")), "an unregistered port of sam (registered from port 13000)");
         assert_eq!(t.who_sent(a("203.0.113.9:13000")), "nobody registered");
-        assert_eq!(t.who_has(sam), "sam's");
-        assert_eq!(t.who_has(a("192.0.2.1:49999")), "nobody's");
+        assert_eq!(t.who_has(sam), "sam's relay port");
+        assert_eq!(t.who_has(a("198.51.100.7:13000")), "sam's real address", "a game told Sam's own address");
+        assert_eq!(t.who_has(a("192.0.2.1:40999")), "nobody's relay port");
+        assert_eq!(t.who_has(a("192.0.2.1:49999")), "nobody's address");
+        let mut direct = table(RelayMode::Off);
+        let (dee, relayed) = advertise(&direct.probe(a("198.51.100.8:13000"), 0, 1, None, "Dee", now));
+        assert!(!relayed);
+        assert_eq!(direct.who_has(dee), "dee's address");
+    }
+
+    /// A relay drop says whether the player's game and launcher went quiet too: nothing from
+    /// either since the look before. A game not signed in here can't be told.
+    #[test]
+    fn a_relay_drop_says_whether_the_player_went_quiet_too() {
+        let now = Instant::now();
+        let ago = |s| now.checked_sub(Duration::from_secs(s)).unwrap();
+        assert!(went_quiet([None, None], ago(10)));
+        assert!(went_quiet([Some(ago(12)), Some(ago(40))], ago(10)), "both last heard before the fall");
+        assert!(!went_quiet([Some(ago(3)), None], ago(10)), "the game still talks to the server");
+        assert!(!went_quiet([Some(ago(30)), Some(ago(2))], ago(10)), "the launcher still does");
+        assert!(!player_quiet("NAT-Quiet-Unknown", ago(10)));
+        ids().insert("nat-quiet".into(), 4_100_001);
+        let since = Instant::now();
+        assert!(player_quiet("NAT-Quiet", since), "nothing heard from them");
+        crate::clients::note_api_call(4_100_001);
+        assert!(!player_quiet("NAT-Quiet", since));
+        game_signed_out("NAT-Quiet");
+        assert!(!player_quiet("NAT-Quiet", since), "signed out: can't tell");
     }
 
     #[test]

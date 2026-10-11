@@ -1300,7 +1300,9 @@ impl Storage {
 
     /// Whether the relay may carry `sender`'s game traffic to `receiver` (names, any case):
     /// they're in a live session together, `receiver` hosts one anyone may join (matchmaking
-    /// reaches the host before its join does), or one invited the other (unanswered).
+    /// reaches the host before its join does), one is on their way into a public one the other
+    /// is in ([`crate::pending_joins`]: the match's players reach a newcomer before its join
+    /// does), or one invited the other (unanswered).
     pub fn may_relay(&self, sender: &str, receiver: &str) -> Result<bool> {
         let ids: Vec<(u32, String)> = run(sqlx::query_as("SELECT id, name_key FROM users WHERE name_key IN (?, ?)")
             .bind(sender.to_lowercase())
@@ -1310,7 +1312,7 @@ impl Storage {
         let (Some(a), Some(b)) = (id(sender), id(receiver)) else {
             return Ok(false);
         };
-        if self.share_session(a, b)? || self.hosts_public_session(b)? {
+        if crate::pending_joins::together(a, b) || self.share_session(a, b)? || self.hosts_public_session(b)? {
             return Ok(true);
         }
         let n: i64 = run(sqlx::query_scalar(
@@ -1336,6 +1338,23 @@ impl Storage {
         .bind(host)
         .fetch_one(&self.pool))??;
         Ok(n > 0)
+    }
+
+    /// Who's in the sessions `host` hosts that anyone may join ([`Self::hosts_public_session`]):
+    /// the host, participants and guests, by id and name, a few dozen at most.
+    pub fn public_session_members(&self, host: u32) -> Result<Vec<(u32, String)>> {
+        Ok(run(sqlx::query_as(&format!(
+            "WITH s AS (SELECT g.id FROM game_sessions g WHERE g.creator_id = ?1 AND g.destroyed_at IS NULL
+                 AND EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = g.creator_id)
+                 AND NOT EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.user_id = g.creator_id AND a.invite_only = 1)
+                 AND NOT {PRIVATE_SEATS_ONLY})
+             SELECT u.id, u.username FROM users u
+              WHERE u.id IN (SELECT user_id FROM participants WHERE game_id IN s)
+                 OR u.id IN (SELECT user_id FROM guests WHERE game_id IN s)
+              LIMIT 32"
+        ))
+        .bind(host)
+        .fetch_all(&self.pool))??)
     }
 
     /// The attributes of the live sessions `host` opened and is in together with `member`.
@@ -1843,6 +1862,43 @@ pub(crate) mod tests {
         assert!(storage.may_relay("Host", "Guest").unwrap());
         assert!(!storage.may_relay("Stranger", "Guest").unwrap(), "a guest isn't a host");
         assert!(!storage.may_relay("Nobody", "Host").unwrap(), "no such player");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A player who found a public match is reached by its players before their join arrives
+    /// (the host's game tells them to connect first), and reaches them; only them, briefly.
+    #[test]
+    fn the_players_of_a_public_match_reach_a_newcomer_before_the_join() {
+        let (storage, dir) = temp_storage("relay_joining");
+        for name in ["PjHost", "PjGuest", "PjJoiner", "PjStranger"] {
+            storage.register_user(name, "pw", Some(name)).unwrap();
+        }
+        // Ids no other test's players have: who's joining is kept for the whole server.
+        run(sqlx::query("UPDATE users SET id = id + 7000000 WHERE username LIKE 'Pj%'").execute(&storage.pool))
+            .unwrap()
+            .unwrap();
+        let id = |n: &str| storage.find_user_id_by_name(n).unwrap().unwrap();
+        let (host, guest, joiner) = (id("PjHost"), id("PjGuest"), id("PjJoiner"));
+        let public = storage.create_game_session(host, 1, "113 => 0".into()).unwrap();
+        storage.add_participants(1, public, vec![], vec![host]).unwrap();
+        assert!(storage.add_guest(public, guest, false).unwrap());
+        let mut members = storage.public_session_members(host).unwrap();
+        members.sort();
+        assert_eq!(members, [(host, "PjHost".to_string()), (guest, "PjGuest".to_string())]);
+        assert!(storage.public_session_members(guest).unwrap().is_empty(), "a guest hosts nothing");
+        assert!(!storage.may_relay("PjGuest", "PjJoiner").unwrap(), "not before they probe the host");
+        // What the probe of the host notes (nat_traversal).
+        let ids: Vec<u32> = members.iter().map(|(id, _)| *id).collect();
+        crate::pending_joins::note(host, joiner, &ids);
+        assert!(storage.may_relay("PjGuest", "PjJoiner").unwrap(), "the guest reaches the newcomer");
+        assert!(storage.may_relay("PjJoiner", "PjGuest").unwrap(), "and the other way");
+        assert!(storage.may_relay("PjHost", "PjJoiner").unwrap());
+        assert!(!storage.may_relay("PjStranger", "PjJoiner").unwrap(), "a stranger still can't");
+        assert!(!storage.may_relay("PjStranger", "PjGuest").unwrap());
+        // A private room has no members anyone may reach.
+        let private = storage.create_game_session(guest, 1, "113 => 0;3 => 0;4 => 2".into()).unwrap();
+        storage.add_participants(1, private, vec![], vec![guest]).unwrap();
+        assert!(storage.public_session_members(guest).unwrap().is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
