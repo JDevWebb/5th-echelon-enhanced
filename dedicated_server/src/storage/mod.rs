@@ -1162,6 +1162,41 @@ impl Storage {
             .fetch_optional(&self.pool))??)
     }
 
+    /// A room a failed join was about, live or ended (until it's purged): who opened it,
+    /// whether it has ended, and its attributes.
+    pub fn room_of_failed_join(&self, session_id: u32) -> Result<Option<(u32, bool, String)>> {
+        let row: Option<(u32, bool, Option<String>)> = run(sqlx::query_as("SELECT creator_id, destroyed_at IS NOT NULL, attributes FROM game_sessions WHERE id = ?")
+            .bind(session_id)
+            .fetch_optional(&self.pool))??;
+        Ok(row.map(|(creator, ended, attributes)| (creator, ended, attributes.unwrap_or_default())))
+    }
+
+    /// The attributes of the room `creator` opened last, live or ended: their game's data
+    /// version is in it (107).
+    pub fn newest_room_attributes(&self, creator: u32) -> Result<Option<String>> {
+        let row: Option<Option<String>> = run(sqlx::query_scalar("SELECT attributes FROM game_sessions WHERE creator_id = ? ORDER BY id DESC LIMIT 1")
+            .bind(creator)
+            .fetch_optional(&self.pool))??;
+        Ok(row.flatten())
+    }
+
+    /// The newest live room `host` opened that anyone may join (as [`Self::hosts_public_session`]
+    /// counts them) and `joiner` isn't in: the one a probe to `host` was for.
+    pub fn public_room_for(&self, host: u32, joiner: u32) -> Result<Option<u32>> {
+        Ok(run(sqlx::query_scalar(&format!(
+            "SELECT g.id FROM game_sessions g WHERE g.creator_id = ?1 AND g.destroyed_at IS NULL
+               AND EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = g.creator_id)
+               AND NOT EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?2)
+               AND NOT EXISTS (SELECT 1 FROM guests gu WHERE gu.game_id = g.id AND gu.user_id = ?2)
+               AND NOT EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.user_id = g.creator_id AND a.invite_only = 1)
+               AND NOT {PRIVATE_SEATS_ONLY}
+             ORDER BY g.id DESC LIMIT 1"
+        ))
+        .bind(host)
+        .bind(joiner)
+        .fetch_optional(&self.pool))??)
+    }
+
     /// A player leaves a session (LeaveSession/AbandonSession): they're no
     /// longer a participant, and a session nobody is left in ends. Returns
     /// whether it ended.
@@ -1868,6 +1903,36 @@ pub(crate) mod tests {
         assert_eq!(storage.leave_game_session(host, lobby).unwrap(), Some(true), "nobody left: the session ends");
         assert!(storage.search_sessions_with_participants(1, &[host], 50).unwrap().is_empty());
         assert_eq!(storage.leave_game_session(host, lobby).unwrap(), Some(false), "leaving twice is harmless");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn a_failed_joins_rooms_are_found() {
+        let (storage, dir) = temp_storage("failed-join");
+        let mut ids = vec![];
+        for name in ["FjHost", "FjJoiner", "FjPrivate"] {
+            storage.register_user(name, "pw", Some(name)).unwrap();
+            ids.push(storage.find_user_id_by_name(name).unwrap().unwrap());
+        }
+        let [host, joiner, private] = ids[..] else { unreachable!() };
+        let party = storage.create_game_session(joiner, 1, "113 => 1;107 => 3909881133".into()).unwrap();
+        let split = storage.create_game_session(joiner, 1, "113 => 1;107 => 3713379539".into()).unwrap();
+        assert_eq!(storage.newest_room_attributes(joiner).unwrap().as_deref(), Some("113 => 1;107 => 3713379539"));
+        assert_eq!(storage.newest_room_attributes(host).unwrap(), None);
+        storage.delete_game_session(joiner, 1, party).unwrap();
+        assert_eq!(storage.room_of_failed_join(party).unwrap(), Some((joiner, true, "113 => 1;107 => 3909881133".into())));
+        assert_eq!(storage.room_of_failed_join(split).unwrap().map(|(c, ended, _)| (c, ended)), Some((joiner, false)));
+        assert_eq!(storage.room_of_failed_join(0).unwrap(), None);
+
+        assert_eq!(storage.public_room_for(host, joiner).unwrap(), None, "no room");
+        let open = storage.create_game_session(host, 1, "113 => 0;3 => 2;4 => 0".into()).unwrap();
+        storage.add_participants(1, open, vec![], vec![host]).unwrap();
+        assert_eq!(storage.public_room_for(host, joiner).unwrap(), Some(open));
+        storage.add_participants(1, open, vec![], vec![joiner]).unwrap();
+        assert_eq!(storage.public_room_for(host, joiner).unwrap(), None, "not one they're in already");
+        let invite_only = storage.create_game_session(private, 1, "113 => 0;3 => 0;4 => 2".into()).unwrap();
+        storage.add_participants(1, invite_only, vec![private], vec![]).unwrap();
+        assert_eq!(storage.public_room_for(private, joiner).unwrap(), None, "private seats only");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

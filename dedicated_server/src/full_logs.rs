@@ -57,7 +57,8 @@ pub fn diagnostics(user: u32, name: Option<&str>, agreed: bool) {
 /// The problem a session event is, if it's one worth the game's log.
 pub fn problem_of(kind: &str, detail: &serde_json::Value) -> Option<&'static str> {
     match kind {
-        "join_failed" => Some("join_failed"),
+        // Not the game's own room, nor a room full, locked or closed: that says all there is.
+        "join_failed" if detail["own"] != true && crate::reports::JoinOutcome::of_detail(detail).wants_log() => Some("join_failed"),
         "nat_lost" => Some("nat_lost"),
         "relay_drop" if detail["direction"] == "sending" && detail["after"].as_f64() == Some(0.0) => Some("relay_stopped"),
         "leave" if detail["how"] == "dropped" => Some("restarted"),
@@ -147,5 +148,19 @@ mod tests {
         );
         assert_eq!(problem_of("relay_drop", &serde_json::json!({ "direction": "sending", "after": 4.0 })), None);
         assert_eq!(problem_of("leave", &serde_json::json!({ "how": "dropped" })), Some("restarted"));
+    }
+
+    #[test]
+    fn only_a_failed_join_that_says_little_wants_the_log() {
+        let wants = |detail: serde_json::Value| problem_of("join_failed", &detail);
+        assert_eq!(wants(serde_json::json!({ "room": 9, "code": "0xb08a1a05", "outcome": "failed" })), Some("join_failed"));
+        assert_eq!(
+            wants(serde_json::json!({ "room": 9, "code": "0xeea440ee", "outcome": "data_mismatch" })),
+            Some("join_failed")
+        );
+        for outcome in ["full", "locked", "closed"] {
+            assert_eq!(wants(serde_json::json!({ "room": 9, "outcome": outcome })), None, "{outcome}");
+        }
+        assert_eq!(wants(serde_json::json!({ "room": 9, "outcome": "failed", "own": true })), None, "the game's own room");
     }
 }

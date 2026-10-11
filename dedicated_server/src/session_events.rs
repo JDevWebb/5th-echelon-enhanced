@@ -23,7 +23,14 @@
 //!   `ping_ms` and `host_ping_ms` (each one's round trip to this server, as their game
 //!   measured it), `relayed`, and for a relayed pair `relay_ms` (their round trip through
 //!   the relay) and `direct_ms` (the least a direct one could take, from where they are).
-//! - `join_failed`: `room`, `code` (the game's error code, hex).
+//! - `join_failed`: `room`, `code` (the game's error code, hex), `outcome` (`full`: the
+//!   lobby is full at its current size; `locked`; `closed`: the room had just been closed;
+//!   `data_mismatch`: different game data; `failed`: anything else). `own`: true when the
+//!   room is the player's own or had ended, the game's own churn rather than a failed join.
+//!   `reported_room`: what the game said, when that was session 0 or its own split party
+//!   and `room` is the one the server had just given the player (join_targets.rs). For
+//!   `data_mismatch`: `data` (`mine`, `theirs`: each side's attribute 107, hex, either may be
+//!   absent) and `mine_name`, `theirs_name` (`server_api::data_versions`, null if unknown).
 //! - `leave`: `room`, `how` (`left`, `abandoned`, `removed` by the host: `by`), `ended`.
 //! - `invite`: `to`, `room` (none: unbound, the receiver finds nothing to join).
 //! - `invite_delivered`: `from`, `room`.
