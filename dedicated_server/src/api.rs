@@ -781,22 +781,22 @@ impl Users for MyUsers {
         if username.chars().count() > 32 || password.len() > 128 {
             return Err(Status::unauthenticated("Invalid login"));
         }
-        if !crate::rate_limit::begin_login(peer, &username) {
-            crate::session_events::refused(crate::session_events::Who::Name(username.clone()), "too_many", "api", Some(client.as_str()));
-            return Err(Status::resource_exhausted("Too many failed logins; try again later"));
-        }
+        let attempt = crate::rate_limit::begin_login(peer, &username).map_err(|refused| {
+            crate::session_events::refused(crate::session_events::Who::Name(username.clone()), refused.reason(), "api", Some(client.as_str()));
+            Status::resource_exhausted(refused.message())
+        })?;
         // An outdated client retrying what was refused a moment ago: the same answer, without
         // the password hash again (the password was right then, as it is now).
         if let Some(why) = crate::clients::refused_lately(&username, &client, &password) {
             crate::session_events::refused(crate::session_events::Who::Name(username.clone()), "outdated", "api", Some(client.as_str()));
-            crate::rate_limit::login_succeeded(peer, &username);
+            attempt.succeeded();
             return Err(Status::failed_precondition(why));
         }
 
         let maybe_user = self.storage.login_user_async(&username, &password).await.map_err(storage_error)?;
 
         let user_id = maybe_user.map_err(|err| {
-            crate::rate_limit::login_failed(peer, &username);
+            attempt.failed();
             crate::metrics::failed_login();
             let who = || crate::session_events::Who::Name(username.clone());
             match &err {
@@ -815,10 +815,10 @@ impl Users for MyUsers {
         // The server's own accounts (Tracking's password is the game's, so public) never get
         // an API session.
         if !self.storage.is_player_account(user_id).await.map_err(internal)? {
-            crate::rate_limit::login_failed(peer, &username);
+            attempt.failed();
             return Err(Status::unauthenticated("Invalid login"));
         }
-        crate::rate_limit::login_succeeded(peer, &username);
+        attempt.succeeded();
         if let Err(refusal) = self.admit(user_id, &username, &client).await {
             if refusal.code() == tonic::Code::FailedPrecondition {
                 crate::clients::refused(user_id, &username, &client, &password);
@@ -977,13 +977,14 @@ impl Users for MyUsers {
         } else {
             request.username.clone()
         };
-        if request.username.chars().count() > 32 || request.global_id.len() > 64 || !crate::rate_limit::begin_key_login(peer, &limit_key) {
+        if request.username.chars().count() > 32 || request.global_id.len() > 64 {
             return Err(Status::resource_exhausted("Too many failed logins; try again later"));
         }
+        let attempt = crate::rate_limit::begin_key_login(peer, &limit_key).map_err(|refused| Status::resource_exhausted(refused.message()))?;
         // One answer for every failure: which accounts are linked to which identity isn't
         // anyone's business.
         let refused = |_why: &str| {
-            crate::rate_limit::key_login_failed(peer, &limit_key);
+            attempt.failed();
             Status::unauthenticated("Signing in with this identity didn't work")
         };
         if !identity::fresh(request.time, identity::now()) {
@@ -1001,7 +1002,7 @@ impl Users for MyUsers {
                 Some(person) => person,
                 // Not a failed sign-in: a player new here.
                 None => {
-                    crate::rate_limit::key_login_succeeded(peer, &limit_key);
+                    attempt.succeeded();
                     return Err(Status::not_found("No account here is linked to this identity"));
                 }
             }
@@ -1041,7 +1042,7 @@ impl Users for MyUsers {
             self.storage.set_password(person.id, &request.new_password).await.map_err(storage_error)?;
             info!(self.logger, "{} set a new password with their identity key", person.username);
         }
-        crate::rate_limit::key_login_succeeded(peer, &limit_key);
+        attempt.succeeded();
         info!(self.logger, "Key login successful for {}", person.username);
         crate::metrics::api_login();
         if let Some(ip) = peer {

@@ -103,16 +103,17 @@ pub fn routes(storage: Arc<Storage>, cfg: CommunityApiConfig) -> Routes {
             },
             ("POST", "/api/login") if cfg.accounts => {
                 let name = credentials(&req.body).map(|(u, _)| u).unwrap_or_default();
-                if rate_limit::begin_login(req.peer, &name) {
-                    let response = login(&storage, &req.body);
-                    if response.status_is("401 Unauthorized") {
-                        rate_limit::login_failed(req.peer, &name);
-                    } else if response.status_is("200 OK") {
-                        rate_limit::login_succeeded(req.peer, &name);
+                match rate_limit::begin_login(req.peer, &name) {
+                    Ok(attempt) => {
+                        let response = login(&storage, &req.body);
+                        if response.status_is("401 Unauthorized") {
+                            attempt.failed();
+                        } else if response.status_is("200 OK") {
+                            attempt.succeeded();
+                        }
+                        response
                     }
-                    response
-                } else {
-                    too_many()
+                    Err(refused) => too_many_logins(refused),
                 }
             }
             _ => Response::status("404 Not Found"),
@@ -294,6 +295,11 @@ fn busy() -> Response {
 
 fn too_many() -> Response {
     Response::json("429 Too Many Requests", &json!({ "error": "too many attempts, try again later" }))
+}
+
+/// A sign-in refused by the login limits, saying which.
+fn too_many_logins(refused: rate_limit::Refused) -> Response {
+    Response::json("429 Too Many Requests", &json!({ "error": refused.message() }))
 }
 
 fn register(storage: &Storage, body: &[u8]) -> Response {
