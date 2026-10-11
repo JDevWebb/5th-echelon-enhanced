@@ -600,7 +600,10 @@ fn describe(e: &Event) -> String {
             let why = match e.str("reason") {
                 "outdated" => format!("outdated client {}", e.str("client")),
                 "no_current_client" => "its game client isn't current (or never signed in to the API)".into(),
-                "too_many" => "too many attempts".into(),
+                // Failures (password guessing); servers before 0.4.4 said it for both limits.
+                "too_many" => "too many failed sign-ins (or sign-ins, from a server before 0.4.4)".into(),
+                // Every sign-in counts: a game signing in again and again, each time fine.
+                "too_many_signins" => "too many sign-ins from their address".into(),
                 "wrong_password" => "wrong password".into(),
                 "banned" => "banned".into(),
                 other => other.to_string(),
@@ -1026,6 +1029,24 @@ mod tests {
 
     fn titles(events: &[Event]) -> Vec<String> {
         problems(events).iter().map(|p| p["title"].as_str().unwrap_or_default().to_string()).collect()
+    }
+
+    /// Ghost_Leader on eu1, 10-09: a game signing in again and again, every time fine, was
+    /// refused as "too many attempts". From 0.4.4 servers say which limit it was.
+    #[test]
+    fn sign_in_limits_say_which() {
+        let refused = |reason: &str| {
+            let events: Vec<Event> = (0..3)
+                .map(|i| ev("eu", 100 + i, 9, "Ghost_Leader", "signin_refused", json!({ "reason": reason, "via": "api" })))
+                .collect();
+            problems(&events)[0]["text"].as_str().unwrap_or_default().to_string()
+        };
+        assert!(
+            refused("too_many_signins").contains("too many sign-ins from their address"),
+            "{}",
+            refused("too_many_signins")
+        );
+        assert!(refused("too_many").contains("too many failed sign-ins"));
     }
 
     /// Tonight's dropout on NA1, as it happened: traffic fell, the player left the match a

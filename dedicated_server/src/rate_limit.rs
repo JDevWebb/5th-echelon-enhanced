@@ -85,7 +85,7 @@ pub fn client_ip(peer: Option<IpAddr>, forwarded_for: Option<&str>) -> Option<Ip
 }
 
 /// The server's one limiter for failed password checks per address, shared
-/// by every login route (through [`begin_login`]).
+/// by every login route (through [`begin_login`]; see [`Attempt`]).
 pub fn logins() -> &'static RateLimit {
     static LIMIT: std::sync::OnceLock<RateLimit> = std::sync::OnceLock::new();
     LIMIT.get_or_init(|| RateLimit::new((limits().failed_logins_per_10_minutes, Duration::from_secs(10 * 60))))
@@ -143,57 +143,128 @@ fn is_local_network(ip: IpAddr) -> bool {
 /// The answer for credentials refused by [`credentials_allowed`].
 pub const TLS_REQUIRED: &str = "This server takes passwords and sign-ins over HTTPS only; connect to it with https:// (update the 5th Echelon launcher)";
 
-/// Starts a sign-in for `name` from `peer`. It counts now, before the
-/// password is checked, so a burst of guesses can't all get through before the
-/// first failure is recorded; false when the address is over either of its
-/// limits, or the account is closed to this address (see [`AccountLimit`]).
-pub fn begin_login(peer: Option<IpAddr>, name: &str) -> bool {
+/// Why a sign-in was refused before its password (or key) was checked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refused {
+    /// Too many failed sign-ins: from the address, or for the account from this address (or
+    /// from everywhere, see [`AccountLimit`]). Password guessing.
+    Failures,
+    /// Too many sign-ins from the address, failed or not (`[limits] logins_per_10_minutes`):
+    /// each one costs a password hash. A game retrying sign-ins that all worked ends up here,
+    /// never at [`Refused::Failures`].
+    Flood,
+}
+
+impl Refused {
+    /// The `reason` of the `signin_refused` session event.
+    pub fn reason(self) -> &'static str {
+        match self {
+            Self::Failures => "too_many",
+            Self::Flood => "too_many_signins",
+        }
+    }
+
+    /// What the player is told. Both start "Too many": the game's hooks wait minutes before
+    /// signing in again on that, and only a moment on other refusals (a busy server).
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Failures => "Too many failed logins; try again later",
+            Self::Flood => "Too many sign-ins from your address in a short time; wait a few minutes and try again",
+        }
+    }
+}
+
+/// A sign-in let through [`begin_login`] (or [`begin_key_login`]). It counts against its
+/// address's failed sign-ins from the start, before the password is checked, so a burst of
+/// guesses can't all get through before the first failure is recorded. Only
+/// [`Attempt::failed`] keeps that count: a sign-in that worked, ended in an error (the server
+/// too busy hashing passwords) or was dropped (its connection lost) gives it back when it's
+/// dropped, so a player whose sign-ins all worked is never told they failed. Every sign-in
+/// still counts towards the address's sign-ins (see [`Refused::Flood`]).
+#[must_use]
+pub struct Attempt {
+    peer: Option<IpAddr>,
+    name: String,
+    /// A key sign-in, whose failures are counted apart (see [`begin_key_login`]).
+    key: bool,
+    failed: std::sync::atomic::AtomicBool,
+}
+
+impl Attempt {
+    fn accounts(&self) -> &'static AccountLimit {
+        if self.key {
+            key_accounts()
+        } else {
+            accounts()
+        }
+    }
+
+    /// The sign-in failed (a wrong password or key): it stays counted against the address,
+    /// and counts against the account from this address and towards the account's slowdown.
+    pub fn failed(&self) {
+        if !self.failed.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            self.accounts().record(&self.name, self.peer);
+        }
+    }
+
+    /// The sign-in worked: the address is one this account signs in from.
+    pub fn succeeded(&self) {
+        self.failed.store(false, std::sync::atomic::Ordering::Relaxed);
+        self.accounts().succeeded(&self.name, self.peer);
+    }
+}
+
+impl Drop for Attempt {
+    fn drop(&mut self) {
+        if !*self.failed.get_mut() {
+            logins().refund(self.peer);
+        }
+    }
+}
+
+/// Starts a sign-in for `name` from `peer` (see [`Attempt`]); refused when the address is over
+/// either of its limits, or the account is closed to this address (see [`AccountLimit`]).
+pub fn begin_login(peer: Option<IpAddr>, name: &str) -> Result<Attempt, Refused> {
     begin_login_vouched(peer, name, false)
 }
 
 /// [`begin_login`], for an address `vouched` for as the account's (its player's launcher
 /// signed in from there): it isn't held up by failures from elsewhere, which anyone could
 /// cause with a few addresses, only by its own.
-pub fn begin_login_vouched(peer: Option<IpAddr>, name: &str, vouched: bool) -> bool {
+pub fn begin_login_vouched(peer: Option<IpAddr>, name: &str, vouched: bool) -> Result<Attempt, Refused> {
     let blocked = if vouched { accounts().blocked_here(name, peer) } else { accounts().blocked(name, peer) };
-    !blocked && attempts().check(peer) && logins().check(peer)
+    begin(peer, name, false, blocked)
 }
 
 /// Sign-ins with an identity key (a signature, which can't be guessed): their failures are
 /// counted apart from passwords', so anyone's password guesses for a name don't lock its
 /// owner's key out (a prefix on the name didn't keep them apart: a password sign-in can
 /// name anything).
-pub fn begin_key_login(peer: Option<IpAddr>, name: &str) -> bool {
-    !key_accounts().blocked(name, peer) && attempts().check(peer) && logins().check(peer)
+pub fn begin_key_login(peer: Option<IpAddr>, name: &str) -> Result<Attempt, Refused> {
+    begin(peer, name, true, key_accounts().blocked(name, peer))
 }
 
-/// A key sign-in worked (see [`begin_key_login`]).
-pub fn key_login_succeeded(peer: Option<IpAddr>, name: &str) {
-    logins().refund(peer);
-    key_accounts().succeeded(name, peer);
-}
-
-/// A key sign-in failed (see [`begin_key_login`]).
-pub fn key_login_failed(peer: Option<IpAddr>, name: &str) {
-    key_accounts().record(name, peer);
+fn begin(peer: Option<IpAddr>, name: &str, key: bool, blocked: bool) -> Result<Attempt, Refused> {
+    if blocked {
+        return Err(Refused::Failures);
+    }
+    if !attempts().check(peer) {
+        return Err(Refused::Flood);
+    }
+    if !logins().check(peer) {
+        return Err(Refused::Failures);
+    }
+    Ok(Attempt {
+        peer,
+        name: name.chars().take(MAX_NAME).collect(),
+        key,
+        failed: std::sync::atomic::AtomicBool::new(false),
+    })
 }
 
 fn key_accounts() -> &'static AccountLimit {
     static LIMIT: std::sync::OnceLock<AccountLimit> = std::sync::OnceLock::new();
     LIMIT.get_or_init(AccountLimit::new)
-}
-
-/// The sign-in worked: it isn't a failure after all (it still counts as an
-/// attempt), and the address is one this account signs in from.
-pub fn login_succeeded(peer: Option<IpAddr>, name: &str) {
-    logins().refund(peer);
-    accounts().succeeded(name, peer);
-}
-
-/// The sign-in failed: it counts against the account from this address, and
-/// towards the account's slowdown.
-pub fn login_failed(peer: Option<IpAddr>, name: &str) {
-    accounts().record(name, peer);
 }
 
 /// A login that checks no password (the game's plain `Login`, for the
@@ -624,6 +695,62 @@ mod tests {
         limit.refund(peer);
         assert!(limit.check(peer), "the first attempt succeeded and was given back");
         assert!(!limit.check(peer));
+    }
+
+    /// Ghost_Leader on eu1, 10-09: their game signed in again and again over a connection that
+    /// lost the server's replies, every sign-in fine, and was told "Too many failed logins".
+    /// Sign-ins that worked, or that ended without an answer, aren't failures.
+    #[test]
+    fn only_failed_sign_ins_count_as_failures() {
+        let defaults = crate::config::LimitsConfig::default();
+        let player = Some(IpAddr::from([192, 0, 2, 101]));
+        for _ in 0..defaults.failed_logins_per_10_minutes + 5 {
+            begin_login(player, "Ghost_Leader").expect("signed in fine before").succeeded();
+            // An error (the server busy), or a connection lost before the answer.
+            drop(begin_login(player, "Ghost_Leader").expect("nothing failed"));
+        }
+        let key_player = Some(IpAddr::from([192, 0, 2, 102]));
+        for _ in 0..defaults.failed_logins_per_10_minutes + 5 {
+            drop(begin_key_login(key_player, "Ghost_Leader").expect("nothing failed"));
+        }
+
+        // A guesser's failures still add up, whatever names they try.
+        let guesser = Some(IpAddr::from([192, 0, 2, 103]));
+        for i in 0..defaults.failed_logins_per_10_minutes {
+            begin_login(guesser, &format!("name{i}")).expect("under the limit").failed();
+        }
+        assert_eq!(begin_login(guesser, "another").err(), Some(Refused::Failures));
+        assert_eq!(begin_key_login(guesser, "another").err(), Some(Refused::Failures), "one budget for both");
+    }
+
+    /// The limit on every sign-in stays, saying so: it isn't about failures.
+    #[test]
+    fn too_many_sign_ins_say_so() {
+        let defaults = crate::config::LimitsConfig::default();
+        let player = Some(IpAddr::from([192, 0, 2, 104]));
+        for _ in 0..defaults.logins_per_10_minutes {
+            begin_login(player, "Renegade").expect("under the limit").succeeded();
+        }
+        let refused = begin_login(player, "Renegade").err();
+        assert_eq!(refused, Some(Refused::Flood));
+        assert_eq!(refused.map(Refused::reason), Some("too_many_signins"));
+        assert!(Refused::Flood.message().starts_with("Too many sign-ins"));
+        // The game's hooks wait long before signing in again on "too many" (not a busy server).
+        assert!(Refused::Failures.message().to_lowercase().contains("too many"));
+        assert!(Refused::Flood.message().to_lowercase().contains("too many"));
+    }
+
+    /// A failed key counts against the key, not the account's passwords, and only once.
+    #[test]
+    fn a_failed_key_counts_against_the_key() {
+        let peer = Some(IpAddr::from([192, 0, 2, 105]));
+        for _ in 0..AccountLimit::MAX {
+            let attempt = begin_key_login(peer, "Kea").expect("under the limit");
+            attempt.failed();
+            attempt.failed();
+        }
+        assert_eq!(begin_key_login(peer, "Kea").err(), Some(Refused::Failures));
+        assert!(begin_login(peer, "Kea").is_ok(), "passwords are counted apart");
     }
 
     #[test]
