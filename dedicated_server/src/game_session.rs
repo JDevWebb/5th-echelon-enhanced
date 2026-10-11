@@ -1726,11 +1726,13 @@ fn failed_join(storage: &Storage, user: u32, reported: u32, code: u32) -> Failed
     // party it had just left (Renegade's, 3 s after it closed): its own churn.
     let own_party = reported_facts.as_ref().is_some_and(|(creator, _, _)| *creator == user);
     let elsewhere = reported == 0 || (own_party && !matches!(outcome, JoinOutcome::Locked | JoinOutcome::Closed));
+    let given = || crate::join_targets::target(user, |host| storage.public_room_for(host, user).ok().flatten());
     let target = elsewhere
-        .then(|| crate::join_targets::target(user, |host| storage.public_room_for(host, user).ok().flatten()))
+        .then(&given)
         .flatten()
         .filter(|&room| room != reported)
         .and_then(|room| room_of(room).filter(|(creator, _, _)| *creator != user).map(|facts| (room, facts)));
+    let moved = target.is_some();
     let (room, reported_room, facts) = match target {
         Some((room, facts)) => (room, Some(reported), Some(facts)),
         None => (reported, None, reported_facts),
@@ -1738,8 +1740,11 @@ fn failed_join(storage: &Storage, user: u32, reported: u32, code: u32) -> Failed
     let (creator, ended, attributes) = facts.map_or((None, false, String::new()), |(c, e, a)| (Some(c), e, a));
     let own = creator == Some(user) || ended;
     let mismatch = (outcome == JoinOutcome::DataMismatch).then(|| {
-        // Someone else's room: theirs is the data its host's game has.
-        let host = creator.filter(|&c| c != user);
+        // Someone else's room: theirs is the data its host's game has. Only for the room the
+        // server just gave this player (an invitation, a search, a probe): the game names any
+        // session id it likes, and this goes back to the player in their summary, so any other
+        // room would tell them who hosts it (a private match, say) and with what mods.
+        let host = creator.filter(|&c| c != user && (moved || given() == Some(room)));
         crate::reports::Mismatch {
             host: host.and_then(|h| storage.find_username_by_user_id(h).ok().flatten()),
             mine: storage.newest_room_attributes(user).ok().flatten().and_then(|a| attribute_value(&a, PROPERTY_DATA_VERSION)),
@@ -2051,6 +2056,17 @@ mod tests {
                 "mine_name": "balaclava mod", "theirs_name": "unmodified",
             })
         );
+
+        // A mismatch the game reports against a room it wasn't given names nobody: the game
+        // can name any session id, and the answer reaches the player in their summary.
+        let private = storage.create_game_session(tacit, 1, stock.into()).unwrap();
+        let join = failed_join(&storage, d15, private, crate::reports::VERSION_MISMATCH);
+        let mismatch = join.mismatch.unwrap();
+        assert_eq!((mismatch.host, mismatch.theirs), (None, None));
+        // Given it (an invitation), it does.
+        crate::join_targets::invited(d15, private);
+        let mismatch = failed_join(&storage, d15, private, crate::reports::VERSION_MISMATCH).mismatch.unwrap();
+        assert_eq!((mismatch.host.as_deref(), mismatch.theirs), (Some("Tacit"), Some(0xe90c_0d2d)));
 
         // Renegade's game reports its own party, closed 3 s earlier, as locked, while an
         // invitation is pending: its own churn, not a failed join.
