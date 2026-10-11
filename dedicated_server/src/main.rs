@@ -208,6 +208,13 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
         // An admin's kick or ban (players.rs).
         server.sign_outs = Some(players::sign_outs());
         server.user_handler = Some(handle_user_packet);
+        // A game still sending whose acknowledgements of our packets never come: the server's
+        // replies aren't reaching the player's PC, so it never gets fully online.
+        server.unacked_handler = Some(Box::new(|ci: &ClientInfo, packets| {
+            if let Some(user_id) = ci.user_id.filter(|u| !SERVICE_ACCOUNTS.contains(u)) {
+                session_events::login_stalled(user_id, packets);
+            }
+        }));
         // A game that dropped and signed in again from the same address: when its old
         // connection goes, so do the rooms it made (nobody hosts them now). The player, still
         // connected, keeps the rest.

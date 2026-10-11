@@ -415,6 +415,10 @@ pub struct Coordinator {
     pings: Limit,
     /// When each launcher address last reported a ping to each server.
     ping_reporters: std::sync::Mutex<HashMap<(std::net::IpAddr, String), std::time::Instant>>,
+    /// The address each listed server's name last resolved to, with that name and port: the
+    /// coordinator's API checks fall back on it when a lookup is slow or fails. One per
+    /// listed server.
+    ping_addresses: std::sync::Mutex<HashMap<String, (String, u16, std::net::SocketAddr)>>,
     heartbeats: Limit,
     metrics: Limit,
     /// The release this machine's updater was last asked for, and when.
@@ -554,6 +558,7 @@ impl Coordinator {
             // Launchers report pings when they look at the directory: a few a minute at most.
             pings: Limit::new(6),
             ping_reporters: std::sync::Mutex::new(HashMap::new()),
+            ping_addresses: std::sync::Mutex::new(HashMap::new()),
             // Per server: a heartbeat every 30 seconds and metrics every minute, with room
             // for a retry.
             heartbeats: Limit::new(6),

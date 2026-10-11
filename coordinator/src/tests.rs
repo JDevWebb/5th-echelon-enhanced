@@ -2196,6 +2196,29 @@ async fn all_servers_silent_is_one_alert_about_the_coordinator() {
         .unwrap();
     t.c.check_alerts().await.unwrap();
     assert_eq!(active().await, ["offline"]);
+    // The coordinator couldn't look its name up three times running: its own DNS, not the
+    // server's web server.
+    for ago in [0, 60, 120] {
+        sqlx::query("INSERT OR REPLACE INTO server_pings (server_id, at, ms, failure) VALUES ('srv-a', ?, NULL, 'lookup')")
+            .bind(now - ago)
+            .execute(&t.c.pool)
+            .await
+            .unwrap();
+    }
+    t.c.check_alerts().await.unwrap();
+    let mut kinds = active().await;
+    kinds.sort();
+    assert_eq!(kinds, ["dns", "offline"]);
+    // One of the three was an unanswered connection: that's the API again.
+    sqlx::query("UPDATE server_pings SET failure = 'connect' WHERE server_id = 'srv-a' AND at = ?")
+        .bind(now - 60)
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    t.c.check_alerts().await.unwrap();
+    let mut kinds = active().await;
+    kinds.sort();
+    assert_eq!(kinds, ["api", "offline"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

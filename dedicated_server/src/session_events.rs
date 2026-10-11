@@ -43,6 +43,9 @@
 //!   was still signed in; nobody can reach it until it registers again.
 //! - `relay_drop`: `direction` (`sending`: the relay stopped getting this player's traffic;
 //!   `receiving`: stopped getting traffic for them), `before` and `after` (packets a second).
+//! - `login_stalled`: the game kept sending but never acknowledged the server's reliable
+//!   packets (its replies aren't reaching the PC, so it can't finish signing in): `packets`
+//!   given up on in this run, `since` (when the run began). At most once in 10 minutes.
 //! - `request_error`: `call` (Protocol.Method), `error`.
 //! - `report_refused`: the player's report (the launcher's "how did it go") wasn't taken:
 //!   `reason` (`too_many` today, or `invalid`), `why` (what the player was told), `files`
@@ -79,6 +82,10 @@ const PRUNE_EVERY: Duration = Duration::from_secs(3600);
 /// A join noted again for the same player and room within this long is the same join (the
 /// game may both add itself and send `JoinSession`).
 const SAME_JOIN: Duration = Duration::from_secs(600);
+/// A player's lost packets are noted at most this often (`login_stalled`), and a run of them
+/// ends after this long without one.
+const STALL_NOTE_EVERY: Duration = Duration::from_secs(600);
+const STALL_RUN_GAP: Duration = Duration::from_secs(600);
 
 /// Who an event is about.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -96,6 +103,18 @@ struct Queue {
     events: VecDeque<NewSessionEvent>,
     dropped: u64,
     joins: HashMap<(u32, u32), Instant>,
+    stalls: HashMap<u32, Stall>,
+}
+
+/// A player's run of reliable packets their game never acknowledged (see [`login_stalled`]).
+struct Stall {
+    /// When the run began (unix seconds).
+    since: i64,
+    /// Packets given up on in it.
+    packets: u64,
+    last: Instant,
+    /// When it was last noted.
+    noted: Option<Instant>,
 }
 
 fn queue() -> &'static Mutex<Queue> {
@@ -166,6 +185,39 @@ pub fn forget_joins(user: u32) {
 /// Forgets the joins of a room that ended (its id may come again after a restart).
 pub fn room_ended(room: u32) {
     queue().lock().unwrap_or_else(std::sync::PoisonError::into_inner).joins.retain(|(_, r), _| *r != room);
+}
+
+/// Notes that `user`'s game kept sending but never acknowledged `packets` of the server's
+/// reliable packets (quazal gave up on them): its replies aren't reaching their PC, so the
+/// game can't finish signing in. At most once per player in [`STALL_NOTE_EVERY`], with the
+/// run's total so far.
+pub fn login_stalled(user: u32, packets: usize) {
+    let detail = {
+        let mut q = queue().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        stalled(&mut q.stalls, user, packets, Instant::now(), now())
+    };
+    if let Some(detail) = detail {
+        note(Who::Id(user), "login_stalled", detail);
+    }
+}
+
+/// Adds `packets` to `user`'s run of lost packets, and gives the event's detail when it's
+/// time to note it.
+fn stalled(stalls: &mut HashMap<u32, Stall>, user: u32, packets: usize, at: Instant, unix: i64) -> Option<Value> {
+    stalls.retain(|_, s| at.duration_since(s.last) < STALL_RUN_GAP);
+    let s = stalls.entry(user).or_insert(Stall {
+        since: unix,
+        packets: 0,
+        last: at,
+        noted: None,
+    });
+    s.packets += packets as u64;
+    s.last = at;
+    if s.noted.is_some_and(|n| at.duration_since(n) < STALL_NOTE_EVERY) {
+        return None;
+    }
+    s.noted = Some(at);
+    Some(json!({ "packets": s.packets, "since": s.since }))
 }
 
 /// The events waiting, taken.
@@ -275,5 +327,28 @@ mod tests {
         assert_eq!(d["map"], 3_578_398_534u32);
         let party = super::room_detail("113 => 1;3 => 8;4 => 0");
         assert_eq!((party["room_kind"].as_str(), party.get("mode")), (Some("party"), None));
+    }
+
+    /// Lost packets are noted once in ten minutes, with the run's total; a quiet spell as long
+    /// starts a new run.
+    #[test]
+    fn a_stalled_login_is_noted_once_in_ten_minutes() {
+        use std::time::Duration;
+        use std::time::Instant;
+        let mut stalls = std::collections::HashMap::new();
+        let t = Instant::now();
+        let at = |secs: u64| t + Duration::from_secs(secs);
+        let first = super::stalled(&mut stalls, 1009, 1, at(0), 1000).unwrap();
+        assert_eq!(first, serde_json::json!({ "packets": 1, "since": 1000 }));
+        // Every four or five minutes, for a while: one note in ten minutes.
+        assert_eq!(super::stalled(&mut stalls, 1009, 1, at(270), 1270), None);
+        assert_eq!(super::stalled(&mut stalls, 2000, 2, at(300), 1300).unwrap()["packets"], 2, "another player's own");
+        assert_eq!(super::stalled(&mut stalls, 1009, 2, at(540), 1540), None);
+        let again = super::stalled(&mut stalls, 1009, 1, at(810), 1810).unwrap();
+        assert_eq!(again, serde_json::json!({ "packets": 5, "since": 1000 }));
+        // Fine for ten minutes, then again: a new run.
+        let later = super::stalled(&mut stalls, 1009, 1, at(1500), 2500).unwrap();
+        assert_eq!(later, serde_json::json!({ "packets": 1, "since": 2500 }));
+        assert!(!stalls.contains_key(&2000), "old runs are forgotten");
     }
 }
