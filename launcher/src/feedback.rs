@@ -704,6 +704,7 @@ mod tests {
             comment: String::new(),
             attach: true,
             viewing: None,
+            mismatch: None,
             exit,
         };
         #[allow(clippy::cast_possible_wrap)]
