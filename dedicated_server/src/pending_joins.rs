@@ -5,9 +5,12 @@
 //! before the newcomer's JoinSession arrives (eu1, 2026-10-09). Until then the newcomer shares
 //! no room with them, so their probes and relayed traffic to each other were refused. When a
 //! probe is allowed because the target hosts a public match, the prober is noted here as
-//! joining it, with who's in it then: for [`FOR`], they and those players may probe and relay
-//! to each other ([`together`]). Nobody else gets anything: a stranger could join the match
-//! anyway, and reaches only its players, briefly.
+//! joining it, with who's in it then: for [`FOR`], the relay carries them and those players
+//! to each other ([`together`], used by `Storage::may_relay`). Not probes: a probe hands each
+//! side the other's addresses, and anyone may probe a public host without joining, so that
+//! would give out the addresses of everyone in any public match; the relay shows neither
+//! one's. Nobody else gets anything: a stranger could join the match anyway, and reaches only
+//! its players, through the relay, briefly.
 
 use std::sync::Mutex;
 use std::time::Duration;

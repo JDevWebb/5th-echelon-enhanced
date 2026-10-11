@@ -61,8 +61,8 @@ fn probe_station(offered: &StationURL, observed: std::net::IpAddr, relay: Option
 impl NatTraversalProtocolServerImpl {
     /// `joiner` probes `host`, who hosts a public match: they're on their way in. The host's
     /// game tells the match's other players to connect to them before their join reaches the
-    /// server, so for a while those players and the joiner may probe each other
-    /// ([`crate::pending_joins`]), and the relay carries them (paired now).
+    /// server, so for a while the relay carries those players and the joiner (paired now;
+    /// [`crate::pending_joins`]). Not probes between them: a probe hands out addresses.
     fn joining_public_match(&self, logger: &Logger, joiner: u32, host: u32) {
         let members = match self.storage.public_session_members(host) {
             Ok(members) => members,
@@ -169,20 +169,20 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
                 continue;
             };
             let addr = *target.address();
-            // A player in a session with the caller, or on their way into a public one with
-            // them, or hosting one the caller may join anyway: matchmaking asks for the probe
-            // to a host it found before it joins.
+            // A player in a session with the caller, or hosting one the caller may join anyway:
+            // matchmaking asks for the probe to a host it found before it joins. Not a player
+            // merely on their way into a match with the caller (pending_joins.rs): a probe
+            // hands each side the other's addresses, and anyone may probe a public host
+            // without joining, so that would give out the addresses of everyone in any public
+            // match. Those players reach each other through the relay only, which shows
+            // neither one's address.
             let Some(other) = target.user_id else {
                 warn!(logger, "Not probing {url}: it isn't signed in");
                 continue;
             };
-            let together = crate::pending_joins::together(user_id, other) || self.storage.share_session(user_id, other).unwrap_or(false);
-            if !together {
+            if !self.storage.share_session(user_id, other).unwrap_or(false) {
                 if !self.storage.hosts_public_session(other).unwrap_or(false) {
-                    warn!(
-                        logger,
-                        "Not probing {url}: not in a session with {user_id}, nor joining one with them, nor hosting a public one"
-                    );
+                    warn!(logger, "Not probing {url}: not in a session with {user_id}, nor hosting a public one");
                     continue;
                 }
                 self.joining_public_match(logger, user_id, other);
