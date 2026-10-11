@@ -42,7 +42,9 @@
 //! - `nat_lost`: `probe_secs`: the game's registration lapsed (no probe that long) while it
 //!   was still signed in; nobody can reach it until it registers again.
 //! - `relay_drop`: `direction` (`sending`: the relay stopped getting this player's traffic;
-//!   `receiving`: stopped getting traffic for them), `before` and `after` (packets a second).
+//!   `receiving`: stopped getting traffic for them), `before` and `after` (packets a second),
+//!   `player_quiet` (their game and launcher said nothing to the server over that time
+//!   either: their own connection stalled; 0.4.4 servers).
 //! - `login_stalled`: the game kept sending but never acknowledged the server's reliable
 //!   packets (its replies aren't reaching the PC, so it can't finish signing in): `packets`
 //!   given up on in this run, `since` (when the run began). At most once in 10 minutes.

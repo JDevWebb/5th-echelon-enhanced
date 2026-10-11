@@ -168,5 +168,50 @@ impl<T> ClientInfo<T> {
     /// Updates the last seen time for the client.
     pub fn seen(&mut self) {
         self.last_seen = std::time::Instant::now();
+        if let Some(user_id) = self.user_id {
+            heard_from(user_id, self.last_seen);
+        }
+    }
+}
+
+/// When each signed-in user's game last sent the server anything (a call or a ping), on any
+/// of its connections: the server's other parts (the NAT relay's threads) can't see the
+/// connections themselves.
+fn heard() -> std::sync::MutexGuard<'static, HashMap<u32, Instant>> {
+    static HEARD: std::sync::LazyLock<std::sync::Mutex<HashMap<u32, Instant>>> = std::sync::LazyLock::new(std::sync::Mutex::default);
+    HEARD.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// Users not heard from in this long are forgotten (when there are many).
+const HEARD_KEPT: std::time::Duration = std::time::Duration::from_secs(10 * 60);
+
+fn heard_from(user_id: u32, at: Instant) {
+    let mut heard = heard();
+    if heard.len() >= 4096 {
+        heard.retain(|_, t| at.duration_since(*t) < HEARD_KEPT);
+    }
+    heard.insert(user_id, at);
+}
+
+/// When `user_id`'s game last sent the server anything, if it has since this server started
+/// (and lately, when many have).
+#[must_use]
+pub fn last_heard(user_id: u32) -> Option<Instant> {
+    heard().get(&user_id).copied()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_signed_in_connection_is_heard_from() {
+        let mut ci: ClientInfo<()> = ClientInfo::new("203.0.113.5:3074".parse().unwrap());
+        ci.seen();
+        assert_eq!(last_heard(4_000_001), None, "nobody signed in yet");
+        ci.user_id = Some(4_000_001);
+        let before = Instant::now();
+        ci.seen();
+        assert!(last_heard(4_000_001).is_some_and(|t| t >= before));
     }
 }

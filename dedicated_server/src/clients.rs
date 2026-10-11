@@ -193,9 +193,38 @@ pub fn address_proven(user: u32, ip: std::net::IpAddr) -> bool {
         .is_some_and(|list| list.iter().any(|(a, at)| *a == ip && at.elapsed() < API_ADDRESS_FOR))
 }
 
+fn api_calls() -> std::sync::MutexGuard<'static, HashMap<u32, Instant>> {
+    static CALLS: std::sync::LazyLock<Mutex<HashMap<u32, Instant>>> = std::sync::LazyLock::new(Mutex::default);
+    CALLS.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `user`'s launcher (or overlay) made an API call with their token.
+pub fn note_api_call(user: u32) {
+    let now = Instant::now();
+    let mut calls = api_calls();
+    if calls.len() >= 4096 {
+        calls.retain(|_, at| now.duration_since(*at) < API_ADDRESS_FOR);
+    }
+    calls.insert(user, now);
+}
+
+/// When `user`'s launcher last made an API call with their token (lately, when many have).
+pub fn last_api_call(user: u32) -> Option<Instant> {
+    api_calls().get(&user).copied()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn api_calls_are_noted_per_player() {
+        let (me, other) = (930_101, 930_102);
+        let before = Instant::now();
+        note_api_call(me);
+        assert!(last_api_call(me).is_some_and(|t| t >= before));
+        assert_eq!(last_api_call(other), None);
+    }
 
     #[test]
     fn an_api_sign_in_vouches_for_its_address() {
