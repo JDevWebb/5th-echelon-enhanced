@@ -70,10 +70,13 @@ export function netText(n) {
   return `Relayed: ${ms(n.relay_ms)} round trip${best} · ${pings}`;
 }
 
-const PROBLEM_KINDS = new Set(['signin_refused', 'join_failed', 'relay_drop', 'request_error', 'nat_missing', 'nat_lost', 'report_refused', 'restart']);
+const PROBLEM_KINDS = new Set(['signin_refused', 'join_failed', 'relay_drop', 'login_stalled', 'request_error', 'nat_missing', 'nat_lost', 'report_refused', 'restart']);
 
-/** A timeline mark's colour. */
+/** A timeline mark's colour: its own level when the coordinator gave one (a failed join
+ * that's the game's churn or a full lobby, a player's own connection stalling), else its
+ * kind's. */
 export function markClass(m) {
+  if (m.level) return m.level;
   if (m.kind === 'client_log') return /^Game error/.test(m.text) ? 'bad' : /^Game warn/.test(m.text) ? 'warn' : 'muted';
   if (m.kind === 'restart') return 'warn';
   if (PROBLEM_KINDS.has(m.kind)) return m.kind === 'request_error' || m.kind === 'report_refused' ? 'warn' : 'bad';
