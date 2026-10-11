@@ -131,6 +131,59 @@ impl ItemEdit {
     }
 }
 
+/// The lanes admins write, which the project's roadmap replaces; Requested is the players'.
+pub const PROJECT_LANES: [&str; 3] = ["shipping", "next", "later"];
+/// Items the project's roadmap may have.
+const MAX_PROJECT_ITEMS: usize = 60;
+
+/// The project's roadmap for a release, as the admin UI sends it: the items of the admin-written
+/// lanes in order, and the release each lane is for.
+#[derive(Debug, Deserialize)]
+pub struct ProjectRoadmap {
+    pub items: Vec<ItemEdit>,
+    #[serde(default)]
+    pub releases: std::collections::BTreeMap<String, String>,
+}
+
+impl ProjectRoadmap {
+    pub fn check(&self) -> Result<(), &'static str> {
+        if self.items.len() > MAX_PROJECT_ITEMS {
+            return Err("up to 60 items");
+        }
+        for e in &self.items {
+            e.check()?;
+            if !PROJECT_LANES.contains(&e.lane.as_str()) {
+                return Err("the project's roadmap fills Shipping, Next and Later only");
+            }
+        }
+        for (lane, release) in &self.releases {
+            if !PROJECT_LANES.contains(&lane.as_str()) {
+                return Err("releases are for Shipping, Next and Later only");
+            }
+            if !crate::valid_text(release, 24) {
+                return Err("a release is up to 24 printable characters");
+            }
+        }
+        Ok(())
+    }
+}
+
+/// What bringing the roadmap up to the project's changed.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct ProjectUpdate {
+    pub added: usize,
+    pub changed: usize,
+    pub moved: usize,
+    pub removed: usize,
+    /// Items made of players' suggestions, left where they are.
+    pub kept: usize,
+}
+
+/// How the project's items are matched with the ones there: by title, whatever its case.
+fn same_title(a: &str, b: &str) -> bool {
+    a.trim().to_lowercase() == b.trim().to_lowercase()
+}
+
 type ItemRow = (i64, String, String, String, String, String, i64, bool, String, Option<i64>, i64, String);
 const ITEM_COLUMNS: &str = "id, lane, title, body, tags, status, position, public, source, suggestion_id, updated_at, updated_by";
 
@@ -281,6 +334,112 @@ impl Coordinator {
             .bind(id)
             .fetch_optional(&self.pool)
             .await
+    }
+
+    /// Brings the admin-written lanes (Shipping, Next, Later) up to the project's roadmap, in one
+    /// transaction: an item there with the same title becomes the project's (keeping its id),
+    /// the project's others are added, and the rest are removed. Requested is left alone, and
+    /// so are items made of players' suggestions in any lane, so the suggestions keep their
+    /// links (they go after the project's items in their lane). The admin UI's preview matches
+    /// items the same way (`projectChanges` in lib/roadmap.js).
+    pub(crate) async fn update_from_project(&self, p: &ProjectRoadmap, by: &str, now: i64) -> sqlx::Result<ProjectUpdate> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let rows: Vec<ItemRow> = sqlx::query_as(&format!(
+            "SELECT {ITEM_COLUMNS} FROM roadmap_items WHERE lane IN ('shipping', 'next', 'later') ORDER BY position, id"
+        ))
+        .fetch_all(&mut *tx)
+        .await?;
+        let (linked, mut open): (Vec<ItemRow>, Vec<ItemRow>) = rows.into_iter().partition(|r| r.9.is_some());
+        let mut done = ProjectUpdate {
+            kept: linked.len(),
+            ..ProjectUpdate::default()
+        };
+        let mut next_position: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+        for e in &p.items {
+            let position = next_position.entry(e.lane.clone()).or_insert(0);
+            let at = *position;
+            *position += 1;
+            let tags = json!(e.tags.iter().map(|t| t.trim()).collect::<Vec<_>>()).to_string();
+            let Some(i) = open.iter().position(|r| same_title(&r.2, &e.title)) else {
+                sqlx::query(
+                    "INSERT INTO roadmap_items (lane, title, body, tags, status, position, public, source, created_at, updated_at, updated_by)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                )
+                .bind(&e.lane)
+                .bind(e.title.trim())
+                .bind(e.body.trim())
+                .bind(&tags)
+                .bind(e.status.trim())
+                .bind(at)
+                .bind(e.public)
+                .bind(e.source.trim())
+                .bind(now)
+                .bind(now)
+                .bind(by)
+                .execute(&mut *tx)
+                .await?;
+                done.added += 1;
+                continue;
+            };
+            let (id, lane, title, body, old_tags, status, old_position, public, source, ..) = open.remove(i);
+            let content = (title.as_str(), body.as_str(), old_tags.as_str(), status.as_str(), public, source.as_str())
+                != (e.title.trim(), e.body.trim(), tags.as_str(), e.status.trim(), e.public, e.source.trim());
+            let moved = lane != e.lane;
+            if moved {
+                done.moved += 1;
+            } else if content {
+                done.changed += 1;
+            } else if old_position == at {
+                continue;
+            }
+            // A new place in its lane alone doesn't count as a change to the item.
+            let changed = moved || content;
+            sqlx::query(
+                "UPDATE roadmap_items SET lane = ?, title = ?, body = ?, tags = ?, status = ?, position = ?, public = ?, source = ?,
+                        updated_at = CASE WHEN ? THEN ? ELSE updated_at END, updated_by = CASE WHEN ? THEN ? ELSE updated_by END
+                 WHERE id = ?",
+            )
+            .bind(&e.lane)
+            .bind(e.title.trim())
+            .bind(e.body.trim())
+            .bind(&tags)
+            .bind(e.status.trim())
+            .bind(at)
+            .bind(e.public)
+            .bind(e.source.trim())
+            .bind(changed)
+            .bind(now)
+            .bind(changed)
+            .bind(by)
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+        }
+        for r in &open {
+            sqlx::query("DELETE FROM roadmap_items WHERE id = ?").bind(r.0).execute(&mut *tx).await?;
+            done.removed += 1;
+        }
+        // Players' items follow the project's in their lane, in the order they had.
+        for r in &linked {
+            let position = next_position.entry(r.1.clone()).or_insert(0);
+            if r.6 != *position {
+                sqlx::query("UPDATE roadmap_items SET position = ? WHERE id = ?")
+                    .bind(*position)
+                    .bind(r.0)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            *position += 1;
+        }
+        for (lane, release) in &p.releases {
+            sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
+                .bind(release_key(lane))
+                .bind(release.trim())
+                .execute(&mut *tx)
+                .await?;
+        }
+        tx.commit().await?;
+        Ok(done)
     }
 
     /// Sets the release a lane is for ("" for none).

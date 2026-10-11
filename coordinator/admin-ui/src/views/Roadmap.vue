@@ -7,6 +7,7 @@
       <Stat :value="fmt.n(count('requested'))" label="Requested" />
       <Stat :value="fmt.n(road.suggestions?.new || 0)" label="New suggestions" :tone="road.suggestions?.new ? 'info' : ''" />
     </template>
+    <button v-if="road?.items.length" type="button" :title="`Shipping, Next and Later as the project has them for ${STARTING_RELEASES.shipping}; you see the changes first`" @click="update">Update from the project's roadmap</button>
     <button class="primary" type="button" @click="jump('suggest', 's-title')">Suggest</button>
   </PageTop>
 
@@ -17,9 +18,9 @@
   <div v-else-if="!road" class="empty">Loading…</div>
   <section v-else-if="!road.items.length" class="panel start">
     <h2 class="big-title">Nothing on the roadmap yet</h2>
-    <p class="muted">Start from the project's roadmap as it stood for 0.4.3: {{ STARTING_ITEMS.length }} items in four lanes. Players see all but the requests, which quote players. Edit or delete any of them afterwards.</p>
+    <p class="muted">Start from the project's roadmap as it stands for {{ STARTING_RELEASES.shipping }}: {{ STARTING_ITEMS.length }} items in Shipping, Next and Later, all shown to players. Edit or delete any of them afterwards; after each release, "Update from the project's roadmap" brings them up to date.</p>
     <div class="row">
-      <button class="primary" type="button" :disabled="seeding" @click="seed">{{ seeding ? `Adding ${seeded} of ${STARTING_ITEMS.length}…` : 'Start from the project\'s roadmap' }}</button>
+      <button class="primary" type="button" :disabled="seeding" @click="seed">{{ seeding ? 'Adding…' : 'Start from the project\'s roadmap' }}</button>
       <span class="small muted">Or add your own with the form below.</span>
     </div>
   </section>
@@ -89,13 +90,14 @@ import { computed, nextTick, reactive, ref, watch } from 'vue';
 import PageTop from '../components/PageTop.vue';
 import Stat from '../components/Stat.vue';
 import RoadmapItem from '../components/RoadmapItem.vue';
+import RoadmapUpdate from '../components/RoadmapUpdate.vue';
 import SuggestionCard from '../components/SuggestionCard.vue';
 import { api } from '../lib/api.js';
 import { useLoad } from '../lib/data.js';
 import { fmt } from '../lib/fmt.js';
 import { live } from '../lib/live.js';
-import { AREAS, LANE_IDS, STARTING_ITEMS, STARTING_RELEASES } from '../lib/roadmap.js';
-import { toast } from '../lib/ui.js';
+import { AREAS, LANE_IDS, PROJECT_LANES, STARTING_ITEMS, STARTING_RELEASES, projectRoadmap } from '../lib/roadmap.js';
+import { openModal, toast } from '../lib/ui.js';
 
 const { data: road, error, reload } = useLoad(() => api('GET', '/roadmap'), () => null, { refresh: false });
 const filter = ref('new');
@@ -146,25 +148,30 @@ async function saveRelease(lane) {
   } catch (e) { toast(e.message, true); }
 }
 
-// An empty roadmap starts from the project's.
+// An empty roadmap starts from the project's, in one request (requests the project's list
+// quotes, if any, then go under Requested one by one).
 const seeding = ref(false);
-const seeded = ref(0);
 async function seed() {
   seeding.value = true;
-  seeded.value = 0;
   try {
-    for (const item of STARTING_ITEMS) {
-      await api('POST', '/roadmap/items', item);
-      seeded.value++;
-    }
-    for (const [lane, release] of Object.entries(STARTING_RELEASES)) await api('PUT', `/roadmap/lanes/${lane}`, { release });
+    await api('POST', '/roadmap/from-project', projectRoadmap());
+    for (const item of STARTING_ITEMS.filter(i => !PROJECT_LANES.includes(i.lane))) await api('POST', '/roadmap/items', item);
     toast('The project\'s roadmap is in. Edit anything to suit.');
   } catch (e) {
-    toast(`Stopped after ${seeded.value} items: ${e.message}`, true);
+    toast(e.message, true);
   } finally {
     seeding.value = false;
     reload();
   }
+}
+
+// Any time: Shipping, Next and Later brought up to the project's, after a preview.
+async function update() {
+  const done = await openModal(RoadmapUpdate, { items: road.value.items, lanes: road.value.lanes });
+  if (!done) return;
+  const parts = [['added', done.added], ['changed', done.changed], ['moved', done.moved], ['removed', done.removed]].filter(([, n]) => n).map(([what, n]) => `${n} ${what}`);
+  toast(parts.length ? `Up to the project's roadmap: ${parts.join(', ')}.` : 'Up to the project\'s roadmap.');
+  reload();
 }
 
 // The suggest form: an admin's own request, under Requested.
