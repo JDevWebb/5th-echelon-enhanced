@@ -814,6 +814,91 @@ async fn private_match_invite(ctx: &mut Ctx) -> Result<()> {
     b.disconnect().await
 }
 
+/// A room full at its current size (attributes 3 + 4, as the host last sent them) isn't
+/// offered by matchmaking, and an invitee isn't put into it; the host raising the size (co-op
+/// lobbies go from 2 to 4-6) opens it again.
+async fn full_room(ctx: &mut Ctx) -> Result<()> {
+    let mut host = ctx.player("Host").await?;
+    let mut guest = ctx.player("Guest").await?;
+    let mut seeker = ctx.player("Seeker").await?;
+    host.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
+    // A public co-op room on a map no other scenario has, at the default 2 seats.
+    let map = 910_000 + ctx.run;
+    let coop = |public: u32| format!("113 => 0;103 => 0;102 => 3;101 => {map};3 => {public};4 => 0");
+    let query = format!("113 => 0;103 => 0;102 => 3;101 => {map}");
+    let room = host.create_session(&coop(2)).await?;
+    host.add_participants(room, &[], &[host.pid]).await?;
+    let offered = |found: Vec<(u32, u32)>| found.iter().any(|(s, _)| *s == room);
+    ensure!(offered(seeker.search_sessions(&query).await?), "a co-op room with a free seat isn't offered");
+    guest.join_session(room).await?;
+    ensure!(!offered(seeker.search_sessions(&query).await?), "a full co-op room (2 of 2) is offered");
+    ensure!(!seeker.search_sessions_plain().await?.iter().any(|&(s, _)| s == room), "the plain search lists a full room");
+    host.update_session(room, &coop(4)).await?;
+    ensure!(offered(seeker.search_sessions(&query).await?), "raised to 4 seats, 2 in it: not offered");
+
+    // A private 2-seat co-op match, two invited: the first takes the seat, the second isn't
+    // put into it until the host raises the size.
+    let mut second = ctx.player("Second").await?;
+    let game = host.create_session("113 => 0;103 => 0;102 => 3;3 => 0;4 => 2").await?;
+    host.add_participants(game, &[], &[host.pid]).await?;
+    host.set_session(game, true).await?;
+    host.invite(&seeker.name).await?;
+    host.invite(&second.name).await?;
+    ensure!(seeker.poll_invite(Duration::from_secs(3)).await?.is_some(), "invite not delivered");
+    ensure!(second.poll_invite(Duration::from_secs(3)).await?.is_some(), "second invite not delivered");
+    ensure!(
+        has_session(&seeker.search_with_participants(&[host.pid]).await?, game),
+        "the invited player doesn't find the match"
+    );
+    let members = |found: &[GameSessionSearchWithParticipantsResult]| {
+        found
+            .iter()
+            .find(|r| r.game_session_search_result.session_key.session_id == game)
+            .map(|r| r.participant_ids.0.clone())
+            .unwrap_or_default()
+    };
+    ensure!(
+        members(&host.search_with_participants(&[host.pid]).await?).contains(&seeker.pid),
+        "the first invitee wasn't added"
+    );
+    let found = second.search_with_participants(&[host.pid]).await?;
+    ensure!(has_session(&found, game), "the second invitee isn't answered with the match");
+    ensure!(!members(&found).contains(&second.pid), "the second invitee was put into a full match");
+    host.update_session(game, "113 => 0;103 => 0;102 => 3;3 => 0;4 => 4").await?;
+    ensure!(
+        members(&second.search_with_participants(&[host.pid]).await?).contains(&second.pid),
+        "raised to 4 seats, the second invitee still isn't added"
+    );
+    for bot in [host, guest, seeker, second] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
+/// The host leaving a public match its guests (who joined from a search) are still in ends
+/// it for nobody: a guest's game may split it to carry on. A stranger still may not.
+async fn host_leaves_match(ctx: &mut Ctx) -> Result<()> {
+    let mut host = ctx.player("Host").await?;
+    let mut guest = ctx.player("Guest").await?;
+    let mut stranger = ctx.player("Stranger").await?;
+    host.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
+    let game = host.create_session("113 => 0;103 => 0;102 => 3;3 => 4;4 => 0").await?;
+    host.add_participants(game, &[], &[host.pid]).await?;
+    guest.join_session(game).await?;
+    ensure!(stranger.split_session(game).await.is_err(), "a stranger split the match");
+    host.abandon_session(game).await?;
+    let split = guest
+        .split_session(game)
+        .await
+        .map_err(|e| eyre!("a guest's split of the match its host left was refused: {e}"))?;
+    ensure!(split != game, "the split made no new session");
+    ensure!(stranger.split_session(game).await.is_err(), "a stranger split the match once its host left");
+    for bot in [host, guest, stranger] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
 /// Nobody joins a private match uninvited: not by naming themselves twice (private and
 /// public), nor for sharing some other room with the host. The host's own party follows it
 /// in, by adding itself or being added; a stranger can't be pulled in.
@@ -1655,6 +1740,8 @@ const SCENARIOS: &[&str] = &[
     "reconnect",
     "ticket-elsewhere",
     "private-room-join",
+    "full-room",
+    "host-leaves-match",
     "split-limits",
     "private-room-hidden",
     "station-url-schemes",
@@ -1763,6 +1850,8 @@ async fn main() -> Result<()> {
                 "reconnect" => reconnect(&mut ctx).await,
                 "ticket-elsewhere" => ticket_elsewhere(&mut ctx).await,
                 "private-room-join" => private_room_join(&mut ctx).await,
+                "full-room" => full_room(&mut ctx).await,
+                "host-leaves-match" => host_leaves_match(&mut ctx).await,
                 "split-limits" => split_limits(&mut ctx).await,
                 "private-room-hidden" => private_room_hidden(&mut ctx).await,
                 "station-url-schemes" => station_url_schemes(&mut ctx).await,
