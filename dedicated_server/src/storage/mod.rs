@@ -1402,15 +1402,13 @@ impl Storage {
 
     /// How many live sessions `user_id` hosts.
     pub fn count_live_sessions(&self, user_id: u32) -> Result<u32> {
-        // Not a match the host has left that its guests play on (it outlives its host): one
-        // they'd otherwise hold against the host's limit for as long as they stayed.
-        let n: i64 = run(sqlx::query_scalar(
-            "SELECT COUNT(*) FROM game_sessions g WHERE g.creator_id = ?1 AND g.destroyed_at IS NULL
-               AND (EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?1)
-                    OR NOT EXISTS (SELECT 1 FROM guests gu WHERE gu.game_id = g.id))",
-        )
-        .bind(user_id)
-        .fetch_one(&self.pool))??;
+        // Every live room the host made, including a match it left that its guests play on:
+        // leaving those out would let a host past its limit with a second account as a guest
+        // of each room. A guest is a guest of one match at a time ([`Self::add_guest`]), so
+        // holding a host's rooms against it takes as many accounts.
+        let n: i64 = run(sqlx::query_scalar("SELECT COUNT(*) FROM game_sessions WHERE creator_id = ? AND destroyed_at IS NULL")
+            .bind(user_id)
+            .fetch_one(&self.pool))??;
         Ok(u32::try_from(n).unwrap_or(u32::MAX))
     }
 
@@ -2277,12 +2275,10 @@ pub(crate) mod tests {
         assert!(storage.add_guest(party, hider, false).unwrap());
         assert!(storage.is_guest(b, hider).unwrap(), "still in match b");
 
-        // A match its host left, that its guests play on, doesn't count against the host's
-        // limit; one the host is in does, and so does an empty one it just made.
+        // A match its host left, that its guests play on, still counts against the host's
+        // limit (otherwise a second account as its guest would take the host past it).
         let before = storage.count_live_sessions(host_b).unwrap();
         assert_eq!(storage.leave_game_session(host_b, b).unwrap(), Some(false));
-        assert_eq!(storage.count_live_sessions(host_b).unwrap(), before - 1);
-        storage.create_game_session(host_b, 1, coop.into()).unwrap();
         assert_eq!(storage.count_live_sessions(host_b).unwrap(), before);
 
         // Whatever seat count a host sends reads as a big lobby, not an error.
