@@ -144,6 +144,14 @@ fn rooms_for_friend_search<'a>(rooms: impl Iterator<Item = (u32, &'a str)>, invi
     keep
 }
 
+/// Whether the room an invitee is about to be put into is full: its members and seats
+/// (`Storage::room_seats`) when they've taken every seat, so the invitee has none. Not for one
+/// who already has a seat (a guest of it), nor a room without seats (nothing to compare
+/// with) or one that's gone. Seats are whatever the host last sent, never a size per mode.
+fn full_for_invitee(has_seat: bool, room: Option<(u32, u32)>) -> Option<(u32, u32)> {
+    room.filter(|&(members, seats)| !has_seat && seats > 0 && members >= seats)
+}
+
 /// Reads one property out of an `"id => value;..."` attribute string.
 ///
 /// Returns `None` if the property is absent or unparsable; callers treat both the same way.
@@ -404,7 +412,18 @@ impl GameSessionProtocolServerImpl {
         }
         left.insert(user_id, (session_id, now));
         drop(left);
-        info!(logger, "User {user_id} {verb} session {session_id}{}", if ended { "; nobody left, it ends" } else { "" });
+        let host_left = !ended && self.storage.session_creator(session_id).ok().flatten() == Some(user_id);
+        info!(
+            logger,
+            "User {user_id} {verb} session {session_id}{}",
+            if ended {
+                "; nobody left, it ends"
+            } else if host_left {
+                "; the others in it carry on"
+            } else {
+                ""
+            }
+        );
         let how = if verb == "abandons" { "abandoned" } else { "left" };
         crate::session_events::note(
             crate::session_events::Who::Id(user_id),
@@ -967,8 +986,22 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // our answer does differently from a working search is the participant list - it names
         // only the host, and the client that is asking does not appear in it. Adding the caller
         // first makes the room look the way it would if the join had already been accepted.
-        if let Some(room) = invited.as_ref() {
-            if !room.participants.iter().any(|p| p.user_id == user_id) {
+        //
+        // Not into a room full at its current size (its seats, attributes 3 and 4, as its
+        // host last sent them): a host can invite more players than it has seats, and the
+        // first to accept takes the last one. Added anyway, the next was counted in a match
+        // whose host then refused them (FANTOMAS, eu1 2026-10-08: Daramos's 2-seat room
+        // after Saulet). Answered as it is, their game tries and is told the room is full.
+        if let Some(room) = invited.as_ref().filter(|room| !room.participants.iter().any(|p| p.user_id == user_id)) {
+            // A guest of it already has their seat.
+            let has_seat = rmc_err!(self.storage.is_guest(room.session_id, user_id), logger, "error reading session guests")?;
+            let seats = rmc_err!(self.storage.room_seats(room.session_id), logger, "error reading the invited room's seats")?;
+            if let Some((members, seats)) = full_for_invitee(has_seat, seats) {
+                info!(
+                    logger,
+                    "Not adding {user_id} to invited room {} before answering the search: it's full ({members} in {seats} seats)", room.session_id
+                );
+            } else {
                 info!(logger, "Adding {user_id} to invited room {} before answering the search", room.session_id);
                 rmc_err!(
                     self.storage.add_participants(room.session_type, room.session_id, vec![user_id], vec![]),
@@ -1118,9 +1151,13 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             .get(&user_id)
             .is_some_and(|(session, at)| *session == key.session_id && at.elapsed() < SPLIT_AFTER_LEAVING);
         let creator = rmc_err!(self.storage.session_creator(key.session_id), logger, "error reading session")?;
+        // A guest (who joined a public match from a search) is in it as much as a participant:
+        // their game splits the match to carry on when its host leaves (eu1: 4 such splits
+        // refused in a week, 3 in one match).
         let member = just_left
             || creator == Some(user_id)
-            || rmc_err!(self.storage.session_members(key.session_id), logger, "error reading session members")?.is_some_and(|(_, p)| p.contains(&user_id));
+            || rmc_err!(self.storage.session_members(key.session_id), logger, "error reading session members")?.is_some_and(|(_, p)| p.contains(&user_id))
+            || rmc_err!(self.storage.is_guest(key.session_id, user_id), logger, "error reading session guests")?;
         if creator.is_some() && !member {
             warn!(logger, "User {user_id} splits session {} they aren't in; refused", key.session_id);
             return Err(Error::AccessDenied);
@@ -2008,6 +2045,20 @@ mod tests {
         assert_eq!(match_mode(svm_classic), Some("svm"));
         assert_eq!(match_mode(svm_matchmaking), Some("svm"));
         assert_eq!(match_mode("113 => 1;3 => 8;4 => 0"), None, "a lobby serves either mode");
+    }
+
+    /// An invitee isn't put into a room whose members have taken every seat it has now;
+    /// a host who raised the size has room for them.
+    #[test]
+    fn invitees_are_added_only_while_the_room_has_a_seat() {
+        use super::full_for_invitee;
+        assert_eq!(full_for_invitee(false, Some((2, 2))), Some((2, 2)), "a 2-seat co-op room with its host and one guest");
+        assert_eq!(full_for_invitee(false, Some((2, 4))), None, "raised to 4");
+        assert_eq!(full_for_invitee(false, Some((5, 6))), None, "raised to 6, one seat left");
+        assert_eq!(full_for_invitee(false, Some((6, 6))), Some((6, 6)));
+        assert_eq!(full_for_invitee(false, Some((3, 0))), None, "no seats sent: as before");
+        assert_eq!(full_for_invitee(true, Some((2, 2))), None, "a guest of it already has a seat");
+        assert_eq!(full_for_invitee(false, None), None, "the room is gone");
     }
 
     #[test]
