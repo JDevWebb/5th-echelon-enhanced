@@ -181,15 +181,15 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
                 warn!(logger, "Not probing {url}: it isn't signed in");
                 continue;
             };
-            // Who asked to reach whom: in a public match, a probe between two players goes
-            // ahead only when both games asked (probe_wants.rs).
+            // Who asked to reach whom: outside private matches, a probe between two players
+            // goes ahead only when both games asked (probe_wants.rs).
             crate::probe_wants::note(user_id, other);
             if self.storage.share_session(user_id, other).unwrap_or(false) {
-                // Two members of a public match, neither its host: anyone may become one
-                // without playing in it, so only when the target's game asked to reach the
+                // Two members of a public match or a party, neither its host: anyone may become
+                // one without playing in it, so only when the target's game asked to reach the
                 // caller too. Otherwise they reach each other through the relay only.
                 if !self.storage.share_session_for_probes(user_id, other).unwrap_or(false) && !crate::probe_wants::wanted(other, user_id) {
-                    info!(logger, "Not probing {url}: {user_id} and {other} share only a public match neither hosts, and {other}'s game hasn't asked to reach {user_id}; the relay carries them");
+                    info!(logger, "Not probing {url}: {user_id} and {other} share only a public room neither hosts, and {other}'s game hasn't asked to reach {user_id}; the relay carries them");
                     continue;
                 }
             } else {

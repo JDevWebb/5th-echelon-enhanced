@@ -1757,6 +1757,31 @@ async fn public_match_probes(ctx: &mut Ctx) -> Result<()> {
     Ok(())
 }
 
+/// The same in a party: anyone may join one by its id, so a probe between its members goes
+/// ahead only with its host, or when both games asked.
+async fn party_probes(ctx: &mut Ctx) -> Result<()> {
+    let mut host = ctx.player("Host").await?;
+    let mut friend = ctx.player("Friend").await?;
+    let mut stranger = ctx.player("Stranger").await?;
+    let party = host.create_session(LOBBY).await?;
+    host.add_participants(party, &[host.pid], &[]).await?;
+    friend.add_participants(party, &[friend.pid], &[]).await?;
+    // The stranger joins by the party's id alone, as anyone could.
+    stranger.join_session(party).await?;
+    let (h, f) = (host.connection_id().await?, friend.connection_id().await?);
+    let quiet = Duration::from_millis(700);
+    stranger.request_probes("udp:/address=127.0.0.1;port=13019", &[f]).await?;
+    ensure!(friend.wait_probe(quiet).await?.is_none(), "a stranger in a party was probed to a member");
+    stranger.request_probes("udp:/address=127.0.0.1;port=13019", &[h]).await?;
+    ensure!(host.wait_probe(Duration::from_secs(3)).await?.is_some(), "the party's host, as anyone's");
+    friend.request_probes("udp:/address=127.0.0.1;port=13018", &[h]).await?;
+    ensure!(host.wait_probe(Duration::from_secs(3)).await?.is_some(), "a member couldn't reach the host");
+    for bot in [host, friend, stranger] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
 /// Someone joining a public match from a search reaches its players through the relay
 /// before their join reaches the server (the host's game has them connect first), once
 /// they've probed its host: not before, and not by probes.
@@ -1923,6 +1948,7 @@ async fn whats_being_played(ctx: &mut Ctx) -> Result<()> {
 const SCENARIOS: &[&str] = &[
     "login",
     "public-match-probes",
+    "party-probes",
     "relay-to-joiner",
     "search-other-data",
     "whats-being-played",
@@ -2064,6 +2090,7 @@ async fn main() -> Result<()> {
                 "full-room" => full_room(&mut ctx).await,
                 "host-leaves-match" => host_leaves_match(&mut ctx).await,
                 "public-match-probes" => public_match_probes(&mut ctx).await,
+                "party-probes" => party_probes(&mut ctx).await,
                 "relay-to-joiner" => relay_to_joiner(&mut ctx).await,
                 "search-other-data" => search_other_data(&mut ctx).await,
                 "whats-being-played" => whats_being_played(&mut ctx).await,

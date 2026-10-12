@@ -1,6 +1,6 @@
 //! Which players' games asked to reach which, lately: a probe between two players of a public
-//! match, neither of them its host, goes ahead only when the target's game asked to reach the
-//! caller too (`nat_traversal.rs`).
+//! match or a party, neither of them its host, goes ahead only when the target's game asked to
+//! reach the caller too (`nat_traversal.rs`). Private matches trust their members.
 //!
 //! A probe hands each side the other's address, and anyone may become a member of a public
 //! match without playing in it (JoinSession makes a guest, and AddParticipants of oneself

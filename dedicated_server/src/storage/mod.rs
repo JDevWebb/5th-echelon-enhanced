@@ -1431,9 +1431,11 @@ impl Storage {
     }
 
     /// Whether `a` and `b` share a live session whose members are who they say, for a probe
-    /// between them: any but a public match, or one either of them hosts. Anyone may become a
-    /// member of a public match without playing in it (a guest by JoinSession, a participant
-    /// by adding themselves: only private rooms refuse that), so there only the host is.
+    /// between them: a private match (invite only, or private seats only), or one either of
+    /// them hosts. Anyone may become a member of any other room without playing in it: a
+    /// public match or a party (a guest by JoinSession, a participant by adding themselves;
+    /// only private rooms refuse that, and party ids are small numbers anyone can try), so
+    /// there only the host is.
     pub fn share_session_for_probes(&self, a: u32, b: u32) -> Result<bool> {
         let n: i64 = run(sqlx::query_scalar(&format!(
             "SELECT COUNT(*) FROM game_sessions g WHERE g.destroyed_at IS NULL
@@ -1442,7 +1444,6 @@ impl Storage {
                AND (g.creator_id = ?2 OR EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?2)
                     OR EXISTS (SELECT 1 FROM guests gu WHERE gu.game_id = g.id AND gu.user_id = ?2))
                AND (g.creator_id IN (?1, ?2)
-                    OR ';' || COALESCE(g.attributes, '') || ';' NOT LIKE '%;113 => 0;%'
                     OR EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.user_id = g.creator_id AND a.invite_only = 1)
                     OR {PRIVATE_SEATS_ONLY})"
         ))
@@ -1998,8 +1999,9 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// In a public match only the host is who they say for probes: anyone may become a guest
-    /// or add themselves as a participant without playing. Elsewhere, membership is enough.
+    /// Outside private matches only the host is who they say for probes: anyone may become a
+    /// guest of, or add themselves to, a public match or a party without playing. In a
+    /// private match, membership is enough.
     #[test]
     fn probes_trust_only_the_host_of_a_public_match() {
         let (storage, dir) = temp_storage("probe_trust");
@@ -2018,12 +2020,16 @@ pub(crate) mod tests {
         assert!(!trusted(found, asked) && !trusted(asked, found), "two guests: not on membership alone");
         assert!(!trusted(walkin, found) && !trusted(found, walkin), "nor a participant who added themselves");
         assert!(trusted(found, host) && trusted(host, found) && trusted(walkin, host), "the host, either way");
-        // A private match, and a party: their members got in by invitation or with the host.
+        // A party: anyone may add themselves to one (its id is all it takes), so only its host.
+        let party = storage.create_game_session(walkin, 1, "113 => 1".into()).unwrap();
+        storage.add_participants(1, party, vec![], vec![walkin]).unwrap();
+        storage.add_guest(party, found, false).unwrap();
+        storage.add_participants(1, party, vec![], vec![asked]).unwrap();
+        assert!(trusted(walkin, found) && trusted(asked, walkin), "its host, either way");
+        assert!(!trusted(found, asked), "two who joined a party: not on membership alone");
+        // A private match: its members got in by invitation or with the host.
         let private = storage.create_game_session(host, 1, "113 => 0;3 => 0;4 => 4".into()).unwrap();
         storage.add_participants(1, private, vec![], vec![host]).unwrap();
-        let party = storage.create_game_session(walkin, 1, "113 => 1".into()).unwrap();
-        storage.add_participants(1, party, vec![], vec![walkin, found]).unwrap();
-        assert!(trusted(walkin, found), "a party");
         storage.add_guest(private, asked, true).unwrap();
         storage.add_guest(private, found, true).unwrap();
         assert!(trusted(found, asked), "a private match");
