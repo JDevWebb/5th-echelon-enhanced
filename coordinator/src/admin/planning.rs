@@ -1,8 +1,8 @@
 //! The admin UI's maintenance windows (see [`crate::maintenance`]) and roadmap (see
 //! [`crate::roadmap`]):
 //!
-//! * `GET /api/maintenance`; `POST /api/maintenance` `{servers, network, start, end, note}`
-//!   books windows; `DELETE /api/maintenance/<id>` cancels one.
+//! * `GET /api/maintenance`; `POST /api/maintenance` `{servers, network, start, end, note, kind}`
+//!   books windows (an update window wants a second factor lately); `DELETE /api/maintenance/<id>` cancels one.
 //! * `GET /api/roadmap`: lanes, every item, and how many suggestions are new.
 //! * `POST /api/roadmap/items`, `PUT|DELETE /api/roadmap/items/<id>`: items.
 //! * `PUT /api/roadmap/lanes/<lane>` `{release}`: the release a lane is for.
@@ -60,7 +60,13 @@ async fn maintenance_list(State(c): State<Shared>, Extension(client): Extension<
 }
 
 async fn book(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Json(b): Json<maintenance::Booking>) -> Response {
-    let s = match c.full(&headers, &client).await {
+    // An update window puts the rollout's release on its servers when it starts: a second
+    // factor lately, as for "Update now".
+    let s = match if b.kind == maintenance::UPDATE {
+        c.recent(&headers, &client).await
+    } else {
+        c.full(&headers, &client).await
+    } {
         Ok(s) => s,
         Err(r) => return r,
     };
@@ -75,7 +81,7 @@ async fn book(State(c): State<Shared>, Extension(client): Extension<Client>, hea
                 whom.push(String::from("the whole network"));
             }
             let note = if b.note.trim().is_empty() { String::new() } else { format!(": {}", b.note.trim()) };
-            let detail = format!("{} from {} for {} min{note}", whom.join(", "), maintenance::utc(b.start), (b.end - b.start) / 60);
+            let detail = format!("{} {} from {} for {} min{note}", b.kind, whom.join(", "), maintenance::utc(b.start), (b.end - b.start) / 60);
             c.audit(&s.username, Some(&client), "maintenance: booked", &detail).await;
             c.publish(Event::Maintenance);
             match c.maintenance_list(now).await {

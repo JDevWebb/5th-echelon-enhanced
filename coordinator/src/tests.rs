@@ -3051,6 +3051,23 @@ async fn maintenance_is_told_to_launchers_and_servers_and_holds_updates() {
     .await;
     assert_eq!((status, v["windows"][0]["server_name"].as_str()), (StatusCode::OK, Some("Whole network")), "{v}");
 
+    // An update window puts a release out when it starts: a second factor lately, as "Update now".
+    sqlx::query("UPDATE admin_sessions SET verified_at = verified_at - 601").execute(&t.c.pool).await.unwrap();
+    let (status, v) = admin_call(
+        &r,
+        "POST",
+        "/api/maintenance",
+        &cookie,
+        Some(json!({ "servers": ["server-b"], "start": now + 3600, "end": now + 7200, "kind": "update" })),
+    )
+    .await;
+    assert_eq!((status, v["reverify"].as_bool()), (StatusCode::FORBIDDEN, Some(true)), "{v}");
+    sqlx::query("UPDATE admin_sessions SET verified_at = ?")
+        .bind(identity::now())
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+
     // Launchers: the server's windows and the network's.
     let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
     let server = |id: &str| dir["servers"].as_array().unwrap().iter().find(|s| s["id"] == id).cloned().unwrap();
