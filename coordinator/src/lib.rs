@@ -348,10 +348,74 @@ struct Listing {
     /// The identities of its players online now (for friends on other servers; not listed).
     #[serde(default, skip_serializing)]
     online: Vec<String>,
+    /// What's being played there (the launcher shows it on the server's row): its public
+    /// matches by mode, map and players, private matches and lobbies counted, no names.
+    /// Bounded by [`Playing::bound`] before it's kept.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    playing: Option<Playing>,
 }
 
 fn yes() -> bool {
     true
+}
+
+/// What a server says is being played there (as the server's `api::playing`).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+struct Playing {
+    #[serde(default)]
+    matches: Vec<PlayedMatch>,
+    #[serde(default)]
+    more_matches: u32,
+    #[serde(default)]
+    more_players: u32,
+    #[serde(default)]
+    private_matches: u32,
+    #[serde(default)]
+    private_players: u32,
+    #[serde(default)]
+    lobby_players: u32,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+struct PlayedMatch {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    game_mode: Option<u32>,
+    #[serde(default)]
+    kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    map: Option<u32>,
+    #[serde(default)]
+    players: u32,
+    #[serde(default)]
+    seats: u32,
+}
+
+/// The most matches a server's listing keeps, and the most players or seats one has.
+const MAX_PLAYED_MATCHES: usize = 12;
+const MAX_MATCH_SEATS: u32 = 16;
+
+impl Playing {
+    /// Cut to what a listing may say: a few matches, of known kinds, with the game's room
+    /// sizes, and no count past the server's own players online.
+    fn bound(&mut self, players_online: u32) {
+        self.matches.truncate(MAX_PLAYED_MATCHES);
+        for m in &mut self.matches {
+            if m.kind != "svm" && m.kind != "coop" {
+                m.kind.clear();
+            }
+            m.players = m.players.min(MAX_MATCH_SEATS);
+            m.seats = m.seats.min(MAX_MATCH_SEATS);
+        }
+        for n in [
+            &mut self.more_matches,
+            &mut self.more_players,
+            &mut self.private_matches,
+            &mut self.private_players,
+            &mut self.lobby_players,
+        ] {
+            *n = (*n).min(players_online);
+        }
+    }
 }
 
 impl Listing {
@@ -415,6 +479,10 @@ pub struct Coordinator {
     pings: Limit,
     /// When each launcher address last reported a ping to each server.
     ping_reporters: std::sync::Mutex<HashMap<(std::net::IpAddr, String), std::time::Instant>>,
+    /// The address each listed server's name last resolved to, with that name and port: the
+    /// coordinator's API checks fall back on it when a lookup is slow or fails. One per
+    /// listed server.
+    ping_addresses: std::sync::Mutex<HashMap<String, (String, u16, std::net::SocketAddr)>>,
     heartbeats: Limit,
     metrics: Limit,
     /// The release this machine's updater was last asked for, and when.
@@ -554,6 +622,7 @@ impl Coordinator {
             // Launchers report pings when they look at the directory: a few a minute at most.
             pings: Limit::new(6),
             ping_reporters: std::sync::Mutex::new(HashMap::new()),
+            ping_addresses: std::sync::Mutex::new(HashMap::new()),
             // Per server: a heartbeat every 30 seconds and metrics every minute, with room
             // for a retry.
             heartbeats: Limit::new(6),
@@ -1239,6 +1308,10 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, body: axum::body
         listing.players_online = listing.players_online.min(listing.players_total);
     }
     listing.players_online = listing.players_online.min(MAX_LISTED_PLAYERS);
+    let online = listing.players_online;
+    if let Some(playing) = listing.playing.as_mut() {
+        playing.bound(online);
+    }
     let text = match serde_json::to_string(&listing) {
         Ok(t) => t,
         Err(e) => return internal(e),

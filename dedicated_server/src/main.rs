@@ -79,6 +79,7 @@ mod friends_policy;
 mod full_logs;
 mod game_session;
 mod game_session_ex;
+mod join_targets;
 mod keys;
 mod ladder;
 mod locale;
@@ -88,8 +89,10 @@ mod nat_traversal;
 mod overlord_challenge;
 mod overlord_core;
 mod overlord_news;
+mod pending_joins;
 mod player_stats;
 mod players;
+mod playing;
 mod privileges;
 mod rate_limit;
 mod recent_log;
@@ -207,6 +210,13 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
         // An admin's kick or ban (players.rs).
         server.sign_outs = Some(players::sign_outs());
         server.user_handler = Some(handle_user_packet);
+        // A game still sending whose acknowledgements of our packets never come: the server's
+        // replies aren't reaching the player's PC, so it never gets fully online.
+        server.unacked_handler = Some(Box::new(|ci: &ClientInfo, packets| {
+            if let Some(user_id) = ci.user_id.filter(|u| !SERVICE_ACCOUNTS.contains(u)) {
+                session_events::login_stalled(user_id, packets);
+            }
+        }));
         // A game that dropped and signed in again from the same address: when its old
         // connection goes, so do the rooms it made (nobody hosts them now). The player, still
         // connected, keeps the rest.
@@ -271,7 +281,7 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
             metrics::game_login(user_id, from.ip(), new_session);
             // It should register with the NAT helper next: noticed when it doesn't.
             if let Ok(Some(name)) = storage.find_username_by_user_id(user_id) {
-                nat_helper::game_signed_in(&name);
+                nat_helper::game_signed_in(&name, user_id);
             }
             players::changed(user_id);
             federation::stats_soon(user_id);
@@ -622,7 +632,11 @@ fn main() -> color_eyre::Result<()> {
     let mut threads = vec![];
     if nat.enabled {
         let pairs = Arc::clone(&storage);
-        let may_relay: nat_helper::MayRelay = Box::new(move |a, b| pairs.may_relay(a, b).unwrap_or(false));
+        let may_relay: nat_helper::MayRelay = Box::new(move |a, b| match pairs.may_relay(a, b) {
+            Ok(true) => Ok(()),
+            Ok(false) => Err("the server didn't put them together (no room together, no public room the receiver hosts, no invitation, not joining one)".into()),
+            Err(e) => Err(format!("the lookup failed ({e})")),
+        });
         match nat_helper::start(&logger.new(o!("service" => "nat")), nat, relay_ip, may_relay) {
             Ok(t) => threads.extend(t),
             Err(e) => crit!(logger, "Couldn't start the NAT helper on UDP {}: {e}", nat.listen),
@@ -703,6 +717,7 @@ fn main() -> color_eyre::Result<()> {
             friends_mode,
             auto_update: federation_config.auto_update && self_update::updater_installed(),
             online: Vec::new(),
+            playing: Default::default(),
         }
     };
 

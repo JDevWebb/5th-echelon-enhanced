@@ -89,6 +89,15 @@ pub fn news(server: &str, timeout: Duration) -> Vec<NewsItem> {
         .unwrap_or_default()
 }
 
+/// What's being played on `server` (`GET /api/playing`, servers from 0.4.4): its public
+/// matches by mode, map and players, private matches and lobbies counted. None when it
+/// doesn't answer or doesn't say.
+pub fn playing(server: &str, timeout: Duration) -> Option<server_api::playing::Playing> {
+    get(server, crate::CONFIG_PORT, "/api/playing", timeout)
+        .and_then(|body| serde_json::from_str::<server_api::playing::Playing>(&body).ok())
+        .map(server_api::playing::Playing::checked)
+}
+
 /// The body of a GET to `path` on `server`'s port `port`, if it answers 200.
 fn get(server: &str, port: u16, path: &str, timeout: Duration) -> Option<String> {
     let host = server.trim();

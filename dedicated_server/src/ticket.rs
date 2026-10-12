@@ -231,27 +231,30 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
             .ok()
             .flatten()
             .is_some_and(|id| crate::clients::address_proven(id, ci.address().ip()));
-        if !crate::rate_limit::begin_login_vouched(peer, ubi_username, vouched) {
-            if crate::clients::worth_saying(&format!("too-many/{ubi_username}")) {
-                warn!(
-                    logger,
-                    "too many logins from {} or failures for {ubi_username:?}; refused (said once an hour)",
-                    ci.address().ip()
-                );
+        let attempt = match crate::rate_limit::begin_login_vouched(peer, ubi_username, vouched) {
+            Ok(attempt) => attempt,
+            Err(refused) => {
+                if crate::clients::worth_saying(&format!("too-many/{ubi_username}")) {
+                    let what = match refused {
+                        crate::rate_limit::Refused::Flood => "too many logins",
+                        crate::rate_limit::Refused::Failures => "too many failed logins",
+                    };
+                    warn!(logger, "{what} from {} or for {ubi_username:?}; refused (said once an hour)", ci.address().ip());
+                }
+                crate::session_events::refused(crate::session_events::Who::Name(ubi_username.clone()), refused.reason(), "game", None);
+                return Err(quazal::rmc::Error::AccessDenied);
             }
-            crate::session_events::refused(crate::session_events::Who::Name(ubi_username.clone()), "too_many", "game", None);
-            return Err(quazal::rmc::Error::AccessDenied);
-        }
+        };
 
         // An error (e.g. the server too busy checking passwords) isn't a failed login.
         let Some(user_id) = self.login(logger, ubi_username, password)? else {
-            crate::rate_limit::login_failed(peer, ubi_username);
+            attempt.failed();
             crate::metrics::failed_login();
             warn!(logger, "login failed for {:?}", ubi_username);
             crate::session_events::refused(crate::session_events::Who::Name(ubi_username.clone()), "wrong_password", "game", None);
             return Err(quazal::rmc::Error::AccessDenied);
         };
-        crate::rate_limit::login_succeeded(peer, ubi_username);
+        attempt.succeeded();
         if !self.has_current_client(logger, user_id)? {
             if crate::clients::worth_saying(&format!("game/{ubi_username}")) {
                 warn!(

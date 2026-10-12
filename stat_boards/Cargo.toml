@@ -2,6 +2,6 @@
 name = "stat_boards"
 version = "0.3.0"
 edition = "2021"
-description = "The game's statistics boards and leaderboards, shared by the server and the coordinator"
+description = "The game's statistics boards and leaderboards, and its names for maps and modes, shared by the server, the coordinator and the clients"
 
 [dependencies]

@@ -13,6 +13,7 @@ identity = { path = "../identity" }
 rand = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+server_api = { path = "../api", package = "api" }
 thiserror = { workspace = true }
 toml = { workspace = true }
 tracing = { workspace = true }

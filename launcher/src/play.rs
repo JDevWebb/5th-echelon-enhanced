@@ -120,6 +120,11 @@ pub struct Play {
     /// The news item the home card shows, and when it last turned.
     news_index: usize,
     news_turned: Option<Instant>,
+    /// What's being played on the player's server (`/api/playing`), which server it's from,
+    /// and when it was asked.
+    fetching_playing: Slot<Result<(String, Option<server_api::playing::Playing>), String>>,
+    playing_now: Option<(String, server_api::playing::Playing)>,
+    playing_from: Option<(String, Instant)>,
 }
 
 /// A setup as it was started, to start it again.
@@ -746,6 +751,9 @@ fn server_choices(play: &mut Play, ui: &mut egui::Ui) {
                 let left = (ui.available_width() - 90.0).max(160.0);
                 ui.allocate_ui_with_layout(egui::vec2(left, 0.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
                     ui.label(RichText::new(server_name(s)).family(theme::strong()));
+                    if let Some(now) = s.playing.as_ref().map(server_api::playing::Playing::summary).filter(|t| !t.is_empty()) {
+                        ui.label(RichText::new(now).size(12.5).color(theme::SOFT));
+                    }
                     ui.horizontal_wrapped(|ui| {
                         ui.label(theme::muted(format!("{} · {} online", s.host, s.players_online)).small());
                         if best == Some(i) {
@@ -814,6 +822,7 @@ fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Con
     let mut to = None;
     load_art(play, game, ctx);
     load_news(play, game, ctx);
+    load_playing(play, game, ctx);
     // The network's servers, for the server's name, ping and players here too.
     poll_directory(play);
     if game.managed.is_none() {
@@ -963,6 +972,31 @@ fn load_news(play: &mut Play, game: &Game, ctx: &egui::Context) {
             Ok((server, news))
         });
     }
+}
+
+/// How often what's being played on the player's server is asked for.
+const PLAYING_EVERY: Duration = Duration::from_secs(15);
+
+/// Asks the player's server what's being played there every [`PLAYING_EVERY`], while the
+/// home screen shows.
+fn load_playing(play: &mut Play, game: &Game, ctx: &egui::Context) {
+    if let Some(Ok((server, playing))) = play.fetching_playing.poll() {
+        play.playing_now = playing.map(|p| (server, p));
+    }
+    let Some(server) = game.cfg.current_profile().map(|p| p.server.clone()).filter(|s| !s.is_empty()) else {
+        play.playing_now = None;
+        return;
+    };
+    if play.playing_now.as_ref().is_some_and(|(from, _)| *from != server) {
+        play.playing_now = None;
+    }
+    let fresh = play.playing_from.as_ref().is_some_and(|(from, at)| *from == server && at.elapsed() < PLAYING_EVERY);
+    if !fresh && !play.fetching_playing.running() {
+        play.playing_from = Some((server.clone(), Instant::now()));
+        play.fetching_playing
+            .start(ctx, move || Ok((server.clone(), setup::server_info::playing(&server, Duration::from_secs(5)))));
+    }
+    ctx.request_repaint_after(PLAYING_EVERY);
 }
 
 /// The banner: the game's name over one of its loading screens (or the
@@ -1448,6 +1482,9 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
                     });
                 });
             }
+            if let Some((_, now)) = &play.playing_now {
+                playing_now(ui, now);
+            }
         },
         // Bottom up: the hint last, any requests above it.
         |ui| {
@@ -1467,6 +1504,33 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
         // Confirmed on the Servers screen, which says where it goes and what happens there.
         play.switching = Some(Switch { host, new_name: None });
         *to = Some(Go::View(View::Servers));
+    }
+}
+
+/// The most of the server's matches the Friends card lists.
+const PLAYING_SHOWN: usize = 4;
+
+/// What's being played on the player's server, under their friends: its public matches
+/// (mode, map, players), the rest in a line.
+fn playing_now(ui: &mut egui::Ui, now: &server_api::playing::Playing) {
+    ui.add_space(8.0);
+    ui.label(theme::caps("Playing now"));
+    ui.add_space(2.0);
+    if now.is_empty() {
+        ui.label(theme::muted("Nobody's in a match or a lobby here right now.").small());
+        return;
+    }
+    for m in now.matches.iter().take(PLAYING_SHOWN) {
+        ui.label(RichText::new(m.line()).size(13.0));
+    }
+    let rest = server_api::playing::Playing {
+        matches: now.matches.iter().skip(PLAYING_SHOWN).cloned().collect(),
+        ..now.clone()
+    };
+    let more = rest.summary();
+    if !more.is_empty() {
+        let lead = if now.matches.is_empty() { "" } else { "Also: " };
+        ui.label(theme::muted(format!("{lead}{more}")).small());
     }
 }
 

@@ -112,20 +112,32 @@ impl Coordinator {
         }
         // Servers still sending heartbeats whose launcher API port stopped answering (the
         // coordinator checks it every minute): the web server in front of it, say.
-        let pings: Vec<(String, Option<f64>)> = sqlx::query_as("SELECT server_id, ms FROM server_pings WHERE at >= ? ORDER BY at DESC")
+        // A check that couldn't look the server's name up (the coordinator's own DNS) says
+        // nothing about its web server, so those get their own alert.
+        let pings: Vec<(String, Option<f64>, Option<String>)> = sqlx::query_as("SELECT server_id, ms, failure FROM server_pings WHERE at >= ? ORDER BY at DESC")
             .bind(now - 300)
             .fetch_all(&self.pool)
             .await?;
-        let mut recent: BTreeMap<String, Vec<Option<f64>>> = BTreeMap::new();
-        for (id, ms) in pings {
-            recent.entry(id).or_default().push(ms);
+        let mut recent: BTreeMap<String, Vec<(Option<f64>, Option<String>)>> = BTreeMap::new();
+        for (id, ms, failure) in pings {
+            recent.entry(id).or_default().push((ms, failure));
         }
         for (id, checks) in &recent {
             if offline.iter().any(|o| &o.1 == id) {
                 continue;
             }
-            if checks.len() >= API_CHECKS_FAILED && checks.iter().take(API_CHECKS_FAILED).all(Option::is_none) {
-                let n = names.get(id).cloned().unwrap_or_else(|| id.clone());
+            if checks.len() < API_CHECKS_FAILED || !checks.iter().take(API_CHECKS_FAILED).all(|c| c.0.is_none()) {
+                continue;
+            }
+            let n = names.get(id).cloned().unwrap_or_else(|| id.clone());
+            if checks.iter().take(API_CHECKS_FAILED).all(|c| c.1.as_deref() == Some("lookup")) {
+                found.push((
+                    "dns".into(),
+                    id.clone(),
+                    "warn",
+                    format!("The coordinator couldn't look up {n}'s name for the last {API_CHECKS_FAILED} checks of its launcher API (DNS on the coordinator's machine)"),
+                ));
+            } else {
                 found.push((
                     "api".into(),
                     id.clone(),

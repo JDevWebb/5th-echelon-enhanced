@@ -188,6 +188,9 @@ name = "api"
 version = "0.2.5"
 dependencies = [
  "prost",
+ "serde",
+ "serde_json",
+ "stat_boards",
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
@@ -4949,6 +4952,7 @@ name = "setup"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "api",
  "base64",
  "flate2",
  "hooks-config",

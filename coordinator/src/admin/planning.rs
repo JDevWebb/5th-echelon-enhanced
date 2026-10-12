@@ -6,6 +6,8 @@
 //! * `GET /api/roadmap`: lanes, every item, and how many suggestions are new.
 //! * `POST /api/roadmap/items`, `PUT|DELETE /api/roadmap/items/<id>`: items.
 //! * `PUT /api/roadmap/lanes/<lane>` `{release}`: the release a lane is for.
+//! * `POST /api/roadmap/from-project` `{items, releases}`: Shipping, Next and Later become the
+//!   project's roadmap for a release, in one go; Requested and players' items stay.
 //! * `GET /api/suggestions?status=new|all`; `PUT /api/suggestions/<id>` `{status, reply}`;
 //!   `POST /api/suggestions/<id>/promote` `{lane}`: players' suggestions.
 //!
@@ -44,6 +46,7 @@ pub(super) fn routes() -> Router<Shared> {
         .route("/roadmap/items", post(add_item))
         .route("/roadmap/items/{id}", put(edit_item).delete(remove_item))
         .route("/roadmap/lanes/{lane}", put(set_lane))
+        .route("/roadmap/from-project", post(from_project))
         .route("/suggestions", get(suggestions))
         .route("/suggestions/{id}", put(answer))
         .route("/suggestions/{id}/promote", post(promote))
@@ -209,6 +212,37 @@ async fn set_lane(State(c): State<Shared>, Extension(client): Extension<Client>,
             c.audit(&s.username, Some(&client), "roadmap: lane", &format!("{lane}: {}", r.release.trim())).await;
             c.publish(Event::Roadmap);
             ok(json!({ "ok": true }))
+        }
+        Err(e) => internal(e),
+    }
+}
+
+async fn from_project(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Json(p): Json<roadmap::ProjectRoadmap>) -> Response {
+    if !c.has_roadmap() {
+        return fail(StatusCode::NOT_FOUND, "no roadmap on this network");
+    }
+    let s = match c.full(&headers, &client).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    if let Err(why) = p.check() {
+        return fail(StatusCode::BAD_REQUEST, why);
+    }
+    match c.update_from_project(&p, &s.username, identity::now()).await {
+        Ok(done) => {
+            let release = p.releases.get("shipping").map(|r| r.trim()).filter(|r| !r.is_empty());
+            let detail = format!(
+                "{}{} added, {} changed, {} moved, {} removed, {} players' items kept",
+                release.map(|r| format!("for {r}: ")).unwrap_or_default(),
+                done.added,
+                done.changed,
+                done.moved,
+                done.removed,
+                done.kept
+            );
+            c.audit(&s.username, Some(&client), "roadmap: updated from the project", &detail).await;
+            c.publish(Event::Roadmap);
+            ok(json!({ "added": done.added, "changed": done.changed, "moved": done.moved, "removed": done.removed, "kept": done.kept }))
         }
         Err(e) => internal(e),
     }

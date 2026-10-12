@@ -384,7 +384,10 @@ impl Coordinator {
     }
 
     /// Measures the round trip to each listed server (a TCP connection to
-    /// its API port). Run every minute.
+    /// its API port). Run every minute. A check that couldn't look the
+    /// server's name up is recorded as that (`failure = 'lookup'`), apart
+    /// from one whose connection went unanswered (`'connect'`): the first is
+    /// the coordinator's own DNS, not the server.
     pub async fn ping_servers(&self) -> sqlx::Result<()> {
         let since = identity::now() - 180;
         let rows: Vec<(String, String)> = sqlx::query_as("SELECT id, listing FROM servers WHERE last_seen >= ? AND listing IS NOT NULL")
@@ -392,6 +395,7 @@ impl Coordinator {
             .fetch_all(&self.pool)
             .await?;
         let mut tasks = Vec::new();
+        let mut listed = Vec::new();
         for (id, listing) in rows {
             let l: Value = serde_json::from_str(&listing).unwrap_or_default();
             let host = l["host"].as_str().unwrap_or_default().to_string();
@@ -403,33 +407,56 @@ impl Coordinator {
             if host.is_empty() {
                 continue;
             }
+            listed.push(id.clone());
+            let known = self.known_address(&id, &host, port);
             tasks.push(tokio::spawn(async move {
-                // Only to a public address: a member can't have the coordinator knock on its
-                // own network, or this machine's.
-                let resolved = tokio::time::timeout(Duration::from_secs(3), tokio::net::lookup_host((host.as_str(), port))).await;
-                let Some(target) = resolved.ok().and_then(Result::ok).and_then(|mut a| a.find(|a| crate::public_ip(a.ip()))) else {
-                    return (id, None);
+                // A slow resolver mustn't fail the check: with an address from an earlier
+                // lookup to fall back on, the lookup gets the usual time; with none, longer.
+                let wait = Duration::from_secs(if known.is_some() { LOOKUP_WAIT } else { LOOKUP_WAIT_FIRST });
+                let looked_up = tokio::time::timeout(wait, tokio::net::lookup_host((host.as_str(), port)))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .map(Iterator::collect::<Vec<_>>);
+                let Some((target, fresh)) = ping_target(looked_up, known) else {
+                    return (id, host, port, Err(PingFailure::Lookup), None);
                 };
                 let start = Instant::now();
                 let ms = match tokio::time::timeout(Duration::from_secs(3), tokio::net::TcpStream::connect(target)).await {
-                    Ok(Ok(_)) => Some(start.elapsed().as_secs_f64() * 1000.0),
-                    _ => None,
+                    Ok(Ok(_)) => Ok(start.elapsed().as_secs_f64() * 1000.0),
+                    _ => Err(PingFailure::Connect),
                 };
-                (id, ms)
+                (id, host, port, ms, fresh.then_some(target))
             }));
         }
+        self.ping_addresses.lock().unwrap().retain(|id, _| listed.contains(id));
         let at = identity::now();
         for task in tasks {
-            if let Ok((id, ms)) = task.await {
-                sqlx::query("INSERT OR REPLACE INTO server_pings (server_id, at, ms) VALUES (?, ?, ?)")
+            if let Ok((id, host, port, ms, fresh)) = task.await {
+                if let Some(addr) = fresh {
+                    self.ping_addresses.lock().unwrap().insert(id.clone(), (host, port, addr));
+                }
+                let (ms, failure) = match ms {
+                    Ok(ms) => (Some(ms), None),
+                    Err(f) => (None, Some(f.as_str())),
+                };
+                sqlx::query("INSERT OR REPLACE INTO server_pings (server_id, at, ms, failure) VALUES (?, ?, ?, ?)")
                     .bind(id)
                     .bind(at)
                     .bind(ms)
+                    .bind(failure)
                     .execute(&self.pool)
                     .await?;
             }
         }
         Ok(())
+    }
+
+    /// The address a server's name last resolved to (for [`Self::ping_servers`]),
+    /// if the listing still has the same name and port.
+    fn known_address(&self, id: &str, host: &str, port: u16) -> Option<std::net::SocketAddr> {
+        let known = self.ping_addresses.lock().unwrap();
+        known.get(id).filter(|k| k.0 == host && k.1 == port).map(|k| k.2)
     }
 
     /// Records a launcher's pings to the servers, from `ip` (located, then
@@ -943,6 +970,41 @@ impl Coordinator {
 /// One hour of a server's samples (`rows`, from shortly before the hour, so
 /// the first rate in it has a sample before): averages for the charts, and
 /// player-minutes per city and per activity.
+/// How long a server's name lookup may take when an address from an earlier
+/// one is there to fall back on, and when there's none (seconds). Resolvers
+/// have taken 5 s at times.
+const LOOKUP_WAIT: u64 = 3;
+const LOOKUP_WAIT_FIRST: u64 = 8;
+
+/// Why a check of a server's API port failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PingFailure {
+    /// Its name couldn't be looked up, and no earlier address was there.
+    Lookup,
+    /// The connection wasn't answered.
+    Connect,
+}
+
+impl PingFailure {
+    fn as_str(self) -> &'static str {
+        match self {
+            PingFailure::Lookup => "lookup",
+            PingFailure::Connect => "connect",
+        }
+    }
+}
+
+/// Where to check a server: the first public address its name resolved to
+/// (and `true`: remember it), else the one remembered from an earlier lookup.
+/// Only public addresses: a member can't have the coordinator knock on its
+/// own network, or this machine's.
+fn ping_target(looked_up: Option<Vec<std::net::SocketAddr>>, known: Option<std::net::SocketAddr>) -> Option<(std::net::SocketAddr, bool)> {
+    if let Some(a) = looked_up.into_iter().flatten().find(|a| crate::public_ip(a.ip())) {
+        return Some((a, true));
+    }
+    known.filter(|a| crate::public_ip(a.ip())).map(|a| (a, false))
+}
+
 fn summarise(hour: i64, rows: &[(i64, String)]) -> Option<Value> {
     let samples: Vec<(i64, Value)> = rows.iter().map(|(t, d)| (*t, serde_json::from_str(d).unwrap_or_default())).collect();
     let mut points = Vec::new();
@@ -1054,6 +1116,23 @@ mod tests {
         assert_eq!(h["places"][0]["player_minutes"], 8.0);
         assert_eq!(h["activity"][0]["session_minutes"], 3.0);
         assert!(summarise(7200, &rows).is_none());
+    }
+
+    #[test]
+    fn a_slow_lookup_falls_back_on_the_last_address() {
+        let public: std::net::SocketAddr = "203.0.114.7:443".parse().unwrap();
+        let newer: std::net::SocketAddr = "203.0.114.8:443".parse().unwrap();
+        let private: std::net::SocketAddr = "10.0.0.5:443".parse().unwrap();
+        // A lookup that answered is used, and remembered; its first public address.
+        assert_eq!(ping_target(Some(vec![private, newer]), Some(public)), Some((newer, true)));
+        // A lookup that timed out, failed or found only private addresses: the last address.
+        assert_eq!(ping_target(None, Some(public)), Some((public, false)));
+        assert_eq!(ping_target(Some(vec![private]), Some(public)), Some((public, false)));
+        // Nothing to fall back on: the name couldn't be looked up.
+        assert_eq!(ping_target(None, None), None);
+        // Never a private address, remembered or not.
+        assert_eq!(ping_target(None, Some(private)), None);
+        assert_eq!(PingFailure::Lookup.as_str(), "lookup");
     }
 
     #[test]

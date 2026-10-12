@@ -77,7 +77,11 @@ message Activity {
     // "match" or "lobby".
     string room = 2;
     repeated string with = 3;
+    // The map (session attribute 101); 0 when the room didn't say.
     uint32 map = 4;
+    // The game mode (attribute 102, the game's EGameMode: 8 is SvM Classic); 0 when the room
+    // didn't say (0 is single player, never a room).
+    uint32 game_mode = 5;
 }
 
 message Player {

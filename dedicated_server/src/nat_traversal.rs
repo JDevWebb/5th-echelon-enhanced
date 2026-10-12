@@ -58,6 +58,36 @@ fn probe_station(offered: &StationURL, observed: std::net::IpAddr, relay: Option
         .filter(|station| probe_address_allowed(&station.address, observed))
 }
 
+impl NatTraversalProtocolServerImpl {
+    /// `joiner` probes `host`, who hosts a public match: they're on their way in. The host's
+    /// game tells the match's other players to connect to them before their join reaches the
+    /// server, so for a while the relay carries those players and the joiner (paired now;
+    /// [`crate::pending_joins`]). Not probes between them: a probe hands out addresses.
+    fn joining_public_match(&self, logger: &Logger, joiner: u32, host: u32) {
+        let members = match self.storage.public_session_members(host) {
+            Ok(members) => members,
+            Err(e) => {
+                warn!(logger, "Looking up who's in {host}'s public match failed: {e}");
+                return;
+            }
+        };
+        let ids: Vec<u32> = members.iter().map(|(id, _)| *id).collect();
+        crate::pending_joins::note(host, joiner, &ids);
+        let Ok(Some(me)) = self.storage.find_username_by_user_id(joiner) else { return };
+        // The host is paired as the probe goes out, as anyone probed is.
+        let others: Vec<&str> = members.iter().filter(|(id, _)| *id != joiner && *id != host).map(|(_, name)| name.as_str()).collect();
+        for name in &others {
+            crate::nat_helper::introduce(&me, name);
+        }
+        info!(
+            logger,
+            "{me} is on the way into {host}'s public match: {} of its players may reach them for {} s",
+            others.len(),
+            crate::pending_joins::FOR.as_secs()
+        );
+    }
+}
+
 impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
     /// Handles the `RequestProbeInitiationExt` request.
     ///
@@ -140,15 +170,28 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
             };
             let addr = *target.address();
             // A player in a session with the caller, or hosting one the caller may join anyway:
-            // matchmaking asks for the probe to a host it found before it joins.
-            let may_probe = target
-                .user_id
-                .is_some_and(|other| self.storage.share_session(user_id, other).unwrap_or(false) || self.storage.hosts_public_session(other).unwrap_or(false));
-            if !may_probe {
-                warn!(logger, "Not probing {url}: not in a session with {user_id}, nor hosting a public one");
+            // matchmaking asks for the probe to a host it found before it joins. Not a player
+            // merely on their way into a match with the caller (pending_joins.rs): a probe
+            // hands each side the other's addresses, and anyone may probe a public host
+            // without joining, so that would give out the addresses of everyone in any public
+            // match. Those players reach each other through the relay only, which shows
+            // neither one's address.
+            let Some(other) = target.user_id else {
+                warn!(logger, "Not probing {url}: it isn't signed in");
                 continue;
+            };
+            if !self.storage.share_session(user_id, other).unwrap_or(false) {
+                if !self.storage.hosts_public_session(other).unwrap_or(false) {
+                    warn!(logger, "Not probing {url}: not in a session with {user_id}, nor hosting a public one");
+                    continue;
+                }
+                self.joining_public_match(logger, user_id, other);
             }
             info!(logger, "Sending probe to {url} ({addr})\n{payload:x?}");
+            // Which room a join that then fails was for (join_targets.rs).
+            if let Some(other) = target.user_id {
+                crate::join_targets::probed(user_id, other);
+            }
             // The two games are about to send to each other: through the relay, too.
             if let (Ok(Some(me)), Some(Ok(Some(them)))) = (
                 self.storage.find_username_by_user_id(user_id),

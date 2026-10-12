@@ -208,6 +208,8 @@ pub struct Listing {
     /// The identities of the players online here, so their friends on other servers see
     /// where they are.
     pub online: Vec<String>,
+    /// What's being played here (crate::playing), for the directory to show players.
+    pub playing: server_api::playing::Playing,
 }
 
 struct State {
@@ -663,6 +665,9 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                 }
                 if let Ok(online) = storage.online_linked().await {
                     listing.online = online.into_iter().filter_map(|p| p.global_id).take(20_000).collect();
+                }
+                if let Ok(sessions) = storage.live_sessions_async().await {
+                    listing.playing = crate::playing::of(&sessions);
                 }
                 match client.post("/v1/heartbeat", &listing).await {
                     Ok(answer) => {

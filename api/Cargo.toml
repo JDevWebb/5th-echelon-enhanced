@@ -7,8 +7,13 @@ edition = "2021"
 
 [dependencies]
 prost = { workspace = true }
+serde = { workspace = true }
+stat_boards = { path = "../stat_boards" }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

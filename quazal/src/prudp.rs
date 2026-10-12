@@ -449,6 +449,10 @@ where
     /// game that dropped and signed in again from the same address): their state stays, but
     /// what that connection alone made can go.
     pub stale_connection_handler: Option<Box<dyn FnMut(ClientInfo<T>) + 'a>>,
+    /// Called with a connection whose client kept sending but never acknowledged some of the
+    /// server's reliable packets, and how many were given up on just now: the server's
+    /// packets aren't reaching it (a game that closed, which sends nothing, isn't counted).
+    pub unacked_handler: Option<Box<dyn FnMut(&ClientInfo<T>, usize) + 'a>>,
     /// Whether a user's newest sign-in closes their connections from elsewhere (see
     /// [`Self::sign_out_elsewhere`]): every user by default. Shared accounts (the server's
     /// own, whose passwords are public) must not.
@@ -498,6 +502,7 @@ where
             disconnect_handler: None,
             login_handler: None,
             stale_connection_handler: None,
+            unacked_handler: None,
             newest_sign_in_wins: |_| true,
             sign_outs: None,
             next_conn_id: AtomicU32::new(0x3AAA_AAAA),
@@ -883,9 +888,18 @@ where
                 debug!(self.logger, "Resending unacknowledged packet {seq} to {addr} (try {})", p.tries);
                 let _ = socket.send_to(&p.data, addr);
             }
+            // Lost on the way to a client still talking to us, rather than to one that's gone.
+            let mut lost = 0;
             for seq in give_up {
                 warn!(self.logger, "Client {addr} never acknowledged packet {seq}; giving up");
-                ci.unacked.remove(&seq);
+                if ci.unacked.remove(&seq).is_some_and(|p| ci.last_seen > p.first) {
+                    lost += 1;
+                }
+            }
+            if lost > 0 {
+                if let Some(handler) = self.unacked_handler.as_mut() {
+                    handler(&ci, lost);
+                }
             }
         }
     }
@@ -1289,6 +1303,7 @@ pub fn send_response<T>(
         sequence,
         crate::Unacked {
             data: data.clone(),
+            first: Instant::now(),
             sent: Instant::now(),
             tries: 0,
         },
@@ -1572,6 +1587,42 @@ mod tests {
             "the new game's connection"
         );
         assert_eq!(server.client_registry.connections_from(from.ip()), 1);
+    }
+
+    /// Reliable packets given up on are reported for a client that kept sending (the server's
+    /// packets aren't reaching it), not for one that went quiet (a game that closed).
+    #[test]
+    fn packets_lost_to_a_client_still_sending_are_reported() {
+        let ctx = Context::splinter_cell_blacklist();
+        let logger = Logger::root(slog::Discard, o!());
+        let mut server = test_server(&ctx);
+        let reported = std::rc::Rc::new(RefCell::new(Vec::new()));
+        let r = std::rc::Rc::clone(&reported);
+        server.unacked_handler = Some(Box::new(move |ci: &ClientInfo<()>, n| r.borrow_mut().push((ci.user_id, n))));
+        let talking = SocketAddr::from(([127, 0, 0, 1], 50010));
+        let gone = SocketAddr::from(([127, 0, 0, 1], 50011));
+        let long_ago = Instant::now() - Duration::from_secs(60);
+        for (from, user, last_seen) in [(talking, 7, Instant::now()), (gone, 8, long_ago - Duration::from_secs(1))] {
+            let sig = server.cookies.signature(from, 1, 0);
+            server.handle_connect(&logger, handshake(PacketType::Connect, sig, 1), from);
+            let mut ci = server.client_registry.clients[&sig].borrow_mut();
+            ci.user_id = Some(user);
+            ci.last_seen = last_seen;
+            for seq in [3, 4] {
+                ci.unacked.insert(
+                    seq,
+                    crate::Unacked {
+                        data: vec![0],
+                        first: long_ago,
+                        sent: long_ago,
+                        tries: RESEND_TRIES,
+                    },
+                );
+            }
+        }
+        server.resend_unacked();
+        assert_eq!(*reported.borrow(), [(Some(7), 2)]);
+        assert!(server.client_registry.clients.values().all(|ci| ci.borrow().unacked.keys().all(|s| ![3, 4].contains(s))));
     }
 
     /// A connection that never says anything after its CONNECT goes after a few seconds.

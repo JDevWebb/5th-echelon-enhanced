@@ -5,6 +5,8 @@
 //! and the global leaderboards) need them to keep the stats the way Ubisoft's did.
 //! Only the numbers are here.
 
+pub mod game_names;
+
 use std::ops::RangeInclusive;
 
 /// How a write to a stat changes the stored value.

@@ -330,6 +330,7 @@ mod tests {
             players_total: 0,
             friends_mode: String::new(),
             maintenance: windows,
+            playing: None,
         }
     }
 

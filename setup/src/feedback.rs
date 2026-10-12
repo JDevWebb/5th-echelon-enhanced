@@ -39,6 +39,60 @@ pub struct ServerSaw {
     pub failed_joins: i32,
     pub version_mismatches: i32,
     pub relayed: bool,
+    /// Searches that found nothing while lobbies with other game data were open.
+    pub searches_other_data: i32,
+}
+
+/// Whose game data differs, for a join refused as "a different version", from the server's
+/// summary (`mismatch_host`, `mismatch_mine`, `mismatch_theirs`: each side's data by what
+/// makes it, "unmodified", "balaclava mod", or as hex). None when the server didn't say
+/// (servers before 0.4.4).
+pub fn mismatch_line(host: &str, mine: &str, theirs: &str) -> Option<String> {
+    fn has(data: &str) -> String {
+        match data {
+            "unmodified" => "is unmodified".to_string(),
+            hex if hex.starts_with("0x") => format!("has other game data ({hex})"),
+            name => format!("has the {name}"),
+        }
+    }
+    let host = host.trim();
+    let theirs_game = if host.is_empty() { "The host's game".to_string() } else { format!("{host}'s game") };
+    let said = match (mine.trim(), theirs.trim()) {
+        ("", "") => return None,
+        (mine, theirs) if mine == theirs => return None,
+        ("", theirs) => format!("{theirs_game} {}.", has(theirs)),
+        (mine, "") => format!("Your game {}.", has(mine)),
+        (mine, theirs) => format!("{theirs_game} {}; yours {}.", has(theirs), has(mine)),
+    };
+    Some(format!("{said} Everyone in a match needs the same mods."))
+}
+
+/// Why searches found no lobbies, when the open ones have other game data (the server's
+/// `other_data_mine`, `other_data_theirs`, named as for [`mismatch_line`]). The game shows
+/// only lobbies whose data is the same as its own, and says nothing of the others. None when
+/// the server didn't say (servers before 0.4.4).
+pub fn search_mismatch_line(mine: &str, theirs: &str) -> Option<String> {
+    let (mine, theirs) = (mine.trim(), theirs.trim());
+    if theirs.is_empty() || mine == theirs {
+        return None;
+    }
+    let lobbies = match theirs {
+        "unmodified" => "The open lobbies were unmodified games".to_string(),
+        hex if hex.starts_with("0x") => format!("The open lobbies had other game data ({hex})"),
+        name => format!("The open lobbies had the {name}"),
+    };
+    let yours = match mine {
+        "" => String::new(),
+        "unmodified" => ", and yours is unmodified".to_string(),
+        hex if hex.starts_with("0x") => format!(", and yours has other game data ({hex})"),
+        name => format!(", and yours has the {name}"),
+    };
+    let fix = if mine == "unmodified" {
+        "they need the same game files as you to show up"
+    } else {
+        "remove your mods (or verify the game files in Steam or Ubisoft Connect) to see them"
+    };
+    Some(format!("{lobbies}{yours}: the game only shows lobbies with the same game data, so {fix}."))
 }
 
 /// Whether a game's exit code means it crashed: Windows' exception codes (0xC0000005 and
@@ -46,6 +100,75 @@ pub struct ServerSaw {
 pub fn crashed(code: Option<i32>) -> bool {
     #[allow(clippy::cast_sign_loss)]
     code.is_some_and(|c| (c as u32) >= 0xC000_0000)
+}
+
+/// How the game ended, as far as the launcher knows: what a report says of it, so the admins
+/// can tell a crash from the game being ended (Task Manager) or quit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GameExit {
+    /// It exited with this code: the launcher started it and saw it end.
+    Code(i32),
+    /// It closed, but the launcher didn't start it (it was started some other way, or before
+    /// the launcher was), so it has no exit code; or it hasn't seen the game close.
+    Unknown,
+    /// Still running: a report sent from Settings while playing.
+    Running,
+}
+
+impl GameExit {
+    /// The game the launcher watched closed, with its exit code if it had one.
+    pub fn closed(code: Option<i32>) -> Self {
+        code.map_or(Self::Unknown, Self::Code)
+    }
+
+    pub fn code(self) -> Option<i32> {
+        match self {
+            Self::Code(c) => Some(c),
+            Self::Unknown | Self::Running => None,
+        }
+    }
+
+    /// The report's `exit_code`: the code in hex as Windows shows it (`0xC0000005`), else
+    /// `running` or `unknown`.
+    #[allow(clippy::cast_sign_loss)]
+    pub fn value(self) -> String {
+        match self {
+            Self::Code(c) => format!("0x{:08X}", c as u32),
+            Self::Unknown => "unknown".into(),
+            Self::Running => "running".into(),
+        }
+    }
+
+    /// What the exit means, in a few words.
+    #[allow(clippy::cast_sign_loss)]
+    pub fn meaning(self) -> &'static str {
+        match self {
+            Self::Code(0) => "a normal quit",
+            // TerminateProcess's code when Task Manager ends a process.
+            Self::Code(1) => "ended from outside (Task Manager ends games with 1), or the game's own error",
+            Self::Code(c) => match c as u32 {
+                0xC000_0005 => "an access violation: a crash",
+                0xC000_0409 => "a stack buffer overrun or fail-fast: a crash",
+                0xC000_00FD => "a stack overflow: a crash",
+                0xC000_0374 => "heap corruption: a crash",
+                0xC000_001D => "an illegal instruction: a crash",
+                0xC000_0017 | 0xC000_009A => "out of memory: a crash",
+                // Windows closing it (shutting down, signing out) or a console's Ctrl+C.
+                0xC000_013A => "closed by Windows or Ctrl+C",
+                0x4001_0004 => "ended by a debugger or Windows shutting down",
+                _ if crashed(Some(c)) => "a Windows exception: a crash",
+                _ => "the game's own exit code",
+            },
+            Self::Unknown => "the launcher didn't start the game, so it can't tell",
+            Self::Running => "the game is still running",
+        }
+    }
+
+    /// The line for the report's `checklist.txt`, in its form (status, title, detail).
+    pub fn checklist_line(self) -> String {
+        let status = if crashed(self.code()) { "Warn" } else { "Ok" };
+        format!("{status}\tGame exit code {}\t{}", self.value(), self.meaning())
+    }
 }
 
 /// Why to ask the player how it went, if at all: what went wrong, or "routine" now and then
@@ -67,6 +190,9 @@ pub fn triggers(log: LogSignals, server: Option<ServerSaw>, exit_code: Option<i3
     }
     if server.failed_joins > server.version_mismatches {
         t.push("failed_join");
+    }
+    if server.searches_other_data > 0 {
+        t.push("search_mismatch");
     }
     if log.relayed || server.relayed {
         t.push("relayed");
@@ -320,6 +446,44 @@ mod tests {
     }
 
     #[test]
+    fn a_mismatch_says_whose_data_differs() {
+        assert_eq!(
+            mismatch_line("Theusma01", "balaclava mod", "unmodified").as_deref(),
+            Some("Theusma01's game is unmodified; yours has the balaclava mod. Everyone in a match needs the same mods.")
+        );
+        assert_eq!(
+            mismatch_line("", "unmodified", "0x12345678").as_deref(),
+            Some("The host's game has other game data (0x12345678); yours is unmodified. Everyone in a match needs the same mods.")
+        );
+        assert_eq!(
+            mismatch_line("Host", "balaclava mod", "").as_deref(),
+            Some("Your game has the balaclava mod. Everyone in a match needs the same mods.")
+        );
+        assert_eq!(mismatch_line("Host", "", ""), None, "an older server's");
+        assert_eq!(mismatch_line("Host", "unmodified", "unmodified"), None, "no difference to tell");
+    }
+
+    #[test]
+    fn lobbies_hidden_by_game_data_are_explained() {
+        assert_eq!(
+            search_mismatch_line("0xc37ed697", "unmodified").as_deref(),
+            Some(
+                "The open lobbies were unmodified games, and yours has other game data (0xc37ed697): the game only shows lobbies \
+                 with the same game data, so remove your mods (or verify the game files in Steam or Ubisoft Connect) to see them."
+            )
+        );
+        assert_eq!(
+            search_mismatch_line("unmodified", "balaclava mod").as_deref(),
+            Some(
+                "The open lobbies had the balaclava mod, and yours is unmodified: the game only shows lobbies with the same game \
+                 data, so they need the same game files as you to show up."
+            )
+        );
+        assert_eq!(search_mismatch_line("", ""), None, "a server before 0.4.4");
+        assert_eq!(search_mismatch_line("unmodified", "unmodified"), None);
+    }
+
+    #[test]
     fn when_to_ask() {
         let online = LogSignals {
             played_online: true,
@@ -336,8 +500,15 @@ mod tests {
             failed_joins: 2,
             version_mismatches: 1,
             relayed: true,
+            searches_other_data: 0,
         };
         assert_eq!(triggers(online, Some(saw), Some(0), true), ["version_mismatch", "failed_join", "relayed"]);
+        let hidden = ServerSaw {
+            searches_other_data: 3,
+            ..ServerSaw::default()
+        };
+        assert_eq!(triggers(online, Some(hidden), Some(0), true), ["search_mismatch"]);
+        assert!(Asked::default().may_ask(&["search_mismatch"], 10 * 86_400), "not a mild one");
         #[allow(clippy::cast_possible_wrap)]
         let access_violation = 0xC000_0005_u32 as i32;
         assert_eq!(triggers(online, None, Some(access_violation), false), ["exit_code"]);
@@ -363,6 +534,26 @@ mod tests {
         assert_eq!(a, Asked { last: 5, last_routine: 5 });
         a.note(&["panic"], 9);
         assert_eq!(a, Asked { last: 9, last_routine: 5 });
+    }
+
+    /// Renegade, Oni and nano_machine on eu1, 10-09: games that stopped mid-match, and nothing
+    /// in the reports to tell a crash from a quit.
+    #[test]
+    fn reports_say_how_the_game_ended() {
+        #[allow(clippy::cast_possible_wrap)]
+        let access_violation = GameExit::Code(0xC000_0005_u32 as i32);
+        assert_eq!(access_violation.value(), "0xC0000005");
+        assert_eq!(access_violation.checklist_line(), "Warn\tGame exit code 0xC0000005\tan access violation: a crash");
+        assert_eq!(GameExit::closed(Some(0)).value(), "0x00000000");
+        assert_eq!(GameExit::closed(Some(0)).checklist_line(), "Ok\tGame exit code 0x00000000\ta normal quit");
+        assert!(GameExit::Code(1).meaning().contains("Task Manager"));
+        #[allow(clippy::cast_possible_wrap)]
+        let other_exception = GameExit::Code(0xC000_0096_u32 as i32);
+        assert_eq!(other_exception.meaning(), "a Windows exception: a crash");
+        assert_eq!(GameExit::closed(None), GameExit::Unknown);
+        assert_eq!(GameExit::Unknown.value(), "unknown");
+        assert_eq!(GameExit::Running.value(), "running");
+        assert_eq!(GameExit::Running.code(), None);
     }
 
     #[test]

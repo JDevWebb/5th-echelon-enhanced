@@ -12,6 +12,7 @@ use eframe::egui;
 use setup::config::Config;
 use setup::config::Profile;
 use setup::feedback::Attachment;
+use setup::feedback::GameExit;
 
 use crate::activity::Action;
 use crate::app::Notices;
@@ -37,6 +38,7 @@ fn why(triggers: &[&'static str]) -> &'static str {
         Some("signin_refused") => "The server didn't let the game sign in.",
         Some("version_mismatch") => "A join was refused as \"a different version of the game\".",
         Some("failed_join") => "A join didn't work.",
+        Some("search_mismatch") => "Searching found no lobbies, though some were open: their game data differs from yours.",
         Some("relayed") => "Your matches went through the server's relay.",
         Some("manual") => "Tell the server's admins what happened.",
         _ => "Help us make the community servers better.",
@@ -51,7 +53,7 @@ fn ticked(triggers: &[&'static str]) -> BTreeSet<&'static str> {
             "panic" | "exit_code" => Some("crash"),
             "signin_refused" => Some("signin"),
             "version_mismatch" => Some("version"),
-            "failed_join" => Some("join"),
+            "failed_join" | "search_mismatch" => Some("join"),
             _ => None,
         })
         .collect()
@@ -61,6 +63,9 @@ fn ticked(triggers: &[&'static str]) -> BTreeSet<&'static str> {
 #[derive(Clone)]
 pub struct Ask {
     triggers: Vec<&'static str>,
+    /// Whose game data differs, after a join refused as a different version, when the
+    /// server could tell.
+    mismatch: Option<String>,
     profile: Profile,
     files: Vec<Attachment>,
     /// 👍 or 👎, if picked.
@@ -70,6 +75,8 @@ pub struct Ask {
     attach: bool,
     /// The file shown in the preview.
     viewing: Option<usize>,
+    /// How the game ended, sent as the report's `exit_code` (and in its checklist.txt).
+    exit: GameExit,
 }
 
 #[derive(Default)]
@@ -93,6 +100,8 @@ pub struct Feedback {
     /// The player closed the launcher while a report was sending: asking whether to wait
     /// (`Some(true)`), or waiting to close once it's sent (`Some(false)`).
     closing: Option<bool>,
+    /// How the last game the launcher saw close ended, for a report sent from Settings.
+    last_exit: Option<GameExit>,
 }
 
 impl crate::task::FromPanic for Option<Ask> {
@@ -106,9 +115,12 @@ fn current_profile(game_dir: &std::path::Path) -> Option<Profile> {
     Config::load(game_dir).current_profile().cloned().filter(Profile::has_account)
 }
 
-/// Looks at a game that just closed and builds the ask, if there should be one.
-fn check(game_dir: PathBuf, exit_code: Option<i32>, checks: String, manual: bool) -> Result<Option<Ask>, String> {
+/// Looks at a game that just closed and builds the ask, if there should be one. `exit`: how
+/// it ended; for a report the player asked to send (`manual`), how the last game the launcher
+/// saw close ended, unless one is running now.
+fn check(game_dir: PathBuf, exit: GameExit, checks: String, manual: bool) -> Result<Option<Ask>, String> {
     let profile = current_profile(&game_dir).ok_or("Connect to a server first.")?;
+    let exit = if manual && setup::game::game_running() { GameExit::Running } else { exit };
     let log = std::fs::read(game_dir.join("bl-tracing.log"))
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_default();
@@ -131,11 +143,12 @@ fn check(game_dir: PathBuf, exit_code: Option<i32>, checks: String, manual: bool
         failed_joins: s.failed_joins,
         version_mismatches: s.version_mismatches,
         relayed: s.relayed,
+        searches_other_data: s.searches_other_data,
     });
     let triggers = if manual {
         vec!["manual"]
     } else {
-        let t = setup::feedback::triggers(signals, saw, exit_code, asked.routine_due(now));
+        let t = setup::feedback::triggers(signals, saw, exit.code(), asked.routine_due(now));
         if off || !asked.may_ask(&t, now) {
             return Ok(None);
         }
@@ -155,12 +168,28 @@ fn check(game_dir: PathBuf, exit_code: Option<i32>, checks: String, manual: bool
         })
         .collect();
     let private = setup::feedback::Private::of_this_pc(keep);
+    // Servers before 0.4.4 drop the report's `exit_code`: the checklist carries it too.
+    let checks = if checks.is_empty() {
+        exit.checklist_line()
+    } else {
+        format!("{checks}\n{}", exit.checklist_line())
+    };
     let mut extra = vec![("checklist.txt", checks)];
     if let Some(s) = &server {
         extra.push(("server-summary.json", s.json.clone()));
     }
     let files = setup::feedback::prepare(&game_dir, crate::logging::log_path().as_deref(), &extra, &private);
+    let mismatch = server.as_ref().and_then(|s| {
+        if triggers.contains(&"version_mismatch") {
+            setup::feedback::mismatch_line(&s.mismatch_host, &s.mismatch_mine, &s.mismatch_theirs)
+        } else if triggers.contains(&"search_mismatch") {
+            setup::feedback::search_mismatch_line(&s.other_data_mine, &s.other_data_theirs)
+        } else {
+            None
+        }
+    });
     Ok(Some(Ask {
+        mismatch,
         problems: ticked(&triggers),
         triggers,
         profile,
@@ -169,6 +198,7 @@ fn check(game_dir: PathBuf, exit_code: Option<i32>, checks: String, manual: bool
         comment: String::new(),
         attach: true,
         viewing: None,
+        exit,
     }))
 }
 
@@ -196,6 +226,7 @@ fn report_of(ask: &Ask) -> server_api::misc::ReportRequest {
     let client = [
         ("launcher".to_string(), env!("FE_RELEASE").to_string()),
         ("os".to_string(), std::env::consts::OS.to_string()),
+        ("exit_code".to_string(), ask.exit.value()),
     ];
     server_api::misc::ReportRequest {
         rating: match ask.good {
@@ -404,16 +435,19 @@ impl Feedback {
 
     /// The game closed: looks at what happened, in the background.
     pub fn game_closed(&mut self, ctx: &egui::Context, game_dir: PathBuf, exit_code: Option<i32>, checks: String) {
+        let exit = GameExit::closed(exit_code);
+        self.last_exit = Some(exit);
         if self.asking.is_some() || self.checking.running() || Prefs::feedback().1 {
             return;
         }
-        self.checking.start(ctx, move || check(game_dir, exit_code, checks, false));
+        self.checking.start(ctx, move || check(game_dir, exit, checks, false));
     }
 
     /// The player asked to send feedback (Settings).
     pub fn ask_now(&mut self, ctx: &egui::Context, game_dir: PathBuf, checks: String) {
         if self.asking.is_none() && !self.checking.running() {
-            self.checking.start(ctx, move || check(game_dir, None, checks, true));
+            let exit = self.last_exit.unwrap_or(GameExit::Unknown);
+            self.checking.start(ctx, move || check(game_dir, exit, checks, true));
         }
     }
 
@@ -566,6 +600,9 @@ impl Feedback {
             ui.set_max_width(560.0);
             ui.label(theme::heading("How did that go?"));
             ui.label(theme::muted(why(&ask.triggers)));
+            if let Some(mismatch) = &ask.mismatch {
+                ui.label(theme::muted(mismatch));
+            }
             ui.add_space(8.0);
             // A scroll bar beside the content, not over the comment box.
             ui.spacing_mut().scroll = egui::style::ScrollStyle::solid();
@@ -655,10 +692,33 @@ mod tests {
     #[test]
     fn what_went_wrong_is_ticked_for_the_player() {
         assert_eq!(ticked(&["version_mismatch", "failed_join", "relayed"]), BTreeSet::from(["version", "join"]));
+        assert_eq!(ticked(&["search_mismatch"]), BTreeSet::from(["join"]));
         assert!(ticked(&["routine"]).is_empty());
         assert_eq!(why(&["exit_code"]), "The game seems to have crashed.");
         assert!(PROBLEMS
             .iter()
             .all(|(id, _)| ["join", "lag", "crash", "connection", "version", "signin", "other"].contains(id)));
+    }
+
+    /// A report says how the game ended, so a crash, a kill and a quit can be told apart.
+    #[test]
+    fn reports_carry_the_exit_code() {
+        let ask = |exit| Ask {
+            triggers: vec!["exit_code"],
+            profile: Profile::default(),
+            files: vec![],
+            good: None,
+            problems: BTreeSet::new(),
+            comment: String::new(),
+            attach: true,
+            viewing: None,
+            mismatch: None,
+            exit,
+        };
+        #[allow(clippy::cast_possible_wrap)]
+        let crashed = report_of(&ask(GameExit::Code(0xC000_0005_u32 as i32)));
+        assert_eq!(crashed.client.get("exit_code").map(String::as_str), Some("0xC0000005"));
+        let started_elsewhere = report_of(&ask(GameExit::Unknown));
+        assert_eq!(started_elsewhere.client.get("exit_code").map(String::as_str), Some("unknown"));
     }
 }

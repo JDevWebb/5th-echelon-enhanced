@@ -4,21 +4,35 @@ What's being worked on next, roughly in order. Plans change as testing and the g
 
 ## Next
 
+### Chat, in 0.4.5
+
+Global, friends and lobby chat in the launcher, with popups in the game, to find people to play with. On the community network, with a language filter on chat and names, and no links but Discord invites.
+
 ### Code signing for Windows
 
 A signed `launcher.exe` and client DLL, so antivirus programs stop guessing (see [Antivirus warnings](../README.md#antivirus-warnings)). Until then, each release is sent to Microsoft for review.
-
-### Global matchmaking
-
-One matchmaking server for everyone, relays kept near players, hosts ranked by ping: the second step of [cross-region play](#cross-region-play) below.
 
 ### Coordinator failover
 
 Moving the community network's coordinator to a one-level name, so Cloudflare can proxy it, then turning [failover](failover.md) on.
 
+### What's being played
+
+Players asked to see what people are playing before they start the game. Friends' lines in the launcher and the overlay name the mode and the map (SvM Classic or Blacklist, which co-op mission), and each server shows its open lobbies and matches by mode ("2 co-op lobbies, 1 SvM Classic match, 6/8"), public rooms only and without names, so it's clear where people are playing.
+
 ### When a public match's host leaves
 
 When the host of a public match leaves, the match ends for everyone else, since the 0.4.0 rule on who may take a session over doesn't count the players who joined from a search. Next: count them, and find out whether the game hands hosting over.
+
+## Later
+
+### Global matchmaking
+
+One matchmaking server for everyone, relays kept near players, hosts ranked by ping: the second step of [cross-region play](#cross-region-play) below.
+
+### Lobby browser
+
+Alongside global matchmaking: a list of every open public lobby, with its mode, map, players and seats. Joining still goes through the game's own search or an invite.
 
 ## Cross-region play
 

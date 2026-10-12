@@ -8,12 +8,13 @@ The config server on port 80 also answers a small JSON API under `/api/`, for la
 
 ```toml
 [community_api]
-info = true        # GET /api/info: name, version, features, and GET /api/news: the server's news (on by default)
+info = true        # GET /api/info: name, version, features; GET /api/news: the server's news; GET /api/playing: what's being played (on by default)
 presence = false   # GET /api/presence: registered players, who's online, what they're playing
 accounts = false   # POST /api/register and /api/login, for tools (register is refused with [limits] require_identity)
 unhandled = false  # GET /api/unhandled: game calls this server couldn't answer
 ```
 
+- **info** includes `/api/playing`, for the launcher and the overlay: the public matches by game mode, map and players (6/8, say), and how many private matches there are and how many players wait in lobbies. It never names anyone, and shows no more than a search in the game shows any player. A server in a network also sends it to the coordinator, whose directory lists it with the server.
 - **presence** shares every registered username and what each online player is doing. Turn it on only for a community whose players expect that.
 - **accounts** lets anyone who can reach port 80 create an account.
   - Registering and logging in are rate-limited per address (see `[limits]`).
@@ -118,7 +119,7 @@ require_tls_for_credentials = false  # true: passwords and sign-ins only over HT
 
 - With `require_identity = true` (the installer's default), accounts are only made through the launcher, linked to the player's identity: the launcher finds a player's account by their identity, so they never type a password, and accounts can't be unlinked. `/api/register` and password-only registrations are refused.
 
-- The login limits cover the game's own login, the launcher's (gRPC) and the community API. `failed_logins_per_10_minutes` counts failures: players sharing one address sign in often, and only password guessing fails a lot. `logins_per_10_minutes` counts every login, because each one checks a password, which takes the server real work; raise it if many players sign in from one address (a big LAN party playing on a server elsewhere). The launcher's name checks (`NameAvailable`, as a player types a name for a new account) are allowed as many again, counted on their own.
+- The login limits cover the game's own login, the launcher's (gRPC) and the community API. `failed_logins_per_10_minutes` counts failures (a wrong password or key; a login that worked, or was cut off or met a busy server, isn't one): players sharing one address sign in often, and only password guessing fails a lot. Over it, players are told *Too many failed logins*. `logins_per_10_minutes` counts every login, because each one checks a password, which takes the server real work; over it, players are told *Too many sign-ins from your address in a short time* (a game that keeps signing in again over a bad connection can get there). Raise it if many players sign in from one address (a big LAN party playing on a server elsewhere). The launcher's name checks (`NameAvailable`, as a player types a name for a new account) are allowed as many again, counted on their own.
 - When many logins at once keep the server checking passwords for more than a few seconds, further ones are answered "busy, try again" instead of waiting in line.
 - Players behind one address (a LAN party, a household) share the registration budget, so raise it if a big group sets up at once.
 - Requests from the server's own machine (loopback) are never limited.

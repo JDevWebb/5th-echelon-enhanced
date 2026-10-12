@@ -8,6 +8,9 @@
 //! * `GET /api/info` - what this server is and supports.
 //! * `GET /api/news` - the server's news (`data/news.json`, as the game's news
 //!   screen shows it), for the launcher. On with `info`.
+//! * `GET /api/playing` - what's being played here: public matches by mode, map and
+//!   players (no names), private matches and lobbies counted (`crate::playing`). On with
+//!   `info`.
 //! * `GET /api/presence` - every registered player, who's online and what
 //!   they're playing (`presence = true`).
 //! * `POST /api/register` `{"username","password"}` - create an account, as
@@ -55,6 +58,7 @@ const FEATURES: &[&str] = &[
 /// Session attributes (see game_session.rs): 101 map, 102 mode, 113 room kind
 /// (0 match, 1 lobby); `match_mode` tells co-op from Spies vs Mercs.
 const ATTR_MAP: u32 = 101;
+const ATTR_GAME_MODE: u32 = 102;
 const ATTR_ROOM_KIND: u32 = 113;
 
 /// The ports (and host) players connect to, for `/api/info`; set at start.
@@ -89,6 +93,10 @@ pub fn routes(storage: Arc<Storage>, cfg: CommunityApiConfig) -> Routes {
         Some(match (req.method.as_str(), path) {
             ("GET", "/api/info") if cfg.info => Response::json("200 OK", &info(cfg)),
             ("GET", "/api/news") if cfg.info => Response::json("200 OK", &news()),
+            ("GET", "/api/playing") if cfg.info => match playing(&storage) {
+                Ok(playing) => Response::json("200 OK", &json!(playing)),
+                Err(e) => internal(e),
+            },
             ("GET", "/api/presence") if cfg.presence => match storage.presence() {
                 Ok((players, sessions)) => Response::json("200 OK", &presence(&players, &sessions)),
                 Err(e) => internal(e),
@@ -103,16 +111,17 @@ pub fn routes(storage: Arc<Storage>, cfg: CommunityApiConfig) -> Routes {
             },
             ("POST", "/api/login") if cfg.accounts => {
                 let name = credentials(&req.body).map(|(u, _)| u).unwrap_or_default();
-                if rate_limit::begin_login(req.peer, &name) {
-                    let response = login(&storage, &req.body);
-                    if response.status_is("401 Unauthorized") {
-                        rate_limit::login_failed(req.peer, &name);
-                    } else if response.status_is("200 OK") {
-                        rate_limit::login_succeeded(req.peer, &name);
+                match rate_limit::begin_login(req.peer, &name) {
+                    Ok(attempt) => {
+                        let response = login(&storage, &req.body);
+                        if response.status_is("401 Unauthorized") {
+                            attempt.failed();
+                        } else if response.status_is("200 OK") {
+                            attempt.succeeded();
+                        }
+                        response
                     }
-                    response
-                } else {
-                    too_many()
+                    Err(refused) => too_many_logins(refused),
                 }
             }
             _ => Response::status("404 Not Found"),
@@ -156,9 +165,23 @@ fn news() -> Value {
     news
 }
 
+/// What's being played (`crate::playing`), worked out at most every few seconds (anyone
+/// may ask, as often as they like).
+fn playing(storage: &Storage) -> eyre::Result<server_api::playing::Playing> {
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, server_api::playing::Playing)>> = std::sync::Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if let Some((_, playing)) = cache.as_ref().filter(|(at, _)| at.elapsed() < crate::playing::FRESH_FOR) {
+        return Ok(playing.clone());
+    }
+    let playing = crate::playing::of(&crate::storage::run(storage.live_sessions_async())??);
+    *cache = Some((std::time::Instant::now(), playing.clone()));
+    Ok(playing)
+}
+
 fn info(cfg: CommunityApiConfig) -> Value {
     let mut features: Vec<&str> = FEATURES.to_vec();
     features.push("news");
+    features.push("playing");
     if cfg.presence {
         features.push("presence");
     }
@@ -231,6 +254,8 @@ pub(crate) struct Activity {
     /// The others in it.
     pub with: Vec<String>,
     pub map: Option<u32>,
+    /// The game's mode number (8 is SvM Classic), in a match.
+    pub game_mode: Option<u32>,
 }
 
 /// `name`'s activity: the match they're in (preferred) or their lobby.
@@ -252,6 +277,7 @@ pub(crate) fn activity_of(name: &str, sessions: &[LiveSession]) -> Option<Activi
         },
         with: best.players.iter().filter(|p| *p != name).cloned().collect(),
         map: attribute_value(&best.attributes, ATTR_MAP),
+        game_mode: attribute_value(&best.attributes, ATTR_GAME_MODE),
     })
 }
 
@@ -260,6 +286,9 @@ fn activity(name: &str, sessions: &[LiveSession]) -> Option<Value> {
     let mut v = json!({ "mode": a.mode, "room": a.room, "with": a.with });
     if let Some(map) = a.map {
         v["map"] = json!(map);
+    }
+    if let Some(game_mode) = a.game_mode {
+        v["game_mode"] = json!(game_mode);
     }
     Some(v)
 }
@@ -294,6 +323,11 @@ fn busy() -> Response {
 
 fn too_many() -> Response {
     Response::json("429 Too Many Requests", &json!({ "error": "too many attempts, try again later" }))
+}
+
+/// A sign-in refused by the login limits, saying which.
+fn too_many_logins(refused: rate_limit::Refused) -> Response {
+    Response::json("429 Too Many Requests", &json!({ "error": refused.message() }))
 }
 
 fn register(storage: &Storage, body: &[u8]) -> Response {
@@ -440,6 +474,11 @@ mod tests {
         assert!(status.contains("200"));
         let features = v["features"].as_array().unwrap();
         assert!(!features.iter().any(|f| f == "presence" || f == "accounts"), "switched-off parts aren't advertised");
+        // What's being played is on with info (no names in it).
+        assert!(features.iter().any(|f| f == "playing"));
+        let (status, v) = call(&routes, req("GET", "/api/playing", ""));
+        assert!(status.contains("200"), "{status}");
+        assert_eq!(v["matches"], json!([]));
         let creds = r#"{"username":"Kiwi","password":"correct horse battery"}"#;
         for (method, path, body) in [
             ("GET", "/api/presence", ""),
@@ -535,6 +574,10 @@ mod tests {
         let v = presence(&players, &sessions);
         let p = |name: &str| v["players"].as_array().unwrap().iter().find(|p| p["name"] == name).unwrap().clone();
         assert_eq!(p("Kiwi")["activity"], json!({"mode": "svm", "room": "match", "map": 7, "with": ["Tank"]}));
+        assert_eq!(activity_of("Kiwi", &sessions).unwrap().game_mode, None);
+        let mut classic = sessions.clone();
+        classic[1].attributes.push_str(";102 => 8");
+        assert_eq!(activity_of("Tank", &classic).unwrap().game_mode, Some(8));
         assert_eq!(p("Nexus")["activity"]["mode"], "coop");
         assert_eq!(p("Nexus")["activity"]["room"], "lobby");
         assert!(p("Tank").get("activity").is_none(), "offline players show no activity");

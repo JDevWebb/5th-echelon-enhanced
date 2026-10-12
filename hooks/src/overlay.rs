@@ -994,6 +994,23 @@ impl MyRenderLoop {
                 row += 1;
             }
         }
+        if let Some(playing) = &self.data.playing {
+            self.section(ui, "Playing on this server");
+            if playing.is_empty() {
+                ui.text_colored(MUTED, "Nobody's in a match or a lobby right now.");
+            }
+            for m in &playing.matches {
+                ui.text(m.line());
+            }
+            let rest = server_api::playing::Playing {
+                matches: Vec::new(),
+                ..playing.clone()
+            }
+            .summary();
+            if !rest.is_empty() {
+                ui.text_colored(MUTED, rest);
+            }
+        }
         if !self.data.elsewhere.is_empty() {
             self.section(ui, "On other servers");
             {

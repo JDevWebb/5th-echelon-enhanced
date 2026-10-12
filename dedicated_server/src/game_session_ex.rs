@@ -14,6 +14,7 @@ use quazal::ClientInfo;
 use quazal::Context;
 use slog::Logger;
 
+use crate::game_session::PROPERTY_DATA_VERSION;
 use crate::login_required;
 use crate::protocols::game_session_ex_service::game_session_ex_protocol::GameSessionExProtocolServer;
 use crate::protocols::game_session_ex_service::game_session_ex_protocol::GameSessionExProtocolServerTrait;
@@ -83,6 +84,7 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
                 logger,
                 "Answering invitation search of {user_id} with session {} of host {}", session.session_id, session.creator_id
             );
+            crate::join_targets::invited(user_id, session.session_id);
             vec![session]
         } else {
             // Without participants: the attributes decide first, and only the answer's few
@@ -122,29 +124,26 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
         if let Entry::Vacant(entry) = req_attrs.entry(103) {
             entry.insert(0);
         }
-        let sessions: Vec<_> = sessions
+        let scanned: Vec<_> = sessions
             .into_iter()
-            .filter(|session| {
-                if invitation_search {
-                    return true;
-                }
-                let Ok(sess_attrs) = session.attributes.parse::<QList<Property>>() else {
+            .filter_map(|session| {
+                let Ok(attrs) = session.attributes.parse::<QList<Property>>() else {
                     warn!(logger, "skipping session {} with unreadable attributes {:?}", session.session_id, session.attributes);
-                    return false;
+                    return None;
                 };
-                let sess_attrs = sess_attrs.0.into_iter().map(|p| (p.id, p.value)).collect::<HashMap<_, _>>();
-                for (id, value) in &req_attrs {
-                    if *id == 112 {
-                        // search request says 1 but in the session create request it says 2.
-                        // no idea what they mean, but we would like to find those sessions, so skip this check
-                        continue;
-                    }
-                    if sess_attrs.get(id) != Some(value) {
-                        return false;
-                    }
-                }
-                true
+                let attrs = attrs.0.into_iter().map(|p| (p.id, p.value)).collect::<HashMap<_, _>>();
+                Some((session, attrs))
             })
+            .collect();
+        let hidden = if invitation_search {
+            None
+        } else {
+            other_data(&req_attrs, scanned.iter().map(|(_, attrs)| attrs))
+        };
+        let sessions: Vec<_> = scanned
+            .into_iter()
+            .filter(|(_, attrs)| invitation_search || answers(&req_attrs, attrs, false))
+            .map(|(session, _)| session)
             .take(crate::game_session::MAX_SEARCH_RESULTS as usize)
             .collect();
         // The invited room comes with its participants already.
@@ -154,11 +153,27 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
             rmc_err!(self.storage.with_participants(sessions, UrlsFor::AllBut(user_id)), logger, "Error reading participants")?
         };
         info!(logger, "Found {} sessions", sessions.len());
-        crate::session_events::note(
-            crate::session_events::Who::Id(user_id),
-            "search",
-            serde_json::json!({ "query": request.game_session_query.query_id, "found": sessions.len() }),
-        );
+        let mut detail = serde_json::json!({ "query": request.game_session_query.query_id, "found": sessions.len() });
+        // Found nothing, but there are lobbies their game data keeps from them: the game
+        // says nothing of it, so the player and the admins hear it from us.
+        if let Some(hidden) = hidden.filter(|_| sessions.is_empty()) {
+            info!(
+                logger,
+                "{} open lobbies have other game data ({:#010x}, theirs {:#010x})", hidden.lobbies, hidden.mine, hidden.theirs
+            );
+            detail["other_data"] = serde_json::json!({
+                "lobbies": hidden.lobbies,
+                "mine": format!("{:#010x}", hidden.mine),
+                "theirs": format!("{:#010x}", hidden.theirs),
+                "mine_name": server_api::data_versions::name(hidden.mine),
+                "theirs_name": server_api::data_versions::name(hidden.theirs),
+            });
+            crate::reports::search_other_data(user_id, hidden.mine, hidden.theirs, hidden.lobbies);
+        }
+        crate::session_events::note(crate::session_events::Who::Id(user_id), "search", detail);
+        if !invitation_search {
+            crate::join_targets::searched(user_id, sessions.iter().map(|s| (s.session_id, s.creator_id)));
+        }
         Ok(SearchSessionsResponse {
             search_results: QList(
                 sessions
@@ -191,6 +206,81 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
     }
 }
 
+/// Whether a session's attributes answer a search's: every one the search names but 112
+/// (the search says 1 where the room says 2: no idea what it means, and we'd like those rooms
+/// found) and, with `any_data`, the game data ([`PROPERTY_DATA_VERSION`]).
+fn answers(search: &HashMap<u32, u32>, session: &HashMap<u32, u32>, any_data: bool) -> bool {
+    search
+        .iter()
+        .all(|(id, value)| *id == 112 || (any_data && *id == PROPERTY_DATA_VERSION) || session.get(id) == Some(value))
+}
+
+/// Open lobbies a search would have found but for their game data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OtherData {
+    lobbies: usize,
+    /// The searcher's data.
+    mine: u32,
+    /// What most of those lobbies have.
+    theirs: u32,
+}
+
+/// The lobbies among `sessions` that answer `search` in all but their game data, if any.
+fn other_data<'a>(search: &HashMap<u32, u32>, sessions: impl Iterator<Item = &'a HashMap<u32, u32>>) -> Option<OtherData> {
+    let mine = *search.get(&PROPERTY_DATA_VERSION)?;
+    let mut counts: HashMap<u32, usize> = HashMap::new();
+    for data in sessions
+        .filter(|s| answers(search, s, true))
+        .filter_map(|s| s.get(&PROPERTY_DATA_VERSION))
+        .filter(|data| **data != mine)
+    {
+        *counts.entry(*data).or_default() += 1;
+    }
+    let lobbies = counts.values().sum();
+    let (theirs, _) = counts.into_iter().max_by_key(|(data, n)| (*n, *data == server_api::data_versions::STOCK))?;
+    Some(OtherData { lobbies, mine, theirs })
+}
+
 pub fn new_protocol<T: 'static>(storage: Arc<Storage>) -> Box<dyn Protocol<T>> {
     Box::new(GameSessionExProtocolServer::new(GameSessionExProtocolServerImpl { storage }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const STOCK: u32 = server_api::data_versions::STOCK;
+    const MODDED: u32 = 0xc37e_d697;
+
+    fn attrs(list: &[(u32, u32)]) -> HashMap<u32, u32> {
+        list.iter().copied().collect()
+    }
+
+    /// ijsman's two PCs on na1 (2026-10-10): one modded, one not, each searching and finding
+    /// nothing while the other's lobby was open.
+    #[test]
+    fn lobbies_hidden_by_game_data_are_counted() {
+        let search = attrs(&[(106, 3_564_829), (107, MODDED), (103, 0), (112, 1)]);
+        let stock = attrs(&[(106, 3_564_829), (107, STOCK), (103, 0), (112, 2)]);
+        let other_mode = attrs(&[(106, 3_564_829), (107, STOCK), (103, 2_165_463_540), (112, 2)]);
+        let same = attrs(&[(106, 3_564_829), (107, MODDED), (103, 0), (112, 2)]);
+        assert!(answers(&search, &same, false), "112 never decides");
+        assert!(!answers(&search, &stock, false) && answers(&search, &stock, true));
+        assert_eq!(
+            other_data(&search, [&stock, &stock, &other_mode].into_iter()),
+            Some(OtherData {
+                lobbies: 2,
+                mine: MODDED,
+                theirs: STOCK
+            }),
+            "only lobbies the search wants otherwise"
+        );
+        assert_eq!(other_data(&search, [&other_mode, &same].into_iter()), None);
+        let no_data = attrs(&[(106, 3_564_829), (103, 0)]);
+        assert_eq!(other_data(&no_data, [&stock].into_iter()), None, "a search without game data");
+        // Several others: most of them, the unmodified game on a tie.
+        let a = attrs(&[(106, 3_564_829), (107, 1), (103, 0)]);
+        assert_eq!(other_data(&search, [&a, &stock].into_iter()).map(|o| (o.lobbies, o.theirs)), Some((2, STOCK)));
+        assert_eq!(other_data(&search, [&a, &a, &stock].into_iter()).map(|o| o.theirs), Some(1));
+    }
 }

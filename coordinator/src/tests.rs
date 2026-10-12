@@ -2196,6 +2196,29 @@ async fn all_servers_silent_is_one_alert_about_the_coordinator() {
         .unwrap();
     t.c.check_alerts().await.unwrap();
     assert_eq!(active().await, ["offline"]);
+    // The coordinator couldn't look its name up three times running: its own DNS, not the
+    // server's web server.
+    for ago in [0, 60, 120] {
+        sqlx::query("INSERT OR REPLACE INTO server_pings (server_id, at, ms, failure) VALUES ('srv-a', ?, NULL, 'lookup')")
+            .bind(now - ago)
+            .execute(&t.c.pool)
+            .await
+            .unwrap();
+    }
+    t.c.check_alerts().await.unwrap();
+    let mut kinds = active().await;
+    kinds.sort();
+    assert_eq!(kinds, ["dns", "offline"]);
+    // One of the three was an unanswered connection: that's the API again.
+    sqlx::query("UPDATE server_pings SET failure = 'connect' WHERE server_id = 'srv-a' AND at = ?")
+        .bind(now - 60)
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    t.c.check_alerts().await.unwrap();
+    let mut kinds = active().await;
+    kinds.sort();
+    assert_eq!(kinds, ["api", "offline"]);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -3121,6 +3144,131 @@ async fn players_suggest_from_the_launcher_and_admins_keep_the_roadmap() {
 }
 
 #[tokio::test]
+async fn the_roadmap_comes_up_to_the_projects_keeping_players_requests() {
+    let t = start("roadmap-project").await;
+    let r = admin_router(&t);
+    t.c.enable_roadmap();
+    let cookie = admin_cookie(&t, "admin1", 3600).await;
+    let item = |lane: &str, title: &str, body: &str| json!({ "lane": lane, "title": title, "body": body, "tags": ["Admin"], "status": "Planned", "public": true });
+    let mut ids = std::collections::HashMap::new();
+    for (lane, title, body) in [
+        ("shipping", "Support", "Write to the admins."),
+        ("next", "Chat and who's online", "Find people to play with."),
+        ("later", "Code signing", "A signed launcher."),
+        ("later", "Settings of our own", "Stop the launchers resetting each other."),
+        ("requested", "Favourite servers", "An admin's note of a request."),
+    ] {
+        let (status, v) = admin_call(&r, "POST", "/api/roadmap/items", &cookie, Some(item(lane, title, body))).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        ids.insert(title, v["id"].as_i64().unwrap());
+    }
+    // Two players' suggestions on the roadmap, one promoted to Next and one to Requested.
+    let mut promoted = Vec::new();
+    for (title, lane) in [("Show who's in each match", "next"), ("Bigger lobbies", "requested")] {
+        let sid: i64 = sqlx::query_scalar(
+            "INSERT INTO suggestions (global_id, name, server, launcher, area, title, text, created_at, updated_at)
+             VALUES ('ABC', 'Kiwi', '', '', 'Launcher', ?, 'Please.', 0, 0) RETURNING id",
+        )
+        .bind(title)
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+        let (status, v) = admin_call(&r, "POST", &format!("/api/suggestions/{sid}/promote"), &cookie, Some(json!({ "lane": lane }))).await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        promoted.push((sid, v["id"].as_i64().unwrap()));
+    }
+    sqlx::query("UPDATE roadmap_items SET updated_at = 1").execute(&t.c.pool).await.unwrap();
+
+    let project = json!({
+        "items": [
+            item("shipping", "Roadmap from the project", "One click after each release."),
+            item("shipping", "chat and who's online", "Find people to play with."),
+            item("later", "Code signing", "A signed launcher and DLL."),
+            item("later", "Settings of our own", "Stop the launchers resetting each other."),
+        ],
+        "releases": { "shipping": "0.4.4", "next": "0.4.5" },
+    });
+    // Signed in fully, or nothing.
+    assert_eq!(
+        admin_call(&r, "POST", "/api/roadmap/from-project", "", Some(project.clone())).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    let halfway = admin_cookie(&t, "admin2", 3600).await;
+    sqlx::query("UPDATE admin_sessions SET stage = 'password' WHERE admin_id = (SELECT id FROM admins WHERE username = 'admin2')")
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        admin_call(&r, "POST", "/api/roadmap/from-project", &halfway, Some(project.clone())).await.0,
+        StatusCode::UNAUTHORIZED
+    );
+    // Requested isn't the project's to fill, and a bad item changes nothing.
+    let mut bad = project.clone();
+    bad["items"].as_array_mut().unwrap().push(item("requested", "Ours", ""));
+    assert_eq!(admin_call(&r, "POST", "/api/roadmap/from-project", &cookie, Some(bad)).await.0, StatusCode::BAD_REQUEST);
+    let mut bad = project.clone();
+    bad["items"].as_array_mut().unwrap().push(item("next", "", ""));
+    assert_eq!(admin_call(&r, "POST", "/api/roadmap/from-project", &cookie, Some(bad)).await.0, StatusCode::BAD_REQUEST);
+    let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM roadmap_items").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(count, 7);
+
+    let (status, v) = admin_call(&r, "POST", "/api/roadmap/from-project", &cookie, Some(project.clone())).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v, json!({ "added": 1, "changed": 1, "moved": 1, "removed": 1, "kept": 1 }));
+    let (_, road) = admin_call(&r, "GET", "/api/roadmap", &cookie, None).await;
+    let lane = |id: &str| -> Vec<(i64, String)> {
+        let mut items: Vec<&Value> = road["items"].as_array().unwrap().iter().filter(|i| i["lane"] == id).collect();
+        items.sort_by_key(|i| (i["position"].as_i64(), i["id"].as_i64()));
+        items.iter().map(|i| (i["id"].as_i64().unwrap(), i["title"].as_str().unwrap().to_string())).collect()
+    };
+    let shipping = lane("shipping");
+    assert_eq!(shipping.len(), 2, "{road}");
+    assert_eq!(shipping[0].1, "Roadmap from the project");
+    // Matched by title whatever its case: the same item, moved, now spelt as the project's.
+    assert_eq!(shipping[1], (ids["Chat and who's online"], "chat and who's online".to_string()));
+    assert_eq!(lane("next"), [(promoted[0].1, "Show who's in each match".to_string())]);
+    assert_eq!(
+        lane("later"),
+        [
+            (ids["Code signing"], "Code signing".to_string()),
+            (ids["Settings of our own"], "Settings of our own".to_string())
+        ]
+    );
+    assert_eq!(
+        lane("requested"),
+        [(ids["Favourite servers"], "Favourite servers".to_string()), (promoted[1].1, "Bigger lobbies".to_string())]
+    );
+    // An item the project's left as it was isn't marked changed.
+    let unchanged: i64 = sqlx::query_scalar("SELECT updated_at FROM roadmap_items WHERE id = ?")
+        .bind(ids["Settings of our own"])
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(unchanged, 1);
+    // The players' suggestions still lead to their items.
+    for (sid, item_id) in &promoted {
+        let linked: Option<i64> = sqlx::query_scalar("SELECT item_id FROM suggestions WHERE id = ?")
+            .bind(sid)
+            .fetch_one(&t.c.pool)
+            .await
+            .unwrap();
+        assert_eq!(linked, Some(*item_id));
+    }
+    let releases: Vec<String> = road["lanes"].as_array().unwrap().iter().map(|l| l["release"].as_str().unwrap().to_string()).collect();
+    assert_eq!(releases, ["0.4.4", "0.4.5", "", ""]);
+    let (event, detail): (String, String) = sqlx::query_as("SELECT event, detail FROM audit ORDER BY id DESC LIMIT 1")
+        .fetch_one(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(event, "roadmap: updated from the project");
+    assert_eq!(detail, "for 0.4.4: 1 added, 1 changed, 1 moved, 1 removed, 1 players' items kept");
+
+    // Again: nothing more to do.
+    let (status, v) = admin_call(&r, "POST", "/api/roadmap/from-project", &cookie, Some(project)).await;
+    assert_eq!((status, v), (StatusCode::OK, json!({ "added": 0, "changed": 0, "moved": 0, "removed": 0, "kept": 1 })));
+}
+
+#[tokio::test]
 async fn players_write_to_support_and_read_the_admins_answers() {
     use std::io::Write as _;
 
@@ -3502,6 +3650,32 @@ async fn listings_keep_to_a_believable_count() {
     let (_, v) = t.call("GET", "/v1/servers", None, None).await;
     let a_listed = v["servers"].as_array().unwrap().iter().find(|s| s["name"] == "Server A").cloned().unwrap();
     assert_eq!(a_listed["players_online"], json!(MAX_LISTED_PLAYERS));
+}
+
+/// What a server says is being played is listed with it, cut to what a listing may say.
+#[tokio::test]
+async fn listings_say_what_is_being_played() {
+    let t = start("listing-playing").await;
+    let a = t.join("server-a").await;
+    let matches: Vec<Value> = (0..40).map(|_| json!({ "game_mode": 8, "kind": "<i>", "map": 1, "players": 999, "seats": 999 })).collect();
+    let playing = json!({ "matches": matches, "private_matches": 1_000_000, "lobby_players": 3, "names": ["Kiwi"] });
+    let (status, _) = t
+        .call(
+            "POST",
+            "/v1/heartbeat",
+            Some(&a),
+            Some(json!({ "name": "Server A", "host": "server-a", "names": ["server-a"], "players_online": 20, "players_total": 50, "playing": playing })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, v) = t.call("GET", "/v1/servers", None, None).await;
+    let listed = v["servers"].as_array().unwrap().iter().find(|s| s["name"] == "Server A").cloned().unwrap();
+    let playing = &listed["playing"];
+    assert_eq!(playing["matches"].as_array().unwrap().len(), 12);
+    assert_eq!(playing["matches"][0], json!({ "game_mode": 8, "kind": "", "map": 1, "players": 16, "seats": 16 }));
+    assert_eq!(playing["private_matches"], 20, "not past the players online");
+    assert_eq!(playing["lobby_players"], 3);
+    assert!(playing.get("names").is_none(), "nothing else is kept");
 }
 
 /// Waits until every server's host check is of `target`; their results by id.
