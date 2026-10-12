@@ -39,6 +39,45 @@ pub struct Release {
 /// Newest first. A release with nothing a player would notice has no entry.
 pub const RELEASES: &[Release] = &[
     Release {
+        version: "0.4.4",
+        thanks: &["FANTOMAS", "d15_HB", "Oni", "PlaySkill", "ijsman", "Renegade", "nano_machine", "Ghost_Leader"],
+        new: &[
+            Item {
+                title: "See what's being played",
+                text: "Friends show their mode and map (SvM Classic · Virus Vault), and each server its open matches by mode, map and players: under Playing now on the Friends card, in the server list, and in the overlay.",
+                community: false,
+            },
+            Item {
+                title: "Know why a join failed",
+                text: "A full lobby, a closed one, or game data that differ: the launcher says which, and whose game has the mod.",
+                community: false,
+            },
+            Item {
+                title: "Mods that hide lobbies",
+                text: "The game only shows lobbies with the same game data as yours. When a search finds nothing because of that, the launcher tells you.",
+                community: false,
+            },
+        ],
+        fixed: &[
+            Fix {
+                lead: "A public match goes on",
+                rest: " when its host leaves.",
+            },
+            Fix {
+                lead: "Searches skip full lobbies",
+                rest: ", and an invitation doesn't put you into one.",
+            },
+            Fix {
+                lead: "Joining through the relay connects at once",
+                rest: ", without waiting for the server.",
+            },
+            Fix {
+                lead: "\"Too many failed logins\" only after wrong passwords",
+                rest: ", not after sign-ins that worked.",
+            },
+        ],
+    },
+    Release {
         version: "0.4.3",
         thanks: &["Oni", "PlaySkill", "Icky", "tacit_danger", "SirCooms", "Daramos", "Renegade"],
         new: &[
