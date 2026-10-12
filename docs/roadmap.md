@@ -4,6 +4,10 @@ What's being worked on next, roughly in order. Plans change as testing and the g
 
 ## Next
 
+### Chat, in 0.4.5
+
+Global, friends and lobby chat in the launcher, with popups in the game, to find people to play with. On the community network, with a language filter on chat and names, and no links but Discord invites.
+
 ### Code signing for Windows
 
 A signed `launcher.exe` and client DLL, so antivirus programs stop guessing (see [Antivirus warnings](../README.md#antivirus-warnings)). Until then, each release is sent to Microsoft for review.

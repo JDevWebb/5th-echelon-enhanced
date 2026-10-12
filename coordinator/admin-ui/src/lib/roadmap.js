@@ -22,7 +22,7 @@ export const STARTING_ITEMS = [
   ['shipping', 'Joining and connection fixes', 'From players\' reports: joining from a search through the relay, searches that skip full rooms, and clearer reasons when a join fails.', ['Server', 'Network'], 'In 0.4.4'],
   ['shipping', 'A match\'s end isn\'t a dropout', 'The Sessions page tells everyone leaving at the end of a match from a player dropping out.', ['Admin'], 'In 0.4.4'],
   ['shipping', 'What\'s being played', 'Friends\' modes and maps (SvM Classic or Blacklist, co-op), and each server\'s open lobbies and matches by mode, in the launcher and the overlay.', ['Launcher', 'Overlay', 'Server'], 'In 0.4.4'],
-  ['next', 'Chat and who\'s online', 'Find people to play with from the launcher, with popups in the game. Community network only.', ['Launcher', 'Overlay'], 'Planned'],
+  ['next', 'Chat and who\'s online', 'Find people to play with from the launcher, with popups in the game. Community network only.', ['Launcher', 'Overlay'], 'In 0.4.5'],
   ['next', 'Coordinator failover', 'Move the coordinator to a one-level name so Cloudflare can proxy it, then turn failover on.', ['Ops'], 'Planned'],
   ['next', 'Fewer relayed matches', 'Relayed players connect straight to hosts that have a port open.', ['Network'], 'Planned'],
   ['later', 'Global matchmaking', 'One matchmaking server for everyone, relays kept near players, hosts ranked by ping.', ['Server', 'Network'], 'Later'],
