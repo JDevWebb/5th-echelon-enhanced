@@ -158,6 +158,19 @@ fn attribute_sql(id: u32) -> String {
     format!("COALESCE(CAST(substr(';' || g.attributes || ';', NULLIF(instr(';' || g.attributes || ';', '{key}'), 0) + {len}) AS INTEGER), 0)")
 }
 
+/// SQL: whether invitation `i` (an `invites` row) still leads into its room: one its host
+/// sent, or one a member sent to a party (room kind 1) they're still a participant of. A
+/// member's invitation is to the party only: once the room is anything else (its participants
+/// may change its attributes), or they've left it, it gets nobody in.
+fn invite_holds_sql(i: &str) -> String {
+    format!(
+        "EXISTS (SELECT 1 FROM game_sessions g WHERE g.id = {i}.session_id AND g.type_id = {i}.session_type
+           AND (g.creator_id = {i}.sender
+                OR ({kind} = 1 AND EXISTS (SELECT 1 FROM participants s WHERE s.game_id = g.id AND s.user_id = {i}.sender))))",
+        kind = attribute_sql(113)
+    )
+}
+
 /// SQL: the seats of game session `g`, its public (attribute 3) plus private (4) ones as its
 /// host last sent them (CreateSession, UpdateSession). They're the room's size, not its free
 /// seats, and the host's choice: co-op starts at 2 and hosts raise it to 4-6, which the game
@@ -996,6 +1009,27 @@ impl Storage {
         .await?)
     }
 
+    /// The parties (room kind 1) `user_id` is a participant of without hosting them, their
+    /// host still in them, newest first: where a member's invitation may lead (the invite
+    /// handler checks the host trusts them). Not a party they're only a guest of: anyone may
+    /// join one by its id.
+    pub async fn member_parties_async(&self, user_id: u32) -> Result<Vec<GameSession>> {
+        let query = format!(
+            r"
+            SELECT g.type_id AS session_type, g.id AS session_id, g.creator_id, g.attributes
+            FROM game_sessions g
+            INNER JOIN participants h ON h.game_id = g.id AND h.user_id = g.creator_id
+            WHERE g.creator_id != ?1
+              AND g.destroyed_at IS NULL
+              AND {kind} = 1
+              AND EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?1)
+            ORDER BY g.id DESC
+            ",
+            kind = attribute_sql(113)
+        );
+        Ok(sqlx::query_as(&query).bind(user_id).fetch_all(&self.pool).await?)
+    }
+
     /// Records one pending invitation, optionally bound to an exact room.
     ///
     /// A receiver keeps one invitation per sender (a new one from the same sender replaces
@@ -1094,7 +1128,7 @@ impl Storage {
     }
 
     pub async fn find_pending_invited_session_async(&self, receiver_id: u32, session_type: u32, hosts: &[u32]) -> Result<Option<GameSession>> {
-        let mut candidates: Vec<GameSession> = sqlx::query_as(
+        let query = format!(
             r"
             SELECT g.type_id AS session_type, g.id AS session_id, g.creator_id, g.attributes
             FROM invites i
@@ -1104,15 +1138,13 @@ impl Storage {
               AND i.session_type = ?
               AND i.consumed_at IS NULL
               AND i.expires_at > CURRENT_TIMESTAMP
-              AND g.creator_id = i.sender
+              AND {holds}
               AND g.destroyed_at IS NULL
             ORDER BY i.created DESC, i.id DESC
             ",
-        )
-        .bind(receiver_id)
-        .bind(session_type)
-        .fetch_all(&self.pool)
-        .await?;
+            holds = invite_holds_sql("i")
+        );
+        let mut candidates: Vec<GameSession> = sqlx::query_as(&query).bind(receiver_id).bind(session_type).fetch_all(&self.pool).await?;
         let pick = candidates.iter().position(|s| hosts.contains(&s.creator_id)).unwrap_or(0);
         let mut session = (!candidates.is_empty()).then(|| candidates.swap_remove(pick));
 
@@ -1147,13 +1179,14 @@ impl Storage {
     /// Called after `JoinSession`, never before - an invitation consumed too early is exactly
     /// the failure this whole mechanism exists to avoid.
     pub fn consume_invite_for_session(&self, receiver_id: u32, session_type: u32, session_id: u32) -> Result<bool> {
-        let affected = run(
-            sqlx::query("UPDATE invites SET consumed_at = CURRENT_TIMESTAMP WHERE receiver = ? AND session_type = ? AND session_id = ? AND consumed_at IS NULL")
-                .bind(receiver_id)
-                .bind(session_type)
-                .bind(session_id)
-                .execute(&self.pool),
-        )??
+        let affected = run(sqlx::query(&format!(
+            "UPDATE invites SET consumed_at = CURRENT_TIMESTAMP WHERE receiver = ? AND session_type = ? AND session_id = ? AND consumed_at IS NULL AND {}",
+            invite_holds_sql("invites")
+        ))
+        .bind(receiver_id)
+        .bind(session_type)
+        .bind(session_id)
+        .execute(&self.pool))??
         .rows_affected();
         Ok(affected > 0)
     }
@@ -1600,10 +1633,11 @@ impl Storage {
     /// Whether `user_id` has a pending invitation into `session_id`: the API's
     /// (not consumed, not expired) or the game's own.
     pub fn is_invited(&self, user_id: u32, session_id: u32) -> Result<bool> {
-        let n: i64 = run(sqlx::query_scalar(
-            "SELECT (SELECT COUNT(*) FROM invites WHERE receiver = ? AND session_id = ? AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP)
+        let n: i64 = run(sqlx::query_scalar(&format!(
+            "SELECT (SELECT COUNT(*) FROM invites WHERE receiver = ? AND session_id = ? AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP AND {})
                   + (SELECT COUNT(*) FROM game_session_invites WHERE receiver = ? AND session_id = ?)",
-        )
+            invite_holds_sql("invites")
+        ))
         .bind(user_id)
         .bind(session_id)
         .bind(user_id)
@@ -1989,6 +2023,52 @@ pub(crate) mod tests {
         assert!(storage.was_member(party, member).unwrap(), "taken off it, still once in it");
         assert!(storage.was_member(party, guest).unwrap());
         assert!(!storage.was_member(party, stranger).unwrap(), "never in it");
+        drop(storage);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_party_members_invitation_is_to_that_party() {
+        let (storage, dir) = temp_storage("member-invite");
+        for (name, ubi) in [("Host", "HOST"), ("Member", "MEMBER"), ("Friend", "FRIEND")] {
+            storage.register_user(name, "pw", Some(ubi)).unwrap();
+        }
+        let id = |n: &str| storage.find_user_id_by_name(n).unwrap().unwrap();
+        let (host, member, friend) = (id("Host"), id("Member"), id("Friend"));
+        let party = storage.create_game_session(host, 1, "113 => 1;103 => 0".into()).unwrap();
+        storage.add_participants(1, party, vec![], vec![host, member]).unwrap();
+        let private = storage.create_game_session(host, 1, "113 => 0;3 => 0;4 => 4".into()).unwrap();
+        storage.add_participants(1, private, vec![host, member], vec![]).unwrap();
+
+        let parties = run(storage.member_parties_async(member)).unwrap().unwrap();
+        assert_eq!(parties.iter().map(|s| s.session_id).collect::<Vec<_>>(), [party], "the party, not the host's private match");
+        assert!(run(storage.member_parties_async(host)).unwrap().unwrap().is_empty(), "a host's own rooms are its own");
+
+        run(storage.add_invite_async(member, friend, Some(1), Some(party))).unwrap().unwrap();
+        let found = storage.find_pending_invited_session(friend, 1, &[member]).unwrap();
+        assert_eq!(found.map(|s| s.session_id), Some(party), "the invited friend finds the member's party");
+        assert!(storage.is_invited(friend, party).unwrap());
+
+        // Only while it's a party: its participants may change its attributes, and a member's
+        // invitation never leads into a private match.
+        storage.update_game_session(1, party, "113 => 0;3 => 0;4 => 4".into()).unwrap();
+        assert!(storage.find_pending_invited_session(friend, 1, &[member]).unwrap().is_none(), "turned into a match");
+        assert!(!storage.is_invited(friend, party).unwrap(), "no way into it as a private match");
+        assert!(!storage.consume_invite_for_session(friend, 1, party).unwrap(), "nor does joining it count as invited");
+        storage.update_game_session(1, party, "113 => 1;103 => 0".into()).unwrap();
+        assert!(storage.is_invited(friend, party).unwrap(), "a party again");
+
+        // Only while the member is in it.
+        storage.remove_participants(1, party, vec![member]).unwrap();
+        assert!(!storage.is_invited(friend, party).unwrap(), "the member left");
+        assert!(storage.find_pending_invited_session(friend, 1, &[member]).unwrap().is_none());
+
+        // A guest of a party (anyone may join one by its id) has no say in it.
+        assert!(storage.add_guest(party, member, true).unwrap());
+        assert!(
+            run(storage.member_parties_async(member)).unwrap().unwrap().is_empty(),
+            "a guest isn't a member who may invite"
+        );
         drop(storage);
         let _ = std::fs::remove_dir_all(dir);
     }

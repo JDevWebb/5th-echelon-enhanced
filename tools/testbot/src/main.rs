@@ -1804,6 +1804,66 @@ async fn party_member_split(ctx: &mut Ctx) -> Result<()> {
     Ok(())
 }
 
+/// A party member the host is friends with invites to the party: the newcomer gets into it
+/// though it's invite-only. Someone who walked in by the party's id may not, and a member's
+/// invitation never leads into a private match, even one the party was turned into.
+async fn member_invite(ctx: &mut Ctx) -> Result<()> {
+    let mut host = ctx.player("Host").await?;
+    let mut member = ctx.player("Member").await?;
+    let mut newcomer = ctx.player("Newcomer").await?;
+    let mut walkin = ctx.player("Walkin").await?;
+    let mut other = ctx.player("Other").await?;
+    let mut late = ctx.player("Late").await?;
+    ensure!(host.friend_change("request", &member.name).await? == Relation::RequestSent, "no friend request");
+    ensure!(member.friend_change("accept", &host.name).await? == Relation::Friend, "not friends");
+    let party = host.create_session(LOBBY).await?;
+    host.add_participants(party, &[host.pid], &[]).await?;
+    member.add_participants(party, &[member.pid], &[]).await?;
+    // Walks in by the party's id while it's public; then the host makes it invite-only.
+    walkin.add_participants(party, &[walkin.pid], &[]).await?;
+    host.set_session(party, true).await?;
+    let in_party = |found: &[GameSessionSearchWithParticipantsResult], who: u32| {
+        found
+            .iter()
+            .find(|r| r.game_session_search_result.session_key.session_id == party)
+            .is_some_and(|r| r.participant_ids.0.contains(&who))
+    };
+
+    member.invite(&newcomer.name).await?;
+    ensure!(newcomer.poll_invite(Duration::from_secs(3)).await?.is_some(), "the member's invitation wasn't delivered");
+    ensure!(
+        has_session(&newcomer.search_with_participants(&[member.pid]).await?, party),
+        "the newcomer doesn't find the member's party"
+    );
+    newcomer.join_session(party).await?;
+    ensure!(
+        in_party(&host.search_with_participants(&[host.pid]).await?, newcomer.pid),
+        "invited by a member, the newcomer isn't in the invite-only party"
+    );
+
+    // Walked in by the party's id: not a member the host trusts.
+    walkin.invite(&other.name).await?;
+    ensure!(other.poll_invite(Duration::from_secs(3)).await?.is_some(), "the walk-in's invitation wasn't delivered");
+    other.join_session(party).await?;
+    ensure!(
+        !in_party(&host.search_with_participants(&[host.pid]).await?, other.pid),
+        "invited by someone who walked in, a stranger got into the invite-only party"
+    );
+
+    // Turned into a private match, the member's invitation leads nowhere.
+    member.invite(&late.name).await?;
+    ensure!(late.poll_invite(Duration::from_secs(3)).await?.is_some(), "the second invitation wasn't delivered");
+    member.update_session(party, PRIVATE_MATCH).await?;
+    ensure!(
+        late.add_participants(party, &[], &[late.pid]).await.is_err(),
+        "a member's invitation got someone into a private match"
+    );
+    for bot in [host, member, newcomer, walkin, other, late] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
 /// Someone joining a public match from a search reaches its players through the relay
 /// before their join reaches the server (the host's game has them connect first), once
 /// they've probed its host: not before, and not by probes.
@@ -1972,6 +2032,7 @@ const SCENARIOS: &[&str] = &[
     "public-match-probes",
     "party-probes",
     "party-member-split",
+    "member-invite",
     "relay-to-joiner",
     "search-other-data",
     "whats-being-played",
@@ -2115,6 +2176,7 @@ async fn main() -> Result<()> {
                 "public-match-probes" => public_match_probes(&mut ctx).await,
                 "party-probes" => party_probes(&mut ctx).await,
                 "party-member-split" => party_member_split(&mut ctx).await,
+                "member-invite" => member_invite(&mut ctx).await,
                 "relay-to-joiner" => relay_to_joiner(&mut ctx).await,
                 "search-other-data" => search_other_data(&mut ctx).await,
                 "whats-being-played" => whats_being_played(&mut ctx).await,
