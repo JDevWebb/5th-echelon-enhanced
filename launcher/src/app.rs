@@ -60,19 +60,41 @@ pub struct Game {
     pub cfg: ConfigMut,
     /// Set when another tool manages this install (`uplay.override.toml`).
     pub managed: Option<Managed>,
+    /// Set when the game's own Uplay DLL is an emulator (a crack): not a setup we support.
+    pub uplay_emulator: bool,
+    /// The player closed the notice about the emulator: not shown again.
+    pub uplay_emulator_told: bool,
+    /// The Uplay DLLs' sizes and times when [`Self::uplay_emulator`] was last worked out.
+    uplay_dlls: Vec<Option<(u64, std::time::SystemTime)>>,
 }
 
 impl Game {
     pub fn open(dir: PathBuf) -> Self {
         let cfg = Config::load(&dir);
         let managed = setup::overrides::managed_by(&dir);
-        Self { dir, cfg, managed }
+        let uplay_dlls = uplay_dlls(&dir);
+        let uplay_emulator = setup::install::uplay_emulator(&dir);
+        let uplay_emulator_told = Prefs::uplay_emulator_told();
+        Self {
+            dir,
+            cfg,
+            managed,
+            uplay_emulator,
+            uplay_emulator_told,
+            uplay_dlls,
+        }
     }
 
     /// Picks up changes to the settings made on another thread or by hand.
     pub fn reload(&mut self) {
         self.cfg.reload_if_changed();
         self.managed = setup::overrides::managed_by(&self.dir);
+        // Read again only when a DLL changed (an install, a crack put in or taken out).
+        let dlls = uplay_dlls(&self.dir);
+        if dlls != self.uplay_dlls {
+            self.uplay_emulator = setup::install::uplay_emulator(&self.dir);
+            self.uplay_dlls = dlls;
+        }
     }
 
     /// Changes the settings, reporting a failure to save.
@@ -81,6 +103,14 @@ impl Game {
             notices.error(format!("Couldn't save the settings: {e}"));
         }
     }
+}
+
+/// The size and time of the game folder's Uplay DLLs, to tell when one changes.
+fn uplay_dlls(dir: &Path) -> Vec<Option<(u64, std::time::SystemTime)>> {
+    [setup::install::DLL_NAME, setup::install::ORIG_DLL_NAME]
+        .iter()
+        .map(|name| std::fs::metadata(dir.join(name)).ok().and_then(|m| Some((m.len(), m.modified().ok()?))))
+        .collect()
 }
 
 /// The directory, as last read from disk.
@@ -134,6 +164,9 @@ pub struct Prefs {
     /// The newest support answer the player was told of (support.rs), by its id.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     support_seen: Option<i64>,
+    /// The player closed the notice that a Uplay emulator isn't a supported setup.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    uplay_emulator_told: bool,
 }
 
 /// A server the player connected to by its address.
@@ -266,6 +299,16 @@ impl Prefs {
     pub fn set_whats_new_seen(release: &str) {
         let mut prefs = Self::load();
         prefs.whats_new_seen = Some(release.to_string());
+        prefs.save();
+    }
+
+    pub fn uplay_emulator_told() -> bool {
+        Self::load().uplay_emulator_told
+    }
+
+    pub fn set_uplay_emulator_told() {
+        let mut prefs = Self::load();
+        prefs.uplay_emulator_told = true;
         prefs.save();
     }
 

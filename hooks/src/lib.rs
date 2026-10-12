@@ -243,6 +243,13 @@ fn check_orig_library(hmodule: Option<HMODULE>) {
     if matches!(orig_info.company.as_deref(), Some("5th Echelon")) {
         fatal_error!("uplay_r1_loader.orig.dll is invalid: Not Ubisoft version");
     }
+    // Left to the player; logged so a report shows it isn't a supported setup.
+    if [&orig_info.product, &orig_info.company]
+        .iter()
+        .any(|s| s.as_deref().is_some_and(|s| s.to_ascii_lowercase().contains("emulator")))
+    {
+        warn!("uplay_r1_loader.orig.dll is a Uplay emulator, not Ubisoft's: not a supported setup");
+    }
 }
 
 #[instrument(skip_all)]

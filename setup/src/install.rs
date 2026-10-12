@@ -43,6 +43,30 @@ pub fn is_5th_echelon_dll(data: &[u8]) -> bool {
     data.windows(marker.len()).any(|w| w == marker)
 }
 
+/// Text found in Uplay emulators (the DLLs cracks put in place of the game's own), in their
+/// code or their version resource, lower case. Only names no genuine Ubisoft DLL carries:
+/// a false match would tell a player with a bought copy that theirs isn't one.
+const EMULATOR_MARKERS: &[&str] = &["uplay_emu", "uplay r1 emulator", "loader emulator", "lumaemu"];
+
+/// Whether `data` is a Uplay emulator rather than Ubisoft's DLL.
+pub fn is_uplay_emulator(data: &[u8]) -> bool {
+    let data = data.to_ascii_lowercase();
+    EMULATOR_MARKERS.iter().any(|m| {
+        let wide: Vec<u8> = m.encode_utf16().flat_map(u16::to_le_bytes).collect();
+        [m.as_bytes(), &wide[..]].iter().any(|marker| data.windows(marker.len()).any(|w| w == *marker))
+    })
+}
+
+/// Whether the game's own Uplay DLL in `game_dir` (the kept one once the client's installed)
+/// is an emulator. Players may run their game as they like; the launcher says it isn't a
+/// setup we support.
+pub fn uplay_emulator(game_dir: &Path) -> bool {
+    let own = std::fs::read(game_dir.join(ORIG_DLL_NAME))
+        .ok()
+        .or_else(|| std::fs::read(game_dir.join(DLL_NAME)).ok().filter(|d| !is_5th_echelon_dll(d)));
+    own.is_some_and(|d| is_uplay_emulator(&d))
+}
+
 /// What's installed in `game_dir`, compared with `bundled` (the DLL this
 /// launcher carries).
 pub fn client_state(game_dir: &Path, bundled: &[u8]) -> ClientState {
@@ -175,6 +199,29 @@ mod tests {
         install(&dir, &ours("v1")).unwrap();
         assert_eq!(std::fs::read(dir.join(ORIG_DLL_NAME)).unwrap(), theirs());
         assert!(!dir.join(format!("{ORIG_DLL_NAME}.tmp")).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn uplay_emulators_are_told_from_the_game_dll() {
+        let dir = temp_dir("install-emu");
+        std::fs::write(dir.join(DLL_NAME), theirs()).unwrap();
+        assert!(!uplay_emulator(&dir));
+
+        // One in the version resource only (UTF-16), and one in its code only.
+        let mut emu = theirs();
+        emu.extend("Uplay R1 EMULATOR".encode_utf16().flat_map(u16::to_le_bytes));
+        assert!(is_uplay_emulator(&emu));
+        assert!(is_uplay_emulator(b"MZ iCARUS_Uplay_EMU"));
+        assert!(!is_uplay_emulator(&ours("v1")));
+
+        // Before the client's installed, and after (the kept original).
+        std::fs::write(dir.join(DLL_NAME), &emu).unwrap();
+        assert!(uplay_emulator(&dir));
+        install(&dir, &ours("v1")).unwrap();
+        assert!(uplay_emulator(&dir));
+        std::fs::write(dir.join(ORIG_DLL_NAME), theirs()).unwrap();
+        assert!(!uplay_emulator(&dir));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

@@ -840,6 +840,40 @@ fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Con
                 )));
             });
     }
+    if game.uplay_emulator && !game.uplay_emulator_told {
+        let dismissed = egui::Frame::new()
+            .fill(theme::WARN.linear_multiply(0.12))
+            .inner_margin(egui::Margin {
+                left: 32,
+                right: 24,
+                top: 10,
+                bottom: 10,
+            })
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width() - 40.0, 28.0),
+                        egui::Layout::top_down(egui::Align::LEFT).with_main_align(egui::Align::Center),
+                        |ui| {
+                            ui.label(
+                                "This game's Ubisoft Connect DLL has been replaced by an emulator. That's up to you and we don't mind, \
+                                 but it isn't a setup we support: if something doesn't work with it, we may not be able to help.",
+                            );
+                        },
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        crate::activity::close_button(ui).on_hover_text("Dismiss: don't show this again").clicked()
+                    })
+                    .inner
+                })
+                .inner
+            })
+            .inner;
+        if dismissed {
+            game.uplay_emulator_told = true;
+            crate::app::Prefs::set_uplay_emulator_told();
+        }
+    }
     hero(play, game, &mut to, ui);
     let notice = update_notice(play, game, ctx);
     launch_bar(play, game, notices, notice.as_ref(), &mut to, ui);

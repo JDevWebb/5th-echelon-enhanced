@@ -484,7 +484,7 @@ fn steps_button(ui: &mut egui::Ui, open: bool) -> egui::Response {
 }
 
 /// A small painted cross, to dismiss.
-fn close_button(ui: &mut egui::Ui) -> egui::Response {
+pub(crate) fn close_button(ui: &mut egui::Ui) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
     let p = ui.painter();
     if response.hovered() {
