@@ -350,9 +350,28 @@ impl Friends for MyFriends {
         // The client sorts both rooms by that same attribute when it answers the invitation,
         // and it gives the match room precedence - see `search_sessions_with_participants`
         // in `game_session.rs` for the full picture.
-        let room = host_sessions.iter().find(|session| is_private_room(session)).or_else(|| host_sessions.first());
+        // A member of someone else's party invites to that party (the game lets them): bound to
+        // it, the join counts as by invitation, and the newcomer is in the party even when it's
+        // invite-only (eu1: 9 such invitations unbound in five days). Only a party: a host's
+        // private match takes whom its host invites.
+        let member_parties = if host_sessions.is_empty() {
+            self.storage.member_parties_async(sender).await.map_err(internal)?
+        } else {
+            Vec::new()
+        };
+        let room = host_sessions
+            .iter()
+            .find(|session| is_private_room(session))
+            .or_else(|| host_sessions.first())
+            .or_else(|| member_parties.first());
 
         match room {
+            Some(room) if room.creator_id != sender => {
+                info!(
+                    self.logger,
+                    "Binding invitation to party session {} of host {}, which {sender} is in", room.session_id, room.creator_id
+                );
+            }
             Some(room) => info!(
                 self.logger,
                 "Binding invitation to {} {} of host {sender}",

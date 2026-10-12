@@ -996,6 +996,26 @@ impl Storage {
         .await?)
     }
 
+    /// The parties (room kind 1) `user_id` is in without hosting them, their host still in
+    /// them, newest first: an invitation a party's member sends is to that party.
+    pub async fn member_parties_async(&self, user_id: u32) -> Result<Vec<GameSession>> {
+        let query = format!(
+            r"
+            SELECT g.type_id AS session_type, g.id AS session_id, g.creator_id, g.attributes
+            FROM game_sessions g
+            INNER JOIN participants h ON h.game_id = g.id AND h.user_id = g.creator_id
+            WHERE g.creator_id != ?1
+              AND g.destroyed_at IS NULL
+              AND {kind} = 1
+              AND (EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?1)
+                   OR EXISTS (SELECT 1 FROM guests q WHERE q.game_id = g.id AND q.user_id = ?1))
+            ORDER BY g.id DESC
+            ",
+            kind = attribute_sql(113)
+        );
+        Ok(sqlx::query_as(&query).bind(user_id).fetch_all(&self.pool).await?)
+    }
+
     /// Records one pending invitation, optionally bound to an exact room.
     ///
     /// A receiver keeps one invitation per sender (a new one from the same sender replaces
@@ -1104,7 +1124,9 @@ impl Storage {
               AND i.session_type = ?
               AND i.consumed_at IS NULL
               AND i.expires_at > CURRENT_TIMESTAMP
-              AND g.creator_id = i.sender
+              AND (g.creator_id = i.sender
+                   OR EXISTS (SELECT 1 FROM participants s WHERE s.game_id = g.id AND s.user_id = i.sender)
+                   OR EXISTS (SELECT 1 FROM guests s WHERE s.game_id = g.id AND s.user_id = i.sender))
               AND g.destroyed_at IS NULL
             ORDER BY i.created DESC, i.id DESC
             ",
@@ -1989,6 +2011,30 @@ pub(crate) mod tests {
         assert!(storage.was_member(party, member).unwrap(), "taken off it, still once in it");
         assert!(storage.was_member(party, guest).unwrap());
         assert!(!storage.was_member(party, stranger).unwrap(), "never in it");
+        drop(storage);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn a_party_members_invitation_is_to_that_party() {
+        let (storage, dir) = temp_storage("member-invite");
+        for (name, ubi) in [("Host", "HOST"), ("Member", "MEMBER"), ("Friend", "FRIEND")] {
+            storage.register_user(name, "pw", Some(ubi)).unwrap();
+        }
+        let id = |n: &str| storage.find_user_id_by_name(n).unwrap().unwrap();
+        let (host, member, friend) = (id("Host"), id("Member"), id("Friend"));
+        let party = storage.create_game_session(host, 1, "113 => 1;103 => 0".into()).unwrap();
+        storage.add_participants(1, party, vec![], vec![host, member]).unwrap();
+        let private = storage.create_game_session(host, 1, "113 => 0;3 => 0;4 => 4".into()).unwrap();
+        storage.add_participants(1, private, vec![host, member], vec![]).unwrap();
+
+        let parties = run(storage.member_parties_async(member)).unwrap().unwrap();
+        assert_eq!(parties.iter().map(|s| s.session_id).collect::<Vec<_>>(), [party], "the party, not the host's private match");
+        assert!(run(storage.member_parties_async(host)).unwrap().unwrap().is_empty(), "a host's own rooms are its own");
+
+        run(storage.add_invite_async(member, friend, Some(1), Some(party))).unwrap().unwrap();
+        let found = storage.find_pending_invited_session(friend, 1, &[member]).unwrap();
+        assert_eq!(found.map(|s| s.session_id), Some(party), "the invited friend finds the member's party");
         drop(storage);
         let _ = std::fs::remove_dir_all(dir);
     }
