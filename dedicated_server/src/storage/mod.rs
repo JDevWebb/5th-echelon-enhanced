@@ -159,15 +159,29 @@ fn attribute_sql(id: u32) -> String {
 }
 
 /// SQL: whether invitation `i` (an `invites` row) still leads into its room: one its host
-/// sent, or one a member sent to a party (room kind 1) they're still a participant of. A
-/// member's invitation is to the party only: once the room is anything else (its participants
-/// may change its attributes), or they've left it, it gets nobody in.
+/// sent, or one a member sent to a party (room kind 1). A member's invitation holds only while
+/// all of it is still so, checked each time it's used, not only when it was sent: the room is
+/// a party (its participants may change its attributes: never into a private match), the
+/// member is in it, the host has them as a friend with no block either way, and the host and
+/// the invitee haven't blocked each other.
 fn invite_holds_sql(i: &str) -> String {
+    let blocked = |a: &str, b: &str| {
+        format!(
+            "EXISTS (SELECT 1 FROM relationships b WHERE b.kind = 'block'
+               AND ((b.user_id = {a} AND b.other_id = {b}) OR (b.user_id = {b} AND b.other_id = {a})))"
+        )
+    };
     format!(
         "EXISTS (SELECT 1 FROM game_sessions g WHERE g.id = {i}.session_id AND g.type_id = {i}.session_type
            AND (g.creator_id = {i}.sender
-                OR ({kind} = 1 AND EXISTS (SELECT 1 FROM participants s WHERE s.game_id = g.id AND s.user_id = {i}.sender))))",
-        kind = attribute_sql(113)
+                OR ({kind} = 1
+                    AND EXISTS (SELECT 1 FROM participants s WHERE s.game_id = g.id AND s.user_id = {i}.sender)
+                    AND EXISTS (SELECT 1 FROM relationships f WHERE f.user_id = g.creator_id AND f.other_id = {i}.sender AND f.kind = 'friend')
+                    AND NOT {member_blocked}
+                    AND NOT {invitee_blocked})))",
+        kind = attribute_sql(113),
+        member_blocked = blocked("g.creator_id", &format!("{i}.sender")),
+        invitee_blocked = blocked("g.creator_id", &format!("{i}.receiver")),
     )
 }
 
@@ -2039,6 +2053,8 @@ pub(crate) mod tests {
         storage.add_participants(1, party, vec![], vec![host, member]).unwrap();
         let private = storage.create_game_session(host, 1, "113 => 0;3 => 0;4 => 4".into()).unwrap();
         storage.add_participants(1, private, vec![host, member], vec![]).unwrap();
+        // The invite handler binds a member's invitation only for one the host is friends with.
+        run(storage.make_friends(host, member)).unwrap().unwrap();
 
         let parties = run(storage.member_parties_async(member)).unwrap().unwrap();
         assert_eq!(parties.iter().map(|s| s.session_id).collect::<Vec<_>>(), [party], "the party, not the host's private match");
@@ -2048,6 +2064,22 @@ pub(crate) mod tests {
         let found = storage.find_pending_invited_session(friend, 1, &[member]).unwrap();
         assert_eq!(found.map(|s| s.session_id), Some(party), "the invited friend finds the member's party");
         assert!(storage.is_invited(friend, party).unwrap());
+
+        // Only while the host trusts the member and welcomes the invitee, checked each time.
+        run(storage.remove_friend(host, member)).unwrap().unwrap();
+        assert!(!storage.is_invited(friend, party).unwrap(), "no longer the host's friend");
+        assert!(storage.find_pending_invited_session(friend, 1, &[member]).unwrap().is_none());
+        run(storage.make_friends(host, member)).unwrap().unwrap();
+        assert!(storage.is_invited(friend, party).unwrap(), "friends again");
+        run(storage.block(host, friend)).unwrap().unwrap().unwrap();
+        assert!(!storage.is_invited(friend, party).unwrap(), "the host blocked the invitee");
+        assert!(!storage.consume_invite_for_session(friend, 1, party).unwrap());
+        run(storage.unblock(host, friend)).unwrap().unwrap();
+        run(storage.block(member, host)).unwrap().unwrap().unwrap();
+        assert!(!storage.is_invited(friend, party).unwrap(), "the member blocked the host");
+        run(storage.unblock(member, host)).unwrap().unwrap();
+        run(storage.make_friends(host, member)).unwrap().unwrap();
+        assert!(storage.is_invited(friend, party).unwrap(), "all well again");
 
         // Only while it's a party: its participants may change its attributes, and a member's
         // invitation never leads into a private match.
