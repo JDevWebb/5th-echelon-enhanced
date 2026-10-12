@@ -60,7 +60,7 @@ pub const RELEASES: &[Release] = &[
         ],
         fixed: &[
             Fix {
-                lead: "A public match goes on",
+                lead: "A public match isn't ended by the server",
                 rest: " when its host leaves.",
             },
             Fix {
