@@ -26,6 +26,9 @@ use tracing::info;
 use tracing::instrument;
 
 static TOKEN: Mutex<Option<MetadataValue<Ascii>>> = Mutex::new(None);
+/// One sign-in again at a time: every thread whose call the server refused would otherwise
+/// sign in again, each new token signing out the calls made with the one before.
+static RELOGIN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 static CREDS: Mutex<Option<(String, String)>> = Mutex::new(None);
 /// The account id the server gave us at sign-in (the game's "Ubisoft id").
 static ACCOUNT_ID: Mutex<Option<String>> = Mutex::new(None);
@@ -163,10 +166,11 @@ where
     F: Fn() -> Fut,
     Fut: Future<Output = Result<T, Error>>,
 {
+    let used = TOKEN.lock().unwrap().clone();
     match call().await {
         Err(e) if is_signed_out(&e) => {
-            info!("Signed out by the server; signing in again");
-            if relogin().await {
+            info!("Signed out by the server");
+            if relogin_after(used).await {
                 call().await
             } else {
                 Err(e)
@@ -446,16 +450,30 @@ pub async fn report(report: server_api::misc::ReportRequest) -> Result<String, E
     .await
 }
 
+/// Signs in again with the saved credentials.
 #[instrument]
 pub async fn relogin() -> bool {
-    {
+    let used = TOKEN.lock().unwrap().clone();
+    relogin_after(used).await
+}
+
+/// Signs in again, unless another call already did since `used` (the token a refused call
+/// went out with): then that token is the one to use. The token in use stays until a new one
+/// replaces it; clearing it first sent the game's other calls out without one ("Missing
+/// authorization" on eu1, seconds after each sign-in).
+async fn relogin_after(used: Option<MetadataValue<Ascii>>) -> bool {
+    let _one = RELOGIN.lock().await;
+    let now = TOKEN.lock().unwrap().clone();
+    if now.is_some() && now != used {
+        return true;
+    }
+    let Some((username, password)) = CREDS.lock().unwrap().clone() else {
+        return false;
+    };
+    info!("Signing in again");
+    let ok = login_async(&username, &password).await.is_ok();
+    if !ok {
         let _ = TOKEN.lock().unwrap().take();
     }
-    let (username, password) = {
-        let Some((username, password)) = CREDS.lock().unwrap().clone() else {
-            return false;
-        };
-        (username, password)
-    };
-    login_async(&username, &password).await.is_ok()
+    ok
 }
