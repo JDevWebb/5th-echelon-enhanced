@@ -1213,8 +1213,19 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             if !join.own {
                 crate::metrics::failed_join();
             }
-            if join.counts() {
-                crate::reports::join_failed(user_id, join.room, code, join.mismatch.clone());
+            let noted = join.counts().then(|| crate::reports::join_failed(user_id, join.room, code, join.mismatch.clone()));
+            // The player hears why at once, in the game's overlay (not their game's own churn);
+            // one that says all there is needn't be asked about after the game.
+            if !join.own {
+                let problem = join.outcome.problem();
+                let m = join.mismatch.clone().unwrap_or_default();
+                let (title, text) = server_api::notices::join_notice(
+                    problem,
+                    m.host.as_deref().unwrap_or_default(),
+                    &crate::reports::data_shown(m.mine),
+                    &crate::reports::data_shown(m.theirs),
+                );
+                crate::reports::tell(user_id, title, text, noted.filter(|_| problem.explained()));
             }
             crate::session_events::note(crate::session_events::Who::Id(user_id), "join_failed", join.detail(code));
             warn!(

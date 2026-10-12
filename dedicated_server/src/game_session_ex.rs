@@ -168,7 +168,13 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
                 "mine_name": server_api::data_versions::name(hidden.mine),
                 "theirs_name": server_api::data_versions::name(hidden.theirs),
             });
-            crate::reports::search_other_data(user_id, hidden.mine, hidden.theirs, hidden.lobbies);
+            // Once a minute at most (as noted), the overlay says so as it happens.
+            if let Some(noted) = crate::reports::search_other_data(user_id, hidden.mine, hidden.theirs, hidden.lobbies) {
+                let shown = |v: u32| crate::reports::data_shown(Some(v));
+                if let Some((title, text)) = server_api::notices::search_notice(&shown(hidden.mine), &shown(hidden.theirs)) {
+                    crate::reports::tell(user_id, title, text, Some(noted));
+                }
+            }
         }
         crate::session_events::note(crate::session_events::Who::Id(user_id), "search", detail);
         if !invitation_search {

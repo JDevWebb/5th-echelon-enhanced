@@ -129,7 +129,7 @@ pub fn main() -> color_eyre::Result<()> {
 
                 let mut client = MiscClient::connect(URL).await?;
 
-                let mut request = Request::new(EventRequest {});
+                let mut request = Request::new(EventRequest { notices: false });
                 request.metadata_mut().insert("authorization", token.parse()?);
 
                 dbg!(client.event(request).await?);

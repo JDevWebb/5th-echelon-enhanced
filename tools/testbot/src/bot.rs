@@ -881,7 +881,10 @@ impl Bot {
     pub async fn poll_invite(&self, wait: Duration) -> Result<Option<String>> {
         let deadline = tokio::time::Instant::now() + wait;
         loop {
-            let resp = MiscClient::new(self.api.clone()).event(self.authed(server_api::misc::EventRequest {})).await?.into_inner();
+            let resp = MiscClient::new(self.api.clone())
+                .event(self.authed(server_api::misc::EventRequest { notices: false }))
+                .await?
+                .into_inner();
             if let Some(sender) = resp.invite.and_then(|i| i.sender) {
                 return Ok(Some(sender.username));
             }
@@ -1030,12 +1033,34 @@ impl Bot {
         Ok(())
     }
 
+    /// Polls events as a game that shows notices in its overlay (0.4.4 and later) does, until
+    /// a notice comes: its title and text.
+    pub async fn poll_notice(&self, wait: Duration) -> Result<Option<(String, String)>> {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let resp = MiscClient::new(self.api.clone())
+                .event(self.authed(server_api::misc::EventRequest { notices: true }))
+                .await?
+                .into_inner();
+            if let Some(notice) = resp.notice {
+                return Ok(Some((notice.title, notice.text)));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
     /// Waits for a friend event (a request or an accepted one): its kind
     /// and who from.
     pub async fn poll_friend_event(&self, wait: Duration) -> Result<Option<(server_api::misc::friend_event::Kind, String)>> {
         let deadline = tokio::time::Instant::now() + wait;
         loop {
-            let resp = MiscClient::new(self.api.clone()).event(self.authed(server_api::misc::EventRequest {})).await?.into_inner();
+            let resp = MiscClient::new(self.api.clone())
+                .event(self.authed(server_api::misc::EventRequest { notices: false }))
+                .await?
+                .into_inner();
             if let Some(event) = resp.friend {
                 let from = event.from.as_ref().map(|u| u.username.clone()).unwrap_or_default();
                 return Ok(Some((event.kind(), from)));

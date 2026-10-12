@@ -306,6 +306,10 @@ unsafe extern "cdecl" fn UPLAY_Startup(uplay_id: usize, game_version: usize, lan
                                     }
                                     // An answer from support: a notice too.
                                     crate::community::support_unread(resp.support_unread);
+                                    // Something that just went wrong (a join, and why): shown at once.
+                                    if let Some(notice) = resp.notice.as_ref() {
+                                        crate::community::problem(notice);
+                                    }
                                     resp.invite
                                 })
                                 .transpose();

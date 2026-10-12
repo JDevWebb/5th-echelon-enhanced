@@ -415,7 +415,8 @@ pub async fn event() -> Result<EventResponse, Error> {
     signed_in(|| async {
         let mut client = connect!(MiscClient);
 
-        let request = tonic::Request::new(EventRequest {});
+        // This game shows the server's notices (a join that failed, and why) in its overlay.
+        let request = tonic::Request::new(EventRequest { notices: true });
 
         Ok(client.event(request).await?.into_inner())
     })

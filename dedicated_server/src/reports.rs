@@ -76,6 +76,18 @@ impl JoinOutcome {
         self != Self::Full
     }
 
+    /// As the overlay's notice names it.
+    pub fn problem(self) -> server_api::notices::JoinProblem {
+        use server_api::notices::JoinProblem;
+        match self {
+            Self::Full => JoinProblem::Full,
+            Self::Locked => JoinProblem::Locked,
+            Self::Closed => JoinProblem::Closed,
+            Self::DataMismatch => JoinProblem::DataMismatch,
+            Self::Failed => JoinProblem::Failed,
+        }
+    }
+
     /// Whether it's worth the game's log: a full, locked or closed room says all there is.
     pub fn wants_log(self) -> bool {
         matches!(self, Self::DataMismatch | Self::Failed)
@@ -108,7 +120,7 @@ pub struct Mismatch {
 }
 
 /// A data version as a player reads it: what makes it when known, else hex.
-fn data_shown(version: Option<u32>) -> String {
+pub(crate) fn data_shown(version: Option<u32>) -> String {
     version.map_or_else(String::new, |v| server_api::data_versions::name(v).map_or_else(|| format!("{v:#010x}"), str::to_string))
 }
 /// The problems a player can tick.
@@ -133,10 +145,14 @@ const EVENTS_FOR_SECS: i64 = 6 * 3600;
 /// Something that happened to a player, for their next report.
 #[derive(Debug, Clone)]
 struct Event {
+    /// Its number, for the notice that explains it ([`tell`]).
+    id: u64,
     at: i64,
     kind: &'static str,
     detail: String,
     mismatch: Option<Mismatch>,
+    /// The game's overlay showed the notice explaining it ([`take_notice`]).
+    told: bool,
 }
 
 fn events() -> &'static Mutex<HashMap<u32, VecDeque<Event>>> {
@@ -150,31 +166,101 @@ fn relayed_names() -> &'static Mutex<HashMap<String, (i64, bool)>> {
     RELAYED.get_or_init(Mutex::default)
 }
 
-fn note(user: u32, kind: &'static str, detail: String, mismatch: Option<Mismatch>) {
+fn note(user: u32, kind: &'static str, detail: String, mismatch: Option<Mismatch>) -> u64 {
+    static IDS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let id = IDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let now = identity::now();
     let mut all = events().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let list = all.entry(user).or_default();
     while list.len() >= EVENTS_KEPT || list.front().is_some_and(|e| now - e.at > EVENTS_FOR_SECS) {
         list.pop_front();
     }
-    list.push_back(Event { at: now, kind, detail, mismatch });
+    list.push_back(Event {
+        id,
+        at: now,
+        kind,
+        detail,
+        mismatch,
+        told: false,
+    });
     // Now and then, players gone for a while.
     if all.len() > 2000 {
         all.retain(|_, l| l.back().is_some_and(|e| now - e.at <= EVENTS_FOR_SECS));
     }
+    id
+}
+
+/// A notice waiting for a player's game ([`tell`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Notice {
+    at: i64,
+    title: String,
+    text: String,
+    /// The event it explains, marked told once the game has it.
+    explains: Option<u64>,
+}
+
+/// How long a notice waits for the game: past that, the player has moved on.
+const NOTICE_FRESH: i64 = 60;
+/// The most notices waiting for one player.
+const NOTICES_KEPT: usize = 3;
+
+fn notices() -> &'static Mutex<HashMap<u32, VecDeque<Notice>>> {
+    static NOTICES: OnceLock<Mutex<HashMap<u32, VecDeque<Notice>>>> = OnceLock::new();
+    NOTICES.get_or_init(Mutex::default)
+}
+
+/// Tells `user`'s game, for its overlay, what just went wrong: `explains` is the event it
+/// explains (so the launcher needn't ask about it). The same notice again (a game retrying
+/// its join) replaces the one waiting.
+pub fn tell(user: u32, title: String, text: String, explains: Option<u64>) {
+    let now = identity::now();
+    let mut all = notices().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let list = all.entry(user).or_default();
+    list.retain(|n| now - n.at <= NOTICE_FRESH && !(n.title == title && n.text == text));
+    while list.len() >= NOTICES_KEPT {
+        list.pop_front();
+    }
+    list.push_back(Notice { at: now, title, text, explains });
+    if all.len() > 2000 {
+        all.retain(|_, l| l.back().is_some_and(|n| now - n.at <= NOTICE_FRESH));
+    }
+}
+
+/// The oldest fresh notice for `user`'s game (title, text), if any; the event it explains is
+/// then told.
+pub fn take_notice(user: u32) -> Option<(String, String)> {
+    let now = identity::now();
+    let notice = {
+        let mut all = notices().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let list = all.get_mut(&user)?;
+        list.retain(|n| now - n.at <= NOTICE_FRESH);
+        let notice = list.pop_front();
+        if list.is_empty() {
+            all.remove(&user);
+        }
+        notice?
+    };
+    if let Some(id) = notice.explains {
+        let mut all = events().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(event) = all.get_mut(&user).and_then(|l| l.iter_mut().find(|e| e.id == id)) {
+            event.told = true;
+        }
+    }
+    Some((notice.title, notice.text))
 }
 
 /// `user`'s game reported a join failing with `code`: one that counts as theirs (not their
 /// game's own churn, see `game_session.rs`, nor a full lobby, [`JoinOutcome::counts`]).
 /// `mismatch`: both sides' data, for a join refused as a different version.
-pub fn join_failed(user: u32, session: u32, code: u32, mismatch: Option<Mismatch>) {
+pub fn join_failed(user: u32, session: u32, code: u32, mismatch: Option<Mismatch>) -> u64 {
     let version = code == VERSION_MISMATCH;
     note(
         user,
         if version { "version_mismatch" } else { "failed_join" },
         format!("session {session}, code {code:#010x}"),
         mismatch.filter(|_| version),
-    );
+    )
 }
 
 /// How long one note of lobbies hidden by game data stands for the searches after it: the
@@ -184,7 +270,8 @@ const SEARCH_NOTED_FOR: i64 = 60;
 
 /// `user`'s matchmaking search found nothing, but `lobbies` open lobbies would have answered
 /// it but for their game data: `mine`, theirs most often `theirs`.
-pub fn search_other_data(user: u32, mine: u32, theirs: u32, lobbies: usize) {
+/// The event's number when noted (not within [`SEARCH_NOTED_FOR`] of the last).
+pub fn search_other_data(user: u32, mine: u32, theirs: u32, lobbies: usize) -> Option<u64> {
     let now = identity::now();
     {
         let all = events().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -192,10 +279,10 @@ pub fn search_other_data(user: u32, mine: u32, theirs: u32, lobbies: usize) {
             .get(&user)
             .is_some_and(|l| l.iter().rev().any(|e| e.kind == "search_mismatch" && now - e.at < SEARCH_NOTED_FOR));
         if lately {
-            return;
+            return None;
         }
     }
-    note(
+    Some(note(
         user,
         "search_mismatch",
         format!("{lobbies} lobbies with data {theirs:#010x}, this game's {mine:#010x}"),
@@ -204,7 +291,7 @@ pub fn search_other_data(user: u32, mine: u32, theirs: u32, lobbies: usize) {
             mine: Some(mine),
             theirs: Some(theirs),
         }),
-    );
+    ))
 }
 
 /// The NAT helper registered `name`, relayed or not.
@@ -231,6 +318,11 @@ pub struct Summary {
     /// (each counted once a minute), and the last one's data: theirs, the lobbies'.
     pub searches_other_data: i32,
     pub search_mismatch: Option<Mismatch>,
+    /// Of those, the ones the game's overlay explained as they happened ([`take_notice`]):
+    /// failed joins other than version mismatches, version mismatches, searches.
+    pub joins_explained: i32,
+    pub mismatches_explained: i32,
+    pub searches_explained: i32,
     pub json: Value,
 }
 
@@ -254,6 +346,7 @@ pub fn summary(storage: &Storage, user: u32) -> eyre::Result<Summary> {
         .filter(|(at, _)| *at >= since)
         .is_some_and(|(_, r)| *r);
     let count = |kind: &str| i32::try_from(list.iter().filter(|e| e.kind == kind).count()).unwrap_or(i32::MAX);
+    let told = |kind: &str| i32::try_from(list.iter().filter(|e| e.kind == kind && e.told).count()).unwrap_or(i32::MAX);
     let failed_joins = count("failed_join") + count("version_mismatch");
     let version_mismatches = count("version_mismatch");
     let matches = record.as_ref().map_or(0, |r| i32::try_from(r.matches).unwrap_or(i32::MAX));
@@ -282,7 +375,8 @@ pub fn summary(storage: &Storage, user: u32) -> eyre::Result<Summary> {
             "mine_name": m.mine.and_then(server_api::data_versions::name),
             "theirs_name": m.theirs.and_then(server_api::data_versions::name),
         })),
-        "events": list.iter().map(|e| json!({ "at": e.at, "kind": e.kind, "detail": e.detail })).collect::<Vec<_>>(),
+        "explained": { "joins": told("failed_join"), "mismatches": told("version_mismatch"), "searches": told("search_mismatch") },
+        "events": list.iter().map(|e| json!({ "at": e.at, "kind": e.kind, "detail": e.detail, "told": e.told })).collect::<Vec<_>>(),
     });
     Ok(Summary {
         started,
@@ -294,6 +388,9 @@ pub fn summary(storage: &Storage, user: u32) -> eyre::Result<Summary> {
         mismatch,
         searches_other_data,
         search_mismatch,
+        joins_explained: told("failed_join"),
+        mismatches_explained: told("version_mismatch"),
+        searches_explained: told("search_mismatch"),
         json,
     })
 }
@@ -494,6 +591,44 @@ mod tests {
         };
         assert_eq!(unknown.mismatch_shown(), (String::new(), "0x00001234".to_string(), String::new()));
         assert_eq!(Summary::default().mismatch_shown(), Default::default());
+    }
+
+    #[test]
+    fn a_notice_waits_for_the_game_and_marks_what_it_explains() {
+        let user = 424_244;
+        assert_eq!(take_notice(user), None);
+        let explained = join_failed(user, 9, 0x9718_2b1b, None);
+        let unexplained = join_failed(user, 10, 0xac2d_801a, None);
+        tell(user, "Couldn't join: the session is locked".into(), "a".into(), Some(explained));
+        // The game retrying the same join: one notice, not two.
+        tell(user, "Couldn't join: the session is locked".into(), "a".into(), Some(explained));
+        tell(user, "Couldn't join".into(), "b".into(), None);
+        let told = |user: u32| {
+            events()
+                .lock()
+                .unwrap()
+                .get(&user)
+                .map(|l| l.iter().filter(|e| e.told).map(|e| e.id).collect::<Vec<_>>())
+                .unwrap_or_default()
+        };
+        assert!(told(user).is_empty(), "nothing told before the game takes it");
+        assert_eq!(take_notice(user), Some(("Couldn't join: the session is locked".into(), "a".into())), "oldest first");
+        assert_eq!(told(user), [explained]);
+        assert_eq!(take_notice(user), Some(("Couldn't join".into(), "b".into())));
+        assert_eq!(told(user), [explained], "a notice that explains nothing marks nothing");
+        assert!(!told(user).contains(&unexplained));
+        assert_eq!(take_notice(user), None);
+
+        // A notice the game didn't take in time is dropped: the player has moved on.
+        tell(user, "Old".into(), "c".into(), None);
+        notices().lock().unwrap().get_mut(&user).unwrap()[0].at -= NOTICE_FRESH + 1;
+        assert_eq!(take_notice(user), None);
+        // At most a few wait.
+        for i in 0..5 {
+            tell(user, format!("n{i}"), String::new(), None);
+        }
+        assert_eq!(notices().lock().unwrap().get(&user).unwrap().len(), NOTICES_KEPT);
+        assert_eq!(take_notice(user).map(|n| n.0), Some("n2".to_string()), "the newest kept");
     }
 
     #[test]

@@ -48,13 +48,13 @@ pub const RELEASES: &[Release] = &[
                 community: false,
             },
             Item {
-                title: "Know why a join failed",
-                text: "A full lobby, a closed one, or game data that differ: the launcher says which, and whose game has the mod.",
+                title: "Know why a join failed, straight away",
+                text: "A full lobby, a locked or closed one, or game data that differ: the overlay says which the moment it happens, and whose game has the mod. What it explained, the launcher doesn't ask you to report.",
                 community: false,
             },
             Item {
                 title: "Mods that hide lobbies",
-                text: "The game only shows lobbies with the same game data as yours. When a search finds nothing because of that, the launcher tells you.",
+                text: "The game only shows lobbies with the same game data as yours. When a search finds nothing because of that, the overlay tells you.",
                 community: false,
             },
         ],

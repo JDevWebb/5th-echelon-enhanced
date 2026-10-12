@@ -164,6 +164,19 @@ pub struct Notice {
     pub at: Instant,
 }
 
+/// Something that just went wrong for the player, as the server explained it (a join that
+/// failed, and why): the overlay shows it at once.
+#[derive(Debug, Clone)]
+pub struct Problem {
+    pub title: String,
+    pub text: String,
+    pub at: Instant,
+}
+
+/// The longest problem title and text shown.
+const MAX_PROBLEM_TITLE: usize = 80;
+const MAX_PROBLEM_TEXT: usize = 400;
+
 /// The longest player name shown (the server's own limit).
 const MAX_NAME: usize = 32;
 /// The longest server message, activity or server name shown.
@@ -190,6 +203,8 @@ pub struct Snapshot {
     /// Set once the lists have loaded at least once.
     pub loaded: bool,
     pub notice: Option<Notice>,
+    /// What just went wrong, from the server's notice.
+    pub problem: Option<Problem>,
     /// Our own name belongs to another player on the servers sharing
     /// friends: we should rename.
     pub my_name_conflict: bool,
@@ -400,6 +415,20 @@ pub fn friend_event(event: &server_api::misc::FriendEvent) {
     info!("Friend event: {text}");
     say(text, false);
     refresh();
+}
+
+/// A notice from the server's event poll: what just went wrong, and why. As any server text,
+/// cut and cleaned; logged, so a report shows what the player was told.
+pub fn problem(notice: &server_api::misc::Notice) {
+    let title = clip(&notice.title, MAX_PROBLEM_TITLE);
+    let text = clip(&notice.text, MAX_PROBLEM_TEXT);
+    if title.is_empty() && text.is_empty() {
+        return;
+    }
+    info!("Told the player: {title}: {text}");
+    update(|s| {
+        s.problem = Some(Problem { title, text, at: Instant::now() });
+    });
 }
 
 /// Answers from the network's admins the player hasn't read, as the server last said.

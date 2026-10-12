@@ -15,6 +15,7 @@ pub mod games {
     pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("games_descriptor");
 }
 
+pub mod notices;
 pub mod playing;
 /// The game's names for maps and modes.
 pub use stat_boards::game_names;

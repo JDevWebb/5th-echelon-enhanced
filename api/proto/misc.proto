@@ -45,13 +45,27 @@ message ClientLogResponse {
     string send_log_problem = 3;
 }
 
-message EventRequest {}
+message EventRequest {
+    // The game shows notices in its overlay (0.4.4 and later). Only then does the server hand
+    // them out, and count them as told: a game that can't show them leaves them to the
+    // launcher's "how did it go".
+    bool notices = 1;
+}
 message EventResponse {
     InviteEvent invite = 1;
     FriendEvent friend = 2;
     // Answers from the network's admins (the launcher's Support page) the player hasn't read:
     // the overlay says so. 0 from servers before 0.4.3, or off the community network.
     uint32 support_unread = 3;
+    // Something that just went wrong for the player, and why: the overlay shows it at once.
+    // Only to a game that asked for notices; none from servers before 0.4.4.
+    Notice notice = 4;
+}
+
+message Notice {
+    // A few words ("Couldn't join: the lobby is full"), and a sentence or two.
+    string title = 1;
+    string text = 2;
 }
 
 message FriendEvent {
@@ -104,6 +118,13 @@ message SessionSummaryResponse {
     int32 searches_other_data = 11;
     string other_data_mine = 12;
     string other_data_theirs = 13;
+    // Of those, how many the game's overlay already explained as they happened (a full,
+    // locked or closed room, whose mod, the lobbies' data), so the launcher needn't ask about
+    // them: failed joins other than version mismatches, version mismatches, and searches.
+    // 0 from servers before 0.4.4, and for games that don't show notices.
+    int32 joins_explained = 14;
+    int32 mismatches_explained = 15;
+    int32 searches_explained = 16;
 }
 
 message ReportFile {

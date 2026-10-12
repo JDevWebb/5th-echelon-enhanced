@@ -41,59 +41,18 @@ pub struct ServerSaw {
     pub relayed: bool,
     /// Searches that found nothing while lobbies with other game data were open.
     pub searches_other_data: i32,
+    /// Of those, the ones the game's overlay already explained as they happened (servers
+    /// from 0.4.4, games that show notices): failed joins other than version mismatches,
+    /// version mismatches, searches. Explained, they aren't asked about again.
+    pub joins_explained: i32,
+    pub mismatches_explained: i32,
+    pub searches_explained: i32,
 }
 
-/// Whose game data differs, for a join refused as "a different version", from the server's
-/// summary (`mismatch_host`, `mismatch_mine`, `mismatch_theirs`: each side's data by what
-/// makes it, "unmodified", "balaclava mod", or as hex). None when the server didn't say
-/// (servers before 0.4.4).
-pub fn mismatch_line(host: &str, mine: &str, theirs: &str) -> Option<String> {
-    fn has(data: &str) -> String {
-        match data {
-            "unmodified" => "is unmodified".to_string(),
-            hex if hex.starts_with("0x") => format!("has other game data ({hex})"),
-            name => format!("has the {name}"),
-        }
-    }
-    let host = host.trim();
-    let theirs_game = if host.is_empty() { "The host's game".to_string() } else { format!("{host}'s game") };
-    let said = match (mine.trim(), theirs.trim()) {
-        ("", "") => return None,
-        (mine, theirs) if mine == theirs => return None,
-        ("", theirs) => format!("{theirs_game} {}.", has(theirs)),
-        (mine, "") => format!("Your game {}.", has(mine)),
-        (mine, theirs) => format!("{theirs_game} {}; yours {}.", has(theirs), has(mine)),
-    };
-    Some(format!("{said} Everyone in a match needs the same mods."))
-}
-
-/// Why searches found no lobbies, when the open ones have other game data (the server's
-/// `other_data_mine`, `other_data_theirs`, named as for [`mismatch_line`]). The game shows
-/// only lobbies whose data is the same as its own, and says nothing of the others. None when
-/// the server didn't say (servers before 0.4.4).
-pub fn search_mismatch_line(mine: &str, theirs: &str) -> Option<String> {
-    let (mine, theirs) = (mine.trim(), theirs.trim());
-    if theirs.is_empty() || mine == theirs {
-        return None;
-    }
-    let lobbies = match theirs {
-        "unmodified" => "The open lobbies were unmodified games".to_string(),
-        hex if hex.starts_with("0x") => format!("The open lobbies had other game data ({hex})"),
-        name => format!("The open lobbies had the {name}"),
-    };
-    let yours = match mine {
-        "" => String::new(),
-        "unmodified" => ", and yours is unmodified".to_string(),
-        hex if hex.starts_with("0x") => format!(", and yours has other game data ({hex})"),
-        name => format!(", and yours has the {name}"),
-    };
-    let fix = if mine == "unmodified" {
-        "they need the same game files as you to show up"
-    } else {
-        "remove your mods (or verify the game files in Steam or Ubisoft Connect) to see them"
-    };
-    Some(format!("{lobbies}{yours}: the game only shows lobbies with the same game data, so {fix}."))
-}
+// The lines saying whose game data differs: shared with the server, which says them in the
+// game's overlay the moment a join or a search runs into it.
+pub use server_api::notices::mismatch_line;
+pub use server_api::notices::search_mismatch_line;
 
 /// Whether a game's exit code means it crashed: Windows' exception codes (0xC0000005 and
 /// the like). A plain exit, 0 or otherwise, isn't taken for one.
@@ -185,13 +144,13 @@ pub fn triggers(log: LogSignals, server: Option<ServerSaw>, exit_code: Option<i3
     if log.signin_refused {
         t.push("signin_refused");
     }
-    if server.version_mismatches > 0 {
+    if server.version_mismatches > server.mismatches_explained {
         t.push("version_mismatch");
     }
-    if server.failed_joins > server.version_mismatches {
+    if server.failed_joins - server.version_mismatches > server.joins_explained {
         t.push("failed_join");
     }
-    if server.searches_other_data > 0 {
+    if server.searches_other_data > server.searches_explained {
         t.push("search_mismatch");
     }
     if log.relayed || server.relayed {
@@ -501,6 +460,7 @@ mod tests {
             version_mismatches: 1,
             relayed: true,
             searches_other_data: 0,
+            ..ServerSaw::default()
         };
         assert_eq!(triggers(online, Some(saw), Some(0), true), ["version_mismatch", "failed_join", "relayed"]);
         let hidden = ServerSaw {
@@ -508,6 +468,19 @@ mod tests {
             ..ServerSaw::default()
         };
         assert_eq!(triggers(online, Some(hidden), Some(0), true), ["search_mismatch"]);
+        // What the overlay explained as it happened isn't asked about again; the rest is.
+        let explained = ServerSaw {
+            failed_joins: 3,
+            version_mismatches: 1,
+            searches_other_data: 2,
+            joins_explained: 2,
+            mismatches_explained: 1,
+            searches_explained: 2,
+            ..ServerSaw::default()
+        };
+        assert_eq!(triggers(online, Some(explained), Some(0), false), Vec::<&str>::new(), "all explained in the game");
+        let one_unexplained = ServerSaw { joins_explained: 1, ..explained };
+        assert_eq!(triggers(online, Some(one_unexplained), Some(0), false), ["failed_join"]);
         assert!(Asked::default().may_ask(&["search_mismatch"], 10 * 86_400), "not a mild one");
         #[allow(clippy::cast_possible_wrap)]
         let access_violation = 0xC000_0005_u32 as i32;

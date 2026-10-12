@@ -45,6 +45,8 @@ const RELEASE: &str = env!("FE_RELEASE");
 static NOTIFICATION_TIMEOUT: Duration = Duration::from_secs(30);
 static INITIAL_POPUP_DURATION: Duration = Duration::from_secs(10);
 static NOTICE_DURATION: Duration = Duration::from_secs(5);
+/// How long what just went wrong (a join that failed, and why) stays up.
+static PROBLEM_DURATION: Duration = Duration::from_secs(15);
 /// How often the player list refreshes while the panel is open (it's every
 /// 15 s otherwise), so friends starting their game show up quickly.
 static PANEL_REFRESH: Duration = Duration::from_secs(5);
@@ -645,6 +647,43 @@ impl MyRenderLoop {
                 self.with_font(ui, |f| f.heading, || ui.text_colored(colour, &title));
                 let _c = ui.push_style_color(StyleColor::Text, MUTED);
                 ui.text_wrapped(detail);
+            });
+    }
+
+    /// What just went wrong, as the server explained it (a join that failed, and why): a card
+    /// above the notice line, open panel or not, with a draining bar.
+    fn show_problem(&self, ui: &Ui) {
+        let Some(problem) = self.data.problem.as_ref() else {
+            return;
+        };
+        let Some(left) = PROBLEM_DURATION.checked_sub(problem.at.elapsed()) else {
+            return;
+        };
+        let win = ui.io().display_size;
+        let _p = ui.push_style_var(StyleVar::WindowPadding([self.s(22.0), self.s(14.0)]));
+        ui.window("##fe-problem")
+            .no_decoration()
+            .no_inputs()
+            .no_nav()
+            .movable(false)
+            .focus_on_appearing(false)
+            .always_auto_resize(true)
+            .size([self.s(620.0), 0.0], Condition::Always)
+            .position([win[0] / 2.0, win[1] - self.s(96.0)], Condition::Always)
+            .position_pivot([0.5, 1.0])
+            .build(|| {
+                let pos = ui.window_pos();
+                let size = ui.window_size();
+                let dl = ui.get_window_draw_list();
+                dl.add_rect(pos, [pos[0] + self.s(4.0), pos[1] + size[1]], WARN).filled(true).build();
+                let h = self.s(3.0);
+                let progress = left.as_secs_f32() / PROBLEM_DURATION.as_secs_f32();
+                dl.add_rect([pos[0], pos[1] + size[1] - h], [pos[0] + size[0] * progress.clamp(0.0, 1.0), pos[1] + size[1]], ACCENT)
+                    .filled(true)
+                    .build();
+                self.with_font(ui, |f| f.heading, || ui.text_colored(WARN, &problem.title));
+                let _c = ui.push_style_color(StyleColor::Text, MUTED);
+                ui.text_wrapped(&problem.text);
             });
     }
 
@@ -1407,6 +1446,7 @@ impl ImguiRenderLoop for MyRenderLoop {
         self.show_invite_toast(ui);
         self.show_maintenance(ui);
         self.show_initial_info(ui);
+        self.show_problem(ui);
         self.show_notice(ui);
     }
 

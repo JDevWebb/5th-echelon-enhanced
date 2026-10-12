@@ -1864,6 +1864,60 @@ async fn member_invite(ctx: &mut Ctx) -> Result<()> {
     Ok(())
 }
 
+/// A failed join is explained in the game's overlay the moment it's reported (a game that
+/// shows notices takes them from the event poll), and what was explained there isn't counted
+/// for the launcher's "how did it go"; a failure with no known reason still is. A game that
+/// doesn't show notices (before 0.4.4) never takes them, so nothing counts as explained for
+/// it; and the game's own room isn't a failure to tell anyone about.
+async fn join_notice(ctx: &mut Ctx) -> Result<()> {
+    const LOCKED: u32 = 0x9718_2b1b;
+    const TIMED_OUT: u32 = 0xac2d_801a;
+    let mut host = ctx.player("Host").await?;
+    let mut joiner = ctx.player("Joiner").await?;
+    let mut old = ctx.player("OldGame").await?;
+    let lobby = host.create_session(LOBBY).await?;
+    host.add_participants(lobby, &[host.pid], &[]).await?;
+    let wait = Duration::from_secs(3);
+
+    joiner.report_failed_joins(&[(lobby, LOCKED)]).await?;
+    let (title, text) = joiner.poll_notice(wait).await?.ok_or_else(|| eyre!("no notice for a locked session"))?;
+    ensure!(title == "Couldn't join: the session is locked", "{title}");
+    ensure!(text.contains("match is already under way"), "{text}");
+    let summary = joiner.session_summary().await?;
+    ensure!(
+        summary.failed_joins == 1 && summary.joins_explained == 1,
+        "explained in the game, so not for the launcher to ask about: {summary:?}"
+    );
+
+    joiner.report_failed_joins(&[(lobby, TIMED_OUT)]).await?;
+    let (title, _) = joiner.poll_notice(wait).await?.ok_or_else(|| eyre!("no notice for a join that timed out"))?;
+    ensure!(title == "Couldn't join", "{title}");
+    let summary = joiner.session_summary().await?;
+    ensure!(
+        summary.failed_joins == 2 && summary.joins_explained == 1,
+        "a failure with no known reason is still the launcher's to ask about: {summary:?}"
+    );
+
+    // The joiner's own lobby: the game's own churn, nothing to tell.
+    let own = joiner.create_session(LOBBY).await?;
+    joiner.add_participants(own, &[joiner.pid], &[]).await?;
+    joiner.report_failed_joins(&[(own, LOCKED)]).await?;
+    ensure!(joiner.poll_notice(Duration::from_secs(1)).await?.is_none(), "a notice for the game's own room");
+
+    // A game that doesn't show notices polls without asking for them.
+    old.report_failed_joins(&[(lobby, LOCKED)]).await?;
+    ensure!(old.poll_invite(Duration::from_secs(1)).await?.is_none());
+    let summary = old.session_summary().await?;
+    ensure!(
+        summary.failed_joins == 1 && summary.joins_explained == 0,
+        "a game that can't show notices had one counted as explained: {summary:?}"
+    );
+    for bot in [host, joiner, old] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
 /// Someone joining a public match from a search reaches its players through the relay
 /// before their join reaches the server (the host's game has them connect first), once
 /// they've probed its host: not before, and not by probes.
@@ -1948,6 +2002,17 @@ async fn search_other_data(ctx: &mut Ctx) -> Result<()> {
         ensure!(tokio::time::Instant::now() < deadline, "the summary doesn't count the hidden lobby");
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
+    // The game's overlay says so as it happens, and then the launcher needn't ask.
+    let (title, text) = modded
+        .poll_notice(Duration::from_secs(3))
+        .await?
+        .ok_or_else(|| eyre!("no notice for lobbies hidden by game data"))?;
+    ensure!(title == "No lobbies with your game data" && text.contains("unmodified"), "{title}: {text}");
+    let summary = modded.session_summary().await.map_err(|e| eyre!("session summary: {}", e.message()))?;
+    ensure!(
+        summary.searches_explained == summary.searches_other_data,
+        "told in the game, still counted for the launcher: {summary:?}"
+    );
     for bot in [host, modded, plain] {
         bot.disconnect().await?;
     }
@@ -2033,6 +2098,7 @@ const SCENARIOS: &[&str] = &[
     "party-probes",
     "party-member-split",
     "member-invite",
+    "join-notice",
     "relay-to-joiner",
     "search-other-data",
     "whats-being-played",
@@ -2177,6 +2243,7 @@ async fn main() -> Result<()> {
                 "party-probes" => party_probes(&mut ctx).await,
                 "party-member-split" => party_member_split(&mut ctx).await,
                 "member-invite" => member_invite(&mut ctx).await,
+                "join-notice" => join_notice(&mut ctx).await,
                 "relay-to-joiner" => relay_to_joiner(&mut ctx).await,
                 "search-other-data" => search_other_data(&mut ctx).await,
                 "whats-being-played" => whats_being_played(&mut ctx).await,

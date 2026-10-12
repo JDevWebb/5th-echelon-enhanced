@@ -144,6 +144,9 @@ fn check(game_dir: PathBuf, exit: GameExit, checks: String, manual: bool) -> Res
         version_mismatches: s.version_mismatches,
         relayed: s.relayed,
         searches_other_data: s.searches_other_data,
+        joins_explained: s.joins_explained,
+        mismatches_explained: s.mismatches_explained,
+        searches_explained: s.searches_explained,
     });
     let triggers = if manual {
         vec!["manual"]
