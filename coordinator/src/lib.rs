@@ -537,7 +537,7 @@ pub struct Coordinator {
     /// Where servers' plain HTTP is asked (80; a test's own server's port in tests).
     host_check_http_port: std::sync::atomic::AtomicU16,
     /// The servers whose host is being checked now, and what's checked ([`host_check::target`]).
-    host_checks_running: std::sync::Mutex<HashMap<String, String>>,
+    host_checks_running: tokio::sync::Mutex<HashMap<String, String>>,
     /// Request bodies being read at once (see [`limits::Budgets`]).
     pub(crate) budgets: limits::Budgets,
     /// The folder the database is in: reports' files go under it.
@@ -658,7 +658,7 @@ impl Coordinator {
             host_checks: std::sync::atomic::AtomicBool::new(false),
             host_checks_private: std::sync::atomic::AtomicBool::new(false),
             host_check_http_port: std::sync::atomic::AtomicU16::new(80),
-            host_checks_running: std::sync::Mutex::default(),
+            host_checks_running: tokio::sync::Mutex::default(),
             budgets: limits::Budgets::default(),
             files_dir: std::path::Path::new(path)
                 .parent()
@@ -1781,7 +1781,7 @@ impl Coordinator {
         // One check at a time per address: a slow one (a name that doesn't resolve) doesn't
         // hold up the check of a new address.
         let start = host_check::due(kept.as_deref(), listing, now) && {
-            let mut running = self.host_checks_running.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            let mut running = self.host_checks_running.lock().await;
             running.insert(server.to_string(), target.clone()).as_ref() != Some(&target)
         };
         if start {
@@ -1796,23 +1796,23 @@ impl Coordinator {
                     tracing::warn!("server {server} lists {}, but isn't there: {}; not in the directory", listing.host, checked.why);
                 }
                 // Kept only if it's still the latest check of the server: one of an address it
-                // moved from since says nothing about where it is now.
-                let latest = {
-                    let mut running = c.host_checks_running.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let latest = running.get(&server) == Some(&checked.target);
-                    if latest {
+                // moved from since says nothing about where it is now. Decided and written under
+                // the one lock: decided first and written after, a slow check of the old address
+                // overwrote the new one's result, written in between.
+                {
+                    let mut running = c.host_checks_running.lock().await;
+                    if running.get(&server) == Some(&checked.target) {
                         running.remove(&server);
-                    }
-                    latest
-                };
-                if let (true, Ok(text)) = (latest, serde_json::to_string(&checked)) {
-                    if let Err(e) = sqlx::query("UPDATE servers SET host_check = ? WHERE id = ?")
-                        .bind(text)
-                        .bind(&server)
-                        .execute(&c.pool)
-                        .await
-                    {
-                        tracing::warn!("server {server}: keeping its host check: {e}");
+                        if let Ok(text) = serde_json::to_string(&checked) {
+                            if let Err(e) = sqlx::query("UPDATE servers SET host_check = ? WHERE id = ?")
+                                .bind(text)
+                                .bind(&server)
+                                .execute(&c.pool)
+                                .await
+                            {
+                                tracing::warn!("server {server}: keeping its host check: {e}");
+                            }
+                        }
                     }
                 }
                 c.publish(admin::live::Event::Network);
