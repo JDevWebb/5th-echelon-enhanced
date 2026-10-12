@@ -1782,6 +1782,28 @@ async fn party_probes(ctx: &mut Ctx) -> Result<()> {
     Ok(())
 }
 
+/// A party member the game took off the party's participants may still split it to carry it
+/// on (eu1 2026-10-12: five members of one party refused at once); a stranger still may not.
+async fn party_member_split(ctx: &mut Ctx) -> Result<()> {
+    let mut host = ctx.player("Host").await?;
+    let mut member = ctx.player("Member").await?;
+    let mut stranger = ctx.player("Stranger").await?;
+    let party = host.create_session(LOBBY).await?;
+    host.add_participants(party, &[host.pid], &[]).await?;
+    member.add_participants(party, &[member.pid], &[]).await?;
+    member.remove_participants(party, &[member.pid]).await?;
+    ensure!(stranger.split_session(party).await.is_err(), "a stranger split the party");
+    let split = member
+        .split_session(party)
+        .await
+        .map_err(|e| eyre!("a member taken off the party's participants couldn't split it: {e}"))?;
+    ensure!(split != party, "the split made no new session");
+    for bot in [host, member, stranger] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
 /// Someone joining a public match from a search reaches its players through the relay
 /// before their join reaches the server (the host's game has them connect first), once
 /// they've probed its host: not before, and not by probes.
@@ -1949,6 +1971,7 @@ const SCENARIOS: &[&str] = &[
     "login",
     "public-match-probes",
     "party-probes",
+    "party-member-split",
     "relay-to-joiner",
     "search-other-data",
     "whats-being-played",
@@ -2091,6 +2114,7 @@ async fn main() -> Result<()> {
                 "host-leaves-match" => host_leaves_match(&mut ctx).await,
                 "public-match-probes" => public_match_probes(&mut ctx).await,
                 "party-probes" => party_probes(&mut ctx).await,
+                "party-member-split" => party_member_split(&mut ctx).await,
                 "relay-to-joiner" => relay_to_joiner(&mut ctx).await,
                 "search-other-data" => search_other_data(&mut ctx).await,
                 "whats-being-played" => whats_being_played(&mut ctx).await,

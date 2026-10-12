@@ -1153,11 +1153,14 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         let creator = rmc_err!(self.storage.session_creator(key.session_id), logger, "error reading session")?;
         // A guest (who joined a public match from a search) is in it as much as a participant:
         // their game splits the match to carry on when its host leaves (eu1: 4 such splits
-        // refused in a week, 3 in one match).
+        // refused in a week, 3 in one match). So is anyone who was in it before: the game takes
+        // players off a party's participants while they're still in its party, and splits it
+        // later (eu1 2026-10-12: five members of one party refused within a second).
         let member = just_left
             || creator == Some(user_id)
             || rmc_err!(self.storage.session_members(key.session_id), logger, "error reading session members")?.is_some_and(|(_, p)| p.contains(&user_id))
-            || rmc_err!(self.storage.is_guest(key.session_id, user_id), logger, "error reading session guests")?;
+            || rmc_err!(self.storage.is_guest(key.session_id, user_id), logger, "error reading session guests")?
+            || rmc_err!(self.storage.was_member(key.session_id, user_id), logger, "error reading past members")?;
         if creator.is_some() && !member {
             warn!(logger, "User {user_id} splits session {} they aren't in; refused", key.session_id);
             return Err(Error::AccessDenied);

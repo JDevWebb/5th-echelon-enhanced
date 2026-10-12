@@ -773,8 +773,28 @@ impl Storage {
                 .bind(session_id)
                 .bind(user_id)
                 .execute(&self.pool))??;
+            self.note_past_member(session_id, user_id)?;
         }
         Ok(())
+    }
+
+    /// Notes that `user_id` is in `session_id` (see the `past_members` table).
+    fn note_past_member(&self, session_id: u32, user_id: u32) -> Result<()> {
+        run(sqlx::query("INSERT OR IGNORE INTO past_members (game_id, user_id) VALUES (?, ?)")
+            .bind(session_id)
+            .bind(user_id)
+            .execute(&self.pool))??;
+        Ok(())
+    }
+
+    /// Whether `user_id` has been in session `session_id` at any time, as a participant or a
+    /// guest, whether or not they still are.
+    pub fn was_member(&self, session_id: u32, user_id: u32) -> Result<bool> {
+        let n: i64 = run(sqlx::query_scalar("SELECT COUNT(*) FROM past_members WHERE game_id = ? AND user_id = ?")
+            .bind(session_id)
+            .bind(user_id)
+            .fetch_one(&self.pool))??;
+        Ok(n > 0)
     }
 
     pub async fn remove_participants_async(&self, _type_id: u32, session_id: u32, participants: Vec<u32>) -> Result<()> {
@@ -829,6 +849,11 @@ impl Storage {
                 .bind(session_id)
                 .execute(&self.pool)
                 .await?;
+                sqlx::query("INSERT OR IGNORE INTO past_members (game_id, user_id) VALUES (?, ?)")
+                    .bind(session_id)
+                    .bind(user_id)
+                    .execute(&self.pool)
+                    .await?;
             }
             Ok::<_, eyre::Error>(added)
         })?
@@ -1943,6 +1968,29 @@ pub(crate) mod tests {
         let next = storage.create_game_session(host, 1, "113 => 1".into()).unwrap();
         assert!(next > last && last > first, "{first} {last} {next}: ids keep climbing");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn past_members_stay_members_of_a_session_after_they_are_taken_off_it() {
+        let (storage, dir) = temp_storage("past-members");
+        for (name, ubi) in [("Host", "HOST"), ("Member", "MEMBER"), ("Guest", "GUEST"), ("Stranger", "STRANGER")] {
+            storage.register_user(name, "pw", Some(ubi)).unwrap();
+        }
+        let id = |n: &str| storage.find_user_id_by_name(n).unwrap().unwrap();
+        let (host, member, guest, stranger) = (id("Host"), id("Member"), id("Guest"), id("Stranger"));
+        let party = storage.create_game_session(host, 1, "113 => 1".into()).unwrap();
+        storage.add_participants(1, party, vec![], vec![host, member]).unwrap();
+        assert!(storage.add_guest(party, guest, true).unwrap());
+        assert!(storage.was_member(party, member).unwrap());
+        assert!(storage.was_member(party, guest).unwrap(), "a guest is a member too");
+
+        storage.remove_participants(1, party, vec![member, guest]).unwrap();
+        assert!(!storage.session_members(party).unwrap().unwrap().1.contains(&member));
+        assert!(storage.was_member(party, member).unwrap(), "taken off it, still once in it");
+        assert!(storage.was_member(party, guest).unwrap());
+        assert!(!storage.was_member(party, stranger).unwrap(), "never in it");
+        drop(storage);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
