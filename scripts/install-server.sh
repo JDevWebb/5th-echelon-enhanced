@@ -1937,7 +1937,7 @@ ProtectKernelLogs=yes
 ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
-RestrictSUIDSGID=yes
+$( [ "$t" = archive ] && echo "RestrictSUIDSGID=yes" || echo "# Not RestrictSUIDSGID: GNU tar's --listed-incremental can't stat a folder's files under it (\"Function not implemented\"; every hourly copy failed from 0.4.3 on)." )
 RestrictNamespaces=yes
 RestrictRealtime=yes
 LockPersonality=yes
