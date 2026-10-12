@@ -43,6 +43,17 @@ pub struct Listing {
     /// don't say).
     #[serde(default, deserialize_with = "windows", skip_serializing_if = "Vec::is_empty")]
     pub maintenance: Vec<Window>,
+    /// What's being played there (servers from 0.4.4 say): public matches by mode, map and
+    /// players, private matches and lobbies counted.
+    #[serde(default, deserialize_with = "playing", skip_serializing_if = "Option::is_none")]
+    pub playing: Option<server_api::playing::Playing>,
+}
+
+/// A server's `playing`, bounded; anything that doesn't read as one is let go rather than
+/// losing the server.
+fn playing<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<server_api::playing::Playing>, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value::<server_api::playing::Playing>(v).ok().map(server_api::playing::Playing::checked))
 }
 
 /// A time a server (or the whole network) is booked to be down, from `start` to `end`
@@ -263,6 +274,7 @@ pub fn built_in(coordinator: &str) -> Vec<Listing> {
         players_total: 0,
         friends_mode: "mutual".into(),
         maintenance: Vec::new(),
+        playing: None,
     })
     .collect()
 }
@@ -326,12 +338,16 @@ pub fn cached(dir: &Path, coordinator: &str) -> Option<(Vec<Listing>, Option<Win
 pub fn fallback(dir: Option<&Path>, coordinator: &str, now: i64) -> Option<(Vec<Listing>, String)> {
     let cached = dir.and_then(|d| read_cache(d).into_iter().find(|c| same_directory(&c.directory, coordinator)));
     if let Some(c) = cached.filter(|c| !c.servers.is_empty()) {
-        // Players online then isn't players online now.
+        // Players online then isn't players online now, nor what they played.
         let servers = c
             .servers
             .into_iter()
             .filter(|l| listable_host(&l.host))
-            .map(|l| Listing { players_online: 0, ..l })
+            .map(|l| Listing {
+                players_online: 0,
+                playing: None,
+                ..l
+            })
             .collect();
         return Some((
             servers,
@@ -403,6 +419,7 @@ mod tests {
             players_total: 0,
             friends_mode: String::new(),
             maintenance: Vec::new(),
+            playing: None,
         }
     }
 
@@ -489,6 +506,20 @@ mod tests {
         assert_eq!(list[0].name, "Kiwi Ops");
         assert_eq!(list[0].ports.unwrap().api, 80);
         assert_eq!(url("https://c.example.com/"), "https://c.example.com/v1/servers");
+    }
+
+    #[test]
+    fn reads_what_is_being_played() {
+        let json = r#"{"servers":[
+            {"id":"a","name":"A","host":"a.example.com","players_online":4,
+             "playing":{"matches":[{"game_mode":8,"kind":"svm","map":100044816,"players":4,"seats":8}],"lobby_players":2}},
+            {"id":"b","name":"B","host":"b.example.com","playing":"lots"},
+            {"id":"c","name":"C","host":"c.example.com"}]}"#;
+        let list = parse(json).unwrap();
+        assert_eq!(list.len(), 3, "a server saying something odd is still listed");
+        assert_eq!(list[0].playing.as_ref().unwrap().summary(), "SvM Classic 4/8 · 2 in lobbies");
+        assert_eq!(list[1].playing, None);
+        assert_eq!(list[2].playing, None, "an older server");
     }
 
     #[test]

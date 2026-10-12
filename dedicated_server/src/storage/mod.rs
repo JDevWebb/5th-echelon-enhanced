@@ -1730,6 +1730,8 @@ pub struct LiveSession {
     /// Its host's name, and when it was made (Unix seconds).
     pub host: String,
     pub created: i64,
+    /// Invite only, or with private seats only: not for anyone to join.
+    pub private: bool,
 }
 
 impl Storage {
@@ -1743,10 +1745,16 @@ impl Storage {
         let players: Vec<(String, bool)> = sqlx::query_as("SELECT username, is_online FROM users WHERE ubi_id IS NOT NULL ORDER BY username COLLATE NOCASE")
             .fetch_all(&self.pool)
             .await?;
-        let sessions: Vec<(u32, String, String, i64)> = sqlx::query_as(
-            "SELECT g.id, COALESCE(g.attributes, ''), COALESCE(u.username, ''), COALESCE(unixepoch(g.created_at), 0)
-             FROM game_sessions g LEFT JOIN users u ON u.id = g.creator_id WHERE g.destroyed_at IS NULL ORDER BY g.id DESC",
-        )
+        Ok((players, self.live_sessions_async().await?))
+    }
+
+    /// Live sessions with their players (newest first), for presence and what's being played.
+    pub async fn live_sessions_async(&self) -> Result<Vec<LiveSession>> {
+        let sessions: Vec<(u32, String, String, i64, bool)> = sqlx::query_as(&format!(
+            "SELECT g.id, COALESCE(g.attributes, ''), COALESCE(u.username, ''), COALESCE(unixepoch(g.created_at), 0),
+                    EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.user_id = g.creator_id AND a.invite_only = 1) OR {PRIVATE_SEATS_ONLY}
+             FROM game_sessions g LEFT JOIN users u ON u.id = g.creator_id WHERE g.destroyed_at IS NULL ORDER BY g.id DESC"
+        ))
         .fetch_all(&self.pool)
         .await?;
         // Participants and guests (who joined a public match: its host never adds them).
@@ -1758,16 +1766,17 @@ impl Storage {
         .await?;
         let live = sessions
             .into_iter()
-            .map(|(id, attributes, host, created)| LiveSession {
+            .map(|(id, attributes, host, created, private)| LiveSession {
                 id,
                 attributes,
                 host,
                 created,
+                private,
                 players: members.iter().filter(|(g, _)| *g == id).map(|(_, name)| name.clone()).collect(),
             })
             .filter(|s| !s.players.is_empty())
             .collect();
-        Ok((players, live))
+        Ok(live)
     }
 }
 

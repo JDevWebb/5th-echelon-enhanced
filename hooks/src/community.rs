@@ -69,7 +69,7 @@ pub struct Player {
     pub id: String,
     pub name: String,
     pub online: bool,
-    /// What they're doing, e.g. "Spies vs Mercs · in a match with Tank".
+    /// What they're doing, e.g. "SvM Classic · Virus Vault · in a match with Tank".
     pub activity: Option<String>,
     pub relation: Relation,
     /// Short form of their identity ("K7QF-2M9D"), empty if not linked.
@@ -187,6 +187,9 @@ pub struct Snapshot {
     /// Friends playing on another server sharing friends: their name there,
     /// and that server's name (with its region).
     pub elsewhere: Vec<(String, String)>,
+    /// What's being played on this server (`/api/playing`, servers from 0.4.4): public
+    /// matches by mode, map and players, private matches and lobbies counted.
+    pub playing: Option<server_api::playing::Playing>,
     /// Friends we know from other servers, by name key.
     known: std::collections::HashMap<String, Vec<Known>>,
 }
@@ -506,6 +509,10 @@ fn refresh_now() {
             })
             .collect(),
     });
+    let playing = host
+        .as_deref()
+        .and_then(|h| http_get_json::<server_api::playing::Playing>(h, "/api/playing"))
+        .map(server_api::playing::Playing::checked);
 
     update(|s| {
         match lists {
@@ -549,6 +556,7 @@ fn refresh_now() {
         if server.is_some() {
             s.server = server;
         }
+        s.playing = playing;
     });
 }
 
@@ -603,14 +611,10 @@ fn player(p: friends::Player) -> Player {
     }
 }
 
-/// "Spies vs Mercs · in a match with Tank". Everything in it comes from the
-/// server: names cleaned, the whole cut to one line.
+/// "SvM Classic · Virus Vault · in a match with Tank"; "In a lobby with Tank" (a lobby is
+/// for either mode). Everything in it comes from the server: names cleaned, the whole cut
+/// to one line.
 fn describe(a: &friends::Activity) -> String {
-    let mode = match a.mode.as_str() {
-        "svm" => String::from("Spies vs Mercs"),
-        "coop" => String::from("Co-op"),
-        other => clip(other, MAX_NAME),
-    };
     let with = a.with.iter().take(8).map(|n| clip(n, MAX_NAME)).collect::<Vec<_>>().join(", ");
     let room = match (a.room.as_str(), with.is_empty()) {
         ("match", true) => String::from("in a match"),
@@ -618,7 +622,14 @@ fn describe(a: &friends::Activity) -> String {
         (_, true) => String::from("in a lobby"),
         (_, false) => format!("in a lobby with {with}"),
     };
-    clip(&format!("{mode} · {room}"), MAX_TEXT)
+    let line = match server_api::playing::activity_what(a) {
+        Some(what) => format!("{what} · {room}"),
+        None => {
+            let mut chars = room.chars();
+            chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+        }
+    };
+    clip(&line, MAX_TEXT)
 }
 
 /// A GET to the server's HTTP API (port 80), decoded as JSON. Errors are
@@ -793,12 +804,19 @@ mod tests {
                 room: "match".into(),
                 with: vec!["Tank".into()],
                 map: 7,
+                game_mode: 0,
             }),
         };
         p.set_relation(friends::Relation::RequestReceived);
         let got = player(p.clone());
         assert_eq!(got.relation, Relation::RequestReceived);
-        assert_eq!(got.activity.as_deref(), Some("Spies vs Mercs · in a match with Tank"));
+        assert_eq!(got.activity.as_deref(), Some("Spies vs Mercs · in a match with Tank"), "an older server");
+        let activity = p.activity.as_mut().unwrap();
+        (activity.game_mode, activity.map) = (8, 0x05F6_9010);
+        assert_eq!(player(p.clone()).activity.as_deref(), Some("SvM Classic · Virus Vault · in a match with Tank"));
+        let activity = p.activity.as_mut().unwrap();
+        (activity.mode, activity.room) = ("coop".into(), "lobby".into());
+        assert_eq!(player(p.clone()).activity.as_deref(), Some("In a lobby with Tank"), "a lobby is for either mode");
         p.is_online = false;
         assert_eq!(player(p).activity, None, "no activity while offline");
         let list = sorted(vec![test_player("zed", false), test_player("Mjewbear", true), test_player("anna", true)]);

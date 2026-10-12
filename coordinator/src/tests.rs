@@ -3652,6 +3652,32 @@ async fn listings_keep_to_a_believable_count() {
     assert_eq!(a_listed["players_online"], json!(MAX_LISTED_PLAYERS));
 }
 
+/// What a server says is being played is listed with it, cut to what a listing may say.
+#[tokio::test]
+async fn listings_say_what_is_being_played() {
+    let t = start("listing-playing").await;
+    let a = t.join("server-a").await;
+    let matches: Vec<Value> = (0..40).map(|_| json!({ "game_mode": 8, "kind": "<i>", "map": 1, "players": 999, "seats": 999 })).collect();
+    let playing = json!({ "matches": matches, "private_matches": 1_000_000, "lobby_players": 3, "names": ["Kiwi"] });
+    let (status, _) = t
+        .call(
+            "POST",
+            "/v1/heartbeat",
+            Some(&a),
+            Some(json!({ "name": "Server A", "host": "server-a", "names": ["server-a"], "players_online": 20, "players_total": 50, "playing": playing })),
+        )
+        .await;
+    assert_eq!(status, StatusCode::OK);
+    let (_, v) = t.call("GET", "/v1/servers", None, None).await;
+    let listed = v["servers"].as_array().unwrap().iter().find(|s| s["name"] == "Server A").cloned().unwrap();
+    let playing = &listed["playing"];
+    assert_eq!(playing["matches"].as_array().unwrap().len(), 12);
+    assert_eq!(playing["matches"][0], json!({ "game_mode": 8, "kind": "", "map": 1, "players": 16, "seats": 16 }));
+    assert_eq!(playing["private_matches"], 20, "not past the players online");
+    assert_eq!(playing["lobby_players"], 3);
+    assert!(playing.get("names").is_none(), "nothing else is kept");
+}
+
 /// Waits until every server's host check is of `target`; their results by id.
 async fn checked(t: &Test, target: &str) -> HashMap<String, Value> {
     let mut checks = HashMap::new();

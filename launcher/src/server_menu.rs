@@ -19,6 +19,9 @@ pub struct Row {
     pub name: String,
     pub ping: Option<u32>,
     pub players: u32,
+    /// What's being played there ("SvM Classic 6/8 · 3 in lobbies"), shown on hover; empty
+    /// when nobody is, or the server doesn't say.
+    pub playing: String,
     /// The player is on it.
     pub current: bool,
     pub best: bool,
@@ -53,6 +56,7 @@ pub fn rows(servers: &[(Listing, Option<u32>)], current: &str, now: i64, clock: 
                 name: names[i].clone(),
                 ping: *ping,
                 players: s.players_online,
+                playing: s.playing.as_ref().map(server_api::playing::Playing::summary).unwrap_or_default(),
                 current: s.host.eq_ignore_ascii_case(current.trim()),
                 best: best == Some(i),
                 maintenance: crate::maintenance::tag(s, *ping, now, clock),
@@ -188,6 +192,11 @@ fn row_ui(ui: &mut egui::Ui, row: &Row, focused: bool) -> egui::Response {
     let width = ui.available_width();
     let (rect, response) = ui.allocate_exact_size(egui::vec2(width, 50.0), egui::Sense::click());
     let response = response.on_hover_cursor(if row.current { egui::CursorIcon::Default } else { egui::CursorIcon::PointingHand });
+    let response = if row.playing.is_empty() {
+        response
+    } else {
+        response.on_hover_text(format!("Playing now: {}", row.playing))
+    };
     let p = ui.painter();
     if focused || response.hovered() {
         p.rect_filled(rect, 9, theme::CONTROL);
@@ -279,6 +288,7 @@ mod tests {
             players_total: 0,
             friends_mode: String::new(),
             maintenance: Vec::new(),
+            playing: None,
         }
     }
 

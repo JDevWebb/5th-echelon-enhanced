@@ -161,7 +161,7 @@ static API_TOKEN: Mutex<Option<(String, String)>> = Mutex::new(None);
 #[derive(Debug, Clone, Default)]
 pub struct OnlineFriend {
     pub name: String,
-    /// What they're doing ("Spies vs Mercs · in a lobby"), if the server says.
+    /// What they're doing ("SvM Classic · Virus Vault · in a match"), if the server says.
     pub activity: Option<String>,
 }
 
@@ -245,14 +245,10 @@ pub fn friends(cfg: &Config) -> Result<Friends, String> {
     })
 }
 
-/// "Spies vs Mercs · in a match with Tank", as the overlay says it.
+/// "SvM Classic · Virus Vault · in a match with Tank", as the overlay says it; "In a lobby
+/// with Tank" (a lobby is for either mode).
 fn describe(a: &server_api::friends::Activity) -> String {
     let clip = hooks_config::text::clip;
-    let mode = match a.mode.as_str() {
-        "svm" => String::from("Spies vs Mercs"),
-        "coop" => String::from("Co-op"),
-        other => clip(other, 32),
-    };
     let with = a.with.iter().take(4).map(|n| clip(n, 32)).collect::<Vec<_>>().join(", ");
     let room = match (a.room.as_str(), with.is_empty()) {
         ("match", true) => String::from("in a match"),
@@ -260,7 +256,17 @@ fn describe(a: &server_api::friends::Activity) -> String {
         (_, true) => String::from("in a lobby"),
         (_, false) => format!("in a lobby with {with}"),
     };
-    clip(&format!("{mode} · {room}"), 96)
+    let line = match server_api::playing::activity_what(a) {
+        Some(what) => format!("{what} · {room}"),
+        None => capitalised(&room),
+    };
+    clip(&line, 96)
+}
+
+/// `text` with its first letter capitalised.
+fn capitalised(text: &str) -> String {
+    let mut chars = text.chars();
+    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
 }
 
 /// What the player asked the setup for.
@@ -890,6 +896,21 @@ fn explorer_path(dir: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::explorer_path;
+
+    #[test]
+    fn friends_read_with_their_mode_and_map() {
+        let a = |mode: &str, room: &str, game_mode: u32, map: u32| server_api::friends::Activity {
+            mode: mode.into(),
+            room: room.into(),
+            with: vec!["Tank".into()],
+            map,
+            game_mode,
+        };
+        assert_eq!(super::describe(&a("svm", "match", 8, 0x05F6_9010)), "SvM Classic · Virus Vault · in a match with Tank");
+        assert_eq!(super::describe(&a("coop", "match", 3, 0)), "Grim (Ghost) · in a match with Tank");
+        assert_eq!(super::describe(&a("svm", "match", 0, 0)), "Spies vs Mercs · in a match with Tank", "an older server");
+        assert_eq!(super::describe(&a("coop", "lobby", 0, 4)), "In a lobby with Tank");
+    }
 
     #[test]
     fn a_refusal_that_wont_change_holds_until_checked_again() {

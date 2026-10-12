@@ -92,6 +92,7 @@ mod overlord_news;
 mod pending_joins;
 mod player_stats;
 mod players;
+mod playing;
 mod privileges;
 mod rate_limit;
 mod recent_log;
@@ -716,6 +717,7 @@ fn main() -> color_eyre::Result<()> {
             friends_mode,
             auto_update: federation_config.auto_update && self_update::updater_installed(),
             online: Vec::new(),
+            playing: Default::default(),
         }
     };
 

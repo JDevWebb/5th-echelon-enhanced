@@ -15,6 +15,10 @@ pub mod games {
     pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("games_descriptor");
 }
 
+pub mod playing;
+/// The game's names for maps and modes.
+pub use stat_boards::game_names;
+
 /// The game's data versions (DX11, build V2425.0) that we know, as the server and the
 /// launcher both name them. A room carries its host's in attribute 107. Games whose versions
 /// differ can't play a match together; the same mods (the same version) play fine.

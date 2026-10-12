@@ -8,12 +8,13 @@ The config server on port 80 also answers a small JSON API under `/api/`, for la
 
 ```toml
 [community_api]
-info = true        # GET /api/info: name, version, features, and GET /api/news: the server's news (on by default)
+info = true        # GET /api/info: name, version, features; GET /api/news: the server's news; GET /api/playing: what's being played (on by default)
 presence = false   # GET /api/presence: registered players, who's online, what they're playing
 accounts = false   # POST /api/register and /api/login, for tools (register is refused with [limits] require_identity)
 unhandled = false  # GET /api/unhandled: game calls this server couldn't answer
 ```
 
+- **info** includes `/api/playing`, for the launcher and the overlay: the public matches by game mode, map and players (6/8, say), and how many private matches there are and how many players wait in lobbies. It never names anyone, and shows no more than a search in the game shows any player. A server in a network also sends it to the coordinator, whose directory lists it with the server.
 - **presence** shares every registered username and what each online player is doing. Turn it on only for a community whose players expect that.
 - **accounts** lets anyone who can reach port 80 create an account.
   - Registering and logging in are rate-limited per address (see `[limits]`).
