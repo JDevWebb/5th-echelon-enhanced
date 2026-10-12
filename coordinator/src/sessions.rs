@@ -730,22 +730,36 @@ fn describe(e: &Event) -> String {
 fn join_error(code: &str) -> String {
     let name = match code {
         "0xb08a1a05" => "CONNECTION_FAILED: couldn't reach the host",
+        "0xac2d801a" => "CONNECTION_TIMED_OUT: the host's game stopped answering",
+        "0xe4aaebcd" => "SESSION_JOIN_TIMED_OUT: the host didn't let them in in time",
+        "0xca473b80" => "TICKET_PENDING: the join was still waiting for the host",
         "0x97182b1b" => "LOCKED_SESSION: the session was locked (its own party, or a match already under way)",
+        "0xbb263fc5" => "PRIVATE_SESSION: invite only",
         "0xeea440ee" => "DATA_VERSION_MISMATCH: different game data (a mod)",
-        "0xcf964066" => "the lobby was full (at its current size)",
+        "0x9bf4cf37" => "VERSION_MISMATCH: the host's answer couldn't be read (different game data)",
+        "0xcf964066" => "REFUSED: the host refused (the lobby was full at its current size)",
         "0xe92fbc33" => "INVALID_SESSION_ID: the room had just closed",
+        "0x33ae7adc" => "LEAVING: the host was leaving",
+        "0x546d52c6" => "DISSOLVED: the session was dissolved",
+        "0x59d6f9cc" => "HOST_GONE: the host was gone",
+        "0x0cba75b9" => "MIGRATION_FAILED: no new host was found",
+        "0xe5d81913" => "INVALID_TICKET: the host didn't recognise the join",
+        "0x886fca0f" => "KICKED: kicked by the host",
+        "0x6bb1ca30" => "BANNED: banned by the host",
+        "0xae3577f4" => "MAXIMUM_ROUTED_PEERS_REACHED: too many players reached through others",
+        "0x926359dd" => "UNKNOWN",
         _ => return code.to_string(),
     };
     format!("{name}, {code}")
 }
 
-/// What a failed join's code means, as the server's `outcome` says it.
+/// What a failed join's code means, as the server's `outcome` says it (reports.rs JoinOutcome).
 fn code_outcome(code: &str) -> &'static str {
     match code {
         "0xcf964066" => "full",
-        "0x97182b1b" => "locked",
-        "0xe92fbc33" => "closed",
-        "0xeea440ee" => "data_mismatch",
+        "0x97182b1b" | "0xbb263fc5" => "locked",
+        "0xe92fbc33" | "0x33ae7adc" | "0x546d52c6" | "0x59d6f9cc" => "closed",
+        "0xeea440ee" | "0x9bf4cf37" => "data_mismatch",
         _ => "failed",
     }
 }
@@ -1682,7 +1696,10 @@ mod tests {
             ]
         );
         let texts: Vec<String> = problems(&old).iter().map(|p| p["text"].as_str().unwrap().to_string()).collect();
-        assert_eq!(texts[0], "Couldn't join tacit_danger's room (the lobby was full (at its current size), 0xcf964066)");
+        assert_eq!(
+            texts[0],
+            "Couldn't join tacit_danger's room (REFUSED: the host refused (the lobby was full at its current size), 0xcf964066)"
+        );
         assert!(
             texts[1].contains("its own party, or a match already under way") && !texts[1].contains("had started"),
             "{}",
@@ -1703,7 +1720,7 @@ mod tests {
         assert_eq!(found[0]["level"], "warn");
         assert_eq!(
             found[0]["text"],
-            "Couldn't join Renegade's room (the lobby was full (at its current size), 0xcf964066; the game named room 0)"
+            "Couldn't join Renegade's room (REFUSED: the host refused (the lobby was full at its current size), 0xcf964066; the game named room 0)"
         );
         let t = super::timelines(&events, &[], &std::collections::HashMap::new(), 0, 100);
         let renegade = t.iter().find(|p| p["name"] == "Renegade").unwrap();

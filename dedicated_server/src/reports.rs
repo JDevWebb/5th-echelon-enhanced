@@ -18,14 +18,22 @@ use crate::storage::Storage;
 /// What the game reports when the host refuses a join as another version of the game
 /// (`DATA_VERSION_MISMATCH`).
 pub const VERSION_MISMATCH: u32 = 0xeea4_40ee;
-/// The room is full at its current lobby size (hosts can raise it): seen on co-op rooms
-/// still at their 2 seats.
+/// `REFUSED`: the host refused, most often because the room is full at its current lobby
+/// size (hosts can raise it; "Maximum number of peers reached."), also while it's leaving or
+/// migrating. Seen on co-op rooms still at their 2 seats.
 pub const ROOM_FULL: u32 = 0xcf96_4066;
 /// `LOCKED_SESSION`: seen when the game reports its own just-closed party, or a match that
 /// had started.
 pub const LOCKED_SESSION: u32 = 0x9718_2b1b;
 /// `INVALID_SESSION_ID`: the room had just been closed.
 pub const ROOM_CLOSED: u32 = 0xe92f_bc33;
+/// The room going as the player joined: its host `LEAVING`, the session `DISSOLVED`, or its
+/// `HOST_GONE` (no new host). The game's codes are the CRC-32 of these names.
+const ROOM_GOING: [u32; 3] = [0x33ae_7adc, 0x546d_52c6, 0x59d6_f9cc];
+/// `PRIVATE_SESSION`: invite only.
+const PRIVATE_SESSION: u32 = 0xbb26_3fc5;
+/// The game's own `VERSION_MISMATCH`: the host's answer couldn't be read with this game's data.
+const STORM_VERSION_MISMATCH: u32 = 0x9bf4_cf37;
 
 /// How a join the game reported failing went, from its error code.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,9 +49,12 @@ impl JoinOutcome {
     pub fn of(code: u32) -> Self {
         match code {
             ROOM_FULL => Self::Full,
-            LOCKED_SESSION => Self::Locked,
+            LOCKED_SESSION | PRIVATE_SESSION => Self::Locked,
             ROOM_CLOSED => Self::Closed,
-            VERSION_MISMATCH => Self::DataMismatch,
+            c if ROOM_GOING.contains(&c) => Self::Closed,
+            VERSION_MISMATCH | STORM_VERSION_MISMATCH => Self::DataMismatch,
+            // CONNECTION_FAILED, CONNECTION_TIMED_OUT, SESSION_JOIN_TIMED_OUT, TICKET_PENDING and
+            // the rest: the join itself failed.
             _ => Self::Failed,
         }
     }
@@ -525,6 +536,15 @@ mod tests {
         assert_eq!(logged, ["data_mismatch", "failed"]);
         assert_eq!(JoinOutcome::of_detail(&json!({ "outcome": "full", "code": "0xeea440ee" })), JoinOutcome::Full);
         assert_eq!(JoinOutcome::of_detail(&json!({ "code": "0xcf964066" })), JoinOutcome::Full, "a 0.4.3 server's");
+        // The host leaving as they joined (na1, 2026-10-11: LEAVING then TICKET_PENDING on a
+        // match breaking up): the room went, not the player's join; a time-out is the join's.
+        assert_eq!(JoinOutcome::of(0x33ae_7adc), JoinOutcome::Closed, "LEAVING");
+        assert_eq!(JoinOutcome::of(0x59d6_f9cc), JoinOutcome::Closed, "HOST_GONE");
+        assert_eq!(JoinOutcome::of(0xbb26_3fc5), JoinOutcome::Locked, "PRIVATE_SESSION");
+        assert_eq!(JoinOutcome::of(0x9bf4_cf37), JoinOutcome::DataMismatch, "the game's VERSION_MISMATCH");
+        for timed_out in [0xac2d_801a, 0xe4aa_ebcd, 0xca47_3b80] {
+            assert_eq!(JoinOutcome::of(timed_out), JoinOutcome::Failed, "{timed_out:#x}");
+        }
         assert_eq!(JoinOutcome::of_detail(&json!({})), JoinOutcome::Failed);
     }
 }
