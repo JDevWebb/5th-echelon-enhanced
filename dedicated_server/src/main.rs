@@ -94,6 +94,7 @@ mod player_stats;
 mod players;
 mod playing;
 mod privileges;
+mod probe_wants;
 mod rate_limit;
 mod recent_log;
 mod reports;

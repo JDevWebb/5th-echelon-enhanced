@@ -169,8 +169,9 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
                 continue;
             };
             let addr = *target.address();
-            // A player in a session with the caller, or hosting one the caller may join anyway:
-            // matchmaking asks for the probe to a host it found before it joins. Not a player
+            // A player in a session with the caller (in a public match, only its host or a
+            // player whose game asked to reach the caller too), or hosting one the caller may
+            // join anyway: matchmaking asks for the probe to a host it found before it joins. Not a player
             // merely on their way into a match with the caller (pending_joins.rs): a probe
             // hands each side the other's addresses, and anyone may probe a public host
             // without joining, so that would give out the addresses of everyone in any public
@@ -180,7 +181,18 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
                 warn!(logger, "Not probing {url}: it isn't signed in");
                 continue;
             };
-            if !self.storage.share_session(user_id, other).unwrap_or(false) {
+            // Who asked to reach whom: in a public match, a probe between two players goes
+            // ahead only when both games asked (probe_wants.rs).
+            crate::probe_wants::note(user_id, other);
+            if self.storage.share_session(user_id, other).unwrap_or(false) {
+                // Two members of a public match, neither its host: anyone may become one
+                // without playing in it, so only when the target's game asked to reach the
+                // caller too. Otherwise they reach each other through the relay only.
+                if !self.storage.share_session_for_probes(user_id, other).unwrap_or(false) && !crate::probe_wants::wanted(other, user_id) {
+                    info!(logger, "Not probing {url}: {user_id} and {other} share only a public match neither hosts, and {other}'s game hasn't asked to reach {user_id}; the relay carries them");
+                    continue;
+                }
+            } else {
                 if !self.storage.hosts_public_session(other).unwrap_or(false) {
                     warn!(logger, "Not probing {url}: not in a session with {user_id}, nor hosting a public one");
                     continue;

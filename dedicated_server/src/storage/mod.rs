@@ -1430,6 +1430,28 @@ impl Storage {
         Ok(n > 0)
     }
 
+    /// Whether `a` and `b` share a live session whose members are who they say, for a probe
+    /// between them: any but a public match, or one either of them hosts. Anyone may become a
+    /// member of a public match without playing in it (a guest by JoinSession, a participant
+    /// by adding themselves: only private rooms refuse that), so there only the host is.
+    pub fn share_session_for_probes(&self, a: u32, b: u32) -> Result<bool> {
+        let n: i64 = run(sqlx::query_scalar(&format!(
+            "SELECT COUNT(*) FROM game_sessions g WHERE g.destroyed_at IS NULL
+               AND (g.creator_id = ?1 OR EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?1)
+                    OR EXISTS (SELECT 1 FROM guests gu WHERE gu.game_id = g.id AND gu.user_id = ?1))
+               AND (g.creator_id = ?2 OR EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?2)
+                    OR EXISTS (SELECT 1 FROM guests gu WHERE gu.game_id = g.id AND gu.user_id = ?2))
+               AND (g.creator_id IN (?1, ?2)
+                    OR ';' || COALESCE(g.attributes, '') || ';' NOT LIKE '%;113 => 0;%'
+                    OR EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.user_id = g.creator_id AND a.invite_only = 1)
+                    OR {PRIVATE_SEATS_ONLY})"
+        ))
+        .bind(a)
+        .bind(b)
+        .fetch_one(&self.pool))??;
+        Ok(n > 0)
+    }
+
     /// Whether the relay may carry `sender`'s game traffic to `receiver` (names, any case):
     /// they're in a live session together, `receiver` hosts one anyone may join (matchmaking
     /// reaches the host before its join does), one is on their way into a public one the other
@@ -1973,6 +1995,38 @@ pub(crate) mod tests {
         storage.add_guest(private, asked, true).unwrap();
         storage.delete_user_session(asked).unwrap();
         assert!(!storage.share_session(asked, host).unwrap());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// In a public match only the host is who they say for probes: anyone may become a guest
+    /// or add themselves as a participant without playing. Elsewhere, membership is enough.
+    #[test]
+    fn probes_trust_only_the_host_of_a_public_match() {
+        let (storage, dir) = temp_storage("probe_trust");
+        for name in ["Host", "Found", "Asked", "Walkin"] {
+            storage.register_user(name, "pw", Some(name)).unwrap();
+        }
+        let id = |n: &str| storage.find_user_id_by_name(n).unwrap().unwrap();
+        let (host, found, asked, walkin) = (id("Host"), id("Found"), id("Asked"), id("Walkin"));
+        let public = storage.create_game_session(host, 1, "113 => 0;3 => 8;4 => 0".into()).unwrap();
+        storage.add_participants(1, public, vec![], vec![host]).unwrap();
+        storage.add_guest(public, found, false).unwrap();
+        storage.add_guest(public, asked, false).unwrap();
+        storage.add_participants(1, public, vec![], vec![walkin]).unwrap();
+        let trusted = |a: u32, b: u32| storage.share_session_for_probes(a, b).unwrap();
+        assert!(storage.share_session(found, asked).unwrap(), "members all the same (the relay carries them)");
+        assert!(!trusted(found, asked) && !trusted(asked, found), "two guests: not on membership alone");
+        assert!(!trusted(walkin, found) && !trusted(found, walkin), "nor a participant who added themselves");
+        assert!(trusted(found, host) && trusted(host, found) && trusted(walkin, host), "the host, either way");
+        // A private match, and a party: their members got in by invitation or with the host.
+        let private = storage.create_game_session(host, 1, "113 => 0;3 => 0;4 => 4".into()).unwrap();
+        storage.add_participants(1, private, vec![], vec![host]).unwrap();
+        let party = storage.create_game_session(walkin, 1, "113 => 1".into()).unwrap();
+        storage.add_participants(1, party, vec![], vec![walkin, found]).unwrap();
+        assert!(trusted(walkin, found), "a party");
+        storage.add_guest(private, asked, true).unwrap();
+        storage.add_guest(private, found, true).unwrap();
+        assert!(trusted(found, asked), "a private match");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
