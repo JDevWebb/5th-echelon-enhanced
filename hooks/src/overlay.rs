@@ -10,6 +10,8 @@
 //! changes: the renderer has no mipmaps, so shrinking a bigger font made text
 //! jagged below 1080p.
 
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::mpsc;
 use std::sync::Mutex;
 use std::time::Duration;
@@ -30,6 +32,7 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::WindowsAndMessaging::DefWindowProcA;
+use windows::Win32::UI::WindowsAndMessaging::WM_ACTIVATEAPP;
 
 use crate::community;
 use crate::uplay_r1_loader::Event;
@@ -45,6 +48,8 @@ static NOTICE_DURATION: Duration = Duration::from_secs(5);
 /// How often the player list refreshes while the panel is open (it's every
 /// 15 s otherwise), so friends starting their game show up quickly.
 static PANEL_REFRESH: Duration = Duration::from_secs(5);
+/// The game lost focus (`WM_ACTIVATEAPP`) since the last frame: an open panel closes.
+static FOCUS_LOST: AtomicBool = AtomicBool::new(false);
 
 /// The screen height the sizes below are designed for.
 const DESIGN_HEIGHT: f32 = 1080.0;
@@ -288,6 +293,8 @@ struct MyRenderLoop {
     search_text: String,
     /// Whether Find players has searched since the panel opened.
     searched: bool,
+    /// The panel just opened: log what it's drawn with on the next frame.
+    log_draw_state: bool,
 }
 
 /// Builds the Uplay event that hands an accepted invitation to the game.
@@ -399,12 +406,9 @@ impl MyRenderLoop {
         let down = |vk: u16| unsafe { GetAsyncKeyState(vk.into()) & 0x8000u16 as i16 != 0 };
         let f5 = down(overlay_key().1);
         let in_front = crate::overlay_input::game_in_front();
-        // Another program came in front with the panel open: it closes, freeing the mouse.
-        if !in_front && self.ui_state == UiState::Show {
-            self.ui_state = UiState::Hide;
-        }
         if f5 && !self.f5_down && in_front {
             self.toggle();
+            self.log_draw_state = self.ui_state == UiState::Show;
             crate::game_state::overlay(self.ui_state == UiState::Show, &overlay_key().0);
         }
         self.f5_down = f5;
@@ -1346,10 +1350,35 @@ impl ImguiRenderLoop for MyRenderLoop {
     }
 
     fn before_render(&mut self, ctx: &mut imgui::Context, render_context: &mut dyn hudhook::RenderContext) {
-        self.s = screen_scale(ctx.io().display_size[1]);
-        let font_scale = font_scale_for(self.s);
-        if font_scale != self.font_scale && !self.font_rebuild_failed {
-            self.rebuild_fonts(ctx, render_context, font_scale);
+        // Another program came in front, or the game lost focus, with the panel open: it closes,
+        // freeing the mouse and keys. Here, not in `render`: hudhook skips that while the window
+        // is minimised (0x0), so a panel open at alt-tab stayed open, holding the game's input.
+        let in_front = crate::overlay_input::game_in_front();
+        let focus_lost = FOCUS_LOST.swap(false, Ordering::SeqCst);
+        if (!in_front || focus_lost) && self.ui_state == UiState::Show {
+            self.ui_state = UiState::Hide;
+            crate::overlay_input::set_open(false);
+            info!("Overlay closed (the game lost focus)");
+        }
+        // A minimised window (0x0) or one in the background keeps the fonts it has: alt-tab
+        // shouldn't rebuild them twice.
+        let height = ctx.io().display_size[1];
+        if height > 0.0 && in_front {
+            self.s = screen_scale(height);
+            let font_scale = font_scale_for(self.s);
+            if font_scale != self.font_scale && !self.font_rebuild_failed {
+                self.rebuild_fonts(ctx, render_context, font_scale);
+            }
+        }
+        if std::mem::take(&mut self.log_draw_state) {
+            let [w, h] = ctx.io().display_size;
+            info!(
+                "Overlay drawn at {w}x{h}, scale {:.2}, fonts {:.2} (texture {}{})",
+                self.s,
+                self.font_scale,
+                ctx.fonts().tex_id.id(),
+                if self.font_rebuild_failed { ", rebuild failed" } else { "" }
+            );
         }
         ctx.io_mut().font_global_scale = self.s / self.font_scale;
         // The game hides the system's cursor in play: the overlay draws its own while open.
@@ -1390,6 +1419,9 @@ impl ImguiRenderLoop for MyRenderLoop {
     }
 
     fn on_wnd_proc(&self, hwnd: windows::Win32::Foundation::HWND, umsg: u32, wparam: windows::Win32::Foundation::WPARAM, lparam: windows::Win32::Foundation::LPARAM) {
+        if umsg == WM_ACTIVATEAPP && wparam.0 == 0 {
+            FOCUS_LOST.store(true, Ordering::SeqCst);
+        }
         if matches!(self.ui_state, UiState::Show) {
             // Forward to default handler so that the window doesn't break
             unsafe {
@@ -1428,6 +1460,7 @@ fn init_hudhook<T: hudhook::Hooks + 'static>(invites: crossbeam_channel::Receive
             last_refresh: Instant::now(),
             search_text: String::new(),
             searched: false,
+            log_draw_state: false,
         })
         .with_hmodule(unsafe { GetModuleHandleA(PCSTR::null())?.into() })
         .build()
