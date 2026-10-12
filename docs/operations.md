@@ -10,14 +10,16 @@ A coordinator does more than share friends. It keeps every server in its network
    - It asks GitHub for the latest release every 10 minutes.
    - It only takes a release whose `SHA256SUMS` carries the release key's signature for that release's version (its tag), and which has a server build.
    - An unsigned release is never rolled out.
-2. **One server goes first (the canary).**
-   - The coordinator picks the quietest server that installs updates, and its next heartbeat answer names the release.
+2. **It waits for update windows.** A release is installed on a server only during an [update window](#maintenance-windows) booked for that server or for the whole network, so its players know days ahead when it restarts. Until one is under way, the rollout waits ("waiting for an update window"). Within a window, a server updates at once, players on or not: they were told when.
+3. **One server goes first (the canary).**
+   - The coordinator picks the quietest server that installs updates and is in an update window, and its next heartbeat answer names the release.
    - The canary must run the release and keep reporting in for 10 minutes.
    - If it doesn't come back, or its updater rolls back, the rollout halts there.
-3. **The rest follow.**
-   - Each server updates when it has no players on.
-   - Two hours into the stage, a server updates even with players on.
-4. **The coordinator updates itself** once the canary has proved the release, when the installer's updater is on its machine. If that updater fails or rolls back, the coordinator doesn't ask for that release again for 6 hours (it reads `update-status.json`), so a bad release doesn't restart its machine every 30 seconds.
+   - If its window ends before it installed the release, the next window picks again.
+4. **The rest follow,** each in its update window (a whole network's window covers every server). A window should be long enough for the canary's 10 minutes and the rest: an hour is plenty.
+5. **The coordinator updates itself** once the canary has proved the release, in an update window for the whole network (its machine's updater installs every program there, the game server's too), when the installer's updater is on its machine. If that updater fails or rolls back, the coordinator doesn't ask for that release again for 6 hours (it reads `update-status.json`), so a bad release doesn't restart its machine every 30 seconds.
+
+**Without a window:** **Update now, without a window** (Updates) lets a rollout go out at once, for an urgent fix: then each server updates when it has no players on, or two hours into the stage whatever, and players get no warning ahead. **Roll back** always goes out at once. A new release waits for windows again.
 
 **What's rolled out on its own:** a release newer than the one being rolled out (with none yet, not older than the coordinator's own), and at most one major version past it. Anything else is recorded, and an admin can roll it out (Roll this out). The signature names the version, so an old signed release published again under a new tag doesn't verify.
 
@@ -25,7 +27,8 @@ A coordinator does more than share friends. It keeps every server in its network
 
 While a release is going out, `/v1/servers` carries the rollout (see the [coordinator's API](friends.md#the-coordinators-api)), and players' launchers show a notice under the launch bar, read again every minute:
 
-- **While it's tested:** the canary's minutes left, and when the player's own server updates: about two minutes after the test, or for a server with players on, once they leave and by two hours into the stage at the latest. They can keep playing until their server restarts.
+- **Before:** the update window, as a maintenance notice ("Server update today, 8:00 pm NZDT"): see [Maintenance windows](#maintenance-windows). The rollout itself is only in the directory while an update window is under way (or it goes out without one).
+- **While it's tested:** the canary's minutes left, and when the player's own server updates: about two minutes after the test (without a window, for a server with players on, once they leave and by two hours into the stage at the latest). They can keep playing until their server restarts.
 - **While their server restarts:** back in about two minutes (the launcher checks every 15 seconds), and a server already on the release to play on meanwhile.
 - **When their server runs a newer release than their launcher** (it turns older games away): **Update and restart**, and **Play** waits.
 
@@ -82,7 +85,8 @@ A member server drops out of the server directory, and players' launchers stop o
 |---|---|
 | Pause / Resume | Stop or restart telling servers to update; they keep what they run |
 | Pin / Unpin | A pinned rollout ignores new releases until unpinned |
-| Skip the canary | Every server updates now |
+| Skip the canary | Every server updates (in its update window) without waiting for the canary |
+| Update now, without a window | The rollout goes out without update windows: each server when quiet, or within 2 hours; for urgent fixes |
 | Halt | Stop the rollout where it is |
 | Roll back to … | Every server returns to the release before (from its kept copy, so no download), and the rollout is pinned there |
 | Roll this out | Roll out an earlier signed release, with a canary, and pin it |
@@ -90,13 +94,17 @@ A member server drops out of the server directory, and players' launchers stop o
 
 ## Maintenance windows
 
-Admins book a time a server will be down, or the whole network (the coordinator itself), in the admin UI's **Updates** page: the servers, the start in the admin's own time (with UTC beside it), how long, and a note for players ("Moving to a faster machine"). A booking is a notice for players; nothing is stopped, and the work is the admin's to do.
+Admins book a time a server will be down, or the whole network, in the admin UI's **Updates** page: what it's for (an update, or other maintenance), the servers, the start in the admin's own time (with UTC beside it), how long, and a note for players ("Moving to a faster machine"; an update window without one says "Server update"). A booking is a notice for players: the rollout installs releases in update windows (above), and any other work is the admin's to do.
+
+**Update windows** are when releases go out, so book them ahead, say a regular weekly slot in each region's quiet hours, or one for the whole network. A whole network's update window is each server's too: launchers on every server are told, and the coordinator updates in it as well. A server restarts once, for about two minutes, early in the window.
 
 **What players see:**
 - **In the launcher,** from the start of the day it begins by their PC's clock, or 12 hours before it if that's earlier: a notice under the launch bar ("Maintenance today, 8:00–9:00 pm NZDT"), in their time zone and their PC's 12 or 24-hour clock, and a tag on that server in the server menu. From 30 minutes before, it offers the nearest server that stays up. While it's under way and the server doesn't answer, **Play** waits and offers that server; past its end with the server still down, "Taking longer than planned". The network's window says that friends on other servers, the server list and new names pause, and games carry on; it never stops **Play**.
 - **In the game,** from 10 minutes before: a toast in the overlay with the time left, how long, and the note (each server hears its windows and the network's in its heartbeat answer, and tells its games in `/api/info`).
 
-**Updates wait:** no rollout starts an update on a server during its window or the network's. Cancelling a window takes it off launchers within a minute.
+**Players see** an update window as one: "Server update today", their server restarting with a new release, down for about two minutes, and in the game "Server update in 5 min".
+
+**Other maintenance:** no rollout starts an update on a server during it. Cancelling a window takes it off launchers within a minute.
 
 ## Support
 

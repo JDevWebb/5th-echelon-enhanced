@@ -190,6 +190,7 @@ async fn the_directory_carries_a_rollout_through_its_stages() {
     t.call("POST", "/v1/heartbeat", Some(&busy), Some(beat("busy", "1.0.0", 3))).await;
     let rollout = || async { t.call("GET", "/v1/servers", None, None).await.1 };
     assert!(rollout().await.get("rollout").is_none(), "nothing going out");
+    update_window(&t, None).await;
 
     // Canary: the quietest server first.
     t.c.start_rollout("1.1.0", "a test").await.unwrap();
@@ -199,7 +200,11 @@ async fn the_directory_carries_a_rollout_through_its_stages() {
         (r["release"].as_str(), r["stage"].as_str(), r["canary"].as_str()),
         (Some("1.1.0"), Some("canary"), Some("quiet"))
     );
-    assert_eq!((r["healthy_for"].as_i64(), r["quiet_wait"].as_i64()), (Some(600), Some(7200)));
+    assert_eq!(
+        (r["healthy_for"].as_i64(), r["quiet_wait"].as_i64(), r["windows"].as_bool()),
+        (Some(600), Some(0), Some(true)),
+        "in an update window: no wait for players, who were told when"
+    );
     let started = r["stage_started"].as_i64().unwrap();
     assert!((identity::now() - started).abs() < 5, "Unix seconds, now");
     // Each server's version and players stay in its listing.
@@ -228,6 +233,20 @@ async fn the_directory_carries_a_rollout_through_its_stages() {
     assert!(rollout().await.get("rollout").is_none(), "done");
 }
 
+/// An update window under way for the next hour, for `server` or (None) the whole network:
+/// the rollout may update servers in it.
+async fn update_window(t: &Test, server: Option<&str>) {
+    let now = identity::now();
+    sqlx::query("INSERT INTO maintenance (server_id, starts, ends, note, created_by, created_at, kind) VALUES (?, ?, ?, '', 'test', ?, 'update')")
+        .bind(server)
+        .bind(now - 60)
+        .bind(now + 3600)
+        .bind(now)
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+}
+
 /// A heartbeat from a server that installs updates (unless `manual`), and what the
 /// coordinator answers it to install, if anything.
 async fn heartbeat_asks(t: &Test, secret: &str, id: &str, version: &str, players: u32, manual: bool) -> Option<String> {
@@ -251,6 +270,7 @@ async fn heartbeats_tell_each_server_when_to_update() {
     heartbeat_asks(&t, &quiet, "quiet", "1.0.0", 0, false).await;
     heartbeat_asks(&t, &busy, "busy", "1.0.0", 3, false).await;
     heartbeat_asks(&t, &manual, "manual", "1.0.0", 0, true).await;
+    update_window(&t, None).await;
     t.c.start_rollout("1.1.0", "a test").await.unwrap();
     assert_eq!(t.c.rollout().await.unwrap().previous.as_deref(), Some("1.0.0"), "what the network ran");
 
@@ -269,22 +289,11 @@ async fn heartbeats_tell_each_server_when_to_update() {
     assert_eq!(stage(&t).await.0, "verifying");
     assert_eq!(heartbeat_asks(&t, &busy, "busy", "1.0.0", 3, false).await, None);
 
-    // Rolling: a server with players on waits for them, up to QUIET_WAIT.
+    // Rolling: in the update window, at once, players on or not (they were told when).
     sqlx::query("UPDATE rollout SET stage_since = stage_since - 601").execute(&t.c.pool).await.unwrap();
     t.c.tick_rollout().await.unwrap();
     assert_eq!(stage(&t).await.0, "rolling");
-    assert_eq!(heartbeat_asks(&t, &busy, "busy", "1.0.0", 3, false).await, None, "players are on");
-    assert_eq!(heartbeat_asks(&t, &busy, "busy", "1.0.0", 0, false).await.as_deref(), Some("1.1.0"), "they left");
-    sqlx::query("UPDATE rollout SET stage_since = stage_since - ?")
-        .bind(updates::QUIET_WAIT)
-        .execute(&t.c.pool)
-        .await
-        .unwrap();
-    assert_eq!(
-        heartbeat_asks(&t, &busy, "busy", "1.0.0", 3, false).await.as_deref(),
-        Some("1.1.0"),
-        "after QUIET_WAIT, whatever"
-    );
+    assert_eq!(heartbeat_asks(&t, &busy, "busy", "1.0.0", 3, false).await.as_deref(), Some("1.1.0"), "in its window");
     // Offered to a server that doesn't install updates too: its own setting declines it
     // (dedicated_server's self_update::request), and it can update by hand.
     assert_eq!(heartbeat_asks(&t, &manual, "manual", "1.0.0", 0, true).await.as_deref(), Some("1.1.0"));
@@ -302,12 +311,84 @@ async fn heartbeats_tell_each_server_when_to_update() {
     assert_eq!(stage(&t).await, ("halted".to_string(), "an admin's test".to_string()));
 }
 
+/// Releases go out only in update windows, booked ahead so players know: nobody is asked
+/// without one, a server's own window lets only it update, and other maintenance stops it.
+#[tokio::test]
+async fn a_rollout_waits_for_update_windows() {
+    let t = start("rollout-windows").await;
+    let (a, b) = (t.join("a").await, t.join("b").await);
+    heartbeat_asks(&t, &a, "a", "1.0.0", 0, false).await;
+    heartbeat_asks(&t, &b, "b", "1.0.0", 0, false).await;
+    t.c.start_rollout("1.1.0", "a test").await.unwrap();
+    let r = t.c.rollout().await.unwrap();
+    assert_eq!((r.stage.as_str(), r.canary.as_deref(), r.note.as_str()), ("canary", None, updates::WAITING_FOR_WINDOW));
+    assert_eq!(heartbeat_asks(&t, &a, "a", "1.0.0", 0, false).await, None, "no window, no update");
+    let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
+    assert!(dir.get("rollout").is_none(), "launchers show the windows booked, not a rollout waiting for one");
+
+    // b's window: b tries it first, whatever the order.
+    update_window(&t, Some("b")).await;
+    t.c.tick_rollout().await.unwrap();
+    assert_eq!(t.c.rollout().await.unwrap().canary.as_deref(), Some("b"));
+    assert_eq!(heartbeat_asks(&t, &a, "a", "1.0.0", 0, false).await, None, "not a's window");
+    assert_eq!(heartbeat_asks(&t, &b, "b", "1.0.0", 5, false).await.as_deref(), Some("1.1.0"), "b's, players on or not");
+    let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
+    assert_eq!(dir["rollout"]["stage"], "canary", "shown while a window is under way");
+
+    // Other maintenance on b: no update starts during it.
+    sqlx::query("INSERT INTO maintenance (server_id, starts, ends, note, created_by, created_at, kind) VALUES ('b', ?, ?, '', 'test', ?, 'maintenance')")
+        .bind(identity::now() - 60)
+        .bind(identity::now() + 600)
+        .bind(identity::now())
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(heartbeat_asks(&t, &b, "b", "1.0.0", 0, false).await, None, "in other maintenance");
+    // The canary's window over before it updated: it waits for the next one.
+    t.c.tick_rollout().await.unwrap();
+    let r = t.c.rollout().await.unwrap();
+    assert_eq!((r.canary, r.note.as_str()), (None, updates::WAITING_FOR_WINDOW));
+}
+
+/// An admin's "now" lets a rollout go out without windows: each server when it's quiet, or
+/// QUIET_WAIT into the stage whatever.
+#[tokio::test]
+async fn an_admin_can_send_a_rollout_out_without_windows() {
+    let t = start("rollout-now").await;
+    let (quiet, busy) = (t.join("quiet").await, t.join("busy").await);
+    heartbeat_asks(&t, &quiet, "quiet", "1.0.0", 0, false).await;
+    heartbeat_asks(&t, &busy, "busy", "1.0.0", 3, false).await;
+    t.c.start_rollout("1.1.0", "a test").await.unwrap();
+    assert_eq!(heartbeat_asks(&t, &quiet, "quiet", "1.0.0", 0, false).await, None);
+    t.c.go_now().await.unwrap();
+    assert_eq!(heartbeat_asks(&t, &quiet, "quiet", "1.0.0", 0, false).await.as_deref(), Some("1.1.0"), "the canary");
+    let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
+    assert_eq!((dir["rollout"]["quiet_wait"].as_i64(), dir["rollout"]["windows"].as_bool()), (Some(7200), Some(false)));
+    t.c.promote().await.unwrap();
+    assert_eq!(heartbeat_asks(&t, &busy, "busy", "1.0.0", 3, false).await, None, "players are on");
+    assert_eq!(heartbeat_asks(&t, &busy, "busy", "1.0.0", 0, false).await.as_deref(), Some("1.1.0"), "they left");
+    sqlx::query("UPDATE rollout SET stage_since = stage_since - ?")
+        .bind(updates::QUIET_WAIT)
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        heartbeat_asks(&t, &busy, "busy", "1.0.0", 3, false).await.as_deref(),
+        Some("1.1.0"),
+        "after QUIET_WAIT, whatever"
+    );
+    // A new release waits for windows again.
+    t.c.start_rollout("1.2.0", "a test").await.unwrap();
+    assert!(!t.c.rollout().await.unwrap().anytime);
+}
+
 #[tokio::test]
 async fn a_canary_that_rolls_back_or_never_updates_halts_the_rollout() {
     let t = start("rollout-halts").await;
     let (a, b) = (t.join("a").await, t.join("b").await);
     heartbeat_asks(&t, &a, "a", "1.0.0", 0, false).await;
     heartbeat_asks(&t, &b, "b", "1.0.0", 1, false).await;
+    update_window(&t, None).await;
     t.c.start_rollout("1.1.0", "a test").await.unwrap();
     assert_eq!(t.c.rollout().await.unwrap().canary.as_deref(), Some("a"));
 
@@ -400,6 +481,7 @@ async fn an_admin_rolls_out_a_recorded_release_and_promotes_it() {
     let (quiet, busy) = (t.join("quiet").await, t.join("busy").await);
     heartbeat_asks(&t, &quiet, "quiet", "1.1.0", 0, false).await;
     heartbeat_asks(&t, &busy, "busy", "1.1.0", 2, false).await;
+    update_window(&t, None).await;
     assert!(
         t.c.roll_out("1.0.9").await.unwrap_err().contains("isn't a signed release"),
         "only releases the coordinator has seen"
@@ -2991,13 +3073,16 @@ async fn maintenance_is_told_to_launchers_and_servers_and_holds_updates() {
     let (_, beat_b) = t
         .call("POST", "/v1/heartbeat", Some(&b), Some(json!({ "name": "server-b", "host": "server-b", "listed": true })))
         .await;
-    assert_eq!(beat_b["maintenance"], json!([{ "start": now + 86_400, "end": now + 90_000, "note": "", "network": true }]));
+    assert_eq!(
+        beat_b["maintenance"],
+        json!([{ "start": now + 86_400, "end": now + 90_000, "note": "", "network": true, "update": false }])
+    );
 
     // No update starts on a server in its window, or anywhere in the network's.
-    assert!(!t.c.in_maintenance("server-a", now).await.unwrap());
-    assert!(t.c.in_maintenance("server-a", now + 3600).await.unwrap());
-    assert!(!t.c.in_maintenance("server-b", now + 3600).await.unwrap());
-    assert!(t.c.in_maintenance("server-b", now + 86_400).await.unwrap());
+    assert!(!t.c.in_window("server-a", crate::maintenance::MAINTENANCE, now).await.unwrap());
+    assert!(t.c.in_window("server-a", crate::maintenance::MAINTENANCE, now + 3600).await.unwrap());
+    assert!(!t.c.in_window("server-b", crate::maintenance::MAINTENANCE, now + 3600).await.unwrap());
+    assert!(t.c.in_window("server-b", crate::maintenance::MAINTENANCE, now + 86_400).await.unwrap());
 
     // Cancelled: gone from the directory, and audited.
     assert_eq!(admin_call(&r, "DELETE", &format!("/api/maintenance/{a_window}"), &cookie, None).await.0, StatusCode::OK);

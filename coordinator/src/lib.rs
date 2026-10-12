@@ -1693,10 +1693,11 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
         Err(e) => return internal(e),
     };
     // Maintenance booked: launchers warn the players of a server on the day.
-    let (mut maintenance, network_maintenance) = match c.directory_maintenance(now).await {
+    let maintenance = match c.directory_maintenance(now).await {
         Ok(m) => m,
         Err(e) => return internal(e),
     };
+    let network_maintenance = maintenance.network.clone();
     let mut list: Vec<Value> = rows
         .into_iter()
         .filter_map(|(id, listing, last_seen, checked)| {
@@ -1714,7 +1715,8 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
             if updates::delisted(&rollout, version, auto_update, now).is_some() {
                 return None;
             }
-            if let Some(windows) = maintenance.remove(&id) {
+            let windows = maintenance.of(&id);
+            if !windows.is_empty() {
                 v["maintenance"] = json!(windows);
             }
             v["id"] = json!(id);
@@ -1725,7 +1727,11 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
     list.sort_by_key(|v| std::cmp::Reverse(v["players_online"].as_u64().unwrap_or(0)));
     // A release going out: launchers tell their players when their server updates.
     let mut answer = json!({ "servers": list });
-    if let Some(rollout) = updates::public_rollout(&rollout) {
+    let window_open = match c.update_windows_open(now).await {
+        Ok((any, _)) => any,
+        Err(e) => return internal(e),
+    };
+    if let Some(rollout) = updates::public_rollout(&rollout, window_open) {
         answer["rollout"] = rollout;
     }
     if let Some(window) = network_maintenance {

@@ -4,8 +4,15 @@
       <h2 class="big-title">Book maintenance</h2>
       <span class="small muted">Times are in your time zone: <span class="mono">{{ zone }}</span></span>
     </header>
-    <p class="small muted lead-in">A notice only: nothing is stopped. On the day, launchers on the server warn their players in their own time, and rollouts don't update a server during its window.</p>
+    <p class="small muted lead-in">On the day, launchers on the server warn their players in their own time, and the game warns them in the last minutes. New releases are installed only in update windows, so players know ahead when their server restarts; book one for the whole network to update the coordinator too. No update starts during other maintenance.</p>
     <form class="book" @submit.prevent="book">
+      <span id="mt-kind" class="label">Purpose</span>
+      <div class="row" role="group" aria-labelledby="mt-kind">
+        <button class="chip" type="button" :aria-pressed="String(kind === 'update')" @click="kind = 'update'">Update</button>
+        <button class="chip" type="button" :aria-pressed="String(kind === 'maintenance')" @click="kind = 'maintenance'">Other maintenance</button>
+        <span class="small muted">{{ kind === 'update' ? 'The rollout installs the new release in this window, at its start.' : 'Nothing is installed during it.' }}</span>
+      </div>
+
       <span id="mt-servers" class="label">Servers</span>
       <div class="row" role="group" aria-labelledby="mt-servers">
         <label v-for="sv in servers" :key="sv.id" class="check">
@@ -35,8 +42,8 @@
 
       <label class="label" for="mt-note">For players</label>
       <div class="stack" style="gap: 6px">
-        <input id="mt-note" v-model="note" type="text" maxlength="100" placeholder="Moving to a faster machine" class="note">
-        <span class="small muted">Optional. Shown after the time in the launcher. {{ note.length }}/100</span>
+        <input id="mt-note" v-model="note" type="text" maxlength="100" :placeholder="kind === 'update' ? 'Server update' : 'Moving to a faster machine'" class="note">
+        <span class="small muted">Optional{{ kind === 'update' ? ' ("Server update" if empty)' : '' }}. Shown after the time in the launcher. {{ note.length }}/100</span>
       </div>
 
       <span class="label">Players see</span>
@@ -68,10 +75,11 @@
     <div v-else-if="!windows.length" class="empty">Nothing booked. Book a window above and it shows here.</div>
     <div v-else class="table-wrap">
       <table>
-        <thead><tr><th>Server</th><th>When (yours)</th><th>Length</th><th>Shown to players</th><th>Status</th><th></th></tr></thead>
+        <thead><tr><th>Server</th><th>Purpose</th><th>When (yours)</th><th>Length</th><th>Shown to players</th><th>Status</th><th></th></tr></thead>
         <tbody>
           <tr v-for="w in windows" :key="w.id">
             <td>{{ w.server_name }}<span class="sub">{{ w.server ? short(w.server) : 'coordinator' }}</span></td>
+            <td><span class="pill" :class="w.kind === 'update' ? 'info' : ''">{{ w.kind === 'update' ? 'Update' : 'Maintenance' }}</span></td>
             <td>{{ localText(w.start, w.end) }}<span class="sub">{{ utcRange(w.start, w.end) }}</span></td>
             <td class="mono">{{ lengthShort(w.end - w.start) }}</td>
             <td><span v-if="w.note">{{ w.note }}</span><span v-else class="faint">nothing</span></td>
@@ -117,6 +125,7 @@ const minutes = ref(60);
 const other = ref(false);
 const otherMinutes = ref(90);
 const note = ref('');
+const kind = ref('update');
 const busy = ref(false);
 const confirming = ref(null);
 
@@ -171,7 +180,8 @@ const preview = computed(() => {
   if (start.value == null) return [];
   const at = clock(start.value);
   const forHow = lengthWords(length.value);
-  const why = note.value.trim() ? `: ${note.value.trim()}` : '';
+  const text = note.value.trim() || (kind.value === 'update' ? 'Server update' : '');
+  const why = text ? `: ${text}` : '';
   const lines = [];
   const first = props.servers.find(sv => picked.value.includes(sv.id));
   if (first) lines.push(`${city(first)} goes down at ${at} for ${forHow}${why}.`);
@@ -184,7 +194,7 @@ async function book() {
   busy.value = true;
   try {
     const r = await api('POST', '/maintenance', {
-      servers: picked.value, network: network.value, start: start.value, end: start.value + length.value * 60, note: note.value.trim(),
+      servers: picked.value, network: network.value, start: start.value, end: start.value + length.value * 60, note: note.value.trim(), kind: kind.value,
     });
     const n = r.windows?.length || 0;
     toast(n === 1 ? 'Maintenance booked.' : `Maintenance booked: ${n} windows.`);

@@ -102,6 +102,10 @@ pub struct Maintenance {
     /// The whole network (the coordinator), not this server: games carry on.
     #[serde(default)]
     pub network: bool,
+    /// For installing a release: this server restarts (a whole network's updates every
+    /// server).
+    #[serde(default)]
+    pub update: bool,
 }
 
 /// How long before a window the overlay warns.
@@ -131,7 +135,14 @@ pub fn maintenance_warning(windows: &[Maintenance], now: i64) -> Option<(String,
     let minutes = ((w.start - now + 59) / 60).max(1);
     let when = if minutes == 1 { String::from("1 min") } else { format!("{minutes} min") };
     let note = if w.note.is_empty() { String::new() } else { format!(": {}", w.note) };
-    Some(if w.network {
+    Some(if w.update {
+        // The note an update window gets when booked without one says no more.
+        let note = if w.note == "Server update" { "" } else { note.as_str() };
+        (
+            format!("Server update in {when}"),
+            format!("This server restarts with a new release, down for about two minutes{note}. Finish your match before then."),
+        )
+    } else if w.network {
         (
             format!("Network maintenance in {when}"),
             format!("Friends and invites pause for {}{note}. Your match carries on.", length(w.end - w.start)),
@@ -723,12 +734,14 @@ mod tests {
             end: 13_600,
             note: String::from("Moving to a faster machine"),
             network: false,
+            update: false,
         };
         let network = Maintenance {
             start: 20_000,
             end: 21_800,
             note: String::new(),
             network: true,
+            update: false,
         };
         let windows = [network.clone(), server];
         assert_eq!(maintenance_warning(&windows, 10_000 - 601), None, "not yet");
@@ -746,6 +759,19 @@ mod tests {
             Some((
                 "Network maintenance in 5 min".into(),
                 "Friends and invites pause for about 30 minutes. Your match carries on.".into()
+            ))
+        );
+        // A whole network's update window restarts this server too.
+        let update = Maintenance {
+            update: true,
+            note: String::from("Server update"),
+            ..network.clone()
+        };
+        assert_eq!(
+            maintenance_warning(&[update], 20_000 - 300),
+            Some((
+                "Server update in 5 min".into(),
+                "This server restarts with a new release, down for about two minutes. Finish your match before then.".into()
             ))
         );
         assert_eq!(super::length(90 * 60), "about an hour and a half");

@@ -8,9 +8,15 @@
 //!    update in its heartbeat answer;
 //! 2. **verifying**: once it runs the release, it must keep reporting in for
 //!    [`HEALTHY_FOR`];
-//! 3. **rolling**: every other server is told, each when it has no players
-//!    on, or [`QUIET_WAIT`] after the stage began whatever;
+//! 3. **rolling**: every other server is told;
 //! 4. **done**, when they all run it.
+//!
+//! A server is only ever told during an update window booked for it or for the whole network
+//! (`maintenance.rs`), so its players know days ahead when it restarts: launchers warn them
+//! on the day, and the game in the last minutes. A rollout waits for the windows; within one,
+//! servers update at once. An admin can let a rollout go out without windows (an urgent fix):
+//! then servers update when they have no players on, or [`QUIET_WAIT`] into the stage
+//! whatever. Rolling back always goes out at once.
 //!
 //! A canary that doesn't come back, or whose updater rolled back, halts the
 //! rollout. Admins can pause, pin (no new releases on their own), promote,
@@ -41,7 +47,8 @@ pub const CHECK_EVERY: Duration = Duration::from_secs(10 * 60);
 pub(crate) const HEALTHY_FOR: i64 = 10 * 60;
 /// A canary that hasn't updated after this long halts the rollout.
 const CANARY_TIMEOUT: i64 = 3 * 3600;
-/// Servers with players on are updated anyway this long into a stage.
+/// Without update windows (an admin's "now"), servers with players on are updated anyway this
+/// long into a stage.
 pub(crate) const QUIET_WAIT: i64 = 2 * 3600;
 /// Seen this recently, a server counts as up.
 const FRESH: i64 = 180;
@@ -167,7 +174,12 @@ pub struct Rollout {
     pub paused: bool,
     pub pinned: bool,
     pub note: String,
+    /// Going out without update windows (an admin's "now", or a rollback).
+    pub anytime: bool,
 }
+
+/// What the rollout waits for while no server it needs is in an update window.
+pub const WAITING_FOR_WINDOW: &str = "waiting for an update window: book one under Maintenance (or update now)";
 
 /// A member server as the rollout sees it.
 #[derive(Debug, Clone)]
@@ -183,13 +195,13 @@ struct Member {
 
 impl Coordinator {
     pub async fn rollout(&self) -> sqlx::Result<Rollout> {
-        sqlx::query_as("SELECT target, previous, stage, canary, stage_since, paused, pinned, note FROM rollout WHERE id = 1")
+        sqlx::query_as("SELECT target, previous, stage, canary, stage_since, paused, pinned, note, anytime FROM rollout WHERE id = 1")
             .fetch_one(&self.pool)
             .await
     }
 
     async fn save_rollout(&self, r: &Rollout) -> sqlx::Result<()> {
-        sqlx::query("UPDATE rollout SET target = ?, previous = ?, stage = ?, canary = ?, stage_since = ?, paused = ?, pinned = ?, note = ? WHERE id = 1")
+        sqlx::query("UPDATE rollout SET target = ?, previous = ?, stage = ?, canary = ?, stage_since = ?, paused = ?, pinned = ?, note = ?, anytime = ? WHERE id = 1")
             .bind(&r.target)
             .bind(&r.previous)
             .bind(&r.stage)
@@ -198,9 +210,20 @@ impl Coordinator {
             .bind(r.paused)
             .bind(r.pinned)
             .bind(&r.note)
+            .bind(r.anytime)
             .execute(&self.pool)
             .await?;
         Ok(())
+    }
+
+    /// Whether the rollout may tell `server` to update at `now`: in an update window booked
+    /// for it or the network (or the rollout goes out without them), and never during other
+    /// maintenance.
+    async fn may_update(&self, r: &Rollout, server: &str, now: i64) -> sqlx::Result<bool> {
+        if self.in_window(server, crate::maintenance::MAINTENANCE, now).await? {
+            return Ok(false);
+        }
+        Ok(r.anytime || self.in_window(server, crate::maintenance::UPDATE, now).await?)
     }
 
     async fn members(&self) -> sqlx::Result<Vec<Member>> {
@@ -269,6 +292,7 @@ impl Coordinator {
         r.canary = None;
         r.stage_since = identity::now();
         r.paused = false;
+        r.anytime = false;
         r.note = why.to_string();
         self.save_rollout(&r).await?;
         self.tick_rollout().await
@@ -284,25 +308,40 @@ impl Coordinator {
         let now = identity::now();
         let members = self.members().await?;
         let fresh: Vec<&Member> = members.iter().filter(|m| now - m.last_seen <= FRESH).collect();
-        let before = (r.stage.clone(), r.canary.clone());
+        let before = (r.stage.clone(), r.canary.clone(), r.note.clone());
         match r.stage.as_str() {
             "canary" => {
                 let canary = r.canary.as_ref().and_then(|c| fresh.iter().find(|m| &m.id == c)).copied();
+                let canary_may = match canary {
+                    Some(m) => self.may_update(&r, &m.id, now).await?,
+                    None => false,
+                };
                 match canary {
                     None => {
-                        // The quietest server that installs updates and isn't on the target yet;
-                        // among as quiet ones, an order made from each id and the release, not
-                        // the ids themselves (a member that joined as "---" sorted first, and
-                        // was the canary every time).
-                        let pick = fresh
-                            .iter()
-                            .filter(|m| m.auto_update && m.version != target)
+                        // The quietest server that installs updates, isn't on the target yet and
+                        // may update now (in an update window); among as quiet ones, an order
+                        // made from each id and the release, not the ids themselves (a member
+                        // that joined as "---" sorted first, and was the canary every time).
+                        let candidates: Vec<&&Member> = fresh.iter().filter(|m| m.auto_update && m.version != target).collect();
+                        let mut ready = Vec::new();
+                        for m in candidates.iter().copied() {
+                            if self.may_update(&r, &m.id, now).await? {
+                                ready.push(m);
+                            }
+                        }
+                        let pick = ready
+                            .into_iter()
                             .min_by_key(|m| (m.players_online, identity::digest(format!("{target}\n{}", m.id).as_bytes())));
                         match pick {
                             Some(m) => {
                                 r.canary = Some(m.id.clone());
                                 r.stage_since = now;
+                                if r.note == WAITING_FOR_WINDOW {
+                                    r.note = format!("{}'s update window began", m.id);
+                                }
                             }
+                            // Servers to try it on, none in an update window yet.
+                            None if !candidates.is_empty() => r.note = WAITING_FOR_WINDOW.into(),
                             // Nobody left to try it on: every server runs it already, or none update.
                             None => {
                                 r.stage = "rolling".into();
@@ -318,6 +357,11 @@ impl Coordinator {
                         r.stage = "halted".into();
                         r.note = format!("{} couldn't install {target} ({}); rollout halted", m.id, m.updater_state);
                         r.stage_since = now;
+                    }
+                    // Its window ended before it installed the release: another, in the next.
+                    Some(_) if !canary_may => {
+                        r.canary = None;
+                        r.note = WAITING_FOR_WINDOW.into();
                     }
                     Some(m) if now - r.stage_since > CANARY_TIMEOUT => {
                         r.stage = "halted".into();
@@ -353,12 +397,14 @@ impl Coordinator {
             }
             _ => {}
         }
-        if (r.stage.clone(), r.canary.clone()) != before {
+        if (r.stage.clone(), r.canary.clone(), r.note.clone()) != before {
             tracing::info!("Rollout of {target}: {} ({})", r.stage, r.note);
             self.save_rollout(&r).await?;
         }
-        // The coordinator itself follows once the canary proved the release.
-        if matches!(r.stage.as_str(), "rolling" | "done") {
+        // The coordinator itself follows once the canary proved the release: in an update
+        // window for the whole network (its machine's updater installs every program there,
+        // its game server's too), or when the rollout goes out without windows.
+        if matches!(r.stage.as_str(), "rolling" | "done") && (r.anytime || self.update_windows_open(now).await?.1) {
             self.request_own_update(&target);
         }
         Ok(())
@@ -367,17 +413,19 @@ impl Coordinator {
     /// The release a server should install now, for its heartbeat answer.
     pub(crate) async fn update_for(&self, server: &str, version: &str, players_online: u64) -> sqlx::Result<Option<String>> {
         let r = self.rollout().await?;
-        let Some(target) = r.target else { return Ok(None) };
+        let Some(target) = r.target.clone() else { return Ok(None) };
         if r.paused || version == target {
             return Ok(None);
         }
         let now = identity::now();
-        // Not during the server's maintenance window (or the network's).
-        if self.in_maintenance(server, now).await? {
+        // Only in an update window (its own or the network's), unless it goes out without them.
+        if !self.may_update(&r, server, now).await? {
             return Ok(None);
         }
         let asked = match r.stage.as_str() {
             "canary" => r.canary.as_deref() == Some(server),
+            // In its window, at once: its players were told when.
+            "rolling" | "done" if !r.anytime => true,
             "rolling" | "done" => players_online == 0 || now - r.stage_since >= QUIET_WAIT,
             _ => false,
         };
@@ -439,7 +487,16 @@ impl Coordinator {
         Ok(())
     }
 
-    /// Skips the canary: every server updates now.
+    /// Lets the rollout go out without update windows (an urgent fix): servers update when
+    /// quiet, or [`QUIET_WAIT`] into the stage whatever.
+    pub async fn go_now(&self) -> sqlx::Result<()> {
+        sqlx::query("UPDATE rollout SET anytime = 1, note = 'going out now, without an update window, by an admin' WHERE id = 1 AND target IS NOT NULL")
+            .execute(&self.pool)
+            .await?;
+        self.tick_rollout().await
+    }
+
+    /// Skips the canary: every server updates (in its update window).
     pub async fn promote(&self) -> sqlx::Result<()> {
         sqlx::query("UPDATE rollout SET stage = 'rolling', stage_since = ?, note = 'promoted by an admin' WHERE id = 1 AND target IS NOT NULL")
             .bind(identity::now())
@@ -473,6 +530,8 @@ impl Coordinator {
             paused: false,
             pinned: true,
             note: format!("rolled back from {target} by an admin"),
+            // A rollback can't wait for a window.
+            anytime: true,
         };
         self.save_rollout(&back).await.map_err(|e| e.to_string())?;
         Ok(previous)
@@ -530,10 +589,12 @@ fn release_page(version: &str, page: &str) -> String {
 /// The rollout as launchers see it in the directory, while a release is going out (none
 /// when it's done, halted or paused): the release, the stage and when it began (Unix
 /// seconds, UTC), the canary, and the rule's times, so a launcher can tell its player when
-/// their server updates.
-pub fn public_rollout(r: &Rollout) -> Option<Value> {
+/// their server updates. Going out in update windows, only while one is under way
+/// (`window_open`), with no wait for players (they were told when): until then the windows,
+/// booked ahead, are what launchers show.
+pub fn public_rollout(r: &Rollout, window_open: bool) -> Option<Value> {
     let release = r.target.as_deref()?;
-    if r.paused || !matches!(r.stage.as_str(), "canary" | "verifying" | "rolling") {
+    if r.paused || !matches!(r.stage.as_str(), "canary" | "verifying" | "rolling") || !(r.anytime || window_open) {
         return None;
     }
     Some(serde_json::json!({
@@ -542,7 +603,8 @@ pub fn public_rollout(r: &Rollout) -> Option<Value> {
         "stage_started": r.stage_since,
         "canary": r.canary,
         "healthy_for": HEALTHY_FOR,
-        "quiet_wait": QUIET_WAIT,
+        "quiet_wait": if r.anytime { QUIET_WAIT } else { 0 },
+        "windows": !r.anytime,
     }))
 }
 

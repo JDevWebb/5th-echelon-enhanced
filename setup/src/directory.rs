@@ -64,6 +64,9 @@ pub struct Window {
     pub end: i64,
     #[serde(default)]
     pub note: String,
+    /// For installing a release: the server restarts with it, early in the window.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub update: bool,
 }
 
 /// The most windows read for a server.
@@ -162,8 +165,12 @@ pub struct Rollout {
     pub canary: Option<String>,
     /// How long the first server must run it fine before the rest update (seconds).
     pub healthy_for: i64,
-    /// How long into the last stage a server with players on is updated anyway (seconds).
+    /// How long into the last stage a server with players on is updated anyway (seconds);
+    /// 0 in update windows.
     pub quiet_wait: i64,
+    /// Going out in update windows booked ahead (coordinators from 0.4.4): each server
+    /// updates at the start of its window, players on or not.
+    pub windows: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -197,6 +204,7 @@ pub fn parse_rollout(json: &str) -> Option<Rollout> {
         canary: r["canary"].as_str().map(|c| clean(c)).filter(|c| !c.is_empty()),
         healthy_for: within("healthy_for", DAY)?,
         quiet_wait: within("quiet_wait", 7 * DAY)?,
+        windows: r["windows"].as_bool().unwrap_or(false),
     })
 }
 
@@ -394,6 +402,7 @@ mod tests {
                 canary: Some("eu".into()),
                 healthy_for: 600,
                 quiet_wait: 7200,
+                windows: false,
             })
         );
         assert_eq!(parse_rollout(r#"{"servers":[]}"#), None, "nothing going out");
@@ -455,7 +464,12 @@ mod tests {
 
     #[test]
     fn ended_windows_stay_for_a_server_not_back() {
-        let window = |start: i64, end: i64| Window { start, end, note: String::new() };
+        let window = |start: i64, end: i64| Window {
+            start,
+            end,
+            note: String::new(),
+            update: false,
+        };
         let mut before = listing("a", 0);
         before.maintenance = vec![window(1000, 2000), window(5000, 6000), window(9000, 9500)];
         let mut now_listed = vec![listing("a", 0), listing("b", 0)];

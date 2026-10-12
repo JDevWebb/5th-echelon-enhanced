@@ -219,7 +219,8 @@ pub fn notice(input: &Input) -> Option<Notice> {
         });
     }
 
-    let (eta, when_mine) = if mine.players_online > 0 && !(is_canary(mine) && rollout.stage == Stage::Canary) {
+    // In update windows, servers update at once, players on or not (they were told when).
+    let (eta, when_mine) = if mine.players_online > 0 && !rollout.windows && !(is_canary(mine) && rollout.stage == Stage::Canary) {
         (
             format!("{my_city} by {} at the latest", clock.time(latest, now)),
             format!("once nobody is playing on it, by {} at the latest", clock.time(latest, now)),
@@ -230,6 +231,9 @@ pub fn notice(input: &Input) -> Option<Notice> {
         (format!("{my_city} {rel} · about {}", clock.time(at, now)), rel)
     };
     let text = match rollout.stage {
+        Stage::Canary | Stage::Verifying if rollout.windows => format!(
+            "{target} is being tested on one server first, in this update window. {my_city} updates after that ({when_mine}) and is down for about two minutes."
+        ),
         Stage::Canary | Stage::Verifying => format!(
             "{target} is being tested on one server first. {my_city} updates after that ({when_mine}) and is down for about two minutes. A game you're in isn't cut off: servers with players on wait until they're empty, for up to {} hours.",
             rollout.quiet_wait / 3600
@@ -289,7 +293,7 @@ fn rows(input: &Input, rollout: &Rollout, testing_ends: i64, latest: i64) -> Vec
                 (installing, "Restarting · usually two minutes".into(), None, Tone::Now)
             } else if is_canary(s) && rollout.stage == Stage::Canary {
                 (installing, "Installing the new release, to test it".into(), None, Tone::Now)
-            } else if s.players_online > 0 {
+            } else if s.players_online > 0 && !rollout.windows {
                 let doing = if rollout.stage == Stage::Rolling {
                     format!("Waiting for its {} to leave · by {} at the latest", players(s.players_online), clock.time(latest, now))
                 } else {
@@ -459,6 +463,7 @@ mod tests {
             canary: Some("eu".into()),
             healthy_for: 600,
             quiet_wait: 7200,
+            windows: false,
         }
     }
 
@@ -515,6 +520,22 @@ mod tests {
         assert_eq!(n.action, None, "no newer launcher");
         let mine = n.servers.iter().find(|r| r.mine).unwrap();
         assert_eq!(mine.meter, Some(0.25));
+    }
+
+    /// In an update window, a server with players on updates anyway: they were told when.
+    #[test]
+    fn in_an_update_window_players_dont_hold_it_up() {
+        let r = Rollout {
+            quiet_wait: 0,
+            windows: true,
+            ..rollout(Stage::Verifying, NOW - 4 * 60)
+        };
+        let servers = network("0.4.2", "0.4.1", 2);
+        let n = work(Some(&r), &servers, "na", Some(213), None).unwrap();
+        assert!(n.text.contains("in this update window"), "{}", n.text);
+        assert!(!n.text.contains("wait until they're empty"), "{}", n.text);
+        assert_eq!(n.eta, "Beauharnois in ~8 min · about 9:38 pm NZDT", "players on or not");
+        assert!(!n.servers[2].doing.contains("once they leave"), "{}", n.servers[2].doing);
     }
 
     #[test]

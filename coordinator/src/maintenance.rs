@@ -1,8 +1,11 @@
 //! Maintenance windows: an admin books a time a server (or the whole network, the
 //! coordinator itself) will be down. It's a notice: launchers warn the server's players on the
-//! day (`/v1/servers`), the game's overlay warns them in the last minutes (each server hears
-//! its windows in its heartbeat answer, and tells its games in `/api/info`), and rollouts don't
-//! start an update on a server during its window. Nothing is stopped.
+//! day (`/v1/servers`), and the game's overlay warns them in the last minutes (each server
+//! hears its windows in its heartbeat answer, and tells its games in `/api/info`).
+//!
+//! A window is for updates or for other maintenance. Releases are installed only in update
+//! windows (`updates.rs`), so players know ahead when their server restarts; no update starts
+//! during other maintenance.
 
 use serde::Serialize;
 use serde_json::json;
@@ -24,12 +27,21 @@ const PER_HEARTBEAT: usize = 4;
 /// Ended windows the admin UI still lists.
 const LISTED_AFTER: i64 = 30 * 86_400;
 
+/// A window for installing releases (the rollout's), and for anything else.
+pub const UPDATE: &str = "update";
+pub const MAINTENANCE: &str = "maintenance";
+/// What players are told of an update window booked without a note.
+pub const UPDATE_NOTE: &str = "Server update";
+
 /// A window as players' launchers and games get it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Window {
     pub start: i64,
     pub end: i64,
     pub note: String,
+    /// Booked for installing a release.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub update: bool,
 }
 
 /// What an admin books: windows for these servers, and the network's when `network`.
@@ -43,6 +55,13 @@ pub struct Booking {
     pub end: i64,
     #[serde(default)]
     pub note: String,
+    /// [`UPDATE`] or [`MAINTENANCE`] (the default).
+    #[serde(default = "maintenance_kind")]
+    pub kind: String,
+}
+
+fn maintenance_kind() -> String {
+    MAINTENANCE.into()
 }
 
 impl Booking {
@@ -69,7 +88,30 @@ impl Booking {
         if !crate::valid_text(&self.note, MAX_NOTE) {
             return Err("the note is up to 100 printable characters");
         }
+        if self.kind != UPDATE && self.kind != MAINTENANCE {
+            return Err("a window is for an update or for maintenance");
+        }
         Ok(())
+    }
+}
+
+/// The directory's windows: each server's own, the network's update windows (every server's
+/// too), and the network's next window.
+#[derive(Debug, Default)]
+pub struct DirectoryMaintenance {
+    servers: std::collections::HashMap<String, Vec<Window>>,
+    everywhere: Vec<Window>,
+    pub network: Option<Window>,
+}
+
+impl DirectoryMaintenance {
+    /// `server`'s windows for players: its own and the network's update windows, by start, a
+    /// few at most.
+    pub fn of(&self, server: &str) -> Vec<Window> {
+        let mut list: Vec<Window> = self.servers.get(server).into_iter().flatten().chain(&self.everywhere).cloned().collect();
+        list.sort_by_key(|w| (w.start, w.end));
+        list.truncate(PER_SERVER);
+        list
     }
 }
 
@@ -79,34 +121,43 @@ type Upcoming = Vec<(Option<String>, Window)>;
 
 impl Coordinator {
     pub(crate) async fn upcoming_maintenance(&self, now: i64) -> sqlx::Result<Upcoming> {
-        let rows: Vec<(Option<String>, i64, i64, String)> = sqlx::query_as(
-            "SELECT server_id, starts, ends, note FROM maintenance
+        let rows: Vec<(Option<String>, i64, i64, String, String)> = sqlx::query_as(
+            "SELECT server_id, starts, ends, note, kind FROM maintenance
               WHERE cancelled_at IS NULL AND ends > ? AND starts < ? ORDER BY starts, id",
         )
         .bind(now)
         .bind(now + AHEAD)
         .fetch_all(&self.pool)
         .await?;
-        Ok(rows.into_iter().map(|(server, start, end, note)| (server, Window { start, end, note })).collect())
+        Ok(rows
+            .into_iter()
+            .map(|(server, start, end, note, kind)| {
+                let update = kind == UPDATE;
+                let note = if update && note.is_empty() { UPDATE_NOTE.to_string() } else { note };
+                (server, Window { start, end, note, update })
+            })
+            .collect())
     }
 
-    /// For the directory: each server's windows, and the network's next one.
-    pub(crate) async fn directory_maintenance(&self, now: i64) -> sqlx::Result<(std::collections::HashMap<String, Vec<Window>>, Option<Window>)> {
-        let mut servers: std::collections::HashMap<String, Vec<Window>> = std::collections::HashMap::new();
-        let mut network = None;
+    /// For the directory: each server's windows, and the network's next one. A whole
+    /// network's update window updates every server, so it's each server's too:
+    /// [`DirectoryMaintenance::of`].
+    pub(crate) async fn directory_maintenance(&self, now: i64) -> sqlx::Result<DirectoryMaintenance> {
+        let mut d = DirectoryMaintenance::default();
         for (server, w) in self.upcoming_maintenance(now).await? {
             match server {
-                Some(id) => {
-                    let list = servers.entry(id).or_default();
-                    if list.len() < PER_SERVER {
-                        list.push(w);
+                Some(id) => d.servers.entry(id).or_default().push(w),
+                None => {
+                    if w.update {
+                        d.everywhere.push(w.clone());
+                    }
+                    if d.network.is_none() {
+                        d.network = Some(w);
                     }
                 }
-                None if network.is_none() => network = Some(w),
-                None => {}
             }
         }
-        Ok((servers, network))
+        Ok(d)
     }
 
     /// For a server's heartbeat answer: its windows and the network's, marked.
@@ -117,28 +168,58 @@ impl Coordinator {
             .into_iter()
             .filter(|(s, _)| s.as_deref().is_none_or(|s| s == server))
             .take(PER_HEARTBEAT)
-            .map(|(s, w)| json!({ "start": w.start, "end": w.end, "note": w.note, "network": s.is_none() }))
+            .map(|(s, w)| json!({ "start": w.start, "end": w.end, "note": w.note, "network": s.is_none(), "update": w.update }))
             .collect();
         Ok(json!(list))
     }
 
-    /// Whether `server` (or the whole network) is in a window at `now`: no update starts then.
-    pub(crate) async fn in_maintenance(&self, server: &str, now: i64) -> sqlx::Result<bool> {
+    /// Whether `server` (or the whole network) is in a window of `kind` at `now`: an update
+    /// window lets the rollout update it; no update starts during other maintenance.
+    pub(crate) async fn in_window(&self, server: &str, kind: &str, now: i64) -> sqlx::Result<bool> {
         let n: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM maintenance
-              WHERE cancelled_at IS NULL AND starts <= ?1 AND ends > ?1 AND (server_id IS NULL OR server_id = ?2)",
+              WHERE cancelled_at IS NULL AND starts <= ?1 AND ends > ?1 AND (server_id IS NULL OR server_id = ?2) AND kind = ?3",
         )
         .bind(now)
         .bind(server)
+        .bind(kind)
         .fetch_one(&self.pool)
         .await?;
         Ok(n > 0)
     }
 
+    /// Update windows under way at `now`: whether any is, and whether one is the whole
+    /// network's (the coordinator's own machine updates only in one: its updater installs
+    /// every program there, the game server's too).
+    pub(crate) async fn update_windows_open(&self, now: i64) -> sqlx::Result<(bool, bool)> {
+        let (any, network): (i64, i64) = sqlx::query_as(
+            "SELECT COUNT(*), COUNT(*) FILTER (WHERE server_id IS NULL) FROM maintenance
+              WHERE cancelled_at IS NULL AND starts <= ?1 AND ends > ?1 AND kind = 'update'",
+        )
+        .bind(now)
+        .fetch_one(&self.pool)
+        .await?;
+        Ok((any > 0, network > 0))
+    }
+
+    /// The next update window from `now` (under way, or the next to start) for `server` or
+    /// the network, or for any server (None): its start and end.
+    pub(crate) async fn next_update_window(&self, server: Option<&str>, now: i64) -> sqlx::Result<Option<(i64, i64)>> {
+        sqlx::query_as(
+            "SELECT starts, ends FROM maintenance
+              WHERE cancelled_at IS NULL AND ends > ?1 AND kind = 'update' AND (?2 IS NULL OR server_id IS NULL OR server_id = ?2)
+              ORDER BY starts LIMIT 1",
+        )
+        .bind(now)
+        .bind(server)
+        .fetch_optional(&self.pool)
+        .await
+    }
+
     /// The admin UI's list: windows not ended or ended lately, newest start first.
     pub(crate) async fn maintenance_list(&self, now: i64) -> sqlx::Result<Value> {
-        let rows: Vec<(i64, Option<String>, Option<String>, i64, i64, String, String, i64, Option<i64>)> = sqlx::query_as(
-            "SELECT m.id, m.server_id, s.listing, m.starts, m.ends, m.note, m.created_by, m.created_at, m.cancelled_at
+        let rows: Vec<(i64, Option<String>, Option<String>, i64, i64, String, String, i64, Option<i64>, String)> = sqlx::query_as(
+            "SELECT m.id, m.server_id, s.listing, m.starts, m.ends, m.note, m.created_by, m.created_at, m.cancelled_at, m.kind
                FROM maintenance m LEFT JOIN servers s ON s.id = m.server_id
               WHERE m.ends > ? ORDER BY m.starts DESC, m.id DESC LIMIT 200",
         )
@@ -147,7 +228,7 @@ impl Coordinator {
         .await?;
         let windows: Vec<Value> = rows
             .into_iter()
-            .map(|(id, server, listing, start, end, note, created_by, created_at, cancelled_at)| {
+            .map(|(id, server, listing, start, end, note, created_by, created_at, cancelled_at, kind)| {
                 let name = match &server {
                     None => String::from("Whole network"),
                     Some(id) => listing
@@ -157,7 +238,7 @@ impl Coordinator {
                 };
                 json!({
                     "id": id, "server": server, "server_name": name, "start": start, "end": end, "note": note,
-                    "created_by": created_by, "created_at": created_at, "cancelled_at": cancelled_at,
+                    "created_by": created_by, "created_at": created_at, "cancelled_at": cancelled_at, "kind": kind,
                 })
             })
             .collect();
@@ -183,13 +264,14 @@ impl Coordinator {
                     return Ok(None);
                 }
             }
-            let id: i64 = sqlx::query_scalar("INSERT INTO maintenance (server_id, starts, ends, note, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?) RETURNING id")
+            let id: i64 = sqlx::query_scalar("INSERT INTO maintenance (server_id, starts, ends, note, created_by, created_at, kind) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id")
                 .bind(server)
                 .bind(b.start)
                 .bind(b.end)
                 .bind(b.note.trim())
                 .bind(by)
                 .bind(now)
+                .bind(&b.kind)
                 .fetch_one(&mut *tx)
                 .await?;
             ids.push(id);
@@ -245,6 +327,7 @@ mod tests {
             start,
             end,
             note: note.into(),
+            kind: MAINTENANCE.into(),
         };
         assert!(b(&["eu1"], false, now + 60, now + 3660, "Moving").check(now).is_ok());
         assert!(b(&[], true, now, now + 60, "").check(now).is_ok());
@@ -255,5 +338,15 @@ mod tests {
         assert!(b(&["eu1"], false, now + MAX_LEAD + 1, now + MAX_LEAD + 60, "").check(now).is_err(), "too far ahead");
         assert!(b(&["eu1"], false, now, now + 60, &"x".repeat(MAX_NOTE + 1)).check(now).is_err(), "long note");
         assert!(b(&["eu1"], false, now, now + 60, "a\u{202e}b").check(now).is_err(), "hidden characters");
+        let update = Booking {
+            kind: UPDATE.into(),
+            ..b(&["eu1"], false, now + 60, now + 3660, "")
+        };
+        assert!(update.check(now).is_ok());
+        let odd = Booking {
+            kind: "party".into(),
+            ..b(&["eu1"], false, now + 60, now + 3660, "")
+        };
+        assert!(odd.check(now).is_err(), "update or maintenance");
     }
 }

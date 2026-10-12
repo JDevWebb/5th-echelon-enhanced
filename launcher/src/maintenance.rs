@@ -101,7 +101,9 @@ fn with_note(text: String, note: &str) -> String {
 pub fn tag(server: &Listing, ping: Option<u32>, now: i64, clock: &Clock) -> Option<String> {
     let (window, phase) = showing(&server.maintenance, now, clock, ping.is_some())?;
     Some(match phase {
+        Phase::Before | Phase::Soon if window.update => format!("Update {}", clock.short_time(window.start)),
         Phase::Before | Phase::Soon => format!("Maintenance {}", clock.short_time(window.start)),
+        Phase::During if window.update => "Updating".into(),
         Phase::During => format!("Back {}", clock.short_time(window.end)),
         Phase::Overrun => "Running late".into(),
     })
@@ -136,11 +138,17 @@ fn play_on((host, alt, _): (String, String, u32)) -> (Action, String) {
     (Action::PlayOn { host, place: alt }, label)
 }
 
+/// What an update window booked without a note is called (the coordinator's).
+const UPDATE_NOTE: &str = "Server update";
+
 /// The notice for maintenance on the player's server, if one shows.
 pub fn notice(input: &Input) -> Option<Notice> {
     let (mine, ping) = input.mine?;
     let (now, clock) = (input.now, input.clock);
     let (window, phase) = showing(&mine.maintenance, now, clock, ping.is_some())?;
+    if window.update && phase != Phase::Overrun {
+        return Some(update_notice(input, mine, ping, window, phase));
+    }
     let my_place = place(mine);
     let my_city = city(&my_place).to_string();
     let at = clock.clock_time(window.start);
@@ -231,6 +239,80 @@ pub fn notice(input: &Input) -> Option<Notice> {
     })
 }
 
+/// The notice for an update window on the player's server: it restarts with a new release
+/// early in it, down for a couple of minutes.
+fn update_notice(input: &Input, mine: &Listing, ping: Option<u32>, window: &Window, phase: Phase) -> Notice {
+    let (now, clock) = (input.now, input.clock);
+    let my_place = place(mine);
+    let my_city = city(&my_place).to_string();
+    let at = clock.clock_time(window.start);
+    let back = clock.time(window.end, now);
+    let note = if window.note.trim() == UPDATE_NOTE { "" } else { window.note.as_str() };
+    let alt = alternative(input, window.end);
+    let alt_line = |sentence: &str| {
+        alt.as_ref()
+            .map(|(_, place, ms)| format!(" {}", sentence.replace("{alt}", city(place)).replace("{ms}", &ms.to_string())))
+            .unwrap_or_default()
+    };
+    let restarts = with_note(format!("{my_city} restarts with a new release at {at}, down for about two minutes"), note);
+    let base = Notice {
+        kind: Kind::Maintenance,
+        heading: String::new(),
+        eta: String::new(),
+        text: String::new(),
+        note: None,
+        action: None,
+        servers: vec![],
+        status: format!("Ready to play · server update at {at}"),
+        blocks_play: None,
+    };
+    match phase {
+        Phase::Before => Notice {
+            heading: if clock.day_start(window.start) == clock.day_start(now) {
+                "Server update today".into()
+            } else {
+                "Server update tomorrow".into()
+            },
+            eta: format!("{} · {}", clock.time(window.start, now), setup::clock::from_now(window.start - now)),
+            text: format!("{restarts} Play until then, and finish your match before it starts: games on the server are cut off."),
+            ..base
+        },
+        Phase::Soon => Notice {
+            heading: "Server update soon".into(),
+            eta: format!("{} · {}", setup::clock::from_now(window.start - now), clock.time(window.start, now)),
+            text: format!("{restarts} A match you start now may not finish there.{}", alt_line("{alt} isn't updating now ({ms} ms).")),
+            action: alt.map(play_on),
+            ..base
+        },
+        Phase::During if ping.is_some() => Notice {
+            kind: Kind::MaintenanceNow,
+            heading: "Server update under way".into(),
+            eta: format!("until about {back}"),
+            text: format!(
+                "{} It answers, so you can play, but a match may be cut short when it restarts.{}",
+                with_note(format!("{my_city} installs a new release in this window, until about {back}"), note),
+                alt_line("{alt} isn't updating now ({ms} ms).")
+            ),
+            action: alt.map(play_on),
+            status: format!("Ready to play · server update until {}", clock.clock_time(window.end)),
+            ..base
+        },
+        _ => Notice {
+            kind: Kind::MaintenanceNow,
+            heading: "Your server is updating".into(),
+            eta: "back in a couple of minutes".into(),
+            text: format!(
+                "{my_city} is restarting with a new release. The launcher checks every 15 seconds and says when it's back.{}",
+                alt_line("Or play on {alt} now ({ms} ms).")
+            ),
+            action: alt.map(play_on),
+            status: format!("{my_city} is restarting with a new release"),
+            blocks_play: Some(format!("{my_city} is restarting with a new release")),
+            ..base
+        },
+    }
+}
+
 /// The notice for the network's own window, if it shows. It never stops anyone playing:
 /// games carry on without the coordinator.
 pub fn network_notice(window: Option<&Window>, now: i64, clock: &Clock) -> Option<Notice> {
@@ -315,7 +397,12 @@ mod tests {
     }
 
     fn window(start: i64, end: i64, note: &str) -> Window {
-        Window { start, end, note: note.into() }
+        Window {
+            start,
+            end,
+            note: note.into(),
+            update: false,
+        }
     }
 
     fn listing(id: &str, region: &str, windows: Vec<Window>) -> Listing {
@@ -375,6 +462,30 @@ mod tests {
         );
         assert_eq!(n.status, "Ready to play · maintenance at 8:00 pm");
         assert_eq!((n.action, n.blocks_play), (None, None));
+    }
+
+    /// An update window: the server restarts with a release early in it, for a couple of
+    /// minutes.
+    #[test]
+    fn an_update_window_says_the_server_restarts() {
+        let mut servers = network();
+        servers[0].0.maintenance = vec![Window {
+            update: true,
+            ..window(START, END, "Server update")
+        }];
+        let n = work(&servers, Some(45), START - 5 * 3600, &nz()).unwrap();
+        assert_eq!((n.kind, n.heading.as_str()), (Kind::Maintenance, "Server update today"));
+        assert_eq!(
+            n.text,
+            "Sydney restarts with a new release at 8:00 pm, down for about two minutes. Play until then, and finish your match before it starts: games on the server are cut off."
+        );
+        assert_eq!(n.status, "Ready to play · server update at 8:00 pm");
+        let n = work(&servers, Some(45), START + 60, &nz()).unwrap();
+        assert_eq!((n.heading.as_str(), n.blocks_play.as_deref()), ("Server update under way", None));
+        let n = work(&servers, None, START + 60, &nz()).unwrap();
+        assert_eq!(n.heading, "Your server is updating");
+        assert!(n.blocks_play.is_some());
+        assert_eq!(tag(&servers[0].0, Some(45), START - 3600, &nz()).as_deref(), Some("Update 8 pm"));
     }
 
     #[test]

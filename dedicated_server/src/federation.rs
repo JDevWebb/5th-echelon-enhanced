@@ -294,6 +294,7 @@ fn note_maintenance(answer: &Value) {
                 json!({
                     "start": start, "end": end, "note": printable(w["note"].as_str().unwrap_or_default(), 100),
                     "network": w["network"].as_bool().unwrap_or(false),
+                    "update": w["update"].as_bool().unwrap_or(false),
                 })
             })
         })
@@ -1280,13 +1281,13 @@ mod tests {
         super::note_maintenance(&serde_json::json!({ "maintenance": [
             { "start": 100, "end": 200, "note": "Moving\u{202e}", "network": false },
             { "start": 300, "end": 250, "note": "ends before it starts" },
-            { "start": 400, "end": 500 },
+            { "start": 400, "end": 500, "update": true },
         ] }));
         assert_eq!(
             maintenance(0),
             [
-                serde_json::json!({ "start": 100, "end": 200, "note": "Moving", "network": false }),
-                serde_json::json!({ "start": 400, "end": 500, "note": "", "network": false }),
+                serde_json::json!({ "start": 100, "end": 200, "note": "Moving", "network": false, "update": false }),
+                serde_json::json!({ "start": 400, "end": 500, "note": "", "network": false, "update": true }),
             ]
         );
         assert_eq!(maintenance(200).len(), 1, "over at its end");

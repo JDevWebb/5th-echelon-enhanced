@@ -304,6 +304,7 @@ mod tests {
             start: 20 * 3600,
             end: 21 * 3600,
             note: String::new(),
+            update: false,
         }];
         let tags = |now: i64| rows(&servers, "", now, &utc()).into_iter().map(|r| r.maintenance).collect::<Vec<_>>();
         assert_eq!(tags(3600), [Some("Maintenance 20:00".to_string()), None, None, None]);

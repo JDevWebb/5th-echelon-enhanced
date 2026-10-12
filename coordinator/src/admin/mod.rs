@@ -1807,6 +1807,9 @@ async fn updates(State(c): State<Shared>, Extension(client): Extension<Client>, 
         let releases = c.releases().await?;
         Ok(json!({
             "rollout": c.rollout().await?,
+            // The next update window anywhere (under way, or the next to start): when the
+            // rollout can go on.
+            "next_window": c.next_update_window(None, identity::now()).await?.map(|(start, end)| json!({ "start": start, "end": end })),
             "releases": releases.into_iter().map(|(v, page, published, seen)| json!({ "version": v, "page": page, "published_at": published, "seen_at": seen })).collect::<Vec<_>>(),
             "repo": crate::updates::REPO,
             "verify": crate::updates::own_verify(),
@@ -1829,7 +1832,7 @@ async fn update_action(
     Path(action): Path<String>,
     body: Option<Json<UpdateAction>>,
 ) -> Response {
-    let sensitive = matches!(action.as_str(), "rollback" | "release" | "promote");
+    let sensitive = matches!(action.as_str(), "rollback" | "release" | "promote" | "now");
     let s = match if sensitive {
         c.recent(&headers, &client).await
     } else {
@@ -1845,6 +1848,7 @@ async fn update_action(
         "pin" => c.set_pinned(true).await.map(|()| "pinned".into()).map_err(|e| e.to_string()),
         "unpin" => c.set_pinned(false).await.map(|()| "unpinned".into()).map_err(|e| e.to_string()),
         "promote" => c.promote().await.map(|()| "rolling out to every server".into()).map_err(|e| e.to_string()),
+        "now" => c.go_now().await.map(|()| "going out now, without an update window".into()).map_err(|e| e.to_string()),
         "halt" => c.halt("halted by an admin").await.map(|()| "halted".into()).map_err(|e| e.to_string()),
         "rollback" => c.roll_back().await.map(|v| format!("rolling back to {v}")),
         "release" => c.roll_out(version.trim()).await.map(|()| format!("rolling out {}", version.trim())),
