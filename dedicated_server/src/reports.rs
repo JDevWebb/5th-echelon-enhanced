@@ -196,8 +196,9 @@ struct Notice {
     at: i64,
     title: String,
     text: String,
-    /// The event it explains, marked told once the game has it.
-    explains: Option<u64>,
+    /// The events it explains, marked told once the game has it: the same notice again (a
+    /// game retrying its join) explains its events too.
+    explains: Vec<u64>,
 }
 
 /// How long a notice waits for the game: past that, the player has moved on.
@@ -217,7 +218,13 @@ pub fn tell(user: u32, title: String, text: String, explains: Option<u64>) {
     let now = identity::now();
     let mut all = notices().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let list = all.entry(user).or_default();
-    list.retain(|n| now - n.at <= NOTICE_FRESH && !(n.title == title && n.text == text));
+    list.retain(|n| now - n.at <= NOTICE_FRESH);
+    let mut explains: Vec<u64> = explains.into_iter().collect();
+    if let Some(same) = list.iter().position(|n| n.title == title && n.text == text) {
+        if let Some(earlier) = list.remove(same) {
+            explains.extend(earlier.explains);
+        }
+    }
     while list.len() >= NOTICES_KEPT {
         list.pop_front();
     }
@@ -241,10 +248,12 @@ pub fn take_notice(user: u32) -> Option<(String, String)> {
         }
         notice?
     };
-    if let Some(id) = notice.explains {
+    if !notice.explains.is_empty() {
         let mut all = events().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(event) = all.get_mut(&user).and_then(|l| l.iter_mut().find(|e| e.id == id)) {
-            event.told = true;
+        if let Some(list) = all.get_mut(&user) {
+            for event in list.iter_mut().filter(|e| notice.explains.contains(&e.id)) {
+                event.told = true;
+            }
         }
     }
     Some((notice.title, notice.text))
@@ -598,10 +607,11 @@ mod tests {
         let user = 424_244;
         assert_eq!(take_notice(user), None);
         let explained = join_failed(user, 9, 0x9718_2b1b, None);
+        let retried = join_failed(user, 9, 0x9718_2b1b, None);
         let unexplained = join_failed(user, 10, 0xac2d_801a, None);
         tell(user, "Couldn't join: the session is locked".into(), "a".into(), Some(explained));
-        // The game retrying the same join: one notice, not two.
-        tell(user, "Couldn't join: the session is locked".into(), "a".into(), Some(explained));
+        // The game retrying the same join: one notice, not two, explaining both.
+        tell(user, "Couldn't join: the session is locked".into(), "a".into(), Some(retried));
         tell(user, "Couldn't join".into(), "b".into(), None);
         let told = |user: u32| {
             events()
@@ -613,9 +623,9 @@ mod tests {
         };
         assert!(told(user).is_empty(), "nothing told before the game takes it");
         assert_eq!(take_notice(user), Some(("Couldn't join: the session is locked".into(), "a".into())), "oldest first");
-        assert_eq!(told(user), [explained]);
+        assert_eq!(told(user), [explained, retried], "the retry is explained too");
         assert_eq!(take_notice(user), Some(("Couldn't join".into(), "b".into())));
-        assert_eq!(told(user), [explained], "a notice that explains nothing marks nothing");
+        assert_eq!(told(user), [explained, retried], "a notice that explains nothing marks nothing");
         assert!(!told(user).contains(&unexplained));
         assert_eq!(take_notice(user), None);
 

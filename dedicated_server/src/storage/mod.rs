@@ -1142,9 +1142,10 @@ impl Storage {
     }
 
     pub async fn find_pending_invited_session_async(&self, receiver_id: u32, session_type: u32, hosts: &[u32]) -> Result<Option<GameSession>> {
-        let query = format!(
-            r"
-            SELECT g.type_id AS session_type, g.id AS session_id, g.creator_id, g.attributes
+        let query = |columns: &str| {
+            format!(
+                r"
+            SELECT {columns}
             FROM invites i
             INNER JOIN game_sessions g ON g.id = i.session_id AND g.type_id = i.session_type
             INNER JOIN participants p ON p.game_id = g.id AND p.user_id = g.creator_id
@@ -1156,10 +1157,22 @@ impl Storage {
               AND g.destroyed_at IS NULL
             ORDER BY i.created DESC, i.id DESC
             ",
-            holds = invite_holds_sql("i")
-        );
-        let mut candidates: Vec<GameSession> = sqlx::query_as(&query).bind(receiver_id).bind(session_type).fetch_all(&self.pool).await?;
-        let pick = candidates.iter().position(|s| hosts.contains(&s.creator_id)).unwrap_or(0);
+                holds = invite_holds_sql("i")
+            )
+        };
+        let mut candidates: Vec<GameSession> = sqlx::query_as(&query("g.type_id AS session_type, g.id AS session_id, g.creator_id, g.attributes"))
+            .bind(receiver_id)
+            .bind(session_type)
+            .fetch_all(&self.pool)
+            .await?;
+        // Who sent each, in the same order: a party member's invitation is to their host's
+        // room, and the game searches for the member it accepted.
+        let senders: Vec<u32> = sqlx::query_scalar(&query("i.sender")).bind(receiver_id).bind(session_type).fetch_all(&self.pool).await?;
+        let pick = candidates
+            .iter()
+            .zip(senders.iter().map(Some).chain(std::iter::repeat(None)))
+            .position(|(s, sender)| hosts.contains(&s.creator_id) || sender.is_some_and(|sender| hosts.contains(sender)))
+            .unwrap_or(0);
         let mut session = (!candidates.is_empty()).then(|| candidates.swap_remove(pick));
 
         {
@@ -2064,11 +2077,24 @@ pub(crate) mod tests {
         let found = storage.find_pending_invited_session(friend, 1, &[member]).unwrap();
         assert_eq!(found.map(|s| s.session_id), Some(party), "the invited friend finds the member's party");
         assert!(storage.is_invited(friend, party).unwrap());
+        // Another host's invitation, older: searching for that host finds its room, and for the
+        // member the member's party (by who sent it, not only whose room it is).
+        let other_host = {
+            storage.register_user("Other", "pw", Some("OTHER")).unwrap();
+            id("Other")
+        };
+        let other_party = storage.create_game_session(other_host, 1, "113 => 1;103 => 0".into()).unwrap();
+        storage.add_participants(1, other_party, vec![], vec![other_host]).unwrap();
+        run(storage.add_invite_async(other_host, friend, Some(1), Some(other_party))).unwrap().unwrap();
+        run(storage.add_invite_async(member, friend, Some(1), Some(party))).unwrap().unwrap();
+        let picked = |hosts: &[u32]| storage.find_pending_invited_session(friend, 1, hosts).unwrap().map(|s| s.session_id);
+        assert_eq!(picked(&[other_host]), Some(other_party));
+        assert_eq!(picked(&[member]), Some(party), "the member's invitation, matched by its sender");
 
         // Only while the host trusts the member and welcomes the invitee, checked each time.
         run(storage.remove_friend(host, member)).unwrap().unwrap();
         assert!(!storage.is_invited(friend, party).unwrap(), "no longer the host's friend");
-        assert!(storage.find_pending_invited_session(friend, 1, &[member]).unwrap().is_none());
+        assert!(storage.find_pending_invited_session(friend, 1, &[member]).unwrap().map(|s| s.session_id) != Some(party));
         run(storage.make_friends(host, member)).unwrap().unwrap();
         assert!(storage.is_invited(friend, party).unwrap(), "friends again");
         run(storage.block(host, friend)).unwrap().unwrap().unwrap();
@@ -2084,7 +2110,10 @@ pub(crate) mod tests {
         // Only while it's a party: its participants may change its attributes, and a member's
         // invitation never leads into a private match.
         storage.update_game_session(1, party, "113 => 0;3 => 0;4 => 4".into()).unwrap();
-        assert!(storage.find_pending_invited_session(friend, 1, &[member]).unwrap().is_none(), "turned into a match");
+        assert!(
+            storage.find_pending_invited_session(friend, 1, &[member]).unwrap().map(|s| s.session_id) != Some(party),
+            "turned into a match"
+        );
         assert!(!storage.is_invited(friend, party).unwrap(), "no way into it as a private match");
         assert!(!storage.consume_invite_for_session(friend, 1, party).unwrap(), "nor does joining it count as invited");
         storage.update_game_session(1, party, "113 => 1;103 => 0".into()).unwrap();
@@ -2093,7 +2122,7 @@ pub(crate) mod tests {
         // Only while the member is in it.
         storage.remove_participants(1, party, vec![member]).unwrap();
         assert!(!storage.is_invited(friend, party).unwrap(), "the member left");
-        assert!(storage.find_pending_invited_session(friend, 1, &[member]).unwrap().is_none());
+        assert!(storage.find_pending_invited_session(friend, 1, &[member]).unwrap().map(|s| s.session_id) != Some(party));
 
         // A guest of a party (anyone may join one by its id) has no say in it.
         assert!(storage.add_guest(party, member, true).unwrap());

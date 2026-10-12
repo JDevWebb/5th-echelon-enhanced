@@ -1140,13 +1140,16 @@ impl Misc for MyMisc {
         if !crate::rate_limit::polls().check(user_id) {
             return Err(Status::resource_exhausted("Too many requests; slow down"));
         }
-        // Only a game that shows notices takes them (and so counts them as told).
-        let notice = request
-            .get_ref()
-            .notices
-            .then(|| crate::reports::take_notice(user_id))
-            .flatten()
-            .map(|(title, text)| misc::Notice { title, text });
+        // Only a game that shows notices takes them (and so counts them as told), and only
+        // in an answer that's going out: taken earlier, one lost to an error below would count
+        // as told.
+        let wants_notices = request.get_ref().notices;
+        let notice = || {
+            wants_notices
+                .then(|| crate::reports::take_notice(user_id))
+                .flatten()
+                .map(|(title, text)| misc::Notice { title, text })
+        };
 
         let Some(invite) = self.storage.take_invite_async(user_id).await.map_err(|e| {
             error!(self.logger, "Error getting latest invite for user: {e}");
@@ -1173,7 +1176,7 @@ impl Misc for MyMisc {
                 invite: None,
                 friend,
                 support_unread: crate::support::unread(user_id),
-                notice,
+                notice: notice(),
             }));
         };
 
@@ -1215,7 +1218,7 @@ impl Misc for MyMisc {
                 force_join: self.debug_config.force_joins,
             }),
             friend: None,
-            notice,
+            notice: notice(),
         }))
     }
 

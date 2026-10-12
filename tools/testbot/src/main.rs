@@ -1879,13 +1879,16 @@ async fn join_notice(ctx: &mut Ctx) -> Result<()> {
     host.add_participants(lobby, &[host.pid], &[]).await?;
     let wait = Duration::from_secs(3);
 
+    // Tried twice (as a game retrying its join): one notice, explaining both.
+    joiner.report_failed_joins(&[(lobby, LOCKED)]).await?;
     joiner.report_failed_joins(&[(lobby, LOCKED)]).await?;
     let (title, text) = joiner.poll_notice(wait).await?.ok_or_else(|| eyre!("no notice for a locked session"))?;
     ensure!(title == "Couldn't join: the session is locked", "{title}");
     ensure!(text.contains("match is already under way"), "{text}");
+    ensure!(joiner.poll_notice(Duration::from_millis(600)).await?.is_none(), "the retry was a notice of its own");
     let summary = joiner.session_summary().await?;
     ensure!(
-        summary.failed_joins == 1 && summary.joins_explained == 1,
+        summary.failed_joins == 2 && summary.joins_explained == 2,
         "explained in the game, so not for the launcher to ask about: {summary:?}"
     );
 
@@ -1894,7 +1897,7 @@ async fn join_notice(ctx: &mut Ctx) -> Result<()> {
     ensure!(title == "Couldn't join", "{title}");
     let summary = joiner.session_summary().await?;
     ensure!(
-        summary.failed_joins == 2 && summary.joins_explained == 1,
+        summary.failed_joins == 3 && summary.joins_explained == 2,
         "a failure with no known reason is still the launcher's to ask about: {summary:?}"
     );
 
