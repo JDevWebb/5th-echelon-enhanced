@@ -1713,8 +1713,219 @@ async fn outdated_client(ctx: &mut Ctx) -> Result<()> {
     Ok(())
 }
 
+/// A probe between players of a public match goes ahead only with its host, or when both
+/// games asked to reach each other (as two players really in the match do): anyone may be
+/// counted in a public match without playing in it, and a probe hands each side the other's
+/// address. Three players and a stranger, as in a real match.
+async fn public_match_probes(ctx: &mut Ctx) -> Result<()> {
+    let mut host = ctx.player("Host").await?;
+    let mut first = ctx.player("Guest").await?;
+    let mut second = ctx.player("Guest").await?;
+    let mut stranger = ctx.player("Stranger").await?;
+    host.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
+    let game = host.create_session("113 => 0;103 => 1;3 => 8;4 => 0;102 => 8").await?;
+    host.add_participants(game, &[], &[host.pid]).await?;
+    first.join_session(game).await?;
+    second.join_session(game).await?;
+    // The stranger adds themselves (public rooms let anyone) and plays no part.
+    stranger.add_participants(game, &[], &[stranger.pid]).await?;
+    let (h, f, s) = (host.connection_id().await?, first.connection_id().await?, second.connection_id().await?);
+    let station = |port: u16| format!("udp:/address=127.0.0.1;port={port}");
+    let quiet = Duration::from_millis(700);
+
+    // Guest to guest, the other not having asked: refused; the relay carries them instead.
+    first.request_probes(&station(13001), &[s]).await?;
+    ensure!(second.wait_probe(quiet).await?.is_none(), "a guest was probed for another guest who hadn't asked");
+    // The other asks back: both games want it, so it goes ahead.
+    second.request_probes(&station(13002), &[f]).await?;
+    ensure!(
+        first.wait_probe(Duration::from_secs(3)).await?.is_some_and(|url| url.contains("13002")),
+        "two guests who both asked weren't probed to each other"
+    );
+    // The host, either way.
+    first.request_probes(&station(13001), &[h]).await?;
+    ensure!(host.wait_probe(Duration::from_secs(3)).await?.is_some(), "a guest couldn't reach the host");
+    host.request_probes(&station(13000), &[s]).await?;
+    ensure!(second.wait_probe(Duration::from_secs(3)).await?.is_some(), "the host couldn't reach a guest");
+    // The stranger: never, for anyone but the host.
+    stranger.request_probes(&station(13009), &[f, s]).await?;
+    ensure!(first.wait_probe(quiet).await?.is_none(), "a stranger in the match was probed to a guest");
+    ensure!(second.wait_probe(quiet).await?.is_none(), "a stranger in the match was probed to a guest");
+    for bot in [host, first, second, stranger] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
+/// Someone joining a public match from a search reaches its players through the relay
+/// before their join reaches the server (the host's game has them connect first), once
+/// they've probed its host: not before, and not by probes.
+async fn relay_to_joiner(ctx: &mut Ctx) -> Result<()> {
+    use nat_proto::Message;
+    let nat = nat_addr(ctx.server, false)?;
+    let mut host = ctx.player("Host").await?;
+    let mut member = ctx.player("Member").await?;
+    let mut joiner = ctx.player("Joiner").await?;
+    host.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
+    let game = host.create_session("113 => 0;103 => 1;3 => 8;4 => 0;102 => 7").await?;
+    host.add_participants(game, &[], &[host.pid]).await?;
+    member.join_session(game).await?;
+    let (m, j) = (tokio::net::UdpSocket::bind("0.0.0.0:0").await?, tokio::net::UdpSocket::bind("0.0.0.0:0").await?);
+    let rm = testbot::bot::nat_register(&m, nat, nat_proto::probe_flags::WANT_RELAY, &member.name, member.nat_ticket).await?;
+    let rj = testbot::bot::nat_register(&j, nat, 0, &joiner.name, joiner.nat_ticket).await?;
+    ensure!(rm.relayed && !rj.relayed, "relayed: member {}, joiner {}", rm.relayed, rj.relayed);
+    let send = |payload: &[u8]| {
+        Message::DataTo {
+            tag: rm.tag,
+            to: rj.advertise,
+            payload: payload.to_vec(),
+        }
+        .encode()
+    };
+    m.send_to(&send(b"too soon"), nat).await?;
+    ensure!(nat_wait_data(&j, Duration::from_millis(600)).await.is_none(), "relayed to someone in no match yet");
+    // The joiner's game probes the host it found.
+    let h = host.connection_id().await?;
+    joiner.request_probes("udp:/address=127.0.0.1;port=13005", &[h]).await?;
+    ensure!(host.wait_probe(Duration::from_secs(3)).await?.is_some(), "the joiner couldn't probe the public host");
+    // The refusal above stands a second.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    m.send_to(&send(b"welcome"), nat).await?;
+    ensure!(
+        nat_wait_data(&j, Duration::from_secs(2)).await
+            == Some(Message::DataFrom {
+                tag: rj.tag,
+                from: rm.advertise,
+                payload: b"welcome".to_vec()
+            }),
+        "a player of the match didn't reach the joiner through the relay"
+    );
+    for bot in [host, member, joiner] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
+/// A search that finds nothing while a lobby with other game data is open (one PC modded, the
+/// other not) is told: the player's summary counts it and names both sides' data.
+async fn search_other_data(ctx: &mut Ctx) -> Result<()> {
+    const STOCK: u32 = 0xe90c_0d2d;
+    const BALACLAVA: u32 = 0xdd55_acd3;
+    let mut host = ctx.player("Host").await?;
+    let mut modded = ctx.player("Modded").await?;
+    let mut plain = ctx.player("Plain").await?;
+    host.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
+    let map = 920_000 + ctx.run;
+    let game = host
+        .create_session(&format!("113 => 0;103 => 1;3 => 8;4 => 0;102 => 8;101 => {map};107 => {STOCK}"))
+        .await?;
+    host.add_participants(game, &[], &[host.pid]).await?;
+    let query = |data: u32| format!("113 => 0;103 => 1;102 => 8;101 => {map};107 => {data}");
+    ensure!(
+        plain.search_sessions(&query(STOCK)).await?.iter().any(|(s, _)| *s == game),
+        "the same data doesn't find the lobby"
+    );
+    ensure!(modded.search_sessions(&query(BALACLAVA)).await?.is_empty(), "other data found the lobby");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        let summary = modded.session_summary().await.map_err(|e| eyre!("session summary: {}", e.message()))?;
+        if summary.searches_other_data > 0 {
+            ensure!(
+                !summary.other_data_mine.is_empty() && !summary.other_data_theirs.is_empty() && summary.other_data_mine != summary.other_data_theirs,
+                "both sides' data aren't named: mine {:?}, theirs {:?}",
+                summary.other_data_mine,
+                summary.other_data_theirs
+            );
+            break;
+        }
+        ensure!(tokio::time::Instant::now() < deadline, "the summary doesn't count the hidden lobby");
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+    for bot in [host, modded, plain] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
+/// A GET to the server's community API (its config port: `CONFIG_PORT`, else 80), as the
+/// launcher and the overlay ask it; the body of a 200.
+fn community_get(server: IpAddr, path: &str) -> Result<String> {
+    use std::io::Read;
+    use std::io::Write;
+    let port: u16 = std::env::var("CONFIG_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(80);
+    let mut stream = std::net::TcpStream::connect_timeout(&std::net::SocketAddr::new(server, port), Duration::from_secs(3))?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    write!(stream, "GET {path} HTTP/1.1\r\nHost: {server}\r\nConnection: close\r\n\r\n")?;
+    let mut response = String::new();
+    stream.read_to_string(&mut response)?;
+    let (head, body) = response.split_once("\r\n\r\n").ok_or_else(|| eyre!("no HTTP answer"))?;
+    ensure!(
+        head.starts_with("HTTP/1.1 200") || head.starts_with("HTTP/1.0 200"),
+        "{path}: {}",
+        head.lines().next().unwrap_or_default()
+    );
+    Ok(body.to_string())
+}
+
+/// What's being played: a friend's line has the match's mode and map, and the server's
+/// `/api/playing` lists the public match (mode, map, players and seats) and only counts the
+/// private one.
+async fn whats_being_played(ctx: &mut Ctx) -> Result<()> {
+    const VIRUS_VAULT: u32 = 0x05F6_9010;
+    let mut host = ctx.player("Host").await?;
+    let mut friend = ctx.player("Friend").await?;
+    let mut coop = ctx.player("Coop").await?;
+    ensure!(host.friend_change("request", &friend.name).await? == Relation::RequestSent, "the request wasn't sent");
+    ensure!(friend.friend_change("accept", &host.name).await? == Relation::Friend, "not friends");
+    host.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
+    let game = host.create_session(&format!("113 => 0;103 => 1;3 => 8;4 => 0;102 => 8;101 => {VIRUS_VAULT}")).await?;
+    host.add_participants(game, &[], &[host.pid]).await?;
+    friend.join_session(game).await?;
+    let private = coop.create_session("113 => 0;103 => 0;3 => 0;4 => 2;102 => 3").await?;
+    coop.add_participants(private, &[], &[coop.pid]).await?;
+
+    // The friend's line: SvM Classic on Virus Vault.
+    let lists = friend.relationships().await?;
+    let line = lists.friends.iter().find(|p| p.username == host.name).and_then(|p| p.activity.clone());
+    ensure!(
+        line.as_ref().is_some_and(|a| a.game_mode == 8 && a.map == VIRUS_VAULT && a.room == "match"),
+        "the friend's activity: {line:?}"
+    );
+    ensure!(
+        line.as_ref().and_then(server_api::playing::activity_what).as_deref() == Some("SvM Classic · Virus Vault"),
+        "reads as {:?}",
+        line.as_ref().and_then(server_api::playing::activity_what)
+    );
+
+    // The server's list (worked out at most every 5 seconds).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
+    loop {
+        let server = ctx.server;
+        let body = tokio::task::spawn_blocking(move || community_get(server, "/api/playing")).await??;
+        let playing: server_api::playing::Playing = serde_json::from_str(&body)?;
+        let listed = playing.matches.iter().find(|m| m.map == Some(VIRUS_VAULT) && m.game_mode == Some(8));
+        if let Some(m) = listed {
+            ensure!((m.players, m.seats) == (2, 8), "the public match reads {}", m.line());
+            ensure!(m.line() == "SvM Classic · Virus Vault · 2/8", "{}", m.line());
+            ensure!(playing.private_matches >= 1, "the private match isn't counted: {body}");
+            ensure!(!body.contains(&host.name) && !body.contains(&coop.name), "names in what's being played: {body}");
+            break;
+        }
+        ensure!(tokio::time::Instant::now() < deadline, "the public match isn't listed: {body}");
+        tokio::time::sleep(Duration::from_millis(1000)).await;
+    }
+    for bot in [host, friend, coop] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
 const SCENARIOS: &[&str] = &[
     "login",
+    "public-match-probes",
+    "relay-to-joiner",
+    "search-other-data",
+    "whats-being-played",
     "lobby-invite",
     "private-match-invite",
     "cleanup",
@@ -1852,6 +2063,10 @@ async fn main() -> Result<()> {
                 "private-room-join" => private_room_join(&mut ctx).await,
                 "full-room" => full_room(&mut ctx).await,
                 "host-leaves-match" => host_leaves_match(&mut ctx).await,
+                "public-match-probes" => public_match_probes(&mut ctx).await,
+                "relay-to-joiner" => relay_to_joiner(&mut ctx).await,
+                "search-other-data" => search_other_data(&mut ctx).await,
+                "whats-being-played" => whats_being_played(&mut ctx).await,
                 "split-limits" => split_limits(&mut ctx).await,
                 "private-room-hidden" => private_room_hidden(&mut ctx).await,
                 "station-url-schemes" => station_url_schemes(&mut ctx).await,

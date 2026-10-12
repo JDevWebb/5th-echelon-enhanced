@@ -1055,6 +1055,62 @@ impl Bot {
         }
     }
 
+    /// This game's connection id on the secure server (Register, as the game does at the
+    /// start): what other players' games name it by (RVCID) in probe requests.
+    pub async fn connection_id(&mut self) -> Result<u32> {
+        use sc_bl_protocols::secure_connection_service::secure_connection_protocol as sc;
+        let resp: sc::RegisterResponse = decode(
+            &self
+                .secure
+                .call(
+                    sc::SECURE_CONNECTION_PROTOCOL_ID,
+                    sc::SecureConnectionProtocolMethod::Register as u32,
+                    sc::RegisterRequest { vec_my_urls: vec![] }.to_bytes(),
+                )
+                .await?,
+        )?;
+        Ok(resp.pid_connection_id)
+    }
+
+    /// Asks the server to have the games on these connections (ids from
+    /// [`Self::connection_id`]) probe this one at `station` (RequestProbeInitiationExt, as the
+    /// game asks before it connects to another player's).
+    pub async fn request_probes(&mut self, station: &str, targets: &[u32]) -> Result<()> {
+        use sc_bl_protocols::nat_traversal::nat_traversal_protocol as nt;
+        let url = |s: &str| s.parse::<StationURL>().map_err(|e| eyre!("{s}: {e:?}"));
+        let request = nt::RequestProbeInitiationExtRequest {
+            url_target_list: QList(
+                targets
+                    .iter()
+                    .map(|t| url(&format!("udp:/address=127.0.0.1;port=13000;RVCID={t}")))
+                    .collect::<Result<_>>()?,
+            ),
+            url_station_to_probe: url(station)?,
+        };
+        self.secure
+            .call(
+                nt::NAT_TRAVERSAL_PROTOCOL_ID,
+                nt::NatTraversalProtocolMethod::RequestProbeInitiationExt as u32,
+                request.to_bytes(),
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Waits for the server telling this game to probe another (InitiateProbe): the station
+    /// it's told to send to.
+    pub async fn wait_probe(&mut self, wait: Duration) -> Result<Option<String>> {
+        use sc_bl_protocols::nat_traversal::nat_traversal_protocol as nt;
+        match self
+            .secure
+            .wait_request(nt::NAT_TRAVERSAL_PROTOCOL_ID, nt::NatTraversalProtocolMethod::InitiateProbe as u32, wait)
+            .await?
+        {
+            Some(req) => Ok(Some(decode::<nt::InitiateProbeRequest>(&req.parameters)?.url_station_to_probe.to_string())),
+            None => Ok(None),
+        }
+    }
+
     /// Leaves the secure server (the game closing).
     pub async fn disconnect(self) -> Result<()> {
         self.secure.disconnect().await
