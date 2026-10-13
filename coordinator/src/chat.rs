@@ -283,9 +283,12 @@ impl Coordinator {
     /// conversations with it, what it read, its masked counts.
     pub(crate) async fn prune_chat(&self) -> sqlx::Result<()> {
         let now = identity::now();
-        // A message reported and not dealt with yet stays, whatever: neither its sender unlinking
-        // everywhere nor its age takes the evidence away from the admins.
-        let reported = "id NOT IN (SELECT message_id FROM chat_reports WHERE status = 'open')";
+        // A message reported and not dealt with yet stays: neither its sender unlinking everywhere
+        // nor its age takes the evidence away from the admins. For [`REPORTS_KEEP`] at most, the
+        // time a report is kept: a report anyone can make mustn't keep a message for ever.
+        let held_since = now - REPORTS_KEEP;
+        let reported = format!("id NOT IN (SELECT message_id FROM chat_reports WHERE status = 'open' AND at >= {held_since})");
+        sqlx::query("DELETE FROM chat_reports WHERE status = 'open' AND at < ?").bind(held_since).execute(&self.pool).await?;
         let gone = "NOT IN (SELECT global_id FROM links)";
         for sql in [
             format!("DELETE FROM chat_messages WHERE (sender {gone} OR (recipient IS NOT NULL AND recipient {gone})) AND {reported}"),

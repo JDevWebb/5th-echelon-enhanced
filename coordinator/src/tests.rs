@@ -4223,4 +4223,9 @@ async fn chat_names_are_their_own_and_go_with_the_links() {
     t.c.prune_chat().await.unwrap();
     let left: Vec<i64> = sqlx::query_scalar("SELECT id FROM chat_messages").fetch_all(&t.c.pool).await.unwrap();
     assert_eq!(left, [reported]);
+    // But not for ever: a report holds it 90 days at most.
+    sqlx::query("UPDATE chat_reports SET at = at - 91 * 86400").execute(&t.c.pool).await.unwrap();
+    t.c.prune_chat().await.unwrap();
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(left, 0);
 }
