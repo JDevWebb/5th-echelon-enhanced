@@ -185,6 +185,8 @@ pub const WAITING_FOR_WINDOW: &str = "waiting for an update window: book one und
 #[derive(Debug, Clone)]
 struct Member {
     id: String,
+    /// Where its listing says players reach it.
+    host: String,
     version: String,
     auto_update: bool,
     players_online: u64,
@@ -226,6 +228,53 @@ impl Coordinator {
         Ok(r.anytime || self.in_window(server, crate::maintenance::UPDATE, now).await?)
     }
 
+    /// The member servers on this machine: `--local-server`, else those whose listed host
+    /// resolves to one of this machine's addresses (worked out every [`LOCAL_EVERY`]). Its
+    /// updater installs every program here, the coordinator included, so these update last.
+    async fn local_members(&self, members: &[Member]) -> Vec<String> {
+        if let Some(fixed) = self.local_servers.get().filter(|f| !f.is_empty()) {
+            return fixed.clone();
+        }
+        let now = identity::now();
+        if let Some((at, ids)) = self.local_members_seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
+            if now - at < LOCAL_EVERY {
+                return ids.clone();
+            }
+        }
+        let own = own_addresses();
+        let mut ids = Vec::new();
+        if !own.is_empty() {
+            for m in members {
+                let host = m.host.trim_start_matches('[').trim_end_matches(']');
+                if host.is_empty() {
+                    continue;
+                }
+                let found: Vec<std::net::IpAddr> = match host.parse::<std::net::IpAddr>() {
+                    Ok(ip) => vec![ip],
+                    Err(_) => tokio::time::timeout(Duration::from_secs(3), tokio::net::lookup_host((host, 80)))
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .map(|a| a.map(|a| a.ip()).collect())
+                        .unwrap_or_default(),
+                };
+                if found.iter().any(|ip| own.contains(ip)) {
+                    ids.push(m.id.clone());
+                }
+            }
+        }
+        let mut seen = self.local_members_seen.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if seen.as_ref().is_none_or(|(_, before)| before != &ids) {
+            if ids.is_empty() {
+                tracing::info!("Rollout: no member server found on this machine");
+            } else {
+                tracing::info!("Rollout: {} on this machine: updated last, with the coordinator", ids.join(", "));
+            }
+        }
+        *seen = Some((now, ids.clone()));
+        ids
+    }
+
     async fn members(&self) -> sqlx::Result<Vec<Member>> {
         let rows: Vec<(String, Option<String>, Option<i64>, Option<String>)> =
             sqlx::query_as("SELECT id, listing, last_seen, update_status FROM servers").fetch_all(&self.pool).await?;
@@ -236,6 +285,7 @@ impl Coordinator {
                 let s: Value = status.and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
                 Member {
                     id,
+                    host: l["host"].as_str().unwrap_or_default().to_string(),
                     version: l["version"].as_str().unwrap_or_default().to_string(),
                     auto_update: l["auto_update"].as_bool().unwrap_or(false),
                     players_online: l["players_online"].as_u64().unwrap_or(0),
@@ -307,6 +357,7 @@ impl Coordinator {
         }
         let now = identity::now();
         let members = self.members().await?;
+        let local = self.local_members(&members).await;
         let fresh: Vec<&Member> = members.iter().filter(|m| now - m.last_seen <= FRESH).collect();
         let before = (r.stage.clone(), r.canary.clone(), r.note.clone());
         match r.stage.as_str() {
@@ -322,7 +373,18 @@ impl Coordinator {
                         // may update now (in an update window); among as quiet ones, an order
                         // made from each id and the release, not the ids themselves (a member
                         // that joined as "---" sorted first, and was the canary every time).
-                        let candidates: Vec<&&Member> = fresh.iter().filter(|m| m.auto_update && m.version != target).collect();
+                        // Not a server on this machine: its updater installs the coordinator too,
+                        // which would then carry on the rollout under the new release's rules (on
+                        // 2026-10-13, 0.4.3's picked eu1 and 0.4.4 took over half-way). Those
+                        // update last, with the coordinator.
+                        let candidates: Vec<&&Member> = fresh.iter().filter(|m| m.auto_update && m.version != target && !local.contains(&m.id)).collect();
+                        // A server already running it (an admin's update now, a rollout picked up
+                        // half-way): that one is the canary to check, not another.
+                        let already = fresh
+                            .iter()
+                            .filter(|m| m.auto_update && m.version == target)
+                            .min_by_key(|m| (local.contains(&m.id), m.id.clone()))
+                            .copied();
                         let mut ready = Vec::new();
                         for m in candidates.iter().copied() {
                             if self.may_update(&r, &m.id, now).await? {
@@ -332,8 +394,14 @@ impl Coordinator {
                         let pick = ready
                             .into_iter()
                             .min_by_key(|m| (m.players_online, identity::digest(format!("{target}\n{}", m.id).as_bytes())));
-                        match pick {
-                            Some(m) => {
+                        match (already, pick) {
+                            (Some(m), _) => {
+                                r.canary = Some(m.id.clone());
+                                r.stage = "verifying".into();
+                                r.stage_since = now;
+                                r.note = format!("{} already runs {target}: checking it keeps reporting in", m.id);
+                            }
+                            (None, Some(m)) => {
                                 r.canary = Some(m.id.clone());
                                 r.stage_since = now;
                                 if r.note == WAITING_FOR_WINDOW {
@@ -341,9 +409,9 @@ impl Coordinator {
                                 }
                             }
                             // Servers to try it on, none in an update window yet.
-                            None if !candidates.is_empty() => r.note = WAITING_FOR_WINDOW.into(),
+                            (None, None) if !candidates.is_empty() => r.note = WAITING_FOR_WINDOW.into(),
                             // Nobody left to try it on: every server runs it already, or none update.
-                            None => {
+                            (None, None) => {
                                 r.stage = "rolling".into();
                                 r.stage_since = now;
                             }
@@ -404,7 +472,9 @@ impl Coordinator {
         // The coordinator itself follows once the canary proved the release: in an update
         // window for the whole network (its machine's updater installs every program there,
         // its game server's too), or when the rollout goes out without windows.
-        if matches!(r.stage.as_str(), "rolling" | "done") && (r.anytime || self.update_windows_open(now).await?.1) {
+        // Last, once every other server runs it: the coordinator, and with it the game server on
+        // this machine.
+        if matches!(r.stage.as_str(), "rolling" | "done") && others_done(&fresh, &local, &target) && (r.anytime || self.update_windows_open(now).await?.1) {
             self.request_own_update(&target);
         }
         Ok(())
@@ -421,6 +491,18 @@ impl Coordinator {
         // Only in an update window (its own or the network's), unless it goes out without them.
         if !self.may_update(&r, server, now).await? {
             return Ok(None);
+        }
+        // A server on this machine waits for every other one: its updater installs the
+        // coordinator too.
+        if matches!(r.stage.as_str(), "rolling" | "done") {
+            let members = self.members().await?;
+            let local = self.local_members(&members).await;
+            if local.iter().any(|l| l == server) {
+                let fresh: Vec<&Member> = members.iter().filter(|m| now - m.last_seen <= FRESH).collect();
+                if !others_done(&fresh, &local, &target) {
+                    return Ok(None);
+                }
+            }
         }
         let asked = match r.stage.as_str() {
             "canary" => r.canary.as_deref() == Some(server),
@@ -559,6 +641,32 @@ impl Coordinator {
         }
         Ok(list)
     }
+}
+
+/// How often the member servers on this machine are worked out again.
+const LOCAL_EVERY: i64 = 600;
+
+/// This machine's addresses as other machines reach it: the ones it sends from to the
+/// internet, IPv4 and IPv6 (found by connecting a UDP socket, which sends nothing).
+fn own_addresses() -> Vec<std::net::IpAddr> {
+    let mut found = Vec::new();
+    for (bind, to) in [("0.0.0.0:0", "1.1.1.1:53"), ("[::]:0", "[2606:4700:4700::1111]:53")] {
+        if let Ok(socket) = std::net::UdpSocket::bind(bind) {
+            if socket.connect(to).is_ok() {
+                if let Ok(addr) = socket.local_addr() {
+                    if !addr.ip().is_unspecified() && !addr.ip().is_loopback() {
+                        found.push(addr.ip());
+                    }
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Whether every server not on this machine (`local`) that installs updates runs `target`.
+fn others_done(fresh: &[&Member], local: &[String], target: &str) -> bool {
+    fresh.iter().filter(|m| m.auto_update && !local.contains(&m.id)).all(|m| m.version == target)
 }
 
 /// Why this machine's updater shouldn't be asked for `version` now, from its

@@ -37,6 +37,11 @@ struct Args {
     /// Without it, for whatever name a request says
     #[argh(option)]
     name: Vec<String>,
+    /// a member server on this machine, by its id (repeat for more): rollouts update it
+    /// last, with the coordinator (this machine's updater installs both). Without it, the
+    /// members whose host resolves to this machine's address
+    #[argh(option)]
+    local_server: Vec<String>,
     /// list member servers without checking that the server at each listed
     /// host answers as that member (a test network whose servers the
     /// coordinator can't reach)
@@ -365,6 +370,7 @@ async fn main() -> eyre::Result<()> {
         }
     }
     let _ = coordinator.names.set(args.name.iter().map(|n| identity::host_key(n)).collect());
+    let _ = coordinator.local_servers.set(args.local_server.clone());
     if args.no_host_check {
         tracing::warn!("--no-host-check: member servers are listed at whatever host they say, unchecked");
     } else {

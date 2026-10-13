@@ -487,6 +487,11 @@ pub struct Coordinator {
     metrics: Limit,
     /// The release this machine's updater was last asked for, and when.
     own_update_asked: std::sync::Mutex<Option<(String, i64)>>,
+    /// The member servers on this machine (`--local-server`), when set: else worked out from
+    /// their hosts ([`Self::local_members`]).
+    pub local_servers: std::sync::OnceLock<Vec<String>>,
+    /// The member servers worked out to be on this machine, and when (Unix seconds).
+    local_members_seen: std::sync::Mutex<Option<(i64, Vec<String>)>>,
     /// Where player addresses are (for launchers' ping reports).
     pub geo: std::sync::OnceLock<Arc<geo::Geo>>,
     /// The coordinator's folder (for its own update requests).
@@ -628,6 +633,8 @@ impl Coordinator {
             heartbeats: Limit::new(6),
             metrics: Limit::new(2),
             own_update_asked: std::sync::Mutex::new(None),
+            local_servers: std::sync::OnceLock::new(),
+            local_members_seen: std::sync::Mutex::new(None),
             geo: std::sync::OnceLock::new(),
             data_dir: std::sync::OnceLock::new(),
             admin: std::sync::OnceLock::new(),

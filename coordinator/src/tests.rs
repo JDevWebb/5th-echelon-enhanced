@@ -382,6 +382,49 @@ async fn an_admin_can_send_a_rollout_out_without_windows() {
     assert!(!t.c.rollout().await.unwrap().anytime);
 }
 
+/// The server on the coordinator's machine is never the canary and updates last: its machine's
+/// updater installs the coordinator too, which would carry on the rollout under the new
+/// release's rules (2026-10-13: 0.4.3's coordinator picked eu1, and 0.4.4 took over half-way).
+/// A server already running the release is the canary to check, not another.
+#[tokio::test]
+async fn the_coordinators_own_machine_updates_last() {
+    let t = start("rollout-local").await;
+    let _ = t.c.local_servers.set(vec!["eu1".into()]);
+    let (eu1, na1, oce) = (t.join("eu1").await, t.join("na1").await, t.join("oceania").await);
+    for (s, id) in [(&eu1, "eu1"), (&na1, "na1"), (&oce, "oceania")] {
+        heartbeat_asks(&t, s, id, "1.0.0", 0, false).await;
+    }
+    update_window(&t, None).await;
+    t.c.start_rollout("1.1.0", "a test").await.unwrap();
+    t.c.tick_rollout().await.unwrap();
+    let canary = t.c.rollout().await.unwrap().canary.unwrap();
+    assert_ne!(canary, "eu1", "never the coordinator's own machine");
+    assert_eq!(heartbeat_asks(&t, &eu1, "eu1", "1.0.0", 0, false).await, None);
+    let (canary_secret, other, other_secret) = if canary == "na1" { (&na1, "oceania", &oce) } else { (&oce, "na1", &na1) };
+    assert_eq!(heartbeat_asks(&t, canary_secret, &canary, "1.0.0", 0, false).await.as_deref(), Some("1.1.0"));
+    heartbeat_asks(&t, canary_secret, &canary, "1.1.0", 0, false).await;
+    t.c.tick_rollout().await.unwrap();
+    sqlx::query("UPDATE rollout SET stage_since = stage_since - 601").execute(&t.c.pool).await.unwrap();
+    heartbeat_asks(&t, canary_secret, &canary, "1.1.0", 0, false).await;
+    t.c.tick_rollout().await.unwrap();
+    assert_eq!(stage(&t).await.0, "rolling");
+    // Rolling: the other server first; eu1 only once it runs it.
+    assert_eq!(heartbeat_asks(&t, &eu1, "eu1", "1.0.0", 0, false).await, None, "not before the others");
+    assert_eq!(heartbeat_asks(&t, other_secret, other, "1.0.0", 0, false).await.as_deref(), Some("1.1.0"));
+    heartbeat_asks(&t, other_secret, other, "1.1.0", 0, false).await;
+    assert_eq!(heartbeat_asks(&t, &eu1, "eu1", "1.0.0", 0, false).await.as_deref(), Some("1.1.0"), "last");
+
+    // The next release: na1 already runs it (an admin updated it by hand). It's the canary to
+    // check, rather than another server being tried.
+    heartbeat_asks(&t, &eu1, "eu1", "1.1.0", 0, false).await;
+    t.c.tick_rollout().await.unwrap();
+    t.c.start_rollout("1.2.0", "a test").await.unwrap();
+    heartbeat_asks(&t, &na1, "na1", "1.2.0", 0, false).await;
+    t.c.tick_rollout().await.unwrap();
+    let r = t.c.rollout().await.unwrap();
+    assert_eq!((r.stage.as_str(), r.canary.as_deref()), ("verifying", Some("na1")), "{}", r.note);
+}
+
 #[tokio::test]
 async fn a_canary_that_rolls_back_or_never_updates_halts_the_rollout() {
     let t = start("rollout-halts").await;
