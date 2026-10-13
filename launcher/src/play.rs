@@ -2114,9 +2114,13 @@ fn launch(play: &mut Play, game: &mut Game, notices: &mut Notices) {
         notices.error("The game's executable is missing.");
         return;
     };
-    match setup::launch::launch(&game.dir, version) {
+    match setup::launch::launch(&game.dir, version, crate::app::Prefs::start_through_steam()) {
         Ok(setup::launch::Launched::Game(child)) => play.running = Some(child),
         Ok(setup::launch::Launched::Steam) => notices.info("Steam is starting the game."),
+        Ok(setup::launch::Launched::GameNotSteam(child, why)) => {
+            play.running = Some(child);
+            notices.error(format!("Steam couldn't start the game ({why}), so the launcher did: no Steam Input this time."));
+        }
         Err(e) => notices.error(format!("Couldn't start the game: {e}")),
     }
 }

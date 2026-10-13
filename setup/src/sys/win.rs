@@ -108,6 +108,14 @@ fn steam_dirs() -> Vec<PathBuf> {
     .collect()
 }
 
+/// Steam's own program, to ask it to start a game: where Steam last ran from (`SteamExe`), else
+/// `steam.exe` in its folder.
+pub fn steam_exe() -> Option<PathBuf> {
+    read_path(Key::CurrentUser, r"Software\Valve\Steam", "SteamExe")
+        .filter(|p| p.is_file())
+        .or_else(|| steam_dirs().into_iter().map(|d| d.join("steam.exe")).find(|p| p.is_file()))
+}
+
 /// Fixed drives, as `C:\`.
 fn fixed_drives() -> Vec<PathBuf> {
     let mask = unsafe { GetLogicalDrives() };

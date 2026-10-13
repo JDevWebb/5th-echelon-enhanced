@@ -18,6 +18,11 @@ mod other {
         Vec::new()
     }
 
+    /// Steam's Windows program (Windows only).
+    pub fn steam_exe() -> Option<PathBuf> {
+        None
+    }
+
     fn home() -> Option<PathBuf> {
         std::env::var_os("HOME").map(PathBuf::from)
     }

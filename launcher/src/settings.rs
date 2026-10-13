@@ -514,6 +514,19 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
         }
         ui.add_space(6.0);
     }
+    // A Steam copy on Windows: Steam Input (controllers) only applies to games Steam starts.
+    if cfg!(target_os = "windows") && !hooks_config::running_under_wine() && setup::launch::steam_copy(&game.dir) {
+        let mut through_steam = crate::app::Prefs::start_through_steam();
+        if ui.checkbox(&mut through_steam, "Start the game through Steam (for Steam Input and controllers)").changed() {
+            crate::app::Prefs::set_start_through_steam(through_steam);
+        }
+        if through_steam {
+            ui.label(theme::muted(
+                "Steam then picks DirectX 9 or 11 (its Play menu or launch options), not the Renderer above, and the launcher can't tell from its exit code whether the game crashed.",
+            ));
+        }
+        ui.add_space(6.0);
+    }
     if let Some(wine) = flow::wine_facts(&game.dir).filter(|w| w.steam) {
         ui.label(theme::muted("Runs through Steam and Proton; Play asks Steam to start it."));
         if let Some(options) = wine.launch_options {

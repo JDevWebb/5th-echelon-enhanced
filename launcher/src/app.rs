@@ -167,6 +167,9 @@ pub struct Prefs {
     /// The player closed the notice that a Uplay emulator isn't a supported setup.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     uplay_emulator_told: bool,
+    /// Play asks Steam to start a Steam copy on Windows (for Steam Input), not the launcher.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    start_through_steam: bool,
 }
 
 /// A server the player connected to by its address.
@@ -304,6 +307,16 @@ impl Prefs {
 
     pub fn uplay_emulator_told() -> bool {
         Self::load().uplay_emulator_told
+    }
+
+    pub fn start_through_steam() -> bool {
+        Self::load().start_through_steam
+    }
+
+    pub fn set_start_through_steam(on: bool) {
+        let mut prefs = Self::load();
+        prefs.start_through_steam = on;
+        prefs.save();
     }
 
     pub fn set_uplay_emulator_told() {
