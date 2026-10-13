@@ -216,7 +216,11 @@ impl Prefs {
             .unwrap_or_default();
         // The community network's old name (until 0.4.5), saved by a player who typed it or
         // set it in Settings: its new one, once and for good.
-        if prefs.directory.as_deref().is_some_and(|d| Self::is_community(d) && d.trim().trim_end_matches('/') != COMMUNITY_DIRECTORY) {
+        if prefs
+            .directory
+            .as_deref()
+            .is_some_and(|d| Self::is_community(d) && d.trim().trim_end_matches('/') != COMMUNITY_DIRECTORY)
+        {
             prefs.directory = Some(COMMUNITY_DIRECTORY.to_string());
             prefs.save();
         }
