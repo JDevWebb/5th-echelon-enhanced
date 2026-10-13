@@ -28,7 +28,7 @@ jobs:
     name: Tests, test players and Linux builds
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Install protoc
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends protobuf-compiler
       - name: Install the toolchain (rust-toolchain.toml)
@@ -36,7 +36,7 @@ jobs:
       - name: Build the coordinator's admin UI (Node comes with the runner)
         working-directory: coordinator/admin-ui
         run: npm ci --no-audit --no-fund && npm run build
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Formatting
         run: cargo fmt --all --check
       - name: Tests
@@ -73,13 +73,21 @@ jobs:
     name: Windows builds
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: arduino/setup-protoc@c65c819552d16ad3c9b72d9dfd5ba5237b9c906b # v3.0.0
-        with:
-          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # protoc for the API's generated code: a pinned release, checked against its SHA-256
+      # (arduino/setup-protoc has no release on Node.js 24).
+      - name: Install protoc
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'protoc.zip'
+          Invoke-WebRequest -Uri 'https://github.com/protocolbuffers/protobuf/releases/download/v36.2/protoc-36.2-win64.zip' -OutFile $zip
+          if ((Get-FileHash $zip -Algorithm SHA256).Hash -ne 'f0c128dc0d8492eceece83bb459a4c0e316764b929ffbf1aa416357fd644edd3') { throw 'protoc download failed its checksum' }
+          $dir = Join-Path $env:RUNNER_TEMP 'protoc'
+          Expand-Archive $zip -DestinationPath $dir
+          Add-Content $env:GITHUB_PATH (Join-Path $dir 'bin')
       - name: Install the toolchain (rust-toolchain.toml)
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Client DLL
         run: cargo build --locked -p hooks --target i686-pc-windows-msvc
       - name: Client DLL tests
