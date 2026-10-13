@@ -547,6 +547,10 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
         )));
     }
     ui.checkbox(&mut hook.auto_join_invite, "Join invites automatically");
+    ui.checkbox(&mut hook.disable_mouse_accel, "Remove negative mouse acceleration").on_hover_text(
+        "The game caps how far the view can turn in one frame, so fast flicks feel like the mouse slows down. \
+         This widens that cap for a linear, 1:1 feel (the camera's safety limit stays in place).",
+    );
     ui.horizontal(|ui| {
         ui.label("Client log detail");
         egui::ComboBox::from_id_salt("loglevel")

@@ -733,6 +733,11 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
     storm::init_hooks(config, addr);
     nla::init_hooks();
     quazal::init_hooks(config, addr);
+
+    // Remove the engine's negative mouse acceleration (widen the look-delta clamp; see mouse_fix.rs).
+    if config.disable_mouse_accel {
+        crate::mouse_fix::disable_negative_mouse_acceleration();
+    }
 }
 
 macro_rules! disable_configurable_hook {

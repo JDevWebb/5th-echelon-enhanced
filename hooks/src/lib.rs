@@ -40,6 +40,7 @@ mod dll_utils;
 mod game_state;
 mod hooks;
 mod macros;
+mod mouse_fix;
 mod overlay;
 mod overlay_input;
 mod uplay_r1_loader;
@@ -104,7 +105,7 @@ const DATA_VERSION_CHECK: [Option<u8>; 19] = [
 ];
 
 /// The game's code: its executable's `.text` section in memory.
-unsafe fn game_code() -> Option<&'static [u8]> {
+pub(crate) unsafe fn game_code() -> Option<&'static [u8]> {
     use windows::Win32::System::LibraryLoader::GetModuleHandleA;
     let base = GetModuleHandleA(windows::core::PCSTR::null()).ok()?.0 as *const u8;
     let pe = base.add(std::ptr::read_unaligned(base.add(0x3c).cast::<u32>()) as usize);
