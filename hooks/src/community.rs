@@ -261,9 +261,17 @@ impl Snapshot {
 
 enum Action {
     Refresh,
-    Invite { id: String, name: String },
+    Invite {
+        id: String,
+        name: String,
+    },
     Search(String),
-    Change { change: FriendChange, id: String, name: String },
+    Change {
+        change: FriendChange,
+        id: String,
+        identity: String,
+        name: String,
+    },
 }
 
 /// A friend we know from some server: their identity there.
@@ -403,7 +411,22 @@ pub fn search(query: String) {
 
 /// Changes how we stand to a player (a friend request, a block...).
 pub fn change(change: FriendChange, id: String, name: String) {
-    send(Action::Change { change, id, name });
+    send(Action::Change {
+        change,
+        id,
+        identity: String::new(),
+        name,
+    });
+}
+
+/// Changes how we stand to a chat message's sender, by their identity (chat has no account id).
+pub fn change_by_identity(change: FriendChange, identity: String, name: String) {
+    send(Action::Change {
+        change,
+        id: String::new(),
+        identity,
+        name,
+    });
 }
 
 /// A friend event from the server's event poll: shows it and refreshes.
@@ -467,8 +490,8 @@ pub fn start() {
                 Ok(Action::Refresh) | Err(mpsc::RecvTimeoutError::Timeout) => refresh_now(),
                 Ok(Action::Invite { id, name }) => invite_now(&id, &name),
                 Ok(Action::Search(query)) => search_now(&query),
-                Ok(Action::Change { change, id, name }) => {
-                    change_now(change, &id, &name);
+                Ok(Action::Change { change, id, identity, name }) => {
+                    change_now(change, &id, &identity, &name);
                     refresh_now();
                     // Keep the search's relations current too.
                     if let Some((query, _)) = snapshot().search {
@@ -519,7 +542,7 @@ fn search_now(query: &str) {
     }
 }
 
-fn change_now(change: FriendChange, id: &str, name: &str) {
+fn change_now(change: FriendChange, id: &str, identity: &str, name: &str) {
     let done = match change {
         FriendChange::Request => format!("Friend request sent to {name}"),
         FriendChange::Accept => format!("You and {name} are friends"),
@@ -528,7 +551,7 @@ fn change_now(change: FriendChange, id: &str, name: &str) {
         FriendChange::Block => format!("Blocked {name}. They can't see you or invite you."),
         FriendChange::Unblock => format!("Unblocked {name}"),
     };
-    match crate::api::change_friend(change, id, name) {
+    match crate::api::change_friend(change, id, identity) {
         Ok(()) => say(done, false),
         Err(e) => {
             warn!("{change:?} {name} failed: {e}");

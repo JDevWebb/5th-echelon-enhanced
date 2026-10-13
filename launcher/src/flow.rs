@@ -311,9 +311,9 @@ pub fn friends(cfg: &Config) -> Result<Friends, String> {
     })
 }
 
-/// Does `action` to `name` (account id `id`, or empty: by name) as the current account, from
-/// "Online now" or chat: what to tell the player.
-pub fn player_action(cfg: &Config, action: crate::network::PlayerAction, id: &str, name: &str) -> Result<String, String> {
+/// Does `action` to `name` (account id `id`, or empty: by `identity`, from chat) as the current
+/// account, from "Online now" or chat: what to tell the player.
+pub fn player_action(cfg: &Config, action: crate::network::PlayerAction, id: &str, identity: &str, name: &str) -> Result<String, String> {
     use crate::network::PlayerAction;
     let Some(profile) = cfg.current_profile().filter(|p| !p.server.is_empty() && p.has_account()) else {
         return Err("Set up an account on a server first.".into());
@@ -322,7 +322,7 @@ pub fn player_action(cfg: &Config, action: crate::network::PlayerAction, id: &st
     let (username, secret) = (profile.user.username.clone(), profile.user.secret().unwrap_or_default());
     let rt = crate::services::rt();
     let token = rt.block_on(crate::network::sign_in(url.clone(), &username, &secret)).map_err(|e| e.to_string())?;
-    rt.block_on(crate::network::player_action(url, &token, action, id, name)).map_err(|e| e.to_string())?;
+    rt.block_on(crate::network::player_action(url, &token, action, id, identity)).map_err(|e| e.to_string())?;
     Ok(match action {
         PlayerAction::Request => format!("Asked {name} to be friends."),
         PlayerAction::Invite => format!("Invited {name} to your game."),

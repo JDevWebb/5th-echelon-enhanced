@@ -384,13 +384,14 @@ pub fn search_players(query: &str) -> Result<Vec<Player>, Error> {
 }
 
 /// Changes how we stand to the player with account id `id` (none known, from chat: by their
-/// name, `username`).
-pub fn change_friend(change: FriendChange, id: &str, username: &str) -> Result<(), Error> {
+/// identity, never by a name, which may be another account's here).
+pub fn change_friend(change: FriendChange, id: &str, identity: &str) -> Result<(), Error> {
     run(signed_in(|| async {
         let mut client = connect!(FriendsClient);
         let request = tonic::Request::new(TargetRequest {
             id: id.into(),
-            username: if id.is_empty() { username.into() } else { String::new() },
+            username: String::new(),
+            identity: if id.is_empty() { identity.into() } else { String::new() },
         });
         match change {
             FriendChange::Request => client.request(request).await?,

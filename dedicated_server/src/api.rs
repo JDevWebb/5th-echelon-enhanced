@@ -279,10 +279,12 @@ pub struct MyFriends {
 impl MyFriends {
     /// The player a request names, by account id or else by name.
     async fn target(&self, request: &friends::TargetRequest) -> Result<Person, Status> {
-        let person = if request.id.is_empty() {
-            self.storage.find_person_by_name(&request.username).await
-        } else {
+        let person = if !request.id.is_empty() {
             self.storage.find_person_by_ubi_id(&request.id).await
+        } else if !request.identity.is_empty() {
+            self.storage.find_person_by_global_id(&request.identity).await
+        } else {
+            self.storage.find_person_by_name(&request.username).await
         };
         person
             .map_err(internal)?

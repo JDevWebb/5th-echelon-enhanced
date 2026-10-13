@@ -691,17 +691,19 @@ fn online(chat: &mut Chat, cfg: &Config, height: f32, ui: &mut egui::Ui) {
                 ui.label(theme::muted("Right-click a name for more.").small());
             }
             if let Some((action, id, name)) = act {
-                start_action(chat, cfg, action, id, name, ui.ctx());
+                start_action(chat, cfg, action, id, String::new(), name, ui.ctx());
             }
         });
 }
 
-fn start_action(chat: &mut Chat, cfg: &Config, action: PlayerAction, id: String, name: String, ctx: &egui::Context) {
+/// Does `action` to a player: by account id (who's online here), or by identity (chat's
+/// senders), never by name alone.
+fn start_action(chat: &mut Chat, cfg: &Config, action: PlayerAction, id: String, identity: String, name: String, ctx: &egui::Context) {
     if chat.acting.running() {
         return;
     }
     let cfg = cfg.clone();
-    chat.acting.start(ctx, move || flow::player_action(&cfg, action, &id, &name));
+    chat.acting.start(ctx, move || flow::player_action(&cfg, action, &id, &identity, &name));
 }
 
 /// A room's or a conversation's messages, newest at the bottom.
@@ -793,8 +795,6 @@ fn message_menu(chat: &mut Chat, cfg: &Config, m: &Message, ui: &mut egui::Ui) {
         }
         return;
     }
-    // The sender's account here, if they're online on this server (an invite needs it).
-    let here = chat.online.others.iter().find(|p| p.name.eq_ignore_ascii_case(&m.from_name)).map(|p| p.id.clone());
     let friend = chat.friends.iter().any(|f| f.identity == m.from);
     if friend && m.room() != Room::Direct && ui.button(format!("Message {}", m.from_name)).clicked() {
         chat.names.insert(m.from.clone(), m.from_name.clone());
@@ -802,18 +802,13 @@ fn message_menu(chat: &mut Chat, cfg: &Config, m: &Message, ui: &mut egui::Ui) {
         chat.tab = Tab::Messages;
         ui.close();
     }
+    // By their identity: a name alone may be another account's on this server.
     if !friend && ui.button("Add friend").clicked() {
-        start_action(chat, cfg, PlayerAction::Request, here.clone().unwrap_or_default(), m.from_name.clone(), ui.ctx());
+        start_action(chat, cfg, PlayerAction::Request, String::new(), m.from.clone(), m.from_name.clone(), ui.ctx());
         ui.close();
     }
-    if let Some(id) = &here {
-        if ui.button("Invite to your game").clicked() {
-            start_action(chat, cfg, PlayerAction::Invite, id.clone(), m.from_name.clone(), ui.ctx());
-            ui.close();
-        }
-    }
     if ui.button(format!("Block {}", m.from_name)).clicked() {
-        start_action(chat, cfg, PlayerAction::Block, here.unwrap_or_default(), m.from_name.clone(), ui.ctx());
+        start_action(chat, cfg, PlayerAction::Block, String::new(), m.from.clone(), m.from_name.clone(), ui.ctx());
         ui.close();
     }
     if ui.button("Report…").clicked() {

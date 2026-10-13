@@ -135,10 +135,12 @@ message SearchResponse {
     repeated Player players = 1;
 }
 
-// A player, by account id or else by name.
+// A player, by account id, else by identity (their account here, as chat names players: a
+// name alone may be another account's here), else by name.
 message TargetRequest {
     string id = 1;
     string username = 2;
+    string identity = 3;
 }
 
 message ChangeResponse {

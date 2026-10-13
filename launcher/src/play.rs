@@ -1683,7 +1683,7 @@ fn online_now(play: &mut Play, game: &Game, others: &[flow::OnlinePlayer], playi
     }
     if let Some((action, p)) = act {
         let cfg = (*game.cfg).clone();
-        play.acting.start(ui.ctx(), move || flow::player_action(&cfg, action, &p.id, &p.name));
+        play.acting.start(ui.ctx(), move || flow::player_action(&cfg, action, &p.id, "", &p.name));
     }
 }
 

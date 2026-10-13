@@ -312,12 +312,14 @@ pub enum PlayerAction {
     Block,
 }
 
-/// Does `action` to the player with account id `id` (none known: by their name, `username`).
-pub async fn player_action(api_url: String, token: &str, action: PlayerAction, id: &str, username: &str) -> Result<(), Error> {
+/// Does `action` to the player with account id `id` (none known, from chat: by their identity,
+/// never by a name, which may be another account's here).
+pub async fn player_action(api_url: String, token: &str, action: PlayerAction, id: &str, identity: &str) -> Result<(), Error> {
     let (mut client, token) = friends_client(&api_url, token).await?;
     let target = || server_api::friends::TargetRequest {
         id: id.to_string(),
-        username: if id.is_empty() { username.to_string() } else { String::new() },
+        username: String::new(),
+        identity: if id.is_empty() { identity.to_string() } else { String::new() },
     };
     let result = match action {
         PlayerAction::Request => client.request(authed(target(), &token)).await.map(|_| ()),

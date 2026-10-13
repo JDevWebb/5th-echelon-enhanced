@@ -723,6 +723,20 @@ async fn chat(ctx: &mut Ctx, other: IpAddr) -> Result<()> {
         friends.iter().any(|f| f.identity == tank_key.global_id() && f.name == tank.name),
         "Tank isn't among Kiwi's friends to message: {friends:?}"
     );
+    // Chat's friend changes go by identity (a name may be another account's here).
+    let seer_key = identity::Identity::generate();
+    let seer = ctx.player("ChatSeer").await?;
+    seer.link(&seer_key, &id_a, identity::now()).await?;
+    let relation = kiwi
+        .friend_change_by_identity("request", &seer_key.global_id())
+        .await
+        .wrap_err("a friend request by identity")?;
+    ensure!(relation == server_api::friends::Relation::RequestSent, "a friend request by identity: {relation:?}");
+    let nobody = kiwi.friend_change_by_identity("block", &identity::Identity::generate().global_id()).await;
+    ensure!(
+        nobody.as_ref().is_err_and(|s| s.code() == tonic::Code::NotFound),
+        "an identity with no account here: {nobody:?}"
+    );
     // New accounts wait 30 minutes for Global: these bots are new.
     ensure!(!kiwi.chat_status().await?.may_post_global, "a new account may post in Global at once");
 
@@ -773,7 +787,7 @@ async fn chat(ctx: &mut Ctx, other: IpAddr) -> Result<()> {
         .await
         .wrap_err("sending a link")?;
     ensure!(refused.message.is_none() && !refused.says.is_empty(), "a link was sent: {refused:?}");
-    for bot in [kiwi, tank, plain, tank_b] {
+    for bot in [kiwi, tank, plain, tank_b, seer] {
         bot.disconnect().await?;
     }
     Ok(())

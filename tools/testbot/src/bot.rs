@@ -919,11 +919,33 @@ impl Bot {
 
     /// A friend change towards the player called `name`, as the overlay makes it.
     pub async fn friend_change(&self, change: &str, name: &str) -> std::result::Result<server_api::friends::Relation, tonic::Status> {
+        self.friend_change_to(
+            change,
+            server_api::friends::TargetRequest {
+                id: String::new(),
+                username: name.into(),
+                identity: String::new(),
+            },
+        )
+        .await
+    }
+
+    /// A friend change towards the player with `identity`, as chat makes it.
+    pub async fn friend_change_by_identity(&self, change: &str, identity: &str) -> std::result::Result<server_api::friends::Relation, tonic::Status> {
+        self.friend_change_to(
+            change,
+            server_api::friends::TargetRequest {
+                id: String::new(),
+                username: String::new(),
+                identity: identity.into(),
+            },
+        )
+        .await
+    }
+
+    async fn friend_change_to(&self, change: &str, target: server_api::friends::TargetRequest) -> std::result::Result<server_api::friends::Relation, tonic::Status> {
         let mut c = FriendsClient::new(self.api.clone());
-        let req = self.authed(server_api::friends::TargetRequest {
-            id: String::new(),
-            username: name.into(),
-        });
+        let req = self.authed(target);
         let resp = match change {
             "request" => c.request(req).await?,
             "accept" => c.accept(req).await?,

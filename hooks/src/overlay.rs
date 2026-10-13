@@ -1262,11 +1262,12 @@ impl MyRenderLoop {
                         }
                         return;
                     }
+                    // By their identity: a name alone may be another account's on this server.
                     if ui.menu_item("Add friend") {
-                        community::change(community::FriendChange::Request, String::new(), m.from_name.clone());
+                        community::change_by_identity(community::FriendChange::Request, m.from.clone(), m.from_name.clone());
                     }
                     if ui.menu_item(format!("Block {}", m.from_name)) {
-                        community::change(community::FriendChange::Block, String::new(), m.from_name.clone());
+                        community::change_by_identity(community::FriendChange::Block, m.from.clone(), m.from_name.clone());
                     }
                     if ui.menu_item("Report to the admins") {
                         chat::report(m.id, m.from_name.clone());
