@@ -38,6 +38,8 @@ pub use rpc::account_id;
 pub use rpc::identity_login;
 pub use rpc::link_identity;
 pub use rpc::name_available;
+pub use rpc::online_players;
+pub use rpc::player_action;
 pub use rpc::register;
 pub use rpc::relationships;
 pub use rpc::rename;
@@ -46,6 +48,7 @@ pub use rpc::send_report;
 pub use rpc::session_summary;
 pub use rpc::sign_in;
 pub use rpc::test_login;
+pub use rpc::PlayerAction;
 
 /// A gRPC endpoint for `url`: HTTPS (with the usual root certificates) when
 /// the URL says so.

@@ -268,6 +268,69 @@ pub async fn relationships(api_url: String, token: &str) -> Result<server_api::f
     }
 }
 
+/// The friends API with the session token, on `api_url`.
+async fn friends_client(
+    api_url: &str,
+    token: &str,
+) -> Result<
+    (
+        server_api::friends::friends_client::FriendsClient<tonic::transport::Channel>,
+        tonic::metadata::MetadataValue<tonic::metadata::Ascii>,
+    ),
+    Error,
+> {
+    let channel = super::endpoint(api_url)?.connect().await.map_err(|_| Error::ConnectionFailed)?;
+    let token = tonic::metadata::MetadataValue::try_from(token).map_err(|_| Error::InvalidPassword)?;
+    Ok((server_api::friends::friends_client::FriendsClient::new(channel), token))
+}
+
+fn authed<T>(message: T, token: &tonic::metadata::MetadataValue<tonic::metadata::Ascii>) -> tonic::Request<T> {
+    let mut request = tonic::Request::new(message);
+    request.metadata_mut().insert("authorization", token.clone());
+    request
+}
+
+/// Who's online on the server, as the overlay's Find players lists them before anything is
+/// typed (an empty search): everyone in the "everyone" friends mode, only friends in
+/// "mutual"; never anyone blocked either way, nor the caller.
+pub async fn online_players(api_url: String, token: &str) -> Result<Vec<server_api::friends::Player>, Error> {
+    let (mut client, token) = friends_client(&api_url, token).await?;
+    match client.search(authed(server_api::friends::SearchRequest { query: String::new() }, &token)).await {
+        Ok(resp) => Ok(resp.into_inner().players),
+        Err(status) if status.code() == tonic::Code::Unauthenticated => Err(Error::InvalidPassword),
+        Err(status) => Err(status.into()),
+    }
+}
+
+/// Something the player does to another from the launcher's list of who's online.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerAction {
+    /// Asks them to be friends (accepts, if they'd asked).
+    Request,
+    /// Invites them to the game session the player is in (needs the game running).
+    Invite,
+    Block,
+}
+
+/// Does `action` to the player with account id `id`.
+pub async fn player_action(api_url: String, token: &str, action: PlayerAction, id: &str) -> Result<(), Error> {
+    let (mut client, token) = friends_client(&api_url, token).await?;
+    let target = || server_api::friends::TargetRequest {
+        id: id.to_string(),
+        username: String::new(),
+    };
+    let result = match action {
+        PlayerAction::Request => client.request(authed(target(), &token)).await.map(|_| ()),
+        PlayerAction::Block => client.block(authed(target(), &token)).await.map(|_| ()),
+        PlayerAction::Invite => client.invite(authed(server_api::friends::InviteRequest { id: id.to_string() }, &token)).await.map(|_| ()),
+    };
+    match result {
+        Ok(()) => Ok(()),
+        Err(status) if status.code() == tonic::Code::Unauthenticated => Err(Error::InvalidPassword),
+        Err(status) => Err(status.into()),
+    }
+}
+
 /// A session token for the account, and a channel to its server.
 async fn signed_in(api_url: &str, username: &str, password: &str) -> Result<(tonic::transport::Channel, tonic::metadata::MetadataValue<tonic::metadata::Ascii>), Error> {
     let channel = super::endpoint(api_url)?.connect().await.map_err(|_| Error::ConnectionFailed)?;

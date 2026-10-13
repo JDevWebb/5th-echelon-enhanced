@@ -2082,6 +2082,38 @@ async fn join_room_closing(ctx: &mut Ctx) -> Result<()> {
     Ok(())
 }
 
+/// Who's online (an empty search, the launcher's "Online now" and the overlay's Find players),
+/// on a server in the "everyone" mode: others online, not the player, not someone they blocked
+/// or who blocked them, and not someone who went offline. (The "mutual" mode, friends only, is
+/// friends-mutual's.)
+async fn who_is_online(ctx: &mut Ctx) -> Result<()> {
+    let a = ctx.player("Looker").await?;
+    let b = ctx.player("Online").await?;
+    let c = ctx.player("Blocker").await?;
+    let d = ctx.player("Leaver").await?;
+    let online = |found: &[(String, bool)], name: &str| found.iter().any(|(n, on)| n == name && *on);
+    let found = a.search_online("").await?;
+    ensure!(online(&found, &b.name) && online(&found, &d.name), "others online aren't listed: {found:?}");
+    ensure!(!found.iter().any(|(n, _)| *n == a.name), "the player is listed to themselves");
+    c.friend_change("block", &a.name).await?;
+    ensure!(!a.search_online("").await?.iter().any(|(n, _)| *n == c.name), "someone who blocked the player is listed");
+    ensure!(!c.search_online("").await?.iter().any(|(n, _)| *n == a.name), "someone the player blocked is listed");
+    let leaver = d.name.clone();
+    d.disconnect().await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        if !online(&a.search_online("").await?, &leaver) {
+            break;
+        }
+        ensure!(tokio::time::Instant::now() < deadline, "someone who left is still listed online");
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    for bot in [a, b, c] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
 /// Someone joining a public match from a search reaches its players through the relay
 /// before their join reaches the server (the host's game has them connect first), once
 /// they've probed its host: not before, and not by probes.
@@ -2265,6 +2297,7 @@ const SCENARIOS: &[&str] = &[
     "join-notice",
     "join-other-data",
     "join-room-closing",
+    "who-is-online",
     "relay-to-joiner",
     "search-other-data",
     "whats-being-played",
@@ -2414,6 +2447,7 @@ async fn main() -> Result<()> {
                 "join-notice" => join_notice(&mut ctx).await,
                 "join-other-data" => join_other_data(&mut ctx).await,
                 "join-room-closing" => join_room_closing(&mut ctx).await,
+                "who-is-online" => who_is_online(&mut ctx).await,
                 "relay-to-joiner" => relay_to_joiner(&mut ctx).await,
                 "search-other-data" => search_other_data(&mut ctx).await,
                 "whats-being-played" => whats_being_played(&mut ctx).await,

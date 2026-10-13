@@ -37,6 +37,8 @@ pub struct Play {
     /// Friends online here and on other servers sharing friends, fetched with the checklist.
     fetching_friends: Slot<Result<flow::Friends, String>>,
     friends: flow::Friends,
+    /// An action on someone in "Online now" (asked to be friends, invited, blocked).
+    acting: Slot<Result<String, String>>,
     checks: Vec<Check>,
     support: Option<Support>,
     refreshed: Option<Instant>,
@@ -203,6 +205,16 @@ impl Play {
         // A failed fetch keeps the last list: it's a hint, not a check.
         if let Some(Ok(friends)) = self.fetching_friends.poll() {
             self.friends = friends;
+        }
+        if let Some(result) = self.acting.poll() {
+            match result {
+                Ok(done) => notices.info(done),
+                Err(e) => notices.error(e),
+            }
+            if !self.fetching_friends.running() && game.managed.is_none() {
+                let cfg = (*game.cfg).clone();
+                self.fetching_friends.start(ctx, move || flow::friends(&cfg));
+            }
         }
         if let Some((facts, support)) = self.facts.poll() {
             let outdated = matches!(facts.account, Some(setup::diagnose::AccountFact::Outdated(_)));
@@ -1598,6 +1610,7 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
                     });
                 });
             }
+            online_now(play, game, &friends.others, playing, ui);
             if let Some((_, now)) = &play.playing_now {
                 playing_now(ui, now);
             }
@@ -1625,6 +1638,54 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
 
 /// The most of the server's matches the Friends card lists.
 const PLAYING_SHOWN: usize = 4;
+
+/// How many others "Online now" lists before "and N more".
+const ONLINE_SHOWN: usize = 8;
+
+/// Others online on the player's server, under their friends (none on a friends-only server,
+/// which shows only friends): each can be asked to be friends, invited while the game runs, or
+/// blocked (right-click, so it isn't pressed by mistake).
+fn online_now(play: &mut Play, game: &Game, others: &[flow::OnlinePlayer], playing: bool, ui: &mut egui::Ui) {
+    use crate::network::PlayerAction;
+    if others.is_empty() || game.managed.is_some() {
+        return;
+    }
+    ui.add_space(6.0);
+    ui.label(RichText::new(format!("Online now · {}", others.len())).color(theme::SOFT).small());
+    let busy = play.acting.running();
+    let mut act: Option<(PlayerAction, flow::OnlinePlayer)> = None;
+    for p in others.iter().take(ONLINE_SHOWN) {
+        let row = ui.horizontal(|ui| {
+            friend_row(ui, theme::OK, &p.name, p.activity.as_deref().unwrap_or("Online"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if playing && ui.add_enabled(!busy, theme::secondary("Invite")).on_hover_text("To the game you're in").clicked() {
+                    act = Some((PlayerAction::Invite, p.clone()));
+                }
+                let (label, enabled) = match (p.asked_us, p.asked) {
+                    (true, _) => ("Accept", true),
+                    (false, true) => ("Asked", false),
+                    (false, false) => ("Add friend", true),
+                };
+                if ui.add_enabled(enabled && !busy, theme::secondary(label)).clicked() {
+                    act = Some((PlayerAction::Request, p.clone()));
+                }
+            });
+        });
+        row.response.context_menu(|ui| {
+            if ui.button(format!("Block {}", p.name)).clicked() {
+                act = Some((PlayerAction::Block, p.clone()));
+                ui.close();
+            }
+        });
+    }
+    if others.len() > ONLINE_SHOWN {
+        ui.label(theme::muted(format!("and {} more: Find players in the overlay lists them all", others.len() - ONLINE_SHOWN)).small());
+    }
+    if let Some((action, p)) = act {
+        let cfg = (*game.cfg).clone();
+        play.acting.start(ui.ctx(), move || flow::player_action(&cfg, action, &p.id, &p.name));
+    }
+}
 
 /// What's being played on the player's server, under their friends: its public matches
 /// (mode, map, players), the rest in a line.

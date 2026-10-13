@@ -165,11 +165,26 @@ pub struct OnlineFriend {
     pub activity: Option<String>,
 }
 
+/// Someone else online on this server (not a friend), for "Online now".
+#[derive(Debug, Clone, Default)]
+pub struct OnlinePlayer {
+    /// Their account id, what the friend calls take.
+    pub id: String,
+    pub name: String,
+    pub activity: Option<String>,
+    /// They asked to be friends, or the player asked them.
+    pub asked: bool,
+    pub asked_us: bool,
+}
+
 /// The current account's friends, as the home screen shows them.
 #[derive(Debug, Clone, Default)]
 pub struct Friends {
     /// Online here, online first by name.
     pub online: Vec<OnlineFriend>,
+    /// Others online here: everyone the server shows (the "everyone" friends mode; none in
+    /// "mutual", where only friends show), by name.
+    pub others: Vec<OnlinePlayer>,
     pub offline: usize,
     /// Friend requests waiting for this player's answer.
     pub requests: usize,
@@ -199,7 +214,7 @@ pub fn friends(cfg: &Config) -> Result<Friends, String> {
         .filter(|(k, _)| *k == key)
         .map(|(_, t)| t.clone());
     let rt = crate::services::rt();
-    let fetch = |token: String| rt.block_on(crate::network::relationships(url.clone(), &token));
+    let fetch = |token: String| rt.block_on(crate::network::relationships(url.clone(), &token)).map(|r| (r, token));
     let result = match kept {
         Some(token) => match fetch(token) {
             // Signed out (a new password elsewhere, or expired): sign in once more.
@@ -216,9 +231,26 @@ pub fn friends(cfg: &Config) -> Result<Friends, String> {
             fetch(token)
         }
     };
+    let (lists, token) = result.map_err(|e| e.to_string())?;
+    // Who else is online: a hint like the rest, so a server that won't say leaves it empty.
+    let others = rt.block_on(crate::network::online_players(url.clone(), &token)).unwrap_or_default();
     // Shown on the Play screen: one line each, cut short, whatever the server sends.
     let clip = hooks_config::text::clip;
-    let lists = result.map_err(|e| e.to_string())?;
+    let friend_ids: std::collections::HashSet<&str> = lists.friends.iter().map(|f| f.id.as_str()).collect();
+    use server_api::friends::Relation;
+    let mut others: Vec<OnlinePlayer> = others
+        .iter()
+        .filter(|p| p.is_online && !friend_ids.contains(p.id.as_str()) && p.relation() != Relation::Friend && !p.id.is_empty())
+        .take(100)
+        .map(|p| OnlinePlayer {
+            id: p.id.clone(),
+            name: clip(&p.username, 32),
+            activity: p.activity.as_ref().map(describe),
+            asked: p.relation() == Relation::RequestSent,
+            asked_us: p.relation() == Relation::RequestReceived,
+        })
+        .collect();
+    others.sort_by_key(|p| p.name.to_lowercase());
     let mut online: Vec<OnlineFriend> = lists
         .friends
         .iter()
@@ -234,6 +266,7 @@ pub fn friends(cfg: &Config) -> Result<Friends, String> {
         name_not_allowed: (lists.my_name() == server_api::friends::NameStatus::NotAllowed).then(|| username.clone()),
         offline: lists.friends.iter().filter(|f| !f.is_online).count(),
         online,
+        others,
         requests: lists.requests_received.len(),
         elsewhere: lists
             .elsewhere
@@ -246,6 +279,25 @@ pub fn friends(cfg: &Config) -> Result<Friends, String> {
                 host: f.host.trim().to_string(),
             })
             .collect(),
+    })
+}
+
+/// Does `action` to `name` (account id `id`) as the current account, from "Online now":
+/// what to tell the player.
+pub fn player_action(cfg: &Config, action: crate::network::PlayerAction, id: &str, name: &str) -> Result<String, String> {
+    use crate::network::PlayerAction;
+    let Some(profile) = cfg.current_profile().filter(|p| !p.server.is_empty() && p.has_account()) else {
+        return Err("Set up an account on a server first.".into());
+    };
+    let url = profile.api_server_url().to_string();
+    let (username, secret) = (profile.user.username.clone(), profile.user.secret().unwrap_or_default());
+    let rt = crate::services::rt();
+    let token = rt.block_on(crate::network::sign_in(url.clone(), &username, &secret)).map_err(|e| e.to_string())?;
+    rt.block_on(crate::network::player_action(url, &token, action, id)).map_err(|e| e.to_string())?;
+    Ok(match action {
+        PlayerAction::Request => format!("Asked {name} to be friends."),
+        PlayerAction::Invite => format!("Invited {name} to your game."),
+        PlayerAction::Block => format!("Blocked {name}: neither of you sees the other now."),
     })
 }
 

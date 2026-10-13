@@ -1126,12 +1126,16 @@ impl MyRenderLoop {
         };
         if found.is_empty() {
             let _c = ui.push_style_color(StyleColor::Text, MUTED);
-            ui.text_wrapped(if query.is_empty() {
-                String::from("No one else is online right now.")
-            } else {
-                format!("No one called \"{query}\".")
+            ui.text_wrapped(match (query.is_empty(), self.data.everyone_mode) {
+                (true, true) => String::from("No one else is online right now."),
+                // A friends-only server shows only friends.
+                (true, false) => String::from("None of your friends are online right now."),
+                (false, _) => format!("No one called \"{query}\"."),
             });
             return;
+        }
+        if query.is_empty() {
+            ui.text_colored(MUTED, format!("Online now · {}", found.len()));
         }
         for (i, p) in found.iter().enumerate() {
             let (detail, mut actions) = match p.relation {
