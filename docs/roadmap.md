@@ -16,14 +16,6 @@ A signed `launcher.exe` and client DLL, so antivirus programs stop guessing (see
 
 Moving the community network's coordinator to a one-level name, so Cloudflare can proxy it, then turning [failover](failover.md) on.
 
-### What's being played
-
-Players asked to see what people are playing before they start the game. Friends' lines in the launcher and the overlay name the mode and the map (SvM Classic or Blacklist, which co-op mission), and each server shows its open lobbies and matches by mode ("2 co-op lobbies, 1 SvM Classic match, 6/8"), public rooms only and without names, so it's clear where people are playing.
-
-### When a public match's host leaves
-
-When the host of a public match leaves, the match ends for everyone else, since the 0.4.0 rule on who may take a session over doesn't count the players who joined from a search. Next: count them, and find out whether the game hands hosting over.
-
 ## Later
 
 ### Global matchmaking
@@ -69,6 +61,7 @@ The fix, if players ask for it:
 
 ## Done recently
 
+- **0.4.4:** what's being played: friends' lines name the mode and map, and each server shows its open matches by mode, map and players, in the launcher and the overlay. The overlay says why a join failed the moment it does (a full, locked or closed room, or whose game has which mod), and searches skip full lobbies. A public match is no longer ended by the server when its host leaves, and a party carries on for everyone in it. Server updates go out in update windows booked ahead.
 - **0.4.3:** a security review of the whole network, attacking a copy of it and then real servers, and every finding fixed: caps on the API's and the coordinator's connections and messages, limits on game connections that haven't signed in, a relay that carries only the players the server put together, and a directory that lists a server only where it answers as itself. Tested in real games across two networks, co-op and Spies vs Mercs, relayed and direct, over half-hour matches.
 - **0.4.3:** Support in the launcher (the community network's), replies to reports, the overlay's key yours to choose, the 15 minutes of the game's log before a problem, and in the admin UI a **Live** page and how each stay ended.
 - **0.4.3:** the server's Docker image signed with each release (`scripts/verify-image.sh`).
