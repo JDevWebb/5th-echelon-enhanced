@@ -158,6 +158,11 @@ impl Rules {
         if MINORS.iter().any(|w| compact.contains(w)) || self.extra.iter().any(|w| compact.contains(w.as_str())) {
             return Err(NameRefused::Offensive);
         }
+        // With the digits gone too, for a word they split ("ab12cd").
+        let no_digits: String = name.chars().filter(|c| !c.is_ascii_digit()).collect();
+        if offensive(Censor::from_str(&no_digits).analyze()) {
+            return Err(NameRefused::Offensive);
+        }
         if offensive(Censor::from_str(name).analyze()) {
             // The list reads digits as letters, so a number after a name can spell a slur
             // ("Kevin1993": n, 1, 9, 9, 3). A number of two digits or more with no letter after
@@ -385,7 +390,7 @@ mod tests {
             assert_eq!(rules().check_name(ok), Ok(()), "{ok}");
         }
         assert_eq!(rules().check_name(&format!("{}_slayer", rev("regg1n"))), Err(NameRefused::Offensive));
-        for bad in ["r3gg1n_1", "reggin99", "77reggin", "4ggin", "t0ggaf"] {
+        for bad in ["r3gg1n_1", "reggin99", "77reggin", "4ggin", "t0ggaf", "re99gin", "re123ggin", "to00ggaf"] {
             assert_eq!(rules().check_name(&rev(bad)), Err(NameRefused::Offensive), "{bad} reversed");
         }
         assert_eq!(rules().check_name("xXloliXx"), Err(NameRefused::Offensive), "our list, inside a name");

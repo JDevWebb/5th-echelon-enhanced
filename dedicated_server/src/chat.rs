@@ -247,10 +247,24 @@ impl MyChat {
         Ok(Caller { user, me, name, lobby })
     }
 
-    /// Whether `c` may post in Global: 30 minutes signed in here, or a match played.
+    /// Whether `c` may post in Global: 30 minutes signed in here, or a match played. Not when
+    /// their record can't be read (`None` is only for a record that says so).
     async fn global_wait(&self, c: &Caller) -> Option<String> {
         let (storage, user) = (Arc::clone(&self.storage), c.user);
-        let record = tokio::task::spawn_blocking(move || storage.player_records(Some(&[user]))).await.ok()?.ok()?.pop()?;
+        let record = match tokio::task::spawn_blocking(move || storage.player_records(Some(&[user]))).await {
+            Ok(Ok(mut records)) => records.pop(),
+            Ok(Err(e)) => {
+                warn!(self.logger, "Chat: player {user}'s record couldn't be read: {e}");
+                None
+            }
+            Err(e) => {
+                warn!(self.logger, "Chat: player {user}'s record couldn't be read: {e}");
+                None
+            }
+        };
+        let Some(record) = record else {
+            return Some("Global can't check your account right now; try again in a minute.".into());
+        };
         if record.play_seconds >= GLOBAL_AFTER || record.matches > 0 {
             return None;
         }
