@@ -999,7 +999,14 @@ impl MyRenderLoop {
             ui.text_colored(MUTED, "Loading friends...");
             return;
         }
-        if self.data.my_name_conflict {
+        if self.data.my_name_not_allowed {
+            let _c = ui.push_style_color(StyleColor::Text, BAD);
+            ui.text_wrapped(format!(
+                "The network's admins asked you to choose another name: this one breaks its rules. Give yourself a new one in {} (Settings, Servers and accounts, Rename).",
+                setup_tool()
+            ));
+            ui.dummy([0.0, self.s(4.0)]);
+        } else if self.data.my_name_conflict {
             let _c = ui.push_style_color(StyleColor::Text, BAD);
             ui.text_wrapped(format!(
                 "Another player has your name on the servers that share friends with this one. Give yourself a new one in {} (Settings, Servers and accounts, Rename).",

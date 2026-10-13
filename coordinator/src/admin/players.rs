@@ -97,7 +97,10 @@ async fn act(
 ) -> Response {
     let kind = req.kind.as_str();
     if !players::KINDS.contains(&kind) {
-        return fail(StatusCode::BAD_REQUEST, "not an action: ban, unban, kick, reset_password, rename or delete");
+        return fail(
+            StatusCode::BAD_REQUEST,
+            "not an action: ban, unban, kick, reset_password, rename, name_not_allowed or delete",
+        );
     }
     let s = match if players::sensitive(kind) {
         c.recent(&headers, &client).await

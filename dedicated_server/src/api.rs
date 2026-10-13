@@ -525,7 +525,12 @@ impl Friends for MyFriends {
                 })
                 .collect(),
         };
-        resp.set_my_name(name_status(&me_person));
+        // Only the player is told their name isn't allowed.
+        resp.set_my_name(if me_person.name_not_allowed {
+            friends::NameStatus::NotAllowed
+        } else {
+            name_status(&me_person)
+        });
         Ok(Response::new(resp))
     }
 

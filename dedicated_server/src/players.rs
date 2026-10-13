@@ -203,6 +203,11 @@ pub async fn perform(logger: &slog::Logger, storage: &Storage, action: &Action) 
                 Err(e) => Outcome::failed(format!("Couldn't rename {name}: {e}")),
             }
         }
+        "name_not_allowed" => match storage.set_name_not_allowed(user).await {
+            // Told in the overlay and the launcher; the game keeps its name until they rename.
+            Ok(()) => Outcome::done(format!("{name} is asked to choose another name")),
+            Err(e) => Outcome::failed(format!("Couldn't mark {name}'s name: {e}")),
+        },
         "delete" => {
             sign_out(user);
             let global_id = person.global_id.clone();

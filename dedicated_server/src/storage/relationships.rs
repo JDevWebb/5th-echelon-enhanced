@@ -52,9 +52,11 @@ pub struct Person {
     pub global_id: Option<String>,
     /// Another player holds this name on the servers sharing friends.
     pub name_conflict: bool,
+    /// The network's admins asked the player to choose another name.
+    pub name_not_allowed: bool,
 }
 
-const PERSON: &str = "u.id, u.username, u.ubi_id, u.is_online, u.global_id, u.name_conflict";
+const PERSON: &str = "u.id, u.username, u.ubi_id, u.is_online, u.global_id, u.name_conflict, u.name_not_allowed";
 
 /// Why a rename was refused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -471,10 +473,16 @@ impl Storage {
         Ok(())
     }
 
+    /// Marks `user`'s name as one the network's admins don't allow: they're asked to rename.
+    pub async fn set_name_not_allowed(&self, user: u32) -> Result<()> {
+        sqlx::query("UPDATE users SET name_not_allowed = 1 WHERE id = ?").bind(user).execute(&self.pool).await?;
+        Ok(())
+    }
+
     /// Gives `user` a new name; its account id stays, so friends and
-    /// invites carry on. Clears a name clash.
+    /// invites carry on. Clears a name clash, and a name not allowed.
     pub async fn rename_user(&self, user: u32, new_name: &str) -> Result<std::result::Result<(), RenameError>> {
-        let done = sqlx::query("UPDATE users SET username = ?, name_key = ?, name_conflict = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+        let done = sqlx::query("UPDATE users SET username = ?, name_key = ?, name_conflict = 0, name_not_allowed = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
             .bind(new_name.trim())
             .bind(name_key(new_name))
             .bind(user)

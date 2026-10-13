@@ -208,6 +208,8 @@ pub struct Snapshot {
     /// Our own name belongs to another player on the servers sharing
     /// friends: we should rename.
     pub my_name_conflict: bool,
+    /// The network's admins asked me to choose another name.
+    pub my_name_not_allowed: bool,
     /// Our identity's short form, empty if not linked.
     pub my_identity: String,
     /// Friends playing on another server sharing friends: their name there,
@@ -561,6 +563,7 @@ fn refresh_now() {
                     s.known = load_known();
                 }
                 s.my_name_conflict = lists.my_name() == friends::NameStatus::Conflict;
+                s.my_name_not_allowed = lists.my_name() == friends::NameStatus::NotAllowed;
                 s.my_identity = clip(&lists.my_identity, MAX_NAME);
                 s.friends = sorted(lists.friends.into_iter().map(player).collect());
                 tell_game_if_changed(&s.friends);
@@ -638,6 +641,8 @@ fn player(p: friends::Player) -> Player {
         friends::NameStatus::Linked => NameStatus::Linked,
         friends::NameStatus::Reserved => NameStatus::Reserved,
         friends::NameStatus::Conflict => NameStatus::Conflict,
+        // Only ever my own: never sent for others.
+        friends::NameStatus::NotAllowed => NameStatus::Linked,
     };
     Player {
         activity: if p.is_online { p.activity.as_ref().map(describe) } else { None },

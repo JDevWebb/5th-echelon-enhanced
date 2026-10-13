@@ -48,7 +48,7 @@ const ACTIONS_PER_PULSE: i64 = 20;
 pub const PAGE: i64 = 50;
 
 /// What an admin can ask a server to do to a player.
-pub const KINDS: [&str; 6] = ["ban", "unban", "kick", "reset_password", "rename", "delete"];
+pub const KINDS: [&str; 7] = ["ban", "unban", "kick", "reset_password", "rename", "name_not_allowed", "delete"];
 
 /// Whether an action wants a second factor proved lately (as rollbacks do).
 pub fn sensitive(kind: &str) -> bool {

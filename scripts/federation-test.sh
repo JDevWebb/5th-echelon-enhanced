@@ -99,6 +99,17 @@ if [ -n "$player" ]; then
   banned=$(db fes-fed-a /srv/fe/5th-echelon.db "SELECT COUNT(*) FROM bans WHERE user_id = $player AND reason = 'federation test'")
   [ "$status" = "done" ] && [ "${banned:-0}" -eq 1 ] && echo "PASS an admin's ban reached server A and came back done" \
     || { echo "FAIL the ban: status ${status:-none}, banned ${banned:-0}"; rc=1; }
+  # A name the admins don't allow: the account is marked, so the player is asked to rename.
+  other=$(coord_db "SELECT id FROM players WHERE server_id = '$server_a' AND id != $player ORDER BY id LIMIT 1")
+  action=$(coord_write "INSERT INTO player_actions (server_id, player, kind, args, created_by, created_at) VALUES ('$server_a', ${other:-0}, 'name_not_allowed', '{}', 'test', CAST(strftime('%s','now') AS INTEGER)) RETURNING id")
+  status=pending
+  for _ in $(seq 60); do
+    status=$(coord_db "SELECT status FROM player_actions WHERE id = ${action:-0}")
+    [ "$status" != pending ] && break; sleep 1
+  done
+  marked=$(db fes-fed-a /srv/fe/5th-echelon.db "SELECT name_not_allowed FROM users WHERE id = ${other:-0}")
+  [ "$status" = "done" ] && [ "${marked:-0}" -eq 1 ] && echo "PASS an admin's request for another name reached server A and marked the account" \
+    || { echo "FAIL the name request: status ${status:-none}, marked ${marked:-0}"; rc=1; }
 fi
 echo "--- global stats"
 # A ladder kill for a player with an identity on server A, as the game's write leaves it.

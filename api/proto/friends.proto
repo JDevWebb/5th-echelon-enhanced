@@ -47,6 +47,9 @@ enum NameStatus {
     RESERVED = 2;
     // Linked, but another player holds this name on the servers sharing friends.
     CONFLICT = 3;
+    // The network's admins found the name breaks its rules: the player should choose another.
+    // Only ever the caller's own (my_name); others see their usual status.
+    NOT_ALLOWED = 4;
 }
 
 message RenameRequest {
