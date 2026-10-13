@@ -359,6 +359,11 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub log_data_version: bool,
 
+    /// When chat messages pop up in the game (the overlay's toasts), per room: Settings ›
+    /// Notifications in the launcher. Invitations and friend requests always do.
+    #[serde(default, skip_serializing_if = "Notifications::is_default")]
+    pub notifications: Notifications,
+
     /// Set when another tool manages this install (from the override file's
     /// `[Managed]`); never read from or written to `uplay.toml`.
     #[serde(skip)]
@@ -784,6 +789,77 @@ impl AsRef<str> for LogLevel {
     }
 }
 
+/// When a chat message pops up in the game.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "PascalCase")]
+pub enum ChatToasts {
+    Never,
+    /// Only messages that name the player (@name).
+    OnlyMentions,
+    /// Not while they're in a match (mentions still do).
+    OutsideMatches,
+    Always,
+}
+
+impl ChatToasts {
+    pub const ALL: [Self; 4] = [Self::Never, Self::OnlyMentions, Self::OutsideMatches, Self::Always];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Never => "Never",
+            Self::OnlyMentions => "Only when they name me",
+            Self::OutsideMatches => "Outside matches",
+            Self::Always => "Always",
+        }
+    }
+
+    /// Whether a message pops up: one naming the player or not, while in a match or not.
+    pub fn shows(self, mentions_me: bool, in_match: bool) -> bool {
+        match self {
+            Self::Never => false,
+            Self::OnlyMentions => mentions_me,
+            Self::OutsideMatches => mentions_me || !in_match,
+            Self::Always => true,
+        }
+    }
+}
+
+/// Chat's toasts in the game, per room.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "PascalCase")]
+pub struct Notifications {
+    #[serde(default = "outside_matches")]
+    pub global: ChatToasts,
+    #[serde(default = "always")]
+    pub lobby: ChatToasts,
+    #[serde(default = "always")]
+    pub direct: ChatToasts,
+}
+
+const fn outside_matches() -> ChatToasts {
+    ChatToasts::OutsideMatches
+}
+
+const fn always() -> ChatToasts {
+    ChatToasts::Always
+}
+
+impl Default for Notifications {
+    fn default() -> Self {
+        Self {
+            global: outside_matches(),
+            lobby: always(),
+            direct: always(),
+        }
+    }
+}
+
+impl Notifications {
+    pub fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub struct Logging {
@@ -1141,6 +1217,21 @@ mod tests {
         cfg.overlay_key = "F8".into();
         let back: Config = toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();
         assert_eq!(back.overlay_key, "F8");
+    }
+
+    #[test]
+    fn chat_toasts_default_per_room_and_are_written_only_when_changed() {
+        let mut cfg = super::default();
+        assert_eq!((cfg.notifications.global, cfg.notifications.direct), (ChatToasts::OutsideMatches, ChatToasts::Always));
+        assert!(!toml::to_string(&cfg).unwrap().contains("Notifications"), "the default isn't written");
+        cfg.notifications.global = ChatToasts::OnlyMentions;
+        let back: Config = toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(back.notifications.global, ChatToasts::OnlyMentions);
+        assert_eq!(back.notifications.lobby, ChatToasts::Always);
+        assert!(ChatToasts::OutsideMatches.shows(true, true), "a mention in a match");
+        assert!(!ChatToasts::OutsideMatches.shows(false, true));
+        assert!(ChatToasts::OutsideMatches.shows(false, false));
+        assert!(!ChatToasts::OnlyMentions.shows(false, false));
     }
 
     #[test]

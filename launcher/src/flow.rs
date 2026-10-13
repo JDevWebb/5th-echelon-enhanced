@@ -157,6 +157,35 @@ fn checked_account(url: &str, username: &str, secret: &str, check: impl FnOnce()
 /// refresh, and signing in for each would cost the server a password hash.
 static API_TOKEN: Mutex<Option<(String, String)>> = Mutex::new(None);
 
+/// The current account's server (its API address) and a session token for it, kept as the
+/// friends list keeps it; `fresh` signs in again (the server stopped taking the kept one).
+pub fn api_session(cfg: &Config, fresh: bool) -> Result<(String, String), String> {
+    use sha2::Digest as _;
+    let Some(profile) = cfg.current_profile().filter(|p| !p.server.is_empty() && p.has_account()) else {
+        return Err("Set up an account on a server first.".into());
+    };
+    let url = profile.api_server_url().to_string();
+    let username = profile.user.username.clone();
+    let secret = profile.user.secret().unwrap_or_default();
+    let key = format!("{url}\n{username}\n{:x}", sha2::Sha256::digest(secret.as_bytes()));
+    if !fresh {
+        let kept = API_TOKEN
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .as_ref()
+            .filter(|(k, _)| *k == key)
+            .map(|(_, t)| t.clone());
+        if let Some(token) = kept {
+            return Ok((url, token));
+        }
+    }
+    let token = crate::services::rt()
+        .block_on(crate::network::sign_in(url.clone(), &username, &secret))
+        .map_err(|e| e.to_string())?;
+    *API_TOKEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((key, token.clone()));
+    Ok((url, token))
+}
+
 /// A friend who's online on this server.
 #[derive(Debug, Clone, Default)]
 pub struct OnlineFriend {
@@ -282,8 +311,8 @@ pub fn friends(cfg: &Config) -> Result<Friends, String> {
     })
 }
 
-/// Does `action` to `name` (account id `id`) as the current account, from "Online now":
-/// what to tell the player.
+/// Does `action` to `name` (account id `id`, or empty: by name) as the current account, from
+/// "Online now" or chat: what to tell the player.
 pub fn player_action(cfg: &Config, action: crate::network::PlayerAction, id: &str, name: &str) -> Result<String, String> {
     use crate::network::PlayerAction;
     let Some(profile) = cfg.current_profile().filter(|p| !p.server.is_empty() && p.has_account()) else {
@@ -293,7 +322,7 @@ pub fn player_action(cfg: &Config, action: crate::network::PlayerAction, id: &st
     let (username, secret) = (profile.user.username.clone(), profile.user.secret().unwrap_or_default());
     let rt = crate::services::rt();
     let token = rt.block_on(crate::network::sign_in(url.clone(), &username, &secret)).map_err(|e| e.to_string())?;
-    rt.block_on(crate::network::player_action(url, &token, action, id)).map_err(|e| e.to_string())?;
+    rt.block_on(crate::network::player_action(url, &token, action, id, name)).map_err(|e| e.to_string())?;
     Ok(match action {
         PlayerAction::Request => format!("Asked {name} to be friends."),
         PlayerAction::Invite => format!("Invited {name} to your game."),

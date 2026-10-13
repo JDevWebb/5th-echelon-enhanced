@@ -5,6 +5,7 @@
 
 mod activity;
 mod app;
+mod chat;
 mod diagnostics;
 mod dll_utils;
 mod feedback;

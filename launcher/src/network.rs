@@ -48,6 +48,7 @@ pub use rpc::send_report;
 pub use rpc::session_summary;
 pub use rpc::sign_in;
 pub use rpc::test_login;
+pub use rpc::ChatApi;
 pub use rpc::PlayerAction;
 
 /// A gRPC endpoint for `url`: HTTPS (with the usual root certificates) when

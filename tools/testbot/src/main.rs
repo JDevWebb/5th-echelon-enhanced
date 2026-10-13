@@ -717,6 +717,12 @@ async fn chat(ctx: &mut Ctx, other: IpAddr) -> Result<()> {
         !plain_status.available && plain_status.why_not.contains("identity"),
         "a player without an identity: {plain_status:?}"
     );
+    // Friends to message, by identity.
+    let friends = kiwi.chat_friends().await.wrap_err("chat friends")?;
+    ensure!(
+        friends.iter().any(|f| f.identity == tank_key.global_id() && f.name == tank.name),
+        "Tank isn't among Kiwi's friends to message: {friends:?}"
+    );
     // New accounts wait 30 minutes for Global: these bots are new.
     ensure!(!kiwi.chat_status().await?.may_post_global, "a new account may post in Global at once");
 

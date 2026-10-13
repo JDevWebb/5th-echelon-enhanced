@@ -3074,6 +3074,7 @@ dependencies = [
  "identity",
  "image",
  "jzon",
+ "moderation",
  "nat_proto",
  "portmap",
  "prost",

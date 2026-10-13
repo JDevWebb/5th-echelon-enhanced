@@ -47,6 +47,8 @@ pub enum View {
     News,
     /// What's being built, and suggestions for it.
     Roadmap,
+    /// Chat on the community network: Global, the lobby, friends.
+    Chat,
     /// A conversation with the community network's admins.
     Support,
     Settings,
@@ -473,6 +475,7 @@ pub struct App {
     server: Server,
     roadmap: crate::roadmap::Roadmap,
     support: crate::support::Support,
+    chat: crate::chat::Chat,
     /// Whether the diagnostics notice for players who agreed before 0.4.3 was looked at.
     log_excerpt_checked: bool,
     /// The latest release, once looked up.
@@ -514,6 +517,7 @@ impl App {
             server: Server::default(),
             roadmap: crate::roadmap::Roadmap::default(),
             support: crate::support::Support::default(),
+            chat: crate::chat::Chat::default(),
             log_excerpt_checked: false,
             latest: None,
             checking: Slot::default(),
@@ -694,18 +698,27 @@ impl App {
                         (View::Play, theme::Icon::Play, "Play"),
                         (View::Servers, theme::Icon::Servers, "Servers"),
                         (View::News, theme::Icon::News, "News"),
+                        (View::Chat, theme::Icon::Chat, "Chat"),
                         (View::Roadmap, theme::Icon::Roadmap, "Roadmap"),
                         (View::Support, theme::Icon::Support, "Support"),
                         (View::Server, theme::Icon::Host, "Host"),
                         (View::Settings, theme::Icon::Settings, "Settings"),
                     ] {
-                        if matches!(view, View::Roadmap | View::Support) && !community {
+                        if matches!(view, View::Chat | View::Roadmap | View::Support) && !community {
                             continue;
                         }
                         let button = theme::nav_button(ui, icon, label, self.view == view);
                         // Answers from support not seen yet: a dot on its button.
                         if view == View::Support && self.support.unread() > 0 {
                             ui.painter().circle_filled(button.rect.right_top() + egui::vec2(-14.0, 10.0), 4.5, theme::ACCENT);
+                        }
+                        // Direct messages and mentions not seen yet: their count on Chat.
+                        let unread = self.chat.unread();
+                        if view == View::Chat && unread > 0 {
+                            let at = button.rect.right_top() + egui::vec2(-16.0, 11.0);
+                            ui.painter().circle_filled(at, 8.0, theme::ACCENT);
+                            let text = if unread > 9 { "9+".to_string() } else { unread.to_string() };
+                            ui.painter().text(at, egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(10.0), theme::ON_ACCENT);
                         }
                         if button.clicked() {
                             self.view = view;
@@ -874,6 +887,7 @@ impl eframe::App for App {
         crate::play::show_account_dialog(self, ctx);
         self.roadmap.tick(ctx, &mut self.notices);
         self.support.tick(ctx, &mut self.notices, self.view == View::Support);
+        self.chat.tick(ctx, self.game.as_ref(), &mut self.notices, self.view == View::Chat);
         if let Some(Err(e)) = self.updating.poll() {
             match self.updating_activity.take() {
                 Some(a) => {
@@ -894,8 +908,9 @@ impl eframe::App for App {
             View::News => crate::play::show_news(self, ui),
             View::Roadmap if Prefs::directory().is_some_and(|d| Prefs::is_community(&d)) => crate::roadmap::show(self, ui),
             View::Support if Prefs::directory().is_some_and(|d| Prefs::is_community(&d)) => crate::support::show(self, ui),
+            View::Chat if crate::chat::available() => crate::chat::show(self, ui),
             // Left the community network while on it: back to Play.
-            View::Roadmap | View::Support => self.view = View::Play,
+            View::Roadmap | View::Support | View::Chat => self.view = View::Play,
             View::Settings => crate::settings::show(self, ui),
             View::Server => {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
@@ -933,6 +948,10 @@ impl App {
 
     pub fn support_mut(&mut self) -> (&mut crate::support::Support, &Option<Game>, &mut Notices) {
         (&mut self.support, &self.game, &mut self.notices)
+    }
+
+    pub fn chat_mut(&mut self) -> (&mut crate::chat::Chat, &Option<Game>, &mut Notices) {
+        (&mut self.chat, &self.game, &mut self.notices)
     }
 }
 

@@ -312,12 +312,12 @@ pub enum PlayerAction {
     Block,
 }
 
-/// Does `action` to the player with account id `id`.
-pub async fn player_action(api_url: String, token: &str, action: PlayerAction, id: &str) -> Result<(), Error> {
+/// Does `action` to the player with account id `id` (none known: by their name, `username`).
+pub async fn player_action(api_url: String, token: &str, action: PlayerAction, id: &str, username: &str) -> Result<(), Error> {
     let (mut client, token) = friends_client(&api_url, token).await?;
     let target = || server_api::friends::TargetRequest {
         id: id.to_string(),
-        username: String::new(),
+        username: if id.is_empty() { username.to_string() } else { String::new() },
     };
     let result = match action {
         PlayerAction::Request => client.request(authed(target(), &token)).await.map(|_| ()),
@@ -521,5 +521,93 @@ mod upload {
             assert_eq!(seen.load(Ordering::SeqCst), (PIECE * 2 + 10) as u64);
             assert!(body.is_end_stream());
         }
+    }
+}
+
+/// Chat on the player's server (docs/chat.md), signed in with a session token.
+pub struct ChatApi {
+    client: server_api::chat::chat_client::ChatClient<tonic::transport::Channel>,
+    token: tonic::metadata::MetadataValue<tonic::metadata::Ascii>,
+}
+
+/// What a chat call's failure says: a token the server no longer takes is `InvalidPassword`.
+fn chat_error(status: tonic::Status) -> Error {
+    if status.code() == tonic::Code::Unauthenticated {
+        Error::InvalidPassword
+    } else {
+        Error::ServerFailure(status.message().chars().take(300).collect())
+    }
+}
+
+impl ChatApi {
+    pub async fn connect(api_url: &str, token: &str) -> Result<Self, Error> {
+        let channel = super::endpoint(api_url)?.connect().await.map_err(|_| Error::ConnectionFailed)?;
+        let token = tonic::metadata::MetadataValue::try_from(token).map_err(|_| Error::InvalidPassword)?;
+        Ok(Self {
+            client: server_api::chat::chat_client::ChatClient::new(channel),
+            token,
+        })
+    }
+
+    pub async fn status(&mut self) -> Result<server_api::chat::StatusResponse, Error> {
+        let r = authed(server_api::chat::StatusRequest {}, &self.token);
+        self.client.status(r).await.map(tonic::Response::into_inner).map_err(chat_error)
+    }
+
+    pub async fn send(&mut self, room: server_api::chat::Room, to: String, text: String) -> Result<server_api::chat::SendResponse, Error> {
+        let r = authed(server_api::chat::SendRequest { room: room.into(), to, text }, &self.token);
+        self.client.send(r).await.map(tonic::Response::into_inner).map_err(chat_error)
+    }
+
+    /// The messages after `after`: at once, or when one comes, or after about 25 s.
+    pub async fn wait(&mut self, after: i64) -> Result<server_api::chat::WaitResponse, Error> {
+        let r = authed(server_api::chat::WaitRequest { after }, &self.token);
+        self.client.wait(r).await.map(tonic::Response::into_inner).map_err(chat_error)
+    }
+
+    pub async fn history(&mut self, room: server_api::chat::Room, with: String, before: i64) -> Result<Vec<server_api::chat::Message>, Error> {
+        let r = authed(
+            server_api::chat::HistoryRequest {
+                room: room.into(),
+                with,
+                before,
+                limit: 100,
+            },
+            &self.token,
+        );
+        self.client.history(r).await.map(|r| r.into_inner().messages).map_err(chat_error)
+    }
+
+    pub async fn conversations(&mut self) -> Result<Vec<server_api::chat::Conversation>, Error> {
+        let r = authed(server_api::chat::ConversationsRequest {}, &self.token);
+        self.client.conversations(r).await.map(|r| r.into_inner().conversations).map_err(chat_error)
+    }
+
+    pub async fn mark_read(&mut self, with: String, up_to: i64) -> Result<(), Error> {
+        let r = authed(
+            server_api::chat::MarkReadRequest {
+                room: server_api::chat::Room::Direct.into(),
+                with,
+                up_to,
+            },
+            &self.token,
+        );
+        self.client.mark_read(r).await.map(|_| ()).map_err(chat_error)
+    }
+
+    pub async fn delete(&mut self, id: i64) -> Result<(), Error> {
+        let r = authed(server_api::chat::MessageRequest { id, why: String::new() }, &self.token);
+        self.client.delete(r).await.map(|_| ()).map_err(chat_error)
+    }
+
+    /// Friends who can be messaged, with their identities.
+    pub async fn friends(&mut self) -> Result<Vec<server_api::chat::ChatFriend>, Error> {
+        let r = authed(server_api::chat::Empty {}, &self.token);
+        self.client.friends(r).await.map(|r| r.into_inner().friends).map_err(chat_error)
+    }
+
+    pub async fn report(&mut self, id: i64, why: String) -> Result<(), Error> {
+        let r = authed(server_api::chat::MessageRequest { id, why }, &self.token);
+        self.client.report(r).await.map(|_| ()).map_err(chat_error)
     }
 }

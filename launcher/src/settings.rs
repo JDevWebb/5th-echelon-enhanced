@@ -29,6 +29,7 @@ pub enum Section {
     Network,
     Servers,
     Identity,
+    Notifications,
     Save,
     Client,
     Advanced,
@@ -38,11 +39,12 @@ pub enum Section {
 }
 
 impl Section {
-    const ALL: [Self; 10] = [
+    const ALL: [Self; 11] = [
         Self::Game,
         Self::Network,
         Self::Servers,
         Self::Identity,
+        Self::Notifications,
         Self::Save,
         Self::Client,
         Self::Advanced,
@@ -57,6 +59,7 @@ impl Section {
             Self::Network => "Network",
             Self::Servers => "Servers and accounts",
             Self::Identity => "Identity and friends",
+            Self::Notifications => "Notifications",
             Self::Save => "Save game",
             Self::Client => "5th Echelon client",
             Self::Advanced => "Advanced",
@@ -204,6 +207,7 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
             let accounts = game.cfg.profiles.iter().filter(|p| p.has_account()).count();
             section(ui, "Identity and friends", |ui| identity_section(settings, accounts, notices, ui));
         }
+        Section::Notifications => section(ui, "Chat in the game", |ui| notifications(game, notices, ui)),
         Section::Save => section(ui, "Save game", |ui| save_game(settings, game, &ctx, ui)),
         Section::Client => section(ui, "5th Echelon client", |ui| client(settings, game, &ctx, ui)),
         Section::Advanced => section(ui, "Hooks", |ui| hooks(game, notices, ui)),
@@ -666,6 +670,32 @@ pub(crate) fn set_brighten(game: &mut Game, notices: &mut Notices, on: bool) {
             c.gamma_backup = backup;
         }),
         Err(e) => notices.error(format!("Couldn't change the brightness: {e}")),
+    }
+}
+
+/// When chat messages pop up in the game's overlay, per room (written for the overlay).
+fn notifications(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
+    use hooks_config::ChatToasts;
+    ui.label(theme::muted(
+        "When a chat message pops up in the corner of the game. Messages that name you (@name) count as mentions. Invitations and friend requests always pop up.",
+    ));
+    ui.add_space(6.0);
+    let mut n = game.cfg.hook_config.notifications;
+    egui::Grid::new("chat-toasts").num_columns(2).spacing([16.0, 8.0]).show(ui, |ui| {
+        for (label, value) in [("Global", &mut n.global), ("Lobby", &mut n.lobby), ("Messages from friends", &mut n.direct)] {
+            ui.label(label);
+            egui::ComboBox::from_id_salt(label).selected_text(value.label()).show_ui(ui, |ui| {
+                for choice in ChatToasts::ALL {
+                    ui.selectable_value(value, choice, choice.label());
+                }
+            });
+            ui.end_row();
+        }
+    });
+    ui.add_space(4.0);
+    ui.label(theme::muted("\"Outside matches\" keeps Global quiet while you play a match; it still tells you when someone names you.").small());
+    if n != game.cfg.hook_config.notifications {
+        game.update(notices, |c| c.hook_config.notifications = n);
     }
 }
 

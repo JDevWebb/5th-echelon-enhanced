@@ -36,6 +36,7 @@ serde_json = { workspace = true }
 server_api = { path = "../api", package = "api" }
 setup = { path = "../setup" }
 identity = { path = "../identity" }
+moderation = { path = "../moderation" }
 sha2 = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "net", "macros"] }

@@ -1106,6 +1106,15 @@ impl Bot {
         Ok(seen)
     }
 
+    /// The friends this player can message, with their identities.
+    pub async fn chat_friends(&self) -> std::result::Result<Vec<server_api::chat::ChatFriend>, tonic::Status> {
+        Ok(server_api::chat::chat_client::ChatClient::new(self.api.clone())
+            .friends(self.authed(server_api::chat::Empty {}))
+            .await?
+            .into_inner()
+            .friends)
+    }
+
     /// Deletes one of this player's chat messages.
     pub async fn chat_delete(&self, id: i64) -> std::result::Result<(), tonic::Status> {
         server_api::chat::chat_client::ChatClient::new(self.api.clone())

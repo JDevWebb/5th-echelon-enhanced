@@ -17,6 +17,7 @@ mod links;
 
 use std::collections::HashSet;
 
+pub use links::discord_invites;
 pub use links::find_link;
 pub use links::Link;
 use rustrict::Censor;

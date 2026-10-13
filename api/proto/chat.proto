@@ -23,6 +23,8 @@ service Chat {
     rpc Delete (MessageRequest) returns (Empty);
     // Reports a message to the network's admins, and why.
     rpc Report (MessageRequest) returns (Empty);
+    // The caller's friends who can be messaged (linked to an identity), to start a conversation.
+    rpc Friends (Empty) returns (FriendsResponse);
 }
 
 enum Room {
@@ -138,4 +140,15 @@ message MessageRequest {
     int64 id = 1;
     // For a report: why.
     string why = 2;
+}
+
+message ChatFriend {
+    // The friend's identity (a direct message's `to`), name, and whether they're online here.
+    string identity = 1;
+    string name = 2;
+    bool online = 3;
+}
+
+message FriendsResponse {
+    repeated ChatFriend friends = 1;
 }

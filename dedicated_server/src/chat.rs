@@ -17,10 +17,12 @@ use reqwest::Method;
 use serde_json::json;
 use serde_json::Value;
 use server_api::chat::chat_server::Chat;
+use server_api::chat::ChatFriend;
 use server_api::chat::Conversation;
 use server_api::chat::ConversationsRequest;
 use server_api::chat::ConversationsResponse;
 use server_api::chat::Empty;
+use server_api::chat::FriendsResponse;
 use server_api::chat::HistoryRequest;
 use server_api::chat::HistoryResponse;
 use server_api::chat::MarkReadRequest;
@@ -516,6 +518,25 @@ impl Chat for MyChat {
         // Gone here too, for waits to come.
         kept().lock().unwrap_or_else(std::sync::PoisonError::into_inner).retain(|m| m.id != r.id);
         Ok(Response::new(Empty {}))
+    }
+
+    async fn friends(&self, request: Request<Empty>) -> Result<Response<FriendsResponse>, Status> {
+        let c = self.caller(&request).await?;
+        let friends = self
+            .storage
+            .friends_of(c.user)
+            .await
+            .map_err(internal)?
+            .into_iter()
+            .filter_map(|p| {
+                Some(ChatFriend {
+                    identity: p.global_id?,
+                    name: p.username,
+                    online: p.is_online,
+                })
+            })
+            .collect();
+        Ok(Response::new(FriendsResponse { friends }))
     }
 
     async fn report(&self, request: Request<MessageRequest>) -> Result<Response<Empty>, Status> {
