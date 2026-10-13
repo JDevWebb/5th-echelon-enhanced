@@ -1,10 +1,10 @@
 # Community servers
 
-Servers that anyone can join. Players type the community network's address, **`play.scbl.jdevwebb.net`**, and the launcher sets them up on the server with the lowest ping; the Play screen lists the rest. This page also lists servers outside it.
+Servers that anyone can join. Players type the community network's address, **`scbl.jdevwebb.net`**, and the launcher sets them up on the server with the lowest ping; the Play screen lists the rest. This page also lists servers outside it.
 
 ## The community network
 
-Servers that share friends through the community coordinator, `https://play.scbl.jdevwebb.net`. Friends and names follow players between them.
+Servers that share friends through the community coordinator, `https://scbl.jdevwebb.net`. Friends and names follow players between them.
 
 | Server | Address | Region | Friend lists | Run by |
 |---|---|---|---|---|

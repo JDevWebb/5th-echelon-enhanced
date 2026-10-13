@@ -23,7 +23,7 @@ Every server of the group needs 0.4.2 or newer (the standby is part of the coord
 
 The examples use `play.example.net` for the coordinator, `metrics.example.net` for the admin UI, and three servers `eu1`, `na1` and `oceania` (in the order they take over).
 
-**The coordinator's name and the admin UI's must be one level below your domain** (`play.example.net`, not `play.scbl.example.net`). Both are proxied, and Cloudflare's free edge certificate covers only `example.net` and `*.example.net`: a name two levels deep fails with a TLS error before Cloudflare answers, and every launcher and server loses the coordinator. A deeper name needs Cloudflare's Advanced Certificate Manager (paid). If your coordinator already has a deeper name, set up the group under a new one-level name and move servers and players to it, rather than proxying the old one.
+**The coordinator's name and the admin UI's must be one level below your domain** (`play.example.net`, not `play.scbl.example.net`). Both are proxied, and Cloudflare's free edge certificate covers only `example.net` and `*.example.net`: a name two levels deep fails with a TLS error before Cloudflare answers, and every launcher and server loses the coordinator. A deeper name needs Cloudflare's Advanced Certificate Manager (paid). If your coordinator already has a deeper name, set up the group under a new one-level name and move servers and players to it, rather than proxying the old one ([Moving a coordinator to a new name](#moving-a-coordinator-to-a-new-name)).
 
 **1. Backups on every server of the group.** The standbys restore the coordinator from its live backup, so it must be running on the coordinator's machine, and each standby needs the keys to read it. Set up [backups.md](backups.md) on each server, with the same R2 bucket. Leave `BACKUP_NAME` out: each server's backups are then kept under its name in the group, which is where the others look.
 
@@ -73,6 +73,16 @@ sudo /opt/5th-echelon/coordinator standby --take-over
 ```
 
 It restores the coordinator from the live backup of the server it runs on, starts it here, and points the records here. The other server stands down within 15 seconds. Changes made there in those few seconds (a friend added, a stat) can be lost, so move it when it's quiet.
+
+## Moving a coordinator to a new name
+
+From 0.4.5 a coordinator answers to more than one name, and a member server moving to a new name keeps its membership: the coordinator at the address it joined has to list the new name as its own (`/v1/info`). The community network moved from `play.scbl.jdevwebb.net` to `scbl.jdevwebb.net` this way.
+
+1. **The new name, DNS only for now**, pointing at the coordinator's machine. Run the installer there with `--coordinator-domain <new>` and `--coordinator-alias <old>`: the coordinator answers to both (players' signed requests made for either count), each with its own Caddy site.
+2. **Each member server:** run the installer with `--coordinator https://<new>`. It asks the coordinator at the old address whether the new name is its own, then joins again with its secret.
+3. **Launchers:** 0.4.5 and later move a saved community address on their own; for a network of your own, players set the new address in Settings, or a server reporting it is adopted when they have none.
+4. **Then proxy it and turn failover on** as in [Setting it up](#setting-it-up) (the installer checks the name answers `/v1/info` with 200 through Cloudflare). The old name stays DNS only on the first machine and doesn't follow a takeover.
+5. **When no launcher uses the old name any more**, run the installer with `--coordinator-alias -` to drop it, and remove its record.
 
 ## A drill
 

@@ -26,7 +26,7 @@ Helpful to include:
 ## What's in scope
 
 - **This repository's code:** the launcher, the client DLL (`uplay_r1_loader.dll`), the dedicated server, the coordinator and its admin UI, the Linux installer and `harden-host.sh`, and the release signing and update path.
-- **The community network:** `play.scbl.jdevwebb.net`, its game servers (`eu1`, `na1` and `oceania.scbl.jdevwebb.net`) and its admin UI, `scbl-metrics.jdevwebb.net`.
+- **The community network:** `scbl.jdevwebb.net` (and its old name, `play.scbl.jdevwebb.net`, while launchers move to the new one), its game servers (`eu1`, `na1` and `oceania.scbl.jdevwebb.net`) and its admin UI, `scbl-metrics.jdevwebb.net`.
 - **Especially interesting:** anything that lets someone take over another player's account or identity, run code on a player's PC or a server, get around the release signature checks, read or change another player's data, use the servers to reach or attack other hosts (the relay, the NAT helper), join the community network without its join token, or get into the admin UI.
 
 ## Out of scope

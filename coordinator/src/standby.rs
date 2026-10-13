@@ -2,7 +2,7 @@
 //! (`coordinator standby`, as root), and the coordinator runs on whichever
 //! of them its record points at (docs/failover.md).
 //!
-//! The coordinator's record (e.g. play.scbl.example.net) is proxied through
+//! The coordinator's record (e.g. coord.example.net) is proxied through
 //! Cloudflare, so it changes for everyone at once, and it's what says where
 //! the coordinator is. Every 15 seconds each standby reads it (Cloudflare's
 //! API) and:

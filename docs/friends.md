@@ -163,7 +163,7 @@ A server is listed only where it really is. The coordinator asks the host and po
 - **No `/api/info`:** a server with `[community_api] info = false` can't be checked, so it isn't listed.
 - **Turning it off:** `coordinator --no-host-check` lists servers unchecked.
 
-You can also type a coordinator's address where you'd type a server's (the community's is `play.scbl.jdevwebb.net`): the launcher uses its directory, pings every server, and sets you up on the best one.
+You can also type a coordinator's address where you'd type a server's (the community's is `scbl.jdevwebb.net`): the launcher uses its directory, pings every server, and sets you up on the best one.
 
 The first server you join that uses a coordinator brings its directory: the launcher uses it from then on. A directory you set yourself, in **Settings › Identity and friends**, is never replaced.
 

@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        For your own server or your own network. The community network (play.scbl.jdevwebb.net) doesn't take outside servers: to play together across groups, run your own coordinator ([docs/deploying.md](https://github.com/JDevWebb/5th-echelon-enhanced/blob/main/docs/deploying.md)).
+        For your own server or your own network. The community network (scbl.jdevwebb.net) doesn't take outside servers: to play together across groups, run your own coordinator ([docs/deploying.md](https://github.com/JDevWebb/5th-echelon-enhanced/blob/main/docs/deploying.md)).
         **Never paste a join token, an admin password, setup links or keys** here.
   - type: dropdown
     id: how

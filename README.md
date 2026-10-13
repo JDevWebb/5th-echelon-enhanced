@@ -28,7 +28,7 @@
 **There are public 5th Echelon servers that anyone can play on, for free.** Get the launcher and press Connect: it picks the server closest to you.
 
 <table>
-<tr><td><b>Address</b></td><td><code>play.scbl.jdevwebb.net</code>: the community network, the launcher's default; it pings every server in it and sets you up on the best</td></tr>
+<tr><td><b>Address</b></td><td><code>scbl.jdevwebb.net</code>: the community network, the launcher's default; it pings every server in it and sets you up on the best</td></tr>
 <tr><td><b>Servers</b></td><td>Europe: <code>eu1.scbl.jdevwebb.net</code> (Falkenstein, Germany)<br>North America: <code>na1.scbl.jdevwebb.net</code> (Beauharnois, Canada)<br>Oceania: <code>oceania.scbl.jdevwebb.net</code> (Australia)</td></tr>
 <tr><td><b>Modes</b></td><td>Co-op and Spies vs Mercs: Find Teammate, Quick Match, lobby and private-match invites</td></tr>
 <tr><td><b>Friends</b></td><td>Friends-only lists and invites, blocking, player search; your friends follow you to every server in the community network</td></tr>
@@ -767,7 +767,7 @@ Never commit game files or anything extracted from them. Facts learned from the 
 
 ## Community
 
-**Play on the [community server](#the-community-server)** at `play.scbl.jdevwebb.net`, or [run your own](#run-your-own-server). The community network's servers, and public servers run by others, are listed in [docs/community-servers.md](docs/community-servers.md). What's coming next, cross-region play among it, is in the **[roadmap](docs/roadmap.md)**.
+**Play on the [community server](#the-community-server)** at `scbl.jdevwebb.net`, or [run your own](#run-your-own-server). The community network's servers, and public servers run by others, are listed in [docs/community-servers.md](docs/community-servers.md). What's coming next, cross-region play among it, is in the **[roadmap](docs/roadmap.md)**.
 
 Find other players, active servers and help:
 

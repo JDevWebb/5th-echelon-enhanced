@@ -84,4 +84,4 @@ Your commits keep your name, and you'll be listed under [Authors and contributor
 
 ## Finding other players
 
-The [community server](README.md#the-community-server) is at `play.scbl.jdevwebb.net`, and the [Discords in the README](README.md#community) are the place to find players and arrange games.
+The [community server](README.md#the-community-server) is at `scbl.jdevwebb.net`, and the [Discords in the README](README.md#community) are the place to find players and arrange games.
