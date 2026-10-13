@@ -9,6 +9,7 @@
           <span>{{ r[1] }}</span>
           <b v-if="r[0] === 'alerts' && alertCount" class="badge" :class="{ bad: alertsBad }" :aria-label="`${alertCount} open`">{{ alertCount }}</b>
           <b v-if="r[0] === 'reports' && reportCount" class="badge info" :aria-label="`${reportCount} open`">{{ reportCount }}</b>
+          <b v-if="r[0] === 'moderation' && moderationCount" class="badge info" :aria-label="`${moderationCount} reported`">{{ moderationCount }}</b>
           <b v-if="r[0] === 'support' && supportCount" class="badge info" :aria-label="`${supportCount} unread`">{{ supportCount }}</b>
         </RouterLink>
       </template>
@@ -65,6 +66,7 @@ const current = computed(() => {
 const alertCount = computed(() => live.overview?.alerts?.length || 0);
 const reportCount = computed(() => live.overview?.open_reports || 0);
 const supportCount = computed(() => live.overview?.support_unread || 0);
+const moderationCount = computed(() => live.overview?.chat_reports || 0);
 const alertsBad = computed(() => (live.overview?.alerts || []).some(a => a.level === 'bad'));
 const version = computed(() => live.overview?.coordinator?.version || '');
 </script>

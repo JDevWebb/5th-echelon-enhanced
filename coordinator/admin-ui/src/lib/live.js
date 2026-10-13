@@ -28,6 +28,7 @@ export const live = reactive({
   roadmapTick: 0,
   /** Goes up when a support conversation changes (a player wrote, or an admin answered). */
   supportTick: 0,
+  moderationTick: 0,
 });
 
 const KEEP_POINTS = 180;
@@ -74,6 +75,9 @@ export function connectLive() {
       live.roadmapTick++;
     } else if (msg.type === 'support') {
       live.supportTick++;
+    } else if (msg.type === 'moderation') {
+      // The overview that follows carries the open chat reports' count; the page reloads.
+      live.moderationTick++;
     } else if (msg.type === 'bye') {
       wanted = false;
       session.signedOut();
