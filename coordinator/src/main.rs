@@ -32,7 +32,7 @@ struct Args {
     /// network's coordinator only, whose roadmap every launcher reads
     #[argh(switch)]
     roadmap: bool,
-    /// a name launchers reach this coordinator by, e.g. play.scbl.jdevwebb.net
+    /// a name launchers reach this coordinator by, e.g. scbl.jdevwebb.net
     /// (repeat for more): players' signed requests must be made for one of them.
     /// Without it, for whatever name a request says
     #[argh(option)]

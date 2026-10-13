@@ -1167,6 +1167,33 @@ async fn same_machine(a: &str, b: &str) -> bool {
     x.iter().any(|ip| y.contains(ip))
 }
 
+/// Whether the coordinator at `trusted` (where this server joined) lists `other`'s host among
+/// its names (its `/v1/info`): the same coordinator, by another name.
+async fn vouched_for(http: &reqwest::Client, trusted: &str, other: &str) -> bool {
+    let Some(host) = reqwest::Url::parse(other).ok().and_then(|u| u.host_str().map(identity::host_key)) else {
+        return false;
+    };
+    let answer = async {
+        let resp = http
+            .get(format!("{}/v1/info", trusted.trim_end_matches('/')))
+            .timeout(Duration::from_secs(10))
+            .send()
+            .await
+            .ok()?;
+        resp.status().is_success().then_some(())?;
+        resp.json::<serde_json::Value>().await.ok()
+    }
+    .await;
+    names_include(answer.as_ref(), &host)
+}
+
+/// Whether a coordinator's `/v1/info` answer lists `host` (as [`identity::host_key`]) among
+/// its names.
+fn names_include(info: Option<&serde_json::Value>, host: &str) -> bool {
+    info.and_then(|v| v["names"].as_array())
+        .is_some_and(|names| names.iter().filter_map(|n| n.as_str()).any(|n| identity::host_key(n) == host))
+}
+
 /// Joins the coordinator with the join token and saves the credentials.
 async fn join(logger: &Logger, http: &reqwest::Client, base: &str, cfg: &FederationConfig, server_id: &str) -> Option<String> {
     if cfg.join_token.trim().is_empty() {
@@ -1181,10 +1208,16 @@ async fn join(logger: &Logger, http: &reqwest::Client, base: &str, cfg: &Federat
     // https or from its IP address to a name): the coordinator only lets a server join again
     // with its current secret, so it goes along. Never to another machine: the secret is
     // that coordinator's, and anyone holding it can act as this server there.
+    // Or a name of its own behind a proxy (the community network's from 0.4.5, through
+    // Cloudflare): not the same machine as far as addresses go, so the coordinator it trusts,
+    // at the address it joined, has to name the new one as one of its own.
     let mut previous = saved_credentials().filter(|(url, _)| url != base);
     if let Some((url, _)) = previous.take() {
         if same_machine(&url, base).await {
             info!(logger, "Federation: the coordinator was {url}; joining again at {base}");
+            previous = saved_credentials();
+        } else if vouched_for(http, &url, base).await {
+            info!(logger, "Federation: the coordinator at {url} names {base} as its own; joining again there");
             previous = saved_credentials();
         } else {
             info!(logger, "Federation: joined {url} before, which isn't {base}'s machine; joining {base} afresh");
@@ -1276,6 +1309,19 @@ async fn pull(logger: &Logger, storage: &Storage, client: &Coordinator<'_>, user
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn a_coordinator_vouches_only_for_its_own_names() {
+        let info = serde_json::json!({ "name": "5th Echelon coordinator", "names": ["scbl.jdevwebb.net", "play.scbl.jdevwebb.net"] });
+        assert!(names_include(Some(&info), "scbl.jdevwebb.net"));
+        assert!(names_include(Some(&info), &identity::host_key("SCBL.jdevwebb.net:443")));
+        assert!(!names_include(Some(&info), "evil.example"), "another name");
+        assert!(
+            !names_include(Some(&serde_json::json!({ "name": "5th Echelon coordinator" })), "scbl.jdevwebb.net"),
+            "a coordinator before 0.4.5"
+        );
+        assert!(!names_include(None, "scbl.jdevwebb.net"), "no answer");
+    }
     #[test]
     fn maintenance_windows_from_the_heartbeat_are_checked_and_expire() {
         use super::maintenance;

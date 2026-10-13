@@ -3601,7 +3601,8 @@ async fn admins_write_first_to_a_player_the_network_knows() {
 #[tokio::test]
 async fn signed_reads_are_for_this_coordinators_names() {
     let t = start("signed-names").await;
-    let _ = t.c.names.set(vec!["coordinator.test".into()]);
+    // Its new name and the one older launchers still use (the community network's from 0.4.5).
+    let _ = t.c.names.set(vec!["coordinator.test".into(), "old.coordinator.test".into()]);
     let me = identity::Identity::generate();
     let read = |host: &str, signed_for: &str| {
         let time = identity::now();
@@ -3617,6 +3618,16 @@ async fn signed_reads_are_for_this_coordinators_names() {
     assert_eq!(read("coordinator.test", "coordinator.test").await, StatusCode::OK);
     assert_eq!(read("Coordinator.test:443", "coordinator.test").await, StatusCode::OK, "the same name, another way");
     assert_eq!(read("evil.example", "evil.example").await, StatusCode::FORBIDDEN);
+    assert_eq!(
+        read("old.coordinator.test", "old.coordinator.test").await,
+        StatusCode::OK,
+        "an older launcher, by the old name"
+    );
+    assert_eq!(
+        read("coordinator.test", "old.coordinator.test").await,
+        StatusCode::FORBIDDEN,
+        "signed for one name, sent to the other: replayed"
+    );
 }
 
 /// Support files: one player's are capped (their message keeps its text), and past the cap in

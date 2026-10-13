@@ -1228,7 +1228,10 @@ fn same_secret(a: &str, b: &str) -> bool {
 
 async fn info(State(c): State<Shared>) -> Answer {
     let servers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM servers").fetch_one(&c.pool).await.unwrap_or(0);
-    ok(json!({ "name": "5th Echelon coordinator", "version": env!("FE_RELEASE"), "servers": servers }))
+    // Its names (`--name`): a member server moving to one of them from another asks here first,
+    // by the address it trusts, before taking its secret there.
+    let names = c.names.get().cloned().unwrap_or_default();
+    ok(json!({ "name": "5th Echelon coordinator", "version": env!("FE_RELEASE"), "servers": servers, "names": names }))
 }
 
 #[derive(Deserialize)]
