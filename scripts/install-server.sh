@@ -60,6 +60,12 @@
 #                         also run a coordinator here, at https://NAME (an A
 #                         record for this server, TCP 443 open); this server
 #                         joins it, and other servers can too
+#   --coordinator-alias NAME
+#                         with --coordinator-domain: another name the coordinator
+#                         answers to (repeat for more), DNS only with its own
+#                         certificate, e.g. its old name while launchers move to
+#                         the new one. Kept for later runs; --coordinator-alias -
+#                         drops them
 #   --coordinator-only    with --coordinator-domain: only the coordinator
 #                         (and Caddy), no game server on this machine
 #   --coordinator-binary FILE
@@ -200,12 +206,12 @@ domain="" no_caddy=0 public_address="" version="latest" binary="" relay=""
 notes=()
 firewall=1 yes=0 force=0 uninstall=0 purge=0 use_systemd=1
 # The community network's coordinator, by the names it has had (setup/src/directory.rs).
-COMMUNITY_COORDINATORS="play.scbl.jdevwebb.net"
+COMMUNITY_COORDINATORS="scbl.jdevwebb.net play.scbl.jdevwebb.net"
 friends="" server_name="" region="" coordinator="" join_token="" coord_domain="" coord_binary=""
 https_api=1 allow_unsigned=0 coord_only=0 admin="" registration="" listed="" command=""
 metrics_cert="" metrics_key="" metrics_domain="" origin_pull=0 admin_name="" auto_update="" release_version=""
 coord_cert="" coord_key="" standby="" standby_me=""
-aliases=()
+aliases=() coord_aliases=() coord_aliases_given=0
 # Only HTTPS, and TLS 1.2 or newer, for every download, and none larger
 # than a release's binaries could be (SMALL: for listings, checksums and
 # signatures).
@@ -269,6 +275,7 @@ while [ $# -gt 0 ]; do
     --auto-update) auto_update=true ;;
     --allow-unsigned) allow_unsigned=1 ;;
     --coordinator-domain) coord_domain="${2:?}"; shift ;;
+    --coordinator-alias) coord_aliases_given=1; [ "${2:?}" = "-" ] || coord_aliases+=("${2,,}"); shift ;;
     --coordinator-binary) coord_binary="${2:?}"; shift ;;
     --coordinator-only) coord_only=1 ;;
     --alias) aliases+=("${2:?}"); shift ;;
@@ -423,6 +430,15 @@ fi
 if [ -z "$metrics_domain" ] && [ -s "$ETC_DIR/metrics-domain" ]; then metrics_domain="$(head -c 256 "$ETC_DIR/metrics-domain" | tr -d '[:space:]')"; fi
 if [ -f "$ETC_DIR/metrics-origin-pull" ]; then origin_pull=1; fi
 [ -z "$metrics_domain" ] || [ -n "$coord_domain" ] || die "--metrics-domain is the coordinator's admin UI: it needs --coordinator-domain (a coordinator on this machine)"
+# Its other names stay, unless new ones (or -) are given.
+if [ "$coord_aliases_given" -eq 0 ] && [ -s "$ETC_DIR/coordinator-aliases" ]; then
+  mapfile -t coord_aliases < <(head -c 4096 "$ETC_DIR/coordinator-aliases" | tr -d ' \r' | grep -v '^$')
+fi
+[ "${#coord_aliases[@]}" -eq 0 ] || [ -n "$coord_domain" ] || die "--coordinator-alias goes with --coordinator-domain"
+for a in "${coord_aliases[@]}"; do
+  [[ "$a" =~ $DOMAIN_RE ]] || die "--coordinator-alias $a isn't a domain name"
+  [ "$a" != "${coord_domain,,}" ] || die "--coordinator-alias $a is the coordinator's own name"
+done
 [ "$origin_pull" -eq 0 ] || [ -n "$metrics_domain" ] || die "--cloudflare-origin-pull goes with --metrics-domain"
 if [ -n "$metrics_cert" ] || [ -n "$metrics_key" ]; then
   [ -n "$metrics_cert" ] && [ -n "$metrics_key" ] || die "--metrics-cert and --metrics-key go together"
@@ -762,8 +778,15 @@ fi
 # Caddy refuses everyone but Cloudflare, or nobody reaches it.
 check_proxied() {
   local name="$1"
-  if curl -sS -o /dev/null -D - --max-time 10 "https://$name/v1/info" 2>/dev/null | grep -qi '^cf-ray:'; then
+  local head
+  head="$(curl -sS -o /dev/null -D - --max-time 10 "https://$name/v1/info" 2>/dev/null || true)"
+  # Through Cloudflare (cf-ray) and let through: Cloudflare's security settings can block a
+  # data centre's address, servers' own included, and then heartbeats fail and standbys can't
+  # tell the coordinator is down (docs/failover.md).
+  if printf '%s' "$head" | grep -qi '^cf-ray:' && printf '%s' "$head" | head -1 | grep -q ' 200'; then
     say "$name is proxied through Cloudflare"
+  elif printf '%s' "$head" | grep -qi '^cf-ray:' && [ "$force" -eq 0 ]; then
+    die "$name answers through Cloudflare, but not with 200 ($(printf '%s' "$head" | head -1 | tr -d '\r')): Cloudflare's security settings may block this server's address. Allow the servers' addresses (a WAF skip rule), then run this again. --force goes on anyway"
   elif [ "$force" -eq 1 ]; then
     warn "$name doesn't answer through Cloudflare; going on (--force)"
   else
@@ -773,6 +796,8 @@ check_proxied() {
 if [ -n "$coord_domain" ] && [ "${coord_dns_checked:-0}" -eq 0 ]; then
   if [ -n "$coord_cert" ] || [ -f "$COORD_CERT" ]; then check_proxied "$coord_domain"; else check_dns "$coord_domain"; fi
 fi
+# Its other names are DNS only, pointing here (Caddy gets their certificates).
+for a in "${coord_aliases[@]}"; do check_dns "$a"; done
 # This server in its failover group: the one listed by its domain.
 if [ -n "$standby" ]; then
   for entry in "${standby_entries[@]}"; do
@@ -1123,10 +1148,14 @@ if [ -n "$coord_domain" ]; then
   # Players sign their support messages and reads for the coordinator's name: one made for
   # another coordinator mustn't count here.
   coord_args="--listen $COORD_ADDR:8700 --data $COORD_DIR --name $coord_domain"
+  # Its other names (an old one, while launchers move to the new): signed requests made for
+  # them count too.
+  for a in "${coord_aliases[@]}"; do coord_args="$coord_args --name $a"; done
+  if [ "${#coord_aliases[@]}" -gt 0 ]; then printf '%s\n' "${coord_aliases[@]}" > "$ETC_DIR/coordinator-aliases"; else rm -f "$ETC_DIR/coordinator-aliases"; fi
   # The admin UI on its own port, for Caddy to serve at the metrics name.
   if [ -n "$metrics_domain" ]; then coord_args="$coord_args --admin-listen $COORD_ADDR:8701 --admin-origin https://$metrics_domain"; fi
   # The roadmap and players' suggestions: every launcher reads the community network's, so
-  # only its coordinator keeps one.
+  # only its coordinator keeps one (by its current name or the old).
   case " $COMMUNITY_COORDINATORS " in *" $coord_domain "*) coord_args="$coord_args --roadmap" ;; esac
   rm -f "$COORD_DIR/domain"
   if [ "$use_systemd" -eq 1 ]; then
@@ -2499,6 +2528,17 @@ $coord_domain {
 }
 SITE
   fi
+  local a
+  for a in "${coord_aliases[@]}"; do
+    cat <<SITE
+
+# The coordinator by another name ($a), DNS only, over HTTPS (Caddy gets
+# the certificate): e.g. its old name, for launchers that haven't moved yet.
+$a {
+	reverse_proxy $COORD_ADDR:8700
+}
+SITE
+  done
   if [ -n "$metrics_domain" ]; then
     cat <<SITE
 
