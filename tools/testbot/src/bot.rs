@@ -1057,6 +1057,48 @@ impl Bot {
         Ok(())
     }
 
+    /// Chat's status for this player (`Chat.Status`).
+    pub async fn chat_status(&self) -> std::result::Result<server_api::chat::StatusResponse, tonic::Status> {
+        Ok(server_api::chat::chat_client::ChatClient::new(self.api.clone())
+            .status(self.authed(server_api::chat::StatusRequest {}))
+            .await?
+            .into_inner())
+    }
+
+    /// Sends a chat message: to a room, or (`to`, an identity) a friend.
+    pub async fn chat_send(&self, room: server_api::chat::Room, to: &str, text: &str) -> std::result::Result<server_api::chat::SendResponse, tonic::Status> {
+        Ok(server_api::chat::chat_client::ChatClient::new(self.api.clone())
+            .send(self.authed(server_api::chat::SendRequest {
+                room: room.into(),
+                to: to.into(),
+                text: text.into(),
+            }))
+            .await?
+            .into_inner())
+    }
+
+    /// Waits for chat messages after `after`, until one with `body` comes or `wait` runs out:
+    /// the bodies seen.
+    pub async fn chat_wait_for(&self, after: i64, body: &str, wait: Duration) -> Result<Vec<String>> {
+        let deadline = tokio::time::Instant::now() + wait;
+        let mut seen = Vec::new();
+        let mut after = after;
+        while tokio::time::Instant::now() < deadline {
+            let left = deadline - tokio::time::Instant::now();
+            let mut client = server_api::chat::chat_client::ChatClient::new(self.api.clone());
+            let Ok(answer) = tokio::time::timeout(left, client.wait(self.authed(server_api::chat::WaitRequest { after }))).await else {
+                break;
+            };
+            let answer = answer?.into_inner();
+            after = answer.last.max(after);
+            seen.extend(answer.messages.into_iter().map(|m| m.body));
+            if seen.iter().any(|b| b == body) {
+                break;
+            }
+        }
+        Ok(seen)
+    }
+
     /// Polls events as a game that shows notices in its overlay (0.4.4 and later) does, until
     /// a notice comes: its title and text.
     pub async fn poll_notice(&self, wait: Duration) -> Result<Option<(String, String)>> {

@@ -517,6 +517,38 @@ fn joined() -> Option<(String, String)> {
     STATE.get().filter(|s| s.enabled)?.joined.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
 }
 
+/// Calls the coordinator for chat (`/v1/chat/...`): its answer, or why not. A wait for messages
+/// takes up to 25 s, so these have a longer timeout than the other calls.
+pub async fn chat_call(method: reqwest::Method, path_and_query: &str, body: Option<&serde_json::Value>) -> eyre::Result<serde_json::Value> {
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    let client = CLIENT.get_or_init(|| {
+        reqwest::Client::builder()
+            .timeout(Duration::from_secs(40))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .expect("an HTTP client")
+    });
+    let Some((base, secret)) = joined() else {
+        return Err(eyre::eyre!("not joined to a coordinator"));
+    };
+    let mut request = client.request(method, format!("{base}{path_and_query}")).bearer_auth(secret);
+    if let Some(body) = body {
+        request = request.json(body);
+    }
+    let resp = request.send().await?;
+    let status = resp.status();
+    let value = read_json(resp).await?;
+    if !status.is_success() {
+        return Err(eyre::eyre!("{status}: {}", value["error"].as_str().unwrap_or_default()));
+    }
+    Ok(value)
+}
+
+/// `s` for a URL's query.
+pub fn query_value(s: &str) -> String {
+    urlencode(s)
+}
+
 /// Reserves `name` for `global_id` across the group (signed with the
 /// player's link signature for this server, reached as `host`).
 pub async fn claim_name(global_id: &str, name: &str, host: &str, time: i64, signature: &str) -> NameCheck {
@@ -623,6 +655,8 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
     }
     let http = http().clone();
     info!(logger, "Federation: coordinator {base}, server id {}", state.server_id);
+    // Chat's wait on the coordinator: idle until a pulse answer says the network runs chat.
+    crate::chat::start_relay(logger.clone());
     let mut secret: Option<String> = None;
     let mut last_heartbeat: Option<Instant> = None;
     let mut last_metrics: Option<Instant> = None;
@@ -723,6 +757,7 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                     Ok(answer) => {
                         carry_out_actions(&logger, &storage, &client, &answer, &mut actions_done).await;
                         crate::support::from_pulse(&answer);
+                        crate::chat::from_pulse(&answer, &logger);
                         PULSE_EVERY
                     }
                     // An older coordinator: not every ten seconds, then.

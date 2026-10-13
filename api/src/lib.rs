@@ -10,6 +10,10 @@ pub mod misc {
     tonic::include_proto!("misc"); // The string specified here must match the proto package name
     pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("misc_descriptor");
 }
+pub mod chat {
+    tonic::include_proto!("chat");
+    pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("chat_descriptor");
+}
 pub mod games {
     tonic::include_proto!("games"); // The string specified here must match the proto package name
     pub const FILE_DESCRIPTOR_SET: &[u8] = tonic::include_file_descriptor_set!("games_descriptor");

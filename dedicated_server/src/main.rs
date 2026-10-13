@@ -70,6 +70,7 @@ fn login_or_service_required<T>(ci: &ClientInfo<T>) -> quazal::rmc::Result<u32> 
 
 mod api;
 mod challenge;
+mod chat;
 mod clan;
 mod clients;
 mod community_api;

@@ -1649,6 +1649,41 @@ impl Storage {
     }
 
     /// Whether `user_id` hosts, takes part in or joined (a guest) live session `session_id`.
+    /// The game session `user_id` is in now (a participant or a guest, the newest), for Lobby chat.
+    pub async fn current_room(&self, user_id: u32) -> Result<Option<u32>> {
+        Ok(sqlx::query_scalar(
+            "SELECT g.id FROM game_sessions g WHERE g.destroyed_at IS NULL
+               AND (EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?1)
+                    OR EXISTS (SELECT 1 FROM guests q WHERE q.game_id = g.id AND q.user_id = ?1))
+             ORDER BY g.id DESC LIMIT 1",
+        )
+        .bind(user_id)
+        .fetch_optional(&self.pool)
+        .await?)
+    }
+
+    /// `user_id`'s identity (global id), if their account is linked to one.
+    pub async fn global_id_of(&self, user_id: u32) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar::<_, Option<String>>("SELECT global_id FROM users WHERE id = ?")
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await?
+            .flatten()
+            .filter(|g| !g.is_empty()))
+    }
+
+    /// The identities of players here `user_id` blocked, or who blocked them: their messages
+    /// aren't shown to each other.
+    pub async fn blocked_global_ids(&self, user_id: u32) -> Result<Vec<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT u.global_id FROM relationships r JOIN users u ON u.id = CASE WHEN r.user_id = ?1 THEN r.other_id ELSE r.user_id END
+             WHERE r.kind = 'block' AND (r.user_id = ?1 OR r.other_id = ?1) AND u.global_id IS NOT NULL",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     pub async fn is_in_session(&self, user_id: u32, session_id: u32) -> Result<bool> {
         let n: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM game_sessions g WHERE g.id = ?1 AND g.destroyed_at IS NULL

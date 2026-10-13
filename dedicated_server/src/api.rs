@@ -1838,6 +1838,16 @@ pub async fn start_server(
         .http2_max_header_list_size(MAX_HEADERS)
         .add_optional_service(reflection_v1alpha)
         .add_optional_service(reflection_v1)
+        // Chat on the community network (chat.rs): Unimplemented elsewhere.
+        .add_service(authenticated(
+            server_api::chat::chat_server::ChatServer::new(crate::chat::MyChat {
+                logger: logger.clone(),
+                storage: Arc::clone(&storage),
+            }),
+            logger.clone(),
+            key.clone(),
+            Arc::clone(&storage),
+        ))
         .add_service(authenticated(
             FriendsServer::new(MyFriends {
                 logger: logger.clone(),

@@ -1,0 +1,138 @@
+// Chat on the community network (docs/chat.md), as a player's launcher and game ask their server.
+// The server passes messages to and from the network's coordinator, which keeps them: a server
+// on its own, or on another network, answers Unimplemented.
+syntax = "proto3";
+
+package chat;
+
+service Chat {
+    // Whether chat is open to the caller, and what they may do in it.
+    rpc Status (StatusRequest) returns (StatusResponse);
+    // Sends a message: back as sent (offending words masked), or why it wasn't.
+    rpc Send (SendRequest) returns (SendResponse);
+    // The messages for the caller after `after`: at once if there are any, else when one comes,
+    // or after about 25 s with none. Start with the newest message id the caller has (0: none).
+    rpc Wait (WaitRequest) returns (WaitResponse);
+    // A room's or a conversation's messages, newest last.
+    rpc History (HistoryRequest) returns (HistoryResponse);
+    // The caller's direct conversations, newest first, with unread counts.
+    rpc Conversations (ConversationsRequest) returns (ConversationsResponse);
+    // The caller read a conversation up to a message.
+    rpc MarkRead (MarkReadRequest) returns (Empty);
+    // Deletes one of the caller's own messages.
+    rpc Delete (MessageRequest) returns (Empty);
+    // Reports a message to the network's admins, and why.
+    rpc Report (MessageRequest) returns (Empty);
+}
+
+enum Room {
+    // Everyone on the community network.
+    GLOBAL = 0;
+    // One friend, whatever their server.
+    DIRECT = 1;
+    // The players in the caller's game session (lobby or match), on this server.
+    LOBBY = 2;
+}
+
+message Empty {}
+
+message StatusRequest {}
+
+message StatusResponse {
+    // Chat is open here (this server is on the community network, which runs it).
+    bool available = 1;
+    // Why not, or what the caller needs (e.g. their account linked to their identity).
+    string why_not = 2;
+    // The coordinator can't be reached right now: rooms read only.
+    bool read_only = 3;
+    // The caller may post in Global (a new account waits 30 minutes signed in, or a match).
+    bool may_post_global = 4;
+    string global_wait = 5;
+    // The caller's game session, for Lobby (0: none).
+    uint32 lobby = 6;
+    // The caller's identity, as messages name senders.
+    string me = 7;
+}
+
+message Message {
+    int64 id = 1;
+    Room room = 2;
+    // Unix seconds.
+    int64 at = 3;
+    // The sender's identity and name, and their server's name.
+    string from = 4;
+    string from_name = 5;
+    string server_name = 6;
+    // For a direct message: the other identity.
+    string to = 7;
+    string body = 8;
+    // The caller sent it.
+    bool mine = 9;
+    // It names the caller (@name).
+    bool mentions_me = 10;
+}
+
+message SendRequest {
+    Room room = 1;
+    // For a direct message: the friend's identity.
+    string to = 2;
+    string text = 3;
+}
+
+message SendResponse {
+    Message message = 1;
+    // Why it wasn't sent: a code (link, invite, slow, muted, not_friends, global_wait, ...) and
+    // what to tell the player.
+    string refused = 2;
+    string says = 3;
+}
+
+message WaitRequest {
+    int64 after = 1;
+}
+
+message WaitResponse {
+    repeated Message messages = 1;
+    // The newest message id seen (the next Wait's `after`).
+    int64 last = 2;
+}
+
+message HistoryRequest {
+    Room room = 1;
+    // For a direct conversation: the friend's identity.
+    string with = 2;
+    // Older than this message (0: the newest).
+    int64 before = 3;
+    uint32 limit = 4;
+}
+
+message HistoryResponse {
+    repeated Message messages = 1;
+}
+
+message ConversationsRequest {}
+
+message Conversation {
+    // The friend's identity and name.
+    string with = 1;
+    string with_name = 2;
+    int64 last = 3;
+    int64 at = 4;
+    uint32 unread = 5;
+}
+
+message ConversationsResponse {
+    repeated Conversation conversations = 1;
+}
+
+message MarkReadRequest {
+    Room room = 1;
+    string with = 2;
+    int64 up_to = 3;
+}
+
+message MessageRequest {
+    int64 id = 1;
+    // For a report: why.
+    string why = 2;
+}

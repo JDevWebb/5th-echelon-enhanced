@@ -23,7 +23,7 @@ cleanup
 docker network create "$net" >/dev/null
 
 docker run -d --name fes-fed-coord --network "$net" $mount "$image" \
-  bash -c "mkdir -p /srv/c && exec $bin/coordinator --listen 0.0.0.0:8700 --data /srv/c --check-private-hosts >/srv/c/log 2>&1" >/dev/null
+  bash -c "mkdir -p /srv/c && exec $bin/coordinator --listen 0.0.0.0:8700 --data /srv/c --check-private-hosts --chat --chat-unverified >/srv/c/log 2>&1" >/dev/null
 for _ in $(seq 100); do docker exec fes-fed-coord test -s /srv/c/join-token.txt 2>/dev/null && break; sleep 0.2; done
 token=$(docker exec fes-fed-coord cat /srv/c/join-token.txt | tr -d '[:space:]')
 coord=$(docker inspect -f "{{(index .NetworkSettings.Networks \"$net\").IPAddress}}" fes-fed-coord)
@@ -57,6 +57,8 @@ client curl -sf "http://$coord:8700/v1/servers"; echo
 [ "${n:-0}" -eq 2 ] && echo "PASS directory lists both servers" || { echo "FAIL directory"; rc=1; }
 echo "--- test players"
 client "$bin/testbot" --server "$a" --other "$b" federation || rc=1
+echo "--- chat across the two servers"
+client "$bin/testbot" --server "$a" --other "$b" chat || rc=1
 echo "--- metrics"
 # Each server reports its metrics as it starts, then every minute.
 servers_reporting=$(docker exec fes-fed-coord python3 -c "import sqlite3; print(sqlite3.connect('/srv/c/coordinator.db').execute('SELECT COUNT(DISTINCT server_id) FROM samples').fetchone()[0])" 2>/dev/null || echo 0)

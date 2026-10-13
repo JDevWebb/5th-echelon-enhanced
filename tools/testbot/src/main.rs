@@ -12,6 +12,7 @@ use std::time::Duration;
 use eyre::ensure;
 use eyre::eyre;
 use eyre::Result;
+use eyre::WrapErr as _;
 use quazal::rmc::types::Property;
 use sc_bl_protocols::game_session_service::types::GameSessionSearchWithParticipantsResult;
 use testbot::bot::Bot;
@@ -681,6 +682,87 @@ async fn login_lockout(ctx: &mut Ctx) -> Result<()> {
 
 /// Two servers sharing a coordinator (`--other` is the second): friends made
 /// on one show up on the other once both players link there too.
+/// Chat across two servers sharing a coordinator that runs it (docs/chat.md): Global reaches
+/// the other server, a direct message the friend there and nobody else, a lobby only its own
+/// players; a link is refused; a player not linked to an identity is told why there's none.
+async fn chat(ctx: &mut Ctx, other: IpAddr) -> Result<()> {
+    use server_api::chat::Room;
+    let (id_a, id_b) = (server_id(ctx.server)?, server_id(other)?);
+    let (kiwi_key, tank_key) = (identity::Identity::generate(), identity::Identity::generate());
+    let mut kiwi = ctx.player("ChatKiwi").await?;
+    let mut tank = ctx.player("ChatTank").await?;
+    let plain = ctx.player("ChatPlain").await?;
+    kiwi.link(&kiwi_key, &id_a, identity::now()).await?;
+    tank.link(&tank_key, &id_a, identity::now()).await?;
+    kiwi.friend_change("request", &tank.name).await?;
+    tank.friend_change("accept", &kiwi.name).await?;
+    let tank_b_name = format!("{}B", tank.name);
+    Bot::register(other, &tank_b_name, PASSWORD).await?;
+    let tank_b = Bot::login(other, &tank_b_name, PASSWORD).await?;
+    tank_b.link(&tank_key, &id_b, identity::now()).await?;
+
+    // Chat comes on with a pulse answer (every 10 s).
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(40);
+    loop {
+        let (a, b) = (kiwi.chat_status().await.wrap_err("chat status")?, tank_b.chat_status().await.wrap_err("chat status on B")?);
+        if a.available && b.available {
+            ensure!(a.me == kiwi_key.global_id(), "chat names Kiwi by another identity");
+            break;
+        }
+        ensure!(tokio::time::Instant::now() < deadline, "chat didn't come on: {a:?} {b:?}");
+        tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+    let plain_status = plain.chat_status().await?;
+    ensure!(
+        !plain_status.available && plain_status.why_not.contains("identity"),
+        "a player without an identity: {plain_status:?}"
+    );
+    // New accounts wait 30 minutes for Global: these bots are new.
+    ensure!(!kiwi.chat_status().await?.may_post_global, "a new account may post in Global at once");
+
+    // Direct: to the friend's identity, read on the other server; not by someone else.
+    let sent = kiwi
+        .chat_send(Room::Direct, &tank_key.global_id(), "meet on EU?")
+        .await
+        .wrap_err("sending the direct message")?;
+    let id = sent.message.as_ref().ok_or_else(|| eyre!("not sent: {} {}", sent.refused, sent.says))?.id;
+    let seen = tank_b
+        .chat_wait_for(id - 1, "meet on EU?", Duration::from_secs(40))
+        .await
+        .wrap_err("waiting for the direct message on B")?;
+    ensure!(
+        seen.iter().any(|b| b == "meet on EU?"),
+        "the direct message didn't reach the friend on the other server: {seen:?}"
+    );
+    let refused = plain.chat_status().await?;
+    ensure!(!refused.available, "a player without an identity can chat");
+
+    // Lobby: the players in Kiwi's lobby on this server only.
+    let lobby = kiwi.create_session(LOBBY).await?;
+    kiwi.add_participants(lobby, &[kiwi.pid], &[]).await?;
+    tank.add_participants(lobby, &[tank.pid], &[]).await?;
+    let sent = kiwi.chat_send(Room::Lobby, "", "ready up").await.wrap_err("sending to the lobby")?;
+    let id = sent.message.as_ref().ok_or_else(|| eyre!("lobby message not sent: {} {}", sent.refused, sent.says))?.id;
+    let seen = tank
+        .chat_wait_for(id - 1, "ready up", Duration::from_secs(40))
+        .await
+        .wrap_err("waiting for the lobby message")?;
+    ensure!(seen.iter().any(|b| b == "ready up"), "the lobby message didn't reach a player in the lobby: {seen:?}");
+    let elsewhere = tank_b.chat_wait_for(id - 1, "ready up", Duration::from_secs(3)).await.wrap_err("the lobby message on B")?;
+    ensure!(!elsewhere.iter().any(|b| b == "ready up"), "a lobby message reached the other server");
+
+    // The rules: a link is refused.
+    let refused = kiwi
+        .chat_send(Room::Direct, &tank_key.global_id(), "free skins at example.com")
+        .await
+        .wrap_err("sending a link")?;
+    ensure!(refused.message.is_none() && !refused.says.is_empty(), "a link was sent: {refused:?}");
+    for bot in [kiwi, tank, plain, tank_b] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
 async fn federation(ctx: &mut Ctx, other: IpAddr) -> Result<()> {
     let (id_a, id_b) = (server_id(ctx.server)?, server_id(other)?);
     let (kiwi_key, tank_key) = (identity::Identity::generate(), identity::Identity::generate());
@@ -2406,6 +2488,7 @@ async fn main() -> Result<()> {
     for name in names {
         let limit = match name {
             "federation" => 300,
+            "chat" => 120,
             "reconnect" | "closing-note" => 180,
             _ => 30,
         };
@@ -2471,6 +2554,10 @@ async fn main() -> Result<()> {
                 "federation" => match other {
                     Some(other) => federation(&mut ctx, other).await,
                     None => Err(eyre!("federation needs --other <second server>")),
+                },
+                "chat" => match other {
+                    Some(other) => chat(&mut ctx, other).await,
+                    None => Err(eyre!("chat needs --other <second server>")),
                 },
                 other => Err(eyre!("unknown scenario {other:?} (known: {})", SCENARIOS.join(", "))),
             }

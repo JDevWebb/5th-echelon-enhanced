@@ -22,6 +22,17 @@ pub use links::Link;
 use rustrict::Censor;
 use rustrict::Type;
 
+/// `text` for one line: no control characters, nor zero-width or bidi ones (which hide or
+/// reorder what's shown), cut to `max` characters and trimmed.
+pub fn clean(text: &str, max: usize) -> String {
+    text.chars()
+        .filter(|c| !c.is_control() && !links::invisible(*c))
+        .take(max)
+        .collect::<String>()
+        .trim()
+        .to_string()
+}
+
 /// The longest message, in characters.
 pub const MAX_MESSAGE: usize = 500;
 
@@ -360,7 +371,23 @@ mod tests {
         for ok in ["SirCooms", "Theusma01", "kill_count", "Shitstorm", "vipex_clapzzz", "d15_HB", "Scunthorpe"] {
             assert_eq!(rules().check_name(ok), Ok(()), "{ok}");
         }
+        // Numbers in names aren't letters in disguise (the list read these as slurs).
+        for ok in [
+            "Online14_1",
+            "Logger35_1",
+            "Logger105_1",
+            "Plain119_3",
+            "Seen119_3",
+            "ChatPlain119_3",
+            "Gamer4Life",
+            "xXSniper99Xx",
+        ] {
+            assert_eq!(rules().check_name(ok), Ok(()), "{ok}");
+        }
         assert_eq!(rules().check_name(&format!("{}_slayer", rev("regg1n"))), Err(NameRefused::Offensive));
+        for bad in ["r3gg1n_1", "reggin99", "77reggin", "4ggin", "t0ggaf"] {
+            assert_eq!(rules().check_name(&rev(bad)), Err(NameRefused::Offensive), "{bad} reversed");
+        }
         assert_eq!(rules().check_name("xXloliXx"), Err(NameRefused::Offensive), "our list, inside a name");
         assert_eq!(rules().check_name("evil.com"), Err(NameRefused::Link));
         assert_eq!(rules().check_name("v1.5.2"), Ok(()), "a version isn't a web address");

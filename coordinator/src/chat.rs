@@ -288,7 +288,10 @@ impl Coordinator {
         // time a report is kept: a report anyone can make mustn't keep a message for ever.
         let held_since = now - REPORTS_KEEP;
         let reported = format!("id NOT IN (SELECT message_id FROM chat_reports WHERE status = 'open' AND at >= {held_since})");
-        sqlx::query("DELETE FROM chat_reports WHERE status = 'open' AND at < ?").bind(held_since).execute(&self.pool).await?;
+        sqlx::query("DELETE FROM chat_reports WHERE status = 'open' AND at < ?")
+            .bind(held_since)
+            .execute(&self.pool)
+            .await?;
         let gone = "NOT IN (SELECT global_id FROM links)";
         for sql in [
             format!("DELETE FROM chat_messages WHERE (sender {gone} OR (recipient IS NOT NULL AND recipient {gone})) AND {reported}"),

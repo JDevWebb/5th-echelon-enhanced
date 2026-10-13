@@ -83,7 +83,7 @@ fn normalise(text: &str) -> String {
 }
 
 /// Zero-width and bidi characters, which hide or reorder what's shown.
-fn invisible(c: char) -> bool {
+pub(crate) fn invisible(c: char) -> bool {
     matches!(c, '\u{200b}'..='\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2060}'..='\u{2064}' | '\u{2066}'..='\u{2069}' | '\u{feff}' | '\u{00ad}')
 }
 
