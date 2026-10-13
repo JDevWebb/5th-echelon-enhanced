@@ -57,6 +57,11 @@ pub const RELEASES: &[Release] = &[
                 text: "The game only shows lobbies with the same game data as yours. When a search finds nothing because of that, the overlay tells you.",
                 community: false,
             },
+            Item {
+                title: "Server updates, announced ahead",
+                text: "Servers update in windows booked days ahead: the launcher says when (\"Server update today, 8:00 pm\") and that it's down for about two minutes, and the game warns you 10 minutes before.",
+                community: false,
+            },
         ],
         fixed: &[
             Fix {
@@ -64,8 +69,20 @@ pub const RELEASES: &[Release] = &[
                 rest: ", and an invitation doesn't put you into one.",
             },
             Fix {
+                lead: "Parties carry on when their host leaves",
+                rest: ", for everyone in them, and the server no longer ends a public match its host left.",
+            },
+            Fix {
+                lead: "The overlay lets go when you alt-tab",
+                rest: ", instead of keeping the mouse and keys until you press its key again.",
+            },
+            Fix {
                 lead: "Joining through the relay connects at once",
                 rest: ", without waiting for the server.",
+            },
+            Fix {
+                lead: "A party member's invitations lead to their party",
+                rest: ", when the host is their friend.",
             },
             Fix {
                 lead: "\"Too many failed logins\" only after wrong passwords",
