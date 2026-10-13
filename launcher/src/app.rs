@@ -210,10 +210,26 @@ impl Prefs {
     }
 
     pub fn load() -> Self {
-        Self::path()
+        let mut prefs: Self = Self::path()
             .and_then(|p| std::fs::read_to_string(p).ok())
             .and_then(|s| toml::from_str(&s).ok())
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // The community network's old name (until 0.4.5), saved by a player who typed it or
+        // set it in Settings: its new one, once and for good.
+        if prefs.directory.as_deref().is_some_and(|d| Self::is_community(d) && d.trim().trim_end_matches('/') != COMMUNITY_DIRECTORY) {
+            prefs.directory = Some(COMMUNITY_DIRECTORY.to_string());
+            prefs.save();
+        }
+        prefs
+    }
+
+    /// `url` as kept: the community network by its current name, anything else as given.
+    fn directory_as_kept(url: &str) -> String {
+        if Self::is_community(url) {
+            COMMUNITY_DIRECTORY.to_string()
+        } else {
+            url.trim().to_string()
+        }
     }
 
     fn save(&self) {
@@ -392,16 +408,15 @@ impl Prefs {
         Self::forget_cached_directory();
     }
 
-    /// Whether `url` is the community network's directory.
+    /// Whether `url` is the community network's directory, by either of its names.
     pub fn is_community(url: &str) -> bool {
-        let key = |u: &str| u.trim().trim_end_matches('/').to_ascii_lowercase();
-        key(url) == key(COMMUNITY_DIRECTORY)
+        setup::directory::is_community(url)
     }
 
     /// Sets (or with None, clears) the server directory.
     pub fn set_directory(url: Option<String>) {
         let mut prefs = Self::load();
-        prefs.directory = url.map(|u| u.trim().to_string()).filter(|u| !u.is_empty());
+        prefs.directory = url.map(|u| Self::directory_as_kept(&u)).filter(|u| !u.is_empty());
         prefs.directory_set = true;
         prefs.save();
         Self::forget_cached_directory();
@@ -417,7 +432,7 @@ impl Prefs {
         if prefs.directory.is_some() || !prefs.directory_set || !setup::directory::valid_coordinator(url) {
             return false;
         }
-        prefs.directory = Some(url.trim().to_string());
+        prefs.directory = Some(Self::directory_as_kept(url));
         prefs.save();
         Self::forget_cached_directory();
         true
@@ -934,7 +949,10 @@ mod tests {
         let list = note_recent(list, " D.example ", None, 99);
         assert_eq!((list[0].address.as_str(), list[0].name.as_deref(), list[0].last_used), ("D.example", Some("LAN party"), 99));
         assert_eq!(list.len(), 5);
-        assert!(Prefs::is_community("https://play.scbl.jdevwebb.net/"));
+        assert!(Prefs::is_community("https://play.scbl.jdevwebb.net/"), "its name until 0.4.5");
+        assert!(Prefs::is_community(COMMUNITY_DIRECTORY));
+        assert_eq!(Prefs::directory_as_kept(" https://play.scbl.jdevwebb.net/ "), COMMUNITY_DIRECTORY);
+        assert_eq!(Prefs::directory_as_kept(" https://play.example.org "), "https://play.example.org");
         assert!(!Prefs::is_community("https://play.example.org"));
     }
 }

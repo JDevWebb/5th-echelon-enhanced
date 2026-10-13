@@ -325,7 +325,7 @@ pub const STAGES: [&str; 4] = [
 /// account, pin the adapter, make a save, and save it all as the player's
 /// profile. Stops at the first step that fails, saying why.
 /// When `address` is a network (a coordinator's https address, e.g. the
-/// community's play.scbl.jdevwebb.net) rather than a game server: uses its
+/// community's scbl.jdevwebb.net) rather than a game server: uses its
 /// directory from now on, pings its servers, and returns the best one's host.
 /// None for anything else (a server, an IP address, a LAN host).
 pub fn pick_from_network(address: &str, log: &Log) -> Result<Option<String>, String> {
@@ -493,7 +493,7 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
             );
         } else if crate::app::Prefs::adopt_directory(&coordinator) {
             say(log, format!("Using the server directory at {shown}."));
-        } else if crate::app::Prefs::directory().is_none_or(|d| d.trim().trim_end_matches('/') != coordinator.trim().trim_end_matches('/')) {
+        } else if crate::app::Prefs::directory().is_none_or(|d| !setup::directory::same_directory(&d, &coordinator)) {
             say(
                 log,
                 format!("The server names the server directory {shown}. Yours stays as it is; if you trust it, set it in Settings."),

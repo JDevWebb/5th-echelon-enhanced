@@ -13,7 +13,11 @@ use serde::Serialize;
 
 /// The community network's coordinator, the launcher's directory unless the
 /// player chose another.
-pub const COMMUNITY: &str = "https://play.scbl.jdevwebb.net";
+pub const COMMUNITY: &str = "https://scbl.jdevwebb.net";
+/// Its name until 0.4.5, two levels deep, so Cloudflare couldn't stand in front of it (and fail
+/// it over). Still the same network: launchers that saved it move to [`COMMUNITY`], and the
+/// coordinator answers to both while older launchers update.
+pub const COMMUNITY_OLD: &str = "https://play.scbl.jdevwebb.net";
 /// The file, in the launcher's folder, keeping each directory's last list.
 pub const CACHE_FILE: &str = "directory-cache.json";
 /// The most directories kept in the cache.
@@ -256,7 +260,7 @@ pub fn best(servers: &[(Listing, Option<u32>)]) -> Option<usize> {
 /// The community's servers, built in for when its directory doesn't answer
 /// (none for any other directory).
 pub fn built_in(coordinator: &str) -> Vec<Listing> {
-    if !same_directory(coordinator, COMMUNITY) {
+    if !is_community(coordinator) {
         return Vec::new();
     }
     let ports = crate::server_info::Ports {
@@ -287,9 +291,27 @@ pub fn built_in(coordinator: &str) -> Vec<Listing> {
     .collect()
 }
 
-fn same_directory(a: &str, b: &str) -> bool {
+/// A directory's address as compared: trimmed, without a trailing `/`, lower case, and the
+/// community network's old name taken for its new one.
+fn directory_key(url: &str) -> String {
     let key = |u: &str| u.trim().trim_end_matches('/').to_ascii_lowercase();
-    key(a) == key(b)
+    let k = key(url);
+    if k == key(COMMUNITY_OLD) {
+        key(COMMUNITY)
+    } else {
+        k
+    }
+}
+
+/// Whether two directory addresses are the same directory (the community network's old and new
+/// names included).
+pub fn same_directory(a: &str, b: &str) -> bool {
+    directory_key(a) == directory_key(b)
+}
+
+/// Whether `url` is the community network's directory, by either of its names.
+pub fn is_community(url: &str) -> bool {
+    same_directory(url, COMMUNITY)
 }
 
 /// One directory's last list, as kept in [`CACHE_FILE`].
@@ -486,6 +508,26 @@ mod tests {
         let mut cancelled = vec![listing("a", 0)];
         carry_ended(std::slice::from_ref(&before), &mut cancelled, 9200);
         assert_eq!(cancelled[0].maintenance, [window(1000, 2000), window(5000, 6000)]);
+    }
+
+    #[test]
+    fn the_community_networks_old_name_is_the_same_directory() {
+        assert!(is_community(COMMUNITY) && is_community(COMMUNITY_OLD));
+        assert!(is_community("HTTPS://play.scbl.jdevwebb.net/ "));
+        assert!(same_directory(COMMUNITY_OLD, COMMUNITY));
+        assert!(!is_community("https://scbl.example.net") && !same_directory("https://a.example", COMMUNITY));
+        assert!(!built_in(COMMUNITY_OLD).is_empty());
+        // A list kept under the old name is the community's under the new one, and replaced
+        // by the new name's, not kept beside it.
+        let dir = std::env::temp_dir().join(format!("fe-dir-rename-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        save_cache(&dir, COMMUNITY_OLD, &[listing("old", 3)], None, 1000);
+        assert_eq!(cached(&dir, COMMUNITY).map(|(s, _)| s[0].id.clone()), Some("old".to_string()));
+        assert!(known_network(Some(&dir), COMMUNITY));
+        save_cache(&dir, COMMUNITY, &[listing("new", 3)], None, 2000);
+        assert_eq!(read_cache(&dir).len(), 1);
+        assert_eq!(cached(&dir, COMMUNITY_OLD).map(|(s, _)| s[0].id.clone()), Some("new".to_string()));
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
