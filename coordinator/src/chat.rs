@@ -283,33 +283,38 @@ impl Coordinator {
     /// conversations with it, what it read, its masked counts.
     pub(crate) async fn prune_chat(&self) -> sqlx::Result<()> {
         let now = identity::now();
+        // A message reported and not dealt with yet stays, whatever: neither its sender unlinking
+        // everywhere nor its age takes the evidence away from the admins.
+        let reported = "id NOT IN (SELECT message_id FROM chat_reports WHERE status = 'open')";
         let gone = "NOT IN (SELECT global_id FROM links)";
         for sql in [
-            format!("DELETE FROM chat_messages WHERE sender {gone} OR (recipient IS NOT NULL AND recipient {gone})"),
+            format!("DELETE FROM chat_messages WHERE (sender {gone} OR (recipient IS NOT NULL AND recipient {gone})) AND {reported}"),
             format!("DELETE FROM chat_reads WHERE global_id {gone}"),
             format!("DELETE FROM chat_masked WHERE global_id {gone}"),
         ] {
             sqlx::query(&sql).execute(&self.pool).await?;
         }
         for (sql, keep) in [
-            ("DELETE FROM chat_messages WHERE room = 'global' AND at < ?", GLOBAL_KEEP),
-            ("DELETE FROM chat_messages WHERE room = 'direct' AND at < ?", DIRECT_KEEP),
-            ("DELETE FROM chat_messages WHERE room = 'lobby' AND at < ?", LOBBY_KEEP),
-            ("DELETE FROM chat_refused WHERE at < ?", REFUSED_KEEP),
-            ("DELETE FROM chat_reports WHERE status != 'open' AND resolved_at < ?", REPORTS_KEEP),
-            ("DELETE FROM chat_masked WHERE day * 86400 < ?", MASKED_KEEP),
-            ("DELETE FROM chat_mutes WHERE until IS NOT NULL AND until < ?", 0),
+            (format!("DELETE FROM chat_messages WHERE room = 'global' AND at < ? AND {reported}"), GLOBAL_KEEP),
+            (format!("DELETE FROM chat_messages WHERE room = 'direct' AND at < ? AND {reported}"), DIRECT_KEEP),
+            (format!("DELETE FROM chat_messages WHERE room = 'lobby' AND at < ? AND {reported}"), LOBBY_KEEP),
+            ("DELETE FROM chat_refused WHERE at < ?".to_string(), REFUSED_KEEP),
+            ("DELETE FROM chat_reports WHERE status != 'open' AND resolved_at < ?".to_string(), REPORTS_KEEP),
+            ("DELETE FROM chat_masked WHERE day * 86400 < ?".to_string(), MASKED_KEEP),
+            ("DELETE FROM chat_mutes WHERE until IS NOT NULL AND until < ?".to_string(), 0),
         ] {
-            sqlx::query(sql).bind(now - keep).execute(&self.pool).await?;
+            sqlx::query(&sql).bind(now - keep).execute(&self.pool).await?;
         }
-        sqlx::query("DELETE FROM chat_messages WHERE room = 'global' AND id NOT IN (SELECT id FROM chat_messages WHERE room = 'global' ORDER BY id DESC LIMIT ?)")
-            .bind(GLOBAL_LAST)
-            .execute(&self.pool)
-            .await?;
-        sqlx::query(
-            "DELETE FROM chat_messages WHERE room = 'direct' AND id IN (
-                 SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY conv ORDER BY id DESC) AS n FROM chat_messages WHERE room = 'direct') WHERE n > ?)",
-        )
+        sqlx::query(&format!(
+            "DELETE FROM chat_messages WHERE room = 'global' AND {reported} AND id NOT IN (SELECT id FROM chat_messages WHERE room = 'global' ORDER BY id DESC LIMIT ?)"
+        ))
+        .bind(GLOBAL_LAST)
+        .execute(&self.pool)
+        .await?;
+        sqlx::query(&format!(
+            "DELETE FROM chat_messages WHERE room = 'direct' AND {reported} AND id IN (
+                 SELECT id FROM (SELECT id, ROW_NUMBER() OVER (PARTITION BY conv ORDER BY id DESC) AS n FROM chat_messages WHERE room = 'direct') WHERE n > ?)"
+        ))
         .bind(DIRECT_LAST)
         .execute(&self.pool)
         .await?;

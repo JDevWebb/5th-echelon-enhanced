@@ -4197,17 +4197,30 @@ async fn chat_names_are_their_own_and_go_with_the_links() {
     // On server-b, an account also called Kiwi (the link notes the conflict).
     let r = t.changes(&b, json!([link(&imposter, "server-b", "Kiwi")])).await;
     assert_eq!(r[0]["conflict"], true, "{r:?}");
-    let send = |secret: &str, who: &identity::Identity| {
-        let (secret, body) = (secret.to_string(), json!({ "room": "global", "from": who.global_id(), "text": "hello" }));
+    let send = |secret: &str, who: &identity::Identity, text: &str| {
+        let (secret, body) = (secret.to_string(), json!({ "room": "global", "from": who.global_id(), "text": text }));
         let t = &t;
         async move { t.call("POST", "/v1/chat/send", Some(&secret), Some(body)).await.1 }
     };
-    assert_eq!(send(&b, &imposter).await["refused"], "name_conflict");
-    assert_eq!(send(&a, &kiwi).await["message"]["from_name"], "Kiwi");
+    assert_eq!(send(&b, &imposter, "hello").await["refused"], "name_conflict");
+    assert_eq!(send(&a, &kiwi, "hello").await["message"]["from_name"], "Kiwi");
 
-    // Kiwi unlinks everywhere: their chat goes with the next hourly rollup.
+    // A message of Kiwi's reported by another player, and one not.
+    let watcher = identity::Identity::generate();
+    t.changes(&b, json!([link(&watcher, "server-b", "Watcher")])).await;
+    let reported = send(&a, &kiwi, "something abusive").await["message"]["id"].as_i64().unwrap();
+    t.call(
+        "POST",
+        "/v1/chat/report",
+        Some(&b),
+        Some(json!({ "for": watcher.global_id(), "id": reported, "why": "abuse" })),
+    )
+    .await;
+
+    // Kiwi unlinks everywhere: their chat goes with the next hourly rollup, but not what's
+    // reported and waiting for the admins (no wiping the evidence by unlinking).
     t.changes(&a, json!([{ "op": "unlink", "global_id": kiwi.global_id() }])).await;
     t.c.prune_chat().await.unwrap();
-    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages").fetch_one(&t.c.pool).await.unwrap();
-    assert_eq!(left, 0);
+    let left: Vec<i64> = sqlx::query_scalar("SELECT id FROM chat_messages").fetch_all(&t.c.pool).await.unwrap();
+    assert_eq!(left, [reported]);
 }
