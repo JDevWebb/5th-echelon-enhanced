@@ -378,13 +378,6 @@ impl Coordinator {
                         // 2026-10-13, 0.4.3's picked eu1 and 0.4.4 took over half-way). Those
                         // update last, with the coordinator.
                         let candidates: Vec<&&Member> = fresh.iter().filter(|m| m.auto_update && m.version != target && !local.contains(&m.id)).collect();
-                        // A server already running it (an admin's update now, a rollout picked up
-                        // half-way): that one is the canary to check, not another.
-                        let already = fresh
-                            .iter()
-                            .filter(|m| m.auto_update && m.version == target)
-                            .min_by_key(|m| (local.contains(&m.id), m.id.clone()))
-                            .copied();
                         let mut ready = Vec::new();
                         for m in candidates.iter().copied() {
                             if self.may_update(&r, &m.id, now).await? {
@@ -394,14 +387,8 @@ impl Coordinator {
                         let pick = ready
                             .into_iter()
                             .min_by_key(|m| (m.players_online, identity::digest(format!("{target}\n{}", m.id).as_bytes())));
-                        match (already, pick) {
-                            (Some(m), _) => {
-                                r.canary = Some(m.id.clone());
-                                r.stage = "verifying".into();
-                                r.stage_since = now;
-                                r.note = format!("{} already runs {target}: checking it keeps reporting in", m.id);
-                            }
-                            (None, Some(m)) => {
+                        match pick {
+                            Some(m) => {
                                 r.canary = Some(m.id.clone());
                                 r.stage_since = now;
                                 if r.note == WAITING_FOR_WINDOW {
@@ -409,9 +396,9 @@ impl Coordinator {
                                 }
                             }
                             // Servers to try it on, none in an update window yet.
-                            (None, None) if !candidates.is_empty() => r.note = WAITING_FOR_WINDOW.into(),
+                            None if !candidates.is_empty() => r.note = WAITING_FOR_WINDOW.into(),
                             // Nobody left to try it on: every server runs it already, or none update.
-                            (None, None) => {
+                            None => {
                                 r.stage = "rolling".into();
                                 r.stage_since = now;
                             }
@@ -474,7 +461,10 @@ impl Coordinator {
         // its game server's too), or when the rollout goes out without windows.
         // Last, once every other server runs it: the coordinator, and with it the game server on
         // this machine.
-        if matches!(r.stage.as_str(), "rolling" | "done") && others_done(&fresh, &local, &target) && (r.anytime || self.update_windows_open(now).await?.1) {
+        if matches!(r.stage.as_str(), "rolling" | "done")
+            && (others_done(&fresh, &local, &target) || now - r.stage_since >= LAST_WAIT)
+            && (r.anytime || self.update_windows_open(now).await?.1)
+        {
             self.request_own_update(&target);
         }
         Ok(())
@@ -499,7 +489,7 @@ impl Coordinator {
             let local = self.local_members(&members).await;
             if local.iter().any(|l| l == server) {
                 let fresh: Vec<&Member> = members.iter().filter(|m| now - m.last_seen <= FRESH).collect();
-                if !others_done(&fresh, &local, &target) {
+                if !others_done(&fresh, &local, &target) && now - r.stage_since < LAST_WAIT {
                     return Ok(None);
                 }
             }
@@ -642,6 +632,11 @@ impl Coordinator {
         Ok(list)
     }
 }
+
+/// How long into the rolling stage the coordinator's own machine waits for the other servers at
+/// most: a server that never updates (stuck, or on purpose) mustn't keep the coordinator off a
+/// release, a security fix say, for good.
+const LAST_WAIT: i64 = QUIET_WAIT;
 
 /// How often the member servers on this machine are worked out again.
 const LOCAL_EVERY: i64 = 600;

@@ -385,7 +385,7 @@ async fn an_admin_can_send_a_rollout_out_without_windows() {
 /// The server on the coordinator's machine is never the canary and updates last: its machine's
 /// updater installs the coordinator too, which would carry on the rollout under the new
 /// release's rules (2026-10-13: 0.4.3's coordinator picked eu1, and 0.4.4 took over half-way).
-/// A server already running the release is the canary to check, not another.
+/// They don't hold it back for ever, though.
 #[tokio::test]
 async fn the_coordinators_own_machine_updates_last() {
     let t = start("rollout-local").await;
@@ -414,15 +414,19 @@ async fn the_coordinators_own_machine_updates_last() {
     heartbeat_asks(&t, other_secret, other, "1.1.0", 0, false).await;
     assert_eq!(heartbeat_asks(&t, &eu1, "eu1", "1.0.0", 0, false).await.as_deref(), Some("1.1.0"), "last");
 
-    // The next release: na1 already runs it (an admin updated it by hand). It's the canary to
-    // check, rather than another server being tried.
+    // A server that never updates holds it back only so long: the coordinator mustn't be kept
+    // off a release (a security fix) for good.
     heartbeat_asks(&t, &eu1, "eu1", "1.1.0", 0, false).await;
-    t.c.tick_rollout().await.unwrap();
     t.c.start_rollout("1.2.0", "a test").await.unwrap();
-    heartbeat_asks(&t, &na1, "na1", "1.2.0", 0, false).await;
-    t.c.tick_rollout().await.unwrap();
-    let r = t.c.rollout().await.unwrap();
-    assert_eq!((r.stage.as_str(), r.canary.as_deref()), ("verifying", Some("na1")), "{}", r.note);
+    t.c.go_now().await.unwrap();
+    t.c.promote().await.unwrap();
+    assert_eq!(heartbeat_asks(&t, &eu1, "eu1", "1.1.0", 0, false).await, None, "the others first");
+    sqlx::query("UPDATE rollout SET stage_since = stage_since - ?")
+        .bind(updates::QUIET_WAIT)
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(heartbeat_asks(&t, &eu1, "eu1", "1.1.0", 0, false).await.as_deref(), Some("1.2.0"), "but not for ever");
 }
 
 #[tokio::test]
