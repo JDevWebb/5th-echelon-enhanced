@@ -31,8 +31,12 @@ use windows::core::PCSTR;
 use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
-use windows::Win32::UI::WindowsAndMessaging::DefWindowProcA;
+use windows::Win32::UI::Input::KeyboardAndMouse::VK_F4;
+use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
+use windows::Win32::UI::WindowsAndMessaging::SC_CLOSE;
 use windows::Win32::UI::WindowsAndMessaging::WM_ACTIVATEAPP;
+use windows::Win32::UI::WindowsAndMessaging::WM_SYSCOMMAND;
+use windows::Win32::UI::WindowsAndMessaging::WM_SYSKEYDOWN;
 
 use crate::community;
 use crate::uplay_r1_loader::Event;
@@ -1458,14 +1462,28 @@ impl ImguiRenderLoop for MyRenderLoop {
         }
     }
 
+    // hudhook hands each window message here later, on the render thread, after the game's own
+    // window procedure has had it (or the message filter held it back). Nothing is handled a
+    // second time here: replaying them through the default handler, as this once did, ran
+    // Alt's menu loop, Alt+Space's system menu and minimise/move again, late and on the wrong
+    // thread.
     fn on_wnd_proc(&self, hwnd: windows::Win32::Foundation::HWND, umsg: u32, wparam: windows::Win32::Foundation::WPARAM, lparam: windows::Win32::Foundation::LPARAM) {
         if umsg == WM_ACTIVATEAPP && wparam.0 == 0 {
             FOCUS_LOST.store(true, Ordering::SeqCst);
         }
-        if matches!(self.ui_state, UiState::Show) {
-            // Forward to default handler so that the window doesn't break
+        // The panel holds the keyboard back from the game, Alt+F4 with it: still the way to
+        // quit. Alt held (bit 29) and not a repeat (bit 30); posted, so it reaches the window's
+        // own thread as a close would.
+        let alt = lparam.0 & (1 << 29) != 0;
+        let repeat = lparam.0 & (1 << 30) != 0;
+        if matches!(self.ui_state, UiState::Show) && umsg == WM_SYSKEYDOWN && wparam.0 == usize::from(VK_F4.0) && alt && !repeat {
             unsafe {
-                DefWindowProcA(hwnd, umsg, wparam, lparam);
+                let _ = PostMessageW(
+                    hwnd,
+                    WM_SYSCOMMAND,
+                    windows::Win32::Foundation::WPARAM(SC_CLOSE as usize),
+                    windows::Win32::Foundation::LPARAM(0),
+                );
             }
         }
     }
