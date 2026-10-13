@@ -37,6 +37,13 @@ struct Args {
     /// Without it, for whatever name a request says
     #[argh(option)]
     name: Vec<String>,
+    /// run chat: the community network's coordinator only (docs/chat.md)
+    #[argh(switch)]
+    chat: bool,
+    /// let member servers not checked against the signed release pass chat (a test network
+    /// built from a branch)
+    #[argh(switch)]
+    chat_unverified: bool,
     /// a member server on this machine, by its id (repeat for more): rollouts update it
     /// last, with the coordinator (this machine's updater installs both). Without it, the
     /// members whose host resolves to this machine's address
@@ -373,6 +380,13 @@ async fn main() -> eyre::Result<()> {
     }
     let _ = coordinator.names.set(args.name.iter().map(|n| identity::host_key(n)).collect());
     let _ = coordinator.local_servers.set(args.local_server.clone());
+    if args.chat {
+        coordinator.enable_chat();
+        if args.chat_unverified {
+            tracing::warn!("--chat-unverified: servers not checked against the signed release may pass chat");
+            coordinator.chat_from_unverified();
+        }
+    }
     if args.no_host_check {
         tracing::warn!("--no-host-check: member servers are listed at whatever host they say, unchecked");
     } else {

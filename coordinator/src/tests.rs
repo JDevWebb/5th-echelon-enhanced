@@ -3996,3 +3996,190 @@ async fn heartbeats_carry_the_client_builds_servers_take() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(beat().await["allowed"], json!([]));
 }
+
+/// Chat (docs/chat.md): only with `--chat`, only from servers running the signed release, a
+/// server only for its own players; Global to every server, a direct message only to the two
+/// friends' servers, a lobby only to its own server; links refused, slurs masked, a pace kept;
+/// a conversation read only by its two; unread counts, reports and deletes.
+#[tokio::test]
+async fn chat_goes_only_where_it_should() {
+    let t = start("chat").await;
+    let (a, b, c) = (t.join("server-a").await, t.join("server-b").await, t.join("server-c").await);
+    let (kiwi, tank, stranger) = (identity::Identity::generate(), identity::Identity::generate(), identity::Identity::generate());
+    let r = t
+        .changes(
+            &a,
+            json!([link(&kiwi, "server-a", "Kiwi"), link(&tank, "server-a", "Tank"), { "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": true }]),
+        )
+        .await;
+    assert!(r.iter().all(|r| r.get("error").is_none()), "{r:?}");
+    t.changes(&b, json!([link(&tank, "server-b", "Tank"), link(&stranger, "server-b", "Stranger")])).await;
+    let send = |secret: &str, body: Value| {
+        let secret = secret.to_string();
+        let t = &t;
+        async move { t.call("POST", "/v1/chat/send", Some(&secret), Some(body)).await }
+    };
+    let global = |who: &identity::Identity, text: &str| json!({ "room": "global", "from": who.global_id(), "text": text });
+
+    // Off without --chat; then only for servers running the signed release.
+    assert_eq!(send(&a, global(&kiwi, "hi")).await.0, StatusCode::NOT_FOUND);
+    t.c.enable_chat();
+    assert_eq!(send(&a, global(&kiwi, "hi")).await.0, StatusCode::FORBIDDEN, "not checked against the release");
+    t.c.chat_from_unverified();
+
+    // Where each server starts reading.
+    let start = |secret: &str| {
+        let secret = secret.to_string();
+        let t = &t;
+        async move { t.call("GET", "/v1/chat/wait?after=-1", Some(&secret), None).await.1["last"].as_i64().unwrap() }
+    };
+    let (from_b, from_c) = (start(&b).await, start(&c).await);
+
+    // Global: as the player linked there, by that name; a server can't post for another's.
+    let (status, v) = send(&a, global(&kiwi, "anyone up for co-op?")).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(
+        (v["message"]["from_name"].as_str(), v["message"]["body"].as_str()),
+        (Some("Kiwi"), Some("anyone up for co-op?"))
+    );
+    assert_eq!(send(&a, global(&stranger, "hello")).await.0, StatusCode::FORBIDDEN, "not server-a's player");
+
+    // Direct: friends only; to the two players' servers.
+    let direct = |from: &identity::Identity, to: &identity::Identity, text: &str| json!({ "room": "direct", "from": from.global_id(), "to": to.global_id(), "text": text });
+    let (_, v) = send(&a, direct(&kiwi, &tank, "ready?")).await;
+    assert!(v["message"]["id"].is_i64(), "{v}");
+    let (_, v) = send(&b, direct(&stranger, &tank, "hey")).await;
+    assert_eq!(v["refused"], "not_friends", "{v}");
+    // Lobby: its own server's only.
+    send(&a, json!({ "room": "lobby", "from": kiwi.global_id(), "session": 5, "text": "in the lobby" })).await;
+
+    let read = |secret: &str, after: i64| {
+        let secret = secret.to_string();
+        let t = &t;
+        async move {
+            let v = t.call("GET", &format!("/v1/chat/wait?after={after}"), Some(&secret), None).await.1;
+            v["messages"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|m| m["body"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(
+        read(&b, from_b).await,
+        ["anyone up for co-op?", "ready?"],
+        "Global and the direct message to Tank, not server-a's lobby"
+    );
+    assert_eq!(read(&c, from_c).await, ["anyone up for co-op?"], "nobody of server-c's in the direct message");
+
+    // A conversation is read only by its two (and their servers).
+    let conv = crate::chat::direct_conv(&kiwi.global_id(), &tank.global_id());
+    let history = |secret: &str, who: &identity::Identity| {
+        let (secret, path) = (secret.to_string(), format!("/v1/chat/history?for={}&conv={}", who.global_id(), urlencode(&conv)));
+        let t = &t;
+        async move { t.call("GET", &path, Some(&secret), None).await }
+    };
+    assert_eq!(history(&b, &tank).await.1["messages"][0]["body"], "ready?");
+    assert_eq!(history(&b, &stranger).await.0, StatusCode::FORBIDDEN, "not theirs");
+    assert_eq!(history(&c, &tank).await.0, StatusCode::FORBIDDEN, "not server-c's player");
+
+    // Rules: a link is refused (and kept for the admins), a slur masked; the pace.
+    let (_, v) = send(&a, global(&kiwi, "free skins at example.com")).await;
+    assert_eq!(v["refused"], "link", "{v}");
+    let refused: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_refused").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(refused, 1);
+    let slur: String = "regg1n".chars().rev().collect();
+    let (_, v) = send(&a, global(&kiwi, &format!("you {slur}"))).await;
+    assert_eq!(v["message"]["body"], "you ***");
+    let mut slowed = false;
+    for i in 0..8 {
+        if send(&a, global(&kiwi, &format!("spam {i}"))).await.1["refused"] == "slow" {
+            slowed = true;
+            break;
+        }
+    }
+    assert!(slowed, "five in ten seconds at most");
+
+    // Unread counts, read, report, delete.
+    let convs = t.call("GET", &format!("/v1/chat/conversations?for={}", tank.global_id()), Some(&b), None).await.1;
+    assert_eq!(
+        (convs["conversations"][0]["with_name"].as_str(), convs["conversations"][0]["unread"].as_i64()),
+        (Some("Kiwi"), Some(1))
+    );
+    let last = convs["conversations"][0]["last"].as_i64().unwrap();
+    t.call("POST", "/v1/chat/read", Some(&b), Some(json!({ "for": tank.global_id(), "conv": conv, "up_to": last })))
+        .await;
+    let convs = t.call("GET", &format!("/v1/chat/conversations?for={}", tank.global_id()), Some(&b), None).await.1;
+    assert_eq!(convs["conversations"][0]["unread"], 0);
+    assert_eq!(
+        t.call("POST", "/v1/chat/report", Some(&b), Some(json!({ "for": tank.global_id(), "id": last, "why": "rude" })))
+            .await
+            .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        t.call("POST", "/v1/chat/delete", Some(&b), Some(json!({ "for": tank.global_id(), "id": last }))).await.0,
+        StatusCode::NOT_FOUND,
+        "not Tank's message to delete"
+    );
+    assert_eq!(
+        t.call("POST", "/v1/chat/delete", Some(&a), Some(json!({ "for": kiwi.global_id(), "id": last }))).await.0,
+        StatusCode::OK
+    );
+    assert!(history(&b, &tank).await.1["messages"].as_array().unwrap().is_empty(), "deleted");
+}
+
+fn urlencode(s: &str) -> String {
+    s.bytes()
+        .map(|b| {
+            if b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.') {
+                (b as char).to_string()
+            } else {
+                format!("%{b:02X}")
+            }
+        })
+        .collect()
+}
+
+/// A server waiting for messages gets one as soon as it's sent, not after the wait runs out.
+#[tokio::test]
+async fn a_waiting_server_gets_a_message_at_once() {
+    let t = start("chat-wait").await;
+    t.c.enable_chat();
+    t.c.chat_from_unverified();
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    let kiwi = identity::Identity::generate();
+    t.changes(&a, json!([link(&kiwi, "server-a", "Kiwi")])).await;
+    let from = t.call("GET", "/v1/chat/wait?after=-1", Some(&b), None).await.1["last"].as_i64().unwrap();
+    let started = std::time::Instant::now();
+    let waiting = {
+        let router = t.router.clone();
+        let b = b.clone();
+        tokio::spawn(async move {
+            let req = Request::builder()
+                .uri(format!("/v1/chat/wait?after={from}"))
+                .header("authorization", format!("Bearer {b}"))
+                .header("host", "coordinator.test")
+                .body(Body::empty())
+                .unwrap();
+            let resp = router.oneshot(req).await.unwrap();
+            let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+            serde_json::from_slice::<Value>(&bytes).unwrap()
+        })
+    };
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    t.call(
+        "POST",
+        "/v1/chat/send",
+        Some(&a),
+        Some(json!({ "room": "global", "from": kiwi.global_id(), "text": "now" })),
+    )
+    .await;
+    let v = tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .expect("the wait didn't end when a message came")
+        .unwrap();
+    assert_eq!(v["messages"][0]["body"], "now");
+    assert!(started.elapsed() < Duration::from_secs(5));
+}

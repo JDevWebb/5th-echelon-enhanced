@@ -41,6 +41,7 @@
 
 pub mod admin;
 pub mod alerts;
+pub mod chat;
 pub mod clients;
 pub mod content;
 pub mod game_names;
@@ -531,6 +532,11 @@ pub struct Coordinator {
     /// coordinator only, whose roadmap every launcher reads (`--roadmap`). Off, its routes
     /// and the admin UI's page aren't there.
     roadmap: std::sync::atomic::AtomicBool,
+    /// Chat runs here (the community network's coordinator: `--chat`).
+    chat_on: std::sync::atomic::AtomicBool,
+    /// Servers not checked against the signed release may pass chat (a test network).
+    chat_unverified: std::sync::atomic::AtomicBool,
+    pub chat: chat::ChatState,
     /// The names launchers reach this coordinator by (`--name`): what players' signed
     /// requests must be made for. Unset, the request's own Host is taken, which anyone
     /// replaying a signature made for another coordinator can set to that one's name.
@@ -662,6 +668,9 @@ impl Coordinator {
             support_address_bytes: std::sync::Mutex::default(),
             support_refusals_said: Limit::per(1, Duration::from_secs(3600)),
             roadmap: std::sync::atomic::AtomicBool::new(false),
+            chat_on: std::sync::atomic::AtomicBool::new(false),
+            chat_unverified: std::sync::atomic::AtomicBool::new(false),
+            chat: chat::ChatState::default(),
             names: std::sync::OnceLock::new(),
             host_checks: std::sync::atomic::AtomicBool::new(false),
             host_checks_private: std::sync::atomic::AtomicBool::new(false),
@@ -825,6 +834,13 @@ impl Coordinator {
             .route("/v1/reports", post(report).layer(DefaultBodyLimit::max(reports::MAX_BODY)))
             .route("/v1/content", post(player_content).layer(DefaultBodyLimit::max(content::MAX_BODY)))
             .route("/v1/events", post(events_report).layer(DefaultBodyLimit::max(sessions::MAX_BODY)))
+            .route("/v1/chat/send", post(chat::send))
+            .route("/v1/chat/wait", get(chat::wait))
+            .route("/v1/chat/history", get(chat::history))
+            .route("/v1/chat/conversations", get(chat::conversations))
+            .route("/v1/chat/read", post(chat::read))
+            .route("/v1/chat/delete", post(chat::delete))
+            .route("/v1/chat/report", post(chat::report))
             .layer(DefaultBodyLimit::max(MAX_BODY))
             .layer(axum::middleware::from_fn_with_state(Arc::clone(&self), bounded))
             .with_state(self)
@@ -1427,7 +1443,14 @@ async fn pulse(State(c): State<Shared>, headers: HeaderMap, body: axum::body::By
     } else {
         Vec::new()
     };
-    ok(json!({ "actions": actions, "support": support }))
+    // The network's chat rules, for its servers to check messages and names by (the coordinator
+    // checks again): the words and names its admins allowed, and its own extra words.
+    let mut answer = json!({ "actions": actions, "support": support });
+    if c.has_chat() {
+        let (allow, extra, discord_invites) = c.chat_settings().await;
+        answer["chat"] = json!({ "allow": allow, "extra": extra, "discord_invites": discord_invites });
+    }
+    ok(answer)
 }
 
 /// A server's players' session events (see [`sessions`]).

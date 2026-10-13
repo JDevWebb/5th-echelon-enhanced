@@ -19,6 +19,7 @@ axum = { version = "0.8", default-features = false, features = ["http1", "json",
 eyre = { workspace = true }
 flate2 = { workspace = true }
 identity = { path = "../identity" }
+moderation = { path = "../moderation" }
 stat_boards = { path = "../stat_boards" }
 rand = { workspace = true }
 serde = { workspace = true }

@@ -380,6 +380,7 @@ impl Coordinator {
         self.prune_session_events().await?;
         self.prune_content().await?;
         self.prune_support().await?;
+        self.prune_chat().await?;
         self.expire_actions().await
     }
 
