@@ -74,6 +74,8 @@ pub enum Event {
     Roadmap,
     /// A support conversation changed (a player wrote, or an admin answered).
     Support,
+    /// A chat message was reported, or an admin dealt with one (or with a mute, or the rules).
+    Moderation,
 }
 
 /// The live points kept per server: half an hour of them.
@@ -441,6 +443,12 @@ async fn serve(c: Arc<Coordinator>, mut socket: WebSocket, headers: HeaderMap, c
                 Ok(Event::Support) => {
                     dirty = true;
                     if !send(&mut socket, json!({ "type": "support" })).await {
+                        return;
+                    }
+                }
+                Ok(Event::Moderation) => {
+                    dirty = true;
+                    if !send(&mut socket, json!({ "type": "moderation" })).await {
                         return;
                     }
                 }

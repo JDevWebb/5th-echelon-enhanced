@@ -734,6 +734,16 @@ async fn chat(ctx: &mut Ctx, other: IpAddr) -> Result<()> {
         seen.iter().any(|b| b == "meet on EU?"),
         "the direct message didn't reach the friend on the other server: {seen:?}"
     );
+    // Deleted by its sender: a deletion reaches the friend's server too.
+    kiwi.chat_delete(id).await.wrap_err("deleting the direct message")?;
+    let seen = tank_b
+        .chat_wait_until(id, Duration::from_secs(40), |m| m.deletes == id)
+        .await
+        .wrap_err("waiting for the deletion on B")?;
+    ensure!(
+        seen.iter().any(|m| m.deletes == id && m.body.is_empty()),
+        "the deletion didn't reach the friend on the other server: {seen:?}"
+    );
     let refused = plain.chat_status().await?;
     ensure!(!refused.available, "a player without an identity can chat");
 

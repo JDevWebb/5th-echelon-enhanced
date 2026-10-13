@@ -80,6 +80,8 @@ struct Kept {
     server_name: String,
     to: String,
     body: String,
+    /// For a deletion: the message it deletes (0: none).
+    deletes: i64,
 }
 
 impl Kept {
@@ -101,6 +103,7 @@ impl Kept {
             server_name: text("server_name", 64),
             to: v["to"].as_str().unwrap_or_default().to_string(),
             body: v["body"].as_str().unwrap_or_default().chars().take(moderation::MAX_MESSAGE).collect(),
+            deletes: v["deletes"].as_i64().unwrap_or_default(),
         })
     }
 
@@ -117,6 +120,7 @@ impl Kept {
             body: self.body.clone(),
             mine: self.from == me,
             mentions_me: !my_name.is_empty() && self.from != me && self.body.to_lowercase().contains(&mention),
+            deletes: self.deletes,
         }
     }
 }
@@ -193,6 +197,10 @@ fn take(answer: &Value) {
     }
     let mut all = kept().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     for m in messages {
+        // A deletion: the message goes, and the deletion is kept for players who have it.
+        if m.deletes != 0 {
+            all.retain(|k| k.id != m.deletes);
+        }
         if all.back().is_none_or(|b| b.id < m.id) {
             all.push_back(m);
         }

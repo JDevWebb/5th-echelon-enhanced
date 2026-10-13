@@ -1080,6 +1080,13 @@ impl Bot {
     /// Waits for chat messages after `after`, until one with `body` comes or `wait` runs out:
     /// the bodies seen.
     pub async fn chat_wait_for(&self, after: i64, body: &str, wait: Duration) -> Result<Vec<String>> {
+        let seen = self.chat_wait_until(after, wait, |m| m.body == body).await?;
+        Ok(seen.into_iter().map(|m| m.body).collect())
+    }
+
+    /// Waits for chat messages after `after`, until one that `done` likes comes or `wait` runs
+    /// out: the messages seen.
+    pub async fn chat_wait_until(&self, after: i64, wait: Duration, done: impl Fn(&server_api::chat::Message) -> bool) -> Result<Vec<server_api::chat::Message>> {
         let deadline = tokio::time::Instant::now() + wait;
         let mut seen = Vec::new();
         let mut after = after;
@@ -1091,12 +1098,20 @@ impl Bot {
             };
             let answer = answer?.into_inner();
             after = answer.last.max(after);
-            seen.extend(answer.messages.into_iter().map(|m| m.body));
-            if seen.iter().any(|b| b == body) {
+            seen.extend(answer.messages);
+            if seen.iter().any(&done) {
                 break;
             }
         }
         Ok(seen)
+    }
+
+    /// Deletes one of this player's chat messages.
+    pub async fn chat_delete(&self, id: i64) -> std::result::Result<(), tonic::Status> {
+        server_api::chat::chat_client::ChatClient::new(self.api.clone())
+            .delete(self.authed(server_api::chat::MessageRequest { id, why: String::new() }))
+            .await?;
+        Ok(())
     }
 
     /// Polls events as a game that shows notices in its overlay (0.4.4 and later) does, until

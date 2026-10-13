@@ -19,7 +19,7 @@ service Chat {
     rpc Conversations (ConversationsRequest) returns (ConversationsResponse);
     // The caller read a conversation up to a message.
     rpc MarkRead (MarkReadRequest) returns (Empty);
-    // Deletes one of the caller's own messages.
+    // Deletes one of the caller's own messages (a deletion follows in Wait, for every player).
     rpc Delete (MessageRequest) returns (Empty);
     // Reports a message to the network's admins, and why.
     rpc Report (MessageRequest) returns (Empty);
@@ -70,6 +70,9 @@ message Message {
     bool mine = 9;
     // It names the caller (@name).
     bool mentions_me = 10;
+    // A deletion, not a message: drop the message with this id (by its sender or an admin).
+    // Nothing else in it is to be shown.
+    int64 deletes = 11;
 }
 
 message SendRequest {

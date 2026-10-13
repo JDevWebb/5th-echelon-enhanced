@@ -4242,3 +4242,107 @@ async fn chat_names_are_their_own_and_go_with_the_links() {
     let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages").fetch_one(&t.c.pool).await.unwrap();
     assert_eq!(left, 0);
 }
+
+/// The Moderation page: a report shows the message and what came before it; deleting it sends a
+/// deletion after it (and wants a second factor proved lately); mutes; the rules' settings,
+/// which reach names and messages at once; names that fail them listed.
+#[tokio::test]
+async fn admins_moderate_chat_and_names() {
+    let t = start("moderation").await;
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    let (kiwi, tank) = (identity::Identity::generate(), identity::Identity::generate());
+    t.changes(
+        &a,
+        json!([link(&kiwi, "server-a", "Kiwi"), link(&tank, "server-a", "Tank"), { "op": "friends", "a": kiwi.global_id(), "b": tank.global_id(), "friends": true }]),
+    )
+    .await;
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&a),
+        Some(json!({ "full": true, "players": [player(1, "Kiwi", Some(&kiwi.global_id())), player(2, "Tank", Some(&tank.global_id())), player(3, "Pineapple", None)] })),
+    )
+    .await;
+    t.c.enable_chat();
+    t.c.chat_from_unverified();
+    let send = |who: &identity::Identity, text: &str| {
+        let (a, body) = (a.clone(), json!({ "room": "global", "from": who.global_id(), "text": text }));
+        let t = &t;
+        async move { t.call("POST", "/v1/chat/send", Some(&a), Some(body)).await.1 }
+    };
+    let start = t.call("GET", "/v1/chat/wait?after=-1", Some(&a), None).await.1["last"].as_i64().unwrap();
+    send(&kiwi, "evening all").await;
+    let bad = send(&kiwi, "something nasty").await["message"]["id"].as_i64().unwrap();
+    let (status, _) = t
+        .call("POST", "/v1/chat/report", Some(&a), Some(json!({ "for": tank.global_id(), "id": bad, "why": "rude" })))
+        .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let stale = admin_cookie(&t, "admin1", 3600).await;
+    let (status, v) = admin_call(&r, "GET", "/api/moderation", &stale, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let report = &v["reports"][0];
+    assert_eq!(report["message"]["body"], "something nasty");
+    assert_eq!(report["reports"][0]["name"], "Tank");
+    assert_eq!(report["reports"][0]["why"], "rude");
+    assert_eq!(report["before"][0]["body"], "evening all");
+    assert_eq!(report["sender"]["accounts"][0]["id"], 1, "the sender's accounts, for a ban");
+    assert_eq!(t.c.admin_overview().await.unwrap()["chat_reports"], 1, "the rail's badge");
+
+    // Deleting wants a second factor proved lately; then a deletion follows the message.
+    let (status, _) = admin_call(&r, "POST", &format!("/api/moderation/reports/{bad}"), &stale, Some(json!({ "action": "delete" }))).await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    let fresh = admin_cookie(&t, "admin2", 0).await;
+    let (status, v) = admin_call(
+        &r,
+        "POST",
+        &format!("/api/moderation/reports/{bad}"),
+        &fresh,
+        Some(json!({ "action": "delete", "note": "rude" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let v = t.call("GET", &format!("/v1/chat/wait?after={start}"), Some(&a), None).await.1;
+    let messages = v["messages"].as_array().unwrap();
+    assert_eq!(messages.len(), 2, "evening all, and the deletion (the deleted message is gone): {v}");
+    assert_eq!((messages[1]["deletes"].as_i64(), messages[1]["body"].as_str()), (Some(bad), Some("")));
+    let path = format!("/v1/chat/history?for={}&conv=global", tank.global_id());
+    let v = t.call("GET", &path, Some(&a), None).await.1;
+    assert_eq!(v["messages"].as_array().unwrap().len(), 1, "history shows neither: {v}");
+    assert_eq!(t.c.admin_overview().await.unwrap()["chat_reports"], 0);
+    let (status, _) = admin_call(&r, "POST", &format!("/api/moderation/reports/{bad}"), &fresh, Some(json!({ "action": "dismiss" }))).await;
+    assert_eq!(status, StatusCode::CONFLICT, "dealt with already");
+
+    // A mute, then lifted.
+    let mute = json!({ "identity": kiwi.global_id(), "room": "global", "hours": 1, "reason": "cool off" });
+    assert_eq!(admin_call(&r, "POST", "/api/moderation/mutes", &stale, Some(mute.clone())).await.0, StatusCode::FORBIDDEN);
+    assert_eq!(admin_call(&r, "POST", "/api/moderation/mutes", &fresh, Some(mute)).await.0, StatusCode::OK);
+    assert_eq!(send(&kiwi, "am I muted?").await["refused"], "muted");
+    let (_, v) = admin_call(&r, "GET", "/api/moderation", &stale, None).await;
+    assert_eq!((v["mutes"][0]["name"].as_str(), v["mutes"][0]["room"].as_str()), (Some("Kiwi"), Some("global")));
+    let unmute = format!("/api/moderation/mutes/{}/global", kiwi.global_id());
+    assert_eq!(admin_call(&r, "DELETE", &unmute, &stale, None).await.0, StatusCode::OK);
+    assert!(send(&kiwi, "back again").await["message"].is_object());
+
+    // The network's own words: masked in chat, refused in new names, and names listed.
+    let settings = json!({ "allow": [], "extra": ["Pineapple", "pineapple "], "discord_invites": true });
+    let (status, v) = admin_call(&r, "PUT", "/api/moderation/settings", &fresh, Some(settings)).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["settings"]["extra"], json!(["pineapple"]), "lower case, once");
+    assert_eq!(v["names"][0]["name"], "Pineapple", "{v}");
+    assert_eq!(send(&tank, "who likes pineapple").await["message"]["body"], "who likes ***");
+    let (_, pulse) = t
+        .call("POST", "/v1/pulse", Some(&a), Some(json!({ "players": { "online": 0 }, "matches": 0, "counters": {} })))
+        .await;
+    assert_eq!(pulse["rules"]["extra"], json!(["pineapple"]), "{pulse}");
+    assert_eq!(pulse["chat"], true);
+    // Cleared again by the allow list.
+    let settings = json!({ "allow": ["pineapple"], "extra": ["pineapple"], "discord_invites": false });
+    let (_, v) = admin_call(&r, "PUT", "/api/moderation/settings", &fresh, Some(settings)).await;
+    assert!(v["names"].as_array().unwrap().is_empty(), "{v}");
+    let events: Vec<String> = sqlx::query_scalar("SELECT event FROM audit ORDER BY id").fetch_all(&t.c.pool).await.unwrap();
+    for e in ["chat: report deleted", "chat: muted", "chat: unmuted", "moderation: rules changed"] {
+        assert!(events.iter().any(|x| x == e), "{e} in {events:?}");
+    }
+}

@@ -145,6 +145,11 @@ impl Coordinator {
         rules
     }
 
+    /// The rules' settings changed: read again at once.
+    pub(crate) fn forget_chat_rules(&self) {
+        *self.chat.rules.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
     /// The settings the rules are made of: allowed words and names, extra words to mask, and
     /// whether Discord invites may be sent (yes unless set off).
     pub async fn chat_settings(&self) -> (Vec<String>, Vec<String>, bool) {
@@ -245,6 +250,7 @@ impl Coordinator {
             "server_name": server_name.unwrap_or_default(),
             "to": row.recipient,
             "body": row.body,
+            "deletes": row.deletes,
         })
     }
 
@@ -252,7 +258,7 @@ impl Coordinator {
     /// messages to or from players linked to it.
     async fn chat_for_server(&self, server: &str, after: i64) -> sqlx::Result<Vec<Row>> {
         sqlx::query_as(
-            "SELECT id, room, conv, at, sender, sender_name, server, recipient, body FROM chat_messages m
+            "SELECT id, room, conv, at, sender, sender_name, server, recipient, body, deletes FROM chat_messages m
              WHERE m.id > ?1 AND m.deleted_at IS NULL AND (
                  m.room = 'global'
                  OR (m.room = 'lobby' AND substr(m.conv, 1, length(?2) + 7) = 'lobby:' || ?2 || ':')
@@ -265,6 +271,34 @@ impl Coordinator {
         .bind(MAX_ANSWER)
         .fetch_all(&self.pool)
         .await
+    }
+
+    /// Deletes message `id` (only if `sender`'s, when given), by `by` (the sender, or an admin
+    /// as `admin:<name>`): hidden, and a deletion sent after it so servers and players drop it.
+    pub(crate) async fn chat_delete(&self, id: i64, sender: Option<&str>, by: &str) -> sqlx::Result<bool> {
+        let now = identity::now();
+        let mut tx = self.pool.begin().await?;
+        let done = sqlx::query("UPDATE chat_messages SET deleted_at = ?, deleted_by = ? WHERE id = ? AND deleted_at IS NULL AND deletes IS NULL AND (?4 IS NULL OR sender = ?4)")
+            .bind(now)
+            .bind(by)
+            .bind(id)
+            .bind(sender)
+            .execute(&mut *tx)
+            .await?;
+        if done.rows_affected() == 0 {
+            return Ok(false);
+        }
+        sqlx::query(
+            "INSERT INTO chat_messages (room, conv, at, sender, sender_name, server, recipient, body, deletes)
+             SELECT room, conv, ?, sender, sender_name, server, recipient, '', id FROM chat_messages WHERE id = ?",
+        )
+        .bind(now)
+        .bind(id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        self.chat.notify.notify_waiters();
+        Ok(true)
     }
 
     /// Whether `who`, a player of `server`, may read conversation `conv`.
@@ -339,6 +373,8 @@ struct Row {
     server: String,
     recipient: Option<String>,
     body: String,
+    /// For a deletion: the message it deletes.
+    deletes: Option<i64>,
 }
 
 #[derive(Deserialize)]
@@ -493,6 +529,7 @@ pub(crate) async fn send(State(c): State<Shared>, headers: HeaderMap, body: axum
         server,
         recipient,
         body: checked.text,
+        deletes: None,
     };
     ok(json!({ "message": c.chat_message_json(&row).await }))
 }
@@ -578,8 +615,8 @@ pub(crate) async fn history(State(c): State<Shared>, headers: HeaderMap, Query(q
     let limit = q.limit.unwrap_or(50).clamp(1, 100);
     let before = if q.before > 0 { q.before } else { i64::MAX };
     let rows: Vec<Row> = match sqlx::query_as(
-        "SELECT id, room, conv, at, sender, sender_name, server, recipient, body FROM chat_messages
-         WHERE conv = ? AND id < ? AND deleted_at IS NULL ORDER BY id DESC LIMIT ?",
+        "SELECT id, room, conv, at, sender, sender_name, server, recipient, body, deletes FROM chat_messages
+         WHERE conv = ? AND id < ? AND deleted_at IS NULL AND deletes IS NULL ORDER BY id DESC LIMIT ?",
     )
     .bind(&q.conv)
     .bind(before)
@@ -613,10 +650,10 @@ pub(crate) async fn conversations(State(c): State<Shared>, headers: HeaderMap, Q
         "SELECT m.conv, MAX(m.id), MAX(m.at),
                 CASE WHEN m.sender = ?1 THEN m.recipient ELSE m.sender END AS other,
                 COALESCE((SELECT sender_name FROM chat_messages x WHERE x.conv = m.conv AND x.sender != ?1 ORDER BY x.id DESC LIMIT 1), ''),
-                (SELECT COUNT(*) FROM chat_messages u WHERE u.conv = m.conv AND u.sender != ?1 AND u.deleted_at IS NULL
+                (SELECT COUNT(*) FROM chat_messages u WHERE u.conv = m.conv AND u.sender != ?1 AND u.deleted_at IS NULL AND u.deletes IS NULL
                     AND u.id > COALESCE((SELECT up_to FROM chat_reads r WHERE r.global_id = ?1 AND r.conv = m.conv), 0))
          FROM chat_messages m
-         WHERE m.room = 'direct' AND (m.sender = ?1 OR m.recipient = ?1) AND m.deleted_at IS NULL
+         WHERE m.room = 'direct' AND (m.sender = ?1 OR m.recipient = ?1) AND m.deleted_at IS NULL AND m.deletes IS NULL
          GROUP BY m.conv ORDER BY MAX(m.id) DESC LIMIT 100",
     )
     .bind(&q.who)
@@ -684,16 +721,9 @@ pub(crate) async fn delete(State(c): State<Shared>, headers: HeaderMap, body: ax
     if let Err(e) = for_player(&c, &headers, &r.who).await {
         return e;
     }
-    match sqlx::query("UPDATE chat_messages SET deleted_at = ?, deleted_by = ? WHERE id = ? AND sender = ? AND deleted_at IS NULL")
-        .bind(identity::now())
-        .bind(&r.who)
-        .bind(r.id)
-        .bind(&r.who)
-        .execute(&c.pool)
-        .await
-    {
-        Ok(done) if done.rows_affected() > 0 => ok(json!({})),
-        Ok(_) => fail(StatusCode::NOT_FOUND, "no such message of this player's"),
+    match c.chat_delete(r.id, Some(&r.who), &r.who).await {
+        Ok(true) => ok(json!({})),
+        Ok(false) => fail(StatusCode::NOT_FOUND, "no such message of this player's"),
         Err(e) => internal(e),
     }
 }
@@ -708,7 +738,11 @@ pub(crate) async fn report(State(c): State<Shared>, headers: HeaderMap, body: ax
         Ok(s) => s,
         Err(e) => return e,
     };
-    let conv: Option<String> = match sqlx::query_scalar("SELECT conv FROM chat_messages WHERE id = ?").bind(r.id).fetch_optional(&c.pool).await {
+    let conv: Option<String> = match sqlx::query_scalar("SELECT conv FROM chat_messages WHERE id = ? AND deletes IS NULL")
+        .bind(r.id)
+        .fetch_optional(&c.pool)
+        .await
+    {
         Ok(conv) => conv,
         Err(e) => return internal(e),
     };
@@ -727,6 +761,7 @@ pub(crate) async fn report(State(c): State<Shared>, headers: HeaderMap, body: ax
     {
         Ok(_) => {
             tracing::info!("Chat: message {} in {conv} reported", r.id);
+            c.publish(crate::admin::live::Event::Moderation);
             ok(json!({}))
         }
         Err(e) => internal(e),
