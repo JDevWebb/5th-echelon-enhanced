@@ -1,0 +1,10 @@
+[package]
+name = "moderation"
+version = "0.2.5"
+edition = "2021"
+description = "Chat and name rules for the community network: slurs and hate masked, links refused (Discord invites excepted)"
+
+[dependencies]
+# Word lists with leetspeak, look-alikes and spacing handled; MIT OR Apache-2.0.
+rustrict = "0.7.39"
+unicode-normalization = "0.1"

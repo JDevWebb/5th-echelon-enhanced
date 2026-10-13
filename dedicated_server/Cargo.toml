@@ -18,6 +18,7 @@ dedicated_server_config = { path = "./config" }
 eyre = { workspace = true }
 hmac = { workspace = true }
 identity = { path = "../identity" }
+moderation = { path = "../moderation" }
 libc = { workspace = true }
 geo = { path = "../geo" }
 md-5 = { workspace = true }

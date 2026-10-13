@@ -20,6 +20,7 @@ members = [
   "stat_boards",
   "portmap",
   "identity",
+  "moderation",
   "geo",
   "coordinator",
   "setup",

@@ -141,7 +141,28 @@ pub fn check_username(name: &str) -> Result<(), &'static str> {
     if RESERVED_NAMES.contains(&key.as_str()) {
         return Err("that name is reserved");
     }
+    // Slurs and hate (and sexual content involving minors) aren't names, nor web addresses:
+    // the chat rules' line, as names can't be masked (moderation).
+    rules().check_name(name).map_err(moderation::NameRefused::says)?;
     Ok(())
+}
+
+/// The network's chat and name rules, the defaults until the coordinator sends its own (with the
+/// words and names its admins checked).
+static RULES: std::sync::RwLock<Option<moderation::Rules>> = std::sync::RwLock::new(None);
+
+/// The chat and name rules in force here.
+pub fn rules() -> moderation::Rules {
+    RULES
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+        .unwrap_or_else(|| moderation::Rules::new([], [], true))
+}
+
+/// Takes the network's chat and name rules.
+pub fn set_rules(rules: moderation::Rules) {
+    *RULES.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(rules);
 }
 
 /// Names no player may take (compared without case or punctuation): they'd
@@ -1920,5 +1941,19 @@ mod tests {
         for name in ["-", "..", "_", "._-", ""] {
             assert!(check_username(name).is_err(), "{name:?}");
         }
+    }
+
+    #[test]
+    fn names_follow_the_chat_rules() {
+        // Swearing and crude names are allowed; slurs, hate and web addresses aren't.
+        assert!(check_username("SirCooms").is_ok());
+        assert!(check_username("Shitstorm").is_ok());
+        let slur: String = "regg1n".chars().rev().collect();
+        assert_eq!(check_username(&format!("{slur}_x")), Err("That name isn't allowed. Try another one."));
+        assert_eq!(check_username("evil.com"), Err("Names can't be web addresses. Try another one."));
+        // Checked by the admins: allowed.
+        super::set_rules(moderation::Rules::new([&*format!("{slur}_x")], [], true));
+        assert!(check_username(&format!("{slur}_x")).is_ok());
+        super::set_rules(moderation::Rules::new([], [], true));
     }
 }
