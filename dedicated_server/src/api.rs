@@ -737,8 +737,10 @@ impl Friends for MyFriends {
                 if !identity::verify(global_id, &identity::link_message(&request.host, &new_name, request.time), &request.signature) {
                     return Err(Status::permission_denied("Sign the new name with the identity this account is linked to"));
                 }
-                if federation::claim_name(global_id, &new_name, &request.host, request.time, &request.signature).await == federation::NameCheck::Taken {
-                    return Err(Status::already_exists(NAME_HELD_ELSEWHERE));
+                match federation::claim_name(global_id, &new_name, &request.host, request.time, &request.signature).await {
+                    federation::NameCheck::Taken => return Err(Status::already_exists(NAME_HELD_ELSEWHERE)),
+                    federation::NameCheck::NotAllowed => return Err(Status::invalid_argument(moderation::NameRefused::Offensive.says())),
+                    _ => {}
                 }
                 Some(federation::Change::Link {
                     global_id: global_id.clone(),
@@ -1005,9 +1007,16 @@ impl Users for MyUsers {
             };
             // Claimed only now the account exists: a registration that fails leaves no claim
             // behind. Held by someone else across the group: the account goes again.
-            if federation::claim_name(&global_id, &username, &host, time, &signature).await == federation::NameCheck::Taken {
-                self.storage.delete_user_async(person.id).await.map_err(internal)?;
-                return Err(Status::already_exists(NAME_HELD_ELSEWHERE));
+            match federation::claim_name(&global_id, &username, &host, time, &signature).await {
+                federation::NameCheck::Taken => {
+                    self.storage.delete_user_async(person.id).await.map_err(internal)?;
+                    return Err(Status::already_exists(NAME_HELD_ELSEWHERE));
+                }
+                federation::NameCheck::NotAllowed => {
+                    self.storage.delete_user_async(person.id).await.map_err(internal)?;
+                    return Err(Status::invalid_argument(moderation::NameRefused::Offensive.says()));
+                }
+                _ => {}
             }
             self.storage.link_global_id(person.id, &global_id).await.map_err(internal)?;
             let link = federation::Change::Link {

@@ -470,6 +470,8 @@ pub enum NameCheck {
     Ours,
     /// Another player holds it across the group.
     Taken,
+    /// The network's rules refuse it (its admins' extra words, say).
+    NotAllowed,
 }
 
 /// How long a player waits on the coordinator when making an account.
@@ -566,6 +568,7 @@ pub async fn claim_name(global_id: &str, name: &str, host: &str, time: i64, sign
     match sent.map(|r| r.status()) {
         Ok(s) if s.is_success() => NameCheck::Ours,
         Ok(reqwest::StatusCode::CONFLICT) => NameCheck::Taken,
+        Ok(reqwest::StatusCode::UNPROCESSABLE_ENTITY) => NameCheck::NotAllowed,
         _ => NameCheck::Unknown,
     }
 }

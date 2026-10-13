@@ -125,6 +125,12 @@ async fn act(
         ("rename", _) => return fail(StatusCode::BAD_REQUEST, "a name is 3 to 24 letters, digits, _ - and ."),
         _ => None,
     };
+    // The chat rules' line for names; one they wrongly refuse goes on the allow list first.
+    if let Some(name) = &name {
+        if let Err(why) = c.chat_rules().await.check_name(name) {
+            return fail(StatusCode::BAD_REQUEST, why.says());
+        }
+    }
     let Ok(Some(player_name)) = c.player_name(&server, id).await else {
         return fail(StatusCode::NOT_FOUND, "no such player");
     };

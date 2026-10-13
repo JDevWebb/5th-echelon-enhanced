@@ -1443,14 +1443,15 @@ async fn pulse(State(c): State<Shared>, headers: HeaderMap, body: axum::body::By
     } else {
         Vec::new()
     };
-    // The network's chat rules, for its servers to check messages and names by (the coordinator
-    // checks again): the words and names its admins allowed, and its own extra words.
-    let mut answer = json!({ "actions": actions, "support": support });
-    if c.has_chat() {
-        let (allow, extra, discord_invites) = c.chat_settings().await;
-        answer["chat"] = json!({ "allow": allow, "extra": extra, "discord_invites": discord_invites });
-    }
-    ok(answer)
+    // The network's rules, for its servers to check names (always) and messages (with chat) by,
+    // the coordinator checking again: the words and names its admins allowed, its own extra words.
+    let (allow, extra, discord_invites) = c.chat_settings().await;
+    ok(json!({
+        "actions": actions,
+        "support": support,
+        "rules": { "allow": allow, "extra": extra, "discord_invites": discord_invites },
+        "chat": c.has_chat(),
+    }))
 }
 
 /// A server's players' session events (see [`sessions`]).
@@ -2217,6 +2218,11 @@ async fn claim_name(State(c): State<Shared>, headers: HeaderMap, body: axum::bod
     };
     if !valid_name(&req.name) {
         return fail(StatusCode::BAD_REQUEST, "not a name");
+    }
+    // A name being taken now, so the rules apply (names players already have aren't refused
+    // here: the admins see those on the moderation page).
+    if let Err(why) = c.chat_rules().await.check_name(&req.name) {
+        return fail(StatusCode::UNPROCESSABLE_ENTITY, why.says());
     }
     match c.owns_host(&server, &req.host).await {
         Ok(true) => {}

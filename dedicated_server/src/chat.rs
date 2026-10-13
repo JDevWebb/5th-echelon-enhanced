@@ -126,10 +126,10 @@ fn hooks_text(s: &str, max: usize) -> String {
     moderation::clean(s, max)
 }
 
-/// Takes a pulse's answer: chat is on when it carries the network's chat rules, which then
-/// apply to names and messages here too.
+/// Takes a pulse's answer: the network's rules, which then apply to names (and messages) here
+/// too, and whether its coordinator runs chat.
 pub fn from_pulse(answer: &Value, logger: &Logger) {
-    let Some(chat) = answer["chat"].as_object() else {
+    let Some(chat) = answer["rules"].as_object() else {
         ON.store(false, Ordering::Relaxed);
         return;
     };
@@ -146,8 +146,9 @@ pub fn from_pulse(answer: &Value, logger: &Logger) {
     let (allow, extra) = (list("allow"), list("extra"));
     let invites = chat.get("discord_invites").and_then(Value::as_bool).unwrap_or(true);
     crate::api::set_rules(moderation::Rules::new(allow.iter().map(String::as_str), extra.iter().map(String::as_str), invites));
-    if !ON.swap(true, Ordering::Relaxed) {
-        slog::info!(logger, "Chat: on (the network's coordinator runs it)");
+    let on = answer["chat"].as_bool().unwrap_or_default();
+    if ON.swap(on, Ordering::Relaxed) != on {
+        slog::info!(logger, "Chat: {} (the network's coordinator runs it)", if on { "on" } else { "off" });
     }
 }
 

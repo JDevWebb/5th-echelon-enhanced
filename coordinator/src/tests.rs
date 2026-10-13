@@ -861,6 +861,19 @@ async fn names_belong_to_one_player_across_the_group() {
     // Names follow the players' rules.
     let (status, _) = t.call("POST", "/v1/names/claim", Some(&b), Some(claim(&other, "server-b", "bad name"))).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
+    // And the chat rules' line (a slur, kept reversed here): a name being taken now is refused,
+    // one a player already has still links (the admins see it on the moderation page).
+    let slur: String = "r3gg1n_1".chars().rev().collect();
+    let (status, v) = t.call("POST", "/v1/names/claim", Some(&b), Some(claim(&other, "server-b", &slur))).await;
+    assert_eq!(
+        (status, v["error"].as_str()),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            Some("That name isn't allowed (no slurs or hate). Try another one, or if it's a mistake, ask for a review in the launcher's Support.")
+        )
+    );
+    let (status, _) = t.call("POST", "/v1/names/claim", Some(&b), Some(claim(&other, "server-b", "Logger35_1"))).await;
+    assert_eq!(status, StatusCode::OK, "digits aren't letters in disguise");
 
     // Linking an account whose name someone else holds: linked, but flagged.
     let r = t.changes(&b, json!([link(&other, "server-b", "Kiwi")])).await;
