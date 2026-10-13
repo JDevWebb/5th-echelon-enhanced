@@ -27,6 +27,7 @@
         <button v-else class="small" type="button" @click="act('unban')">Unban</button>
         <button class="small" type="button" @click="act('reset_password')">Reset password</button>
         <button class="small" type="button" @click="act('rename')">Rename</button>
+        <button class="small" type="button" title="Their overlay asks them to choose another name in the launcher" @click="act('name_not_allowed')">Ask to rename</button>
         <RouterLink v-if="features.roadmap && p.identity" class="btn small" :to="{ path: `/support/${p.identity}`, query: { name: p.name } }" title="Write to them: they read it on their launcher's Support page, and the game's overlay tells them">Message</RouterLink>
         <button class="small danger" type="button" @click="act('delete')">Delete</button>
       </div>
@@ -146,8 +147,13 @@ const daySeries = computed(() => [{ name: 'Played', color: PALETTE[0], points: d
 
 async function act(kind) {
   let queued;
-  if (kind === 'kick' || kind === 'unban') {
-    const ok = await confirmBox(`${ACTION_LABELS[kind]} ${p.value.name}?`, kind === 'kick' ? 'They\'re signed out, and can sign in again.' : 'They can sign in again.', ACTION_LABELS[kind]);
+  if (kind === 'kick' || kind === 'unban' || kind === 'name_not_allowed') {
+    const says = {
+      kick: 'They\'re signed out, and can sign in again.',
+      unban: 'They can sign in again.',
+      name_not_allowed: 'Their name breaks the rules: the game\'s overlay asks them to choose another in the launcher. They keep playing meanwhile.',
+    }[kind];
+    const ok = await confirmBox(`${ACTION_LABELS[kind]} ${p.value.name}?`, says, ACTION_LABELS[kind]);
     if (!ok) return;
     try {
       queued = (await api('POST', `/players/${encodeURIComponent(props.server)}/${props.id}/actions`, { kind })).actions;
