@@ -111,6 +111,8 @@ impl View {
 
 static VIEW: Mutex<Option<View>> = Mutex::new(None);
 static STARTED: AtomicBool = AtomicBool::new(false);
+/// Asking for chat's status failed (and the log said so).
+static STATUS_FAILED: AtomicBool = AtomicBool::new(false);
 /// What the panel shows, so messages there don't pop up or count as unseen: the Chat tab's
 /// room, and the open conversation.
 static SHOWING: Mutex<Option<(Room, String)>> = Mutex::new(None);
@@ -261,7 +263,10 @@ fn refresh_status() -> bool {
             s.available
         }
         Err(e) => {
-            warn!("Chat: status: {e}");
+            // Said once: a server without chat answers the same every 30 s.
+            if !STATUS_FAILED.swap(true, Ordering::Relaxed) {
+                warn!("Chat: status: {e}");
+            }
             false
         }
     }
