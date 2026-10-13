@@ -528,7 +528,7 @@ fn change_now(change: FriendChange, id: &str, name: &str) {
         FriendChange::Block => format!("Blocked {name}. They can't see you or invite you."),
         FriendChange::Unblock => format!("Unblocked {name}"),
     };
-    match crate::api::change_friend(change, id) {
+    match crate::api::change_friend(change, id, name) {
         Ok(()) => say(done, false),
         Err(e) => {
             warn!("{change:?} {name} failed: {e}");

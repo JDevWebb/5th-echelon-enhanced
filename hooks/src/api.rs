@@ -2,6 +2,7 @@ use std::future::Future;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 
+use server_api::chat::chat_client::ChatClient;
 use server_api::friends::friends_client::FriendsClient;
 use server_api::friends::InviteRequest;
 use server_api::friends::ListRequest;
@@ -382,13 +383,14 @@ pub fn search_players(query: &str) -> Result<Vec<Player>, Error> {
     }))
 }
 
-/// Changes how we stand to the player with account id `id`.
-pub fn change_friend(change: FriendChange, id: &str) -> Result<(), Error> {
+/// Changes how we stand to the player with account id `id` (none known, from chat: by their
+/// name, `username`).
+pub fn change_friend(change: FriendChange, id: &str, username: &str) -> Result<(), Error> {
     run(signed_in(|| async {
         let mut client = connect!(FriendsClient);
         let request = tonic::Request::new(TargetRequest {
             id: id.into(),
-            username: String::new(),
+            username: if id.is_empty() { username.into() } else { String::new() },
         });
         match change {
             FriendChange::Request => client.request(request).await?,
@@ -515,4 +517,84 @@ async fn relogin_after(used: Option<MetadataValue<Ascii>>) -> bool {
         let _ = TOKEN.lock().unwrap().take();
     }
     ok
+}
+
+/// Chat on the player's server (docs/chat.md): whether it's open to them, and what they may do.
+pub fn chat_status() -> Result<server_api::chat::StatusResponse, Error> {
+    run(signed_in(|| async {
+        let mut client = connect!(ChatClient);
+        Ok(client.status(tonic::Request::new(server_api::chat::StatusRequest {})).await?.into_inner())
+    }))
+}
+
+/// The chat messages for the player after `after`: at once, or when one comes, within 8 s (the
+/// overlay's calls time out at 10).
+pub fn chat_wait(after: i64) -> Result<server_api::chat::WaitResponse, Error> {
+    run(signed_in(|| async {
+        let mut client = connect!(ChatClient);
+        let request = tonic::Request::new(server_api::chat::WaitRequest { after, wait_seconds: 8 });
+        Ok(client.wait(request).await?.into_inner())
+    }))
+}
+
+pub fn chat_send(room: server_api::chat::Room, to: &str, text: &str) -> Result<server_api::chat::SendResponse, Error> {
+    run(signed_in(|| async {
+        let mut client = connect!(ChatClient);
+        let request = tonic::Request::new(server_api::chat::SendRequest {
+            room: room.into(),
+            to: to.into(),
+            text: text.into(),
+        });
+        Ok(client.send(request).await?.into_inner())
+    }))
+}
+
+pub fn chat_history(room: server_api::chat::Room, with: &str) -> Result<Vec<server_api::chat::Message>, Error> {
+    run(signed_in(|| async {
+        let mut client = connect!(ChatClient);
+        let request = tonic::Request::new(server_api::chat::HistoryRequest {
+            room: room.into(),
+            with: with.into(),
+            before: 0,
+            limit: 50,
+        });
+        Ok(client.history(request).await?.into_inner().messages)
+    }))
+}
+
+/// Friends the player can message, with their identities.
+pub fn chat_friends() -> Result<Vec<server_api::chat::ChatFriend>, Error> {
+    run(signed_in(|| async {
+        let mut client = connect!(ChatClient);
+        Ok(client.friends(tonic::Request::new(server_api::chat::Empty {})).await?.into_inner().friends)
+    }))
+}
+
+pub fn chat_report(id: i64, why: &str) -> Result<(), Error> {
+    run(signed_in(|| async {
+        let mut client = connect!(ChatClient);
+        client.report(tonic::Request::new(server_api::chat::MessageRequest { id, why: why.into() })).await?;
+        Ok(())
+    }))
+}
+
+pub fn chat_delete(id: i64) -> Result<(), Error> {
+    run(signed_in(|| async {
+        let mut client = connect!(ChatClient);
+        client.delete(tonic::Request::new(server_api::chat::MessageRequest { id, why: String::new() })).await?;
+        Ok(())
+    }))
+}
+
+pub fn chat_mark_read(with: &str, up_to: i64) -> Result<(), Error> {
+    run(signed_in(|| async {
+        let mut client = connect!(ChatClient);
+        let request = tonic::Request::new(server_api::chat::MarkReadRequest {
+            room: server_api::chat::Room::Direct.into(),
+            with: with.into(),
+            up_to,
+        });
+        client.mark_read(request).await?;
+        Ok(())
+    }))
 }

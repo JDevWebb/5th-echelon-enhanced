@@ -561,7 +561,7 @@ impl ChatApi {
 
     /// The messages after `after`: at once, or when one comes, or after about 25 s.
     pub async fn wait(&mut self, after: i64) -> Result<server_api::chat::WaitResponse, Error> {
-        let r = authed(server_api::chat::WaitRequest { after }, &self.token);
+        let r = authed(server_api::chat::WaitRequest { after, wait_seconds: 0 }, &self.token);
         self.client.wait(r).await.map(tonic::Response::into_inner).map_err(chat_error)
     }
 

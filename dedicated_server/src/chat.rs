@@ -340,6 +340,8 @@ impl Chat for MyChat {
             Err(e) => return Err(e),
         };
         let global_wait = self.global_wait(&c).await;
+        let sessions = self.storage.live_sessions_async().await.unwrap_or_default();
+        let in_match = crate::community_api::activity_of(&c.name, &sessions).is_some_and(|a| a.room == "match");
         let away = crate::federation::coordinator_seen_ago().is_none_or(|s| s > AWAY_AFTER);
         Ok(Response::new(StatusResponse {
             available: true,
@@ -349,6 +351,7 @@ impl Chat for MyChat {
             global_wait: global_wait.unwrap_or_default(),
             lobby: c.lobby.unwrap_or(0),
             me: c.me,
+            in_match,
         }))
     }
 
@@ -413,9 +416,14 @@ impl Chat for MyChat {
         if !crate::rate_limit::polls().check(c.user) {
             return Err(Status::resource_exhausted("Too many requests; slow down"));
         }
-        let after = request.into_inner().after;
+        let r = request.into_inner();
+        let after = r.after;
+        let hold = match r.wait_seconds {
+            0 => WAIT,
+            s => Duration::from_secs(u64::from(s)).min(WAIT),
+        };
         let blocked = self.storage.blocked_global_ids(c.user).await.map_err(internal)?;
-        let deadline = tokio::time::Instant::now() + WAIT;
+        let deadline = tokio::time::Instant::now() + hold;
         loop {
             let notified = arrived().notified();
             tokio::pin!(notified);

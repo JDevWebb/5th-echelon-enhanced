@@ -38,6 +38,7 @@ use windows::Win32::UI::WindowsAndMessaging::WM_ACTIVATEAPP;
 use windows::Win32::UI::WindowsAndMessaging::WM_SYSCOMMAND;
 use windows::Win32::UI::WindowsAndMessaging::WM_SYSKEYDOWN;
 
+use crate::chat;
 use crate::community;
 use crate::uplay_r1_loader::Event;
 use crate::uplay_r1_loader::EVENTS;
@@ -221,6 +222,7 @@ enum UiState {
 enum Tab {
     #[default]
     Friends,
+    Chat,
     Players,
     Invites,
     Match,
@@ -228,11 +230,12 @@ enum Tab {
 }
 
 impl Tab {
-    const ALL: [Tab; 5] = [Tab::Friends, Tab::Players, Tab::Invites, Tab::Match, Tab::Server];
+    const ALL: [Tab; 6] = [Tab::Friends, Tab::Chat, Tab::Players, Tab::Invites, Tab::Match, Tab::Server];
 
     fn label(self) -> &'static str {
         match self {
             Tab::Friends => "Friends",
+            Tab::Chat => "Chat",
             Tab::Players => "Find players",
             Tab::Invites => "Invites",
             Tab::Match => "Match",
@@ -301,6 +304,14 @@ struct MyRenderLoop {
     searched: bool,
     /// The panel just opened: log what it's drawn with on the next frame.
     log_draw_state: bool,
+    /// Chat as last read (each frame the panel shows), the room shown, the open conversation,
+    /// and what's typed.
+    chat: chat::View,
+    chat_room: server_api::chat::Room,
+    chat_with: Option<String>,
+    chat_text: String,
+    /// Keep the typing focus after sending.
+    chat_refocus: bool,
 }
 
 /// Builds the Uplay event that hands an accepted invitation to the game.
@@ -616,6 +627,24 @@ impl MyRenderLoop {
         });
     }
 
+    /// A chat message (or several) that came in, as Settings › Notifications says: top right,
+    /// unless an invite shows there.
+    fn show_chat_toast(&self, ui: &Ui) {
+        if self.ui_state == UiState::Show || self.invite_notification.is_some() {
+            return;
+        }
+        let Some(toast) = chat::toast() else { return };
+        let left = chat::TOAST_FOR.saturating_sub(toast.at.elapsed());
+        self.toast(ui, "##fe-chat", Some(left.as_secs_f32() / chat::TOAST_FOR.as_secs_f32()), || {
+            self.heading(ui, &toast.title);
+            let _c = ui.push_style_color(StyleColor::Text, FG);
+            ui.text_wrapped(&toast.text);
+            self.key(ui, &overlay_key().0);
+            ui.same_line();
+            ui.text_colored(MUTED, "to answer in Chat");
+        });
+    }
+
     fn show_error_banner(&self, ui: &Ui) {
         // The server can't be reached at all: that says it. Otherwise, other players not
         // reaching this PC: their matches won't connect, and nothing else would say why.
@@ -749,6 +778,7 @@ impl MyRenderLoop {
                         .always_use_window_padding(true)
                         .build(|| match self.tab {
                             Tab::Friends => self.pane_friends(ui),
+                            Tab::Chat => self.pane_chat(ui),
                             Tab::Players => self.pane_players(ui),
                             Tab::Invites => self.pane_invites(ui),
                             Tab::Match => self.pane_match(ui),
@@ -833,6 +863,7 @@ impl MyRenderLoop {
             let badge = match tab {
                 Tab::Invites => pending,
                 Tab::Friends => self.data.requests_in.len(),
+                Tab::Chat => self.chat.badge() as usize,
                 _ => 0,
             };
             if badge > 0 {
@@ -1093,6 +1124,190 @@ impl MyRenderLoop {
                 self.player_row(ui, row, "blocked", p, "Can't see you or invite you", &[RowAction::Change(C::Unblock, "Unblock")]);
                 row += 1;
             }
+        }
+    }
+
+    fn pane_chat(&mut self, ui: &Ui) {
+        use server_api::chat::Room;
+        self.pane_title(
+            ui,
+            "Chat",
+            "Everyone on the community network, your lobby, and your friends. Messages are kept for 7 days and the admins can read them. No links.",
+        );
+        let v = self.chat.clone();
+        if !v.available {
+            let _c = ui.push_style_color(StyleColor::Text, MUTED);
+            ui.text_wrapped(if v.why_not.is_empty() {
+                "Chat isn't open on this server (or is still starting)."
+            } else {
+                &v.why_not
+            });
+            return;
+        }
+        let direct_unread: u32 = v.unread.values().sum();
+        let rooms = [
+            (Room::Global, String::from("Global")),
+            (Room::Lobby, String::from("Lobby")),
+            (
+                Room::Direct,
+                if direct_unread > 0 {
+                    format!("Messages ({direct_unread})")
+                } else {
+                    String::from("Messages")
+                },
+            ),
+        ];
+        for (i, (room, label)) in rooms.iter().enumerate() {
+            if i > 0 {
+                ui.same_line();
+            }
+            if self.button(ui, &format!("{label}##fe-chat-room-{i}"), self.chat_room == *room) {
+                self.chat_room = *room;
+            }
+        }
+        if v.read_only {
+            ui.text_colored(WARN, "The network can't be reached right now: you can read, not send.");
+        }
+        ui.dummy([0.0, self.s(4.0)]);
+        let input_h = ui.text_line_height() * 2.0 + self.s(34.0);
+        let log_h = (ui.content_region_avail()[1] - input_h).max(self.s(120.0));
+        match self.chat_room {
+            Room::Global => {
+                self.chat_log(ui, "global", &v.global, log_h);
+                let note = (!v.may_post_global).then(|| v.global_wait.clone());
+                self.chat_input(ui, Room::Global, "", v.may_post_global && !v.read_only, note, &v);
+            }
+            Room::Lobby => {
+                if v.lobby == 0 {
+                    let _c = ui.push_style_color(StyleColor::Text, MUTED);
+                    ui.text_wrapped("Join a lobby or a match: its players can talk here.");
+                    return;
+                }
+                self.chat_log(ui, "lobby", &v.lobby_messages, log_h);
+                self.chat_input(ui, Room::Lobby, "", !v.read_only, None, &v);
+            }
+            Room::Direct => {
+                // Conversations (and friends to start one with) beside the open one.
+                let mut people: Vec<(String, String)> = v.direct.keys().map(|k| (k.clone(), v.names.get(k).cloned().unwrap_or_default())).collect();
+                for (identity, name, _) in &v.friends {
+                    if !people.iter().any(|(k, _)| k == identity) {
+                        people.push((identity.clone(), name.clone()));
+                    }
+                }
+                ui.child_window("##fe-chat-people").size([self.s(190.0), log_h + input_h - self.s(8.0)]).build(|| {
+                    if people.is_empty() {
+                        let _c = ui.push_style_color(StyleColor::Text, MUTED);
+                        ui.text_wrapped("No friends to message yet. Add some in Find players.");
+                    }
+                    for (identity, name) in &people {
+                        let unread = v.unread.get(identity).copied().unwrap_or(0);
+                        let online = v.friends.iter().any(|(i, _, o)| i == identity && *o);
+                        let label = match (unread, online) {
+                            (0, true) => format!("● {name}"),
+                            (0, false) => name.clone(),
+                            (n, _) => format!("{name} ({n})"),
+                        };
+                        let chosen = self.chat_with.as_deref() == Some(identity.as_str());
+                        if ui.selectable_config(format!("{label}##fe-chat-with-{:016x}", ui_id(identity))).selected(chosen).build() {
+                            self.chat_with = Some(identity.clone());
+                            chat::open_conversation(identity.clone());
+                        }
+                    }
+                });
+                ui.same_line();
+                ui.group(|| {
+                    let Some(with) = self.chat_with.clone() else {
+                        ui.text_colored(MUTED, "Pick a friend.");
+                        return;
+                    };
+                    let list = v.direct.get(&with).cloned().unwrap_or_default();
+                    self.chat_log(ui, "direct", &list, log_h);
+                    self.chat_input(ui, Room::Direct, &with, !v.read_only, None, &v);
+                });
+            }
+        }
+    }
+
+    /// A room's messages, newest at the bottom (kept there while it's scrolled down); right-click
+    /// a name for more.
+    fn chat_log(&self, ui: &Ui, id: &str, list: &[chat::Msg], h: f32) {
+        ui.child_window(format!("##fe-chat-log-{id}")).size([0.0, h]).build(|| {
+            let at_bottom = ui.scroll_y() >= ui.scroll_max_y() - self.s(4.0);
+            if list.is_empty() {
+                ui.text_colored(MUTED, "No messages yet.");
+            }
+            for m in list {
+                let name_color = if m.mine {
+                    ACCENT
+                } else if m.mentions_me {
+                    WARN
+                } else {
+                    FG
+                };
+                self.with_font(ui, |f| f.strong, || ui.text_colored(name_color, if m.mine { "You" } else { &m.from_name }));
+                let popup = format!("##fe-chat-menu-{}", m.id);
+                if ui.is_item_hovered() && !m.server_name.is_empty() {
+                    ui.tooltip_text(format!("On {}", m.server_name));
+                }
+                if ui.is_item_clicked_with_button(imgui::MouseButton::Right) {
+                    ui.open_popup(&popup);
+                }
+                ui.same_line();
+                let _c = ui.push_style_color(StyleColor::Text, if m.mentions_me { FG } else { MUTED });
+                ui.text_wrapped(&m.body);
+                ui.popup(&popup, || {
+                    if m.mine {
+                        if ui.menu_item("Delete") {
+                            chat::delete(m.id);
+                        }
+                        return;
+                    }
+                    if ui.menu_item("Add friend") {
+                        community::change(community::FriendChange::Request, String::new(), m.from_name.clone());
+                    }
+                    if ui.menu_item(format!("Block {}", m.from_name)) {
+                        community::change(community::FriendChange::Block, String::new(), m.from_name.clone());
+                    }
+                    if ui.menu_item("Report to the admins") {
+                        chat::report(m.id, m.from_name.clone());
+                    }
+                });
+            }
+            if at_bottom {
+                ui.set_scroll_here_y_with_ratio(1.0);
+            }
+        });
+    }
+
+    /// The text box and Send, with why the last message wasn't sent.
+    fn chat_input(&mut self, ui: &Ui, room: server_api::chat::Room, to: &str, allowed: bool, note: Option<String>, v: &chat::View) {
+        let mut text = std::mem::take(&mut self.chat_text);
+        let send_label = "Send##fe-chat-send";
+        let field_w = ui.content_region_avail()[0] - self.button_width(ui, send_label) - self.s(10.0);
+        ui.set_next_item_width(field_w);
+        if std::mem::take(&mut self.chat_refocus) {
+            ui.set_keyboard_focus_here();
+        }
+        let entered = {
+            let _d = (!allowed).then(|| ui.begin_disabled(true));
+            ui.input_text("##fe-chat-input", &mut text).hint("Say something...").enter_returns_true(true).build()
+        };
+        ui.same_line();
+        let clicked = {
+            let _d = (!allowed || v.sending).then(|| ui.begin_disabled(true));
+            self.button(ui, send_label, true)
+        };
+        if text.chars().count() > 500 {
+            text = text.chars().take(500).collect();
+        }
+        if (entered || clicked) && allowed && !v.sending && !text.trim().is_empty() {
+            chat::send(room, to.to_string(), text.trim().to_string());
+            text.clear();
+            self.chat_refocus = true;
+        }
+        self.chat_text = text;
+        if let Some(why) = v.refused.as_ref().or(note.as_ref()) {
+            ui.text_colored(WARN, why);
         }
     }
 
@@ -1446,6 +1661,12 @@ impl ImguiRenderLoop for MyRenderLoop {
         self.poll_invites();
         self.poll_relogin();
         self.data = community::snapshot();
+        // What chat's panel shows is seen; read again while it's open.
+        let chat_shown = (self.ui_state == UiState::Show && self.tab == Tab::Chat).then(|| (self.chat_room, self.chat_with.clone().unwrap_or_default()));
+        chat::showing(chat_shown);
+        if self.ui_state == UiState::Show {
+            self.chat = chat::view();
+        }
 
         if self.ui_state == UiState::Show {
             if self.last_refresh.elapsed() >= PANEL_REFRESH {
@@ -1459,6 +1680,7 @@ impl ImguiRenderLoop for MyRenderLoop {
         }
         self.show_error_banner(ui);
         self.show_invite_toast(ui);
+        self.show_chat_toast(ui);
         self.show_maintenance(ui);
         self.show_initial_info(ui);
         self.show_problem(ui);
@@ -1505,6 +1727,7 @@ fn init_hudhook<T: hudhook::Hooks + 'static>(invites: crossbeam_channel::Receive
     EVENTS.get_or_init(|| Mutex::new(rx));
     crate::uplay_r1_loader::EVENT_SENDER.get_or_init(|| Mutex::new(tx.clone()));
     community::start();
+    chat::start();
     crate::overlay_input::init();
     hudhook::Hudhook::builder()
         .with::<T>(MyRenderLoop {
@@ -1530,6 +1753,11 @@ fn init_hudhook<T: hudhook::Hooks + 'static>(invites: crossbeam_channel::Receive
             search_text: String::new(),
             searched: false,
             log_draw_state: false,
+            chat: chat::View::default(),
+            chat_room: server_api::chat::Room::Global,
+            chat_with: None,
+            chat_text: String::new(),
+            chat_refocus: false,
         })
         .with_hmodule(unsafe { GetModuleHandleA(PCSTR::null())?.into() })
         .build()

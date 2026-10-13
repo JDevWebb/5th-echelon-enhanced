@@ -54,6 +54,8 @@ message StatusResponse {
     uint32 lobby = 6;
     // The caller's identity, as messages name senders.
     string me = 7;
+    // The caller is in a match (not only a lobby): the overlay keeps quieter then.
+    bool in_match = 8;
 }
 
 message Message {
@@ -94,6 +96,9 @@ message SendResponse {
 
 message WaitRequest {
     int64 after = 1;
+    // How long to hold the wait open, in seconds (0: about 25; at most that): shorter for a
+    // client whose calls time out sooner (the game's overlay).
+    uint32 wait_seconds = 2;
 }
 
 message WaitResponse {
