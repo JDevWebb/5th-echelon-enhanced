@@ -102,6 +102,11 @@ impl Coordinator {
     }
 
     /// Whether `server` may pass chat: chat runs here, and its program is the signed release.
+    ///
+    /// The release check is the one the server reports about itself (its updater's, as root):
+    /// it keeps an honest server running something else out of chat, but a server changed on
+    /// purpose could say anything. What keeps strangers out is membership: only servers joined
+    /// with the network's token, which its admins hand out, are heard at all.
     async fn chat_gate(&self, server: &str) -> Result<(), Answer> {
         if !self.has_chat() {
             return Err(fail(StatusCode::NOT_FOUND, "no chat on this network"));
@@ -273,9 +278,19 @@ impl Coordinator {
         conv.strip_prefix("lobby:").and_then(|rest| rest.split_once(':')).is_some_and(|(s, _)| s == server)
     }
 
-    /// Prunes chat past what's kept (the hourly rollup).
+    /// Prunes chat past what's kept (the hourly rollup), and an identity's chat once it has no
+    /// links left (its accounts unlinked or deleted everywhere): its messages, the direct
+    /// conversations with it, what it read, its masked counts.
     pub(crate) async fn prune_chat(&self) -> sqlx::Result<()> {
         let now = identity::now();
+        let gone = "NOT IN (SELECT global_id FROM links)";
+        for sql in [
+            format!("DELETE FROM chat_messages WHERE sender {gone} OR (recipient IS NOT NULL AND recipient {gone})"),
+            format!("DELETE FROM chat_reads WHERE global_id {gone}"),
+            format!("DELETE FROM chat_masked WHERE global_id {gone}"),
+        ] {
+            sqlx::query(&sql).execute(&self.pool).await?;
+        }
         for (sql, keep) in [
             ("DELETE FROM chat_messages WHERE room = 'global' AND at < ?", GLOBAL_KEEP),
             ("DELETE FROM chat_messages WHERE room = 'direct' AND at < ?", DIRECT_KEEP),
@@ -359,6 +374,13 @@ pub(crate) async fn send(State(c): State<Shared>, headers: HeaderMap, body: axum
     let Some(name) = name else {
         return fail(StatusCode::FORBIDDEN, "not one of this server's players");
     };
+    // Only under a name that's theirs across the network: a link may carry a name another
+    // player holds (the server then asks its player to rename), and chat shows senders by name.
+    match c.owner(&identity::name_key(&name)).await {
+        Ok(owner) if owner.as_deref() == Some(r.from.as_str()) => {}
+        Ok(_) => return refused("name_conflict", "Your name is another player's on the network: rename to chat."),
+        Err(e) => return internal(e),
+    }
     let (room, conv, recipient) = match r.room.as_str() {
         "global" => ("global", "global".to_string(), None),
         "direct" => {

@@ -4183,3 +4183,31 @@ async fn a_waiting_server_gets_a_message_at_once() {
     assert_eq!(v["messages"][0]["body"], "now");
     assert!(started.elapsed() < Duration::from_secs(5));
 }
+
+/// Chat shows senders by name, so only under their own: a player whose account elsewhere has
+/// another player's name can't post as them. And an identity's chat goes once it has no links.
+#[tokio::test]
+async fn chat_names_are_their_own_and_go_with_the_links() {
+    let t = start("chat-names").await;
+    t.c.enable_chat();
+    t.c.chat_from_unverified();
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    let (kiwi, imposter) = (identity::Identity::generate(), identity::Identity::generate());
+    t.changes(&a, json!([link(&kiwi, "server-a", "Kiwi")])).await;
+    // On server-b, an account also called Kiwi (the link notes the conflict).
+    let r = t.changes(&b, json!([link(&imposter, "server-b", "Kiwi")])).await;
+    assert_eq!(r[0]["conflict"], true, "{r:?}");
+    let send = |secret: &str, who: &identity::Identity| {
+        let (secret, body) = (secret.to_string(), json!({ "room": "global", "from": who.global_id(), "text": "hello" }));
+        let t = &t;
+        async move { t.call("POST", "/v1/chat/send", Some(&secret), Some(body)).await.1 }
+    };
+    assert_eq!(send(&b, &imposter).await["refused"], "name_conflict");
+    assert_eq!(send(&a, &kiwi).await["message"]["from_name"], "Kiwi");
+
+    // Kiwi unlinks everywhere: their chat goes with the next hourly rollup.
+    t.changes(&a, json!([{ "op": "unlink", "global_id": kiwi.global_id() }])).await;
+    t.c.prune_chat().await.unwrap();
+    let left: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chat_messages").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(left, 0);
+}
