@@ -5,6 +5,10 @@ package friends;
 service Friends {
     rpc List (ListRequest) returns (ListResponse);
     rpc Invite (InviteRequest) returns (InviteResponse);
+    // Asks to join a friend's game without an invitation: binds a force-join invitation from
+    // the friend to the caller, so the caller's running game joins their public session. Only a
+    // friend (or anyone, in "everyone" mode) who is in a joinable, non-private session.
+    rpc JoinNow (JoinNowRequest) returns (JoinNowResponse);
     // Publishes the game session the caller is currently in, so that it shows up in the
     // friend lists of everybody else. The game announces its session through
     // UPLAY_USER_SetGameSession and expects to find a friend's session in the friend list -
@@ -207,4 +211,27 @@ message InviteRequest {
 
 message InviteResponse {
 
+}
+
+message JoinNowRequest {
+    // The friend to join (their account id).
+    string id = 1;
+}
+
+message JoinNowResponse {
+    enum Status {
+        // A force-join was queued; the caller's running game joins on its next event poll.
+        OK = 0;
+        // No such player.
+        NOT_FOUND = 1;
+        // Not a friend (on a server that only lets friends join each other).
+        NOT_FRIENDS = 2;
+        // The friend isn't in a game right now.
+        OFFLINE = 3;
+        // The friend's game is private/invite-only: it needs a real invitation.
+        PRIVATE = 4;
+    }
+    Status status = 1;
+    // A short line for the player when the join can't go ahead.
+    string detail = 2;
 }
