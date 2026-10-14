@@ -2076,7 +2076,17 @@ async fn whats_being_played(ctx: &mut Ctx) -> Result<()> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(8);
     loop {
         let server = ctx.server;
-        let body = tokio::task::spawn_blocking(move || community_get(server, "/api/playing")).await??;
+        // A transient socket reset on this one-shot HTTP GET is treated like "not listed yet" and
+        // retried until the deadline, rather than failing the test (the onlineconfig server can
+        // reset a connection under load).
+        let body = match tokio::task::spawn_blocking(move || community_get(server, "/api/playing")).await? {
+            Ok(body) => body,
+            Err(e) => {
+                ensure!(tokio::time::Instant::now() < deadline, "/api/playing: {e}");
+                tokio::time::sleep(Duration::from_millis(1000)).await;
+                continue;
+            }
+        };
         let playing: server_api::playing::Playing = serde_json::from_str(&body)?;
         let listed = playing.matches.iter().find(|m| m.map == Some(VIRUS_VAULT) && m.game_mode == Some(8));
         if let Some(m) = listed {
