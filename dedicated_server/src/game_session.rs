@@ -424,7 +424,11 @@ impl GameSessionProtocolServerImpl {
                 ""
             }
         );
-        let how = if verb == "abandons" { "abandoned" } else { "left" };
+        let how = match verb {
+            "abandons" => "abandoned",
+            "splits off from" => "split",
+            _ => "left",
+        };
         crate::session_events::note(
             crate::session_events::Who::Id(user_id),
             "leave",
@@ -1173,6 +1177,11 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         )?;
         if let Some(session_id) = migrated {
             made(ci, user_id, session_id);
+            // The game moves into the copy and never leaves the session it split: it stayed
+            // live, its departed host's, until that host signed out, and the launcher's and
+            // overlay's lists showed it beside the new one (eu1 2026-10-13: 15 such, one for
+            // 4 h 20 min).
+            self.leave(logger, user_id, key.session_id, "splits off from")?;
         }
         Ok(SplitSessionResponse {
             game_session_key_migrated: match migrated {
@@ -1838,6 +1847,57 @@ fn failed_joins_allowed(user_id: u32, wanted: usize) -> usize {
 
 #[cfg(test)]
 mod tests {
+
+    /// A player whose game splits a match its host left moves into the copy and out of the
+    /// match: it ends once they were the last in it, and only the copy is live. It used to
+    /// keep them and stay listed until its host signed out (eu1 2026-10-13: hours).
+    #[test]
+    fn splitting_leaves_the_session_split() {
+        let (storage, dir) = crate::storage::tests::temp_storage("split-leaves");
+        let storage = std::sync::Arc::new(storage);
+        let server = super::GameSessionProtocolServerImpl {
+            storage: std::sync::Arc::clone(&storage),
+            debug_config: std::sync::Arc::default(),
+            left: std::sync::Mutex::default(),
+        };
+        let logger = slog::Logger::root(slog::Discard, slog::o!());
+        let mut ids = vec![];
+        for name in ["Host", "First", "Second"] {
+            storage.register_user(name, "pw", Some(name)).unwrap();
+            ids.push(storage.find_user_id_by_name(name).unwrap().unwrap());
+        }
+        let [host, first, second] = ids[..] else { unreachable!() };
+        let live = |id: u32| run_live(&storage).contains(&id);
+
+        // The host leaves; their only guest carries on in a copy.
+        let game = storage.create_game_session(host, 1, "113 => 0;3 => 4;4 => 0".into()).unwrap();
+        storage.add_participants(1, game, vec![], vec![host]).unwrap();
+        storage.add_guest(game, first, false).unwrap();
+        server.leave(&logger, host, game, "abandons").unwrap();
+        assert!(live(game), "its guest is still in it");
+        let copy = storage.split_game_session(first, 1, game).unwrap().unwrap();
+        server.leave(&logger, first, game, "splits off from").unwrap();
+        assert!(!live(game), "nobody left in it: ended");
+        assert!(live(copy));
+
+        // With two guests, the first to split leaves the other in it until they split too.
+        let game = storage.create_game_session(host, 1, "113 => 0;3 => 4;4 => 0".into()).unwrap();
+        storage.add_participants(1, game, vec![], vec![host]).unwrap();
+        storage.add_guest(game, first, false).unwrap();
+        storage.add_guest(game, second, false).unwrap();
+        server.leave(&logger, host, game, "abandons").unwrap();
+        storage.split_game_session(first, 1, game).unwrap().unwrap();
+        server.leave(&logger, first, game, "splits off from").unwrap();
+        assert!(live(game), "the second guest is still in it");
+        storage.split_game_session(second, 1, game).unwrap().unwrap();
+        server.leave(&logger, second, game, "splits off from").unwrap();
+        assert!(!live(game));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn run_live(storage: &crate::storage::Storage) -> Vec<u32> {
+        storage.presence().unwrap().1.into_iter().map(|s| s.id).collect()
+    }
 
     /// A game that signed in again leaves the rooms an earlier game of the player's joined,
     /// but not one it joined again itself.

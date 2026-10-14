@@ -50,6 +50,7 @@ export function endText(r) {
     case 'restarted': return `Lost: the game restarted or crashed, after ${after} in the ${what}`;
     case 'signed_out': return `${e.signout === 'timed_out' ? 'Timed out' : 'Signed out'} after ${after} in the ${what}`;
     case 'server_restart': return `The server restarted, after ${after} in the ${what}`;
+    case 'split': return `Moved on to a new ${what} after ${after}${e.ended ? '; this one ended' : ''}`;
     case 'abandoned': return r.host ? `Closed the ${what} after ${after}` : `Left the ${what} after ${after}`;
     default: return `Left the ${what} after ${after}${e.ended ? '; it ended' : ''}`;
   }
