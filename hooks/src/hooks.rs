@@ -733,6 +733,12 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
     storm::init_hooks(config, addr);
     nla::init_hooks();
     quazal::init_hooks(config, addr);
+
+    // Remove the engine's automatic climb/vault (collapse the nav scan volume; see autoclimb.rs).
+    #[cfg(not(feature = "patch-free"))]
+    if config.disable_autoclimb {
+        crate::autoclimb::disable_auto_climb();
+    }
 }
 
 macro_rules! disable_configurable_hook {
