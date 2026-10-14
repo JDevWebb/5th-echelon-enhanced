@@ -13,9 +13,11 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
 
-/// How long a request stays good: the running game polls for events every few seconds, so this
-/// only needs to outlast one poll; kept short so it can't attach to a later invitation.
-const FOR: Duration = Duration::from_secs(30);
+/// How long a request stays good. Long enough that a game the launcher just started can finish
+/// booting and reach its first event poll (Way 1), but short enough that it can't attach to some
+/// much later, unrelated invitation. The bound invitation it pairs with is the intended one, and
+/// the mark is cleared the moment it's taken.
+const FOR: Duration = Duration::from_secs(240);
 
 fn requests() -> &'static Mutex<HashMap<u32, Instant>> {
     static REQUESTS: OnceLock<Mutex<HashMap<u32, Instant>>> = OnceLock::new();

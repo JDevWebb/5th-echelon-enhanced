@@ -408,7 +408,12 @@ impl Friends for MyFriends {
         if !crate::rate_limit::invites().check(me) {
             return Err(Status::resource_exhausted("Too many requests; try again in a minute"));
         }
-        let reply = |status: JoinStatus, detail: &str| Ok(Response::new(friends::JoinNowResponse { status: status as i32, detail: detail.to_string() }));
+        let reply = |status: JoinStatus, detail: &str| {
+            Ok(Response::new(friends::JoinNowResponse {
+                status: status as i32,
+                detail: detail.to_string(),
+            }))
+        };
         let target = request.into_inner().id;
         let Some(host) = self.storage.find_user_id_by_ubi_id_async(&target).await.map_err(internal)? else {
             return reply(JoinStatus::NotFound, "That player isn't on this server.");
