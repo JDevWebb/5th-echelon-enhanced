@@ -261,6 +261,21 @@ pub async fn relationships(api_url: String, token: &str) -> Result<server_api::f
     }
 }
 
+/// Asks the server to join a friend's game (`JoinNow`): it queues a force-join for the caller's
+/// running game. `friend_id` is the friend's account id.
+pub async fn join_now(api_url: String, token: &str, friend_id: String) -> Result<server_api::friends::JoinNowResponse, Error> {
+    let channel = super::endpoint(&api_url)?.connect().await.map_err(|_| Error::ConnectionFailed)?;
+    let mut client = server_api::friends::friends_client::FriendsClient::new(channel);
+    let mut request = tonic::Request::new(server_api::friends::JoinNowRequest { id: friend_id });
+    let token = tonic::metadata::MetadataValue::try_from(token).map_err(|_| Error::InvalidPassword)?;
+    request.metadata_mut().insert("authorization", token);
+    match client.join_now(request).await {
+        Ok(resp) => Ok(resp.into_inner()),
+        Err(status) if status.code() == tonic::Code::Unauthenticated => Err(Error::InvalidPassword),
+        Err(status) => Err(status.into()),
+    }
+}
+
 /// A session token for the account, and a channel to its server.
 async fn signed_in(api_url: &str, username: &str, password: &str) -> Result<(tonic::transport::Channel, tonic::metadata::MetadataValue<tonic::metadata::Ascii>), Error> {
     let channel = super::endpoint(api_url)?.connect().await.map_err(|_| Error::ConnectionFailed)?;
