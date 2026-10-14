@@ -39,6 +39,29 @@ pub struct Release {
 /// Newest first. A release with nothing a player would notice has no entry.
 pub const RELEASES: &[Release] = &[
     Release {
+        version: "0.4.5",
+        thanks: &["Alessenchaleur", "Tea_bag", "PsykoGun", "RAZA"],
+        new: &[Item {
+            title: "Steam Input for Steam copies",
+            text: "Settings › Start the game through Steam, for a Steam copy on Windows: Steam then applies your controller settings, which it does only for games it starts. Off by default.",
+            community: false,
+        }],
+        fixed: &[
+            Fix {
+                lead: "No more ghost matches in the lists",
+                rest: " after a host leaves: the match the others carried on from no longer stays listed.",
+            },
+            Fix {
+                lead: "Reports keep what went wrong",
+                rest: ": the game's log no longer fills with the overlay's errors while the game is minimised, and keeps the run that crashed.",
+            },
+            Fix {
+                lead: "The overlay keeps out of the game's window handling",
+                rest: ": Alt no longer opens the window's menu with the panel open.",
+            },
+        ],
+    },
+    Release {
         version: "0.4.4",
         thanks: &["FANTOMAS", "d15_HB", "Oni", "PlaySkill", "ijsman", "Renegade", "nano_machine", "Ghost_Leader"],
         new: &[

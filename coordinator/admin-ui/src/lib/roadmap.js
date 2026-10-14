@@ -6,24 +6,21 @@ export const PROMOTE_LANES = [['requested', 'Requested'], ['next', 'Next'], ['la
 export const AREAS = ['Launcher', 'Overlay', 'Server', 'Admin', 'Network'];
 export const SUGGESTION_STATUSES = [['new', 'New'], ['planned', 'Planned'], ['done', 'Done'], ['declined', 'Declined']];
 /** Statuses offered when editing an item (any other text up to 24 characters works too). */
-export const STATUS_HINTS = ['In 0.4.4', 'In 0.4.5', 'Building', 'Mocked up', 'Planned', 'Later', 'On hold', 'When data says', 'Requested', 'Done'];
+export const STATUS_HINTS = ['In 0.4.5', 'In 0.4.6', 'Building', 'Mocked up', 'Planned', 'Later', 'On hold', 'When data says', 'Requested', 'Done'];
 /** The lanes the project's roadmap fills; Requested is the players' and admins' own. */
 export const PROJECT_LANES = ['shipping', 'next', 'later'];
 
 /** Lane releases the project's roadmap sets. */
-export const STARTING_RELEASES = { shipping: '0.4.4', next: '0.4.5' };
+export const STARTING_RELEASES = { shipping: '0.4.5', next: '0.4.6' };
 
 /** The project's roadmap as it stands for this release (STARTING_RELEASES.shipping): what an
  * empty roadmap starts from, and what "Update from the project's roadmap" brings one up to.
  * Requested items start hidden from players. */
 export const STARTING_ITEMS = [
-  ['shipping', 'Roadmap from the project', 'One click brings a network\'s roadmap up to the project\'s for each release, keeping players\' requests.', ['Admin'], 'In 0.4.4'],
-  ['shipping', 'Public matches outlive their host', 'Players who joined from a search count as part of the match, so the host leaving no longer ends it for them.', ['Server'], 'In 0.4.4'],
-  ['shipping', 'Joining and connection fixes', 'From players\' reports: joining from a search through the relay, searches that skip full rooms, and clearer reasons when a join fails.', ['Server', 'Network'], 'In 0.4.4'],
-  ['shipping', 'A match\'s end isn\'t a dropout', 'The Sessions page tells everyone leaving at the end of a match from a player dropping out.', ['Admin'], 'In 0.4.4'],
-  ['shipping', 'What\'s being played', 'Friends\' modes and maps (SvM Classic or Blacklist, co-op), and each server\'s open lobbies and matches by mode, in the launcher and the overlay.', ['Launcher', 'Overlay', 'Server'], 'In 0.4.4'],
-  ['next', 'Chat and who\'s online', 'Find people to play with from the launcher, with popups in the game. Community network only.', ['Launcher', 'Overlay'], 'In 0.4.5'],
-  ['next', 'Coordinator failover', 'Move the coordinator to a one-level name so Cloudflare can proxy it, then turn failover on.', ['Ops'], 'Planned'],
+  ['shipping', 'Fixes from players\' reports', 'No more duplicate matches in the lists after a host leaves, and game logs that keep what went wrong, so hangs and crashes can be traced.', ['Server', 'Launcher', 'Overlay'], 'In 0.4.5'],
+  ['shipping', 'Steam Input for controllers', 'A Steam copy on Windows can be started through Steam, so Steam\'s controller settings apply.', ['Launcher'], 'In 0.4.5'],
+  ['next', 'Chat and who\'s online', 'Find people to play with from the launcher, with popups in the game. Community network only.', ['Launcher', 'Overlay'], 'In 0.4.6'],
+  ['next', 'Coordinator failover', 'Move the coordinator to a one-level name so Cloudflare can proxy it, then turn failover on.', ['Ops'], 'In 0.4.6'],
   ['next', 'Fewer relayed matches', 'Relayed players connect straight to hosts that have a port open.', ['Network'], 'Planned'],
   ['later', 'Global matchmaking', 'One matchmaking server for everyone, relays kept near players, hosts ranked by ping.', ['Server', 'Network'], 'Later'],
   ['later', 'Lobby browser', 'A list of every open public lobby (mode, map, players and seats), alongside global matchmaking.', ['Launcher', 'Overlay'], 'Later'],

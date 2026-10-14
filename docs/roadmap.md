@@ -4,7 +4,7 @@ What's being worked on next, roughly in order. Plans change as testing and the g
 
 ## Next
 
-### Chat, in 0.4.5
+### Chat, in 0.4.6
 
 Global, friends and lobby chat in the launcher, with popups in the game, to find people to play with. On the community network, with a language filter on chat and names, and no links but Discord invites.
 
