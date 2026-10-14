@@ -39,6 +39,16 @@ pub struct Release {
 /// Newest first. A release with nothing a player would notice has no entry.
 pub const RELEASES: &[Release] = &[
     Release {
+        version: "0.4.5",
+        thanks: &[],
+        new: &[Item {
+            title: "Mouse moves 1:1",
+            text: "The game slowed fast flicks by capping how far the view turns in a single frame — its negative mouse acceleration. That cap is now widened, so aiming is linear however fast you move, and it's on from this update. Turn it off under Settings › Game if you prefer the original. (If you run ThirteenAG's Fusion Fix, that removes the acceleration instead, and this option stays off.)",
+            community: false,
+        }],
+        fixed: &[],
+    },
+    Release {
         version: "0.4.4",
         thanks: &["FANTOMAS", "d15_HB", "Oni", "PlaySkill", "ijsman", "Renegade", "nano_machine", "Ghost_Leader"],
         new: &[
