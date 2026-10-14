@@ -1372,9 +1372,10 @@ impl Misc for MyMisc {
                     username: sender.username,
                     ips: vec![],
                 }),
-                // A launcher/overlay "join a friend" (JoinNow) marks the caller, so the
-                // invitation it bound is delivered as a join; otherwise the server-wide debug flag.
-                force_join: self.debug_config.force_joins || crate::join_requests::take(user_id),
+                force_join: self.debug_config.force_joins,
+                // A launcher/overlay "join a friend" (JoinNow) marks the caller, so the invitation
+                // it bound is delivered as a join the player asked for (honoured without a click).
+                requested: crate::join_requests::take(user_id),
             }),
             friend: None,
             notice: notice(),

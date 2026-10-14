@@ -254,6 +254,7 @@ fn ui_id(id: &str) -> u64 {
 #[derive(Clone, Copy)]
 enum RowAction {
     Invite,
+    Join,
     Change(community::FriendChange, &'static str),
 }
 
@@ -439,10 +440,13 @@ impl MyRenderLoop {
                         if let Some(ref sender) = evt.sender {
                             self.invite_notification.replace((Instant::now(), sender.username.clone()));
                         }
-                        // The server may ask to join without a click only if the player allowed it.
+                        // A join the player asked for (the launcher's/overlay's "Join", via
+                        // JoinNow) is honoured without a click. A server-forced join only if the
+                        // player allowed it; an ordinary invitation only with auto-join on.
                         let cfg = hooks_config::get();
                         let force_join = evt.force_join && cfg.is_some_and(|c| c.allow_force_join);
-                        if evt.sender.is_some() && (force_join || cfg.is_some_and(|c| c.auto_join_invite)) {
+                        let auto = evt.requested || force_join || cfg.is_some_and(|c| c.auto_join_invite);
+                        if evt.sender.is_some() && auto {
                             self.join_session(&evt.sender.unwrap());
                         } else {
                             self.active_invites.push(Invite {
@@ -940,6 +944,7 @@ impl MyRenderLoop {
             .map(|a| {
                 let text = match a {
                     RowAction::Invite => "Invite",
+                    RowAction::Join => "Join",
                     RowAction::Change(_, text) => text,
                 };
                 // Ids come from the server: hashed, so none can collide with ImGui's own
@@ -966,6 +971,7 @@ impl MyRenderLoop {
                 if self.button(ui, label, primary) {
                     match action {
                         RowAction::Invite => community::invite(p.id.clone(), p.name.clone()),
+                        RowAction::Join => community::join(p.id.clone(), p.name.clone()),
                         RowAction::Change(change, _) => community::change(*change, p.id.clone(), p.name.clone()),
                     }
                 }
@@ -1043,6 +1049,7 @@ impl MyRenderLoop {
                 let mut actions = vec![RowAction::Change(C::Block, "Block"), RowAction::Change(C::Remove, "Remove")];
                 if p.online {
                     actions.push(RowAction::Invite);
+                    actions.push(RowAction::Join);
                 }
                 self.player_row(ui, row, "friend", p, &Self::status(p), &actions);
                 row += 1;
@@ -1149,6 +1156,7 @@ impl MyRenderLoop {
             let can_invite = p.online && (p.relation == community::Relation::Friend || (self.data.everyone_mode && p.relation == community::Relation::None));
             if can_invite {
                 actions.push(RowAction::Invite);
+                actions.push(RowAction::Join);
             }
             self.player_row(ui, i, "found", p, &detail, &actions);
         }
