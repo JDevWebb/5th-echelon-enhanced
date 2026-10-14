@@ -17,6 +17,7 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::ERROR_BUFFER_OVERFLOW;
 use windows::Win32::Foundation::HANDLE;
 use windows::Win32::NetworkManagement::IpHelper::IP_ADAPTER_INFO;
+use windows::Win32::NetworkManagement::IpHelper::IP_ADDR_STRING;
 use windows::Win32::Networking::WinSock::gethostname;
 use windows::Win32::Networking::WinSock::HOSTENT;
 use windows::Win32::System::LibraryLoader::GetProcAddress;
@@ -386,19 +387,44 @@ fn get_adapters_info(adapter_info: *mut IP_ADAPTER_INFO, sizepointer: *mut u32) 
 
     unsafe {
         let mut adapter = adapter_info;
+        let mut seen = Vec::new();
 
-        while !adapter.is_null() {
-            let data = &*(std::ptr::from_ref::<[i8]>(&(*adapter).IpAddressList.IpAddress.String) as *const [u8]);
-            let addr = CStr::from_bytes_until_nul(data).unwrap();
-            debug!("{addr:?} == {target:?} ?");
-            if addr == target.as_ref() {
-                break;
+        // Every address of each adapter, not only its first: an adapter with more than one
+        // (Wine lists them so) never matched, and each call logged an error (mpw, 179 times).
+        'adapters: while !adapter.is_null() {
+            let mut ip: *mut IP_ADDR_STRING = &raw mut (*adapter).IpAddressList;
+            while !ip.is_null() {
+                let data = &*(std::ptr::from_ref::<[i8]>(&(*ip).IpAddress.String) as *const [u8]);
+                let addr = CStr::from_bytes_until_nul(data).unwrap_or_default();
+                debug!("{addr:?} == {target:?} ?");
+                if addr == target.as_ref() {
+                    // The game reads an adapter's first address: make it this one.
+                    // (Unaligned is usual here: see below.)
+                    let first = &raw mut (*adapter).IpAddressList;
+                    if ip != first {
+                        let found = std::ptr::read_unaligned(ip);
+                        let mut head = std::ptr::read_unaligned(first);
+                        head.IpAddress = found.IpAddress;
+                        head.IpMask = found.IpMask;
+                        std::ptr::write_unaligned(first, head);
+                    }
+                    break 'adapters;
+                }
+                seen.push(addr.to_string_lossy().into_owned());
+                ip = (*ip).Next;
             }
             adapter = (*adapter).Next;
         }
 
         if adapter.is_null() {
-            error!("Adapter with IP {adapter_ip} not found");
+            // The game asks often; once is enough to say so.
+            static TOLD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+            if !TOLD.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                warn!(
+                    "No adapter has {adapter_ip} (the game sees all of them: {}); the launcher picks it again next time the game starts",
+                    seen.join(", ")
+                );
+            }
             return res;
         }
 
@@ -702,7 +728,7 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
     configurable_hook!(config, Hook::StormErrorFormatter, StormErrorFormatter ; addr.func_storm_some_error_formatter => storm_some_error_formatter);
     configurable_hook!(config, Hook::StormHostPortToString, StormHostPortToStringHook ; addr.func_storm_host_port_to_str => storm_host_port_to_str);
     configurable_hook!(config, Hook::StormSetState, StormSetStateHook ; addr.func_storm_maybe_set_state => storm_set_state);
-    configurable_hook!(config, Hook::StormStateMachineActionExecute, StormStateMachineActionExecuteHook ; 
+    configurable_hook!(config, Hook::StormStateMachineActionExecute, StormStateMachineActionExecuteHook ;
         addr.func_storm_statemachineaction_execute => storm_statemachineaction_execute);
     configurable_hook!(config, Hook::Thread, ThreadStarterHook ; addr.func_thread_starter => set_thread_name);
     #[cfg(feature = "modding")]

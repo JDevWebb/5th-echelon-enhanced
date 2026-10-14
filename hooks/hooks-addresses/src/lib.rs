@@ -503,6 +503,12 @@ pub fn load_custom_addresses(dir: &Path) -> HashMap<String, HashMap<[u8; 32], Ad
 
     let f = match File::open(&filepath) {
         Ok(f) => f,
+        // None there is usual (a game folder the add-on couldn't write to, as Ubisoft Connect's
+        // in Program Files): the built-in addresses are used. Not an error in players' reports.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            info!("No {fname} there; using the built-in addresses");
+            return HashMap::default();
+        }
         Err(e) => {
             error!("Error reading {filepath:?}: {e}");
             return HashMap::default();
