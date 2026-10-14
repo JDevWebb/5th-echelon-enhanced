@@ -260,6 +260,7 @@ impl Snapshot {
 enum Action {
     Refresh,
     Invite { id: String, name: String },
+    Join { id: String, name: String },
     Search(String),
     Change { change: FriendChange, id: String, name: String },
 }
@@ -389,6 +390,11 @@ pub fn invite(id: String, name: String) {
     send(Action::Invite { id, name });
 }
 
+/// Joins a friend's game without an invitation (the overlay's "Join").
+pub fn join(id: String, name: String) {
+    send(Action::Join { id, name });
+}
+
 /// Searches players by part of their name (everyone online for "").
 pub fn search(query: String) {
     send(Action::Search(query));
@@ -459,6 +465,7 @@ pub fn start() {
             match rx.recv_timeout(REFRESH_EVERY) {
                 Ok(Action::Refresh) | Err(mpsc::RecvTimeoutError::Timeout) => refresh_now(),
                 Ok(Action::Invite { id, name }) => invite_now(&id, &name),
+                Ok(Action::Join { id, name }) => join_now_impl(&id, &name),
                 Ok(Action::Search(query)) => search_now(&query),
                 Ok(Action::Change { change, id, name }) => {
                     change_now(change, &id, &name);
@@ -494,6 +501,23 @@ fn invite_now(id: &str, name: &str) {
             warn!("Invite to {name} failed: {e}");
             let why = reason(&e).unwrap_or_else(|| String::from("Host or join a match first, then try again."));
             say(format!("Couldn't invite {name}. {why}"), true);
+        }
+    }
+}
+
+fn join_now_impl(id: &str, name: &str) {
+    use server_api::friends::join_now_response::Status as JoinStatus;
+    match crate::api::join_friend(id) {
+        Ok(resp) => match JoinStatus::try_from(resp.status).unwrap_or(JoinStatus::Offline) {
+            JoinStatus::Ok => say(format!("Joining {name}..."), false),
+            _ if !resp.detail.is_empty() => say(resp.detail, true),
+            JoinStatus::Offline => say(format!("{name} isn't hosting a game right now."), true),
+            JoinStatus::Private => say(format!("{name}'s match is private - you need an invitation."), true),
+            _ => say(format!("Couldn't join {name}."), true),
+        },
+        Err(e) => {
+            warn!("Join {name} failed: {e}");
+            say(reason(&e).unwrap_or_else(|| format!("Couldn't join {name}; try again.")), true);
         }
     }
 }

@@ -82,7 +82,11 @@ message FriendEvent {
 message InviteEvent {
     int64 id = 1;
     users.User sender = 2;
+    // The server forces the join (its debug force_joins); honoured only if the player allowed it.
     bool force_join = 3;
+    // The player themselves asked to join this (the launcher's/overlay's "Join", via JoinNow):
+    // honoured without a click regardless of force_join, since they requested it.
+    bool requested = 4;
 }
 
 message TestP2PRequest {
