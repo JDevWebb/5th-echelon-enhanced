@@ -385,14 +385,48 @@ fn deinit(hmodule: Option<HMODULE>, exiting: bool) {
 struct FileWriter(PathBuf);
 
 impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for FileWriter {
-    type Writer = Box<dyn std::io::Write>;
+    type Writer = EventWriter<'a>;
 
     fn make_writer(&'a self) -> Self::Writer {
+        EventWriter { path: &self.0, text: Vec::new() }
+    }
+}
+
+/// Lines written over and over, left out of the log (`hooks_config::diagnostics::Repeats`).
+static REPEATS: std::sync::Mutex<Option<hooks_config::diagnostics::Repeats>> = std::sync::Mutex::new(None);
+
+/// One event's lines, written to the log when done, unless they only repeat.
+struct EventWriter<'a> {
+    path: &'a Path,
+    text: Vec<u8>,
+}
+
+impl std::io::Write for EventWriter<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.text.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl Drop for EventWriter<'_> {
+    fn drop(&mut self) {
+        if self.text.is_empty() {
+            return;
+        }
+        let text = String::from_utf8_lossy(&self.text);
+        let mut repeats = REPEATS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let out = repeats.get_or_insert_with(Default::default).filter(&text);
+        if out.is_empty() {
+            return;
+        }
         // A log that can't be written (read-only game folder) must not crash
         // the game.
-        match File::options().create(true).append(true).open(&self.0) {
-            Ok(f) => Box::new(f),
-            Err(_) => Box::new(std::io::sink()),
+        if let Ok(mut f) = File::options().create(true).append(true).open(self.path) {
+            let _ = std::io::Write::write_all(&mut f, out.as_bytes());
         }
     }
 }
@@ -461,8 +495,14 @@ pub(crate) static LOG_PATH: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::
 fn init_log(target_dir: &Path) -> ReconfigurableLogger {
     let path = target_dir.join("bl-tracing.log");
     let _ = LOG_PATH.set(path.clone());
-    // Keep the previous run's log: that's usually the one with the problem.
-    let _ = std::fs::rename(&path, target_dir.join("bl-tracing.prev.log"));
+    // Keep the previous run's log: that's usually the one with the problem. Not a run that
+    // closed at once (the game is started, closes and is started again by Steam or Ubisoft
+    // Connect): it took the place of the one with the problem in every report's previous log
+    // (2026-10-14: 9 of 9). This run is added to it instead.
+    let stub = std::fs::metadata(&path).is_ok_and(|m| m.len() < 64 * 1024) && std::fs::read_to_string(&path).is_ok_and(|text| hooks_config::diagnostics::short_run(&text, 10));
+    if !stub {
+        let _ = std::fs::rename(&path, target_dir.join("bl-tracing.prev.log"));
+    }
     let subscriber_builder = tracing_subscriber::FmtSubscriber::builder()
         .with_writer(FileWriter(path))
         .with_ansi(false)

@@ -152,9 +152,133 @@ pub fn example(log: &str, count: usize) -> Vec<String> {
     lines
 }
 
+/// How often a line that keeps repeating is still written: once a minute.
+const REPEAT_EVERY_SECS: i64 = 60;
+/// How many different lines are watched for repeats.
+const REPEAT_WATCHED: usize = 8;
+
+/// Keeps a line written over and over from filling the game's log: the overlay's renderer
+/// logs two errors every frame while the window has no size (minimised), and a report keeps
+/// only the log's end (2026-10-13: PsykoGun's log reached 92 MB, about 140 KB/s; Tea_bag's
+/// report held 8 seconds of it). A line the same as one written in the last minute but for
+/// its time is left out; it's written again after a minute, and when another line comes, a
+/// note says how many were left out.
+#[derive(Debug, Default)]
+pub struct Repeats {
+    /// Lines (without their time) lately written: when last, and how many left out since.
+    recent: Vec<(String, i64, u64)>,
+}
+
+impl Repeats {
+    /// What to write for `line` (one event, possibly several lines, ending in a newline):
+    /// nothing, the line, or notes on lines left out and the line.
+    pub fn filter(&mut self, line: &str) -> String {
+        let Some(at) = line_time(line) else {
+            return line.to_string();
+        };
+        let (stamp, body) = line.split_once(' ').unwrap_or((line, ""));
+        // The thread's id may differ between the same messages.
+        let body = without_thread(body.trim_start());
+        let body = body.as_str();
+        if let Some(i) = self.recent.iter().position(|(b, _, _)| b == body) {
+            let (_, written, left_out) = &mut self.recent[i];
+            if at - *written < REPEAT_EVERY_SECS {
+                *left_out += 1;
+                return String::new();
+            }
+            let note = note(stamp, body, *left_out);
+            *written = at;
+            *left_out = 0;
+            return note + line;
+        }
+        let mut out = String::new();
+        for (body, _, left_out) in &mut self.recent {
+            if *left_out > 0 {
+                out.push_str(&note(stamp, body, *left_out));
+                *left_out = 0;
+            }
+        }
+        if self.recent.len() >= REPEAT_WATCHED {
+            self.recent.remove(0);
+        }
+        self.recent.push((body.to_string(), at, 0));
+        out + line
+    }
+}
+
+/// A log line's level and the rest without its thread's id (`ThreadId(17) `).
+fn without_thread(body: &str) -> String {
+    match body.find("ThreadId(") {
+        Some(i) => match body[i..].find(") ") {
+            Some(j) => format!("{}{}", &body[..i], &body[i + j + 2..]),
+            None => body.to_string(),
+        },
+        None => body.to_string(),
+    }
+}
+
+fn note(stamp: &str, body: &str, left_out: u64) -> String {
+    if left_out == 0 {
+        return String::new();
+    }
+    let first = body.lines().next().unwrap_or_default();
+    let first = first.get(..first.char_indices().nth(120).map_or(first.len(), |(i, _)| i)).unwrap_or(first);
+    format!("{stamp}  INFO (left out {left_out} more of: {first})\n")
+}
+
+/// Whether the log `text` is of a run that lasted under `secs`: the game starts, closes at
+/// once and is started again (Steam and Ubisoft Connect do this), and that run isn't worth
+/// keeping as the previous run's log in place of the one before it.
+#[must_use]
+pub fn short_run(text: &str, secs: i64) -> bool {
+    let mut times = text.lines().filter_map(line_time);
+    let Some(first) = times.next() else {
+        return true;
+    };
+    times.last().unwrap_or(first) - first < secs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn repeated_lines_are_left_out_and_counted() {
+        let mut r = Repeats::default();
+        let line = |t: &str, m: &str| format!("2026-10-13T22:10:{t}.352542Z ERROR ThreadId(17) hudhook::renderer::pipeline: 141: {m}\n");
+        assert_eq!(r.filter(&line("02", "Insufficient display size: 0x0")), line("02", "Insufficient display size: 0x0"));
+        assert_eq!(r.filter(&line("03", "Render error")), line("03", "Render error"));
+        for t in 4..30 {
+            assert_eq!(r.filter(&line(&format!("{t:02}"), "Insufficient display size: 0x0")), "");
+            assert_eq!(r.filter(&line(&format!("{t:02}"), "Render error")), "");
+        }
+        let other = "2026-10-13T22:10:31.000000Z  INFO ThreadId(01) hooks::game_state: 72: Overlay opened (F5)\n";
+        let out = r.filter(other);
+        assert!(
+            out.contains("(left out 26 more of: ERROR hudhook::renderer::pipeline: 141: Insufficient display size: 0x0)"),
+            "{out}"
+        );
+        assert!(out.contains("(left out 26 more of: ERROR hudhook::renderer::pipeline: 141: Render error)"), "{out}");
+        assert!(out.ends_with(other));
+        assert!(log_since(&out, 0).lines().count() == 3, "the notes have a time");
+        // A minute on, the line is written again, with how many were left out.
+        assert_eq!(r.filter(&line("40", "Render error")), "");
+        let later = "2026-10-13T22:11:41.000000Z ERROR ThreadId(17) hudhook::renderer::pipeline: 141: Render error\n";
+        assert_eq!(
+            r.filter(later),
+            format!("2026-10-13T22:11:41.000000Z  INFO (left out 1 more of: ERROR hudhook::renderer::pipeline: 141: Render error)\n{later}")
+        );
+        assert_eq!(r.filter("a line without a time\n"), "a line without a time\n");
+    }
+
+    #[test]
+    fn a_run_that_closed_at_once_is_short() {
+        let stub = "2026-10-13T22:07:55.328339Z  INFO ThreadId(01) hooks: 481: attaching\n2026-10-13T22:07:55.583807Z  INFO hooks: The game is closing (a normal exit)\n";
+        assert!(short_run(stub, 10));
+        assert!(short_run("", 10));
+        let real = "2026-10-13T22:07:55.328339Z  INFO hooks: attaching\n2026-10-13T22:37:55.000000Z  INFO hooks: closing\n";
+        assert!(!short_run(real, 10));
+    }
 
     #[test]
     fn the_log_since_a_time_and_its_times() {
