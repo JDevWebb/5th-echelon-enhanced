@@ -1699,6 +1699,14 @@ async fn outdated_client(ctx: &mut Ctx) -> Result<()> {
             "the game signed in after the client {client:?}"
         );
     }
+    // The same outdated sign-in again within a minute: the same answer, after a while (an old
+    // game left running retries as soon as it's answered).
+    let started = std::time::Instant::now();
+    match api_sign_in(ctx.server, &name, PASSWORD, "game/0.0.1").await {
+        Err(e) if e.downcast_ref::<tonic::Status>().is_some_and(|s| s.code() == tonic::Code::FailedPrecondition) => {}
+        other => return Err(eyre!("a repeated outdated sign-in wasn't refused: {:?}", other.map(|_| ()))),
+    }
+    ensure!(started.elapsed() >= std::time::Duration::from_secs(9), "a repeated outdated sign-in was answered at once");
     // A current client lets the game in; an outdated one trying after it shuts it out again.
     Bot::login(ctx.server, &name, PASSWORD).await.map_err(|e| eyre!("a current client couldn't play: {e}"))?;
     ensure!(api_sign_in(ctx.server, &name, PASSWORD, "game/0.0.1").await.is_err(), "an outdated client was let in");

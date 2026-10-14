@@ -821,6 +821,9 @@ impl Users for MyUsers {
         if let Some(why) = crate::clients::refused_lately(&username, &client, &password) {
             crate::session_events::refused(crate::session_events::Who::Name(username.clone()), "outdated", "api", Some(client.as_str()));
             attempt.succeeded();
+            // Answered after a while: an old game left running retries as soon as it's
+            // answered (AAYF's 0.4.2 game, na1: 48,269 times in 40 h), and the answer won't change.
+            tokio::time::sleep(crate::clients::REFUSED_AGAIN_AFTER).await;
             return Err(Status::failed_precondition(why));
         }
 

@@ -25,6 +25,8 @@ static MINIMUM: OnceLock<Option<[u32; 3]>> = OnceLock::new();
 /// How long an outdated client that proved its password is refused again without the
 /// password being checked (an old client retrying every second costs a hash each time).
 const REFUSED_FOR: Duration = Duration::from_secs(60);
+/// How long the same outdated sign-in, refused within [`REFUSED_FOR`], waits for its answer.
+pub const REFUSED_AGAIN_AFTER: Duration = Duration::from_secs(10);
 /// Outdated sign-ins that proved their password lately, by a hash of the name, client and
 /// password (only the same three match): when, and the account.
 static REFUSED: Mutex<Option<HashMap<[u8; 32], (Instant, u32)>>> = Mutex::new(None);
