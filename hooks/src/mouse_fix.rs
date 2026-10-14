@@ -22,26 +22,11 @@
 
 use tracing::info;
 use tracing::warn;
-use windows::core::PCSTR;
-use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 
 /// Wide replacement bounds: `dt*±100000` (~±1666/frame at 60 fps) — unreachable for real movement,
 /// yet still catches a garbage/spike value. `f64`, because `mulsd` reads a QWORD.
 const WIDE_LOWER: f64 = -100_000.0;
 const WIDE_UPPER: f64 = 100_000.0;
-
-/// Base + `SizeOfImage` of the main module (the game exe), to bound-check constant reads.
-unsafe fn module_bounds() -> Option<(usize, usize)> {
-    let base = GetModuleHandleA(PCSTR::null()).ok()?.0 as *const u8;
-    if base.is_null() {
-        return None;
-    }
-    let e_lfanew = std::ptr::read_unaligned(base.add(0x3c).cast::<u32>()) as usize;
-    // NT headers: Signature(4) + FileHeader(20) -> IMAGE_OPTIONAL_HEADER32; SizeOfImage is at +0x38.
-    let opt = base.add(e_lfanew + 24);
-    let size_of_image = std::ptr::read_unaligned(opt.add(0x38).cast::<u32>()) as usize;
-    Some((base as usize, size_of_image))
-}
 
 /// Reads an `f64` at absolute address `addr`, but only if it lies fully inside the loaded module
 /// (guards against faulting on a coincidental structural match whose disp32 is garbage).
@@ -60,20 +45,9 @@ fn leak_f64_addr(v: f64) -> u32 {
     Box::into_raw(Box::new(v)) as usize as u32
 }
 
-/// Writes `value` (little-endian) as a disp32 at `addr`, flipping the page to RW for the write.
-unsafe fn write_u32(addr: *mut u8, value: u32) -> bool {
-    if let Ok(_handle) = region::protect_with_handle(addr, 4, region::Protection::READ_WRITE) {
-        std::ptr::copy(value.to_le_bytes().as_ptr(), addr, 4);
-        true
-    } else {
-        warn!("mouse-accel-fix: protect failed at {addr:?}");
-        false
-    }
-}
-
 /// Removes the negative mouse acceleration by widening the look-delta clamp bounds.
 pub unsafe fn disable_negative_mouse_acceleration() {
-    let Some((base, img_size)) = module_bounds() else {
+    let Some((base, img_size)) = crate::module_bounds() else {
         warn!("mouse-accel-fix: module info unavailable -> skipped");
         return;
     };
@@ -111,11 +85,7 @@ pub unsafe fn disable_negative_mouse_acceleration() {
     info!("mouse-accel-fix: clamp verified @ .text+{off:#x}; lower->{lower_ptr:#010x} upper->{upper_ptr:#010x}");
     // disp32 of the lower (-500) mulsd sits at +4, of the upper (+500) mulsd at +15.
     let text = image.as_ptr();
-    let lo = write_u32(text.add(off + 4).cast_mut(), lower_ptr);
-    let hi = write_u32(text.add(off + 15).cast_mut(), upper_ptr);
-    if lo && hi {
-        info!("mouse-accel-fix: bounds widened - negative acceleration OFF, camera clamp still active");
-    } else {
-        warn!("mouse-accel-fix: write failed (lo={lo}, hi={hi})");
-    }
+    crate::writemem(text.add(off + 4).cast_mut(), &lower_ptr.to_le_bytes());
+    crate::writemem(text.add(off + 15).cast_mut(), &upper_ptr.to_le_bytes());
+    info!("mouse-accel-fix: bounds widened - negative acceleration OFF, camera clamp still active");
 }

@@ -735,6 +735,7 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
     quazal::init_hooks(config, addr);
 
     // Remove the engine's negative mouse acceleration (widen the look-delta clamp; see mouse_fix.rs).
+    #[cfg(not(feature = "patch-free"))]
     if config.disable_mouse_accel {
         crate::mouse_fix::disable_negative_mouse_acceleration();
     }

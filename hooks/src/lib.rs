@@ -123,6 +123,20 @@ pub(crate) unsafe fn game_code() -> Option<&'static [u8]> {
     None
 }
 
+/// The game module's base address and `SizeOfImage` — the full in-memory span of the executable,
+/// to bound-check reads that may land outside `.text` but inside the image (e.g. constant pools).
+pub(crate) unsafe fn module_bounds() -> Option<(usize, usize)> {
+    use windows::Win32::System::LibraryLoader::GetModuleHandleA;
+    let base = GetModuleHandleA(windows::core::PCSTR::null()).ok()?.0 as *const u8;
+    if base.is_null() {
+        return None;
+    }
+    let e_lfanew = std::ptr::read_unaligned(base.add(0x3c).cast::<u32>()) as usize;
+    // NT headers: Signature(4) + FileHeader(20) -> IMAGE_OPTIONAL_HEADER32; SizeOfImage is at +0x38.
+    let size_of_image = std::ptr::read_unaligned(base.add(e_lfanew + 24 + 0x38).cast::<u32>()) as usize;
+    Some((base as usize, size_of_image))
+}
+
 /// Where the host's data version check starts, if it's found exactly once in the game's
 /// code (an unknown build is left alone).
 unsafe fn data_version_check() -> Option<*mut u8> {
