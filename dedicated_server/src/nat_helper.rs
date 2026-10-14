@@ -1097,10 +1097,14 @@ const DROP_TO_SHARE: f64 = 0.25;
 
 /// Watches each player's relayed traffic from one look to the next (every ten seconds), for
 /// a match whose traffic stops while the players are still connected: the relay can't tell
-/// why, but the admin UI can show which side went quiet.
+/// why, but the admin UI can show which side went quiet. A fall counts once it has lasted two
+/// looks: co-op's traffic dips for a few seconds as it plays (eu1, 0.4.4's first 40 h: 169 of
+/// 268 drops in co-op, and most of those players carried on).
 #[derive(Default)]
 struct RelayWatch {
     last: HashMap<String, (f64, f64)>,
+    /// Falls seen at the last look, waiting for the next: the rate before them, each way.
+    falling: HashMap<(String, &'static str), f64>,
 }
 
 impl RelayWatch {
@@ -1109,19 +1113,27 @@ impl RelayWatch {
     fn tick(&mut self, flows: &[(String, u64, u64)], secs: f64) -> Vec<(String, &'static str, f64, f64)> {
         let mut fell = Vec::new();
         let mut now = HashMap::with_capacity(flows.len());
+        let mut falling = HashMap::new();
         #[allow(clippy::cast_precision_loss)]
         for (name, sent, received) in flows {
             let rates = (*sent as f64 / secs.max(1.0), *received as f64 / secs.max(1.0));
             if let Some(&(sent_before, received_before)) = self.last.get(name) {
                 for (direction, before, after) in [("sending", sent_before, rates.0), ("receiving", received_before, rates.1)] {
-                    if before >= DROP_FROM_PPS && after < before * DROP_TO_SHARE {
-                        fell.push((name.clone(), direction, before, after));
+                    let key = (name.clone(), direction);
+                    if let Some(from) = self.falling.get(&key) {
+                        // Still low a look later: it fell. Back up: a dip.
+                        if after < from * DROP_TO_SHARE {
+                            fell.push((name.clone(), direction, *from, after));
+                        }
+                    } else if before >= DROP_FROM_PPS && after < before * DROP_TO_SHARE {
+                        falling.insert(key, before);
                     }
                 }
             }
             now.insert(name.clone(), rates);
         }
         self.last = now;
+        self.falling = falling;
         fell
     }
 }
@@ -1575,18 +1587,24 @@ mod tests {
         assert_eq!(t.route(a("203.0.113.4:5000"), victim, 10, now).map(|(to, _)| to), Some(a("198.51.100.7:61000")));
     }
 
-    /// A player whose relayed traffic one way falls from a match's rate to almost nothing is
-    /// noticed, once; a quiet player or a slow fall isn't.
+    /// A player whose relayed traffic one way falls from a match's rate to almost nothing, and
+    /// stays there a look later, is noticed, once; a quiet player, a slow fall or a dip isn't.
     #[test]
     fn falling_relay_traffic_is_noticed() {
         let mut watch = super::RelayWatch::default();
         let flows = |a: (u64, u64), b: (u64, u64)| vec![("a".to_string(), a.0, a.1), ("b".to_string(), b.0, b.1)];
         assert!(watch.tick(&flows((650, 640), (5, 5)), 10.0).is_empty(), "nothing to compare with yet");
         assert!(watch.tick(&flows((600, 400), (3, 0)), 10.0).is_empty(), "lower, not fallen");
-        let fell = watch.tick(&flows((610, 40), (0, 0)), 10.0);
+        assert!(watch.tick(&flows((610, 40), (0, 0)), 10.0).is_empty(), "fell: wait a look");
+        let fell = watch.tick(&flows((610, 30), (0, 0)), 10.0);
         assert_eq!(fell.len(), 1, "{fell:?}");
-        assert_eq!((fell[0].0.as_str(), fell[0].1), ("a", "receiving"));
-        assert!(watch.tick(&flows((610, 40), (0, 0)), 10.0).is_empty(), "already low");
+        assert_eq!((fell[0].0.as_str(), fell[0].1, fell[0].2), ("a", "receiving", 40.0), "from the rate before the fall");
+        assert!(watch.tick(&flows((610, 30), (0, 0)), 10.0).is_empty(), "already low");
+        // A dip that's back by the next look isn't a drop.
+        assert!(watch.tick(&flows((610, 400), (0, 0)), 10.0).is_empty());
+        assert!(watch.tick(&flows((610, 400), (0, 0)), 10.0).is_empty());
+        assert!(watch.tick(&flows((20, 400), (0, 0)), 10.0).is_empty(), "sending dipped");
+        assert!(watch.tick(&flows((500, 400), (0, 0)), 10.0).is_empty(), "and came back");
     }
 
     #[test]
