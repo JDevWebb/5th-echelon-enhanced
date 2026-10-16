@@ -122,10 +122,23 @@ pub struct Config {
     pub default_game: GameVersion,
     #[serde(default)]
     pub ui_version: Option<UIVersion>,
+    /// Opt-in: brighten the picture by lifting Blacklist.ini's dark gamma cap (see [`crate::gamma`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub brighten: bool,
+    /// The brightness the option writes (hundredths of `m_fVideoGamma`), when `brighten` is on.
+    #[serde(default = "default_brightness")]
+    pub brightness: u8,
+    /// The gamma values Blacklist.ini had before `brighten` changed them, to put back when it's off.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gamma_backup: Option<crate::gamma::Backup>,
 }
 
 fn default_game() -> GameVersion {
     GameVersion::SplinterCellBlacklistDx11
+}
+
+fn default_brightness() -> u8 {
+    crate::gamma::DEFAULT_BRIGHTNESS
 }
 
 impl Default for Config {
@@ -137,6 +150,9 @@ impl Default for Config {
             hook_config: hooks_config::default(),
             default_game: default_game(),
             ui_version: None,
+            brighten: false,
+            brightness: default_brightness(),
+            gamma_backup: None,
         }
     }
 }

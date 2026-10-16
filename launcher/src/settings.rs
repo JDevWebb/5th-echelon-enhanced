@@ -571,6 +571,58 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
              This widens that cap for a linear, 1:1 feel (a wide limit stays, so a bad input spike can't flip the camera).",
         );
     }
+    // Picture brightness (opt-in): lifts Blacklist.ini's dark gamma cap. The file is edited
+    // statically while the game is off and put back when the option is turned off, so the
+    // controls are locked while the game runs.
+    let running = setup::game::game_running();
+    ui.add_enabled_ui(!running, |ui| {
+        let mut brighten = game.cfg.brighten;
+        let toggled = ui
+            .checkbox(&mut brighten, "Brighten the picture")
+            .on_hover_text(
+                "Blacklist caps its brightness low, which looks dark under Proton. This lifts the cap and \
+                 sets a brighter picture by editing Blacklist.ini while the game is closed; turning it off \
+                 puts the original back.",
+            )
+            .changed();
+        if toggled {
+            let dir = game.dir.clone();
+            let mut backup = game.cfg.gamma_backup.clone();
+            let brightness = game.cfg.brightness;
+            let res = if brighten {
+                setup::gamma::enable(&dir, brightness, &mut backup)
+            } else {
+                setup::gamma::disable(&dir, &mut backup)
+            };
+            match res {
+                Ok(()) => game.update(notices, |c| {
+                    c.brighten = brighten;
+                    c.gamma_backup = backup;
+                }),
+                Err(e) => notices.error(format!("Couldn't change the brightness: {e}")),
+            }
+        }
+        if game.cfg.brighten {
+            let mut level = game.cfg.brightness;
+            let slider = egui::Slider::new(&mut level, setup::gamma::MIN_BRIGHTNESS..=setup::gamma::MAX_BRIGHTNESS)
+                .text("Brightness")
+                .custom_formatter(|n, _| format!("{:.2}", n / 100.0));
+            if ui.add(slider).changed() {
+                let dir = game.dir.clone();
+                let mut backup = game.cfg.gamma_backup.clone();
+                match setup::gamma::enable(&dir, level, &mut backup) {
+                    Ok(()) => game.update(notices, |c| {
+                        c.brightness = level;
+                        c.gamma_backup = backup;
+                    }),
+                    Err(e) => notices.error(format!("Couldn't change the brightness: {e}")),
+                }
+            }
+        }
+    });
+    if running && game.cfg.brighten {
+        ui.label(theme::muted("Close the game to change the picture brightness."));
+    }
     ui.horizontal(|ui| {
         ui.label("Client log detail");
         egui::ComboBox::from_id_salt("loglevel")
