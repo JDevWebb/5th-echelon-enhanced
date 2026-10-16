@@ -150,6 +150,16 @@ pub fn available() -> bool {
 }
 
 impl Support {
+    /// Starts a message with `text`, unless one is being written; without the logs (a name's
+    /// review needs none: the player ticks them back if they want).
+    pub fn draft(&mut self, text: String) {
+        if self.text.trim().is_empty() {
+            self.text = text;
+            self.game_log = false;
+            self.launcher_log = false;
+        }
+    }
+
     /// Answers the player hasn't seen: the rail's badge.
     pub fn unread(&self) -> u32 {
         self.thread.as_ref().map_or(0, |t| t.unread)

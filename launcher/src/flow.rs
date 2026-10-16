@@ -555,7 +555,7 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
                         taken,
                     });
                 }
-                Err(e) => return Err(format!("Couldn't create your account: {e}.")),
+                Err(e) => return Err(sentence(format!("Couldn't create your account: {e}"))),
             }
         }
     };
@@ -894,6 +894,15 @@ fn explorer_path(dir: &str) -> String {
     match dir.strip_prefix(r"\\?\UNC\") {
         Some(share) => format!(r"\\{share}"),
         None => dir.strip_prefix(r"\\?\").unwrap_or(&dir).to_string(),
+    }
+}
+
+/// `text` ending with a full stop, unless it ends with one already (the server's messages may).
+fn sentence(text: String) -> String {
+    if text.ends_with(['.', '!', '?']) {
+        text
+    } else {
+        text + "."
     }
 }
 

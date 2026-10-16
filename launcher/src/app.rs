@@ -735,6 +735,12 @@ impl App {
         self.settings.section = section;
         self.view = View::Settings;
     }
+
+    /// Support, with a message started (`text`) for the player to finish and send.
+    pub fn open_support(&mut self, text: String) {
+        self.support.draft(text);
+        self.view = View::Support;
+    }
 }
 
 impl eframe::App for App {

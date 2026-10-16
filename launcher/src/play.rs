@@ -393,16 +393,19 @@ fn auto_browse(play: &mut Play, ctx: &egui::Context) {
 }
 
 /// Where a screen asks to go next (a card's link to another screen).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Go {
     View(View),
     Settings(crate::settings::Section),
+    /// Support, with a message started.
+    Support(String),
 }
 
 fn go(app: &mut App, to: Option<Go>) {
     match to {
         Some(Go::View(view)) => app.set_view(view),
         Some(Go::Settings(section)) => app.open_settings(section),
+        Some(Go::Support(text)) => app.open_support(text),
         None => {}
     }
 }
@@ -847,7 +850,7 @@ fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Con
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.allocate_ui_with_layout(
-                        egui::vec2(ui.available_width() - 110.0, 28.0),
+                        egui::vec2(ui.available_width() - 250.0, 28.0),
                         egui::Layout::top_down(egui::Align::LEFT).with_main_align(egui::Align::Center),
                         |ui| {
                             ui.label(format!(
@@ -858,6 +861,19 @@ fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Con
                     );
                     if ui.button("Rename…").clicked() {
                         to = Some(Go::Settings(crate::settings::Section::Servers));
+                    }
+                    // Support is the community network's: elsewhere, the server's own admins.
+                    let community = crate::app::Prefs::directory().is_some_and(|d| crate::app::Prefs::is_community(&d));
+                    if community
+                        && ui
+                            .button("Ask for a review")
+                            .on_hover_text("Think it's a mistake? The admins check the name and can allow it")
+                            .clicked()
+                    {
+                        to = Some(Go::Support(format!(
+                            "Please review my name {name}: I was asked to choose another, and I think that's a mistake. \
+                             What it means: "
+                        )));
                     }
                 });
             });
@@ -1956,6 +1972,12 @@ fn start_setup(play: &mut Play, game: &Game, ctx: &egui::Context, notices: &mut 
             format!("You're set up on {shown}"),
             format!("Couldn't connect to {shown}"),
         ),
+    };
+    // The name step: what failed is the account (a name refused, say), not the connection.
+    let failed = if new_name.is_some() {
+        format!("Couldn't create your account on {shown}")
+    } else {
+        failed
     };
     // A community server: an account is made there with the player's usual name, without asking.
     let listed = play.directory.as_ref().is_some_and(|d| d.iter().any(|(s, _)| s.host.eq_ignore_ascii_case(&server)));
