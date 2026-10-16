@@ -24,8 +24,11 @@ const MAX_REQUEST_LINE: u64 = 8 * 1024;
 const MAX_BODY: usize = 16 * 1024;
 /// How long an upload's body may take (a PUT of the game's content, uploads.rs).
 const UPLOAD_DEADLINE: Duration = Duration::from_secs(60);
-/// How long a refused POST or PUT may go on sending before the connection closes.
-const REFUSED_DRAIN: Duration = Duration::from_secs(2);
+/// How long a client may go on sending after its answer (a refused POST's or PUT's body, a
+/// GET's headers) before the connection closes.
+const DRAIN: Duration = Duration::from_secs(2);
+/// The most of a GET's headers read (and dropped) after its answer.
+const MAX_GET_HEADERS: u64 = 64 * MAX_REQUEST_LINE;
 
 /// Whether a PUT to `path` is taken: the game's uploads (uploads.rs), on the content server
 /// only (`serve_many`).
@@ -326,18 +329,23 @@ impl<R: Read> Read for Deadline<R> {
     }
 }
 
-/// Answers a POST or PUT before its body is read, then reads (and drops) what the client
-/// still sends for a moment: closing with it unread resets the connection, and the client
-/// (or a proxy in front) would see the reset instead of the answer.
-fn refuse(stream: &TcpStream, status: &'static str) -> std::io::Result<()> {
+/// Sends `answer` and ends it, then reads (and drops) up to `limit` bytes the client still
+/// sends for a moment: closing with any of the request unread resets the connection, and the
+/// client (or a proxy in front) would see the reset instead of the answer.
+fn answer_then_drain(stream: &TcpStream, answer: &[u8], limit: u64) -> std::io::Result<()> {
     let mut stream = stream;
-    stream.write_all(&Response::status(status).to_bytes())?;
+    stream.write_all(answer)?;
     let _ = stream.shutdown(std::net::Shutdown::Write);
-    let until = std::time::Instant::now() + REFUSED_DRAIN;
-    stream.set_read_timeout(Some(REFUSED_DRAIN))?;
-    let mut rest = Deadline { inner: stream, until }.take(crate::uploads::MAX_UPLOAD as u64 + MAX_BODY as u64);
+    let until = std::time::Instant::now() + DRAIN;
+    stream.set_read_timeout(Some(DRAIN))?;
+    let mut rest = Deadline { inner: stream, until }.take(limit);
     let _ = std::io::copy(&mut rest, &mut std::io::sink());
     Ok(())
+}
+
+/// Answers a POST or PUT before its body is read.
+fn refuse(stream: &TcpStream, status: &'static str) -> std::io::Result<()> {
+    answer_then_drain(stream, &Response::status(status).to_bytes(), crate::uploads::MAX_UPLOAD as u64 + MAX_BODY as u64)
 }
 
 /// Answers one request. `client_slot` takes the place of the client a trusted
@@ -433,7 +441,8 @@ fn handle(
     }
     let resp = handler(&req);
     debug!(logger, "Status {}", resp.status);
-    stream.write_all(&resp.to_bytes())
+    // A GET's headers weren't read: whatever of them is still coming is drained after the answer.
+    answer_then_drain(&stream, &resp.to_bytes(), MAX_GET_HEADERS)
 }
 
 #[cfg(test)]
@@ -492,6 +501,25 @@ mod tests {
         let resp = get(addr, "GET /OnlineConfigService.svc/GetOnlineConfig HTTP/1.1\r\n");
         assert!(resp.starts_with("HTTP/1.0 200 OK"), "{resp}");
         assert!(resp.ends_with("config"));
+    }
+
+    #[test]
+    fn a_get_with_headers_left_unread_gets_the_answer_not_a_reset() {
+        let addr = free_addr();
+        std::thread::spawn(move || serve(&logger(), addr, "config", None, |_| false));
+        std::thread::sleep(Duration::from_millis(100));
+        // A GET is answered after its first line. Whatever of the request is still unread when
+        // the connection closes resets it, and the client loses the answer it was reading: here
+        // headers longer than one read, as a client writing its request in pieces can leave too.
+        let mut s = TcpStream::connect(addr).unwrap();
+        s.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        let padding = "x".repeat(4000);
+        let headers: String = (0..8).map(|i| format!("X-Pad-{i}: {padding}\r\n")).collect();
+        write!(s, "GET /api/playing HTTP/1.1\r\nHost: 127.0.0.1\r\n{headers}Connection: close\r\n\r\n").unwrap();
+        let mut out = String::new();
+        s.read_to_string(&mut out).expect("the answer, not a reset");
+        assert!(out.starts_with("HTTP/1.0 200 OK"), "{out}");
+        assert!(out.ends_with("config"));
     }
 
     #[test]
