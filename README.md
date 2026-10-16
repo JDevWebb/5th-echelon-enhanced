@@ -274,6 +274,7 @@ Everything the launcher does can be done by hand:
 - **An in-game overlay** (<kbd>F5</kbd>, or a key you choose): friends and what they're playing, friend requests, player search and blocking, invites, lobby player limits, and server status.
 - **One identity, every server:** the launcher makes you an identity (a key that stays on your PC) and links every account to it. It finds your account on a server by itself, with no username or password to remember, and asks for a name only the first time. Friends made on one server show up on every other server that shares a coordinator, and friends playing on another of them are listed in the overlay and the launcher, which joins you to their server in one click. Moving PCs? Copy your identity across in **Settings**, before connecting on the new PC ([how](docs/friends.md#your-identity)).
 - **Your name is yours:** servers that share a coordinator reserve each name for one player. Elsewhere, the overlay warns when someone has a friend's name but isn't them. You can rename your account from the launcher.
+- **No slurs or hate in names:** new names and renames are checked (swearing is fine). A player whose name breaks the rules is asked to choose another before they play, with one click to ask the admins for a review if it's a mistake ([how it looks](https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Your-Account-and-Identity#when-youre-asked-to-choose-another-name)).
 - **A server directory:** joining a server that shares a coordinator brings in its directory. The launcher pings every server in it, preselects the best (the lowest ping, then the busiest), and its server menu moves you to another in one click.
 - **Save games:**
   - a rank 5 save for new players with no save anywhere;
@@ -310,7 +311,7 @@ Everything the launcher does can be done by hand:
     - each server's CPU, memory and bandwidth, live;
     - bandwidth over time: in, out and relayed, the 95th percentile, monthly allowances, CSV export;
     - players over time, play time and when people play, and the matches played (by mode, map, length and players);
-    - the players on every server, by name, with their play time, sessions and matches, and actions on them: kick, ban, a new password, rename, delete (never their addresses);
+    - the players on every server, by name, with their play time, sessions and matches, and actions on them: kick, ban, a new password, rename, ask to rename, allow a name the rules flagged by mistake, delete (never their addresses);
     - alerts (a server offline, CPU, memory, disk, refused sign-ins, the traffic allowance, failed updates), optionally posted to Discord or Slack;
     - players' reports after their sessions (what went wrong, their logs, redacted on their PC, and the server's), to read, reply to and resolve, each posted to the alert chat;
     - every game open now (**Live**), and each player's sessions: how each stay ended, where, and with whom;
