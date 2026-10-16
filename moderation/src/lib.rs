@@ -149,8 +149,9 @@ impl Rules {
         }
         if offensive(Censor::from_str(name).analyze()) {
             // The list reads digits as letters, so a number after a name can spell a slur
-            // ("Kevin1993": n, 1, 9, 9, 3). A number of two digits or more is a number: the
-            // name without it decides. A digit standing for a letter is still read as one.
+            // ("Kevin1993": n, 1, 9, 9, 3). A number of two digits or more with no letter after
+            // it is a number: the name without it decides. Digits among letters are still read
+            // as letters.
             let without_numbers = without_numbers(name);
             if without_numbers == name || offensive(Censor::from_str(&without_numbers).analyze()) {
                 return Err(NameRefused::Offensive);
@@ -210,14 +211,15 @@ impl Rules {
 }
 
 /// Whether the list's verdict is a slur or hate, at any level.
-/// `name` without its numbers of two digits or more (each becomes a space).
+/// `name` without its numbers: runs of two digits or more with no letter right after them
+/// (each becomes a space). Digits with letters after them may be letters ("n199er").
 fn without_numbers(name: &str) -> String {
     let mut out = String::with_capacity(name.len());
     let chars: Vec<char> = name.chars().collect();
     let mut i = 0;
     while i < chars.len() {
         let run = chars[i..].iter().take_while(|c| c.is_ascii_digit()).count();
-        if run >= 2 {
+        if run >= 2 && !chars.get(i + run).is_some_and(|c| c.is_alphabetic()) {
             out.push(' ');
             i += run;
         } else {
@@ -347,6 +349,10 @@ mod tests {
         let slur: String = "reggin".chars().rev().collect();
         assert!(rules.check_name(&slur.replace('i', "1").replace('e', "3")).is_err());
         assert!(rules.check_name(&format!("{slur}1993")).is_err());
+        // Digits in a run with letters after them are letters ("n199er").
+        let spelled = format!("{}199{}", &slur[..1], &slur[4..]);
+        assert!(rules.check_name(&spelled).is_err(), "{spelled}");
+        assert!(rules.check_name(&format!("{spelled}_7")).is_err(), "{spelled}_7");
     }
 
     #[test]
