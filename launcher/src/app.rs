@@ -151,6 +151,9 @@ pub struct Prefs {
     /// problem (from 0.4.3): told once, or asked with that wording.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     log_excerpt_told: bool,
+    /// The new game options the player chose about (new_options.rs), by their ids.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    options_asked: Vec<String>,
     /// Servers of their own the player connected to (Servers › A server of your own), newest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     recent_servers: Vec<RecentServer>,
@@ -294,6 +297,21 @@ impl Prefs {
         true
     }
 
+    /// The new game options the player chose about (new_options.rs).
+    pub fn options_asked() -> Vec<String> {
+        Self::load().options_asked
+    }
+
+    pub fn add_options_asked<'a>(ids: impl IntoIterator<Item = &'a str>) {
+        let mut prefs = Self::load();
+        for id in ids {
+            if !prefs.options_asked.iter().any(|a| a == id) {
+                prefs.options_asked.push(id.to_string());
+            }
+        }
+        prefs.save();
+    }
+
     /// The release whose What's new was last shown or noted.
     pub fn whats_new_seen() -> Option<String> {
         Self::load().whats_new_seen
@@ -426,6 +444,8 @@ pub struct App {
     feedback: crate::feedback::Feedback,
     /// Asking once about the game's diagnostics (diagnostics.rs).
     diagnostics: crate::diagnostics::Ask,
+    /// New game options, asked once after an update brings them (new_options.rs).
+    new_options: crate::new_options::Ask,
     /// What's new, once after an update (whats_new.rs).
     whats_new: crate::whats_new::WhatsNew,
     /// The side menu's GitHub and Discord marks.
@@ -468,6 +488,7 @@ impl App {
             play: Play::default(),
             feedback: crate::feedback::Feedback::default(),
             diagnostics: crate::diagnostics::Ask::default(),
+            new_options: crate::new_options::Ask::default(),
             whats_new: crate::whats_new::WhatsNew::default(),
             marks: None,
             settings: Settings::default(),
@@ -816,9 +837,13 @@ impl eframe::App for App {
             );
         }
         self.diagnostics.show(ctx, self.game.as_mut(), &mut self.notices);
+        // After the diagnostics, unless the guided setup asks about them in its own step.
+        let setup_asks = self.play.asks_new_options();
+        self.new_options.show(ctx, self.game.as_mut(), &mut self.notices, self.diagnostics.asking() || setup_asks);
         self.whats_new.start(self.game.as_ref());
         let community = Prefs::directory().is_some_and(|d| Prefs::is_community(&d));
-        if let Some(crate::whats_new::Action::UseCommunityNetwork) = self.whats_new.show(ctx, self.diagnostics.asking(), community) {
+        let waiting = self.diagnostics.asking() || self.new_options.asking() || setup_asks;
+        if let Some(crate::whats_new::Action::UseCommunityNetwork) = self.whats_new.show(ctx, waiting, community) {
             self.play.use_community_network(&mut self.notices);
             self.view = View::Play;
         }

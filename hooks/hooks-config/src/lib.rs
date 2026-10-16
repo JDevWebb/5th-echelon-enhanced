@@ -11,6 +11,7 @@ use tracing::instrument;
 use url::Url;
 
 pub mod diagnostics;
+pub mod fusion_fix;
 pub mod redact;
 
 #[cfg(target_os = "windows")]
@@ -58,10 +59,6 @@ fn default_account_id() -> String {
     String::from("00000000-0000-4000-0000-000000000000")
 }
 fn default_overlay() -> bool {
-    true
-}
-
-fn default_mouse_accel() -> bool {
     true
 }
 fn default_overlay_key() -> String {
@@ -301,8 +298,11 @@ pub struct Config {
     pub logging: Logging,
     #[serde(default)]
     pub auto_join_invite: bool,
-    /// Removes the engine's negative mouse acceleration (widens the per-frame look-delta clamp).
-    #[serde(default = "default_mouse_accel")]
+    /// Removes the engine's negative mouse acceleration (widens the per-frame look-delta clamp,
+    /// see the hooks' `mouse_fix`). Off until the player chose: the launcher asks once, with it
+    /// on as the recommendation (its `new_options`), and Settings › Game changes it. Nothing to
+    /// do while Fusion Fix removes the acceleration itself ([`fusion_fix`]).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disable_mouse_accel: bool,
     /// Let the server join you to a match without your click (its `force_join`).
     /// Off: a server shouldn't be able to put you into a match by itself.

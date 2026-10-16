@@ -43,6 +43,11 @@ pub struct Play {
 
     /// The join form, shown when there's no server yet or on "Change server".
     editing: bool,
+    /// The guided setup ran this session from a first run: it asks about the new game options
+    /// in a step of its own once there's a server (the window after an update waits).
+    fresh_setup: bool,
+    /// That step's options and choices so far, once it showed.
+    setup_options: Option<(Vec<&'static crate::new_options::NewOption>, Vec<bool>)>,
     server: String,
     /// The name for a new account, asked for when `needs_name` is set.
     nick: String,
@@ -147,6 +152,11 @@ struct Switch {
 }
 
 impl Play {
+    /// Whether the guided setup asks about the new game options itself (new_options.rs).
+    pub fn asks_new_options(&self) -> bool {
+        self.fresh_setup
+    }
+
     /// Back to the community network's directory: its servers fill the server menu again.
     pub fn use_community_network(&mut self, notices: &mut Notices) {
         crate::app::Prefs::use_community_network();
@@ -425,7 +435,10 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         play.poll(&ctx, game, notices);
         let has_server = game.cfg.current_profile().is_some_and(|p| !p.server.is_empty());
         if game.managed.is_none() && (!has_server || play.editing) {
+            play.fresh_setup |= !has_server;
             setup_screen(play, game, notices, &ctx, ui);
+        } else if play.fresh_setup && options_step(play, game, notices, ui) {
+            // The guided setup's last question before Play.
         } else {
             to = home(play, game, notices, &ctx, ui);
         }
@@ -434,7 +447,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
 }
 
 /// The steps of the guided setup, in order.
-const STEPS: [&str; 4] = ["Find the game", "Choose a server", "Pick your name", "Play"];
+const STEPS: [&str; 5] = ["Find the game", "Choose a server", "Pick your name", "Game options", "Play"];
 
 /// The guided setup's frame: the steps on the left (`step` is the current
 /// one), the step itself on the right.
@@ -610,6 +623,37 @@ fn find_on_network(play: &mut Play, ctx: &egui::Context) {
 fn ping_again(play: &mut Play, ctx: &egui::Context, url: String) {
     play.browsed_at = Some(Instant::now());
     play.browsing.start(ctx, move || crate::services::rt().block_on(crate::network::server_directory(&url)));
+}
+
+/// The guided setup's game options step, once there's a server: the new game options with the
+/// recommended settings chosen (new_options.rs). False once there's nothing (left) to ask.
+fn options_step(play: &mut Play, game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) -> bool {
+    if play.setup_options.is_none() {
+        let options = crate::new_options::pending(Some(game));
+        if options.is_empty() {
+            play.fresh_setup = false;
+            return false;
+        }
+        let choices = crate::new_options::offered(&options, &game.dir);
+        play.setup_options = Some((options, choices));
+    }
+    let mut done = false;
+    if let Some((options, choices)) = play.setup_options.as_mut() {
+        wizard(ui, 3, |ui| {
+            ui.label(RichText::new("Game options").family(theme::strong()).size(24.0));
+            ui.add_space(4.0);
+            crate::new_options::setup_step(ui, options, choices, &game.dir);
+            ui.add_space(20.0);
+            done = ui.add(theme::primary("Continue").min_size(egui::vec2(170.0, 48.0)).corner_radius(12)).clicked();
+        });
+    }
+    if done {
+        if let Some((options, choices)) = play.setup_options.take() {
+            crate::new_options::save(game, notices, &options, &choices);
+        }
+        play.fresh_setup = false;
+    }
+    true
 }
 
 /// The guided setup's server and name steps (the setup itself installs the
@@ -795,7 +839,7 @@ fn server_name(s: &setup::directory::Listing) -> String {
 
 /// A small label on a server: filled for the one to pick, outlined otherwise.
 /// Painted at its own size, so a taller row never stretches it.
-fn badge(ui: &mut egui::Ui, text: &str, strong: bool) {
+pub(crate) fn badge(ui: &mut egui::Ui, text: &str, strong: bool) {
     let color = if strong { theme::ON_ACCENT } else { theme::MUTED };
     let mut job = egui::text::LayoutJob::single_section(
         text.to_uppercase(),
@@ -2141,6 +2185,11 @@ fn launch(play: &mut Play, game: &mut Game, notices: &mut Notices) {
     // The question about diagnostics is answered first (diagnostics.rs shows it).
     if crate::diagnostics::Ask::pending(Some(game)) {
         notices.info("First, say whether the game may send its diagnostics.");
+        return;
+    }
+    // And the new game options (new_options.rs asks).
+    if !crate::new_options::pending(Some(game)).is_empty() {
+        notices.info("First, choose the new game options.");
         return;
     }
     if setup::game::game_running() {

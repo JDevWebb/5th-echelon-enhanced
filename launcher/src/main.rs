@@ -12,6 +12,7 @@ mod flow;
 mod logging;
 mod maintenance;
 mod network;
+mod new_options;
 mod play;
 mod roadmap;
 mod scale;

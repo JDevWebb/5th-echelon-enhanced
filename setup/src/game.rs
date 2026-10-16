@@ -48,19 +48,6 @@ pub fn is_game_dir(dir: &Path) -> bool {
     !installed_versions(dir).is_empty()
 }
 
-/// Whether ThirteenAG's Fusion Fix is installed in `game_dir`. Its own
-/// `DisableNegativeMouseAcceleration` removes the mouse acceleration by a different route
-/// (it NOPs the clamp outright), which overrides our widened clamp and can't be combined
-/// with it — so the launcher turns our option off when this is present. The mod is
-/// `SplinterCellBlacklist.FusionFix.asi`, loaded by an ASI loader from the game folder or a
-/// `scripts\` / `plugins\` subfolder beside the executable.
-pub fn fusion_fix_installed(game_dir: &Path) -> bool {
-    const ASI: &str = "SplinterCellBlacklist.FusionFix.asi";
-    [game_dir.to_path_buf(), game_dir.join("scripts"), game_dir.join("plugins")]
-        .iter()
-        .any(|dir| dir.join(ASI).is_file())
-}
-
 /// `wanted` if it's installed in `game_dir`, else the other one.
 pub fn pick_version(game_dir: &Path, wanted: GameVersion) -> Option<GameVersion> {
     let installed = installed_versions(game_dir);
@@ -180,17 +167,6 @@ mod tests {
     fn touch(path: &Path) {
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(path, b"").unwrap();
-    }
-
-    #[test]
-    fn fusion_fix_is_found_in_the_usual_spots() {
-        let dir = temp_dir("fusion");
-        assert!(!fusion_fix_installed(&dir), "nothing installed");
-        // A stray .ini doesn't count; the .asi (the mod itself) does.
-        touch(&dir.join("SplinterCellBlacklist.FusionFix.ini"));
-        assert!(!fusion_fix_installed(&dir));
-        touch(&dir.join("scripts/SplinterCellBlacklist.FusionFix.asi"));
-        assert!(fusion_fix_installed(&dir), "found under scripts\\");
     }
 
     #[test]

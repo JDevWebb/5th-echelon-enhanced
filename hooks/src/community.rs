@@ -288,6 +288,11 @@ pub fn set_folder(dir: std::path::PathBuf) {
     let _ = FOLDER.set(dir);
 }
 
+/// Where the game is, once set.
+pub fn folder() -> Option<&'static std::path::Path> {
+    FOLDER.get().map(std::path::PathBuf::as_path)
+}
+
 fn name_key(name: &str) -> String {
     name.trim().to_lowercase()
 }

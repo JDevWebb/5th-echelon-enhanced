@@ -560,20 +560,15 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
         )));
     }
     ui.checkbox(&mut hook.auto_join_invite, "Join invites automatically");
-    if setup::game::fusion_fix_installed(&game.dir) {
-        // Fusion Fix removes the acceleration its own way (it NOPs the clamp), which overrides
-        // ours and can't be combined — so the option is off and greyed, with a word on why.
+    // Fusion Fix's own fix, when it's on, NOPs the clamp ours widens: nothing to do here then.
+    if hooks_config::fusion_fix::removes_mouse_accel(&game.dir) {
         let mut off = false;
         ui.add_enabled(false, egui::Checkbox::new(&mut off, "Remove negative mouse acceleration"));
-        ui.label(theme::muted(
-            "Fusion Fix is installed and already removes the mouse acceleration (its \
-             DisableNegativeMouseAcceleration), so this is off — the two can't be combined. \
-             Fusion Fix can run poorly under Proton; there, remove it and use this instead.",
-        ));
+        ui.label(theme::muted(crate::new_options::FUSION_FIX_MOUSE));
     } else {
         ui.checkbox(&mut hook.disable_mouse_accel, "Remove negative mouse acceleration").on_hover_text(
             "The game caps how far the view can turn in one frame, so fast flicks feel like the mouse slows down. \
-             This widens that cap for a linear, 1:1 feel (the camera's safety limit stays in place).",
+             This widens that cap for a linear, 1:1 feel (a wide limit stays, so a bad input spike can't flip the camera).",
         );
     }
     ui.horizontal(|ui| {

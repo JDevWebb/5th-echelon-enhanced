@@ -47,6 +47,13 @@ fn leak_f64_addr(v: f64) -> u32 {
 
 /// Removes the negative mouse acceleration by widening the look-delta clamp bounds.
 pub unsafe fn disable_negative_mouse_acceleration() {
+    // Fusion Fix's own fix NOPs the clamp, so its bounds (ours) are never used.
+    if crate::community::folder().is_some_and(hooks_config::fusion_fix::removes_mouse_accel) {
+        info!(
+            "mouse-accel-fix: Fusion Fix's DisableNegativeMouseAcceleration is on and removes the clamp itself -> skipped (set it to 0 in SplinterCellBlacklist.FusionFix.ini to use this fix)"
+        );
+        return;
+    }
     let Some((base, img_size)) = crate::module_bounds() else {
         warn!("mouse-accel-fix: module info unavailable -> skipped");
         return;
