@@ -60,6 +60,10 @@ fn default_account_id() -> String {
 fn default_overlay() -> bool {
     true
 }
+
+fn default_mouse_accel() -> bool {
+    true
+}
 fn default_overlay_key() -> String {
     String::from("F5")
 }
@@ -297,6 +301,9 @@ pub struct Config {
     pub logging: Logging,
     #[serde(default)]
     pub auto_join_invite: bool,
+    /// Removes the engine's negative mouse acceleration (widens the per-frame look-delta clamp).
+    #[serde(default = "default_mouse_accel")]
+    pub disable_mouse_accel: bool,
     /// Let the server join you to a match without your click (its `force_join`).
     /// Off: a server shouldn't be able to put you into a match by itself.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
