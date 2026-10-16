@@ -99,7 +99,7 @@ async fn act(
     if !players::KINDS.contains(&kind) {
         return fail(
             StatusCode::BAD_REQUEST,
-            "not an action: ban, unban, kick, reset_password, rename, name_not_allowed or delete",
+            "not an action: ban, unban, kick, reset_password, rename, name_not_allowed, allow_name or delete",
         );
     }
     let s = match if players::sensitive(kind) {

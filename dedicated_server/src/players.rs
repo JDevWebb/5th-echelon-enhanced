@@ -185,7 +185,9 @@ pub async fn perform(logger: &slog::Logger, storage: &Storage, action: &Action) 
         }
         "rename" => {
             let new_name = action.name.as_deref().unwrap_or_default().trim().to_string();
-            if let Err(why) = crate::api::check_username(&new_name) {
+            // An admin's rename may grant a name the word list refuses (a player asked for a
+            // review): the form still applies, and the name counts as checked.
+            if let Err(why) = crate::api::check_username_form(&new_name) {
                 return Outcome::failed(why);
             }
             let clash = storage.find_person_by_name(&new_name).await.ok().flatten().is_some_and(|p| p.id != user)
@@ -195,6 +197,11 @@ pub async fn perform(logger: &slog::Logger, storage: &Storage, action: &Action) 
             }
             match storage.rename_user(user, &new_name).await {
                 Ok(Ok(())) => {
+                    if crate::api::rules().check_name(&new_name).is_err() {
+                        if let Err(e) = storage.approve_name(user).await {
+                            return Outcome::failed(format!("Renamed to {new_name}, but couldn't mark it as checked: {e}"));
+                        }
+                    }
                     // The game shows the name it signed in with: sign them out to show the new one.
                     sign_out(user);
                     Outcome::done(format!("{name} is now {new_name}"))
@@ -204,9 +211,14 @@ pub async fn perform(logger: &slog::Logger, storage: &Storage, action: &Action) 
             }
         }
         "name_not_allowed" => match storage.set_name_not_allowed(user).await {
-            // Told in the overlay and the launcher; the game keeps its name until they rename.
+            // Told in the overlay and the launcher; the game is kept out until they rename.
             Ok(()) => Outcome::done(format!("{name} is asked to choose another name")),
             Err(e) => Outcome::failed(format!("Couldn't mark {name}'s name: {e}")),
+        },
+        // A name the rules flagged that the admins checked (after a player asked for a review).
+        "allow_name" => match storage.approve_name(user).await {
+            Ok(()) => Outcome::done(format!("{name} is allowed: no longer asked to rename")),
+            Err(e) => Outcome::failed(format!("Couldn't allow {name}: {e}")),
         },
         "delete" => {
             sign_out(user);

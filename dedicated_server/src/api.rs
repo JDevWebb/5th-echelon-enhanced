@@ -121,8 +121,18 @@ fn issue_token(key: &Key, user_id: u32, epoch: i64) -> String {
 }
 
 /// Whether a new account name is acceptable: 1 to 32 letters, digits, `_`,
-/// `-` and `.` (what the launcher's one-click names are made of).
+/// `-` and `.` (what the launcher's one-click names are made of), and within the rules.
 pub fn check_username(name: &str) -> Result<(), &'static str> {
+    check_username_form(name)?;
+    // Slurs and hate (and sexual content involving minors) aren't names, nor web addresses:
+    // the chat rules' line, as names can't be masked (moderation).
+    rules().check_name(name).map_err(moderation::NameRefused::says)?;
+    Ok(())
+}
+
+/// [`check_username`] but the word list: what an admin's rename must meet (the admins decide
+/// whether a name the list flags is one, after a player asks for a review).
+pub fn check_username_form(name: &str) -> Result<(), &'static str> {
     let n = name.chars().count();
     if n == 0 || n > 32 {
         return Err("names are 1 to 32 characters");
@@ -141,9 +151,6 @@ pub fn check_username(name: &str) -> Result<(), &'static str> {
     if RESERVED_NAMES.contains(&key.as_str()) {
         return Err("that name is reserved");
     }
-    // Slurs and hate (and sexual content involving minors) aren't names, nor web addresses:
-    // the chat rules' line, as names can't be masked (moderation).
-    rules().check_name(name).map_err(moderation::NameRefused::says)?;
     Ok(())
 }
 
@@ -151,7 +158,8 @@ pub fn check_username(name: &str) -> Result<(), &'static str> {
 pub fn name_not_allowed_message(name: &str) -> String {
     format!(
         "Your name {name} breaks this network's rules (no slurs or hate). Choose another in the launcher \
-         (Settings › Servers and accounts › Rename), then start the game again."
+         (Settings › Servers and accounts › Rename), then start the game again. A mistake? Ask for a review \
+         in the launcher's Support."
     )
 }
 
@@ -1968,6 +1976,7 @@ impl tonic::transport::server::Connected for Limited {
 #[cfg(test)]
 mod tests {
     use super::check_username;
+    use super::check_username_form;
 
     #[test]
     fn names_need_a_letter_or_digit() {
@@ -1984,7 +1993,8 @@ mod tests {
         assert!(check_username("SirCooms").is_ok());
         assert!(check_username("Shitstorm").is_ok());
         let slur: String = "regg1n".chars().rev().collect();
-        assert_eq!(check_username(&format!("{slur}_x")), Err("That name isn't allowed. Try another one."));
+        assert_eq!(check_username(&format!("{slur}_x")), Err(moderation::NameRefused::Offensive.says()));
+        assert_eq!(check_username_form(&format!("{slur}_x")), Ok(()), "an admin's rename decides");
         assert_eq!(check_username("evil.com"), Err("Names can't be web addresses. Try another one."));
         // Checked by the admins: allowed.
         super::set_rules(moderation::Rules::new([&*format!("{slur}_x")], [], true));

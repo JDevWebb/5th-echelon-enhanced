@@ -27,5 +27,5 @@ export async function follow(id, kind) {
 }
 
 export const ACTION_LABELS = {
-  ban: 'Ban', unban: 'Unban', kick: 'Kick', reset_password: 'Reset password', rename: 'Rename', name_not_allowed: 'Ask to rename', delete: 'Delete',
+  ban: 'Ban', unban: 'Unban', kick: 'Kick', reset_password: 'Reset password', rename: 'Rename', name_not_allowed: 'Ask to rename', allow_name: 'Allow name', delete: 'Delete',
 };

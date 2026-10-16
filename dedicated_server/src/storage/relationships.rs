@@ -112,10 +112,11 @@ impl Storage {
     }
 
     /// Every player's account and name (not the server's own accounts), for checking against
-    /// the rules, and whether it's already asked to rename.
+    /// the rules: whether it's already asked to rename, or the admins allowed this name.
     pub async fn player_names(&self) -> Result<Vec<(u32, String, bool)>> {
         Ok(sqlx::query_as(&format!(
-            "SELECT u.id, u.username, u.name_not_allowed FROM users u WHERE {} AND u.username IS NOT NULL ORDER BY u.name_key",
+            "SELECT u.id, u.username, u.name_not_allowed OR u.name_approved IS u.username FROM users u
+             WHERE {} AND u.username IS NOT NULL ORDER BY u.name_key",
             Self::players()
         ))
         .fetch_all(&self.pool)
@@ -478,6 +479,16 @@ impl Storage {
     pub async fn set_name_conflict_by_id(&self, user: u32, conflict: bool) -> Result<()> {
         sqlx::query("UPDATE users SET name_conflict = ? WHERE id = ?")
             .bind(i32::from(conflict))
+            .bind(user)
+            .execute(&self.pool)
+            .await?;
+        Ok(())
+    }
+
+    /// The admins checked `user`'s name and allow it (a false positive of the rules): not
+    /// asked to rename, and not flagged again while it's their name.
+    pub async fn approve_name(&self, user: u32) -> Result<()> {
+        sqlx::query("UPDATE users SET name_not_allowed = 0, name_approved = username WHERE id = ?")
             .bind(user)
             .execute(&self.pool)
             .await?;

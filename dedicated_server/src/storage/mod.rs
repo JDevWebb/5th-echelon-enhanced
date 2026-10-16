@@ -2470,6 +2470,13 @@ pub(crate) mod tests {
         assert!(run(storage.find_person(id)).unwrap().unwrap().unwrap().name_not_allowed);
         run(storage.rename_user(id, "Better")).unwrap().unwrap().unwrap();
         assert!(!flagged(&storage), "renaming clears it");
+        // Allowed by the admins: not flagged again while it's their name.
+        run(storage.set_name_not_allowed(id)).unwrap().unwrap();
+        run(storage.approve_name(id)).unwrap().unwrap();
+        assert!(!run(storage.find_person(id)).unwrap().unwrap().unwrap().name_not_allowed);
+        assert!(flagged(&storage), "checked: the start-up check leaves it");
+        run(storage.rename_user(id, "Another")).unwrap().unwrap().unwrap();
+        assert!(!flagged(&storage), "another name isn't the one checked");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

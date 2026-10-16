@@ -85,7 +85,7 @@ pub enum NameRefused {
 impl NameRefused {
     pub fn says(self) -> &'static str {
         match self {
-            Self::Offensive => "That name isn't allowed. Try another one.",
+            Self::Offensive => "That name isn't allowed (no slurs or hate). Try another one, or if it's a mistake, ask for a review in the launcher's Support.",
             Self::Link => "Names can't be web addresses. Try another one.",
         }
     }
