@@ -837,9 +837,16 @@ impl Storage {
 
     /// Notes that `user_id` joined `session_id` with JoinSession (see the `guests` table).
     /// Not for its host or a participant, nor a session that's over; and, unless `invited`,
-    /// only a session matchmaking lists (its host in it, not invite-only as its host
-    /// announced, not private seats only): JoinSession names any id, and a guest may be
-    /// probed to the others. Whether it was noted.
+    /// only a public session (its host in it, not invite-only as its host announced, not
+    /// private seats only): JoinSession names any id, and a guest may be probed to the
+    /// others. Whether it was noted.
+    ///
+    /// Full or not: JoinSession comes once the host's game let them in, so there was a seat,
+    /// whatever this count said (it misses who came with a party, and keeps who left unseen).
+    /// Refusing them here undercounted the match from then on (eu1, 0.4.4's first 40 h: 16 of
+    /// 121 players joining from a search, against 1 of 31 before), and searches offered it
+    /// full (Joni74, Quam's room 165: ten times). One match at a time still stops an account
+    /// hiding lobbies by joining them.
     pub fn add_guest(&self, session_id: u32, user_id: u32, invited: bool) -> Result<bool> {
         run(async {
             let added = sqlx::query(&format!(
@@ -849,9 +856,7 @@ impl Storage {
                    AND NOT EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?1)
                    AND (?3 OR (EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = g.creator_id)
                         AND NOT EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.user_id = g.creator_id AND a.invite_only = 1)
-                        AND NOT {PRIVATE_SEATS_ONLY}
-                        AND NOT {full}))",
-                full = room_full_sql()
+                        AND NOT {PRIVATE_SEATS_ONLY}))"
             ))
             .bind(user_id)
             .bind(session_id)
@@ -2452,6 +2457,22 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
+    /// A name the rules flag: the account is asked to rename, which clears it.
+    #[test]
+    fn a_name_not_allowed_is_cleared_by_a_rename() {
+        let (storage, dir) = temp_storage("name-not-allowed");
+        storage.register_user("Flagged", "pw", Some("Flagged")).unwrap();
+        let id = storage.find_user_id_by_name("Flagged").unwrap().unwrap();
+        let flagged = |s: &Storage| run(s.player_names()).unwrap().unwrap().into_iter().find(|(i, _, _)| *i == id).unwrap().2;
+        assert!(!flagged(&storage));
+        run(storage.set_name_not_allowed(id)).unwrap().unwrap();
+        assert!(flagged(&storage));
+        assert!(run(storage.find_person(id)).unwrap().unwrap().unwrap().name_not_allowed);
+        run(storage.rename_user(id, "Better")).unwrap().unwrap().unwrap();
+        assert!(!flagged(&storage), "renaming clears it");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     /// The host leaving a public match its guests are still in ends it for nobody: they're
     /// in it until they go too, and their games may split it (`is_guest`).
     #[test]
@@ -2499,9 +2520,9 @@ pub(crate) mod tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 
-    /// Guests count towards a room being full, which hides it from matchmaking: so a guest
-    /// gets in only while there's a seat (unless invited), and is a guest of one match at a
-    /// time. Otherwise one account joining room after room would hide every public lobby.
+    /// Guests count towards a room being full, which hides it from matchmaking: so a guest is
+    /// a guest of one match at a time, or one account joining room after room would hide every
+    /// public lobby. A join of a full room still counts: the host's game let them in.
     #[test]
     fn nobody_can_hide_lobbies_by_joining_them() {
         let (storage, dir) = temp_storage("hide-lobbies");
@@ -2524,8 +2545,8 @@ pub(crate) mod tests {
         assert!(storage.add_guest(b, hider, false).unwrap());
         assert!(!storage.is_guest(a, hider).unwrap(), "joining b left a");
         assert!(offered(&storage).contains(&a) && !offered(&storage).contains(&b));
-        // A full room takes no uninvited guest; an invited one gets in (the game decides).
-        assert!(!storage.add_guest(b, searcher, false).unwrap(), "b is full");
+        // A join of a full room counts (the host's game let them in), invited or not.
+        assert!(storage.add_guest(b, searcher, false).unwrap(), "b was full by our count");
         assert!(storage.add_guest(b, friend, true).unwrap(), "invited");
         // A party is another kind of room: joining one keeps the match.
         let party = storage.create_game_session(host_a, 1, "113 => 1;3 => 4;4 => 0".into()).unwrap();
