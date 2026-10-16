@@ -41,12 +41,22 @@ pub const RELEASES: &[Release] = &[
     Release {
         version: "0.4.5",
         thanks: &["Alessenchaleur", "Tea_bag", "PsykoGun", "RAZA"],
-        new: &[Item {
+        new: &[
+            Item {
+                title: "No slurs or hate in names",
+                text: "Names that break the rules are refused, and players who already have one are asked to choose another before they play.",
+                community: false,
+            },
+            Item {
             title: "Steam Input for Steam copies",
             text: "Settings › Start the game through Steam, for a Steam copy on Windows: Steam then applies your controller settings, which it does only for games it starts. Off by default.",
             community: false,
         }],
         fixed: &[
+            Fix {
+                lead: "Players who join a match are counted in it",
+                rest: ", so searches no longer offer it when it's full.",
+            },
             Fix {
                 lead: "No more ghost matches in the lists",
                 rest: " after a host leaves: the match the others carried on from no longer stays listed.",
