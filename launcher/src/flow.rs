@@ -175,6 +175,9 @@ pub struct Friends {
     pub requests: usize,
     /// Friends playing on other servers sharing friends, with the server.
     pub elsewhere: Vec<server_api::friends::FriendElsewhere>,
+    /// The account's name, when it breaks the network's rules: the server keeps the game out
+    /// until the player chooses another (Settings › Servers and accounts › Rename).
+    pub name_not_allowed: Option<String>,
 }
 
 /// The current account's friends: who's online here and what they're
@@ -228,6 +231,7 @@ pub fn friends(cfg: &Config) -> Result<Friends, String> {
         .collect();
     online.sort_by_key(|f| f.name.to_lowercase());
     Ok(Friends {
+        name_not_allowed: (lists.my_name() == server_api::friends::NameStatus::NotAllowed).then(|| username.clone()),
         offline: lists.friends.iter().filter(|f| !f.is_online).count(),
         online,
         requests: lists.requests_received.len(),

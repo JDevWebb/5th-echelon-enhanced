@@ -546,6 +546,27 @@ fn main() -> color_eyre::Result<()> {
     quazal::prudp::set_ticket_address_proven(clients::address_proven);
 
     let storage = Arc::new(Storage::init(logger.clone())?);
+    // Names from before the rules that break them: the player is asked to choose another (the
+    // game is kept out until they do), as an admin's "Ask to rename" does. Nobody is renamed:
+    // their launcher signs in by name.
+    match storage::run(storage.player_names()) {
+        Ok(Ok(names)) => {
+            let rules = api::rules();
+            let mut asked = Vec::new();
+            for (id, name, already) in names {
+                if !already && rules.check_name(&name).is_err() {
+                    match storage::run(storage.set_name_not_allowed(id)) {
+                        Ok(Ok(())) => asked.push(name),
+                        Ok(Err(e)) | Err(e) => warn!(logger, "Couldn't ask {name} to rename: {e}"),
+                    }
+                }
+            }
+            if !asked.is_empty() {
+                warn!(logger, "{} player name(s) break the rules; asked to choose another: {}", asked.len(), asked.join(", "));
+            }
+        }
+        Ok(Err(e)) | Err(e) => warn!(logger, "Couldn't check players' names against the rules: {e}"),
+    }
     {
         let storage = Arc::clone(&storage);
         quazal::prudp::set_ticket_accepted(move |user, valid_until| {

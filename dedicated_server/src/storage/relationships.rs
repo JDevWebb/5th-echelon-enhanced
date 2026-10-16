@@ -111,6 +111,17 @@ impl Storage {
         "u.ubi_id IS NOT NULL AND (u.password IS NOT NULL OR u.password_hash IS NOT NULL)"
     }
 
+    /// Every player's account and name (not the server's own accounts), for checking against
+    /// the rules, and whether it's already asked to rename.
+    pub async fn player_names(&self) -> Result<Vec<(u32, String, bool)>> {
+        Ok(sqlx::query_as(&format!(
+            "SELECT u.id, u.username, u.name_not_allowed FROM users u WHERE {} AND u.username IS NOT NULL ORDER BY u.name_key",
+            Self::players()
+        ))
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     /// `me`'s friends, by name.
     pub async fn friends_of(&self, me: u32) -> Result<Vec<Person>> {
         Ok(sqlx::query_as(&format!(

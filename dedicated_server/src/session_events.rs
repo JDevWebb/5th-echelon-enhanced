@@ -15,7 +15,7 @@
 //! - `signin`: the game signed in.
 //! - `signin_refused`: `reason` (`outdated`, `too_many`: too many failed sign-ins,
 //!   `too_many_signins`: too many sign-ins from the address, failed or not, `wrong_password`,
-//!   `banned`, `no_current_client`), `via` (`game` or `api`), `client` when known.
+//!   `banned`, `no_current_client`, `name_not_allowed`), `via` (`game` or `api`), `client` when known.
 //! - `signout`: `how` (`closed`: the game said goodbye; `timed_out`: it went quiet).
 //! - `room`: `room` (the session id), made by the player.
 //! - `search`: `query` (8: Spies vs Mercs matchmaking or an invitation, 11: co-op), `found`.

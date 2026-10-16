@@ -265,6 +265,23 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
             crate::session_events::refused(crate::session_events::Who::Id(user_id), "no_current_client", "game", None);
             return Err(quazal::rmc::Error::AccessDenied);
         }
+        // A name that breaks the rules: the game stays out until they choose another (the
+        // overlay and the launcher say how).
+        if crate::storage::run(self.storage.find_person(user_id))
+            .ok()
+            .and_then(Result::ok)
+            .flatten()
+            .is_some_and(|p| p.name_not_allowed)
+        {
+            if crate::clients::worth_saying(&format!("name/{ubi_username}")) {
+                warn!(
+                    logger,
+                    "login refused for {:?}: its name breaks the rules, and it hasn't chosen another (said once an hour)", ubi_username
+                );
+            }
+            crate::session_events::refused(crate::session_events::Who::Id(user_id), "name_not_allowed", "game", None);
+            return Err(quazal::rmc::Error::AccessDenied);
+        }
         info!(logger, "login successful for {:?}", ubi_username);
         crate::session_events::note(crate::session_events::Who::Id(user_id), "signin", serde_json::json!({}));
 

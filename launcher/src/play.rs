@@ -840,6 +840,28 @@ fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Con
                 )));
             });
     }
+    if let Some(name) = name_not_allowed(play, game) {
+        egui::Frame::new()
+            .fill(theme::BAD.linear_multiply(0.14))
+            .inner_margin(egui::Margin::symmetric(32, 10))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width() - 110.0, 28.0),
+                        egui::Layout::top_down(egui::Align::LEFT).with_main_align(egui::Align::Center),
+                        |ui| {
+                            ui.label(format!(
+                                "Your name {name} breaks this network's rules (no slurs or hate). Choose another to play: \
+                                 friends and invites carry on."
+                            ));
+                        },
+                    );
+                    if ui.button("Rename…").clicked() {
+                        to = Some(Go::Settings(crate::settings::Section::Servers));
+                    }
+                });
+            });
+    }
     if game.uplay_emulator && !game.uplay_emulator_told {
         let dismissed = egui::Frame::new()
             .fill(theme::WARN.linear_multiply(0.12))
@@ -2103,6 +2125,11 @@ fn launch(play: &mut Play, game: &mut Game, notices: &mut Notices) {
         notices.error("Splinter Cell: Blacklist is already running.");
         return;
     }
+    // The server would keep the game out: say why here, and how to fix it.
+    if name_not_allowed(play, game).is_some() {
+        notices.error("Your name breaks this network's rules. Choose another first: Settings › Servers and accounts › Rename.");
+        return;
+    }
     // The hook reads uplay.toml when the game starts: make sure it has the
     // current profile.
     if game.managed.is_none() {
@@ -2123,6 +2150,13 @@ fn launch(play: &mut Play, game: &mut Game, notices: &mut Notices) {
         }
         Err(e) => notices.error(format!("Couldn't start the game: {e}")),
     }
+}
+
+/// The player's name, when the server said it breaks the rules: only while it's still their
+/// name (a rename takes effect at once, before the next look).
+fn name_not_allowed(play: &Play, game: &Game) -> Option<String> {
+    let name = play.friends.name_not_allowed.clone()?;
+    game.cfg.current_profile().is_some_and(|p| p.user.username == name).then_some(name)
 }
 
 /// How long after the last key a name is checked.

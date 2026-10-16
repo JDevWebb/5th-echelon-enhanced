@@ -619,6 +619,7 @@ fn describe(e: &Event) -> String {
             let why = match e.str("reason") {
                 "outdated" => format!("outdated client {}", e.str("client")),
                 "no_current_client" => "its game client isn't current (or never signed in to the API)".into(),
+                "name_not_allowed" => "its name breaks the rules, and it hasn't chosen another".into(),
                 // Failures (password guessing); servers before 0.4.4 said it for both limits.
                 "too_many" => "too many failed sign-ins (or sign-ins, from a server before 0.4.4)".into(),
                 // Every sign-in counts: a game signing in again and again, each time fine.

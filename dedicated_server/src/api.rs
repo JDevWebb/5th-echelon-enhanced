@@ -147,6 +147,20 @@ pub fn check_username(name: &str) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// What a player whose name breaks the rules is told, in the game and the launcher.
+pub fn name_not_allowed_message(name: &str) -> String {
+    format!(
+        "Your name {name} breaks this network's rules (no slurs or hate). Choose another in the launcher \
+         (Settings › Servers and accounts › Rename), then start the game again."
+    )
+}
+
+/// Names the rules flag that admins checked and allow (the word list's false positives).
+const ALLOWED_NAMES: &[&str] = &[
+    // A player since before the rules (eu1, na1, oceania); flagged in the trial over every name.
+    "bedunga",
+];
+
 /// The network's chat and name rules, the defaults until the coordinator sends its own (with the
 /// words and names its admins checked).
 static RULES: std::sync::RwLock<Option<moderation::Rules>> = std::sync::RwLock::new(None);
@@ -157,7 +171,7 @@ pub fn rules() -> moderation::Rules {
         .read()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone()
-        .unwrap_or_else(|| moderation::Rules::new([], [], true))
+        .unwrap_or_else(|| moderation::Rules::new(ALLOWED_NAMES.iter().copied(), [], true))
 }
 
 /// Takes the network's chat and name rules.
@@ -886,6 +900,15 @@ impl Users for MyUsers {
             return Err(refusal);
         }
 
+        // A name that breaks the rules keeps the game out (the launcher still signs in: it's
+        // where the player chooses another).
+        if client.starts_with("game/") {
+            if let Some(why) = self.name_refused(user_id).await? {
+                crate::session_events::refused(crate::session_events::Who::Id(user_id), "name_not_allowed", "api", Some(client.as_str()));
+                return Err(Status::failed_precondition(why));
+            }
+        }
+
         info!(self.logger, "Login successful for {username}");
         crate::metrics::api_login();
         // Over TLS with the password: the game's ticket is good from this address too.
@@ -1129,6 +1152,13 @@ impl MyUsers {
             crate::session_events::refused(crate::session_events::Who::Id(user_id), "outdated", "api", Some(client));
             Status::failed_precondition(why)
         })
+    }
+
+    /// Why the game may not sign in as `user_id`: their name breaks the network's rules
+    /// (flagged at start or by an admin's "Ask to rename"), until they rename.
+    async fn name_refused(&self, user_id: u32) -> Result<Option<String>, Status> {
+        let person = self.storage.find_person(user_id).await.map_err(internal)?;
+        Ok(person.filter(|p| p.name_not_allowed).map(|p| name_not_allowed_message(&p.username)))
     }
 
     /// The answer to a successful sign-in: a token, and who they are (the
@@ -1959,6 +1989,8 @@ mod tests {
         // Checked by the admins: allowed.
         super::set_rules(moderation::Rules::new([&*format!("{slur}_x")], [], true));
         assert!(check_username(&format!("{slur}_x")).is_ok());
-        super::set_rules(moderation::Rules::new([], [], true));
+        super::set_rules(moderation::Rules::new(super::ALLOWED_NAMES.iter().copied(), [], true));
+        // A player's name the word list flags, which the admins checked.
+        assert!(check_username("Bedunga").is_ok());
     }
 }

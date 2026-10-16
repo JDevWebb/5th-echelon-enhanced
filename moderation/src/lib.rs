@@ -148,7 +148,13 @@ impl Rules {
             return Err(NameRefused::Offensive);
         }
         if offensive(Censor::from_str(name).analyze()) {
-            return Err(NameRefused::Offensive);
+            // The list reads digits as letters, so a number after a name can spell a slur
+            // ("Kevin1993": n, 1, 9, 9, 3). A number of two digits or more is a number: the
+            // name without it decides. A digit standing for a letter is still read as one.
+            let without_numbers = without_numbers(name);
+            if without_numbers == name || offensive(Censor::from_str(&without_numbers).analyze()) {
+                return Err(NameRefused::Offensive);
+            }
         }
         Ok(())
     }
@@ -204,6 +210,24 @@ impl Rules {
 }
 
 /// Whether the list's verdict is a slur or hate, at any level.
+/// `name` without its numbers of two digits or more (each becomes a space).
+fn without_numbers(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    let chars: Vec<char> = name.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        let run = chars[i..].iter().take_while(|c| c.is_ascii_digit()).count();
+        if run >= 2 {
+            out.push(' ');
+            i += run;
+        } else {
+            out.push(chars[i]);
+            i += 1;
+        }
+    }
+    out
+}
+
 fn offensive(t: Type) -> bool {
     t.is(Type::OFFENSIVE & Type::MILD_OR_HIGHER)
 }
@@ -309,6 +333,20 @@ mod tests {
             Err(Refused::Link),
             "an invite doesn't bring a link along"
         );
+    }
+
+    #[test]
+    /// A number after a name is a number, not letters: years and run numbers spelled slurs.
+    #[test]
+    fn numbers_after_a_name_are_numbers() {
+        let rules = Rules::new([], [], true);
+        for name in ["Kevin1993", "Martin1995", "Walkin41797_13", "Plain12345_19", "Robin_1993"] {
+            assert!(rules.check_name(name).is_ok(), "{name}");
+        }
+        // Digits standing for letters still count, and a slur with a number after it too.
+        let slur: String = "reggin".chars().rev().collect();
+        assert!(rules.check_name(&slur.replace('i', "1").replace('e', "3")).is_err());
+        assert!(rules.check_name(&format!("{slur}1993")).is_err());
     }
 
     #[test]
