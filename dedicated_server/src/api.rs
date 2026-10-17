@@ -902,14 +902,13 @@ impl Users for MyUsers {
             return Err(Status::unauthenticated("Invalid login"));
         }
         attempt.succeeded();
-        if let Err(refusal) = self.admit(user_id, &username, &client).await {
+        if let Err(refusal) = self.admit(user_id, &username, &client, &build).await {
             if refusal.code() == tonic::Code::FailedPrecondition {
                 crate::clients::refused(user_id, &username, &client, &password);
             }
             return Err(refusal);
         }
 
-        self.check_build(user_id, &username, &client, &build).await?;
         // A name that breaks the rules keeps the game out (the launcher still signs in: it's
         // where the player chooses another).
         if client.starts_with("game/") {
@@ -1124,8 +1123,7 @@ impl Users for MyUsers {
             return Err(Status::permission_denied(crate::players::banned_message(&ban)));
         }
         // Before the password changes: an outdated launcher changes nothing.
-        self.admit(person.id, &person.username, &request.client).await?;
-        self.check_build(person.id, &person.username, &request.client, &request.build).await?;
+        self.admit(person.id, &person.username, &request.client, &request.build).await?;
         if !self.storage.use_key_login(person.id, request.time).await.map_err(internal)? {
             return Err(refused("That signature was already used"));
         }
@@ -1150,11 +1148,23 @@ impl MyUsers {
     /// Lets `client` finish signing in to the account (whose password or key it proved), or
     /// refuses an outdated one. Either way it's noted: the game's own sign-in is let through
     /// only after a current client's (see [`crate::clients`]).
-    async fn admit(&self, user_id: u32, username: &str, client: &str) -> Result<(), Status> {
+    async fn admit(&self, user_id: u32, username: &str, client: &str, build: &str) -> Result<(), Status> {
         let verdict = crate::clients::check(client);
-        self.storage.note_client_sign_in(user_id, client, verdict.is_ok()).await.map_err(internal)?;
-        if verdict.is_ok() {
+        // Its build, before the sign-in is noted: a current client's sign-in lets the game in
+        // for a day, so a build the network refuses must count as refused here, as an outdated
+        // client does (from the security review: noted first, a refused build still let the
+        // game in).
+        let refused_build = match verdict {
+            Ok(()) => self.check_build(user_id, username, client, build).await.err(),
+            Err(_) => None,
+        };
+        let admitted = verdict.is_ok() && refused_build.is_none();
+        self.storage.note_client_sign_in(user_id, client, admitted).await.map_err(internal)?;
+        if admitted {
             crate::clients::admitted(user_id);
+        }
+        if let Some(refusal) = refused_build {
+            return Err(refusal);
         }
         verdict.map_err(|why| {
             if crate::clients::worth_saying(username) {
