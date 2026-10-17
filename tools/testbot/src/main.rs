@@ -257,6 +257,55 @@ async fn client_log(ctx: &mut Ctx) -> Result<()> {
     a.disconnect().await
 }
 
+/// A game that said it was closing (Misc.Closing, as the hooks DLL does when the game quits)
+/// and is started again: its earlier connection going isn't taken for a drop, so the server
+/// doesn't ask for its log. One that didn't say is asked, as before. Both agreed to send it,
+/// were in a friend's lobby, and start again at once; their old connections time out a
+/// minute later.
+async fn closing_note(ctx: &mut Ctx) -> Result<()> {
+    let mut host = ctx.player("Host").await?;
+    let mut quit = ctx.player("Quitter").await?;
+    let mut dropped = ctx.player("Dropper").await?;
+    host.register_urls(&["prudp:/address=127.0.0.1;port=3075;sid=15;type=3"]).await?;
+    let lobby = host.create_session(LOBBY).await?;
+    host.add_participants(lobby, &[host.pid], &[]).await?;
+    for bot in [&mut quit, &mut dropped] {
+        let pid = bot.pid;
+        bot.add_participants(lobby, &[pid], &[]).await?;
+        bot.client_log_agreeing().await.map_err(|e| eyre!("client log: {}", e.message()))?;
+    }
+    quit.closing().await.map_err(|e| eyre!("closing: {}", e.message()))?;
+    let quit = quit.reconnect(ctx.server, PASSWORD, Duration::from_secs(0), false).await?;
+    let dropped = dropped.reconnect(ctx.server, PASSWORD, Duration::from_secs(0), false).await?;
+    // The old connections go after a minute's quiet; the new games keep talking meanwhile.
+    let (mut asked_dropped, mut seen_at) = (None, None);
+    let deadline = std::time::Instant::now() + Duration::from_secs(110);
+    loop {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        host.search_sessions("113 => 1;103 => 0").await?;
+        let q = quit.client_log_agreeing().await.map_err(|e| eyre!("client log: {}", e.message()))?;
+        ensure!(q.send_log_since == 0, "the quitting game was asked for its log ({:?})", q.send_log_problem);
+        let d = dropped.client_log_agreeing().await.map_err(|e| eyre!("client log: {}", e.message()))?;
+        if d.send_log_since != 0 {
+            asked_dropped = Some(d.send_log_problem);
+            seen_at.get_or_insert_with(std::time::Instant::now);
+        }
+        // One more round after the dropped game's ask: the quitter's old connection went too.
+        if seen_at.is_some_and(|at| at.elapsed() >= Duration::from_secs(10)) {
+            break;
+        }
+        ensure!(std::time::Instant::now() < deadline, "the game that dropped wasn't asked for its log");
+    }
+    ensure!(
+        asked_dropped.as_deref() == Some("restarted"),
+        "the game that dropped was asked for its log for {asked_dropped:?}, not restarted"
+    );
+    for bot in [host, quit, dropped] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
 async fn report(ctx: &mut Ctx) -> Result<()> {
     let a = ctx.player("Reporter").await?;
     let summary = a.session_summary().await.map_err(|e| eyre!("session summary: {}", e.message()))?;
@@ -2245,6 +2294,7 @@ const SCENARIOS: &[&str] = &[
     "slow-handshake",
     "second-sign-in",
     "reconnect",
+    "closing-note",
     "ticket-elsewhere",
     "private-room-join",
     "full-room",
@@ -2326,7 +2376,7 @@ async fn main() -> Result<()> {
     for name in names {
         let limit = match name {
             "federation" => 300,
-            "reconnect" => 180,
+            "reconnect" | "closing-note" => 180,
             _ => 30,
         };
         let result = tokio::time::timeout(Duration::from_secs(limit), async {
@@ -2355,6 +2405,7 @@ async fn main() -> Result<()> {
                 "slow-handshake" => slow_handshake(&mut ctx).await,
                 "second-sign-in" => second_sign_in(&mut ctx).await,
                 "reconnect" => reconnect(&mut ctx).await,
+                "closing-note" => closing_note(&mut ctx).await,
                 "ticket-elsewhere" => ticket_elsewhere(&mut ctx).await,
                 "private-room-join" => private_room_join(&mut ctx).await,
                 "full-room" => full_room(&mut ctx).await,

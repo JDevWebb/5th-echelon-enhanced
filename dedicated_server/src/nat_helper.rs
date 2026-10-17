@@ -1325,11 +1325,22 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
             for (name, direction, before, after) in watch.tick(&flows, secs) {
                 // Their game and launcher silent too: their own connection stalled.
                 let quiet = player_quiet(&name, since);
+                // Their game said it was closing: the quit, not a drop (no event).
+                let closed = crate::session_events::closed_lately(&crate::session_events::Who::Name(name.clone()));
                 info!(
                     logger,
                     "NAT relay: {name}'s traffic {direction} fell from {before:.0} to {after:.0} packets/s{}",
-                    if quiet { " (and their game and launcher went quiet too)" } else { "" }
+                    if closed {
+                        " (their game had said it was closing)"
+                    } else if quiet {
+                        " (and their game and launcher went quiet too)"
+                    } else {
+                        ""
+                    }
                 );
+                if closed {
+                    continue;
+                }
                 crate::session_events::note(
                     crate::session_events::Who::Name(name),
                     "relay_drop",

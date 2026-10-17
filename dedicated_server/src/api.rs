@@ -1425,6 +1425,17 @@ impl Misc for MyMisc {
         }))
     }
 
+    /// The player's game is closing normally (0.4.5 games, as they quit; they send no goodbye
+    /// on the game connection): its connection going in the next couple of minutes is the
+    /// quit, not a drop or a restart, and asks for no log (session_events::closing).
+    async fn closing(&self, request: Request<misc::ClosingRequest>) -> Result<Response<misc::ClosingResponse>, Status> {
+        let user_id = caller(&request)?;
+        let name = self.storage.find_username_by_user_id_async(user_id).await.ok().flatten();
+        info!(self.logger, "User {user_id}'s game is closing (a normal quit)");
+        crate::session_events::closing(user_id, name.as_deref());
+        Ok(Response::new(misc::ClosingResponse {}))
+    }
+
     /// A player's feedback, with their logs if they agreed: queued for the coordinator with
     /// this server's side added (reports.rs).
     async fn report(&self, request: Request<misc::ReportRequest>) -> Result<Response<misc::ReportResponse>, Status> {

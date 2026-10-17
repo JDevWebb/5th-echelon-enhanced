@@ -16,7 +16,9 @@
 //! - `signin_refused`: `reason` (`outdated`, `too_many`: too many failed sign-ins,
 //!   `too_many_signins`: too many sign-ins from the address, failed or not, `wrong_password`,
 //!   `banned`, `no_current_client`, `name_not_allowed`), `via` (`game` or `api`), `client` when known.
-//! - `signout`: `how` (`closed`: the game said goodbye; `timed_out`: it went quiet).
+//! - `signout`: `how` (`closed`: the game said goodbye, or its connection went after it said
+//!   it was closing; `timed_out`: it went quiet; `closing`: the game said it's quitting, as
+//!   0.4.5 games do (Misc.Closing), ahead of its connection going: see [`closing`]).
 //! - `room`: `room` (the session id), made by the player.
 //! - `search`: `query` (8: Spies vs Mercs matchmaking or an invitation, 11: co-op), `found`.
 //! - `join`: `room`, `via` (`invite`, `party`: their host took them along, `search`); when the
@@ -32,7 +34,9 @@
 //!   and `room` is the one the server had just given the player (join_targets.rs). For
 //!   `data_mismatch`: `data` (`mine`, `theirs`: each side's attribute 107, hex, either may be
 //!   absent) and `mine_name`, `theirs_name` (`server_api::data_versions`, null if unknown).
-//! - `leave`: `room`, `how` (`left`, `abandoned`, `removed` by the host: `by`), `ended`.
+//! - `leave`: `room`, `how` (`left`, `abandoned`, `removed` by the host: `by`; `dropped`: an
+//!   earlier game of theirs went without a word; `closed`: it went after saying it was
+//!   closing), `ended`.
 //! - `invite`: `to`, `room` (none: unbound, the receiver finds nothing to join).
 //! - `invite_delivered`: `from`, `room`.
 //! - `stats`: the game wrote stats (it does at the end of a mission or match).
@@ -182,6 +186,61 @@ pub fn joined(user: u32, room: u32, via: &'static str) {
 /// of the room the game before was in is a join of its own, to note.
 pub fn forget_joins(user: u32) {
     queue().lock().unwrap_or_else(std::sync::PoisonError::into_inner).joins.retain(|(u, _), _| *u != user);
+}
+
+/// How long after a game said it's closing its connection going is the quit, not a drop: a
+/// quitting game sends no goodbye, so its connection goes when it's been quiet a minute
+/// (quazal's session timeout), and the relay notices its traffic stopping within seconds.
+/// One a player restarting at once leaves behind goes then too (a game that exited at
+/// 20:31:29 was taken for a restart at 20:32:23).
+pub const CLOSING_COVERS: Duration = Duration::from_secs(120);
+
+/// Games that said they're closing (Misc.Closing), by account id and by name (lower case):
+/// when.
+#[derive(Default)]
+struct Closing {
+    ids: HashMap<u32, Instant>,
+    names: HashMap<String, Instant>,
+}
+
+fn closings() -> std::sync::MutexGuard<'static, Closing> {
+    static CLOSING: OnceLock<Mutex<Closing>> = OnceLock::new();
+    CLOSING.get_or_init(Mutex::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `user`'s game (`name`, when known) said it's closing normally: for [`CLOSING_COVERS`],
+/// its connection going is the quit ([`closed_lately`]), not a drop or a restart. Noted as a
+/// `signout` (`closing`) once, however often the game says it.
+pub fn closing(user: u32, name: Option<&str>) {
+    let fresh = {
+        let mut c = closings();
+        let now = Instant::now();
+        if c.ids.len() > 10_000 {
+            c.ids.retain(|_, at| now.duration_since(*at) < CLOSING_COVERS);
+            c.names.retain(|_, at| now.duration_since(*at) < CLOSING_COVERS);
+        }
+        let fresh = !c.ids.get(&user).is_some_and(|at| now.duration_since(*at) < CLOSING_COVERS);
+        c.ids.insert(user, now);
+        if let Some(name) = name {
+            c.names.insert(name.to_lowercase(), now);
+        }
+        fresh
+    };
+    if fresh {
+        note(Who::Id(user), "signout", json!({ "how": "closing" }));
+    }
+}
+
+/// Whether `who`'s game said it was closing within [`CLOSING_COVERS`]: its connection going
+/// (or its traffic stopping) now is the quit. Never for games before 0.4.5, which don't say.
+pub fn closed_lately(who: &Who) -> bool {
+    let c = closings();
+    let at = match who {
+        Who::Id(id) => c.ids.get(id),
+        Who::Name(name) => c.names.get(&name.to_lowercase()),
+        Who::Server => None,
+    };
+    at.is_some_and(|at| at.elapsed() < CLOSING_COVERS)
 }
 
 /// Forgets the joins of a room that ended (its id may come again after a restart).

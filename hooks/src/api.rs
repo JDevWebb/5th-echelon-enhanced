@@ -14,6 +14,7 @@ use server_api::friends::TargetRequest;
 use server_api::misc::misc_client::MiscClient;
 use server_api::misc::ClientLogLine;
 use server_api::misc::ClientLogRequest;
+use server_api::misc::ClosingRequest;
 use server_api::misc::EventRequest;
 use server_api::misc::EventResponse;
 use server_api::users::users_client::UsersClient;
@@ -438,6 +439,30 @@ pub async fn client_log(lines: Vec<ClientLogLine>, dropped: u32, full_logs: bool
         }
     })
     .await
+}
+
+/// Tells the server the game is closing normally (Misc.Closing), so its connection going
+/// isn't taken for a drop or a restart. From `UPLAY_Quit`, on the game's way out: one try
+/// with the token it has (no signing in again), given up after `limit` so the quit is never
+/// held up. Never from the DLL's unload (the loader lock: nothing that waits).
+pub fn closing(limit: std::time::Duration) {
+    if TOKEN.lock().unwrap().is_none() {
+        return;
+    }
+    let Ok(rt) = runtime() else { return };
+    let sent = rt.block_on(async {
+        tokio::time::timeout(limit, async {
+            let mut client = connect!(MiscClient);
+            client.closing(tonic::Request::new(ClosingRequest {})).await?;
+            Ok::<_, Error>(())
+        })
+        .await
+    });
+    match sent {
+        Ok(Ok(())) => info!("Told the server the game is closing"),
+        Ok(Err(e)) => debug!("Couldn't tell the server the game is closing: {e}"),
+        Err(_) => debug!("Couldn't tell the server the game is closing in time"),
+    }
 }
 
 /// Sends a report as the game (its log, when the server asked for it: diagnostics.rs).

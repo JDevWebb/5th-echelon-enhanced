@@ -250,8 +250,11 @@ unsafe extern "cdecl" fn UPLAY_HasOverlappedOperationCompleted(overlapped: *mut 
 
 #[forwardable_export]
 unsafe extern "cdecl" fn UPLAY_Quit() -> bool {
-    // The game is exiting normally: take down the router's port mapping now, not while the
-    // DLL unloads.
+    // The game is exiting normally: tell the server (its connection going is then the quit,
+    // not a drop or a restart) and take down the router's port mapping now, not while the
+    // DLL unloads (under the loader lock, where nothing may wait on the network). The game
+    // calls this on its way out, from its own thread, before ExitProcess.
+    crate::api::closing(std::time::Duration::from_millis(1500));
     crate::hooks::remove_port_mapping();
     false
 }

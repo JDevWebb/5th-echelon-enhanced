@@ -1025,6 +1025,25 @@ impl Bot {
             .kept)
     }
 
+    /// Sends no lines, saying the player agreed to send the game's log when something goes
+    /// wrong, as the hooks DLL does for them; answers what the server asked for.
+    pub async fn client_log_agreeing(&self) -> std::result::Result<server_api::misc::ClientLogResponse, tonic::Status> {
+        Ok(MiscClient::new(self.api.clone())
+            .client_log(self.authed(server_api::misc::ClientLogRequest {
+                lines: vec![],
+                dropped: 0,
+                full_logs: true,
+            }))
+            .await?
+            .into_inner())
+    }
+
+    /// Says the game is closing normally, as the hooks DLL does from `UPLAY_Quit`.
+    pub async fn closing(&self) -> std::result::Result<(), tonic::Status> {
+        MiscClient::new(self.api.clone()).closing(self.authed(server_api::misc::ClosingRequest {})).await?;
+        Ok(())
+    }
+
     /// Sends a report, as the launcher does after a game; answers its id.
     pub async fn report(&self, report: server_api::misc::ReportRequest) -> std::result::Result<String, tonic::Status> {
         Ok(MiscClient::new(self.api.clone()).report(self.authed(report)).await?.into_inner().id)

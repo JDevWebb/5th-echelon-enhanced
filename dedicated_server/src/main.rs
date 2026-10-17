@@ -181,7 +181,10 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
             if let Some(user_id) = ci.user_id {
                 metrics::game_logout(user_id);
                 end_play(logger, storage, user_id);
-                session_events::note(session_events::Who::Id(user_id), "signout", serde_json::json!({ "how": "timed_out" }));
+                // Quiet since it said it was closing: it quit, it didn't drop.
+                let closed = session_events::closed_lately(&session_events::Who::Id(user_id));
+                let how = if closed { "closed" } else { "timed_out" };
+                session_events::note(session_events::Who::Id(user_id), "signout", serde_json::json!({ "how": how }));
                 game_session::forget_rooms(user_id);
                 info!(logger, "Cleaning old session of user {user_id}");
                 if let Err(e) = storage.delete_user_session(user_id) {
@@ -232,7 +235,10 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
                     Err(e) => error!(rooms_logger, "ending the rooms of {user_id}'s earlier connection failed: {e}"),
                 }
             }
-            // And the rooms an earlier game of theirs joined: it's no longer in them.
+            // And the rooms an earlier game of theirs joined: it's no longer in them. Dropped,
+            // unless it said it was closing (it quit, and the player started it again).
+            let closed = session_events::closed_lately(&session_events::Who::Id(user_id));
+            let how = if closed { "closed" } else { "dropped" };
             for room in game_session::joined_by_earlier_games(user_id).into_iter().filter(|r| !rooms.contains(r)) {
                 match rooms_storage.leave_game_session(user_id, room) {
                     Ok(None) => {}
@@ -245,7 +251,7 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
                         session_events::note(
                             session_events::Who::Id(user_id),
                             "leave",
-                            serde_json::json!({ "room": room, "how": "dropped", "ended": ended }),
+                            serde_json::json!({ "room": room, "how": how, "ended": ended }),
                         );
                         if ended {
                             session_events::room_ended(room);

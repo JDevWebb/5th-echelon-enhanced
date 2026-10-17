@@ -5,7 +5,8 @@
 //! join, a lapsed registration, their relayed traffic stopping, a game that dropped and came
 //! back), the next answer to its diagnostics asks for its log from 15 minutes before. The
 //! game sends it as a report with the trigger `auto`, which only goes through when it was
-//! asked for: then it goes as reports do, with this server's side added.
+//! asked for: then it goes as reports do, with this server's side added. A game that said
+//! it was closing (Misc.Closing, 0.4.5 games as they quit) isn't asked about its own going.
 //!
 //! At most once an hour per player, and four a day.
 
@@ -66,13 +67,28 @@ pub fn problem_of(kind: &str, detail: &serde_json::Value) -> Option<&'static str
     }
 }
 
+/// Whether a game quitting normally looks like `problem` to the server: its old connection
+/// going (`restarted`, when the player started the game again), the relay losing its traffic,
+/// its NAT registration lapsing.
+fn quit_shows_as(problem: &str) -> bool {
+    matches!(problem, "restarted" | "relay_stopped" | "nat_lost")
+}
+
 /// A problem was noted for the player `user` (or `name`): their log is wanted, if they
-/// agreed and weren't asked lately.
+/// agreed and weren't asked lately, and it isn't their game's normal quit (it said it was
+/// closing: [`crate::session_events::closing`]).
 pub fn noted(user: Option<u32>, name: Option<&str>, problem: &'static str, now_unix: i64) {
     let mut st = state();
     let Some(user) = user.or_else(|| name.and_then(|n| st.names.get(&n.to_lowercase()).copied())) else {
         return;
     };
+    // The game said it was closing (a normal quit): its connection going, its traffic
+    // stopping or its registration lapsing is the quit, not a problem. 14 of 31 logs asked
+    // for were of a game that had just exited normally. A failed join is still the new game's.
+    let closed = |who: crate::session_events::Who| crate::session_events::closed_lately(&who);
+    if quit_shows_as(problem) && (closed(crate::session_events::Who::Id(user)) || name.is_some_and(|n| closed(crate::session_events::Who::Name(n.into())))) {
+        return;
+    }
     if !st.agreed.get(&user).is_some_and(|at| at.elapsed() < AGREED_FOR) || st.wanted.contains_key(&user) {
         return;
     }
@@ -148,6 +164,32 @@ mod tests {
         );
         assert_eq!(problem_of("relay_drop", &serde_json::json!({ "direction": "sending", "after": 4.0 })), None);
         assert_eq!(problem_of("leave", &serde_json::json!({ "how": "dropped" })), Some("restarted"));
+    }
+
+    /// A game that said it was closing (a normal quit) isn't asked for its log when its
+    /// connection goes or its relayed traffic stops; one that didn't say is, as before.
+    #[test]
+    fn a_game_that_said_it_was_closing_isnt_asked_about_going() {
+        let (quit, dropped) = (900_011, 900_012);
+        diagnostics(quit, Some("Closing-Quit"), true);
+        diagnostics(dropped, Some("Closing-Dropped"), true);
+        crate::session_events::closing(quit, Some("Closing-Quit"));
+        // Its earlier connection goes as the player starts the game again; its traffic
+        // through the relay stops (noted by name).
+        let gone = problem_of("leave", &serde_json::json!({ "how": "dropped" })).unwrap();
+        noted(Some(quit), None, gone, 20_000);
+        let stopped = problem_of("relay_drop", &serde_json::json!({ "direction": "sending", "after": 0.0 })).unwrap();
+        noted(None, Some("closing-quit"), stopped, 20_000);
+        noted(Some(quit), None, "nat_lost", 20_000);
+        assert_eq!(ask(quit), None, "a normal quit asked for the log");
+        // No closing note: as before.
+        noted(Some(dropped), None, gone, 20_000);
+        assert_eq!(ask(dropped), Some((20_000 - BEFORE, "restarted")));
+        // A failed join (the new game's) still wants it.
+        noted(Some(quit), None, "join_failed", 20_100);
+        assert_eq!(ask(quit), Some((20_100 - BEFORE, "join_failed")));
+        assert!(!crate::session_events::closed_lately(&crate::session_events::Who::Id(dropped)));
+        assert!(crate::session_events::closed_lately(&crate::session_events::Who::Name("CLOSING-QUIT".into())));
     }
 
     #[test]

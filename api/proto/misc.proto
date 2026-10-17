@@ -15,7 +15,14 @@ service Misc {
     // The game's warnings, errors and network events as they happen (redacted on the
     // player's PC), for the server's admins: Settings › Feedback turns them off.
     rpc ClientLog(ClientLogRequest) returns (ClientLogResponse);
+    // The game is closing normally (it's quitting: 0.4.5 games and later). Its connection going
+    // in the next couple of minutes is the quit, not a drop or a restart, and asks for no
+    // log. Games before 0.4.5 don't say; their quits look as they always did.
+    rpc Closing(ClosingRequest) returns (ClosingResponse);
 }
+
+message ClosingRequest {}
+message ClosingResponse {}
 
 message ClientLogRequest {
     repeated ClientLogLine lines = 1;
