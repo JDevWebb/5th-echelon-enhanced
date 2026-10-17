@@ -35,6 +35,7 @@ mod addresses;
 mod api;
 mod autoclimb;
 mod community;
+mod crash;
 mod dataversion;
 mod diagnostics;
 mod dll_utils;
@@ -277,6 +278,10 @@ fn init(hmodule: Option<HMODULE>) {
     }
     community::set_folder(dir.clone());
     let reload_handle = init_log(&dir);
+    // From here, a crash says where in the log (crash.rs).
+    if let Some(log) = LOG_PATH.get() {
+        crash::install(log);
+    }
     check_orig_library(hmodule);
     if let Some(cmdline) = get_arguments() {
         info!("Cmdline: {}", cmdline);
