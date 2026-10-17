@@ -2066,10 +2066,7 @@ async fn join_room_closing(ctx: &mut Ctx) -> Result<()> {
         return Err(eyre!("the TICKET_PENDING after it was told too: {title}: {text}"));
     }
     let summary = joiner.session_summary().await.map_err(|e| eyre!("session summary: {}", e.message()))?;
-    ensure!(
-        (summary.failed_joins, summary.joins_explained) == (1, 1),
-        "one failure, explained, not two: {summary:?}"
-    );
+    ensure!((summary.failed_joins, summary.joins_explained) == (1, 1), "one failure, explained, not two: {summary:?}");
 
     alone.report_failed_joins(&[(lobby, TICKET_PENDING)]).await?;
     let (title, _) = alone.poll_notice(wait).await?.ok_or_else(|| eyre!("no notice for a TICKET_PENDING on its own"))?;

@@ -1226,7 +1226,9 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             if join.told() {
                 crate::metrics::failed_join();
             }
-            let noted = join.counts().then(|| crate::reports::join_failed(user_id, join.room, code, join.outcome, join.mismatch.clone()));
+            let noted = join
+                .counts()
+                .then(|| crate::reports::join_failed(user_id, join.room, code, join.outcome, join.mismatch.clone()));
             // The player hears why at once, in the game's overlay (not their game's own churn,
             // nor what they were just told); one that says all there is needn't be asked about
             // after the game.
@@ -1855,7 +1857,9 @@ fn failed_join(storage: &Storage, user: u32, reported: u32, code: u32) -> Failed
         // A join that just failed between games with different data is the mod's doing,
         // whatever the game named it: a PEC.ini mod joining a stock host got CONNECTION_FAILED.
         JoinOutcome::Failed if !own => match sides() {
-            m @ crate::reports::Mismatch { mine: Some(a), theirs: Some(b), .. } if a != b => (JoinOutcome::DataMismatch, Some(m)),
+            m @ crate::reports::Mismatch {
+                mine: Some(a), theirs: Some(b), ..
+            } if a != b => (JoinOutcome::DataMismatch, Some(m)),
             _ => (outcome, None),
         },
         _ => (outcome, None),

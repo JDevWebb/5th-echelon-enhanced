@@ -248,11 +248,7 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
                             "User {user_id}'s earlier game leaves session {room}{}",
                             if ended { "; nobody left, it ends" } else { "" }
                         );
-                        session_events::note(
-                            session_events::Who::Id(user_id),
-                            "leave",
-                            serde_json::json!({ "room": room, "how": how, "ended": ended }),
-                        );
+                        session_events::note(session_events::Who::Id(user_id), "leave", serde_json::json!({ "room": room, "how": how, "ended": ended }));
                         if ended {
                             session_events::room_ended(room);
                         }
