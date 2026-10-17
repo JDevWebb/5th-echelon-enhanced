@@ -74,6 +74,22 @@ pub const RELEASES: &[Release] = &[
                 lead: "The overlay keeps out of the game's window handling",
                 rest: ": Alt no longer opens the window's menu with the panel open.",
             },
+            Fix {
+                lead: "The overlay stays on screen on DirectX 9",
+                rest: ", on big screens too, instead of vanishing while it holds your keys.",
+            },
+            Fix {
+                lead: "Two PCs on one home connection can join each other",
+                rest: ": each game is given its own address, not its housemate's.",
+            },
+            Fix {
+                lead: "A join refused for different mods says so",
+                rest: ", and whose game has them, whatever the game reported.",
+            },
+            Fix {
+                lead: "Play works for a game set to run as administrator",
+                rest: ": Windows asks, and the game starts.",
+            },
         ],
     },
     Release {
