@@ -441,6 +441,50 @@ impl Friends for MyFriends {
         Ok(Response::new(friends::InviteResponse {}))
     }
 
+    /// Joins a friend's game without an invitation (the launcher's/overlay's "Join"): binds a
+    /// force-join invitation from the friend to the caller, so the caller's running game joins on
+    /// its next event poll. Only a friend (or anyone, in "everyone" mode) who is in a joinable,
+    /// non-private session; a private match still needs a real invitation.
+    async fn join_now(&self, request: Request<friends::JoinNowRequest>) -> Result<Response<friends::JoinNowResponse>, Status> {
+        use friends::join_now_response::Status as JoinStatus;
+        let me = caller(&request)?;
+        if !crate::rate_limit::invites().check(me) {
+            return Err(Status::resource_exhausted("Too many requests; try again in a minute"));
+        }
+        let reply = |status: JoinStatus, detail: &str| {
+            Ok(Response::new(friends::JoinNowResponse {
+                status: status as i32,
+                detail: detail.to_string(),
+            }))
+        };
+        let target = request.into_inner().id;
+        let Some(host) = self.storage.find_user_id_by_ubi_id_async(&target).await.map_err(internal)? else {
+            return reply(JoinStatus::NotFound, "That player isn't on this server.");
+        };
+        match self.storage.relation(me, host).await.map_err(internal)? {
+            Relation::Blocked | Relation::BlockedBy => return reply(JoinStatus::NotFriends, "You can't join this player."),
+            Relation::Friend => {}
+            _ if self.mode == FriendsMode::Mutual => return reply(JoinStatus::NotFriends, "Only friends can join each other on this server."),
+            _ => {}
+        }
+        // The friend's own hosted session: a public one is joinable, a private match needs a real
+        // invitation, and no session means they aren't hosting a game right now.
+        let host_sessions = self.storage.find_host_sessions_async(host).await.map_err(internal)?;
+        let Some(room) = host_sessions.iter().find(|s| !is_private_room(s)).or_else(|| host_sessions.first()) else {
+            return reply(JoinStatus::Offline, "That player isn't hosting a game right now.");
+        };
+        if is_private_room(room) {
+            return reply(JoinStatus::Private, "That player's match is private - you need an invitation.");
+        }
+        self.storage
+            .add_invite_async(host, me, Some(room.session_type), Some(room.session_id))
+            .await
+            .map_err(|e| Status::resource_exhausted(format!("Couldn't queue the join: {e}")))?;
+        crate::join_requests::mark(me);
+        info!(self.logger, "JoinNow: {me} joins {host}'s session {} (bound force-join)", room.session_id);
+        reply(JoinStatus::Ok, "")
+    }
+
     /// The game's friend list: every player in the "everyone" mode (as before friend lists
     /// existed), only friends in the "mutual" mode; never anyone blocked either way.
     async fn list(&self, request: Request<friends::ListRequest>) -> Result<Response<friends::ListResponse>, Status> {
@@ -1329,6 +1373,9 @@ impl Misc for MyMisc {
                     ips: vec![],
                 }),
                 force_join: self.debug_config.force_joins,
+                // A launcher/overlay "join a friend" (JoinNow) marks the caller, so the invitation
+                // it bound is delivered as a join the player asked for (honoured without a click).
+                requested: crate::join_requests::take(user_id),
             }),
             friend: None,
             notice: notice(),

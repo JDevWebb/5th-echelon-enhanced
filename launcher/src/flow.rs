@@ -160,6 +160,8 @@ static API_TOKEN: Mutex<Option<(String, String)>> = Mutex::new(None);
 /// A friend who's online on this server.
 #[derive(Debug, Clone, Default)]
 pub struct OnlineFriend {
+    /// The friend's account id, to join them (`JoinNow`).
+    pub id: String,
     pub name: String,
     /// What they're doing ("SvM Classic · Virus Vault · in a match"), if the server says.
     pub activity: Option<String>,
@@ -178,6 +180,31 @@ pub struct Friends {
     /// The account's name, when it breaks the network's rules: the server keeps the game out
     /// until the player chooses another (Settings › Servers and accounts › Rename).
     pub name_not_allowed: Option<String>,
+}
+
+/// Asks the server to join `friend_name` (account id `friend_id`) — see `Friends.JoinNow`. On
+/// success the caller's running game joins on its next event poll; otherwise the reason is given.
+/// `Ok` is a line to show as a notice, `Err` one to show as an error.
+pub fn join_friend(cfg: &Config, friend_id: &str, friend_name: &str) -> Result<String, String> {
+    use server_api::friends::join_now_response::Status as JoinStatus;
+    let Some(profile) = cfg.current_profile().filter(|p| !p.server.is_empty() && p.has_account()) else {
+        return Err("Sign in to a server first.".into());
+    };
+    let url = profile.api_server_url().to_string();
+    let username = profile.user.username.clone();
+    let secret = profile.user.secret().unwrap_or_default();
+    let rt = crate::services::rt();
+    // A fresh token: joining is rare and one sign-in keeps it simple (no shared-token caching).
+    let token = rt.block_on(crate::network::sign_in(url.clone(), &username, &secret)).map_err(|e| e.to_string())?;
+    let resp = rt.block_on(crate::network::join_now(url, &token, friend_id.to_string())).map_err(|e| e.to_string())?;
+    match JoinStatus::try_from(resp.status).unwrap_or(JoinStatus::Offline) {
+        JoinStatus::Ok => Ok(format!("Joining {friend_name} — the game connects to their match.")),
+        _ if !resp.detail.is_empty() => Err(resp.detail),
+        JoinStatus::NotFound => Err(format!("{friend_name} isn't on this server.")),
+        JoinStatus::NotFriends => Err(format!("You can't join {friend_name}.")),
+        JoinStatus::Offline => Err(format!("{friend_name} isn't hosting a game right now.")),
+        JoinStatus::Private => Err(format!("{friend_name}'s match is private - you need an invitation.")),
+    }
 }
 
 /// The current account's friends: who's online here and what they're
@@ -225,6 +252,7 @@ pub fn friends(cfg: &Config) -> Result<Friends, String> {
         .filter(|f| f.is_online)
         .take(100)
         .map(|f| OnlineFriend {
+            id: f.id.clone(),
             name: clip(&f.username, 32),
             activity: f.activity.as_ref().map(describe),
         })
