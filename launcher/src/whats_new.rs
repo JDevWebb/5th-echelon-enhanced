@@ -43,6 +43,11 @@ pub const RELEASES: &[Release] = &[
         thanks: &["Alessenchaleur", "Tea_bag", "PsykoGun", "RAZA"],
         new: &[
             Item {
+                title: "New game options",
+                text: "Mouse moves 1:1 (no negative mouse acceleration; recommended), Brighten the picture and No automatic climbing. You choose them when this update starts; Settings › Game changes them any time.",
+                community: false,
+            },
+            Item {
                 title: "No slurs or hate in names",
                 text: "Names that break the rules are refused, and players who already have one are asked to choose another before they play.",
                 community: false,
