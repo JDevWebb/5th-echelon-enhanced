@@ -127,6 +127,8 @@ It installs the coordinator and Caddy, and no game server. Servers then join it 
 
 Run the installer again with the new names (`--domain`, `--coordinator-domain`), after their A records point at the machine. Accounts, friends and settings stay. A server whose coordinator has a new address joins it again by itself, with the secret it already has. Players set up on an old name press **Connect** again with the new one, or with the network's address.
 
+A coordinator can keep answering to its old name while launchers and servers move: add `--coordinator-alias <old name>` (from 0.4.6; `--coordinator-alias -` drops it later). Servers moving to the new name keep their membership as long as the coordinator lists it as its own, which it does with both names set. The steps, failover included, are in [Moving a coordinator to a new name](failover.md#moving-a-coordinator-to-a-new-name).
+
 ## The join token
 
 On the coordinator's machine:
