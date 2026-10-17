@@ -304,6 +304,10 @@ pub struct Config {
     /// do while Fusion Fix removes the acceleration itself ([`fusion_fix`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disable_mouse_accel: bool,
+    /// Opt-in: remove the engine's automatic climb/vault ("Active Sprint"), so climbing over
+    /// edges is only ever manual. Off by default. See `hooks::autoclimb`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disable_autoclimb: bool,
     /// Let the server join you to a match without your click (its `force_join`).
     /// Off: a server shouldn't be able to put you into a match by itself.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

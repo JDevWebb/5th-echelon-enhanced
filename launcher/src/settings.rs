@@ -623,6 +623,18 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     if running && game.cfg.brighten {
         ui.label(theme::muted("Close the game to change the picture brightness."));
     }
+    // Auto-climb (opt-in): takes effect at the next game start, so the toggle is locked while the
+    // game is running, like the other start-time options.
+    let autoclimb_running = setup::game::game_running();
+    ui.add_enabled_ui(!autoclimb_running, |ui| {
+        ui.checkbox(&mut hook.disable_autoclimb, "Disable automatic climbing (Active Sprint)").on_hover_text(
+            "The game climbs and vaults over edges by itself when you sprint into them. This turns that \
+             off, so climbing is only ever manual. Takes effect the next time the game starts.",
+        );
+    });
+    if autoclimb_running {
+        ui.label(theme::muted("Close the game to change automatic climbing."));
+    }
     ui.horizontal(|ui| {
         ui.label("Client log detail");
         egui::ComboBox::from_id_salt("loglevel")

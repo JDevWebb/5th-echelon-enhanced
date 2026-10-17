@@ -765,6 +765,12 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
     if config.disable_mouse_accel {
         crate::mouse_fix::disable_negative_mouse_acceleration();
     }
+
+    // Remove the engine's automatic climb/vault (collapse the nav scan volume; see autoclimb.rs).
+    #[cfg(not(feature = "patch-free"))]
+    if config.disable_autoclimb {
+        crate::autoclimb::disable_auto_climb();
+    }
 }
 
 macro_rules! disable_configurable_hook {
