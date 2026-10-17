@@ -586,36 +586,29 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
             )
             .changed();
         if toggled {
-            let dir = game.dir.clone();
-            let mut backup = game.cfg.gamma_backup.clone();
-            let brightness = game.cfg.brightness;
-            let res = if brighten {
-                setup::gamma::enable(&dir, brightness, &mut backup)
-            } else {
-                setup::gamma::disable(&dir, &mut backup)
-            };
-            match res {
-                Ok(()) => game.update(notices, |c| {
-                    c.brighten = brighten;
-                    c.gamma_backup = backup;
-                }),
-                Err(e) => notices.error(format!("Couldn't change the brightness: {e}")),
-            }
+            set_brighten(game, notices, brighten);
         }
         if game.cfg.brighten {
-            let mut level = game.cfg.brightness;
+            // Shown as it's dragged, written once: when the drag ends, or on a click or a key.
+            let id = ui.id().with("brightness");
+            let mut level = ui.data(|d| d.get_temp::<u8>(id)).unwrap_or(game.cfg.brightness);
             let slider = egui::Slider::new(&mut level, setup::gamma::MIN_BRIGHTNESS..=setup::gamma::MAX_BRIGHTNESS)
                 .text("Brightness")
                 .custom_formatter(|n, _| format!("{:.2}", n / 100.0));
-            if ui.add(slider).changed() {
-                let dir = game.dir.clone();
-                let mut backup = game.cfg.gamma_backup.clone();
-                match setup::gamma::enable(&dir, level, &mut backup) {
-                    Ok(()) => game.update(notices, |c| {
-                        c.brightness = level;
-                        c.gamma_backup = backup;
-                    }),
-                    Err(e) => notices.error(format!("Couldn't change the brightness: {e}")),
+            let response = ui.add(slider);
+            if response.dragged() {
+                ui.data_mut(|d| d.insert_temp(id, level));
+            } else {
+                ui.data_mut(|d| d.remove::<u8>(id));
+                if level != game.cfg.brightness && (response.drag_stopped() || response.changed()) {
+                    let mut backup = game.cfg.gamma_backup.clone();
+                    match setup::gamma::enable(&game.dir, level, &mut backup) {
+                        Ok(()) => game.update(notices, |c| {
+                            c.brightness = level;
+                            c.gamma_backup = backup;
+                        }),
+                        Err(e) => notices.error(format!("Couldn't change the brightness: {e}")),
+                    }
                 }
             }
         }
@@ -625,14 +618,13 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     }
     // Auto-climb (opt-in): takes effect at the next game start, so the toggle is locked while the
     // game is running, like the other start-time options.
-    let autoclimb_running = setup::game::game_running();
-    ui.add_enabled_ui(!autoclimb_running, |ui| {
+    ui.add_enabled_ui(!running, |ui| {
         ui.checkbox(&mut hook.disable_autoclimb, "Disable automatic climbing (Active Sprint)").on_hover_text(
             "The game climbs and vaults over edges by itself when you sprint into them. This turns that \
              off, so climbing is only ever manual. Takes effect the next time the game starts.",
         );
     });
-    if autoclimb_running {
+    if running {
         ui.label(theme::muted("Close the game to change automatic climbing."));
     }
     ui.horizontal(|ui| {
@@ -656,6 +648,24 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     });
     if hook != game.cfg.hook_config {
         game.update(notices, |c| c.hook_config = hook);
+    }
+}
+
+/// Turns "Brighten the picture" on or off: edits Blacklist.ini (the game must be closed), then
+/// notes it (here and in new_options.rs). On a failure the setting stays as it was.
+pub(crate) fn set_brighten(game: &mut Game, notices: &mut Notices, on: bool) {
+    let mut backup = game.cfg.gamma_backup.clone();
+    let res = if on {
+        setup::gamma::enable(&game.dir, game.cfg.brightness, &mut backup)
+    } else {
+        setup::gamma::disable(&game.dir, &mut backup)
+    };
+    match res {
+        Ok(()) => game.update(notices, |c| {
+            c.brighten = on;
+            c.gamma_backup = backup;
+        }),
+        Err(e) => notices.error(format!("Couldn't change the brightness: {e}")),
     }
 }
 

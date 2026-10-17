@@ -1,7 +1,7 @@
 //! New game options: the ones that change how the game plays, asked about once each.
 //!
-//! Each is off in `uplay.toml` until the player chose, and offered with its recommended
-//! setting already chosen. On a first run they're a step of the guided setup (`play.rs`);
+//! Each is off until the player chose, and offered with its recommended setting already
+//! chosen (on for some, off for others). On a first run they're a step of the guided setup (`play.rs`);
 //! after an update brings one, this asks in a window of its own before the game starts (after
 //! the question about diagnostics, before What's new). Settings › Game changes them later. An
 //! install another tool manages isn't asked: they stay off there.
@@ -10,7 +10,6 @@ use std::path::Path;
 
 use eframe::egui;
 use eframe::egui::RichText;
-use hooks_config::Config;
 
 use crate::app::Game;
 use crate::app::Notices;
@@ -23,29 +22,55 @@ pub struct NewOption {
     pub title: &'static str,
     pub text: &'static str,
     pub recommended: bool,
-    pub set: fn(&mut Config, bool),
+    pub setting: Setting,
     /// Why it can't be used on this install right now, if it can't (it's then left off): a
     /// badge and a line.
     pub blocked: fn(&Path) -> Option<(&'static str, &'static str)>,
 }
 
+/// Where an option's choice goes.
+pub enum Setting {
+    /// A key of `uplay.toml` the hooks read when the game starts.
+    Hook(fn(&mut hooks_config::Config, bool)),
+    /// Something the launcher does itself (and notes), such as editing the game's own files.
+    Launcher(fn(&mut Game, &mut Notices, bool)),
+}
+
 /// Oldest first. An option stays here once added: a player who skipped releases is asked
 /// about every one they haven't been.
-pub const OPTIONS: &[NewOption] = &[NewOption {
-    id: "mouse-accel",
-    title: "Mouse moves 1:1",
-    text: "Fast flicks turn as far as slow ones: the game's negative mouse acceleration is gone. A wide limit stays, so a bad input spike can't flip the camera.",
-    recommended: true,
-    set: |c, on| c.disable_mouse_accel = on,
-    blocked: |dir| hooks_config::fusion_fix::removes_mouse_accel(dir).then_some(("Fusion Fix", FUSION_FIX_MOUSE)),
-}];
+pub const OPTIONS: &[NewOption] = &[
+    NewOption {
+        id: "mouse-accel",
+        title: "Mouse moves 1:1",
+        text: "Fast flicks turn as far as slow ones: the game's negative mouse acceleration is gone. A wide limit stays, so a bad input spike can't flip the camera.",
+        recommended: true,
+        setting: Setting::Hook(|c, on| c.disable_mouse_accel = on),
+        blocked: |dir| hooks_config::fusion_fix::removes_mouse_accel(dir).then_some(("Fusion Fix", FUSION_FIX_MOUSE)),
+    },
+    NewOption {
+        id: "brighten",
+        title: "Brighten the picture",
+        text: "The game caps its brightness low, which can look dark (under Proton especially). This lifts the cap and sets a brighter picture by editing Blacklist.ini; turning it off puts the original back. Settings › Game sets how bright.",
+        recommended: false,
+        setting: Setting::Launcher(crate::settings::set_brighten),
+        blocked: |_| None,
+    },
+    NewOption {
+        id: "autoclimb",
+        title: "No automatic climbing",
+        text: "Sam stops climbing and vaulting over edges by himself when you sprint into them (Active Sprint): climbing is only ever manual.",
+        recommended: false,
+        setting: Setting::Hook(|c, on| c.disable_autoclimb = on),
+        blocked: |_| None,
+    },
+];
 
 /// Shown for the mouse option while Fusion Fix removes the acceleration itself (here and in
 /// Settings › Game).
 pub const FUSION_FIX_MOUSE: &str = "Fusion Fix already removes it (DisableNegativeMouseAcceleration = 1 in SplinterCellBlacklist.FusionFix.ini). Set that to 0 to use this one: it keeps the spike limit, which matters under Proton.";
 
-const INTRO_UPDATE: &str = "This update adds options that change how the game plays. The recommended setting is already chosen; change any you don't want.";
-const INTRO_SETUP: &str = "These change how the game plays. The recommended setting is already chosen; change any you don't want.";
+const INTRO_UPDATE: &str = "This update adds options that change how the game plays. Each is set as we recommend; tick or untick any you like.";
+const INTRO_SETUP: &str = "These change how the game plays. Each is set as we recommend; tick or untick any you like.";
 const LATER: &str = "Change these any time in Settings › Game.";
 
 /// The options in `options` the player hasn't been asked about (`asked`: their ids).
@@ -101,9 +126,17 @@ pub fn list(ui: &mut egui::Ui, options: &[&NewOption], choices: &mut [bool], gam
 pub fn save(game: &mut Game, notices: &mut Notices, options: &[&NewOption], choices: &[bool]) {
     game.update(notices, |c| {
         for (option, on) in options.iter().zip(choices) {
-            (option.set)(&mut c.hook_config, *on);
+            if let Setting::Hook(set) = option.setting {
+                set(&mut c.hook_config, *on);
+            }
         }
     });
+    for (option, on) in options.iter().zip(choices) {
+        // Off is how they start: only an option turned on has anything to do.
+        if let (Setting::Launcher(set), true) = (&option.setting, *on) {
+            set(game, notices, true);
+        }
+    }
     Prefs::add_options_asked(options.iter().map(|o| o.id));
 }
 
@@ -212,7 +245,23 @@ mod tests {
         let mouse = OPTIONS.iter().find(|o| o.id == "mouse-accel").unwrap();
         let mut c = hooks_config::default();
         assert!(!c.disable_mouse_accel, "off until chosen");
-        (mouse.set)(&mut c, true);
+        let Setting::Hook(set) = mouse.setting else { panic!("a uplay.toml key") };
+        set(&mut c, true);
         assert!(c.disable_mouse_accel);
+    }
+
+    #[test]
+    fn brightening_and_no_auto_climbing_are_offered_off() {
+        let dir = std::env::temp_dir().join(format!("new-options-off-{}", std::process::id()));
+        let options: Vec<&NewOption> = OPTIONS.iter().filter(|o| o.id == "brighten" || o.id == "autoclimb").collect();
+        assert_eq!(options.len(), 2);
+        assert_eq!(offered(&options, &dir), vec![false, false]);
+        let c = hooks_config::default();
+        assert!(!c.disable_autoclimb, "off until chosen");
+        let autoclimb = options.iter().find(|o| o.id == "autoclimb").unwrap();
+        let Setting::Hook(set) = autoclimb.setting else { panic!("a uplay.toml key") };
+        let mut c = c;
+        set(&mut c, true);
+        assert!(c.disable_autoclimb);
     }
 }
