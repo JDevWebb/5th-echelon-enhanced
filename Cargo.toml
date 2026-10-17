@@ -27,6 +27,7 @@ members = [
   "tools/umd_browser",
   "tools/testbot",
 ]
+exclude = ["vendor"]
 
 # v2 panics with
 # activated_features for invalid package: features did not find PackageId { name: "windows_i686_msvc", version: "0.48.0", source: "registry `crates-io`" } NormalOrDev
@@ -35,6 +36,9 @@ resolver = "1"
 [patch.'crates-io']
 # TODO: remove this once the fix to imgui-rs/imgui-rs#775 gets released. Fixes a panic with hudhook
 imgui = { git = "https://github.com/imgui-rs/imgui-rs", rev = "cb8beeb" }
+# hudhook 0.8.1 with its DirectX 9 vertex buffer sized for the vertices it's filled with and the
+# game's device state restored when drawing fails. See vendor/hudhook/PATCHES.md.
+hudhook = { path = "vendor/hudhook" }
 
 # The following fixes numblock inconsistencies, but can't be combined with the patch above.
 # TODO: remove this once the fix from https://github.com/imgui-rs/imgui-winit-support/pull/2 gets released (imgui-winit-support>0.13)
