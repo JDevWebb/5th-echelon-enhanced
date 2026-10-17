@@ -573,76 +573,42 @@ pub fn without_builtin(mut custom: AddressMap) -> AddressMap {
     custom
 }
 
-/// What became of an [`ADDRESSES_FILE`] found next to the launcher.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum StrayAddresses {
-    /// A copy of the built-in addresses, which earlier launchers wrote wherever they ran (the
-    /// desktop, Downloads): deleted.
-    Removed,
-    /// Addresses found for an unknown game build: moved into the game folder's file.
-    Moved,
-}
-
-/// Tidies an addresses file next to the launcher (`exe_dir`): earlier launchers wrote a copy
-/// of the built-in addresses wherever they ran. A copy is deleted; addresses found for a build
-/// the add-on doesn't know (**Try to identify**, run from an earlier launcher) are moved into
-/// the game folder's file, which is where the game reads them. Nothing happens when the file
-/// can't be read, or the game folder can't be written: it's left as it is and logged.
-pub fn tidy_stray_addresses(exe_dir: &Path, game_dir: &Path) -> Option<StrayAddresses> {
+/// Deletes an addresses file next to the launcher (`exe_dir`) that's only a copy of the
+/// built-in addresses: earlier launchers wrote one wherever they ran (the desktop, Downloads).
+/// Whether it was deleted.
+///
+/// Anything else there is left alone and never read for the game: a folder like Downloads
+/// takes files from anywhere, and the game patches its code where these addresses say. Found
+/// addresses belong in the game folder, which **Try to identify** writes.
+pub fn tidy_stray_addresses(exe_dir: &Path, game_dir: &Path) -> bool {
     let stray = exe_dir.join(ADDRESSES_FILE);
     // The launcher kept in the game's own folder: that file is the game's.
     if !stray.is_file() || same_dir(exe_dir, game_dir) {
-        return None;
+        return false;
     }
     let found = match read_custom_addresses(exe_dir) {
-        Ok(Some(found)) => without_builtin(found),
-        Ok(None) => return None,
+        Ok(Some(found)) => found,
+        Ok(None) => return false,
         Err(e) => {
             tracing::warn!("{} isn't one the launcher can read ({e}); left where it is", stray.display());
-            return None;
+            return false;
         }
     };
-    let outcome = if found.is_empty() {
-        StrayAddresses::Removed
-    } else {
-        // The game folder's own found addresses win where both have the same build.
-        let mut merged = match read_custom_addresses(game_dir) {
-            Ok(theirs) => theirs.unwrap_or_default(),
-            Err(e) => {
-                tracing::warn!("The game folder's {ADDRESSES_FILE} can't be read ({e}); {} left where it is", stray.display());
-                return None;
-            }
-        };
-        for (exe, builds) in found {
-            let into = merged.entry(exe).or_default();
-            for (hash, addresses) in builds {
-                into.entry(hash).or_insert(addresses);
-            }
-        }
-        let dx9 = merged.remove("blacklist_game.exe").unwrap_or_default();
-        let dx11 = merged.remove("blacklist_dx11_game.exe").unwrap_or_default();
-        if let Err(e) = save_addresses(game_dir, dx9, dx11) {
-            tracing::warn!("Couldn't move {} into the game folder ({e}); left where it is", stray.display());
-            return None;
-        }
-        StrayAddresses::Moved
-    };
+    if !without_builtin(found).is_empty() {
+        tracing::warn!(
+            "{} has addresses for a game build the add-on doesn't know; left where it is and not used (Try to identify writes them in the game folder)",
+            stray.display()
+        );
+        return false;
+    }
     match std::fs::remove_file(&stray) {
         Ok(()) => {
-            tracing::info!(
-                "{} {}",
-                stray.display(),
-                if outcome == StrayAddresses::Moved {
-                    "moved into the game folder"
-                } else {
-                    "deleted: a copy of the built-in addresses"
-                }
-            );
-            Some(outcome)
+            tracing::info!("{} deleted: a copy of the built-in addresses", stray.display());
+            true
         }
         Err(e) => {
             tracing::warn!("Couldn't delete {}: {e}", stray.display());
-            None
+            false
         }
     }
 }
@@ -975,36 +941,34 @@ mod tests {
         let (launcher, game) = dirs("template");
         let mut inbuilt = inbuilt_addresses();
         save_addresses(&launcher, inbuilt.remove("blacklist_game.exe").unwrap(), inbuilt.remove("blacklist_dx11_game.exe").unwrap()).unwrap();
-        assert_eq!(tidy_stray_addresses(&launcher, &game), Some(StrayAddresses::Removed));
+        assert!(tidy_stray_addresses(&launcher, &game));
         assert!(!launcher.join(ADDRESSES_FILE).exists());
         assert!(!game.join(ADDRESSES_FILE).exists(), "nothing to move");
-        assert_eq!(tidy_stray_addresses(&launcher, &game), None, "nothing left to do");
+        assert!(!tidy_stray_addresses(&launcher, &game), "nothing left to do");
     }
 
     #[test]
-    fn found_addresses_beside_the_launcher_move_into_the_game_folder() {
+    fn found_addresses_beside_the_launcher_are_left_alone_and_never_reach_the_game() {
         let (launcher, game) = dirs("found");
         let some = inbuilt_addresses()["blacklist_dx11_game.exe"].values().next().unwrap().clone();
         save_addresses(&launcher, HashMap::new(), HashMap::from([([9; 32], some.clone())])).unwrap();
-        // The game folder already has one of its own: kept, and the launcher's joins it.
         save_addresses(&game, HashMap::from([([8; 32], some)]), HashMap::new()).unwrap();
-        assert_eq!(tidy_stray_addresses(&launcher, &game), Some(StrayAddresses::Moved));
-        assert!(!launcher.join(ADDRESSES_FILE).exists());
-        let merged = read_custom_addresses(&game).unwrap().unwrap();
-        assert!(merged["blacklist_game.exe"].contains_key(&[8; 32]));
-        assert!(merged["blacklist_dx11_game.exe"].contains_key(&[9; 32]));
+        let before = std::fs::read(game.join(ADDRESSES_FILE)).unwrap();
+        assert!(!tidy_stray_addresses(&launcher, &game));
+        assert!(launcher.join(ADDRESSES_FILE).exists(), "left where it is");
+        assert_eq!(std::fs::read(game.join(ADDRESSES_FILE)).unwrap(), before, "the game folder's file untouched");
     }
 
     #[test]
     fn a_file_that_cant_be_read_or_the_games_own_is_left_alone() {
         let (launcher, game) = dirs("left");
         std::fs::write(launcher.join(ADDRESSES_FILE), "not json").unwrap();
-        assert_eq!(tidy_stray_addresses(&launcher, &game), None);
+        assert!(!tidy_stray_addresses(&launcher, &game));
         assert!(launcher.join(ADDRESSES_FILE).exists());
         // The launcher kept in the game folder: that file is the game's.
         let mut inbuilt = inbuilt_addresses();
         save_addresses(&game, inbuilt.remove("blacklist_game.exe").unwrap(), HashMap::new()).unwrap();
-        assert_eq!(tidy_stray_addresses(&game, &game), None);
+        assert!(!tidy_stray_addresses(&game, &game));
         assert!(game.join(ADDRESSES_FILE).exists());
     }
 
