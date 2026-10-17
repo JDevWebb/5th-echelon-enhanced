@@ -676,6 +676,8 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                         last_heartbeat = Some(Instant::now());
                         coordinator_seen_now();
                         note_maintenance(&answer);
+                        // Which client builds to take (clients.rs).
+                        crate::clients::note_build_rules(&answer);
                         // The release the coordinator is rolling out to this server.
                         if let Some(version) = answer["update"]["version"].as_str() {
                             crate::self_update::request(&logger, version, cfg.auto_update);

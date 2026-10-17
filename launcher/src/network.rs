@@ -16,6 +16,21 @@ pub use discover::try_locate_server;
 /// What this launcher signs in to servers as: they refuse launchers older than they allow.
 pub const CLIENT: &str = concat!("launcher/", env!("FE_RELEASE"));
 
+/// The SHA-256 (hex) of this launcher's own executable, sent when it signs in: servers tell
+/// the project's signed releases from other builds by it. Empty if it can't be read.
+pub fn build() -> String {
+    static BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    BUILD
+        .get_or_init(|| {
+            use sha2::Digest as _;
+            std::env::current_exe()
+                .and_then(std::fs::read)
+                .map(|bytes| format!("{:x}", sha2::Sha256::digest(bytes)))
+                .unwrap_or_default()
+        })
+        .clone()
+}
+
 pub use nat::test_nat_helper;
 pub use quazal::test_p2p;
 pub use quazal::test_quazal_login;

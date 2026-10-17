@@ -856,6 +856,7 @@ impl Users for MyUsers {
         let username = request.username;
         let password = request.password;
         let client = request.client;
+        let build = request.build;
         // Nothing costly for what can't be an account.
         if username.chars().count() > 32 || password.len() > 128 {
             return Err(Status::unauthenticated("Invalid login"));
@@ -908,6 +909,7 @@ impl Users for MyUsers {
             return Err(refusal);
         }
 
+        self.check_build(user_id, &username, &client, &build).await?;
         // A name that breaks the rules keeps the game out (the launcher still signs in: it's
         // where the player chooses another).
         if client.starts_with("game/") {
@@ -1123,6 +1125,7 @@ impl Users for MyUsers {
         }
         // Before the password changes: an outdated launcher changes nothing.
         self.admit(person.id, &person.username, &request.client).await?;
+        self.check_build(person.id, &person.username, &request.client, &request.build).await?;
         if !self.storage.use_key_login(person.id, request.time).await.map_err(internal)? {
             return Err(refused("That signature was already used"));
         }
@@ -1160,6 +1163,38 @@ impl MyUsers {
             crate::session_events::refused(crate::session_events::Who::Id(user_id), "outdated", "api", Some(client));
             Status::failed_precondition(why)
         })
+    }
+
+    /// Whether `client`'s build is one the network takes (clients::judge): a signed release's,
+    /// or any for an identity the admins allowed. Reported (Sessions, the log once an hour per
+    /// build) when it isn't; refused too when the network enforces it.
+    async fn check_build(&self, user_id: u32, username: &str, client: &str, build: &str) -> Result<(), Status> {
+        let identity = self.storage.find_person(user_id).await.map_err(internal)?.and_then(|p| p.global_id);
+        let crate::clients::Verdict::Unverified { why, enforced } = crate::clients::judge(build, identity.as_deref()) else {
+            return Ok(());
+        };
+        let short: String = build.chars().take(16).collect();
+        if crate::clients::worth_saying(&format!("build/{user_id}/{short}")) {
+            warn!(
+                self.logger,
+                "{username}'s {client:?} isn't one of the project's releases ({why}{}){} (said once an hour)",
+                if short.is_empty() { String::new() } else { format!(", build {short}…") },
+                if enforced { "; refused" } else { "" }
+            );
+            crate::session_events::note(
+                crate::session_events::Who::Id(user_id),
+                "client_unverified",
+                serde_json::json!({ "client": client, "build": short, "why": why, "refused": enforced }),
+            );
+        }
+        if enforced {
+            return Err(Status::failed_precondition(
+                "This network takes only the project's own releases of the launcher and the game add-on. \
+                 Download the launcher again from https://github.com/JDevWebb/5th-echelon-enhanced/releases \
+                 (developers: ask the network's admins to allow your identity).",
+            ));
+        }
+        Ok(())
     }
 
     /// Why the game may not sign in as `user_id`: their name breaks the network's rules

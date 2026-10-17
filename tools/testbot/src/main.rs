@@ -164,6 +164,7 @@ async fn identity_login(ctx: &mut Ctx) -> Result<()> {
                 new_password: "attackers-password".into(),
                 host: "rogue.example".into(),
                 client: testbot::bot::LAUNCHER_CLIENT.into(),
+                build: String::new(),
             })
             .await?;
         Ok::<(), eyre::Report>(())

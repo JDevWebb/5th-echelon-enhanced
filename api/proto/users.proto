@@ -63,6 +63,10 @@ message LoginRequest {
   // The client signing in and its release ("launcher/0.3.156", "game/0.3.156"). Servers
   // refuse clients older than they allow, and ones that leave it empty.
   string client = 3;
+  // The SHA-256 (hex) of the client's own file: the launcher's executable, or the game
+  // add-on's DLL. Servers tell the project's signed releases from other builds by it.
+  // Empty from clients before 0.4.5.
+  string build = 4;
 }
 
 message LoginResponse {
@@ -90,6 +94,8 @@ message RegisterRequest {
   // The client signing in and its release ("launcher/0.3.156", "game/0.3.156"). Servers
   // refuse clients older than they allow, and ones that leave it empty.
   string client = 8;
+  // As LoginRequest's.
+  string build = 9;
 }
 
 message KeyLoginRequest {
@@ -109,6 +115,8 @@ message KeyLoginRequest {
   // The client signing in and its release ("launcher/0.3.156", "game/0.3.156"). Servers
   // refuse clients older than they allow, and ones that leave it empty.
   string client = 7;
+  // As LoginRequest's.
+  string build = 8;
 }
 
 message RegisterResponse {

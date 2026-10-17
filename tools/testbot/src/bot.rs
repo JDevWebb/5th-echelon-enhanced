@@ -156,6 +156,7 @@ pub async fn key_login(server: IpAddr, identity: &identity::Identity, host: &str
             new_password: new_password.into(),
             host: host.into(),
             client: LAUNCHER_CLIENT.into(),
+            build: String::new(),
         })
         .await?;
     Ok(answer.into_inner().user.map(|u| u.username).unwrap_or_default())
@@ -174,6 +175,7 @@ pub async fn login_as_client(server: IpAddr, name: &str, password: &str, client:
         username: name.into(),
         password: password.into(),
         client: LAUNCHER_CLIENT.into(),
+        build: String::new(),
     });
     request
         .metadata_mut()
@@ -266,6 +268,7 @@ pub async fn api_sign_in(server: IpAddr, name: &str, password: &str, client: &st
             username: name.into(),
             password: password.into(),
             client: client.into(),
+            build: String::new(),
         })
         .await?
         .into_inner();
@@ -346,6 +349,7 @@ impl Bot {
                 signature,
                 host,
                 client: LAUNCHER_CLIENT.into(),
+                build: String::new(),
             })
             .await?;
         Ok(())

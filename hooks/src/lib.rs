@@ -271,6 +271,10 @@ fn check_orig_library(hmodule: Option<HMODULE>) {
 #[instrument(skip_all)]
 fn init(hmodule: Option<HMODULE>) {
     let dir = get_target_dir(hmodule);
+    // What the game tells the server this add-on is (a signed release, or another build).
+    if let Ok(path) = get_dll_path(hmodule) {
+        api::set_build(&path);
+    }
     community::set_folder(dir.clone());
     let reload_handle = init_log(&dir);
     check_orig_library(hmodule);

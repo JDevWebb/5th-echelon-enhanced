@@ -215,8 +215,117 @@ pub fn last_api_call(user: u32) -> Option<Instant> {
     api_calls().get(&user).copied()
 }
 
+/// What the network's coordinator says of client builds (its heartbeat answer's `clients`):
+/// the mode, the SHA-256 of its signed releases' client files, and the identities allowed
+/// others. Nothing judged until it has said.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct BuildRules {
+    pub mode: BuildMode,
+    pub builds: std::collections::HashSet<String>,
+    pub allowed: std::collections::HashSet<String>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum BuildMode {
+    #[default]
+    Off,
+    Report,
+    Enforce,
+}
+
+static BUILD_RULES: std::sync::RwLock<Option<BuildRules>> = std::sync::RwLock::new(None);
+
+/// At most this many builds and allowed identities are taken from an answer.
+const MAX_BUILDS: usize = 64;
+const MAX_ALLOWED: usize = 2000;
+
+/// Takes the rules from a heartbeat answer (absent: an older coordinator, nothing judged).
+pub fn note_build_rules(answer: &serde_json::Value) {
+    let rules = &answer["clients"];
+    let mode = match rules["mode"].as_str() {
+        Some("report") => BuildMode::Report,
+        Some("enforce") => BuildMode::Enforce,
+        _ => BuildMode::Off,
+    };
+    let strings = |v: &serde_json::Value, max: usize, ok: fn(&str) -> bool| -> std::collections::HashSet<String> {
+        v.as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|s| s.as_str())
+            .filter(|s| ok(s))
+            .take(max)
+            .map(str::to_string)
+            .collect()
+    };
+    let sha = |s: &str| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase());
+    let builds = strings(&rules["builds"], MAX_BUILDS, sha);
+    let allowed = strings(&rules["allowed"], MAX_ALLOWED, identity::is_global_id);
+    // No release builds to go by: nothing can be judged.
+    let mode = if builds.is_empty() { BuildMode::Off } else { mode };
+    *BUILD_RULES.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(BuildRules { mode, builds, allowed });
+}
+
+/// What a sign-in's build is to the network.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Verdict {
+    /// A signed release's, an allowed identity, or nothing to judge by.
+    Fine,
+    /// Not a release's: `why` ("no fingerprint", a client before 0.4.5; "not a release"),
+    /// and whether the network refuses it.
+    Unverified { why: &'static str, enforced: bool },
+}
+
+/// Judges a sign-in by its build's SHA-256 (`build`) and the player's identity.
+pub fn judge(build: &str, identity: Option<&str>) -> Verdict {
+    let rules = BUILD_RULES.read().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(rules) = rules.as_ref() else { return Verdict::Fine };
+    if rules.mode == BuildMode::Off || rules.builds.contains(&build.to_ascii_lowercase()) || identity.is_some_and(|i| rules.allowed.contains(i)) {
+        return Verdict::Fine;
+    }
+    Verdict::Unverified {
+        why: if build.is_empty() { "no fingerprint: a client before 0.4.5" } else { "not a release" },
+        enforced: rules.mode == BuildMode::Enforce,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// The coordinator's rules: a release's build, an allowed identity or no rules at all pass;
+    /// anything else is reported, and refused only when enforced. (Report mode here: other
+    /// tests sign in meanwhile, and report never refuses.)
+    #[test]
+    fn builds_are_judged_by_the_coordinators_rules() {
+        use super::judge;
+        use super::note_build_rules;
+        use super::Verdict;
+        let release = "a".repeat(64);
+        let dev = identity::Identity::generate().global_id();
+        assert_eq!(judge("", None), Verdict::Fine, "nothing said yet: nothing judged");
+        note_build_rules(&serde_json::json!({ "clients": { "mode": "report", "builds": [release, "nothex"], "allowed": [dev, "x"] } }));
+        assert_eq!(judge(&release, None), Verdict::Fine);
+        assert_eq!(judge(&release.to_ascii_uppercase(), None), Verdict::Fine, "as hex, either case");
+        assert_eq!(judge(&"b".repeat(64), Some(&dev)), Verdict::Fine, "an allowed developer");
+        assert_eq!(
+            judge(&"b".repeat(64), None),
+            Verdict::Unverified {
+                why: "not a release",
+                enforced: false
+            }
+        );
+        assert_eq!(
+            judge("", None),
+            Verdict::Unverified {
+                why: "no fingerprint: a client before 0.4.5",
+                enforced: false
+            }
+        );
+        // No release builds to go by: off, whatever the mode says.
+        note_build_rules(&serde_json::json!({ "clients": { "mode": "enforce", "builds": [] } }));
+        assert_eq!(judge("", None), Verdict::Fine);
+        note_build_rules(&serde_json::json!({}));
+        assert_eq!(judge("", None), Verdict::Fine, "an older coordinator says nothing");
+    }
     use super::*;
 
     #[test]

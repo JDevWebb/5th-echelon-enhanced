@@ -289,6 +289,7 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
         // Servers refuse clients older than they allow, and let the game sign in only after
         // a current one has.
         client: concat!("game/", env!("FE_RELEASE")).into(),
+        build: BUILD.get().cloned().unwrap_or_default(),
     });
 
     debug!("logging in");
@@ -449,6 +450,18 @@ pub async fn report(report: server_api::misc::ReportRequest) -> Result<String, E
         }
     })
     .await
+}
+
+/// The SHA-256 (hex) of this DLL's own file, sent when the game signs in: servers tell the
+/// project's signed releases from other builds by it ([`set_build`]).
+static BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// Hashes the DLL at `path` for [`BUILD`] (at start; left empty if it can't be read).
+pub fn set_build(path: &std::path::Path) {
+    use sha2::Digest as _;
+    if let Ok(bytes) = std::fs::read(path) {
+        let _ = BUILD.set(format!("{:x}", sha2::Sha256::digest(bytes)));
+    }
 }
 
 /// Signs in again with the saved credentials.
