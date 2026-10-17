@@ -5,8 +5,9 @@
 //! default this server's own release) is refused with a message saying what to do, and so
 //! is one that says nothing (every client from before this check). The game's own sign-in
 //! (the ticket server's Login/LoginEx) carries no version, so it is let through only for an
-//! account a current client signed in to lately, with no outdated one trying since: the
-//! client DLL signs in to the API as the game starts, well before the game signs in.
+//! account the current game client signed in to lately, with no outdated one trying since:
+//! the client DLL signs in to the API as the game starts, well before the game signs in. A
+//! launcher's sign-in doesn't vouch for the game ([`vouches_for_game`]).
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -125,6 +126,14 @@ pub fn refused(user_id: u32, username: &str, client: &str, password: &str) {
     if map.len() < 10_000 {
         map.insert(refusal_key(username, client, password), (Instant::now(), user_id));
     }
+}
+
+/// Whether a current `client`'s sign-in vouches for the game's own (LoginEx): only the game
+/// client's ("game/<version>", the hooks DLL signing in as the game starts). A launcher's
+/// says nothing of the game the player runs: it let a refused 0.4.3 game in once the
+/// player's 0.4.4 launcher signed in.
+pub fn vouches_for_game(client: &str) -> bool {
+    client.starts_with("game/")
 }
 
 /// A current client signed in to the account: an outdated one trying after it must be

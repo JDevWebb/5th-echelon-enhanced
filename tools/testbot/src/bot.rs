@@ -391,9 +391,10 @@ impl Bot {
     }
 
     /// Signs in to the auth server and takes a ticket for the secure server,
-    /// then stops there, as the launcher's connection test does (after its own sign-in).
+    /// then stops there, as the launcher's connection test does. After the game client's
+    /// sign-in: only that vouches for the game's (a launcher's doesn't).
     pub async fn ticket_only(server: IpAddr, name: &str, password: &str) -> Result<()> {
-        api_sign_in(server, name, password, LAUNCHER_CLIENT).await?;
+        api_sign_in(server, name, password, GAME_CLIENT).await?;
         request_ticket(server, name, password).await.map(|_| ())
     }
 

@@ -1147,7 +1147,8 @@ impl Users for MyUsers {
 impl MyUsers {
     /// Lets `client` finish signing in to the account (whose password or key it proved), or
     /// refuses an outdated one. Either way it's noted: the game's own sign-in is let through
-    /// only after a current client's (see [`crate::clients`]).
+    /// only after the current game client's (a launcher's doesn't vouch for it: see
+    /// [`crate::clients`]).
     async fn admit(&self, user_id: u32, username: &str, client: &str, build: &str) -> Result<(), Status> {
         let verdict = crate::clients::check(client);
         // Its build, before the sign-in is noted: a current client's sign-in lets the game in
@@ -1160,7 +1161,7 @@ impl MyUsers {
         };
         let admitted = verdict.is_ok() && refused_build.is_none();
         self.storage.note_client_sign_in(user_id, client, admitted).await.map_err(internal)?;
-        if admitted {
+        if admitted && crate::clients::vouches_for_game(client) {
             crate::clients::admitted(user_id);
         }
         if let Some(refusal) = refused_build {

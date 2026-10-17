@@ -266,8 +266,14 @@ impl Storage {
 
     /// Notes that `client` signed in to the account through the API: a current one, or an
     /// outdated one (refused, after the right password). The latest one counts: each clears
-    /// the other's time, since two in the same second can't be told apart by time.
+    /// the other's time, since two in the same second can't be told apart by time. Only the
+    /// game's own sign-in vouches for its LoginEx ([`crate::clients::vouches_for_game`]): a
+    /// current launcher's is left out, so it neither lets a game in nor clears a refused one
+    /// (a refused 0.4.3 game got in once the player's 0.4.4 launcher signed in).
     pub async fn note_client_sign_in(&self, user_id: u32, client: &str, current: bool) -> Result<()> {
+        if current && !crate::clients::vouches_for_game(client) {
+            return Ok(());
+        }
         let (column, other) = if current { ("current_at", "outdated_at") } else { ("outdated_at", "current_at") };
         sqlx::query(&format!(
             "INSERT INTO client_sign_ins (user_id, client, {column}) VALUES (?1, ?2, ?3)
@@ -1944,6 +1950,33 @@ pub(crate) mod tests {
                 );
             }
         }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn only_the_games_own_sign_in_vouches_for_it() {
+        let (storage, dir) = temp_storage("vouches");
+        storage.register_user("Dominik", "pw", Some("DOMINIK-UBI")).unwrap();
+        let id = storage.find_user_id_by_name("Dominik").unwrap().unwrap();
+        let since = crate::clients::now() - crate::clients::VOUCHES_FOR;
+        let current = |s: &Storage| run(s.has_current_client(id, since)).unwrap().unwrap();
+        let note = |s: &Storage, client: &str, ok: bool| run(s.note_client_sign_in(id, client, ok)).unwrap().unwrap();
+        assert!(!current(&storage), "nothing signed in yet");
+        // A current launcher alone doesn't let the game in.
+        note(&storage, "launcher/0.4.5", true);
+        assert!(!current(&storage), "a launcher's sign-in vouched for the game");
+        // An outdated (or refused) game, then a current launcher: still refused.
+        note(&storage, "game/0.4.3", false);
+        note(&storage, "launcher/0.4.5", true);
+        assert!(!current(&storage), "a current launcher let an outdated game back in");
+        // The current game itself gets in, and a launcher after it changes nothing.
+        note(&storage, "game/0.4.5", true);
+        assert!(current(&storage), "a current game was kept out");
+        note(&storage, "launcher/0.4.5", true);
+        assert!(current(&storage));
+        // An outdated launcher trying after it still shuts the game out, as before.
+        note(&storage, "launcher/0.1.0", false);
+        assert!(!current(&storage));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

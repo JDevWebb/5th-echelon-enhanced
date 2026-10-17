@@ -1715,6 +1715,15 @@ async fn outdated_client(ctx: &mut Ctx) -> Result<()> {
         Bot::game_sign_in_only(ctx.server, &name, PASSWORD).await.is_err(),
         "the game signed in after an outdated client tried"
     );
+    // A current launcher signing in doesn't let the outdated game back in (dominik99's 0.4.3
+    // game got in after their 0.4.4 launcher signed in); the launcher itself still signs in.
+    api_sign_in(ctx.server, &name, PASSWORD, testbot::bot::LAUNCHER_CLIENT)
+        .await
+        .map_err(|e| eyre!("a current launcher couldn't sign in: {e}"))?;
+    ensure!(
+        Bot::game_sign_in_only(ctx.server, &name, PASSWORD).await.is_err(),
+        "a current launcher's sign-in let an outdated game in"
+    );
     api_sign_in(ctx.server, &name, PASSWORD, testbot::bot::GAME_CLIENT).await?;
     Bot::game_sign_in_only(ctx.server, &name, PASSWORD)
         .await
