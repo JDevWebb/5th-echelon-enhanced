@@ -162,13 +162,22 @@ jobs:
           mv vt.tmp vt.md
           cat vt.md
       - name: Write the release notes
+        id: notes
         env:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
+          own="docs/releases/v$VERSION.md"
+          # A release's name, from its notes' first line: `# 0.4.5 "Perfect Ghost"`. It goes in the
+          # title, so that line is left out of the body.
+          name=""
+          if [ -f "$own" ]; then
+            name="$(head -n 1 "$own" | sed -n 's/^# [^"]*"\([^"]\{1,60\}\)"[[:space:]]*$/\1/p')"
+          fi
+          echo "name=$name" >> "$GITHUB_OUTPUT"
           {
             # This release's own notes first, when docs/releases has them.
-            if [ -f "docs/releases/v$VERSION.md" ]; then
-              cat "docs/releases/v$VERSION.md"
+            if [ -f "$own" ]; then
+              if [ -n "$name" ]; then tail -n +2 "$own" | sed '1{/^[[:space:]]*$/d;}'; else cat "$own"; fi
               echo
             fi
             echo "## Verify your download"
@@ -202,11 +211,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.version.outputs.version }}
           PRERELEASE: ${{ needs.version.outputs.prerelease }}
+          NAME: ${{ steps.notes.outputs.name }}
         run: |
           # A draft: scripts/sign-release.sh signs SHA256SUMS with the offline
           # release key and publishes it. Launchers ignore unsigned releases.
-          # The generated changelog follows the verification notes.
-          flags=(--draft --generate-notes --notes-file notes.md --title "v$VERSION")
+          # The generated changelog follows the verification notes. The title
+          # is the version, and the release's name when its notes give one.
+          title="v$VERSION"
+          if [ -n "$NAME" ]; then title="v$VERSION · $NAME"; fi
+          flags=(--draft --generate-notes --notes-file notes.md --title "$title")
           if [ "$PRERELEASE" = "true" ]; then flags+=(--prerelease); fi
           gh release create "v$VERSION" "${flags[@]}" dist/*
 
