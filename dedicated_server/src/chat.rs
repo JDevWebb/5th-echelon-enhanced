@@ -132,13 +132,9 @@ fn hooks_text(s: &str, max: usize) -> String {
     moderation::clean(s, max)
 }
 
-/// Takes a pulse's answer: the network's rules, which then apply to names (and messages) here
-/// too, and whether its coordinator runs chat.
-pub fn from_pulse(answer: &Value, logger: &Logger) {
-    let Some(chat) = answer["rules"].as_object() else {
-        ON.store(false, Ordering::Relaxed);
-        return;
-    };
+/// The network's rules from a pulse's `rules`: the coordinator's allow list adds to the names
+/// this release allows (`api::ALLOWED_NAMES`), never takes them away.
+fn rules_from(chat: &serde_json::Map<String, Value>) -> moderation::Rules {
     let list = |k: &str| -> Vec<String> {
         chat.get(k)
             .and_then(Value::as_array)
@@ -151,7 +147,18 @@ pub fn from_pulse(answer: &Value, logger: &Logger) {
     };
     let (allow, extra) = (list("allow"), list("extra"));
     let invites = chat.get("discord_invites").and_then(Value::as_bool).unwrap_or(true);
-    crate::api::set_rules(moderation::Rules::new(allow.iter().map(String::as_str), extra.iter().map(String::as_str), invites));
+    let allowed = crate::api::ALLOWED_NAMES.iter().copied().chain(allow.iter().map(String::as_str));
+    moderation::Rules::new(allowed, extra.iter().map(String::as_str), invites)
+}
+
+/// Takes a pulse's answer: the network's rules, which then apply to names (and messages) here
+/// too, and whether its coordinator runs chat.
+pub fn from_pulse(answer: &Value, logger: &Logger) {
+    let Some(chat) = answer["rules"].as_object() else {
+        ON.store(false, Ordering::Relaxed);
+        return;
+    };
+    crate::api::set_rules(rules_from(chat));
     let on = answer["chat"].as_bool().unwrap_or_default();
     if ON.swap(on, Ordering::Relaxed) != on {
         slog::info!(logger, "Chat: {} (the network's coordinator runs it)", if on { "on" } else { "off" });
@@ -563,6 +570,17 @@ impl Chat for MyChat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_coordinators_rules_keep_the_names_this_release_allows() {
+        let without = moderation::Rules::new([], [], true);
+        let rules = rules_from(json!({ "allow": ["Someone_ok"], "extra": [], "discord_invites": true }).as_object().unwrap());
+        for name in crate::api::ALLOWED_NAMES {
+            assert_eq!(rules.check_name(name), Ok(()), "{name}");
+            // (The test is only worth it while the word list would refuse it on its own.)
+            assert!(without.check_name(name).is_err(), "{name} isn't refused by the list any more");
+        }
+    }
 
     fn kept_message(id: i64, room: &str, conv: &str, from: &str, to: &str) -> Value {
         json!({ "id": id, "room": room, "conv": conv, "at": 1, "from": from, "from_name": "Kiwi\u{202e}", "server_name": "EU", "to": to, "body": "hi @Tank" })

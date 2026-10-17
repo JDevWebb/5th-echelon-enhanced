@@ -163,8 +163,9 @@ pub fn name_not_allowed_message(name: &str) -> String {
     )
 }
 
-/// Names the rules flag that admins checked and allow (the word list's false positives).
-const ALLOWED_NAMES: &[&str] = &[
+/// Names the rules flag that admins checked and allow (the word list's false positives). Always
+/// allowed, with whatever the coordinator's admins add (chat.rs).
+pub(crate) const ALLOWED_NAMES: &[&str] = &[
     // A player since before the rules (eu1, na1, oceania); flagged in the trial over every name.
     "bedunga",
 ];
