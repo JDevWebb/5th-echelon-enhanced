@@ -261,9 +261,10 @@ pub fn take_notice(user: u32) -> Option<(String, String)> {
 
 /// `user`'s game reported a join failing with `code`: one that counts as theirs (not their
 /// game's own churn, see `game_session.rs`, nor a full lobby, [`JoinOutcome::counts`]).
-/// `mismatch`: both sides' data, for a join refused as a different version.
-pub fn join_failed(user: u32, session: u32, code: u32, mismatch: Option<Mismatch>) -> u64 {
-    let version = code == VERSION_MISMATCH;
+/// `outcome` as the server made it out (a join that failed between games with different data
+/// is a mismatch, whatever its code); `mismatch`: both sides' data, for a mismatch.
+pub fn join_failed(user: u32, session: u32, code: u32, outcome: JoinOutcome, mismatch: Option<Mismatch>) -> u64 {
+    let version = outcome == JoinOutcome::DataMismatch;
     note(
         user,
         if version { "version_mismatch" } else { "failed_join" },
@@ -579,8 +580,8 @@ mod tests {
             mine: Some(0xdd55_acd3),
             theirs: Some(0xe90c_0d2d),
         };
-        join_failed(424_242, 9, VERSION_MISMATCH, Some(mismatch.clone()));
-        join_failed(424_242, 9, 0xb08a_1a05, Some(mismatch.clone()));
+        join_failed(424_242, 9, VERSION_MISMATCH, JoinOutcome::DataMismatch, Some(mismatch.clone()));
+        join_failed(424_242, 9, 0xb08a_1a05, JoinOutcome::Failed, Some(mismatch.clone()));
         let list = events().lock().unwrap().get(&424_242).cloned().unwrap();
         assert_eq!(list.iter().map(|e| e.kind).collect::<Vec<_>>(), ["version_mismatch", "failed_join"]);
         assert_eq!(list[0].mismatch, Some(mismatch.clone()));
@@ -606,9 +607,9 @@ mod tests {
     fn a_notice_waits_for_the_game_and_marks_what_it_explains() {
         let user = 424_244;
         assert_eq!(take_notice(user), None);
-        let explained = join_failed(user, 9, 0x9718_2b1b, None);
-        let retried = join_failed(user, 9, 0x9718_2b1b, None);
-        let unexplained = join_failed(user, 10, 0xac2d_801a, None);
+        let explained = join_failed(user, 9, 0x9718_2b1b, JoinOutcome::Locked, None);
+        let retried = join_failed(user, 9, 0x9718_2b1b, JoinOutcome::Locked, None);
+        let unexplained = join_failed(user, 10, 0xac2d_801a, JoinOutcome::Failed, None);
         tell(user, "Couldn't join: the session is locked".into(), "a".into(), Some(explained));
         // The game retrying the same join: one notice, not two, explaining both.
         tell(user, "Couldn't join: the session is locked".into(), "a".into(), Some(retried));
@@ -646,7 +647,7 @@ mod tests {
         let user = 424_243;
         search_other_data(user, 0xc37e_d697, 0xe90c_0d2d, 2);
         search_other_data(user, 0xc37e_d697, 0xe90c_0d2d, 2);
-        join_failed(user, 9, VERSION_MISMATCH, None);
+        join_failed(user, 9, VERSION_MISMATCH, JoinOutcome::DataMismatch, None);
         let list = events().lock().unwrap().get(&user).cloned().unwrap();
         assert_eq!(
             list.iter().map(|e| e.kind).collect::<Vec<_>>(),

@@ -1930,6 +1930,55 @@ async fn join_notice(ctx: &mut Ctx) -> Result<()> {
     Ok(())
 }
 
+/// A join that failed between games with different data is put down to the mod, whatever
+/// the game called it (a PEC.ini mod joining a stock host got CONNECTION_FAILED): told in the
+/// overlay and counted as a mismatch. Between games with the same data it stays the join's own.
+async fn join_other_data(ctx: &mut Ctx) -> Result<()> {
+    const STOCK: u32 = 0xe90c_0d2d;
+    const PEC_MOD: u32 = 0xf93d_2b07;
+    const CONNECTION_FAILED: u32 = 0xb08a_1a05;
+    let mut host = ctx.player("Host").await?;
+    let mut modded = ctx.player("Modded").await?;
+    let mut plain = ctx.player("Plain").await?;
+    host.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
+    let map = 930_000 + ctx.run;
+    let lobby = host
+        .create_session(&format!("113 => 0;103 => 1;3 => 8;4 => 0;102 => 8;101 => {map};107 => {STOCK}"))
+        .await?;
+    host.add_participants(lobby, &[], &[host.pid]).await?;
+    // Each joiner's own party, with their game's data; then the lobby, found by a search.
+    for (bot, data) in [(&mut modded, PEC_MOD), (&mut plain, STOCK)] {
+        let party = bot.create_session(&format!("113 => 1;103 => 0;3 => 2;4 => 0;107 => {data}")).await?;
+        bot.add_participants(party, &[bot.pid], &[]).await?;
+        let found = bot.search_sessions(&format!("113 => 0;103 => 1;102 => 8;101 => {map};107 => {STOCK}")).await?;
+        ensure!(found.iter().any(|(s, _)| *s == lobby), "{} didn't find the lobby", bot.name);
+    }
+    let wait = Duration::from_secs(3);
+
+    modded.report_failed_joins(&[(lobby, CONNECTION_FAILED)]).await?;
+    let (title, text) = modded.poll_notice(wait).await?.ok_or_else(|| eyre!("no notice for the modded join"))?;
+    ensure!(title == "Couldn't join: different game data", "{title}: {text}");
+    ensure!(text.contains(&host.name) && text.contains("Everyone in a match needs the same mods"), "{text}");
+    let summary = modded.session_summary().await.map_err(|e| eyre!("session summary: {}", e.message()))?;
+    ensure!(
+        (summary.failed_joins, summary.version_mismatches) == (1, 1) && summary.mismatch_host == host.name && summary.mismatch_theirs == "unmodified",
+        "not counted as a mismatch: {summary:?}"
+    );
+
+    plain.report_failed_joins(&[(lobby, CONNECTION_FAILED)]).await?;
+    let (title, text) = plain.poll_notice(wait).await?.ok_or_else(|| eyre!("no notice for the plain join"))?;
+    ensure!(title == "Couldn't join" && text.contains("didn't let you in in time"), "{title}: {text}");
+    let summary = plain.session_summary().await.map_err(|e| eyre!("session summary: {}", e.message()))?;
+    ensure!(
+        (summary.failed_joins, summary.version_mismatches) == (1, 0),
+        "the same data, counted as a mismatch: {summary:?}"
+    );
+    for bot in [host, modded, plain] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
 /// Someone joining a public match from a search reaches its players through the relay
 /// before their join reaches the server (the host's game has them connect first), once
 /// they've probed its host: not before, and not by probes.
@@ -2111,6 +2160,7 @@ const SCENARIOS: &[&str] = &[
     "party-member-split",
     "member-invite",
     "join-notice",
+    "join-other-data",
     "relay-to-joiner",
     "search-other-data",
     "whats-being-played",
@@ -2256,6 +2306,7 @@ async fn main() -> Result<()> {
                 "party-member-split" => party_member_split(&mut ctx).await,
                 "member-invite" => member_invite(&mut ctx).await,
                 "join-notice" => join_notice(&mut ctx).await,
+                "join-other-data" => join_other_data(&mut ctx).await,
                 "relay-to-joiner" => relay_to_joiner(&mut ctx).await,
                 "search-other-data" => search_other_data(&mut ctx).await,
                 "whats-being-played" => whats_being_played(&mut ctx).await,

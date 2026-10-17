@@ -1222,7 +1222,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             if !join.own {
                 crate::metrics::failed_join();
             }
-            let noted = join.counts().then(|| crate::reports::join_failed(user_id, join.room, code, join.mismatch.clone()));
+            let noted = join.counts().then(|| crate::reports::join_failed(user_id, join.room, code, join.outcome, join.mismatch.clone()));
             // The player hears why at once, in the game's overlay (not their game's own churn);
             // one that says all there is needn't be asked about after the game.
             if !join.own {
@@ -1799,7 +1799,7 @@ fn failed_join(storage: &Storage, user: u32, reported: u32, code: u32) -> Failed
     };
     let (creator, ended, attributes) = facts.map_or((None, false, String::new()), |(c, e, a)| (Some(c), e, a));
     let own = creator == Some(user) || ended;
-    let mismatch = (outcome == JoinOutcome::DataMismatch).then(|| {
+    let sides = || {
         // Someone else's room: theirs is the data its host's game has. Only for the room the
         // server just gave this player (an invitation, a search, a probe): the game names any
         // session id it likes, and this goes back to the player in their summary, so any other
@@ -1810,7 +1810,17 @@ fn failed_join(storage: &Storage, user: u32, reported: u32, code: u32) -> Failed
             mine: storage.newest_room_attributes(user).ok().flatten().and_then(|a| attribute_value(&a, PROPERTY_DATA_VERSION)),
             theirs: host.and_then(|_| attribute_value(&attributes, PROPERTY_DATA_VERSION)),
         }
-    });
+    };
+    let (outcome, mismatch) = match outcome {
+        JoinOutcome::DataMismatch => (outcome, Some(sides())),
+        // A join that just failed between games with different data is the mod's doing,
+        // whatever the game named it: a PEC.ini mod joining a stock host got CONNECTION_FAILED.
+        JoinOutcome::Failed if !own => match sides() {
+            m @ crate::reports::Mismatch { mine: Some(a), theirs: Some(b), .. } if a != b => (JoinOutcome::DataMismatch, Some(m)),
+            _ => (outcome, None),
+        },
+        _ => (outcome, None),
+    };
     FailedJoin {
         room,
         reported_room,
@@ -2222,6 +2232,69 @@ mod tests {
         assert_eq!((join.room, join.reported_room, join.own), (0, None, false));
         assert!(join.counts());
         assert_eq!(join.detail(0xb08a_1a05), serde_json::json!({ "room": 0, "code": "0xb08a1a05", "outcome": "failed" }));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A join that failed between games with different data is the mod's doing, whatever the
+    /// game called it (a PEC.ini mod joining a stock host got CONNECTION_FAILED); between
+    /// games with the same data, or when either side's isn't known, it stays the join's own.
+    #[test]
+    fn a_failed_join_between_different_data_is_put_down_to_the_mod() {
+        use super::failed_join;
+        use crate::reports::JoinOutcome;
+        const CONNECTION_FAILED: u32 = 0xb08a_1a05;
+        let (storage, dir) = crate::storage::tests::temp_storage("failed-joins-data");
+        // Other ids than the test above's players: what the server gave each is shared.
+        for i in 0..5 {
+            storage.register_user(&format!("Pad{i}"), "pw", None).unwrap();
+        }
+        let mut ids = vec![];
+        for name in ["StockHost", "PecMod", "Stock", "NoRoom"] {
+            storage.register_user(name, "pw", Some(name)).unwrap();
+            ids.push(storage.find_user_id_by_name(name).unwrap().unwrap());
+        }
+        let [host, modded, stock, no_room] = ids[..] else { unreachable!() };
+        let lobby = storage.create_game_session(host, 1, "113 => 0;107 => 3909881133;3 => 8;4 => 0".into()).unwrap();
+        storage.create_game_session(modded, 1, "113 => 1;107 => 4181535495;3 => 2;4 => 0".into()).unwrap();
+        storage.create_game_session(stock, 1, "113 => 1;107 => 3909881133;3 => 2;4 => 0".into()).unwrap();
+
+        // Not a room the server gave them: theirs isn't known, so nothing changes.
+        let join = failed_join(&storage, modded, lobby, CONNECTION_FAILED);
+        assert_eq!((join.outcome, join.mismatch), (JoinOutcome::Failed, None));
+
+        crate::join_targets::searched(modded, [(lobby, host)]);
+        let join = failed_join(&storage, modded, lobby, CONNECTION_FAILED);
+        assert_eq!((join.room, join.outcome, join.own), (lobby, JoinOutcome::DataMismatch, false));
+        let m = join.mismatch.clone().unwrap();
+        assert_eq!((m.host.as_deref(), m.mine, m.theirs), (Some("StockHost"), Some(0xf93d_2b07), Some(0xe90c_0d2d)));
+        assert!(join.counts() && join.outcome.problem().explained());
+        assert_eq!(join.detail(CONNECTION_FAILED)["outcome"], "data_mismatch");
+        let (title, text) = server_api::notices::join_notice(
+            join.outcome.problem(),
+            m.host.as_deref().unwrap_or_default(),
+            &crate::reports::data_shown(m.mine),
+            &crate::reports::data_shown(m.theirs),
+        );
+        assert_eq!(title, "Couldn't join: different game data");
+        assert!(text.contains("StockHost") && text.contains("Everyone in a match needs the same mods"), "{text}");
+        // Counted as a mismatch, as a refused one is.
+        let user = modded + 7_000_000;
+        crate::reports::join_failed(user, join.room, CONNECTION_FAILED, join.outcome, join.mismatch.clone());
+        let summary = crate::reports::summary(&storage, user).unwrap();
+        assert_eq!((summary.failed_joins, summary.version_mismatches), (1, 1));
+        assert_eq!(summary.mismatch, Some(m));
+
+        // The same data: the join's own failure, told as before.
+        crate::join_targets::searched(stock, [(lobby, host)]);
+        let join = failed_join(&storage, stock, lobby, CONNECTION_FAILED);
+        assert_eq!((join.outcome, join.mismatch), (JoinOutcome::Failed, None));
+        // Their own data not known (no room of theirs): the same.
+        crate::join_targets::searched(no_room, [(lobby, host)]);
+        let join = failed_join(&storage, no_room, lobby, CONNECTION_FAILED);
+        assert_eq!((join.outcome, join.mismatch), (JoinOutcome::Failed, None));
+        // A full lobby says all there is, whatever the data.
+        let join = failed_join(&storage, modded, lobby, crate::reports::ROOM_FULL);
+        assert_eq!((join.outcome, join.mismatch), (JoinOutcome::Full, None));
         std::fs::remove_dir_all(dir).unwrap();
     }
 
