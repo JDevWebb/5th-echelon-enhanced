@@ -88,7 +88,10 @@ fn mentions(text: &str, word: &str) -> bool {
 }
 
 /// The kept lines since `since` (Unix seconds) about a player: those mentioning their
-/// account id, their name or one of `addresses`, up to `max_bytes` (the newest kept).
+/// account id, their name or one of `addresses`, up to `max_bytes`, in order. The packet
+/// traces are left out, and the debug lines (the API's token checks every half minute, most of
+/// them) get only what the others leave: the informative lines then reach back to when the
+/// problem happened, not just the last minute or two.
 pub fn about(id: u32, name: &str, addresses: &[String], since: i64, max_bytes: usize) -> String {
     let id = id.to_string();
     let lowered = name.to_lowercase();
@@ -96,20 +99,32 @@ pub fn about(id: u32, name: &str, addresses: &[String], since: i64, max_bytes: u
     let picked: Vec<&str> = lines
         .iter()
         .filter(|l| l.at >= since)
+        .filter(|l| level(&l.text) != "TRCE")
         .filter(|l| mentions(&l.text, &id) || mentions(&l.text.to_lowercase(), &lowered) || addresses.iter().any(|a| mentions(&l.text, a)))
         .map(|l| l.text.as_str())
         .collect();
-    let mut out = Vec::new();
+    // The informative lines first, newest first, in up to three quarters of the room; then the
+    // debug lines, newest first, in what's left.
+    let mut keep = vec![false; picked.len()];
     let mut size = 0;
-    for line in picked.iter().rev() {
-        size += line.len() + 1;
-        if size > max_bytes {
-            break;
+    for (debug, room) in [(false, max_bytes / 4 * 3), (true, max_bytes)] {
+        for (i, line) in picked.iter().enumerate().rev() {
+            if keep[i] || (level(line) == "DEBG") != debug {
+                continue;
+            }
+            if size + line.len() + 1 > room {
+                break;
+            }
+            size += line.len() + 1;
+            keep[i] = true;
         }
-        out.push(*line);
     }
-    out.reverse();
-    out.join("\n")
+    picked.iter().zip(keep).filter_map(|(line, keep)| keep.then_some(*line)).collect::<Vec<_>>().join("\n")
+}
+
+/// A kept line's level (`INFO`, `DEBG`, `TRCE`…): after its `HH:MM:SS `.
+fn level(text: &str) -> &str {
+    text.get(9..13).unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -132,6 +147,27 @@ mod tests {
         assert!(!text.contains("10111") && !text.contains("1012"));
         // The newest within the size given.
         assert!(about(1011, "x", &[], 0, 120).lines().all(|l| !l.contains("JoinSession")));
+    }
+
+    #[test]
+    fn traces_are_left_out_and_debug_lines_get_what_the_others_leave() {
+        let logger = slog::Logger::root(slog::Drain::fuse(Recent), slog::o!());
+        slog::warn!(logger, "Join failed: 7071 did not get into session 9 (type 1)");
+        for _ in 0..200 {
+            slog::debug!(logger, "Valid token for user 7071: someone");
+            slog::trace!(logger, "QPacket for 7071: 0102030405060708");
+        }
+        slog::info!(logger, "user 7071 leaves session 9");
+        let text = about(7071, "nobody-here", &[], 0, 4000);
+        assert!(!text.contains("QPacket"), "no traces");
+        // The older warning is kept although the debug lines alone would fill the room.
+        assert!(text.contains("Join failed: 7071"), "{text}");
+        assert!(text.contains("leaves session 9"));
+        assert!(text.contains("Valid token"));
+        assert!(text.len() <= 4000);
+        // In order: the warning first, the last info line last.
+        assert!(text.lines().next().is_some_and(|l| l.contains("Join failed")));
+        assert!(text.lines().last().is_some_and(|l| l.contains("leaves session 9")));
     }
 
     #[test]
