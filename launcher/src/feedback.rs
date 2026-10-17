@@ -118,12 +118,30 @@ fn current_profile(game_dir: &std::path::Path) -> Option<Profile> {
 /// Looks at a game that just closed and builds the ask, if there should be one. `exit`: how
 /// it ended; for a report the player asked to send (`manual`), how the last game the launcher
 /// saw close ended, unless one is running now.
+/// A game that ran less than this long isn't asked about (see [`check`]).
+const SHORT_RUN_SECS: i64 = 10;
+/// How long after the server's last play session what it saw still counts in asking.
+const RECENT_SESSION_SECS: i64 = 2 * 3600;
+
+/// Whether the server's last play session (`started`, `ended`: Unix seconds, 0 for none) is
+/// recent enough to be the game that just closed.
+fn recent_session(started: i64, ended: i64, now: i64) -> bool {
+    started > 0 && now - ended.max(started) < RECENT_SESSION_SECS
+}
+
 fn check(game_dir: PathBuf, exit: GameExit, checks: String, manual: bool) -> Result<Option<Ask>, String> {
     let profile = current_profile(&game_dir).ok_or("Connect to a server first.")?;
     let exit = if manual && setup::game::game_running() { GameExit::Running } else { exit };
     let log = std::fs::read(game_dir.join("bl-tracing.log"))
         .map(|b| String::from_utf8_lossy(&b).into_owned())
         .unwrap_or_default();
+    // A run of a few seconds is Steam's or Ubisoft Connect's start-and-close (the game they
+    // start right after it is the one played), or a game that has only just started: either
+    // way not a game to ask about. The game that follows is asked about when it closes.
+    if !manual && (setup::game::game_running() || (!log.is_empty() && hooks_config::diagnostics::short_run(&log, SHORT_RUN_SECS))) {
+        tracing::info!("Not asking how the game went: it ran a few seconds, or another started");
+        return Ok(None);
+    }
     let signals = setup::feedback::read_log(&log);
     let password = profile.user.secret();
     let server = password.as_deref().and_then(|password| {
@@ -139,7 +157,9 @@ fn check(game_dir: PathBuf, exit: GameExit, checks: String, manual: bool) -> Res
     });
     let (asked, off) = Prefs::feedback();
     let now = identity::now();
-    let saw = server.as_ref().map(|s| setup::feedback::ServerSaw {
+    // What the server saw counts only for a session that ended a short while ago: the last one
+    // it has may be from another day (and was asked about then).
+    let saw = server.as_ref().filter(|s| recent_session(s.started, s.ended, now)).map(|s| setup::feedback::ServerSaw {
         failed_joins: s.failed_joins,
         version_mismatches: s.version_mismatches,
         relayed: s.relayed,
@@ -690,6 +710,16 @@ impl Feedback {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn only_a_recent_session_counts_in_asking() {
+        let now = 1_792_000_000;
+        assert!(recent_session(now - 3600, now - 60, now), "ended a minute ago");
+        assert!(recent_session(now - 600, 0, now), "still going");
+        assert!(!recent_session(now - 30 * 3600, now - 26 * 3600, now), "yesterday's");
+        assert!(!recent_session(0, 0, now), "none");
+    }
+
     use super::*;
 
     #[test]
