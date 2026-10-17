@@ -51,7 +51,7 @@ pub fn identify(game_dir: &Path, version: GameVersion) -> anyhow::Result<()> {
         GameVersion::SplinterCellBlacklistDx9 => dx9.insert(hash, addresses),
         GameVersion::SplinterCellBlacklistDx11 => dx11.insert(hash, addresses),
     };
-    hooks_addresses::save_addresses(game_dir, dx9, dx11);
+    hooks_addresses::save_addresses(game_dir, dx9, dx11)?;
     Ok(())
 }
 

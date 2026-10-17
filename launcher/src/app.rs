@@ -544,6 +544,14 @@ impl App {
         if !game.cfg.hook_config.log_data_version {
             hooks_config::remove_data_version_files(&game.dir);
         }
+        // The addresses file earlier launchers left next to themselves (on the desktop, in
+        // Downloads): deleted, or moved into the game folder when it has found addresses.
+        if let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+            if hooks_addresses::tidy_stray_addresses(&exe_dir, &game.dir) == Some(hooks_addresses::StrayAddresses::Moved) {
+                self.notices
+                    .info("The addresses found for your game build were moved from beside the launcher into the game folder.");
+            }
+        }
         if let Some(kept) = game.cfg.started_over() {
             self.notices.info(format!(
                 "Settings from an earlier 5th Echelon were set aside (kept as {} in the game folder); this launcher starts from its own.",

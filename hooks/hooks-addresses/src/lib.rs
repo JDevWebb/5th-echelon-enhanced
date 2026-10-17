@@ -1,5 +1,4 @@
 use std::collections::HashMap;
-use std::env;
 use std::fs::File;
 use std::io::Read;
 use std::ops::Range;
@@ -484,45 +483,24 @@ fn dx11_addresses() -> HashMap<[u8; 32], Addresses> {
     HashMap::from(dx11_hashes.map(|h| (h, dx11_addrs.clone())))
 }
 
-#[instrument]
-fn load_custom_addresses_default() -> HashMap<String, HashMap<[u8; 32], Addresses>> {
-    let Ok(exec_path) = env::current_exe() else {
-        error!("Unable to find current exectuable");
-        return HashMap::default();
-    };
-    load_custom_addresses(exec_path.parent().unwrap())
-}
+/// The file of addresses found for game builds this add-on doesn't know (the launcher's
+/// **Try to identify**), in the game's folder, beside its executables.
+pub const ADDRESSES_FILE: &str = "5th-echelon-addresses.json";
 
-#[instrument]
-pub fn load_custom_addresses(dir: &Path) -> HashMap<String, HashMap<[u8; 32], Addresses>> {
-    let fname = "5th-echelon-addresses.json";
+/// The addresses found for each executable (`blacklist_game.exe`, `blacklist_dx11_game.exe`),
+/// by the SHA-256 of its build.
+pub type AddressMap = HashMap<String, HashMap<[u8; 32], Addresses>>;
 
-    let filepath = dir.join(fname);
-
-    info!("Trying to load addresses from {filepath:?}");
-
+/// The addresses in `dir`'s [`ADDRESSES_FILE`]: `None` when there's none, an error when it
+/// can't be read or isn't one.
+pub fn read_custom_addresses(dir: &Path) -> anyhow::Result<Option<AddressMap>> {
+    let filepath = dir.join(ADDRESSES_FILE);
     let f = match File::open(&filepath) {
         Ok(f) => f,
-        // None there is usual (a game folder the add-on couldn't write to, as Ubisoft Connect's
-        // in Program Files): the built-in addresses are used. Not an error in players' reports.
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            info!("No {fname} there; using the built-in addresses");
-            return HashMap::default();
-        }
-        Err(e) => {
-            error!("Error reading {filepath:?}: {e}");
-            return HashMap::default();
-        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
     };
-
-    let saved: SavedAddresses = match serde_json::from_reader(f) {
-        Ok(s) => s,
-        Err(e) => {
-            error!("Error parsing {filepath:?}: {e}");
-            return HashMap::default();
-        }
-    };
-
+    let saved: SavedAddresses = serde_json::from_reader(f)?;
     let dehex = |s: String| -> anyhow::Result<[u8; 32]> {
         anyhow::ensure!(s.len() == 64, "hash should be 64 hex chars");
         anyhow::ensure!(s.is_ascii(), "hash should be a hex string");
@@ -533,18 +511,19 @@ pub fn load_custom_addresses(dir: &Path) -> HashMap<String, HashMap<[u8; 32], Ad
         }
         Ok(out)
     };
-
     let convert = |hm: HashMap<String, Addresses>| -> anyhow::Result<HashMap<[u8; 32], Addresses>> { hm.into_iter().map(|(key, value)| Ok((dehex(key)?, value))).collect() };
+    Ok(Some(HashMap::from([
+        (String::from("blacklist_game.exe"), convert(saved.dx9)?),
+        (String::from("blacklist_dx11_game.exe"), convert(saved.dx11)?),
+    ])))
+}
 
-    let build = || -> anyhow::Result<_> {
-        Ok(HashMap::from([
-            (String::from("blacklist_game.exe"), convert(saved.dx9)?),
-            (String::from("blacklist_dx11_game.exe"), convert(saved.dx11)?),
-        ]))
-    };
-
-    match build() {
-        Ok(res) => {
+#[instrument]
+pub fn load_custom_addresses(dir: &Path) -> AddressMap {
+    let filepath = dir.join(ADDRESSES_FILE);
+    info!("Trying to load addresses from {filepath:?}");
+    match read_custom_addresses(dir) {
+        Ok(Some(res)) => {
             let loaded = res
                 .iter()
                 .map(|(k, v)| format!("{k} ({})", v.keys().map(hex).collect::<Vec<_>>().join(", ")))
@@ -553,71 +532,127 @@ pub fn load_custom_addresses(dir: &Path) -> HashMap<String, HashMap<[u8; 32], Ad
             info!("Loaded custom addresses for {loaded}");
             res
         }
+        // None there is usual (a known build needs none, and a game folder the launcher
+        // couldn't write to, as Ubisoft Connect's in Program Files, has none): the built-in
+        // addresses are used. Not an error in players' reports.
+        Ok(None) => {
+            info!("No {ADDRESSES_FILE} there; using the built-in addresses");
+            HashMap::default()
+        }
         Err(e) => {
-            error!("Error parsing {filepath:?}: {e}");
+            error!("Error reading {filepath:?}: {e}");
             HashMap::default()
         }
     }
 }
 
-#[instrument]
-fn save_builtin_addresses() {
-    let Ok(exec_path) = env::current_exe() else {
-        error!("Unable to find current exectuable");
-        return;
+/// Writes `dx9` and `dx11` as `dir`'s [`ADDRESSES_FILE`], replacing what was there.
+#[instrument(skip(dx9, dx11))]
+pub fn save_addresses(dir: &Path, dx9: HashMap<[u8; 32], Addresses>, dx11: HashMap<[u8; 32], Addresses>) -> std::io::Result<()> {
+    let filepath = dir.join(ADDRESSES_FILE);
+    info!("Saving addresses to {filepath:?}");
+    let convert = |a: HashMap<[u8; 32], Addresses>| -> HashMap<String, Addresses> { a.into_iter().map(|(key, value)| (hex(key), value)).collect() };
+    let saved = SavedAddresses {
+        dx9: convert(dx9),
+        dx11: convert(dx11),
     };
-    let mut inbuilt = inbuilt_addresses();
-    save_addresses_impl(
-        exec_path.parent().unwrap(),
-        inbuilt.remove("blacklist_game.exe").unwrap_or_default(),
-        inbuilt.remove("blacklist_dx11_game.exe").unwrap_or_default(),
-        false,
-    )
+    let json = serde_json::to_vec_pretty(&saved).map_err(std::io::Error::other)?;
+    std::fs::write(&filepath, json)
 }
 
-fn save_addresses_impl(dir: &Path, dx9: HashMap<[u8; 32], Addresses>, dx11: HashMap<[u8; 32], Addresses>, overwrite: bool) {
-    let fname = "5th-echelon-addresses.json";
-
-    let filepath = dir.join(fname);
-
-    if !overwrite && filepath.exists() {
-        info!("{filepath:?} already exists, no need to save");
-        return;
+/// The entries of `custom` for builds the add-on knows itself: a copy of the built-in
+/// addresses (an [`ADDRESSES_FILE`] the add-on once wrote as a template), not found ones.
+pub fn without_builtin(mut custom: AddressMap) -> AddressMap {
+    let inbuilt = inbuilt_addresses();
+    for (exe, builds) in &mut custom {
+        if let Some(known) = inbuilt.get(exe) {
+            builds.retain(|hash, _| !known.contains_key(hash));
+        }
     }
+    custom.retain(|_, builds| !builds.is_empty());
+    custom
+}
 
-    info!("Trying to save internal addresses to {filepath:?}");
+/// What became of an [`ADDRESSES_FILE`] found next to the launcher.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StrayAddresses {
+    /// A copy of the built-in addresses, which earlier launchers wrote wherever they ran (the
+    /// desktop, Downloads): deleted.
+    Removed,
+    /// Addresses found for an unknown game build: moved into the game folder's file.
+    Moved,
+}
 
-    let f = match File::create(&filepath) {
-        Ok(f) => f,
+/// Tidies an addresses file next to the launcher (`exe_dir`): earlier launchers wrote a copy
+/// of the built-in addresses wherever they ran. A copy is deleted; addresses found for a build
+/// the add-on doesn't know (**Try to identify**, run from an earlier launcher) are moved into
+/// the game folder's file, which is where the game reads them. Nothing happens when the file
+/// can't be read, or the game folder can't be written: it's left as it is and logged.
+pub fn tidy_stray_addresses(exe_dir: &Path, game_dir: &Path) -> Option<StrayAddresses> {
+    let stray = exe_dir.join(ADDRESSES_FILE);
+    // The launcher kept in the game's own folder: that file is the game's.
+    if !stray.is_file() || same_dir(exe_dir, game_dir) {
+        return None;
+    }
+    let found = match read_custom_addresses(exe_dir) {
+        Ok(Some(found)) => without_builtin(found),
+        Ok(None) => return None,
         Err(e) => {
-            error!("Error opening {filepath:?}: {e}");
-            return;
+            tracing::warn!("{} isn't one the launcher can read ({e}); left where it is", stray.display());
+            return None;
         }
     };
-
-    let hex = |b: [u8; 32]| -> String { b.into_iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join("") };
-
-    let convert = |a: HashMap<[u8; 32], Addresses>| -> HashMap<String, Addresses> {
-        a.into_iter()
-            .map(|(key, value)| {
-                let key = hex(key);
-                (key, value)
-            })
-            .collect()
+    let outcome = if found.is_empty() {
+        StrayAddresses::Removed
+    } else {
+        // The game folder's own found addresses win where both have the same build.
+        let mut merged = match read_custom_addresses(game_dir) {
+            Ok(theirs) => theirs.unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!("The game folder's {ADDRESSES_FILE} can't be read ({e}); {} left where it is", stray.display());
+                return None;
+            }
+        };
+        for (exe, builds) in found {
+            let into = merged.entry(exe).or_default();
+            for (hash, addresses) in builds {
+                into.entry(hash).or_insert(addresses);
+            }
+        }
+        let dx9 = merged.remove("blacklist_game.exe").unwrap_or_default();
+        let dx11 = merged.remove("blacklist_dx11_game.exe").unwrap_or_default();
+        if let Err(e) = save_addresses(game_dir, dx9, dx11) {
+            tracing::warn!("Couldn't move {} into the game folder ({e}); left where it is", stray.display());
+            return None;
+        }
+        StrayAddresses::Moved
     };
-
-    let dx9 = convert(dx9);
-    let dx11 = convert(dx11);
-
-    let saved = SavedAddresses { dx9, dx11 };
-    if let Err(e) = serde_json::to_writer_pretty(f, &saved) {
-        error!("Error saving inbuilt addresses: {e:?}");
+    match std::fs::remove_file(&stray) {
+        Ok(()) => {
+            tracing::info!(
+                "{} {}",
+                stray.display(),
+                if outcome == StrayAddresses::Moved {
+                    "moved into the game folder"
+                } else {
+                    "deleted: a copy of the built-in addresses"
+                }
+            );
+            Some(outcome)
+        }
+        Err(e) => {
+            tracing::warn!("Couldn't delete {}: {e}", stray.display());
+            None
+        }
     }
 }
 
-#[instrument]
-pub fn save_addresses(dir: &Path, dx9: HashMap<[u8; 32], Addresses>, dx11: HashMap<[u8; 32], Addresses>) {
-    save_addresses_impl(dir, dx9, dx11, true);
+/// Whether two folders are the same one (the paths may be written differently).
+fn same_dir(a: &Path, b: &Path) -> bool {
+    match (a.canonicalize(), b.canonicalize()) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => a == b,
+    }
 }
 
 fn inbuilt_addresses() -> HashMap<String, HashMap<[u8; 32], Addresses>> {
@@ -627,8 +662,7 @@ fn inbuilt_addresses() -> HashMap<String, HashMap<[u8; 32], Addresses>> {
     ])
 }
 
-fn build_game_map(dir: &Path) -> HashMap<String, HashMap<[u8; 32], Addresses>> {
-    save_builtin_addresses();
+fn build_game_map(dir: &Path) -> AddressMap {
     let mut map = inbuilt_addresses();
     let mut custom = load_custom_addresses(dir);
 
@@ -914,6 +948,66 @@ pub fn search_patterns(filepath: &Path) -> Result<Addresses, Error> {
 
 #[cfg(test)]
 mod tests {
+
+    fn dirs(name: &str) -> (PathBuf, PathBuf) {
+        let base = std::env::temp_dir().join(format!("fe-addresses-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (launcher, game) = (base.join("Desktop"), base.join("game"));
+        std::fs::create_dir_all(&launcher).unwrap();
+        std::fs::create_dir_all(&game).unwrap();
+        (launcher, game)
+    }
+
+    #[test]
+    fn a_copy_of_the_builtin_addresses_is_no_found_addresses() {
+        let inbuilt = inbuilt_addresses();
+        assert!(without_builtin(inbuilt.clone()).is_empty());
+        let mut custom = inbuilt;
+        let some = custom["blacklist_game.exe"].values().next().unwrap().clone();
+        custom.get_mut("blacklist_game.exe").unwrap().insert([7; 32], some);
+        let left = without_builtin(custom);
+        assert_eq!(left.len(), 1);
+        assert_eq!(left["blacklist_game.exe"].keys().copied().collect::<Vec<_>>(), vec![[7; 32]]);
+    }
+
+    #[test]
+    fn a_template_beside_the_launcher_is_deleted() {
+        let (launcher, game) = dirs("template");
+        let mut inbuilt = inbuilt_addresses();
+        save_addresses(&launcher, inbuilt.remove("blacklist_game.exe").unwrap(), inbuilt.remove("blacklist_dx11_game.exe").unwrap()).unwrap();
+        assert_eq!(tidy_stray_addresses(&launcher, &game), Some(StrayAddresses::Removed));
+        assert!(!launcher.join(ADDRESSES_FILE).exists());
+        assert!(!game.join(ADDRESSES_FILE).exists(), "nothing to move");
+        assert_eq!(tidy_stray_addresses(&launcher, &game), None, "nothing left to do");
+    }
+
+    #[test]
+    fn found_addresses_beside_the_launcher_move_into_the_game_folder() {
+        let (launcher, game) = dirs("found");
+        let some = inbuilt_addresses()["blacklist_dx11_game.exe"].values().next().unwrap().clone();
+        save_addresses(&launcher, HashMap::new(), HashMap::from([([9; 32], some.clone())])).unwrap();
+        // The game folder already has one of its own: kept, and the launcher's joins it.
+        save_addresses(&game, HashMap::from([([8; 32], some)]), HashMap::new()).unwrap();
+        assert_eq!(tidy_stray_addresses(&launcher, &game), Some(StrayAddresses::Moved));
+        assert!(!launcher.join(ADDRESSES_FILE).exists());
+        let merged = read_custom_addresses(&game).unwrap().unwrap();
+        assert!(merged["blacklist_game.exe"].contains_key(&[8; 32]));
+        assert!(merged["blacklist_dx11_game.exe"].contains_key(&[9; 32]));
+    }
+
+    #[test]
+    fn a_file_that_cant_be_read_or_the_games_own_is_left_alone() {
+        let (launcher, game) = dirs("left");
+        std::fs::write(launcher.join(ADDRESSES_FILE), "not json").unwrap();
+        assert_eq!(tidy_stray_addresses(&launcher, &game), None);
+        assert!(launcher.join(ADDRESSES_FILE).exists());
+        // The launcher kept in the game folder: that file is the game's.
+        let mut inbuilt = inbuilt_addresses();
+        save_addresses(&game, inbuilt.remove("blacklist_game.exe").unwrap(), HashMap::new()).unwrap();
+        assert_eq!(tidy_stray_addresses(&game, &game), None);
+        assert!(game.join(ADDRESSES_FILE).exists());
+    }
+
     use super::*;
 
     #[test]
