@@ -17,6 +17,10 @@ pub enum Launched {
     /// Asked to start through Steam, Steam couldn't be started: the game's own process
     /// instead, and why.
     GameNotSteam(Child, String),
+    /// As administrator, because the game is set to run that way (its
+    /// Compatibility setting or manifest) and a plain start was refused.
+    /// Watched like [`Launched::Steam`], by the game's process.
+    Elevated,
 }
 
 /// Whether the game in `game_dir` is a Steam copy: in a Steam library (a `steamapps` folder)
@@ -27,6 +31,9 @@ pub fn steam_copy(game_dir: &Path) -> bool {
         .find(|d| d.file_name().is_some_and(|n| n.eq_ignore_ascii_case("steamapps")))
         .is_some_and(|steamapps| steamapps.join(format!("appmanifest_{}.acf", crate::wine::STEAM_APP_ID)).is_file())
 }
+
+/// Windows' ERROR_ELEVATION_REQUIRED: the program must run as administrator.
+const ERROR_ELEVATION_REQUIRED: i32 = 740;
 
 /// Starts `version` of the game from `game_dir`.
 ///
@@ -53,18 +60,21 @@ pub fn launch(game_dir: &Path, version: GameVersion, through_steam: bool) -> std
         } else {
             None
         };
-        let mut cmd = Command::new(exe);
+        let mut cmd = Command::new(&exe);
         cmd.current_dir(game_dir);
         // A Windows launcher running under Wine: keep the game from freezing
         // on CPUs with many threads, as a Linux launcher would.
         if hooks_config::running_under_wine() && crate::wine::cpu_threads() > crate::wine::MAX_THREADS {
             cmd.env("WINE_CPU_TOPOLOGY", crate::wine::cpu_topology(crate::wine::MAX_THREADS));
         }
-        let child = cmd.spawn()?;
-        return Ok(match steam_failed {
-            Some(why) => Launched::GameNotSteam(child, why),
-            None => Launched::Game(child),
-        });
+        return match cmd.spawn() {
+            Ok(child) => Ok(match steam_failed {
+                Some(why) => Launched::GameNotSteam(child, why),
+                None => Launched::Game(child),
+            }),
+            Err(e) if e.raw_os_error() == Some(ERROR_ELEVATION_REQUIRED) => start_elevated(&exe, game_dir),
+            Err(e) => Err(e),
+        };
     }
     match crate::wine::prefix_for(game_dir) {
         Some(prefix) if prefix.steam => start_through_steam().map(|()| Launched::Steam),
@@ -110,6 +120,18 @@ fn start_through_steam_on_windows() -> std::io::Result<()> {
         Ok(status) if status.success() => Ok(()),
         Ok(_) | Err(_) => Err(std::io::Error::new(std::io::ErrorKind::NotFound, "Steam isn't installed or didn't answer")),
     }
+}
+
+/// Starts the game as administrator, with Windows asking the player (UAC).
+#[cfg(target_os = "windows")]
+fn start_elevated(exe: &Path, game_dir: &Path) -> std::io::Result<Launched> {
+    tracing::info!("{} needs to run as administrator; starting it that way", exe.display());
+    crate::sys::start_elevated(exe, game_dir).map(|()| Launched::Elevated)
+}
+
+#[cfg(not(target_os = "windows"))]
+fn start_elevated(_exe: &Path, _game_dir: &Path) -> std::io::Result<Launched> {
+    Err(std::io::Error::from_raw_os_error(ERROR_ELEVATION_REQUIRED))
 }
 
 /// Asks Steam to start the game: its own `steam` command, Flatpak Steam, or

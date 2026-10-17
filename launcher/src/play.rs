@@ -2219,7 +2219,11 @@ fn launch(play: &mut Play, game: &mut Game, notices: &mut Notices) {
             play.running = Some(child);
             notices.error(format!("Steam couldn't start the game ({why}), so the launcher did: no Steam Input this time."));
         }
-        Err(e) => notices.error(format!("Couldn't start the game: {e}")),
+        Ok(setup::launch::Launched::Elevated) => notices.info("The game was started as administrator, because it's set to run that way."),
+        Err(e) => {
+            tracing::warn!("couldn't start the game: {e}");
+            notices.error(format!("Couldn't start the game: {e}"));
+        }
     }
 }
 

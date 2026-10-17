@@ -192,6 +192,33 @@ pub fn roaming_app_data() -> Option<PathBuf> {
     }
 }
 
+/// Starts `exe` in `dir` as administrator ("runas"), so Windows asks the
+/// player (UAC). For a game set to "Run this program as an administrator",
+/// which a plain start refuses with ERROR_ELEVATION_REQUIRED (740).
+pub fn start_elevated(exe: &std::path::Path, dir: &std::path::Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+    let wide = |s: &std::ffi::OsStr| s.encode_wide().chain(Some(0)).collect::<Vec<u16>>();
+    let verb = wide("runas".as_ref());
+    let file = wide(exe.as_os_str());
+    let directory = wide(dir.as_os_str());
+    let mut info = Shell::SHELLEXECUTEINFOW {
+        cbSize: std::mem::size_of::<Shell::SHELLEXECUTEINFOW>() as u32,
+        fMask: Shell::SEE_MASK_NOCLOSEPROCESS,
+        lpVerb: PCWSTR::from_raw(verb.as_ptr()),
+        lpFile: PCWSTR::from_raw(file.as_ptr()),
+        lpDirectory: PCWSTR::from_raw(directory.as_ptr()),
+        // SW_SHOWNORMAL
+        nShow: 1,
+        ..Default::default()
+    };
+    unsafe { Shell::ShellExecuteExW(&mut info) }.map_err(|e| std::io::Error::from_raw_os_error((e.code().0 & 0xFFFF) as i32))?;
+    // The game is watched by its process name, as when Steam starts it.
+    if !info.hProcess.is_invalid() {
+        let _ = unsafe { CloseHandle(info.hProcess) };
+    }
+    Ok(())
+}
+
 /// The game's `%APPDATA%`: this user's (under Wine, the prefix's).
 pub fn game_roaming_dir(_game_dir: &std::path::Path) -> Option<PathBuf> {
     roaming_app_data()
