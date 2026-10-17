@@ -96,7 +96,13 @@ pub fn init() {
         tracing_subscriber::fmt::layer()
             .with_ansi(false)
             .with_writer(std::sync::Mutex::new(f))
-            .with_filter(tracing_subscriber::filter::LevelFilter::INFO)
+            // The game's addresses are loaded again on each refresh of the checklist (every half
+            // minute): their lines filled the log (99% of a day's), so only their warnings.
+            .with_filter(
+                tracing_subscriber::filter::Targets::new()
+                    .with_default(tracing_subscriber::filter::LevelFilter::INFO)
+                    .with_target("hooks_addresses", tracing_subscriber::filter::LevelFilter::WARN),
+            )
     });
     tracing_subscriber::registry()
         .with(
