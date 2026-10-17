@@ -182,12 +182,31 @@ struct Peer {
     /// Where this player's relayed data last came from, and when: packets for them go back
     /// there (the socket that sent), not to `real` (the one that probes).
     data_from: Option<(SocketAddrV4, Instant)>,
+    /// Since when this player has been registered from `real` (a new socket starts over).
+    since: Instant,
 }
 
 /// How long a direct player's address must stand before the address echo gives it out: the
 /// hook checks a second port first, and a NAT that gives every destination its own port
 /// then moves to the relay (a fraction of a second later).
 const SETTLE: Duration = Duration::from_secs(2);
+
+/// An address echo's source is forgotten this long after it last asked.
+const ECHO_FORGET: Duration = Duration::from_secs(60);
+/// Echo sources kept: addresses, and ports at each (the oldest goes).
+const MAX_ECHO_IPS: usize = 10_000;
+const MAX_ECHOES_PER_IP: usize = 8;
+/// Another game behind the same address asking for its echo this long before a lone
+/// player there registered, or since, makes that player's address anyone's.
+const ECHO_OVERLAP: Duration = Duration::from_secs(5);
+
+/// A port at an address that asked for its address echo ([`Table::advertised_for_echo`]).
+#[derive(Debug, Clone, Copy)]
+struct EchoSource {
+    port: u16,
+    first_asked: Instant,
+    last_asked: Instant,
+}
 
 /// A registered player, by number (so relaying a packet allocates nothing).
 type Id = u64;
@@ -222,6 +241,10 @@ pub struct Table {
     /// Asks this second, per address ([`MAX_ASKS_PER_IP`]) and in all ([`MAX_ASKS_ALL`]).
     asks_by_ip: HashMap<Ipv4Addr, (Instant, u32)>,
     asks_all: (Instant, u32),
+    /// Who asked for their address echo lately, by address ([`Self::advertised_for_echo`]),
+    /// and when that was last swept.
+    echoes: HashMap<Ipv4Addr, Vec<EchoSource>>,
+    echoes_swept: Instant,
 }
 
 /// The key of two players' pair, the same either way round.
@@ -249,6 +272,8 @@ impl Table {
             asking: HashMap::new(),
             asks_by_ip: HashMap::new(),
             asks_all: (Instant::now(), 0),
+            echoes: HashMap::new(),
+            echoes_swept: Instant::now(),
         }
     }
 
@@ -384,6 +409,7 @@ impl Table {
                 .map(|(_, o)| o.aliases.iter().copied().filter(|a| a.ip() == src.ip() && *a != src).collect())
                 .unwrap_or_default(),
             data_from: old.as_ref().and_then(|(_, o)| o.data_from).filter(|(a, _)| a.ip() == src.ip()),
+            since: old.as_ref().filter(|(_, o)| o.real == src).map_or(now, |(_, o)| o.since),
         };
         let tag = peer.tag;
         for a in &peer.aliases {
@@ -683,6 +709,7 @@ impl Table {
         self.refused.retain(|_, at| now.duration_since(*at) < REFUSED_FOR);
         self.asking.retain(|_, at| now.duration_since(*at) < ASKING_FOR);
         self.asks_by_ip.retain(|_, (at, _)| now.duration_since(*at) < Duration::from_secs(1));
+        self.sweep_echoes(now);
         gone
     }
 
@@ -693,16 +720,72 @@ impl Table {
         (IpAddr::V4(*p.real.ip()) == ip).then_some(p.advertise)
     }
 
-    /// The address the one player registered from `ip` should be reached on, if exactly one
-    /// is (several behind one router can't be told apart by address alone).
+    /// The address the game whose Storm socket sent an address echo from `src` should be
+    /// reached on, once that address is final: a relayed one at once, a direct one when it
+    /// has stood for [`SETTLE`] (until then the player may still move to the relay).
     ///
-    /// Only once that address is final: a relayed one at once, a direct one when it has stood
-    /// for [`SETTLE`] (until then the player may still move to the relay).
-    pub fn advertised_for_ip(&self, ip: Ipv4Addr, now: Instant) -> Option<SocketAddrV4> {
-        let mut found = self.peers.values().filter(|p| *p.real.ip() == ip);
-        let first = found.next()?;
-        let settled = first.relayed || now.duration_since(first.settled_since) >= SETTLE;
-        (found.next().is_none() && settled).then_some(first.advertise)
+    /// The echo comes from the same socket as the hook's probes, so behind most routers from
+    /// the very address the player registered from: that player's, and nobody else's. Behind
+    /// one router, another player at the address is a housemate (2026-10-16: a game asking
+    /// before its hook had registered was given its housemate's relay address, and their joins
+    /// into each other's rooms failed).
+    ///
+    /// A NAT that gives every destination its own port (a VPN, a mobile network) sends the
+    /// echo from another port than the probes. The one player at the address is then taken as
+    /// this game only if it registered after the echo first asked (the game asks the moment
+    /// its socket opens, before its hook registers), and no other port there asked for an echo
+    /// around then (another game). Else nothing: the echo is answered as for an unknown player.
+    pub fn advertised_for_echo(&mut self, src: SocketAddrV4, now: Instant) -> Option<SocketAddrV4> {
+        let first_asked = self.echo_heard(src, now);
+        let settled = |p: &Peer| p.relayed || now.duration_since(p.settled_since) >= SETTLE;
+        if let Some(id) = self.by_real.get(&src).or_else(|| self.by_alias.get(&src)) {
+            let p = self.peers.get(id)?;
+            return settled(p).then_some(p.advertise);
+        }
+        let [id] = self.by_ip.get(src.ip())?.as_slice() else { return None };
+        let p = self.peers.get(id)?;
+        let others = self
+            .echoes
+            .get(src.ip())
+            .is_some_and(|e| e.iter().any(|e| e.port != src.port() && e.last_asked + ECHO_OVERLAP >= p.since));
+        (first_asked? <= p.since && !others && settled(p)).then_some(p.advertise)
+    }
+
+    /// Notes an address echo from `src`: when it first asked (`None` when there's no room to
+    /// keep it).
+    fn echo_heard(&mut self, src: SocketAddrV4, now: Instant) -> Option<Instant> {
+        if !self.echoes.contains_key(src.ip()) && self.echoes.len() >= MAX_ECHO_IPS {
+            if now.duration_since(self.echoes_swept) < Duration::from_secs(1) {
+                return None;
+            }
+            self.sweep_echoes(now);
+            if self.echoes.len() >= MAX_ECHO_IPS {
+                return None;
+            }
+        }
+        let here = self.echoes.entry(*src.ip()).or_default();
+        here.retain(|e| now.duration_since(e.last_asked) < ECHO_FORGET);
+        if let Some(e) = here.iter_mut().find(|e| e.port == src.port()) {
+            e.last_asked = now;
+            return Some(e.first_asked);
+        }
+        if here.len() >= MAX_ECHOES_PER_IP {
+            here.remove(0);
+        }
+        here.push(EchoSource {
+            port: src.port(),
+            first_asked: now,
+            last_asked: now,
+        });
+        Some(now)
+    }
+
+    fn sweep_echoes(&mut self, now: Instant) {
+        self.echoes.retain(|_, e| {
+            e.retain(|e| now.duration_since(e.last_asked) < ECHO_FORGET);
+            !e.is_empty()
+        });
+        self.echoes_swept = now;
     }
 
     pub fn len(&self) -> usize {
@@ -795,11 +878,11 @@ pub fn advertised_for(name: &str, ip: IpAddr) -> Option<SocketAddrV4> {
     TABLE.get()?.lock().ok()?.advertised_for(name, ip)
 }
 
-/// The address the NAT helper checked for the one player at `ip` (their public one, or the
-/// relay's), when it runs and exactly one player there is registered.
-pub fn advertised_for_ip(ip: IpAddr) -> Option<SocketAddrV4> {
-    let IpAddr::V4(ip) = ip else { return None };
-    TABLE.get()?.lock().ok()?.advertised_for_ip(ip, Instant::now())
+/// The address the NAT helper checked for the game whose address echo came from `src` (its
+/// public one, or the relay's), when it runs and knows that game ([`Table::advertised_for_echo`]).
+pub fn advertised_for_echo(src: SocketAddr) -> Option<SocketAddrV4> {
+    let src = v4(src)?;
+    TABLE.get()?.lock().ok()?.advertised_for_echo(src, Instant::now())
 }
 
 /// Station URLs with `advertise` in place of the address the game registered
@@ -1922,18 +2005,99 @@ mod tests {
     fn the_one_player_at_an_address_is_found_by_it() {
         let mut t = table(RelayMode::Auto);
         let now = Instant::now();
-        let ip = Ipv4Addr::new(198, 51, 100, 7);
-        assert_eq!(t.advertised_for_ip(ip, now), None);
+        let src = a("198.51.100.7:25676");
+        assert_eq!(t.advertised_for_echo(src, now), None);
         // First a direct registration (a router mapping): not final until it has stood a while.
-        let (direct, _) = advertise(&t.probe(a("198.51.100.7:25676"), probe_flags::HAS_MAPPING, 1, Some(a("198.51.100.7:25676")), "Solo", now));
-        assert_eq!(t.advertised_for_ip(ip, now), None, "the player may still move to the relay");
-        assert_eq!(t.advertised_for_ip(ip, now + SETTLE), Some(direct));
+        let (direct, _) = advertise(&t.probe(src, probe_flags::HAS_MAPPING, 1, Some(src), "Solo", now));
+        assert_eq!(t.advertised_for_echo(src, now), None, "the player may still move to the relay");
+        assert_eq!(t.advertised_for_echo(src, now + SETTLE), Some(direct));
         // Then its hook asks for the relay: final at once.
-        let (relay, relayed) = advertise(&t.probe(a("198.51.100.7:25676"), nat_proto::probe_flags::WANT_RELAY, 2, None, "Solo", now));
+        let (relay, relayed) = advertise(&t.probe(src, nat_proto::probe_flags::WANT_RELAY, 2, None, "Solo", now));
         assert!(relayed);
-        assert_eq!(t.advertised_for_ip(ip, now), Some(relay), "a relayed player is reached on the relay");
-        t.probe(a("198.51.100.7:51000"), 0, 3, None, "Flatmate", now);
-        assert_eq!(t.advertised_for_ip(ip, now + SETTLE), None, "two players behind one address can't be told apart");
+        assert_eq!(t.advertised_for_echo(src, now), Some(relay), "a relayed player is reached on the relay");
+        // A flatmate registering doesn't change whose echo is whose.
+        let (flatmate, _) = advertise(&t.probe(a("198.51.100.7:51000"), 0, 3, None, "Flatmate", now));
+        assert_eq!(t.advertised_for_echo(src, now + SETTLE), Some(relay));
+        assert_eq!(t.advertised_for_echo(a("198.51.100.7:51000"), now + SETTLE), Some(flatmate));
+    }
+
+    /// Two games behind one router, both relayed: each echo gets its own game's address.
+    #[test]
+    fn two_players_behind_one_router_each_get_their_own_address() {
+        let mut t = table(RelayMode::Auto);
+        let now = Instant::now();
+        let (marius, subgi) = (a("2.28.137.33:13000"), a("2.28.137.33:61712"));
+        let (relay_m, _) = advertise(&t.probe(marius, 0, 1, None, "Marius", now));
+        let (relay_s, _) = advertise(&t.probe(subgi, 0, 2, None, "Subgi", now));
+        assert_ne!(relay_m, relay_s);
+        assert_eq!(t.advertised_for_echo(marius, now), Some(relay_m));
+        assert_eq!(t.advertised_for_echo(subgi, now), Some(relay_s));
+        assert_eq!(t.advertised_for_echo(marius, now), Some(relay_m), "asked again, still their own");
+    }
+
+    /// The reports of 2026-10-16: the second game behind a router asks for its echo before its
+    /// hook registers. Its housemate's relay address isn't its own: it waits for its own.
+    #[test]
+    fn a_newcomer_behind_a_known_address_isnt_given_its_housemates() {
+        let mut t = table(RelayMode::Auto);
+        let now = Instant::now();
+        let marius = a("2.28.137.33:13000");
+        let (relay_m, _) = advertise(&t.probe(marius, 0, 1, None, "Marius", now));
+        // Marius's game keeps its registration up meanwhile.
+        let later = now + Duration::from_secs(600);
+        t.probe(marius, 0, 3, None, "Marius", later);
+        let subgi = a("2.28.137.33:61712");
+        assert_eq!(t.advertised_for_echo(subgi, later), None, "not Marius's {relay_m}");
+        assert_eq!(t.advertised_for_echo(subgi, later + Duration::from_millis(250)), None);
+        let (relay_s, _) = advertise(&t.probe(subgi, 0, 2, None, "Subgi", later + Duration::from_secs(1)));
+        assert_eq!(t.advertised_for_echo(subgi, later + Duration::from_secs(1)), Some(relay_s));
+        // Behind a NAT giving the echo a port of its own, a housemate's isn't taken either.
+        let mut t = table(RelayMode::Auto);
+        t.probe(marius, 0, 1, None, "Marius", now);
+        assert_eq!(t.advertised_for_echo(a("2.28.137.33:61713"), later), None);
+    }
+
+    /// Behind a NAT that gives every destination its own port, the echo comes from another
+    /// port than the probes: the lone player who registered after it first asked is this game,
+    /// unless another game there asked too.
+    #[test]
+    fn the_lone_player_behind_a_port_per_destination_nat_still_gets_the_relay() {
+        let mut t = table(RelayMode::Auto);
+        let now = Instant::now();
+        let echo = a("203.0.113.5:40001");
+        assert_eq!(t.advertised_for_echo(echo, now), None, "not registered yet");
+        let (relay, relayed) = advertise(&t.probe(a("203.0.113.5:40002"), probe_flags::SYMMETRIC, 1, None, "Solo", now + Duration::from_millis(300)));
+        assert!(relayed);
+        assert_eq!(t.advertised_for_echo(echo, now + Duration::from_millis(500)), Some(relay));
+
+        // Two such games starting together: whose is whose can't be told, so neither is told.
+        let mut t = table(RelayMode::Auto);
+        let (echo_a, echo_b) = (a("203.0.113.6:40001"), a("203.0.113.6:40003"));
+        assert_eq!(t.advertised_for_echo(echo_a, now), None);
+        assert_eq!(t.advertised_for_echo(echo_b, now), None);
+        t.probe(a("203.0.113.6:40002"), probe_flags::SYMMETRIC, 1, None, "A", now + Duration::from_millis(300));
+        assert_eq!(t.advertised_for_echo(echo_a, now + Duration::from_millis(500)), None);
+        assert_eq!(t.advertised_for_echo(echo_b, now + Duration::from_millis(500)), None);
+    }
+
+    /// Echo sources are forgotten a while after they stop asking, and there's a limit.
+    #[test]
+    fn echo_sources_are_kept_within_limits() {
+        let mut t = table(RelayMode::Auto);
+        let now = Instant::now();
+        let first = Ipv4Addr::from(0x0a00_0000);
+        for n in 0..MAX_ECHO_IPS as u32 {
+            t.echo_heard(SocketAddrV4::new(Ipv4Addr::from(0x0a00_0000 + n), 1), now);
+        }
+        assert_eq!(t.echo_heard(a("198.51.100.1:1"), now), None, "full");
+        for port in 0..20 {
+            t.echo_heard(SocketAddrV4::new(first, port), now);
+        }
+        assert!(t.echoes[&first].len() <= MAX_ECHOES_PER_IP);
+        let later = now + ECHO_FORGET + Duration::from_secs(1);
+        assert_eq!(t.echo_heard(a("198.51.100.1:1"), later), Some(later), "room after a sweep");
+        t.expire(later);
+        assert_eq!(t.echoes.len(), 1);
     }
 
     #[test]

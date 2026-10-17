@@ -305,16 +305,16 @@ fn handle_user_packet(logger: &Logger, packet: QPacket, client: SocketAddr, sock
     // The game takes its address for other players from this echo. What this socket saw is a
     // port its router opened for this server alone, which behind a NAT that gives every
     // destination its own (a VPN, a mobile network) nobody else reaches. The NAT helper knows
-    // the address that works - the player's checked public one, or the relay's - when it's
-    // the only player there.
+    // the address that works - the player's checked public one, or the relay's - for the game
+    // whose socket this is (never a housemate's behind the same router).
     //
     // The game asks the moment its socket opens, a little before its hook has reached the
     // helper, and asks again every quarter second until answered: so it isn't answered until
-    // the helper's address for it is final (see `advertised_for_ip`), for up to ECHO_WAIT,
+    // the helper's address for it is final (see `advertised_for_echo`), for up to ECHO_WAIT,
     // and then with what was seen.
-    let reply = match nat_helper::advertised_for_ip(client.ip()) {
+    let reply = match nat_helper::advertised_for_echo(client) {
         Some(advertise) => SocketAddr::V4(advertise),
-        None if nat_helper::relay_ip().is_some() && echo_waiting(client.ip()) => return,
+        None if nat_helper::relay_ip().is_some() && echo_waiting(client) => return,
         None => client,
     };
     let mut response = packet.payload;
@@ -327,10 +327,10 @@ fn handle_user_packet(logger: &Logger, packet: QPacket, client: SocketAddr, sock
 /// How long the address echo waits for the NAT helper to know a player.
 const ECHO_WAIT: std::time::Duration = std::time::Duration::from_secs(4);
 
-/// When each address first asked for its echo (forgotten after a minute), and when the
-/// table was last swept.
+/// When each address and port (each game's socket: several behind one router) first asked
+/// for its echo (forgotten after a minute), and when the table was last swept.
 struct EchoWaits {
-    first_asked: HashMap<std::net::IpAddr, std::time::Instant>,
+    first_asked: HashMap<SocketAddr, std::time::Instant>,
     swept: std::time::Instant,
 }
 
@@ -338,14 +338,14 @@ impl EchoWaits {
     const FORGET: std::time::Duration = std::time::Duration::from_secs(60);
     const MAX: usize = 10_000;
 
-    /// Whether an echo from `ip` should go unanswered for now: it first asked less than
+    /// Whether an echo from `src` should go unanswered for now: it first asked less than
     /// [`ECHO_WAIT`] ago (asking again a minute later starts over).
     ///
-    /// The address's own entry is looked at first. Old entries are swept at most once a
+    /// The source's own entry is looked at first. Old entries are swept at most once a
     /// second, not on every packet (a pass over up to [`Self::MAX`] for each forged
     /// source); a full table answers new addresses at once.
-    fn waiting(&mut self, ip: std::net::IpAddr, now: std::time::Instant) -> bool {
-        if let Some(first) = self.first_asked.get_mut(&ip) {
+    fn waiting(&mut self, src: SocketAddr, now: std::time::Instant) -> bool {
+        if let Some(first) = self.first_asked.get_mut(&src) {
             if now.duration_since(*first) >= Self::FORGET {
                 *first = now;
             }
@@ -358,13 +358,13 @@ impl EchoWaits {
         if self.first_asked.len() >= Self::MAX {
             return false;
         }
-        self.first_asked.insert(ip, now);
+        self.first_asked.insert(src, now);
         true
     }
 }
 
 /// [`EchoWaits::waiting`], for the service's one table.
-fn echo_waiting(ip: std::net::IpAddr) -> bool {
+fn echo_waiting(src: SocketAddr) -> bool {
     static WAITS: std::sync::Mutex<Option<EchoWaits>> = std::sync::Mutex::new(None);
     let now = std::time::Instant::now();
     let mut waits = WAITS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -373,7 +373,7 @@ fn echo_waiting(ip: std::net::IpAddr) -> bool {
             first_asked: HashMap::new(),
             swept: now,
         })
-        .waiting(ip, now)
+        .waiting(src, now)
 }
 
 /// Log level from the environment variable `var` (default: info).
@@ -827,11 +827,13 @@ mod tests {
             first_asked: HashMap::new(),
             swept: start,
         };
-        let ip = |n: u32| std::net::IpAddr::from(std::net::Ipv4Addr::from(0x0a00_0000 + n));
+        let ip = |n: u32| SocketAddr::from((std::net::Ipv4Addr::from(0x0a00_0000 + n), 13000));
         assert!(waits.waiting(ip(0), start));
         assert!(waits.waiting(ip(0), start + std::time::Duration::from_secs(1)), "still within ECHO_WAIT");
         assert!(!waits.waiting(ip(0), start + ECHO_WAIT), "then answered");
         assert!(waits.waiting(ip(0), start + EchoWaits::FORGET + ECHO_WAIT), "a minute later it starts over");
+        let housemate = SocketAddr::from((std::net::Ipv4Addr::from(0x0a00_0000), 61712));
+        assert!(waits.waiting(housemate, start + ECHO_WAIT), "another game behind the same router waits its own");
         for n in 1..EchoWaits::MAX as u32 {
             waits.waiting(ip(n), start);
         }
