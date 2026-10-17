@@ -72,6 +72,7 @@
         </div>
       </form>
     </section>
+    <ClientBuilds />
     <section class="panel">
       <header>
         <h2>Admins</h2>
@@ -108,6 +109,7 @@
 <script setup>
 import { computed, onMounted, reactive, ref } from 'vue';
 import PageTop from '../components/PageTop.vue';
+import ClientBuilds from '../components/ClientBuilds.vue';
 import KeyIcon from '../components/KeyIcon.vue';
 import Stat from '../components/Stat.vue';
 import { SECURITY_TABS } from '../router.js';

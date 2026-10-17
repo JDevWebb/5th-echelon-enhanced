@@ -29,6 +29,7 @@
         <button class="small" type="button" @click="act('rename')">Rename</button>
         <button class="small" type="button" title="Their launcher and overlay ask them to choose another name, and the game is kept out until they do" @click="act('name_not_allowed')">Ask to rename</button>
         <button class="small" type="button" title="Their name was flagged by mistake: no longer asked to rename, and not flagged again" @click="act('allow_name')">Allow name</button>
+        <button v-if="p.identity" class="small" type="button" title="A developer: every server takes their identity's other launcher and add-on builds (Security › Client builds)" @click="allowBuilds">Allow other builds</button>
         <RouterLink v-if="features.roadmap && p.identity" class="btn small" :to="{ path: `/support/${p.identity}`, query: { name: p.name } }" title="Write to them: they read it on their launcher's Support page, and the game's overlay tells them">Message</RouterLink>
         <button class="small danger" type="button" @click="act('delete')">Delete</button>
       </div>
@@ -145,6 +146,15 @@ async function load() {
 watch(() => [props.server, props.id], () => { d.value = null; mineIds.value = []; load(); }, { immediate: true });
 
 const daySeries = computed(() => [{ name: 'Played', color: PALETTE[0], points: d.value.days.map(x => ({ t: x.t, v: x.seconds / 60 })) }]);
+
+/// A developer: their identity's other builds are taken on every server (clients.rs).
+async function allowBuilds() {
+  if (!await confirmBox(`Allow ${p.value.name} other builds?`, 'Every server takes their identity\'s modified or development launcher and add-on, even when other builds are refused. Undo in Security › Client builds.', 'Allow')) return;
+  try {
+    await api('POST', '/clients/allowed', { identity: p.value.identity, note: `${p.value.name}` });
+    toast(`${p.value.name} may use other builds: servers take it within a minute.`);
+  } catch (e) { toast(e.message, true); }
+}
 
 async function act(kind) {
   let queued;

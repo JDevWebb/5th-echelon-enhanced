@@ -209,6 +209,9 @@ pub fn router(c: Shared) -> Router {
         .route("/admins", get(admins).post(add_admin))
         .route("/admins/{id}/{action}", post(admin_action))
         .route("/restrictions", get(restrictions).put(set_restrictions))
+        .route("/clients", get(clients).put(set_client_mode))
+        .route("/clients/allowed", axum::routing::post(allow_client))
+        .route("/clients/allowed/{identity}", axum::routing::delete(disallow_client))
         .route("/audit", get(audit))
         .route("/overview", get(overview))
         .route("/series", get(series))
@@ -1400,6 +1403,104 @@ async fn admin_action(State(c): State<Shared>, Extension(client): Extension<Clie
     ok(result)
 }
 
+/// Which client builds the network's servers take (clients.rs): the mode, the release builds
+/// recorded, and the identities allowed others.
+async fn clients(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap) -> Response {
+    if let Err(r) = c.full(&headers, &client).await {
+        return r;
+    }
+    let (mode, builds, allowed) = match (c.client_mode().await, c.genuine_builds().await, c.allowed_clients().await) {
+        (Ok(m), Ok(b), Ok(a)) => (m, b, a),
+        (Err(e), ..) | (_, Err(e), _) | (.., Err(e)) => return internal(e),
+    };
+    // The names each allowed identity has on the servers, for the list.
+    let mut names: Vec<Value> = Vec::with_capacity(allowed.len());
+    for (identity, ..) in &allowed {
+        let found: Vec<String> = sqlx::query_scalar("SELECT DISTINCT name FROM players WHERE identity = ? LIMIT 5")
+            .bind(identity)
+            .fetch_all(&c.pool)
+            .await
+            .unwrap_or_default();
+        names.push(json!(found));
+    }
+    ok(json!({
+        "mode": mode,
+        "modes": crate::clients::MODES,
+        "builds": builds.into_iter().map(|(version, asset, sha256)| json!({ "version": version, "asset": asset, "sha256": sha256 })).collect::<Vec<_>>(),
+        "allowed": allowed.into_iter().zip(names).map(|((identity, note, by, at), names)| json!({ "identity": identity, "note": note, "added_by": by, "added_at": at, "names": names })).collect::<Vec<_>>(),
+    }))
+}
+
+#[derive(serde::Deserialize)]
+struct ClientModeRequest {
+    mode: String,
+}
+
+async fn set_client_mode(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Json(req): Json<ClientModeRequest>) -> Response {
+    let s = match c.recent(&headers, &client).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    if !crate::clients::MODES.contains(&req.mode.as_str()) {
+        return fail(StatusCode::BAD_REQUEST, "the mode is off, report or enforce");
+    }
+    if let Err(e) = c.set_client_mode(&req.mode).await {
+        return internal(e);
+    }
+    c.audit(&s.username, Some(&client), "set which client builds servers take", &req.mode).await;
+    ok(json!({ "mode": req.mode }))
+}
+
+#[derive(serde::Deserialize)]
+struct AllowClientRequest {
+    identity: String,
+    #[serde(default)]
+    note: String,
+}
+
+async fn allow_client(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap, Json(req): Json<AllowClientRequest>) -> Response {
+    let s = match c.recent(&headers, &client).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let identity = req.identity.trim();
+    if !identity::is_global_id(identity) {
+        return fail(StatusCode::BAD_REQUEST, "that isn't a player's identity");
+    }
+    let note: String = req.note.chars().filter(|ch| !ch.is_control()).take(200).collect();
+    if let Err(e) = c.allow_client(identity, note.trim(), &s.username).await {
+        return internal(e);
+    }
+    c.audit(
+        &s.username,
+        Some(&client),
+        "allowed an identity other client builds",
+        &format!("{identity} ({})", note.trim()),
+    )
+    .await;
+    ok(json!({ "identity": identity }))
+}
+
+async fn disallow_client(
+    State(c): State<Shared>,
+    Extension(client): Extension<Client>,
+    headers: HeaderMap,
+    axum::extract::Path(identity): axum::extract::Path<String>,
+) -> Response {
+    let s = match c.recent(&headers, &client).await {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    match c.disallow_client(&identity).await {
+        Ok(true) => {
+            c.audit(&s.username, Some(&client), "took an identity off the other-builds list", &identity).await;
+            ok(json!({ "identity": identity }))
+        }
+        Ok(false) => fail(StatusCode::NOT_FOUND, "that identity isn't on the list"),
+        Err(e) => internal(e),
+    }
+}
+
 async fn restrictions(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap) -> Response {
     if let Err(r) = c.full(&headers, &client).await {
         return r;
@@ -1853,15 +1954,16 @@ async fn update_action(
         "rollback" => c.roll_back().await.map(|v| format!("rolling back to {v}")),
         "release" => c.roll_out(version.trim()).await.map(|()| format!("rolling out {}", version.trim())),
         "check" => match crate::updates::latest_signed(&crate::http()).await {
-            Ok((v, page, published)) => c
-                .release_found(&v, &page, &published)
-                .await
-                .map(|found| match found {
-                    crate::updates::Found::Started => format!("{v} is new: rolling it out"),
-                    crate::updates::Found::Kept => format!("{v} is the latest signed release"),
-                    crate::updates::Found::Held(why) => format!("{v} isn't rolled out on its own ({why})"),
-                })
-                .map_err(|e| e.to_string()),
+            Ok((v, page, published, sums)) => match c.note_client_builds(&v, &sums).await {
+                Err(e) => Err(e),
+                Ok(()) => c.release_found(&v, &page, &published).await,
+            }
+            .map(|found| match found {
+                crate::updates::Found::Started => format!("{v} is new: rolling it out"),
+                crate::updates::Found::Kept => format!("{v} is the latest signed release"),
+                crate::updates::Found::Held(why) => format!("{v} isn't rolled out on its own ({why})"),
+            })
+            .map_err(|e| e.to_string()),
             Err(e) => Err(e),
         },
         _ => return fail(StatusCode::NOT_FOUND, "no such action"),

@@ -41,6 +41,7 @@
 
 pub mod admin;
 pub mod alerts;
+pub mod clients;
 pub mod content;
 pub mod game_names;
 mod host_check;
@@ -1355,6 +1356,11 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, body: axum::body
     // Its maintenance windows and the network's, for its games' overlay.
     match c.heartbeat_maintenance(&server, identity::now()).await {
         Ok(windows) => answer["maintenance"] = windows,
+        Err(e) => return internal(e),
+    }
+    // Which client builds to take (clients.rs).
+    match c.client_rules().await {
+        Ok(rules) => answer["clients"] = rules,
         Err(e) => return internal(e),
     }
     ok(answer)

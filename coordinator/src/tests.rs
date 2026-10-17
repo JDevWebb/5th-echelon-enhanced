@@ -3936,3 +3936,52 @@ async fn a_host_on_this_machine_or_its_network_isnt_asked() {
     let (_, v) = t.call("GET", "/v1/servers", None, None).await;
     assert!(v["servers"].as_array().unwrap().is_empty());
 }
+
+/// Heartbeat answers say which client builds servers take: nothing judged until a signed
+/// release is recorded; then its client files' SHA-256, the mode (report until an admin
+/// chooses) and the identities allowed other builds, all set from the admin UI.
+#[tokio::test]
+async fn heartbeats_carry_the_client_builds_servers_take() {
+    let t = start("client-builds").await;
+    let r = admin_router(&t);
+    let a = t.join("server-a").await;
+    let beat = || async {
+        let (status, v) = t
+            .call("POST", "/v1/heartbeat", Some(&a), Some(json!({ "name": "server-a", "host": "server-a", "listed": true })))
+            .await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+        v["clients"].clone()
+    };
+    assert_eq!(beat().await["mode"], "off", "no release recorded");
+    let launcher = "a".repeat(64);
+    let sums = format!(
+        "{launcher}  launcher.exe\n{}  uplay_r1_loader.dll\n{}  dedicated_server-linux-x86_64\n",
+        "b".repeat(64),
+        "c".repeat(64)
+    );
+    t.c.note_client_builds("0.4.5", &sums).await.unwrap();
+    let rules = beat().await;
+    assert_eq!(rules["mode"], "report");
+    assert_eq!(rules["builds"].as_array().unwrap().len(), 2, "the server's file isn't a client's: {rules}");
+    assert!(rules["builds"].as_array().unwrap().contains(&json!(launcher)));
+
+    let cookie = admin_cookie(&t, "admin1", 10).await;
+    let (status, v) = admin_call(&r, "PUT", "/api/clients", &cookie, Some(json!({ "mode": "sometimes" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+    let (status, v) = admin_call(&r, "PUT", "/api/clients", &cookie, Some(json!({ "mode": "enforce" }))).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let dev = identity::Identity::generate().global_id();
+    let (status, v) = admin_call(&r, "POST", "/api/clients/allowed", &cookie, Some(json!({ "identity": "not-one" }))).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{v}");
+    let (status, v) = admin_call(&r, "POST", "/api/clients/allowed", &cookie, Some(json!({ "identity": dev, "note": "mouse fix" }))).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let rules = beat().await;
+    assert_eq!(rules["mode"], "enforce");
+    assert_eq!(rules["allowed"], json!([dev]));
+    let (status, v) = admin_call(&r, "GET", "/api/clients", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    assert_eq!(v["allowed"][0]["note"], "mouse fix");
+    let (status, _) = admin_call(&r, "DELETE", &format!("/api/clients/allowed/{dev}"), &cookie, None).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(beat().await["allowed"], json!([]));
+}

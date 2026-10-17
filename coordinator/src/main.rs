@@ -250,7 +250,7 @@ fn spawn_jobs(c: &Arc<coordinator::Coordinator>) {
     };
     every(coordinator::updates::CHECK_EVERY, c, "looking for releases", |c| {
         Box::pin(async move {
-            let (version, page, published) = match coordinator::updates::latest_signed(&coordinator::http()).await {
+            let (version, page, published, sums) = match coordinator::updates::latest_signed(&coordinator::http()).await {
                 Ok(found) => found,
                 // Nothing published yet: not worth a warning every ten minutes.
                 Err(e) if e.contains("404") => {
@@ -259,6 +259,8 @@ fn spawn_jobs(c: &Arc<coordinator::Coordinator>) {
                 }
                 Err(e) => return Err(e),
             };
+            // Its client files: the builds the network's servers take (clients.rs).
+            c.note_client_builds(&version, &sums).await.map_err(|e| e.to_string())?;
             c.release_found(&version, &page, &published).await.map(drop).map_err(|e| e.to_string())
         })
     });

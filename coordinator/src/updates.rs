@@ -726,7 +726,8 @@ pub fn delisted(r: &Rollout, version: &str, auto_update: bool, now: i64) -> Opti
 
 /// Asks GitHub for the latest release and checks its signature. Answers
 /// (version, page, published) for a signed release with a server build.
-pub async fn latest_signed(http: &reqwest::Client) -> Result<(String, String, String), String> {
+/// The newest signed release: its version, page, publication time and SHA256SUMS.
+pub async fn latest_signed(http: &reqwest::Client) -> Result<(String, String, String, String), String> {
     let get = |url: String| async move {
         let resp = http.get(&url).send().await.and_then(reqwest::Response::error_for_status).map_err(|e| e.to_string())?;
         if resp.content_length().is_some_and(|n| n > MAX_SMALL as u64) {
@@ -763,7 +764,7 @@ pub async fn latest_signed(http: &reqwest::Client) -> Result<(String, String, St
         return Err(format!("release {version} has no {SERVER_ASSET}"));
     }
     let page = release_page(&version, release["html_url"].as_str().unwrap_or_default());
-    Ok((version, page, release["published_at"].as_str().unwrap_or_default().to_string()))
+    Ok((version, page, release["published_at"].as_str().unwrap_or_default().to_string(), sums))
 }
 
 #[cfg(test)]

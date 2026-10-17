@@ -615,6 +615,12 @@ fn describe(e: &Event) -> String {
     let times = if e.count > 1 { format!(" ({} times)", e.count) } else { String::new() };
     match e.kind.as_str() {
         "signin" => "Signed in".into(),
+        "client_unverified" => format!(
+            "Not one of the project's releases: {} ({}){}",
+            e.str("client"),
+            e.str("why"),
+            if e.detail["refused"].as_bool() == Some(true) { "; refused" } else { "" }
+        ),
         "signin_refused" => {
             let why = match e.str("reason") {
                 "outdated" => format!("outdated client {}", e.str("client")),
