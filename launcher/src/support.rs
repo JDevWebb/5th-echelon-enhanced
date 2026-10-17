@@ -102,7 +102,7 @@ fn send(draft: &Draft) -> Result<(), String> {
                 std::net::IpAddr::V6(_) => None,
             })
             .collect();
-        let private = setup::feedback::Private::of_this_pc(keep);
+        let private = setup::feedback::Private::of_this_pc(keep).showing(&draft.name);
         let launcher_log = if draft.launcher_log { crate::logging::log_path() } else { None };
         let mut files = match &draft.game_dir {
             Some(dir) => setup::feedback::prepare(dir, launcher_log.as_deref(), &[], &private),

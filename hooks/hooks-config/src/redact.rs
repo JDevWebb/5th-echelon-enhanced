@@ -7,11 +7,13 @@ use std::net::Ipv6Addr;
 
 /// What to hide in the logs sent: the names of the player's Windows (or Linux) account and
 /// PC. Folders under a user's home are hidden whatever the name; so are public addresses
-/// other than `keep` (the server's, which isn't the player's).
+/// other than `keep` (the server's, which isn't the player's). Names in `shown` (the
+/// player's in-game name, which the server knows anyway) stay where they appear whole.
 #[derive(Debug, Clone, Default)]
 pub struct Private {
     pub names: Vec<String>,
     pub keep: Vec<Ipv4Addr>,
+    pub shown: Vec<String>,
 }
 
 impl Private {
@@ -23,26 +25,69 @@ impl Private {
             .map(|n| n.trim().to_string())
             .filter(|n| n.chars().count() >= 3)
             .collect();
-        Self { names, keep }
+        Self { names, keep, shown: Vec::new() }
+    }
+
+    /// Also keeps `name` (the player's in-game name) where it appears whole, even when it
+    /// holds or is the account's name ("Victor" for the account "Victo").
+    #[must_use]
+    pub fn showing(mut self, name: &str) -> Self {
+        let name = name.trim();
+        if !name.is_empty() {
+            self.shown.push(name.to_string());
+        }
+        self
     }
 }
 
 /// `text` with the private parts hidden: home folders (`C:\Users\<name>`, `/home/<name>`,
 /// also with doubled backslashes as debug output writes them), the names in `private`
-/// wherever they appear, public IPv4 addresses (`203.0.x.x`) other than those kept, and
-/// public IPv6 ones (`2001:db8:x`).
+/// wherever they appear (inside longer words too: `jon1987` is `<private>1987`), except
+/// within the player's own in-game name where it appears whole, public IPv4 addresses (`203.0.x.x`) other than those kept, and public IPv6 ones
+/// (`2001:db8:x`).
 pub fn redact(text: &str, private: &Private) -> String {
     // The names first: a home folder may be the whole of one ("C:\Users\Jo Smith").
-    // Longest first: a PC name often holds the account's ("Jons-Laptop" for "Jon"), and
-    // hiding the account's first would leave the rest of the PC's ("<private>s-Laptop").
-    let mut names: Vec<&str> = private.names.iter().map(String::as_str).collect();
-    names.sort_by_key(|n| std::cmp::Reverse(n.len()));
-    names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
-    let mut out = text.to_string();
-    for name in names {
-        out = replace_ignoring_case(&out, name, "<private>");
-    }
+    let out = hide_names(text, &private.names, &private.shown);
     hide_public_v6(&hide_public_addresses(&hide_homes(&out), &private.keep))
+}
+
+/// `text` with each of `names`, wherever it appears (inside a longer word too: the account's
+/// name in `jon1987` or `Jon_Desktop` is still the account's), ignoring (ASCII) case, as
+/// `<private>`; a `shown` name that appears as a whole word (no letter, digit or `_` on
+/// either side) stays as it is. Where several match at one place the longest wins: a PC name often holds the account's
+/// ("Jons-Laptop" for "Jon"), and hiding the account's alone would leave the rest of the
+/// PC's ("<private>s-Laptop"); the player's in-game name may hold it too ("Victor" for
+/// "Victo"). A shown name wins a tie: it's the player's own, which the server knows.
+fn hide_names(text: &str, names: &[String], shown: &[String]) -> String {
+    // ASCII case only: it keeps every byte where it was, so the offsets match `text`.
+    let lower = text.to_ascii_lowercase();
+    let lowered = |list: &[String]| list.iter().map(|n| n.to_ascii_lowercase()).filter(|n| !n.is_empty()).collect::<Vec<_>>();
+    let (names, shown) = (lowered(names), lowered(shown));
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    let whole_at =
+        |i: usize, name: &str| lower[i..].starts_with(name) && !text[..i].chars().next_back().is_some_and(is_word) && !text[i + name.len()..].chars().next().is_some_and(is_word);
+    let kept = |i: usize| shown.iter().filter(|n| whole_at(i, n)).map(String::len).max();
+    let hidden = |i: usize| names.iter().filter(|n| lower[i..].starts_with(n.as_str())).map(String::len).max();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < text.len() {
+        match (kept(i), hidden(i)) {
+            (Some(keep), hide) if hide.is_none_or(|h| keep >= h) => {
+                out.push_str(&text[i..i + keep]);
+                i += keep;
+            }
+            (_, Some(hide)) => {
+                out.push_str("<private>");
+                i += hide;
+            }
+            _ => {
+                let c = text[i..].chars().next().unwrap_or(' ');
+                out.push(c);
+                i += c.len_utf8();
+            }
+        }
+    }
+    out
 }
 
 /// Public IPv6 addresses, as `2001:db8:x` (the first two groups say the network, as an
@@ -102,24 +147,6 @@ fn hide_homes(text: &str) -> String {
     out
 }
 
-fn replace_ignoring_case(text: &str, what: &str, with: &str) -> String {
-    // ASCII case only: it keeps every byte where it was, so the offsets match `text`.
-    let lower = text.to_ascii_lowercase();
-    let what = what.to_ascii_lowercase();
-    if what.is_empty() {
-        return text.to_string();
-    }
-    let mut out = String::with_capacity(text.len());
-    let mut last = 0;
-    for (i, _) in lower.match_indices(&what) {
-        out.push_str(&text[last..i]);
-        out.push_str(with);
-        last = i + what.len();
-    }
-    out.push_str(&text[last..]);
-    out
-}
-
 fn hide_public_addresses(text: &str, keep: &[Ipv4Addr]) -> String {
     let bytes = text.as_bytes();
     let mut out = String::with_capacity(text.len());
@@ -153,6 +180,50 @@ fn hide_public_addresses(text: &str, keep: &[Ipv4Addr]) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::redact;
+    use super::Private;
+
+    fn account(names: &[&str]) -> Private {
+        Private {
+            names: names.iter().map(|n| (*n).to_string()).collect(),
+            ..Private::default()
+        }
+    }
+
+    #[test]
+    fn a_username_holding_the_account_name_stays() {
+        // The account "Victo", the player "Victor": no "Signed in as <private>r".
+        let private = account(&["Victo", "DESKTOP-NASN"]).showing("Victor");
+        assert_eq!(redact("Signed in as Victor", &private), "Signed in as Victor");
+        assert_eq!(redact("Signed in as VICTOR on DESKTOP-NASN", &private), "Signed in as VICTOR on <private>");
+        // Not shown: the account's name is hidden wherever it is, as before.
+        assert_eq!(redact("Signed in as Victor", &account(&["Victo"])), "Signed in as <private>r");
+        // The in-game name being the account's own: it's the player's, the server knows it.
+        assert_eq!(redact("Signed in as Victor", &account(&["victor"]).showing("Victor")), "Signed in as Victor");
+        // The account's name alone is still hidden.
+        assert_eq!(redact("profile of victo loaded", &private), "profile of <private> loaded");
+    }
+
+    #[test]
+    fn the_account_name_in_a_path_is_hidden() {
+        let private = account(&["Victo"]).showing("Victor");
+        let out = redact(r#"save "D:\Games\Victo\Blacklist" and "C:\\Users\\VICTO\\AppData", D:/victo/x"#, &private);
+        assert_eq!(out, r#"save "D:\Games\<private>\Blacklist" and "C:\\Users\\<user>\\AppData", D:/<private>/x"#);
+    }
+
+    #[test]
+    fn the_account_name_is_hidden_inside_other_words_too() {
+        let private = account(&["Jon"]).showing("Jonathan");
+        // The player's own name stays whole; the account's is hidden everywhere else, glued to
+        // digits or underscores too (a folder or PC name made from it).
+        assert_eq!(
+            redact("by JON, for jon: (Jon) Jonathan jon1987 Jon_Desktop xjon", &private),
+            "by <private>, for <private>: (<private>) Jonathan <private>1987 <private>_Desktop x<private>"
+        );
+        // Not whole, the in-game name doesn't keep the account's name in it.
+        assert_eq!(redact("Jonathans-PC", &private), "<private>athans-PC");
+    }
+
     #[test]
     fn public_ipv6_addresses_are_hidden_and_local_ones_stay() {
         let text = "peer [2001:db8:85a3::8a2e:370:7334]:13000, lan fe80::1%3, fd12:3456::1, ::1, at 12:34:56";

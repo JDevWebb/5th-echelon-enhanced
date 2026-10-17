@@ -107,6 +107,8 @@ pub fn start(config: &hooks_config::Config) {
     }
     let Ok(rt) = crate::api::runtime() else { return };
     let server = config.api_server.clone();
+    // The player's in-game name: the server knows it, so it stays in the lines sent.
+    let username = config.user.username.clone();
     // The same agreement covers the game's log when something goes wrong (the launcher's
     // question says so): the server may ask for it.
     let full_logs = true;
@@ -121,7 +123,7 @@ pub fn start(config: &hooks_config::Config) {
                 }));
             }
         }
-        let private = Private::of_this_pc(keep);
+        let private = Private::of_this_pc(keep).showing(&username);
         let mut last_sent = std::time::Instant::now();
         loop {
             tokio::time::sleep(EVERY).await;

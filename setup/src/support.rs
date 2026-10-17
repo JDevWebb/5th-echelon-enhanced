@@ -165,7 +165,7 @@ mod tests {
             "C:\\Users\\jon\\x: dropped\n",
             &Private {
                 names: vec!["jon".into()],
-                keep: vec![],
+                ..Private::default()
             },
         )
         .unwrap();

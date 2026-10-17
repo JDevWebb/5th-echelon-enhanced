@@ -534,6 +534,7 @@ mod tests {
         let private = Private {
             names: vec!["DESKTOP-NASN".into(), "msjou".into()],
             keep: vec![Ipv4Addr::new(139, 99, 171, 113)],
+            ..Private::default()
         };
         let text = r#"Save game name: "C:\\Users\\msjou\\AppData\\Roaming\\5th-Echelon"
 path="C:\Users\Jason\Documents" and /home/deck/.steam
@@ -554,7 +555,7 @@ this PC is 122.58.93.144:13000; advertising 139.99.171.113:40000; LAN 192.168.0.
     fn names_with_spaces_and_other_alphabets_are_hidden() {
         let private = Private {
             names: vec!["Jo Smith".into(), "DESKTOP-NASN".into()],
-            keep: vec![],
+            ..Private::default()
         };
         let text = "İstanbul: C:\\Users\\Jo Smith\\AppData and C:\\Users\\Other Name\\x; on desktop-nasn";
         let out = redact(text, &private);
@@ -566,7 +567,7 @@ this PC is 122.58.93.144:13000; advertising 139.99.171.113:40000; LAN 192.168.0.
     fn a_pc_name_holding_the_account_name_is_hidden_whole() {
         // As Windows lists them (USERNAME before COMPUTERNAME), and the other way round.
         for names in [vec!["Jon".to_string(), "Jons-Aero15KD".to_string()], vec!["Jons-Aero15KD".to_string(), "jon".to_string()]] {
-            let private = Private { names, keep: vec![] };
+            let private = Private { names, ..Private::default() };
             let out = redact(r#"gethostbyname: called with "Jons-Aero15KD" by JON"#, &private);
             assert_eq!(out, r#"gethostbyname: called with "<private>" by <private>"#);
         }

@@ -190,7 +190,7 @@ fn check(game_dir: PathBuf, exit: GameExit, checks: String, manual: bool) -> Res
             std::net::IpAddr::V6(_) => None,
         })
         .collect();
-    let private = setup::feedback::Private::of_this_pc(keep);
+    let private = setup::feedback::Private::of_this_pc(keep).showing(&profile.user.username);
     // Servers before 0.4.4 drop the report's `exit_code`: the checklist carries it too.
     let checks = if checks.is_empty() {
         exit.checklist_line()

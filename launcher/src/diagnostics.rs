@@ -78,7 +78,7 @@ impl Ask {
             ui.add_space(10.0);
             ui.horizontal(|ui| {
                 if self.example.is_none() && ui.add(theme::secondary("Show me an example")).clicked() {
-                    self.example = Some(example(&game.dir));
+                    self.example = Some(example(game));
                 }
                 // The two answers alike: neither is the one to pick.
                 if ui.add(theme::secondary("Keep sending")).clicked() {
@@ -104,11 +104,14 @@ impl Ask {
 }
 
 /// The last lines of the player's own log that would have been sent, private parts hidden.
-fn example(game_dir: &std::path::Path) -> Vec<String> {
-    let private = Private::of_this_pc(Vec::new());
+fn example(game: &crate::app::Game) -> Vec<String> {
+    let mut private = Private::of_this_pc(Vec::new());
+    if let Some(profile) = game.cfg.current_profile() {
+        private = private.showing(&profile.user.username);
+    }
     ["bl-tracing.log", "bl-tracing.prev.log"]
         .iter()
-        .filter_map(|f| std::fs::read_to_string(game_dir.join(f)).ok())
+        .filter_map(|f| std::fs::read_to_string(game.dir.join(f)).ok())
         .map(|log| hooks_config::diagnostics::example(&log, EXAMPLE_LINES))
         .find(|lines| !lines.is_empty())
         .unwrap_or_default()
