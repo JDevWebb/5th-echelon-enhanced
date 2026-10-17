@@ -30,6 +30,9 @@ pub const ROOM_CLOSED: u32 = 0xe92f_bc33;
 /// The room going as the player joined: its host `LEAVING`, the session `DISSOLVED`, or its
 /// `HOST_GONE` (no new host). The game's codes are the CRC-32 of these names.
 const ROOM_GOING: [u32; 3] = [0x33ae_7adc, 0x546d_52c6, 0x59d6_f9cc];
+/// `TICKET_PENDING`: the join was still waiting for the host. A failure of its own, but the game
+/// also sends it straight after another for the same join (the room closing as they joined).
+pub const TICKET_PENDING: u32 = 0xca47_3b80;
 /// `PRIVATE_SESSION`: invite only.
 const PRIVATE_SESSION: u32 = 0xbb26_3fc5;
 /// The game's own `VERSION_MISMATCH`: the host's answer couldn't be read with this game's data.
@@ -688,7 +691,7 @@ mod tests {
         assert_eq!(JoinOutcome::of(0x59d6_f9cc), JoinOutcome::Closed, "HOST_GONE");
         assert_eq!(JoinOutcome::of(0xbb26_3fc5), JoinOutcome::Locked, "PRIVATE_SESSION");
         assert_eq!(JoinOutcome::of(0x9bf4_cf37), JoinOutcome::DataMismatch, "the game's VERSION_MISMATCH");
-        for timed_out in [0xac2d_801a, 0xe4aa_ebcd, 0xca47_3b80] {
+        for timed_out in [0xac2d_801a, 0xe4aa_ebcd, TICKET_PENDING] {
             assert_eq!(JoinOutcome::of(timed_out), JoinOutcome::Failed, "{timed_out:#x}");
         }
         assert_eq!(JoinOutcome::of_detail(&json!({})), JoinOutcome::Failed);

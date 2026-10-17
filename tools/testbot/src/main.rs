@@ -1979,6 +1979,54 @@ async fn join_other_data(ctx: &mut Ctx) -> Result<()> {
     Ok(())
 }
 
+/// A room closing as a player joins it: the game reports its host LEAVING and, in the same
+/// second, TICKET_PENDING (often against its own party). That's one failure, told and
+/// explained once; a TICKET_PENDING on its own is still a failure of its own.
+async fn join_room_closing(ctx: &mut Ctx) -> Result<()> {
+    const LEAVING: u32 = 0x33ae_7adc;
+    const TICKET_PENDING: u32 = 0xca47_3b80;
+    let mut host = ctx.player("Host").await?;
+    let mut joiner = ctx.player("Joiner").await?;
+    let mut alone = ctx.player("Alone").await?;
+    host.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
+    let map = 940_000 + ctx.run;
+    let lobby = host.create_session(&format!("113 => 0;103 => 1;3 => 8;4 => 0;102 => 8;101 => {map}")).await?;
+    host.add_participants(lobby, &[], &[host.pid]).await?;
+    let party = joiner.create_session(LOBBY).await?;
+    joiner.add_participants(party, &[joiner.pid], &[]).await?;
+    for bot in [&mut joiner, &mut alone] {
+        let found = bot.search_sessions(&format!("113 => 0;103 => 1;102 => 8;101 => {map}")).await?;
+        ensure!(found.iter().any(|(s, _)| *s == lobby), "{} didn't find the lobby", bot.name);
+    }
+    let wait = Duration::from_secs(3);
+
+    joiner.report_failed_joins(&[(lobby, LEAVING)]).await?;
+    joiner.report_failed_joins(&[(party, TICKET_PENDING)]).await?;
+    let (title, _) = joiner.poll_notice(wait).await?.ok_or_else(|| eyre!("no notice for the room closing"))?;
+    ensure!(title == "Couldn't join: that room had just closed", "{title}");
+    if let Some((title, text)) = joiner.poll_notice(Duration::from_millis(800)).await? {
+        return Err(eyre!("the TICKET_PENDING after it was told too: {title}: {text}"));
+    }
+    let summary = joiner.session_summary().await.map_err(|e| eyre!("session summary: {}", e.message()))?;
+    ensure!(
+        (summary.failed_joins, summary.joins_explained) == (1, 1),
+        "one failure, explained, not two: {summary:?}"
+    );
+
+    alone.report_failed_joins(&[(lobby, TICKET_PENDING)]).await?;
+    let (title, _) = alone.poll_notice(wait).await?.ok_or_else(|| eyre!("no notice for a TICKET_PENDING on its own"))?;
+    ensure!(title == "Couldn't join", "{title}");
+    let summary = alone.session_summary().await.map_err(|e| eyre!("session summary: {}", e.message()))?;
+    ensure!(
+        (summary.failed_joins, summary.joins_explained) == (1, 0),
+        "a TICKET_PENDING on its own is a failure: {summary:?}"
+    );
+    for bot in [host, joiner, alone] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
 /// Someone joining a public match from a search reaches its players through the relay
 /// before their join reaches the server (the host's game has them connect first), once
 /// they've probed its host: not before, and not by probes.
@@ -2161,6 +2209,7 @@ const SCENARIOS: &[&str] = &[
     "member-invite",
     "join-notice",
     "join-other-data",
+    "join-room-closing",
     "relay-to-joiner",
     "search-other-data",
     "whats-being-played",
@@ -2307,6 +2356,7 @@ async fn main() -> Result<()> {
                 "member-invite" => member_invite(&mut ctx).await,
                 "join-notice" => join_notice(&mut ctx).await,
                 "join-other-data" => join_other_data(&mut ctx).await,
+                "join-room-closing" => join_room_closing(&mut ctx).await,
                 "relay-to-joiner" => relay_to_joiner(&mut ctx).await,
                 "search-other-data" => search_other_data(&mut ctx).await,
                 "whats-being-played" => whats_being_played(&mut ctx).await,

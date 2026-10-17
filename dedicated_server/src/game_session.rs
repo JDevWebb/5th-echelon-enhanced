@@ -1218,15 +1218,23 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         for failed in request.unsuccessful_join_sessions.0.iter().take(taken) {
             #[allow(clippy::cast_sign_loss)]
             let code = failed.error_code as u32;
-            let join = failed_join(&self.storage, user_id, failed.session_key.session_id, code);
-            if !join.own {
+            let reported = failed.session_key.session_id;
+            let join = match explained_just_before(user_id, code) {
+                Some(earlier) => FailedJoin::follow_up(&earlier, reported),
+                None => failed_join(&self.storage, user_id, reported, code),
+            };
+            if join.told() {
                 crate::metrics::failed_join();
             }
             let noted = join.counts().then(|| crate::reports::join_failed(user_id, join.room, code, join.outcome, join.mismatch.clone()));
-            // The player hears why at once, in the game's overlay (not their game's own churn);
-            // one that says all there is needn't be asked about after the game.
-            if !join.own {
+            // The player hears why at once, in the game's overlay (not their game's own churn,
+            // nor what they were just told); one that says all there is needn't be asked about
+            // after the game.
+            if join.told() {
                 let problem = join.outcome.problem();
+                if problem.explained() {
+                    note_explained(user_id, &join);
+                }
                 let m = join.mismatch.clone().unwrap_or_default();
                 let (title, text) = server_api::notices::join_notice(
                     problem,
@@ -1244,7 +1252,13 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 failed.session_key.type_id,
                 failed.error_category,
                 join.outcome.as_str(),
-                if join.own { ", the game's own room or one that had ended" } else { "" },
+                if join.own {
+                    ", the game's own room or one that had ended"
+                } else if join.follows {
+                    ", part of the failure just before"
+                } else {
+                    ""
+                },
                 join.reported_room.map(|r| format!(" (the game said session {r})")).unwrap_or_default()
             );
         }
@@ -1741,12 +1755,34 @@ struct FailedJoin {
     own: bool,
     /// For a data mismatch: both sides' data.
     mismatch: Option<crate::reports::Mismatch>,
+    /// The game's TICKET_PENDING straight after a failure it was told about (the room closing
+    /// as they joined): part of that one, on its room, with its outcome.
+    follows: bool,
 }
 
 impl FailedJoin {
     /// Whether it counts as the player's failed join, for their report prompt.
     fn counts(&self) -> bool {
-        !self.own && self.outcome.counts()
+        !self.own && !self.follows && self.outcome.counts()
+    }
+
+    /// Whether the player is told about it: not the game's own churn, nor a failure they
+    /// were just told about.
+    fn told(&self) -> bool {
+        !self.own && !self.follows
+    }
+
+    /// The game's TICKET_PENDING (against `reported`) following `earlier`, the failure the
+    /// player was just told about: part of it, on its room whatever room the game names.
+    fn follow_up(earlier: &Explained, reported: u32) -> Self {
+        FailedJoin {
+            room: earlier.room,
+            reported_room: (reported != earlier.room).then_some(reported),
+            outcome: earlier.outcome,
+            own: false,
+            mismatch: None,
+            follows: true,
+        }
     }
 
     /// The `join_failed` session event's detail.
@@ -1754,6 +1790,9 @@ impl FailedJoin {
         let mut detail = serde_json::json!({ "room": self.room, "code": format!("{code:#010x}"), "outcome": self.outcome.as_str() });
         if self.own {
             detail["own"] = true.into();
+        }
+        if self.follows {
+            detail["follows"] = true.into();
         }
         if let Some(reported) = self.reported_room {
             detail["reported_room"] = reported.into();
@@ -1827,7 +1866,55 @@ fn failed_join(storage: &Storage, user: u32, reported: u32, code: u32) -> Failed
         outcome,
         own,
         mismatch,
+        follows: false,
     }
+}
+
+/// A failed join the player was just told about, for the game's TICKET_PENDING after it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Explained {
+    room: u32,
+    outcome: crate::reports::JoinOutcome,
+}
+
+/// How soon after a failure the player was told about the game's TICKET_PENDING is part of
+/// it: it comes in the same second (the room closing as they joined: LEAVING, then
+/// TICKET_PENDING; 3 of 7 join-failure logs).
+const FOLLOWS_WITHIN: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// Each player's last failed join they were told about, and when.
+type ExplainedLately = std::collections::HashMap<u32, (std::time::Instant, Explained)>;
+
+fn explained_lately() -> std::sync::MutexGuard<'static, ExplainedLately> {
+    static LATELY: std::sync::OnceLock<std::sync::Mutex<ExplainedLately>> = std::sync::OnceLock::new();
+    LATELY.get_or_init(Default::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `user` was just told about `join`'s failure (one that says all there is).
+fn note_explained(user: u32, join: &FailedJoin) {
+    let mut lately = explained_lately();
+    if lately.len() >= 10_000 {
+        lately.retain(|_, (at, _)| at.elapsed() < FOLLOWS_WITHIN);
+    }
+    lately.insert(
+        user,
+        (
+            std::time::Instant::now(),
+            Explained {
+                room: join.room,
+                outcome: join.outcome,
+            },
+        ),
+    );
+}
+
+/// The failure `user` was just told about that their game's `code` is part of: a
+/// TICKET_PENDING within [`FOLLOWS_WITHIN`] of it. A TICKET_PENDING on its own is a failure.
+fn explained_just_before(user: u32, code: u32) -> Option<Explained> {
+    if code != crate::reports::TICKET_PENDING {
+        return None;
+    }
+    explained_lately().get(&user).filter(|(at, _)| at.elapsed() < FOLLOWS_WITHIN).map(|(_, e)| *e)
 }
 
 /// Join failures taken from one call, and from one player a minute (see
@@ -2295,6 +2382,60 @@ mod tests {
         // A full lobby says all there is, whatever the data.
         let join = failed_join(&storage, modded, lobby, crate::reports::ROOM_FULL);
         assert_eq!((join.outcome, join.mismatch), (JoinOutcome::Full, None));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The game's TICKET_PENDING straight after a failure the player was told about (LEAVING,
+    /// the room closing as they joined) is part of that one: not counted again, nor told,
+    /// and on its room whatever room the game names. On its own it's a failure.
+    #[test]
+    fn a_ticket_pending_after_an_explained_failure_is_part_of_it() {
+        use super::explained_just_before;
+        use super::failed_join;
+        use super::note_explained;
+        use super::FailedJoin;
+        use crate::reports::JoinOutcome;
+        use crate::reports::TICKET_PENDING;
+        const LEAVING: u32 = 0x33ae_7adc;
+        let (storage, dir) = crate::storage::tests::temp_storage("failed-joins-follow");
+        // Other ids than the two tests above (what the server gave each is shared).
+        for i in 0..9 {
+            storage.register_user(&format!("Pad{i}"), "pw", None).unwrap();
+        }
+        let mut ids = vec![];
+        for name in ["Leaver", "Joiner", "Alone"] {
+            storage.register_user(name, "pw", Some(name)).unwrap();
+            ids.push(storage.find_user_id_by_name(name).unwrap().unwrap());
+        }
+        let [host, joiner, alone] = ids[..] else { unreachable!() };
+        let room = storage.create_game_session(host, 1, "113 => 0;107 => 3909881133;3 => 8;4 => 0".into()).unwrap();
+        let party = storage.create_game_session(joiner, 1, "113 => 1;107 => 3909881133;3 => 2;4 => 0".into()).unwrap();
+        crate::join_targets::searched(joiner, [(room, host)]);
+
+        let leaving = failed_join(&storage, joiner, room, LEAVING);
+        assert_eq!((leaving.room, leaving.outcome), (room, JoinOutcome::Closed));
+        assert!(leaving.told() && leaving.counts() && leaving.outcome.problem().explained());
+        assert_eq!(explained_just_before(joiner, TICKET_PENDING), None, "nothing told yet");
+        note_explained(joiner, &leaving);
+        // In the same second, against the joiner's own party (na1: 909, put on 907).
+        let earlier = explained_just_before(joiner, TICKET_PENDING).unwrap();
+        assert_eq!((earlier.room, earlier.outcome), (room, JoinOutcome::Closed));
+        let pending = FailedJoin::follow_up(&earlier, party);
+        assert_eq!((pending.room, pending.reported_room, pending.outcome), (room, Some(party), JoinOutcome::Closed));
+        assert!(!pending.counts() && !pending.told(), "counted once, told once");
+        assert_eq!(pending.detail(TICKET_PENDING)["follows"], true);
+        // Only a TICKET_PENDING is part of it: another failure is one of its own.
+        assert_eq!(explained_just_before(joiner, 0xac2d_801a), None);
+        // Later than that, it's a failure of its own again.
+        super::explained_lately().get_mut(&joiner).unwrap().0 -= super::FOLLOWS_WITHIN;
+        assert_eq!(explained_just_before(joiner, TICKET_PENDING), None);
+
+        // A TICKET_PENDING on its own: the join's own failure, counted and not explained.
+        crate::join_targets::searched(alone, [(room, host)]);
+        let join = failed_join(&storage, alone, room, TICKET_PENDING);
+        assert_eq!(explained_just_before(alone, TICKET_PENDING), None);
+        assert_eq!((join.room, join.outcome, join.follows), (room, JoinOutcome::Failed, false));
+        assert!(join.counts() && join.told() && !join.outcome.problem().explained());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
