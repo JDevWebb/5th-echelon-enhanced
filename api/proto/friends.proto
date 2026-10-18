@@ -91,6 +91,8 @@ message Activity {
     // The game mode (attribute 102, the game's EGameMode: 8 is SvM Classic); 0 when the room
     // didn't say (0 is single player, never a room).
     uint32 game_mode = 5;
+    // The player hosts that room: a friend can join them without an invitation (JoinNow).
+    bool hosting = 6;
 }
 
 message Player {

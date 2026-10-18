@@ -244,6 +244,7 @@ mod tests {
             with: vec![],
             map,
             game_mode,
+            hosting: false,
         };
         assert_eq!(activity_what(&a("svm", 8, 0x05F6_9010)).as_deref(), Some("SvM Classic · Virus Vault"));
         assert_eq!(activity_what(&a("coop", 3, 0)).as_deref(), Some("Grim (Ghost)"));

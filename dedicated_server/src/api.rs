@@ -308,6 +308,7 @@ impl MyFriends {
                 with: a.with,
                 map: a.map.unwrap_or_default(),
                 game_mode: a.game_mode.unwrap_or_default(),
+                hosting: a.hosting,
             });
         let status = name_status(&person);
         let mut p = friends::Player {

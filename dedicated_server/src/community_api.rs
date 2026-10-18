@@ -53,6 +53,7 @@ const FEATURES: &[&str] = &[
     "identity-login",
     "rename",
     "name-check",
+    "join-now",
 ];
 
 /// Session attributes (see game_session.rs): 101 map, 102 mode, 113 room kind
@@ -256,6 +257,8 @@ pub(crate) struct Activity {
     pub map: Option<u32>,
     /// The game's mode number (8 is SvM Classic), in a match.
     pub game_mode: Option<u32>,
+    /// They host that room (a friend can join them without an invitation, `JoinNow`).
+    pub hosting: bool,
 }
 
 /// `name`'s activity: the match they're in (preferred) or their lobby.
@@ -278,6 +281,7 @@ pub(crate) fn activity_of(name: &str, sessions: &[LiveSession]) -> Option<Activi
         with: best.players.iter().filter(|p| *p != name).cloned().collect(),
         map: attribute_value(&best.attributes, ATTR_MAP),
         game_mode: attribute_value(&best.attributes, ATTR_GAME_MODE),
+        hosting: best.host == name,
     })
 }
 
