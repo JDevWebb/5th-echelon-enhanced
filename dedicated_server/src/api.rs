@@ -514,13 +514,17 @@ impl Friends for MyFriends {
             }
         }
         // The invitation this queues is the one to deliver as a requested join: another one
-        // already waiting for the caller goes out as the ordinary invitation it is.
+        // already waiting for the caller goes out as the ordinary invitation it is. Marked
+        // before it's committed, so the caller's event poll can't take it unmarked.
+        let sender = if host == friend { host } else { friend };
+        let room_id = room.session_id;
         let invite = self
             .storage
-            .add_join_request_async(host, (host != friend).then_some(friend), me, room.session_type, room.session_id)
+            .add_join_request_async(host, (host != friend).then_some(friend), me, room.session_type, room_id, |invite| {
+                crate::join_requests::mark(me, crate::join_requests::Requested { invite, sender, room: room_id });
+            })
             .await
             .map_err(|e| Status::resource_exhausted(format!("Couldn't queue the join: {e}")))?;
-        crate::join_requests::mark(me, invite);
         match host == friend {
             true => info!(self.logger, "JoinNow: {me} joins {host}'s session {} (invitation {invite}, requested)", room.session_id),
             false => info!(
@@ -1422,7 +1426,16 @@ impl Misc for MyMisc {
                 // A launcher/overlay "join a friend" (JoinNow) marks the caller with the
                 // invitation it queued: that one is delivered as a join the player asked for
                 // (honoured without a click); any other waiting invitation isn't.
-                requested: crate::join_requests::take(user_id, invite.id),
+                requested: invite.session_id.is_some_and(|room| {
+                    crate::join_requests::take(
+                        user_id,
+                        crate::join_requests::Requested {
+                            invite: invite.id,
+                            sender: invite.sender,
+                            room,
+                        },
+                    )
+                }),
             }),
             friend: None,
             notice: notice(),

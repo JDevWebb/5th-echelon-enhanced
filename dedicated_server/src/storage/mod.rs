@@ -1094,7 +1094,7 @@ impl Storage {
             "invite",
             serde_json::json!({ "to": receiver_id, "room": session_id }),
         );
-        self.insert_invite_async(sender_id, receiver_id, session_type, session_id).await
+        self.insert_invite_async(sender_id, receiver_id, session_type, session_id, |_| {}).await
     }
 
     /// Records the invitation a join request (`JoinNow`) stands on: to `joiner`, bound to
@@ -1102,7 +1102,10 @@ impl Storage {
     /// when the friend joined through is the host; else from that friend (`via`), a member of
     /// the room, so it holds as a member's invitation does ([`invite_holds_sql`]). The session
     /// log notes a join request by the joiner, since nobody invited anyone.
-    pub async fn add_join_request_async(&self, host: u32, via: Option<u32>, joiner: u32, session_type: u32, session_id: u32) -> Result<i64> {
+    ///
+    /// `queued` is told the new invitation's id before it's committed, so the caller can mark it
+    /// as the requested join before any event poll can take it (see `join_requests`).
+    pub async fn add_join_request_async(&self, host: u32, via: Option<u32>, joiner: u32, session_type: u32, session_id: u32, queued: impl FnOnce(i64) + Send) -> Result<i64> {
         match via {
             Some(via) => info!(
                 self.logger,
@@ -1115,10 +1118,12 @@ impl Storage {
             "join-request",
             serde_json::json!({ "host": host, "room": session_id, "via": via }),
         );
-        self.insert_invite_async(via.unwrap_or(host), joiner, Some(session_type), Some(session_id)).await
+        self.insert_invite_async(via.unwrap_or(host), joiner, Some(session_type), Some(session_id), queued).await
     }
 
-    async fn insert_invite_async(&self, sender_id: u32, receiver_id: u32, session_type: Option<u32>, session_id: Option<u32>) -> Result<i64> {
+    /// Records the invitation ([`Self::add_invite_async`]); `queued` is told its id while it's
+    /// still uncommitted: nobody can take it before that's done.
+    async fn insert_invite_async(&self, sender_id: u32, receiver_id: u32, session_type: Option<u32>, session_id: Option<u32>, queued: impl FnOnce(i64) + Send) -> Result<i64> {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query("DELETE FROM invites WHERE (receiver = ? AND sender = ?) OR consumed_at IS NOT NULL OR expires_at IS NULL OR expires_at <= CURRENT_TIMESTAMP")
             .bind(receiver_id)
@@ -1140,6 +1145,7 @@ impl Storage {
             .execute(&mut *transaction)
             .await?
             .last_insert_rowid();
+        queued(id);
         transaction.commit().await?;
         Ok(id)
     }
