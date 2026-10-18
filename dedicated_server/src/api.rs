@@ -445,10 +445,10 @@ impl Friends for MyFriends {
     /// Joins a friend's game without an invitation (the launcher's/overlay's "Join"): queues an
     /// invitation from the friend to the caller, marked as a join the caller asked for, so the
     /// caller's running game joins on its next event poll. Only a friend (or anyone, in
-    /// "everyone" mode) who is in a party: their own, or someone else's they're a member of -
-    /// then the invitation is the friend's, bound to that party, and holds as a member's
-    /// invitation does (while its host has the friend as a friend; `invite_holds_sql`). A match
-    /// still needs a real invitation.
+    /// "everyone" mode) who is in a party: their own, or someone else's they're a participant
+    /// of - then the invitation is the friend's, bound to that party, and holds as a member's
+    /// invitation does (while its host has the friend as a friend; `invite_holds_sql`). A friend
+    /// in a match, theirs or not, still needs a real invitation.
     async fn join_now(&self, request: Request<friends::JoinNowRequest>) -> Result<Response<friends::JoinNowResponse>, Status> {
         use friends::join_now_response::Status as JoinStatus;
         let me = caller(&request)?;
@@ -474,63 +474,65 @@ impl Friends for MyFriends {
             _ if self.mode == FriendsMode::Mutual => return reply(JoinStatus::NotFriends, "Only friends can join each other on this server."),
             _ => {}
         }
-        // The friend's own hosted session first: a party is joinable, a private match needs a
-        // real invitation. Without one, the session they're a member of: its host's party (the
-        // invitation is then the friend's, as a member's), or a match, which needs a real
-        // invitation. In neither, they aren't in a game right now.
+        // Where the friend is: the rooms they host, and those they're in as a member (a
+        // participant, or a guest who joined from a search). A match, hosted or not, needs a
+        // real invitation - as the friend list says, a match wins over the party around it
+        // (`community_api::activity_of`): the anteroom of a host who's in a match isn't a way in.
         let host_sessions = self.storage.find_host_sessions_async(friend).await.map_err(internal)?;
-        let own = host_sessions.iter().find(|s| !is_private_room(s)).or_else(|| host_sessions.first());
-        let member_sessions = match own {
-            Some(_) => Vec::new(),
-            None => self.storage.member_sessions_async(friend).await.map_err(internal)?,
-        };
-        let (host, room) = match own {
-            Some(room) => (friend, room),
+        let member_sessions = self.storage.member_sessions_async(friend).await.map_err(internal)?;
+        if host_sessions.iter().chain(&member_sessions).any(is_private_room) {
+            return reply(JoinStatus::Private, "That player is in a match - you need an invitation.");
+        }
+        // Their own party; else a party they're a participant of, joined through them as a
+        // member's invitation (see the invite handler): only a member the host trusts (a
+        // friend), and only to someone the host hasn't blocked (nor been blocked by). Not a
+        // party they're only a guest of: a guest's invitation doesn't hold. Checked again
+        // whenever the invitation is used (`invite_holds_sql`).
+        let (host, session_type, room_id) = match host_sessions.first() {
+            Some(room) => (friend, room.session_type, room.session_id),
+            None if member_sessions.is_empty() => return reply(JoinStatus::Offline, "That player isn't in a game right now."),
             None => {
-                let Some(room) = member_sessions.iter().find(|s| !is_private_room(s)).or_else(|| member_sessions.first()) else {
-                    return reply(JoinStatus::Offline, "That player isn't in a game right now.");
+                let mut refusal = (
+                    JoinStatus::NotFriendsWithHost,
+                    "That player can't bring you in: they aren't a member the game's host trusts.",
+                );
+                let mut found = None;
+                for party in self.storage.member_parties_async(friend).await.map_err(internal)? {
+                    let host = party.creator_id;
+                    if host == me {
+                        return Err(Status::invalid_argument("You're already in that game: it's yours."));
+                    }
+                    if matches!(self.storage.relation(host, me).await.map_err(internal)?, Relation::Blocked | Relation::BlockedBy) {
+                        refusal = (JoinStatus::NotFriends, "You can't join that game.");
+                        continue;
+                    }
+                    if !matches!(self.storage.relation(host, friend).await.map_err(internal)?, Relation::Friend) {
+                        continue;
+                    }
+                    found = Some((host, party.session_type, party.session_id));
+                    break;
+                }
+                let Some(found) = found else {
+                    return reply(refusal.0, refusal.1);
                 };
-                (room.creator_id, room)
+                found
             }
         };
-        if is_private_room(room) {
-            return reply(JoinStatus::Private, "That player's match is private - you need an invitation.");
-        }
-        if host != friend {
-            if host == me {
-                return Err(Status::invalid_argument("You're already in that game: it's yours."));
-            }
-            // As a member's invitation (see the invite handler): only a member the host trusts
-            // (a friend), and only to someone the host hasn't blocked (nor been blocked by).
-            // Checked again whenever the invitation is used (`invite_holds_sql`).
-            if matches!(self.storage.relation(host, me).await.map_err(internal)?, Relation::Blocked | Relation::BlockedBy) {
-                return reply(JoinStatus::NotFriends, "You can't join that game.");
-            }
-            if !matches!(self.storage.relation(host, friend).await.map_err(internal)?, Relation::Friend) {
-                return reply(
-                    JoinStatus::NotFriendsWithHost,
-                    "That player can't bring you in: the game's host doesn't have them as a friend.",
-                );
-            }
-        }
         // The invitation this queues is the one to deliver as a requested join: another one
         // already waiting for the caller goes out as the ordinary invitation it is. Marked
         // before it's committed, so the caller's event poll can't take it unmarked.
-        let sender = if host == friend { host } else { friend };
-        let room_id = room.session_id;
+        let via = (host != friend).then_some(friend);
+        let sender = via.unwrap_or(host);
         let invite = self
             .storage
-            .add_join_request_async(host, (host != friend).then_some(friend), me, room.session_type, room_id, |invite| {
+            .add_join_request_async(host, via, me, session_type, room_id, |invite| {
                 crate::join_requests::mark(me, crate::join_requests::Requested { invite, sender, room: room_id });
             })
             .await
             .map_err(|e| Status::resource_exhausted(format!("Couldn't queue the join: {e}")))?;
-        match host == friend {
-            true => info!(self.logger, "JoinNow: {me} joins {host}'s session {} (invitation {invite}, requested)", room.session_id),
-            false => info!(
-                self.logger,
-                "JoinNow: {me} joins {host}'s session {} through {friend} (invitation {invite}, requested)", room.session_id
-            ),
+        match via {
+            None => info!(self.logger, "JoinNow: {me} joins {host}'s session {room_id} (invitation {invite}, requested)"),
+            Some(via) => info!(self.logger, "JoinNow: {me} joins {host}'s session {room_id} through {via} (invitation {invite}, requested)"),
         }
         reply(JoinStatus::Ok, "")
     }

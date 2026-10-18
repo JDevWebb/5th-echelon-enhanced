@@ -615,7 +615,7 @@ fn join_now_impl(id: &str, name: &str) {
             }
             _ if !resp.detail.is_empty() => say(resp.detail, true),
             JoinStatus::Offline => say(format!("{name} isn't in a game right now."), true),
-            JoinStatus::Private => say(format!("{name}'s match is private - you need an invitation."), true),
+            JoinStatus::Private => say(format!("{name} is in a match - you need an invitation."), true),
             JoinStatus::NotFriendsWithHost => say(format!("{name} can't bring you in: the game's host doesn't have them as a friend."), true),
             _ => say(format!("Couldn't join {name}."), true),
         },

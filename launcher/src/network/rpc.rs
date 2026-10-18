@@ -268,8 +268,8 @@ pub async fn relationships(api_url: String, token: &str) -> Result<server_api::f
     }
 }
 
-/// Asks the server to join a friend's game (`JoinNow`): it queues a force-join for the caller's
-/// running game. `friend_id` is the friend's account id.
+/// Asks the server to join a friend's game (`JoinNow`): it queues an invitation for the caller's
+/// game, marked as a join they asked for. `friend_id` is the friend's account id.
 pub async fn join_now(api_url: String, token: &str, friend_id: String) -> Result<server_api::friends::JoinNowResponse, Error> {
     let channel = super::endpoint(&api_url)?.connect().await.map_err(|_| Error::ConnectionFailed)?;
     let mut client = server_api::friends::friends_client::FriendsClient::new(channel);

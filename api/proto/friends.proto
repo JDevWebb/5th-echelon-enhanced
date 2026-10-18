@@ -10,8 +10,8 @@ service Friends {
     // caller's running game joins the party the friend is in - their own, or one they're a
     // member of (then the invitation counts as the friend's, like a member's invitation: it
     // holds while the party's host has the friend as a friend). Only a friend (or anyone, in
-    // "everyone" mode) who is in a party; a match needs a real invitation. Servers that offer
-    // it list "join-now" in /api/info's features.
+    // "everyone" mode) who is in a party and not in a match: a match, theirs or not, needs a
+    // real invitation. Servers that offer it list "join-now" in /api/info's features.
     rpc JoinNow (JoinNowRequest) returns (JoinNowResponse);
     // Publishes the game session the caller is currently in, so that it shows up in the
     // friend lists of everybody else. The game announces its session through
@@ -235,10 +235,11 @@ message JoinNowResponse {
         NOT_FRIENDS = 2;
         // The friend isn't in a game right now.
         OFFLINE = 3;
-        // The friend's game is private/invite-only: it needs a real invitation.
+        // The friend is in a match (hosting it or not): it needs a real invitation.
         PRIVATE = 4;
-        // The friend is a member of someone else's party, but its host doesn't have them as a
-        // friend, so they can't bring anyone in (as with a member's invitation).
+        // The friend is a member of someone else's party but can't bring anyone in (as with a
+        // member's invitation): its host doesn't have them as a friend, or they're only a
+        // guest there.
         NOT_FRIENDS_WITH_HOST = 5;
     }
     Status status = 1;
