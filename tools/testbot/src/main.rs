@@ -624,7 +624,7 @@ async fn rename(ctx: &mut Ctx) -> Result<()> {
 
 /// In the "mutual" mode: only friends are listed, and only friends invite.
 async fn friends_mutual(ctx: &mut Ctx) -> Result<()> {
-    let a = ctx.player("Host").await?;
+    let mut a = ctx.player("Host").await?;
     let b = ctx.player("Guest").await?;
     ensure!(a.relationships().await?.mode == "mutual", "the server isn't in the mutual mode");
     // Who's online is for friends: an empty search lists none of the strangers who are.
@@ -644,8 +644,37 @@ async fn friends_mutual(ctx: &mut Ctx) -> Result<()> {
     );
     a.try_invite(&b.name).await.map_err(|e| eyre!("a friend couldn't invite: {e}"))?;
     ensure!(b.poll_invite(Duration::from_secs(3)).await?.as_deref() == Some(a.name.as_str()), "the invite didn't arrive");
+    // Joining a friend who is in a stranger's party (JoinNow): only once that host has the
+    // friend as a friend; the invitation is the friend's.
+    let mut c = ctx.player("Host").await?;
+    c.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
+    let party = c.create_session(LOBBY).await?;
+    c.add_participants(party, &[c.pid], &[]).await?;
+    a.register_urls(&["prudp:/address=127.0.0.1;port=3075;sid=15;type=3"]).await?;
+    a.add_participants(party, &[a.pid], &[]).await?;
+    let refused = b.join_now(&a.id).await?;
+    ensure!(
+        refused.status() == JoinStatus::NotFriendsWithHost,
+        "joining through a member the host doesn't trust answered {:?}",
+        refused.status()
+    );
+    c.friend_change("request", &a.name).await?;
+    a.friend_change("accept", &c.name).await?;
+    let answer = b.join_now(&a.id).await?;
+    ensure!(
+        answer.status() == JoinStatus::Ok,
+        "JoinNow through a friend answered {:?}: {}",
+        answer.status(),
+        answer.detail
+    );
+    let got = b.poll_invite_event(Duration::from_secs(3)).await?;
+    ensure!(
+        got.as_ref().is_some_and(|(from, requested)| *from == a.name && *requested),
+        "the friend's invitation isn't delivered as the requested join: {got:?}"
+    );
     a.disconnect().await?;
-    b.disconnect().await
+    b.disconnect().await?;
+    c.disconnect().await
 }
 
 /// Wrong passwords for an account from one address stop that address only:
@@ -801,29 +830,32 @@ async fn login(ctx: &mut Ctx) -> Result<()> {
 
 /// Joining a friend's game without an invitation (the launcher's and the overlay's Join,
 /// `JoinNow`): a friend hosting a public room is joined with an invitation marked as
-/// requested; one in a private match isn't (PRIVATE); one not hosting isn't (OFFLINE); nor
+/// requested; one in a private match isn't (PRIVATE); one not in a game isn't (OFFLINE); nor
 /// oneself. An older invitation from someone else, already waiting, is delivered first and
-/// as it is: not as the requested join.
+/// as it is: not as the requested join. A friend who is a member of someone else's party is
+/// joined through: the invitation is the friend's, to the host's party, found by the search
+/// for the friend - only once the host has the friend as a friend (NOT_FRIENDS_WITH_HOST
+/// before); a friend in someone else's private match answers PRIVATE.
 async fn join_now(ctx: &mut Ctx) -> Result<()> {
     let mut host = ctx.player("Host").await?;
-    let guest = ctx.player("Guest").await?;
+    let mut guest = ctx.player("Guest").await?;
     let other = ctx.player("Host").await?;
     host.friend_change("request", &guest.name).await?;
     guest.friend_change("accept", &host.name).await?;
     host.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
     let lobby = host.create_session(LOBBY).await?;
     host.add_participants(lobby, &[host.pid], &[]).await?;
-    // The friend list says who hosts: that's where the Join button goes.
+    // The friend list says who can be joined: that's where the Join button goes.
     let listed = guest.relationships().await?;
     let friend = listed.friends.iter().find(|p| p.username == host.name).ok_or_else(|| eyre!("the host isn't a friend"))?;
     ensure!(
-        friend.activity.as_ref().is_some_and(|a| a.hosting),
-        "the friend list doesn't say the host hosts: {friend:?}"
+        friend.activity.as_ref().is_some_and(|a| a.joinable),
+        "the friend list doesn't say the host can be joined: {friend:?}"
     );
 
     ensure!(guest.join_now(&guest.id).await.is_err(), "joining oneself wasn't refused");
     let refused = guest.join_now(&other.id).await?;
-    ensure!(refused.status() == JoinStatus::Offline, "joining someone not hosting answered {:?}", refused.status());
+    ensure!(refused.status() == JoinStatus::Offline, "joining someone not in a game answered {:?}", refused.status());
 
     // Someone else's invitation is already waiting when the player clicks Join.
     other.invite(&guest.name).await?;
@@ -852,10 +884,81 @@ async fn join_now(ctx: &mut Ctx) -> Result<()> {
         "a refused join still queued an invitation"
     );
 
+    // A friend who is a member of someone else's party: joined through them, once the party's
+    // host has them as a friend.
+    let mut member = ctx.player("Guest").await?;
+    member.friend_change("request", &guest.name).await?;
+    guest.friend_change("accept", &member.name).await?;
+    let mut party_host = ctx.player("Host").await?;
+    party_host.register_urls(&["prudp:/address=127.0.0.1;port=3077;sid=15;type=3"]).await?;
+    let party = party_host.create_session(LOBBY).await?;
+    party_host.add_participants(party, &[party_host.pid], &[]).await?;
+    member.register_urls(&["prudp:/address=127.0.0.1;port=3078;sid=15;type=3"]).await?;
+    member.add_participants(party, &[member.pid], &[]).await?;
+    member.join_session(party).await?;
+    let listed = guest.relationships().await?;
+    let friend = listed
+        .friends
+        .iter()
+        .find(|p| p.username == member.name)
+        .ok_or_else(|| eyre!("the member isn't a friend"))?;
+    ensure!(
+        friend.activity.as_ref().is_some_and(|a| a.joinable),
+        "the friend list doesn't say the member can be joined: {friend:?}"
+    );
+    let refused = guest.join_now(&member.id).await?;
+    ensure!(
+        refused.status() == JoinStatus::NotFriendsWithHost,
+        "joining through a member the host doesn't trust answered {:?}",
+        refused.status()
+    );
+    party_host.friend_change("request", &member.name).await?;
+    member.friend_change("accept", &party_host.name).await?;
+    let answer = guest.join_now(&member.id).await?;
+    ensure!(
+        answer.status() == JoinStatus::Ok,
+        "JoinNow through a member answered {:?}: {}",
+        answer.status(),
+        answer.detail
+    );
+    let got = guest.poll_invite_event(Duration::from_secs(3)).await?;
+    ensure!(
+        got.as_ref().is_some_and(|(from, requested)| *from == member.name && *requested),
+        "the member's invitation isn't delivered as the requested join: {got:?}"
+    );
+    // As the game does on accepting: it searches for the friend it accepted, and must be
+    // answered with the host's party.
+    let found = guest.search_with_participants(&[member.pid]).await?;
+    ensure!(
+        found.iter().any(|r| r.game_session_search_result.session_key.session_id == party),
+        "the search for the member doesn't lead to the host's party: {found:?}"
+    );
+
+    // A friend in someone else's private match: a real invitation is needed.
+    let inside = ctx.player("Guest").await?;
+    inside.friend_change("request", &guest.name).await?;
+    guest.friend_change("accept", &inside.name).await?;
+    let mut match_host = ctx.player("Host").await?;
+    match_host.register_urls(&["prudp:/address=127.0.0.1;port=3079;sid=15;type=3"]).await?;
+    match_host.friend_change("request", &inside.name).await?;
+    inside.friend_change("accept", &match_host.name).await?;
+    let game = match_host.create_session(PRIVATE_MATCH).await?;
+    match_host.add_participants(game, &[], &[match_host.pid, inside.pid]).await?;
+    let refused = guest.join_now(&inside.id).await?;
+    ensure!(
+        refused.status() == JoinStatus::Private,
+        "joining a friend in a private match answered {:?}",
+        refused.status()
+    );
+
     host.disconnect().await?;
     guest.disconnect().await?;
     other.disconnect().await?;
-    private.disconnect().await
+    private.disconnect().await?;
+    member.disconnect().await?;
+    party_host.disconnect().await?;
+    inside.disconnect().await?;
+    match_host.disconnect().await
 }
 
 /// Invite into a lobby: delivered, found by the friend search, joinable.
