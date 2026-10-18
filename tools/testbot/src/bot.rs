@@ -116,6 +116,8 @@ pub const SESSION_TYPE: u32 = 1;
 
 pub struct Bot {
     pub name: String,
+    /// The account id (as the API names players, e.g. in `JoinNow`).
+    pub id: String,
     pub pid: u32,
     /// The NAT helper ticket from signing in.
     pub nat_ticket: nat_proto::Ticket,
@@ -435,6 +437,7 @@ impl Bot {
         let nat_ticket = login.nat_ticket.as_slice().try_into().unwrap_or([0; 16]);
         Ok(Bot {
             name: name.into(),
+            id: login.user.map(|u| u.id).unwrap_or_default(),
             pid,
             nat_ticket,
             token: login.token,
@@ -898,6 +901,35 @@ impl Bot {
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
+    }
+
+    /// Polls for an invitation as the DLL does every second: the inviter's name and whether
+    /// it's a join this player asked for (`JoinNow`'s `requested`).
+    pub async fn poll_invite_event(&self, wait: Duration) -> Result<Option<(String, bool)>> {
+        let deadline = tokio::time::Instant::now() + wait;
+        loop {
+            let resp = MiscClient::new(self.api.clone())
+                .event(self.authed(server_api::misc::EventRequest { notices: false }))
+                .await?
+                .into_inner();
+            if let Some(invite) = resp.invite {
+                let from = invite.sender.map(|s| s.username).unwrap_or_default();
+                return Ok(Some((from, invite.requested)));
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Ok(None);
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    /// Asks to join the game of the player with account id `id` without an invitation, as the
+    /// launcher's and the overlay's Join do (`JoinNow`): the server's answer, or its refusal.
+    pub async fn join_now(&self, id: &str) -> std::result::Result<server_api::friends::JoinNowResponse, tonic::Status> {
+        Ok(FriendsClient::new(self.api.clone())
+            .join_now(self.authed(server_api::friends::JoinNowRequest { id: id.into() }))
+            .await?
+            .into_inner())
     }
 
     /// Friends as the game's friend list shows them: (name, online).
