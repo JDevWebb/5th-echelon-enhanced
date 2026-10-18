@@ -460,7 +460,8 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                     launch(play, game, notices);
                 }
                 let cfg = game.cfg.clone();
-                play.joining.start(&ctx, move || flow::join_friend(&cfg, &id, &name));
+                let game_dir = game.dir.clone();
+                play.joining.start(&ctx, move || flow::join_friend(&cfg, &game_dir, &id, &name));
             }
         }
     });
@@ -1601,14 +1602,23 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
             for friend in &friends.online {
                 ui.horizontal(|ui| {
                     friend_row(ui, theme::OK, &friend.name, friend.activity.as_deref().unwrap_or("Online"));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        // Join their game: the server sends our game into their public match (it's
-                        // started first if it isn't running). A private match still needs an invite.
-                        let button = ui.add_enabled(!play.setup.running() && !play.joining.running(), theme::secondary("Join"));
-                        if button.on_hover_text("Join this friend's game").clicked() {
-                            join_click = Some((friend.id.clone(), friend.name.clone()));
-                        }
-                    });
+                    // Join their game, on a server that offers it: the server sends our game into
+                    // their public room (the game is started first if it isn't running). Only a
+                    // friend hosting one; a private match still needs an invite.
+                    if friends.join_offered {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let can = friend.hosting && !play.setup.running() && !play.joining.running();
+                            let button = ui.add_enabled(can, theme::secondary("Join"));
+                            let button = if friend.hosting {
+                                button.on_hover_text("Join this friend's game")
+                            } else {
+                                button.on_disabled_hover_text(format!("{} isn't hosting a game right now", friend.name))
+                            };
+                            if button.clicked() {
+                                join_click = Some((friend.id.clone(), friend.name.clone()));
+                            }
+                        });
+                    }
                 });
             }
             for friend in &friends.elsewhere {
