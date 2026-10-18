@@ -351,8 +351,14 @@ fn take_launcher_join_request() {
         return;
     };
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    // Dated ahead (beyond a little clock slack) it would outlive its time: not one of the
+    // launcher's.
+    if request.at > now + 60 || !crate::api::is_plain_id(&request.id) {
+        warn!("The launcher's join request isn't a valid one; ignored");
+        return;
+    }
     let age = Duration::from_secs(now.saturating_sub(request.at).max(0) as u64);
-    if age >= JOIN_REQUEST_FOR || !crate::api::is_plain_id(&request.id) {
+    if age >= JOIN_REQUEST_FOR {
         info!("The launcher's join request is stale ({}s old); ignored", age.as_secs());
         return;
     }
