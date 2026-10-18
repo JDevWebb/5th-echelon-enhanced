@@ -5,9 +5,11 @@ package friends;
 service Friends {
     rpc List (ListRequest) returns (ListResponse);
     rpc Invite (InviteRequest) returns (InviteResponse);
-    // Asks to join a friend's game without an invitation: binds a force-join invitation from
-    // the friend to the caller, so the caller's running game joins their public session. Only a
-    // friend (or anyone, in "everyone" mode) who is in a joinable, non-private session.
+    // Asks to join a friend's game without an invitation: queues an invitation from the friend
+    // to the caller, delivered as a join the caller asked for (InviteEvent.requested), so the
+    // caller's running game joins their public session. Only a friend (or anyone, in "everyone"
+    // mode) who is in a joinable, non-private session. Servers that offer it list "join-now"
+    // in /api/info's features.
     rpc JoinNow (JoinNowRequest) returns (JoinNowResponse);
     // Publishes the game session the caller is currently in, so that it shows up in the
     // friend lists of everybody else. The game announces its session through
@@ -220,7 +222,7 @@ message JoinNowRequest {
 
 message JoinNowResponse {
     enum Status {
-        // A force-join was queued; the caller's running game joins on its next event poll.
+        // The join was queued; the caller's running game joins on its next event poll.
         OK = 0;
         // No such player.
         NOT_FOUND = 1;

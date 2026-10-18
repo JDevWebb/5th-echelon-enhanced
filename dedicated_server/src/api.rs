@@ -441,10 +441,11 @@ impl Friends for MyFriends {
         Ok(Response::new(friends::InviteResponse {}))
     }
 
-    /// Joins a friend's game without an invitation (the launcher's/overlay's "Join"): binds a
-    /// force-join invitation from the friend to the caller, so the caller's running game joins on
-    /// its next event poll. Only a friend (or anyone, in "everyone" mode) who is in a joinable,
-    /// non-private session; a private match still needs a real invitation.
+    /// Joins a friend's game without an invitation (the launcher's/overlay's "Join"): queues an
+    /// invitation from the friend to the caller, marked as a join the caller asked for, so the
+    /// caller's running game joins on its next event poll. Only a friend (or anyone, in
+    /// "everyone" mode) who is in a joinable, non-private session; a private match still needs a
+    /// real invitation.
     async fn join_now(&self, request: Request<friends::JoinNowRequest>) -> Result<Response<friends::JoinNowResponse>, Status> {
         use friends::join_now_response::Status as JoinStatus;
         let me = caller(&request)?;
@@ -461,6 +462,9 @@ impl Friends for MyFriends {
         let Some(host) = self.storage.find_user_id_by_ubi_id_async(&target).await.map_err(internal)? else {
             return reply(JoinStatus::NotFound, "That player isn't on this server.");
         };
+        if host == me {
+            return Err(Status::invalid_argument("You can't join your own game."));
+        }
         match self.storage.relation(me, host).await.map_err(internal)? {
             Relation::Blocked | Relation::BlockedBy => return reply(JoinStatus::NotFriends, "You can't join this player."),
             Relation::Friend => {}
@@ -476,12 +480,15 @@ impl Friends for MyFriends {
         if is_private_room(room) {
             return reply(JoinStatus::Private, "That player's match is private - you need an invitation.");
         }
-        self.storage
-            .add_invite_async(host, me, Some(room.session_type), Some(room.session_id))
+        // The invitation this queues is the one to deliver as a requested join: another one
+        // already waiting for the caller goes out as the ordinary invitation it is.
+        let invite = self
+            .storage
+            .add_join_request_async(host, me, room.session_type, room.session_id)
             .await
             .map_err(|e| Status::resource_exhausted(format!("Couldn't queue the join: {e}")))?;
-        crate::join_requests::mark(me);
-        info!(self.logger, "JoinNow: {me} joins {host}'s session {} (bound force-join)", room.session_id);
+        crate::join_requests::mark(me, invite);
+        info!(self.logger, "JoinNow: {me} joins {host}'s session {} (invitation {invite}, requested)", room.session_id);
         reply(JoinStatus::Ok, "")
     }
 
@@ -1373,9 +1380,10 @@ impl Misc for MyMisc {
                     ips: vec![],
                 }),
                 force_join: self.debug_config.force_joins,
-                // A launcher/overlay "join a friend" (JoinNow) marks the caller, so the invitation
-                // it bound is delivered as a join the player asked for (honoured without a click).
-                requested: crate::join_requests::take(user_id),
+                // A launcher/overlay "join a friend" (JoinNow) marks the caller with the
+                // invitation it queued: that one is delivered as a join the player asked for
+                // (honoured without a click); any other waiting invitation isn't.
+                requested: crate::join_requests::take(user_id, invite.id),
             }),
             friend: None,
             notice: notice(),

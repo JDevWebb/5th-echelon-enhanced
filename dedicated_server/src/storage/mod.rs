@@ -1073,7 +1073,23 @@ impl Storage {
             "invite",
             serde_json::json!({ "to": receiver_id, "room": session_id }),
         );
+        self.insert_invite_async(sender_id, receiver_id, session_type, session_id).await
+    }
 
+    /// Records the invitation a join request (`JoinNow`) stands on: from `host` to `joiner`,
+    /// bound to the host's room, kept like any invitation (see [`Self::add_invite_async`]). The
+    /// session log notes a join request by the joiner, since the host never invited anyone.
+    pub async fn add_join_request_async(&self, host: u32, joiner: u32, session_type: u32, session_id: u32) -> Result<i64> {
+        info!(self.logger, "join request from {joiner} to {host}'s session {session_id} (type {session_type})");
+        crate::session_events::note(
+            crate::session_events::Who::Id(joiner),
+            "join-request",
+            serde_json::json!({ "host": host, "room": session_id }),
+        );
+        self.insert_invite_async(host, joiner, Some(session_type), Some(session_id)).await
+    }
+
+    async fn insert_invite_async(&self, sender_id: u32, receiver_id: u32, session_type: Option<u32>, session_id: Option<u32>) -> Result<i64> {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query("DELETE FROM invites WHERE (receiver = ? AND sender = ?) OR consumed_at IS NOT NULL OR expires_at IS NULL OR expires_at <= CURRENT_TIMESTAMP")
             .bind(receiver_id)
