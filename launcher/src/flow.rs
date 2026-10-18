@@ -165,8 +165,9 @@ pub struct OnlineFriend {
     pub name: String,
     /// What they're doing ("SvM Classic · Virus Vault · in a match"), if the server says.
     pub activity: Option<String>,
-    /// They host the room they're in: the one to join them in (`JoinNow`).
-    pub hosting: bool,
+    /// They're in a party (its host or a member): the room to join them in (`JoinNow`). Not
+    /// in a match, which needs an invitation.
+    pub joinable: bool,
 }
 
 /// The current account's friends, as the home screen shows them.
@@ -219,8 +220,9 @@ pub fn join_friend(cfg: &Config, game_dir: &Path, friend_id: &str, friend_name: 
             _ if !resp.detail.is_empty() => Err(resp.detail),
             JoinStatus::NotFound => Err(format!("{friend_name} isn't on this server.")),
             JoinStatus::NotFriends => Err(format!("You can't join {friend_name}.")),
-            JoinStatus::Offline => Err(format!("{friend_name} isn't hosting a game right now.")),
+            JoinStatus::Offline => Err(format!("{friend_name} isn't in a game right now.")),
             JoinStatus::Private => Err(format!("{friend_name}'s match is private - you need an invitation.")),
+            JoinStatus::NotFriendsWithHost => Err(format!("{friend_name} can't bring you in: the game's host doesn't have them as a friend.")),
         },
         Err(e) => Err(e),
     };
@@ -286,7 +288,7 @@ pub fn friends(cfg: &Config) -> Result<Friends, String> {
             id: f.id.clone(),
             name: clip(&f.username, 32),
             activity: f.activity.as_ref().map(describe),
-            hosting: f.activity.as_ref().is_some_and(|a| a.hosting),
+            joinable: f.activity.as_ref().is_some_and(|a| a.joinable),
         })
         .collect();
     online.sort_by_key(|f| f.name.to_lowercase());
@@ -981,7 +983,7 @@ mod tests {
             with: vec!["Tank".into()],
             map,
             game_mode,
-            hosting: false,
+            joinable: false,
         };
         assert_eq!(super::describe(&a("svm", "match", 8, 0x05F6_9010)), "SvM Classic · Virus Vault · in a match with Tank");
         assert_eq!(super::describe(&a("coop", "match", 3, 0)), "Grim (Ghost) · in a match with Tank");

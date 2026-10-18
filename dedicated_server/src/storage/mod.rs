@@ -1055,6 +1055,27 @@ impl Storage {
         Ok(sqlx::query_as(&query).bind(user_id).fetch_all(&self.pool).await?)
     }
 
+    /// The sessions `user_id` is in without hosting them (as a participant, or a guest who
+    /// joined a public match), their host still in them, newest first: where a friend's join
+    /// request (`JoinNow`) may lead. Of any kind: the caller tells a party from a match.
+    pub async fn member_sessions_async(&self, user_id: u32) -> Result<Vec<GameSession>> {
+        Ok(sqlx::query_as(
+            r"
+            SELECT g.type_id AS session_type, g.id AS session_id, g.creator_id, g.attributes
+            FROM game_sessions g
+            INNER JOIN participants h ON h.game_id = g.id AND h.user_id = g.creator_id
+            WHERE g.creator_id != ?1
+              AND g.destroyed_at IS NULL
+              AND (EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?1)
+                   OR EXISTS (SELECT 1 FROM guests gu WHERE gu.game_id = g.id AND gu.user_id = ?1))
+            ORDER BY g.id DESC
+            ",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     /// Records one pending invitation, optionally bound to an exact room.
     ///
     /// A receiver keeps one invitation per sender (a new one from the same sender replaces
@@ -1076,17 +1097,25 @@ impl Storage {
         self.insert_invite_async(sender_id, receiver_id, session_type, session_id).await
     }
 
-    /// Records the invitation a join request (`JoinNow`) stands on: from `host` to `joiner`,
-    /// bound to the host's room, kept like any invitation (see [`Self::add_invite_async`]). The
-    /// session log notes a join request by the joiner, since the host never invited anyone.
-    pub async fn add_join_request_async(&self, host: u32, joiner: u32, session_type: u32, session_id: u32) -> Result<i64> {
-        info!(self.logger, "join request from {joiner} to {host}'s session {session_id} (type {session_type})");
+    /// Records the invitation a join request (`JoinNow`) stands on: to `joiner`, bound to
+    /// `host`'s room, kept like any invitation (see [`Self::add_invite_async`]). From the host
+    /// when the friend joined through is the host; else from that friend (`via`), a member of
+    /// the room, so it holds as a member's invitation does ([`invite_holds_sql`]). The session
+    /// log notes a join request by the joiner, since nobody invited anyone.
+    pub async fn add_join_request_async(&self, host: u32, via: Option<u32>, joiner: u32, session_type: u32, session_id: u32) -> Result<i64> {
+        match via {
+            Some(via) => info!(
+                self.logger,
+                "join request from {joiner} to {host}'s session {session_id} (type {session_type}) through {via}"
+            ),
+            None => info!(self.logger, "join request from {joiner} to {host}'s session {session_id} (type {session_type})"),
+        }
         crate::session_events::note(
             crate::session_events::Who::Id(joiner),
             "join-request",
-            serde_json::json!({ "host": host, "room": session_id }),
+            serde_json::json!({ "host": host, "room": session_id, "via": via }),
         );
-        self.insert_invite_async(host, joiner, Some(session_type), Some(session_id)).await
+        self.insert_invite_async(via.unwrap_or(host), joiner, Some(session_type), Some(session_id)).await
     }
 
     async fn insert_invite_async(&self, sender_id: u32, receiver_id: u32, session_type: Option<u32>, session_id: Option<u32>) -> Result<i64> {

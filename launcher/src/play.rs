@@ -1603,16 +1603,18 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
                 ui.horizontal(|ui| {
                     friend_row(ui, theme::OK, &friend.name, friend.activity.as_deref().unwrap_or("Online"));
                     // Join their game, on a server that offers it: the server sends our game into
-                    // their public room (the game is started first if it isn't running). Only a
-                    // friend hosting one; a private match still needs an invite.
+                    // the party they're in, hosting it or not (the game is started first if it
+                    // isn't running). A match still needs an invite.
                     if friends.join_offered {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            let can = friend.hosting && !play.setup.running() && !play.joining.running();
+                            let can = friend.joinable && !play.setup.running() && !play.joining.running();
                             let button = ui.add_enabled(can, theme::secondary("Join"));
-                            let button = if friend.hosting {
+                            let button = if friend.joinable {
                                 button.on_hover_text("Join this friend's game")
+                            } else if friend.activity.is_some() {
+                                button.on_disabled_hover_text(format!("{} is in a match: you need an invitation", friend.name))
                             } else {
-                                button.on_disabled_hover_text(format!("{} isn't hosting a game right now", friend.name))
+                                button.on_disabled_hover_text(format!("{} isn't in a game right now", friend.name))
                             };
                             if button.clicked() {
                                 join_click = Some((friend.id.clone(), friend.name.clone()));

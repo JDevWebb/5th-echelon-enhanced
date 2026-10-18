@@ -308,7 +308,7 @@ impl MyFriends {
                 with: a.with,
                 map: a.map.unwrap_or_default(),
                 game_mode: a.game_mode.unwrap_or_default(),
-                hosting: a.hosting,
+                joinable: a.joinable,
             });
         let status = name_status(&person);
         let mut p = friends::Player {
@@ -445,8 +445,10 @@ impl Friends for MyFriends {
     /// Joins a friend's game without an invitation (the launcher's/overlay's "Join"): queues an
     /// invitation from the friend to the caller, marked as a join the caller asked for, so the
     /// caller's running game joins on its next event poll. Only a friend (or anyone, in
-    /// "everyone" mode) who is in a joinable, non-private session; a private match still needs a
-    /// real invitation.
+    /// "everyone" mode) who is in a party: their own, or someone else's they're a member of -
+    /// then the invitation is the friend's, bound to that party, and holds as a member's
+    /// invitation does (while its host has the friend as a friend; `invite_holds_sql`). A match
+    /// still needs a real invitation.
     async fn join_now(&self, request: Request<friends::JoinNowRequest>) -> Result<Response<friends::JoinNowResponse>, Status> {
         use friends::join_now_response::Status as JoinStatus;
         let me = caller(&request)?;
@@ -460,36 +462,72 @@ impl Friends for MyFriends {
             }))
         };
         let target = request.into_inner().id;
-        let Some(host) = self.storage.find_user_id_by_ubi_id_async(&target).await.map_err(internal)? else {
+        let Some(friend) = self.storage.find_user_id_by_ubi_id_async(&target).await.map_err(internal)? else {
             return reply(JoinStatus::NotFound, "That player isn't on this server.");
         };
-        if host == me {
+        if friend == me {
             return Err(Status::invalid_argument("You can't join your own game."));
         }
-        match self.storage.relation(me, host).await.map_err(internal)? {
+        match self.storage.relation(me, friend).await.map_err(internal)? {
             Relation::Blocked | Relation::BlockedBy => return reply(JoinStatus::NotFriends, "You can't join this player."),
             Relation::Friend => {}
             _ if self.mode == FriendsMode::Mutual => return reply(JoinStatus::NotFriends, "Only friends can join each other on this server."),
             _ => {}
         }
-        // The friend's own hosted session: a public one is joinable, a private match needs a real
-        // invitation, and no session means they aren't hosting a game right now.
-        let host_sessions = self.storage.find_host_sessions_async(host).await.map_err(internal)?;
-        let Some(room) = host_sessions.iter().find(|s| !is_private_room(s)).or_else(|| host_sessions.first()) else {
-            return reply(JoinStatus::Offline, "That player isn't hosting a game right now.");
+        // The friend's own hosted session first: a party is joinable, a private match needs a
+        // real invitation. Without one, the session they're a member of: its host's party (the
+        // invitation is then the friend's, as a member's), or a match, which needs a real
+        // invitation. In neither, they aren't in a game right now.
+        let host_sessions = self.storage.find_host_sessions_async(friend).await.map_err(internal)?;
+        let own = host_sessions.iter().find(|s| !is_private_room(s)).or_else(|| host_sessions.first());
+        let member_sessions = match own {
+            Some(_) => Vec::new(),
+            None => self.storage.member_sessions_async(friend).await.map_err(internal)?,
+        };
+        let (host, room) = match own {
+            Some(room) => (friend, room),
+            None => {
+                let Some(room) = member_sessions.iter().find(|s| !is_private_room(s)).or_else(|| member_sessions.first()) else {
+                    return reply(JoinStatus::Offline, "That player isn't in a game right now.");
+                };
+                (room.creator_id, room)
+            }
         };
         if is_private_room(room) {
             return reply(JoinStatus::Private, "That player's match is private - you need an invitation.");
+        }
+        if host != friend {
+            if host == me {
+                return Err(Status::invalid_argument("You're already in that game: it's yours."));
+            }
+            // As a member's invitation (see the invite handler): only a member the host trusts
+            // (a friend), and only to someone the host hasn't blocked (nor been blocked by).
+            // Checked again whenever the invitation is used (`invite_holds_sql`).
+            if matches!(self.storage.relation(host, me).await.map_err(internal)?, Relation::Blocked | Relation::BlockedBy) {
+                return reply(JoinStatus::NotFriends, "You can't join that game.");
+            }
+            if !matches!(self.storage.relation(host, friend).await.map_err(internal)?, Relation::Friend) {
+                return reply(
+                    JoinStatus::NotFriendsWithHost,
+                    "That player can't bring you in: the game's host doesn't have them as a friend.",
+                );
+            }
         }
         // The invitation this queues is the one to deliver as a requested join: another one
         // already waiting for the caller goes out as the ordinary invitation it is.
         let invite = self
             .storage
-            .add_join_request_async(host, me, room.session_type, room.session_id)
+            .add_join_request_async(host, (host != friend).then_some(friend), me, room.session_type, room.session_id)
             .await
             .map_err(|e| Status::resource_exhausted(format!("Couldn't queue the join: {e}")))?;
         crate::join_requests::mark(me, invite);
-        info!(self.logger, "JoinNow: {me} joins {host}'s session {} (invitation {invite}, requested)", room.session_id);
+        match host == friend {
+            true => info!(self.logger, "JoinNow: {me} joins {host}'s session {} (invitation {invite}, requested)", room.session_id),
+            false => info!(
+                self.logger,
+                "JoinNow: {me} joins {host}'s session {} through {friend} (invitation {invite}, requested)", room.session_id
+            ),
+        }
         reply(JoinStatus::Ok, "")
     }
 

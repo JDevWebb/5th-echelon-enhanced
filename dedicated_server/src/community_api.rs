@@ -257,8 +257,9 @@ pub(crate) struct Activity {
     pub map: Option<u32>,
     /// The game's mode number (8 is SvM Classic), in a match.
     pub game_mode: Option<u32>,
-    /// They host that room (a friend can join them without an invitation, `JoinNow`).
-    pub hosting: bool,
+    /// A friend can join them there without an invitation (`JoinNow`): a party, hosted by
+    /// them or with them as a member. Not a match.
+    pub joinable: bool,
 }
 
 /// `name`'s activity: the match they're in (preferred) or their lobby.
@@ -281,7 +282,7 @@ pub(crate) fn activity_of(name: &str, sessions: &[LiveSession]) -> Option<Activi
         with: best.players.iter().filter(|p| *p != name).cloned().collect(),
         map: attribute_value(&best.attributes, ATTR_MAP),
         game_mode: attribute_value(&best.attributes, ATTR_GAME_MODE),
-        hosting: best.host == name,
+        joinable: attribute_value(&best.attributes, ATTR_ROOM_KIND) == Some(1),
     })
 }
 

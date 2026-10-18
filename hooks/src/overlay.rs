@@ -1055,8 +1055,8 @@ impl MyRenderLoop {
                 if p.online {
                     actions.push(RowAction::Invite);
                 }
-                // Join: only someone hosting a room, on a server that offers it.
-                if p.hosting && join_offered {
+                // Join: only someone in a party (hosting it or in it), on a server that offers it.
+                if p.joinable && join_offered {
                     actions.push(RowAction::Join);
                 }
                 self.player_row(ui, row, "friend", p, &Self::status(p), &actions);
@@ -1165,7 +1165,7 @@ impl MyRenderLoop {
             let can_invite = p.online && (p.relation == community::Relation::Friend || (self.data.everyone_mode && p.relation == community::Relation::None));
             if can_invite {
                 actions.push(RowAction::Invite);
-                if p.hosting && join_offered {
+                if p.joinable && join_offered {
                     actions.push(RowAction::Join);
                 }
             }

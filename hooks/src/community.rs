@@ -71,8 +71,9 @@ pub struct Player {
     pub online: bool,
     /// What they're doing, e.g. "SvM Classic · Virus Vault · in a match with Tank".
     pub activity: Option<String>,
-    /// They host the room they're in: the one a friend can join without an invitation.
-    pub hosting: bool,
+    /// They're in a party (as its host or a member): the room a friend joins them in without
+    /// an invitation. Not in a match, which needs one.
+    pub joinable: bool,
     pub relation: Relation,
     /// Short form of their identity ("K7QF-2M9D"), empty if not linked.
     pub identity: String,
@@ -613,8 +614,9 @@ fn join_now_impl(id: &str, name: &str) {
                 return;
             }
             _ if !resp.detail.is_empty() => say(resp.detail, true),
-            JoinStatus::Offline => say(format!("{name} isn't hosting a game right now."), true),
+            JoinStatus::Offline => say(format!("{name} isn't in a game right now."), true),
             JoinStatus::Private => say(format!("{name}'s match is private - you need an invitation."), true),
+            JoinStatus::NotFriendsWithHost => say(format!("{name} can't bring you in: the game's host doesn't have them as a friend."), true),
             _ => say(format!("Couldn't join {name}."), true),
         },
         Err(e) => {
@@ -774,7 +776,7 @@ fn player(p: friends::Player) -> Player {
     };
     Player {
         activity: if p.is_online { p.activity.as_ref().map(describe) } else { None },
-        hosting: p.is_online && p.activity.as_ref().is_some_and(|a| a.hosting),
+        joinable: p.is_online && p.activity.as_ref().is_some_and(|a| a.joinable),
         id: p.id,
         name: clip(&p.username, MAX_NAME),
         online: p.is_online,
@@ -950,7 +952,7 @@ mod tests {
             name: name.into(),
             online,
             activity: None,
-            hosting: false,
+            joinable: false,
             relation: Relation::Friend,
             identity: String::new(),
             name_status: NameStatus::Unlinked,
@@ -995,7 +997,7 @@ mod tests {
                 with: vec!["Tank".into()],
                 map: 7,
                 game_mode: 0,
-                hosting: false,
+                joinable: false,
             }),
         };
         p.set_relation(friends::Relation::RequestReceived);
