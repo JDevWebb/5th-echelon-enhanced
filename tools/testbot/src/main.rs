@@ -836,8 +836,10 @@ async fn login(ctx: &mut Ctx) -> Result<()> {
 /// joined through: the invitation is the friend's, to the host's party, found by the search
 /// for the friend - only once the host has the friend as a friend (NOT_FRIENDS_WITH_HOST
 /// before), and not through someone who's only a guest of the party (NOT_FRIENDS_WITH_HOST); a
-/// friend in a match - someone else's, or their own with their anteroom beside it - answers
-/// PRIVATE.
+/// friend in a private match - someone else's, or their own with their anteroom beside it -
+/// answers PRIVATE. A friend in a public match - hosting it, with their anteroom beside it, or
+/// a guest of a stranger's - is joined into the match itself, with the requested invitation
+/// (not through a host who blocked the caller).
 async fn join_now(ctx: &mut Ctx) -> Result<()> {
     let mut host = ctx.player("Host").await?;
     let mut guest = ctx.player("Guest").await?;
@@ -990,6 +992,96 @@ async fn join_now(ctx: &mut Ctx) -> Result<()> {
         refused.status()
     );
 
+    // A friend hosting a public match (a quick match or a public lobby), with the anteroom
+    // every game opens beside it: joined into the match itself - the anteroom of a host who is
+    // in a match is no way in (the game finds it locked).
+    let mut fan = ctx.player("Guest").await?;
+    let mut public_host = ctx.player("Host").await?;
+    public_host.friend_change("request", &fan.name).await?;
+    fan.friend_change("accept", &public_host.name).await?;
+    public_host.register_urls(&["prudp:/address=127.0.0.1;port=3082;sid=15;type=3"]).await?;
+    let anteroom = public_host.create_session(LOBBY).await?;
+    public_host.add_participants(anteroom, &[public_host.pid], &[]).await?;
+    let public_game = public_host.create_session(PUBLIC_MATCH).await?;
+    public_host.add_participants(public_game, &[public_host.pid], &[]).await?;
+    let listed = fan.relationships().await?;
+    let friend = listed
+        .friends
+        .iter()
+        .find(|p| p.username == public_host.name)
+        .ok_or_else(|| eyre!("the public match's host isn't a friend"))?;
+    ensure!(
+        friend.activity.as_ref().is_some_and(|a| a.joinable && a.room == "match"),
+        "the friend list doesn't say a friend hosting a public match can be joined: {friend:?}"
+    );
+    let answer = fan.join_now(&public_host.id).await?;
+    ensure!(
+        answer.status() == JoinStatus::Ok,
+        "joining a friend hosting a public match answered {:?}: {}",
+        answer.status(),
+        answer.detail
+    );
+    let got = fan.poll_invite_event(Duration::from_secs(3)).await?;
+    ensure!(
+        got.as_ref().is_some_and(|(from, requested)| *from == public_host.name && *requested),
+        "the public match host's invitation isn't delivered as the requested join: {got:?}"
+    );
+    fan.register_urls(&["prudp:/address=127.0.0.1;port=3083;sid=15;type=3"]).await?;
+    let found = fan.search_with_participants(&[public_host.pid]).await?;
+    ensure!(
+        found.iter().any(|r| r.game_session_search_result.session_key.session_id == public_game),
+        "the search for the public match's host doesn't lead to the match: {found:?}"
+    );
+
+    // A friend who joined a stranger's public match (a guest of it, from matchmaking), their
+    // own anteroom beside it: joined through them into that match, the host's trust not needed
+    // (anyone may join a public match) - unless the host and the caller blocked each other.
+    let mut player = ctx.player("Guest").await?;
+    player.friend_change("request", &fan.name).await?;
+    fan.friend_change("accept", &player.name).await?;
+    let mut stranger_host = ctx.player("Host").await?;
+    stranger_host.register_urls(&["prudp:/address=127.0.0.1;port=3084;sid=15;type=3"]).await?;
+    let stranger_game = stranger_host.create_session(PUBLIC_MATCH).await?;
+    stranger_host.add_participants(stranger_game, &[stranger_host.pid], &[]).await?;
+    player.register_urls(&["prudp:/address=127.0.0.1;port=3085;sid=15;type=3"]).await?;
+    let own = player.create_session(LOBBY).await?;
+    player.add_participants(own, &[player.pid], &[]).await?;
+    player.join_session(stranger_game).await?;
+    let listed = fan.relationships().await?;
+    let friend = listed
+        .friends
+        .iter()
+        .find(|p| p.username == player.name)
+        .ok_or_else(|| eyre!("the public match's guest isn't a friend"))?;
+    ensure!(
+        friend.activity.as_ref().is_some_and(|a| a.joinable && a.room == "match"),
+        "the friend list doesn't say a friend in a public match can be joined: {friend:?}"
+    );
+    let answer = fan.join_now(&player.id).await?;
+    ensure!(
+        answer.status() == JoinStatus::Ok,
+        "joining a friend in someone else's public match answered {:?}: {}",
+        answer.status(),
+        answer.detail
+    );
+    let got = fan.poll_invite_event(Duration::from_secs(3)).await?;
+    ensure!(
+        got.as_ref().is_some_and(|(from, requested)| *from == player.name && *requested),
+        "the public match guest's invitation isn't delivered as the requested join: {got:?}"
+    );
+    let found = fan.search_with_participants(&[player.pid]).await?;
+    ensure!(
+        found.iter().any(|r| r.game_session_search_result.session_key.session_id == stranger_game),
+        "the search for the public match's guest doesn't lead to the match: {found:?}"
+    );
+    stranger_host.friend_change("block", &fan.name).await?;
+    let refused = fan.join_now(&player.id).await?;
+    ensure!(
+        refused.status() == JoinStatus::NotFriends,
+        "joining into the public match of a host who blocked the caller answered {:?}",
+        refused.status()
+    );
+
     host.disconnect().await?;
     guest.disconnect().await?;
     other.disconnect().await?;
@@ -999,8 +1091,15 @@ async fn join_now(ctx: &mut Ctx) -> Result<()> {
     walker.disconnect().await?;
     busy.disconnect().await?;
     inside.disconnect().await?;
-    match_host.disconnect().await
+    match_host.disconnect().await?;
+    fan.disconnect().await?;
+    public_host.disconnect().await?;
+    player.disconnect().await?;
+    stranger_host.disconnect().await
 }
+
+/// A public Spies vs Mercs match room (room kind 0, public seats), as matchmaking makes it.
+const PUBLIC_MATCH: &str = "113 => 0;103 => 1;3 => 8;4 => 0;102 => 8";
 
 /// Invite into a lobby: delivered, found by the friend search, joinable.
 async fn lobby_invite(ctx: &mut Ctx) -> Result<()> {

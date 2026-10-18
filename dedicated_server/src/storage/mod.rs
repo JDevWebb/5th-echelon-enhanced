@@ -164,6 +164,12 @@ fn attribute_sql(id: u32) -> String {
 /// a party (its participants may change its attributes: never into a private match), the
 /// member is in it, the host has them as a friend with no block either way, and the host and
 /// the invitee haven't blocked each other.
+///
+/// Or one a member (a participant, or a guest who joined from matchmaking) sent to a public
+/// match (room kind 0, neither announced invite-only nor with private seats only), as a join
+/// request through them makes (`JoinNow`): anyone may join a public match, so the host's trust
+/// in the member isn't needed - only that the member is still in it, it's still public, and the
+/// host and the invitee haven't blocked each other.
 fn invite_holds_sql(i: &str) -> String {
     let blocked = |a: &str, b: &str| {
         format!(
@@ -178,6 +184,12 @@ fn invite_holds_sql(i: &str) -> String {
                     AND EXISTS (SELECT 1 FROM participants s WHERE s.game_id = g.id AND s.user_id = {i}.sender)
                     AND EXISTS (SELECT 1 FROM relationships f WHERE f.user_id = g.creator_id AND f.other_id = {i}.sender AND f.kind = 'friend')
                     AND NOT {member_blocked}
+                    AND NOT {invitee_blocked})
+                OR ({kind} = 0
+                    AND NOT EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.user_id = g.creator_id AND a.invite_only = 1)
+                    AND NOT {PRIVATE_SEATS_ONLY}
+                    AND (EXISTS (SELECT 1 FROM participants s WHERE s.game_id = g.id AND s.user_id = {i}.sender)
+                         OR EXISTS (SELECT 1 FROM guests gu WHERE gu.game_id = g.id AND gu.user_id = {i}.sender))
                     AND NOT {invitee_blocked})))",
         kind = attribute_sql(113),
         member_blocked = blocked("g.creator_id", &format!("{i}.sender")),
@@ -769,6 +781,10 @@ impl Storage {
     /// Which of these sessions are invite-only: announced so by their hosts, or
     /// with private seats only ([`PRIVATE_SEATS_ONLY`]).
     pub fn invite_only_among(&self, session_ids: &[u32]) -> Result<Vec<u32>> {
+        run(self.invite_only_among_async(session_ids))?
+    }
+
+    pub async fn invite_only_among_async(&self, session_ids: &[u32]) -> Result<Vec<u32>> {
         if session_ids.is_empty() {
             return Ok(vec![]);
         }
@@ -780,7 +796,7 @@ impl Storage {
             ids.push_bind(*id);
         }
         query.push(") ORDER BY g.id");
-        Ok(run(query.build_query_scalar().fetch_all(&self.pool))??)
+        Ok(query.build_query_scalar().fetch_all(&self.pool).await?)
     }
 
     pub fn add_participants(&self, _type_id: u32, session_id: u32, private_participants: Vec<u32>, public_participants: Vec<u32>) -> Result<()> {

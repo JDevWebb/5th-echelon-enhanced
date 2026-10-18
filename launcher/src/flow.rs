@@ -165,8 +165,8 @@ pub struct OnlineFriend {
     pub name: String,
     /// What they're doing ("SvM Classic · Virus Vault · in a match"), if the server says.
     pub activity: Option<String>,
-    /// They're in a party (its host or a member): the room to join them in (`JoinNow`). Not
-    /// in a match, which needs an invitation.
+    /// They're in a party (its host or a member) or a public match: the room to join them in
+    /// (`JoinNow`). Not in a private match, which needs an invitation.
     pub joinable: bool,
 }
 
@@ -216,12 +216,12 @@ pub fn join_friend(cfg: &Config, game_dir: &Path, friend_id: &str, friend_name: 
     });
     let answer = match resp {
         Ok(resp) => match JoinStatus::try_from(resp.status).unwrap_or(JoinStatus::Offline) {
-            JoinStatus::Ok => Ok(format!("Joining {friend_name} — the game joins their party.")),
+            JoinStatus::Ok => Ok(format!("Joining {friend_name} — the game joins their party or match.")),
             _ if !resp.detail.is_empty() => Err(resp.detail),
             JoinStatus::NotFound => Err(format!("{friend_name} isn't on this server.")),
             JoinStatus::NotFriends => Err(format!("You can't join {friend_name}.")),
             JoinStatus::Offline => Err(format!("{friend_name} isn't in a game right now.")),
-            JoinStatus::Private => Err(format!("{friend_name} is in a match - you need an invitation.")),
+            JoinStatus::Private => Err(format!("{friend_name} is in a private match - you need an invitation.")),
             JoinStatus::NotFriendsWithHost => Err(format!("{friend_name} can't bring you in: the game's host doesn't have them as a friend.")),
         },
         Err(e) => Err(e),

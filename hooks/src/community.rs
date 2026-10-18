@@ -71,8 +71,8 @@ pub struct Player {
     pub online: bool,
     /// What they're doing, e.g. "SvM Classic · Virus Vault · in a match with Tank".
     pub activity: Option<String>,
-    /// They're in a party (as its host or a member): the room a friend joins them in without
-    /// an invitation. Not in a match, which needs one.
+    /// They're in a party (as its host or a member) or a public match: the room a friend joins
+    /// them in without an invitation. Not in a private match, which needs one.
     pub joinable: bool,
     pub relation: Relation,
     /// Short form of their identity ("K7QF-2M9D"), empty if not linked.
@@ -621,7 +621,7 @@ fn join_now_impl(id: &str, name: &str) {
             }
             _ if !resp.detail.is_empty() => say(resp.detail, true),
             JoinStatus::Offline => say(format!("{name} isn't in a game right now."), true),
-            JoinStatus::Private => say(format!("{name} is in a match - you need an invitation."), true),
+            JoinStatus::Private => say(format!("{name} is in a private match - you need an invitation."), true),
             JoinStatus::NotFriendsWithHost => say(format!("{name} can't bring you in: the game's host doesn't have them as a friend."), true),
             _ => say(format!("Couldn't join {name}."), true),
         },
