@@ -602,8 +602,8 @@ impl Coordinator {
 
     /// Opens (creating if needed) the database at `path`.
     pub async fn open(path: &str, join_token: String) -> eyre::Result<Self> {
-        // WAL: readers don't wait for a writer, and the live backup (Litestream) needs it. The
-        // mode stays with the file, so the release before still opens it.
+        // WAL: readers (the backup's snapshots too) don't wait for a writer. The mode stays
+        // with the file, so the release before still opens it.
         let options = SqliteConnectOptions::new()
             .filename(path)
             .create_if_missing(true)

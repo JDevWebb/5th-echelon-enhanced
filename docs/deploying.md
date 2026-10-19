@@ -183,11 +183,11 @@ The admin API is never reachable from the internet; Caddy refuses it. Use an SSH
 
 ## Backups
 
-The databases (accounts, friends and stats; and the coordinator's links, names and admins) can be backed up off the machine: live to Cloudflare R2, seconds behind, and a daily archive to Backblaze B2 (30 days, and 12 monthly copies). Write `/etc/5th-echelon/backup.env` with the buckets' keys and run the installer again; `/opt/5th-echelon/backup.sh` restores. See **[backups.md](backups.md)**.
+The databases (accounts, friends and stats; and the coordinator's links, names and admins) can be backed up off the machine: a snapshot to Cloudflare R2 every 2 hours (a week of them), and a daily archive to Backblaze B2 (30 days, and 12 monthly copies). Write `/etc/5th-echelon/backup.env` with the buckets' keys and run the installer again; `/opt/5th-echelon/backup.sh` restores. See **[backups.md](backups.md)**.
 
 ## Failover
 
-If the coordinator's machine goes down, every server of its network loses friends across servers, the directory and stats until it's back. In a failover group, each game server keeps a standby coordinator, and the next in line takes over after 3 minutes, from the coordinator's live backup, by moving its record (proxied through Cloudflare). Give each server `--standby NAME=HOST,...` with an Origin certificate for the coordinator's name. See **[failover.md](failover.md)**.
+If the coordinator's machine goes down, every server of its network loses friends across servers, the directory and stats until it's back. In a failover group, each game server keeps a standby coordinator, and the next in line takes over after 3 minutes, from the coordinator's latest snapshot, by moving its record (proxied through Cloudflare). Give each server `--standby NAME=HOST,...` with an Origin certificate for the coordinator's name. See **[failover.md](failover.md)**.
 
 ## The admin UI
 

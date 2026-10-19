@@ -53,8 +53,8 @@ const COORDINATOR_NAME: &str = "5th Echelon coordinator";
 /// A server of the group, in the order they take over.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Server {
-    /// Its backup name (docs/backups.md): the live copy a standby restores from is
-    /// `live/<name>/coordinator`.
+    /// Its backup name (docs/backups.md): the snapshots a standby restores from are in
+    /// `snapshots/<name>/coordinator`.
     pub name: String,
     /// Its game server's host name (DNS only, not proxied), for its `/api/info`.
     pub host: String,

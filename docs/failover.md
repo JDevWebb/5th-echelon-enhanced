@@ -1,6 +1,6 @@
 # Failover
 
-A network's servers all depend on its coordinator: friends across servers, the server directory the launcher browses, stats, names and updates. If the coordinator's machine goes down, every server loses those until it's back. In a **failover group**, each game server also keeps a standby coordinator, and when the coordinator is down for long enough, the next server in line takes over, with the coordinator's data as it was a second or so before.
+A network's servers all depend on its coordinator: friends across servers, the server directory the launcher browses, stats, names and updates. If the coordinator's machine goes down, every server loses those until it's back. In a **failover group**, each game server also keeps a standby coordinator, and when the coordinator is down for long enough, the next server in line takes over, with the coordinator's data as it was in its latest backup snapshot (taken every 2 hours).
 
 ## How it works
 
@@ -10,7 +10,7 @@ A network's servers all depend on its coordinator: friends across servers, the s
   - **pointing at another server:** it makes sure the coordinator *doesn't* run here, and asks for the coordinator through Cloudflare.
 - **Taking over.** When Cloudflare answers for the coordinator with an error from its server (the machine is down, or Caddy or the coordinator on it), the standbys wait their turn: **3 minutes** for the first in line, **6** for the second, and so on, so they don't race. Then the standby:
   1. asks the other servers of the group (their `/api/info`) whether they still reach the coordinator. If one does, the problem is between this server and Cloudflare, and nothing happens;
-  2. restores the coordinator from the live backup of the server it replaces (`live/NAME/coordinator` in R2, with its join token and players' reports; see [backups.md](backups.md)), and starts it;
+  2. restores the coordinator from the latest snapshot of the server it replaces (`snapshots/NAME/coordinator` in R2, with its join token and players' reports; see [backups.md](backups.md)), and starts it. What changed on the coordinator since that snapshot (up to 2 hours: new links, names, servers that joined) is lost;
   3. looks at the record once more (another server may have taken over meanwhile), and points it, and the admin UI's, here.
 - **Standing down.** A server that was replaced and comes back sees the record pointing elsewhere and keeps its coordinator stopped. It doesn't take the coordinator back by itself: the data moved on without it. Moving the coordinator back is an admin's choice ([below](#moving-the-coordinator)).
 - **What doesn't trigger it:** no answer from Cloudflare at all (this server's own network), an answer that isn't an error from the coordinator's server (a Cloudflare challenge, say), a server that still reaches the coordinator, and Cloudflare's API not answering. A coordinator that stops for an update is back well within 3 minutes, and the updater pauses the standby on its own machine meanwhile.
@@ -25,7 +25,7 @@ The examples use `play.example.net` for the coordinator, `metrics.example.net` f
 
 **The coordinator's name and the admin UI's must be one level below your domain** (`play.example.net`, not `play.scbl.example.net`). Both are proxied, and Cloudflare's free edge certificate covers only `example.net` and `*.example.net`: a name two levels deep fails with a TLS error before Cloudflare answers, and every launcher and server loses the coordinator. A deeper name needs Cloudflare's Advanced Certificate Manager (paid). If your coordinator already has a deeper name, set up the group under a new one-level name and move servers and players to it, rather than proxying the old one.
 
-**1. Backups on every server of the group.** The standbys restore the coordinator from its live backup, so it must be running on the coordinator's machine, and each standby needs the keys to read it. Set up [backups.md](backups.md) on each server, with the same R2 bucket. Leave `BACKUP_NAME` out: each server's backups are then kept under its name in the group, which is where the others look.
+**1. Backups on every server of the group.** The standbys restore the coordinator from its snapshots, so backups must be on on the coordinator's machine, and each standby needs the keys to read it. Set up [backups.md](backups.md) on each server, with the same R2 bucket. Leave `BACKUP_NAME` out: each server's backups are then kept under its name in the group, which is where the others look.
 
 **2. In Cloudflare:**
 - **An Origin certificate** (SSL/TLS › Origin Server › Create certificate) for the coordinator's name and the admin UI's: `play.example.net, metrics.example.net`. Save the certificate and its key on each server (e.g. `/root/origin.pem` and `/root/origin.key`, root's only).
@@ -72,7 +72,7 @@ To move the coordinator to a server of the group (back to eu1 after it took over
 sudo /opt/5th-echelon/coordinator standby --take-over
 ```
 
-It restores the coordinator from the live backup of the server it runs on, starts it here, and points the records here. The other server stands down within 15 seconds. Changes made there in those few seconds (a friend added, a stat) can be lost, so move it when it's quiet.
+It restores the coordinator from the latest snapshot of the server it runs on, starts it here, and points the records here. The other server stands down within 15 seconds. **First take a fresh snapshot there** (`sudo /opt/5th-echelon/backup.sh snapshot` on the server the coordinator runs on), or what changed since its last one (up to 2 hours) is lost. Changes made in the minute between (a friend added, a stat) can still be lost, so move it when it's quiet.
 
 ## A drill
 
