@@ -1048,7 +1048,8 @@ BACKUP
 if [ "$command" = backups-only ]; then
   [ "$use_systemd" -eq 1 ] || die "--backups-only needs systemd"
   [ -f "$BACKUP_ENV" ] || die "there's no $BACKUP_ENV: write it first (docs/backups.md)"
-  standby_me="$(sed -n 's/^me \([a-z0-9-]\{1,64\}\)$/\1/p' "$STANDBY_CONF" 2>/dev/null | head -1)"
+  standby_me=""
+  if [ -f "$STANDBY_CONF" ]; then standby_me="$(sed -n 's/^me \([a-z0-9-]\{1,64\}\)$/\1/p' "$STANDBY_CONF" | head -1)"; fi
   install_backups
   for note in "${notes[@]}"; do
     echo
