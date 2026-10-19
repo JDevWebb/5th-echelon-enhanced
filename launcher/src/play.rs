@@ -2399,9 +2399,21 @@ fn launch(play: &mut Play, game: &mut Game, notices: &mut Notices, mode: crate::
         notices.error("The game's executable is missing.");
         return false;
     };
-    match setup::launch::launch(&game.dir, version, crate::app::Prefs::start_through_steam()) {
+    // Linux, "Brighten the picture": vkBasalt's switches for the game's process.
+    let env = crate::settings::brighten_env(game, notices);
+    match setup::launch::launch(&game.dir, version, crate::app::Prefs::start_through_steam(), &env) {
         Ok(setup::launch::Launched::Game(child)) => play.running = Some(child),
-        Ok(setup::launch::Launched::Steam) => notices.info("Steam is starting the game."),
+        Ok(setup::launch::Launched::Steam) => {
+            notices.info("Steam is starting the game.");
+            // Steam starts the game itself, without the launcher's environment.
+            if let [(enable, on), (config, path)] = env.as_slice() {
+                notices.info(format!(
+                    "To brighten the picture when Steam starts the game, put this in its Launch Options in Steam: {enable}={} {config}=\"{}\" %command%",
+                    on.to_string_lossy(),
+                    path.to_string_lossy()
+                ));
+            }
+        }
         Ok(setup::launch::Launched::GameNotSteam(child, why)) => {
             play.running = Some(child);
             notices.error(format!("Steam couldn't start the game ({why}), so the launcher did: no Steam Input this time."));

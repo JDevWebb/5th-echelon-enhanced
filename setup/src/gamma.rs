@@ -4,6 +4,10 @@
 //! option lifts that cap and sets a brighter value by editing `Blacklist.ini` — statically,
 //! only while the game isn't running (it reads the file at start and never writes it back) —
 //! and puts the originals back when the option is turned off.
+//!
+//! That is the option on Windows. On Linux the game's gamma does nothing under Proton, and the
+//! option brightens through vkBasalt instead ([`crate::vkbasalt`]); [`disable`] still puts
+//! back what an earlier version changed there.
 
 use std::io;
 use std::path::Path;
@@ -22,7 +26,8 @@ const OPEN_CAP: f32 = 1.0;
 pub const MIN_BRIGHTNESS: u8 = 60;
 pub const MAX_BRIGHTNESS: u8 = 100;
 /// The default brightness when the option is first turned on (the value confirmed by testing).
-pub const DEFAULT_BRIGHTNESS: u8 = 75;
+/// On Linux the slider sets vkBasalt's curve instead ([`crate::vkbasalt::strength`]): 90 is 1.75.
+pub const DEFAULT_BRIGHTNESS: u8 = if cfg!(target_os = "linux") { 90 } else { 75 };
 
 /// The values the two keys had before the option changed them, to put back when it's turned
 /// off. `None` means the key wasn't in the file, so restoring removes it again.

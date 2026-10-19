@@ -27,6 +27,7 @@ pub mod server_info;
 pub mod support;
 mod sys;
 pub mod update;
+pub mod vkbasalt;
 pub mod wine;
 
 /// The server's gRPC API port (accounts, friends, invites, admin).

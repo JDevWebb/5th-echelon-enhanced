@@ -50,10 +50,14 @@ pub const OPTIONS: &[NewOption] = &[
     NewOption {
         id: "brighten",
         title: "Brighten the picture",
-        text: "The game caps its brightness low, which can look dark (under Proton especially). This lifts the cap and sets a brighter picture by editing Blacklist.ini; turning it off puts the original back. Settings › Game sets how bright.",
+        text: if crate::settings::BRIGHTEN_WITH_VKBASALT {
+            "The game's own brightness does nothing under Proton, so this brightens the picture with vkBasalt when the launcher starts the game: mid-tones lighter, black and white kept. Home turns it off and on in the game; Settings › Game sets how bright."
+        } else {
+            "The game caps its brightness low, which can look dark (under Proton especially). This lifts the cap and sets a brighter picture by editing Blacklist.ini; turning it off puts the original back. Settings › Game sets how bright."
+        },
         recommended: false,
         setting: Setting::Launcher(crate::settings::set_brighten),
-        blocked: |_| None,
+        blocked: |_| (crate::settings::BRIGHTEN_WITH_VKBASALT && crate::settings::vkbasalt_missing()).then_some(("Needs vkBasalt", crate::settings::VKBASALT_MISSING)),
     },
     NewOption {
         id: "autoclimb",
