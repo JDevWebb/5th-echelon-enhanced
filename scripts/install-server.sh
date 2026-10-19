@@ -840,9 +840,11 @@ take() {
   uid="$(stat -c %u "$dir")" gid="$(stat -c %g "$dir")"
   tmp="$work/$what.taking"
   install -d -m 700 -o "$uid" -g "$gid" "$tmp"
-  setpriv --reuid="$uid" --regid="$gid" --clear-groups \
-    sqlite3 -init /dev/null -bail -cmd '.timeout 60000' "$db" ".backup '$tmp/copy.db'" || return 1
-  timeout 600 setpriv --reuid="$uid" --regid="$gid" --clear-groups cat -- "$tmp/copy.db" > "$out" || return 1
+  # With none of this script's environment: the keys are in it, and the owner can read its
+  # own processes' environment.
+  local as_owner=(env -i PATH=/usr/bin:/bin setpriv --reuid="$uid" --regid="$gid" --clear-groups)
+  timeout 1800 "${as_owner[@]}" sqlite3 -init /dev/null -bail -cmd '.timeout 60000' "$db" ".backup '$tmp/copy.db'" || return 1
+  timeout 600 "${as_owner[@]}" cat -- "$tmp/copy.db" > "$out" || return 1
   rm -rf "$tmp"
 }
 # Whether FILE is a whole SQLite database.
