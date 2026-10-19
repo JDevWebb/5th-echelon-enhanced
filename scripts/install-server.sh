@@ -830,7 +830,8 @@ restore_snapshot() {
 }
 # Takes a snapshot of WHAT to FILE (in $work): SQLite's own backup, as the database's owner
 # (the files SQLite makes beside the database stay theirs), into a folder of its own, then
-# read without following a link the owner could have put there.
+# read out as the owner too: whatever the owner puts there instead (a link to root's keys,
+# a pipe that never ends), root never opens it, and the read can't hang.
 take() {
   local what="$1" out="$2" db dir tmp uid gid
   db="$(database "$what")"
@@ -841,7 +842,7 @@ take() {
   install -d -m 700 -o "$uid" -g "$gid" "$tmp"
   setpriv --reuid="$uid" --regid="$gid" --clear-groups \
     sqlite3 -init /dev/null -bail -cmd '.timeout 60000' "$db" ".backup '$tmp/copy.db'" || return 1
-  dd if="$tmp/copy.db" of="$out" iflag=nofollow status=none
+  timeout 600 setpriv --reuid="$uid" --regid="$gid" --clear-groups cat -- "$tmp/copy.db" > "$out" || return 1
   rm -rf "$tmp"
 }
 # Whether FILE is a whole SQLite database.
