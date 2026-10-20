@@ -828,24 +828,26 @@ async fn login(ctx: &mut Ctx) -> Result<()> {
     b.disconnect().await
 }
 
+/// Makes `a` and `b` friends: `a` asks, `b` accepts.
+async fn befriend(a: &Bot, b: &Bot) -> Result<()> {
+    a.friend_change("request", &b.name).await?;
+    b.friend_change("accept", &a.name).await?;
+    Ok(())
+}
+
 /// Joining a friend's game without an invitation (the launcher's and the overlay's Join,
-/// `JoinNow`): a friend hosting a public room is joined with an invitation marked as
-/// requested; one in a private match isn't (PRIVATE); one not in a game isn't (OFFLINE); nor
-/// oneself. An older invitation from someone else, already waiting, is delivered first and
+/// `JoinNow`), outside a match (`join-now-match` has the matches): a friend hosting a public
+/// room is joined with an invitation marked as requested; one not in a game isn't (OFFLINE);
+/// nor oneself. An older invitation from someone else, already waiting, is delivered first and
 /// as it is: not as the requested join. A friend who is a member of someone else's party is
 /// joined through: the invitation is the friend's, to the host's party, found by the search
 /// for the friend - only once the host has the friend as a friend (NOT_FRIENDS_WITH_HOST
-/// before), and not through someone who's only a guest of the party (NOT_FRIENDS_WITH_HOST); a
-/// friend in a private match - someone else's, or their own with their anteroom beside it -
-/// answers PRIVATE. A friend in a public match - hosting it, with their anteroom beside it, or
-/// a guest of a stranger's - is joined into the match itself, with the requested invitation
-/// (not through a host who blocked the caller).
+/// before), and not through someone who's only a guest of the party (NOT_FRIENDS_WITH_HOST).
 async fn join_now(ctx: &mut Ctx) -> Result<()> {
     let mut host = ctx.player("Host").await?;
     let mut guest = ctx.player("Guest").await?;
     let other = ctx.player("Host").await?;
-    host.friend_change("request", &guest.name).await?;
-    guest.friend_change("accept", &host.name).await?;
+    befriend(&host, &guest).await?;
     host.register_urls(&["prudp:/address=127.0.0.1;port=3074;sid=15;type=3"]).await?;
     let lobby = host.create_session(LOBBY).await?;
     host.add_participants(lobby, &[host.pid], &[]).await?;
@@ -876,23 +878,10 @@ async fn join_now(ctx: &mut Ctx) -> Result<()> {
         "the host's invitation isn't delivered as the requested join: {second:?}"
     );
 
-    // A private match needs a real invitation.
-    let mut private = ctx.player("Host").await?;
-    private.register_urls(&["prudp:/address=127.0.0.1;port=3076;sid=15;type=3"]).await?;
-    let game = private.create_session(PRIVATE_MATCH).await?;
-    private.add_participants(game, &[], &[private.pid]).await?;
-    let refused = guest.join_now(&private.id).await?;
-    ensure!(refused.status() == JoinStatus::Private, "joining a private match answered {:?}", refused.status());
-    ensure!(
-        guest.poll_invite_event(Duration::from_secs(1)).await?.is_none(),
-        "a refused join still queued an invitation"
-    );
-
     // A friend who is a member of someone else's party: joined through them, once the party's
     // host has them as a friend.
     let mut member = ctx.player("Guest").await?;
-    member.friend_change("request", &guest.name).await?;
-    guest.friend_change("accept", &member.name).await?;
+    befriend(&member, &guest).await?;
     let mut party_host = ctx.player("Host").await?;
     party_host.register_urls(&["prudp:/address=127.0.0.1;port=3077;sid=15;type=3"]).await?;
     let party = party_host.create_session(LOBBY).await?;
@@ -916,8 +905,7 @@ async fn join_now(ctx: &mut Ctx) -> Result<()> {
         "joining through a member the host doesn't trust answered {:?}",
         refused.status()
     );
-    party_host.friend_change("request", &member.name).await?;
-    member.friend_change("accept", &party_host.name).await?;
+    befriend(&party_host, &member).await?;
     let answer = guest.join_now(&member.id).await?;
     ensure!(
         answer.status() == JoinStatus::Ok,
@@ -941,10 +929,8 @@ async fn join_now(ctx: &mut Ctx) -> Result<()> {
     // A friend who is only a guest of that party (they joined it from a search): their
     // invitation wouldn't hold, so they can't bring anyone in, even with the host's trust.
     let mut walker = ctx.player("Guest").await?;
-    walker.friend_change("request", &guest.name).await?;
-    guest.friend_change("accept", &walker.name).await?;
-    party_host.friend_change("request", &walker.name).await?;
-    walker.friend_change("accept", &party_host.name).await?;
+    befriend(&walker, &guest).await?;
+    befriend(&party_host, &walker).await?;
     walker.register_urls(&["prudp:/address=127.0.0.1;port=3080;sid=15;type=3"]).await?;
     walker.join_session(party).await?;
     let refused = guest.join_now(&walker.id).await?;
@@ -954,38 +940,57 @@ async fn join_now(ctx: &mut Ctx) -> Result<()> {
         refused.status()
     );
 
+    host.disconnect().await?;
+    guest.disconnect().await?;
+    other.disconnect().await?;
+    member.disconnect().await?;
+    party_host.disconnect().await?;
+    walker.disconnect().await
+}
+
+/// `JoinNow` into a match: a friend in a private match - their own, also with their anteroom
+/// beside it, or someone else's - answers PRIVATE, and nothing is queued. A friend in a public
+/// match - hosting it, with their anteroom beside it, or a guest of a stranger's - is joined
+/// into the match itself, with the requested invitation (not through a host who blocked the
+/// caller).
+async fn join_now_match(ctx: &mut Ctx) -> Result<()> {
+    let mut fan = ctx.player("Guest").await?;
+
+    // A private match needs a real invitation.
+    let mut private = ctx.player("Host").await?;
+    private.register_urls(&["prudp:/address=127.0.0.1;port=3076;sid=15;type=3"]).await?;
+    let game = private.create_session(PRIVATE_MATCH).await?;
+    private.add_participants(game, &[], &[private.pid]).await?;
+    let refused = fan.join_now(&private.id).await?;
+    ensure!(refused.status() == JoinStatus::Private, "joining a private match answered {:?}", refused.status());
+    ensure!(fan.poll_invite_event(Duration::from_secs(1)).await?.is_none(), "a refused join still queued an invitation");
+
     // A friend hosting a private match, with the anteroom every game opens beside it: the
     // match is what they're in, and it needs a real invitation (the anteroom isn't a way in).
     let mut busy = ctx.player("Host").await?;
-    busy.friend_change("request", &guest.name).await?;
-    guest.friend_change("accept", &busy.name).await?;
+    befriend(&busy, &fan).await?;
     busy.register_urls(&["prudp:/address=127.0.0.1;port=3081;sid=15;type=3"]).await?;
     let anteroom = busy.create_session(LOBBY).await?;
     busy.add_participants(anteroom, &[busy.pid], &[]).await?;
     let game = busy.create_session(PRIVATE_MATCH).await?;
     busy.add_participants(game, &[], &[busy.pid]).await?;
-    let refused = guest.join_now(&busy.id).await?;
+    let refused = fan.join_now(&busy.id).await?;
     ensure!(
         refused.status() == JoinStatus::Private,
         "joining a friend with an anteroom beside their private match answered {:?}",
         refused.status()
     );
-    ensure!(
-        guest.poll_invite_event(Duration::from_secs(1)).await?.is_none(),
-        "a refused join still queued an invitation"
-    );
+    ensure!(fan.poll_invite_event(Duration::from_secs(1)).await?.is_none(), "a refused join still queued an invitation");
 
     // A friend in someone else's private match: a real invitation is needed.
     let inside = ctx.player("Guest").await?;
-    inside.friend_change("request", &guest.name).await?;
-    guest.friend_change("accept", &inside.name).await?;
+    befriend(&inside, &fan).await?;
     let mut match_host = ctx.player("Host").await?;
     match_host.register_urls(&["prudp:/address=127.0.0.1;port=3079;sid=15;type=3"]).await?;
-    match_host.friend_change("request", &inside.name).await?;
-    inside.friend_change("accept", &match_host.name).await?;
+    befriend(&match_host, &inside).await?;
     let game = match_host.create_session(PRIVATE_MATCH).await?;
     match_host.add_participants(game, &[], &[match_host.pid, inside.pid]).await?;
-    let refused = guest.join_now(&inside.id).await?;
+    let refused = fan.join_now(&inside.id).await?;
     ensure!(
         refused.status() == JoinStatus::Private,
         "joining a friend in a private match answered {:?}",
@@ -995,10 +1000,8 @@ async fn join_now(ctx: &mut Ctx) -> Result<()> {
     // A friend hosting a public match (a quick match or a public lobby), with the anteroom
     // every game opens beside it: joined into the match itself - the anteroom of a host who is
     // in a match is no way in (the game finds it locked).
-    let mut fan = ctx.player("Guest").await?;
     let mut public_host = ctx.player("Host").await?;
-    public_host.friend_change("request", &fan.name).await?;
-    fan.friend_change("accept", &public_host.name).await?;
+    befriend(&public_host, &fan).await?;
     public_host.register_urls(&["prudp:/address=127.0.0.1;port=3082;sid=15;type=3"]).await?;
     let anteroom = public_host.create_session(LOBBY).await?;
     public_host.add_participants(anteroom, &[public_host.pid], &[]).await?;
@@ -1037,8 +1040,7 @@ async fn join_now(ctx: &mut Ctx) -> Result<()> {
     // own anteroom beside it: joined through them into that match, the host's trust not needed
     // (anyone may join a public match) - unless the host and the caller blocked each other.
     let mut player = ctx.player("Guest").await?;
-    player.friend_change("request", &fan.name).await?;
-    fan.friend_change("accept", &player.name).await?;
+    befriend(&player, &fan).await?;
     let mut stranger_host = ctx.player("Host").await?;
     stranger_host.register_urls(&["prudp:/address=127.0.0.1;port=3084;sid=15;type=3"]).await?;
     let stranger_game = stranger_host.create_session(PUBLIC_MATCH).await?;
@@ -1082,17 +1084,11 @@ async fn join_now(ctx: &mut Ctx) -> Result<()> {
         refused.status()
     );
 
-    host.disconnect().await?;
-    guest.disconnect().await?;
-    other.disconnect().await?;
+    fan.disconnect().await?;
     private.disconnect().await?;
-    member.disconnect().await?;
-    party_host.disconnect().await?;
-    walker.disconnect().await?;
     busy.disconnect().await?;
     inside.disconnect().await?;
     match_host.disconnect().await?;
-    fan.disconnect().await?;
     public_host.disconnect().await?;
     player.disconnect().await?;
     stranger_host.disconnect().await
@@ -2591,6 +2587,7 @@ const SCENARIOS: &[&str] = &[
     "block",
     "invite-queue",
     "join-now",
+    "join-now-match",
     "identity-login",
     "rename",
     "direct-test",
@@ -2703,6 +2700,7 @@ async fn main() -> Result<()> {
                 "block" => block(&mut ctx).await,
                 "invite-queue" => invite_queue(&mut ctx).await,
                 "join-now" => join_now(&mut ctx).await,
+                "join-now-match" => join_now_match(&mut ctx).await,
                 "identity-login" => identity_login(&mut ctx).await,
                 "rename" => rename(&mut ctx).await,
                 "direct-test" => direct_test(&mut ctx).await,
