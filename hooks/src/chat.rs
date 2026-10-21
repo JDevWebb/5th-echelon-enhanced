@@ -33,6 +33,8 @@ const MAX_MESSAGE: usize = 500;
 pub struct Msg {
     pub id: i64,
     pub room: Room,
+    /// When it was sent (Unix seconds).
+    pub at: i64,
     pub from: String,
     pub from_name: String,
     pub server_name: String,
@@ -47,6 +49,7 @@ impl Msg {
         Self {
             id: m.id,
             room: m.room(),
+            at: m.at,
             from_name: clip(&m.from_name, MAX_NAME),
             server_name: clip(&m.server_name, 64),
             body: clip(&m.body, MAX_MESSAGE),

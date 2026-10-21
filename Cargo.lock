@@ -2461,6 +2461,7 @@ name = "hooks-config"
 version = "0.2.5"
 dependencies = [
  "anyhow",
+ "libc",
  "serde",
  "thiserror 2.0.17",
  "toml 0.9.8",

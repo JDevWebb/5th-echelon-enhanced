@@ -851,22 +851,43 @@ fn report_form(chat: &mut Chat, cfg: &Config, ui: &mut egui::Ui) {
     }
 }
 
-/// Asks before opening a Discord invite someone sent.
+/// Asks before opening a Discord invite someone sent: a dialog over the page (Escape or a
+/// click outside cancels).
 fn confirm_link(chat: &mut Chat, link: &str, ui: &mut egui::Ui) {
-    theme::card().show(ui, |ui| {
-        ui.label(format!("Open {link} in your browser? Only join Discord servers you trust."));
-        ui.horizontal(|ui| {
-            if ui.add(theme::primary("Open")).clicked() {
-                let url = if link.starts_with("http") { link.to_string() } else { format!("https://{link}") };
-                ui.ctx().open_url(egui::OpenUrl::new_tab(url));
-                chat.open_link = None;
-            }
-            if ui.button("Cancel").clicked() {
-                chat.open_link = None;
-            }
+    let modal = egui::Modal::new(egui::Id::new("chat-open-link"))
+        .frame(
+            egui::Frame::new()
+                .fill(theme::SURFACE)
+                .stroke(egui::Stroke::new(1.0, theme::CONTROL_LINE))
+                .corner_radius(16)
+                .inner_margin(egui::Margin {
+                    left: 26,
+                    right: 26,
+                    top: 24,
+                    bottom: 22,
+                }),
+        )
+        .show(ui.ctx(), |ui| {
+            ui.set_width(420.0);
+            ui.spacing_mut().item_spacing.y = 10.0;
+            ui.label(theme::display("Open a Discord invite?", 22.0));
+            ui.label(RichText::new(link).family(theme::strong()));
+            ui.label(RichText::new("It opens in your browser. Someone in chat sent it: only join Discord servers you trust.").color(theme::SOFT));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                if ui.add(theme::primary("Open")).clicked() {
+                    let url = if link.starts_with("http") { link.to_string() } else { format!("https://{link}") };
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                    chat.open_link = None;
+                }
+                if ui.button("Cancel").clicked() {
+                    chat.open_link = None;
+                }
+            });
         });
-    });
-    ui.add_space(8.0);
+    if modal.should_close() {
+        chat.open_link = None;
+    }
 }
 
 /// The text box: the rules checked while typing, Enter sends.

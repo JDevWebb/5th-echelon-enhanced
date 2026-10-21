@@ -10,6 +10,7 @@ use tracing::info;
 use tracing::instrument;
 use url::Url;
 
+pub mod clock;
 pub mod diagnostics;
 pub mod fusion_fix;
 pub mod redact;

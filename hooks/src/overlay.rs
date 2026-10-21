@@ -1241,7 +1241,11 @@ impl MyRenderLoop {
             if list.is_empty() {
                 ui.text_colored(MUTED, "No messages yet.");
             }
+            let clock = hooks_config::clock::Clock::local();
             for m in list {
+                // When, as the PC's clock shows it (the launcher's chat does the same).
+                ui.text_colored(MUTED, clock.clock_time(m.at));
+                ui.same_line();
                 let name_color = if m.mine {
                     ACCENT
                 } else if m.mentions_me {
