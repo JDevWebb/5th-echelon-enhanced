@@ -78,16 +78,6 @@ unsafe extern "C" fn guarded_fill(stream: *mut c_void, particles: *mut c_void, c
     fill(stream, particles, count);
 }
 
-/// Where the signature is, if it's found exactly once.
-fn find(code: &[u8]) -> Result<usize, usize> {
-    let matches = |w: &[u8]| w.iter().zip(SIGNATURE).all(|(b, want)| want.is_none_or(|v| *b == v));
-    let hits: Vec<usize> = code.windows(SIGNATURE.len()).enumerate().filter(|(_, w)| matches(w)).map(|(i, _)| i).collect();
-    match hits[..] {
-        [at] => Ok(at),
-        _ => Err(hits.len()),
-    }
-}
-
 /// Installs the guard. Safe to call once at startup; leaves an unrecognised build untouched.
 #[allow(clippy::cast_possible_truncation)]
 pub unsafe fn guard_particle_fills() {
@@ -95,7 +85,7 @@ pub unsafe fn guard_particle_fills() {
         warn!("particle-fix: the game's .text wasn't found -> skipped");
         return;
     };
-    let at = match find(code) {
+    let at = match crate::find_unique(code, &SIGNATURE) {
         Ok(at) => at,
         Err(n) => {
             warn!("particle-fix: the particle fill's queueing was found {n} times, not once -> skipped (unknown build?)");
@@ -142,10 +132,10 @@ mod tests {
         ];
         let mut code = vec![0xCC; 5];
         code.extend_from_slice(&site);
-        assert_eq!(find(&code), Ok(5));
+        assert_eq!(crate::find_unique(&code, &SIGNATURE), Ok(5));
         assert_eq!(u32::from_le_bytes(code[5 + STREAMS_AT..5 + STREAMS_AT + 4].try_into().unwrap()), 0x033e_eec4);
         assert_eq!(u32::from_le_bytes(code[5 + FILL_AT..5 + FILL_AT + 4].try_into().unwrap()), 0x0161_a9c0);
         code.extend_from_slice(&site);
-        assert_eq!(find(&code), Err(2));
+        assert_eq!(crate::find_unique(&code, &SIGNATURE), Err(2));
     }
 }

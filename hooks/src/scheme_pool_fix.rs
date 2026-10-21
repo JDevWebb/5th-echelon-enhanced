@@ -111,16 +111,6 @@ fn assemble(stub: u32, skip: u32, cont: u32, counter: u32) -> Vec<u8> {
     code
 }
 
-/// Where the signature is, if it's found exactly once.
-fn find(code: &[u8]) -> Result<usize, usize> {
-    let matches = |w: &[u8]| w.iter().zip(SIGNATURE).all(|(b, want)| want.is_none_or(|v| *b == v));
-    let hits: Vec<usize> = code.windows(SIGNATURE.len()).enumerate().filter(|(_, w)| matches(w)).map(|(i, _)| i).collect();
-    match hits[..] {
-        [at] => Ok(at),
-        _ => Err(hits.len()),
-    }
-}
-
 /// Installs the fix. Safe to call once at startup; leaves an unrecognised build untouched.
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 pub unsafe fn keep_shared_scheme_pool() {
@@ -128,7 +118,7 @@ pub unsafe fn keep_shared_scheme_pool() {
         warn!("scheme-pool-fix: the game's .text wasn't found -> skipped");
         return;
     };
-    let at = match find(code) {
+    let at = match crate::find_unique(code, &SIGNATURE) {
         Ok(at) => at,
         Err(n) => {
             warn!("scheme-pool-fix: the pawn teardown was found {n} times, not once -> skipped (unknown build?)");
@@ -190,11 +180,11 @@ mod tests {
 
     #[test]
     fn finds_the_site_once() {
-        assert_eq!(find(&dx11_site()), Ok(8));
+        assert_eq!(crate::find_unique(&dx11_site(), &SIGNATURE), Ok(8));
         let mut twice = dx11_site();
         twice.extend(dx11_site());
-        assert_eq!(find(&twice), Err(2));
-        assert_eq!(find(&[0x90; 64]), Err(0));
+        assert_eq!(crate::find_unique(&twice, &SIGNATURE), Err(2));
+        assert_eq!(crate::find_unique(&[0x90; 64], &SIGNATURE), Err(0));
     }
 
     #[test]

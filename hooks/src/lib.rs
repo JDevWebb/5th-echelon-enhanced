@@ -110,8 +110,24 @@ const DATA_VERSION_CHECK: [Option<u8>; 19] = [
     Some(0x74), // jz accept
 ];
 
+/// Where `signature` (`None` is a wildcard) is in `code`, if it's there exactly once; else how
+/// many times it was found.
+pub(crate) fn find_unique(code: &[u8], signature: &[Option<u8>]) -> Result<usize, usize> {
+    let matches = |w: &[u8]| w.iter().zip(signature).all(|(b, want)| want.is_none_or(|v| *b == v));
+    let hits: Vec<usize> = code.windows(signature.len()).enumerate().filter(|(_, w)| matches(w)).map(|(i, _)| i).collect();
+    match hits[..] {
+        [at] => Ok(at),
+        _ => Err(hits.len()),
+    }
+}
+
 /// The game's code: its executable's `.text` section in memory.
 pub(crate) unsafe fn game_code() -> Option<&'static [u8]> {
+    game_section(b".text")
+}
+
+/// The game executable's section `name` (e.g. `.rdata`) as loaded.
+pub(crate) unsafe fn game_section(name: &[u8]) -> Option<&'static [u8]> {
     use windows::Win32::System::LibraryLoader::GetModuleHandleA;
     let base = GetModuleHandleA(windows::core::PCSTR::null()).ok()?.0 as *const u8;
     let pe = base.add(std::ptr::read_unaligned(base.add(0x3c).cast::<u32>()) as usize);
@@ -119,7 +135,8 @@ pub(crate) unsafe fn game_code() -> Option<&'static [u8]> {
     let optional = u16::from_le_bytes([*pe.add(20), *pe.add(21)]) as usize;
     let mut header = pe.add(24 + optional);
     for _ in 0..sections {
-        if std::slice::from_raw_parts(header, 8).starts_with(b".text") {
+        let raw = std::slice::from_raw_parts(header, 8);
+        if raw.starts_with(name) && raw[name.len()..].iter().all(|b| *b == 0) {
             let size = std::ptr::read_unaligned(header.add(8).cast::<u32>()) as usize;
             let rva = std::ptr::read_unaligned(header.add(12).cast::<u32>()) as usize;
             return Some(std::slice::from_raw_parts(base.add(rva), size));
