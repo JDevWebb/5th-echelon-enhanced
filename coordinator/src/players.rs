@@ -755,8 +755,20 @@ impl Coordinator {
             .collect(),
             None => vec![],
         };
-        // Their identity's chat mutes in force (moderation.rs makes and lifts them).
-        let mutes: Vec<(String, Option<i64>, String, String, i64)> = match player["identity"].as_str() {
+        // Their identity's chat mutes in force (moderation.rs makes and lifts them): only when
+        // that identity is linked on this server (a server's word alone isn't enough, as for
+        // the other accounts above), with the identity checked, for lifting one.
+        let linked: Option<String> = match player["identity"].as_str() {
+            Some(identity) => {
+                sqlx::query_scalar("SELECT global_id FROM links WHERE global_id = ? AND server_id = ? LIMIT 1")
+                    .bind(identity)
+                    .bind(server)
+                    .fetch_optional(&self.pool)
+                    .await?
+            }
+            None => None,
+        };
+        let mutes: Vec<(String, Option<i64>, String, String, i64)> = match &linked {
             Some(identity) => {
                 sqlx::query_as("SELECT room, until, by_admin, reason, at FROM chat_mutes WHERE global_id = ? AND (until IS NULL OR until > ?) ORDER BY at DESC LIMIT 20")
                     .bind(identity)
@@ -780,6 +792,7 @@ impl Coordinator {
             })).collect::<Vec<_>>(),
             "days": days.into_iter().map(|(t, secs)| json!({ "t": t, "seconds": secs })).collect::<Vec<_>>(),
             "others": others,
+            "mutes_identity": linked,
             "mutes": mutes.into_iter().map(|(room, until, by, reason, at)| json!({ "room": room, "until": until, "by": by, "reason": reason, "at": at })).collect::<Vec<_>>(),
             "actions": actions.into_iter().map(|(aid, kind, args, by, at, status, message, done)| json!({
                 "id": aid, "kind": kind, "args": serde_json::from_str::<Value>(&args).unwrap_or_default(), "created_by": by,

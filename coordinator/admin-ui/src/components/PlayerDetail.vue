@@ -164,7 +164,7 @@ const muteWhere = room => (room === '*' ? 'everywhere' : `in ${ROOM[room] || roo
 async function unmute(mu) {
   if (!await confirmBox(`Lift ${p.value.name}'s mute?`, `Muted ${muteWhere(mu.room)}: they can post there again at once.`, 'Lift')) return;
   try {
-    await api('DELETE', `/moderation/mutes/${encodeURIComponent(p.value.identity)}/${encodeURIComponent(mu.room)}`);
+    await api('DELETE', `/moderation/mutes/${encodeURIComponent(d.value.mutes_identity)}/${encodeURIComponent(mu.room)}`);
     toast(`Lifted ${p.value.name}'s mute.`);
     load();
   } catch (e) { toast(e.message, true); }
