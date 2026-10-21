@@ -46,6 +46,7 @@ mod macros;
 mod mouse_fix;
 mod overlay;
 mod overlay_input;
+mod scheme_pool_fix;
 mod uplay_r1_loader;
 
 use macros::fatal_error;

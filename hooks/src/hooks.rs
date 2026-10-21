@@ -771,6 +771,14 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
     if config.disable_autoclimb {
         crate::autoclimb::disable_auto_climb();
     }
+
+    // Fixes for the game's own crashes (see each module).
+    #[cfg(not(feature = "patch-free"))]
+    if config.disable_crash_fixes {
+        tracing::info!("crash fixes: off (disable_crash_fixes)");
+    } else {
+        crate::scheme_pool_fix::keep_shared_scheme_pool();
+    }
 }
 
 macro_rules! disable_configurable_hook {

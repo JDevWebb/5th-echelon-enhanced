@@ -308,6 +308,10 @@ pub struct Config {
     /// edges is only ever manual. Off by default. See `hooks::autoclimb`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disable_autoclimb: bool,
+    /// Turns off the fixes for the game's own crashes (hooks' `scheme_pool_fix`, …), which are
+    /// on otherwise. Not shown in the launcher: for ruling them out when something goes wrong.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disable_crash_fixes: bool,
     /// Let the server join you to a match without your click (its `force_join`).
     /// Off: a server shouldn't be able to put you into a match by itself.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
