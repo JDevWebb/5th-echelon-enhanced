@@ -679,11 +679,42 @@ pub fn get_from_path(filepath: &Path) -> Result<Addresses, Error> {
     let game_map = build_game_map(filepath.parent().unwrap());
     let game_map = game_map.get(&file_name).ok_or(Error::UnknownBinary(file_name.clone()))?;
 
-    digest
+    let mut addresses = digest
         .ok()
         .map(|digest| game_map.get(&digest).ok_or(Error::BinaryMismatch(file_name.clone(), hex(digest))))
         .unwrap_or(Err(Error::BinaryMismatch(file_name, Default::default())))
-        .cloned()
+        .cloned()?;
+    // Addresses a release before the NAT functions found (Try to identify wrote them, and the
+    // file keeps them) have none for those: looked for now, as a fresh identify would.
+    if addresses.func_nat_echo_send.is_none() || addresses.func_nat_packet_parse.is_none() {
+        if let Some(found) = nat_by_patterns(filepath) {
+            fill_nat(&mut addresses, found);
+            info!(
+                "NAT functions looked for by pattern (this build's addresses have none): send {:?}, parse {:?}",
+                addresses.func_nat_echo_send, addresses.func_nat_packet_parse
+            );
+        }
+    }
+    Ok(addresses)
+}
+
+/// The NAT functions' addresses in the executable at `filepath`, by their patterns.
+fn nat_by_patterns(filepath: &Path) -> Option<(Option<Address>, Option<Address>)> {
+    let content = std::fs::read(filepath).ok()?;
+    let pe = goblin::pe::PE::parse(&content).ok()?;
+    let text = pe.sections.iter().find(|s| &s.name == b".text\0\0\0")?;
+    let code = text.data(&content).ok()??;
+    let base = text.virtual_address as usize + pe.image_base as usize;
+    Some((
+        NAT_ECHO_SEND_PATTERN.search(&code).map(|i| base + i),
+        NAT_PACKET_PARSE_PATTERN.search(&code).map(|i| base + i),
+    ))
+}
+
+/// Fills in the NAT functions `addresses` lacks from `found` (send, parse); what it has stays.
+fn fill_nat(addresses: &mut Addresses, (send, parse): (Option<Address>, Option<Address>)) {
+    addresses.func_nat_echo_send = addresses.func_nat_echo_send.or(send);
+    addresses.func_nat_packet_parse = addresses.func_nat_packet_parse.or(parse);
 }
 
 fn find_subsequence(haystack: &[u8], needle: &[u8]) -> Option<usize> {
@@ -910,6 +941,22 @@ pub fn search_patterns(filepath: &Path) -> Result<Addresses, Error> {
     }
 
     Ok(addr)
+}
+
+#[cfg(test)]
+mod nat_tests {
+    use super::*;
+
+    #[test]
+    fn only_missing_nat_functions_are_filled() {
+        let mut a = Addresses {
+            func_nat_echo_send: Some(1),
+            func_nat_packet_parse: None,
+            ..dx11_addresses().into_values().next().unwrap()
+        };
+        fill_nat(&mut a, (Some(7), Some(8)));
+        assert_eq!((a.func_nat_echo_send, a.func_nat_packet_parse), (Some(1), Some(8)));
+    }
 }
 
 #[cfg(test)]
