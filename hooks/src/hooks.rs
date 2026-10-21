@@ -778,6 +778,7 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
         tracing::info!("crash fixes: off (disable_crash_fixes)");
     } else {
         crate::scheme_pool_fix::keep_shared_scheme_pool();
+        crate::particle_fix::guard_particle_fills();
     }
 }
 
