@@ -755,6 +755,17 @@ impl Coordinator {
             .collect(),
             None => vec![],
         };
+        // Their identity's chat mutes in force (moderation.rs makes and lifts them).
+        let mutes: Vec<(String, Option<i64>, String, String, i64)> = match player["identity"].as_str() {
+            Some(identity) => {
+                sqlx::query_as("SELECT room, until, by_admin, reason, at FROM chat_mutes WHERE global_id = ? AND (until IS NULL OR until > ?) ORDER BY at DESC LIMIT 20")
+                    .bind(identity)
+                    .bind(now)
+                    .fetch_all(&self.pool)
+                    .await?
+            }
+            None => vec![],
+        };
         let actions: Vec<(i64, String, String, String, i64, String, Option<String>, Option<i64>)> = sqlx::query_as(
             "SELECT id, kind, args, created_by, created_at, status, message, done_at FROM player_actions WHERE server_id = ? AND player = ? ORDER BY id DESC LIMIT 50",
         )
@@ -769,6 +780,7 @@ impl Coordinator {
             })).collect::<Vec<_>>(),
             "days": days.into_iter().map(|(t, secs)| json!({ "t": t, "seconds": secs })).collect::<Vec<_>>(),
             "others": others,
+            "mutes": mutes.into_iter().map(|(room, until, by, reason, at)| json!({ "room": room, "until": until, "by": by, "reason": reason, "at": at })).collect::<Vec<_>>(),
             "actions": actions.into_iter().map(|(aid, kind, args, by, at, status, message, done)| json!({
                 "id": aid, "kind": kind, "args": serde_json::from_str::<Value>(&args).unwrap_or_default(), "created_by": by,
                 "created_at": at, "status": status, "message": message, "done_at": done,

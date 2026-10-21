@@ -40,6 +40,17 @@
       <h3 class="sub">Time played, last 30 days</h3>
       <LineChart :series="daySeries" :from="d.days[0].t" :to="d.days.at(-1).t" :format="v => `${fmt.n(v)} min`" :height="140" />
 
+      <template v-if="d.mutes?.length">
+        <h3 class="sub">Chat mutes</h3>
+        <ul class="list">
+          <li v-for="mu in d.mutes" :key="mu.room">
+            <span class="pill warn">Muted {{ muteWhere(mu.room) }} {{ mu.until ? 'until ' + fmt.when(mu.until) : 'for good' }}</span>
+            <span class="small muted">{{ mu.by }} · {{ fmt.ago(mu.at) }}{{ mu.reason ? ` · ${mu.reason}` : '' }}</span>
+            <button class="ghost small" type="button" title="They can post there again at once" @click="unmute(mu)">Lift</button>
+          </li>
+        </ul>
+      </template>
+
       <template v-if="d.others.length">
         <h3 class="sub">Other accounts (same identity)</h3>
         <ul class="list">
@@ -146,6 +157,18 @@ async function load() {
 watch(() => [props.server, props.id], () => { d.value = null; mineIds.value = []; load(); }, { immediate: true });
 
 const daySeries = computed(() => [{ name: 'Played', color: PALETTE[0], points: d.value.days.map(x => ({ t: x.t, v: x.seconds / 60 })) }]);
+
+// Chat mutes (Moderation): where, and lifting one (wants a second factor proved lately).
+const ROOM = { global: 'Global', direct: 'direct messages', lobby: 'lobbies' };
+const muteWhere = room => (room === '*' ? 'everywhere' : `in ${ROOM[room] || room}`);
+async function unmute(mu) {
+  if (!await confirmBox(`Lift ${p.value.name}'s mute?`, `Muted ${muteWhere(mu.room)}: they can post there again at once.`, 'Lift')) return;
+  try {
+    await api('DELETE', `/moderation/mutes/${encodeURIComponent(p.value.identity)}/${encodeURIComponent(mu.room)}`);
+    toast(`Lifted ${p.value.name}'s mute.`);
+    load();
+  } catch (e) { toast(e.message, true); }
+}
 
 /// A developer: their identity's other builds are taken on every server (clients.rs).
 async function allowBuilds() {
