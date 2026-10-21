@@ -94,6 +94,86 @@ pub(crate) fn steam_libraries(vdf: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+/// The launch options set for `app` in a Steam `localconfig.vdf` (a player's own settings:
+/// `"apps" { "235600" { "LaunchOptions" "-offline" } }`), if any.
+pub fn steam_launch_options(vdf: &str, app: u32) -> Option<String> {
+    let app = app.to_string();
+    // Quoted strings (backslash escapes) and braces, in order.
+    let mut tokens = Vec::new();
+    let mut chars = vdf.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '{' | '}' => tokens.push(c.to_string()),
+            '"' => {
+                let mut text = String::new();
+                while let Some(c) = chars.next() {
+                    match c {
+                        '\\' => text.extend(chars.next()),
+                        '"' => break,
+                        c => text.push(c),
+                    }
+                }
+                tokens.push(format!("\"{text}"));
+            }
+            _ => {}
+        }
+    }
+    let mut path: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < tokens.len() {
+        match tokens[i].as_str() {
+            "}" => {
+                path.pop();
+                i += 1;
+            }
+            "{" => i += 1,
+            key => {
+                let key = key.trim_start_matches('"');
+                match tokens.get(i + 1).map(String::as_str) {
+                    Some("{") => {
+                        path.push(key.to_ascii_lowercase());
+                        i += 2;
+                    }
+                    Some(value) if value.starts_with('"') => {
+                        let in_app = path.len() >= 2 && path[path.len() - 1] == app && path[path.len() - 2] == "apps";
+                        if in_app && key.eq_ignore_ascii_case("LaunchOptions") {
+                            return Some(value.trim_start_matches('"').to_string());
+                        }
+                        i += 2;
+                    }
+                    _ => i += 1,
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The switch in launch options that keeps the game offline (`-offline`, `-offline_mode`).
+pub fn offline_switch(options: &str) -> Option<&str> {
+    options
+        .split_whitespace()
+        .map(|a| a.trim_matches('"'))
+        .find(|a| a.eq_ignore_ascii_case("-offline") || a.eq_ignore_ascii_case("-offline_mode"))
+}
+
+/// The game's launch options in this PC's Steam, for any player who signed in to it there,
+/// when they keep the game offline (Wikowikor's: `-offline -offline_mode`).
+pub fn steam_offline_options() -> Option<String> {
+    for steam in crate::sys::steam_installs() {
+        let Ok(users) = std::fs::read_dir(steam.join("userdata")) else { continue };
+        for user in users.flatten() {
+            let Ok(vdf) = std::fs::read_to_string(user.path().join("config").join("localconfig.vdf")) else {
+                continue;
+            };
+            if let Some(options) = steam_launch_options(&vdf, crate::wine::STEAM_APP_ID).filter(|o| offline_switch(o).is_some()) {
+                return Some(options);
+            }
+        }
+    }
+    None
+}
+
 /// Subfolders of `dir` named like the game ("Splinter Cell Blacklist").
 pub(crate) fn blacklist_folders(dir: &Path) -> Vec<PathBuf> {
     let Ok(entries) = std::fs::read_dir(dir) else {
@@ -162,6 +242,43 @@ pub fn game_running() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn steam_launch_options_are_read_for_the_game_only() {
+        let vdf = r#""UserLocalConfigStore"
+{
+	"Software"
+	{
+		"Valve"
+		{
+			"Steam"
+			{
+				"apps"
+				{
+					"220"
+					{
+						"LaunchOptions"		"-novid"
+					}
+					"235600"
+					{
+						"LastPlayed"		"1792619695"
+						"LaunchOptions"		"-uplay_steam_mode -offline -offline_mode"
+					}
+				}
+			}
+		}
+	}
+}"#;
+        let options = steam_launch_options(vdf, 235_600);
+        assert_eq!(options.as_deref(), Some("-uplay_steam_mode -offline -offline_mode"));
+        assert_eq!(offline_switch(options.as_deref().unwrap()), Some("-offline"));
+        assert_eq!(steam_launch_options(vdf, 1), None);
+        assert_eq!(
+            steam_launch_options(r#""apps" { "235600" { "LaunchOptions" "say \"hi\"" } }"#, 235_600).as_deref(),
+            Some("say \"hi\"")
+        );
+        assert_eq!(offline_switch("-windowed -offlinex"), None);
+    }
     use crate::testutil::temp_dir;
 
     fn touch(path: &Path) {

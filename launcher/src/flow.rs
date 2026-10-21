@@ -108,6 +108,8 @@ pub fn gather(game_dir: &Path, cfg: &Config, bundled: Option<&[u8]>) -> (Facts, 
     facts.save = save::save_path(&cfg.hook_config.save, game_dir).map(|p| save::check(&p));
     facts.log = setup::diagnose::read_log(game_dir);
     facts.data = Some(setup::diagnose::read_data(game_dir));
+    // A Steam copy started with -offline (its launch options in Steam) never goes online.
+    facts.steam_offline = setup::launch::steam_copy(game_dir).then(setup::game::steam_offline_options).flatten();
     facts.wine = wine_facts(game_dir);
     let version = setup::game::pick_version(game_dir, cfg.default_game).unwrap_or(cfg.default_game);
     (facts, support(game_dir, version))

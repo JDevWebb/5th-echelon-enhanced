@@ -47,6 +47,11 @@ mod other {
         dirs
     }
 
+    /// Where Steam is installed (its `userdata` holds each player's settings).
+    pub fn steam_installs() -> Vec<PathBuf> {
+        steam_dirs()
+    }
+
     /// Every Steam library (the folders holding `steamapps`): each Steam
     /// install's own and those its `libraryfolders.vdf` lists, an SD card too.
     pub fn steam_libraries() -> Vec<PathBuf> {

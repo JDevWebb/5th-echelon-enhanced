@@ -128,6 +128,8 @@ pub struct Facts {
     /// Set when the game runs under Wine or Proton.
     pub wine: Option<WineFacts>,
     pub data: Option<DataFacts>,
+    /// The game's launch options in Steam, when they keep it offline (a Steam copy only).
+    pub steam_offline: Option<String>,
 }
 
 /// Whether the game's data is the unmodified game's (see [`STOCK_DATA_VERSION`]).
@@ -452,6 +454,19 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
         checks.push(check);
     }
 
+    if let Some(options) = &f.steam_offline {
+        checks.push(Check::new(
+            "launch_options",
+            Status::Warn,
+            "Steam starts the game offline",
+            format!(
+                "The game's launch options in Steam are \"{}\": started from Steam (or by the launcher through Steam), -offline keeps it from going online. Remove it in Steam: the game's Properties, General, Launch options.",
+                hooks_config::text::clip(options, 120)
+            ),
+            None,
+        ));
+    }
+
     if let Some(log) = &f.log {
         // Only about a pin that's still there: without one, nothing can go missing.
         if let (Some(adapter), Some(pinned)) = (&log.adapter_missing, &f.pinned) {
@@ -555,7 +570,20 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
                 version: Some(STOCK_DATA_VERSION),
                 mods: vec![],
             }),
+            steam_offline: None,
         }
+    }
+
+    #[test]
+    fn steam_starting_the_game_offline_is_a_warning() {
+        assert!(checklist(&ready_facts()).iter().all(|c| c.id != "launch_options"));
+        let facts = Facts {
+            steam_offline: Some("-uplay_steam_mode -offline -offline_mode".into()),
+            ..ready_facts()
+        };
+        let check = checklist(&facts).into_iter().find(|c| c.id == "launch_options").expect("said");
+        assert_eq!(check.status, Status::Warn);
+        assert!(check.detail.contains("-offline -offline_mode"), "{}", check.detail);
     }
 
     #[test]

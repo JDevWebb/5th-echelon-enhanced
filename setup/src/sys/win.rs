@@ -108,6 +108,13 @@ fn steam_dirs() -> Vec<PathBuf> {
     .collect()
 }
 
+/// Where Steam is installed (its `userdata` holds each player's settings).
+pub fn steam_installs() -> Vec<PathBuf> {
+    let mut dirs = steam_dirs();
+    dirs.dedup();
+    dirs
+}
+
 /// Steam's own program, to ask it to start a game: where Steam last ran from (`SteamExe`), else
 /// `steam.exe` in its folder.
 pub fn steam_exe() -> Option<PathBuf> {
