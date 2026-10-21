@@ -168,7 +168,9 @@ impl Refused {
     /// signing in again on that, and only a moment on other refusals (a busy server).
     pub fn message(self) -> &'static str {
         match self {
-            Self::Failures => "Too many failed logins; try again later",
+            Self::Failures => {
+                "Too many failed logins; wait 10 minutes before trying again. Forgot your password? This server's admins can reset it (on the community network, write to them on the launcher's Support page)"
+            }
             Self::Flood => "Too many sign-ins from your address in a short time; wait a few minutes and try again",
         }
     }

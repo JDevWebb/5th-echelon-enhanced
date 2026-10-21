@@ -350,7 +350,15 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
     if server_ip.is_some() {
         checks.push(match &f.account {
             Some(AccountFact::Ok(name)) => Check::new("account", Status::Ok, format!("Signed in as {name}"), "", None),
-            Some(AccountFact::Refused(why)) => Check::new("account", Status::Fail, "Account refused", why.clone(), Some(Fix::SetUpAccount)),
+            Some(AccountFact::Refused(why)) => {
+                // A forgotten password has no way back here: the server's admins reset it.
+                let why = if why == "wrong password" {
+                    format!("{why}. Forgot it? The server's admins can reset it: on the community network, write to them on the Support page.")
+                } else {
+                    why.clone()
+                };
+                Check::new("account", Status::Fail, "Account refused", why, Some(Fix::SetUpAccount))
+            }
             Some(AccountFact::Outdated(why)) => Check::new("account", Status::Fail, "Update the launcher", why.clone(), Some(Fix::UpdateLauncher)),
             Some(AccountFact::Banned(why)) => Check::new(
                 "account",
