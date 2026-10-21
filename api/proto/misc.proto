@@ -67,6 +67,10 @@ message EventResponse {
     // Something that just went wrong for the player, and why: the overlay shows it at once.
     // Only to a game that asked for notices; none from servers before 0.4.4.
     Notice notice = 4;
+    // The players the mode of the match the player is in is made for (2 co-op, 4 Classic, 8
+    // Blacklist...), from the game's own playlists; the overlay warns a host above it. 0 when
+    // not in a match, for a mode the server doesn't know, or from servers before 0.4.6.
+    uint32 match_size = 5;
 }
 
 message Notice {

@@ -1276,6 +1276,16 @@ impl Misc for MyMisc {
                 .map(|(title, text)| misc::Notice { title, text })
         };
 
+        // The mode's size for the match the player is in, for the overlay's warning; nothing
+        // when it can't be read (a warning, not worth failing the poll for).
+        let match_size = self
+            .storage
+            .rooms_attributes_of_async(user_id)
+            .await
+            .ok()
+            .and_then(|rooms| rooms.iter().find_map(|a| crate::game_session::mode_size(a)))
+            .unwrap_or(0);
+
         let Some(invite) = self.storage.take_invite_async(user_id).await.map_err(|e| {
             error!(self.logger, "Error getting latest invite for user: {e}");
             Status::internal("internal error")
@@ -1302,6 +1312,7 @@ impl Misc for MyMisc {
                 friend,
                 support_unread: crate::support::unread(user_id),
                 notice: notice(),
+                match_size,
             }));
         };
 
@@ -1344,6 +1355,7 @@ impl Misc for MyMisc {
             }),
             friend: None,
             notice: notice(),
+            match_size,
         }))
     }
 

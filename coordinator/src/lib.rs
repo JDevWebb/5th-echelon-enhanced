@@ -390,6 +390,13 @@ struct PlayedMatch {
     players: u32,
     #[serde(default)]
     seats: u32,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    mode_size: u32,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 /// The most matches a server's listing keeps, and the most players or seats one has.
@@ -407,6 +414,7 @@ impl Playing {
             }
             m.players = m.players.min(MAX_MATCH_SEATS);
             m.seats = m.seats.min(MAX_MATCH_SEATS);
+            m.mode_size = m.mode_size.min(MAX_MATCH_SEATS);
         }
         for n in [
             &mut self.more_matches,

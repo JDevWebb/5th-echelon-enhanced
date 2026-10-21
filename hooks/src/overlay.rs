@@ -1447,6 +1447,13 @@ impl MyRenderLoop {
         self.stepper(ui, 0, "Players needed to start", "The match waits for this many players", min, 1, most.max(1));
         let least = (*min).max(1);
         self.stepper(ui, 1, "Most players", "Spies vs Mercs classic is 2 against 2, co-op is 2", max, least, 99);
+        // Above the mode's own size some players' games can crash or freeze (more players than
+        // it was made for); allowed all the same, as hosts use it, but said.
+        if let Some(size) = crate::community::match_size().filter(|size| *max > *size) {
+            ui.dummy([0.0, self.s(4.0)]);
+            let _c = ui.push_style_color(StyleColor::Text, WARN);
+            ui.text_wrapped(format!("More than {size} players can crash or freeze the game for some players in this mode."));
+        }
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -309,6 +309,8 @@ unsafe extern "cdecl" fn UPLAY_Startup(uplay_id: usize, game_version: usize, lan
                                     }
                                     // An answer from support: a notice too.
                                     crate::community::support_unread(resp.support_unread);
+                                    // The mode's size, for the Match pane's warning above it.
+                                    crate::community::set_match_size(resp.match_size);
                                     // Something that just went wrong (a join, and why): shown at once.
                                     if let Some(notice) = resp.notice.as_ref() {
                                         crate::community::problem(notice);

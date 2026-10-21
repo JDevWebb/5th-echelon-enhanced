@@ -483,6 +483,23 @@ pub fn support_unread(count: u32) {
     }
 }
 
+/// The players the mode of the match the player is in is made for, as the server last said
+/// (0: not in a match, or not known).
+static MATCH_SIZE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// The server's size for the mode of the player's match, from each event poll.
+pub fn set_match_size(size: u32) {
+    let before = MATCH_SIZE.swap(size, std::sync::atomic::Ordering::Relaxed);
+    if size != before && size != 0 {
+        info!("The match's mode is made for {size} players");
+    }
+}
+
+/// The players the mode of the player's match is made for, if known.
+pub fn match_size() -> Option<i32> {
+    i32::try_from(MATCH_SIZE.load(std::sync::atomic::Ordering::Relaxed)).ok().filter(|n| *n > 0)
+}
+
 /// Starts the background thread. Safe to call more than once.
 pub fn start() {
     if ACTIONS.get().is_some() {

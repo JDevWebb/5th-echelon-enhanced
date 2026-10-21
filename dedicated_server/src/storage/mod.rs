@@ -1508,6 +1508,20 @@ impl Storage {
         Ok(u32::try_from(n).unwrap_or(u32::MAX))
     }
 
+    /// The attributes of each live room `user_id` hosts or is in (as a participant or a guest),
+    /// newest first.
+    pub async fn rooms_attributes_of_async(&self, user_id: u32) -> Result<Vec<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT COALESCE(g.attributes, '') FROM game_sessions g WHERE g.destroyed_at IS NULL
+               AND (g.creator_id = ?1 OR EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?1)
+                    OR EXISTS (SELECT 1 FROM guests gu WHERE gu.game_id = g.id AND gu.user_id = ?1))
+             ORDER BY g.id DESC",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool)
+        .await?)
+    }
+
     /// Whether two players are in a live session together (either hosting).
     pub fn share_session(&self, a: u32, b: u32) -> Result<bool> {
         let n: i64 = run(sqlx::query_scalar(

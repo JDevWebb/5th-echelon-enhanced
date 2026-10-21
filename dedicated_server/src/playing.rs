@@ -46,6 +46,7 @@ pub fn of(sessions: &[LiveSession]) -> Playing {
             map: attribute_value(&s.attributes, ATTR_MAP),
             players: count(s.players.len()),
             seats,
+            mode_size: crate::game_session::mode_size(&s.attributes).unwrap_or(0),
         });
     }
     // The busiest first; then the newest (sessions come newest first, and the sort keeps it).
@@ -92,11 +93,15 @@ mod tests {
         ];
         let p = of(&sessions);
         assert_eq!(p.matches.len(), 2, "public matches only");
-        assert_eq!(p.matches[0].line(), "SvM Classic · Virus Vault · 3/8", "the busiest first");
+        assert_eq!(
+            p.matches[0].line(),
+            "SvM Classic · Virus Vault · 3/8 (made for 4)",
+            "the busiest first, raised past its mode's 4"
+        );
         assert_eq!(p.matches[1].line(), "Grim (Ghost) · Hawkins Seafort · 1/2");
         assert_eq!((p.private_matches, p.private_players), (1, 2), "private ones counted, nothing more");
         assert_eq!(p.lobby_players, 2, "those in a match aren't also waiting");
-        assert_eq!(p.summary(), "SvM Classic 3/8 · Grim (Ghost) 1/2 · 1 private match · 2 in lobbies");
+        assert_eq!(p.summary(), "SvM Classic 3/8 (made for 4) · Grim (Ghost) 1/2 · 1 private match · 2 in lobbies");
         assert!(of(&[]).is_empty());
     }
 

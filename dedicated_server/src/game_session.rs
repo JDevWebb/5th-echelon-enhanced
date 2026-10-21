@@ -180,6 +180,31 @@ pub(crate) fn match_mode(attributes: &str) -> Option<&'static str> {
     Some(if seats > 2 && attribute_value(attributes, 105) != Some(2) { "svm" } else { "coop" })
 }
 
+/// The players a match's mode is made for, from the game's own playlists (`maxPlayers`): by
+/// its playlist (attribute 103, set by matchmaking) when it's one of them, else by its game
+/// mode (102). None for a lobby, or a mode not known here.
+///
+/// A host can raise a match past it (the overlay's "Most players"); above it some players'
+/// games can crash or freeze, so the overlay warns.
+pub(crate) fn mode_size(attributes: &str) -> Option<u32> {
+    if attribute_value(attributes, PROPERTY_ROOM_KIND) != Some(0) {
+        return None;
+    }
+    let by_playlist = match attribute_value(attributes, 103) {
+        Some(2_165_463_540) => Some(4),                                             // Classic
+        Some(4_008_726_265 | 709_003_443 | 655_282_787 | 1_365_420_058) => Some(8), // Blacklist, Team Deathmatch, Capture, Training Grounds
+        Some(4_078_930_099 | 1_487_234_637) => Some(6),                             // Frontline, Training Grounds
+        _ => None,
+    };
+    by_playlist.or(match attribute_value(attributes, 102)? {
+        3..=5 => Some(2),      // co-op
+        6 | 7 | 10 => Some(8), // Team Deathmatch, Blacklist, Capture
+        8 => Some(4),          // Classic
+        9 => Some(6),          // Frontline
+        _ => None,
+    })
+}
+
 /// Presents a private room as if its slots were public.
 ///
 /// Attribute 3 counts public slots, attribute 4 private ones - a private match reserves all
@@ -2220,6 +2245,26 @@ mod tests {
         assert_eq!(match_mode(svm_classic), Some("svm"));
         assert_eq!(match_mode(svm_matchmaking), Some("svm"));
         assert_eq!(match_mode("113 => 1;3 => 8;4 => 0"), None, "a lobby serves either mode");
+    }
+
+    #[test]
+    fn a_match_knows_the_size_its_mode_is_made_for() {
+        use super::mode_size;
+        let coop_private = "113 => 0;3 => 0;4 => 2;102 => 3;103 => 0;105 => 2";
+        let coop_raised = "113 => 0;3 => 0;4 => 6;102 => 3;103 => 0;105 => 2";
+        let svm_private = "113 => 0;3 => 0;4 => 8;102 => 7;103 => 0;105 => 1";
+        let svm_raised = "113 => 0;3 => 10;4 => 0;102 => 7;103 => 0;105 => 1";
+        let classic = "113 => 0;3 => 4;4 => 0;102 => 8;103 => 2165463540;105 => 0";
+        let training = "113 => 0;3 => 6;4 => 0;102 => 7;103 => 1487234637;105 => 0";
+        assert_eq!(mode_size(coop_private), Some(2));
+        assert_eq!(mode_size(coop_raised), Some(2), "the seats a host set aren't the mode's size");
+        assert_eq!(mode_size(svm_private), Some(8));
+        assert_eq!(mode_size(svm_raised), Some(8));
+        assert_eq!(mode_size(classic), Some(4));
+        assert_eq!(mode_size(training), Some(6), "a playlist's own size wins over its game mode's");
+        assert_eq!(mode_size("113 => 0;102 => 9"), Some(6));
+        assert_eq!(mode_size("113 => 1;3 => 8;4 => 0;102 => 7"), None, "a lobby");
+        assert_eq!(mode_size("113 => 0;102 => 42"), None, "a mode not known here");
     }
 
     /// An invitee isn't put into a room whose members have taken every seat it has now;

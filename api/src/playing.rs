@@ -33,6 +33,14 @@ pub struct Match {
     /// Its seats, public and private (0 when the room didn't say).
     #[serde(default)]
     pub seats: u32,
+    /// The players its mode is made for (0 when not known); a host can raise the seats past it.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub mode_size: u32,
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)]
+fn is_zero(n: &u32) -> bool {
+    *n == 0
 }
 
 impl Match {
@@ -41,10 +49,12 @@ impl Match {
         game_names::match_mode(self.game_mode, &self.kind).unwrap_or("A match")
     }
 
-    /// "6/8", or "6 players" when the seats aren't known.
+    /// "6/8", or "6 players" when the seats aren't known; "9/10 (made for 8)" when the host
+    /// raised the seats past the mode's size.
     fn players_text(&self) -> String {
         match self.seats {
             0 => plural(self.players, "player"),
+            seats if self.mode_size > 0 && seats > self.mode_size => format!("{}/{seats} (made for {})", self.players, self.mode_size),
             seats => format!("{}/{seats}", self.players),
         }
     }
@@ -175,6 +185,7 @@ mod tests {
             map: Some(0x05F6_9010),
             players,
             seats,
+            ..Match::default()
         }
     }
 
@@ -209,8 +220,12 @@ mod tests {
             map: Some(1),
             players: 2,
             seats: 0,
+            mode_size: 0,
         };
         assert_eq!(unknown.line(), "Co-op · 2 players");
+        let raised = Match { mode_size: 8, ..svm(7, 9, 10) };
+        assert_eq!(raised.line(), "SvM Blacklist · Virus Vault · 9/10 (made for 8)");
+        assert_eq!(Match { mode_size: 8, ..svm(7, 6, 8) }.line(), "SvM Blacklist · Virus Vault · 6/8", "at its size: as before");
     }
 
     #[test]
