@@ -498,18 +498,25 @@ impl<T> StreamHandler<T> for RVSecHandler<T> {
 
         let rmc_packet = match rmc_packet {
             Packet::Request(r) => r,
-            Packet::Response(_r) => {
-                // Its size, not its bytes: one line per byte made a packet hundreds of lines.
+            Packet::Response(r) => {
+                // What it answers, not its bytes: one line per byte made a packet hundreds of
+                // lines. das's game sends one after each GetContentUrl (na1, 2026-10-19..21),
+                // which this tells apart.
+                let (method, call, result) = match &r.result {
+                    Ok(d) => (Some(d.method_id), d.call_id, String::from("ok")),
+                    Err(e) => (None, e.call_id, format!("error {:#010x}", e.error_code)),
+                };
+                let what = format!("protocol {}, method {method:?}, call {call}, {result}; {} bytes", r.protocol_id, data.len());
                 if ci.user_id.is_some() {
-                    error!(logger, "RMC response not supported here ({} bytes)", data.len());
+                    error!(logger, "RMC response not supported here ({what})");
                 } else {
-                    debug!(logger, "RMC response not supported here ({} bytes)", data.len());
+                    debug!(logger, "RMC response not supported here ({what})");
                 }
                 failures::report(failures::Failure {
                     user_id: ci.user_id,
-                    protocol: None,
-                    method: None,
-                    call: None,
+                    protocol: Some(r.protocol_id),
+                    method,
+                    call: Some(format!("a reply to call {call}")),
                     error: "a reply came where a request was expected".into(),
                 });
                 return Err(packet::Error::Unimplemented);
