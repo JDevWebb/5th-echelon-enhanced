@@ -18,6 +18,8 @@ pub struct LogSignals {
     /// Its matches went through the server's relay.
     pub relayed: bool,
     pub panicked: bool,
+    /// The game froze (the hooks' freeze watch wrote where it was).
+    pub froze: bool,
     /// The server refused the client's sign-in.
     pub signin_refused: bool,
 }
@@ -28,6 +30,7 @@ pub fn read_log(text: &str) -> LogSignals {
         s.played_online |= line.contains("NAT: Storm socket bound") || line.contains("Session Some(");
         s.relayed |= line.contains("(through the server's relay)");
         s.panicked |= line.contains("panicked at");
+        s.froze |= line.contains("hooks::crash: The game froze");
         s.signin_refused |= line.contains("The server refused this client") || line.contains("Login error:") || line.contains("Sign-in failed:");
     }
     s
@@ -140,6 +143,9 @@ pub fn triggers(log: LogSignals, server: Option<ServerSaw>, exit_code: Option<i3
     }
     if crashed(exit_code) {
         t.push("exit_code");
+    }
+    if log.froze {
+        t.push("froze");
     }
     if log.signin_refused {
         t.push("signin_refused");
@@ -400,6 +406,9 @@ mod tests {
         let s = read_log(log);
         assert!(s.played_online && s.relayed && !s.panicked && !s.signin_refused);
         assert!(read_log("ERROR The server refused this client: update").signin_refused);
+        let froze = "2026-10-20T16:31:27.000000Z ERROR hooks::crash: The game froze: no frame for 10 s; the thread that draws (thread 4) is at Blacklist_DX11_game.exe+0x1234";
+        assert!(read_log(froze).froze && !s.froze);
+        assert_eq!(triggers(read_log(froze), None, None, false), ["froze"]);
         assert!(read_log("ERROR relogin: hooks::api: 320: Sign-in failed: Invalid login").signin_refused);
         // The server never answering isn't a refusal (a player on a bad connection was asked
         // why the server didn't let them in, 2026-10-21).

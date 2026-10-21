@@ -304,6 +304,7 @@ fn init(hmodule: Option<HMODULE>) {
     // From here, a crash says where in the log (crash.rs).
     if let Some(log) = LOG_PATH.get() {
         crash::install(log);
+        crash::watch_for_freezes();
     }
     check_orig_library(hmodule);
     if let Some(cmdline) = get_arguments() {

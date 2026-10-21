@@ -329,3 +329,163 @@ impl std::fmt::Write for Line {
         Ok(())
     }
 }
+
+// ---------- Freezes ----------
+//
+// A game that freezes (the picture stops, the sound plays on) throws nothing, so nothing above
+// sees it (Tea_bag's three freezes, TrustInDemon's matches). Each frame the overlay draws says
+// so ([`frame`]); a watchdog thread that sees none for [`FROZEN_AFTER`] while the game's
+// window is in front suspends the thread that draws and the game's main thread for a moment,
+// writes where each is (module and offset, and the code addresses on its stack) to the log as
+// for an exception, and resumes them: once a freeze, at most [`MAX_FREEZES`] a run.
+
+/// No frame for this long, with the game's window in front: frozen.
+const FROZEN_AFTER: std::time::Duration = std::time::Duration::from_secs(10);
+const MAX_FREEZES: u32 = 3;
+/// `CONTEXT_i386 | CONTEXT_CONTROL`: EIP, ESP and the rest of the control registers.
+const CONTEXT_CONTROL: u32 = 0x0001_0001;
+/// `THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION`.
+const THREAD_ACCESS: u32 = 0x0002 | 0x0008 | 0x0040;
+
+/// The x86 `CONTEXT` (716 bytes); its flags first, `Eip`/`Esp` read by their offsets.
+#[repr(C, align(16))]
+struct ThreadContext {
+    bytes: [u8; 0x2CC],
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetCurrentThreadId() -> u32;
+    fn GetCurrentProcessId() -> u32;
+    fn OpenThread(access: u32, inherit: i32, id: u32) -> isize;
+    fn SuspendThread(thread: isize) -> u32;
+    fn ResumeThread(thread: isize) -> u32;
+    fn GetThreadContext(thread: isize, context: *mut ThreadContext) -> i32;
+}
+
+#[link(name = "user32")]
+extern "system" {
+    fn GetForegroundWindow() -> isize;
+    fn GetWindowThreadProcessId(window: isize, process: *mut u32) -> u32;
+}
+
+/// The game's main thread (the one that loaded this DLL), the one that last drew a frame, and
+/// when (milliseconds since [`START`]; 0: none yet).
+static MAIN_THREAD: AtomicU32 = AtomicU32::new(0);
+static FRAME_THREAD: AtomicU32 = AtomicU32::new(0);
+static LAST_FRAME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static START: OnceLock<std::time::Instant> = OnceLock::new();
+static FREEZES: AtomicU32 = AtomicU32::new(0);
+
+fn since_start() -> u64 {
+    u64::try_from(START.get_or_init(std::time::Instant::now).elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+/// The game drew a frame (the overlay's render, on the thread that draws).
+pub fn frame() {
+    FRAME_THREAD.store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
+    LAST_FRAME.store(since_start().max(1), Ordering::Relaxed);
+}
+
+/// Starts watching for freezes, from the thread that loaded this DLL (the game's main one).
+pub fn watch_for_freezes() {
+    MAIN_THREAD.store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
+    since_start();
+    let spawned = std::thread::Builder::new().name(String::from("freeze-watch")).spawn(|| {
+        // Set when a freeze is written, cleared when frames come again.
+        let mut written = false;
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+            let last = LAST_FRAME.load(Ordering::Relaxed);
+            let quiet = std::time::Duration::from_millis(since_start().saturating_sub(last));
+            if last == 0 || quiet < FROZEN_AFTER {
+                written = false;
+                continue;
+            }
+            if written || !in_front() {
+                continue;
+            }
+            written = true;
+            if FREEZES.fetch_add(1, Ordering::Relaxed) >= MAX_FREEZES {
+                continue;
+            }
+            let (main, drawing) = (MAIN_THREAD.load(Ordering::Relaxed), FRAME_THREAD.load(Ordering::Relaxed));
+            unsafe {
+                where_is(drawing, "the thread that draws", quiet);
+                if main != drawing {
+                    where_is(main, "the main thread", quiet);
+                }
+            }
+            tracing::warn!(
+                "The game froze: no frame for {} s with its window in front (where its threads were is above)",
+                quiet.as_secs()
+            );
+        }
+    });
+    if spawned.is_err() {
+        tracing::warn!("Freeze watch: its thread couldn't start");
+    }
+}
+
+/// Whether the window in front is the game's.
+fn in_front() -> bool {
+    unsafe {
+        let window = GetForegroundWindow();
+        let mut process = 0;
+        window != 0 && GetWindowThreadProcessId(window, &mut process) != 0 && process == GetCurrentProcessId()
+    }
+}
+
+/// Writes where thread `id` is: suspended only while its registers and stack are read (into a
+/// line on this thread's stack: nothing is allocated, nor waited on, while it's held).
+unsafe fn where_is(id: u32, which: &str, quiet: std::time::Duration) {
+    if id == 0 {
+        return;
+    }
+    let thread = OpenThread(THREAD_ACCESS, 0, id);
+    if thread == 0 {
+        return;
+    }
+    let mut line = Line::new();
+    timestamp(&mut line);
+    let _ = write!(
+        line,
+        " ERROR hooks::crash: The game froze: no frame for {} s; {which} (thread {id}) is at ",
+        quiet.as_secs()
+    );
+    if SuspendThread(thread) != u32::MAX {
+        let mut context = ThreadContext { bytes: [0; 0x2CC] };
+        context.bytes[..4].copy_from_slice(&CONTEXT_CONTROL.to_le_bytes());
+        if GetThreadContext(thread, &mut context) != 0 {
+            let eip = std::ptr::read_unaligned(context.bytes.as_ptr().add(CONTEXT_EIP).cast::<u32>()) as usize;
+            let esp = std::ptr::read_unaligned(context.bytes.as_ptr().add(CONTEXT_ESP).cast::<u32>()) as usize;
+            place(&mut line, eip);
+            line.push(". On the stack:");
+            stack(&mut line, esp);
+        } else {
+            line.push("(its registers couldn't be read)");
+        }
+        ResumeThread(thread);
+    } else {
+        line.push("(it couldn't be suspended)");
+    }
+    CloseHandle(thread);
+    append(line.bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_line_keeps_its_end_when_cut() {
+        let mut line = Line::new();
+        line.push(&"x".repeat(2000));
+        let bytes = line.bytes();
+        assert_eq!(bytes.len(), 1024);
+        assert_eq!(bytes.last(), Some(&b'\n'));
+        let mut line = Line::new();
+        let _ = write!(line, "at {:#x}", 0x5b9b03);
+        assert_eq!(line.bytes(), b"at 0x5b9b03\n");
+    }
+}

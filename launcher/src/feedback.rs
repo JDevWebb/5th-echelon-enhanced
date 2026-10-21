@@ -35,6 +35,7 @@ const PROBLEMS: [(&str, &str); 7] = [
 fn why(triggers: &[&'static str]) -> &'static str {
     match triggers.first().copied() {
         Some("panic" | "exit_code") => "The game seems to have crashed.",
+        Some("froze") => "The game seems to have frozen.",
         Some("signin_refused") => "The server didn't let the game sign in.",
         Some("version_mismatch") => "A join was refused as \"a different version of the game\".",
         Some("failed_join") => "A join didn't work.",
@@ -50,7 +51,7 @@ fn ticked(triggers: &[&'static str]) -> BTreeSet<&'static str> {
     triggers
         .iter()
         .filter_map(|t| match *t {
-            "panic" | "exit_code" => Some("crash"),
+            "panic" | "exit_code" | "froze" => Some("crash"),
             "signin_refused" => Some("signin"),
             "version_mismatch" => Some("version"),
             "failed_join" | "search_mismatch" => Some("join"),

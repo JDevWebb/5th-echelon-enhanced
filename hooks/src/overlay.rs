@@ -1681,6 +1681,8 @@ impl ImguiRenderLoop for MyRenderLoop {
     }
 
     fn render(&mut self, ui: &mut imgui::Ui) {
+        // A frame: the freeze watch's sign the game is alive.
+        crate::crash::frame();
         self.poll_keys();
         crate::overlay_input::set_open(self.ui_state == UiState::Show);
         self.poll_invites();
