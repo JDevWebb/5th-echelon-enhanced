@@ -356,6 +356,14 @@ fn describe_error(err: &crate::api::Error) -> (&'static str, String) {
         crate::api::Error::GRPCStatus(e) if e.code() == tonic::Code::Unauthenticated => {
             ("Signed out by the server", format!("Signing in again didn't work. Open {tool} and sign in again."))
         }
+        // An outdated game, or a ban: nothing is tried again until the game restarts, so not
+        // "reconnecting". The server's words say what to do ("Start the game from the
+        // launcher to update it").
+        crate::api::Error::Refused(why) if why.starts_with("too many") => (
+            "Waiting to sign in again",
+            String::from("The server had too many sign-ins from this game; it tries again in a few minutes."),
+        ),
+        crate::api::Error::Refused(why) => ("The server refused this game", why.clone()),
         _ => ("Lost the 5th Echelon server", format!("Reconnecting now. Invites are paused until it's back. {fix}")),
     }
 }
