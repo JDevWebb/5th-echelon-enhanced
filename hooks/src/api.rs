@@ -317,6 +317,17 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
             *BACK_OFF_UNTIL.lock().unwrap() = Some(std::time::Instant::now() + wait);
             return Err(status.into());
         }
+        // The server never answered: a timeout, or the connection dropped or reset. Not a
+        // refusal, so the launcher doesn't ask about one (it reads "Sign-in failed:" as that).
+        Err(status)
+            if matches!(
+                status.code(),
+                tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Cancelled | tonic::Code::Unknown
+            ) =>
+        {
+            error!("Couldn't reach the server to sign in: {}", status.message());
+            return Err(status.into());
+        }
         Err(status) => {
             error!("Sign-in failed: {}", status.message());
             return Err(status.into());

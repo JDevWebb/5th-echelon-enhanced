@@ -400,6 +400,10 @@ mod tests {
         let s = read_log(log);
         assert!(s.played_online && s.relayed && !s.panicked && !s.signin_refused);
         assert!(read_log("ERROR The server refused this client: update").signin_refused);
+        assert!(read_log("ERROR relogin: hooks::api: 320: Sign-in failed: Invalid login").signin_refused);
+        // The server never answering isn't a refusal (a player on a bad connection was asked
+        // why the server didn't let them in, 2026-10-21).
+        assert!(!read_log("ERROR relogin: hooks::api: 330: Couldn't reach the server to sign in: Timeout expired").signin_refused);
         assert!(read_log("thread 'main' panicked at src/x.rs").panicked);
         assert_eq!(read_log(""), LogSignals::default());
     }
