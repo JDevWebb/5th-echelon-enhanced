@@ -1787,6 +1787,20 @@ fn init_dx9(invites: crossbeam_channel::Receiver<Result<Option<InviteEvent>, cra
 }
 
 fn init_dx11(invites: crossbeam_channel::Receiver<Result<Option<InviteEvent>, crate::api::Error>>) -> anyhow::Result<()> {
+    // The hook needs a dummy device and swap chain, which some systems won't make (mpw,
+    // 2026-10-18: 0x80004005); hudhook panics then, and a panic ends the game. Checked first,
+    // a few times, so the game runs on without the overlay instead.
+    let mut tries = 0;
+    while let Err(e) = hudhook::hooks::dx11::check() {
+        tries += 1;
+        if tries == 3 {
+            return Err(anyhow::anyhow!(
+                "DirectX 11 wouldn't make the device the overlay hooks through ({e}): the game runs without the overlay"
+            ));
+        }
+        warn!("Overlay: DirectX 11 wouldn't make the device the overlay hooks through ({e}); trying again in 5 s");
+        std::thread::sleep(Duration::from_secs(5));
+    }
     init_hudhook::<hudhook::hooks::dx11::ImguiDx11Hooks>(invites)
 }
 

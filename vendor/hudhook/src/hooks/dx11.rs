@@ -94,7 +94,9 @@ unsafe extern "system" fn dxgi_swap_chain_present_impl(
     dxgi_swap_chain_present(swap_chain, sync_interval, flags)
 }
 
-fn get_target_addrs() -> DXGISwapChainPresentType {
+/// `IDXGISwapChain::Present`'s address, from a dummy device and swap chain; an error when
+/// the system won't make one (seen as `0x80004005`), which the caller can live with.
+fn try_target_addrs() -> Result<DXGISwapChainPresentType> {
     let mut p_device: Option<ID3D11Device> = None;
     let mut p_context: Option<ID3D11DeviceContext> = None;
     let mut p_swap_chain: Option<IDXGISwapChain> = None;
@@ -127,11 +129,10 @@ fn get_target_addrs() -> DXGISwapChainPresentType {
             Some(&mut p_device),
             None,
             Some(&mut p_context),
-        )
-        .expect("D3D11CreateDeviceAndSwapChain failed");
+        )?;
     }
 
-    let swap_chain = p_swap_chain.unwrap();
+    let swap_chain = p_swap_chain.ok_or_else(|| Error::from_hresult(HRESULT(-1)))?;
 
     let present_ptr: DXGISwapChainPresentType = unsafe {
         mem::transmute::<
@@ -140,7 +141,17 @@ fn get_target_addrs() -> DXGISwapChainPresentType {
         >(swap_chain.vtable().Present)
     };
 
-    present_ptr
+    Ok(present_ptr)
+}
+
+fn get_target_addrs() -> DXGISwapChainPresentType {
+    try_target_addrs().expect("D3D11CreateDeviceAndSwapChain failed")
+}
+
+/// Whether DirectX 11 can be hooked here: the dummy device and swap chain it needs can be
+/// made. Check first; [`ImguiDx11Hooks::new`] panics when they can't.
+pub fn check() -> Result<()> {
+    try_target_addrs().map(|_| ())
 }
 
 /// Hooks for DirectX 11.
