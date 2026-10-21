@@ -50,6 +50,7 @@ mod particle_fix;
 mod scheme_pool_fix;
 mod storm_fix;
 mod uplay_r1_loader;
+mod voice_device_fix;
 
 use macros::fatal_error;
 
