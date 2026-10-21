@@ -461,6 +461,15 @@ pub fn problem(notice: &server_api::misc::Notice) {
     });
 }
 
+/// Something the hooks did on the player's behalf, and why: the same card as a server's notice.
+pub fn tell(title: &str, text: &str) {
+    info!("Told the player: {title}: {text}");
+    let (title, text) = (title.to_string(), text.to_string());
+    update(|s| {
+        s.problem = Some(Problem { title, text, at: Instant::now() });
+    });
+}
+
 /// Answers from the network's admins the player hasn't read, as the server last said.
 static SUPPORT_UNREAD: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 

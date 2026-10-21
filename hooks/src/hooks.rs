@@ -772,7 +772,7 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
         crate::autoclimb::disable_auto_climb();
     }
 
-    // Fixes for the game's own crashes (see each module).
+    // Fixes for the game's own crashes and hangs (see each module).
     #[cfg(not(feature = "patch-free"))]
     if config.disable_crash_fixes {
         tracing::info!("crash fixes: off (disable_crash_fixes)");
@@ -781,6 +781,7 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
         crate::particle_fix::guard_particle_fills();
         crate::storm_fix::fix_ticket_observers();
         crate::voice_device_fix::guard_voice_devices();
+        crate::migration_fix::end_stuck_migrations();
     }
 }
 
