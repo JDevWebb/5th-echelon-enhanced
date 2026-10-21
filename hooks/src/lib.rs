@@ -308,6 +308,10 @@ fn init(hmodule: Option<HMODULE>) {
     check_orig_library(hmodule);
     if let Some(cmdline) = get_arguments() {
         info!("Cmdline: {}", cmdline);
+        if let Some(switch) = offline_switch(&cmdline) {
+            warn!("The game was started with {switch} (Steam's launch options?): it stays offline whatever the server says");
+            STARTED_OFFLINE.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
     }
     let game_dir = dir.clone();
     let path = config::get_config_path(dir);
@@ -499,6 +503,18 @@ fn get_executable(hinst: HMODULE) -> Option<PathBuf> {
     Some(PathBuf::from(path))
 }
 
+/// The game was started with `-offline` or `-offline_mode` (seen as a player's own Steam launch
+/// options): it never goes online, so the overlay says so for as long as it runs.
+pub(crate) static STARTED_OFFLINE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The switch in `cmdline` that keeps the game offline, if there is one.
+fn offline_switch(cmdline: &str) -> Option<&str> {
+    cmdline
+        .split_whitespace()
+        .map(|a| a.trim_matches('"'))
+        .find(|a| a.eq_ignore_ascii_case("-offline") || a.eq_ignore_ascii_case("-offline_mode"))
+}
+
 fn get_arguments() -> Option<String> {
     let cmdline = unsafe { windows::Win32::System::Environment::GetCommandLineW().to_string() };
     cmdline.ok()
@@ -615,4 +631,19 @@ unsafe extern "system" fn DllMain(hinst: HMODULE, reason: u32, reserved: *mut c_
         }
     };
     BOOL::from(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_the_switches_that_keep_the_game_offline() {
+        let steam = r#""C:\Games\Blacklist\src\SYSTEM\Blacklist_DX11_game.exe" -uplay_steam_mode -offline -offline_mode"#;
+        assert_eq!(offline_switch(steam), Some("-offline"));
+        assert_eq!(offline_switch("game.exe -OFFLINE_MODE"), Some("-OFFLINE_MODE"));
+        assert_eq!(offline_switch(r#""C:\offline\game.exe" -uplay_steam_mode"#), None, "a folder named offline");
+        assert_eq!(offline_switch("game.exe -offlinex"), None);
+        assert_eq!(offline_switch("game.exe"), None);
+    }
 }

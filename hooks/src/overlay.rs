@@ -653,6 +653,11 @@ impl MyRenderLoop {
                 let (title, detail) = describe_error(err);
                 (title.to_string(), detail.to_string(), BAD)
             }
+            None if crate::STARTED_OFFLINE.load(std::sync::atomic::Ordering::Relaxed) => (
+                String::from("The game was started offline"),
+                String::from("It was started with -offline, so it stays offline. Remove it from Steam's launch options (the game's Properties) and start the game again."),
+                WARN,
+            ),
             None => match crate::hooks::nat::unreachable() {
                 Some(why) => (String::from("Other players can't reach you"), describe_unreachable(why), WARN),
                 None => return,
