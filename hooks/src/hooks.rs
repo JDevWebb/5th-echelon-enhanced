@@ -779,6 +779,7 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
     } else {
         crate::scheme_pool_fix::keep_shared_scheme_pool();
         crate::particle_fix::guard_particle_fills();
+        crate::storm_fix::remove_all_copies_of_observers();
     }
 }
 
