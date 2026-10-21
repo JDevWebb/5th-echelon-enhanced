@@ -112,9 +112,34 @@ pub fn search_notice(mine: &str, theirs: &str) -> Option<(String, String)> {
     search_mismatch_line(mine, theirs).map(|line| ("No lobbies with your game data".to_string(), line))
 }
 
+/// The overlay's notice for a matchmaking search that found nothing while `rooms` open
+/// matches of another mode were: the game only ever finds its own mode's.
+pub fn other_mode_notice(mine: &str, theirs: &str, rooms: usize) -> (String, String) {
+    let open = if rooms == 1 {
+        format!("1 {theirs} match is open")
+    } else {
+        format!("{rooms} {theirs} matches are open")
+    };
+    (
+        format!("Nobody is hosting {mine} right now"),
+        format!("{open}: pick {theirs} to join it, or host {mine} and wait for others."),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_search_says_what_else_is_open() {
+        let (title, text) = other_mode_notice("SvM Classic", "SvM Blacklist", 2);
+        assert_eq!(title, "Nobody is hosting SvM Classic right now");
+        assert_eq!(
+            text,
+            "2 SvM Blacklist matches are open: pick SvM Blacklist to join it, or host SvM Classic and wait for others."
+        );
+        assert!(other_mode_notice("a", "b", 1).1.starts_with("1 b match is open"));
+    }
 
     #[test]
     fn a_join_says_why_it_failed() {

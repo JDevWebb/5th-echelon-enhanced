@@ -140,6 +140,11 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
         } else {
             other_data(&req_attrs, scanned.iter().map(|(_, attrs)| attrs))
         };
+        let other = if invitation_search {
+            None
+        } else {
+            other_mode(&req_attrs, scanned.iter().map(|(_, attrs)| attrs))
+        };
         let sessions: Vec<_> = scanned
             .into_iter()
             .filter(|(_, attrs)| invitation_search || answers(&req_attrs, attrs, false))
@@ -172,6 +177,25 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
             if let Some(noted) = crate::reports::search_other_data(user_id, hidden.mine, hidden.theirs, hidden.lobbies) {
                 let shown = |v: u32| crate::reports::data_shown(Some(v));
                 if let Some((title, text)) = server_api::notices::search_notice(&shown(hidden.mine), &shown(hidden.theirs)) {
+                    crate::reports::tell(user_id, title, text, Some(noted));
+                }
+            }
+        }
+        // Found nothing, but matches of another Spies vs Mercs playlist are open: the game only
+        // ever finds its own, so with few players two lone hosts of different modes never meet.
+        if let Some(other) = other.filter(|_| sessions.is_empty() && detail.get("other_data").is_none()) {
+            let names = (
+                server_api::game_names::playlist_mode(other.mine).and_then(server_api::game_names::mode),
+                server_api::game_names::mode(other.mode),
+            );
+            info!(
+                logger,
+                "{} open matches of playlist {} (game mode {}), this search's {}", other.rooms, other.theirs, other.mode, other.mine
+            );
+            detail["other_mode"] = serde_json::json!({ "rooms": other.rooms, "playlist": other.theirs, "game_mode": other.mode });
+            if let (Some(mine), Some(theirs)) = names {
+                if let Some(noted) = crate::reports::search_other_mode(user_id, other.mine, other.theirs, other.rooms) {
+                    let (title, text) = server_api::notices::other_mode_notice(mine, theirs, other.rooms);
                     crate::reports::tell(user_id, title, text, Some(noted));
                 }
             }
@@ -247,6 +271,35 @@ fn other_data<'a>(search: &HashMap<u32, u32>, sessions: impl Iterator<Item = &'a
     Some(OtherData { lobbies, mine, theirs })
 }
 
+/// Open matches a Spies vs Mercs search would have found but for their playlist.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OtherMode {
+    rooms: usize,
+    /// The search's playlist (attribute 103).
+    mine: u32,
+    /// The playlist most of those matches are, and its game mode (attribute 102).
+    theirs: u32,
+    mode: u32,
+}
+
+/// The matches among `sessions` that answer `search` (a Spies vs Mercs one: its playlist set)
+/// in all but their playlist, if any: of another playlist, with the same game data.
+fn other_mode<'a>(search: &HashMap<u32, u32>, sessions: impl Iterator<Item = &'a HashMap<u32, u32>>) -> Option<OtherMode> {
+    let mine = *search.get(&103).filter(|p| **p != 0)?;
+    let mut without = search.clone();
+    without.remove(&103);
+    let mut counts: HashMap<(u32, u32), usize> = HashMap::new();
+    for s in sessions.filter(|s| answers(&without, s, false)) {
+        match (s.get(&103), s.get(&102)) {
+            (Some(&theirs), Some(&mode)) if theirs != 0 && theirs != mine => *counts.entry((theirs, mode)).or_default() += 1,
+            _ => {}
+        }
+    }
+    let rooms = counts.values().sum();
+    let ((theirs, mode), _) = counts.into_iter().max_by_key(|((playlist, _), n)| (*n, std::cmp::Reverse(*playlist)))?;
+    Some(OtherMode { rooms, mine, theirs, mode })
+}
+
 pub fn new_protocol<T: 'static>(storage: Arc<Storage>) -> Box<dyn Protocol<T>> {
     Box::new(GameSessionExProtocolServer::new(GameSessionExProtocolServerImpl { storage }))
 }
@@ -288,5 +341,31 @@ mod tests {
         let a = attrs(&[(106, 3_564_829), (107, 1), (103, 0)]);
         assert_eq!(other_data(&search, [&a, &stock].into_iter()).map(|o| (o.lobbies, o.theirs)), Some((2, STOCK)));
         assert_eq!(other_data(&search, [&a, &a, &stock].into_iter()).map(|o| o.theirs), Some(1));
+    }
+
+    /// Pa3cio's Classic searches on eu1 (2026-10-20) found nothing while Tea_bag hosted
+    /// Blacklist.
+    #[test]
+    fn matches_of_another_playlist_are_counted() {
+        const CLASSIC: u32 = 2_165_463_540;
+        const BLACKLIST: u32 = 4_008_726_265;
+        let search = attrs(&[(106, 3_564_829), (107, STOCK), (103, CLASSIC), (112, 1)]);
+        let blacklist = attrs(&[(106, 3_564_829), (107, STOCK), (103, BLACKLIST), (102, 7), (112, 2)]);
+        let modded = attrs(&[(106, 3_564_829), (107, MODDED), (103, BLACKLIST), (102, 7)]);
+        let private = attrs(&[(106, 3_564_829), (107, STOCK), (103, 0), (102, 7)]);
+        let classic = attrs(&[(106, 3_564_829), (107, STOCK), (103, CLASSIC), (102, 8)]);
+        assert_eq!(
+            other_mode(&search, [&blacklist, &blacklist, &modded, &private, &classic].into_iter()),
+            Some(OtherMode {
+                rooms: 2,
+                mine: CLASSIC,
+                theirs: BLACKLIST,
+                mode: 7
+            }),
+            "not other game data, a private match, nor its own playlist's"
+        );
+        let coop_search = attrs(&[(106, 3_564_829), (107, STOCK), (103, 0)]);
+        assert_eq!(other_mode(&coop_search, [&blacklist].into_iter()), None, "only a Spies vs Mercs search");
+        assert_eq!(other_mode(&search, [&classic].into_iter()), None);
     }
 }

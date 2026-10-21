@@ -59,6 +59,23 @@ pub const GAME_MODES: &[(u32, &str)] = &[
     (10, "Extraction"),
 ];
 
+/// (playlist, game mode): the Spies vs Mercs playlists a matchmaking search names (attribute
+/// 103, the playlist's id in the game's own data), and the game mode their matches are.
+pub const PLAYLISTS: &[(u32, u32)] = &[
+    (4_008_726_265, 7), // Blacklist
+    (2_165_463_540, 8), // Classic
+    (709_003_443, 6),   // Team Deathmatch
+    (655_282_787, 10),  // Capture (Extraction)
+    (4_078_930_099, 9), // Frontline (Uplink Control)
+    (1_487_234_637, 7), // Training Grounds
+    (1_365_420_058, 6), // Training Grounds (Team Deathmatch)
+];
+
+/// The game mode of a playlist's matches, if it's one the game has.
+pub fn playlist_mode(playlist: u32) -> Option<u32> {
+    PLAYLISTS.iter().find(|(p, _)| *p == playlist).map(|(_, mode)| *mode)
+}
+
 /// A map's name, if it's one the game has.
 pub fn map(id: u32) -> Option<&'static str> {
     MAPS.iter().find(|(m, _)| *m == id).map(|(_, name)| *name)
@@ -89,6 +106,8 @@ mod tests {
         assert_eq!(map(3_578_398_534), Some("Hawkins Seafort"));
         assert_eq!(map(1), None);
         assert_eq!(mode(8), Some("SvM Classic"));
+        assert_eq!(playlist_mode(2_165_463_540).and_then(mode), Some("SvM Classic"));
+        assert_eq!(playlist_mode(1), None);
         assert_eq!(match_mode(Some(7), "svm"), Some("SvM Blacklist"));
         assert_eq!(match_mode(Some(3), "coop"), Some("Grim (Ghost)"));
         assert_eq!(match_mode(None, "svm"), Some("Spies vs Mercs"));

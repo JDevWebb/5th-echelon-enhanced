@@ -307,6 +307,28 @@ pub fn search_other_data(user: u32, mine: u32, theirs: u32, lobbies: usize) -> O
     ))
 }
 
+/// `user`'s Spies vs Mercs search found nothing, but `rooms` open matches of another playlist
+/// (`theirs`; theirs `mine`) would have answered it: noted, as [`search_other_data`], once a
+/// minute at most. The event's number when noted.
+pub fn search_other_mode(user: u32, mine: u32, theirs: u32, rooms: usize) -> Option<u64> {
+    let now = identity::now();
+    {
+        let all = events().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let lately = all
+            .get(&user)
+            .is_some_and(|l| l.iter().rev().any(|e| e.kind == "search_other_mode" && now - e.at < SEARCH_NOTED_FOR));
+        if lately {
+            return None;
+        }
+    }
+    Some(note(
+        user,
+        "search_other_mode",
+        format!("{rooms} open matches of playlist {theirs}, this search's {mine}"),
+        None,
+    ))
+}
+
 /// The NAT helper registered `name`, relayed or not.
 pub fn nat_registered(name: &str, relayed: bool) {
     let mut all = relayed_names().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
