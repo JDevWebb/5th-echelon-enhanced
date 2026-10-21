@@ -514,9 +514,12 @@ impl<T> StreamHandler<T> for RVSecHandler<T> {
                 }
                 failures::report(failures::Failure {
                     user_id: ci.user_id,
-                    protocol: Some(r.protocol_id),
-                    method,
-                    call: Some(format!("a reply to call {call}")),
+                    // The call id stays in the log line: in the event (which repeats are
+                    // folded by) a sender could vary it at will. Protocol and method only for
+                    // a signed-in player, as for requests.
+                    protocol: ci.user_id.map(|_| r.protocol_id),
+                    method: method.filter(|_| ci.user_id.is_some()),
+                    call: Some(String::from("a reply")),
                     error: "a reply came where a request was expected".into(),
                 });
                 return Err(packet::Error::Unimplemented);
