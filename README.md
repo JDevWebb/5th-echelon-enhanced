@@ -169,8 +169,9 @@ Press <kbd>F5</kbd> for the overlay. On most laptops and some keyboards, the top
   - your friends and what they're playing, with invite buttons;
   - friend requests to answer, and who you've blocked.
 - **Find players:** search by name or see who's online, then add a friend, block someone or invite them.
+- **Chat** (community network): Global, your lobby, and messages with friends; new messages pop up as **Settings › Notifications** says. See **[docs/chat.md](docs/chat.md)**.
 - **Invites:** accept one and you go straight into that match.
-- **Match:** change the lobby's minimum and maximum players. For example, co-op with more than two, or Spies vs Mercs with fewer than four.
+- **Match:** change the lobby's minimum and maximum players. For example, co-op with more than two, or Spies vs Mercs with fewer than four. Above the mode's own size it warns that some players' games can crash or freeze.
 - **Server:** which server you're on, how other players reach you (directly, through a router port, or through the server's relay), and **Sign in again**.
 
 Invites and friend requests also pop up as notifications. Friend lists, blocking and sharing friends between servers are in **[docs/friends.md](docs/friends.md)**.
@@ -271,7 +272,9 @@ Everything the launcher does can be done by hand:
   - **invites into private matches**.
 - **Internet play without a VPN:** public addresses from the server, router port forwarding (UPnP / NAT-PMP), and a relay through the server when a router can't be reached.
 - **An automatic setup:** game detection, client install, your account found (or made) with your identity, the network adapter chosen at every start, and your save (your Ubisoft Connect one, or a new rank 5 one), then a Status card with a fix for each problem.
-- **An in-game overlay** (<kbd>F5</kbd>, or a key you choose): friends and what they're playing, friend requests, player search and blocking, invites, lobby player limits, and server status.
+- **An in-game overlay** (<kbd>F5</kbd>, or a key you choose): friends and what they're playing, friend requests, player search and blocking, chat, invites, lobby player limits, and server status.
+- **Chat on the community network:** Global, lobby and friends chat in the launcher and the overlay, with who's online beside it; no links but Discord invites, slurs and hate masked, and reports the network's admins act on ([docs/chat.md](docs/chat.md)).
+- **Fixes for the game's own crashes:** the client patches crashes in the game's code in memory (big Spies vs Mercs lobbies, leaving a match, voice chat, its network code), ends a host migration that never finishes, and writes where a freeze stuck to the log.
 - **One identity, every server:** the launcher makes you an identity (a key that stays on your PC) and links every account to it. It finds your account on a server by itself, with no username or password to remember, and asks for a name only the first time. Friends made on one server show up on every other server that shares a coordinator, and friends playing on another of them are listed in the overlay and the launcher, which joins you to their server in one click. Moving PCs? Copy your identity across in **Settings**, before connecting on the new PC ([how](docs/friends.md#your-identity)).
 - **Your name is yours:** servers that share a coordinator reserve each name for one player. Elsewhere, the overlay warns when someone has a friend's name but isn't them. You can rename your account from the launcher.
 - **No slurs or hate in names:** new names and renames are checked (swearing is fine). A player whose name breaks the rules is asked to choose another before they play, with one click to ask the admins for a review if it's a mistake ([how it looks](https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Your-Account-and-Identity#when-youre-asked-to-choose-another-name)).
