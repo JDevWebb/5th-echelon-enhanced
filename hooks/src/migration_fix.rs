@@ -41,7 +41,7 @@ static_detour! {
 }
 
 /// How long a migration may wait before the match is left.
-pub const GIVE_UP_AFTER: Duration = Duration::from_secs(60);
+pub const GIVE_UP_AFTER: Duration = Duration::from_secs(15);
 
 /// The state machine's fields.
 const REASON: usize = 0x34;
