@@ -97,3 +97,7 @@ jobs:
         run: |
           HOOKS_DLL="$PWD/target/i686-pc-windows-msvc/debug/hooks.dll" cargo build --locked -p launcher --features embed-dll
           cargo build --locked -p dedicated_server -p testbot
+      # The server's Windows build is released too: the test players against it, as on Linux.
+      - name: Test players against a fresh Windows server
+        shell: bash
+        run: scripts/bots.sh target/debug

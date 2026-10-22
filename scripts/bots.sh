@@ -6,14 +6,16 @@
 #
 # FRIENDS_MODE=mutual runs the server with friends-only lists (for the
 # friends-mutual scenario); REQUIRE_IDENTITY=1 with `[limits]
-# require_identity` (for identity-required).
+# require_identity` (for identity-required). On Windows (Git Bash) the
+# folder has dedicated_server.exe and testbot.exe.
 set -euo pipefail
 bin=$(cd "$1" && pwd); shift
 dir=$(mktemp -d) && cd "$dir"
 trap 'rm -rf "$dir"' EXIT
-cp "$bin/dedicated_server" .
+exe=; [ -f "$bin/dedicated_server.exe" ] && exe=.exe
+cp "$bin/dedicated_server$exe" .
 # The first start writes the default service.toml; stop it once written.
-./dedicated_server >gen.log 2>&1 & gen=$!
+"./dedicated_server$exe" >gen.log 2>&1 & gen=$!
 for _ in $(seq 100); do [ -s service.toml ] && break; sleep 0.1; done
 sleep 0.3; kill $gen 2>/dev/null || true; wait $gen 2>/dev/null || true
 # The bots connect from 127.0.0.1: trust it, as a server trusts its VPN.
@@ -29,10 +31,10 @@ if [ -n "${REQUIRE_IDENTITY:-}" ]; then
   sed -i "/^\[limits\]/,/^\[/ s/^require_identity = .*/require_identity = true/" service.toml
   grep -q "^require_identity = true" service.toml || { echo "couldn't set [limits] require_identity"; exit 1; }
 fi
-RUST_LOG=info ./dedicated_server >server.log 2>&1 & srv=$!
+RUST_LOG=info "./dedicated_server$exe" >server.log 2>&1 & srv=$!
 for _ in $(seq 100); do (echo >/dev/tcp/127.0.0.1/50051) 2>/dev/null && break; sleep 0.1; done
 # The community API (/api/playing) is on the config server, moved to 8080 above.
-rc=0; CONFIG_PORT=8080 "$bin/testbot" "$@" || rc=$?
+rc=0; CONFIG_PORT=8080 "$bin/testbot$exe" "$@" || rc=$?
 kill $srv 2>/dev/null || true; wait $srv 2>/dev/null || true
 if [ $rc -ne 0 ]; then echo "--- server log (last 60 lines)"; tail -60 server.log; fi
 exit $rc
