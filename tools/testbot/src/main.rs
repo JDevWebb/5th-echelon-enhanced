@@ -2889,8 +2889,20 @@ const SCENARIOS: &[&str] = &[
     "stats",
 ];
 
-#[tokio::main]
-async fn main() -> Result<()> {
+/// The stack for the scenarios' thread and the runtime's: a debug build's futures are big, and
+/// Windows gives a program's main thread only 1 MB (Linux 8 MB), which they overflowed.
+const STACK: usize = 16 * 1024 * 1024;
+
+fn main() -> Result<()> {
+    std::thread::Builder::new()
+        .name("testbot".into())
+        .stack_size(STACK)
+        .spawn(|| tokio::runtime::Builder::new_multi_thread().enable_all().thread_stack_size(STACK).build()?.block_on(run()))?
+        .join()
+        .map_err(|_| eyre!("the test players' thread panicked"))?
+}
+
+async fn run() -> Result<()> {
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let mut host = String::from("127.0.0.1");
     if let Some(i) = args.iter().position(|a| a == "--server") {
