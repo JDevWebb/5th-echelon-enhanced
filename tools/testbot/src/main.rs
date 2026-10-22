@@ -2688,7 +2688,8 @@ async fn whats_being_played(ctx: &mut Ctx) -> Result<()> {
         let listed = playing.matches.iter().find(|m| m.map == Some(VIRUS_VAULT) && m.game_mode == Some(8));
         if let Some(m) = listed {
             ensure!((m.players, m.seats) == (2, 8), "the public match reads {}", m.line());
-            ensure!(m.line() == "SvM Classic · Virus Vault · 2/8", "{}", m.line());
+            // 8 seats in a mode made for 4: the line says so (Playing now's warning).
+            ensure!(m.line() == "SvM Classic · Virus Vault · 2/8 (made for 4)", "{}", m.line());
             ensure!(playing.private_matches >= 1, "the private match isn't counted: {body}");
             ensure!(!body.contains(&host.name) && !body.contains(&coop.name), "names in what's being played: {body}");
             break;
