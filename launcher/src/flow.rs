@@ -234,13 +234,6 @@ pub struct Friends {
     pub join_offered: bool,
 }
 
-/// The launcher's join request for the game, next to `uplay.toml`: the friend the player
-/// clicked Join on (account id) and when (Unix seconds). The game's hook reads and deletes it,
-/// and takes only that friend's invitation without a click — not any invitation the server
-/// marks as requested (see the hooks' `community::requested_join`). It's written before the
-/// server is asked, so a game polling for events (or one just started) finds it in time.
-const JOIN_REQUEST_FILE: &str = "5th-echelon-join-request.json";
-
 /// Asks the server to join `friend_name` (account id `friend_id`) — see `Friends.JoinNow`. On
 /// success the caller's running game joins on its next event poll; otherwise the reason is given.
 /// `Ok` is a line to show as a notice, `Err` one to show as an error.
@@ -249,10 +242,11 @@ pub fn join_friend(cfg: &Config, game_dir: &Path, friend_id: &str, friend_name: 
     if !cfg.current_profile().is_some_and(|p| !p.server.is_empty() && p.has_account()) {
         return Err("Set up an account on a server first.".into());
     }
-    // The game takes the join only if it knows the player asked for it: told here, first.
-    let request = game_dir.join(JOIN_REQUEST_FILE);
-    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-    if let Err(e) = std::fs::write(&request, serde_json::json!({ "id": friend_id, "at": at }).to_string()) {
+    // The game takes the join only if it knows the player asked for it (`hooks_config::join_request`):
+    // told here, first, so a game polling for events (or one just started) finds it in time.
+    let request = game_dir.join(hooks_config::join_request::FILE);
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    if let Err(e) = std::fs::write(&request, hooks_config::join_request::contents(friend_id, at)) {
         tracing::warn!("couldn't write the join request {}: {e}", request.display());
         return Err("The join request couldn't be written to the game folder.".into());
     }

@@ -366,11 +366,7 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
     Ok(())
 }
 
-/// Whether `id` is safe to hand to the game as an account id: at most 63
-/// bytes of letters, digits and `_-.`.
-pub fn is_plain_id(id: &str) -> bool {
-    (1..64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
-}
+pub use hooks_config::text::is_plain_id;
 
 /// The account id the server knows us by, once signed in. The game should
 /// use this, not whatever the settings file says.

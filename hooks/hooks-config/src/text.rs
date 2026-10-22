@@ -22,6 +22,12 @@ pub fn clip_keeping_lines(text: &str, max: usize) -> String {
     kept.trim().to_string()
 }
 
+/// Whether `id` is safe to hand to the game as an account id: at most 63
+/// bytes of letters, digits and `_-.`.
+pub fn is_plain_id(id: &str) -> bool {
+    (1..64).contains(&id.len()) && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

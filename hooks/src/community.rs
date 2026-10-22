@@ -16,6 +16,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
 
+use hooks_config::join_request;
 use hooks_config::text::clip;
 use serde::Deserialize;
 use server_api::friends;
@@ -318,22 +319,6 @@ pub fn folder() -> Option<&'static std::path::Path> {
     FOLDER.get().map(std::path::PathBuf::as_path)
 }
 
-/// The launcher's join request, next to `uplay.toml`: the friend (account id) the player
-/// clicked Join on there, and when (Unix seconds). The launcher is another process, so this is
-/// how it tells the game which join it asked for; read and deleted when the invitation arrives
-/// (or at start, for a game started for the join).
-const JOIN_REQUEST_FILE: &str = "5th-echelon-join-request.json";
-/// How long a join request (ours or the launcher's) stays good: long enough for a game the
-/// launcher started to boot and sign in, short enough that it can't attach to a later,
-/// unrelated invitation from the same friend.
-const JOIN_REQUEST_FOR: Duration = Duration::from_secs(5 * 60);
-
-#[derive(Debug, Deserialize)]
-struct LauncherJoinRequest {
-    id: String,
-    at: i64,
-}
-
 /// The friend we asked to join (the overlay's Join, or the launcher's), by account id, and
 /// when: the one invitation we take without a click. None once taken.
 static JOIN_REQUESTED: Mutex<Option<(String, Instant)>> = Mutex::new(None);
@@ -352,39 +337,30 @@ fn forget_join_request(id: &str) {
 /// Takes the launcher's join request file, if there is one, as a request of ours: deleted
 /// once read, so it's good for one join only.
 fn take_launcher_join_request() {
-    let Some(path) = folder().map(|d| d.join(JOIN_REQUEST_FILE)) else { return };
+    let Some(path) = folder().map(|d| d.join(join_request::FILE)) else { return };
     let Ok(bytes) = std::fs::read(&path) else { return };
     if let Err(e) = std::fs::remove_file(&path) {
         warn!("Couldn't delete the launcher's join request {}: {e}", path.display());
     }
-    let Ok(request) = serde_json::from_slice::<LauncherJoinRequest>(&bytes) else {
-        warn!("The launcher's join request can't be read; ignored");
-        return;
-    };
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-    // Dated ahead (beyond a little clock slack) it would outlive its time: not one of the
-    // launcher's.
-    if request.at > now + 60 || !crate::api::is_plain_id(&request.id) {
-        warn!("The launcher's join request isn't a valid one; ignored");
-        return;
-    }
-    let age = Duration::from_secs(now.saturating_sub(request.at).max(0) as u64);
-    if age >= JOIN_REQUEST_FOR {
-        info!("The launcher's join request is stale ({}s old); ignored", age.as_secs());
-        return;
-    }
-    info!("The launcher asked to join {}", request.id);
+    let (id, age) = match join_request::read(&bytes, now) {
+        Ok(request) => request,
+        Err(join_request::Refused::Unreadable) => return warn!("The launcher's join request can't be read; ignored"),
+        Err(join_request::Refused::Invalid) => return warn!("The launcher's join request isn't a valid one; ignored"),
+        Err(join_request::Refused::Stale(age)) => return info!("The launcher's join request is stale ({}s old); ignored", age.as_secs()),
+    };
+    info!("The launcher asked to join {id}");
     // Dated when the launcher wrote it, so its time runs from the click, not from here.
     let at = Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
     let mut requested = JOIN_REQUESTED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    *requested = Some((request.id, at));
+    *requested = Some((id, at));
 }
 
 /// Whether an invitation from `sender` (account id) is the join we asked for — from the
-/// overlay's Join or the launcher's — within [`JOIN_REQUEST_FOR`], once: the game joins it
+/// overlay's Join or the launcher's — within [`join_request::GOOD_FOR`], once: the game joins it
 /// without a click. Any other invitation, whatever the server says of it, is an ordinary one.
 pub fn requested_join(sender: &str) -> bool {
-    let matches = |requested: &Option<(String, Instant)>| requested.as_ref().is_some_and(|(id, at)| id == sender && at.elapsed() < JOIN_REQUEST_FOR);
+    let matches = |requested: &Option<(String, Instant)>| requested.as_ref().is_some_and(|(id, at)| id == sender && at.elapsed() < join_request::GOOD_FOR);
     let mut requested = JOIN_REQUESTED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if !matches(&requested) {
         // The launcher may have asked while the game was running.
@@ -1004,6 +980,34 @@ mod tests {
     }
 
     use super::*;
+
+    /// The launcher's file, as the game finds it: taken for that friend's invitation only,
+    /// once, and deleted when read, used or not. (The only test using the game's folder.)
+    #[test]
+    fn a_launcher_join_request_is_taken_once_for_that_friend() {
+        let dir = std::env::temp_dir().join(format!("fes-join-request-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        set_folder(dir.clone());
+        let file = dir.join(join_request::FILE);
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+
+        std::fs::write(&file, join_request::contents("friend-1", now - 10)).unwrap();
+        assert!(!requested_join("someone-else"), "another sender's invitation isn't the join asked for");
+        assert!(!file.exists(), "read, so deleted");
+        assert!(requested_join("friend-1"), "the friend asked for");
+        assert!(!requested_join("friend-1"), "once");
+
+        std::fs::write(&file, join_request::contents("friend-1", now - join_request::GOOD_FOR.as_secs() as i64)).unwrap();
+        assert!(!requested_join("friend-1"), "a stale request is ignored");
+        assert!(!file.exists(), "and deleted");
+
+        note_join_request("friend-2");
+        forget_join_request("friend-2");
+        assert!(!requested_join("friend-2"), "the overlay's request, forgotten");
+        note_join_request("friend-2");
+        assert!(requested_join("friend-2"), "and the overlay's, taken");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn test_player(name: &str, online: bool) -> Player {
         Player {
