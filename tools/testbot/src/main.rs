@@ -1222,7 +1222,10 @@ async fn join_now_match(ctx: &mut Ctx) -> Result<()> {
     let mut searcher = ctx.player("Guest").await?;
     searcher.register_urls(&["prudp:/address=127.0.0.1;port=3089;sid=15;type=3"]).await?;
     let found = searcher.search_sessions(PUBLIC_MATCH).await?;
-    ensure!(found.iter().any(|(session, _)| *session == public_game), "matchmaking doesn't find the public match: {found:?}");
+    ensure!(
+        found.iter().any(|(session, _)| *session == public_game),
+        "matchmaking doesn't find the public match: {found:?}"
+    );
     searcher.report_failed_joins(&[(public_game, 0x9718_2b1b)]).await?;
     ensure!(
         !offered(later.relationships().await?),
