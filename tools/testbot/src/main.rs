@@ -971,6 +971,23 @@ async fn join_now(ctx: &mut Ctx) -> Result<()> {
         "the friend list doesn't say the host can be joined: {friend:?}"
     );
 
+    // A party its host's game announced invite-only needs a real invitation, a friend's too;
+    // open again, it can be joined.
+    host.set_session(lobby, true).await?;
+    let listed = guest.relationships().await?;
+    let friend = listed.friends.iter().find(|p| p.username == host.name).ok_or_else(|| eyre!("the host isn't a friend"))?;
+    ensure!(
+        friend.activity.as_ref().is_some_and(|a| !a.joinable),
+        "the friend list offers Join into an invite-only party: {friend:?}"
+    );
+    let refused = guest.join_now(&host.id).await?;
+    ensure!(refused.status() == JoinStatus::Private, "joining an invite-only party answered {:?}", refused.status());
+    ensure!(
+        guest.poll_invite_event(Duration::from_secs(1)).await?.is_none(),
+        "a refused join still queued an invitation"
+    );
+    host.set_session(lobby, false).await?;
+
     ensure!(guest.join_now(&guest.id).await.is_err(), "joining oneself wasn't refused");
     let refused = guest.join_now(&other.id).await?;
     ensure!(refused.status() == JoinStatus::Offline, "joining someone not in a game answered {:?}", refused.status());
@@ -1102,7 +1119,8 @@ async fn join_now_match(ctx: &mut Ctx) -> Result<()> {
     ensure!(fan.poll_invite_event(Duration::from_secs(1)).await?.is_none(), "a refused join still queued an invitation");
 
     // A friend hosting a private match, with the anteroom every game opens beside it: the
-    // match is what they're in, and it needs a real invitation (the anteroom isn't a way in).
+    // match is what they're in, and it needs a real invitation, a friend's too (the host
+    // chose who comes in; the anteroom isn't a way in).
     let mut busy = ctx.player("Host").await?;
     befriend(&busy, &fan).await?;
     busy.register_urls(&["prudp:/address=127.0.0.1;port=3081;sid=15;type=3"]).await?;
@@ -1110,6 +1128,16 @@ async fn join_now_match(ctx: &mut Ctx) -> Result<()> {
     busy.add_participants(anteroom, &[busy.pid], &[]).await?;
     let game = busy.create_session(PRIVATE_MATCH).await?;
     busy.add_participants(game, &[], &[busy.pid]).await?;
+    let listed = fan.relationships().await?;
+    let friend = listed
+        .friends
+        .iter()
+        .find(|p| p.username == busy.name)
+        .ok_or_else(|| eyre!("the private match's host isn't a friend"))?;
+    ensure!(
+        friend.activity.as_ref().is_some_and(|a| !a.joinable),
+        "the friend list offers Join into a friend's private match: {friend:?}"
+    );
     let refused = fan.join_now(&busy.id).await?;
     ensure!(
         refused.status() == JoinStatus::Private,
@@ -1172,6 +1200,28 @@ async fn join_now_match(ctx: &mut Ctx) -> Result<()> {
         "the search for the public match's host doesn't lead to the match: {found:?}"
     );
 
+    // A match its host's game turned a joiner away from as started (LOCKED_SESSION): the
+    // friend list stops offering Join there, and JoinNow says it has started.
+    let mut turned_away = ctx.player("Guest").await?;
+    turned_away.register_urls(&["prudp:/address=127.0.0.1;port=3088;sid=15;type=3"]).await?;
+    turned_away.report_failed_joins(&[(public_game, 0x9718_2b1b)]).await?;
+    let later = ctx.player("Guest").await?;
+    befriend(&public_host, &later).await?;
+    let listed = later.relationships().await?;
+    let friend = listed
+        .friends
+        .iter()
+        .find(|p| p.username == public_host.name)
+        .ok_or_else(|| eyre!("the public match's host isn't a friend"))?;
+    ensure!(
+        friend.activity.as_ref().is_some_and(|a| !a.joinable),
+        "the friend list still offers Join into a match a join was refused from as started: {friend:?}"
+    );
+    let refused = later.join_now(&public_host.id).await?;
+    ensure!(refused.status() == JoinStatus::Started, "joining a started match answered {:?}", refused.status());
+    turned_away.disconnect().await?;
+    later.disconnect().await?;
+
     // A friend who joined a stranger's public match (a guest of it, from matchmaking), their
     // own anteroom beside it: joined through them into that match, the host's trust not needed
     // (anyone may join a public match) - unless the host and the caller blocked each other.
@@ -1229,8 +1279,8 @@ async fn join_now_match(ctx: &mut Ctx) -> Result<()> {
         other => eyre::bail!("joining a match the caller is already in answered {other:?}"),
     }
 
-    // A join request into a public match its host then makes private (invite-only): its
-    // invitation no longer leads in, as a search wouldn't - the host never invited anyone.
+    // A friend's join request into a public match its host then makes private (invite-only):
+    // its invitation no longer leads in, as a search wouldn't - the host never invited anyone.
     let mut late = ctx.player("Guest").await?;
     let mut closing = ctx.player("Host").await?;
     befriend(&closing, &late).await?;

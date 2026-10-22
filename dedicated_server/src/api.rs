@@ -491,17 +491,21 @@ impl Friends for MyFriends {
         // who's in a match isn't a way in (the game finds it locked), the match is. A private
         // match (announced invite-only, or with private seats only) needs a real invitation; a
         // public one (a quick match, a public lobby) anyone may join, so it's joined directly.
+        // So does a party its host's game announced invite-only: Join is for an open one.
         let host_sessions = self.storage.find_host_sessions_async(friend).await.map_err(internal)?;
         let member_sessions = self.storage.member_sessions_async(friend).await.map_err(internal)?;
-        let matches: Vec<&GameSession> = host_sessions.iter().chain(&member_sessions).filter(|s| is_match_room(s)).collect();
-        let private = self
+        let closed = self
             .storage
-            .invite_only_among_async(&matches.iter().map(|s| s.session_id).collect::<Vec<_>>())
+            .invite_only_among_async(&host_sessions.iter().chain(&member_sessions).map(|s| s.session_id).collect::<Vec<_>>())
             .await
             .map_err(internal)?;
-        if !private.is_empty() {
+        let matches: Vec<&GameSession> = host_sessions.iter().chain(&member_sessions).filter(|s| is_match_room(s)).collect();
+        // A private match always needs a real invitation, a friend's too: its host chose who
+        // comes in.
+        if matches.iter().any(|s| closed.contains(&s.session_id)) {
             return reply(JoinStatus::Private, "That player is in a private match - you need an invitation.");
         }
+        const CLOSED_PARTY: &str = "That player's party is invite-only - you need an invitation.";
         // Newest first, theirs before someone else's (as each list is ordered).
         let public_match = matches.first().copied();
         // A public match: its host's invitation when the friend hosts it; else the friend's, as
@@ -526,6 +530,7 @@ impl Friends for MyFriends {
                 }
                 (host, game.session_type, game.session_id)
             }
+            (None, Some(room)) if closed.contains(&room.session_id) => return reply(JoinStatus::Private, CLOSED_PARTY),
             (None, Some(room)) => (friend, room.session_type, room.session_id),
             (None, None) if member_sessions.is_empty() => return reply(JoinStatus::Offline, NOT_IN_A_GAME),
             (None, None) => {
@@ -542,6 +547,10 @@ impl Friends for MyFriends {
                     let host = party.creator_id;
                     if host == me {
                         return Err(Status::invalid_argument("You're already in that game: it's yours."));
+                    }
+                    if closed.contains(&party.session_id) {
+                        refusal = (JoinStatus::Private, CLOSED_PARTY);
+                        continue;
                     }
                     match self.storage.relation(me, host).await.map_err(internal)? {
                         Relation::Blocked => {
@@ -572,6 +581,10 @@ impl Friends for MyFriends {
         // Already in it (a party member, or a guest of the match): nothing to join.
         if self.storage.member_sessions_async(me).await.map_err(internal)?.iter().any(|s| s.session_id == room_id) {
             return Err(Status::invalid_argument("You're already in that game."));
+        }
+        // A match its host's game has been turning joiners away from (match_started.rs).
+        if crate::match_started::started(room_id) {
+            return reply(JoinStatus::Started, "That player's match has started - you can join when it's over.");
         }
         // The invitation this queues is the one delivered as a requested join (its row says
         // so): another one already waiting for the caller goes out as the ordinary invitation

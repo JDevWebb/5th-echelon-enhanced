@@ -1626,7 +1626,10 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
                             let button = if friend.joinable {
                                 button.on_hover_text("Join this friend's game")
                             } else if friend.activity.is_some() {
-                                button.on_disabled_hover_text(format!("{} is in a private match: you need an invitation", friend.name))
+                                button.on_disabled_hover_text(format!(
+                                    "{}'s match can't be joined now: it's a private match (you need an invitation), or it has started",
+                                    friend.name
+                                ))
                             } else {
                                 button.on_disabled_hover_text(format!("{} isn't in a game right now", friend.name))
                             };

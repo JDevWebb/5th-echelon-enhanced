@@ -1250,6 +1250,11 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             };
             if join.told() {
                 crate::metrics::failed_join();
+                // Its host's game turned the joiner away as under way: Join stops leading
+                // there for a while (match_started.rs).
+                if code == crate::reports::LOCKED_SESSION {
+                    crate::match_started::refused(join.room);
+                }
             }
             let noted = join
                 .counts()

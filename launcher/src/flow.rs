@@ -267,6 +267,7 @@ pub fn join_friend(cfg: &Config, game_dir: &Path, friend_id: &str, friend_name: 
             JoinStatus::Offline => Err(format!("{friend_name} isn't in a game right now.")),
             JoinStatus::Private => Err(format!("{friend_name} is in a private match - you need an invitation.")),
             JoinStatus::NotFriendsWithHost => Err(format!("{friend_name} can't bring you in: the game's host doesn't have them as a friend.")),
+            JoinStatus::Started => Err(format!("{friend_name}'s match has started - you can join when it's over.")),
         },
         Err(e) => Err(e),
     };

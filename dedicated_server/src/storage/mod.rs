@@ -172,8 +172,9 @@ fn attribute_sql(id: u32) -> String {
 /// host and the invitee haven't blocked each other.
 ///
 /// A join request's invitation (`join_request`: the joiner asked, nobody invited them) holds,
-/// even from the host, only while its room is a party or still a public match: a host who
-/// makes the match private after the request keeps the joiner out, as a search would.
+/// even from the host, only while its room is an open party (not announced invite-only) or
+/// still a public match: a host who closes the party or makes the match private after the
+/// request keeps the joiner out, a friend too, as a search would.
 fn invite_holds_sql(i: &str) -> String {
     let blocked = |a: &str, b: &str| {
         format!(
@@ -181,20 +182,24 @@ fn invite_holds_sql(i: &str) -> String {
                AND ((b.user_id = {a} AND b.other_id = {b}) OR (b.user_id = {b} AND b.other_id = {a})))"
         )
     };
+    let announced_invite_only = "EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.user_id = g.creator_id AND a.invite_only = 1)";
     let public_match = format!(
         "({kind} = 0
-          AND NOT EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.user_id = g.creator_id AND a.invite_only = 1)
+          AND NOT {announced_invite_only}
           AND NOT {PRIVATE_SEATS_ONLY})",
         kind = attribute_sql(113),
     );
+    // A party a join request may lead into: one its host's game didn't announce invite-only.
+    let open_party = format!("({kind} = 1 AND NOT {announced_invite_only})", kind = attribute_sql(113));
     format!(
         "EXISTS (SELECT 1 FROM game_sessions g WHERE g.id = {i}.session_id AND g.type_id = {i}.session_type
-           AND ((g.creator_id = {i}.sender AND ({i}.join_request = 0 OR {kind} = 1 OR {public_match}))
+           AND ((g.creator_id = {i}.sender AND ({i}.join_request = 0 OR {open_party} OR {public_match}))
                 OR ({kind} = 1
                     AND EXISTS (SELECT 1 FROM participants s WHERE s.game_id = g.id AND s.user_id = {i}.sender)
                     AND EXISTS (SELECT 1 FROM relationships f WHERE f.user_id = g.creator_id AND f.other_id = {i}.sender AND f.kind = 'friend')
                     AND NOT {member_blocked}
-                    AND NOT {invitee_blocked})
+                    AND NOT {invitee_blocked}
+                    AND ({i}.join_request = 0 OR {open_party}))
                 OR ({public_match}
                     AND (EXISTS (SELECT 1 FROM participants s WHERE s.game_id = g.id AND s.user_id = {i}.sender)
                          OR EXISTS (SELECT 1 FROM guests gu WHERE gu.game_id = g.id AND gu.user_id = {i}.sender))

@@ -257,8 +257,9 @@ pub(crate) struct Activity {
     pub map: Option<u32>,
     /// The game's mode number (8 is SvM Classic), in a match.
     pub game_mode: Option<u32>,
-    /// A friend can join them there without an invitation (`JoinNow`): a party, hosted by
-    /// them or with them as a member, or a public match. Not a private match.
+    /// A friend can join them there without an invitation (`JoinNow`): an open party (not
+    /// announced invite-only), hosted by them or with them as a member, or a public match. Not
+    /// a private match, nor a match that looks started (`match_started`).
     pub joinable: bool,
 }
 
@@ -283,8 +284,8 @@ pub(crate) fn activity_of(name: &str, sessions: &[LiveSession]) -> Option<Activi
         map: attribute_value(&best.attributes, ATTR_MAP),
         game_mode: attribute_value(&best.attributes, ATTR_GAME_MODE),
         joinable: match attribute_value(&best.attributes, ATTR_ROOM_KIND) {
-            Some(1) => true,
-            Some(0) => !best.private,
+            Some(1) => !best.private,
+            Some(0) => !best.private && !crate::match_started::started(best.id),
             _ => false,
         },
     })
