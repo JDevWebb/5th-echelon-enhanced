@@ -80,6 +80,7 @@ mod friends_policy;
 mod full_logs;
 mod game_session;
 mod game_session_ex;
+mod join_requests;
 mod join_targets;
 mod keys;
 mod ladder;

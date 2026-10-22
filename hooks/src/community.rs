@@ -71,6 +71,9 @@ pub struct Player {
     pub online: bool,
     /// What they're doing, e.g. "SvM Classic · Virus Vault · in a match with Tank".
     pub activity: Option<String>,
+    /// They're in a party (as its host or a member) or a public match: the room a friend joins
+    /// them in without an invitation. Not in a private match, which needs one.
+    pub joinable: bool,
     pub relation: Relation,
     /// Short form of their identity ("K7QF-2M9D"), empty if not linked.
     pub identity: String,
@@ -87,6 +90,10 @@ pub struct ServerInfo {
     pub version: String,
     #[serde(default)]
     pub revision: String,
+    /// What the server supports ("join-now": a friend's game can be joined without an
+    /// invitation); empty from servers before features were listed.
+    #[serde(default)]
+    pub features: Vec<String>,
     /// Maintenance booked for this server or the whole network, not over yet.
     #[serde(default)]
     pub maintenance: Vec<Maintenance>,
@@ -249,6 +256,12 @@ impl Snapshot {
         }
     }
 
+    /// Whether this server joins a friend's game without an invitation (`JoinNow`): a server
+    /// without it would answer the overlay's Join with "unimplemented".
+    pub fn join_offered(&self) -> bool {
+        self.server.as_ref().is_some_and(|s| s.features.iter().any(|f| f == "join-now"))
+    }
+
     /// The activity of the named player, if they're online and doing something.
     pub fn activity_of(&self, name: &str) -> Option<&str> {
         self.friends
@@ -262,6 +275,10 @@ impl Snapshot {
 enum Action {
     Refresh,
     Invite {
+        id: String,
+        name: String,
+    },
+    Join {
         id: String,
         name: String,
     },
@@ -299,6 +316,87 @@ pub fn set_folder(dir: std::path::PathBuf) {
 /// Where the game is, once set.
 pub fn folder() -> Option<&'static std::path::Path> {
     FOLDER.get().map(std::path::PathBuf::as_path)
+}
+
+/// The launcher's join request, next to `uplay.toml`: the friend (account id) the player
+/// clicked Join on there, and when (Unix seconds). The launcher is another process, so this is
+/// how it tells the game which join it asked for; read and deleted when the invitation arrives
+/// (or at start, for a game started for the join).
+const JOIN_REQUEST_FILE: &str = "5th-echelon-join-request.json";
+/// How long a join request (ours or the launcher's) stays good: long enough for a game the
+/// launcher started to boot and sign in, short enough that it can't attach to a later,
+/// unrelated invitation from the same friend.
+const JOIN_REQUEST_FOR: Duration = Duration::from_secs(5 * 60);
+
+#[derive(Debug, Deserialize)]
+struct LauncherJoinRequest {
+    id: String,
+    at: i64,
+}
+
+/// The friend we asked to join (the overlay's Join, or the launcher's), by account id, and
+/// when: the one invitation we take without a click. None once taken.
+static JOIN_REQUESTED: Mutex<Option<(String, Instant)>> = Mutex::new(None);
+
+fn note_join_request(id: &str) {
+    *JOIN_REQUESTED.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((id.to_string(), Instant::now()));
+}
+
+fn forget_join_request(id: &str) {
+    let mut requested = JOIN_REQUESTED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if requested.as_ref().is_some_and(|(r, _)| r == id) {
+        *requested = None;
+    }
+}
+
+/// Takes the launcher's join request file, if there is one, as a request of ours: deleted
+/// once read, so it's good for one join only.
+fn take_launcher_join_request() {
+    let Some(path) = folder().map(|d| d.join(JOIN_REQUEST_FILE)) else { return };
+    let Ok(bytes) = std::fs::read(&path) else { return };
+    if let Err(e) = std::fs::remove_file(&path) {
+        warn!("Couldn't delete the launcher's join request {}: {e}", path.display());
+    }
+    let Ok(request) = serde_json::from_slice::<LauncherJoinRequest>(&bytes) else {
+        warn!("The launcher's join request can't be read; ignored");
+        return;
+    };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    // Dated ahead (beyond a little clock slack) it would outlive its time: not one of the
+    // launcher's.
+    if request.at > now + 60 || !crate::api::is_plain_id(&request.id) {
+        warn!("The launcher's join request isn't a valid one; ignored");
+        return;
+    }
+    let age = Duration::from_secs(now.saturating_sub(request.at).max(0) as u64);
+    if age >= JOIN_REQUEST_FOR {
+        info!("The launcher's join request is stale ({}s old); ignored", age.as_secs());
+        return;
+    }
+    info!("The launcher asked to join {}", request.id);
+    // Dated when the launcher wrote it, so its time runs from the click, not from here.
+    let at = Instant::now().checked_sub(age).unwrap_or_else(Instant::now);
+    let mut requested = JOIN_REQUESTED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    *requested = Some((request.id, at));
+}
+
+/// Whether an invitation from `sender` (account id) is the join we asked for — from the
+/// overlay's Join or the launcher's — within [`JOIN_REQUEST_FOR`], once: the game joins it
+/// without a click. Any other invitation, whatever the server says of it, is an ordinary one.
+pub fn requested_join(sender: &str) -> bool {
+    let matches = |requested: &Option<(String, Instant)>| requested.as_ref().is_some_and(|(id, at)| id == sender && at.elapsed() < JOIN_REQUEST_FOR);
+    let mut requested = JOIN_REQUESTED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if !matches(&requested) {
+        // The launcher may have asked while the game was running.
+        drop(requested);
+        take_launcher_join_request();
+        requested = JOIN_REQUESTED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    }
+    if matches(&requested) {
+        *requested = None;
+        return true;
+    }
+    false
 }
 
 fn name_key(name: &str) -> String {
@@ -402,6 +500,13 @@ pub fn refresh() {
 /// Invites a player into our current session.
 pub fn invite(id: String, name: String) {
     send(Action::Invite { id, name });
+}
+
+/// Joins a friend's game without an invitation (the overlay's "Join"). Remembered as asked
+/// for, so the invitation it brings is taken without a click (see [`requested_join`]).
+pub fn join(id: String, name: String) {
+    note_join_request(&id);
+    send(Action::Join { id, name });
 }
 
 /// Searches players by part of their name (everyone online for "").
@@ -510,11 +615,15 @@ pub fn start() {
         return;
     }
     let spawned = std::thread::Builder::new().name(String::from("overlay-data")).spawn(move || {
+        // A game the launcher started for a join: its request is taken up now, so the
+        // invitation finds it (and a stale one is cleared).
+        take_launcher_join_request();
         refresh_now();
         loop {
             match rx.recv_timeout(REFRESH_EVERY) {
                 Ok(Action::Refresh) | Err(mpsc::RecvTimeoutError::Timeout) => refresh_now(),
                 Ok(Action::Invite { id, name }) => invite_now(&id, &name),
+                Ok(Action::Join { id, name }) => join_now_impl(&id, &name),
                 Ok(Action::Search(query)) => search_now(&query),
                 Ok(Action::Change { change, id, identity, name }) => {
                     change_now(change, &id, &identity, &name);
@@ -552,6 +661,29 @@ fn invite_now(id: &str, name: &str) {
             say(format!("Couldn't invite {name}. {why}"), true);
         }
     }
+}
+
+fn join_now_impl(id: &str, name: &str) {
+    use server_api::friends::join_now_response::Status as JoinStatus;
+    match crate::api::join_friend(id) {
+        Ok(resp) => match JoinStatus::try_from(resp.status).unwrap_or(JoinStatus::Offline) {
+            JoinStatus::Ok => {
+                say(format!("Joining {name}..."), false);
+                return;
+            }
+            _ if !resp.detail.is_empty() => say(resp.detail, true),
+            JoinStatus::Offline => say(format!("{name} isn't in a game right now."), true),
+            JoinStatus::Private => say(format!("{name} is in a private match - you need an invitation."), true),
+            JoinStatus::NotFriendsWithHost => say(format!("{name} can't bring you in: the game's host doesn't have them as a friend."), true),
+            _ => say(format!("Couldn't join {name}."), true),
+        },
+        Err(e) => {
+            warn!("Join {name} failed: {e}");
+            say(reason(&e).unwrap_or_else(|| format!("Couldn't join {name}; try again.")), true);
+        }
+    }
+    // Nothing queued: an invitation from them later is an ordinary one.
+    forget_join_request(id);
 }
 
 fn search_now(query: &str) {
@@ -595,6 +727,8 @@ fn refresh_now() {
         name: clip(&i.name, MAX_TEXT),
         version: clip(&i.version, MAX_NAME),
         revision: clip(&i.revision, MAX_NAME),
+        // Only the one looked at, kept short: a server's list, like all its text.
+        features: i.features.iter().filter(|f| *f == "join-now").map(|f| clip(f, MAX_NAME)).collect(),
         maintenance: i
             .maintenance
             .into_iter()
@@ -700,6 +834,7 @@ fn player(p: friends::Player) -> Player {
     };
     Player {
         activity: if p.is_online { p.activity.as_ref().map(describe) } else { None },
+        joinable: p.is_online && p.activity.as_ref().is_some_and(|a| a.joinable),
         id: p.id,
         name: clip(&p.username, MAX_NAME),
         online: p.is_online,
@@ -875,6 +1010,7 @@ mod tests {
             name: name.into(),
             online,
             activity: None,
+            joinable: false,
             relation: Relation::Friend,
             identity: String::new(),
             name_status: NameStatus::Unlinked,
@@ -919,6 +1055,7 @@ mod tests {
                 with: vec!["Tank".into()],
                 map: 7,
                 game_mode: 0,
+                joinable: false,
             }),
         };
         p.set_relation(friends::Relation::RequestReceived);

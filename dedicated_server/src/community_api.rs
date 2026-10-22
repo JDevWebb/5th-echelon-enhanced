@@ -53,6 +53,7 @@ const FEATURES: &[&str] = &[
     "identity-login",
     "rename",
     "name-check",
+    "join-now",
 ];
 
 /// Session attributes (see game_session.rs): 101 map, 102 mode, 113 room kind
@@ -256,6 +257,9 @@ pub(crate) struct Activity {
     pub map: Option<u32>,
     /// The game's mode number (8 is SvM Classic), in a match.
     pub game_mode: Option<u32>,
+    /// A friend can join them there without an invitation (`JoinNow`): a party, hosted by
+    /// them or with them as a member, or a public match. Not a private match.
+    pub joinable: bool,
 }
 
 /// `name`'s activity: the match they're in (preferred) or their lobby.
@@ -278,6 +282,11 @@ pub(crate) fn activity_of(name: &str, sessions: &[LiveSession]) -> Option<Activi
         with: best.players.iter().filter(|p| *p != name).cloned().collect(),
         map: attribute_value(&best.attributes, ATTR_MAP),
         game_mode: attribute_value(&best.attributes, ATTR_GAME_MODE),
+        joinable: match attribute_value(&best.attributes, ATTR_ROOM_KIND) {
+            Some(1) => true,
+            Some(0) => !best.private,
+            _ => false,
+        },
     })
 }
 
@@ -582,5 +591,23 @@ mod tests {
         assert_eq!(p("Nexus")["activity"]["room"], "lobby");
         assert!(p("Tank").get("activity").is_none(), "offline players show no activity");
         assert!(p("Zed").get("activity").is_none(), "online but not in a session");
+    }
+
+    #[test]
+    fn a_party_and_a_public_match_are_joinable_a_private_match_isnt() {
+        let session = |id: u32, attributes: &str, private: bool| LiveSession {
+            id,
+            attributes: attributes.into(),
+            players: vec!["Kiwi".into()],
+            private,
+            ..Default::default()
+        };
+        let party = session(1, "113 => 1;3 => 8;4 => 0", false);
+        let public = session(2, "113 => 0;103 => 1;3 => 8;4 => 0;102 => 8", false);
+        let private = session(3, "113 => 0;3 => 0;4 => 8;102 => 7", true);
+        let joinable = |sessions: &[LiveSession]| activity_of("Kiwi", sessions).unwrap().joinable;
+        assert!(joinable(&[party.clone()]), "a party");
+        assert!(joinable(&[public.clone(), party.clone()]), "a public match, with the anteroom beside it");
+        assert!(!joinable(&[private, party]), "a private match, with the anteroom beside it");
     }
 }

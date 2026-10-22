@@ -5,6 +5,8 @@ use std::sync::OnceLock;
 use server_api::chat::chat_client::ChatClient;
 use server_api::friends::friends_client::FriendsClient;
 use server_api::friends::InviteRequest;
+use server_api::friends::JoinNowRequest;
+use server_api::friends::JoinNowResponse;
 use server_api::friends::ListRequest;
 use server_api::friends::Player;
 use server_api::friends::RelationshipsRequest;
@@ -190,6 +192,16 @@ pub fn invite_friend(id: &str) -> Result<(), Error> {
 
         client.invite(request).await?;
         Ok(())
+    }))
+}
+
+/// Asks the server to join a friend's game (`JoinNow`): on success our game joins on its next
+/// event poll. Returns the server's answer (status + why-not), for the overlay to show.
+pub fn join_friend(id: &str) -> Result<JoinNowResponse, Error> {
+    run(signed_in(|| async {
+        let mut client = connect!(FriendsClient);
+        let request = tonic::Request::new(JoinNowRequest { id: id.into() });
+        Ok(client.join_now(request).await?.into_inner())
     }))
 }
 

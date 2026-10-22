@@ -36,6 +36,7 @@ pub use quazal::test_p2p;
 pub use quazal::test_quazal_login;
 pub use rpc::account_id;
 pub use rpc::identity_login;
+pub use rpc::join_now;
 pub use rpc::link_identity;
 pub use rpc::name_available;
 pub use rpc::online_players;

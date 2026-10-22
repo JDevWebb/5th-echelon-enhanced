@@ -37,6 +37,8 @@ That registers throwaway accounts (`Host…`, `Guest…`) on that server.
 | `friends` | A friend request, its notice, accepting it, and removing the friend. |
 | `block` | A block hides both players from each other and stops invites. |
 | `invite-queue` | Invitations from two players both arrive (one no longer replaces the other). |
+| `join-now` | Joining a friend's game without an invitation (`JoinNow`), outside a match: a friend hosting a public room is joined with an invitation marked as requested, an older invitation from someone else waiting is delivered first and as it is; a friend in someone else's party is joined through them once its host has them as a friend (not through a mere guest of it); someone not in a game, and oneself, are refused. |
+| `join-now-match` | `JoinNow` into a match: a friend in a public match (hosting it with the anteroom beside it, or a guest of a stranger's) is joined into the match, requested (not when its host blocked the caller); a friend in a private match (hosted, also with the anteroom beside it, or joined) is refused, and nothing is queued. |
 | `identity-login` | An identity links to an account, and signs in to it with a new password. |
 | `rename` | Renaming keeps the account (friends, id) and frees the old name. |
 | `direct-test` | The launcher's direct-connection test reaches this machine: behind a reverse proxy too, where the server must use the forwarded address. |
@@ -52,6 +54,6 @@ That registers throwaway accounts (`Host…`, `Guest…`) on that server.
 | `login-lockout` | Wrong passwords for an account from one address stop that address only: its owner, elsewhere, still signs in. (Through the loopback "proxy", so against a server on this machine.) |
 | `outdated-client` | Clients older than the server allows can't sign in, and neither can the game after one tried; a current client lets it in. |
 
-Two more need a server set up for them, and `build/build.sh bots` runs them on one: `friends-mutual` (`[friends] mode = "mutual"`: only friends are listed, and only friends invite) and `identity-required` (`[limits] require_identity`). `federation` needs two servers sharing a coordinator (`--other`); `build/build.sh federation-test` runs it.
+Two more need a server set up for them, and `build/build.sh bots` runs them on one: `friends-mutual` (`[friends] mode = "mutual"`: only friends are listed, and only friends invite or join) and `identity-required` (`[limits] require_identity`). `federation` needs two servers sharing a coordinator (`--other`); `build/build.sh federation-test` runs it.
 
 Add a scenario for every server change. Model it on the real game's calls; the game's own session log (`bl-tracing.log`) shows its sequence of calls.

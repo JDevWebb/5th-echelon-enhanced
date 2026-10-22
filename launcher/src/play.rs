@@ -36,6 +36,11 @@ pub struct Play {
     facts: Slot<(setup::diagnose::Facts, Support)>,
     /// Friends online here and on other servers sharing friends, fetched with the checklist.
     fetching_friends: Slot<Result<flow::Friends, String>>,
+    /// A friend the player clicked Join on ((id, name)), acted on in `show` where the game is
+    /// mutable (it may need starting first).
+    join_requested: Option<(String, String)>,
+    /// A join in flight (`flow::join_friend`): its line to show when it's done.
+    joining: Slot<Result<String, String>>,
     friends: flow::Friends,
     /// An action on someone in "Online now" (asked to be friends, invited, blocked).
     acting: Slot<Result<String, String>>,
@@ -214,6 +219,12 @@ impl Play {
             if !self.fetching_friends.running() && game.managed.is_none() {
                 let cfg = (*game.cfg).clone();
                 self.fetching_friends.start(ctx, move || flow::friends(&cfg));
+            }
+        }
+        if let Some(result) = self.joining.poll() {
+            match result {
+                Ok(msg) => notices.info(msg),
+                Err(msg) => notices.error(msg),
             }
         }
         if let Some((facts, support)) = self.facts.poll() {
@@ -453,6 +464,17 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             // The guided setup's last question before Play.
         } else {
             to = home(play, game, notices, &ctx, ui);
+            // A Join click on the Friends card: start the game if it isn't running, then ask the
+            // server to send it into the friend's match (JoinNow). Done here, where the game is
+            // mutable.
+            if let Some((id, name)) = play.join_requested.take() {
+                if play.running.is_none() && !play.game_seen {
+                    launch(play, game, notices);
+                }
+                let cfg = game.cfg.clone();
+                let game_dir = game.dir.clone();
+                play.joining.start(&ctx, move || flow::join_friend(&cfg, &game_dir, &id, &name));
+            }
         }
     });
     go(app, to);
@@ -1573,6 +1595,7 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
     let playing = play.game_seen || play.running.is_some();
     let friends = play.friends.clone();
     let mut switch_to = None;
+    let mut join_click: Option<(String, String)> = None;
     let note = (!friends.online.is_empty()).then(|| RichText::new(format!("{} online", friends.online.len())).color(theme::OK));
     home_card(
         ui,
@@ -1589,7 +1612,28 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
                 ui.label(RichText::new(text).color(theme::SOFT));
             }
             for friend in &friends.online {
-                friend_row(ui, theme::OK, &friend.name, friend.activity.as_deref().unwrap_or("Online"));
+                ui.horizontal(|ui| {
+                    friend_row(ui, theme::OK, &friend.name, friend.activity.as_deref().unwrap_or("Online"));
+                    // Join their game, on a server that offers it: the server sends our game into
+                    // the party or public match they're in, hosting it or not (the game is started
+                    // first if it isn't running). A private match still needs an invite.
+                    if friends.join_offered {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let can = friend.joinable && !play.setup.running() && !play.joining.running();
+                            let button = ui.add_enabled(can, theme::secondary("Join"));
+                            let button = if friend.joinable {
+                                button.on_hover_text("Join this friend's game")
+                            } else if friend.activity.is_some() {
+                                button.on_disabled_hover_text(format!("{} is in a private match: you need an invitation", friend.name))
+                            } else {
+                                button.on_disabled_hover_text(format!("{} isn't in a game right now", friend.name))
+                            };
+                            if button.clicked() {
+                                join_click = Some((friend.id.clone(), friend.name.clone()));
+                            }
+                        });
+                    }
+                });
             }
             for friend in &friends.elsewhere {
                 let server = if friend.region.is_empty() { friend.server.clone() } else { friend.region.clone() };
@@ -1633,6 +1677,10 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
         // Confirmed on the Servers screen, which says where it goes and what happens there.
         play.switching = Some(Switch { host, new_name: None });
         *to = Some(Go::View(View::Servers));
+    }
+    if let Some(friend) = join_click {
+        // Acted on in `show`, where the game can be started if it isn't running.
+        play.join_requested = Some(friend);
     }
 }
 

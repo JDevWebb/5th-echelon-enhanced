@@ -257,6 +257,7 @@ fn ui_id(id: &str) -> u64 {
 #[derive(Clone, Copy)]
 enum RowAction {
     Invite,
+    Join,
     Change(community::FriendChange, &'static str),
 }
 
@@ -458,10 +459,17 @@ impl MyRenderLoop {
                         if let Some(ref sender) = evt.sender {
                             self.invite_notification.replace((Instant::now(), sender.username.clone()));
                         }
-                        // The server may ask to join without a click only if the player allowed it.
+                        // A join the player asked for (the launcher's/overlay's "Join", via
+                        // JoinNow) is honoured without a click: only when this game (or the
+                        // launcher beside it) asked to join that very friend, not on the
+                        // server's word alone, so no server can pull the player into a match
+                        // this way. A server-forced join only if the player allowed it; an
+                        // ordinary invitation only with auto-join on.
                         let cfg = hooks_config::get();
                         let force_join = evt.force_join && cfg.is_some_and(|c| c.allow_force_join);
-                        if evt.sender.is_some() && (force_join || cfg.is_some_and(|c| c.auto_join_invite)) {
+                        let requested = evt.requested && evt.sender.as_ref().is_some_and(|s| community::requested_join(&s.id));
+                        let auto = requested || force_join || cfg.is_some_and(|c| c.auto_join_invite);
+                        if evt.sender.is_some() && auto {
                             self.join_session(&evt.sender.unwrap());
                         } else {
                             self.active_invites.push(Invite {
@@ -984,6 +992,7 @@ impl MyRenderLoop {
             .map(|a| {
                 let text = match a {
                     RowAction::Invite => "Invite",
+                    RowAction::Join => "Join",
                     RowAction::Change(_, text) => text,
                 };
                 // Ids come from the server: hashed, so none can collide with ImGui's own
@@ -1010,6 +1019,7 @@ impl MyRenderLoop {
                 if self.button(ui, label, primary) {
                     match action {
                         RowAction::Invite => community::invite(p.id.clone(), p.name.clone()),
+                        RowAction::Join => community::join(p.id.clone(), p.name.clone()),
                         RowAction::Change(change, _) => community::change(*change, p.id.clone(), p.name.clone()),
                     }
                 }
@@ -1043,6 +1053,7 @@ impl MyRenderLoop {
             ui.text_colored(MUTED, "Loading friends...");
             return;
         }
+        let join_offered = self.data.join_offered();
         if self.data.my_name_not_allowed {
             let _c = ui.push_style_color(StyleColor::Text, BAD);
             ui.text_wrapped(format!(
@@ -1087,6 +1098,10 @@ impl MyRenderLoop {
                 let mut actions = vec![RowAction::Change(C::Block, "Block"), RowAction::Change(C::Remove, "Remove")];
                 if p.online {
                     actions.push(RowAction::Invite);
+                }
+                // Join: only someone in a party (hosting it or in it), on a server that offers it.
+                if p.joinable && join_offered {
+                    actions.push(RowAction::Join);
                 }
                 self.player_row(ui, row, "friend", p, &Self::status(p), &actions);
                 row += 1;
@@ -1370,6 +1385,7 @@ impl MyRenderLoop {
         if query.is_empty() {
             ui.text_colored(MUTED, format!("Online now · {}", found.len()));
         }
+        let join_offered = self.data.join_offered();
         for (i, p) in found.iter().enumerate() {
             let (detail, mut actions) = match p.relation {
                 community::Relation::Friend => (format!("Friend · {}", Self::status(p)), vec![]),
@@ -1386,6 +1402,9 @@ impl MyRenderLoop {
             let can_invite = p.online && (p.relation == community::Relation::Friend || (self.data.everyone_mode && p.relation == community::Relation::None));
             if can_invite {
                 actions.push(RowAction::Invite);
+                if p.joinable && join_offered {
+                    actions.push(RowAction::Join);
+                }
             }
             self.player_row(ui, i, "found", p, &detail, &actions);
         }

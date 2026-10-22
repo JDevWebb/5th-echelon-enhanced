@@ -5,6 +5,14 @@ package friends;
 service Friends {
     rpc List (ListRequest) returns (ListResponse);
     rpc Invite (InviteRequest) returns (InviteResponse);
+    // Asks to join a friend's game without an invitation: queues an invitation from the friend
+    // to the caller, delivered as a join the caller asked for (InviteEvent.requested), so the
+    // caller's running game joins the party the friend is in - their own, or one they're a
+    // member of (then the invitation counts as the friend's, like a member's invitation: it
+    // holds while the party's host has the friend as a friend). Only a friend (or anyone, in
+    // "everyone" mode) who is in a party and not in a match: a match, theirs or not, needs a
+    // real invitation. Servers that offer it list "join-now" in /api/info's features.
+    rpc JoinNow (JoinNowRequest) returns (JoinNowResponse);
     // Publishes the game session the caller is currently in, so that it shows up in the
     // friend lists of everybody else. The game announces its session through
     // UPLAY_USER_SetGameSession and expects to find a friend's session in the friend list -
@@ -85,6 +93,10 @@ message Activity {
     // The game mode (attribute 102, the game's EGameMode: 8 is SvM Classic); 0 when the room
     // didn't say (0 is single player, never a room).
     uint32 game_mode = 5;
+    // A friend can join them there without an invitation (JoinNow): the room is a party, with
+    // the player as its host or a member, or a public match. Not a private match, which needs a
+    // real invitation.
+    bool joinable = 6;
 }
 
 message Player {
@@ -209,4 +221,31 @@ message InviteRequest {
 
 message InviteResponse {
 
+}
+
+message JoinNowRequest {
+    // The friend to join (their account id).
+    string id = 1;
+}
+
+message JoinNowResponse {
+    enum Status {
+        // The join was queued; the caller's running game joins on its next event poll.
+        OK = 0;
+        // No such player.
+        NOT_FOUND = 1;
+        // Not a friend (on a server that only lets friends join each other).
+        NOT_FRIENDS = 2;
+        // The friend isn't in a game right now.
+        OFFLINE = 3;
+        // The friend is in a private match (hosting it or not): it needs a real invitation.
+        PRIVATE = 4;
+        // The friend is a member of someone else's party but can't bring anyone in (as with a
+        // member's invitation): its host doesn't have them as a friend, or they're only a
+        // guest there.
+        NOT_FRIENDS_WITH_HOST = 5;
+    }
+    Status status = 1;
+    // A short line for the player when the join can't go ahead.
+    string detail = 2;
 }

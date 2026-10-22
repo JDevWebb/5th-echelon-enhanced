@@ -191,9 +191,14 @@ pub fn api_session(cfg: &Config, fresh: bool) -> Result<(String, String), String
 /// A friend who's online on this server.
 #[derive(Debug, Clone, Default)]
 pub struct OnlineFriend {
+    /// The friend's account id, to join them (`JoinNow`).
+    pub id: String,
     pub name: String,
     /// What they're doing ("SvM Classic · Virus Vault · in a match"), if the server says.
     pub activity: Option<String>,
+    /// They're in a party (its host or a member) or a public match: the room to join them in
+    /// (`JoinNow`). Not in a private match, which needs an invitation.
+    pub joinable: bool,
 }
 
 /// Someone else online on this server (not a friend), for "Online now".
@@ -224,47 +229,83 @@ pub struct Friends {
     /// The account's name, when it breaks the network's rules: the server keeps the game out
     /// until the player chooses another (Settings › Servers and accounts › Rename).
     pub name_not_allowed: Option<String>,
+    /// The server joins a friend's game without an invitation (`JoinNow`; "join-now" among
+    /// its features): the Join buttons show. An older server would answer "unimplemented".
+    pub join_offered: bool,
+}
+
+/// The launcher's join request for the game, next to `uplay.toml`: the friend the player
+/// clicked Join on (account id) and when (Unix seconds). The game's hook reads and deletes it,
+/// and takes only that friend's invitation without a click — not any invitation the server
+/// marks as requested (see the hooks' `community::requested_join`). It's written before the
+/// server is asked, so a game polling for events (or one just started) finds it in time.
+const JOIN_REQUEST_FILE: &str = "5th-echelon-join-request.json";
+
+/// Asks the server to join `friend_name` (account id `friend_id`) — see `Friends.JoinNow`. On
+/// success the caller's running game joins on its next event poll; otherwise the reason is given.
+/// `Ok` is a line to show as a notice, `Err` one to show as an error.
+pub fn join_friend(cfg: &Config, game_dir: &Path, friend_id: &str, friend_name: &str) -> Result<String, String> {
+    use server_api::friends::join_now_response::Status as JoinStatus;
+    if !cfg.current_profile().is_some_and(|p| !p.server.is_empty() && p.has_account()) {
+        return Err("Set up an account on a server first.".into());
+    }
+    // The game takes the join only if it knows the player asked for it: told here, first.
+    let request = game_dir.join(JOIN_REQUEST_FILE);
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    if let Err(e) = std::fs::write(&request, serde_json::json!({ "id": friend_id, "at": at }).to_string()) {
+        tracing::warn!("couldn't write the join request {}: {e}", request.display());
+        return Err("The join request couldn't be written to the game folder.".into());
+    }
+    let friend_id = friend_id.to_string();
+    let resp = with_api_token(cfg, |url, token| crate::services::rt().block_on(crate::network::join_now(url, &token, friend_id.clone())));
+    let answer = match resp {
+        Ok(resp) => match JoinStatus::try_from(resp.status).unwrap_or(JoinStatus::Offline) {
+            JoinStatus::Ok => Ok(format!("Joining {friend_name} — the game joins their party or match.")),
+            _ if !resp.detail.is_empty() => Err(resp.detail),
+            JoinStatus::NotFound => Err(format!("{friend_name} isn't on this server.")),
+            JoinStatus::NotFriends => Err(format!("You can't join {friend_name}.")),
+            JoinStatus::Offline => Err(format!("{friend_name} isn't in a game right now.")),
+            JoinStatus::Private => Err(format!("{friend_name} is in a private match - you need an invitation.")),
+            JoinStatus::NotFriendsWithHost => Err(format!("{friend_name} can't bring you in: the game's host doesn't have them as a friend.")),
+        },
+        Err(e) => Err(e),
+    };
+    if answer.is_err() {
+        // Nothing queued: the request isn't left for some later invitation.
+        let _ = std::fs::remove_file(&request);
+    }
+    answer
+}
+
+/// Runs `call` (an API request taking the API's URL and a token) as the current account, with
+/// the token kept from the last call ([`api_session`]), signing in for a new one when the kept
+/// one is refused (a new password elsewhere, or expired).
+fn with_api_token<T>(cfg: &Config, call: impl Fn(String, String) -> Result<T, crate::network::Error>) -> Result<T, String> {
+    let (url, token) = api_session(cfg, false)?;
+    match call(url, token) {
+        Err(crate::network::Error::InvalidPassword) => {
+            let (url, token) = api_session(cfg, true)?;
+            call(url, token).map_err(|e| e.to_string())
+        }
+        other => other.map_err(|e| e.to_string()),
+    }
 }
 
 /// The current account's friends: who's online here and what they're
 /// playing, and who's on other servers sharing friends. Empty without an
 /// account.
 pub fn friends(cfg: &Config) -> Result<Friends, String> {
-    use sha2::Digest as _;
     let Some(profile) = cfg.current_profile().filter(|p| !p.server.is_empty() && p.has_account()) else {
         return Ok(Friends::default());
     };
-    let url = profile.api_server_url().to_string();
     let username = profile.user.username.clone();
-    let secret = profile.user.secret().unwrap_or_default();
-    let key = format!("{url}\n{username}\n{:x}", sha2::Sha256::digest(secret.as_bytes()));
-    let kept = API_TOKEN
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .as_ref()
-        .filter(|(k, _)| *k == key)
-        .map(|(_, t)| t.clone());
-    let rt = crate::services::rt();
-    let fetch = |token: String| rt.block_on(crate::network::relationships(url.clone(), &token)).map(|r| (r, token));
-    let result = match kept {
-        Some(token) => match fetch(token) {
-            // Signed out (a new password elsewhere, or expired): sign in once more.
-            Err(crate::network::Error::InvalidPassword) => None,
-            other => Some(other),
-        },
-        None => None,
-    };
-    let result = match result {
-        Some(result) => result,
-        None => {
-            let token = rt.block_on(crate::network::sign_in(url.clone(), &username, &secret)).map_err(|e| e.to_string())?;
-            *API_TOKEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((key, token.clone()));
-            fetch(token)
-        }
-    };
-    let (lists, token) = result.map_err(|e| e.to_string())?;
-    // Who else is online: a hint like the rest, so a server that won't say leaves it empty.
-    let others = rt.block_on(crate::network::online_players(url.clone(), &token)).unwrap_or_default();
+    let (lists, others) = with_api_token(cfg, |url, token| {
+        let rt = crate::services::rt();
+        let lists = rt.block_on(crate::network::relationships(url.clone(), &token))?;
+        // Who else is online: a hint like the rest, so a server that won't say leaves it empty.
+        let others = rt.block_on(crate::network::online_players(url, &token)).unwrap_or_default();
+        Ok((lists, others))
+    })?;
     // Shown on the Play screen: one line each, cut short, whatever the server sends.
     let clip = hooks_config::text::clip;
     let friend_ids: std::collections::HashSet<&str> = lists.friends.iter().map(|f| f.id.as_str()).collect();
@@ -288,12 +329,17 @@ pub fn friends(cfg: &Config) -> Result<Friends, String> {
         .filter(|f| f.is_online)
         .take(100)
         .map(|f| OnlineFriend {
+            id: f.id.clone(),
             name: clip(&f.username, 32),
             activity: f.activity.as_ref().map(describe),
+            joinable: f.activity.as_ref().is_some_and(|a| a.joinable),
         })
         .collect();
     online.sort_by_key(|f| f.name.to_lowercase());
+    // Whether this server joins friends (`/api/info`): asked only with someone online to join.
+    let join_offered = !online.is_empty() && setup::server_info::fetch(&profile.server, crate::network::INFO_TIMEOUT).is_some_and(|i| i.features.iter().any(|f| f == "join-now"));
     Ok(Friends {
+        join_offered,
         name_not_allowed: (lists.my_name() == server_api::friends::NameStatus::NotAllowed).then(|| username.clone()),
         offline: lists.friends.iter().filter(|f| !f.is_online).count(),
         online,
@@ -1001,6 +1047,7 @@ mod tests {
             with: vec!["Tank".into()],
             map,
             game_mode,
+            joinable: false,
         };
         assert_eq!(super::describe(&a("svm", "match", 8, 0x05F6_9010)), "SvM Classic · Virus Vault · in a match with Tank");
         assert_eq!(super::describe(&a("coop", "match", 3, 0)), "Grim (Ghost) · in a match with Tank");
