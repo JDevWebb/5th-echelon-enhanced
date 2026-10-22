@@ -1251,8 +1251,13 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             if join.told() {
                 crate::metrics::failed_join();
                 // Its host's game turned the joiner away as under way: Join stops leading
-                // there for a while (match_started.rs).
-                if code == crate::reports::LOCKED_SESSION {
+                // there for a while (match_started.rs). Only for the room the server just gave
+                // this player (an invitation, a search, a probe), someone else's and live: the
+                // game names any session id it likes, and a made-up report mustn't close a
+                // match to everyone's Join.
+                if code == crate::reports::LOCKED_SESSION
+                    && crate::join_targets::target(user_id, |host| self.storage.public_room_for(host, user_id).ok().flatten()) == Some(join.room)
+                {
                     crate::match_started::refused(join.room);
                 }
             }

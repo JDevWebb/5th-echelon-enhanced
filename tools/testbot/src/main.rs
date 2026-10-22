@@ -1204,23 +1204,35 @@ async fn join_now_match(ctx: &mut Ctx) -> Result<()> {
     // friend list stops offering Join there, and JoinNow says it has started.
     let mut turned_away = ctx.player("Guest").await?;
     turned_away.register_urls(&["prudp:/address=127.0.0.1;port=3088;sid=15;type=3"]).await?;
-    turned_away.report_failed_joins(&[(public_game, 0x9718_2b1b)]).await?;
     let later = ctx.player("Guest").await?;
     befriend(&public_host, &later).await?;
-    let listed = later.relationships().await?;
-    let friend = listed
-        .friends
-        .iter()
-        .find(|p| p.username == public_host.name)
-        .ok_or_else(|| eyre!("the public match's host isn't a friend"))?;
+    let offered = |listed: server_api::friends::RelationshipsResponse| {
+        listed
+            .friends
+            .iter()
+            .find(|p| p.username == public_host.name)
+            .and_then(|p| p.activity.as_ref())
+            .is_some_and(|a| a.joinable)
+    };
+    // A report about a room the server never gave the player counts for nothing: the game
+    // names any session id it likes.
+    turned_away.report_failed_joins(&[(public_game, 0x9718_2b1b)]).await?;
+    ensure!(offered(later.relationships().await?), "a made-up report closed the match to Join");
+    // Turned away from the room its search led to: the match counts as started.
+    let mut searcher = ctx.player("Guest").await?;
+    searcher.register_urls(&["prudp:/address=127.0.0.1;port=3089;sid=15;type=3"]).await?;
+    let found = searcher.search_sessions(PUBLIC_MATCH).await?;
+    ensure!(found.iter().any(|(session, _)| *session == public_game), "matchmaking doesn't find the public match: {found:?}");
+    searcher.report_failed_joins(&[(public_game, 0x9718_2b1b)]).await?;
     ensure!(
-        friend.activity.as_ref().is_some_and(|a| !a.joinable),
-        "the friend list still offers Join into a match a join was refused from as started: {friend:?}"
+        !offered(later.relationships().await?),
+        "the friend list still offers Join into a match a join was refused from as started"
     );
     let refused = later.join_now(&public_host.id).await?;
     ensure!(refused.status() == JoinStatus::Started, "joining a started match answered {:?}", refused.status());
     turned_away.disconnect().await?;
     later.disconnect().await?;
+    searcher.disconnect().await?;
 
     // A friend who joined a stranger's public match (a guest of it, from matchmaking), their
     // own anteroom beside it: joined through them into that match, the host's trust not needed
