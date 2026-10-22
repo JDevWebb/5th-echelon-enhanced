@@ -1258,7 +1258,12 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 if code == crate::reports::LOCKED_SESSION
                     && crate::join_targets::target(user_id, |host| self.storage.public_room_for(host, user_id).ok().flatten()) == Some(join.room)
                 {
-                    crate::match_started::refused(join.room);
+                    // Named, so a player making reports up can be found.
+                    if crate::match_started::refused(join.room, user_id) {
+                        info!(logger, "Match {} counts as started: {user_id} was turned away as locked", join.room);
+                    } else {
+                        warn!(logger, "{user_id} reports too many matches locked; match {} not marked started", join.room);
+                    }
                 }
             }
             let noted = join

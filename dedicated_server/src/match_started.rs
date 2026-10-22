@@ -23,24 +23,51 @@ const FOR: Duration = Duration::from_secs(10 * 60);
 /// At most this many rooms remembered (a game reports a few failures a minute at most).
 const MAX_ROOMS: usize = 4096;
 
-fn rooms() -> &'static Mutex<HashMap<u32, Instant>> {
-    static ROOMS: OnceLock<Mutex<HashMap<u32, Instant>>> = OnceLock::new();
-    ROOMS.get_or_init(|| Mutex::new(HashMap::new()))
+/// How many matches one player's refusals mark as started within [`FOR`]: a player is turned
+/// away from a started match once or twice, and one making reports up shouldn't close every
+/// match to Join.
+const PER_REPORTER: usize = 3;
+
+#[derive(Default)]
+struct State {
+    rooms: HashMap<u32, Instant>,
+    /// Who marked which room when, within [`FOR`].
+    marks: HashMap<u32, Vec<(u32, Instant)>>,
 }
 
-/// A join into `room` was refused as locked: it counts as started for [`FOR`].
-pub fn refused(room: u32) {
-    refused_at(room, Instant::now());
+fn state() -> &'static Mutex<State> {
+    static STATE: OnceLock<Mutex<State>> = OnceLock::new();
+    STATE.get_or_init(Mutex::default)
 }
 
-fn refused_at(room: u32, now: Instant) {
-    let mut rooms = rooms().lock().unwrap_or_else(PoisonError::into_inner);
+/// `reporter`'s join into `room` was refused as locked: it counts as started for [`FOR`].
+/// Whether it was taken (not past [`PER_REPORTER`]).
+pub fn refused(room: u32, reporter: u32) -> bool {
+    refused_at(room, reporter, Instant::now())
+}
+
+fn refused_at(room: u32, reporter: u32, now: Instant) -> bool {
+    let mut state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    let State { rooms, marks } = &mut *state;
     if rooms.len() >= MAX_ROOMS {
         rooms.retain(|_, at| now.saturating_duration_since(*at) < FOR);
+        marks.retain(|_, m| {
+            m.retain(|(_, at)| now.saturating_duration_since(*at) < FOR);
+            !m.is_empty()
+        });
     }
-    if rooms.len() < MAX_ROOMS {
-        rooms.insert(room, now);
+    let mine = marks.entry(reporter).or_default();
+    mine.retain(|(_, at)| now.saturating_duration_since(*at) < FOR);
+    if !mine.iter().any(|(r, _)| *r == room) && mine.len() >= PER_REPORTER {
+        return false;
     }
+    if rooms.len() >= MAX_ROOMS {
+        return false;
+    }
+    mine.retain(|(r, _)| *r != room);
+    mine.push((room, now));
+    rooms.insert(room, now);
+    true
 }
 
 /// Whether `room`'s match looks started (see the module's comment).
@@ -49,7 +76,8 @@ pub fn started(room: u32) -> bool {
 }
 
 fn started_at(room: u32, now: Instant) -> bool {
-    let mut rooms = rooms().lock().unwrap_or_else(PoisonError::into_inner);
+    let mut state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    let rooms = &mut state.rooms;
     match rooms.get(&room) {
         Some(at) if now.saturating_duration_since(*at) < FOR => true,
         Some(_) => {
@@ -68,7 +96,7 @@ mod tests {
     fn a_refused_room_counts_as_started_for_a_while() {
         let (room, now) = (3_000_001, Instant::now());
         assert!(!started_at(room, now), "nothing refused yet");
-        refused_at(room, now);
+        refused_at(room, 1, now);
         assert!(started_at(room, now + Duration::from_secs(60)));
         assert!(!started_at(3_000_009, now), "only that room");
         assert!(!started_at(room, now + FOR), "forgotten after a while");
@@ -78,8 +106,21 @@ mod tests {
     #[test]
     fn a_later_refusal_keeps_it_started() {
         let (room, now) = (3_000_002, Instant::now());
-        refused_at(room, now);
-        refused_at(room, now + Duration::from_secs(300));
+        refused_at(room, 2, now);
+        refused_at(room, 2, now + Duration::from_secs(300));
         assert!(started_at(room, now + FOR), "counted from the last refusal");
+    }
+
+    #[test]
+    fn one_player_marks_only_a_few_matches() {
+        let (reporter, now) = (3, Instant::now());
+        for room in 3_000_100..3_000_100 + PER_REPORTER as u32 {
+            assert!(refused_at(room, reporter, now));
+        }
+        assert!(!refused_at(3_000_200, reporter, now), "one more is refused");
+        assert!(!started_at(3_000_200, now));
+        assert!(refused_at(3_000_100, reporter, now), "one already marked is renewed");
+        assert!(refused_at(3_000_200, reporter, now + FOR), "and once they've lapsed, more");
+        assert!(refused_at(3_000_200, 4, now), "another player's count is their own");
     }
 }
