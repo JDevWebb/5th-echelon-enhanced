@@ -1156,7 +1156,8 @@ if [ -n "$coord_domain" ]; then
   if [ -n "$metrics_domain" ]; then coord_args="$coord_args --admin-listen $COORD_ADDR:8701 --admin-origin https://$metrics_domain"; fi
   # The roadmap and players' suggestions: every launcher reads the community network's, so
   # only its coordinator keeps one (by its current name or the old).
-  case " $COMMUNITY_COORDINATORS " in *" $coord_domain "*) coord_args="$coord_args --roadmap" ;; esac
+  # Chat too (docs/chat.md): the community network's alone.
+  case " $COMMUNITY_COORDINATORS " in *" $coord_domain "*) coord_args="$coord_args --roadmap --chat" ;; esac
   rm -f "$COORD_DIR/domain"
   if [ "$use_systemd" -eq 1 ]; then
     cat > "$COORD_UNIT" <<UNIT
