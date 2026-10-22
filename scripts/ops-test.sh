@@ -5,20 +5,20 @@
 # * the updater: a signed release installs and comes back healthy; one that doesn't is
 #   rolled back, with the databases as they were; a bad signature, an older release and
 #   a retry too soon are refused; a standby's coordinator is updated but not started;
-# * backup.sh: the live copy (Litestream) and the archive, restoring from either, as at a
-#   time, and from another machine with the coordinator's files (docs/backups.md);
-# * failover: a standby takes over a coordinator that stays down, from its live backup;
+# * backup.sh: the snapshots and the archive, restoring from either, as at a time, and from
+#   another machine with the coordinator's files (docs/backups.md);
+# * failover: a standby takes over a coordinator that stays down, from its snapshot;
 #   the one replaced stands down when it's back; --take-over moves it back
 #   (docs/failover.md).
 #
 # GitHub, Cloudflare's API and R2/B2 are stand-ins in the container (a test CA, a mock
-# API, rclone's S3 server). Litestream and rclone are downloaded at the installer's
-# pinned versions and checked against its checksums.
+# API, rclone's S3 server). rclone is downloaded at the installer's pinned version and
+# checked against its checksum.
 #
 #   scripts/ops-test.sh <folder with a coordinator built for the container>
 #
 # IMAGE is the container (default fes-build:local; it needs apt, or bash, curl, python3,
-# openssl, unzip and ca-certificates); BIN_MOUNT as in federation-test.sh. Used by
+# openssl, unzip, sqlite3 and ca-certificates); BIN_MOUNT as in federation-test.sh. Used by
 # `build/build.sh ops-test` and CI.
 # shellcheck disable=SC2034 # the installer's functions (eval'd) read the variables set here
 set -euo pipefail
@@ -59,16 +59,14 @@ die() { echo "  error: $*"; exit 1; }
 # --- Tools ------------------------------------------------------------------
 
 need=()
-for c in curl python3 openssl unzip update-ca-certificates setsid; do command -v "$c" >/dev/null || need+=("$c"); done
+for c in curl python3 openssl unzip sqlite3 update-ca-certificates setsid setpriv flock; do command -v "$c" >/dev/null || need+=("$c"); done
 if [ "${#need[@]}" -gt 0 ]; then
-  apt-get -qq update >/dev/null && apt-get -qq install -y --no-install-recommends curl python3 openssl unzip ca-certificates util-linux >/dev/null 2>&1
+  apt-get -qq update >/dev/null && apt-get -qq install -y --no-install-recommends curl python3 openssl unzip sqlite3 ca-certificates util-linux >/dev/null 2>&1
 fi
 cd /tmp
 arch=amd64; [ "$(uname -m)" = aarch64 ] && arch=arm64
-eval "$(grep -E '^(LITESTREAM|RCLONE)_(VERSION|SHA256_(amd64|arm64))=' "$S")"
-ls_sum="LITESTREAM_SHA256_$arch" rc_sum="RCLONE_SHA256_$arch"
-curl -fsSL -o ls.tgz "https://github.com/benbjohnson/litestream/releases/download/v$LITESTREAM_VERSION/litestream-$LITESTREAM_VERSION-linux-$( [ $arch = arm64 ] && echo arm64 || echo x86_64 ).tar.gz"
-echo "${!ls_sum}  ls.tgz" | sha256sum -c --quiet - && tar -xzf ls.tgz litestream && install litestream /usr/local/bin/
+eval "$(grep -E '^RCLONE_(VERSION|SHA256_(amd64|arm64))=' "$S")"
+rc_sum="RCLONE_SHA256_$arch"
 curl -fsSL -o rc.zip "https://github.com/rclone/rclone/releases/download/v$RCLONE_VERSION/rclone-v$RCLONE_VERSION-linux-$arch.zip"
 echo "${!rc_sum}  rc.zip" | sha256sum -c --quiet - && unzip -q -j rc.zip "rclone-v$RCLONE_VERSION-linux-$arch/rclone" && install rclone /usr/local/bin/
 install -m 755 "$bin/coordinator" /usr/local/bin/fes-coordinator
@@ -252,58 +250,39 @@ machine() { # machine NAME COORD_ADDR
   mkdir -p "$COORD_DIR" "$BACKUP_STATE"
   touch "/etc/systemd/system/$COORD_SERVICE.service"
   write_backup_script
-  # The coordinator, and its live copy (PartOf it, as the installer's unit).
-  cat > "/tmp/svc-$1-coord.cmd" <<CMD
-fes-coordinator --listen $2:8700 --data $COORD_DIR &
-for _ in \$(seq 50); do [ -s $COORD_DIR/coordinator.db ] && break; sleep 0.2; done
-cat > /tmp/$1-ls.yml <<CFG
-dbs:
-  - path: $COORD_DIR/coordinator.db
-    replica:
-      type: s3
-      endpoint: http://127.0.0.1:9000
-      region: auto
-      bucket: live
-      path: live/$1/coordinator
-      access-key-id: testkey
-      secret-access-key: testsecret123
-CFG
-litestream replicate -config /tmp/$1-ls.yml &
-wait
-CMD
+  echo "exec fes-coordinator --listen $2:8700 --data $COORD_DIR" > "/tmp/svc-$1-coord.cmd"
 }
 machine eu1 127.0.0.2
 machine na1 127.0.0.3
-# The game database's live copy, as the installer's unit runs it (this machine's: eu1).
+# The game server, with its database (this machine's: eu1).
 python3 -c '
 import sqlite3; c = sqlite3.connect("/var/lib/5th-echelon/game.db"); c.execute("PRAGMA journal_mode=WAL")
 c.execute("CREATE TABLE users (name TEXT)"); c.execute("INSERT INTO users VALUES (\"Kiwi\")"); c.commit()'
 rm -f "$STATE_DIR/5th-echelon.db"; mv /var/lib/5th-echelon/game.db "$STATE_DIR/5th-echelon.db"
 touch "/etc/systemd/system/$SERVICE.service"
-cat > /tmp/game-ls.yml <<CFG
-dbs:
-  - path: $STATE_DIR/5th-echelon.db
-    replica:
-      type: s3
-      endpoint: http://127.0.0.1:9000
-      region: auto
-      bucket: live
-      path: live/eu1/game
-      access-key-id: testkey
-      secret-access-key: testsecret123
-CFG
-echo "exec litestream replicate -config /tmp/game-ls.yml" > /tmp/svc-5th-echelon.cmd
+echo "exec sleep infinity" > /tmp/svc-5th-echelon.cmd
 systemctl start 5th-echelon
 systemctl start eu1-coord
+for _ in $(seq 50); do [ -s /var/lib/eu1-coord/join-token.txt ] && break; sleep 0.2; done
 token="$(cat /var/lib/eu1-coord/join-token.txt)"
 curl -fs -X POST http://127.0.0.2:8700/v1/join -H 'content-type: application/json' -d "{\"token\":\"$token\",\"server_id\":\"testserver1\"}" >/dev/null
 mkdir -p /var/lib/eu1-coord/reports/1 && echo "a report" > /var/lib/eu1-coord/reports/1/report.txt
-sleep 4
 users() { python3 -c 'import sqlite3,sys; print(",".join(r[0] for r in sqlite3.connect(sys.argv[1]).execute("SELECT name FROM users")))' "$STATE_DIR/5th-echelon.db"; }
 kiwi_back() { [ "$(users)" = Kiwi ]; }
 missing_archive_refused() { ! /tmp/eu1-backup.sh restore game --archive 2001-01-01 >/dev/null 2>&1 && kiwi_back; }
+no_users() { [ -z "$(users)" ]; }
+check "a snapshot of each database goes to R2, with the coordinator's files" bash -c "/tmp/eu1-backup.sh snapshot >/dev/null && [ \"\$(rclone --config /dev/null lsf -R T:live/snapshots/eu1 | grep -cE '^(game|coordinator)/[0-9]{8}T[0-9]{6}Z\.db\.gz\$')\" = 2 ] && rclone --config /dev/null lsf -R T:live/live/eu1/coordinator-files | grep -q join-token.txt"
+sleep 1
+/tmp/eu1-backup.sh snapshot >/dev/null
+check "  and one that hasn't changed isn't sent again" bash -c "[ \"\$(rclone --config /dev/null lsf T:live/snapshots/eu1/game | wc -l)\" = 1 ]"
+old="$(date -u -d '8 days ago' +%Y%m%dT%H%M%SZ).db.gz"
+rclone --config /dev/null copyto "$(mktemp)" "T:live/snapshots/eu1/game/$old"
+python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("CREATE TABLE more (x)"); c.commit()' "$STATE_DIR/5th-echelon.db"
+sleep 1
+/tmp/eu1-backup.sh snapshot >/dev/null
+check "  one that has is, and those over a week old go" bash -c "[ \"\$(rclone --config /dev/null lsf T:live/snapshots/eu1/game | wc -l)\" = 2 ] && ! rclone --config /dev/null lsf T:live/snapshots/eu1/game | grep -qF '$old'"
 check "the coordinator's files go to R2 where it runs" bash -c "/tmp/eu1-backup.sh files >/dev/null && rclone --config /dev/null lsf -R T:live/live/eu1/coordinator-files | grep -q join-token.txt"
-check "  and nowhere on a standby (it isn't running there)" bash -c "/tmp/na1-backup.sh files && ! rclone --config /dev/null lsf T:live/live/na1 2>/dev/null | grep -q ."
+check "  and nowhere on a standby (it isn't running there)" bash -c "/tmp/na1-backup.sh snapshot >/dev/null && ! rclone --config /dev/null lsf T:live/live/na1 2>/dev/null | grep -q . && ! rclone --config /dev/null lsf T:live/snapshots/na1/coordinator 2>/dev/null | grep -q ."
 # The coordinator's user owns its folder; the backup runs as root. Links there never take
 # root's files (the backup keys) to R2, whenever they're made.
 mkdir -p /var/lib/eu1-coord/reports/4 && echo "a report that goes" > /var/lib/eu1-coord/reports/4/report.txt
@@ -319,11 +298,13 @@ check "the daily archive goes to B2" bash -c "/tmp/eu1-backup.sh archive >/dev/n
 before="$(date -u +%FT%TZ)"
 sleep 2
 python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("DELETE FROM users"); c.commit()' "$STATE_DIR/5th-echelon.db"
-sleep 3
+/tmp/eu1-backup.sh snapshot >/dev/null
 /tmp/eu1-backup.sh restore game --time "$before" >/dev/null
 check "a database restores as it was at a time" kiwi_back
 check "  the one it replaced is kept beside it" bash -c "ls $STATE_DIR | grep -q before-restore"
 check "a missing archive changes nothing" missing_archive_refused
+/tmp/eu1-backup.sh restore game >/dev/null
+check "a database restores as it is in the latest snapshot" no_users
 python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("DELETE FROM users"); c.commit()' "$STATE_DIR/5th-echelon.db"
 /tmp/eu1-backup.sh restore game --archive "$(date -u +%F)" >/dev/null
 check "a database restores from the archive" kiwi_back
@@ -401,14 +382,13 @@ check "the standby keeps the coordinator where its record points" bash -c "syste
 # eu1 goes down, machine and all.
 systemctl stop eu1-standby; systemctl stop eu1-coord
 check "a standby takes over a coordinator that stays down, and moves both records" wait_for 120 '[ "$(records)" = "192.0.2.2 192.0.2.2" ]'
-check "  with its data, join token and reports, from the live backup" took_eu1s_data
+check "  with its data, join token and reports, from its snapshot" took_eu1s_data
 check "  answering through the proxy" bash -c "curl -fs http://127.0.0.1:8443/probe/v1/info | grep -q coordinator"
 # eu1 comes back, its coordinator started as before failover.
 systemctl start eu1-coord; systemctl start eu1-standby
 check "the one replaced stands down when it's back" wait_for 40 '! systemctl is-active --quiet eu1-coord'
 curl -fs -X POST http://127.0.0.3:8700/v1/join -H 'content-type: application/json' -d "{\"token\":\"$token\",\"server_id\":\"testserver2\"}" >/dev/null
-/tmp/na1-backup.sh files >/dev/null
-sleep 3
+/tmp/na1-backup.sh snapshot >/dev/null
 systemctl stop eu1-standby
 fes-coordinator standby --config /tmp/eu1.conf --take-over >/tmp/take-over.log 2>&1 || true
 systemctl start eu1-standby

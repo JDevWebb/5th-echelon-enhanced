@@ -250,8 +250,8 @@ impl Storage {
     /// Opens (creating if needed) and migrates the database at `path`.
     pub fn open(logger: Logger, path: &str) -> Result<Self> {
         let pool = run(async {
-            // WAL: readers don't wait for a writer, and the live backup (Litestream) needs it.
-            // The mode stays with the file, so the release before still opens it.
+            // WAL: readers (the backup's snapshots too) don't wait for a writer. The mode
+            // stays with the file, so the release before still opens it.
             let options = SqliteConnectOptions::new()
                 .filename(path)
                 .create_if_missing(true)
