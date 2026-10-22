@@ -28,60 +28,10 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
+use hooks_addresses::crash_fixes::scheme_pool;
+use hooks_addresses::crash_fixes::scheme_pool::HOOK_LEN;
 use tracing::info;
 use tracing::warn;
-
-/// `mov esi,0x400 / xor edi,edi / mov ecx,[ebx+0xbd0] / cmp ecx,edi / jz rel32 / call rel32 /
-/// mov eax,[ebx+0xbd0] / cmp [abs32],edi`; `None` is a wildcard.
-const SIGNATURE: [Option<u8>; 34] = {
-    const fn b(v: u8) -> Option<u8> {
-        Some(v)
-    }
-    const W: Option<u8> = None;
-    [
-        b(0xBE),
-        b(0x00),
-        b(0x04),
-        b(0x00),
-        b(0x00), // mov esi,0x400
-        b(0x33),
-        b(0xFF), // xor edi,edi
-        b(0x8B),
-        b(0x8B),
-        b(0xD0),
-        b(0x0B),
-        b(0x00),
-        b(0x00), // mov ecx,[ebx+0xbd0]
-        b(0x3B),
-        b(0xCF), // cmp ecx,edi
-        b(0x0F),
-        b(0x84),
-        W,
-        W,
-        W,
-        W, // jz <skip>
-        b(0xE8),
-        W,
-        W,
-        W,
-        W, // call <empty the pool>
-        b(0x8B),
-        b(0x83),
-        b(0xD0),
-        b(0x0B),
-        b(0x00),
-        b(0x00), // mov eax,[ebx+0xbd0]
-        b(0x39),
-        b(0x3D), // cmp [abs32],edi
-    ]
-};
-
-/// Where the replaced instructions start in the signature, and how many bytes they take.
-const HOOK_AT: usize = 7;
-const HOOK_LEN: usize = 14;
-/// The `jz` rel32 and the instruction after it (the call), relative to the signature.
-const JZ_REL: usize = 17;
-const CONTINUE_AT: usize = 21;
 
 /// Shared pools kept from a pawn's teardown since the game started.
 static KEPT: AtomicU32 = AtomicU32::new(0);
@@ -114,22 +64,18 @@ fn assemble(stub: u32, skip: u32, cont: u32, counter: u32) -> Vec<u8> {
 /// Installs the fix. Safe to call once at startup; leaves an unrecognised build untouched.
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 pub unsafe fn keep_shared_scheme_pool() {
-    let Some(code) = crate::game_code() else {
-        warn!("scheme-pool-fix: the game's .text wasn't found -> skipped");
+    let Some(image) = crate::game_image() else {
+        warn!("scheme-pool-fix: the game's sections weren't found -> skipped");
         return;
     };
-    let at = match crate::find_unique(code, &SIGNATURE) {
-        Ok(at) => at,
-        Err(n) => {
-            warn!("scheme-pool-fix: the pawn teardown was found {n} times, not once -> skipped (unknown build?)");
+    let site = match scheme_pool::locate(&image) {
+        Ok(site) => site,
+        Err(what) => {
+            warn!("scheme-pool-fix: {what} -> skipped (unknown build?)");
             return;
         }
     };
-    let site = code.as_ptr().add(at);
-    let hook = site.add(HOOK_AT) as u32;
-    let jz_next = site.add(JZ_REL + 4) as u32;
-    let skip = jz_next.wrapping_add(std::ptr::read_unaligned(site.add(JZ_REL).cast::<u32>()));
-    let cont = site.add(CONTINUE_AT) as u32;
+    let (hook, skip, cont) = (site.hook as u32, site.skip as u32, site.cont as u32);
 
     let Ok(alloc) = region::alloc(64, region::Protection::READ_WRITE_EXECUTE) else {
         warn!("scheme-pool-fix: couldn't allocate the stub -> skipped");
@@ -166,26 +112,6 @@ pub unsafe fn keep_shared_scheme_pool() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The DX11 bytes around the site (the signature plus a few bytes either side).
-    fn dx11_site() -> Vec<u8> {
-        let mut code = vec![0xCC; 8];
-        code.extend_from_slice(&[
-            0xBE, 0x00, 0x04, 0x00, 0x00, 0x33, 0xFF, 0x8B, 0x8B, 0xD0, 0x0B, 0x00, 0x00, 0x3B, 0xCF, 0x0F, 0x84, 0xD0, 0x00, 0x00, 0x00, 0xE8, 0x12, 0x0F, 0x12, 0x00, 0x8B, 0x83,
-            0xD0, 0x0B, 0x00, 0x00, 0x39, 0x3D, 0x98, 0xC1, 0x30, 0x03,
-        ]);
-        code.extend_from_slice(&[0xCC; 8]);
-        code
-    }
-
-    #[test]
-    fn finds_the_site_once() {
-        assert_eq!(crate::find_unique(&dx11_site(), &SIGNATURE), Ok(8));
-        let mut twice = dx11_site();
-        twice.extend(dx11_site());
-        assert_eq!(crate::find_unique(&twice, &SIGNATURE), Err(2));
-        assert_eq!(crate::find_unique(&[0x90; 64], &SIGNATURE), Err(0));
-    }
 
     #[test]
     fn stub_jumps_where_the_original_did() {

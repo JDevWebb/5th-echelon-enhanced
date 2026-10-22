@@ -19,6 +19,7 @@ use tracing::error;
 use tracing::info;
 use tracing::instrument;
 
+pub mod crash_fixes;
 pub mod patterns;
 
 pub type Address = usize;

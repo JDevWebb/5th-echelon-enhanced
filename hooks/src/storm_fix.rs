@@ -32,6 +32,7 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
+use hooks_addresses::crash_fixes::storm;
 use retour::static_detour;
 use tracing::info;
 use tracing::warn;
@@ -44,39 +45,6 @@ static_detour! {
     /// `thiscall(ticket, context, code, unused)`, `ret 0xc`: the ticket's vtable slot 0.
     static OnResultHook: unsafe extern "thiscall" fn(*mut u8, *mut c_void, i32, usize) -> usize;
 }
-
-/// The remove's start: `push ebp / mov ebp,esp / push ebx / mov ebx,ecx / mov eax,[ebx+0x24] /
-/// mov ecx,[ebx+0x1c] / lea ecx,[eax+ecx*4] / push esi / cmp eax,ecx / jz / mov edx,[ebp+0xc] /
-/// cmp [eax],edx / jz / add eax,4 / cmp eax,ecx / jnz / mov esi,[ebp+8] / push 1 / mov ecx,esi /
-/// call <result> / mov eax,esi / pop esi / pop ebx / pop ebp / ret 8`; `None` is a wildcard.
-#[rustfmt::skip]
-const SIGNATURE: [Option<u8>; 54] = [
-    Some(0x55), Some(0x8B), Some(0xEC), Some(0x53), Some(0x8B), Some(0xD9), Some(0x8B), Some(0x43), Some(0x24),
-    Some(0x8B), Some(0x4B), Some(0x1C), Some(0x8D), Some(0x0C), Some(0x88), Some(0x56), Some(0x3B), Some(0xC1),
-    Some(0x74), Some(0x0E), Some(0x8B), Some(0x55), Some(0x0C), Some(0x39), Some(0x10), Some(0x74), Some(0x1B),
-    Some(0x83), Some(0xC0), Some(0x04), Some(0x3B), Some(0xC1), Some(0x75), Some(0xF5), Some(0x8B), Some(0x75),
-    Some(0x08), Some(0x6A), Some(0x01), Some(0x8B), Some(0xCE), Some(0xE8), None, None, None, None,
-    Some(0x8B), Some(0xC6), Some(0x5E), Some(0x5B), Some(0x5D), Some(0xC2), Some(0x08), Some(0x00),
-];
-
-/// The state change's start, up to its first branch on the new state; `None` is a wildcard.
-#[rustfmt::skip]
-const SET_STATE: [Option<u8>; 25] = [
-    Some(0x55), Some(0x8B), Some(0xEC), Some(0x83), Some(0xEC), Some(0x08), // push ebp / mov ebp,esp / sub esp,8
-    Some(0x8B), Some(0x45), Some(0x0C), Some(0x53), Some(0x56), Some(0x8B), Some(0xF1), // mov eax,[ebp+0xc] / push ebx / push esi / mov esi,ecx
-    Some(0x8B), Some(0x56), Some(0x0C), Some(0x89), Some(0x55), Some(0xFC), // mov edx,[esi+0xc] / mov [ebp-4],edx
-    Some(0x89), Some(0x46), Some(0x0C), Some(0x83), Some(0xF8), Some(0x03), // mov [esi+0xc],eax / cmp eax,3
-];
-
-/// The ack or loss's start, through its first read of the observer list.
-#[rustfmt::skip]
-const ON_RESULT: [Option<u8>; 23] = [
-    Some(0x55), Some(0x8B), Some(0xEC), Some(0x8B), Some(0x45), Some(0x0C), // push ebp / mov ebp,esp / mov eax,[ebp+0xc]
-    Some(0x53), Some(0x56), Some(0x57), Some(0x8B), Some(0xF1), Some(0x85), Some(0xC0), // push ebx/esi/edi / mov esi,ecx / test eax,eax
-    Some(0x0F), Some(0x85), None, None, None, None, // jnz <lost>
-    Some(0x8B), Some(0x46), Some(0x1C), // mov eax,[esi+0x1c]
-    Some(0xC7), // mov dword [esi+0xc],2
-];
 
 /// The game's `.rdata`, where every live observer's vtable is.
 static RDATA: AtomicUsize = AtomicUsize::new(0);
@@ -185,46 +153,34 @@ fn on_result(ticket: *mut u8, context: *mut c_void, code: i32, unused: usize) ->
 
 /// Installs the detour. Safe to call once at startup; leaves an unrecognised build untouched.
 pub unsafe fn fix_ticket_observers() {
-    let Some(code) = crate::game_code() else {
-        warn!("storm-fix: the game's .text wasn't found -> skipped");
+    let Some(image) = crate::game_image() else {
+        warn!("storm-fix: the game's sections weren't found -> skipped");
         return;
     };
-    match crate::find_unique(code, &SIGNATURE) {
-        Ok(at) => {
-            let target = code.as_ptr().add(at);
-            match RemoveObserverHook.initialize(std::mem::transmute(target), remove_observer).and_then(|h| h.enable()) {
-                Ok(()) => info!("storm-fix: observers now leave sent-packet tickets entirely (remove @ {target:p})"),
-                Err(err) => warn!("storm-fix: the remove's detour failed: {err:?}"),
-            }
-        }
-        Err(n) => warn!("storm-fix: the ticket's observer remove was found {n} times, not once -> skipped (unknown build?)"),
+    let sites = storm::locate(&image);
+    match sites.remove {
+        Ok(target) => match RemoveObserverHook.initialize(std::mem::transmute(target), remove_observer).and_then(|h| h.enable()) {
+            Ok(()) => info!("storm-fix: observers now leave sent-packet tickets entirely (remove @ {target:#010x})"),
+            Err(err) => warn!("storm-fix: the remove's detour failed: {err:?}"),
+        },
+        Err(what) => warn!("storm-fix: {what} -> skipped (unknown build?)"),
     }
 
-    let Some(rdata) = crate::game_section(b".rdata") else {
-        warn!("storm-fix: the game's .rdata wasn't found -> no observer guard");
-        return;
-    };
-    RDATA.store(rdata.as_ptr() as usize, Ordering::Relaxed);
-    RDATA_END.store(rdata.as_ptr() as usize + rdata.len(), Ordering::Relaxed);
-    match crate::find_unique(code, &SET_STATE) {
-        Ok(at) => {
-            let target = code.as_ptr().add(at);
-            match SetStateHook.initialize(std::mem::transmute(target), set_state).and_then(|h| h.enable()) {
-                Ok(()) => info!("storm-fix: a ticket's state change drops dead observers first (@ {target:p})"),
-                Err(err) => warn!("storm-fix: the state change's detour failed: {err:?}"),
-            }
-        }
-        Err(n) => warn!("storm-fix: the ticket's state change was found {n} times, not once -> not guarded"),
+    RDATA.store(image.rdata_va, Ordering::Relaxed);
+    RDATA_END.store(image.rdata_va + image.rdata.len(), Ordering::Relaxed);
+    match sites.set_state {
+        Ok(target) => match SetStateHook.initialize(std::mem::transmute(target), set_state).and_then(|h| h.enable()) {
+            Ok(()) => info!("storm-fix: a ticket's state change drops dead observers first (@ {target:#010x})"),
+            Err(err) => warn!("storm-fix: the state change's detour failed: {err:?}"),
+        },
+        Err(what) => warn!("storm-fix: {what} -> not guarded"),
     }
-    match crate::find_unique(code, &ON_RESULT) {
-        Ok(at) => {
-            let target = code.as_ptr().add(at);
-            match OnResultHook.initialize(std::mem::transmute(target), on_result).and_then(|h| h.enable()) {
-                Ok(()) => info!("storm-fix: a ticket's ack or loss drops dead observers first (@ {target:p})"),
-                Err(err) => warn!("storm-fix: the ack's detour failed: {err:?}"),
-            }
-        }
-        Err(n) => warn!("storm-fix: the ticket's ack was found {n} times, not once -> not guarded"),
+    match sites.on_result {
+        Ok(target) => match OnResultHook.initialize(std::mem::transmute(target), on_result).and_then(|h| h.enable()) {
+            Ok(()) => info!("storm-fix: a ticket's ack or loss drops dead observers first (@ {target:#010x})"),
+            Err(err) => warn!("storm-fix: the ack's detour failed: {err:?}"),
+        },
+        Err(what) => warn!("storm-fix: {what} -> not guarded"),
     }
 }
 

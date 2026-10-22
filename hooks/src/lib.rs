@@ -112,15 +112,18 @@ const DATA_VERSION_CHECK: [Option<u8>; 19] = [
     Some(0x74), // jz accept
 ];
 
-/// Where `signature` (`None` is a wildcard) is in `code`, if it's there exactly once; else how
-/// many times it was found.
-pub(crate) fn find_unique(code: &[u8], signature: &[Option<u8>]) -> Result<usize, usize> {
-    let matches = |w: &[u8]| w.iter().zip(signature).all(|(b, want)| want.is_none_or(|v| *b == v));
-    let hits: Vec<usize> = code.windows(signature.len()).enumerate().filter(|(_, w)| matches(w)).map(|(i, _)| i).collect();
-    match hits[..] {
-        [at] => Ok(at),
-        _ => Err(hits.len()),
-    }
+/// The game as loaded, for the crash fixes to find their places in
+/// (`hooks_addresses::crash_fixes`).
+pub(crate) unsafe fn game_image() -> Option<hooks_addresses::crash_fixes::Image<'static>> {
+    let (text, rdata) = (game_code()?, game_section(b".rdata")?);
+    let (base, size) = module_bounds()?;
+    Some(hooks_addresses::crash_fixes::Image {
+        text,
+        text_va: text.as_ptr() as usize,
+        rdata,
+        rdata_va: rdata.as_ptr() as usize,
+        image: base..base + size,
+    })
 }
 
 /// The game's code: its executable's `.text` section in memory.

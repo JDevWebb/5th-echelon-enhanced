@@ -7,6 +7,9 @@ edition = "2021"
 name = "generate_patterns"
 required-features = ["generate_patterns"]
 
+[[bin]]
+name = "check_crash_fixes"
+
 [features]
 generate_patterns = ["dep:argh"]
 modding = []

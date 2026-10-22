@@ -19,6 +19,9 @@
 #                            (docs/friends.md)
 #   build/build.sh ui        the coordinator's admin UI (Vue, coordinator/admin-ui -> dist/,
 #                            embedded in the coordinator; the targets building it run this first)
+#   build/build.sh crash-fixes <game folder>
+#                            whether every crash fix finds its place in the game's
+#                            executables (read-only; the game never goes in the repo)
 #   build/build.sh fmt       cargo fmt (the whole workspace, as CI checks it)
 #   build/build.sh shell     interactive shell in the build container
 #
@@ -104,6 +107,10 @@ case "${1:-test}" in
     shift
     run "$IMAGE" cargo build -q --release -p dedicated_server -p testbot
     IMAGE="$IMAGE" scripts/load-test.sh /target/native/release "$@"
+    ;;
+  crash-fixes)
+    game=$(cd "${2:?the game folder (with src/SYSTEM)}" && pwd)
+    run -v "$game":/game:ro "$IMAGE" sh -c 'cargo build -q -p hooks-addresses --bin check_crash_fixes && /target/native/debug/check_crash_fixes /game'
     ;;
   ops-test)
     # What install-server.sh writes and runs as root (the updater, backups, failover), in a

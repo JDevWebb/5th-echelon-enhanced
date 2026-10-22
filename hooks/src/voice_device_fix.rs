@@ -29,65 +29,13 @@ use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 
+use hooks_addresses::crash_fixes::voice_device;
 use tracing::info;
 use tracing::warn;
 
 type Delete = unsafe extern "thiscall" fn(*mut u8, u32) -> *mut u8;
 type Deinit = unsafe extern "thiscall" fn(*mut u8, *mut u32) -> *mut u32;
 type Callback = unsafe extern "system" fn(*mut u8, *const u16, u32) -> i32;
-
-/// The output's destructor (it installs the output's vtable, whose immediate is at +11).
-#[rustfmt::skip]
-const PLAYBACK_DTOR: [Option<u8>; 42] = [
-    Some(0x55), Some(0x8B), Some(0xEC), Some(0x51), Some(0x53), Some(0x56), Some(0x57), Some(0x8B), Some(0xF9),
-    Some(0xC7), Some(0x07), None, None, None, None, // mov [edi],<vtable>
-    Some(0xC7), Some(0x47), Some(0x2C), None, None, None, None, // mov [edi+0x2c],<vtable 2>
-    Some(0x8B), Some(0x87), Some(0x80), Some(0x00), Some(0x00), Some(0x00), Some(0x8B), Some(0x50), Some(0x10),
-    Some(0x6A), Some(0x01), Some(0x8D), Some(0x8F), Some(0x80), Some(0x00), Some(0x00), Some(0x00),
-    Some(0xC7), Some(0x47), Some(0x7C),
-];
-const PLAYBACK_VTABLE_AT: usize = 11;
-
-/// The microphone's destructor (its vtable's immediate is at +17).
-#[rustfmt::skip]
-const CAPTURE_DTOR: [Option<u8>; 21] = [
-    Some(0x55), Some(0x8B), Some(0xEC), Some(0x51), Some(0x53), Some(0x56), Some(0x8B), Some(0xF1), Some(0x57),
-    Some(0x8D), Some(0x8E), Some(0x04), Some(0x26), Some(0x00), Some(0x00), // lea ecx,[esi+0x2604]
-    Some(0xC7), Some(0x06), None, None, None, None, // mov [esi],<vtable>
-];
-const CAPTURE_VTABLE_AT: usize = 17;
-
-/// The output's teardown: `if (opened) { opened = 0; …; close }`, `thiscall(this, result*)`.
-#[rustfmt::skip]
-const PLAYBACK_DEINIT: [Option<u8>; 36] = [
-    Some(0x55), Some(0x8B), Some(0xEC), Some(0x83), Some(0xEC), Some(0x08), Some(0x53), Some(0x8B), Some(0xD9),
-    Some(0x80), Some(0x7B), Some(0x08), Some(0x00), Some(0x56), Some(0x89), Some(0x5D), Some(0xF8), // cmp byte [ebx+8],0
-    Some(0x0F), Some(0x84), None, None, None, None,
-    Some(0x8B), Some(0x73), Some(0x0C), Some(0x57), Some(0x8D), Some(0x7B), Some(0x0C), Some(0xC6), Some(0x43), Some(0x08), Some(0x00), // mov byte [ebx+8],0
-    Some(0x3B), Some(0xF7),
-];
-
-/// The generic device teardown (the microphone's): `if (opened) { opened = 0; vtable[5] close }`.
-#[rustfmt::skip]
-const GENERIC_DEINIT: [Option<u8>; 34] = [
-    Some(0x55), Some(0x8B), Some(0xEC), Some(0x51), Some(0x56), Some(0x8B), Some(0xF1),
-    Some(0x80), Some(0x7E), Some(0x08), Some(0x00), Some(0x74), Some(0x4B), // cmp byte [esi+8],0 / jz
-    Some(0x8B), Some(0x06), Some(0x8B), Some(0x50), Some(0x14), Some(0x8D), Some(0x4D), Some(0xFC), Some(0x51), Some(0x8B), Some(0xCE),
-    Some(0xC6), Some(0x46), Some(0x08), Some(0x00), Some(0xFF), Some(0xD2), // mov byte [esi+8],0 / call [vtable+0x14]
-    Some(0x8D), Some(0x4D), Some(0xFC), Some(0xE8),
-];
-
-/// `OnDeviceStateChanged(this, id, state)`: builds a string of `id`, then looks it up among the
-/// owner's outputs (`lea ecx,[esi-0x2c]`) and sets the match's availability (`[eax+0x58]`).
-#[rustfmt::skip]
-const CALLBACK: [Option<u8>; 56] = [
-    Some(0x55), Some(0x8B), Some(0xEC), Some(0x83), Some(0xEC), Some(0x14), Some(0x53), Some(0x56), Some(0x8B), Some(0x75), Some(0x08),
-    Some(0x57), Some(0x8B), Some(0x7D), Some(0x0C), Some(0x83), Some(0xEC), Some(0x10), Some(0x8B), Some(0xCC), Some(0x33), Some(0xDB),
-    Some(0x57), Some(0x89), Some(0x5D), Some(0xFC), Some(0xE8), None, None, None, None,
-    Some(0x8D), Some(0x4E), Some(0xD4), Some(0xE8), None, None, None, None,
-    Some(0x85), Some(0xC0), Some(0x74), Some(0x0A), Some(0x83), Some(0x7D), Some(0x10), Some(0x01),
-    Some(0x0F), Some(0x94), Some(0xC1), Some(0x88), Some(0x48), Some(0x58), Some(0x8B), Some(0x76), Some(0xD8),
-];
 
 /// The callback's `this` is the owner's notification client, at `owner+0x2c`.
 const CLIENT_IN_OWNER: usize = 0x2c;
@@ -166,83 +114,37 @@ unsafe extern "system" fn on_state_changed(this: *mut u8, id: *const u16, state:
     original(this, id, state)
 }
 
-/// The destructor's address, if `found` is one and the vtable's slot 0 (the deleting destructor,
-/// `push ebp / mov ebp,esp / push esi / mov esi,ecx / call <dtor>`) calls it: (vtable, slot 0).
-unsafe fn checked_vtable(code: &[u8], dtor: usize, vtable_at: usize, rdata: &std::ops::Range<usize>) -> Option<(usize, usize)> {
-    let dtor_va = code.as_ptr() as usize + dtor;
-    let vtable = std::ptr::read_unaligned((dtor_va + vtable_at) as *const u32) as usize;
-    if !rdata.contains(&vtable) {
-        return None;
-    }
-    let delete = std::ptr::read(vtable as *const u32) as usize;
-    let text = code.as_ptr() as usize..code.as_ptr() as usize + code.len();
-    if !text.contains(&delete) || !text.contains(&(delete + 10)) {
-        return None;
-    }
-    let head = std::slice::from_raw_parts(delete as *const u8, 11);
-    if head[..7] != [0x55, 0x8B, 0xEC, 0x56, 0x8B, 0xF1, 0xE8] {
-        return None;
-    }
-    let called = (delete + 11).wrapping_add_signed(i32::from_le_bytes(head[7..11].try_into().unwrap()) as isize);
-    (called == dtor_va).then_some((vtable, delete))
-}
-
-/// The one `.rdata` word that holds `value`.
-fn word_holding(rdata: &[u8], value: usize) -> Option<usize> {
-    #[allow(clippy::cast_possible_truncation)]
-    let bytes = (value as u32).to_le_bytes();
-    let hits: Vec<usize> = (0..rdata.len().saturating_sub(3)).step_by(4).filter(|&i| rdata[i..i + 4] == bytes).collect();
-    match hits[..] {
-        [at] => Some(rdata.as_ptr() as usize + at),
-        _ => None,
-    }
-}
-
 /// Installs the fix. Safe to call once at startup; leaves an unrecognised build untouched.
 #[allow(clippy::cast_possible_truncation)]
 pub unsafe fn guard_voice_devices() {
-    let (Some(code), Some(rdata)) = (crate::game_code(), crate::game_section(b".rdata")) else {
+    let Some(image) = crate::game_image() else {
         warn!("voice-device-fix: the game's sections weren't found -> skipped");
         return;
     };
-    let rdata_range = rdata.as_ptr() as usize..rdata.as_ptr() as usize + rdata.len();
-    let base = code.as_ptr() as usize;
-    let find = |what: &str, signature: &[Option<u8>]| match crate::find_unique(code, signature) {
-        Ok(at) => Some(at),
-        Err(n) => {
-            warn!("voice-device-fix: {what} found {n} times, not once -> skipped (unknown build?)");
-            None
+    let voice_device::Sites {
+        playback_vtable,
+        playback_delete: playback_delete_orig,
+        capture_vtable,
+        capture_delete: capture_delete_orig,
+        playback_teardown,
+        capture_teardown,
+        callback,
+        callback_slot,
+    } = match voice_device::locate(&image) {
+        Ok(sites) => sites,
+        Err(what) => {
+            warn!("voice-device-fix: {what} -> skipped (unknown build?)");
+            return;
         }
-    };
-    let (Some(playback_dtor), Some(capture_dtor), Some(playback_deinit), Some(generic_deinit), Some(callback)) = (
-        find("the headset output's destructor", &PLAYBACK_DTOR),
-        find("the microphone's destructor", &CAPTURE_DTOR),
-        find("the headset output's teardown", &PLAYBACK_DEINIT),
-        find("the device teardown", &GENERIC_DEINIT),
-        find("the sound-device callback", &CALLBACK),
-    ) else {
-        return;
-    };
-    let Some((playback_vtable, playback_delete_orig)) = checked_vtable(code, playback_dtor, PLAYBACK_VTABLE_AT, &rdata_range) else {
-        warn!("voice-device-fix: the headset output's vtable didn't check out -> skipped");
-        return;
-    };
-    let Some((capture_vtable, capture_delete_orig)) = checked_vtable(code, capture_dtor, CAPTURE_VTABLE_AT, &rdata_range) else {
-        warn!("voice-device-fix: the microphone's vtable didn't check out -> skipped");
-        return;
-    };
-    let Some(callback_slot) = word_holding(rdata, base + callback) else {
-        warn!("voice-device-fix: the sound-device callback's vtable slot wasn't found once -> skipped");
-        return;
     };
 
     PLAYBACK_VTABLE.store(playback_vtable, Ordering::Relaxed);
     CAPTURE_VTABLE.store(capture_vtable, Ordering::Relaxed);
     PLAYBACK_DELETE.store(playback_delete_orig, Ordering::Relaxed);
     CAPTURE_DELETE.store(capture_delete_orig, Ordering::Relaxed);
-    PLAYBACK_TEARDOWN.store(base + playback_deinit, Ordering::Relaxed);
-    CAPTURE_TEARDOWN.store(base + generic_deinit, Ordering::Relaxed);
-    CALLBACK_ORIGINAL.store(base + callback, Ordering::Relaxed);
+    PLAYBACK_TEARDOWN.store(playback_teardown, Ordering::Relaxed);
+    CAPTURE_TEARDOWN.store(capture_teardown, Ordering::Relaxed);
+    CALLBACK_ORIGINAL.store(callback, Ordering::Relaxed);
     let playback_delete_fn: Delete = playback_delete;
     let capture_delete_fn: Delete = capture_delete;
     let callback_fn: Callback = on_state_changed;
@@ -255,16 +157,6 @@ pub unsafe fn guard_voice_devices() {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn finds_the_one_word_holding_a_value() {
-        let mut rdata = vec![0u8; 64];
-        rdata[16..20].copy_from_slice(&0x0200_92f0u32.to_le_bytes());
-        assert_eq!(word_holding(&rdata, 0x0200_92f0), Some(rdata.as_ptr() as usize + 16));
-        rdata[40..44].copy_from_slice(&0x0200_92f0u32.to_le_bytes());
-        assert_eq!(word_holding(&rdata, 0x0200_92f0), None, "twice");
-        assert_eq!(word_holding(&rdata, 0x1234), None);
-    }
 
     #[test]
     fn knows_a_live_object_by_its_vtable() {
