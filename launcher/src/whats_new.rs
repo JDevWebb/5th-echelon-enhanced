@@ -39,6 +39,58 @@ pub struct Release {
 /// Newest first. A release with nothing a player would notice has no entry.
 pub const RELEASES: &[Release] = &[
     Release {
+        version: "0.4.6",
+        thanks: &["Matt", "LocoDonut", "ThisMouseIsAss", "Drax333", "Aless", "passiverat", "Tea_bag", "Pa3cio"],
+        new: &[
+            Item {
+                title: "Chat",
+                text: "Global, your lobby, and messages with friends on any server: the Chat page here and the overlay's Chat tab, with pop-ups in the game as Settings › Notifications says. No links but Discord invites, slurs masked; the admins can read messages and act on reports.",
+                community: true,
+            },
+            Item {
+                title: "Who's online",
+                text: "Online now on the Friends card: who else is on your server, with Add friend, Invite and Block. The overlay's Find players shows them too.",
+                community: false,
+            },
+            Item {
+                title: "Lobbies past their mode's size",
+                text: "Raising Most players past the mode's size (8 for Blacklist, 4 for Classic, 2 for co-op) can crash or freeze some players' games: the overlay says so, and Playing now shows \"9/10 (made for 8)\".",
+                community: false,
+            },
+            Item {
+                title: "Searches say what else is open",
+                text: "A search that finds nothing while someone hosts another Spies vs Mercs mode says so, and which.",
+                community: false,
+            },
+        ],
+        fixed: &[
+            Fix {
+                lead: "Four crashes in the game's own code are patched",
+                rest: ": big Spies vs Mercs lobbies, leaving a match, unplugging a headset, and its network code.",
+            },
+            Fix {
+                lead: "A host migration that never ends leaves the match",
+                rest: " after a minute, instead of spinning until you restart.",
+            },
+            Fix {
+                lead: "Freezes leave a note",
+                rest: " in the game's log of where it stuck, and the launcher asks how it went.",
+            },
+            Fix {
+                lead: "The overlay can't end the game",
+                rest: " on a PC where DirectX 11 won't let it hook in: the game runs on without it.",
+            },
+            Fix {
+                lead: "Steam's -offline is caught",
+                rest: ": the checklist warns when Steam's launch options keep the game offline.",
+            },
+            Fix {
+                lead: "Internet play on game builds identified long ago",
+                rest: ": the game finds what it needs when it starts.",
+            },
+        ],
+    },
+    Release {
         version: "0.4.5",
         thanks: &["Alessenchaleur", "Tea_bag", "PsykoGun", "RAZA"],
         new: &[

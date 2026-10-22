@@ -6,22 +6,22 @@ export const PROMOTE_LANES = [['requested', 'Requested'], ['next', 'Next'], ['la
 export const AREAS = ['Launcher', 'Overlay', 'Server', 'Admin', 'Network'];
 export const SUGGESTION_STATUSES = [['new', 'New'], ['planned', 'Planned'], ['done', 'Done'], ['declined', 'Declined']];
 /** Statuses offered when editing an item (any other text up to 24 characters works too). */
-export const STATUS_HINTS = ['In 0.4.5', 'In 0.4.6', 'Building', 'Mocked up', 'Planned', 'Later', 'On hold', 'When data says', 'Requested', 'Done'];
+export const STATUS_HINTS = ['In 0.4.6', 'In 0.4.7', 'Building', 'Mocked up', 'Planned', 'Later', 'On hold', 'When data says', 'Requested', 'Done'];
 /** The lanes the project's roadmap fills; Requested is the players' and admins' own. */
 export const PROJECT_LANES = ['shipping', 'next', 'later'];
 
 /** Lane releases the project's roadmap sets. */
-export const STARTING_RELEASES = { shipping: '0.4.5', next: '0.4.6' };
+export const STARTING_RELEASES = { shipping: '0.4.6', next: '0.4.7' };
 
 /** The project's roadmap as it stands for this release (STARTING_RELEASES.shipping): what an
  * empty roadmap starts from, and what "Update from the project's roadmap" brings one up to.
  * Requested items start hidden from players. */
 export const STARTING_ITEMS = [
-  ['shipping', 'Fixes from players\' reports', 'No more duplicate matches in the lists after a host leaves, and game logs that keep what went wrong, so hangs and crashes can be traced.', ['Server', 'Launcher', 'Overlay'], 'In 0.4.5'],
-  ['shipping', 'Steam Input for controllers', 'A Steam copy on Windows can be started through Steam, so Steam\'s controller settings apply.', ['Launcher'], 'In 0.4.5'],
-  ['next', 'Chat and who\'s online', 'Find people to play with from the launcher, with popups in the game. Community network only.', ['Launcher', 'Overlay'], 'In 0.4.6'],
-  ['next', 'Coordinator failover', 'Move the coordinator to a one-level name so Cloudflare can proxy it, then turn failover on.', ['Ops'], 'In 0.4.6'],
+  ['shipping', 'Chat and who\'s online', 'Global, lobby and friends chat in the launcher and the game\'s overlay, and who\'s online on your server. Community network only.', ['Launcher', 'Overlay'], 'In 0.4.6'],
+  ['shipping', 'Coordinator failover', 'The community network\'s new address, scbl.jdevwebb.net, so another server can take over if the coordinator\'s goes down.', ['Network'], 'In 0.4.6'],
+  ['shipping', 'Crash and freeze fixes', 'Four crashes in the game\'s own code fixed (big Spies vs Mercs lobbies, leaving a match, voice chat, its network code), a host migration that never ends, and freezes that say where they stuck.', ['Overlay'], 'In 0.4.6'],
   ['next', 'Fewer relayed matches', 'Relayed players connect straight to hosts that have a port open.', ['Network'], 'Planned'],
+  ['next', 'Turning speed at high frame rates', 'The view turns slower with the mouse above 60 fps; a fix is being tested.', ['Launcher'], 'Building'],
   ['later', 'Global matchmaking', 'One matchmaking server for everyone, relays kept near players, hosts ranked by ping.', ['Server', 'Network'], 'Later'],
   ['later', 'Lobby browser', 'A list of every open public lobby (mode, map, players and seats), alongside global matchmaking.', ['Launcher', 'Overlay'], 'Later'],
   ['later', 'Relays in US West and Brazil', 'Only once the Sessions page shows relayed players there.', ['Network'], 'When data says'],

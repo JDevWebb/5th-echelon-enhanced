@@ -2,19 +2,19 @@
 
 What's being worked on next, roughly in order. Plans change as testing and the game's own code turn things up; the [issues](https://github.com/JDevWebb/5th-echelon-enhanced/issues) have the details, and ideas are welcome there.
 
+## In 0.4.6
+
+[Chat](chat.md) and who's online, the community network's move to `scbl.jdevwebb.net` for [failover](failover.md), and fixes for crashes and freezes in the game's own code. See the [release notes](releases/v0.4.6.md).
+
 ## Next
 
-### Chat, in 0.4.6
+### Turning speed at high frame rates
 
-Global, friends and lobby chat in the launcher, with popups in the game, to find people to play with. On the community network, with a language filter on chat and names, and no links but Discord invites.
+The view turns slower with the mouse above 60 fps (so players cap their frame rate). A test build is measuring why; the fix would be a game option, chosen once, like 0.4.5's.
 
 ### Code signing for Windows
 
 A signed `launcher.exe` and client DLL, so antivirus programs stop guessing (see [Antivirus warnings](../README.md#antivirus-warnings)). Until then, each release is sent to Microsoft for review.
-
-### Coordinator failover
-
-Moving the community network's coordinator to a one-level name, so Cloudflare can proxy it, then turning [failover](failover.md) on.
 
 ## Later
 
