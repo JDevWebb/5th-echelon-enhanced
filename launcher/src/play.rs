@@ -468,12 +468,14 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             // server to send it into the friend's match (JoinNow). Done here, where the game is
             // mutable.
             if let Some((id, name)) = play.join_requested.take() {
-                if play.running.is_none() && !play.game_seen {
-                    launch(play, game, notices);
+                // Only with a game to take the join: running, or started now (not when the
+                // launcher held back, for a question first, say).
+                let running = play.running.is_some() || play.game_seen || setup::game::game_running();
+                if running || launch(play, game, notices) {
+                    let cfg = game.cfg.clone();
+                    let game_dir = game.dir.clone();
+                    play.joining.start(&ctx, move || flow::join_friend(&cfg, &game_dir, &id, &name));
                 }
-                let cfg = game.cfg.clone();
-                let game_dir = game.dir.clone();
-                play.joining.start(&ctx, move || flow::join_friend(&cfg, &game_dir, &id, &name));
             }
         }
     });
@@ -2290,25 +2292,26 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked:
     }
 }
 
-fn launch(play: &mut Play, game: &mut Game, notices: &mut Notices) {
+/// Starts the game, or says why not: whether it's starting.
+fn launch(play: &mut Play, game: &mut Game, notices: &mut Notices) -> bool {
     // The question about diagnostics is answered first (diagnostics.rs shows it).
     if crate::diagnostics::Ask::pending(Some(game)) {
         notices.info("First, say whether the game may send its diagnostics.");
-        return;
+        return false;
     }
     // And the new game options (new_options.rs asks).
     if !crate::new_options::pending(Some(game)).is_empty() {
         notices.info("First, choose the new game options.");
-        return;
+        return false;
     }
     if setup::game::game_running() {
         notices.error("Splinter Cell: Blacklist is already running.");
-        return;
+        return false;
     }
     // The server would keep the game out: say why here, and how to fix it.
     if name_not_allowed(play, game).is_some() {
         notices.error("Your name breaks this network's rules. Choose another first: Settings › Servers and accounts › Rename.");
-        return;
+        return false;
     }
     // The hook reads uplay.toml when the game starts: make sure it has the
     // current profile.
@@ -2319,7 +2322,7 @@ fn launch(play: &mut Play, game: &mut Game, notices: &mut Notices) {
     }
     let Some(version) = setup::game::pick_version(&game.dir, game.cfg.default_game) else {
         notices.error("The game's executable is missing.");
-        return;
+        return false;
     };
     match setup::launch::launch(&game.dir, version, crate::app::Prefs::start_through_steam()) {
         Ok(setup::launch::Launched::Game(child)) => play.running = Some(child),
@@ -2332,8 +2335,10 @@ fn launch(play: &mut Play, game: &mut Game, notices: &mut Notices) {
         Err(e) => {
             tracing::warn!("couldn't start the game: {e}");
             notices.error(format!("Couldn't start the game: {e}"));
+            return false;
         }
     }
+    true
 }
 
 /// The player's name, when the server said it breaks the rules: only while it's still their

@@ -340,6 +340,16 @@ pub async fn join_now(api_url: String, token: &str, friend_id: String) -> Result
     match client.join_now(authed(server_api::friends::JoinNowRequest { id: friend_id }, &token)).await {
         Ok(resp) => Ok(resp.into_inner()),
         Err(status) if status.code() == tonic::Code::Unauthenticated => Err(Error::InvalidPassword),
+        // The server's own words for a refusal (already in that game, too many requests),
+        // cut short like anything it sends; not the RPC's dump.
+        Err(status)
+            if matches!(
+                status.code(),
+                tonic::Code::InvalidArgument | tonic::Code::ResourceExhausted | tonic::Code::FailedPrecondition
+            ) && !status.message().is_empty() =>
+        {
+            Err(Error::ServerFailure(hooks_config::text::clip(status.message(), 200)))
+        }
         Err(status) => Err(status.into()),
     }
 }

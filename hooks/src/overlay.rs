@@ -1099,8 +1099,9 @@ impl MyRenderLoop {
                 if p.online {
                     actions.push(RowAction::Invite);
                 }
-                // Join: only someone in a party (hosting it or in it), on a server that offers it.
-                if p.joinable && join_offered {
+                // Join: only someone in a party (hosting it or in it) or a public match, on a server
+                // that offers it.
+                if join_offered && Self::joinable(p) {
                     actions.push(RowAction::Join);
                 }
                 self.player_row(ui, row, "friend", p, &Self::status(p), &actions);
@@ -1402,12 +1403,19 @@ impl MyRenderLoop {
             let can_invite = p.online && (p.relation == community::Relation::Friend || (self.data.everyone_mode && p.relation == community::Relation::None));
             if can_invite {
                 actions.push(RowAction::Invite);
-                if p.joinable && join_offered {
+                if join_offered && Self::joinable(p) {
                     actions.push(RowAction::Join);
                 }
             }
             self.player_row(ui, i, "found", p, &detail, &actions);
         }
+    }
+
+    /// Whether to offer Join on `p`'s row: in a room a friend joins without an invitation, and
+    /// not shown in red as someone else with a friend's name (Join takes no second click,
+    /// unlike an invitation they'd have to accept).
+    fn joinable(p: &community::Player) -> bool {
+        p.joinable && p.lookalike.is_none() && !matches!(p.name_status, community::NameStatus::Conflict)
     }
 
     fn pane_invites(&mut self, ui: &Ui) {

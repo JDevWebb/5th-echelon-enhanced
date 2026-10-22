@@ -170,6 +170,10 @@ fn attribute_sql(id: u32) -> String {
 /// request through them makes (`JoinNow`): anyone may join a public match, so the host's trust
 /// in the member isn't needed - only that the member is still in it, it's still public, and the
 /// host and the invitee haven't blocked each other.
+///
+/// A join request's invitation (`join_request`: the joiner asked, nobody invited them) holds,
+/// even from the host, only while its room is a party or still a public match: a host who
+/// makes the match private after the request keeps the joiner out, as a search would.
 fn invite_holds_sql(i: &str) -> String {
     let blocked = |a: &str, b: &str| {
         format!(
@@ -177,17 +181,21 @@ fn invite_holds_sql(i: &str) -> String {
                AND ((b.user_id = {a} AND b.other_id = {b}) OR (b.user_id = {b} AND b.other_id = {a})))"
         )
     };
+    let public_match = format!(
+        "({kind} = 0
+          AND NOT EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.user_id = g.creator_id AND a.invite_only = 1)
+          AND NOT {PRIVATE_SEATS_ONLY})",
+        kind = attribute_sql(113),
+    );
     format!(
         "EXISTS (SELECT 1 FROM game_sessions g WHERE g.id = {i}.session_id AND g.type_id = {i}.session_type
-           AND (g.creator_id = {i}.sender
+           AND ((g.creator_id = {i}.sender AND ({i}.join_request = 0 OR {kind} = 1 OR {public_match}))
                 OR ({kind} = 1
                     AND EXISTS (SELECT 1 FROM participants s WHERE s.game_id = g.id AND s.user_id = {i}.sender)
                     AND EXISTS (SELECT 1 FROM relationships f WHERE f.user_id = g.creator_id AND f.other_id = {i}.sender AND f.kind = 'friend')
                     AND NOT {member_blocked}
                     AND NOT {invitee_blocked})
-                OR ({kind} = 0
-                    AND NOT EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.user_id = g.creator_id AND a.invite_only = 1)
-                    AND NOT {PRIVATE_SEATS_ONLY}
+                OR ({public_match}
                     AND (EXISTS (SELECT 1 FROM participants s WHERE s.game_id = g.id AND s.user_id = {i}.sender)
                          OR EXISTS (SELECT 1 FROM guests gu WHERE gu.game_id = g.id AND gu.user_id = {i}.sender))
                     AND NOT {invitee_blocked})))",
@@ -1110,7 +1118,7 @@ impl Storage {
             "invite",
             serde_json::json!({ "to": receiver_id, "room": session_id }),
         );
-        self.insert_invite_async(sender_id, receiver_id, session_type, session_id, |_| {}).await
+        self.insert_invite_async(sender_id, receiver_id, session_type, session_id, false).await
     }
 
     /// Records the invitation a join request (`JoinNow`) stands on: to `joiner`, bound to
@@ -1119,9 +1127,11 @@ impl Storage {
     /// the room, so it holds as a member's invitation does ([`invite_holds_sql`]). The session
     /// log notes a join request by the joiner, since nobody invited anyone.
     ///
-    /// `queued` is told the new invitation's id before it's committed, so the caller can mark it
-    /// as the requested join before any event poll can take it (see `join_requests`).
-    pub async fn add_join_request_async(&self, host: u32, via: Option<u32>, joiner: u32, session_type: u32, session_id: u32, queued: impl FnOnce(i64) + Send) -> Result<i64> {
+    /// The row is marked `join_request`: it's delivered as a join the player asked for
+    /// (`InviteEvent.requested`), and holds only while its room is a party or a public match.
+    /// Another invitation (one already waiting, or a later one from the same sender, which
+    /// replaces it) isn't marked.
+    pub async fn add_join_request_async(&self, host: u32, via: Option<u32>, joiner: u32, session_type: u32, session_id: u32) -> Result<i64> {
         match via {
             Some(via) => info!(
                 self.logger,
@@ -1134,12 +1144,12 @@ impl Storage {
             "join-request",
             serde_json::json!({ "host": host, "room": session_id, "via": via }),
         );
-        self.insert_invite_async(via.unwrap_or(host), joiner, Some(session_type), Some(session_id), queued).await
+        self.insert_invite_async(via.unwrap_or(host), joiner, Some(session_type), Some(session_id), true).await
     }
 
-    /// Records the invitation ([`Self::add_invite_async`]); `queued` is told its id while it's
-    /// still uncommitted: nobody can take it before that's done.
-    async fn insert_invite_async(&self, sender_id: u32, receiver_id: u32, session_type: Option<u32>, session_id: Option<u32>, queued: impl FnOnce(i64) + Send) -> Result<i64> {
+    /// Records the invitation ([`Self::add_invite_async`]), `join_request` for one a join
+    /// request queued ([`Self::add_join_request_async`]).
+    async fn insert_invite_async(&self, sender_id: u32, receiver_id: u32, session_type: Option<u32>, session_id: Option<u32>, join_request: bool) -> Result<i64> {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         sqlx::query("DELETE FROM invites WHERE (receiver = ? AND sender = ?) OR consumed_at IS NOT NULL OR expires_at IS NULL OR expires_at <= CURRENT_TIMESTAMP")
             .bind(receiver_id)
@@ -1153,15 +1163,15 @@ impl Storage {
         if pending >= MAX_PENDING_INVITES {
             return Err(eyre!("{receiver_id} already has {pending} invitations waiting"));
         }
-        let id = sqlx::query("INSERT INTO invites (sender, receiver, session_type, session_id, expires_at) VALUES (?, ?, ?, ?, datetime('now', '+5 minutes'))")
+        let id = sqlx::query("INSERT INTO invites (sender, receiver, session_type, session_id, join_request, expires_at) VALUES (?, ?, ?, ?, ?, datetime('now', '+5 minutes'))")
             .bind(sender_id)
             .bind(receiver_id)
             .bind(session_type)
             .bind(session_id)
+            .bind(join_request)
             .execute(&mut *transaction)
             .await?
             .last_insert_rowid();
-        queued(id);
         transaction.commit().await?;
         Ok(id)
     }
@@ -1186,7 +1196,7 @@ impl Storage {
         let mut transaction = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         let invite: Option<Invite> = sqlx::query_as(
             r"
-            SELECT id, sender, receiver, session_type, session_id
+            SELECT id, sender, receiver, session_type, session_id, join_request
             FROM invites
             WHERE receiver = ? AND delivered_at IS NULL AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP
             ORDER BY created, id
@@ -1955,6 +1965,8 @@ pub struct Invite {
     /// the time of the invitation - the invitation is then delivered but cannot be resolved.
     pub session_type: Option<u32>,
     pub session_id: Option<u32>,
+    /// A join request queued it (`JoinNow`): delivered as a join the player asked for.
+    pub join_request: bool,
 }
 
 /// A live game session and who is in it, for the presence feed.

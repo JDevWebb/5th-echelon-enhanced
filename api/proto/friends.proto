@@ -234,9 +234,11 @@ message JoinNowResponse {
         OK = 0;
         // No such player.
         NOT_FOUND = 1;
-        // Not a friend (on a server that only lets friends join each other).
+        // Not a friend (on a server that only lets friends join each other), or someone the
+        // caller blocked (or the host of their game).
         NOT_FRIENDS = 2;
-        // The friend isn't in a game right now.
+        // The friend isn't in a game right now. Also the answer when they, or their game's
+        // host, blocked the caller: nobody learns they were blocked.
         OFFLINE = 3;
         // The friend is in a private match (hosting it or not): it needs a real invitation.
         PRIVATE = 4;

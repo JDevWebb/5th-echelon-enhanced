@@ -474,10 +474,15 @@ impl Friends for MyFriends {
         if friend == me {
             return Err(Status::invalid_argument("You can't join your own game."));
         }
+        // Nobody learns they were blocked (as with invitations): a friend or host who blocked
+        // the caller answers as if not in a game, or as a stranger does on a friends-only
+        // server. Only the caller's own block is named.
+        const NOT_IN_A_GAME: &str = "That player isn't in a game right now.";
         match self.storage.relation(me, friend).await.map_err(internal)? {
-            Relation::Blocked | Relation::BlockedBy => return reply(JoinStatus::NotFriends, "You can't join this player."),
+            Relation::Blocked => return reply(JoinStatus::NotFriends, "You've blocked this player."),
             Relation::Friend => {}
             _ if self.mode == FriendsMode::Mutual => return reply(JoinStatus::NotFriends, "Only friends can join each other on this server."),
+            Relation::BlockedBy => return reply(JoinStatus::Offline, NOT_IN_A_GAME),
             _ => {}
         }
         // Where the friend is: the rooms they host, and those they're in as a member (a
@@ -514,27 +519,40 @@ impl Friends for MyFriends {
                 if host == me {
                     return Err(Status::invalid_argument("You're already in that game: it's yours."));
                 }
-                if matches!(self.storage.relation(host, me).await.map_err(internal)?, Relation::Blocked | Relation::BlockedBy) {
-                    return reply(JoinStatus::NotFriends, "You can't join that game.");
+                match self.storage.relation(me, host).await.map_err(internal)? {
+                    Relation::Blocked => return reply(JoinStatus::NotFriends, "You've blocked that game's host."),
+                    Relation::BlockedBy => return reply(JoinStatus::Offline, NOT_IN_A_GAME),
+                    _ => {}
                 }
                 (host, game.session_type, game.session_id)
             }
             (None, Some(room)) => (friend, room.session_type, room.session_id),
-            (None, None) if member_sessions.is_empty() => return reply(JoinStatus::Offline, "That player isn't in a game right now."),
+            (None, None) if member_sessions.is_empty() => return reply(JoinStatus::Offline, NOT_IN_A_GAME),
             (None, None) => {
+                // A host who blocked the caller is passed over unsaid: when that's every party
+                // the friend is in, they answer as not in a game.
                 let mut refusal = (
                     JoinStatus::NotFriendsWithHost,
                     "That player can't bring you in: they aren't a member the game's host trusts.",
                 );
+                let (mut parties, mut hidden) = (0, 0);
                 let mut found = None;
                 for party in self.storage.member_parties_async(friend).await.map_err(internal)? {
+                    parties += 1;
                     let host = party.creator_id;
                     if host == me {
                         return Err(Status::invalid_argument("You're already in that game: it's yours."));
                     }
-                    if matches!(self.storage.relation(host, me).await.map_err(internal)?, Relation::Blocked | Relation::BlockedBy) {
-                        refusal = (JoinStatus::NotFriends, "You can't join that game.");
-                        continue;
+                    match self.storage.relation(me, host).await.map_err(internal)? {
+                        Relation::Blocked => {
+                            refusal = (JoinStatus::NotFriends, "You've blocked that game's host.");
+                            continue;
+                        }
+                        Relation::BlockedBy => {
+                            hidden += 1;
+                            continue;
+                        }
+                        _ => {}
                     }
                     if !matches!(self.storage.relation(host, friend).await.map_err(internal)?, Relation::Friend) {
                         continue;
@@ -543,23 +561,26 @@ impl Friends for MyFriends {
                     break;
                 }
                 let Some(found) = found else {
+                    if parties > 0 && hidden == parties {
+                        return reply(JoinStatus::Offline, NOT_IN_A_GAME);
+                    }
                     return reply(refusal.0, refusal.1);
                 };
                 found
             }
         };
-        // The invitation this queues is the one to deliver as a requested join: another one
-        // already waiting for the caller goes out as the ordinary invitation it is. Marked
-        // before it's committed, so the caller's event poll can't take it unmarked.
+        // Already in it (a party member, or a guest of the match): nothing to join.
+        if self.storage.member_sessions_async(me).await.map_err(internal)?.iter().any(|s| s.session_id == room_id) {
+            return Err(Status::invalid_argument("You're already in that game."));
+        }
+        // The invitation this queues is the one delivered as a requested join (its row says
+        // so): another one already waiting for the caller goes out as the ordinary invitation
+        // it is.
         let via = (host != friend).then_some(friend);
-        let sender = via.unwrap_or(host);
-        let invite = self
-            .storage
-            .add_join_request_async(host, via, me, session_type, room_id, |invite| {
-                crate::join_requests::mark(me, crate::join_requests::Requested { invite, sender, room: room_id });
-            })
-            .await
-            .map_err(|e| Status::resource_exhausted(format!("Couldn't queue the join: {e}")))?;
+        let invite = self.storage.add_join_request_async(host, via, me, session_type, room_id).await.map_err(|e| {
+            warn!(self.logger, "JoinNow: {me} couldn't queue the join to {host}'s session {room_id}: {e}");
+            Status::resource_exhausted("Couldn't queue the join: answer or let some of your waiting invitations go first.")
+        })?;
         match via {
             None => info!(self.logger, "JoinNow: {me} joins {host}'s session {room_id} (invitation {invite}, requested)"),
             Some(via) => info!(self.logger, "JoinNow: {me} joins {host}'s session {room_id} through {via} (invitation {invite}, requested)"),
@@ -1462,7 +1483,7 @@ impl Misc for MyMisc {
         crate::session_events::note(
             crate::session_events::Who::Id(invite.receiver),
             "invite_delivered",
-            serde_json::json!({ "from": invite.sender, "room": invite.session_id }),
+            serde_json::json!({ "from": invite.sender, "room": invite.session_id, "requested": invite.join_request }),
         );
 
         Ok(Response::new(misc::EventResponse {
@@ -1475,19 +1496,10 @@ impl Misc for MyMisc {
                     ips: vec![],
                 }),
                 force_join: self.debug_config.force_joins,
-                // A launcher/overlay "join a friend" (JoinNow) marks the caller with the
-                // invitation it queued: that one is delivered as a join the player asked for
-                // (honoured without a click); any other waiting invitation isn't.
-                requested: invite.session_id.is_some_and(|room| {
-                    crate::join_requests::take(
-                        user_id,
-                        crate::join_requests::Requested {
-                            invite: invite.id,
-                            sender: invite.sender,
-                            room,
-                        },
-                    )
-                }),
+                // The invitation a launcher/overlay "join a friend" (JoinNow) queued: a join the
+                // player asked for (the game takes it without a click only if it asked for it
+                // itself); any other waiting invitation isn't.
+                requested: invite.join_request && invite.session_id.is_some(),
             }),
             friend: None,
             notice: notice(),

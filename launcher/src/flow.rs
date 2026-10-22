@@ -261,7 +261,7 @@ pub fn join_friend(cfg: &Config, game_dir: &Path, friend_id: &str, friend_name: 
     let answer = match resp {
         Ok(resp) => match JoinStatus::try_from(resp.status).unwrap_or(JoinStatus::Offline) {
             JoinStatus::Ok => Ok(format!("Joining {friend_name} — the game joins their party or match.")),
-            _ if !resp.detail.is_empty() => Err(resp.detail),
+            _ if !resp.detail.is_empty() => Err(hooks_config::text::clip(&resp.detail, 200)),
             JoinStatus::NotFound => Err(format!("{friend_name} isn't on this server.")),
             JoinStatus::NotFriends => Err(format!("You can't join {friend_name}.")),
             JoinStatus::Offline => Err(format!("{friend_name} isn't in a game right now.")),
@@ -289,6 +289,26 @@ fn with_api_token<T>(cfg: &Config, call: impl Fn(String, String) -> Result<T, cr
         }
         other => other.map_err(|e| e.to_string()),
     }
+}
+
+/// Whether `server` joins a friend's game without an invitation ("join-now" among `/api/info`'s
+/// features). Asked again after 10 minutes, not on every friends refresh (each would wait on the
+/// server); a server that doesn't answer keeps the last answer, and is asked again in a minute.
+fn join_offered(server: &str) -> bool {
+    static KNOWN: Mutex<Option<(String, Instant, Duration, bool)>> = Mutex::new(None);
+    let lock = || KNOWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let last = lock().as_ref().filter(|(s, ..)| s == server).map(|(_, at, good_for, offered)| (*at, *good_for, *offered));
+    if let Some((at, good_for, offered)) = last {
+        if at.elapsed() < good_for {
+            return offered;
+        }
+    }
+    let (good_for, offered) = match setup::server_info::fetch(server, crate::network::INFO_TIMEOUT) {
+        Some(info) => (Duration::from_secs(600), info.features.iter().any(|f| f == "join-now")),
+        None => (Duration::from_secs(60), last.is_some_and(|(.., offered)| offered)),
+    };
+    *lock() = Some((server.to_string(), Instant::now(), good_for, offered));
+    offered
 }
 
 /// The current account's friends: who's online here and what they're
@@ -337,7 +357,7 @@ pub fn friends(cfg: &Config) -> Result<Friends, String> {
         .collect();
     online.sort_by_key(|f| f.name.to_lowercase());
     // Whether this server joins friends (`/api/info`): asked only with someone online to join.
-    let join_offered = !online.is_empty() && setup::server_info::fetch(&profile.server, crate::network::INFO_TIMEOUT).is_some_and(|i| i.features.iter().any(|f| f == "join-now"));
+    let join_offered = !online.is_empty() && join_offered(&profile.server);
     Ok(Friends {
         join_offered,
         name_not_allowed: (lists.my_name() == server_api::friends::NameStatus::NotAllowed).then(|| username.clone()),

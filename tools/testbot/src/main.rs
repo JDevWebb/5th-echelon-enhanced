@@ -989,6 +989,13 @@ async fn join_now(ctx: &mut Ctx) -> Result<()> {
         second.as_ref().is_some_and(|(from, requested)| *from == host.name && *requested),
         "the host's invitation isn't delivered as the requested join: {second:?}"
     );
+    // The host's own invitation afterwards (replacing the join request's) is an ordinary one.
+    host.invite(&guest.name).await?;
+    let third = guest.poll_invite_event(Duration::from_secs(3)).await?;
+    ensure!(
+        third.as_ref().is_some_and(|(from, requested)| *from == host.name && !requested),
+        "the host's own invitation is delivered as a requested join: {third:?}"
+    );
 
     // A friend who is a member of someone else's party: joined through them, once the party's
     // host has them as a friend.
@@ -1049,6 +1056,23 @@ async fn join_now(ctx: &mut Ctx) -> Result<()> {
     ensure!(
         refused.status() == JoinStatus::NotFriendsWithHost,
         "joining through a party's guest answered {:?}",
+        refused.status()
+    );
+
+    // Blocks: the caller's own is named; one against the caller isn't (as with invitations),
+    // the friend answers as not in a game.
+    guest.friend_change("block", &member.name).await?;
+    let refused = guest.join_now(&member.id).await?;
+    ensure!(
+        refused.status() == JoinStatus::NotFriends,
+        "joining someone the caller blocked answered {:?}",
+        refused.status()
+    );
+    host.friend_change("block", &guest.name).await?;
+    let refused = guest.join_now(&host.id).await?;
+    ensure!(
+        refused.status() == JoinStatus::Offline,
+        "joining a host who blocked the caller answered {:?}",
         refused.status()
     );
 
@@ -1188,12 +1212,49 @@ async fn join_now_match(ctx: &mut Ctx) -> Result<()> {
         found.iter().any(|r| r.game_session_search_result.session_key.session_id == stranger_game),
         "the search for the public match's guest doesn't lead to the match: {found:?}"
     );
+    // A host who blocked the caller isn't named (as with invitations): the friend answers as
+    // not in a game.
     stranger_host.friend_change("block", &fan.name).await?;
     let refused = fan.join_now(&player.id).await?;
     ensure!(
-        refused.status() == JoinStatus::NotFriends,
+        refused.status() == JoinStatus::Offline,
         "joining into the public match of a host who blocked the caller answered {:?}",
         refused.status()
+    );
+
+    // Already in the match (joined from the search): nothing to join.
+    fan.join_session(public_game).await?;
+    match fan.join_now(&public_host.id).await {
+        Err(status) if status.code() == tonic::Code::InvalidArgument => {}
+        other => eyre::bail!("joining a match the caller is already in answered {other:?}"),
+    }
+
+    // A join request into a public match its host then makes private (invite-only): its
+    // invitation no longer leads in, as a search wouldn't - the host never invited anyone.
+    let mut late = ctx.player("Guest").await?;
+    let mut closing = ctx.player("Host").await?;
+    befriend(&closing, &late).await?;
+    closing.register_urls(&["prudp:/address=127.0.0.1;port=3086;sid=15;type=3"]).await?;
+    let closing_game = closing.create_session(PUBLIC_MATCH).await?;
+    closing.add_participants(closing_game, &[closing.pid], &[]).await?;
+    let answer = late.join_now(&closing.id).await?;
+    ensure!(
+        answer.status() == JoinStatus::Ok,
+        "joining a friend hosting a public match answered {:?}: {}",
+        answer.status(),
+        answer.detail
+    );
+    let got = late.poll_invite_event(Duration::from_secs(3)).await?;
+    ensure!(
+        got.as_ref().is_some_and(|(_, requested)| *requested),
+        "the join request isn't delivered as requested: {got:?}"
+    );
+    closing.set_session(closing_game, true).await?;
+    late.register_urls(&["prudp:/address=127.0.0.1;port=3087;sid=15;type=3"]).await?;
+    let found = late.search_with_participants(&[closing.pid]).await?;
+    ensure!(
+        !found.iter().any(|r| r.game_session_search_result.session_key.session_id == closing_game),
+        "a join request still leads into a match its host made private: {found:?}"
     );
 
     fan.disconnect().await?;
@@ -1203,6 +1264,8 @@ async fn join_now_match(ctx: &mut Ctx) -> Result<()> {
     match_host.disconnect().await?;
     public_host.disconnect().await?;
     player.disconnect().await?;
+    late.disconnect().await?;
+    closing.disconnect().await?;
     stranger_host.disconnect().await
 }
 
