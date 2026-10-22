@@ -31,7 +31,7 @@
 <tr><td><b>Address</b></td><td><code>scbl.jdevwebb.net</code>: the community network, the launcher's default; it pings every server in it and sets you up on the best</td></tr>
 <tr><td><b>Servers</b></td><td>Europe: <code>eu1.scbl.jdevwebb.net</code> (Falkenstein, Germany)<br>North America: <code>na1.scbl.jdevwebb.net</code> (Beauharnois, Canada)<br>Oceania: <code>oceania.scbl.jdevwebb.net</code> (Australia)</td></tr>
 <tr><td><b>Modes</b></td><td>Co-op and Spies vs Mercs: Find Teammate, Quick Match, lobby and private-match invites</td></tr>
-<tr><td><b>Friends</b></td><td>Friends-only lists and invites, blocking, player search; your friends follow you to every server in the community network</td></tr>
+<tr><td><b>Friends</b></td><td>Friends-only lists and invites, joining a friend's game without an invite, blocking, player search; your friends follow you to every server in the community network</td></tr>
 <tr><td><b>Internet play</b></td><td>No VPN or port forwarding: the server tells your game its public address, and relays matches when a router can't be reached</td></tr>
 <tr><td><b>Your account</b></td><td>No password to remember: your launcher's identity finds your account on every server, from any PC</td></tr>
 <tr><td><b>Security</b></td><td>Sign-ins never travel unencrypted; each server gets its own random password; the launcher and the servers install only releases signed with the release key, and the servers update themselves</td></tr>
@@ -73,7 +73,7 @@ Tell us how it goes: bugs, ideas and questions are all welcome as [issues](https
 | | Contribution |
 |---|---|
 | **[unixoide](https://github.com/unixoide)** | Created 5th Echelon: the dedicated server, the Quazal/PRUDP/RMC implementation, the launcher, the game hook and the protocol research |
-| **[Matthias Walther (MPW1412)](https://github.com/MPW1412)** | Invites into private matches, worked out in the game itself ([#123](https://github.com/unixoide/5th-echelon/pull/123)); the DLL version parser building on any OS ([#124](https://github.com/unixoide/5th-echelon/pull/124)); the Linux findings on CD keys and many-core CPUs ([#98](https://github.com/unixoide/5th-echelon/issues/98)) |
+| **[Matthias Walther (MPW1412)](https://github.com/MPW1412)** | Invites into private matches, worked out in the game itself ([#123](https://github.com/unixoide/5th-echelon/pull/123)); the DLL version parser building on any OS ([#124](https://github.com/unixoide/5th-echelon/pull/124)); the Linux findings on CD keys and many-core CPUs ([#98](https://github.com/unixoide/5th-echelon/issues/98)); joining a friend's game without an invite ([#6](https://github.com/JDevWebb/5th-echelon-enhanced/pull/6)) |
 | **[Thiago (Thiagogob)](https://github.com/Thiagogob)** | Found why the game says "service not available" under Wine/Proton, and fixed it by emulating the network check Wine lacks ([#128](https://github.com/unixoide/5th-echelon/pull/128)); the reason Linux and Steam Deck work |
 | **[Sergey P. (ThirteenAG)](https://github.com/ThirteenAG)** | Contributions to upstream 5th Echelon |
 | **[koteykaby](https://github.com/koteykaby)** | Contributions to upstream 5th Echelon |
@@ -128,7 +128,7 @@ You need **Splinter Cell: Blacklist on PC** (Steam or Ubisoft Connect) and **Win
 - leaves the network adapter to the game: each time it starts, it uses the one that reaches the server, so other players can reach you (and switching between Wi-Fi and Ethernet doesn't matter);
 - brings over your Ubisoft Connect save, or makes a rank 5 one, so co-op and Spies vs Mercs are unlocked.
 
-The **Status** card on the home screen keeps an eye on all of this. Anything that goes wrong later (a VPN that's off, an update) shows up there with a button that fixes it, and the bar beside **Play** says whether you're ready. **Friends** shows who's online and what they're playing (and friends on other servers, with a button to join them), and **Server news** turns through the server's news; the **News** screen has all of it.
+The **Status** card on the home screen keeps an eye on all of this. Anything that goes wrong later (a VPN that's off, an update) shows up there with a button that fixes it, and the bar beside **Play** says whether you're ready. **Friends** shows who's online and what they're playing, with **Join** for a friend's party or public match (and friends on other servers, with a button to go to their server), and **Server news** turns through the server's news; the **News** screen has all of it.
 
 **The server card** opens a menu of the network's servers, best first, with your ping and the players on each: pick one and you're switched there at once, signed in with the same name. The **Servers** screen is for the rest: a server of your own (with your recent ones), one at a LAN party, or another group's network, with one click back to the community's.
 
@@ -166,7 +166,7 @@ Matches run peer to peer: your game talks straight to the other players' games. 
 
 Press <kbd>F5</kbd> for the overlay. On most laptops and some keyboards, the top row controls brightness or volume, so press <kbd>Fn</kbd>+<kbd>F5</kbd>, turn on Fn Lock, or choose another key in **Settings › Game** (it opens only while the game is in front). It has:
 - **Friends:**
-  - your friends and what they're playing, with invite buttons;
+  - your friends and what they're playing, with buttons to invite them or join their party or public match;
   - friend requests to answer, and who you've blocked.
 - **Find players:** search by name or see who's online, then add a friend, block someone or invite them.
 - **Chat** (community network): Global, your lobby, and messages with friends; new messages pop up as **Settings › Notifications** says. See **[docs/chat.md](docs/chat.md)**.

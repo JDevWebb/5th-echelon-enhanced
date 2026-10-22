@@ -9,10 +9,10 @@ Blacklist has one friend list, and it's whatever the Uplay layer hands it. Upstr
 **Players add friends in the overlay** (<kbd>F5</kbd>):
 - **Friends:**
   - requests waiting for your answer (Accept, Decline, Block);
-  - your friends, with what they're playing (Invite, Remove, Block);
+  - your friends, with what they're playing (Invite, Join, Remove, Block);
   - your requests waiting for theirs (Cancel);
   - who you've blocked (Unblock).
-- **Find players:** search by part of a name, or see who's online; Add friend, Block, or Invite.
+- **Find players:** search by part of a name, or see who's online; Add friend, Block, Invite, or Join.
 - A friend request, or an accepted one, shows up as a notice in the game. The Friends tab counts the requests waiting.
 
 **The server decides who is on the game's own friend list**, `[friends] mode` in `service.toml`:
@@ -41,6 +41,16 @@ The blocked player isn't told. Their friend requests look sent, but never arrive
 
 - **Limits:** a player can send 20 invites a minute, and have 5 waiting from different players at once. A new invite from someone replaces their older one. It no longer pushes out other people's invites, as it used to.
 - **Joining:** when you accept, the server answers the game's search with the room of the player you accepted, even if others invited you too.
+
+### Joining a friend
+
+**Join** (the overlay's friends and Find players, and the launcher's Friends card) takes you into a friend's game without waiting for an invite. The launcher starts the game first if it isn't running.
+
+- **Where it leads:** the friend's party, or a public match (a quick match or a public lobby), theirs or someone else's. A **private match** still needs an invite: Join isn't offered, and the server answers that it's private.
+- **Through a friend who is in someone else's game:** in a party, only when its host has that friend as a friend (as for the invites a party member sends); in a public match, whoever its host is.
+- **Who can:** as with invites, friends only in `mutual` mode, anyone in `everyone` mode, never across a block. A block against you isn't named: the friend shows as not in a game.
+- **How:** the server queues an invite to you from the friend, marked as a join you asked for (`Friends.JoinNow`; servers list `join-now` among `/api/info`'s features). It's used like any invite, and only while the room is still a party or a public match: a host who makes the match private keeps you out. The session log notes a `join-request` by you, not an invite from the host.
+- **No server can pull you in:** your game takes such an invite without a click only when it asked for that very join, from that friend, in the last 5 minutes, once. The overlay remembers the friend you pressed Join on; the launcher, another program, leaves `5th-echelon-join-request.json` beside `uplay.toml`, which the game reads and deletes. Any other invite, whatever the server says of it, waits for your click (or auto-join, if you turned it on).
 
 ## Accounts and names
 
@@ -244,7 +254,7 @@ A member's calls check its secret before the body is read; a body that doesn't p
 ## Testing
 
 - **`build/build.sh bots`:**
-  - on a default server: the `friends`, `block`, `invite-queue`, `identity-login` and `rename` scenarios;
+  - on a default server: the `friends`, `block`, `invite-queue`, `join-now`, `join-now-match`, `identity-login` and `rename` scenarios;
   - on a server in `mutual` mode: `friends-mutual`.
 - **`build/build.sh federation-test`:** a coordinator and two servers in containers.
   - Both servers must appear in the directory.
