@@ -677,7 +677,7 @@ fn getaddrinfo(p_node_name: *const c_char, p_service_name: *const c_char, p_hint
     unsafe { GetAddrinfoHook.call(p_node_name, p_service_name, p_hints, pp_result) }
 }
 
-unsafe fn hook_with_name<T, F>(hook: &retour::StaticDetour<T>, target: Option<T>, f: F, name: &str)
+pub(crate) unsafe fn hook_with_name<T, F>(hook: &retour::StaticDetour<T>, target: Option<T>, f: F, name: &str)
 where
     T: retour::Function,
     F: Fn<T::Arguments, Output = T::Output> + Send + 'static,
@@ -782,6 +782,12 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
         crate::storm_fix::fix_ticket_observers();
         crate::voice_device_fix::guard_voice_devices();
         crate::migration_fix::end_stuck_migrations();
+    }
+
+    // Opt-in: straight into the Spies vs Mercs or Co-op online lobby (see quickstart.rs).
+    #[cfg(not(feature = "patch-free"))]
+    if let Some(lobby) = config.quick_start_lobby {
+        crate::quickstart::install(lobby);
     }
 }
 

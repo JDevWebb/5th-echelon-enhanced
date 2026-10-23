@@ -21,6 +21,7 @@ use tracing::instrument;
 
 pub mod crash_fixes;
 pub mod patterns;
+pub mod quick_start;
 
 pub type Address = usize;
 pub type NopRange = Range<Address>;
