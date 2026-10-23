@@ -175,6 +175,70 @@ pub struct Prefs {
     /// Play asks Steam to start a Steam copy on Windows (for Steam Input), not the launcher.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     start_through_steam: bool,
+    /// What the Play button starts: its split button's last choice.
+    #[serde(default, skip_serializing_if = "PlayMode::is_default")]
+    play_mode: PlayMode,
+    /// The last start set `QuickStartLobby` in `uplay.toml`: a plain Play clears it again. A
+    /// lobby set there by hand is never touched by a plain Play.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    quick_start_set: bool,
+}
+
+/// What the Play button starts: the game as it is, or straight into an online lobby
+/// (`QuickStartLobby` in `uplay.toml`).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PlayMode {
+    Svm,
+    Coop,
+    /// Also what a choice this launcher doesn't know reads as, so it never costs the other prefs.
+    #[default]
+    #[serde(other)]
+    Play,
+}
+
+impl PlayMode {
+    pub const ALL: [PlayMode; 3] = [PlayMode::Play, PlayMode::Svm, PlayMode::Coop];
+
+    pub fn is_default(&self) -> bool {
+        *self == Self::Play
+    }
+
+    /// The text on the button and in its menu.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Play => "Play",
+            Self::Svm => "Play SvM",
+            Self::Coop => "Play Coop",
+        }
+    }
+
+    /// The `QuickStartLobby` this start writes to `uplay.toml` (none: a plain start).
+    pub fn lobby(self) -> Option<hooks_config::QuickStartLobby> {
+        match self {
+            Self::Play => None,
+            Self::Svm => Some(hooks_config::QuickStartLobby::Svm),
+            Self::Coop => Some(hooks_config::QuickStartLobby::Coop),
+        }
+    }
+
+    /// Sets this start in the settings the game reads when it starts. A plain Play clears only a
+    /// lobby the launcher set itself (`set_before`); one set by hand stays. Says whether the
+    /// launcher has a lobby set now.
+    pub fn apply(self, cfg: &mut setup::config::Config, set_before: bool) -> bool {
+        match self.lobby() {
+            Some(lobby) => {
+                cfg.hook_config.quick_start_lobby = Some(lobby);
+                true
+            }
+            None => {
+                if set_before {
+                    cfg.hook_config.quick_start_lobby = None;
+                }
+                false
+            }
+        }
+    }
 }
 
 /// A server the player connected to by its address.
@@ -351,6 +415,28 @@ impl Prefs {
 
     pub fn start_through_steam() -> bool {
         Self::load().start_through_steam
+    }
+
+    pub fn play_mode() -> PlayMode {
+        Self::load().play_mode
+    }
+
+    pub fn quick_start_set() -> bool {
+        Self::load().quick_start_set
+    }
+
+    pub fn set_quick_start_set(set: bool) {
+        let mut prefs = Self::load();
+        if prefs.quick_start_set != set {
+            prefs.quick_start_set = set;
+            prefs.save();
+        }
+    }
+
+    pub fn set_play_mode(mode: PlayMode) {
+        let mut prefs = Self::load();
+        prefs.play_mode = mode;
+        prefs.save();
     }
 
     pub fn set_start_through_steam(on: bool) {
@@ -958,6 +1044,40 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_play_mode_is_kept_and_reaches_the_game() {
+        // Kept in launcher.toml, and not written while it's the plain Play.
+        let mut prefs = Prefs::default();
+        assert!(!toml::to_string(&prefs).unwrap().contains("play_mode"));
+        prefs.play_mode = PlayMode::Coop;
+        let back: Prefs = toml::from_str(&toml::to_string(&prefs).unwrap()).unwrap();
+        assert_eq!(back.play_mode, PlayMode::Coop);
+        let newer: Prefs = toml::from_str("play_mode = \"something-newer\"\nstart_through_steam = true\n").unwrap();
+        assert_eq!((newer.play_mode, newer.start_through_steam), (PlayMode::Play, true), "an unknown choice is a plain Play");
+        // What the game's DLL reads from the uplay.toml the launcher writes.
+        let read = |cfg: &setup::config::Config| toml::from_str::<hooks_config::Config>(&toml::to_string_pretty(cfg).unwrap()).unwrap().quick_start_lobby;
+        let mut cfg = setup::config::Config::default();
+        let mut set = false;
+        for (mode, lobby) in [
+            (PlayMode::Svm, Some(hooks_config::QuickStartLobby::Svm)),
+            (PlayMode::Coop, Some(hooks_config::QuickStartLobby::Coop)),
+            (PlayMode::Play, None),
+            (PlayMode::Play, None),
+        ] {
+            set = mode.apply(&mut cfg, set);
+            assert_eq!(read(&cfg), lobby, "{mode:?}");
+            assert_eq!(set, lobby.is_some());
+        }
+        // A lobby set by hand: a plain Play leaves it, a launcher choice replaces it.
+        cfg.hook_config.quick_start_lobby = Some(hooks_config::QuickStartLobby::Coop);
+        assert!(!PlayMode::Play.apply(&mut cfg, false));
+        assert_eq!(read(&cfg), Some(hooks_config::QuickStartLobby::Coop), "set by hand, kept");
+        assert!(PlayMode::Svm.apply(&mut cfg, false));
+        assert_eq!(read(&cfg), Some(hooks_config::QuickStartLobby::Svm));
+        assert!(!PlayMode::Play.apply(&mut cfg, true));
+        assert_eq!(read(&cfg), None, "the launcher's own, cleared");
+    }
 
     #[test]
     fn recent_servers_newest_first_and_few() {

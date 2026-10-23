@@ -264,6 +264,16 @@ pub enum InviteAcceptEvent {
     Party,
 }
 
+/// The online lobby [`Config::quick_start_lobby`] starts into.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum QuickStartLobby {
+    /// Spies vs Mercs.
+    Svm,
+    /// Co-op.
+    Coop,
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub struct Config {
@@ -314,6 +324,12 @@ pub struct Config {
     /// `voice_device_fix`, `migration_fix`), which are on otherwise. Not shown in the launcher: for ruling them out when something goes wrong.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disable_crash_fixes: bool,
+    /// Opt-in: start straight into an online lobby, `"svm"` (Spies vs Mercs) or `"coop"`
+    /// (Co-op), skipping the boot videos and the title screen. Unset by default: the game starts
+    /// as it always did. The launcher's Play button sets it on each start (its Play SvM / Play
+    /// Coop). See `hooks::quickstart`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub quick_start_lobby: Option<QuickStartLobby>,
     /// Let the server join you to a match without your click (its `force_join`).
     /// Off: a server shouldn't be able to put you into a match by itself.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1223,6 +1239,23 @@ mod tests {
         cfg.overlay_key = "F8".into();
         let back: Config = toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();
         assert_eq!(back.overlay_key, "F8");
+    }
+
+    #[test]
+    fn quick_start_lobby_is_off_unless_set_and_reads_svm_or_coop() {
+        let mut cfg = super::default();
+        assert_eq!(cfg.quick_start_lobby, None);
+        assert!(!toml::to_string(&cfg).unwrap().contains("QuickStartLobby"), "unset isn't written");
+        for (lobby, text) in [(QuickStartLobby::Svm, "QuickStartLobby = \"svm\""), (QuickStartLobby::Coop, "QuickStartLobby = \"coop\"")] {
+            cfg.quick_start_lobby = Some(lobby);
+            let written = toml::to_string(&cfg).unwrap();
+            assert!(written.contains(text), "{written}");
+            let back: Config = toml::from_str(&written).unwrap();
+            assert_eq!(back.quick_start_lobby, Some(lobby));
+        }
+        let unknown = toml::to_string(&cfg).unwrap().replace("QuickStartLobby = \"coop\"", "QuickStartLobby = \"hub\"");
+        assert!(unknown.contains("\"hub\""));
+        assert!(toml::from_str::<Config>(&unknown).is_err(), "an unknown lobby is an error, not a guess");
     }
 
     #[test]

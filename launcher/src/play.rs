@@ -137,6 +137,8 @@ pub struct Play {
     fetching_playing: Slot<Result<(String, Option<server_api::playing::Playing>), String>>,
     playing_now: Option<(String, server_api::playing::Playing)>,
     playing_from: Option<(String, Instant)>,
+    /// What Play starts (the split button's choice), read from the launcher's settings once.
+    play_mode: Option<crate::app::PlayMode>,
 }
 
 /// A setup as it was started, to start it again.
@@ -471,7 +473,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 // Only with a game to take the join: running, or started now (not when the
                 // launcher held back, for a question first, say).
                 let running = play.running.is_some() || play.game_seen || setup::game::game_running();
-                if running || launch(play, game, notices) {
+                if running || launch(play, game, notices, crate::app::PlayMode::Play) {
                     let cfg = game.cfg.clone();
                     let game_dir = game.dir.clone();
                     play.joining.start(&ctx, move || flow::join_friend(&cfg, &game_dir, &id, &name));
@@ -2282,7 +2284,43 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked:
         ui.add_enabled(false, theme::play_button("Playing"));
         return;
     }
-    let button = ui.add_enabled(!play.busy() && blocked.is_none(), theme::play_button("Play"));
+    let mode = *play.play_mode.get_or_insert_with(crate::app::Prefs::play_mode);
+    let enabled = !play.busy() && blocked.is_none();
+    // A split button: the last choice is the button, the arrow beside it offers the others.
+    let (button, arrow) = ui
+        .allocate_ui_with_layout(egui::vec2(220.0 + 2.0 + 42.0, 58.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 2.0;
+            let button = ui.add_enabled(enabled, theme::play_button(mode.label()).corner_radius(egui::CornerRadius { nw: 12, sw: 12, ne: 0, se: 0 }));
+            let arrow = ui.add_enabled(
+                enabled,
+                egui::Button::new("")
+                    .fill(theme::ACCENT)
+                    .corner_radius(egui::CornerRadius { nw: 0, sw: 0, ne: 12, se: 12 })
+                    .min_size(egui::vec2(42.0, 58.0)),
+            );
+            let c = arrow.rect.center();
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![c + egui::vec2(-7.0, -3.5), c + egui::vec2(7.0, -3.5), c + egui::vec2(0.0, 5.0)],
+                theme::ON_ACCENT,
+                egui::Stroke::NONE,
+            ));
+            (button, arrow)
+        })
+        .inner;
+    let mut picked = None;
+    egui::Popup::menu(&arrow).show(|ui| {
+        ui.set_min_width(160.0);
+        for choice in crate::app::PlayMode::ALL {
+            if ui.selectable_label(choice == mode, choice.label()).clicked() {
+                picked = Some(choice);
+            }
+        }
+    });
+    if let Some(choice) = picked {
+        crate::app::Prefs::set_play_mode(choice);
+        play.play_mode = Some(choice);
+        ui.close();
+    }
     let button = if let Some(why) = blocked {
         button.on_disabled_hover_text(why)
     } else if !ready && !play.checks.is_empty() {
@@ -2291,12 +2329,13 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked:
         button
     };
     if button.clicked() {
-        launch(play, game, notices);
+        launch(play, game, notices, mode);
     }
 }
 
-/// Starts the game, or says why not: whether it's starting.
-fn launch(play: &mut Play, game: &mut Game, notices: &mut Notices) -> bool {
+/// Starts the game, or says why not: whether it's starting. `mode` says whether it starts
+/// straight into an online lobby.
+fn launch(play: &mut Play, game: &mut Game, notices: &mut Notices, mode: crate::app::PlayMode) -> bool {
     // The question about diagnostics is answered first (diagnostics.rs shows it).
     if crate::diagnostics::Ask::pending(Some(game)) {
         notices.info("First, say whether the game may send its diagnostics.");
@@ -2322,6 +2361,12 @@ fn launch(play: &mut Play, game: &mut Game, notices: &mut Notices) -> bool {
         if let Some(profile) = game.cfg.current_profile().cloned() {
             game.update(notices, |c| c.apply_profile(&profile));
         }
+        // Straight into a lobby, or a plain start (which clears a lobby the launcher set before,
+        // never one set by hand). The game reads it on every start, through Steam too.
+        let set_before = crate::app::Prefs::quick_start_set();
+        let mut set = set_before;
+        game.update(notices, |c| set = mode.apply(c, set_before));
+        crate::app::Prefs::set_quick_start_set(set);
     }
     let Some(version) = setup::game::pick_version(&game.dir, game.cfg.default_game) else {
         notices.error("The game's executable is missing.");
