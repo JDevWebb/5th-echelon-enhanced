@@ -200,7 +200,10 @@ unsafe extern "cdecl" fn UPLAY_GetNextEvent(event: *mut UplayEvent) -> bool {
             Event::UserAccountSharing => {
                 (*event).event_type = UplayEventType::UserAccountSharing;
             }
-            Event::FriendsGameInviteAccepted(user) => into_friend_invite_accepted(event, user),
+            Event::FriendsGameInviteAccepted(user) => {
+                crate::party_follow::note_invite(&user);
+                into_friend_invite_accepted(event, user)
+            }
             Event::PartyGameInviteAccepted(user) => into_party_invite_accepted(event, user),
             Event::FriendsListUpdated => {
                 // The game's event loop (FUN_008842b0 in the DX11 exe) answers 10000 and 10001

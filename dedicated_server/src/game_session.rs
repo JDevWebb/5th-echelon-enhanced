@@ -91,13 +91,350 @@ const PROCESS_NOTIFICATION_EVENT: u32 = 1;
 struct GameSessionProtocolServerImpl {
     storage: Arc<Storage>,
     debug_config: Arc<DebugConfig>,
-    /// The session each player last left, and when: a player splits the session it has
-    /// just abandoned (see `split_session`), and is no longer in it then.
-    left: std::sync::Mutex<std::collections::HashMap<u32, (u32, std::time::Instant)>>,
+    /// The session each player last left, when, and whether by AbandonSession: a player
+    /// splits the session it has just abandoned (see `split_session`), and is no longer in it
+    /// then.
+    left: std::sync::Mutex<std::collections::HashMap<u32, (u32, std::time::Instant, bool)>>,
+    /// Sessions a host migration moved on (see `split_session`), and when: the old session,
+    /// the new one.
+    migrated: std::sync::Mutex<std::collections::HashMap<u32, (u32, std::time::Instant)>>,
 }
 
 /// How long after leaving a session a player may still split it.
 const SPLIT_AFTER_LEAVING: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A member's split of a session whose host was still in it, and signed in (see
+/// `split_session`): the new session, the member who took it, and when. Nothing told it from a
+/// member splitting off on its own, so only that member moved; the others follow once the host
+/// leaves the old session or signs out, within [`SPLIT_AFTER_LEAVING`].
+struct Takeover {
+    to: u32,
+    by: u32,
+    at: std::time::Instant,
+}
+
+/// The [`Takeover`]s waiting for their host, by the session taken over.
+fn takeovers() -> std::sync::MutexGuard<'static, std::collections::HashMap<u32, Takeover>> {
+    static TAKEOVERS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u32, Takeover>>> = std::sync::OnceLock::new();
+    TAKEOVERS.get_or_init(std::sync::Mutex::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// The session a member's split of `session_id` made while its host was still in it, lately.
+fn taken_over_by(session_id: u32) -> Option<(u32, u32)> {
+    takeovers().get(&session_id).filter(|t| t.at.elapsed() < SPLIT_AFTER_LEAVING).map(|t| (t.to, t.by))
+}
+
+/// Notes the members of `from` that a host migration moved to `to`: they joined it, and
+/// played in it if it's a match.
+fn moved_along(logger: &Logger, storage: &Storage, from: u32, to: u32, moved: &[u32]) {
+    joined(moved.iter().copied(), to);
+    for &along in moved {
+        match storage.note_match_player(to, along) {
+            Ok(true) => crate::metrics::match_started(),
+            Ok(false) => {}
+            Err(e) => warn!(logger, "Couldn't note {along} in match {to}: {e}"),
+        }
+        crate::session_events::note(
+            crate::session_events::Who::Id(along),
+            "leave",
+            serde_json::json!({ "room": from, "how": "split", "ended": false }),
+        );
+        crate::session_events::joined(along, to, "migration");
+    }
+}
+
+/// The sessions a deferred takeover (`host_gone`) moved on, and when: the old session, the new
+/// one. `host_gone` has no server object to note it in, so `migrated_to` looks here too.
+fn host_migrated() -> std::sync::MutexGuard<'static, std::collections::HashMap<u32, (u32, std::time::Instant)>> {
+    static MIGRATED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u32, (u32, std::time::Instant)>>> = std::sync::OnceLock::new();
+    MIGRATED.get_or_init(std::sync::Mutex::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn note_host_migrated(from: u32, to: u32) {
+    let mut migrated = host_migrated();
+    let now = std::time::Instant::now();
+    if migrated.len() >= 10_000 {
+        migrated.retain(|_, (_, at)| now.duration_since(*at) < SPLIT_AFTER_LEAVING);
+    }
+    migrated.insert(from, (to, now));
+}
+
+fn host_migrated_to(from: u32) -> Option<u32> {
+    host_migrated().get(&from).filter(|(_, at)| at.elapsed() < SPLIT_AFTER_LEAVING).map(|(to, _)| *to)
+}
+
+/// The old host of `from` is gone and `by` hosts it as `to`: invitations and join targets
+/// that named `from` name `to` now.
+fn carried_over(logger: &Logger, storage: &Storage, from: u32, to: u32, by: u32) {
+    crate::join_targets::moved(from, to);
+    match storage.rebind_invites(from, to, by) {
+        Ok(0) => {}
+        Ok(n) => info!(logger, "{n} pending invitations to session {from} now name {to}"),
+        Err(e) => warn!(logger, "Couldn't move the invitations to session {from} on to {to}: {e}"),
+    }
+}
+
+/// `host` is out of its sessions (it left `only`, or every one when it signed out): the
+/// members a takeover of one of them left behind follow the member who took it over.
+/// Migration notifications to send once there's a socket to send them on: the members a
+/// deferred takeover (`host_gone`) moves along are told by [`deliver_migration_notes`] on the
+/// server's next sweep.
+static MIGRATION_NOTES: std::sync::Mutex<Vec<(u32, NotificationEvent, std::time::Instant)>> = std::sync::Mutex::new(Vec::new());
+
+/// How long a migration notification waits for its member to be connected (a reconnect) before
+/// it's dropped.
+const MIGRATION_NOTE_TTL: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Whether an undelivered notification of the given age is tried again on the next sweep.
+fn note_still_due(age: std::time::Duration) -> bool {
+    age < MIGRATION_NOTE_TTL
+}
+
+fn migration_event(new_host: u32, old_session: u32, new_session: u32) -> NotificationEvent {
+    NotificationEvent {
+        pid_source: new_host,
+        ui_type: 7001,
+        ui_param_1: new_session,
+        ui_param_2: old_session,
+        str_param: String::new(),
+        ui_param_3: 0,
+    }
+}
+
+/// Sends the migration notifications `host_gone` queued.
+/// A host that has said nothing for this long is gone: a takeover waiting for it goes through.
+/// Its pings come every ten seconds, so a host that's merely idle stays well under it.
+const HOST_SILENT_AFTER: std::time::Duration = std::time::Duration::from_secs(12);
+
+/// Lets the takeovers whose host has gone quiet (or has no connection left) go through now,
+/// instead of when its connection finally expires.
+pub fn resolve_silent_hosts<CI>(logger: &Logger, storage: &Storage, registry: &ClientRegistry<CI>) {
+    let waiting: Vec<u32> = {
+        let mut waiting = takeovers();
+        waiting.retain(|_, t| t.at.elapsed() < SPLIT_AFTER_LEAVING);
+        waiting.keys().copied().collect()
+    };
+    for from in waiting {
+        let Some(host) = storage.session_creator(from).ok().flatten() else { continue };
+        if registry.user_silence(host).is_none_or(|quiet| quiet >= HOST_SILENT_AFTER) {
+            info!(logger, "Host {host} of session {from} has been silent; the takeover of it goes through");
+            host_gone(logger, storage, host, Some(from));
+        }
+    }
+}
+
+/// Whether a host silent for `silence` (`None`: no connection to tell, which is no proof) has
+/// gone.
+fn host_silent(silence: Option<std::time::Duration>) -> bool {
+    silence.is_some_and(|quiet| quiet >= HOST_SILENT_AFTER)
+}
+
+/// Whether the lobby `session_id` of `creator` isn't worth offering a searching player: a host
+/// migration moved it on (its host is gone), or its host has said nothing for
+/// [`HOST_SILENT_AFTER`] (cut off, or about to be): a join would only fail, or land in a room
+/// that migrates a moment later. A host without a connection to look at (nobody's) is offered.
+pub fn lobby_is_dead<CI>(registry: &ClientRegistry<CI>, session_id: u32, creator: u32) -> bool {
+    host_migrated_to(session_id).is_some() || host_silent(registry.user_silence(creator))
+}
+
+pub fn deliver_migration_notes<CI>(logger: &Logger, ctx: &Context, socket: &std::net::UdpSocket, registry: &ClientRegistry<CI>) {
+    let notes: Vec<(u32, NotificationEvent, std::time::Instant)> = std::mem::take(&mut *MIGRATION_NOTES.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+    for (member, event, queued) in notes {
+        if registry.client_by_user_id(member).is_none() {
+            if note_still_due(queued.elapsed()) {
+                // Reconnecting: keep the note for the next sweep.
+                MIGRATION_NOTES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).push((member, event, queued));
+            } else {
+                info!(logger, "No connected client for {member} within {MIGRATION_NOTE_TTL:?} - migration notification dropped");
+            }
+            continue;
+        }
+        info!(
+            logger,
+            "Notifying {member} that session {} moved to {} under {}: {event:?}", event.ui_param_2, event.ui_param_1, event.pid_source
+        );
+        if let Some(cell) = registry.client_by_user_id(member) {
+            if let Err(e) = quazal::rmc::call_client(
+                logger,
+                ctx,
+                socket,
+                &mut cell.borrow_mut(),
+                NOTIFICATION_PROTOCOL_ID,
+                PROCESS_NOTIFICATION_EVENT,
+                event.to_bytes(),
+                true,
+            ) {
+                error!(logger, "Migration notification to {member} failed: {e}");
+            }
+        }
+    }
+}
+
+fn host_gone(logger: &Logger, storage: &Storage, host: u32, only: Option<u32>) {
+    let due: Vec<(u32, Takeover)> = {
+        let mut waiting = takeovers();
+        waiting.retain(|_, t| t.at.elapsed() < SPLIT_AFTER_LEAVING);
+        let sessions: Vec<u32> = waiting
+            .keys()
+            .copied()
+            .filter(|s| only.is_none_or(|o| o == *s) && storage.session_creator(*s).ok().flatten() == Some(host))
+            .collect();
+        sessions.into_iter().filter_map(|s| waiting.remove(&s).map(|t| (s, t))).collect()
+    };
+    for (from, t) in due {
+        match storage.move_members(from, t.to, t.by, None) {
+            Ok((moved, ended)) => {
+                info!(
+                    logger,
+                    "Host {host} is out of session {from}: user {} takes it over as {} (host migration); along: {moved:?}", t.by, t.to
+                );
+                note_host_migrated(from, t.to);
+                carried_over(logger, storage, from, t.to, t.by);
+                moved_along(logger, storage, from, t.to, &moved);
+                let mut notes = MIGRATION_NOTES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                notes.extend(
+                    moved
+                        .iter()
+                        .filter(|m| **m != t.by)
+                        .map(|&m| (m, migration_event(t.by, from, t.to), std::time::Instant::now())),
+                );
+                drop(notes);
+                if ended {
+                    crate::session_events::room_ended(from);
+                }
+            }
+            Err(e) => error!(logger, "Couldn't move the members of session {from} on to {}: {e}", t.to),
+        }
+    }
+}
+
+/// `user_id` signed out (its game connection closed or expired): a match or party it hosted
+/// that a member took over carries on with everyone in it. Call before its sessions end.
+pub fn host_signed_out(logger: &Logger, storage: &Storage, user_id: u32) {
+    host_gone(logger, storage, user_id, None);
+}
+
+/// `user_id`'s game dropped and signed in again from the same address, and its old connection
+/// is gone: a match or party that connection made, which a member took over, carries on with
+/// everyone in it instead of waiting for the takeover to lapse. Call before the rooms end.
+pub fn host_left_rooms(logger: &Logger, storage: &Storage, user_id: u32, rooms: &[u32]) {
+    for &room in rooms {
+        host_gone(logger, storage, user_id, Some(room));
+    }
+}
+
+/// `leader` opened the party `party` (a room of kind 1): if it boarded a private match whose
+/// members then came after it, and that match is over (dissolved, or the leader out of it), the
+/// members who came are asked into the party, each with an invitation from the leader that their
+/// game takes up without a click (as `JoinNow` makes it). The game does not take them back: it
+/// has the leader leave its party for the match and host a new one afterwards, and the members
+/// split the old one among themselves. Once per trip (`escorts`). Call from a thread that may
+/// block.
+pub fn bring_party_back(logger: &Logger, storage: &std::sync::Arc<Storage>, leader: u32, type_id: u32, party: u32) {
+    let members = party_back_members(logger, storage, leader, party);
+    if members.is_empty() {
+        return;
+    }
+    // The member's game is still leaving the match when the match ends: an invitation that
+    // reaches it then is accepted and lost (it never sends the join). So wait a moment, and ask
+    // again if the member hasn't come into the party by then. Not on the caller's thread: that is
+    // the leader's CreateSession.
+    let (logger, storage) = (logger.clone(), std::sync::Arc::clone(storage));
+    let spawned = std::thread::Builder::new().name("party-back".into()).spawn({
+        let logger = logger.clone();
+        move || ask_back(&logger, &storage, leader, type_id, party, &members, PARTY_BACK_DELAY, PARTY_BACK_RETRY, PARTY_BACK_TRIES)
+    });
+    if let Err(e) = spawned {
+        warn!(logger, "Couldn't start the thread that asks {leader}'s party back into {party}: {e}");
+    }
+}
+
+/// The members `leader`'s party takes back into the party `party`: those who came along into a
+/// match that is over now, and may be asked (online, not blocked, not too fast).
+fn party_back_members(logger: &Logger, storage: &Storage, leader: u32, party: u32) -> Vec<u32> {
+    let over = |room: u32| match storage.session_members(room) {
+        Ok(None) => true,
+        Ok(Some((creator, participants))) => creator != leader && !participants.contains(&leader) && !storage.is_guest(room, leader).unwrap_or(false),
+        Err(_) => false,
+    };
+    let mut members = vec![];
+    for member in crate::escorts::back(leader, over) {
+        if !storage.is_online(member).unwrap_or(false) || crate::friends_policy::blocked_blocking(storage, leader, member) {
+            info!(
+                logger,
+                "The match of {leader}'s party is over: {member} isn't asked back into party {party} (offline or blocked)"
+            );
+            continue;
+        }
+        if !crate::rate_limit::invites().check(leader) {
+            warn!(logger, "{leader} brings its party back too fast; {member} isn't asked into party {party}");
+            continue;
+        }
+        members.push(member);
+    }
+    members
+}
+
+/// The live private match (`113 == 0`) among `rooms` (id, host, attributes) that isn't the
+/// leader's own: a member in it is still playing and must not be called out of it.
+fn match_still_running(rooms: &[(u32, u32, String)], leader: u32) -> Option<u32> {
+    rooms
+        .iter()
+        .find(|(_, creator, attributes)| *creator != leader && attribute_value(attributes, PROPERTY_ROOM_KIND) == Some(0))
+        .map(|(id, _, _)| *id)
+}
+
+/// Asks `members` into the party `party` with a requested invitation from `leader`, after `delay`,
+/// and again every `retry` (up to `tries` times in all) while one hasn't come.
+fn ask_back(logger: &Logger, storage: &Storage, leader: u32, type_id: u32, party: u32, members: &[u32], delay: std::time::Duration, retry: std::time::Duration, tries: u32) {
+    std::thread::sleep(delay);
+    for attempt in 1..=tries {
+        let mut missing = false;
+        for &member in members {
+            let in_party = storage
+                .session_members(party)
+                .ok()
+                .flatten()
+                .is_some_and(|(creator, participants)| creator == member || participants.contains(&member));
+            if in_party {
+                continue;
+            }
+            missing = true;
+            // A member that is still in somebody else's running match (the leader was cut off
+            // without a leave, and the member plays on) isn't pulled out of it.
+            if let Some(room) = storage.live_rooms_of(member).ok().and_then(|rooms| match_still_running(&rooms, leader)) {
+                info!(
+                    logger,
+                    "The match of {leader}'s party is over: asking {member} back into party {party} skipped: {member} is still in match session {room} (try {attempt})"
+                );
+                continue;
+            }
+            match storage.add_return_invite(leader, member, type_id, party) {
+                Ok(invite) => {
+                    crate::escorts::mark_return_invite(invite);
+                    info!(
+                        logger,
+                        "The match of {leader}'s party is over: {member} is asked back into party {party} (invitation {invite}, requested, try {attempt})"
+                    );
+                }
+                Err(e) => warn!(logger, "Couldn't ask {member} back into party {party}: {e}"),
+            }
+        }
+        if !missing || attempt == tries {
+            break;
+        }
+        std::thread::sleep(retry);
+    }
+}
+
+/// How long the leader's party waits for a member's game to be done with the match before the
+/// member is asked back into the party, and how long after an invitation before asking again.
+/// The retry is long on purpose: a member's game that is still busy with the first invitation (a
+/// join after a migration took 12 s, live) takes a second one as a new accept and leaves the party
+/// it just joined.
+const PARTY_BACK_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+const PARTY_BACK_RETRY: std::time::Duration = std::time::Duration::from_secs(15);
+const PARTY_BACK_TRIES: u32 = 3;
 
 /// Property that tells the two rooms of a private match apart.
 ///
@@ -418,12 +755,108 @@ impl GameSessionProtocolServerImpl {
                 .is_ok_and(|rooms| rooms.iter().any(|a| attribute_value(a, PROPERTY_ROOM_KIND) == Some(ROOM_KIND_ANTEROOM)))
     }
 
+    /// `leader` accepted an invitation into private match `room` of `host`: notes the members
+    /// of the party it hosts, who may then come into the match after it (`escorts`): the leader's
+    /// game tells them to over Storm (hook `party_follow`, always on), and the host or they themselves
+    /// add them. Without the note they are strangers to the host and refused. Not for a public
+    /// match, which the game doesn't take a party into either.
+    fn board_party(&self, logger: &Logger, leader: u32, host: u32, room: u32) {
+        if !self.is_private_room(1, room) {
+            return;
+        }
+        let companions: Vec<u32> = match self.storage.hosted_parties(leader) {
+            Ok(parties) => parties.into_iter().flat_map(|(_, _, members)| members).filter(|m| *m != host).collect(),
+            Err(e) => {
+                warn!(logger, "Couldn't read {leader}'s party: {e}");
+                return;
+            }
+        };
+        if !companions.is_empty() {
+            info!(logger, "{leader} accepts an invitation into private match {room} of {host}; its party: {companions:?}");
+        }
+        crate::escorts::board(leader, room, &companions);
+    }
+
+    /// Notes that a host migration moved session `from` on to `to`.
+    fn note_migrated(&self, from: u32, to: u32) {
+        let mut migrated = self.migrated.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let now = std::time::Instant::now();
+        if migrated.len() >= 10_000 {
+            migrated.retain(|_, (_, at)| now.duration_since(*at) < SPLIT_AFTER_LEAVING);
+        }
+        migrated.insert(from, (to, now));
+        drop(migrated);
+        note_host_migrated(from, to);
+    }
+
+    /// Tells the members a host migration took along that their session moved: notification
+    /// 7001 (`NetOnlineSessionServiceRdv::vf28` at 0x007bdfb0) carries the new host as its
+    /// source and the new session id as its first parameter, and the second parameter names the
+    /// session the member is in now (`NotificationHandler::vf01` at 0x0077da30 finds the
+    /// member's service object by it). A member's game waits for exactly this in step 5 of its
+    /// migration (0x0089e650) until it knows the new host's session; without it the lobby
+    /// stays on "Host wurde geändert. Match wird migriert ..." for good. The new host
+    /// itself makes the server calls and isn't told.
+    #[allow(clippy::too_many_arguments)]
+    fn notify_new_host<CI>(
+        &self,
+        logger: &Logger,
+        ctx: &Context,
+        socket: &std::net::UdpSocket,
+        client_registry: &ClientRegistry<CI>,
+        new_host: u32,
+        old_session: u32,
+        new_session: u32,
+        members: &[u32],
+    ) {
+        for &member in members.iter().filter(|m| **m != new_host) {
+            let event = NotificationEvent {
+                pid_source: new_host,
+                ui_type: 7001,
+                ui_param_1: new_session,
+                ui_param_2: old_session,
+                str_param: String::new(),
+                ui_param_3: 0,
+            };
+            info!(logger, "Notifying {member} that session {old_session} moved to {new_session} under {new_host}: {event:?}");
+            let payload = event.to_bytes();
+            let reliable = self.debug_config.push_notifications_reliable;
+            if let Some(cell) = client_registry.client_by_user_id(member) {
+                if let Err(e) = quazal::rmc::call_client(
+                    logger,
+                    ctx,
+                    socket,
+                    &mut cell.borrow_mut(),
+                    NOTIFICATION_PROTOCOL_ID,
+                    PROCESS_NOTIFICATION_EVENT,
+                    payload,
+                    reliable,
+                ) {
+                    error!(logger, "Migration notification to {member} failed: {e}");
+                }
+            } else {
+                info!(logger, "No connected client for {member} - no migration notification sent");
+            }
+        }
+    }
+
+    /// The session a host migration moved `session_id` on to, lately ([`SPLIT_AFTER_LEAVING`]).
+    fn migrated_to(&self, session_id: u32) -> Option<u32> {
+        let migrated = self.migrated.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        migrated
+            .get(&session_id)
+            .filter(|(_, at)| at.elapsed() < SPLIT_AFTER_LEAVING)
+            .map(|(to, _)| *to)
+            .or_else(|| host_migrated_to(session_id))
+    }
+
     /// LeaveSession and AbandonSession: the player is no longer in the
     /// session, and one nobody is left in ends. Upstream answered both
     /// without doing anything, so players stayed listed in rooms they had
     /// left (friend searches then found stale parties, #44) and empty
     /// lobbies stayed on offer.
     fn leave(&self, logger: &Logger, user_id: u32, session_id: u32, verb: &str) -> Result<(), Error> {
+        crate::escorts::left(user_id, session_id);
         let Some(ended) = rmc_err!(self.storage.leave_game_session(user_id, session_id), logger, "error leaving session")? else {
             // Usual, not suspicious: a host taking its party along or ending a match removes
             // the guests first, and their own leave arrives a moment later.
@@ -433,11 +866,14 @@ impl GameSessionProtocolServerImpl {
         let mut left = self.left.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let now = std::time::Instant::now();
         if left.len() >= 10_000 {
-            left.retain(|_, (_, at)| now.duration_since(*at) < SPLIT_AFTER_LEAVING);
+            left.retain(|_, (_, at, _)| now.duration_since(*at) < SPLIT_AFTER_LEAVING);
         }
-        left.insert(user_id, (session_id, now));
+        left.insert(user_id, (session_id, now, verb == "abandons"));
         drop(left);
         let host_left = !ended && self.storage.session_creator(session_id).ok().flatten() == Some(user_id);
+        if host_left {
+            host_gone(logger, &self.storage, user_id, Some(session_id));
+        }
         info!(
             logger,
             "User {user_id} {verb} session {session_id}{}",
@@ -522,6 +958,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             return Err(Error::AccessDenied);
         }
 
+        let (type_id, is_party) = (request.game_session.type_id, request.game_session.attributes.0.iter().any(|p| p.id == 113 && p.value == 1));
         let attributes = request
             .game_session
             .attributes
@@ -543,6 +980,11 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         made(ci, user_id, session_id);
         crate::session_events::note(crate::session_events::Who::Id(user_id), "room", serde_json::json!({ "room": session_id }));
         self.went_online(user_id);
+        // A party opened after a private match the leader took its party into: the members who
+        // went along are asked into it (`escorts`).
+        if is_party {
+            bring_party_back(logger, &self.storage, user_id, type_id, session_id);
+        }
         Ok(CreateSessionResponse {
             game_session_key: GameSessionKey {
                 type_id: request.game_session.type_id,
@@ -682,25 +1124,32 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // Nobody walks into a private match uninvited (the ids are small numbers anyone could
         // try); members, anyone invited, and the host's party may. A party taken into a
         // private match follows its host without an invitation of its own - but not past a
-        // block.
+        // block. So does a companion of a leader invited into it (`escorts`): the leader's
+        // game sent it after the leader.
+        let escort_self = targets.contains(&user_id) && !is_member && crate::escorts::allowed(session_id, user_id);
         if targets.contains(&user_id) && !is_member && self.is_private_room(request.game_session_key.type_id, session_id) {
             let invited = rmc_err!(self.storage.is_invited(user_id, session_id), logger, "error checking invitations")?;
             let party_of_host = members
                 .as_ref()
                 .is_some_and(|(creator, _)| self.in_party_before(user_id, *creator, session_id) && !crate::friends_policy::blocked_blocking(&self.storage, user_id, *creator));
-            if !invited && !party_of_host {
+            let escorted = escort_self
+                && members
+                    .as_ref()
+                    .is_some_and(|(creator, _)| !crate::friends_policy::blocked_blocking(&self.storage, user_id, *creator));
+            if !invited && !party_of_host && !escorted {
                 warn!(logger, "User {user_id} tried to join private room {session_id} without an invitation; refused");
                 return Err(Error::AccessDenied);
             }
         }
         // Adding someone else puts them into a session, and a private match nudges them in
         // (below). Only a host taking their own party along may (friends or not, as anyone
-        // in their anteroom), or a friend - never past a block, and never a stranger, whom
-        // a public room the two once shared made no member of anything.
+        // in their anteroom), or a friend, or a companion of a leader invited into this
+        // match (`escorts`) - never past a block, and never a stranger, whom a public room
+        // the two once shared made no member of anything.
         if let Some(other) = targets.iter().find(|&&t| {
             t != user_id
                 && (crate::friends_policy::blocked_blocking(&self.storage, user_id, t)
-                    || !(self.in_party_of(t, user_id) || crate::friends_policy::friends_blocking(&self.storage, user_id, t)))
+                    || !(self.in_party_of(t, user_id) || crate::friends_policy::friends_blocking(&self.storage, user_id, t) || crate::escorts::allowed(session_id, t)))
         }) {
             warn!(logger, "User {user_id} may not add {other} to session {session_id}; refused");
             return Err(Error::AccessDenied);
@@ -718,6 +1167,14 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         let added = request.private_participant_ids.iter().chain(request.public_participant_ids.iter()).copied();
         joined(added.clone(), request.game_session_key.session_id);
         self.note_match_players(logger, request.game_session_key.session_id, added);
+        // A member that split its party's session while the leader was still in it and now
+        // adds itself to another session went somewhere else (it accepted an invitation, its
+        // game having left the party): it has taken nothing over, so the party's others must
+        // not follow it should the leader leave later (see `split_session`). Its own
+        // session, the one it split off, is where its game adds itself after a real takeover.
+        if targets.contains(&user_id) {
+            takeovers().retain(|_, t| t.by != user_id || t.to == session_id);
+        }
 
         // On the invitation route this call IS the join - the client never sends JoinSession
         // here (see split_session for the measurement). Retire the binding now, otherwise it
@@ -731,6 +1188,13 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 logger,
                 "User {user_id} joined session {} through an invitation (via AddParticipants)", request.game_session_key.session_id
             );
+        }
+        for &target in &targets {
+            let there = members.as_ref().is_some_and(|(creator, participants)| *creator == target || participants.contains(&target));
+            if let Some(leader) = crate::escorts::boarded_by(session_id, target).filter(|_| !there && self.is_private_room(request.game_session_key.type_id, session_id)) {
+                info!(logger, "{target} follows its party leader {leader} into private match {session_id}");
+                crate::escorts::came(session_id, target);
+            }
         }
         // Joins into someone else's room: the player's own (invited, following their party,
         // or a public room found), or their host taking them along.
@@ -844,10 +1308,11 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 // for the duration of their own request - they are never findable that way.
                 // Swapping in `borrow_mut` is no way out either; it panics the service thread.
                 if participant == user_id {
-                    // Invitation route only. Otherwise the HOST notifies itself as well when it
-                    // adds itself while opening the private match, opening its own `[0x42A]` gate
-                    // - a join gate on the host side is pointless at best.
-                    if via_invitation {
+                    // Invitation route (or a companion following its leader) only. Otherwise the
+                    // HOST notifies itself as well when it adds itself while opening the private
+                    // match, opening its own `[0x42A]` gate - a join gate on the host side is
+                    // pointless at best.
+                    if via_invitation || escort_self {
                         notify(&mut *ci);
                     }
                 } else if let Some(cell) = _client_registry.client_by_user_id(participant) {
@@ -1039,6 +1504,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 )?;
                 joined([user_id], room.session_id);
                 self.note_match_players(logger, room.session_id, [user_id]);
+                self.board_party(logger, user_id, room.creator_id, room.session_id);
             }
         }
 
@@ -1162,6 +1628,44 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // Ensure the client is logged in.
         let user_id = login_required(&*ci)?;
         let key = request.game_session_key;
+        // A session that migrated already, split again by one of the players it took along
+        // (their game running the migration too): the same new session, not another one.
+        // So for one a member took over while its host was still in it: this player's game
+        // follows the new host, so it moves along now.
+        if let Some((to, by)) = taken_over_by(key.session_id) {
+            if by != user_id {
+                let (moved, ended) = rmc_err!(self.storage.move_members(key.session_id, to, by, Some(user_id)), logger, "error moving a member along")?;
+                let along = !moved.is_empty()
+                    || rmc_err!(self.storage.session_members(to), logger, "error reading session members")?.is_some_and(|(_, p)| p.contains(&user_id))
+                    || rmc_err!(self.storage.is_guest(to, user_id), logger, "error reading session guests")?;
+                if along {
+                    info!(logger, "User {user_id} splits session {}, which {by} took over as {to}; answered with {to}", key.session_id);
+                    moved_along(logger, &self.storage, key.session_id, to, &moved);
+                    if ended {
+                        crate::session_events::room_ended(key.session_id);
+                    }
+                    return Ok(SplitSessionResponse {
+                        game_session_key_migrated: GameSessionKey {
+                            type_id: key.type_id,
+                            session_id: to,
+                        },
+                    });
+                }
+            }
+        }
+        if let Some(to) = self.migrated_to(key.session_id) {
+            let along = rmc_err!(self.storage.session_members(to), logger, "error reading session members")?.is_some_and(|(_, p)| p.contains(&user_id))
+                || rmc_err!(self.storage.is_guest(to, user_id), logger, "error reading session guests")?;
+            if along {
+                info!(logger, "User {user_id} splits session {}, which migrated to {to}; answered with {to}", key.session_id);
+                return Ok(SplitSessionResponse {
+                    game_session_key_migrated: GameSessionKey {
+                        type_id: key.type_id,
+                        session_id: to,
+                    },
+                });
+            }
+        }
         // A split makes a session, copied from another: as limited as creating one, and
         // only of a session the caller is in, or has just left (the game abandons its
         // session and then splits it).
@@ -1173,35 +1677,99 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             warn!(logger, "User {user_id} already hosts {MAX_LIVE_SESSIONS} sessions; split refused");
             return Err(Error::AccessDenied);
         }
-        let just_left = self
+        let (just_left, abandoned_it) = self
             .left
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(&user_id)
-            .is_some_and(|(session, at)| *session == key.session_id && at.elapsed() < SPLIT_AFTER_LEAVING);
+            .filter(|(session, at, _)| *session == key.session_id && at.elapsed() < SPLIT_AFTER_LEAVING)
+            .map_or((false, false), |(_, _, abandoned)| (true, *abandoned));
         let creator = rmc_err!(self.storage.session_creator(key.session_id), logger, "error reading session")?;
         // A guest (who joined a public match from a search) is in it as much as a participant:
         // their game splits the match to carry on when its host leaves (eu1: 4 such splits
         // refused in a week, 3 in one match). So is anyone who was in it before: the game takes
         // players off a party's participants while they're still in its party, and splits it
         // later (eu1 2026-10-12: five members of one party refused within a second).
-        let member = just_left
-            || creator == Some(user_id)
-            || rmc_err!(self.storage.session_members(key.session_id), logger, "error reading session members")?.is_some_and(|(_, p)| p.contains(&user_id))
-            || rmc_err!(self.storage.is_guest(key.session_id, user_id), logger, "error reading session guests")?
-            || rmc_err!(self.storage.was_member(key.session_id, user_id), logger, "error reading past members")?;
+        let live_members = rmc_err!(self.storage.session_members(key.session_id), logger, "error reading session members")?;
+        let guest = rmc_err!(self.storage.is_guest(key.session_id, user_id), logger, "error reading session guests")?;
+        // In it now, and it's live (`session_members` knows only live sessions).
+        let in_it = live_members.as_ref().is_some_and(|(_, p)| guest || p.contains(&user_id));
+        let member = just_left || creator == Some(user_id) || in_it || guest || rmc_err!(self.storage.was_member(key.session_id, user_id), logger, "error reading past members")?;
         if creator.is_some() && !member {
             warn!(logger, "User {user_id} splits session {} they aren't in; refused", key.session_id);
             return Err(Error::AccessDenied);
         }
 
-        let migrated = rmc_err!(
-            self.storage.split_game_session(user_id, key.type_id, key.session_id),
-            logger,
-            "error splitting game session"
-        )?;
-        if let Some(session_id) = migrated {
+        // Someone in a live session that isn't theirs, splitting it: its host is gone (or
+        // going), and Storm made them the new one. Their game's migration (`StateMigrateHost`,
+        // then `StateMigrateHostAddParticipant`, which adds nobody but itself) is all the server
+        // hears; the others follow the new host over Storm without a call of their own, so they
+        // move along here. The game abandons the session first when its online service still
+        // holds a session of its own (`StateAbandon` before `StateMigrateHost`): a split right
+        // after an AbandonSession is a migration too. Not one after LeaveSession or
+        // RemoveParticipants (a player leaving to split the session for themselves).
+        //
+        // Only once its host is out of it, or has no game signed in: a host still there is
+        // either one whose leave hasn't arrived yet, or one a member is splitting off from on
+        // its own. Then only the member moves, and the others follow when the host leaves or
+        // signs out (`host_gone`), or when their own game splits it too (above). A member who
+        // abandoned it while its host is still there splits off alone.
+        let not_theirs = creator.is_some_and(|c| c != user_id);
+        let host_here = match creator {
+            Some(c) if not_theirs && (in_it || abandoned_it) => {
+                let host_in =
+                    live_members.as_ref().is_some_and(|(_, p)| p.contains(&c)) || rmc_err!(self.storage.is_guest(key.session_id, c), logger, "error reading session guests")?;
+                host_in && rmc_err!(self.storage.is_online(c), logger, "error reading who is online")?
+            }
+            _ => false,
+        };
+        let takes_over = not_theirs && (in_it || abandoned_it) && !host_here;
+        let waits_for_host = not_theirs && in_it && host_here;
+        let migrated = if takes_over {
+            rmc_err!(
+                self.storage.migrate_game_session(user_id, key.type_id, key.session_id),
+                logger,
+                "error migrating game session"
+            )?
+        } else {
+            rmc_err!(
+                self.storage.split_game_session(user_id, key.type_id, key.session_id),
+                logger,
+                "error splitting game session"
+            )?
+            .map(|session_id| (session_id, Vec::new()))
+        };
+        if let Some((session_id, moved)) = &migrated {
+            let session_id = *session_id;
             made(ci, user_id, session_id);
+            if takes_over {
+                info!(
+                    logger,
+                    "User {user_id} takes over session {} as {session_id} (host migration); along: {moved:?}", key.session_id
+                );
+                self.note_migrated(key.session_id, session_id);
+                carried_over(logger, &self.storage, key.session_id, session_id, user_id);
+                moved_along(logger, &self.storage, key.session_id, session_id, moved);
+                self.notify_new_host(logger, _ctx, _socket, _client_registry, user_id, key.session_id, session_id, moved);
+            } else if waits_for_host {
+                info!(
+                    logger,
+                    "User {user_id} splits session {} as {session_id} while its host is still in it; the others follow when the host leaves", key.session_id
+                );
+                let mut waiting = takeovers();
+                let now = std::time::Instant::now();
+                if waiting.len() >= 10_000 {
+                    waiting.retain(|_, t| now.duration_since(t.at) < SPLIT_AFTER_LEAVING);
+                }
+                waiting.insert(
+                    key.session_id,
+                    Takeover {
+                        to: session_id,
+                        by: user_id,
+                        at: now,
+                    },
+                );
+            }
             // The game moves into the copy and never leaves the session it split: it stayed
             // live, its departed host's, until that host signed out, and the launcher's and
             // overlay's lists showed it beside the new one (eu1 2026-10-13: 15 such, one for
@@ -1210,7 +1778,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         }
         Ok(SplitSessionResponse {
             game_session_key_migrated: match migrated {
-                Some(session_id) => GameSessionKey { type_id: key.type_id, session_id },
+                Some((session_id, _)) => GameSessionKey { type_id: key.type_id, session_id },
                 None => key,
             },
         })
@@ -1779,6 +2347,7 @@ pub fn new_protocol<T: 'static>(storage: Arc<Storage>, debug_config: Arc<DebugCo
         storage,
         debug_config,
         left: std::sync::Mutex::default(),
+        migrated: std::sync::Mutex::default(),
     }))
 }
 
@@ -1993,6 +2562,64 @@ mod tests {
     /// match: it ends once they were the last in it, and only the copy is live. It used to
     /// keep them and stay listed until its host signed out (eu1 2026-10-13: hours).
     #[test]
+    fn a_migration_note_waits_for_a_reconnect_until_its_ttl() {
+        assert!(super::note_still_due(std::time::Duration::from_secs(5)));
+        assert!(super::note_still_due(std::time::Duration::from_secs(59)));
+        assert!(!super::note_still_due(std::time::Duration::from_secs(60)));
+    }
+
+    #[test]
+    fn a_deferred_takeover_is_noted_as_migrated_for_a_later_split() {
+        let (storage, dir) = crate::storage::tests::temp_storage("host-gone-migrated");
+        let storage = std::sync::Arc::new(storage);
+        let server = super::GameSessionProtocolServerImpl {
+            storage: std::sync::Arc::clone(&storage),
+            debug_config: std::sync::Arc::default(),
+            left: std::sync::Mutex::default(),
+            migrated: std::sync::Mutex::default(),
+        };
+        let logger = slog::Logger::root(slog::Discard, slog::o!());
+        let mut ids = vec![];
+        for name in ["Host", "First", "Second"] {
+            storage.register_user(name, "pw", Some(name)).unwrap();
+            ids.push(storage.find_user_id_by_name(name).unwrap().unwrap());
+        }
+        let [host, first, second] = ids[..] else { unreachable!() };
+        // Session ids high enough not to meet other tests' takeovers (a global).
+        for _ in 0..200 {
+            storage.create_game_session(host, 1, "113 => 0".into()).unwrap();
+        }
+        let game = storage.create_game_session(host, 1, "113 => 0;3 => 4;4 => 0".into()).unwrap();
+        storage.add_participants(1, game, vec![], vec![host]).unwrap();
+        storage.add_guest(game, first, false).unwrap();
+        storage.add_guest(game, second, false).unwrap();
+        // `first` splits while the host is still in it; the takeover waits.
+        let copy = storage.split_game_session(first, 1, game).unwrap().unwrap();
+        super::takeovers().insert(
+            game,
+            super::Takeover {
+                to: copy,
+                by: first,
+                at: std::time::Instant::now(),
+            },
+        );
+        super::host_left_rooms(&logger, &storage, host, &[game]);
+        assert_eq!(server.migrated_to(game), Some(copy), "a later split of the old session is answered with the new one");
+        assert!(storage.session_members(copy).unwrap().is_some());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_silent_host_is_not_offered() {
+        use std::time::Duration;
+        assert!(!super::host_silent(None), "no connection to look at proves nothing");
+        assert!(!super::host_silent(Some(Duration::from_secs(11))));
+        assert!(super::host_silent(Some(Duration::from_secs(12))));
+        // The pings come every ten seconds: an idle host stays under the limit.
+        assert!(!super::host_silent(Some(Duration::from_secs(10))));
+    }
+
+    #[test]
     fn splitting_leaves_the_session_split() {
         let (storage, dir) = crate::storage::tests::temp_storage("split-leaves");
         let storage = std::sync::Arc::new(storage);
@@ -2000,6 +2627,7 @@ mod tests {
             storage: std::sync::Arc::clone(&storage),
             debug_config: std::sync::Arc::default(),
             left: std::sync::Mutex::default(),
+            migrated: std::sync::Mutex::default(),
         };
         let logger = slog::Logger::root(slog::Discard, slog::o!());
         let mut ids = vec![];
@@ -2033,6 +2661,170 @@ mod tests {
         storage.split_game_session(second, 1, game).unwrap().unwrap();
         server.leave(&logger, second, game, "splits off from").unwrap();
         assert!(!live(game));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A party's leader invited into someone else's private match notes its party as escorts: the
+    /// members may come into that match after it. Not for a match that isn't private, nor for
+    /// anyone who isn't in the leader's party.
+    #[test]
+    fn the_party_of_a_leader_invited_into_a_private_match_may_follow_it() {
+        let (storage, dir) = crate::storage::tests::temp_storage("party-escorts");
+        let storage = std::sync::Arc::new(storage);
+        let server = super::GameSessionProtocolServerImpl {
+            storage: std::sync::Arc::clone(&storage),
+            debug_config: std::sync::Arc::default(),
+            left: std::sync::Mutex::default(),
+            migrated: std::sync::Mutex::default(),
+        };
+        let logger = slog::Logger::root(slog::Discard, slog::o!());
+        let mut ids = vec![];
+        for name in ["EHost", "ELeader", "EMember", "EStray"] {
+            storage.register_user(name, "pw", Some(name)).unwrap();
+            let id = storage.find_user_id_by_name(name).unwrap().unwrap();
+            storage.set_online(id).unwrap();
+            ids.push(id);
+        }
+        let [host, leader, member, stray] = ids[..] else { unreachable!() };
+
+        let party = storage.create_game_session(leader, 1, "113 => 1;3 => 8;4 => 0".into()).unwrap();
+        storage.add_participants(1, party, vec![], vec![leader, member]).unwrap();
+        let game = storage.create_game_session(host, 1, "113 => 0;3 => 0;4 => 8".into()).unwrap();
+        storage.add_participants(1, game, vec![host], vec![]).unwrap();
+        let public = storage.create_game_session(host, 1, "113 => 0;3 => 8;4 => 0".into()).unwrap();
+        storage.add_participants(1, public, vec![], vec![host]).unwrap();
+
+        server.board_party(&logger, leader, host, public);
+        assert!(!crate::escorts::allowed(public, member), "a public match takes no party along");
+        server.board_party(&logger, leader, host, game);
+        assert!(crate::escorts::allowed(game, member), "the leader's party follows it into the private match");
+        assert_eq!(crate::escorts::boarded_by(game, member), Some(leader));
+        assert!(!crate::escorts::allowed(game, stray), "a stranger doesn't");
+        assert!(!crate::escorts::allowed(game, leader), "nor does the leader need to");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The members who followed their leader into a private match are asked into the leader's
+    /// next party once the match is over, by a requested invitation from the leader: not while the
+    /// match goes on, not twice, not a member who didn't come, not one the leader blocked.
+    #[test]
+    fn the_members_who_followed_are_asked_into_the_leaders_new_party() {
+        let (storage, dir) = crate::storage::tests::temp_storage("party-return");
+        let storage = std::sync::Arc::new(storage);
+        let server = super::GameSessionProtocolServerImpl {
+            storage: std::sync::Arc::clone(&storage),
+            debug_config: std::sync::Arc::default(),
+            left: std::sync::Mutex::default(),
+            migrated: std::sync::Mutex::default(),
+        };
+        let logger = slog::Logger::root(slog::Discard, slog::o!());
+        let mut ids = vec![];
+        for name in ["RHost", "RLeader", "RMember", "RStay", "RBlocked"] {
+            storage.register_user(name, "pw", Some(name)).unwrap();
+            let id = storage.find_user_id_by_name(name).unwrap().unwrap();
+            storage.set_online(id).unwrap();
+            ids.push(id);
+        }
+        let [host, leader, member, stayed, blocked] = ids[..] else { unreachable!() };
+        let waiting = |user: u32| crate::storage::run(storage.take_invite_async(user)).unwrap().unwrap();
+
+        let party = storage.create_game_session(leader, 1, "113 => 1;3 => 8;4 => 0".into()).unwrap();
+        storage.add_participants(1, party, vec![], vec![leader, member, stayed, blocked]).unwrap();
+        let game = storage.create_game_session(host, 1, "113 => 0;3 => 0;4 => 8".into()).unwrap();
+        storage.add_participants(1, game, vec![host], vec![]).unwrap();
+        crate::storage::run(storage.block(leader, blocked)).unwrap().unwrap().unwrap();
+        server.board_party(&logger, leader, host, game);
+        storage.add_participants(1, game, vec![leader], vec![]).unwrap();
+        for who in [member, blocked] {
+            storage.add_participants(1, game, vec![who], vec![]).unwrap();
+            crate::escorts::came(game, who);
+        }
+
+        // The match goes on (the leader is in it): a new party asks nobody.
+        let next = storage.create_game_session(leader, 1, "113 => 1;3 => 8;4 => 0".into()).unwrap();
+        {
+            let m = super::party_back_members(&logger, &storage, leader, next);
+            super::ask_back(&logger, &storage, leader, 1, next, &m, std::time::Duration::ZERO, std::time::Duration::ZERO, 1);
+        }
+        assert!(waiting(member).is_none(), "the match is still going");
+
+        // The leader is out of it, the host's match goes on: over for the party.
+        server.leave(&logger, leader, game, "leaves").unwrap();
+        storage.leave_game_session(member, game).unwrap();
+        {
+            let m = super::party_back_members(&logger, &storage, leader, next);
+            super::ask_back(&logger, &storage, leader, 1, next, &m, std::time::Duration::ZERO, std::time::Duration::ZERO, 1);
+        }
+        let invite = waiting(member).expect("the member is asked back");
+        assert_eq!((invite.sender, invite.session_id), (leader, Some(next)), "from the leader, to its new party");
+        assert!(crate::escorts::is_return_invite(invite.id), "delivered as a join the member requested");
+        assert!(!invite.join_request, "an ordinary invitation from the host, so it holds for an invite-only party");
+        assert!(waiting(stayed).is_none() && waiting(blocked).is_none(), "nobody else is asked");
+        {
+            let m = super::party_back_members(&logger, &storage, leader, next);
+            super::ask_back(&logger, &storage, leader, 1, next, &m, std::time::Duration::ZERO, std::time::Duration::ZERO, 1);
+        }
+        assert!(waiting(member).is_none(), "and only once");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// The decision alone: only a live private match of somebody else's keeps a member.
+    #[test]
+    fn a_member_in_somebody_elses_match_is_not_called_back() {
+        use super::match_still_running;
+        let leader = 10;
+        let host = 20;
+        let match_attrs = "113 => 0;3 => 0;4 => 8".to_string();
+        let party_attrs = "113 => 1;3 => 8;4 => 0".to_string();
+        assert_eq!(match_still_running(&[(5, host, match_attrs.clone())], leader), Some(5));
+        assert_eq!(match_still_running(&[(4, host, party_attrs.clone()), (5, host, match_attrs.clone())], leader), Some(5));
+        assert_eq!(match_still_running(&[(5, leader, match_attrs)], leader), None, "the leader's own match");
+        assert_eq!(match_still_running(&[(6, host, party_attrs)], leader), None, "a party is no match");
+        assert_eq!(match_still_running(&[], leader), None, "in none");
+    }
+
+    /// With real storage: a member still in the host's live match isn't asked, one whose match
+    /// was destroyed is, and one who leaves the match between try 1 and try 2 is asked at try 2.
+    #[test]
+    fn asking_back_waits_while_the_member_is_still_in_the_match() {
+        let (storage, dir) = crate::storage::tests::temp_storage("party-return-in-match");
+        let storage = std::sync::Arc::new(storage);
+        let logger = slog::Logger::root(slog::Discard, slog::o!());
+        let mut ids = vec![];
+        for name in ["MHost", "MLeader", "MMember", "MOther"] {
+            storage.register_user(name, "pw", Some(name)).unwrap();
+            let id = storage.find_user_id_by_name(name).unwrap().unwrap();
+            storage.set_online(id).unwrap();
+            ids.push(id);
+        }
+        let [host, leader, member, other] = ids[..] else { unreachable!() };
+        let waiting = |user: u32| crate::storage::run(storage.take_invite_async(user)).unwrap().unwrap();
+        let game = storage.create_game_session(host, 1, "113 => 0;3 => 0;4 => 8".into()).unwrap();
+        storage.add_participants(1, game, vec![host, member, other], vec![]).unwrap();
+        let next = storage.create_game_session(leader, 1, "113 => 1;3 => 8;4 => 0".into()).unwrap();
+        let zero = std::time::Duration::ZERO;
+
+        // Still in the host's live match: not asked, however often it tries.
+        super::ask_back(&logger, &storage, leader, 1, next, &[member], zero, zero, 3);
+        assert!(waiting(member).is_none(), "no call in the middle of the match");
+
+        // Leaves between try 1 and try 2 (the retry waits): asked at try 2.
+        let leaver = {
+            let storage = std::sync::Arc::clone(&storage);
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(150));
+                storage.leave_game_session(member, game).unwrap();
+            })
+        };
+        super::ask_back(&logger, &storage, leader, 1, next, &[member], zero, std::time::Duration::from_millis(100), 5);
+        leaver.join().unwrap();
+        assert!(waiting(member).is_some(), "asked once out of the match");
+
+        // The match is gone altogether: asked.
+        storage.leave_game_session(host, game).unwrap();
+        storage.leave_game_session(other, game).unwrap();
+        super::ask_back(&logger, &storage, leader, 1, next, &[other], zero, zero, 1);
+        assert!(waiting(other).is_some(), "a destroyed match holds nobody");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
