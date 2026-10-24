@@ -677,7 +677,7 @@ fn getaddrinfo(p_node_name: *const c_char, p_service_name: *const c_char, p_hint
     unsafe { GetAddrinfoHook.call(p_node_name, p_service_name, p_hints, pp_result) }
 }
 
-unsafe fn hook_with_name<T, F>(hook: &retour::StaticDetour<T>, target: Option<T>, f: F, name: &str)
+pub(crate) unsafe fn hook_with_name<T, F>(hook: &retour::StaticDetour<T>, target: Option<T>, f: F, name: &str)
 where
     T: retour::Function,
     F: Fn<T::Arguments, Output = T::Output> + Send + 'static,
@@ -783,6 +783,21 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
         crate::voice_device_fix::guard_voice_devices();
         crate::migration_fix::end_stuck_migrations();
     }
+
+    // Always on: a match lobby carries on under a new host instead of being dissolved, also when
+    // the host of a running public match drops (see migrate_lobby.rs); a party member that hangs
+    // after a dissolved private match is set going again (see follow_unblock.rs).
+    #[cfg(not(feature = "patch-free"))]
+    {
+        crate::migrate_lobby::migrate_match_lobbies(true);
+        // The facade tick is hooked once: by migration_fix when the crash fixes are on (it calls us), else here.
+        crate::follow_unblock::install(addr, crate::migration_fix::tick_hooked());
+    }
+
+    // Always on: a party's leader invited into a private match keeps its party and takes it along
+    // (see party_follow.rs).
+    #[cfg(not(feature = "patch-free"))]
+    crate::party_follow::install(addr);
 }
 
 macro_rules! disable_configurable_hook {
@@ -823,6 +838,11 @@ pub unsafe fn deinit(config: &Config) {
     disable_configurable_hook!(config, Hook::Thread, ThreadStarterHook);
     #[cfg(feature = "modding")]
     disable_configurable_hook!(config, Hook::OverridePackaged, ArcOpenFileHook);
+    #[cfg(not(feature = "patch-free"))]
+    {
+        crate::party_follow::deinit();
+        crate::follow_unblock::deinit();
+    }
     nat::deinit_hooks();
     storm::deinit_hooks(config);
     quazal::deinit_hooks(config);

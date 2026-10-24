@@ -1512,7 +1512,7 @@ impl Misc for MyMisc {
                 // The invitation a launcher/overlay "join a friend" (JoinNow) queued: a join the
                 // player asked for (the game takes it without a click only if it asked for it
                 // itself); any other waiting invitation isn't.
-                requested: invite.join_request && invite.session_id.is_some(),
+                requested: (invite.join_request || crate::escorts::is_return_invite(invite.id)) && invite.session_id.is_some(),
             }),
             friend: None,
             notice: notice(),

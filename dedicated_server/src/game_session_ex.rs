@@ -148,6 +148,8 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
         let sessions: Vec<_> = scanned
             .into_iter()
             .filter(|(_, attrs)| invitation_search || answers(&req_attrs, attrs, false))
+            // A lobby its host left or went quiet in isn't one to join (host migration).
+            .filter(|(session, _)| invitation_search || !crate::game_session::lobby_is_dead(_client_registry, session.session_id, session.creator_id))
             .map(|(session, _)| session)
             .take(crate::game_session::MAX_SEARCH_RESULTS as usize)
             .collect();

@@ -403,6 +403,17 @@ impl<T> ClientRegistry<T> {
     ///
     /// Needed to send something to a *different* client on our own initiative: whoever adds a
     /// participant has to be able to notify the one being added, and that is not the caller.
+    /// How long it's been since anything came from `user_id` on any of their connections;
+    /// `None` when they have none. A game that's gone (killed, cut off) goes quiet well before
+    /// its connection expires, and its pings otherwise keep it under ten seconds.
+    #[must_use]
+    pub fn user_silence(&self, user_id: u32) -> Option<Duration> {
+        self.clients
+            .values()
+            .filter_map(|c| c.try_borrow().ok().filter(|ci| ci.user_id == Some(user_id)).map(|ci| ci.last_seen.elapsed()))
+            .min()
+    }
+
     #[must_use]
     pub fn client_by_user_id(&self, user_id: u32) -> Option<&RefCell<ClientInfo<T>>> {
         // `try_borrow`, not `borrow`: the caller's cell is mutably borrowed for the duration
@@ -441,6 +452,9 @@ where
     pub expired_client_handler: Option<ECH>,
     /// A handler for disconnected clients.
     pub disconnect_handler: Option<DH>,
+    /// Called once a second with everything needed to call a client back: work the handlers
+    /// above can't do themselves because they're given the departed client only.
+    pub sweep_handler: Option<Box<dyn FnMut(&Logger, &Context, &net::UdpSocket, &ClientRegistry<T>)>>,
     /// Called with the user id once a connection has proved its ticket: the
     /// user is signed in here (until their last connection closes or expires).
     /// Also given the address the connection came from.
@@ -500,6 +514,7 @@ where
             user_handler: None,
             expired_client_handler: None,
             disconnect_handler: None,
+            sweep_handler: None,
             login_handler: None,
             stale_connection_handler: None,
             unacked_handler: None,
@@ -538,6 +553,9 @@ where
             // never expired.
             if last_sweep.elapsed() >= Duration::from_secs(1) {
                 self.clear_clients();
+                if let Some(handler) = self.sweep_handler.as_mut() {
+                    handler(&self.logger, self.ctx, self.socket.as_ref().unwrap(), &self.client_registry);
+                }
                 let wanted: Vec<u32> = self.sign_outs.as_ref().map(|r| r.try_iter().collect()).unwrap_or_default();
                 for user_id in wanted {
                     let logger = self.logger.clone();

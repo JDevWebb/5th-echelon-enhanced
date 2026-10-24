@@ -53,6 +53,18 @@ pub fn invited(user: u32, session: u32) {
     put(user, Offer::Room(session));
 }
 
+/// A host migration moved room `from` on to `to`: whoever was given `from` to join is given
+/// `to`, the room its host took over.
+pub fn moved(from: u32, to: u32) {
+    for (offer, _) in offers().values_mut() {
+        match offer {
+            Offer::Room(room) if *room == from => *room = to,
+            Offer::Rooms(rooms) => rooms.iter_mut().filter(|(room, _)| *room == from).for_each(|(room, _)| *room = to),
+            _ => {}
+        }
+    }
+}
+
 /// `user`'s matchmaking search offered these rooms (room, host). Nothing found leaves what
 /// they had.
 pub fn searched(user: u32, rooms: impl IntoIterator<Item = (u32, u32)>) {
@@ -126,6 +138,17 @@ mod tests {
         // Their own room is never offered as a target.
         searched(user, [(93, user)]);
         assert_eq!(target(user, |_| None), Some(91));
+    }
+
+    #[test]
+    fn a_migrated_room_is_given_as_the_new_one() {
+        let (a, b) = (7_100_004, 7_100_005);
+        invited(a, 7_777_001);
+        searched(b, [(7_777_001, 1), (7_777_002, 2)]);
+        moved(7_777_001, 7_777_003);
+        assert_eq!(target(a, |_| None), Some(7_777_003));
+        probed(b, 1);
+        assert_eq!(target(b, |_| None), Some(7_777_003));
     }
 
     #[test]

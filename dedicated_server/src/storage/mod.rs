@@ -671,6 +671,143 @@ impl Storage {
         Ok(Some(new_id))
     }
 
+    /// A host migration: `user_id`, a member of `session_id` who isn't its host, takes it
+    /// over. Splits it as [`Self::split_game_session`] does, and moves its other members
+    /// (participants and guests, as they were) into the new session with them; not its old
+    /// host, who is the one leaving. Returns the new session and who moved, or `None` when
+    /// the session is unknown.
+    ///
+    /// The game's migration (`StateMigrateHost`, `StateMigrateHostAddParticipant`) is run by
+    /// the new host alone, and adds nobody but itself: the others' games make no server call
+    /// and simply follow the new host over Storm. Splitting off the new host alone left
+    /// them in the old session under a host who was gone, where nobody could find them.
+    pub fn migrate_game_session(&self, user_id: u32, type_id: u32, session_id: u32) -> Result<Option<(u32, Vec<u32>)>> {
+        let Some(new_id) = self.split_game_session(user_id, type_id, session_id)? else {
+            return Ok(None);
+        };
+        let (moved, _) = self.move_members(session_id, new_id, user_id, None)?;
+        info!(self.logger, "host migration of session {session_id}: {user_id} hosts {new_id}, {moved:?} moved along");
+        Ok(Some((new_id, moved)))
+    }
+
+    /// A host migration moved `session_id` on to `new_id` under `new_host`, and its old host is
+    /// gone: the invitations still pending for it go to the new session, from the new host
+    /// where the old host sent them (the invitation holds only while its sender hosts the room,
+    /// see `invite_holds_sql`). Returns how many were moved.
+    pub fn rebind_invites(&self, session_id: u32, new_id: u32, new_host: u32) -> Result<u64> {
+        run(async {
+            let mut tx = self.pool.begin().await?;
+            let old_host: Option<u32> = sqlx::query_scalar("SELECT creator_id FROM game_sessions WHERE id = ?")
+                .bind(session_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+            let moved = sqlx::query(
+                "UPDATE invites SET session_id = ?1, sender = CASE WHEN sender = ?3 THEN ?2 ELSE sender END
+                 WHERE session_id = ?4 AND consumed_at IS NULL",
+            )
+            .bind(new_id)
+            .bind(new_host)
+            .bind(old_host.unwrap_or(new_host))
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await?
+            .rows_affected();
+            sqlx::query("UPDATE OR IGNORE game_session_invites SET session_id = ?1, sender = CASE WHEN sender = ?3 THEN ?2 ELSE sender END WHERE session_id = ?4")
+                .bind(new_id)
+                .bind(new_host)
+                .bind(old_host.unwrap_or(new_host))
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await?;
+            tx.commit().await?;
+            Ok::<_, eyre::Error>(moved)
+        })?
+    }
+
+    /// Moves the members of `session_id` (participants and guests, as they were) into
+    /// `new_id`, the session `new_host` took it over as: all of them but its old host and
+    /// `new_host`, or only `only` (when it's in it). The old session ends when nobody is left in
+    /// it. Returns who moved, and whether the old session ended.
+    pub fn move_members(&self, session_id: u32, new_id: u32, new_host: u32, only: Option<u32>) -> Result<(Vec<u32>, bool)> {
+        run(async {
+            let mut tx = self.pool.begin().await?;
+            let creator: Option<u32> = sqlx::query_scalar("SELECT creator_id FROM game_sessions WHERE id = ?")
+                .bind(session_id)
+                .fetch_optional(&mut *tx)
+                .await?;
+            let creator = creator.unwrap_or(new_host);
+            // Everyone but the two, or (`?4` not NULL) only `only`.
+            let filter = "game_id = ?1 AND user_id NOT IN (?2, ?3) AND (?4 IS NULL OR user_id = ?4)";
+            let mut moved: Vec<u32> = sqlx::query_scalar(&format!("SELECT user_id FROM participants WHERE {filter} UNION SELECT user_id FROM guests WHERE {filter}"))
+                .bind(session_id)
+                .bind(new_host)
+                .bind(creator)
+                .bind(only)
+                .fetch_all(&mut *tx)
+                .await?;
+            moved.sort_unstable();
+            moved.dedup();
+            sqlx::query(&format!(
+                "INSERT OR IGNORE INTO participants (game_id, user_id, joined_after)
+                 SELECT ?5, user_id, joined_after FROM participants WHERE {filter}"
+            ))
+            .bind(session_id)
+            .bind(new_host)
+            .bind(creator)
+            .bind(only)
+            .bind(new_id)
+            .execute(&mut *tx)
+            .await?;
+            sqlx::query(&format!(
+                "INSERT OR IGNORE INTO guests (game_id, user_id, joined_at)
+                 SELECT ?5, user_id, joined_at FROM guests WHERE {filter}"
+            ))
+            .bind(session_id)
+            .bind(new_host)
+            .bind(creator)
+            .bind(only)
+            .bind(new_id)
+            .execute(&mut *tx)
+            .await?;
+            for table in ["participants", "guests"] {
+                sqlx::query(&format!("DELETE FROM {table} WHERE {filter}"))
+                    .bind(session_id)
+                    .bind(new_host)
+                    .bind(creator)
+                    .bind(only)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            for &member in &moved {
+                sqlx::query("INSERT OR IGNORE INTO past_members (game_id, user_id) VALUES (?, ?)")
+                    .bind(new_id)
+                    .bind(member)
+                    .execute(&mut *tx)
+                    .await?;
+            }
+            let left: i64 = sqlx::query_scalar("SELECT (SELECT COUNT(*) FROM participants WHERE game_id = ?1) + (SELECT COUNT(*) FROM guests WHERE game_id = ?1)")
+                .bind(session_id)
+                .fetch_one(&mut *tx)
+                .await?;
+            let ended = !moved.is_empty()
+                && left == 0
+                && sqlx::query("UPDATE game_sessions SET destroyed_at = CURRENT_TIMESTAMP WHERE id = ? AND destroyed_at IS NULL")
+                    .bind(session_id)
+                    .execute(&mut *tx)
+                    .await?
+                    .rows_affected()
+                    > 0;
+            tx.commit().await?;
+            Ok::<_, eyre::Error>((moved, ended))
+        })?
+    }
+
+    /// Whether `user_id` has a signed-in game connection ([`Self::set_online`]).
+    pub fn is_online(&self, user_id: u32) -> Result<bool> {
+        let online: Option<bool> = run(sqlx::query_scalar("SELECT is_online = 1 FROM users WHERE id = ?").bind(user_id).fetch_optional(&self.pool))??;
+        Ok(online.unwrap_or(false))
+    }
+
     pub fn update_game_session(&self, type_id: u32, game_id: u32, attributes: String) -> Result<()> {
         let _id = run(sqlx::query("UPDATE game_sessions SET attributes = ? WHERE id = ? AND type_id = ?")
             .bind(attributes)
@@ -1084,6 +1221,51 @@ impl Storage {
         Ok(sqlx::query_as(&query).bind(user_id).fetch_all(&self.pool).await?)
     }
 
+    /// The parties (room kind 1) `host` hosts and is in, with who else is in each (participants
+    /// and guests): `(session type, session, members)`, newest first.
+    pub fn hosted_parties(&self, host: u32) -> Result<Vec<(u32, u32, Vec<u32>)>> {
+        let query = format!(
+            r"
+            SELECT g.type_id, g.id
+            FROM game_sessions g
+            INNER JOIN participants h ON h.game_id = g.id AND h.user_id = g.creator_id
+            WHERE g.creator_id = ?1
+              AND g.destroyed_at IS NULL
+              AND {kind} = 1
+            ORDER BY g.id DESC
+            ",
+            kind = attribute_sql(113)
+        );
+        run(async {
+            let parties: Vec<(u32, u32)> = sqlx::query_as(&query).bind(host).fetch_all(&self.pool).await?;
+            let mut out = Vec::with_capacity(parties.len());
+            for (type_id, id) in parties {
+                let members: Vec<u32> = sqlx::query_scalar(
+                    "SELECT user_id FROM participants WHERE game_id = ?1 AND user_id != ?2 UNION SELECT user_id FROM guests WHERE game_id = ?1 AND user_id != ?2",
+                )
+                .bind(id)
+                .bind(host)
+                .fetch_all(&self.pool)
+                .await?;
+                out.push((type_id, id, members));
+            }
+            Ok::<_, eyre::Error>(out)
+        })?
+    }
+
+    /// Asks `member` back into `leader`'s party `session_id`: an ordinary invitation from the party's
+    /// host (it holds while the host hosts the room, even for a party announced invite-only, which a
+    /// join request ([`Self::add_join_request`]) is refused). The caller marks it as one the game
+    /// takes without a click ([`crate::escorts::mark_return_invite`]).
+    pub fn add_return_invite(&self, leader: u32, member: u32, session_type: u32, session_id: u32) -> Result<i64> {
+        run(self.add_invite_async(leader, member, Some(session_type), Some(session_id)))?
+    }
+
+    /// [`Self::add_join_request_async`], for the game's own (synchronous) services.
+    pub fn add_join_request(&self, host: u32, joiner: u32, session_type: u32, session_id: u32) -> Result<i64> {
+        run(self.add_join_request_async(host, None, joiner, session_type, session_id))?
+    }
+
     /// The sessions `user_id` is in without hosting them (as a participant, or a guest who
     /// joined a public match), their host still in them, newest first: where a friend's join
     /// request (`JoinNow`) may lead. Of any kind: the caller tells a party from a match.
@@ -1464,6 +1646,20 @@ impl Storage {
         Ok(row.map(|(members, seats)| (clamp(members), clamp(seats))))
     }
 
+    /// The live sessions of type 1 `user_id` is in (as participant or guest): id, host and
+    /// attributes.
+    pub fn live_rooms_of(&self, user_id: u32) -> Result<Vec<(u32, u32, String)>> {
+        let rows: Vec<(u32, u32, Option<String>)> = run(sqlx::query_as(
+            "SELECT g.id, g.creator_id, g.attributes FROM game_sessions g
+             WHERE g.type_id = 1 AND g.destroyed_at IS NULL
+               AND (g.id IN (SELECT game_id FROM participants WHERE user_id = ?1) OR g.id IN (SELECT game_id FROM guests WHERE user_id = ?1))
+             ORDER BY g.id",
+        )
+        .bind(user_id)
+        .fetch_all(&self.pool))??;
+        Ok(rows.into_iter().map(|(id, creator, attributes)| (id, creator, attributes.unwrap_or_default())).collect())
+    }
+
     /// A live session's host and participants, or None if there's no such
     /// session (or it has ended).
     pub fn session_members(&self, session_id: u32) -> Result<Option<(u32, Vec<u32>)>> {
@@ -1510,11 +1706,26 @@ impl Storage {
                 .await?
                 .rows_affected()
                 > 0;
-            let host: Option<u32> = sqlx::query_scalar("SELECT creator_id FROM game_sessions WHERE id = ?")
+            let host: Option<(u32, bool)> = sqlx::query_as("SELECT creator_id, destroyed_at IS NOT NULL FROM game_sessions WHERE id = ?")
                 .bind(session_id)
                 .fetch_optional(&self.pool)
                 .await?;
-            if !was_in && !was_guest && host != Some(user_id) {
+            // Its host, out of it already: the game's LeaveSession after its AbandonSession.
+            // It changes nothing, and was noted as a second leave, "the others carry on" after
+            // "nobody left, it ends". A host who never joined their session still ends it.
+            let host_out = match host {
+                Some((creator, ended)) if creator == user_id && !was_in && !was_guest => {
+                    ended
+                        || sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM past_members WHERE game_id = ? AND user_id = ?")
+                            .bind(session_id)
+                            .bind(user_id)
+                            .fetch_one(&self.pool)
+                            .await?
+                            > 0
+                }
+                _ => false,
+            };
+            if !was_in && !was_guest && (host.map(|(creator, _)| creator) != Some(user_id) || host_out) {
                 return Ok::<_, eyre::Error>(None);
             }
             let left: i64 = sqlx::query_scalar("SELECT (SELECT COUNT(*) FROM participants WHERE game_id = ?1) + (SELECT COUNT(*) FROM guests WHERE game_id = ?1)")
@@ -2047,6 +2258,26 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_pending_invitation_follows_a_host_migration() {
+        let (storage, dir) = temp_storage("invite-rebind");
+        let mut ids = vec![];
+        for name in ["Host", "Taker", "Guest"] {
+            storage.register_user(name, "pw", Some(name)).unwrap();
+            ids.push(storage.find_user_id_by_name(name).unwrap().unwrap());
+        }
+        let [host, taker, guest] = ids[..] else { unreachable!() };
+        let game = storage.create_game_session(host, 1, "113 => 0;3 => 4;4 => 0".into()).unwrap();
+        storage.add_participants(1, game, vec![], vec![host, taker]).unwrap();
+        storage.add_join_request(host, guest, 1, game).unwrap();
+        let found = |s: &Storage| run(s.find_pending_invited_session_async(guest, 1, &[])).unwrap().unwrap().map(|s| s.session_id);
+        assert_eq!(found(&storage), Some(game));
+        let (copy, _) = storage.migrate_game_session(taker, 1, game).unwrap().unwrap();
+        assert_eq!(storage.rebind_invites(game, copy, taker).unwrap(), 1);
+        assert_eq!(found(&storage), Some(copy), "the invitation names the room the new host took over");
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn the_database_is_in_wal_mode_for_the_live_backup() {
         let (storage, dir) = temp_storage("wal");
         let mode: String = run(sqlx::query_scalar("PRAGMA journal_mode").fetch_one(&storage.pool)).unwrap().unwrap();
@@ -2484,7 +2715,18 @@ pub(crate) mod tests {
 
         assert_eq!(storage.leave_game_session(host, lobby).unwrap(), Some(true), "nobody left: the session ends");
         assert!(storage.search_sessions_with_participants(1, &[host], 50).unwrap().is_empty());
-        assert_eq!(storage.leave_game_session(host, lobby).unwrap(), Some(false), "leaving twice is harmless");
+        assert_eq!(storage.leave_game_session(host, lobby).unwrap(), None, "leaving twice changes nothing");
+
+        // The host's game abandons and then leaves: the second is no second leave, while
+        // the others carry on.
+        let lobby = storage.create_game_session(host, 1, "113 => 1".into()).unwrap();
+        storage.add_participants(1, lobby, vec![], vec![host, guest]).unwrap();
+        assert_eq!(storage.leave_game_session(host, lobby).unwrap(), Some(false), "the guest carries on");
+        assert_eq!(storage.leave_game_session(host, lobby).unwrap(), None, "the host is out of it already");
+        assert!(storage.session_members(lobby).unwrap().is_some(), "not ended");
+        // A host who never joined their own session still ends it.
+        let empty = storage.create_game_session(host, 1, "113 => 1".into()).unwrap();
+        assert_eq!(storage.leave_game_session(host, empty).unwrap(), Some(true));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

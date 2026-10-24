@@ -24,6 +24,8 @@
 //! Matched by signatures unique in each executable (DX11 tick VA `0x18eab60`, DX9 `0x43def0`),
 //! the pieces cross-checked against each other; any mismatch leaves the game alone.
 
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -53,6 +55,15 @@ const LOBBY_SESSION: usize = 0x5d4;
 const MIGRATION: usize = 0x610;
 
 static GAME: OnceLock<Game> = OnceLock::new();
+
+/// Whether the tick is hooked here: `follow_unblock` (the member's stale follow task) then runs from
+/// this tick instead of hooking the same function a second time.
+static HOOKED: AtomicBool = AtomicBool::new(false);
+
+/// See [`HOOKED`].
+pub fn tick_hooked() -> bool {
+    HOOKED.load(Ordering::Relaxed)
+}
 
 /// The migration being watched: the state machine, its reason, and since when.
 static WAITING: Mutex<Option<(usize, u32, Instant)>> = Mutex::new(None);
@@ -112,6 +123,7 @@ unsafe fn leave(game: &Game, this: *mut u8) -> &'static str {
 }
 
 fn tick(this: *mut u8, seconds: f32) {
+    crate::follow_unblock::before_tick(this.cast());
     unsafe { TickHook.call(this, seconds) };
     let Some(game) = GAME.get() else { return };
     unsafe {
@@ -196,10 +208,13 @@ pub unsafe fn end_stuck_migrations() {
         .initialize(std::mem::transmute::<usize, unsafe extern "thiscall" fn(*mut u8, f32)>(at), tick)
         .and_then(|h| h.enable())
     {
-        Ok(()) => info!(
-            "migration-fix: a host migration still running after {} s leaves the match (tick @ {at:#010x})",
-            GIVE_UP_AFTER.as_secs()
-        ),
+        Ok(()) => {
+            HOOKED.store(true, Ordering::Relaxed);
+            info!(
+                "migration-fix: a host migration still running after {} s leaves the match (tick @ {at:#010x})",
+                GIVE_UP_AFTER.as_secs()
+            );
+        }
         Err(err) => warn!("migration-fix: the tick's detour failed: {err:?}"),
     }
 }

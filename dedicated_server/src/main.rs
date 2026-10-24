@@ -75,6 +75,7 @@ mod clan;
 mod clients;
 mod community_api;
 mod config;
+mod escorts;
 mod federation;
 mod friends_policy;
 mod full_logs;
@@ -179,6 +180,11 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
     // login, and cleaning up then wiped what the player had just registered on
     // the secure server.
     if is_secure {
+        let sweep_storage = Arc::clone(storage);
+        server.sweep_handler = Some(Box::new(move |logger, ctx, socket, registry| {
+            game_session::resolve_silent_hosts(logger, &sweep_storage, registry);
+            game_session::deliver_migration_notes(logger, ctx, socket, registry);
+        }));
         server.expired_client_handler = Some(|ci: ClientInfo| {
             if let Some(user_id) = ci.user_id {
                 metrics::game_logout(user_id);
@@ -187,6 +193,7 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
                 let closed = session_events::closed_lately(&session_events::Who::Id(user_id));
                 let how = if closed { "closed" } else { "timed_out" };
                 session_events::note(session_events::Who::Id(user_id), "signout", serde_json::json!({ "how": how }));
+                game_session::host_signed_out(logger, storage, user_id);
                 game_session::forget_rooms(user_id);
                 info!(logger, "Cleaning old session of user {user_id}");
                 if let Err(e) = storage.delete_user_session(user_id) {
@@ -199,6 +206,7 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
                 metrics::game_logout(user_id);
                 end_play(logger, storage, user_id);
                 session_events::note(session_events::Who::Id(user_id), "signout", serde_json::json!({ "how": "closed" }));
+                game_session::host_signed_out(logger, storage, user_id);
                 game_session::forget_rooms(user_id);
                 info!(logger, "Cleaning closed session of user {user_id}");
                 if let Err(e) = storage.delete_user_session(user_id) {
@@ -231,6 +239,8 @@ fn start_server(logger: &slog::Logger, ctx: &Context, storage: &Arc<Storage>, de
             let (Some(user_id), Some(conn)) = (ci.user_id, ci.connection_id) else { return };
             let rooms = game_session::rooms_of(user_id, conn);
             if !rooms.is_empty() {
+                // A takeover a member parked for this host goes through before its rooms end.
+                game_session::host_left_rooms(&rooms_logger, &rooms_storage, user_id, &rooms);
                 match rooms_storage.end_game_sessions(user_id, &rooms) {
                     Ok(0) => {}
                     Ok(n) => info!(rooms_logger, "User {user_id}'s earlier connection is gone; ending the {n} room(s) it made"),

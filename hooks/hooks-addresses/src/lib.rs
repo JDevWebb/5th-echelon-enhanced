@@ -85,6 +85,16 @@ pub struct Addresses {
     pub func_nat_echo_send: Option<Address>,
     #[serde(default)]
     pub func_nat_packet_parse: Option<Address>,
+
+    // Party leader following an invitation (always on, DX11 only; see
+    // `hooks::party_follow`; `hooks::follow_unblock` also takes them as "a DX11 build"). The party controller's "leader action" (thiscall, one argument),
+    // and the leader's party-sync state: its enter (`vf08`) and its tick (`vf00`).
+    #[serde(default)]
+    pub func_party_leader_action: Option<Address>,
+    #[serde(default)]
+    pub func_party_sync_enter: Option<Address>,
+    #[serde(default)]
+    pub func_party_sync_tick: Option<Address>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -229,6 +239,9 @@ fn dx9_addresses() -> HashMap<[u8; 32], Addresses> {
         func_open_file_from_archive: Some(0x070_9040),
         func_nat_echo_send: Some(0x02172770),
         func_nat_packet_parse: Some(0x02178320),
+        func_party_leader_action: None,
+        func_party_sync_enter: None,
+        func_party_sync_tick: None,
     };
 
     let dx9_hashes = [
@@ -480,6 +493,9 @@ fn dx11_addresses() -> HashMap<[u8; 32], Addresses> {
         func_open_file_from_archive: Some(0x45ab20),
         func_nat_echo_send: Some(0x02199c60),
         func_nat_packet_parse: Some(0x0219f810),
+        func_party_leader_action: Some(0x00879b20),
+        func_party_sync_enter: Some(0x00839280),
+        func_party_sync_tick: Some(0x008ae430),
     };
     HashMap::from(dx11_hashes.map(|h| (h, dx11_addrs.clone())))
 }
@@ -925,6 +941,9 @@ pub fn search_patterns(filepath: &Path) -> Result<Addresses, Error> {
         func_nat_packet_parse: NAT_PACKET_PARSE_PATTERN
             .search(&text_content)
             .map(|idx| text_section.virtual_address as usize + image_base + idx),
+        func_party_leader_action: None,
+        func_party_sync_enter: None,
+        func_party_sync_tick: None,
     };
 
     for (hook, patterns) in HOOK_PATTERNS.iter() {

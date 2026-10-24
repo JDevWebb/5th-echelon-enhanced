@@ -1491,6 +1491,271 @@ async fn host_leaves_match(ctx: &mut Ctx) -> Result<()> {
     Ok(())
 }
 
+/// Host migration: a party's host leaves and the member Storm elected takes the party over,
+/// the way the game does it: RegisterURLs, SplitSession of the party, AddParticipants of
+/// itself, RemoveParticipants of the old host, UpdateSession. The other members' games make
+/// no call (they follow the new host over Storm), and the old host's own AbandonSession and
+/// LeaveSession come after (their game leaves over Storm first). The party carries on under
+/// the new host with everyone left in it, and the old one ends. The same for a public match
+/// its guests (who joined from a search) carry on.
+async fn host_migration(ctx: &mut Ctx) -> Result<()> {
+    let mut host = ctx.player("Host").await?;
+    let mut heir = ctx.player("Heir").await?;
+    let mut member = ctx.player("Member").await?;
+    let mut friend = ctx.player("Friend").await?;
+    for (bot, port) in [(&mut host, 3074), (&mut heir, 3075), (&mut member, 3076)] {
+        bot.register_urls(&[&format!("prudp:/address=127.0.0.1;port={port};sid=15;type=3")]).await?;
+    }
+    let party = host.create_session(LOBBY).await?;
+    host.add_participants(party, &[host.pid], &[]).await?;
+    for p in [&mut heir, &mut member] {
+        p.add_participants(party, &[p.pid], &[]).await?;
+        p.join_session(party).await?;
+    }
+    let room = |found: &[GameSessionSearchWithParticipantsResult], session: u32| {
+        found.iter().find(|r| r.game_session_search_result.session_key.session_id == session).map(|r| {
+            let mut members = r.participant_ids.0.clone();
+            members.sort_unstable();
+            (r.game_session_search_result.host_pid, members, !r.game_session_search_result.host_urls.0.is_empty())
+        })
+    };
+    let sorted = |mut pids: Vec<u32>| {
+        pids.sort_unstable();
+        pids
+    };
+
+    // The host leaves: over Storm, and on the server its game abandons the party (a session
+    // that may migrate is abandoned, not deleted); the heir's game migrates. (The host's
+    // abandon arriving after the split: host-migration-guest.)
+    host.abandon_session(party).await?;
+    heir.register_urls(&["prudp:/address=127.0.0.1;port=3075;sid=15;type=3"]).await?;
+    let migrated = heir
+        .split_session(party)
+        .await
+        .map_err(|e| eyre!("the heir's split of the party its host left was refused: {e}"))?;
+    ensure!(migrated != party, "the split made no new session");
+    heir.add_participants(migrated, &[heir.pid], &[]).await?;
+    heir.remove_participants(migrated, &[host.pid]).await?;
+    heir.update_session(migrated, LOBBY).await?;
+    let found = friend.search_with_participants(&[member.pid]).await?;
+    ensure!(
+        room(&found, migrated) == Some((heir.pid, sorted(vec![heir.pid, member.pid]), true)),
+        "the migrated party isn't the heir's with everyone left in it, or the member isn't found there: {:?} (want host {}, members {:?})",
+        found
+            .iter()
+            .map(|r| (
+                r.game_session_search_result.session_key.session_id,
+                r.game_session_search_result.host_pid,
+                r.participant_ids.0.clone()
+            ))
+            .collect::<Vec<_>>(),
+        heir.pid,
+        sorted(vec![heir.pid, member.pid])
+    );
+    ensure!(room(&found, party).is_none(), "the member is still found in the old party");
+
+    // Another member's game running the same migration joins the same party, not a new one.
+    let again = member
+        .split_session(party)
+        .await
+        .map_err(|e| eyre!("a member's split of the migrated party was refused: {e}"))?;
+    ensure!(again == migrated, "a second split of the migrated party made another session ({again}, not {migrated})");
+    member.add_participants(migrated, &[member.pid], &[]).await?;
+    ensure!(
+        room(&friend.search_with_participants(&[heir.pid]).await?, migrated) == Some((heir.pid, sorted(vec![heir.pid, member.pid]), true)),
+        "after the second split, the migrated party lost someone"
+    );
+
+    // The old host's last call arrives: it's gone from both, and the old party ends.
+    host.leave_session(party).await?;
+    let found = friend.search_with_participants(&[host.pid, heir.pid, member.pid]).await?;
+    ensure!(room(&found, party).is_none(), "the old party is still there after its host left");
+    ensure!(
+        room(&found, migrated).is_some_and(|(_, members, _)| !members.contains(&host.pid)),
+        "the old host is in the migrated party"
+    );
+
+    // A public match: the host abandons first, then a guest's game migrates; the other guest
+    // carries on with it.
+    let mut guest = ctx.player("Guest").await?;
+    let mut other = ctx.player("Guest").await?;
+    let game = host.create_session("113 => 0;103 => 0;102 => 3;3 => 4;4 => 0").await?;
+    host.add_participants(game, &[], &[host.pid]).await?;
+    guest.join_session(game).await?;
+    other.join_session(game).await?;
+    host.abandon_session(game).await?;
+    let carried = guest.split_session(game).await.map_err(|e| eyre!("the guest's split of the match was refused: {e}"))?;
+    guest.add_participants(carried, &[], &[guest.pid]).await?;
+    let found = friend.search_with_participants(&[other.pid]).await?;
+    ensure!(
+        room(&found, carried).is_some_and(|(h, members, _)| h == guest.pid && members == sorted(vec![guest.pid, other.pid])),
+        "the other guest didn't carry on in the migrated match: {:?}",
+        room(&found, carried)
+    );
+    ensure!(room(&found, game).is_none(), "the other guest is still found in the match its host left");
+    for bot in [host, heir, member, friend, guest, other] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
+/// The members, sorted, and the host of `session` in a search's results.
+fn room_in(found: &[GameSessionSearchWithParticipantsResult], session: u32) -> Option<(u32, Vec<u32>)> {
+    found.iter().find(|r| r.game_session_search_result.session_key.session_id == session).map(|r| {
+        let mut members = r.participant_ids.0.clone();
+        members.sort_unstable();
+        (r.game_session_search_result.host_pid, members)
+    })
+}
+
+/// The abandon variant of a host migration: the game taking over a match lobby whose host left
+/// first abandons it (its online service still holds a session of its own, `StateAbandon`
+/// before `StateMigrateHost`), then splits it. It still takes the others along, but only once
+/// the host is out of it: a member who abandons while its host is still there splits off alone.
+async fn host_migration_abandon(ctx: &mut Ctx) -> Result<()> {
+    let mut host = ctx.player("Host").await?;
+    let mut heir = ctx.player("Heir").await?;
+    let mut guest = ctx.player("Guest").await?;
+    let mut friend = ctx.player("Friend").await?;
+    let game = host.create_session("113 => 0;103 => 0;102 => 3;3 => 4;4 => 0").await?;
+    host.add_participants(game, &[], &[host.pid]).await?;
+    heir.join_session(game).await?;
+    guest.join_session(game).await?;
+
+    // The host's game leaves (AbandonSession, as a session that may migrate does), then the
+    // heir's game abandons and splits.
+    host.abandon_session(game).await?;
+    heir.abandon_session(game).await?;
+    let migrated = heir
+        .split_session(game)
+        .await
+        .map_err(|e| eyre!("the heir's split of the match it abandoned was refused: {e}"))?;
+    ensure!(migrated != game, "the split made no new session");
+    heir.add_participants(migrated, &[], &[heir.pid]).await?;
+    let mut both = vec![heir.pid, guest.pid];
+    both.sort_unstable();
+    let found = friend.search_with_participants(&[guest.pid]).await?;
+    ensure!(
+        room_in(&found, migrated) == Some((heir.pid, both.clone())),
+        "the guest didn't carry on in the heir's match: {:?}",
+        room_in(&found, migrated)
+    );
+    ensure!(room_in(&found, game).is_none(), "the guest is still found in the match its host left");
+
+    // A member who abandons and splits while its host is still in: alone, the others stay.
+    let party = host.create_session(LOBBY).await?;
+    host.add_participants(party, &[host.pid], &[]).await?;
+    for p in [&mut heir, &mut guest] {
+        p.add_participants(party, &[p.pid], &[]).await?;
+        p.join_session(party).await?;
+    }
+    heir.abandon_session(party).await?;
+    let own = heir
+        .split_session(party)
+        .await
+        .map_err(|e| eyre!("a member's split of the party it abandoned was refused: {e}"))?;
+    let mut stay = vec![host.pid, guest.pid];
+    stay.sort_unstable();
+    let found = friend.search_with_participants(&[guest.pid, heir.pid]).await?;
+    ensure!(
+        room_in(&found, party) == Some((host.pid, stay)),
+        "the party lost someone to a member splitting off: {:?}",
+        room_in(&found, party)
+    );
+    ensure!(
+        room_in(&found, own).is_none_or(|(h, members)| h == heir.pid && !members.contains(&guest.pid)),
+        "the member splitting off took the guest along: {:?}",
+        room_in(&found, own)
+    );
+    for bot in [host, heir, guest, friend] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
+/// A guest splits a match while its host is still in it and signed in: nothing tells that from
+/// a guest splitting off on its own, so only the guest moves. The others follow once the host
+/// leaves it (its AbandonSession arriving after the split), or signs out, or when their own
+/// game splits the same match.
+async fn host_migration_guest(ctx: &mut Ctx) -> Result<()> {
+    let mut host = ctx.player("Host").await?;
+    let mut first = ctx.player("Guest").await?;
+    let mut second = ctx.player("Guest").await?;
+    let mut third = ctx.player("Guest").await?;
+    let mut friend = ctx.player("Friend").await?;
+    let attributes = "113 => 0;103 => 0;102 => 3;3 => 4;4 => 0";
+    let sorted = |mut pids: Vec<u32>| {
+        pids.sort_unstable();
+        pids
+    };
+
+    // The host's leave comes after the split.
+    let game = host.create_session(attributes).await?;
+    host.add_participants(game, &[], &[host.pid]).await?;
+    for g in [&mut first, &mut second, &mut third] {
+        g.join_session(game).await?;
+    }
+    let split = first.split_session(game).await.map_err(|e| eyre!("the guest's split of the match was refused: {e}"))?;
+    ensure!(split != game, "the split made no new session");
+    first.add_participants(split, &[], &[first.pid]).await?;
+    let found = friend.search_with_participants(&[second.pid, third.pid, first.pid]).await?;
+    ensure!(
+        room_in(&found, game) == Some((host.pid, sorted(vec![host.pid, second.pid, third.pid]))),
+        "with its host still in, a guest's split took the others out of the match: {:?}",
+        room_in(&found, game)
+    );
+    ensure!(
+        room_in(&found, split).is_some_and(|(h, members)| h == first.pid && members == vec![first.pid]),
+        "the splitting guest isn't alone in its own session: {:?}",
+        room_in(&found, split)
+    );
+    // One of the others' game runs the migration too: it joins the splitter's session.
+    let again = second.split_session(game).await.map_err(|e| eyre!("the second guest's split was refused: {e}"))?;
+    ensure!(again == split, "the second guest's split made another session ({again}, not {split})");
+    // The host's leave arrives: the rest follow.
+    host.abandon_session(game).await?;
+    host.leave_session(game).await?;
+    let found = friend.search_with_participants(&[second.pid, third.pid]).await?;
+    ensure!(
+        room_in(&found, split) == Some((first.pid, sorted(vec![first.pid, second.pid, third.pid]))),
+        "after its host left, the others didn't follow the guest who took over: {:?}",
+        room_in(&found, split)
+    );
+    ensure!(room_in(&found, game).is_none(), "the old match is still there after its host left");
+
+    // The host signs out (its game gone) instead of leaving: the same.
+    let game = host.create_session(attributes).await?;
+    host.add_participants(game, &[], &[host.pid]).await?;
+    let mut fourth = ctx.player("Guest").await?;
+    let mut fifth = ctx.player("Guest").await?;
+    fourth.join_session(game).await?;
+    fifth.join_session(game).await?;
+    let split = fourth
+        .split_session(game)
+        .await
+        .map_err(|e| eyre!("the guest's split of the second match was refused: {e}"))?;
+    fourth.add_participants(split, &[], &[fourth.pid]).await?;
+    host.disconnect().await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let found = friend.search_with_participants(&[fifth.pid]).await?;
+        if room_in(&found, split) == Some((fourth.pid, sorted(vec![fourth.pid, fifth.pid]))) {
+            break;
+        }
+        ensure!(
+            tokio::time::Instant::now() < deadline,
+            "after its host signed out, the other guest didn't follow: {:?} {:?}",
+            room_in(&found, split),
+            room_in(&found, game)
+        );
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    for bot in [first, second, third, fourth, fifth, friend] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
 /// Nobody joins a private match uninvited: not by naming themselves twice (private and
 /// public), nor for sharing some other room with the host. The host's own party follows it
 /// in, by adding itself or being added; a stranger can't be pulled in.
@@ -1552,6 +1817,257 @@ async fn private_room_join(ctx: &mut Ctx) -> Result<()> {
     );
     for p in [host, party, carried, stranger] {
         p.disconnect().await?;
+    }
+    Ok(())
+}
+
+/// A party's leader invited into someone else's private match takes its party along: the game
+/// of the leader tells the members over Storm to follow it (hook `party_follow`, always on), and the
+/// members then join the match like any player of the party of a host would, which the server
+/// has to let them: the leader's search for the match notes its party, and its members are
+/// added by the match's host or add themselves. Nobody else is, and the party is kept (the
+/// leader neither abandons nor splits it).
+async fn party_escort(ctx: &mut Ctx) -> Result<()> {
+    let mut host = ctx.player("Host").await?;
+    let mut leader = ctx.player("Leader").await?;
+    let mut member = ctx.player("Member").await?;
+    let mut other = ctx.player("Member").await?;
+    let mut stray = ctx.player("Stray").await?;
+    for (bot, port) in [(&mut host, 3074), (&mut leader, 3075), (&mut member, 3076), (&mut other, 3077), (&mut stray, 3078)] {
+        bot.register_urls(&[&format!("prudp:/address=127.0.0.1;port={port};sid=15;type=3")]).await?;
+    }
+    let sorted = |mut pids: Vec<u32>| {
+        pids.sort_unstable();
+        pids
+    };
+
+    // The host's private match, with the lobby every game opens beside it.
+    let lobby = host.create_session(LOBBY).await?;
+    host.add_participants(lobby, &[host.pid], &[]).await?;
+    host.set_session(lobby, true).await?;
+    let game = host.create_session(PRIVATE_MATCH).await?;
+    host.add_participants(game, &[], &[host.pid]).await?;
+    // The leader's party, with two members in it (as invited players join).
+    let party = leader.create_session(LOBBY).await?;
+    leader.add_participants(party, &[leader.pid], &[]).await?;
+    for p in [&mut member, &mut other] {
+        p.add_participants(party, &[p.pid], &[]).await?;
+        p.join_session(party).await?;
+    }
+
+    // Nobody outside the party is let in, before anyone is invited.
+    ensure!(
+        host.add_participants(game, &[], &[stray.pid]).await.is_err(),
+        "the host added a stranger to its private match"
+    );
+    ensure!(
+        member.add_participants(game, &[], &[member.pid]).await.is_err(),
+        "a party member joined the private match before its leader was invited"
+    );
+
+    // The host invites the leader, and the leader accepts: the friend search. The party is kept.
+    host.invite(&leader.name).await?;
+    ensure!(leader.poll_invite(Duration::from_secs(3)).await?.is_some(), "the invitation isn't delivered");
+    let found = leader.search_with_participants(&[host.pid]).await?;
+    ensure!(has_session(&found, game), "the invited leader isn't answered with the match");
+    leader.add_participants(game, &[], &[leader.pid]).await?;
+    let push = leader
+        .wait_notification(Duration::from_secs(3))
+        .await?
+        .ok_or_else(|| eyre!("no 'come in' push for the leader"))?;
+    ensure!(push.ui_type == 7003 && push.ui_param_2 == game, "wrong push for the leader: {push:?}");
+    let found = stray.search_with_participants(&[leader.pid]).await?;
+    ensure!(
+        room_in(&found, party) == Some((leader.pid, sorted(vec![leader.pid, member.pid, other.pid]))),
+        "the leader's party isn't kept: {:?}",
+        room_in(&found, party)
+    );
+
+    // The leader's game sent its members after it. (i) The host adds one, as its game does for
+    // every player who completes the join: it gets the push that opens its join gate.
+    host.add_participants(game, &[], &[member.pid])
+        .await
+        .map_err(|e| eyre!("the host couldn't take the leader's party member in: {e}"))?;
+    let push = member
+        .wait_notification(Duration::from_secs(3))
+        .await?
+        .ok_or_else(|| eyre!("no 'come in' push for the party member"))?;
+    ensure!(
+        push.ui_type == 7003 && push.ui_param_1 == member.pid && push.ui_param_2 == game && push.pid_source == host.pid,
+        "wrong push for the party member: {push:?}"
+    );
+    // (iii) The other adds itself, and is told too.
+    other
+        .add_participants(game, &[], &[other.pid])
+        .await
+        .map_err(|e| eyre!("the party member couldn't join the match after its leader: {e}"))?;
+    let push = other
+        .wait_notification(Duration::from_secs(3))
+        .await?
+        .ok_or_else(|| eyre!("no 'come in' push for the member that joined itself"))?;
+    ensure!(push.ui_type == 7003 && push.ui_param_1 == other.pid && push.ui_param_2 == game, "wrong push: {push:?}");
+    // (ii), (iv) A stranger isn't, either way.
+    ensure!(
+        host.add_participants(game, &[], &[stray.pid]).await.is_err(),
+        "the host added a stranger to its private match after the party came"
+    );
+    ensure!(
+        stray.add_participants(game, &[], &[stray.pid]).await.is_err(),
+        "a stranger joined the private match with the party"
+    );
+
+    // (v) The match has all of them.
+    let found = leader.search_with_participants(&[host.pid]).await?;
+    ensure!(
+        room_in(&found, game) == Some((host.pid, sorted(vec![host.pid, leader.pid, member.pid, other.pid]))),
+        "the match doesn't have the host, the leader and its party in it: {:?}",
+        room_in(&found, game)
+    );
+    for bot in [host, leader, member, other, stray] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
+/// The way back of a party that followed its leader into a private match (`party-escort`): the
+/// match is dissolved, the leader's game leaves its party and hosts a new one, and the member,
+/// who saw its party's host go, migrates the old party alone (live, 2026-10-23). The server asks
+/// the member that came along into the leader's new party with an invitation it takes up without
+/// a click; a member that did not come, and one asked before the match is over, are not asked.
+async fn party_return(ctx: &mut Ctx) -> Result<()> {
+    let mut host = ctx.player("Host").await?;
+    let mut leader = ctx.player("Leader").await?;
+    let mut member = ctx.player("Member").await?;
+    let mut stayed = ctx.player("Stayed").await?;
+    for (bot, port) in [(&mut host, 3074), (&mut leader, 3075), (&mut member, 3076), (&mut stayed, 3077)] {
+        bot.register_urls(&[&format!("prudp:/address=127.0.0.1;port={port};sid=15;type=3")]).await?;
+    }
+    let lobby = host.create_session(LOBBY).await?;
+    host.add_participants(lobby, &[host.pid], &[]).await?;
+    host.set_session(lobby, true).await?;
+    let game = host.create_session(PRIVATE_MATCH).await?;
+    host.add_participants(game, &[], &[host.pid]).await?;
+    let party = leader.create_session(LOBBY).await?;
+    leader.add_participants(party, &[leader.pid], &[]).await?;
+    for p in [&mut member, &mut stayed] {
+        p.add_participants(party, &[p.pid], &[]).await?;
+        p.join_session(party).await?;
+    }
+
+    // The leader is invited into the match and takes its party along; one member comes in, the
+    // other stays out.
+    host.invite(&leader.name).await?;
+    ensure!(leader.poll_invite(Duration::from_secs(3)).await?.is_some(), "the invitation isn't delivered");
+    let found = leader.search_with_participants(&[host.pid]).await?;
+    ensure!(has_session(&found, game), "the invited leader isn't answered with the match");
+    leader.add_participants(game, &[], &[leader.pid]).await?;
+    host.add_participants(game, &[], &[member.pid])
+        .await
+        .map_err(|e| eyre!("the host couldn't take the leader's party member in: {e}"))?;
+
+    // A new party opened while the match goes on asks nobody.
+    let early = leader.create_session(LOBBY).await?;
+    leader.add_participants(early, &[leader.pid], &[]).await?;
+    ensure!(
+        member.poll_invite_event(Duration::from_secs(2)).await?.is_none(),
+        "the member was asked back while the match goes on"
+    );
+
+    // The match is dissolved: the leader leaves it and its party (the original's way back), the
+    // member's game migrates the party alone.
+    leader.leave_session(game).await?;
+    leader.abandon_session(party).await?;
+    leader.leave_session(party).await?;
+    leader.leave_session(early).await?;
+    let alone = member
+        .split_session(party)
+        .await
+        .map_err(|e| eyre!("the member's split of the party its leader left was refused: {e}"))?;
+    member.add_participants(alone, &[member.pid], &[]).await?;
+    host.leave_session(game).await?;
+    member.leave_session(game).await?;
+
+    // The leader announces a new party: the member that came is asked into it, as a join it
+    // requested; the one that stayed behind is not.
+    let again = leader.create_session(LOBBY).await?;
+    leader.add_participants(again, &[leader.pid], &[]).await?;
+    leader.set_session(again, false).await?;
+    let got = member.poll_invite_event(Duration::from_secs(3)).await?;
+    ensure!(
+        got.as_ref().is_some_and(|(from, requested)| *from == leader.name && *requested),
+        "the member isn't asked into the leader's new party as the requested join: {got:?}"
+    );
+    ensure!(stayed.poll_invite_event(Duration::from_secs(1)).await?.is_none(), "the member that stayed behind was asked");
+    // As the game does on accepting: search for the leader, then join its party.
+    let found = member.search_with_participants(&[leader.pid]).await?;
+    ensure!(has_session(&found, again), "the search for the leader doesn't lead to its new party: {found:?}");
+    member.add_participants(again, &[member.pid], &[]).await?;
+    member.join_session(again).await?;
+    let found = host.search_with_participants(&[leader.pid]).await?;
+    let mut both = vec![leader.pid, member.pid];
+    both.sort_unstable();
+    ensure!(
+        room_in(&found, again) == Some((leader.pid, both)),
+        "the member isn't in the leader's party: {:?}",
+        room_in(&found, again)
+    );
+    // Once only: another party of the leader asks nobody.
+    let more = leader.create_session(LOBBY).await?;
+    leader.add_participants(more, &[leader.pid], &[]).await?;
+    ensure!(member.poll_invite_event(Duration::from_secs(1)).await?.is_none(), "the member was asked a second time");
+    for bot in [host, leader, member, stayed] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
+/// A party member (not its leader) invited into someone else's private match leaves its party
+/// alone, as the game has it: its game splits the party's session while the leader is still in
+/// it, then joins the match by invitation. The party carries on without it, and when the leader
+/// leaves later the rest of the party is not moved into the session the member split off.
+async fn party_member_leaves_for_match(ctx: &mut Ctx) -> Result<()> {
+    let mut host = ctx.player("Host").await?;
+    let mut leader = ctx.player("Leader").await?;
+    let mut member = ctx.player("Member").await?;
+    let mut other = ctx.player("Member").await?;
+    let mut friend = ctx.player("Friend").await?;
+    for (bot, port) in [(&mut host, 3074), (&mut leader, 3075), (&mut member, 3076), (&mut other, 3077)] {
+        bot.register_urls(&[&format!("prudp:/address=127.0.0.1;port={port};sid=15;type=3")]).await?;
+    }
+    let lobby = host.create_session(LOBBY).await?;
+    host.add_participants(lobby, &[host.pid], &[]).await?;
+    host.set_session(lobby, true).await?;
+    let game = host.create_session(PRIVATE_MATCH).await?;
+    host.add_participants(game, &[], &[host.pid]).await?;
+    let party = leader.create_session(LOBBY).await?;
+    leader.add_participants(party, &[leader.pid], &[]).await?;
+    for p in [&mut member, &mut other] {
+        p.add_participants(party, &[p.pid], &[]).await?;
+        p.join_session(party).await?;
+    }
+
+    // The host invites the member; its game leaves the party (a split while the leader is still
+    // in it) and joins the match by adding itself.
+    host.invite(&member.name).await?;
+    ensure!(member.poll_invite(Duration::from_secs(3)).await?.is_some(), "the invitation isn't delivered");
+    let found = member.search_with_participants(&[host.pid]).await?;
+    ensure!(has_session(&found, game), "the invited member isn't answered with the match");
+    let alone = member.split_session(party).await?;
+    member.add_participants(alone, &[member.pid], &[]).await?;
+    member.add_participants(game, &[], &[member.pid]).await?;
+
+    // The leader leaves the party later: the party's other member is not taken into the
+    // session the first one split off for the match.
+    leader.abandon_session(party).await?;
+    leader.leave_session(party).await?;
+    let found = friend.search_with_participants(&[other.pid, member.pid]).await?;
+    ensure!(
+        room_in(&found, alone).is_none_or(|(_, members)| !members.contains(&other.pid)),
+        "the member that went to the match took the party's other member along: {:?}",
+        room_in(&found, alone)
+    );
+    for bot in [host, leader, member, other, friend] {
+        bot.disconnect().await?;
     }
     Ok(())
 }
@@ -2874,6 +3390,12 @@ const SCENARIOS: &[&str] = &[
     "private-room-join",
     "full-room",
     "host-leaves-match",
+    "host-migration",
+    "host-migration-abandon",
+    "host-migration-guest",
+    "party-escort",
+    "party-return",
+    "party-member-leaves-for-match",
     "split-limits",
     "private-room-hidden",
     "station-url-schemes",
@@ -3000,6 +3522,12 @@ async fn run() -> Result<()> {
                 "private-room-join" => private_room_join(&mut ctx).await,
                 "full-room" => full_room(&mut ctx).await,
                 "host-leaves-match" => host_leaves_match(&mut ctx).await,
+                "host-migration" => host_migration(&mut ctx).await,
+                "host-migration-abandon" => host_migration_abandon(&mut ctx).await,
+                "host-migration-guest" => host_migration_guest(&mut ctx).await,
+                "party-escort" => party_escort(&mut ctx).await,
+                "party-return" => party_return(&mut ctx).await,
+                "party-member-leaves-for-match" => party_member_leaves_for_match(&mut ctx).await,
                 "public-match-probes" => public_match_probes(&mut ctx).await,
                 "party-probes" => party_probes(&mut ctx).await,
                 "party-member-split" => party_member_split(&mut ctx).await,
