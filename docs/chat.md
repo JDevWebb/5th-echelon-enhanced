@@ -1,6 +1,6 @@
 # Chat
 
-Text chat for the community network, in the launcher and in the game's overlay. Blacklist has no text chat of its own on PC (its lobbies only have voice), so this is ours.
+Text chat for the community network, in the launcher and in the game's overlay. It's separate from the game's own chat: Global reaches everyone on the network, and messages reach friends on any server, from the launcher as well as in the game.
 
 Chat is part of the **community network** only (`scbl.jdevwebb.net` and its servers). A server or network of your own doesn't have it: see [Running your own](#running-your-own).
 
