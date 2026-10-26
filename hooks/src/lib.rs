@@ -48,6 +48,7 @@ mod mouse_fix;
 mod overlay;
 mod overlay_input;
 mod particle_fix;
+mod quickstart;
 mod scheme_pool_fix;
 mod storm_fix;
 mod uplay_r1_loader;

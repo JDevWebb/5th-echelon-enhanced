@@ -1,4 +1,4 @@
-//! Checks that every crash fix finds its place in the game's executables, without starting the
+//! Checks that every crash fix (and the quick start) finds its place in the game's executables, without starting the
 //! game: the same search the hooks run on the game as loaded (`hooks_addresses::crash_fixes`),
 //! on the files.
 //!
@@ -17,6 +17,7 @@ use hooks_addresses::crash_fixes::scheme_pool;
 use hooks_addresses::crash_fixes::storm;
 use hooks_addresses::crash_fixes::voice_device;
 use hooks_addresses::crash_fixes::Image;
+use hooks_addresses::quick_start;
 
 const EXECUTABLES: [&str; 2] = ["Blacklist_game.exe", "Blacklist_DX11_game.exe"];
 
@@ -84,6 +85,11 @@ fn check(path: &Path) -> bool {
             .map_err(|what| format!("{what} wasn't found or didn't match")),
     );
     report("session lock", migration::lock_test(&img).map(|at| format!("test {at:#010x}")));
+    // Not a crash fix, but found the same way: the quick start (QuickStartLobby).
+    report(
+        "quick-start",
+        quick_start::locate(&img).map(|s| format!("{s:#x?}").split_whitespace().collect::<Vec<_>>().join(" ")),
+    );
     ok
 }
 
