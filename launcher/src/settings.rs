@@ -196,7 +196,10 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
     }
 
     match current {
-        Section::Game => section(ui, "Options", |ui| game_options(game, notices, ui)),
+        Section::Game => {
+            section(ui, "Options", |ui| game_options(game, notices, ui));
+            section(ui, "Beta features", |ui| beta_features(game, notices, ui));
+        }
         Section::Network => {
             section(ui, "Internet play", |ui| ui.add_enabled_ui(!locked, |ui| internet_play(game, notices, ui)).inner);
             section(ui, "Connection test", |ui| connection_test(settings, game, &ctx, ui));
@@ -652,6 +655,36 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     });
     if hook != game.cfg.hook_config {
         game.update(notices, |c| c.hook_config = hook);
+    }
+}
+
+/// What a beta feature's switch says, and its hover text.
+const BETA_FEATURES: [(&str, &str); 1] = [(
+    "Mouse turning the same at any frame rate",
+    "Above 60 fps the game turns less for the same mouse movement, so turning feels slow and players cap their frame rate. \
+     This scales the mouse's turn by the frame rate, so it turns as it does at 60 fps. Only the mouse: controllers are left as they are.",
+)];
+
+/// Settings › Game › Beta features: changes still being tried out, off unless turned on here,
+/// never asked about. While any is on, each game's whole log goes to the server's admins when
+/// the game closes (feedback.rs), and this says so before one is turned on.
+fn beta_features(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
+    ui.label(RichText::new("Experimental: these may feel wrong, stutter, or crash the game. Turn one off if it gives you trouble.").color(theme::WARN));
+    ui.label(theme::muted(
+        "While any of them is on, the launcher sends the game's full log (names, folders and addresses on your PC hidden) to your server's admins each time the game closes, so they can see how it went. Each takes effect the next time the game starts.",
+    ));
+    ui.add_space(6.0);
+    let mut beta = game.cfg.hook_config.beta.clone();
+    let switches: [&mut bool; 1] = [&mut beta.mouse_turn_per_second];
+    for (on, (label, hover)) in switches.into_iter().zip(BETA_FEATURES) {
+        ui.checkbox(on, label).on_hover_text(hover);
+    }
+    if !beta.is_off() {
+        ui.add_space(4.0);
+        ui.label(RichText::new("Beta on: your game's log is sent after each game.").color(theme::ACCENT));
+    }
+    if beta != game.cfg.hook_config.beta {
+        game.update(notices, |c| c.hook_config.beta = beta);
     }
 }
 

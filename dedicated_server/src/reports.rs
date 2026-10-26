@@ -457,6 +457,34 @@ pub struct Incoming {
     pub files: Vec<(String, Vec<u8>, u64)>,
 }
 
+/// Logs a player's game sends of itself while they try beta features (the launcher's
+/// Settings › Beta features, trigger `beta`), a day: one each time the game closes, filed with
+/// the logs the server asks for (`auto`), not counted with the player's own [`PER_DAY`].
+const BETA_PER_DAY: u32 = 12;
+
+/// Whether `user`'s beta log may be taken today (counted when it is).
+pub fn beta_log_allowed(user: u32) -> bool {
+    beta_log_allowed_on(user, identity::now() / 86_400)
+}
+
+fn beta_log_allowed_on(user: u32, day: i64) -> bool {
+    static SENT: OnceLock<Mutex<HashMap<u32, (i64, u32)>>> = OnceLock::new();
+    let mut sent = SENT.get_or_init(Mutex::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if sent.len() > 10_000 {
+        sent.retain(|_, (d, _)| *d == day);
+    }
+    let (d, n) = sent.entry(user).or_insert((day, 0));
+    if *d != day {
+        *d = day;
+        *n = 0;
+    }
+    if *n >= BETA_PER_DAY {
+        return false;
+    }
+    *n += 1;
+    true
+}
+
 /// Why a report was refused.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Refused {
@@ -552,6 +580,17 @@ pub async fn accept(storage: &Storage, user: u32, peer: Option<std::net::IpAddr>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn beta_logs_are_limited_a_day_each() {
+        let (me, other, day) = (950_001, 950_002, 20_000);
+        for _ in 0..BETA_PER_DAY {
+            assert!(beta_log_allowed_on(me, day));
+        }
+        assert!(!beta_log_allowed_on(me, day), "one more that day");
+        assert!(beta_log_allowed_on(other, day), "another player's are their own");
+        assert!(beta_log_allowed_on(me, day + 1), "and the next day again");
+    }
 
     fn gzip(text: &str) -> Vec<u8> {
         use std::io::Write as _;

@@ -1636,17 +1636,29 @@ impl Misc for MyMisc {
         if auto && asked.is_none() {
             return Err(Status::failed_precondition("The server didn't ask for this game's log"));
         }
+        // The game's log the launcher sends by itself each time the game closes while the
+        // player tries beta features (they agreed to it there): filed with the logs the server
+        // asks for (`auto`, the coordinator's Automatic), limited a day of its own.
+        let beta = !auto && r.triggers.iter().any(|t| t == "beta");
+        if beta && !crate::reports::beta_log_allowed(user_id) {
+            return Err(Status::resource_exhausted("Enough beta logs for today; thanks, they're with the admins"));
+        }
+        let mut triggers = r.triggers;
+        if beta {
+            triggers.insert(0, "auto".to_string());
+        }
         let incoming = crate::reports::Incoming {
             rating: r.rating,
             problems: r.problems,
             comment: r.comment,
-            triggers: r.triggers,
+            triggers,
             client: r.client.into_iter().collect(),
             files: r.files.into_iter().map(|f| (f.name, f.gzip, f.size)).collect(),
         };
-        match crate::reports::accept(&self.storage, user_id, peer, incoming, auto).await.map_err(internal)? {
+        match crate::reports::accept(&self.storage, user_id, peer, incoming, auto || beta).await.map_err(internal)? {
             Ok(id) => {
                 info!(self.logger, "Report {id} from {user_id}, for the coordinator");
+                let asked = asked.or(beta.then_some("beta"));
                 if let Some(problem) = asked {
                     crate::session_events::note(
                         crate::session_events::Who::Id(user_id),

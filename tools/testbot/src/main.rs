@@ -338,6 +338,21 @@ async fn report(ctx: &mut Ctx) -> Result<()> {
     }
     let sixth = a.report(request(vec![])).await;
     ensure!(matches!(&sixth, Err(s) if s.code() == tonic::Code::ResourceExhausted), "a sixth report today: {sixth:?}");
+    // The game's log sent by itself while beta features are on: not one of the player's own
+    // (taken past their five), limited a day of its own.
+    let beta = || server_api::misc::ReportRequest {
+        rating: String::new(),
+        problems: vec![],
+        comment: String::new(),
+        triggers: vec!["beta".into(), "beta:mouse_turn_per_second".into()],
+        client: [("launcher".to_string(), "testbot".to_string())].into_iter().collect(),
+        files: vec![file("bl-tracing.log")],
+    };
+    for n in 0..12 {
+        a.report(beta()).await.map_err(|e| eyre!("beta log {n} after the day's reports: {}", e.message()))?;
+    }
+    let more = a.report(beta()).await;
+    ensure!(matches!(&more, Err(s) if s.code() == tonic::Code::ResourceExhausted), "a 13th beta log today: {more:?}");
     a.disconnect().await
 }
 

@@ -784,6 +784,19 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
         crate::migration_fix::end_stuck_migrations();
     }
 
+    // Beta features (Settings › Beta features), each off unless turned on. Said in the log
+    // (and so in the server's diagnostics, as a warning) so a report shows them.
+    if !config.beta.is_off() {
+        warn!(
+            "Beta features on: {}; the launcher sends this log to the server's admins when the game closes",
+            config.beta.on().join(", ")
+        );
+    }
+    #[cfg(not(feature = "patch-free"))]
+    if config.beta.mouse_turn_per_second {
+        crate::mouse_turn_fix::turn_per_second();
+    }
+
     // Opt-in: straight into the Spies vs Mercs or Co-op online lobby (see quickstart.rs).
     #[cfg(not(feature = "patch-free"))]
     if let Some(lobby) = config.quick_start_lobby {

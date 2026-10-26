@@ -1446,6 +1446,20 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: O
                 });
             });
         });
+        // Beta features on (Settings › Game): said where the game is started, with what it
+        // means, so nobody forgets they're trying one out.
+        let beta = game.cfg.hook_config.beta.on();
+        if !beta.is_empty() {
+            ui.add_space(6.0);
+            ui.label(
+                RichText::new(format!(
+                    "Beta features on ({}): experimental, and your game's log is sent to the server's admins after each game. Settings › Game to turn off.",
+                    beta.len()
+                ))
+                .color(theme::WARN)
+                .size(13.0),
+            );
+        }
     });
 }
 

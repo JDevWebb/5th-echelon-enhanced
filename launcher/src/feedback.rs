@@ -103,6 +103,83 @@ pub struct Feedback {
     closing: Option<bool>,
     /// How the last game the launcher saw close ended, for a report sent from Settings.
     last_exit: Option<GameExit>,
+    /// A game closed with beta features on: its log, to send (see [`beta_log`]).
+    beta_due: Option<(PathBuf, GameExit, String)>,
+    beta_checking: Slot<Result<Option<BetaLog>, String>>,
+    beta_sending: Slot<Result<String, String>>,
+    beta_sent: Option<crate::activity::Handle>,
+}
+
+/// The game's log, sent by itself when the game closes while beta features are on (the player
+/// was told so where they turned them on: Settings › Beta features). Filed with the logs the
+/// server asks for, not as a report of the player's: no rating, no comment.
+struct BetaLog {
+    server: String,
+    username: String,
+    password: String,
+    shown: String,
+    report: server_api::misc::ReportRequest,
+}
+
+/// The beta log of the game in `game_dir` that just closed, if there's one to send: beta features
+/// on, an account here, and not a run of a few seconds (see [`check`]).
+fn beta_log(game_dir: &std::path::Path, exit: GameExit, checks: &str) -> Result<Option<BetaLog>, String> {
+    let on = Config::load(game_dir).hook_config.beta.on();
+    if on.is_empty() {
+        return Ok(None);
+    }
+    let Some(profile) = current_profile(game_dir) else { return Ok(None) };
+    let log = std::fs::read(game_dir.join("bl-tracing.log"))
+        .map(|b| String::from_utf8_lossy(&b).into_owned())
+        .unwrap_or_default();
+    if setup::game::game_running() || log.is_empty() || hooks_config::diagnostics::short_run(&log, SHORT_RUN_SECS) {
+        return Ok(None);
+    }
+    let password = profile
+        .user
+        .secret()
+        .ok_or("Beta features are on, but the saved password can't be read here to send the game's log; press Connect on the server again.")?;
+    let keep: Vec<std::net::Ipv4Addr> = setup::net::resolve(&profile.server)
+        .into_iter()
+        .filter_map(|ip| match ip {
+            std::net::IpAddr::V4(v4) => Some(v4),
+            std::net::IpAddr::V6(_) => None,
+        })
+        .collect();
+    let private = setup::feedback::Private::of_this_pc(keep).showing(&profile.user.username);
+    let checks = if checks.is_empty() {
+        exit.checklist_line()
+    } else {
+        format!("{checks}\n{}", exit.checklist_line())
+    };
+    let files = setup::feedback::prepare(game_dir, crate::logging::log_path().as_deref(), &[("checklist.txt", checks)], &private);
+    let triggers = std::iter::once("beta".to_string()).chain(on.iter().map(|b| format!("beta:{b}"))).collect();
+    let client = [
+        ("launcher".to_string(), env!("FE_RELEASE").to_string()),
+        ("os".to_string(), std::env::consts::OS.to_string()),
+        ("exit_code".to_string(), exit.value()),
+    ];
+    Ok(Some(BetaLog {
+        server: profile.api_server_url().to_string(),
+        username: profile.user.username.clone(),
+        password,
+        shown: server_shown(&profile),
+        report: server_api::misc::ReportRequest {
+            rating: String::new(),
+            problems: vec![],
+            comment: String::new(),
+            triggers,
+            client: client.into_iter().collect(),
+            files: files
+                .iter()
+                .map(|f| server_api::misc::ReportFile {
+                    name: f.name.clone(),
+                    gzip: f.gzip.clone(),
+                    size: f.size,
+                })
+                .collect(),
+        },
+    }))
 }
 
 impl crate::task::FromPanic for Option<Ask> {
@@ -461,6 +538,9 @@ impl Feedback {
     pub fn game_closed(&mut self, ctx: &egui::Context, game_dir: PathBuf, exit_code: Option<i32>, checks: String) {
         let exit = GameExit::closed(exit_code);
         self.last_exit = Some(exit);
+        // With beta features on, the game's log goes whatever the player answers below (or
+        // whether they're asked at all).
+        self.beta_due = Some((game_dir.clone(), exit, checks.clone()));
         if self.asking.is_some() || self.checking.running() || Prefs::feedback().1 {
             return;
         }
@@ -543,6 +623,32 @@ impl Feedback {
 
     /// Shows the ask, when there is one, and what came of sending.
     pub fn show(&mut self, ctx: &egui::Context, notices: &mut Notices) {
+        if let Some((dir, exit, checks)) = self.beta_due.take() {
+            if self.beta_checking.running() || self.beta_sending.running() {
+                tracing::info!("A beta log is still on its way; this game's isn't sent");
+            } else {
+                self.beta_checking.start(ctx, move || beta_log(&dir, exit, &checks));
+            }
+        }
+        match self.beta_checking.poll() {
+            Some(Ok(Some(log))) => {
+                let activity = notices.start(ctx, format!("Sending the game's log to {} (beta features are on)", log.shown));
+                let handle = activity.clone();
+                self.beta_sending
+                    .start(ctx, move || send_report_to(&log.server, &log.username, &log.password, log.report, &handle));
+                self.beta_sent = Some(activity);
+            }
+            Some(Err(e)) => notices.error(e),
+            _ => {}
+        }
+        if let Some(result) = self.beta_sending.poll() {
+            if let Some(activity) = self.beta_sent.take() {
+                match result {
+                    Ok(_) => activity.done("The game's log is with the server's admins (beta features are on)."),
+                    Err(e) => activity.fail(format!("Couldn't send the game's log: {e}"), &[Action::CopyDetails]),
+                }
+            }
+        }
         match self.checking.poll() {
             Some(Ok(Some(ask))) => self.asking = Some(ask),
             Some(Err(e)) => notices.error(e),

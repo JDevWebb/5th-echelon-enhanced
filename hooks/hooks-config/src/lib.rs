@@ -274,6 +274,36 @@ pub enum QuickStartLobby {
     Coop,
 }
 
+/// Beta features (`[Beta]` in `uplay.toml`; the launcher's Settings › Beta features): changes
+/// still being tried out, each off unless the player turns it on. While any is on, the launcher
+/// sends the game's whole log to the server's admins each time the game closes (the player is
+/// told so where they turn them on), so what a beta does can be seen in real games.
+#[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq, Eq)]
+#[serde(rename_all = "PascalCase")]
+pub struct Beta {
+    /// Mouse turning the same at any frame rate: the game turns less for the same mouse
+    /// movement above 60 fps (`hooks::mouse_turn_fix`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub mouse_turn_per_second: bool,
+}
+
+impl Beta {
+    /// The beta features on, by the names reports and logs use.
+    #[must_use]
+    pub fn on(&self) -> Vec<&'static str> {
+        [(self.mouse_turn_per_second, "mouse_turn_per_second")]
+            .into_iter()
+            .filter(|(on, _)| *on)
+            .map(|(_, name)| name)
+            .collect()
+    }
+
+    #[must_use]
+    pub fn is_off(&self) -> bool {
+        self.on().is_empty()
+    }
+}
+
 /// [`Config::quick_start_lobby`] as written, any case; anything else (a typo, another type) is
 /// off, and said so in the log: the rest of `uplay.toml` mustn't fail over an opt-in.
 fn quick_start_lobby<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<QuickStartLobby>, D::Error> {
@@ -345,6 +375,9 @@ pub struct Config {
     /// Coop). See `hooks::quickstart`.
     #[serde(default, deserialize_with = "quick_start_lobby", skip_serializing_if = "Option::is_none")]
     pub quick_start_lobby: Option<QuickStartLobby>,
+    /// Beta features, all off unless turned on; not written while they are.
+    #[serde(default, skip_serializing_if = "Beta::is_off")]
+    pub beta: Beta,
     /// Let the server join you to a match without your click (its `force_join`).
     /// Off: a server shouldn't be able to put you into a match by itself.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1254,6 +1287,18 @@ mod tests {
         cfg.overlay_key = "F8".into();
         let back: Config = toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();
         assert_eq!(back.overlay_key, "F8");
+    }
+
+    #[test]
+    fn beta_features_are_off_and_unwritten_unless_turned_on() {
+        let mut cfg = super::default();
+        assert!(cfg.beta.is_off());
+        assert!(!toml::to_string(&cfg).unwrap().contains("Beta"), "nothing written while off");
+        cfg.beta.mouse_turn_per_second = true;
+        let written = toml::to_string(&cfg).unwrap();
+        assert!(written.contains("[Beta]") && written.contains("MouseTurnPerSecond = true"), "{written}");
+        let back: Config = toml::from_str(&written).unwrap();
+        assert_eq!(back.beta.on(), ["mouse_turn_per_second"]);
     }
 
     #[test]
