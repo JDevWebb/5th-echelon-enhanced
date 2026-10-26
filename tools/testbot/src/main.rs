@@ -2975,6 +2975,10 @@ async fn run() -> Result<()> {
             "federation" => 300,
             "chat" => 120,
             "reconnect" | "closing-note" => 180,
+            // About a dozen players and three parts (private refusals, a public match, one
+            // started): 18-21 s of the 30 on main's CI, and over it in every run of PRs #7
+            // and #8 (MPW1412's note on #7).
+            "join-now-match" => 60,
             _ => 30,
         };
         let result = tokio::time::timeout(Duration::from_secs(limit), async {
