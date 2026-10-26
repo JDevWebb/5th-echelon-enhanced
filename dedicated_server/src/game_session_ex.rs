@@ -118,7 +118,10 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
         // 101 => might be map id
         // 102 => might be game mode
         // 4 => might be number of players? (svm)
-        // 112 => might be number of players? (svm) first is set to 4, but 8 after opening and closening the match settings
+        // 112 => follows the room's free seats, per team it seems (eu1 room 4375, 24 Oct, a
+        //        4v4: 4 with three players in, 2 with four, 1 at seven of eight, up again as
+        //        they left); not compared below, nor taken as full at 0, as long as it's
+        //        unclear whether 0 is one team full or both
         let mut req_attrs = request.game_session_query.parameters.0.into_iter().map(|p| (p.id, p.value)).collect::<HashMap<_, _>>();
         // if not set assume 0 (required for keeping coop and svm apart)
         if let Entry::Vacant(entry) = req_attrs.entry(103) {
@@ -135,6 +138,16 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
                 Some((session, attrs))
             })
             .collect();
+        // Nor a match under way (match_started.rs): its host's game turns the joiner away, or
+        // the joiner's game waits on it and never gives up, and the player restarts. With it
+        // answered, one started match kept every searcher of its mode from playing until it
+        // ended (eu1, 24-25 Oct: 178 stuck searches and 397 locked refusals in three days).
+        // Left out, they find nothing, host, and the next searcher finds them. An invitation
+        // goes where it was asked to.
+        let (scanned, started): (Vec<_>, Vec<_>) = scanned
+            .into_iter()
+            .partition(|(session, _)| invitation_search || !crate::match_started::started(session.session_id));
+        let started = started.iter().filter(|(_, attrs)| answers(&req_attrs, attrs, false)).count();
         let hidden = if invitation_search {
             None
         } else {
@@ -159,6 +172,10 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
         };
         info!(logger, "Found {} sessions", sessions.len());
         let mut detail = serde_json::json!({ "query": request.game_session_query.query_id, "found": sessions.len() });
+        if started > 0 {
+            info!(logger, "Left out {started} matches under way");
+            detail["started"] = serde_json::json!(started);
+        }
         // Found nothing, but there are lobbies their game data keeps from them: the game
         // says nothing of it, so the player and the admins hear it from us.
         if let Some(hidden) = hidden.filter(|_| sessions.is_empty()) {

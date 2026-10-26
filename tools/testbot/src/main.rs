@@ -1233,6 +1233,16 @@ async fn join_now_match(ctx: &mut Ctx) -> Result<()> {
     );
     let refused = later.join_now(&public_host.id).await?;
     ensure!(refused.status() == JoinStatus::Started, "joining a started match answered {:?}", refused.status());
+    // Nor does matchmaking hand it out any more: a searcher's game waited on it or was
+    // turned away, and one started match kept everyone from playing (eu1, 24-25 Oct).
+    let mut next = ctx.player("Guest").await?;
+    next.register_urls(&["prudp:/address=127.0.0.1;port=3090;sid=15;type=3"]).await?;
+    let found = next.search_sessions(PUBLIC_MATCH).await?;
+    ensure!(
+        !found.iter().any(|(session, _)| *session == public_game),
+        "matchmaking still finds a match a join was refused from as started: {found:?}"
+    );
+    next.disconnect().await?;
     turned_away.disconnect().await?;
     later.disconnect().await?;
     searcher.disconnect().await?;
