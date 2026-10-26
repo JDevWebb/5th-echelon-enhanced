@@ -21,13 +21,31 @@ struct State {
     session: Option<(u32, bool)>,
     saved: Option<Instant>,
     achievements: BTreeSet<usize>,
+    online: Option<Online>,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
     session: None,
     saved: None,
     achievements: BTreeSet::new(),
+    online: None,
 });
+
+/// The game's own view of its online sessions (read by `migration_fix`'s tick): whether its
+/// match and lobby sessions are there and locked (`byte [session+0x5de]`, what makes a host
+/// turn a joiner away with "locked"), and whether it counts itself in a match.
+///
+/// For finding out what changes when a Spies vs Mercs round starts: the lock is set on the
+/// lobby session as the player goes into a match (the pre-round lobby too, where joins still
+/// work), and the in-match check holds there as well, so neither is "under way" as far as
+/// anyone has read the game (notes: session-locked.md). Its changes, next to the server's
+/// joins and refusals, show which one is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Online {
+    pub match_session: Option<bool>,
+    pub lobby_session: Option<bool>,
+    pub in_match: bool,
+}
 
 fn state() -> std::sync::MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -58,6 +76,38 @@ pub fn saved(bytes: usize) {
     }
     st.saved = Some(Instant::now());
     info!("Saved the game ({} KB): a checkpoint, or a mission's end", bytes / 1024);
+}
+
+/// The game's sessions as [`Online`] says; written when it changes.
+pub fn online(now: Online) {
+    let mut st = state();
+    if st.online == Some(now) {
+        return;
+    }
+    let first = st.online.is_none();
+    st.online = Some(now);
+    drop(st);
+    if first
+        && now
+            == (Online {
+                match_session: None,
+                lobby_session: None,
+                in_match: false,
+            })
+    {
+        return;
+    }
+    let shown = |s: Option<bool>| match s {
+        None => "none",
+        Some(false) => "open",
+        Some(true) => "locked",
+    };
+    info!(
+        "Online sessions: match {}, lobby {}, {}",
+        shown(now.match_session),
+        shown(now.lobby_session),
+        if now.in_match { "in a match" } else { "not in a match" }
+    );
 }
 
 /// The game earned achievement `id` (once each).

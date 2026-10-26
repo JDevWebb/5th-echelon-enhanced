@@ -162,6 +162,16 @@ pub fn locate(img: &Image) -> Result<(usize, Game), &'static str> {
     locate_in(img.text, img.text_va)
 }
 
+/// The host's answer to a join testing a session's lock: `cmp byte [edi+0x5de], 0`, then
+/// `jz` past the "Locked Session" refusal (DX11 `0x859d37`, DX9 `0xaf4c87`).
+const LOCK_TEST: &str = "80 BF DE 05 00 00 00";
+
+/// Where the game tests a session's lock (byte `+0x5de`), if this build has the test once and
+/// at that offset: what `migration_fix` reads for `game_state::online`.
+pub fn lock_test(img: &Image) -> Result<usize, String> {
+    img.find(&parse(LOCK_TEST)).map_err(|n| format!("the session lock test matched {n} times"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

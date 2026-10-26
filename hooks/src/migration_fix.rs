@@ -23,6 +23,9 @@
 //!
 //! Matched by signatures unique in each executable (DX11 tick VA `0x18eab60`, DX9 `0x43def0`),
 //! the pieces cross-checked against each other; any mismatch leaves the game alone.
+//!
+//! The tick also reads the game's sessions once a second for `game_state::online` (reads and
+//! the game's own in-match check only, nothing written).
 
 use std::sync::Mutex;
 use std::sync::OnceLock;
@@ -51,8 +54,16 @@ const SPINNER: usize = 0x48;
 const MATCH_SESSION: usize = 0x5d0;
 const LOBBY_SESSION: usize = 0x5d4;
 const MIGRATION: usize = 0x610;
+/// A session's lock: a byte the host's answer to a join tests, refusing "locked" when set
+/// (DX11 `0x859d37`, DX9 `0xaf4c87`: `cmp byte [edi+0x5de], 0`).
+const LOCKED: usize = 0x5de;
+/// How often the sessions are read for `game_state::online`.
+const ONLINE_EVERY: Duration = Duration::from_secs(1);
 
 static GAME: OnceLock<Game> = OnceLock::new();
+static ONLINE_READ: Mutex<Option<Instant>> = Mutex::new(None);
+/// Whether this build tests the lock at [`LOCKED`] (`migration::lock_test`).
+static LOCK_KNOWN: OnceLock<bool> = OnceLock::new();
 
 /// The migration being watched: the state machine, its reason, and since when.
 static WAITING: Mutex<Option<(usize, u32, Instant)>> = Mutex::new(None);
@@ -111,9 +122,37 @@ unsafe fn leave(game: &Game, this: *mut u8) -> &'static str {
     "left the match"
 }
 
+/// The game's sessions for `game_state::online`, read as the migration code reads them.
+unsafe fn online(game: &Game) -> crate::game_state::Online {
+    let owner = read::<usize>(game.owner);
+    let session = |at: usize| {
+        let session = if owner == 0 { 0 } else { read::<usize>(owner + at) };
+        (session != 0).then(|| read::<u8>(session + LOCKED) != 0)
+    };
+    let manager = read::<usize>(game.manager);
+    let online = if manager == 0 { 0 } else { read::<usize>(manager + 0x50) };
+    let in_match = online != 0 && {
+        let in_match: unsafe extern "thiscall" fn(usize) -> u8 = std::mem::transmute(game.in_match);
+        in_match(online) != 0
+    };
+    crate::game_state::Online {
+        match_session: session(MATCH_SESSION),
+        lobby_session: session(LOBBY_SESSION),
+        in_match,
+    }
+}
+
 fn tick(this: *mut u8, seconds: f32) {
     unsafe { TickHook.call(this, seconds) };
     let Some(game) = GAME.get() else { return };
+    if LOCK_KNOWN.get() == Some(&true) {
+        let mut read_at = ONLINE_READ.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if read_at.is_none_or(|at| at.elapsed() >= ONLINE_EVERY) {
+            *read_at = Some(Instant::now());
+            drop(read_at);
+            crate::game_state::online(unsafe { online(game) });
+        }
+    }
     unsafe {
         let reason = read::<u32>(this as usize + REASON);
         let waiting = matches!(reason, 5 | 6) && read::<u32>(this as usize + PHASE) == 2;
@@ -192,6 +231,11 @@ pub unsafe fn end_stuck_migrations() {
         }
     };
     let _ = GAME.set(game);
+    let lock = migration::lock_test(&image);
+    if let Err(why) = &lock {
+        warn!("migration-fix: {why}: the game's sessions aren't followed");
+    }
+    let _ = LOCK_KNOWN.set(lock.is_ok());
     match TickHook
         .initialize(std::mem::transmute::<usize, unsafe extern "thiscall" fn(*mut u8, f32)>(at), tick)
         .and_then(|h| h.enable())

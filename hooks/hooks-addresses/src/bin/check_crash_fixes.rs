@@ -83,6 +83,7 @@ fn check(path: &Path) -> bool {
             .map(|(tick, _)| format!("tick {tick:#010x}"))
             .map_err(|what| format!("{what} wasn't found or didn't match")),
     );
+    report("session lock", migration::lock_test(&img).map(|at| format!("test {at:#010x}")));
     ok
 }
 
