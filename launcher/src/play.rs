@@ -2278,17 +2278,25 @@ fn support_row(play: &mut Play, game: &Game, notices: &mut Notices, ctx: &egui::
     });
 }
 
+/// The split Play button's width: the button and its arrow. "Playing" takes the same, so
+/// nothing beside it moves when the game starts.
+const SPLIT_PLAY_WIDTH: f32 = 220.0 + 2.0 + 42.0;
+
 fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked: Option<&str>, ui: &mut egui::Ui) {
     let ready = !play.checks.is_empty() && setup::diagnose::ready(&play.checks) && !matches!(play.support, Some(Support::Unsupported(_)));
     if play.running.is_some() || play.game_seen {
-        ui.add_enabled(false, theme::play_button("Playing"));
+        ui.add_enabled(false, theme::play_button("Playing").min_size(egui::vec2(SPLIT_PLAY_WIDTH, 58.0)));
         return;
     }
-    let mode = *play.play_mode.get_or_insert_with(crate::app::Prefs::play_mode);
+    // A game set up by another tool (`[Managed]`) is started as it is: the launcher doesn't
+    // write its uplay.toml, so it can't start straight into a lobby.
+    let managed = game.managed.is_some();
+    let chosen = *play.play_mode.get_or_insert_with(crate::app::Prefs::play_mode);
+    let mode = if managed { crate::app::PlayMode::Play } else { chosen };
     let enabled = !play.busy() && blocked.is_none();
     // A split button: the last choice is the button, the arrow beside it offers the others.
     let (button, arrow) = ui
-        .allocate_ui_with_layout(egui::vec2(220.0 + 2.0 + 42.0, 58.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        .allocate_ui_with_layout(egui::vec2(SPLIT_PLAY_WIDTH, 58.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
             let button = ui.add_enabled(enabled, theme::play_button(mode.label()).corner_radius(egui::CornerRadius { nw: 12, sw: 12, ne: 0, se: 0 }));
             let arrow = ui.add_enabled(
@@ -2311,7 +2319,12 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked:
     egui::Popup::menu(&arrow).show(|ui| {
         ui.set_min_width(160.0);
         for choice in crate::app::PlayMode::ALL {
-            if ui.selectable_label(choice == mode, choice.label()).clicked() {
+            let can = !managed || choice == crate::app::PlayMode::Play;
+            let item = ui.add_enabled(can, egui::Button::selectable(choice == mode, choice.label()));
+            if item
+                .on_disabled_hover_text("This game is set up by another tool, so the launcher starts it as it is.")
+                .clicked()
+            {
                 picked = Some(choice);
             }
         }

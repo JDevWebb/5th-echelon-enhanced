@@ -274,6 +274,21 @@ pub enum QuickStartLobby {
     Coop,
 }
 
+/// [`Config::quick_start_lobby`] as written, any case; anything else (a typo, another type) is
+/// off, and said so in the log: the rest of `uplay.toml` mustn't fail over an opt-in.
+fn quick_start_lobby<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<QuickStartLobby>, D::Error> {
+    let value = Option::<toml::Value>::deserialize(d)?;
+    let lobby = match value.as_ref().and_then(toml::Value::as_str).map(str::to_ascii_lowercase).as_deref() {
+        Some("svm") => Some(QuickStartLobby::Svm),
+        Some("coop") => Some(QuickStartLobby::Coop),
+        _ => None,
+    };
+    if let (Some(value), None) = (&value, lobby) {
+        tracing::warn!("QuickStartLobby = {value} isn't \"svm\" or \"coop\": the quick start is off");
+    }
+    Ok(lobby)
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub struct Config {
@@ -328,7 +343,7 @@ pub struct Config {
     /// (Co-op), skipping the boot videos and the title screen. Unset by default: the game starts
     /// as it always did. The launcher's Play button sets it on each start (its Play SvM / Play
     /// Coop). See `hooks::quickstart`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "quick_start_lobby", skip_serializing_if = "Option::is_none")]
     pub quick_start_lobby: Option<QuickStartLobby>,
     /// Let the server join you to a match without your click (its `force_join`).
     /// Off: a server shouldn't be able to put you into a match by itself.
@@ -1253,9 +1268,14 @@ mod tests {
             let back: Config = toml::from_str(&written).unwrap();
             assert_eq!(back.quick_start_lobby, Some(lobby));
         }
-        let unknown = toml::to_string(&cfg).unwrap().replace("QuickStartLobby = \"coop\"", "QuickStartLobby = \"hub\"");
-        assert!(unknown.contains("\"hub\""));
-        assert!(toml::from_str::<Config>(&unknown).is_err(), "an unknown lobby is an error, not a guess");
+        let written = toml::to_string(&cfg).unwrap();
+        let with = |value: &str| toml::from_str::<Config>(&written.replace("QuickStartLobby = \"coop\"", &format!("QuickStartLobby = {value}"))).map(|c| c.quick_start_lobby);
+        assert_eq!(with("\"SvM\"").unwrap(), Some(QuickStartLobby::Svm), "any case");
+        // Off, not a guess, and never the whole file refused over it (the game would start
+        // without its config).
+        for value in ["\"hub\"", "\"\"", "1", "true"] {
+            assert_eq!(with(value).unwrap(), None, "{value}");
+        }
     }
 
     #[test]

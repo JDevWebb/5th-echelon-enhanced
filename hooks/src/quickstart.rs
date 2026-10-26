@@ -1,6 +1,7 @@
 //! Quick start: from the process start straight into the online lobby of Spies vs
 //! Mercs or Co-op, with no key press, invitation or dialog (opt-in, `QuickStartLobby`). Once the
-//! lobby is chosen the module does nothing more.
+//! lobby is chosen (or the quick start gives up) every hook only calls the game's own function.
+//! Off for a start the launcher made for a friend's Join (its join request waiting).
 //!
 //! Runtime changes only; no file is modified. `install` runs from `hooks::init` (in `DllMain`),
 //! before the game's own code starts.
@@ -24,6 +25,7 @@
 //!    0x2a (title -> online menu), as the game does from the hub. Should the online startup
 //!    fail (no server), the game shows its own dialog and the suppressed hub travel is done after
 //!    all: the game goes on as it would have without the quick start.
+//!    Still on the title 30 s after that, with the task runner free, it gives up the same way.
 //! 4. **Lobby**: in the online menu (`UI::SMIMatchmaking`'s tick), once the entry for Spies vs
 //!    Mercs (id 1) or Co-op (id 2) has stood in the list for a moment, it gets the focus and the
 //!    menu's own "select" handler is called.
@@ -120,10 +122,24 @@ static ONLINE_STARTED: AtomicBool = AtomicBool::new(false);
 static MODE_CHOSEN: AtomicBool = AtomicBool::new(false);
 /// The online startup failed: the game goes on as without the quick start.
 static GAVE_UP: AtomicBool = AtomicBool::new(false);
+/// When the hub travel (or, DX11, the menu's hub command) was first suppressed for the online
+/// startup.
+static SUPPRESSED_AT: OnceLock<Instant> = OnceLock::new();
+/// Still on the title this long after the hub travel was suppressed, with the UI task runner
+/// free (the startup finished without leading anywhere, or never started), the quick start
+/// gives up and the hub travel is done after all.
+const TITLE_GIVE_UP: Duration = Duration::from_secs(30);
 /// Ticks the wanted entry has stood in the list.
 static TARGET_SEEN: AtomicU32 = AtomicU32::new(0);
 /// The online list's ids last seen (for the log).
 static LAST_IDS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+
+/// Nothing more to do: the lobby was chosen, or the quick start gave up. Every hook then only
+/// calls the game's own function, so a later return to the title (a quit, a lost connection)
+/// is the game's alone.
+fn done() -> bool {
+    MODE_CHOSEN.load(Ordering::Relaxed) || GAVE_UP.load(Ordering::Relaxed)
+}
 
 fn ms() -> u128 {
     START.get().map_or(0, |s| s.elapsed().as_millis())
@@ -166,6 +182,12 @@ fn smi_state() -> Option<u32> {
 pub unsafe fn install(lobby: QuickStartLobby) {
     let _ = START.set(Instant::now());
     let _ = LOBBY.set(lobby);
+    // Started for a friend's Join (the launcher's join request waiting beside uplay.toml): the
+    // join is what the player asked for, not a lobby. Left for `community` to take.
+    if join_request_waiting() {
+        info!("quickstart: a join request is waiting -> off for this start");
+        return;
+    }
 
     let Some(image) = crate::game_image() else {
         warn!("quickstart: the game's sections weren't found -> nothing changed");
@@ -209,10 +231,43 @@ pub unsafe fn install(lobby: QuickStartLobby) {
     info!("quickstart: {} on, lobby {lobby:?}", e.name);
 }
 
+/// Whether the launcher's join request for this start is waiting and still good (read, not
+/// taken: `community` takes it).
+fn join_request_waiting() -> bool {
+    let Some(path) = crate::community::folder().map(|d| d.join(hooks_config::join_request::FILE)) else {
+        return false;
+    };
+    let Ok(bytes) = std::fs::read(path) else { return false };
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    hooks_config::join_request::read(&bytes, now).is_ok()
+}
+
 /// The title screen's tick (main thread): presses Start once the title is ready and online
 /// presence is up, and starts the online startup when it's been asked for.
 fn scene_start_tick(this: *mut c_void, a1: u32) {
+    if done() {
+        // SAFETY: the original, unchanged.
+        return unsafe { SceneStartTickHook.call(this, a1) };
+    }
     SCENE_START.store(this as usize, Ordering::Relaxed);
+    if !this.is_null() && title_given_up() {
+        warn!(
+            "quickstart: +{} ms still on the title {} s after the online startup was asked for -> to the hub, as without the quick start",
+            ms(),
+            TITLE_GIVE_UP.as_secs()
+        );
+        GAVE_UP.store(true, Ordering::Relaxed);
+        // SAFETY: main thread, the live title screen the travel was suppressed for; the
+        // original, unchanged. Then this tick as the game's.
+        unsafe {
+            if exe().dx9 {
+                HubTravelHook9.call(this);
+            } else {
+                HubTravelHook.call(this);
+            }
+            return SceneStartTickHook.call(this, a1);
+        }
+    }
     if !this.is_null() {
         // SAFETY: `this` is the live SceneStart the game is ticking right now; `pressed` is a
         // global of the recognised executable.
@@ -235,6 +290,14 @@ fn scene_start_tick(this: *mut c_void, a1: u32) {
     }
     // SAFETY: the original, unchanged.
     unsafe { SceneStartTickHook.call(this, a1) }
+}
+
+/// The hub was first kept from the title [`TITLE_GIVE_UP`] ago, the game is still on the title and the
+/// UI task runner is free: nothing more is coming.
+fn title_given_up() -> bool {
+    SUPPRESSED_AT.get().is_some_and(|at| at.elapsed() >= TITLE_GIVE_UP)
+        && smi_state() == Some(SMI_STATE_TITLE)
+        && read_u32(exe().task_runner).filter(|&r| r != 0).and_then(|r| read_u32(r as usize + TASK_RUNNER_CURRENT)) == Some(0)
 }
 
 /// Presses Start as `UI::SceneStart::vf88`'s invitation branch does: "Start pressed" = 1, state
@@ -282,7 +345,8 @@ fn ask_online_startup() {
 /// The travel to the hub (main thread): the first one after our press is suppressed and the online
 /// startup asked for instead. `true`: suppressed.
 fn suppress_hub_travel() -> bool {
-    if PRESS_SENT.load(Ordering::Relaxed) && !HUB_SUPPRESSED.swap(true, Ordering::Relaxed) {
+    if !done() && PRESS_SENT.load(Ordering::Relaxed) && !HUB_SUPPRESSED.swap(true, Ordering::Relaxed) {
+        let _ = SUPPRESSED_AT.set(Instant::now());
         ask_online_startup();
         info!("quickstart: +{} ms hub travel suppressed -> online startup (menu state {:x?})", ms(), smi_state());
         return true;
@@ -371,7 +435,7 @@ fn online_result(this: *mut c_void, result: i32) {
 /// The online menu's tick (main thread): once the wanted entry stands in the list, focus it and
 /// call the menu's own "select".
 fn matchmaking_tick(this: *mut c_void, dt: f32) {
-    if PRESS_SENT.load(Ordering::Relaxed) && !MODE_CHOSEN.load(Ordering::Relaxed) && !GAVE_UP.load(Ordering::Relaxed) && smi_state() == Some(SMI_STATE_ONLINE) {
+    if PRESS_SENT.load(Ordering::Relaxed) && !done() && smi_state() == Some(SMI_STATE_ONLINE) {
         let target = match LOBBY.get() {
             Some(QuickStartLobby::Coop) => ITEM_COOP,
             _ => ITEM_SVM,
@@ -454,13 +518,18 @@ unsafe fn item_id(e: &Sites, col: usize, handle: u32) -> u32 {
 /// after our press (commands 0x3d/0x47 in state 0x9a), the command is made one that does nothing
 /// there, and the online startup asked for instead.
 fn smi_step(this: *mut c_void) {
+    if done() {
+        // SAFETY: the original, unchanged.
+        return unsafe { SmiStepHook.call(this) };
+    }
     let smi = this as usize;
     let queued = read_u32(smi + SMI_QUEUE_LEN).unwrap_or(0) > 0;
     let cmd = if queued { read_u32(smi + SMI_QUEUE).and_then(|q| read_u32(q as usize)) } else { None };
-    if PRESS_SENT.load(Ordering::Relaxed) && !GAVE_UP.load(Ordering::Relaxed) && read_u32(smi + SMI_STATE) == Some(SMI_STATE_TITLE) && matches!(cmd, Some(0x3d | 0x47)) {
+    if PRESS_SENT.load(Ordering::Relaxed) && read_u32(smi + SMI_STATE) == Some(SMI_STATE_TITLE) && matches!(cmd, Some(0x3d | 0x47)) {
         if let Some(q) = read_u32(smi + SMI_QUEUE) {
             // SAFETY: the head of the command array (its length checked above), main thread.
             unsafe { *(q as usize as *mut u32) = SMI_CMD_NOOP_TITLE };
+            let _ = SUPPRESSED_AT.set(Instant::now());
             ask_online_startup();
             info!("quickstart: +{} ms menu command {:#x} (hub) on the title dropped -> online startup", ms(), cmd.unwrap_or(0));
         }
@@ -474,7 +543,7 @@ fn smi_step(this: *mut c_void) {
 fn watch() {
     let until = Instant::now() + Duration::from_secs(300);
     let (mut scene, mut smi, mut presence) = (None, None, false);
-    while !MODE_CHOSEN.load(Ordering::Relaxed) && Instant::now() < until {
+    while !done() && Instant::now() < until {
         let now = scene_state();
         if now != scene {
             info!("quickstart: +{} ms title state {scene:?} -> {now:?}", ms());
