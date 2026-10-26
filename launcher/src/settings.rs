@@ -241,7 +241,7 @@ fn feedback(app: &mut App, ui: &mut egui::Ui) {
     if let Some(game) = game.as_mut() {
         section(ui, "While you play", |ui| {
             ui.label(theme::muted(
-                "The game sends the server it's signed in to its warnings, errors and network events as they happen, and what it's doing (the game session it's in, its checkpoint saves), so the server's admins can see why a join, a connection or a mission failed. Your PC's name, your user folder and your internet address are hidden first.",
+                "The game sends the server it's signed in to its warnings, errors and network events as they happen, and what it's doing (the game session it's in, its checkpoint saves, which of 5th Echelon's fixes went in and what they did), so the server's admins can see why a join, a connection or a mission failed. Your PC's name, your user folder and your internet address are hidden first.",
             ));
             let mut send = game.cfg.hook_config.send_diagnostics;
             if ui.checkbox(&mut send, "Send the game's diagnostics to the server").changed() {
@@ -1242,5 +1242,31 @@ fn hooks(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     ui.checkbox(&mut hook.log_data_version, "Write the game's data version (bl-dataversion.txt)");
     if hook != game.cfg.hook_config {
         game.update(notices, |c| c.hook_config = hook);
+    }
+}
+
+#[cfg(all(test, feature = "ui-tests"))]
+mod tests {
+    use egui_kittest::kittest::Queryable;
+
+    use super::*;
+
+    #[test]
+    fn beta_features_warn_say_logs_go_and_turn_on_in_uplay_toml() {
+        let (dir, mut game) = crate::theme::ui_test::game("beta");
+        let mut notices = Notices::default();
+        {
+            let mut h = crate::theme::ui_test::harness(egui::vec2(900.0, 700.0), |ui| beta_features(&mut game, &mut notices, ui));
+            assert!(h.query_by_label_contains("Experimental").is_some(), "the warning");
+            assert!(h.query_by_label_contains("full log").is_some(), "that the log is sent");
+            assert!(h.query_by_label_contains("Beta on").is_none(), "nothing on yet");
+            h.get_by_label("Mouse turning the same at any frame rate").click();
+            h.run();
+            assert!(h.query_by_label_contains("Beta on").is_some(), "said once one is on");
+        }
+        assert!(game.cfg.hook_config.beta.mouse_turn_per_second);
+        let written = std::fs::read_to_string(dir.join("uplay.toml")).unwrap_or_default();
+        assert!(written.contains("[Beta]") && written.contains("MouseTurnPerSecond = true"), "{written}");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

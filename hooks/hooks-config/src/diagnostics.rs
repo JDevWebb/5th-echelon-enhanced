@@ -6,18 +6,39 @@
 const NETWORK: &[&str] = &["hooks::hooks::nat", "hooks::hooks::portmap", "hooks::hooks::nla"];
 /// What the game is doing: its session, saves, achievements and the overlay (`hooks::game_state`).
 const GAME_STATE: &str = "hooks::game_state";
+/// The add-on's fixes, quick start and betas: whether each went in, and what it did (a
+/// migration given up or finished and how long it took, the lobby reached). A few lines a
+/// game, so the admins can see them working across players' PCs, not only on a tester's.
+const FIXES: &[&str] = &[
+    "hooks::scheme_pool_fix",
+    "hooks::particle_fix",
+    "hooks::storm_fix",
+    "hooks::voice_device_fix",
+    "hooks::migration_fix",
+    "hooks::quickstart",
+    "hooks::mouse_turn_fix",
+    "hooks::mouse_fix",
+    "hooks::autoclimb",
+];
+/// The overlay: whether it started, and on DirectX 11 which test device it needed (hudhook's
+/// own line when the first was refused).
+const OVERLAY_UP: [(&str, &str); 2] = [("hooks::uplay_r1_loader", "Overlay initialized"), ("hudhook::hooks::dx11", "DirectX 11 dummy device")];
 
 /// Whether a log line goes to the server: this client's warnings and errors, and the network
 /// code's lines but its packet dumps (those are for the player's own packet logging).
 /// `level` as the log writes it: ERROR, WARN, INFO, DEBUG or TRACE.
 #[must_use]
 pub fn wanted(level: &str, target: &str, message: &str) -> bool {
+    if level == "INFO" && OVERLAY_UP.iter().any(|(t, m)| target.starts_with(t) && message.starts_with(m)) {
+        return true;
+    }
     if !target.starts_with("hooks") || target.starts_with("hooks::diagnostics") {
         return false;
     }
     match level {
         "ERROR" | "WARN" => true,
         "INFO" if target.starts_with(GAME_STATE) => true,
+        "INFO" if FIXES.iter().any(|m| target == *m || target.starts_with(&format!("{m}::"))) => true,
         "INFO" => NETWORK.iter().any(|m| target.starts_with(m)) && !message.starts_with("sendto ") && !message.starts_with("recvfrom "),
         _ => false,
     }
@@ -291,6 +312,32 @@ mod tests {
             "2026-10-06T06:36:50Z  WARN after\n  more of it\n2026-10-06T06:36:51Z  INFO later\n"
         );
         assert_eq!(log_since(log, 1_791_268_700), "");
+    }
+
+    #[test]
+    fn the_fixes_at_work_go_too() {
+        assert!(wanted(
+            "INFO",
+            "hooks::migration_fix",
+            "migration-fix: the host migration (match) ended by itself after 4 s"
+        ));
+        assert!(wanted(
+            "INFO",
+            "hooks::scheme_pool_fix",
+            "scheme-pool-fix: pawn teardown @ 0x00d5e51b now keeps the shared action-scheme pool"
+        ));
+        assert!(wanted("INFO", "hooks::quickstart", "quickstart: +5320 ms done, in the lobby"));
+        assert!(wanted(
+            "INFO",
+            "hooks::mouse_turn_fix",
+            "mouse-turn-fix (beta): scaling the mouse's turn (120 frames so far)"
+        ));
+        assert!(wanted("INFO", "hooks::uplay_r1_loader", "Overlay initialized"));
+        assert!(wanted("INFO", "hudhook::hooks::dx11", "DirectX 11 dummy device: WARP (the null device was refused: ...)"));
+        assert!(!wanted("INFO", "hooks::uplay_r1_loader", "UPLAY_USER_GetUsername"), "the loader's calls stay out");
+        assert!(!wanted("INFO", "hudhook::renderer::pipeline", "anything else of hudhook's"));
+        assert!(!wanted("INFO", "hooks::quickstart_other", "a module that only starts with the name"));
+        assert!(!wanted("DEBUG", "hooks::migration_fix", "debug lines stay"));
     }
 
     #[test]
