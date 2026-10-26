@@ -45,6 +45,7 @@ mod hooks;
 mod macros;
 mod migration_fix;
 mod mouse_fix;
+mod mouse_turn_fix;
 mod overlay;
 mod overlay_input;
 mod particle_fix;

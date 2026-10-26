@@ -17,6 +17,7 @@ use hooks_addresses::crash_fixes::scheme_pool;
 use hooks_addresses::crash_fixes::storm;
 use hooks_addresses::crash_fixes::voice_device;
 use hooks_addresses::crash_fixes::Image;
+use hooks_addresses::mouse_turn;
 use hooks_addresses::quick_start;
 
 const EXECUTABLES: [&str; 2] = ["Blacklist_game.exe", "Blacklist_DX11_game.exe"];
@@ -89,6 +90,11 @@ fn check(path: &Path) -> bool {
     report(
         "quick-start",
         quick_start::locate(&img).map(|s| format!("{s:#x?}").split_whitespace().collect::<Vec<_>>().join(" ")),
+    );
+    // Beta (Settings › Beta features): found the same way.
+    report(
+        "beta: mouse turn",
+        mouse_turn::locate(&img).map(|s| format!("{:#010x}, back to {:#010x}", s.patch, s.resume)),
     );
     ok
 }
