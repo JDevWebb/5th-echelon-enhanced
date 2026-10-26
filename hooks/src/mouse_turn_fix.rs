@@ -136,4 +136,70 @@ mod tests {
         assert_eq!((stub + jmp as u32 + 5).wrapping_add(word(jmp + 1)), 0xd8e31f, "back after the bytes replaced");
         assert!(code.len() <= DATA_AT, "the code stays clear of its data");
     }
+
+    /// The stub itself, run on a stand-in for the look routine's object (32-bit only: the
+    /// game's, and CI's hooks tests): it's called with ESI and EDI and the mouse's X and Y in
+    /// XMM1 and XMM0 as the game has them, and jumps on to a landing that pops the x87 load it
+    /// replays (as the game's next instruction does) and returns.
+    #[cfg(target_arch = "x86")]
+    #[test]
+    fn the_stub_scales_the_mouse_by_the_frame_time() {
+        unsafe fn run(dt: f32, x: f32, y: f32) -> (f32, f32, f32, f32, u32) {
+            let alloc = region::alloc(0x100, region::Protection::READ_WRITE_EXECUTE).unwrap();
+            let base = alloc.as_ptr::<u8>().cast_mut();
+            let (stub, data, landing, counter) = (base, base.add(DATA_AT), base.add(0x80), base.add(0x90));
+            for (i, value) in [ONE_SIXTIETH, LEAST, MOST].into_iter().enumerate() {
+                std::ptr::write_unaligned(data.add(i * 4).cast::<f32>(), value);
+            }
+            // fstp st(0); ret
+            std::ptr::copy_nonoverlapping([0xDD, 0xD8, 0xC3].as_ptr(), landing, 3);
+            std::ptr::write_unaligned(counter.cast::<u32>(), 0);
+            let code = assemble(stub as u32, landing as u32, data as u32, counter as u32);
+            std::ptr::copy_nonoverlapping(code.as_ptr(), stub, code.len());
+
+            let mut object = vec![0u8; 0x500];
+            let this = object.as_mut_ptr();
+            std::ptr::write_unaligned(this.cast::<f32>(), dt);
+            std::ptr::write_unaligned(this.add(0x470).cast::<f32>(), x);
+            std::ptr::write_unaligned(this.add(0x4b4).cast::<f32>(), 1.0);
+            let (mut x_out, mut y_out) = (x, y);
+            std::arch::asm!(
+                "push esi",
+                "mov esi, {this}",
+                "call {stub}",
+                "pop esi",
+                this = in(reg) this as usize,
+                stub = in(reg) stub as usize,
+                in("edi") this as usize + 0x474,
+                inout("xmm0") y_out,
+                inout("xmm1") x_out,
+                out("xmm2") _,
+                out("xmm3") _,
+                out("xmm4") _,
+            );
+            let stored_x = std::ptr::read_unaligned(this.add(0x470).cast::<f32>());
+            let stored_y = std::ptr::read_unaligned(this.add(0x474).cast::<f32>());
+            let frames = std::ptr::read_unaligned(counter.cast::<u32>());
+            (x_out, y_out, stored_x, stored_y, frames)
+        }
+        let close = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        unsafe {
+            // 120 fps: each frame's mouse distance is half 60's, so it's doubled: (1/60) / (1/120).
+            let (x, y, sx, sy, n) = run(1.0 / 120.0, 3.0, -1.5);
+            assert!(close(x, 6.0) && close(y, -3.0) && close(sx, 6.0) && close(sy, -3.0) && n == 1, "{x} {y} {sx} {sy} {n}");
+            // 60 fps: as it was.
+            let (x, y, sx, sy, _) = run(1.0 / 60.0, 3.0, -1.5);
+            assert!(close(x, 3.0) && close(y, -1.5) && close(sx, 3.0) && close(sy, -1.5), "{x} {y} {sx} {sy}");
+            // Held to 8 above 480 fps, and to 0.25 below 15.
+            let (x, ..) = run(1.0 / 1000.0, 1.0, 0.0);
+            assert!(close(x, 8.0), "{x}");
+            let (x, ..) = run(1.0, 1.0, 0.0);
+            assert!(close(x, 0.25), "{x}");
+            // No frame time: left alone, not counted.
+            let (x, y, sx, sy, n) = run(0.0, 3.0, -1.5);
+            assert!(close(x, 3.0) && close(y, -1.5) && close(sx, 3.0) && close(sy, -1.5) && n == 0, "{x} {y} {sx} {sy} {n}");
+            let (x, _, _, _, n) = run(f32::NAN, 3.0, 0.0);
+            assert!(close(x, 3.0) && n == 0, "NaN frame time: {x} {n}");
+        }
+    }
 }
