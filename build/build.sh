@@ -63,7 +63,8 @@ case "${1:-test}" in
     ui
     ;;
   test)
-    run "$IMAGE" cargo test --workspace --exclude hooks --exclude umd_browser
+    # The launcher's screens headless too (its ui-tests feature: never in the launcher as built).
+    run "$IMAGE" sh -c 'cargo test --workspace --exclude hooks --exclude umd_browser && cargo test -p launcher --features ui-tests'
     ;;
   server)
     # The node runs on x86_64; cross-compile for it from any host.

@@ -775,4 +775,25 @@ mod tests {
         assert!(versions.windows(2).all(|w| w[0].newer_than(&w[1])));
         assert!(RELEASES.iter().all(|r| !r.new.is_empty()));
     }
+
+    #[cfg(feature = "ui-tests")]
+    #[test]
+    fn the_newest_release_shows_every_item_and_fix() {
+        use egui_kittest::kittest::Queryable;
+        let newest = &RELEASES[0];
+        let mut w = WhatsNew {
+            open: vec![newest],
+            to: newest.version.to_string(),
+            ..WhatsNew::default()
+        };
+        let h = crate::theme::ui_test::harness(eframe::egui::vec2(1000.0, 4000.0), |ui| {
+            w.show(ui.ctx(), false, true);
+        });
+        for item in newest.new {
+            assert!(h.query_by_label(item.title).is_some(), "the item {:?}", item.title);
+        }
+        for fix in newest.fixed {
+            assert!(h.query_by_label(fix.lead).is_some(), "the fix {:?}", fix.lead);
+        }
+    }
 }

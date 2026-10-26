@@ -2703,3 +2703,63 @@ fn account_dialog(ctx: &egui::Context, dialog: &mut AccountDialog, current: Opti
     }
     choice
 }
+
+#[cfg(all(test, feature = "ui-tests"))]
+mod split_button_tests {
+    use egui_kittest::kittest::Queryable;
+
+    use super::*;
+
+    fn shown(play: &mut Play, game: &mut Game) -> egui_kittest::Harness<'static> {
+        let mut notices = Notices::default();
+        // Owned copies: the harness keeps its closure.
+        let mut play = std::mem::take(play);
+        let mut game = std::mem::replace(game, crate::theme::ui_test::game("split-tmp").1);
+        crate::theme::ui_test::harness(egui::vec2(900.0, 300.0), move |ui| play_button(&mut play, &mut game, &mut notices, None, ui))
+    }
+
+    #[test]
+    fn the_play_button_names_the_choice_and_a_managed_install_plays_plainly() {
+        let (dir, mut game) = crate::theme::ui_test::game("split");
+        let mut play = Play {
+            play_mode: Some(crate::app::PlayMode::Svm),
+            ..Play::default()
+        };
+        let h = shown(&mut play, &mut game);
+        assert!(
+            h.query_by_label(&crate::app::PlayMode::Svm.label().to_uppercase()).is_some(),
+            "the last choice is the button"
+        );
+
+        let (dir2, mut managed) = crate::theme::ui_test::game("split-managed");
+        managed.managed = Some(hooks_config::Managed {
+            by: "Community Hub".into(),
+            help_text: None,
+        });
+        let mut play = Play {
+            play_mode: Some(crate::app::PlayMode::Svm),
+            ..Play::default()
+        };
+        let h = shown(&mut play, &mut managed);
+        assert!(
+            h.query_by_label("PLAY").is_some() && h.query_by_label(&crate::app::PlayMode::Svm.label().to_uppercase()).is_none(),
+            "managed: plain Play"
+        );
+        for d in [dir, dir2] {
+            let _ = std::fs::remove_dir_all(d);
+        }
+    }
+
+    #[test]
+    fn playing_is_as_wide_as_the_split_button() {
+        let (dir, mut game) = crate::theme::ui_test::game("playing");
+        let mut play = Play {
+            game_seen: true,
+            ..Play::default()
+        };
+        let h = shown(&mut play, &mut game);
+        let width = h.get_by_label("PLAYING").rect().width();
+        assert!((width - SPLIT_PLAY_WIDTH).abs() < 1.0, "{width} against {SPLIT_PLAY_WIDTH}");
+        let _ = std::fs::remove_dir_all(dir);
+    }
+}

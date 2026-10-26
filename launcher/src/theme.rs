@@ -456,3 +456,32 @@ pub fn nav_button(ui: &mut egui::Ui, icon: Icon, label: &str, selected: bool) ->
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, label));
     response
 }
+
+/// Test helpers: a temporary game folder, and egui drawing with the launcher's theme (its fonts
+/// are needed before anything with them is laid out, so the first frame only sets the theme).
+#[cfg(all(test, feature = "ui-tests"))]
+pub(crate) mod ui_test {
+    use eframe::egui;
+
+    pub fn game(name: &str) -> (std::path::PathBuf, crate::app::Game) {
+        let dir = std::env::temp_dir().join(format!("fe-ui-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        (dir.clone(), crate::app::Game::open(dir))
+    }
+
+    /// A harness drawing `draw` in a panel, after a first frame that only sets the theme.
+    pub fn harness<'a>(size: egui::Vec2, mut draw: impl FnMut(&mut egui::Ui) + 'a) -> egui_kittest::Harness<'a> {
+        let mut themed = false;
+        let mut h = egui_kittest::Harness::builder().with_size(size).build(move |ctx: &egui::Context| {
+            if !themed {
+                crate::theme::apply(ctx);
+                themed = true;
+                return;
+            }
+            egui::CentralPanel::default().show(ctx, |ui| draw(ui));
+        });
+        h.run();
+        h
+    }
+}

@@ -8,8 +8,15 @@ edition = "2021"
 [features]
 embed-dll = ["brotli"]
 GetAdapterInfos = []
+# Headless tests of the launcher's screens (build.sh test and CI run them).
+ui-tests = ["dep:egui_kittest", "dep:egui-winit"]
 
 [dependencies]
+# The `ui-tests` feature's: screens driven headless in tests, through egui's accessibility
+# tree (no window, no GPU). Optional, so the launcher as built carries neither (the workspace's
+# resolver 1 would otherwise switch AccessKit on in every launcher build).
+egui_kittest = { version = "0.33", optional = true }
+egui-winit = { version = "0.33", default-features = false, features = ["accesskit"], optional = true }
 anyhow = { workspace = true }
 bytes = "1"
 brotli = { workspace = true, optional = true }

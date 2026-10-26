@@ -41,6 +41,8 @@ jobs:
         run: cargo fmt --all --check
       - name: Tests
         run: cargo test --locked --workspace --exclude hooks --exclude umd_browser
+      - name: The launcher's screens, headless
+        run: cargo test --locked -p launcher --features ui-tests
       - name: Test players against a fresh server
         run: |
           cargo build --locked -p dedicated_server -p testbot
