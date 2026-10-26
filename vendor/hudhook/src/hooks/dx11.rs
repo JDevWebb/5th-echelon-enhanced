@@ -7,11 +7,12 @@ use std::sync::OnceLock;
 use imgui::Context;
 use once_cell::sync::OnceCell;
 use parking_lot::Mutex;
-use tracing::{error, trace};
+use tracing::{error, info, trace};
 use windows::core::{Error, Interface, Result, HRESULT};
 use windows::Win32::Foundation::BOOL;
 use windows::Win32::Graphics::Direct3D::{
-    D3D_DRIVER_TYPE_NULL, D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_11_0,
+    D3D_DRIVER_TYPE, D3D_DRIVER_TYPE_HARDWARE, D3D_DRIVER_TYPE_NULL, D3D_DRIVER_TYPE_WARP,
+    D3D_FEATURE_LEVEL, D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_11_0,
 };
 use windows::Win32::Graphics::Direct3D11::{
     D3D11CreateDeviceAndSwapChain, ID3D11Device, ID3D11DeviceContext, ID3D11Texture2D,
@@ -94,24 +95,68 @@ unsafe extern "system" fn dxgi_swap_chain_present_impl(
     dxgi_swap_chain_present(swap_chain, sync_interval, flags)
 }
 
+/// 5th Echelon patch: the ways a dummy device is asked for, in turn. Upstream asks for the
+/// first only, which some systems refuse (mpw, 2026-10-18: `0x80004005`; JeezyWeezy,
+/// 2026-10-25: `0x80070057`, "the parameter is incorrect"), and the overlay was gone for the
+/// run. The software rasteriser (WARP) and the real adapter make a swap chain of the same
+/// DXGI, so its `Present` is the one the game's calls go through.
+const DUMMY_DEVICES: [(D3D_DRIVER_TYPE, &[D3D_FEATURE_LEVEL], &str); 4] = [
+    (D3D_DRIVER_TYPE_NULL, &[D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_11_0], "null"),
+    (D3D_DRIVER_TYPE_NULL, &[D3D_FEATURE_LEVEL_11_0], "null, 11.0 only"),
+    (D3D_DRIVER_TYPE_WARP, &[D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0], "WARP"),
+    (D3D_DRIVER_TYPE_HARDWARE, &[D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_0], "hardware"),
+];
+
 /// `IDXGISwapChain::Present`'s address, from a dummy device and swap chain; an error when
-/// the system won't make one (seen as `0x80004005`), which the caller can live with.
+/// the system won't make one in any of [`DUMMY_DEVICES`]' ways, which the caller can live with.
 fn try_target_addrs() -> Result<DXGISwapChainPresentType> {
+    let dummy_hwnd = DummyHwnd::new();
+    let mut first_error = None;
+    for (n, (driver, levels, name)) in DUMMY_DEVICES.iter().enumerate() {
+        match dummy_swap_chain(&dummy_hwnd, *driver, levels) {
+            Ok(swap_chain) => {
+                if n > 0 {
+                    info!("DirectX 11 dummy device: {name} (the null device was refused: {first_error:?})");
+                }
+                let present_ptr: DXGISwapChainPresentType = unsafe {
+                    mem::transmute::<
+                        unsafe extern "system" fn(*mut c_void, u32, u32) -> HRESULT,
+                        DXGISwapChainPresentType,
+                    >(swap_chain.vtable().Present)
+                };
+                return Ok(present_ptr);
+            },
+            Err(e) => {
+                first_error.get_or_insert(e);
+            },
+        }
+    }
+    Err(first_error.unwrap_or_else(|| Error::from_hresult(HRESULT(-1))))
+}
+
+fn dummy_swap_chain(
+    dummy_hwnd: &DummyHwnd,
+    driver: D3D_DRIVER_TYPE,
+    levels: &[D3D_FEATURE_LEVEL],
+) -> Result<IDXGISwapChain> {
     let mut p_device: Option<ID3D11Device> = None;
     let mut p_context: Option<ID3D11DeviceContext> = None;
     let mut p_swap_chain: Option<IDXGISwapChain> = None;
 
-    let dummy_hwnd = DummyHwnd::new();
     unsafe {
         D3D11CreateDeviceAndSwapChain(
             None,
-            D3D_DRIVER_TYPE_NULL,
+            driver,
             None,
             D3D11_CREATE_DEVICE_FLAG(0),
-            Some(&[D3D_FEATURE_LEVEL_10_0, D3D_FEATURE_LEVEL_11_0]),
+            Some(levels),
             D3D11_SDK_VERSION,
             Some(&DXGI_SWAP_CHAIN_DESC {
                 BufferDesc: DXGI_MODE_DESC {
+                    // 5th Echelon patch: a size of its own, not the dummy window's, which a
+                    // driver may take as nothing to make.
+                    Width: 64,
+                    Height: 64,
                     Format: DXGI_FORMAT_R8G8B8A8_UNORM,
                     ScanlineOrdering: DXGI_MODE_SCANLINE_ORDER_UNSPECIFIED,
                     Scaling: DXGI_MODE_SCALING_UNSPECIFIED,
@@ -132,16 +177,7 @@ fn try_target_addrs() -> Result<DXGISwapChainPresentType> {
         )?;
     }
 
-    let swap_chain = p_swap_chain.ok_or_else(|| Error::from_hresult(HRESULT(-1)))?;
-
-    let present_ptr: DXGISwapChainPresentType = unsafe {
-        mem::transmute::<
-            unsafe extern "system" fn(*mut c_void, u32, u32) -> HRESULT,
-            DXGISwapChainPresentType,
-        >(swap_chain.vtable().Present)
-    };
-
-    Ok(present_ptr)
+    p_swap_chain.ok_or_else(|| Error::from_hresult(HRESULT(-1)))
 }
 
 fn get_target_addrs() -> DXGISwapChainPresentType {
