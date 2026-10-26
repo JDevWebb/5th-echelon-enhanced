@@ -40,12 +40,36 @@ pub struct Release {
 pub const RELEASES: &[Release] = &[
     Release {
         version: "0.4.6",
-        thanks: &["Matt", "LocoDonut", "ThisMouseIsAss", "Drax333", "Aless", "passiverat", "Tea_bag", "Pa3cio"],
+        thanks: &[
+            "Matt",
+            "LocoDonut",
+            "ThisMouseIsAss",
+            "Drax333",
+            "Aless",
+            "passiverat",
+            "Tea_bag",
+            "Pa3cio",
+            "PsykoGun",
+            "JeezyWeezy",
+            "luke",
+            "RAZA",
+            "BEEG",
+        ],
         new: &[
             Item {
                 title: "Chat",
                 text: "Global, your lobby, and messages with friends on any server: the Chat page here and the overlay's Chat tab, with pop-ups in the game as Settings › Notifications says. No links but Discord invites, slurs masked; the admins can read messages and act on reports.",
                 community: true,
+            },
+            Item {
+                title: "Join a friend",
+                text: "Join beside a friend, on the Friends card or in the overlay, takes you into their party or public match without waiting for an invite, and starts the game first if it isn't running. A private match still needs an invite. Thanks to mpw, who wrote it.",
+                community: false,
+            },
+            Item {
+                title: "Play SvM and Play Coop",
+                text: "The arrow beside Play starts the game straight into the Spies vs Mercs or Co-op online lobby: no intro videos, no title screen. Thanks to mpw, who wrote it.",
+                community: false,
             },
             Item {
                 title: "Who's online",
@@ -62,27 +86,40 @@ pub const RELEASES: &[Release] = &[
                 text: "A search that finds nothing while someone hosts another Spies vs Mercs mode says so, and which.",
                 community: false,
             },
+            Item {
+                title: "Beta features",
+                text: "Settings › Game › Beta features: fixes still being tried, off unless you turn them on. The first makes the mouse turn the same at any frame rate. While one is on, the game's log goes to the server's admins after each game.",
+                community: false,
+            },
         ],
         fixed: &[
+            Fix {
+                lead: "Searches no longer hang on a match that has started",
+                rest: ": they find an open one, or host a lobby the next player joins.",
+            },
             Fix {
                 lead: "Four crashes in the game's own code are patched",
                 rest: ": big Spies vs Mercs lobbies, leaving a match, unplugging a headset, and its network code.",
             },
             Fix {
                 lead: "A host migration that never ends leaves the match",
-                rest: " after a minute, instead of spinning until you restart.",
+                rest: " after 15 seconds, instead of spinning until you restart.",
             },
             Fix {
                 lead: "Freezes leave a note",
                 rest: " in the game's log of where it stuck, and the launcher asks how it went.",
             },
             Fix {
-                lead: "The overlay can't end the game",
-                rest: " on a PC where DirectX 11 won't let it hook in: the game runs on without it.",
+                lead: "The overlay starts on more PCs",
+                rest: ", where DirectX 11 refused it before; and if it still can't, the game runs on without it.",
             },
             Fix {
                 lead: "Steam's -offline is caught",
                 rest: ": the checklist warns when Steam's launch options keep the game offline.",
+            },
+            Fix {
+                lead: "A missing add-on is put back",
+                rest: ": when antivirus software takes 5th Echelon's DLL, the checklist says so and Play restores it.",
             },
             Fix {
                 lead: "Internet play on game builds identified long ago",
