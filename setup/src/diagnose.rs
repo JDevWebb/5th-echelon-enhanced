@@ -297,6 +297,13 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
             "The game still has Ubisoft's online DLL.",
             Some(Fix::InstallClient),
         ),
+        Some(ClientState::Removed) => Check::new(
+            "client",
+            Status::Fail,
+            "Reinstall 5th Echelon",
+            "Its uplay_r1_loader.dll is gone from the game folder, so the game can't start; antivirus software often removes it. If it goes again, add the game folder to your antivirus's exclusions.",
+            Some(Fix::InstallClient),
+        ),
         Some(ClientState::NoGameDll) | None => Check::new(
             "client",
             Status::Fail,
@@ -664,6 +671,16 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
             ..ready_facts()
         };
         assert_eq!(fix(f, "client"), Some((Status::Fail, Some(Fix::InstallClient))));
+        let f = Facts {
+            client: Some(ClientState::Removed),
+            ..ready_facts()
+        };
+        assert_eq!(fix(f, "client"), Some((Status::Fail, Some(Fix::InstallClient))), "ours removed: put back");
+        let f = Facts {
+            client: Some(ClientState::NoGameDll),
+            ..ready_facts()
+        };
+        assert_eq!(fix(f, "client"), Some((Status::Fail, None)), "the game's own missing: only the store can");
         let f = Facts { server: None, ..ready_facts() };
         assert_eq!(fix(f.clone(), "server"), Some((Status::Fail, Some(Fix::ChooseServer))));
         assert_eq!(fix(f, "account"), None, "no account check without a server");

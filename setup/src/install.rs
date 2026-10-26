@@ -17,6 +17,10 @@ const HOOK_MARKER: &str = "for 5th Echelon";
 pub enum ClientState {
     /// No `uplay_r1_loader.dll`: not a game folder, or a broken install.
     NoGameDll,
+    /// No `uplay_r1_loader.dll`, but the game's own kept beside it: ours was installed and is
+    /// gone (antivirus software takes it, luke 2026-10-22, and the game then won't start:
+    /// 0xC0000135). Installing puts it back.
+    Removed,
     /// The game's own DLL; not installed yet.
     NotInstalled,
     /// A 5th Echelon DLL that isn't this launcher's (older, newer, or upstream's).
@@ -71,7 +75,11 @@ pub fn uplay_emulator(game_dir: &Path) -> bool {
 /// launcher carries).
 pub fn client_state(game_dir: &Path, bundled: &[u8]) -> ClientState {
     let Ok(installed) = std::fs::read(game_dir.join(DLL_NAME)) else {
-        return ClientState::NoGameDll;
+        return if kept_original(game_dir).is_some() {
+            ClientState::Removed
+        } else {
+            ClientState::NoGameDll
+        };
     };
     if installed == bundled {
         ClientState::Installed
@@ -88,17 +96,18 @@ pub fn install(game_dir: &Path, bundled: &[u8]) -> Result<(), InstallError> {
     let dll = game_dir.join(DLL_NAME);
     let orig = game_dir.join(ORIG_DLL_NAME);
     let installed = match std::fs::read(&dll) {
-        Ok(data) => data,
+        Ok(data) => Some(data),
+        // Ours removed, the game's own kept ([`ClientState::Removed`]): put back below.
+        Err(e) if e.kind() == io::ErrorKind::NotFound && kept_original(game_dir).is_some() => None,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Err(InstallError::NoGameDll),
         Err(e) => return Err(e.into()),
     };
-    if installed == bundled {
+    if installed.as_deref() == Some(bundled) {
         return Ok(());
     }
     // The game's own DLL, kept once. A copy cut short (a full disk, a crash while writing)
     // isn't one: kept again while the game's own is still there to keep.
-    let kept = std::fs::read(&orig).ok().filter(|o| looks_like_dll(o));
-    if kept.is_none() {
+    if let Some(installed) = installed.filter(|_| kept_original(game_dir).is_none()) {
         if is_5th_echelon_dll(&installed) {
             return Err(InstallError::OriginalLost);
         }
@@ -124,6 +133,11 @@ pub fn install(game_dir: &Path, bundled: &[u8]) -> Result<(), InstallError> {
             e.into()
         }
     })
+}
+
+/// The game's own DLL as kept by [`install`], when there's a whole one.
+fn kept_original(game_dir: &Path) -> Option<Vec<u8>> {
+    std::fs::read(game_dir.join(ORIG_DLL_NAME)).ok().filter(|o| looks_like_dll(o))
 }
 
 /// Whether `data` could be a Windows DLL: the DOS header, and the PE header where it says.
@@ -222,6 +236,25 @@ mod tests {
         assert!(uplay_emulator(&dir));
         std::fs::write(dir.join(ORIG_DLL_NAME), theirs()).unwrap();
         assert!(!uplay_emulator(&dir));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn ours_removed_is_put_back() {
+        let dir = temp_dir("install-removed");
+        std::fs::write(dir.join(DLL_NAME), theirs()).unwrap();
+        install(&dir, &ours("v1")).unwrap();
+        // Antivirus software takes ours; the game's own stays kept.
+        std::fs::remove_file(dir.join(DLL_NAME)).unwrap();
+        assert_eq!(client_state(&dir, &ours("v1")), ClientState::Removed);
+        install(&dir, &ours("v1")).unwrap();
+        assert_eq!(client_state(&dir, &ours("v1")), ClientState::Installed);
+        assert_eq!(std::fs::read(dir.join(ORIG_DLL_NAME)).unwrap(), theirs(), "the kept one untouched");
+        // A kept copy cut short isn't the game's DLL: nothing to put ours beside.
+        std::fs::remove_file(dir.join(DLL_NAME)).unwrap();
+        std::fs::write(dir.join(ORIG_DLL_NAME), b"MZ").unwrap();
+        assert_eq!(client_state(&dir, &ours("v1")), ClientState::NoGameDll);
+        assert!(matches!(install(&dir, &ours("v1")), Err(InstallError::NoGameDll)));
         std::fs::remove_dir_all(dir).unwrap();
     }
 

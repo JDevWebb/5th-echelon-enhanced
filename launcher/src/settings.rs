@@ -1137,6 +1137,7 @@ fn client(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui: &mut eg
         Some(setup::install::ClientState::Different) => "A different version is installed.",
         Some(setup::install::ClientState::NotInstalled) => "Not installed.",
         Some(setup::install::ClientState::NoGameDll) => "The game's uplay_r1_loader.dll is missing.",
+        Some(setup::install::ClientState::Removed) => "Removed from the game folder (often by antivirus software): Install puts it back.",
         None => "This build doesn't carry the client.",
     }));
     if let Some(version) = crate::dll_utils::BUNDLED_VERSION {
