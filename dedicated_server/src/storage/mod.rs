@@ -2779,8 +2779,11 @@ pub(crate) mod tests {
         // Issued a minute ago, then the password changed: that ticket no longer connects,
         // while one issued after does.
         run(storage.set_password(id, "a-new-one")).unwrap().unwrap();
+        // The time after the change, not `now`: on a slow machine (CI) seconds pass between, and
+        // a ticket dated `now + 1` could predate the change it was meant to follow.
+        let changed = u64::try_from(identity::now()).unwrap();
         assert!(!storage.ticket_accepted(id, now - 60 + day, day).unwrap());
-        assert!(storage.ticket_accepted(id, now + 1 + day, day).unwrap());
+        assert!(storage.ticket_accepted(id, changed + day, day).unwrap());
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
