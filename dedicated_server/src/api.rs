@@ -151,7 +151,26 @@ pub fn check_username_form(name: &str) -> Result<(), &'static str> {
     if RESERVED_NAMES.contains(&key.as_str()) {
         return Err("that name is reserved");
     }
+    let folded = look_alikes(&key);
+    if RESERVED_WITHIN.iter().any(|word| folded.contains(&look_alikes(word))) {
+        return Err("names can't have admin or 5th Echelon in them");
+    }
     Ok(())
+}
+
+/// `key` with digits and letters that pass for others made one ("Adm1n", "4dmin", "Admln").
+fn look_alikes(key: &str) -> String {
+    key.chars()
+        .map(|c| match c {
+            '0' => 'o',
+            '1' | 'l' => 'i',
+            '3' => 'e',
+            '4' => 'a',
+            '5' => 's',
+            '7' => 't',
+            c => c,
+        })
+        .collect()
 }
 
 /// What a player whose name breaks the rules is told, in the game and the launcher.
@@ -209,6 +228,10 @@ const RESERVED_NAMES: &[&str] = &[
     "anonymous",
     "nobody",
 ];
+
+/// Words no player's name may have anywhere in it (compared as [`RESERVED_NAMES`] are, and
+/// with look-alikes): "xX_Admin_Xx" or "5thEchelon-Team" would pass for the network's own.
+const RESERVED_WITHIN: &[&str] = &["admin", "5thechelon", "fifthechelon"];
 
 fn relation_proto(r: Relation) -> friends::Relation {
     match r {
@@ -2248,6 +2271,31 @@ mod tests {
         assert!(check_username("k.").is_ok());
         for name in ["-", "..", "_", "._-", ""] {
             assert!(check_username(name).is_err(), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn names_cant_have_admin_or_5th_echelon_in_them() {
+        for name in [
+            "Admin",
+            "xX_Admin_Xx",
+            "TheAdministrator",
+            "Adm1n",
+            "4dmin",
+            "Admln",
+            "server_admin",
+            "5th-echelon",
+            "5thEchelon_Team",
+            "5th.Echelon",
+            "FifthEchelon",
+            "5th_3chelon",
+            "Kiwi5thEchelon",
+        ] {
+            assert!(check_username(name).is_err(), "{name:?}");
+            assert!(check_username_form(name).is_err(), "an admin's rename can't grant {name:?}");
+        }
+        for name in ["Kiwi_2", "Adam", "Echelon", "Fifth", "Sam_Fisher", "Admiral", "5thWave"] {
+            assert!(check_username(name).is_ok(), "{name:?}");
         }
     }
 
