@@ -180,14 +180,24 @@ fn dummy_swap_chain(
     p_swap_chain.ok_or_else(|| Error::from_hresult(HRESULT(-1)))
 }
 
+/// 5th Echelon patch: the `Present` [`check`] found, so [`ImguiDx11Hooks::new`] doesn't make the
+/// dummy device a second time (on the systems that need a fallback, making one is flaky, and a
+/// failure there panics, which ends the game).
+static FOUND_PRESENT: OnceLock<usize> = OnceLock::new();
+
 fn get_target_addrs() -> DXGISwapChainPresentType {
-    try_target_addrs().expect("D3D11CreateDeviceAndSwapChain failed")
+    match FOUND_PRESENT.get() {
+        Some(&found) => unsafe { mem::transmute::<usize, DXGISwapChainPresentType>(found) },
+        None => try_target_addrs().expect("D3D11CreateDeviceAndSwapChain failed"),
+    }
 }
 
 /// Whether DirectX 11 can be hooked here: the dummy device and swap chain it needs can be
-/// made. Check first; [`ImguiDx11Hooks::new`] panics when they can't.
+/// made. Check first; [`ImguiDx11Hooks::new`] then hooks the `Present` found here.
 pub fn check() -> Result<()> {
-    try_target_addrs().map(|_| ())
+    let present = try_target_addrs()?;
+    let _ = FOUND_PRESENT.set(present as usize);
+    Ok(())
 }
 
 /// Hooks for DirectX 11.

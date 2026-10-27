@@ -295,15 +295,17 @@ async fn handle_report(State(c): State<Shared>, Extension(client): Extension<Cli
     let Some((sender_name, room)) = sender else {
         return fail(StatusCode::NOT_FOUND, "no such message");
     };
-    if status == "deleted" {
-        // Already gone (its sender deleted it) is fine: the reports are closed all the same.
-        if let Err(e) = c.chat_delete(message, None, &format!("admin:{}", s.username)).await {
-            return internal(e);
-        }
-    }
+    // The reports first: with none open (another admin, or an old tab, got there first) the
+    // message stays, where it went before with nothing in the audit log.
     match c.close_chat_reports(message, status, &s.username, note).await {
         Ok(0) => fail(StatusCode::CONFLICT, "no open report on that message"),
         Ok(_) => {
+            // Already gone (its sender deleted it) is fine: the reports are closed all the same.
+            if status == "deleted" {
+                if let Err(e) = c.chat_delete(message, None, &format!("admin:{}", s.username)).await {
+                    return internal(e);
+                }
+            }
             let detail = format!(
                 "message {message} by {sender_name} in {room}{}",
                 if note.is_empty() { String::new() } else { format!(": {note}") }

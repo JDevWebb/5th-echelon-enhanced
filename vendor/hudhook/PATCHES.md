@@ -23,6 +23,8 @@ copy):
   adapter) with a 64×64 buffer of its own, where upstream asks once for a null device sized by
   the dummy window; some systems refused that (`0x80004005`, `0x80070057`). Which one worked is
   logged when it isn't the first.
+- `ImguiDx11Hooks::new` hooks the `Present` that `check()` found, instead of making the dummy
+  device a second time and panicking if that one fails (flaky on the systems needing a fallback).
 
 `src/renderer/pipeline.rs`:
 - A window with no size (minimised) skips the frame and returns `Ok`, where upstream failed it

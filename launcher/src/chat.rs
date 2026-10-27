@@ -50,7 +50,9 @@ enum Tab {
 
 /// What the feed's thread hands over.
 enum FeedEvent {
-    Messages(Vec<Message>),
+    /// Messages, and whether they're what the server kept before the feed began (the first
+    /// answer): shown, but not counted as unseen.
+    Messages(Vec<Message>, bool),
     /// The server can't be reached, or said no: why, for the screen.
     Trouble(String),
     Back,
@@ -69,10 +71,13 @@ impl Drop for Feed {
     }
 }
 
-/// The server and account chat is for, to tell when they change.
+/// The server and account chat is for, to tell when they change (the password too: the feed
+/// signs in with the one it started with, as `flow::api_session` keys its token).
 fn feed_key(cfg: &Config) -> Option<String> {
+    use sha2::Digest as _;
     let p = cfg.current_profile().filter(|p| !p.server.is_empty() && p.has_account())?;
-    Some(format!("{}\n{}", p.api_server_url(), p.user.username))
+    let secret = p.user.secret().unwrap_or_default();
+    Some(format!("{}\n{}\n{:x}", p.api_server_url(), p.user.username, sha2::Sha256::digest(secret.as_bytes())))
 }
 
 /// A call to chat as the current account; signed in again once if the server stopped taking
@@ -110,6 +115,7 @@ fn with_api<T>(cfg: &Config, f: impl Fn(&mut ChatApi) -> std::pin::Pin<Box<dyn s
 /// again, until stopped.
 fn run_feed(cfg: Config, stop: Arc<AtomicBool>, tx: mpsc::Sender<FeedEvent>, ctx: egui::Context) {
     let mut after = 0;
+    let mut primed = false;
     let mut failures = 0u32;
     while !stop.load(Ordering::Relaxed) {
         match with_api(&cfg, |api| Box::pin(api.wait(after))) {
@@ -119,8 +125,9 @@ fn run_feed(cfg: Config, stop: Arc<AtomicBool>, tx: mpsc::Sender<FeedEvent>, ctx
                 }
                 failures = 0;
                 after = answer.last.max(after);
+                let kept = !std::mem::replace(&mut primed, true);
                 if !answer.messages.is_empty() {
-                    if tx.send(FeedEvent::Messages(answer.messages)).is_err() {
+                    if tx.send(FeedEvent::Messages(answer.messages, kept)).is_err() {
                         return;
                     }
                     ctx.request_repaint();
@@ -269,8 +276,10 @@ impl Chat {
         }
     }
 
-    /// Takes messages from the feed (or a send): into their rooms, deletions applied.
-    fn take(&mut self, messages: Vec<Message>, ctx: &egui::Context, showing: bool) -> bool {
+    /// Takes messages from the feed (or a send): into their rooms, deletions applied. `kept`:
+    /// what the server had before the feed began, not counted as unseen (the conversations'
+    /// unread counts come from the server).
+    fn take(&mut self, messages: Vec<Message>, ctx: &egui::Context, showing: bool, kept: bool) -> bool {
         let mut attention = false;
         for m in messages {
             if m.deletes != 0 {
@@ -282,7 +291,7 @@ impl Chat {
                 }
                 continue;
             }
-            let seen_here = |tab: Tab| showing && self.tab == tab;
+            let seen_here = |tab: Tab| kept || (showing && self.tab == tab);
             match m.room() {
                 Room::Global => {
                     if m.mentions_me && !seen_here(Tab::Global) {
@@ -302,7 +311,7 @@ impl Chat {
                     let other = Self::other(&m);
                     if !m.mine {
                         self.names.insert(other.clone(), m.from_name.clone());
-                        let open = seen_here(Tab::Messages) && self.with.as_deref() == Some(other.as_str());
+                        let open = kept || (seen_here(Tab::Messages) && self.with.as_deref() == Some(other.as_str()));
                         if !open {
                             *self.unseen_direct.entry(other.clone()).or_default() += 1;
                             attention = true;
@@ -379,17 +388,22 @@ impl Chat {
             self.feed = Some(Feed { stop, events });
         }
         let mut arrived = Vec::new();
+        let mut kept = Vec::new();
         if let Some(feed) = &self.feed {
             while let Ok(event) = feed.events.try_recv() {
                 match event {
-                    FeedEvent::Messages(m) => arrived.extend(m),
+                    FeedEvent::Messages(m, true) => kept.extend(m),
+                    FeedEvent::Messages(m, false) => arrived.extend(m),
                     FeedEvent::Trouble(e) => self.trouble = Some(e),
                     FeedEvent::Back => self.trouble = None,
                 }
             }
         }
+        if !kept.is_empty() {
+            self.take(kept, ctx, showing, true);
+        }
         if !arrived.is_empty() {
-            self.take(arrived, ctx, showing);
+            self.take(arrived, ctx, showing, false);
         }
 
         match self.sending.poll() {
@@ -397,7 +411,7 @@ impl Chat {
                 Some(m) => {
                     self.refused = None;
                     self.text.clear();
-                    self.take(vec![m], ctx, showing);
+                    self.take(vec![m], ctx, showing, false);
                 }
                 None => self.refused = Some(if sent.says.is_empty() { "Not sent.".into() } else { sent.says }),
             },
@@ -966,12 +980,12 @@ mod tests {
 
         let mut chat = Chat::default();
         let ctx = egui::Context::default();
-        chat.take(vec![message(5, Room::Global), message(6, Room::Global)], &ctx, false);
+        chat.take(vec![message(5, Room::Global), message(6, Room::Global)], &ctx, false, false);
         let deletion = Message {
             deletes: 5,
             ..message(7, Room::Global)
         };
-        chat.take(vec![deletion], &ctx, false);
+        chat.take(vec![deletion], &ctx, false, false);
         assert_eq!(chat.global.iter().map(|m| m.id).collect::<Vec<_>>(), [6], "deleted, and the deletion isn't shown");
 
         // A friend's message, and a mention, while elsewhere: counted for the rail.
@@ -984,7 +998,13 @@ mod tests {
             mentions_me: true,
             ..message(9, Room::Global)
         };
-        chat.take(vec![direct, mention], &ctx, false);
+        chat.take(vec![direct.clone(), mention.clone()], &ctx, false, false);
         assert_eq!((chat.unread(), chat.names.get("FRIEND").map(String::as_str)), (2, Some("Kiwi")));
+
+        // The same, as what the server kept before the launcher started: shown, not counted
+        // (the conversations' own unread counts follow from the server).
+        let mut chat = Chat::default();
+        chat.take(vec![direct, mention], &ctx, false, true);
+        assert_eq!((chat.unread(), chat.global.len(), chat.conversations_stale), (0, 1, true));
     }
 }

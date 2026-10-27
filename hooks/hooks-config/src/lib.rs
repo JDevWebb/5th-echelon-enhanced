@@ -431,7 +431,7 @@ pub struct Config {
 
     /// When chat messages pop up in the game (the overlay's toasts), per room: Settings ›
     /// Notifications in the launcher. Invitations and friend requests always do.
-    #[serde(default, skip_serializing_if = "Notifications::is_default")]
+    #[serde(default, deserialize_with = "notifications", skip_serializing_if = "Notifications::is_default")]
     pub notifications: Notifications,
 
     /// Set when another tool manages this install (from the override file's
@@ -930,6 +930,28 @@ impl Notifications {
     }
 }
 
+/// [`Config::notifications`] as written; a room set to something this build doesn't know (a
+/// newer launcher's choice, a typo) keeps its default, and said so in the log: the rest of
+/// `uplay.toml` mustn't fail over it, as the game would start without the add-on.
+fn notifications<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Notifications, D::Error> {
+    let value = Option::<toml::Value>::deserialize(d)?;
+    let mut n = Notifications::default();
+    let Some(table) = value.as_ref().and_then(toml::Value::as_table) else {
+        if let Some(value) = value {
+            tracing::warn!("Notifications = {value} isn't a table: the defaults apply");
+        }
+        return Ok(n);
+    };
+    for (room, slot) in [("Global", &mut n.global), ("Lobby", &mut n.lobby), ("Direct", &mut n.direct)] {
+        let Some(v) = table.get(room) else { continue };
+        match v.clone().try_into::<ChatToasts>() {
+            Ok(t) => *slot = t,
+            Err(_) => tracing::warn!("Notifications.{room} = {v} isn't one this build knows: {:?} instead", *slot),
+        }
+    }
+    Ok(n)
+}
+
 #[derive(Debug, Deserialize, Serialize, Clone, Default, PartialEq, Eq)]
 #[serde(rename_all = "PascalCase")]
 pub struct Logging {
@@ -1321,6 +1343,28 @@ mod tests {
         for value in ["\"hub\"", "\"\"", "1", "true"] {
             assert_eq!(with(value).unwrap(), None, "{value}");
         }
+    }
+
+    #[test]
+    fn a_chat_toast_this_build_doesnt_know_keeps_its_default() {
+        let mut cfg = super::default();
+        cfg.notifications.lobby = ChatToasts::Never;
+        cfg.notifications.direct = ChatToasts::OnlyMentions;
+        let written = toml::to_string(&cfg).unwrap();
+        let back: Config = toml::from_str(&written).unwrap();
+        assert_eq!(back.notifications, cfg.notifications, "{written}");
+        // A newer launcher's choice, or a typo: that room's default, the rest as written, and
+        // never the whole file refused over it.
+        let odd = written.replace("Lobby = \"Never\"", "Lobby = \"WhenFriendsSpeak\"");
+        assert_ne!(odd, written);
+        let back: Config = toml::from_str(&odd).unwrap();
+        assert_eq!((back.notifications.lobby, back.notifications.direct), (ChatToasts::Always, ChatToasts::OnlyMentions));
+        assert_eq!(
+            toml::from_str::<Config>(&written.replace("[Notifications]", "Notifications = 3\n[Old]"))
+                .map(|c| c.notifications)
+                .ok(),
+            Some(Notifications::default())
+        );
     }
 
     #[test]

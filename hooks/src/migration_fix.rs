@@ -180,6 +180,8 @@ fn tick(this: *mut u8, seconds: f32) {
             return;
         }
         *watched = None;
+        // Not held over the game's calls below, in case one comes back through here.
+        drop(watched);
         let state = migration_state(game, reason).map_or_else(|| String::from("none"), |s| format!("{s:#x}"));
         let spinner = read::<u32>(this as usize + SPINNER);
         let popups = read::<usize>(game.popups);

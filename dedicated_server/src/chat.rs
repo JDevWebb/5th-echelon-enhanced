@@ -438,12 +438,16 @@ impl Chat for MyChat {
             let (messages, newest) = {
                 let all = kept().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let newest = all.back().map_or(after, |m| m.id.max(after));
-                let mine: Vec<Message> = all
-                    .iter()
-                    .filter(|m| m.id > after && visible(&c, m, &blocked))
-                    .take(MAX_ANSWER)
-                    .map(|m| m.to_message(&c.me, &c.name))
-                    .collect();
+                let fits: Vec<&Kept> = all.iter().filter(|m| m.id > after && visible(&c, m, &blocked)).collect();
+                // A client just started (nothing taken yet) gets the newest of what's kept, in one
+                // answer, which it takes as already seen; one catching up after a break, the
+                // oldest it missed first.
+                let fits = if after <= 0 {
+                    &fits[fits.len().saturating_sub(MAX_ANSWER)..]
+                } else {
+                    &fits[..fits.len().min(MAX_ANSWER)]
+                };
+                let mine: Vec<Message> = fits.iter().map(|m| m.to_message(&c.me, &c.name)).collect();
                 (mine, newest)
             };
             if !messages.is_empty() {
@@ -496,10 +500,13 @@ impl Chat for MyChat {
         let answer = crate::federation::chat_call(Method::GET, &path, None)
             .await
             .map_err(|e| Status::unavailable(e.to_string()))?;
+        // Those the player blocked here, as their messages are left out of waits and history.
+        let blocked = self.storage.blocked_global_ids(c.user).await.map_err(internal)?;
         let conversations = answer["conversations"]
             .as_array()
             .into_iter()
             .flatten()
+            .filter(|v| v["with"].as_str().is_none_or(|with| !blocked.iter().any(|b| b == with)))
             .filter_map(|v| {
                 Some(Conversation {
                     with: v["with"].as_str()?.to_string(),
