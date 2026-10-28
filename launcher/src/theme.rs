@@ -327,21 +327,31 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut egui::Ui, value: &mut T, options:
     egui::Frame::new()
         .fill(SUNKEN)
         .stroke(Stroke::new(1.0, LINE))
-        .corner_radius(10)
-        .inner_margin(egui::Margin::same(4))
+        .corner_radius(4)
+        .inner_margin(egui::Margin::same(3))
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing.x = 4.0;
+                ui.spacing_mut().item_spacing.x = 3.0;
                 for (option, label) in options {
                     let chosen = *value == *option;
                     let text = egui::RichText::new(*label).color(if chosen { FG } else { MUTED });
                     let text = if chosen { text.family(strong()) } else { text };
                     let button = egui::Button::new(text)
-                        .fill(if chosen { CONTROL } else { Color32::TRANSPARENT })
+                        .fill(if chosen { SELECTED } else { Color32::TRANSPARENT })
                         .stroke(Stroke::NONE)
-                        .corner_radius(8)
-                        .min_size(egui::vec2(150.0, 38.0));
-                    if ui.add(button).clicked() && !chosen {
+                        .corner_radius(3)
+                        .min_size(egui::vec2(130.0, 36.0));
+                    let response = ui.add(button);
+                    // The chosen one's green underline.
+                    if chosen {
+                        let r = response.rect;
+                        ui.painter().rect_filled(
+                            egui::Rect::from_min_max(egui::pos2(r.left() + 10.0, r.bottom() - 2.0), egui::pos2(r.right() - 10.0, r.bottom())),
+                            1,
+                            ACCENT,
+                        );
+                    }
+                    if response.clicked() && !chosen {
                         *value = *option;
                         changed = true;
                     }
