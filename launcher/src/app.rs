@@ -775,9 +775,11 @@ impl App {
             if matches!(view, View::Chat | View::Roadmap | View::Support) && !community {
                 return;
             }
-            let button = theme::nav_button(ui, icon, label, current == view);
+            // Hosting is reached from Servers, and lights it.
+            let on = current == view || (view == View::Servers && current == View::Server);
+            let button = theme::nav_button(ui, icon, label, on);
             // Direct messages and mentions, and answers from support, not seen yet: a dot.
-            if current != view && unread.iter().any(|(v, n)| *v == view && *n > 0) {
+            if !on && unread.iter().any(|(v, n)| *v == view && *n > 0) {
                 let at = button.rect.right_top() + egui::vec2(-8.0, 8.0);
                 ui.painter().circle_filled(at, 5.0, theme::RAIL);
                 ui.painter().circle_filled(at, 3.5, theme::ACCENT);
@@ -805,7 +807,6 @@ impl App {
                     item(ui, View::Chat, theme::Icon::Chat, "Chat");
                     item(ui, View::News, theme::Icon::News, "News");
                     item(ui, View::Roadmap, theme::Icon::Roadmap, "Roadmap");
-                    item(ui, View::Server, theme::Icon::Host, "Host a server");
                 });
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                     let version = ui
@@ -1001,7 +1002,7 @@ impl eframe::App for App {
             View::Server => {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     theme::page().show(ui, |ui| {
-                        ui.label(theme::display("Host", 32.0));
+                        theme::title(ui, "On this PC", "Host");
                         ui.label(theme::muted("Run a server for your group on this PC, or manage one you run elsewhere."));
                         ui.add_space(14.0);
                         crate::server::show(self, ui);

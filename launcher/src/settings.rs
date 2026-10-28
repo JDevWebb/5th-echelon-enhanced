@@ -103,14 +103,19 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     egui::SidePanel::left("settings-nav")
         .resizable(false)
         .exact_width(230.0)
-        .frame(egui::Frame::new().fill(theme::BG).inner_margin(egui::Margin {
-            left: 16,
-            right: 16,
-            top: 26,
-            bottom: 16,
-        }))
+        .frame(
+            egui::Frame::new()
+                .fill(theme::SURFACE)
+                .stroke(egui::Stroke::new(1.0, theme::LINE))
+                .inner_margin(egui::Margin {
+                    left: 16,
+                    right: 16,
+                    top: 26,
+                    bottom: 16,
+                }),
+        )
         .show_inside(ui, |ui| {
-            ui.label(theme::display("Settings", 26.0));
+            theme::title(ui, "Loadout", "Settings");
             ui.add_space(12.0);
             let current = app.settings_mut().0.section;
             for section in Section::ALL {
@@ -118,11 +123,21 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
                 let text = RichText::new(section.label()).color(if chosen { theme::FG } else { theme::SOFT });
                 let text = if chosen { text.family(theme::strong()) } else { text };
                 let button = egui::Button::new(text)
-                    .fill(if chosen { theme::SURFACE } else { egui::Color32::TRANSPARENT })
+                    .fill(if chosen { theme::SELECTED } else { egui::Color32::TRANSPARENT })
                     .stroke(egui::Stroke::NONE)
-                    .corner_radius(8)
+                    .corner_radius(4)
                     .min_size(egui::vec2(ui.available_width(), 40.0));
-                if ui.add(button).clicked() {
+                let response = ui.add(button);
+                // The chosen one's green edge, as in the side menu.
+                if chosen {
+                    let r = response.rect;
+                    ui.painter().rect_filled(
+                        egui::Rect::from_min_size(r.left_top() + egui::vec2(0.0, 8.0), egui::vec2(2.0, r.height() - 16.0)),
+                        1,
+                        theme::ACCENT,
+                    );
+                }
+                if response.clicked() {
                     app.settings_mut().0.section = section;
                 }
             }

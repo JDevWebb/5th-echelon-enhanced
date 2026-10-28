@@ -506,7 +506,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let cfg = game.as_ref().map(|g| (*g.cfg).clone());
     theme::page().show(ui, |ui| {
         ui.set_width(ui.available_width());
-        ui.label(theme::display("Chat", 32.0));
+        theme::title(ui, "Community network", "Chat");
         ui.label(RichText::new("Talk with everyone on the community network, the players in your lobby, and your friends on any of its servers.").color(theme::SOFT));
         ui.add_space(12.0);
         let Some(cfg) = cfg.filter(|c| feed_key(c).is_some()) else {

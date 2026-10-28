@@ -524,7 +524,7 @@ fn wizard(ui: &mut egui::Ui, step: usize, body: impl FnOnce(&mut egui::Ui)) {
                             ui.vertical(|ui| {
                                 theme::mark(ui, 34.0);
                                 ui.add_space(14.0);
-                                ui.label(theme::display("Get online in a minute", 28.0));
+                                theme::title(ui, "Operative setup", "Get online in a minute");
                                 ui.add_space(6.0);
                                 ui.label(
                                     RichText::new(
@@ -2002,7 +2002,7 @@ pub fn show_news(app: &mut App, ui: &mut egui::Ui) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         theme::page().show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(theme::display("News", 32.0));
+            theme::title(ui, "From your server", "News");
             let (play, game, _) = app.play_mut();
             let Some(game) = game.as_mut() else {
                 ui.label(theme::muted("Find the game first (Play)."));
@@ -2050,12 +2050,13 @@ pub fn show_news(app: &mut App, ui: &mut egui::Ui) {
 /// your own by its address, or one on this network.
 pub fn show_servers(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
+    let mut host = false;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         theme::page().show(ui, |ui| {
             ui.set_width(ui.available_width());
             let (play, game, notices) = app.play_mut();
             let Some(game) = game.as_mut() else {
-                ui.label(theme::display("Servers", 32.0));
+                theme::title(ui, "Network", "Servers");
                 ui.label(theme::muted("Find the game first (Play)."));
                 return;
             };
@@ -2063,14 +2064,32 @@ pub fn show_servers(app: &mut App, ui: &mut egui::Ui) {
             poll_lookups(play, notices);
             auto_browse(play, &ctx);
             servers_page(play, game, notices, &ctx, ui);
+            // Hosting a server of your own (until 0.4.8 a screen of the side menu's).
+            ui.add_space(16.0);
+            theme::card().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(theme::kicker("Host on this PC"));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Run a server for your group: a LAN party, or friends over the internet. Their launchers find it on your network.").color(theme::SOFT));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(theme::secondary("Host a server")).clicked() {
+                            host = true;
+                        }
+                    });
+                });
+            });
         });
     });
+    if host {
+        app.set_view(View::Server);
+    }
 }
 
 fn servers_page(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Context, ui: &mut egui::Ui) {
     let locked = game.managed.is_some();
     let playing = play.game_seen || play.running.is_some();
-    ui.label(theme::display("Servers", 32.0));
+    theme::title(ui, "Network", "Servers");
     ui.label(RichText::new("Community servers are in the server menu on the Play screen. Here: a server of your own, a LAN party, or another network.").color(theme::SOFT));
     ui.add_space(14.0);
     if locked {

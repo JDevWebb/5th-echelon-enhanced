@@ -16,13 +16,15 @@ const SIZES: [(&str, egui::Vec2); 3] = [
     ("1920x1080", egui::vec2(1920.0, 1080.0)),
 ];
 
-const VIEWS: [(&str, View); 6] = [
+const VIEWS: [(&str, View); 8] = [
     ("play", View::Play),
     ("servers", View::Servers),
     ("chat", View::Chat),
     ("news", View::News),
     ("support", View::Support),
     ("settings", View::Settings),
+    ("roadmap", View::Roadmap),
+    ("host", View::Server),
 ];
 
 /// A game folder the launcher takes, with a profile for a made-up server, named in the

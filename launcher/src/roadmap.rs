@@ -253,7 +253,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         theme::page().show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(theme::display("Roadmap", 32.0));
+            theme::title(ui, "What's coming", "Roadmap");
             let clock = setup::clock::Clock::local();
             let source = match &page.shown {
                 Some((_, at, false)) => format!("What's being built for 5th Echelon Enhanced, as of {}.", clock.date(*at)),
