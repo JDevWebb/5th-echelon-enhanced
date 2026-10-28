@@ -5,8 +5,8 @@
 
 use eframe::egui;
 
-/// The size the screens are laid out for, in points.
-pub const DESIGN: egui::Vec2 = egui::vec2(1120.0, 760.0);
+/// The window's first size, in points (1120x760 until 0.4.8).
+pub const DESIGN: egui::Vec2 = egui::vec2(1280.0, 800.0);
 /// The player's size: from this...
 pub const MIN_SIZE: f32 = 0.7;
 /// ...to this, in steps of [`STEP`].

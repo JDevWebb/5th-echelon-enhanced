@@ -1235,10 +1235,13 @@ fn stage(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: Option
     let inner = rect.shrink2(egui::vec2(36.0, 26.0));
     // The HUD line: the product's label centred on the player's card beside it.
     let mut top = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Min)));
-    top.vertical(|ui| {
-        ui.add_space(22.0);
-        ui.label(theme::caps(&format!("{} //", env!("FE_PRODUCT"))));
-    });
+    // The product's name is the title bar's; the stage's corner keeps the server and the player.
+    if !crate::window_frame::custom() {
+        top.vertical(|ui| {
+            ui.add_space(22.0);
+            ui.label(theme::caps(&format!("{} //", env!("FE_PRODUCT"))));
+        });
+    }
     top.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
         if profile_card(play, game, ui).clicked() {
             *to = Some(Go::Settings(crate::settings::Section::Identity));

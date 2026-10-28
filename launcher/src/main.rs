@@ -29,6 +29,7 @@ mod theme;
 mod update_notice;
 mod updater;
 mod whats_new;
+mod window_frame;
 
 /// The logo, as egui wants it.
 fn logo() -> eframe::egui::ColorImage {
@@ -68,10 +69,13 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()
             .with_title(concat!(env!("FE_PRODUCT"), " ", env!("FE_RELEASE")))
-            // The screens are laid out for this size, and scale with the window (scale.rs).
+            // The window's first size (smaller on a small screen); the screens fit whatever size
+            // it's made (scale.rs).
             .with_inner_size(scale::DESIGN)
             .with_min_inner_size(scale::MIN_WINDOW)
             .with_resizable(true)
+            // The launcher draws its own title bar and edges (window_frame.rs).
+            .with_decorations(!window_frame::custom())
             .with_fullscreen(scale::gamescope())
             .with_maximize_button(true)
             .with_icon(eframe::egui::IconData {

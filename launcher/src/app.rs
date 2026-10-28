@@ -800,8 +800,11 @@ impl App {
             .show(ctx, |ui| {
                 ui.spacing_mut().item_spacing.y = 6.0;
                 ui.vertical_centered(|ui| {
-                    theme::lights(ui, 6.0);
-                    ui.add_space(20.0);
+                    // The goggles' lights head the title bar when the launcher draws its own.
+                    if !crate::window_frame::custom() {
+                        theme::lights(ui, 6.0);
+                        ui.add_space(20.0);
+                    }
                     item(ui, View::Play, theme::Icon::Play, "Play");
                     item(ui, View::Servers, theme::Icon::Servers, "Servers");
                     item(ui, View::Chat, theme::Icon::Chat, "Chat");
@@ -888,6 +891,11 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// Behind everything: the page's colour, so nothing between panels shows through.
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        theme::BG.to_normalized_gamma_f32()
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         if let Some(size) = crate::scale::apply(ctx, self.ui_scale, &mut self.sized) {
             self.set_ui_scale(size);
@@ -984,6 +992,9 @@ impl eframe::App for App {
             }
         }
 
+        // The window's own title bar first, so it spans the side menu too.
+        crate::window_frame::title_bar(ctx);
+        crate::window_frame::edges(ctx);
         self.rail(ctx);
         self.update_banner(ctx);
         self.notices.show(ctx);
