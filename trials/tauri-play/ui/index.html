@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>5th Echelon Enhanced (Tauri trial)</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="window">
+  <header class="titlebar" data-tauri-drag-region>
+    <span class="lights" aria-hidden="true"><i></i><i></i><i></i></span>
+    <span class="product" data-tauri-drag-region>5TH ECHELON ENHANCED · TAURI TRIAL</span>
+    <span class="spacer" data-tauri-drag-region></span>
+    <button class="wc" id="min" aria-label="Minimise"><svg viewBox="0 0 12 12"><path d="M1 6.5h10"/></svg></button>
+    <button class="wc" id="max" aria-label="Maximise"><svg viewBox="0 0 12 12"><rect x="1.5" y="1.5" width="9" height="9"/></svg></button>
+    <button class="wc close" id="close" aria-label="Close"><svg viewBox="0 0 12 12"><path d="M1.5 1.5l9 9M10.5 1.5l-9 9"/></svg></button>
+  </header>
+
+  <div class="body">
+    <nav class="rail" aria-label="Launcher">
+      <a href="#" class="on" aria-label="Play" title="Play"><svg viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z"/></svg></a>
+      <a href="#" aria-label="Servers" title="Servers"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="6" rx="2"/><rect x="4" y="14" width="16" height="6" rx="2"/></svg></a>
+      <a href="#" aria-label="Chat" title="Chat" class="dot"><svg viewBox="0 0 24 24"><path d="M4 5h16v11H9l-5 4z"/></svg></a>
+      <a href="#" aria-label="Intel" title="Intel"><svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/></svg></a>
+      <span class="grow"></span>
+      <a href="#" aria-label="Support" title="Support"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6M12 17h.01"/></svg></a>
+      <a href="#" aria-label="Settings" title="Settings"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/></svg></a>
+      <span class="version">TRIAL</span>
+    </nav>
+
+    <main class="stage">
+      <div class="scan" aria-hidden="true"></div>
+      <div class="glow" aria-hidden="true"></div>
+      <div class="hud">
+        <span id="started" class="caps"></span>
+        <button class="player"><span class="avatar">K</span><span><b id="player">Kiwi</b><small>ID DNIC-JULS</small></span></button>
+      </div>
+      <div class="hero">
+        <p class="kicker reveal" style="--d:0ms">TOM CLANCY'S</p>
+        <h1 class="reveal" style="--d:80ms">SPLINTER CELL<br><span>BLACKLIST</span></h1>
+        <p class="tag reveal" style="--d:180ms">Co-op and Spies vs Mercs on community servers. No VPN, no port forwarding.</p>
+        <div class="launch reveal" style="--d:260ms">
+          <button class="server" id="server" aria-haspopup="true">
+            <span><span class="caps">SERVER</span><b id="server-name"></b></span>
+            <span class="ping"><span id="ping"></span><small id="online"></small></span>
+            <svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg>
+          </button>
+          <span class="ready"><i></i><span id="ready"></span></span>
+          <button class="play"><span>PLAY</span></button>
+          <button class="play-more" aria-label="Play SvM or Co-op"><svg viewBox="0 0 24 24"><path d="M6 9l6 6 6-6"/></svg></button>
+        </div>
+        <div class="menu" id="menu" role="menu">
+          <p class="caps">COMMUNITY SERVERS · SCBL.JDEVWEBB.NET</p>
+          <button role="menuitem" class="on"><b>Falkenstein, Germany</b><small>EU</small><em>38 ms</em></button>
+          <button role="menuitem"><b>Beauharnois, Canada</b><small>North America</small><em class="warn">112 ms</em></button>
+          <button role="menuitem"><b>Sydney, Australia</b><small>Oceania</small><em class="bad">290 ms</em></button>
+        </div>
+        <div class="intel reveal" style="--d:340ms"><span class="caps green">INTEL</span><span id="news"></span><a href="#">All news</a></div>
+      </div>
+    </main>
+
+    <aside class="drawer">
+      <div class="tabs" role="tablist">
+        <button role="tab" data-tab="status">STATUS</button>
+        <button role="tab" data-tab="squad" class="on">SQUAD · 3</button>
+        <button role="tab" data-tab="intel">INTEL</button>
+        <span class="underline"></span>
+      </div>
+      <section class="pane" data-pane="status"><ul id="checks"></ul></section>
+      <section class="pane on" data-pane="squad">
+        <ul id="friends"></ul>
+        <div class="comms">
+          <p class="caps">GLOBAL · LATEST</p>
+          <p id="latest"></p>
+          <button>Open Chat</button>
+        </div>
+      </section>
+      <section class="pane" data-pane="intel"><ul id="briefings"></ul></section>
+    </aside>
+  </div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
