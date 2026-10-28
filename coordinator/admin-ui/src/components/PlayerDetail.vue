@@ -12,7 +12,8 @@
     </header>
     <div v-if="!d" class="empty">{{ error || 'Loading…' }}</div>
     <template v-else>
-      <p v-if="p.banned" class="callout bad">Banned {{ p.banned.until ? `until ${fmt.when(p.banned.until)}` : 'for good' }}{{ p.banned.reason ? `: ${p.banned.reason}` : '' }} <span class="muted small">(since {{ fmt.when(p.banned.at) }})</span></p>
+      <p v-if="d.network_ban" class="callout bad">Banned across the network {{ d.network_ban.until ? `until ${fmt.when(d.network_ban.until)}` : 'for good' }}{{ d.network_ban.reason ? `: ${d.network_ban.reason}` : '' }}: every account of theirs, on every server, and any they make. <span class="muted small">(by {{ d.network_ban.by }}, {{ fmt.when(d.network_ban.at) }})</span></p>
+      <p v-else-if="p.banned" class="callout bad">Banned {{ p.banned.until ? `until ${fmt.when(p.banned.until)}` : 'for good' }}{{ p.banned.reason ? `: ${p.banned.reason}` : '' }} <span class="muted small">(since {{ fmt.when(p.banned.at) }})</span></p>
       <div class="facts">
         <div class="fact"><b>{{ fmt.dur(p.play_seconds) }}</b><span>played in all</span></div>
         <div class="fact"><b>{{ fmt.dur(p.week_seconds) }}</b><span>last 7 days</span></div>
@@ -23,7 +24,7 @@
       </div>
       <div class="row actions">
         <button class="small" type="button" :disabled="!p.online" @click="act('kick')">Kick</button>
-        <button v-if="!p.banned" class="small danger" type="button" @click="act('ban')">Ban</button>
+        <button v-if="!p.banned && !d.network_ban" class="small danger" type="button" @click="act('ban')">Ban</button>
         <button v-else class="small" type="button" @click="act('unban')">Unban</button>
         <button class="small" type="button" @click="act('reset_password')">Reset password</button>
         <button class="small" type="button" @click="act('rename')">Rename</button>
@@ -184,7 +185,7 @@ async function act(kind) {
   if (kind === 'kick' || kind === 'unban' || kind === 'name_not_allowed' || kind === 'allow_name') {
     const says = {
       kick: 'They\'re signed out, and can sign in again.',
-      unban: 'They can sign in again.',
+      unban: d.value.network_ban ? 'Every account of theirs, on every server, can sign in again.' : 'They can sign in again.',
       name_not_allowed: 'Their name breaks the rules: the launcher and the game\'s overlay ask them to choose another, and the game is kept out until they do. They can ask for a review in Support.',
       allow_name: 'Their name was flagged by mistake: they\'re no longer asked to rename, and the check doesn\'t flag it again. To grant a name the rules refused when they tried it, use Rename.',
     }[kind];

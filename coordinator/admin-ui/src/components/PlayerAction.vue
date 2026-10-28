@@ -11,7 +11,7 @@
     </div>
     <label v-if="kind === 'rename'" class="field"><span>New name</span><input ref="first" v-model="name" maxlength="24" required pattern="[A-Za-z0-9_.\-]{3,24}" placeholder="3 to 24 letters, digits, _ - ."></label>
     <label v-if="kind === 'delete'" class="field"><span>Type <b>{{ player.name }}</b> to confirm</span><input ref="first" v-model="typed" autocomplete="off"></label>
-    <label v-if="others && kind !== 'rename' && kind !== 'reset_password'" class="row"><input v-model="all" type="checkbox" style="width: auto"><span>All their accounts ({{ others + 1 }}, on every server)</span></label>
+    <label v-if="others && kind !== 'rename' && kind !== 'reset_password' && kind !== 'ban'" class="row"><input v-model="all" type="checkbox" style="width: auto"><span>All their accounts ({{ others + 1 }}, on every server)</span></label>
     <p class="err" role="alert">{{ err }}</p>
     <div class="row end">
       <button class="ghost" type="button" @click="closeModal(false)">Cancel</button>
@@ -44,7 +44,9 @@ const title = computed(() => ({
   reset_password: `Reset ${props.player.name}'s password`, kick: `Kick ${props.player.name}`, unban: `Unban ${props.player.name}`,
 })[props.kind]);
 const intro = computed(() => ({
-  ban: `They're signed out and can't sign in on ${props.server} until the ban ends.`,
+  ban: props.player.identity
+    ? 'Across the network: every account of theirs, on every server, and any they make or link later. They\'re signed out and can\'t sign in until the ban ends.'
+    : `They're signed out and can't sign in on ${props.server} until the ban ends (this account has no identity, so only it).`,
   rename: 'They\'re signed out, and their friends on every server see the new name.',
   delete: `Their account on ${props.server} is removed for good: stats, friends and all. This can't be undone.`,
   reset_password: 'Their server makes a temporary password. You see it once, here, to give them privately.',

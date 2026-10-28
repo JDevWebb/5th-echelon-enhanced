@@ -5,7 +5,8 @@
 //! * `GET /api/players/<server>/<id>`: one player, with sessions, play by day, other
 //!   accounts and action history.
 //! * `POST /api/players/<server>/<id>/actions` `{kind, reason?, until?, name?, all_servers?}`:
-//!   queues an action (for every account sharing the identity, with `all_servers`). Bans,
+//!   queues an action (for every account sharing the identity, with `all_servers`). Bans and
+//!   unbans are always for the identity, across the network, and its later accounts too. Bans,
 //!   deletes, renames and password resets want a second factor proved lately.
 //! * `GET /api/actions/<id>`: how an action went; a reset password once, to who asked.
 //! * `GET /api/matches-report?days=`: matches per day by mode, lengths, players, maps.
@@ -134,7 +135,11 @@ async fn act(
     let Ok(Some(player_name)) = c.player_name(&server, id).await else {
         return fail(StatusCode::NOT_FOUND, "no such player");
     };
-    let accounts = if req.all_servers {
+    // Bans are across the network (0.4.8): every account of the identity, on every server, and
+    // the accounts it has later (`enforce_identity_bans`). An account without an identity is
+    // banned on its own.
+    let network = matches!(kind, "ban" | "unban");
+    let accounts = if req.all_servers || network {
         match c.accounts_of(&server, id).await {
             Ok(a) => a,
             Err(e) => return internal(e),
@@ -148,6 +153,18 @@ async fn act(
                 Ok(None) => {}
                 Ok(Some(why)) => return fail(StatusCode::CONFLICT, why),
                 Err(e) => return internal(e),
+            }
+        }
+    }
+    if network {
+        let identity = match c.linked_identity_of(&server, id).await {
+            Ok(i) => i,
+            Err(e) => return internal(e),
+        };
+        if let Some(identity) = identity {
+            let ban = (kind == "ban").then_some((reason, until));
+            if let Err(e) = c.set_identity_ban(&identity, ban, &s.username).await {
+                return internal(e);
             }
         }
     }

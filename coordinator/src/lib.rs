@@ -1507,7 +1507,13 @@ async fn players_report(State(c): State<Shared>, headers: HeaderMap, body: axum:
         return fail(StatusCode::PAYLOAD_TOO_LARGE, "at most 2000 players and 5000 sessions a request");
     }
     match c.record_players(&server, &roster).await {
-        Ok(answer) => ok(answer),
+        Ok(answer) => {
+            // Its players of identities banned across the network, banned here too.
+            if let Err(e) = c.enforce_identity_bans(&server).await {
+                tracing::warn!("network bans for {server}: {e}");
+            }
+            ok(answer)
+        }
         Err(e) => internal(e),
     }
 }

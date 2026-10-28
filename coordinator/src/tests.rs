@@ -1452,6 +1452,86 @@ async fn admins_manage_players_through_the_api() {
     assert_eq!((status, v["days"].as_array().map(Vec::len)), (StatusCode::OK, Some(30)));
 }
 
+#[tokio::test]
+async fn a_ban_is_across_the_network_and_reaches_accounts_made_later() {
+    let t = start("network-bans").await;
+    let r = admin_router(&t);
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    let roster = |players: Vec<Value>| Some(json!({ "full": true, "players": players }));
+    t.call("POST", "/v1/players", Some(&a), roster(vec![player(1007, "Exo", Some("ab12"))])).await;
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&b),
+        roster(vec![player(9, "Exo", Some("ab12")), player(10, "Other", Some("cd34"))]),
+    )
+    .await;
+    sqlx::query(
+        "INSERT INTO links (global_id, server_id, username, linked_at) VALUES ('ab12', 'server-a', 'Exo', 0), ('ab12', 'server-b', 'Exo', 0), ('cd34', 'server-b', 'Other', 0)",
+    )
+    .execute(&t.c.pool)
+    .await
+    .unwrap();
+    let fresh = admin_cookie(&t, "admin2", 0).await;
+    // Without all_servers: still every account of the identity, on every server.
+    let ban = json!({ "kind": "ban", "reason": "aimbot", "until": null });
+    let (status, v) = admin_call(&r, "POST", "/api/players/server-a/1007/actions", &fresh, Some(ban)).await;
+    assert_eq!((status, v["actions"].as_array().map(Vec::len)), (StatusCode::OK, Some(2)), "{v}");
+    let on_b = t.pulse_actions(&b).await;
+    assert_eq!(
+        (on_b.len(), on_b[0]["player"].as_i64(), on_b[0]["reason"].as_str()),
+        (1, Some(9), Some("aimbot")),
+        "{on_b:?}"
+    );
+    let d = t.c.player_detail("server-b", 9).await.unwrap().unwrap();
+    assert_eq!(
+        (d["network_ban"]["reason"].as_str(), d["network_ban"]["by"].as_str()),
+        (Some("aimbot"), Some("admin2")),
+        "{d}"
+    );
+    assert!(t.c.player_detail("server-b", 10).await.unwrap().unwrap()["network_ban"].is_null(), "another identity");
+    // Server B carries it out, then the identity makes another account there.
+    t.action_done(&b, on_b[0]["id"].as_i64().unwrap(), json!({ "ok": true, "message": "Banned" })).await;
+    let mut banned = player(9, "Exo", Some("ab12"));
+    banned["banned"] = json!({ "reason": "aimbot", "until": null, "at": identity::now() });
+    sqlx::query("INSERT INTO links (global_id, server_id, username, linked_at) VALUES ('ab12', 'server-b', 'Exo2', 0)")
+        .execute(&t.c.pool)
+        .await
+        .ok();
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&b),
+        roster(vec![banned.clone(), player(11, "Exo2", Some("ab12")), player(10, "Other", Some("cd34"))]),
+    )
+    .await;
+    let later = t.pulse_actions(&b).await;
+    assert_eq!(
+        later.iter().map(|a| (a["kind"].as_str(), a["player"].as_i64())).collect::<Vec<_>>(),
+        [(Some("ban"), Some(11))],
+        "{later:?}"
+    );
+    // Asked once: the next report doesn't ask again while it's pending (or for an hour after).
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&b),
+        roster(vec![banned, player(11, "Exo2", Some("ab12")), player(10, "Other", Some("cd34"))]),
+    )
+    .await;
+    assert_eq!(t.pulse_actions(&b).await.len(), 1);
+    // An unban lifts it everywhere, and later accounts are left alone.
+    let (status, v) = admin_call(&r, "POST", "/api/players/server-b/9/actions", &fresh, Some(json!({ "kind": "unban" }))).await;
+    assert_eq!((status, v["actions"].as_array().map(Vec::len)), (StatusCode::OK, Some(3)), "{v}");
+    assert!(t.c.identity_ban("ab12").await.unwrap().is_none());
+    t.call("POST", "/v1/players", Some(&b), roster(vec![player(12, "Exo3", Some("ab12"))])).await;
+    sqlx::query("INSERT INTO links (global_id, server_id, username, linked_at) VALUES ('ab12', 'server-b', 'Exo3', 0)")
+        .execute(&t.c.pool)
+        .await
+        .ok();
+    assert_eq!(t.c.enforce_identity_bans("server-b").await.unwrap(), 0);
+}
+
 /// A stat write: `value` to `stat` on `board` in `context`, for `who` (named after them).
 fn sw(id: i64, who: &str, board: u32, context: u32, stat: u32, value: f64) -> Value {
     json!({ "id": id, "global_id": who, "name": format!("Name{who}"), "board": board, "context": context, "stat": stat, "value": value })

@@ -778,6 +778,10 @@ impl Coordinator {
             }
             None => vec![],
         };
+        let network_ban = match &linked {
+            Some(identity) => self.identity_ban(identity).await?,
+            None => None,
+        };
         let actions: Vec<(i64, String, String, String, i64, String, Option<String>, Option<i64>)> = sqlx::query_as(
             "SELECT id, kind, args, created_by, created_at, status, message, done_at FROM player_actions WHERE server_id = ? AND player = ? ORDER BY id DESC LIMIT 50",
         )
@@ -793,6 +797,8 @@ impl Coordinator {
             "days": days.into_iter().map(|(t, secs)| json!({ "t": t, "seconds": secs })).collect::<Vec<_>>(),
             "others": others,
             "mutes_identity": linked,
+            // Banned across the network, by identity: every account of theirs, now and later.
+            "network_ban": network_ban.map(|(reason, until, at, by)| json!({ "reason": reason, "until": until, "at": at, "by": by })),
             "mutes": mutes.into_iter().map(|(room, until, by, reason, at)| json!({ "room": room, "until": until, "by": by, "reason": reason, "at": at })).collect::<Vec<_>>(),
             "actions": actions.into_iter().map(|(aid, kind, args, by, at, status, message, done)| json!({
                 "id": aid, "kind": kind, "args": serde_json::from_str::<Value>(&args).unwrap_or_default(), "created_by": by,
@@ -828,6 +834,79 @@ impl Coordinator {
             }
             None => Ok(vec![(server.to_string(), player)]),
         }
+    }
+
+    /// The identity `player` on `server` is linked by there, if any (as [`Self::accounts_of`]
+    /// takes it).
+    pub(crate) async fn linked_identity_of(&self, server: &str, player: i64) -> sqlx::Result<Option<String>> {
+        Ok(sqlx::query_scalar(
+            "SELECT p.identity FROM players p JOIN links l ON l.global_id = p.identity AND l.server_id = p.server_id
+              WHERE p.server_id = ? AND p.id = ?",
+        )
+        .bind(server)
+        .bind(player)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten())
+    }
+
+    /// Bans `identity` across the network (see [`Self::enforce_identity_bans`] for its later
+    /// accounts), or lifts its ban (`None`).
+    pub(crate) async fn set_identity_ban(&self, identity: &str, ban: Option<(&str, Option<i64>)>, by: &str) -> sqlx::Result<()> {
+        match ban {
+            Some((reason, until)) => {
+                sqlx::query(
+                    "INSERT INTO identity_bans (identity, reason, until, at, by) VALUES (?, ?, ?, ?, ?)
+                     ON CONFLICT(identity) DO UPDATE SET reason = excluded.reason, until = excluded.until, at = excluded.at, by = excluded.by",
+                )
+                .bind(identity)
+                .bind(reason)
+                .bind(until)
+                .bind(identity::now())
+                .bind(by)
+                .execute(&self.pool)
+                .await?;
+            }
+            None => {
+                sqlx::query("DELETE FROM identity_bans WHERE identity = ?").bind(identity).execute(&self.pool).await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The network ban on `identity` still running: why, until when, since when, by whom.
+    pub(crate) async fn identity_ban(&self, identity: &str) -> sqlx::Result<Option<(String, Option<i64>, i64, String)>> {
+        sqlx::query_as("SELECT reason, until, at, by FROM identity_bans WHERE identity = ? AND (until IS NULL OR until > ?)")
+            .bind(identity)
+            .bind(identity::now())
+            .fetch_optional(&self.pool)
+            .await
+    }
+
+    /// Bans the accounts on `server` of identities banned across the network that aren't
+    /// banned there: one made or linked after the ban, a server that joined after it, or a ban
+    /// that expired unanswered. Asked again an hour after the last try at most, so a server
+    /// that won't carry it out isn't asked every report. Answers how many it asked for.
+    pub(crate) async fn enforce_identity_bans(&self, server: &str) -> sqlx::Result<usize> {
+        let now = identity::now();
+        let due: Vec<(i64, String, Option<i64>, String)> = sqlx::query_as(
+            "SELECT p.id, b.reason, b.until, b.by FROM players p
+               JOIN links l ON l.global_id = p.identity AND l.server_id = p.server_id
+               JOIN identity_bans b ON b.identity = p.identity
+              WHERE p.server_id = ?1 AND (b.until IS NULL OR b.until > ?2) AND p.banned_at IS NULL
+                AND NOT EXISTS (SELECT 1 FROM player_actions a WHERE a.server_id = p.server_id AND a.player = p.id
+                                 AND a.kind = 'ban' AND a.created_at > ?2 - ?3)
+              LIMIT 100",
+        )
+        .bind(server)
+        .bind(now)
+        .bind(ACTION_EXPIRES)
+        .fetch_all(&self.pool)
+        .await?;
+        for (player, reason, until, by) in &due {
+            self.queue_action(server, *player, "ban", &json!({ "reason": reason, "until": until }), by).await?;
+        }
+        Ok(due.len())
     }
 
     /// A player's name on a server, if the coordinator has them.
