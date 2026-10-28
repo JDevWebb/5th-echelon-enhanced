@@ -235,29 +235,102 @@ impl Support {
 }
 
 /// The Support screen.
+/// The help pages beside the conversation.
+const MANUAL: [(&str, &str); 3] = [
+    ("Troubleshooting", "https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Troubleshooting"),
+    ("Error messages", "https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Error-Messages"),
+    ("Antivirus warnings", "https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Antivirus-Warnings"),
+];
+
+/// What the side panel asked for, done once the page is drawn.
+enum Side {
+    Report,
+    Checks,
+}
+
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
-    let (page, game, notices) = app.support_mut();
-    let profile = game.as_ref().and_then(|g| g.cfg.current_profile().cloned());
-    let game_dir = game.as_ref().map(|g| g.dir.clone());
-    egui::ScrollArea::vertical().auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
-        theme::page().show(ui, |ui| {
-            ui.set_width(ui.available_width());
-            theme::title(ui, "The network's admins", "Support");
-            ui.label(
-                RichText::new("Write to the community network's admins about anything that goes wrong. They answer here, and you're told when they do, here and in the game.")
-                    .color(theme::SOFT),
-            );
-            ui.add_space(14.0);
-            if !crate::roadmap::has_identity() {
-                ui.label(RichText::new("Connect to a server first: your messages are signed with the identity the launcher makes then.").color(theme::SOFT));
-                return;
-            }
-            conversation(page, ui);
-            ui.add_space(16.0);
-            form(page, profile.as_ref(), game_dir, notices, &ctx, ui);
+    let mut side = None;
+    {
+        let (page, game, notices) = app.support_mut();
+        let profile = game.as_ref().and_then(|g| g.cfg.current_profile().cloned());
+        let game_dir = game.as_ref().map(|g| g.dir.clone());
+        egui::ScrollArea::vertical().auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
+            theme::page().show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                theme::title(ui, "The network's admins", "Support");
+                ui.label(
+                    RichText::new("Write to the community network's admins about anything that goes wrong. They answer here, and you're told when they do, here and in the game.")
+                        .color(theme::SOFT),
+                );
+                ui.add_space(14.0);
+                // The conversation, and beside it (with room for it) a report, the checks and
+                // the help pages.
+                let panel = if ui.available_width() >= 900.0 { 300.0 } else { 0.0 };
+                let main = ui.available_width() - if panel > 0.0 { panel + 20.0 } else { 0.0 };
+                ui.horizontal_top(|ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(main);
+                        if !crate::roadmap::has_identity() {
+                            ui.label(RichText::new("Connect to a server first: your messages are signed with the identity the launcher makes then.").color(theme::SOFT));
+                            return;
+                        }
+                        conversation(page, ui);
+                        ui.add_space(16.0);
+                        form(page, profile.as_ref(), game_dir, notices, &ctx, ui);
+                    });
+                    if panel > 0.0 {
+                        ui.add_space(20.0);
+                        ui.vertical(|ui| {
+                            // The cards' own padding comes on top.
+                            ui.set_width(panel - 10.0);
+                            side = side_panel(ui);
+                        });
+                    }
+                });
+            });
         });
+    }
+    match side {
+        Some(Side::Report) => app.ask_feedback(&ctx),
+        Some(Side::Checks) => app.set_view(crate::app::View::Play),
+        None => {}
+    }
+}
+
+/// Beside the conversation: a report with the logs, the checks, and the help pages.
+fn side_panel(ui: &mut egui::Ui) -> Option<Side> {
+    let mut side = None;
+    theme::card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(theme::caps("Something went wrong?"));
+        ui.add_space(6.0);
+        let wide = egui::vec2(ui.available_width(), 38.0);
+        if ui
+            .add(theme::secondary("Send a report with the logs").min_size(wide))
+            .on_hover_text("The report goes to your server's admins, with the game's and the launcher's logs")
+            .clicked()
+        {
+            side = Some(Side::Report);
+        }
+        if ui
+            .add(theme::secondary("Run all checks").min_size(wide))
+            .on_hover_text("The Play screen's Status")
+            .clicked()
+        {
+            side = Some(Side::Checks);
+        }
     });
+    ui.add_space(14.0);
+    theme::card().show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(theme::caps("Field manual"));
+        ui.add_space(6.0);
+        for (name, url) in MANUAL {
+            ui.hyperlink_to(name, url);
+        }
+    });
+    side
 }
 
 /// The messages, oldest first: the player's on the right, the admins' on the left.
