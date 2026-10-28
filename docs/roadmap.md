@@ -8,6 +8,10 @@ What's being worked on next, roughly in order. Plans change as testing and the g
 
 One matchmaking server for the whole community network, relays kept near players, hosts ranked by ping: the second step of [cross-region play](#cross-region-play) below. Players on EU, North America and Oceania find each other's matches; the regional servers keep the relay and the internet-play helper close to you.
 
+### Lobby browser
+
+Alongside global matchmaking: a list of every open public lobby on the network, with its mode, map, players and seats, in the launcher and the overlay. Joining still goes through the game's own search or an invite.
+
 ### Fair play
 
 Checks on the server first: stats that can't be real flagged for the admins, bans that follow a player's identity across the network, the host's actions mid-match logged, and reporting a player from the overlay with the match attached. Then the first checks in the add-on, which only report and never kick. No kernel anti-cheat, and nothing that looks at your PC's other programs.
@@ -34,10 +38,6 @@ A signed `launcher.exe` and client DLL, so antivirus programs stop guessing (see
 `scbl.jdevwebb.net` through Cloudflare, with standby coordinators on the other servers ready to take over ([failover](failover.md)).
 
 ## Later
-
-### Lobby browser
-
-After global matchmaking: a list of every open public lobby, with its mode, map, players and seats. Joining still goes through the game's own search or an invite.
 
 ### Suggestions
 
