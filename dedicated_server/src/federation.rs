@@ -1235,6 +1235,19 @@ fn names_include(info: Option<&serde_json::Value>, host: &str) -> bool {
 /// Joins the coordinator with the join token and saves the credentials.
 async fn join(logger: &Logger, http: &reqwest::Client, base: &str, cfg: &FederationConfig, server_id: &str) -> Option<String> {
     if cfg.join_token.trim().is_empty() {
+        // Without the token, a server that joined the same coordinator by another name (it
+        // moved, as the community network did in 0.4.6) carries on there with its secret: the
+        // coordinator is the same, and so is its membership. Only on the same machine, or a
+        // name the coordinator at the old address lists as its own (see below).
+        if let Some((url, secret)) = saved_credentials().filter(|(url, _)| url != base) {
+            if same_machine(&url, base).await || vouched_for(http, &url, base).await {
+                if let Err(e) = crate::keys::write_secret_text(std::path::Path::new(CREDENTIALS_FILE), &format!("{base}\n{secret}")) {
+                    error!(logger, "Federation: couldn't save {CREDENTIALS_FILE} for {base}: {e}");
+                }
+                info!(logger, "Federation: the coordinator at {url} is {base} too; carrying on there as this server");
+                return Some(secret);
+            }
+        }
         error!(
             logger,
             "Federation: not joined yet, and [federation] join_token is empty; ask the coordinator's operator for one"

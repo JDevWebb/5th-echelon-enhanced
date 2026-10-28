@@ -65,15 +65,16 @@ servers_reporting=$(docker exec fes-fed-coord python3 -c "import sqlite3; print(
 [ "$servers_reporting" -eq 2 ] && echo "PASS both servers report metrics" || { echo "FAIL metrics: $servers_reporting server(s) reported"; rc=1; }
 echo "--- the coordinator moves to another address"
 # Server A is pointed at the same coordinator by another name, and restarted: it must join
-# again on its own (with its secret), not be locked out.
-docker exec fes-fed-a sed -i "s#coordinator = \"http://$coord:8700\"#coordinator = \"http://fes-fed-coord:8700\"#" /srv/fe/service.toml
+# again on its own (with its secret), not be locked out. Without the join token, as a
+# server that joined long ago has none (0.4.6's move needed it: na1 stayed unjoined).
+docker exec fes-fed-a sed -i -e "s#coordinator = \"http://$coord:8700\"#coordinator = \"http://fes-fed-coord:8700\"#" -e 's#^join_token = .*#join_token = ""#' /srv/fe/service.toml
 docker restart fes-fed-a >/dev/null
 moved=0
 for _ in $(seq 60); do
-  if docker exec fes-fed-a grep -qh "Federation: joined http://fes-fed-coord:8700" /srv/fe/server.log /srv/fe/gen.log 2>/dev/null; then moved=1; break; fi
+  if docker exec fes-fed-a grep -qh "Federation: the coordinator at http://$coord:8700 is http://fes-fed-coord:8700 too" /srv/fe/server.log /srv/fe/gen.log 2>/dev/null; then moved=1; break; fi
   sleep 1
 done
-[ "$moved" -eq 1 ] && echo "PASS server A joined again at the new address" || { echo "FAIL server A didn't join at the new address"; rc=1; }
+[ "$moved" -eq 1 ] && echo "PASS server A carried on at the new address without the join token" || { echo "FAIL server A didn't carry on at the new address"; docker exec fes-fed-a grep -h "Federation" /srv/fe/server.log | tail -5; rc=1; }
 echo "--- players and admin actions"
 db() { # db <container> <database> <sql>: the first column of the first row
   docker exec "$1" python3 -c "import sqlite3,sys; r=sqlite3.connect(sys.argv[1]).execute(sys.argv[2]).fetchone(); print('' if r is None else r[0])" "$2" "$3"
