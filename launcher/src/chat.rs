@@ -708,7 +708,10 @@ fn rooms(chat: &mut Chat, status: &StatusResponse, height: f32, ui: &mut egui::U
             chat.tab = Tab::Lobby;
         }
         ui.add_space(14.0);
-        ui.label(theme::caps("Messages"));
+        ui.horizontal(|ui| {
+            ui.add_space(14.0);
+            ui.label(theme::caps("Messages"));
+        });
         ui.add_space(2.0);
         if chat.conversations.is_empty() && chat.friends.is_empty() {
             ui.label(theme::muted("No conversations yet. Make friends in the game (or from Global) to message them.").small());
