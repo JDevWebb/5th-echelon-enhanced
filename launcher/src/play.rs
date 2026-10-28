@@ -129,6 +129,8 @@ pub struct Play {
     fetching_news: Slot<Result<(String, Vec<setup::server_info::NewsItem>), String>>,
     news: Vec<setup::server_info::NewsItem>,
     news_from: Option<(String, Instant)>,
+    /// What the drawer beside the stage shows, once the player picked a tab.
+    drawer: Option<Drawer>,
     /// The news item the home card shows, and when it last turned.
     news_index: usize,
     news_turned: Option<Instant>,
@@ -994,9 +996,24 @@ fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Con
             crate::app::Prefs::set_uplay_emulator_told();
         }
     }
-    hero(play, game, &mut to, ui);
     let notice = update_notice(play, game, ctx);
-    launch_bar(play, game, notices, notice.as_ref(), &mut to, ui);
+    // The stage (the game, the server, Play) and beside it the drawer (status, friends, news).
+    // The drawer takes about a third, so the stage keeps room for its controls in a small window.
+    let width = ui.available_width();
+    let drawer = (width * 0.3).clamp(300.0, 380.0);
+    let height = ui.available_height().max(520.0);
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        let spacing = ui.ctx().style().spacing.item_spacing;
+        ui.allocate_ui_with_layout(egui::vec2(width - drawer, height), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+            ui.spacing_mut().item_spacing = spacing;
+            stage(play, game, notices, notice.as_ref(), &mut to, ui);
+        });
+        ui.allocate_ui_with_layout(egui::vec2(drawer, height), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+            ui.spacing_mut().item_spacing = spacing;
+            drawer_panel(play, game, notices, ctx, &mut to, ui);
+        });
+    });
     if let Some(notice) = &notice {
         match crate::update_notice::show(ui, notice) {
             Some(crate::update_notice::Action::UpdateLauncher) => play.update_asked = true,
@@ -1010,16 +1027,6 @@ fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Con
             _ => {}
         }
     }
-    theme::page().inner_margin(egui::Margin::symmetric(32, 22)).show(ui, |ui| {
-        let gap = 16.0;
-        let width = ((ui.available_width() - 2.0 * gap) / 3.0).floor();
-        ui.horizontal_top(|ui| {
-            ui.spacing_mut().item_spacing.x = gap;
-            status_card(play, game, notices, ctx, &mut to, width, ui);
-            friends_card(play, game, &mut to, width, ui);
-            news_card(play, ctx, &mut to, width, ui);
-        });
-    });
     to
 }
 
@@ -1155,30 +1162,142 @@ fn load_playing(play: &mut Play, game: &Game, ctx: &egui::Context) {
 
 /// The banner: the game's name over one of its loading screens (or the
 /// night-vision grid until there is one), and who's playing in the corner.
-fn hero(play: &mut Play, game: &Game, to: &mut Option<Go>, ui: &mut egui::Ui) {
-    let width = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(width, 300.0), egui::Sense::hover());
+/// The stage: the game's art under a night-vision glow, the HUD along the top (the product, the
+/// link to the server, who's playing), the game's name, the launch controls, and the latest news
+/// along the foot.
+fn stage(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: Option<&crate::update_notice::Notice>, to: &mut Option<Go>, ui: &mut egui::Ui) {
+    let size = egui::vec2(ui.available_width(), ui.available_height());
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
     theme::grid_backdrop(ui.painter(), rect);
     if let Some(texture) = &play.art_texture {
         theme::cover_image(ui.painter(), rect, texture);
         theme::scrim(ui.painter(), rect);
+        theme::glow(ui.painter(), rect, rect.left_bottom(), theme::BG.gamma_multiply(0.6));
     }
-    ui.painter().line_segment([rect.left_bottom(), rect.right_bottom()], egui::Stroke::new(1.0, theme::LINE));
-    let inner = rect.shrink2(egui::vec2(32.0, 24.0));
+    let inner = rect.shrink2(egui::vec2(36.0, 26.0));
     let mut top = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Min)));
-    top.label(theme::caps(env!("FE_PRODUCT")));
+    top.label(theme::caps(&format!("{} //", env!("FE_PRODUCT"))));
     top.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
         if profile_card(play, game, ui).clicked() {
             *to = Some(Go::Settings(crate::settings::Section::Identity));
         }
     });
     let mut bottom = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::bottom_up(egui::Align::LEFT)));
+    news_line(play, to, &mut bottom);
+    bottom.add_space(18.0);
+    // On a wide stage the controls stay together, Play beside the server, not across the screen.
+    let controls = inner.width().min(940.0);
+    bottom.scope(|ui| {
+        ui.set_max_width(controls);
+        launch_bar(play, game, notices, notice, to, ui);
+    });
+    bottom.add_space(20.0);
     bottom.label(
         RichText::new("Co-op and Spies vs Mercs on community servers. No VPN, no port forwarding.")
             .size(16.0)
             .color(theme::SOFT),
     );
-    bottom.label(theme::display("Splinter Cell: Blacklist", 50.0));
+    bottom.add_space(6.0);
+    // The name in two lines, the second in the accent, as big as the stage allows.
+    let big = (inner.width() / 11.0).clamp(46.0, 84.0);
+    bottom.label(theme::display("Blacklist", big).color(theme::ACCENT));
+    bottom.add_space(-big * 0.32);
+    bottom.label(theme::display("Splinter Cell", big));
+    bottom.label(theme::kicker("Tom Clancy's"));
+}
+
+/// The latest news along the foot of the stage: its headline, and the way to all of it.
+fn news_line(play: &Play, to: &mut Option<Go>, ui: &mut egui::Ui) {
+    let latest = play.news.first().map(|n| hooks_config::text::clip(&n.title, 90));
+    ui.horizontal(|ui| {
+        ui.label(theme::kicker("Intel"));
+        match &latest {
+            Some(title) => {
+                ui.add(egui::Label::new(RichText::new(title).color(theme::SOFT)).truncate());
+            }
+            None => {
+                ui.label(theme::muted("No news from this server yet."));
+            }
+        }
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if latest.is_some() && ui.link("All news").clicked() {
+                *to = Some(Go::View(View::News));
+            }
+        });
+    });
+}
+
+/// What the drawer beside the stage shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Drawer {
+    Status,
+    Squad,
+    News,
+}
+
+/// The drawer: the checks, friends and news, one at a time under tabs. Until the player picks one
+/// it shows the checks when something needs fixing, and friends otherwise.
+fn drawer_panel(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Context, to: &mut Option<Go>, ui: &mut egui::Ui) {
+    let rect = ui.max_rect();
+    ui.painter().rect_filled(rect, 0, theme::SURFACE);
+    ui.painter().line_segment([rect.left_top(), rect.left_bottom()], egui::Stroke::new(1.0, theme::LINE));
+    let (color, _) = readiness(play);
+    let trouble = color == theme::BAD;
+    let shown = play.drawer.unwrap_or(if trouble { Drawer::Status } else { Drawer::Squad });
+    let friends_online = play.friends.online.len();
+    let tabs = [
+        (Drawer::Status, if trouble { "Status · fix".to_string() } else { "Status".to_string() }),
+        (
+            Drawer::Squad,
+            if friends_online > 0 {
+                format!("Squad · {friends_online}")
+            } else {
+                "Squad".to_string()
+            },
+        ),
+        (Drawer::News, "Intel".to_string()),
+    ];
+    let mut inner = ui.new_child(
+        egui::UiBuilder::new()
+            .max_rect(rect.shrink2(egui::vec2(0.0, 0.0)))
+            .layout(egui::Layout::top_down(egui::Align::LEFT)),
+    );
+    let ui = &mut inner;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing = egui::Vec2::ZERO;
+        let w = rect.width() / tabs.len() as f32;
+        for (tab, label) in &tabs {
+            let (r, response) = ui.allocate_exact_size(egui::vec2(w, 52.0), egui::Sense::click());
+            let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+            let on = shown == *tab;
+            let painter = ui.painter();
+            painter.line_segment([r.left_bottom(), r.right_bottom()], egui::Stroke::new(1.0, theme::LINE));
+            if on {
+                painter.line_segment(
+                    [r.left_bottom() - egui::vec2(0.0, 1.0), r.right_bottom() - egui::vec2(0.0, 1.0)],
+                    egui::Stroke::new(2.0, theme::ACCENT),
+                );
+            }
+            let color = if on {
+                theme::FG
+            } else if response.hovered() {
+                theme::SOFT
+            } else {
+                theme::MUTED
+            };
+            painter.text(r.center(), egui::Align2::CENTER_CENTER, label.to_uppercase(), egui::FontId::monospace(11.5), color);
+            response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, on, label));
+            if response.clicked() {
+                play.drawer = Some(*tab);
+            }
+        }
+    });
+    let width = rect.width() - 24.0;
+    egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 12)).show(ui, |ui| match shown {
+        Drawer::Status => status_card(play, game, notices, ctx, to, width, ui),
+        Drawer::Squad => friends_card(play, game, to, width, ui),
+        Drawer::News => news_card(play, ctx, to, width, ui),
+    });
 }
 
 /// Who's playing: name, identity and server, on the banner's corner. Opens
@@ -1283,16 +1402,31 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: O
     let menu_open = egui::Popup::is_id_open(ui.ctx(), menu_id);
     let run_by = run_by(listing.is_some(), play.directory.is_some());
     let mut caption_rect = None;
-    egui::Frame::new().fill(theme::SUNKEN).inner_margin(egui::Margin::symmetric(32, 16)).show(ui, |ui| {
+    egui::Frame::new().show(ui, |ui| {
         ui.set_width(ui.available_width());
+        // The server card gives way first when the stage is narrow, and the readiness line goes
+        // under the controls.
+        let chip_width = (ui.available_width() * 0.4).clamp(220.0, 300.0);
+        let narrow = ui.available_width() < 700.0;
+        let status = match notice {
+            Some(n) if n.blocks_play.is_none() => (theme::WARN, n.status.clone()),
+            Some(n) => (theme::BAD, n.status.clone()),
+            None => readiness(play),
+        };
+        let readiness_line = |ui: &mut egui::Ui| {
+            let (color, text) = &status;
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+            ui.painter().circle_filled(rect.center(), 5.0, *color);
+            ui.add(egui::Label::new(RichText::new(text).size(15.0)).truncate()).on_hover_text(text);
+        };
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 20.0;
             // The server: click for the server menu.
-            let chip = ui.allocate_ui_with_layout(egui::vec2(300.0, 60.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+            let chip = ui.allocate_ui_with_layout(egui::vec2(chip_width, 60.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
                 egui::Frame::new()
-                    .fill(theme::SURFACE)
+                    .fill(theme::SURFACE.gamma_multiply(0.85))
                     .stroke(egui::Stroke::new(1.0, if menu_open { theme::ACCENT } else { theme::CONTROL_LINE }))
-                    .corner_radius(12)
+                    .corner_radius(4)
                     .inner_margin(egui::Margin {
                         left: 16,
                         right: 10,
@@ -1300,7 +1434,7 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: O
                         bottom: 10,
                     })
                     .show(ui, |ui| {
-                        ui.set_width(300.0 - 26.0);
+                        ui.set_width(chip_width - 26.0);
                         // The ping and players on the right, as wide as they are ("no answer" is
                         // wider than "53 ms"): the server's caption and name get the rest.
                         let right = listing
@@ -1433,19 +1567,16 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: O
             play.menu_focus = focus;
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 play_button(play, game, notices, notice.and_then(|n| n.blocks_play.as_deref()), ui);
-                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
-                    // A release going out, or maintenance, says what it means for playing now.
-                    let (color, text) = match notice {
-                        Some(n) if n.blocks_play.is_none() => (theme::WARN, n.status.clone()),
-                        Some(n) => (theme::BAD, n.status.clone()),
-                        None => readiness(play),
-                    };
-                    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
-                    ui.painter().circle_filled(rect.center(), 5.0, color);
-                    ui.add(egui::Label::new(RichText::new(&text).size(15.0)).truncate()).on_hover_text(&text);
-                });
+                // A release going out, or maintenance, says what it means for playing now.
+                if !narrow {
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), readiness_line);
+                }
             });
         });
+        if narrow {
+            ui.add_space(8.0);
+            ui.horizontal(readiness_line);
+        }
         // Beta features on (Settings › Game): said where the game is started, with what it
         // means, so nobody forgets they're trying one out.
         let beta = game.cfg.hook_config.beta.on();
@@ -1481,20 +1612,20 @@ fn chevron_down(ui: &mut egui::Ui, open: bool) {
 /// A card of the home screen's row: fixed size, a small uppercase title with
 /// an optional note on the right, the body, and a footer kept at the bottom.
 fn home_card(ui: &mut egui::Ui, width: f32, title: &str, note: Option<RichText>, body: impl FnOnce(&mut egui::Ui), footer: impl FnOnce(&mut egui::Ui)) {
-    const HEIGHT: f32 = 300.0;
-    ui.allocate_ui_with_layout(egui::vec2(width, HEIGHT), egui::Layout::top_down(egui::Align::LEFT), |ui| {
-        theme::card().show(ui, |ui| {
-            ui.set_width(width - 40.0);
-            ui.set_height(HEIGHT - 36.0);
-            ui.horizontal(|ui| {
-                ui.label(theme::caps(title));
-                if let Some(note) = note {
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label(note.size(12.5));
-                    });
-                }
-            });
-            ui.add_space(6.0);
+    // As tall as the room it's given (the drawer's), at least as tall as its content wants.
+    let height = ui.available_height().max(260.0);
+    ui.allocate_ui_with_layout(egui::vec2(width, height), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+        egui::Frame::new().inner_margin(egui::Margin::symmetric(8, 6)).show(ui, |ui| {
+            ui.set_width(width - 16.0);
+            ui.set_height(height - 12.0);
+            // The drawer's tab names the card; its note (a count, "2 of 5") stays.
+            let _ = title;
+            if let Some(note) = note {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+                    ui.label(note.size(12.5));
+                });
+            }
+            ui.add_space(4.0);
             ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
                 footer(ui);
                 ui.add_space(6.0);
