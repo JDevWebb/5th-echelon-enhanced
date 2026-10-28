@@ -373,6 +373,7 @@ impl Coordinator {
             ("DELETE FROM player_actions WHERE created_at < ?", crate::players::KEEP_FOR),
             ("DELETE FROM pulses WHERE at < ?", LIVE_FOR),
             ("DELETE FROM live_feed WHERE at < ?", LIVE_FOR),
+            ("DELETE FROM stat_gains WHERE at < ?", crate::stats::GAINS_FOR),
         ] {
             sqlx::query(sql).bind(now - keep).execute(&self.pool).await?;
         }

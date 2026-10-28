@@ -22,7 +22,7 @@
   </PageTop>
   <PlayerList v-if="tab === 'accounts'" />
   <MatchesReport v-else-if="tab === 'matches'" :days="matchDays" />
-  <Leaderboards v-else-if="tab === 'leaderboards'" />
+  <template v-else-if="tab === 'leaderboards'"><StatFlags /><Leaderboards /></template>
   <template v-else-if="r">
     <p class="small muted">Players are counted per server: someone playing on two servers counts twice. Time played comes from play sessions for servers that send them ({{ sessionServers }}), else from a sample each minute.{{ r.tracking_since ? ` Counted since ${new Date(r.tracking_since * 1000).toLocaleDateString(undefined, { dateStyle: 'medium', timeZone: 'UTC' })}.` : '' }}</p>
     <div class="grid cols-2">
@@ -110,6 +110,7 @@ import PageTop from '../components/PageTop.vue';
 import PlayerList from '../components/PlayerList.vue';
 import MatchesReport from '../components/MatchesReport.vue';
 import Leaderboards from '../components/Leaderboards.vue';
+import StatFlags from '../components/StatFlags.vue';
 import RangePicker from '../components/RangePicker.vue';
 import Stat from '../components/Stat.vue';
 import LineChart from '../components/LineChart.vue';

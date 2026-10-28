@@ -1532,6 +1532,65 @@ async fn a_ban_is_across_the_network_and_reaches_accounts_made_later() {
     assert_eq!(t.c.enforce_identity_bans("server-b").await.unwrap(), 0);
 }
 
+#[tokio::test]
+async fn stat_gains_far_above_normal_are_flagged_for_the_admins() {
+    let t = start("stat-flags").await;
+    let a = t.join("server-a").await;
+    let now = identity::now();
+    // 60 players ten minutes into a session gaining 10 each, and one five minutes in gaining
+    // 100,000.
+    let mut writes = Vec::new();
+    for i in 0..61i64 {
+        let who = format!("P{i}");
+        let (started, gain) = if i == 60 { (now - 300, 100_000.0) } else { (now - 600, 10.0) };
+        sqlx::query("INSERT INTO players (server_id, id, name, identity, updated_at) VALUES ('server-a', ?, ?, ?, 0)")
+            .bind(i)
+            .bind(&who)
+            .bind(&who)
+            .execute(&t.c.pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO play_sessions (server_id, id, player, started, ended) VALUES ('server-a', ?, ?, ?, NULL)")
+            .bind(i)
+            .bind(i)
+            .bind(started)
+            .execute(&t.c.pool)
+            .await
+            .unwrap();
+        writes.push(sw(i + 1, &who, 17, 1, 100, gain));
+    }
+    t.stats(&a, EPOCH, writes).await;
+    let f = t.c.stat_flags().await.unwrap();
+    let flags = f["flags"].as_array().unwrap();
+    assert_eq!(flags.len(), 1, "{f}");
+    assert_eq!((flags[0]["global_id"].as_str(), flags[0]["gain"].as_f64()), (Some("P60"), Some(100_000.0)), "{f}");
+    assert!(flags[0]["times_normal"].as_f64().unwrap() > 10_000.0, "{f}");
+    assert_eq!(f["stats"][0]["samples"], 61, "{f}");
+    // Nothing changed for the players: the leaderboards keep it until an admin acts.
+    assert_eq!(t.stat("P60", 17, 1, 100).await, Some(100_000.0));
+    // An admin removing their stats deals with the flag.
+    t.c.remove_stats("P60").await.unwrap();
+    assert!(t.c.stat_flags().await.unwrap()["flags"].as_array().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn too_few_gains_of_a_stat_flag_nothing() {
+    let t = start("stat-flags-few").await;
+    let a = t.join("server-a").await;
+    sqlx::query("INSERT INTO players (server_id, id, name, identity, updated_at) VALUES ('server-a', 1, 'Huge', 'HUGE', 0)")
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO play_sessions (server_id, id, player, started, ended) VALUES ('server-a', 1, 1, ?, NULL)")
+        .bind(identity::now() - 60)
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    t.stats(&a, EPOCH, vec![sw(1, "HUGE", 17, 1, 100, 1e9)]).await;
+    let f = t.c.stat_flags().await.unwrap();
+    assert!(f["flags"].as_array().unwrap().is_empty(), "one gain is no normal to compare with: {f}");
+}
+
 /// A stat write: `value` to `stat` on `board` in `context`, for `who` (named after them).
 fn sw(id: i64, who: &str, board: u32, context: u32, stat: u32, value: f64) -> Value {
     json!({ "id": id, "global_id": who, "name": format!("Name{who}"), "board": board, "context": context, "stat": stat, "value": value })

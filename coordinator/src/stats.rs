@@ -42,6 +42,21 @@ pub const MAX_COUNT: usize = 100;
 pub const MAX_BODY: usize = 1024 * 1024;
 /// The largest value a write may carry.
 const LARGEST: f64 = 1e12;
+/// How long what each write added is kept (`stat_gains`), and the flags are worked out over.
+pub const GAINS_FOR: i64 = 30 * 86_400;
+/// A gain is flagged once it's this many times the 99th percentile of that stat's gains per
+/// minute of play across the network, and bigger than its 99th percentile gain too...
+const FLAG_TIMES: f64 = 10.0;
+/// ...among at least this many gains of that stat (fewer: not enough to say what's normal).
+const FLAG_SAMPLES: usize = 50;
+/// The most flags answered.
+const MAX_FLAGS: usize = 100;
+
+/// The `p` quantile (0 to 1) of `sorted`, which is sorted and not empty.
+fn quantile(sorted: &[f64], p: f64) -> f64 {
+    sorted[((sorted.len() - 1) as f64 * p).round() as usize]
+}
+
 /// How long the leaderboards answer is kept.
 const CACHE_FOR: Duration = Duration::from_secs(60);
 /// ...and at most this long once new stats came.
@@ -165,6 +180,9 @@ impl Coordinator {
         // Only for people linked on the server that sends them: a server can't make up
         // anyone else's stats.
         let mut linked: BTreeMap<String, bool> = BTreeMap::new();
+        // How long each person has been playing on this server (their session's start), for
+        // the gains (see `stat_gains`).
+        let mut played: BTreeMap<String, Option<i64>> = BTreeMap::new();
         let mut changed = false;
         for (id, w) in writes {
             if id <= last {
@@ -207,6 +225,35 @@ impl Coordinator {
                 .bind(now)
                 .execute(&mut *tx)
                 .await?;
+                let gain = value - stored.unwrap_or(0.0);
+                if matches!(aggregation, Aggregation::Add) && gain > 0.0 {
+                    if !played.contains_key(&w.global_id) {
+                        // Its newest session there still open, or just ended (a match's stats
+                        // come as it ends).
+                        let started: Option<i64> = sqlx::query_scalar(
+                            "SELECT MAX(ps.started) FROM play_sessions ps JOIN players p ON p.server_id = ps.server_id AND p.id = ps.player
+                              WHERE ps.server_id = ?1 AND p.identity = ?2 AND (ps.ended IS NULL OR ps.ended >= ?3 - 600)",
+                        )
+                        .bind(server)
+                        .bind(&w.global_id)
+                        .bind(now)
+                        .fetch_one(&mut *tx)
+                        .await?;
+                        played.insert(w.global_id.clone(), started.map(|s| (now - s).max(0)));
+                    }
+                    sqlx::query("INSERT INTO stat_gains (at, server_id, global_id, board, context, stat, gain, value, played) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+                        .bind(now)
+                        .bind(server)
+                        .bind(&w.global_id)
+                        .bind(w.board)
+                        .bind(w.context)
+                        .bind(w.stat)
+                        .bind(gain)
+                        .bind(value)
+                        .bind(played[&w.global_id])
+                        .execute(&mut *tx)
+                        .await?;
+                }
             }
             let name = w.name.trim();
             if valid_display_name(name) {
@@ -250,6 +297,68 @@ impl Coordinator {
             self.stats_cache.lock().await.stale = true;
         }
         Ok(last)
+    }
+
+    /// Stat gains far above normal (fair play F1), for the admins: for each stat that adds up,
+    /// what the network's players gain per minute of play (over [`GAINS_FOR`]), and the writes
+    /// that gained over [`FLAG_TIMES`] its 99th percentile per minute, and more than its 99th
+    /// percentile gain, worst first. Nothing is hidden or changed: the admins decide.
+    pub async fn stat_flags(&self) -> sqlx::Result<Value> {
+        let now = identity::now();
+        let rows: Vec<(i64, i64, String, String, u32, u32, u32, f64, i64)> =
+            sqlx::query_as("SELECT id, at, server_id, global_id, board, context, stat, gain, played FROM stat_gains WHERE at >= ? AND played IS NOT NULL")
+                .bind(now - GAINS_FOR)
+                .fetch_all(&self.pool)
+                .await?;
+        let per_minute = |gain: f64, played: i64| gain / (played.max(60) as f64 / 60.0);
+        let mut by_stat: BTreeMap<(u32, u32), (Vec<f64>, Vec<f64>)> = BTreeMap::new();
+        for r in &rows {
+            let e = by_stat.entry((r.4, r.6)).or_default();
+            e.0.push(per_minute(r.7, r.8));
+            e.1.push(r.7);
+        }
+        let mut stats = Vec::new();
+        let mut limits: HashMap<(u32, u32), (f64, f64)> = HashMap::new();
+        for ((board, stat), (rates, gains)) in &mut by_stat {
+            rates.sort_by(f64::total_cmp);
+            gains.sort_by(f64::total_cmp);
+            let (p50, p99, max) = (quantile(rates, 0.5), quantile(rates, 0.99), rates[rates.len() - 1]);
+            if rates.len() >= FLAG_SAMPLES {
+                limits.insert((*board, *stat), (p99, quantile(gains, 0.99)));
+            }
+            stats.push(json!({ "board": board, "stat": stat, "samples": rates.len(), "per_minute": { "p50": p50, "p99": p99, "max": max } }));
+        }
+        let mut flags: Vec<(f64, &(i64, i64, String, String, u32, u32, u32, f64, i64))> = rows
+            .iter()
+            .filter_map(|r| {
+                let (p99_rate, p99_gain) = *limits.get(&(r.4, r.6))?;
+                let times = per_minute(r.7, r.8) / p99_rate.max(f64::MIN_POSITIVE);
+                (times > FLAG_TIMES && r.7 > p99_gain).then_some((times, r))
+            })
+            .collect();
+        flags.sort_by(|a, b| b.0.total_cmp(&a.0));
+        flags.truncate(MAX_FLAGS);
+        let mut names: HashMap<String, Option<String>> = HashMap::new();
+        for (_, r) in &flags {
+            if !names.contains_key(&r.3) {
+                let name: Option<String> = sqlx::query_scalar("SELECT name FROM global_names WHERE global_id = ?")
+                    .bind(&r.3)
+                    .fetch_optional(&self.pool)
+                    .await?;
+                names.insert(r.3.clone(), name);
+            }
+        }
+        let flags: Vec<Value> = flags
+            .into_iter()
+            .map(|(times, r)| {
+                json!({
+                    "id": r.0, "at": r.1, "server": r.2, "global_id": r.3, "name": names.get(&r.3).cloned().flatten(),
+                    "board": r.4, "context": r.5, "stat": r.6, "gain": r.7, "played": r.8,
+                    "per_minute": per_minute(r.7, r.8), "times_normal": times,
+                })
+            })
+            .collect();
+        Ok(json!({ "days": GAINS_FOR / 86_400, "times": FLAG_TIMES, "min_samples": FLAG_SAMPLES, "stats": stats, "flags": flags }))
     }
 
     /// The top `count` of a leaderboard in `context`.
@@ -457,6 +566,8 @@ impl Coordinator {
             .fetch_optional(&mut *tx)
             .await?;
         let done = sqlx::query("DELETE FROM global_stats WHERE global_id = ?").bind(global_id).execute(&mut *tx).await?;
+        // Their gains too: with the stats gone, their flags are dealt with.
+        sqlx::query("DELETE FROM stat_gains WHERE global_id = ?").bind(global_id).execute(&mut *tx).await?;
         tx.commit().await?;
         self.forget_leaderboards().await;
         Ok((done.rows_affected(), name))

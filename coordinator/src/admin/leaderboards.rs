@@ -3,6 +3,8 @@
 //!
 //! * `GET /api/leaderboards?leaderboard=&context=&count=`: every leaderboard and the lists
 //!   that aren't empty, and with a leaderboard and context, its top `count` (up to 100).
+//! * `GET /api/stats/flags`: stat gains far above what the network's players make in a minute
+//!   of play, worst first, and each stat's normal (fair play F1). Shown, never acted on.
 //! * `DELETE /api/stats/<global id>`: removes everything kept for that person. Wants a second
 //!   factor proved lately; audited.
 
@@ -27,7 +29,18 @@ use super::Shared;
 use crate::stats;
 
 pub(super) fn routes() -> Router<Shared> {
-    Router::new().route("/leaderboards", get(leaderboards)).route("/stats/{global_id}", delete(remove))
+    Router::new()
+        .route("/leaderboards", get(leaderboards))
+        .route("/stats/flags", get(flags))
+        .route("/stats/{global_id}", delete(remove))
+}
+
+/// Stat gains far above normal (`stats::stat_flags`).
+async fn flags(State(c): State<Shared>, Extension(client): Extension<Client>, headers: HeaderMap) -> Response {
+    if let Err(r) = c.full(&headers, &client).await {
+        return r;
+    }
+    c.stat_flags().await.map_or_else(internal, ok)
 }
 
 #[derive(Deserialize)]
