@@ -37,7 +37,10 @@ fn made_up_game() -> std::path::PathBuf {
         c.upsert_profile(setup::config::Profile {
             name: "eu1.example.net".into(),
             server: "eu1.example.net".into(),
-            user: hooks_config::User { username: "Kiwi".into(), ..Default::default() },
+            user: hooks_config::User {
+                username: "Kiwi".into(),
+                ..Default::default()
+            },
             ..Default::default()
         });
     })
@@ -50,6 +53,7 @@ fn made_up_game() -> std::path::PathBuf {
 
 /// The first-run questions answered, so none of them covers the screens.
 const ANSWERED: &str = "diagnostics_asked = true\nlog_excerpt_told = true\nwhats_new_seen = \"9.9.9\"\n\
+                        options_asked = [\"mouse-accel\", \"brighten\", \"autoclimb\"]\n\
                         directory = \"https://scbl.jdevwebb.net\"\n";
 
 #[test]

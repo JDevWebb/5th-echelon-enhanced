@@ -1,5 +1,5 @@
-//! The launcher's look: the dark Echelon theme the in-game overlay uses
-//! (slate greys, night-vision green), set in IBM Plex Sans.
+//! The launcher's look, "Field ops": near-black panels, one night-vision green, HUD labels in
+//! IBM Plex Mono caps, titles in Plex Sans Condensed, the rest in Plex Sans.
 
 use std::sync::Arc;
 
@@ -10,26 +10,28 @@ use eframe::egui::FontId;
 use eframe::egui::Stroke;
 use eframe::egui::TextStyle;
 
-pub const BG: Color32 = Color32::from_rgb(0x0f, 0x15, 0x18);
-pub const SURFACE: Color32 = Color32::from_rgb(0x1c, 0x25, 0x2a);
+pub const BG: Color32 = Color32::from_rgb(0x0a, 0x0e, 0x0f);
+pub const SURFACE: Color32 = Color32::from_rgb(0x0c, 0x11, 0x12);
 /// Buttons and other controls, a step up from the card they sit on.
-pub const CONTROL: Color32 = Color32::from_rgb(0x2a, 0x36, 0x3d);
-pub const CONTROL_HOVER: Color32 = Color32::from_rgb(0x35, 0x43, 0x4b);
-pub const CONTROL_LINE: Color32 = Color32::from_rgb(0x3a, 0x48, 0x50);
-pub const LINE: Color32 = Color32::from_rgb(0x2b, 0x36, 0x3c);
-pub const FG: Color32 = Color32::from_rgb(0xe6, 0xed, 0xf0);
-pub const MUTED: Color32 = Color32::from_rgb(0x93, 0xa4, 0xad);
-pub const ACCENT: Color32 = Color32::from_rgb(0x8f, 0xd1, 0x4f);
-pub const ON_ACCENT: Color32 = Color32::from_rgb(0x0b, 0x14, 0x05);
-pub const OK: Color32 = Color32::from_rgb(0x3e, 0xcf, 0x9e);
+pub const CONTROL: Color32 = Color32::from_rgb(0x15, 0x1e, 0x1f);
+pub const CONTROL_HOVER: Color32 = Color32::from_rgb(0x1c, 0x28, 0x27);
+pub const CONTROL_LINE: Color32 = Color32::from_rgb(0x26, 0x34, 0x34);
+pub const LINE: Color32 = Color32::from_rgb(0x17, 0x20, 0x22);
+pub const FG: Color32 = Color32::from_rgb(0xe3, 0xec, 0xe6);
+pub const MUTED: Color32 = Color32::from_rgb(0x84, 0x96, 0x8f);
+pub const ACCENT: Color32 = Color32::from_rgb(0x9b, 0xe0, 0x5a);
+pub const ON_ACCENT: Color32 = Color32::from_rgb(0x07, 0x10, 0x03);
+pub const OK: Color32 = Color32::from_rgb(0x9b, 0xe0, 0x5a);
 pub const WARN: Color32 = Color32::from_rgb(0xf0, 0xb4, 0x4c);
-pub const BAD: Color32 = Color32::from_rgb(0xff, 0x6b, 0x6b);
+pub const BAD: Color32 = Color32::from_rgb(0xff, 0x7a, 0x6b);
 /// The side menu, a step darker than the page.
-pub const RAIL: Color32 = Color32::from_rgb(0x0b, 0x10, 0x13);
-/// Wells inside a card (stat tiles, the launch bar), a step below it.
-pub const SUNKEN: Color32 = Color32::from_rgb(0x14, 0x1c, 0x20);
+pub const RAIL: Color32 = Color32::from_rgb(0x07, 0x09, 0x0a);
+/// Wells inside a card (inputs, the launch bar), a step below it.
+pub const SUNKEN: Color32 = Color32::from_rgb(0x07, 0x09, 0x0a);
 /// Secondary text that should read more strongly than [`MUTED`].
-pub const SOFT: Color32 = Color32::from_rgb(0xb8, 0xc6, 0xcd);
+pub const SOFT: Color32 = Color32::from_rgb(0xa9, 0xba, 0xb3);
+/// What's chosen or current: a green tint behind it, with a green edge.
+pub const SELECTED: Color32 = Color32::from_rgb(0x10, 0x1c, 0x16);
 
 /// The semi-bold face, for headings and emphasis.
 pub fn strong() -> FontFamily {
@@ -86,7 +88,7 @@ pub fn apply(ctx: &egui::Context) {
         let v = &mut style.visuals;
         v.panel_fill = BG;
         v.window_fill = SURFACE;
-        v.extreme_bg_color = Color32::from_rgb(0x0a, 0x0f, 0x11);
+        v.extreme_bg_color = SUNKEN;
         v.faint_bg_color = SURFACE;
         v.override_text_color = Some(FG);
         v.hyperlink_color = ACCENT;
@@ -136,12 +138,12 @@ pub fn status_marker(ui: &mut egui::Ui, status: setup::diagnose::Status) {
     }
 }
 
-/// A card: a raised surface for one part of the screen.
+/// A card: a panel for one part of the screen.
 pub fn card() -> egui::Frame {
     egui::Frame::new()
         .fill(SURFACE)
         .stroke(Stroke::new(1.0, LINE))
-        .corner_radius(14)
+        .corner_radius(6)
         .inner_margin(egui::Margin::symmetric(20, 18))
 }
 
@@ -163,9 +165,15 @@ pub fn display(text: &str, size: f32) -> egui::RichText {
     egui::RichText::new(text.to_uppercase()).family(condensed()).size(size).extra_letter_spacing(size * 0.02)
 }
 
-/// A small uppercase label over a value or a group ("SERVER", "PING").
+/// A small uppercase label over a value or a group ("SERVER", "PING"), as a HUD reads: Plex
+/// Mono caps.
 pub fn caps(text: &str) -> egui::RichText {
-    egui::RichText::new(text.to_uppercase()).size(11.5).extra_letter_spacing(1.2).color(MUTED)
+    egui::RichText::new(text.to_uppercase()).monospace().size(11.5).extra_letter_spacing(1.4).color(MUTED)
+}
+
+/// [`caps`] in the accent: a screen's kicker over its title ("NETWORK · SCBL.JDEVWEBB.NET").
+pub fn kicker(text: &str) -> egui::RichText {
+    caps(text).color(ACCENT)
 }
 
 /// The page's own padding.
@@ -183,13 +191,13 @@ pub fn play_button(text: &str) -> egui::Button<'static> {
             .extra_letter_spacing(3.0),
     )
     .fill(ACCENT)
-    .corner_radius(12)
+    .corner_radius(4)
     .min_size(egui::vec2(220.0, 58.0))
 }
 
 /// A quieter button, for actions beside the main one.
 pub fn secondary(text: &str) -> egui::Button<'static> {
-    egui::Button::new(text.to_string()).corner_radius(10).min_size(egui::vec2(0.0, 38.0))
+    egui::Button::new(text.to_string()).corner_radius(4).min_size(egui::vec2(0.0, 38.0))
 }
 
 /// The launcher's mark (docs/logo.svg): five units in an echelon formation, the fifth
@@ -219,20 +227,50 @@ pub fn mark(ui: &mut egui::Ui, size: f32) {
     }
 }
 
-/// The faint night-vision grid behind the game's banner.
+/// Night vision behind the game's banner and the setup: a soft green glow over the page's
+/// colour, with faint scanlines.
 pub fn grid_backdrop(painter: &egui::Painter, rect: egui::Rect) {
-    painter.rect_filled(rect, 0, Color32::from_rgb(0x12, 0x1a, 0x1e));
-    let line = Stroke::new(1.0, ACCENT.linear_multiply(0.06));
-    let step = 48.0;
-    let mut x = rect.left() + step;
-    while x < rect.right() {
-        painter.line_segment([egui::pos2(x, rect.top()), egui::pos2(x, rect.bottom())], line);
-        x += step;
-    }
-    let mut y = rect.top() + step;
+    painter.rect_filled(rect, 0, BG);
+    glow(
+        painter,
+        rect,
+        egui::pos2(rect.left() + rect.width() * 0.7, rect.top() + rect.height() * 0.35),
+        ACCENT.gamma_multiply(0.09),
+    );
+    let line = Stroke::new(1.0, ACCENT.gamma_multiply(0.035));
+    let mut y = rect.top() + 2.0;
     while y < rect.bottom() {
         painter.line_segment([egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)], line);
-        y += step;
+        y += 4.0;
+    }
+}
+
+/// A radial glow of `color` at `centre`, fading to nothing at the far edge of `rect`.
+pub fn glow(painter: &egui::Painter, rect: egui::Rect, centre: egui::Pos2, color: Color32) {
+    let radius = (rect.width().max(rect.height())) * 0.6;
+    let mut mesh = egui::Mesh::default();
+    mesh.colored_vertex(centre, color);
+    let steps = 48;
+    for i in 0..=steps {
+        let a = i as f32 / steps as f32 * std::f32::consts::TAU;
+        mesh.colored_vertex(centre + egui::vec2(a.cos(), a.sin() * 0.8) * radius, Color32::TRANSPARENT);
+    }
+    for i in 1..=steps as u32 {
+        mesh.add_triangle(0, i, i + 1);
+    }
+    let clip = painter.with_clip_rect(rect.intersect(painter.clip_rect()));
+    clip.add(egui::Shape::mesh(mesh));
+}
+
+/// The three lights of the goggles, the side menu's mark: `size` is a light's diameter.
+pub fn lights(ui: &mut egui::Ui, size: f32) {
+    let gap = size * 0.5;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size * 3.0 + gap * 2.0, size), egui::Sense::hover());
+    let painter = ui.painter();
+    for i in 0..3 {
+        let c = egui::pos2(rect.left() + size / 2.0 + i as f32 * (size + gap), rect.center().y);
+        painter.circle_filled(c, size, ACCENT.gamma_multiply(0.12));
+        painter.circle_filled(c, size / 2.0, ACCENT);
     }
 }
 
@@ -426,12 +464,12 @@ pub fn mark_button(ui: &mut egui::Ui, mark: &egui::TextureHandle, label: &str) -
 }
 
 pub fn nav_button(ui: &mut egui::Ui, icon: Icon, label: &str, selected: bool) -> egui::Response {
-    let (rect, response) = ui.allocate_exact_size(egui::vec2(66.0, 60.0), egui::Sense::click());
-    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(42.0, 42.0), egui::Sense::click());
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(label);
     let fill = if selected {
-        SURFACE
+        SELECTED
     } else if response.hovered() {
-        SURFACE.linear_multiply(0.6)
+        CONTROL
     } else {
         Color32::TRANSPARENT
     };
@@ -443,16 +481,15 @@ pub fn nav_button(ui: &mut egui::Ui, icon: Icon, label: &str, selected: bool) ->
         MUTED
     };
     let painter = ui.painter();
-    painter.rect_filled(rect, 10, fill);
-    let icon_rect = egui::Rect::from_center_size(egui::pos2(rect.center().x, rect.top() + 21.0), egui::vec2(22.0, 22.0));
-    paint_icon(painter, icon_rect, icon, color);
-    painter.text(
-        egui::pos2(rect.center().x, rect.bottom() - 13.0),
-        egui::Align2::CENTER_CENTER,
-        label.to_uppercase(),
-        FontId::new(10.5, FontFamily::Proportional),
-        color,
-    );
+    painter.rect_filled(rect, 8, fill);
+    if selected {
+        painter.rect_filled(
+            egui::Rect::from_min_size(rect.left_top() + egui::vec2(0.0, 8.0), egui::vec2(2.0, rect.height() - 16.0)),
+            1,
+            ACCENT,
+        );
+    }
+    paint_icon(painter, egui::Rect::from_center_size(rect.center(), egui::vec2(20.0, 20.0)), icon, color);
     response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, label));
     response
 }

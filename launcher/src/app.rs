@@ -763,54 +763,49 @@ impl App {
             });
     }
 
-    /// The side menu: the mark, the screens, and the version at the bottom.
+    /// The side menu: the goggles' lights, the screens as icons (named on hover), then Support and
+    /// Settings, the other sites and the version at the bottom.
     fn rail(&mut self, ctx: &egui::Context) {
+        // The roadmap, chat and support are the community network's: shown to its players only.
+        let community = Prefs::directory().is_some_and(|d| Prefs::is_community(&d));
+        let current = self.view;
+        let unread = [(View::Chat, self.chat.unread()), (View::Support, self.support.unread())];
+        let mut go = None;
+        let mut item = |ui: &mut egui::Ui, view: View, icon: theme::Icon, label: &str| {
+            if matches!(view, View::Chat | View::Roadmap | View::Support) && !community {
+                return;
+            }
+            let button = theme::nav_button(ui, icon, label, current == view);
+            // Direct messages and mentions, and answers from support, not seen yet: a dot.
+            if current != view && unread.iter().any(|(v, n)| *v == view && *n > 0) {
+                let at = button.rect.right_top() + egui::vec2(-8.0, 8.0);
+                ui.painter().circle_filled(at, 5.0, theme::RAIL);
+                ui.painter().circle_filled(at, 3.5, theme::ACCENT);
+            }
+            if button.clicked() {
+                go = Some(view);
+            }
+        };
         egui::SidePanel::left("rail")
             .resizable(false)
-            .exact_width(88.0)
+            .exact_width(60.0)
             .frame(
                 egui::Frame::new()
                     .fill(theme::RAIL)
                     .stroke(egui::Stroke::new(1.0, theme::LINE))
-                    .inner_margin(egui::Margin::symmetric(11, 18)),
+                    .inner_margin(egui::Margin::symmetric(9, 18)),
             )
             .show(ctx, |ui| {
+                ui.spacing_mut().item_spacing.y = 6.0;
                 ui.vertical_centered(|ui| {
-                    theme::mark(ui, 34.0);
-                    ui.add_space(22.0);
-                    // The roadmap is the community network's: shown to its players only.
-                    let community = Prefs::directory().is_some_and(|d| Prefs::is_community(&d));
-                    for (view, icon, label) in [
-                        (View::Play, theme::Icon::Play, "Play"),
-                        (View::Servers, theme::Icon::Servers, "Servers"),
-                        (View::News, theme::Icon::News, "News"),
-                        (View::Chat, theme::Icon::Chat, "Chat"),
-                        (View::Roadmap, theme::Icon::Roadmap, "Roadmap"),
-                        (View::Support, theme::Icon::Support, "Support"),
-                        (View::Server, theme::Icon::Host, "Host"),
-                        (View::Settings, theme::Icon::Settings, "Settings"),
-                    ] {
-                        if matches!(view, View::Chat | View::Roadmap | View::Support) && !community {
-                            continue;
-                        }
-                        let button = theme::nav_button(ui, icon, label, self.view == view);
-                        // Answers from support not seen yet: a dot on its button.
-                        if view == View::Support && self.support.unread() > 0 {
-                            ui.painter().circle_filled(button.rect.right_top() + egui::vec2(-14.0, 10.0), 4.5, theme::ACCENT);
-                        }
-                        // Direct messages and mentions not seen yet: their count on Chat.
-                        let unread = self.chat.unread();
-                        if view == View::Chat && unread > 0 {
-                            let at = button.rect.right_top() + egui::vec2(-16.0, 11.0);
-                            ui.painter().circle_filled(at, 8.0, theme::ACCENT);
-                            let text = if unread > 9 { "9+".to_string() } else { unread.to_string() };
-                            ui.painter().text(at, egui::Align2::CENTER_CENTER, text, egui::FontId::proportional(10.0), theme::ON_ACCENT);
-                        }
-                        if button.clicked() {
-                            self.view = view;
-                        }
-                        ui.add_space(2.0);
-                    }
+                    theme::lights(ui, 6.0);
+                    ui.add_space(20.0);
+                    item(ui, View::Play, theme::Icon::Play, "Play");
+                    item(ui, View::Servers, theme::Icon::Servers, "Servers");
+                    item(ui, View::Chat, theme::Icon::Chat, "Chat");
+                    item(ui, View::News, theme::Icon::News, "News");
+                    item(ui, View::Roadmap, theme::Icon::Roadmap, "Roadmap");
+                    item(ui, View::Server, theme::Icon::Host, "Host a server");
                 });
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                     let version = ui
@@ -823,7 +818,7 @@ impl App {
                     if version.clicked() && !self.whats_new.reopen() {
                         ui.ctx().open_url(egui::OpenUrl::new_tab(crate::updater::RELEASES_PAGE));
                     }
-                    ui.add_space(8.0);
+                    ui.add_space(4.0);
                     let [github, discord] = self.marks.get_or_insert_with(|| marks(ui.ctx())).clone();
                     let discord = theme::mark_button(ui, &discord, "Message the developer on Discord")
                         .on_hover_text(format!("Message {DISCORD_NAME} on Discord: bugs, questions, or a game.\nRight-click to copy the name."));
@@ -834,13 +829,18 @@ impl App {
                         ui.ctx().copy_text(DISCORD_NAME.to_string());
                         self.notices.info(format!("Copied {DISCORD_NAME}: add it in Discord to message the developer."));
                     }
-                    ui.add_space(2.0);
                     let github = theme::mark_button(ui, &github, "5th Echelon Enhanced on GitHub").on_hover_text("5th Echelon Enhanced on GitHub: releases, issues and the code");
                     if github.clicked() {
                         ui.ctx().open_url(egui::OpenUrl::new_tab(GITHUB));
                     }
+                    ui.add_space(10.0);
+                    item(ui, View::Settings, theme::Icon::Settings, "Settings");
+                    item(ui, View::Support, theme::Icon::Support, "Support");
                 });
             });
+        if let Some(view) = go {
+            self.view = view;
+        }
     }
 
     pub fn set_view(&mut self, view: View) {

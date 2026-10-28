@@ -21,6 +21,8 @@ mod server;
 mod server_menu;
 mod services;
 mod settings;
+#[cfg(all(test, feature = "shots"))]
+mod shots;
 mod support;
 mod task;
 mod theme;
@@ -68,7 +70,7 @@ fn main() -> eframe::Result {
             .with_title(concat!(env!("FE_PRODUCT"), " ", env!("FE_RELEASE")))
             // The screens are laid out for this size, and scale with the window (scale.rs).
             .with_inner_size(scale::DESIGN)
-            .with_min_inner_size(scale::DESIGN * 0.4)
+            .with_min_inner_size(scale::MIN_WINDOW)
             .with_resizable(true)
             .with_fullscreen(scale::gamescope())
             .with_maximize_button(true)

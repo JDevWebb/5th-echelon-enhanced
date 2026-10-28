@@ -1,8 +1,7 @@
-//! The launcher's size. Its screens are laid out for [`DESIGN`] points; the
-//! window can be resized, maximised or made full screen (F11), and the whole
-//! layout scales with it so all of it fits. On top of that comes the
-//! player's own size (Settings › Display, or Ctrl + / Ctrl − / Ctrl 0), for
-//! bigger or smaller text and controls.
+//! The launcher's size. The window opens at [`DESIGN`] points (smaller on a small screen) and
+//! can be resized, maximised or made full screen (F11); the screens lay themselves out for the
+//! space they get, at the system's text size, down to [`MIN_WINDOW`]. On top of that comes the
+//! player's own size (Settings › Display, or Ctrl + / Ctrl − / Ctrl 0).
 
 use eframe::egui;
 
@@ -32,16 +31,20 @@ pub fn clamp(size: f32) -> f32 {
     ((size / STEP).round() * STEP).clamp(MIN_SIZE, MAX_SIZE)
 }
 
-/// The zoom that fits the design into a window of `physical` pixels, on a
-/// screen of `native` pixels per point, times the player's `size`.
-pub fn zoom_for(physical: egui::Vec2, native: f32, size: f32) -> f32 {
-    let fit = (physical.x / (DESIGN.x * native)).min(physical.y / (DESIGN.y * native));
-    if fit.is_finite() && fit > 0.0 {
-        (fit * size).clamp(0.4, 4.0)
+/// The zoom for the player's `size`: the screens lay themselves out at real size for whatever
+/// window they get, with text as big as the system's scaling says (egui's points), times the
+/// player's own size. Until 0.4.8 the design was zoomed to fit the window, so a small window
+/// shrank the text and a big one blew it up.
+pub fn zoom_for(size: f32) -> f32 {
+    if size.is_finite() && size > 0.0 {
+        size.clamp(MIN_SIZE, MAX_SIZE)
     } else {
-        size
+        1.0
     }
 }
+
+/// The smallest window the screens are laid out for, in points; below it they scroll.
+pub const MIN_WINDOW: egui::Vec2 = egui::vec2(800.0, 560.0);
 
 /// The window's first size: the design's, shrunk (keeping its shape) to fit a
 /// screen of `monitor` points, or None when it fits already.
@@ -77,8 +80,7 @@ pub fn apply(ctx: &egui::Context, size: f32, sized: &mut bool) -> Option<f32> {
 
     let changed = shortcut(ctx, size);
     let size = changed.unwrap_or(size);
-    let physical = ctx.content_rect().size() * ctx.pixels_per_point();
-    let zoom = zoom_for(physical, native, size);
+    let zoom = zoom_for(size);
     if (ctx.zoom_factor() - zoom).abs() > 0.002 {
         ctx.set_zoom_factor(zoom);
     }
@@ -112,18 +114,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_design_fits_the_window() {
-        // The design's own size at 100 %: no zoom.
-        assert!((zoom_for(DESIGN, 1.0, 1.0) - 1.0).abs() < 1e-6);
-        // Twice as big (full screen on a large monitor): twice the zoom.
-        assert!((zoom_for(DESIGN * 2.0, 1.0, 1.0) - 2.0).abs() < 1e-6);
-        // A 1366×768 laptop at 125 %: the height decides, all of it fits.
-        let z = zoom_for(egui::vec2(1366.0, 700.0), 1.25, 1.0);
-        assert!(DESIGN.y * 1.25 * z <= 700.0 + 0.01 && DESIGN.x * 1.25 * z <= 1366.0);
-        // The player's size on top.
-        assert!((zoom_for(DESIGN, 1.0, 1.3) - 1.3).abs() < 1e-6);
-        // Nothing sensible to go by (a minimised window): just the player's size.
-        assert_eq!(zoom_for(egui::Vec2::ZERO, 1.0, 1.2), 1.2);
+    fn the_zoom_is_the_players_size_whatever_the_window() {
+        // Real size: no zoom at 100 %, however big or small the window is.
+        assert!((zoom_for(1.0) - 1.0).abs() < 1e-6);
+        // The player's size on top, within its range.
+        assert!((zoom_for(1.3) - 1.3).abs() < 1e-6);
+        assert!((zoom_for(9.0) - MAX_SIZE).abs() < 1e-6);
+        // Nothing sensible: 100 %.
+        assert_eq!(zoom_for(f32::NAN), 1.0);
     }
 
     #[test]
