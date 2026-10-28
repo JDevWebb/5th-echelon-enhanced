@@ -2,29 +2,46 @@
 
 What's being worked on next, roughly in order. Plans change as testing and the game's own code turn things up; the [issues](https://github.com/JDevWebb/5th-echelon-enhanced/issues) have the details, and ideas are welcome there.
 
-## In 0.4.6
+## In 0.4.7
 
-[Chat](chat.md) and who's online, the community network's move to `scbl.jdevwebb.net` for [failover](failover.md), and fixes for crashes and freezes in the game's own code. See the [release notes](releases/v0.4.6.md).
+### Global matchmaking
 
-## Next
+One matchmaking server for the whole community network, relays kept near players, hosts ranked by ping: the second step of [cross-region play](#cross-region-play) below. Players on EU, North America and Oceania find each other's matches; the regional servers keep the relay and the internet-play helper close to you.
+
+### Fair play
+
+Checks on the server first: stats that can't be real flagged for the admins, bans that follow a player's identity across the network, the host's actions mid-match logged, and reporting a player from the overlay with the match attached. Then the first checks in the add-on, which only report and never kick. No kernel anti-cheat, and nothing that looks at your PC's other programs.
+
+### Matches
+
+- Host and party migration (MPW1412's pull request), once it's updated.
+- Search, the friend list and Join knowing when a match is under way, from the host's game.
+- Whether searches still hang after 0.4.6, from a week of its numbers.
+- A co-op wipe returning to the lobby: checked against how the original game behaved.
 
 ### Turning speed at high frame rates
 
-The view turns slower with the mouse above 60 fps (so players cap their frame rate). A test build is measuring why; the fix would be a game option, chosen once, like 0.4.5's.
+0.4.6's first beta (**Settings › Beta features**) fixes the view turning slower with the mouse above 60 fps. If the beta's logs and players say it's right, it becomes a normal game option, chosen once like 0.4.5's.
+
+## Next
 
 ### Code signing for Windows
 
 A signed `launcher.exe` and client DLL, so antivirus programs stop guessing (see [Antivirus warnings](../README.md#antivirus-warnings)). Until then, each release is sent to Microsoft for review.
 
+### Failover for the coordinator
+
+`scbl.jdevwebb.net` through Cloudflare, with standby coordinators on the other servers ready to take over ([failover](failover.md)).
+
 ## Later
-
-### Global matchmaking
-
-One matchmaking server for everyone, relays kept near players, hosts ranked by ping: the second step of [cross-region play](#cross-region-play) below.
 
 ### Lobby browser
 
-Alongside global matchmaking: a list of every open public lobby, with its mode, map, players and seats. Joining still goes through the game's own search or an invite.
+After global matchmaking: a list of every open public lobby, with its mode, map, players and seats. Joining still goes through the game's own search or an invite.
+
+### Suggestions
+
+Screen shake off, and a wider field of view.
 
 ## Cross-region play
 
@@ -61,6 +78,8 @@ The fix, if players ask for it:
 
 ## Done recently
 
+- **0.4.6:** [chat](chat.md): Global across the network, your lobby, and friends on any server, in the launcher and the overlay, with who's online on your server. Join a friend's party or public match without an invite; Play SvM and Play Coop straight into the online lobby. Searches no longer hang on a match that has started, four crashes in the game's own code patched, host migrations that give up instead of spinning for ever, and freezes that note where they stuck. Beta features in Settings. The community network moved to `scbl.jdevwebb.net`, ready for failover. See the [release notes](releases/v0.4.6.md).
+- **0.4.5:** matches no longer haunt the lists after their host has left, the game says what it crashed on, and two PCs on one home connection can join each other. Names with slurs or hate refused, Steam Input for Steam copies, an overlay that keeps out of the game's window handling, and three new game options from MPW1412 (mouse 1:1, a brighter picture, no automatic climbing). See the [release notes](releases/v0.4.5.md).
 - **0.4.4:** what's being played: friends' lines name the mode and map, and each server shows its open matches by mode, map and players, in the launcher and the overlay. The overlay says why a join failed the moment it does (a full, locked or closed room, or whose game has which mod), and searches skip full lobbies. A public match is no longer ended by the server when its host leaves, and a party carries on for everyone in it. Server updates go out in update windows booked ahead.
 - **0.4.3:** a security review of the whole network, attacking a copy of it and then real servers, and every finding fixed: caps on the API's and the coordinator's connections and messages, limits on game connections that haven't signed in, a relay that carries only the players the server put together, and a directory that lists a server only where it answers as itself. Tested in real games across two networks, co-op and Spies vs Mercs, relayed and direct, over half-hour matches.
 - **0.4.3:** Support in the launcher (the community network's), replies to reports, the overlay's key yours to choose, the 15 minutes of the game's log before a problem, and in the admin UI a **Live** page and how each stay ended.
