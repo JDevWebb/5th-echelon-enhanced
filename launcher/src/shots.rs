@@ -81,3 +81,27 @@ fn screens_at_each_size() {
         }
     }
 }
+
+/// Parts that need a server to fill them, drawn from sample data.
+#[test]
+fn parts_with_sample_data() {
+    let out = std::path::PathBuf::from(std::env::var("SHOTS_OUT").unwrap_or_else(|_| "shots".into()));
+    std::fs::create_dir_all(&out).unwrap();
+    for (size_name, size) in [("1280x700", egui::vec2(1220.0, 640.0)), ("900x560", egui::vec2(840.0, 520.0))] {
+        let mut themed = false;
+        let mut h = egui_kittest::Harness::builder().with_size(size).wgpu().build(move |ctx: &egui::Context| {
+            if !themed {
+                crate::theme::apply(ctx);
+                themed = true;
+                return;
+            }
+            egui::CentralPanel::default().show(ctx, |ui| crate::chat::sample(ui));
+        });
+        for _ in 0..4 {
+            h.run_steps(1);
+        }
+        let path = out.join(format!("chat-sample-{size_name}.png"));
+        h.render().expect("rendered").save(&path).unwrap();
+        println!("{}", path.display());
+    }
+}

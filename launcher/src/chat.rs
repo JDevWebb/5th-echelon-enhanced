@@ -540,127 +540,215 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         if status.read_only {
             ui.label(RichText::new("The network can't be reached right now: you can read, not send.").color(theme::WARN).small());
         }
-        let mut tab = chat.tab;
-        let lobby_label = if status.lobby != 0 { "Lobby" } else { "Lobby (not in one)" };
-        let direct_unread: u32 = chat.unseen_direct.values().sum();
-        let messages_label = if direct_unread > 0 {
-            format!("Messages ({direct_unread})")
-        } else {
-            "Messages".to_string()
-        };
-        theme::segmented(
-            ui,
-            &mut tab,
-            &[(Tab::Global, "Global"), (Tab::Lobby, lobby_label), (Tab::Messages, messages_label.as_str())],
-        );
-        chat.tab = tab;
-        ui.add_space(10.0);
         if let Some(link) = chat.open_link.clone() {
             confirm_link(chat, &link, ui);
         }
-        let height = (ui.available_height() - 150.0).max(240.0);
-        match chat.tab {
-            Tab::Global => {
-                ui.horizontal_top(|ui| {
-                    let side = 240.0;
-                    let main = (ui.available_width() - side - 16.0).max(320.0);
-                    ui.vertical(|ui| {
-                        ui.set_width(main);
-                        let list = std::mem::take(&mut chat.global);
-                        messages(chat, &cfg, &list, height, "global", ui);
-                        chat.global = list;
-                    });
-                    ui.add_space(16.0);
-                    ui.vertical(|ui| {
-                        ui.set_width(side);
-                        online(chat, &cfg, height, ui);
-                    });
-                });
-                if !status.may_post_global {
-                    ui.label(theme::muted(&status.global_wait));
-                }
-                composer(chat, &cfg, Room::Global, "", status.may_post_global, "Say something to everyone…", ui);
-            }
-            Tab::Lobby => {
-                if status.lobby == 0 {
-                    ui.label(theme::muted("Join a lobby or a match in the game: its players can talk here, and in the game's overlay."));
-                } else {
-                    let list = std::mem::take(&mut chat.lobby);
-                    messages(chat, &cfg, &list, height, "lobby", ui);
-                    chat.lobby = list;
-                    composer(chat, &cfg, Room::Lobby, "", true, "Say something to your lobby…", ui);
-                }
-            }
-            Tab::Messages => conversations(chat, &cfg, height, ui),
-        }
+        layout(chat, &cfg, &status, ui);
         ui.add_space(4.0);
         ui.label(theme::muted(RULES_LINE).small());
     });
     let _ = notices;
 }
 
-/// The list of conversations (and friends to start one with), beside the open one.
-fn conversations(chat: &mut Chat, cfg: &Config, height: f32, ui: &mut egui::Ui) {
+/// The Chat screen's columns: the rooms and conversations, the one open, and (for Global, with
+/// room for it) who's online here.
+fn layout(chat: &mut Chat, cfg: &Config, status: &StatusResponse, ui: &mut egui::Ui) {
+    let height = (ui.available_height() - 120.0).max(240.0);
     ui.horizontal_top(|ui| {
-        let side = 240.0;
+        // The rooms and conversations, the one open, and (for Global, with room for it) who's
+        // online here.
+        let side = 250.0;
         ui.vertical(|ui| {
             ui.set_width(side);
-            egui::ScrollArea::vertical()
-                .id_salt("conversations")
-                .max_height(height)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    if chat.conversations.is_empty() && chat.friends.is_empty() {
-                        ui.label(theme::muted("No conversations yet. Make friends in the game (or from Global) to message them."));
-                    }
-                    let mut pick = None;
-                    for c in &chat.conversations {
-                        let unread = chat.unseen_direct.get(&c.with).copied().unwrap_or(0);
-                        let name = if c.with_name.is_empty() { identity::short(&c.with) } else { c.with_name.clone() };
-                        let text = if unread > 0 { format!("{name}  ({unread})") } else { name };
-                        let chosen = chat.with.as_deref() == Some(c.with.as_str());
-                        if ui
-                            .add(egui::Button::selectable(
-                                chosen,
-                                RichText::new(text).color(if unread > 0 { theme::ACCENT } else { theme::FG }),
-                            ))
-                            .clicked()
-                        {
-                            pick = Some(c.with.clone());
-                        }
-                    }
-                    let new: Vec<&ChatFriend> = chat.friends.iter().filter(|f| !chat.conversations.iter().any(|c| c.with == f.identity)).collect();
-                    if !new.is_empty() {
-                        ui.add_space(8.0);
-                        ui.label(theme::caps("Friends"));
-                        for f in new {
-                            let dot = if f.online { "● " } else { "" };
-                            let chosen = chat.with.as_deref() == Some(f.identity.as_str());
-                            if ui.add(egui::Button::selectable(chosen, format!("{dot}{}", f.name))).clicked() {
-                                chat.names.insert(f.identity.clone(), f.name.clone());
-                                pick = Some(f.identity.clone());
-                            }
-                        }
-                    }
-                    if let Some(p) = pick {
-                        chat.with = Some(p);
-                    }
-                });
+            rooms(chat, status, height + 80.0, ui);
         });
         ui.add_space(16.0);
+        let online_width = if chat.tab == Tab::Global && ui.available_width() > 760.0 { 240.0 } else { 0.0 };
+        let main = (ui.available_width() - online_width - if online_width > 0.0 { 16.0 } else { 0.0 }).max(280.0);
         ui.vertical(|ui| {
-            let Some(with) = chat.with.clone() else {
-                ui.label(theme::muted("Pick a conversation, or a friend to start one."));
-                return;
-            };
-            let name = chat.names.get(&with).cloned().unwrap_or_else(|| identity::short(&with));
-            ui.label(RichText::new(&name).family(theme::strong()).size(18.0));
-            let list = chat.direct.remove(&with).unwrap_or_default();
-            messages(chat, cfg, &list, height - 30.0, &with, ui);
-            chat.direct.insert(with.clone(), list);
-            composer(chat, cfg, Room::Direct, &with, true, &format!("Message {name}…"), ui);
+            ui.set_width(main);
+            match chat.tab {
+                Tab::Global => {
+                    room_heading(ui, "# Global", "The whole community network");
+                    let list = std::mem::take(&mut chat.global);
+                    messages(chat, cfg, &list, height, "global", ui);
+                    chat.global = list;
+                    if !status.may_post_global {
+                        ui.label(theme::muted(&status.global_wait));
+                    }
+                    composer(chat, cfg, Room::Global, "", status.may_post_global, "Say something to everyone…", ui);
+                }
+                Tab::Lobby => {
+                    room_heading(ui, "# Lobby", "The players in your party or match");
+                    if status.lobby == 0 {
+                        ui.label(theme::muted("Join a lobby or a match in the game: its players can talk here, and in the game's overlay."));
+                    } else {
+                        let list = std::mem::take(&mut chat.lobby);
+                        messages(chat, cfg, &list, height, "lobby", ui);
+                        chat.lobby = list;
+                        composer(chat, cfg, Room::Lobby, "", true, "Say something to your lobby…", ui);
+                    }
+                }
+                Tab::Messages => conversation(chat, cfg, height, ui),
+            }
         });
+        if online_width > 0.0 {
+            ui.add_space(16.0);
+            ui.vertical(|ui| {
+                ui.set_width(online_width);
+                online(chat, cfg, height + 80.0, ui);
+            });
+        }
     });
+}
+
+/// Sample rooms, friends and messages, for the screenshots (shots.rs).
+#[cfg(all(test, feature = "shots"))]
+pub(crate) fn sample(ui: &mut egui::Ui) {
+    let now = identity::now();
+    let msg = |id: i64, from: &str, name: &str, server: &str, body: &str, mentions_me: bool| Message {
+        id,
+        room: Room::Global as i32,
+        at: now - 600 + id * 60,
+        from: from.into(),
+        from_name: name.into(),
+        server_name: server.into(),
+        body: body.into(),
+        mentions_me,
+        ..Default::default()
+    };
+    let mut chat = Chat::default();
+    chat.global = vec![
+        msg(1, "t", "Tank", "Falkenstein, Germany", "anyone up for Blacklist mode on Penthouse?", false),
+        msg(2, "n", "Nova", "Sydney, Australia", "after this match, 10 min", false),
+        msg(3, "r", "Raven", "Beauharnois, Canada", "@Kiwi you hosting tonight?", true),
+    ];
+    chat.conversations = vec![Conversation {
+        with: "r".into(),
+        with_name: "Raven".into(),
+        ..Default::default()
+    }];
+    chat.unseen_direct.insert("r".into(), 2);
+    chat.friends = vec![ChatFriend {
+        identity: "t".into(),
+        name: "Tank".into(),
+        online: true,
+    }];
+    let status = StatusResponse {
+        available: true,
+        may_post_global: true,
+        ..Default::default()
+    };
+    layout(&mut chat, &Config::default(), &status, ui);
+}
+
+/// A room's name over the conversation, and what it is.
+fn room_heading(ui: &mut egui::Ui, name: &str, what: &str) {
+    ui.horizontal(|ui| {
+        ui.label(RichText::new(name).family(theme::strong()).size(17.0));
+        ui.label(theme::muted(what).small());
+    });
+    ui.add_space(4.0);
+}
+
+/// One entry of the rooms column: `name` over `what`, lit when it's open, with its unread count.
+fn room_button(ui: &mut egui::Ui, on: bool, name: &str, what: &str, unread: u32, enabled: bool) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 50.0), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
+    let response = if enabled { response.on_hover_cursor(egui::CursorIcon::PointingHand) } else { response };
+    let painter = ui.painter();
+    if on {
+        painter.rect_filled(rect, 4, theme::SELECTED);
+        painter.rect_filled(egui::Rect::from_min_size(rect.left_top(), egui::vec2(3.0, rect.height())), 0, theme::ACCENT);
+    } else if response.hovered() && enabled {
+        painter.rect_filled(rect, 4, theme::CONTROL);
+    }
+    let left = rect.left() + 14.0;
+    let fg = if !enabled {
+        theme::MUTED
+    } else if on || unread > 0 {
+        theme::FG
+    } else {
+        theme::SOFT
+    };
+    painter.text(
+        egui::pos2(left, rect.top() + 16.0),
+        egui::Align2::LEFT_CENTER,
+        name,
+        egui::FontId::new(15.0, theme::strong()),
+        fg,
+    );
+    painter.text(
+        egui::pos2(left, rect.top() + 35.0),
+        egui::Align2::LEFT_CENTER,
+        what,
+        egui::FontId::proportional(12.5),
+        theme::MUTED,
+    );
+    if unread > 0 {
+        let text = if unread > 99 { "99+".to_string() } else { unread.to_string() };
+        let badge = egui::Rect::from_center_size(egui::pos2(rect.right() - 20.0, rect.center().y), egui::vec2(24.0, 18.0));
+        painter.rect_filled(badge, 3, theme::ACCENT);
+        painter.text(badge.center(), egui::Align2::CENTER_CENTER, text, egui::FontId::monospace(11.0), theme::ON_ACCENT);
+    }
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, on, name));
+    response
+}
+
+/// The rooms column: Global and the lobby, then conversations with friends (and friends to start
+/// one with).
+fn rooms(chat: &mut Chat, status: &StatusResponse, height: f32, ui: &mut egui::Ui) {
+    egui::ScrollArea::vertical().id_salt("rooms").max_height(height).auto_shrink([false, false]).show(ui, |ui| {
+        ui.spacing_mut().item_spacing.y = 4.0;
+        if room_button(ui, chat.tab == Tab::Global, "# Global", "Everyone, every server", 0, true).clicked() {
+            chat.tab = Tab::Global;
+        }
+        let in_lobby = status.lobby != 0;
+        let what = if in_lobby { "Your party or match" } else { "Join a party or match first" };
+        if room_button(ui, chat.tab == Tab::Lobby, "# Lobby", what, 0, true).clicked() {
+            chat.tab = Tab::Lobby;
+        }
+        ui.add_space(14.0);
+        ui.label(theme::caps("Messages"));
+        ui.add_space(2.0);
+        if chat.conversations.is_empty() && chat.friends.is_empty() {
+            ui.label(theme::muted("No conversations yet. Make friends in the game (or from Global) to message them.").small());
+        }
+        let mut pick = None;
+        for c in &chat.conversations {
+            let unread = chat.unseen_direct.get(&c.with).copied().unwrap_or(0);
+            let name = if c.with_name.is_empty() { identity::short(&c.with) } else { c.with_name.clone() };
+            let on = chat.tab == Tab::Messages && chat.with.as_deref() == Some(c.with.as_str());
+            if room_button(ui, on, &name, "Direct", unread, true).clicked() {
+                pick = Some(c.with.clone());
+            }
+        }
+        let new: Vec<&ChatFriend> = chat.friends.iter().filter(|f| !chat.conversations.iter().any(|c| c.with == f.identity)).collect();
+        for f in new {
+            let on = chat.tab == Tab::Messages && chat.with.as_deref() == Some(f.identity.as_str());
+            if room_button(ui, on, &f.name, if f.online { "Friend · online" } else { "Friend" }, 0, true).clicked() {
+                chat.names.insert(f.identity.clone(), f.name.clone());
+                pick = Some(f.identity.clone());
+            }
+        }
+        if let Some(p) = pick {
+            chat.with = Some(p);
+            chat.tab = Tab::Messages;
+        }
+    });
+}
+
+/// The open conversation with a friend.
+fn conversation(chat: &mut Chat, cfg: &Config, height: f32, ui: &mut egui::Ui) {
+    let Some(with) = chat.with.clone() else {
+        ui.label(theme::muted("Pick a conversation, or a friend to start one."));
+        return;
+    };
+    let name = chat.names.get(&with).cloned().unwrap_or_else(|| identity::short(&with));
+    room_heading(ui, &name, "Direct messages");
+    let list = chat.direct.remove(&with).unwrap_or_default();
+    messages(chat, cfg, &list, height, &with, ui);
+    chat.direct.insert(with.clone(), list);
+    composer(chat, cfg, Room::Direct, &with, true, &format!("Message {name}…"), ui);
 }
 
 /// Who's online on the player's server, beside Global.
