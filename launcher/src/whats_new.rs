@@ -578,7 +578,7 @@ fn thanks_box(ui: &mut egui::Ui, names: &[&str]) {
     egui::Frame::new()
         .fill(theme::ACCENT.linear_multiply(0.10))
         .stroke(egui::Stroke::new(1.0, theme::ACCENT.linear_multiply(0.35)))
-        .corner_radius(10)
+        .corner_radius(6)
         .inner_margin(egui::Margin::symmetric(14, 12))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());

@@ -452,6 +452,14 @@ fn go(app: &mut App, to: Option<Go>) {
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let mut to = None;
+    // Chat, for the drawer's Squad tab: the latest in Global, and what's unread.
+    let comms = {
+        let (chat, _, _) = app.chat_mut();
+        Comms {
+            latest: chat.latest_global(),
+            unread: chat.unread(),
+        }
+    };
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         if app.game.is_none() {
             no_game(app, ui);
@@ -467,7 +475,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         } else if play.fresh_setup && options_step(play, game, notices, ui) {
             // The guided setup's last question before Play.
         } else {
-            to = home(play, game, notices, &ctx, ui);
+            to = home(play, game, notices, &comms, &ctx, ui);
             // A Join click on the Friends card: start the game if it isn't running, then ask the
             // server to send it into the friend's match (JoinNow). Done here, where the game is
             // mutable.
@@ -700,7 +708,7 @@ fn options_step(play: &mut Play, game: &mut Game, notices: &mut Notices, ui: &mu
             ui.add_space(4.0);
             crate::new_options::setup_step(ui, options, choices, &game.dir);
             ui.add_space(20.0);
-            done = ui.add(theme::primary("Continue").min_size(egui::vec2(170.0, 48.0)).corner_radius(12)).clicked();
+            done = ui.add(theme::primary("Continue").min_size(egui::vec2(170.0, 48.0)).corner_radius(4)).clicked();
         });
     }
     if done {
@@ -736,7 +744,7 @@ fn setup_screen(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &e
         egui::Frame::new()
             .fill(theme::SUNKEN)
             .stroke(egui::Stroke::new(1.0, theme::LINE))
-            .corner_radius(12)
+            .corner_radius(6)
             .inner_margin(egui::Margin::symmetric(16, 12))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -804,7 +812,7 @@ fn setup_screen(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &e
                     ready,
                     theme::primary(if naming { "Create account" } else { "Connect" })
                         .min_size(egui::vec2(170.0, 48.0))
-                        .corner_radius(12),
+                        .corner_radius(6),
                 )
                 .clicked()
             {
@@ -845,7 +853,7 @@ fn server_choices(play: &mut Play, ui: &mut egui::Ui) {
         let frame = egui::Frame::new()
             .fill(if chosen { theme::ACCENT.linear_multiply(0.08) } else { theme::SUNKEN })
             .stroke(egui::Stroke::new(if chosen { 2.0 } else { 1.0 }, if chosen { theme::ACCENT } else { theme::LINE }))
-            .corner_radius(12)
+            .corner_radius(6)
             .inner_margin(egui::Margin::symmetric(16, 10));
         let inner = frame.show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -921,7 +929,13 @@ pub(crate) fn badge(ui: &mut egui::Ui, text: &str, strong: bool) {
 /// The home screen: the game's banner with your profile, the bar that starts
 /// it, and three cards: status, friends and the server's news. Laid out for
 /// the launcher's fixed window.
-fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Context, ui: &mut egui::Ui) -> Option<Go> {
+/// Chat as the Play screen's drawer shows it.
+struct Comms {
+    latest: Option<(String, String)>,
+    unread: u32,
+}
+
+fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, comms: &Comms, ctx: &egui::Context, ui: &mut egui::Ui) -> Option<Go> {
     let mut to = None;
     load_art(play, game, ctx);
     load_news(play, game, ctx);
@@ -1018,6 +1032,21 @@ fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Con
     let width = ui.available_width();
     let drawer = (width * 0.3).clamp(300.0, 380.0);
     let height = ui.available_height().max(520.0);
+    // Too narrow for both side by side: the stage takes the width, the drawer goes under it
+    // (the screen scrolls to it).
+    if width < 980.0 {
+        let spacing = ui.ctx().style().spacing.item_spacing;
+        // A little short of the window, so the drawer's tabs show under it.
+        let height = (ui.available_height() - 56.0).max(480.0);
+        ui.allocate_ui_with_layout(egui::vec2(width, height), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+            ui.spacing_mut().item_spacing = spacing;
+            stage(play, game, notices, notice.as_ref(), &mut to, ui);
+        });
+        ui.allocate_ui_with_layout(egui::vec2(width, 440.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+            drawer_panel(play, game, notices, comms, ctx, &mut to, ui);
+        });
+        return finish(play, game, notices, notice, ctx, ui, to);
+    }
     ui.horizontal_top(|ui| {
         ui.spacing_mut().item_spacing.x = 0.0;
         let spacing = ui.ctx().style().spacing.item_spacing;
@@ -1027,9 +1056,22 @@ fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Con
         });
         ui.allocate_ui_with_layout(egui::vec2(drawer, height), egui::Layout::top_down(egui::Align::LEFT), |ui| {
             ui.spacing_mut().item_spacing = spacing;
-            drawer_panel(play, game, notices, ctx, &mut to, ui);
+            drawer_panel(play, game, notices, comms, ctx, &mut to, ui);
         });
     });
+    finish(play, game, notices, notice, ctx, ui, to)
+}
+
+/// After the stage and the drawer: the notice of an update or maintenance, and what it asks for.
+fn finish(
+    play: &mut Play,
+    game: &mut Game,
+    notices: &mut Notices,
+    notice: Option<crate::update_notice::Notice>,
+    ctx: &egui::Context,
+    ui: &mut egui::Ui,
+    to: Option<Go>,
+) -> Option<Go> {
     if let Some(notice) = &notice {
         match crate::update_notice::show(ui, notice) {
             Some(crate::update_notice::Action::UpdateLauncher) => play.update_asked = true,
@@ -1252,6 +1294,38 @@ fn news_line(play: &Play, to: &mut Option<Go>, ui: &mut egui::Ui) {
     });
 }
 
+/// The latest in Global, and the way to Chat, under the drawer's friends.
+fn comms_box(comms: &Comms, to: &mut Option<Go>, width: f32, ui: &mut egui::Ui) {
+    egui::Frame::new()
+        .fill(theme::SUNKEN)
+        .stroke(egui::Stroke::new(1.0, theme::LINE))
+        .corner_radius(4)
+        .inner_margin(egui::Margin::symmetric(12, 10))
+        .show(ui, |ui| {
+            ui.set_width(width - 24.0);
+            ui.horizontal(|ui| {
+                ui.label(theme::caps("Global · latest"));
+                if comms.unread > 0 {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(theme::kicker(&format!("{} new for you", comms.unread)));
+                    });
+                }
+            });
+            match &comms.latest {
+                Some((name, body)) => {
+                    let text = format!("{name}: {}", hooks_config::text::clip(body, 120));
+                    ui.add(egui::Label::new(RichText::new(text).color(theme::SOFT)).truncate());
+                }
+                None => {
+                    ui.label(theme::muted("Nothing said yet."));
+                }
+            }
+            if ui.add(theme::secondary("Open Chat").min_size(egui::vec2(ui.available_width(), 34.0))).clicked() {
+                *to = Some(Go::View(View::Chat));
+            }
+        });
+}
+
 /// What the drawer beside the stage shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Drawer {
@@ -1262,7 +1336,7 @@ pub(crate) enum Drawer {
 
 /// The drawer: the checks, friends and news, one at a time under tabs. Until the player picks one
 /// it shows the checks when something needs fixing, and friends otherwise.
-fn drawer_panel(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Context, to: &mut Option<Go>, ui: &mut egui::Ui) {
+fn drawer_panel(play: &mut Play, game: &mut Game, notices: &mut Notices, comms: &Comms, ctx: &egui::Context, to: &mut Option<Go>, ui: &mut egui::Ui) {
     let rect = ui.max_rect();
     ui.painter().rect_filled(rect, 0, theme::SURFACE);
     ui.painter().line_segment([rect.left_top(), rect.left_bottom()], egui::Stroke::new(1.0, theme::LINE));
@@ -1320,7 +1394,19 @@ fn drawer_panel(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &e
     let width = rect.width() - 24.0;
     egui::Frame::new().inner_margin(egui::Margin::symmetric(12, 12)).show(ui, |ui| match shown {
         Drawer::Status => status_card(play, game, notices, ctx, to, width, ui),
-        Drawer::Squad => friends_card(play, game, to, width, ui),
+        // Friends, and under them the latest in Global, on the community network.
+        Drawer::Squad => {
+            let community = crate::app::Prefs::directory().is_some_and(|d| crate::app::Prefs::is_community(&d));
+            if community {
+                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
+                    comms_box(comms, to, width, ui);
+                    ui.add_space(10.0);
+                    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| friends_card(play, game, to, width, ui));
+                });
+            } else {
+                friends_card(play, game, to, width, ui);
+            }
+        }
         Drawer::News => news_card(play, ctx, to, width, ui),
     });
 }
@@ -1542,7 +1628,7 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: O
                     egui::Frame::new()
                         .fill(theme::SURFACE)
                         .stroke(egui::Stroke::new(1.0, theme::CONTROL_LINE))
-                        .corner_radius(12)
+                        .corner_radius(6)
                         .inner_margin(8)
                         .shadow(egui::Shadow {
                             offset: [0, 18],
@@ -1738,7 +1824,7 @@ fn status_card(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &eg
             });
             if fixable && has_server && !managed && !busy {
                 fix_all = ui
-                    .horizontal(|ui| ui.add(theme::primary("Fix everything").min_size(egui::vec2(0.0, 36.0)).corner_radius(10)))
+                    .horizontal(|ui| ui.add(theme::primary("Fix everything").min_size(egui::vec2(0.0, 36.0)).corner_radius(4)))
                     .inner
                     .clicked();
             }
@@ -2555,14 +2641,27 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked:
     let (button, arrow) = ui
         .allocate_ui_with_layout(egui::vec2(SPLIT_PLAY_WIDTH, 58.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            let button = ui.add_enabled(enabled, theme::play_button(mode.label()).corner_radius(egui::CornerRadius { nw: 12, sw: 12, ne: 0, se: 0 }));
+            let button = ui.add_enabled(enabled, theme::play_button(mode.label()).corner_radius(egui::CornerRadius { nw: 4, sw: 4, ne: 0, se: 0 }));
             let arrow = ui.add_enabled(
                 enabled,
                 egui::Button::new("")
                     .fill(theme::ACCENT)
-                    .corner_radius(egui::CornerRadius { nw: 0, sw: 0, ne: 12, se: 12 })
+                    .corner_radius(egui::CornerRadius { nw: 0, sw: 0, ne: 4, se: 0 })
                     .min_size(egui::vec2(42.0, 58.0)),
             );
+            // The cut corner, as on a Field ops primary button: the page's colour over the last
+            // corner of the pair.
+            let r = arrow.rect;
+            let cut = 14.0;
+            ui.painter().add(egui::Shape::convex_polygon(
+                vec![
+                    r.right_bottom() + egui::vec2(1.0, 1.0),
+                    r.right_bottom() + egui::vec2(-cut, 1.0),
+                    r.right_bottom() + egui::vec2(1.0, -cut),
+                ],
+                theme::BG,
+                egui::Stroke::NONE,
+            ));
             let c = arrow.rect.center();
             ui.painter().add(egui::Shape::convex_polygon(
                 vec![c + egui::vec2(-7.0, -3.5), c + egui::vec2(7.0, -3.5), c + egui::vec2(0.0, 5.0)],
@@ -2824,7 +2923,7 @@ fn account_dialog(ctx: &egui::Context, dialog: &mut AccountDialog, current: Opti
             egui::Frame::new()
                 .fill(theme::SURFACE)
                 .stroke(egui::Stroke::new(1.0, theme::CONTROL_LINE))
-                .corner_radius(16)
+                .corner_radius(6)
                 .inner_margin(egui::Margin { left: 26, right: 26, top: 24, bottom: 22 }),
         )
         .show(ctx, |ui| {
@@ -2836,7 +2935,7 @@ fn account_dialog(ctx: &egui::Context, dialog: &mut AccountDialog, current: Opti
             egui::Frame::new()
                 .fill(theme::SUNKEN)
                 .stroke(egui::Stroke::new(1.0, theme::LINE))
-                .corner_radius(10)
+                .corner_radius(6)
                 .inner_margin(egui::Margin::symmetric(14, 10))
                 .show(ui, |ui| {
                     ui.set_width(ui.available_width());

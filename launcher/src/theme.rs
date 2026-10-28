@@ -94,8 +94,15 @@ pub fn apply(ctx: &egui::Context) {
         v.hyperlink_color = ACCENT;
         v.selection.bg_fill = ACCENT.linear_multiply(0.35);
         v.selection.stroke = Stroke::new(1.0, ACCENT);
-        v.window_stroke = Stroke::new(1.0, LINE);
-        v.window_corner_radius = 10.into();
+        v.window_corner_radius = 6.into();
+        v.menu_corner_radius = 4.into();
+        v.window_stroke = Stroke::new(1.0, CONTROL_LINE);
+        v.window_shadow = egui::Shadow {
+            offset: [0, 16],
+            blur: 48,
+            spread: 0,
+            color: Color32::from_black_alpha(150),
+        };
         for (w, fill) in [
             (&mut v.widgets.noninteractive, SURFACE),
             (&mut v.widgets.inactive, CONTROL),

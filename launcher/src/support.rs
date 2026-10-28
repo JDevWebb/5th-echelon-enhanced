@@ -367,7 +367,7 @@ fn conversation(page: &Support, ui: &mut egui::Ui) {
             egui::Frame::new()
                 .fill(if admin { theme::SURFACE } else { theme::SUNKEN })
                 .stroke(egui::Stroke::new(1.0, if admin { theme::ACCENT.linear_multiply(0.35) } else { theme::LINE }))
-                .corner_radius(12)
+                .corner_radius(6)
                 .inner_margin(egui::Margin::symmetric(14, 10))
                 .show(ui, |ui| {
                     ui.set_max_width((width * 0.78).max(280.0));

@@ -357,7 +357,7 @@ fn item_card(ui: &mut egui::Ui, item: &setup::roadmap::Item, shipping: bool) {
     egui::Frame::new()
         .fill(theme::SURFACE)
         .stroke(egui::Stroke::new(1.0, if shipping { theme::ACCENT.linear_multiply(0.35) } else { theme::LINE }))
-        .corner_radius(12)
+        .corner_radius(6)
         .inner_margin(egui::Margin::symmetric(16, 12))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
@@ -464,7 +464,7 @@ fn segmented_small(ui: &mut egui::Ui, value: &mut usize, options: &[(usize, &str
     egui::Frame::new()
         .fill(theme::SUNKEN)
         .stroke(egui::Stroke::new(1.0, theme::LINE))
-        .corner_radius(10)
+        .corner_radius(6)
         .inner_margin(egui::Margin::same(4))
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -511,7 +511,7 @@ fn mine(page: &mut Roadmap, identity: bool, clock: &setup::clock::Clock, ui: &mu
         egui::Frame::new()
             .fill(theme::SUNKEN)
             .stroke(egui::Stroke::new(1.0, theme::LINE))
-            .corner_radius(12)
+            .corner_radius(6)
             .inner_margin(egui::Margin::symmetric(16, 12))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());

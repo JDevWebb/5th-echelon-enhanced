@@ -99,7 +99,7 @@ pub fn list(ui: &mut egui::Ui, options: &[&NewOption], choices: &mut [bool], gam
         egui::Frame::new()
             .fill(theme::SUNKEN)
             .stroke(egui::Stroke::new(1.0, theme::LINE))
-            .corner_radius(12)
+            .corner_radius(6)
             .inner_margin(egui::Margin::symmetric(16, 12))
             .show(ui, |ui| {
                 ui.set_width(ui.available_width());

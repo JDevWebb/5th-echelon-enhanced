@@ -267,6 +267,11 @@ impl Chat {
         self.unseen_mentions + self.unseen_direct.values().sum::<u32>()
     }
 
+    /// The latest in Global (who said it, and what), for the Play screen's drawer.
+    pub fn latest_global(&self) -> Option<(String, String)> {
+        self.global.last().map(|m| (m.from_name.clone(), m.body.clone()))
+    }
+
     /// Who a direct message is with, from the player's side.
     fn other(m: &Message) -> String {
         if m.mine {
@@ -817,7 +822,7 @@ fn messages(chat: &mut Chat, cfg: &Config, list: &[Message], height: f32, salt: 
     egui::Frame::new()
         .fill(theme::SUNKEN)
         .stroke(egui::Stroke::new(1.0, theme::LINE))
-        .corner_radius(10)
+        .corner_radius(6)
         .inner_margin(egui::Margin::symmetric(12, 10))
         .show(ui, |ui| {
             egui::ScrollArea::vertical()
@@ -964,7 +969,7 @@ fn confirm_link(chat: &mut Chat, link: &str, ui: &mut egui::Ui) {
             egui::Frame::new()
                 .fill(theme::SURFACE)
                 .stroke(egui::Stroke::new(1.0, theme::CONTROL_LINE))
-                .corner_radius(16)
+                .corner_radius(6)
                 .inner_margin(egui::Margin {
                     left: 26,
                     right: 26,
