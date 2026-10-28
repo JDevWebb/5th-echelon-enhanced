@@ -53,11 +53,44 @@ const MAX_ANSWER: usize = 200;
 const GLOBAL_AFTER: i64 = 30 * 60;
 /// The coordinator unheard for this long: rooms read only.
 const AWAY_AFTER: u64 = 90;
+/// A player's waits held open at once: the launcher's and the overlay's, and one more while a
+/// client starts again before its last wait ends. Each holds a call for up to [`WAIT`].
+const WAITS_PER_PLAYER: usize = 3;
 
 /// The coordinator runs chat (its last pulse answer said so).
 static ON: AtomicBool = AtomicBool::new(false);
 /// The newest message id taken from the coordinator.
 static LAST: AtomicI64 = AtomicI64::new(-1);
+/// Waits held open, by player.
+static WAITING: Mutex<std::collections::BTreeMap<u32, usize>> = Mutex::new(std::collections::BTreeMap::new());
+
+/// A wait of a player's held open; let go when it ends, whichever way.
+struct Waiting(u32);
+
+impl Waiting {
+    /// One more wait for `user`, unless it already has [`WAITS_PER_PLAYER`].
+    fn take(user: u32) -> Option<Self> {
+        let mut waiting = WAITING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        let n = waiting.entry(user).or_default();
+        if *n >= WAITS_PER_PLAYER {
+            return None;
+        }
+        *n += 1;
+        Some(Self(user))
+    }
+}
+
+impl Drop for Waiting {
+    fn drop(&mut self) {
+        let mut waiting = WAITING.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(n) = waiting.get_mut(&self.0) {
+            *n -= 1;
+            if *n == 0 {
+                waiting.remove(&self.0);
+            }
+        }
+    }
+}
 static RELAY_STARTED: AtomicBool = AtomicBool::new(false);
 
 fn kept() -> &'static Mutex<VecDeque<Kept>> {
@@ -423,6 +456,9 @@ impl Chat for MyChat {
         if !crate::rate_limit::polls().check(c.user) {
             return Err(Status::resource_exhausted("Too many requests; slow down"));
         }
+        let Some(_waiting) = Waiting::take(c.user) else {
+            return Err(Status::resource_exhausted("Too many waits for messages at once; slow down"));
+        };
         let r = request.into_inner();
         let after = r.after;
         let hold = match r.wait_seconds {
@@ -577,6 +613,17 @@ impl Chat for MyChat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_player_holds_only_a_few_waits_at_once() {
+        let user = 4_000_000_001;
+        let held: Vec<Waiting> = (0..WAITS_PER_PLAYER).map(|_| Waiting::take(user).expect("within the limit")).collect();
+        assert!(Waiting::take(user).is_none(), "one over");
+        assert!(Waiting::take(user + 1).is_some(), "another player's own");
+        drop(held);
+        assert!(Waiting::take(user).is_some(), "let go when they end");
+        assert!(!WAITING.lock().unwrap().contains_key(&user), "nothing kept for a player with none");
+    }
 
     #[test]
     fn the_coordinators_rules_keep_the_names_this_release_allows() {
