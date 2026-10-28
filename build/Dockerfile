@@ -17,4 +17,9 @@ COPY build/rc-wrapper.sh /rc.exe
 ENV CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc \
     CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc \
     AR_x86_64_unknown_linux_gnu=x86_64-linux-gnu-ar
+# tc (netem), for tests under added delay and loss (scripts/latency-test.sh); its own layer, so
+# adding it didn't rebuild the toolchain above.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends iproute2 \
+ && rm -rf /var/lib/apt/lists/*
 WORKDIR /src

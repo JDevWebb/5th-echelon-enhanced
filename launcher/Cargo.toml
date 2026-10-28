@@ -10,6 +10,9 @@ embed-dll = ["brotli"]
 GetAdapterInfos = []
 # Headless tests of the launcher's screens (build.sh test and CI run them).
 ui-tests = ["dep:egui_kittest", "dep:egui-winit"]
+# Screenshots of every screen at several window sizes (build.sh shots: wgpu on a software
+# Vulkan, in the fes-shots image).
+shots = ["ui-tests", "egui_kittest/wgpu", "egui_kittest/snapshot", "egui_kittest/eframe"]
 
 [dependencies]
 # The `ui-tests` feature's: screens driven headless in tests, through egui's accessibility

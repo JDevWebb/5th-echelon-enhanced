@@ -8,6 +8,9 @@
 #   build/build.sh windows   launcher.exe (DLL embedded), uplay_r1_loader.dll, dedicated_server.exe, testbot.exe -> dist/
 #   build/build.sh bots [scenario ...]
 #                            test players against a fresh local server (tools/testbot)
+#   build/build.sh shots     every launcher screen at several window sizes -> dist/shots/*.png
+#   build/build.sh latency [scenario ...]
+#                            the test players with delay and loss added (PROFILES)
 #   build/build.sh load [options]
 #                            a load test against a server limited to CPUS (1)
 #                            and MEMORY (1g), e.g. --players 200 --relayed 20
@@ -99,6 +102,26 @@ case "${1:-test}" in
     run "$IMAGE" bash -c 'cargo build -q -p dedicated_server -p testbot && scripts/bots.sh /target/native/debug "$@" &&
       if [ $# -eq 0 ]; then FRIENDS_MODE=mutual scripts/bots.sh /target/native/debug friends-mutual &&
         REQUIRE_IDENTITY=1 scripts/bots.sh /target/native/debug identity-required; fi' bots "$@"
+    ;;
+  shots)
+    # Every screen at several window sizes, as PNGs in dist/shots (launcher/src/shots.rs): the
+    # app on a made-up game folder, drawn by wgpu on a software Vulkan (lavapipe), in an image
+    # made from this one with Mesa added.
+    printf 'FROM %s\nRUN apt-get update && apt-get install -y --no-install-recommends mesa-vulkan-drivers libvulkan1 && rm -rf /var/lib/apt/lists/*\n' "$IMAGE" \
+      | docker build -q -t fes-shots:local - >/dev/null
+    rm -rf dist/shots
+    # Built with the network (cargo fetches its git dependencies), run with none, so nothing the
+    # app asks for reaches the community network it's set up for.
+    shots=$(run fes-shots:local cargo test -q -p launcher --features shots --no-run --message-format=json \
+      | grep -o '"executable":"[^"]*"' | grep '/launcher-' | tail -1 | cut -d'"' -f4)
+    [ -n "$shots" ] || { echo "the shots test didn't build"; exit 1; }
+    run --network none -e XDG_CONFIG_HOME=/tmp/fe-shots -e SHOTS_OUT=/src/dist/shots -e WGPU_BACKEND=vulkan fes-shots:local \
+      "$shots" shots:: --nocapture --test-threads 1
+    ;;
+  latency)
+    # The test players with delay and loss added (scripts/latency-test.sh; PROFILES to choose).
+    shift
+    run --cap-add NET_ADMIN -e PROFILES "$IMAGE" bash -c 'cargo build -q -p dedicated_server -p testbot && scripts/latency-test.sh /target/native/debug "$@"' latency "$@"
     ;;
   federation-test)
     run "$IMAGE" cargo build -q -p dedicated_server -p testbot -p coordinator
