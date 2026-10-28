@@ -2,7 +2,7 @@
 
 What's being worked on next, roughly in order. Plans change as testing and the game's own code turn things up; the [issues](https://github.com/JDevWebb/5th-echelon-enhanced/issues) have the details, and ideas are welcome there.
 
-## In 0.4.7
+## In 0.4.8
 
 ### Global matchmaking
 
@@ -78,6 +78,7 @@ The fix, if players ask for it:
 
 ## Done recently
 
+- **0.4.7:** a fix for 0.4.6: chat, friend lists and signing in answer straight away again on busy servers. See the [release notes](releases/v0.4.7.md).
 - **0.4.6:** [chat](chat.md): Global across the network, your lobby, and friends on any server, in the launcher and the overlay, with who's online on your server. Join a friend's party or public match without an invite; Play SvM and Play Coop straight into the online lobby. Searches no longer hang on a match that has started, four crashes in the game's own code patched, host migrations that give up instead of spinning for ever, and freezes that note where they stuck. Beta features in Settings. The community network moved to `scbl.jdevwebb.net`, ready for failover. See the [release notes](releases/v0.4.6.md).
 - **0.4.5:** matches no longer haunt the lists after their host has left, the game says what it crashed on, and two PCs on one home connection can join each other. Names with slurs or hate refused, Steam Input for Steam copies, an overlay that keeps out of the game's window handling, and three new game options from MPW1412 (mouse 1:1, a brighter picture, no automatic climbing). See the [release notes](releases/v0.4.5.md).
 - **0.4.4:** what's being played: friends' lines name the mode and map, and each server shows its open matches by mode, map and players, in the launcher and the overlay. The overlay says why a join failed the moment it does (a full, locked or closed room, or whose game has which mod), and searches skip full lobbies. A public match is no longer ended by the server when its host leaves, and a party carries on for everyone in it. Server updates go out in update windows booked ahead.

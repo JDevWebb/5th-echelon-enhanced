@@ -6,12 +6,12 @@ export const PROMOTE_LANES = [['requested', 'Requested'], ['next', 'Next'], ['la
 export const AREAS = ['Launcher', 'Overlay', 'Server', 'Admin', 'Network'];
 export const SUGGESTION_STATUSES = [['new', 'New'], ['planned', 'Planned'], ['done', 'Done'], ['declined', 'Declined']];
 /** Statuses offered when editing an item (any other text up to 24 characters works too). */
-export const STATUS_HINTS = ['In 0.4.6', 'In 0.4.7', 'Building', 'Mocked up', 'Planned', 'Later', 'On hold', 'When data says', 'Requested', 'Done'];
+export const STATUS_HINTS = ['In 0.4.6', 'In 0.4.7', 'In 0.4.8', 'Building', 'Mocked up', 'Planned', 'Later', 'On hold', 'When data says', 'Requested', 'Done'];
 /** The lanes the project's roadmap fills; Requested is the players' and admins' own. */
 export const PROJECT_LANES = ['shipping', 'next', 'later'];
 
 /** Lane releases the project's roadmap sets. */
-export const STARTING_RELEASES = { shipping: '0.4.6', next: '0.4.7' };
+export const STARTING_RELEASES = { shipping: '0.4.6', next: '0.4.8' };
 
 /** The project's roadmap as it stands for this release (STARTING_RELEASES.shipping): what an
  * empty roadmap starts from, and what "Update from the project's roadmap" brings one up to.

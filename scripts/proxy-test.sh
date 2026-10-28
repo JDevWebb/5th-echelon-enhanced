@@ -78,6 +78,19 @@ client bash -c "
     echo 'others still answered during 40 slow POSTs' || { echo 'slow POSTs blocked everyone'; exit 1; }
   kill \$(jobs -p) 2>/dev/null; true
 " || rc=1
+echo "--- long gRPC calls through Caddy"
+# Caddy carries every player's calls over a few connections to the API, and chat's
+# waits (0.4.6) are held for up to 25 s: calls held open must not hold up the rest.
+client bash -c "
+  for i in \$(seq 24); do
+    sleep 12 | curl -s -o /dev/null --http2-prior-knowledge -X POST -H 'Content-Type: application/grpc' -H 'TE: trailers' -T - http://$host/users.Users/NameAvailable &
+  done
+  sleep 2
+  start=\$(date +%s%N)
+  curl -sf --max-time 5 -o /dev/null --http2-prior-knowledge -X POST -H 'Content-Type: application/grpc' -H 'TE: trailers' --data-binary '' http://$host/users.Users/NameAvailable &&
+    echo \"another call answered in \$(( (\$(date +%s%N) - start) / 1000000 )) ms during 24 held open\" || { echo 'calls held open blocked everyone'; exit 1; }
+  kill \$(jobs -p) 2>/dev/null; true
+" || rc=1
 echo "--- test players (host name only)"
 client "$bin/testbot" --server "$host" --info login lobby-invite private-match-invite cleanup leave-session abandon-empty duplicate-request lost-push nat-probe nat-relay nat-public-address direct-test || rc=1
 if [ $rc -ne 0 ]; then

@@ -2044,8 +2044,8 @@ pub async fn start_server(
         (None, None)
     };
     // Bounded, so connections from strangers can't hold the server's memory: a request
-    // body is only read by a running call, and a connection runs a few at a time (each
-    // waiting one holds no more than the HTTP/2 window); a call has a deadline, and a
+    // body is only read by a running call, and a connection has a few at a time (within
+    // the HTTP/2 window); a call has a deadline, and a
     // connection that sends nothing is closed (see `incoming`).
     let builder = Server::builder()
         .max_concurrent_streams(MAX_STREAMS_PER_CONNECTION)
@@ -2133,11 +2133,15 @@ pub async fn start_server(
     Ok(())
 }
 
-/// Calls running at once on one connection (more wait, without their bodies being read).
-const MAX_CALLS_PER_CONNECTION: usize = 4;
+/// Calls running at once on one connection: as many as it may have streams, so none waits
+/// behind another. A reverse proxy carries every player's calls over a few connections and
+/// opens another once one has all its streams; with fewer running than open, chat's waits
+/// (held for up to 25 s) held up everyone's sign-ins and friend lists behind Caddy (0.4.6).
+/// A call's body is still only read once its token is checked, and sign-ins' are small.
+const MAX_CALLS_PER_CONNECTION: usize = MAX_STREAMS_PER_CONNECTION as usize;
 /// What a client may send ahead of what's read, per connection and per stream (HTTP/2 flow
-/// control; hyper's default is 1 MB). With the above, a connection that hasn't signed in
-/// holds at most about 512 KB.
+/// control; hyper's default is 1 MB): a connection that hasn't signed in holds at most this,
+/// plus the sign-in messages its calls are reading (`MAX_SIGN_IN_MESSAGE` each).
 const WINDOW: u32 = 256 * 1024;
 /// Streams open at once on one connection (HTTP/2 refuses more).
 const MAX_STREAMS_PER_CONNECTION: u32 = 16;
