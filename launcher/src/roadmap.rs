@@ -250,10 +250,11 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let profile = game.as_ref().and_then(|g| g.cfg.current_profile().cloned());
     let identity = has_identity();
     page.poll(&ctx, identity);
+    let mut go = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         theme::page().show(ui, |ui| {
             ui.set_width(ui.available_width());
-            theme::title(ui, "What's coming", "Roadmap");
+            go = crate::play::intel_header(crate::app::View::Roadmap, ui);
             let clock = setup::clock::Clock::local();
             let source = match &page.shown {
                 Some((_, at, false)) => format!("What's being built for 5th Echelon Enhanced, as of {}.", clock.date(*at)),
@@ -268,6 +269,9 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
             mine(page, identity, &clock, ui);
         });
     });
+    if let Some(view) = go {
+        app.set_view(view);
+    }
 }
 
 /// The lanes as columns of cards (Shipping, Next, Later), and Requested below when it has

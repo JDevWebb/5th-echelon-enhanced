@@ -173,6 +173,25 @@ pub fn title(ui: &mut egui::Ui, kicker: &str, title: &str) {
     ui.add_space(2.0);
 }
 
+/// A screen's title with tabs on its right (Intel's Briefings and Roadmap): answers the tab
+/// clicked, if one was. `tabs` are (value, label); `current` is lit.
+pub fn title_with_tabs<T: PartialEq + Copy>(ui: &mut egui::Ui, kicker: &str, title: &str, current: T, tabs: &[(T, &str)]) -> Option<T> {
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| self::title(ui, kicker, title));
+        if tabs.len() > 1 {
+            // As wide as segmented draws them, at the row's right edge, level with the title.
+            let wide = tabs.len() as f32 * (SEGMENT_WIDTH + 3.0) + 9.0;
+            ui.add_space((ui.available_width() - wide).max(0.0));
+            let mut value = current;
+            if segmented(ui, &mut value, tabs) {
+                picked = Some(value);
+            }
+        }
+    });
+    picked
+}
+
 /// A small uppercase label over a value or a group ("SERVER", "PING"), as a HUD reads: Plex
 /// Mono caps.
 pub fn caps(text: &str) -> egui::RichText {
@@ -321,6 +340,9 @@ pub fn scrim(painter: &egui::Painter, rect: egui::Rect) {
     painter.add(egui::Shape::mesh(mesh));
 }
 
+/// The width of each of [`segmented`]'s choices (at least).
+const SEGMENT_WIDTH: f32 = 130.0;
+
 /// A row of buttons of which one is chosen (in place of a drop-down when
 /// the choices are few and worth seeing at once).
 pub fn segmented<T: PartialEq + Copy>(ui: &mut egui::Ui, value: &mut T, options: &[(T, &str)]) -> bool {
@@ -341,7 +363,7 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut egui::Ui, value: &mut T, options:
                         .fill(if chosen { SELECTED } else { Color32::TRANSPARENT })
                         .stroke(Stroke::NONE)
                         .corner_radius(3)
-                        .min_size(egui::vec2(130.0, 36.0));
+                        .min_size(egui::vec2(SEGMENT_WIDTH, 36.0));
                     let response = ui.add(button);
                     // The chosen one's green underline.
                     if chosen {

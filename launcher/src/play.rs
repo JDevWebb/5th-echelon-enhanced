@@ -2008,10 +2008,11 @@ fn news_card(play: &mut Play, ctx: &egui::Context, to: &mut Option<Go>, width: f
 /// The News screen: everything the server's news says, newest first.
 pub fn show_news(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
+    let mut go = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         theme::page().show(ui, |ui| {
             ui.set_width(ui.available_width());
-            theme::title(ui, "From your server", "News");
+            go = intel_header(View::News, ui);
             let (play, game, _) = app.play_mut();
             let Some(game) = game.as_mut() else {
                 ui.label(theme::muted("Find the game first (Play)."));
@@ -2035,7 +2036,58 @@ pub fn show_news(app: &mut App, ui: &mut egui::Ui) {
                     .color(theme::SOFT),
                 );
             }
-            for item in &play.news {
+            // Wide enough, and more than one: the briefings listed beside the one open, as the
+            // game's own news screen pages them. Otherwise one card each.
+            let wide = ui.available_width() >= 860.0 && play.news.len() > 1;
+            if wide {
+                let open = play.news_index.min(play.news.len() - 1);
+                ui.horizontal_top(|ui| {
+                    let list = 320.0;
+                    ui.allocate_ui_with_layout(egui::vec2(list, 0.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        theme::card().inner_margin(egui::Margin::same(0)).show(ui, |ui| {
+                            ui.set_width(list);
+                            for (i, item) in play.news.iter().enumerate() {
+                                let on = i == open;
+                                let title = RichText::new(hooks_config::text::clip(&item.title, 60)).family(theme::strong());
+                                let button = egui::Button::new(title.color(if on { theme::FG } else { theme::SOFT }))
+                                    .fill(if on { theme::SELECTED } else { egui::Color32::TRANSPARENT })
+                                    .stroke(egui::Stroke::NONE)
+                                    .corner_radius(0)
+                                    .wrap()
+                                    .min_size(egui::vec2(list, 52.0));
+                                let response = ui.add(button);
+                                if on {
+                                    let r = response.rect;
+                                    ui.painter()
+                                        .rect_filled(egui::Rect::from_min_size(r.left_top(), egui::vec2(3.0, r.height())), 0, theme::ACCENT);
+                                }
+                                if response.clicked() {
+                                    play.news_index = i;
+                                    play.news_turned = Some(Instant::now());
+                                }
+                            }
+                        });
+                    });
+                    ui.add_space(16.0);
+                    let item = &play.news[open];
+                    theme::card().inner_margin(egui::Margin::symmetric(28, 24)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(theme::kicker(&format!("Briefing {} of {}", open + 1, play.news.len())));
+                        ui.add_space(4.0);
+                        ui.label(theme::display(&hooks_config::text::clip(&item.title, 80), 30.0));
+                        if !item.text.is_empty() {
+                            ui.add_space(6.0);
+                            ui.label(RichText::new(hooks_config::text::clip(&item.text, 500)).color(theme::SOFT).size(16.0));
+                        }
+                        // Only a web address opens, and the player sees where it goes.
+                        if item.link.starts_with("https://") {
+                            ui.add_space(10.0);
+                            ui.hyperlink_to("Read more", &item.link).on_hover_text(hooks_config::text::clip(&item.link, 120));
+                        }
+                    });
+                });
+            }
+            for item in play.news.iter().filter(|_| !wide) {
                 theme::card().show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.label(RichText::new(hooks_config::text::clip(&item.title, 80)).family(theme::strong()).size(18.0));
@@ -2053,6 +2105,22 @@ pub fn show_news(app: &mut App, ui: &mut egui::Ui) {
             }
         });
     });
+    if let Some(view) = go {
+        app.set_view(view);
+    }
+}
+
+/// Intel's title, over News (Briefings) and the Roadmap: the tabs between them, the Roadmap's
+/// on the community network only. Answers the other screen when its tab is clicked.
+pub(crate) fn intel_header(current: View, ui: &mut egui::Ui) -> Option<View> {
+    let community = crate::app::Prefs::directory().is_some_and(|d| crate::app::Prefs::is_community(&d));
+    let tabs: &[(View, &str)] = if community {
+        &[(View::News, "Briefings"), (View::Roadmap, "Roadmap")]
+    } else {
+        &[(View::News, "Briefings")]
+    };
+    let kicker = if current == View::Roadmap { "What's being built" } else { "From your server" };
+    theme::title_with_tabs(ui, kicker, "Intel", current, tabs).filter(|v| *v != current)
 }
 
 /// The Servers screen: the network the server menu shows (and another one), a server of

@@ -776,7 +776,7 @@ impl App {
                 return;
             }
             // Hosting is reached from Servers, and lights it.
-            let on = current == view || (view == View::Servers && current == View::Server);
+            let on = current == view || (view == View::Servers && current == View::Server) || (view == View::News && current == View::Roadmap);
             let button = theme::nav_button(ui, icon, label, on);
             // Direct messages and mentions, and answers from support, not seen yet: a dot.
             if !on && unread.iter().any(|(v, n)| *v == view && *n > 0) {
@@ -805,8 +805,7 @@ impl App {
                     item(ui, View::Play, theme::Icon::Play, "Play");
                     item(ui, View::Servers, theme::Icon::Servers, "Servers");
                     item(ui, View::Chat, theme::Icon::Chat, "Chat");
-                    item(ui, View::News, theme::Icon::News, "News");
-                    item(ui, View::Roadmap, theme::Icon::Roadmap, "Roadmap");
+                    item(ui, View::News, theme::Icon::News, "Intel: news and the roadmap");
                 });
                 ui.with_layout(egui::Layout::bottom_up(egui::Align::Center), |ui| {
                     let version = ui
