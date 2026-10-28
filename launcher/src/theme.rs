@@ -168,8 +168,9 @@ pub fn display(text: &str, size: f32) -> egui::RichText {
 /// A screen's title: its kicker in green HUD caps over the name in big condensed type.
 pub fn title(ui: &mut egui::Ui, kicker: &str, title: &str) {
     ui.label(self::kicker(kicker));
-    ui.add_space(-2.0);
+    ui.add_space(-4.0);
     ui.label(display(title, 40.0));
+    ui.add_space(2.0);
 }
 
 /// A small uppercase label over a value or a group ("SERVER", "PING"), as a HUD reads: Plex

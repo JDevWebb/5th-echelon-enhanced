@@ -1175,8 +1175,12 @@ fn stage(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: Option
         theme::glow(ui.painter(), rect, rect.left_bottom(), theme::BG.gamma_multiply(0.6));
     }
     let inner = rect.shrink2(egui::vec2(36.0, 26.0));
+    // The HUD line: the product's label centred on the player's card beside it.
     let mut top = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::left_to_right(egui::Align::Min)));
-    top.label(theme::caps(&format!("{} //", env!("FE_PRODUCT"))));
+    top.vertical(|ui| {
+        ui.add_space(22.0);
+        ui.label(theme::caps(&format!("{} //", env!("FE_PRODUCT"))));
+    });
     top.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
         if profile_card(play, game, ui).clicked() {
             *to = Some(Go::Settings(crate::settings::Section::Identity));
@@ -1184,7 +1188,11 @@ fn stage(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: Option
     });
     let mut bottom = ui.new_child(egui::UiBuilder::new().max_rect(inner).layout(egui::Layout::bottom_up(egui::Align::LEFT)));
     news_line(play, to, &mut bottom);
-    bottom.add_space(18.0);
+    // A hairline over the news, apart from the controls above it.
+    bottom.add_space(12.0);
+    let line = bottom.allocate_exact_size(egui::vec2(inner.width(), 1.0), egui::Sense::hover()).0;
+    bottom.painter().rect_filled(line, 0, theme::CONTROL_LINE);
+    bottom.add_space(22.0);
     // On a wide stage the controls stay together, Play beside the server, not across the screen.
     let controls = inner.width().min(940.0);
     bottom.scope(|ui| {
@@ -1203,6 +1211,7 @@ fn stage(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: Option
     bottom.label(theme::display("Blacklist", big).color(theme::ACCENT));
     bottom.add_space(-big * 0.32);
     bottom.label(theme::display("Splinter Cell", big));
+    bottom.add_space(-big * 0.12);
     bottom.label(theme::kicker("Tom Clancy's"));
 }
 
