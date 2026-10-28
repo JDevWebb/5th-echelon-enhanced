@@ -259,7 +259,7 @@ fn feedback(app: &mut App, ui: &mut egui::Ui) {
                 "The game sends the server it's signed in to its warnings, errors and network events as they happen, and what it's doing (the game session it's in, its checkpoint saves, which of 5th Echelon's fixes went in and what they did), so the server's admins can see why a join, a connection or a mission failed. Your PC's name, your user folder and your internet address are hidden first.",
             ));
             let mut send = game.cfg.hook_config.send_diagnostics;
-            if ui.checkbox(&mut send, "Send the game's diagnostics to the server").changed() {
+            if theme::switch(ui, &mut send, "Send the game's diagnostics to the server").changed() {
                 game.update(notices, |c| c.hook_config.send_diagnostics = send);
                 Prefs::set_diagnostics_asked();
             }
@@ -274,7 +274,7 @@ fn feedback(app: &mut App, ui: &mut egui::Ui) {
         ));
         let (_, off) = Prefs::feedback();
         let mut ask = !off;
-        if ui.checkbox(&mut ask, "Ask me how my games went").changed() {
+        if theme::switch(ui, &mut ask, "Ask me how my games went").changed() {
             Prefs::set_feedback_off(!ask);
         }
     });
@@ -481,8 +481,7 @@ fn network(game: &mut Game, notices: &mut Notices, locked: bool, ui: &mut egui::
         });
         let mut require = game.cfg.hook_config.networking.require_adapter;
         if pinned.is_some()
-            && ui
-                .checkbox(&mut require, "Don't start the game without this adapter")
+            && theme::switch(ui, &mut require, "Don't start the game without this adapter")
                 .on_hover_text("Stops the game from quietly playing over the wrong network when your VPN is off.")
                 .changed()
         {
@@ -509,7 +508,7 @@ fn internet_play(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
         NatMode::Off => "The game advertises this PC's local address, as it always did: other players must be on your network or VPN.",
     }));
     ui.add_enabled_ui(mode != NatMode::Off, |ui| {
-        ui.checkbox(&mut port_mapping, "Open the game's port on the router (UPnP / NAT-PMP)")
+        theme::switch(ui, &mut port_mapping, "Open the game's port on the router (UPnP / NAT-PMP)")
             .on_hover_text("Asks the router to forward UDP 13000 to this PC while the game runs, so other players can always reach you directly.");
     });
     if (mode, port_mapping) != (networking.nat, networking.port_mapping) {
@@ -539,7 +538,7 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     // A Steam copy on Windows: Steam Input (controllers) only applies to games Steam starts.
     if cfg!(target_os = "windows") && !hooks_config::running_under_wine() && setup::launch::steam_copy(&game.dir) {
         let mut through_steam = crate::app::Prefs::start_through_steam();
-        if ui.checkbox(&mut through_steam, "Start the game through Steam (for Steam Input and controllers)").changed() {
+        if theme::switch(ui, &mut through_steam, "Start the game through Steam (for Steam Input and controllers)").changed() {
             crate::app::Prefs::set_start_through_steam(through_steam);
         }
         if through_steam {
@@ -566,7 +565,7 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     }
     let mut hook = game.cfg.hook_config.clone();
     ui.horizontal(|ui| {
-        ui.checkbox(&mut hook.enable_overlay, "In-game overlay, opened with");
+        theme::switch(ui, &mut hook.enable_overlay, "In-game overlay, opened with");
         ui.add_enabled_ui(hook.enable_overlay, |ui| {
             egui::ComboBox::from_id_salt("overlay_key").selected_text(hook.overlay_key.clone()).show_ui(ui, |ui| {
                 for (name, _) in hooks_config::OVERLAY_KEYS {
@@ -581,17 +580,20 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
             hook.overlay_key
         )));
     }
-    ui.checkbox(&mut hook.auto_join_invite, "Join invites automatically");
+    theme::switch(ui, &mut hook.auto_join_invite, "Join invites automatically");
     // Fusion Fix's own fix, when it's on, NOPs the clamp ours widens: nothing to do here then.
     if hooks_config::fusion_fix::removes_mouse_accel(&game.dir) {
         let mut off = false;
         ui.add_enabled(false, egui::Checkbox::new(&mut off, "Remove negative mouse acceleration"));
         ui.label(theme::muted(crate::new_options::FUSION_FIX_MOUSE));
     } else {
-        ui.checkbox(&mut hook.disable_mouse_accel, "Remove negative mouse acceleration").on_hover_text(
-            "The game caps how far the view can turn in one frame, so fast flicks feel like the mouse slows down. \
-             This widens that cap for a linear, 1:1 feel (a wide limit stays, so a bad input spike can't flip the camera).",
-        );
+        ui.horizontal(|ui| {
+            theme::switch(ui, &mut hook.disable_mouse_accel, "Remove negative mouse acceleration").on_hover_text(
+                "The game caps how far the view can turn in one frame, so fast flicks feel like the mouse slows down. \
+                 This widens that cap for a linear, 1:1 feel (a wide limit stays, so a bad input spike can't flip the camera).",
+            );
+            ui.label(theme::kicker("Recommended").size(10.5));
+        });
     }
     // Picture brightness (opt-in): lifts Blacklist.ini's dark gamma cap. The file is edited
     // statically while the game is off and put back when the option is turned off, so the
@@ -599,8 +601,7 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     let running = setup::game::game_running();
     ui.add_enabled_ui(!running, |ui| {
         let mut brighten = game.cfg.brighten;
-        let toggled = ui
-            .checkbox(&mut brighten, "Brighten the picture")
+        let toggled = theme::switch(ui, &mut brighten, "Brighten the picture")
             .on_hover_text(
                 "Blacklist caps its brightness low, which looks dark under Proton. This lifts the cap and \
                  sets a brighter picture by editing Blacklist.ini while the game is closed; turning it off \
@@ -641,7 +642,7 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     // Auto-climb (opt-in): takes effect at the next game start, so the toggle is locked while the
     // game is running, like the other start-time options.
     ui.add_enabled_ui(!running, |ui| {
-        ui.checkbox(&mut hook.disable_autoclimb, "Disable automatic climbing (Active Sprint)").on_hover_text(
+        theme::switch(ui, &mut hook.disable_autoclimb, "Disable automatic climbing (Active Sprint)").on_hover_text(
             "The game climbs and vaults over edges by itself when you sprint into them. This turns that \
              off, so climbing is only ever manual. Takes effect the next time the game starts.",
         );
@@ -692,7 +693,7 @@ fn beta_features(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     let mut beta = game.cfg.hook_config.beta.clone();
     let switches: [&mut bool; 1] = [&mut beta.mouse_turn_per_second];
     for (on, (label, hover)) in switches.into_iter().zip(BETA_FEATURES) {
-        ui.checkbox(on, label).on_hover_text(hover);
+        theme::switch(ui, on, label).on_hover_text(hover);
     }
     if !beta.is_off() {
         ui.add_space(4.0);

@@ -384,6 +384,37 @@ pub fn segmented<T: PartialEq + Copy>(ui: &mut egui::Ui, value: &mut T, options:
     changed
 }
 
+/// An on/off switch with its label to the right, in place of a checkbox: green and to the right
+/// when on. Clicking it (or its label) flips `on`; the response says `changed()` then, and reads
+/// as a checkbox to screen readers and the tests.
+pub fn switch(ui: &mut egui::Ui, on: &mut bool, label: impl Into<egui::WidgetText>) -> egui::Response {
+    let galley = label
+        .into()
+        .into_galley(ui, Some(egui::TextWrapMode::Wrap), ui.available_width() - 56.0, egui::TextStyle::Body);
+    let track = egui::vec2(40.0, 22.0);
+    let size = egui::vec2(track.x + 12.0 + galley.size().x, galley.size().y.max(track.y) + 6.0);
+    let (rect, mut response) = ui.allocate_exact_size(size, egui::Sense::click());
+    if response.clicked() {
+        *on = !*on;
+        response.mark_changed();
+    }
+    let response = response.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let text = galley.text().to_string();
+    response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, ui.is_enabled(), *on, &text));
+    let enabled = ui.is_enabled();
+    let how_far = ui.ctx().animate_bool_responsive(response.id, *on);
+    let track_rect = egui::Rect::from_min_size(egui::pos2(rect.left(), rect.center().y - track.y / 2.0), track);
+    let painter = ui.painter();
+    let (fill, stroke) = if *on { (SELECTED.lerp_to_gamma(ACCENT, 0.25), ACCENT) } else { (CONTROL, CONTROL_LINE) };
+    let dim = |c: Color32| if enabled { c } else { c.gamma_multiply(0.45) };
+    painter.rect(track_rect, track.y / 2.0, dim(fill), Stroke::new(1.0, dim(stroke)), egui::StrokeKind::Inside);
+    let knob_x = egui::lerp((track_rect.left() + 11.0)..=(track_rect.right() - 11.0), how_far);
+    painter.circle_filled(egui::pos2(knob_x, track_rect.center().y), 7.5, dim(if *on { ACCENT } else { MUTED }));
+    let text_pos = egui::pos2(rect.left() + track.x + 12.0, rect.center().y - galley.size().y / 2.0);
+    painter.galley(text_pos, galley, if enabled { FG } else { MUTED });
+    response
+}
+
 /// The side menu's icons, drawn so they never depend on a font's glyphs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
