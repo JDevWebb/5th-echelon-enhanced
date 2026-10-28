@@ -28,10 +28,16 @@ const MAX_ROOMS: usize = 4096;
 /// match to Join.
 const PER_REPORTER: usize = 3;
 
+/// How long a player's marks are remembered. A player marks a room once: their later refusals
+/// there neither renew it nor, once it has lapsed, mark it again (room ids aren't reused), so
+/// one player making reports up can't keep a match out of searches past [`FOR`]. Another
+/// player's refusal keeps a match that's still under way marked.
+const MARKS_KEPT: Duration = Duration::from_secs(60 * 60);
+
 #[derive(Default)]
 struct State {
     rooms: HashMap<u32, Instant>,
-    /// Who marked which room when, within [`FOR`].
+    /// Which rooms each player marked when, within [`MARKS_KEPT`].
     marks: HashMap<u32, Vec<(u32, Instant)>>,
 }
 
@@ -40,8 +46,9 @@ fn state() -> &'static Mutex<State> {
     STATE.get_or_init(Mutex::default)
 }
 
-/// `reporter`'s join into `room` was refused as locked: it counts as started for [`FOR`].
-/// Whether it was taken (not past [`PER_REPORTER`]).
+/// `reporter`'s join into `room` was refused as locked: it counts as started for [`FOR`], unless
+/// `reporter` marked it before (see [`MARKS_KEPT`]). Whether it was taken (not past
+/// [`PER_REPORTER`], and the first from this player there).
 pub fn refused(room: u32, reporter: u32) -> bool {
     refused_at(room, reporter, Instant::now())
 }
@@ -52,19 +59,22 @@ fn refused_at(room: u32, reporter: u32, now: Instant) -> bool {
     if rooms.len() >= MAX_ROOMS {
         rooms.retain(|_, at| now.saturating_duration_since(*at) < FOR);
         marks.retain(|_, m| {
-            m.retain(|(_, at)| now.saturating_duration_since(*at) < FOR);
+            m.retain(|(_, at)| now.saturating_duration_since(*at) < MARKS_KEPT);
             !m.is_empty()
         });
     }
     let mine = marks.entry(reporter).or_default();
-    mine.retain(|(_, at)| now.saturating_duration_since(*at) < FOR);
-    if !mine.iter().any(|(r, _)| *r == room) && mine.len() >= PER_REPORTER {
+    mine.retain(|(_, at)| now.saturating_duration_since(*at) < MARKS_KEPT);
+    if let Some((_, at)) = mine.iter().find(|(r, _)| *r == room) {
+        // Still marked by this player: counted already, and not renewed.
+        return now.saturating_duration_since(*at) < FOR;
+    }
+    if mine.iter().filter(|(_, at)| now.saturating_duration_since(*at) < FOR).count() >= PER_REPORTER {
         return false;
     }
     if rooms.len() >= MAX_ROOMS {
         return false;
     }
-    mine.retain(|(r, _)| *r != room);
     mine.push((room, now));
     rooms.insert(room, now);
     true
@@ -104,11 +114,22 @@ mod tests {
     }
 
     #[test]
-    fn a_later_refusal_keeps_it_started() {
+    fn another_players_later_refusal_keeps_it_started() {
         let (room, now) = (3_000_002, Instant::now());
         refused_at(room, 2, now);
-        refused_at(room, 2, now + Duration::from_secs(300));
+        refused_at(room, 5, now + Duration::from_secs(300));
         assert!(started_at(room, now + FOR), "counted from the last refusal");
+    }
+
+    #[test]
+    fn one_player_cant_keep_a_match_marked() {
+        let (room, now) = (3_000_003, Instant::now());
+        assert!(refused_at(room, 6, now));
+        assert!(refused_at(room, 6, now + Duration::from_secs(300)), "still theirs");
+        assert!(!started_at(room, now + FOR), "not renewed by the same player");
+        assert!(!refused_at(room, 6, now + FOR), "nor marked again once it lapsed");
+        assert!(!started_at(room, now + FOR + Duration::from_secs(1)));
+        assert!(refused_at(room, 6, now + MARKS_KEPT), "an hour on, a room id is someone else's game");
     }
 
     #[test]
@@ -119,7 +140,7 @@ mod tests {
         }
         assert!(!refused_at(3_000_200, reporter, now), "one more is refused");
         assert!(!started_at(3_000_200, now));
-        assert!(refused_at(3_000_100, reporter, now), "one already marked is renewed");
+        assert!(refused_at(3_000_100, reporter, now), "one already marked still counts");
         assert!(refused_at(3_000_200, reporter, now + FOR), "and once they've lapsed, more");
         assert!(refused_at(3_000_200, 4, now), "another player's count is their own");
     }
