@@ -257,7 +257,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let game_dir = game.as_ref().map(|g| g.dir.clone());
         egui::ScrollArea::vertical().auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
             theme::page().show(ui, |ui| {
-                ui.set_width(ui.available_width());
+                ui.set_width(ui.available_width().min(theme::MAX_PAGE));
                 theme::title(ui, "The network's admins", "Support");
                 ui.label(
                     RichText::new("Write to the community network's admins about anything that goes wrong. They answer here, and you're told when they do, here and in the game.")

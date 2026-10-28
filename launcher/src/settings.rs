@@ -39,7 +39,7 @@ pub enum Section {
 }
 
 impl Section {
-    const ALL: [Self; 11] = [
+    pub(crate) const ALL: [Self; 11] = [
         Self::Game,
         Self::Network,
         Self::Servers,
@@ -145,7 +145,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::BG)).show_inside(ui, |ui| {
         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
             theme::page().show(ui, |ui| {
-                ui.set_width(ui.available_width());
+                ui.set_width(ui.available_width().min(theme::MAX_PAGE));
                 body(app, ui);
             });
         });
@@ -1235,7 +1235,9 @@ fn hooks(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     let mut hook = game.cfg.hook_config.clone();
     ui.checkbox(&mut hook.enable_all_hooks, "All hooks");
     ui.add_enabled_ui(!hook.enable_all_hooks, |ui| {
-        egui::Grid::new("hooks").num_columns(3).show(ui, |ui| {
+        // As many columns as fit (three at the launcher's first size, fewer in a small window).
+        let columns = ((ui.available_width() / 220.0).floor() as usize).clamp(1, 3);
+        egui::Grid::new("hooks").num_columns(columns).show(ui, |ui| {
             for (i, (h, label)) in Hook::VARIANTS.iter().zip(Hook::LABELS).enumerate() {
                 let mut on = hook.enable_hooks.contains(h);
                 if ui.checkbox(&mut on, label).changed() {
@@ -1245,7 +1247,7 @@ fn hooks(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
                         hook.enable_hooks.remove(h);
                     }
                 }
-                if i % 3 == 2 {
+                if i % columns == columns - 1 {
                     ui.end_row();
                 }
             }

@@ -890,6 +890,31 @@ impl App {
     }
 }
 
+/// The screenshots' sub-screens (shots.rs): what `what` names, set up on a new app.
+#[cfg(all(test, feature = "shots"))]
+impl App {
+    pub(crate) fn shot(&mut self, ctx: &egui::Context, what: &str) {
+        use crate::play::Drawer;
+        match what {
+            "drawer-status" => self.play.shot_drawer(Drawer::Status),
+            "drawer-squad" => self.play.shot_drawer(Drawer::Squad),
+            "drawer-intel" => self.play.shot_drawer(Drawer::News),
+            "setup-name" => self.play.shot_name_step("eu1.scbl.jdevwebb.net"),
+            "whats-new" => {
+                self.whats_new.reopen();
+            }
+            "feedback" => self.ask_feedback(ctx),
+            "server-menu" => egui::Popup::open_id(ctx, egui::Id::new("server-menu")),
+            _ => {
+                if let Some(section) = crate::settings::Section::ALL.into_iter().find(|s| what == format!("settings-{:?}", s).to_lowercase()) {
+                    self.view = View::Settings;
+                    self.settings.section = section;
+                }
+            }
+        }
+    }
+}
+
 impl eframe::App for App {
     /// Behind everything: the page's colour, so nothing between panels shows through.
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -1012,6 +1037,7 @@ impl eframe::App for App {
             View::Server => {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     theme::page().show(ui, |ui| {
+                        ui.set_max_width(theme::MAX_PAGE);
                         theme::title(ui, "On this PC", "Host");
                         ui.label(theme::muted("Run a server for your group on this PC, or manage one you run elsewhere."));
                         ui.add_space(14.0);

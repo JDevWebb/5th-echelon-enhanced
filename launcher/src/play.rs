@@ -1329,6 +1329,19 @@ fn comms_box(comms: &Comms, to: &mut Option<Go>, width: f32, ui: &mut egui::Ui) 
         });
 }
 
+#[cfg(all(test, feature = "shots"))]
+impl Play {
+    /// The screenshots' states: a drawer tab, or the setup's name step.
+    pub(crate) fn shot_drawer(&mut self, drawer: Drawer) {
+        self.drawer = Some(drawer);
+    }
+
+    pub(crate) fn shot_name_step(&mut self, server: &str) {
+        self.needs_name = Some(server.to_string());
+        self.editing = true;
+    }
+}
+
 /// What the drawer beside the stage shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Drawer {
@@ -1401,11 +1414,13 @@ fn drawer_panel(play: &mut Play, game: &mut Game, notices: &mut Notices, comms: 
         Drawer::Squad => {
             let community = crate::app::Prefs::directory().is_some_and(|d| crate::app::Prefs::is_community(&d));
             if community {
-                ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-                    comms_box(comms, to, width, ui);
-                    ui.add_space(10.0);
-                    ui.with_layout(egui::Layout::top_down(egui::Align::LEFT), |ui| friends_card(play, game, to, width, ui));
+                // Friends take what the box under them leaves.
+                let friends = (ui.available_height() - 140.0).max(200.0);
+                ui.allocate_ui_with_layout(egui::vec2(width, friends), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                    friends_card(play, game, to, width, ui)
                 });
+                ui.add_space(10.0);
+                comms_box(comms, to, width, ui);
             } else {
                 friends_card(play, game, to, width, ui);
             }
@@ -2116,7 +2131,7 @@ pub fn show_news(app: &mut App, ui: &mut egui::Ui) {
     let mut go = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         theme::page().show(ui, |ui| {
-            ui.set_width(ui.available_width());
+            ui.set_width(ui.available_width().min(theme::MAX_PAGE));
             go = intel_header(View::News, ui);
             let (play, game, _) = app.play_mut();
             let Some(game) = game.as_mut() else {
@@ -2235,7 +2250,7 @@ pub fn show_servers(app: &mut App, ui: &mut egui::Ui) {
     let mut host = false;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         theme::page().show(ui, |ui| {
-            ui.set_width(ui.available_width());
+            ui.set_width(ui.available_width().min(theme::MAX_PAGE));
             let (play, game, notices) = app.play_mut();
             let Some(game) = game.as_mut() else {
                 theme::title(ui, "Network", "Servers");
@@ -2323,7 +2338,7 @@ fn servers_page(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &e
                     connect = Some(play.address.trim().to_string());
                 }
             });
-            ui.label(theme::muted("A private server for your group, outside the network: the server menu takes you back.").small());
+            ui.horizontal_wrapped(|ui| ui.label(theme::muted("A private server for your group, outside the network: the server menu takes you back.").small()));
             let recent = crate::app::Prefs::recent_servers();
             if !recent.is_empty() {
                 ui.add_space(8.0);
@@ -2346,7 +2361,8 @@ fn servers_page(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &e
             ui.set_width(ui.available_width());
             ui.label(theme::caps("On your network"));
             ui.add_space(6.0);
-            ui.label(RichText::new("Looks for a server running at a LAN party, on this network.").color(theme::SOFT));
+            // Wrapped in a row: the columns' justified layout would justify the text too.
+            ui.horizontal_wrapped(|ui| ui.label(RichText::new("Looks for a server running at a LAN party, on this network.").color(theme::SOFT)));
             ui.add_space(4.0);
             if play.looking.running() {
                 ui.horizontal(|ui| {

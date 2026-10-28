@@ -210,6 +210,10 @@ pub fn kicker(text: &str) -> egui::RichText {
     caps(text).color(ACCENT)
 }
 
+/// The widest a screen's content gets (wider, lines get too long to read); the Play screen,
+/// the first-run setup and Chat use the whole window.
+pub const MAX_PAGE: f32 = 1180.0;
+
 /// The page's own padding.
 pub fn page() -> egui::Frame {
     egui::Frame::new().inner_margin(egui::Margin::symmetric(32, 26))

@@ -92,7 +92,7 @@ pub fn offered(options: &[&NewOption], game_dir: &Path) -> Vec<bool> {
     options.iter().map(|o| o.recommended && (o.blocked)(game_dir).is_none()).collect()
 }
 
-/// The options as cards with a checkbox each, `choices` in the same order.
+/// The options as cards with a switch each, `choices` in the same order.
 pub fn list(ui: &mut egui::Ui, options: &[&NewOption], choices: &mut [bool], game_dir: &Path) {
     for (option, on) in options.iter().zip(choices.iter_mut()) {
         let blocked = (option.blocked)(game_dir);
@@ -107,7 +107,7 @@ pub fn list(ui: &mut egui::Ui, options: &[&NewOption], choices: &mut [bool], gam
                     if blocked.is_some() {
                         *on = false;
                     }
-                    ui.add_enabled(blocked.is_none(), egui::Checkbox::new(on, RichText::new(option.title).family(theme::strong())));
+                    ui.add_enabled_ui(blocked.is_none(), |ui| theme::switch(ui, on, RichText::new(option.title).family(theme::strong())));
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| match blocked {
                         Some((badge, _)) => crate::play::badge(ui, badge, false),
                         None if option.recommended => crate::play::badge(ui, "Recommended", true),

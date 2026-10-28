@@ -609,7 +609,7 @@ fn layout(chat: &mut Chat, cfg: &Config, status: &StatusResponse, ui: &mut egui:
 
 /// Sample rooms, friends and messages, for the screenshots (shots.rs).
 #[cfg(all(test, feature = "shots"))]
-pub(crate) fn sample(ui: &mut egui::Ui) {
+pub(crate) fn sample(ui: &mut egui::Ui, tab: &str) {
     let now = identity::now();
     let msg = |id: i64, from: &str, name: &str, server: &str, body: &str, mentions_me: bool| Message {
         id,
@@ -639,9 +639,31 @@ pub(crate) fn sample(ui: &mut egui::Ui) {
         name: "Tank".into(),
         online: true,
     }];
+    chat.direct.insert(
+        "r".into(),
+        vec![Message {
+            to: "me".into(),
+            room: Room::Direct as i32,
+            ..msg(4, "r", "Raven", "Beauharnois, Canada", "you hosting tonight?", false)
+        }],
+    );
+    chat.lobby = vec![Message {
+        room: Room::Lobby as i32,
+        ..msg(5, "t", "Tank", "Falkenstein, Germany", "ready when you are", false)
+    }];
+    chat.tab = match tab {
+        "lobby" => Tab::Lobby,
+        "messages" => Tab::Messages,
+        _ => Tab::Global,
+    };
+    if tab == "messages" {
+        chat.with = Some("r".into());
+        chat.names.insert("r".into(), "Raven".into());
+    }
     let status = StatusResponse {
         available: true,
         may_post_global: true,
+        lobby: u32::from(tab == "lobby"),
         ..Default::default()
     };
     layout(&mut chat, &Config::default(), &status, ui);

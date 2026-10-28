@@ -253,7 +253,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let mut go = None;
     egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
         theme::page().show(ui, |ui| {
-            ui.set_width(ui.available_width());
+            ui.set_width(ui.available_width().min(theme::MAX_PAGE));
             go = crate::play::intel_header(crate::app::View::Roadmap, ui);
             let clock = setup::clock::Clock::local();
             let source = match &page.shown {
