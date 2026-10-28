@@ -492,6 +492,9 @@ const STEPS: [&str; 5] = ["Find the game", "Choose a server", "Pick your name", 
 /// The guided setup's frame: the steps on the left (`step` is the current
 /// one), the step itself on the right.
 fn wizard(ui: &mut egui::Ui, step: usize, body: impl FnOnce(&mut egui::Ui)) {
+    // On the night-vision glow, as the Play screen's stage.
+    let screen = ui.clip_rect();
+    theme::grid_backdrop(ui.painter(), screen);
     ui.add_space(28.0);
     let width = (ui.available_width() - 32.0).min(980.0);
     let side = ((ui.available_width() - width) / 2.0).max(16.0);
@@ -501,7 +504,7 @@ fn wizard(ui: &mut egui::Ui, step: usize, body: impl FnOnce(&mut egui::Ui)) {
         egui::Frame::new()
             .fill(theme::SURFACE)
             .stroke(egui::Stroke::new(1.0, theme::LINE))
-            .corner_radius(18)
+            .corner_radius(6)
             .show(ui, |ui| {
                 ui.set_width(width);
                 let aside = |ui: &mut egui::Ui| {
@@ -509,9 +512,9 @@ fn wizard(ui: &mut egui::Ui, step: usize, body: impl FnOnce(&mut egui::Ui)) {
                         // Side by side, the fill is painted to the card's full height afterwards.
                         .fill(if stacked { theme::SUNKEN } else { egui::Color32::TRANSPARENT })
                         .corner_radius(if stacked {
-                            egui::CornerRadius { nw: 18, ne: 18, sw: 0, se: 0 }
+                            egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }
                         } else {
-                            egui::CornerRadius { nw: 18, ne: 0, sw: 18, se: 0 }
+                            egui::CornerRadius { nw: 6, ne: 0, sw: 6, se: 0 }
                         })
                         .inner_margin(egui::Margin::symmetric(30, 32))
                         .show(ui, |ui| {
@@ -522,8 +525,8 @@ fn wizard(ui: &mut egui::Ui, step: usize, body: impl FnOnce(&mut egui::Ui)) {
                                 ui.set_min_height(470.0);
                             }
                             ui.vertical(|ui| {
-                                theme::mark(ui, 34.0);
-                                ui.add_space(14.0);
+                                theme::lights(ui, 7.0);
+                                ui.add_space(18.0);
                                 theme::title(ui, "Operative setup", "Get online in a minute");
                                 ui.add_space(6.0);
                                 ui.label(
@@ -545,7 +548,7 @@ fn wizard(ui: &mut egui::Ui, step: usize, body: impl FnOnce(&mut egui::Ui)) {
                     egui::Frame::new().inner_margin(egui::Margin::symmetric(36, 32)).show(ui, |ui| {
                         ui.set_width(w - 72.0);
                         ui.vertical(|ui| {
-                            ui.label(theme::caps(&format!("Step {} of {}", step + 1, STEPS.len())));
+                            ui.label(theme::kicker(&format!("Step {} of {}", step + 1, STEPS.len())));
                             ui.add_space(2.0);
                             body(ui);
                         });
@@ -565,42 +568,55 @@ fn wizard(ui: &mut egui::Ui, step: usize, body: impl FnOnce(&mut egui::Ui)) {
                     });
                     let side = egui::Rect::from_min_max(row.response.rect.min, egui::pos2(row.inner.right(), row.response.rect.bottom()));
                     ui.painter()
-                        .set(fill, egui::Shape::rect_filled(side, egui::CornerRadius { nw: 18, ne: 0, sw: 18, se: 0 }, theme::SUNKEN));
+                        .set(fill, egui::Shape::rect_filled(side, egui::CornerRadius { nw: 6, ne: 0, sw: 6, se: 0 }, theme::SUNKEN));
                 }
             });
     });
     ui.add_space(28.0);
 }
 
-/// One step in the list: done (a tick), current (a green ring) or to come.
+/// One step in the list: done (a tick), current (lit, with the green edge) or to come.
 fn step_row(ui: &mut egui::Ui, i: usize, name: &str, current: usize) {
-    ui.horizontal(|ui| {
-        let (rect, _) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::hover());
-        let c = rect.center();
-        let p = ui.painter();
-        if i < current {
-            p.circle_filled(c, 13.0, theme::OK);
-            let s = egui::Stroke::new(2.4, theme::ON_ACCENT);
-            p.line_segment([c + egui::vec2(-5.0, 0.5), c + egui::vec2(-1.5, 4.0)], s);
-            p.line_segment([c + egui::vec2(-1.5, 4.0), c + egui::vec2(5.5, -3.5)], s);
-        } else {
-            let color = if i == current { theme::ACCENT } else { theme::CONTROL_LINE };
-            p.circle_stroke(c, 12.0, egui::Stroke::new(2.0, color));
-            p.text(
-                c,
-                egui::Align2::CENTER_CENTER,
-                (i + 1).to_string(),
-                egui::FontId::proportional(13.0),
-                if i == current { theme::ACCENT } else { theme::MUTED },
-            );
-        }
-        let text = RichText::new(name);
-        ui.label(match i.cmp(&current) {
-            std::cmp::Ordering::Equal => text.family(theme::strong()).color(theme::FG),
-            _ => text.color(theme::MUTED),
-        });
-    });
-    ui.add_space(6.0);
+    let (row, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 40.0), egui::Sense::hover());
+    let p = ui.painter();
+    if i == current {
+        p.rect_filled(row.expand2(egui::vec2(10.0, 0.0)), 4, theme::SELECTED);
+        p.rect_filled(
+            egui::Rect::from_min_size(row.left_top() - egui::vec2(10.0, 0.0), egui::vec2(3.0, row.height())),
+            0,
+            theme::ACCENT,
+        );
+    }
+    let square = egui::Rect::from_center_size(egui::pos2(row.left() + 13.0, row.center().y), egui::vec2(24.0, 24.0));
+    let c = square.center();
+    if i < current {
+        p.rect_filled(square, 3, theme::SELECTED);
+        let s = egui::Stroke::new(2.2, theme::ACCENT);
+        p.line_segment([c + egui::vec2(-5.0, 0.5), c + egui::vec2(-1.5, 4.0)], s);
+        p.line_segment([c + egui::vec2(-1.5, 4.0), c + egui::vec2(5.5, -3.5)], s);
+    } else {
+        let color = if i == current { theme::ACCENT } else { theme::CONTROL_LINE };
+        p.rect_stroke(square, 3, egui::Stroke::new(1.2, color), egui::StrokeKind::Inside);
+        p.text(
+            c,
+            egui::Align2::CENTER_CENTER,
+            (i + 1).to_string(),
+            egui::FontId::monospace(12.0),
+            if i == current { theme::ACCENT } else { theme::MUTED },
+        );
+    }
+    let color = match i.cmp(&current) {
+        std::cmp::Ordering::Equal => theme::FG,
+        std::cmp::Ordering::Less => theme::SOFT,
+        std::cmp::Ordering::Greater => theme::MUTED,
+    };
+    let font = if i == current {
+        egui::FontId::new(15.0, theme::strong())
+    } else {
+        egui::FontId::proportional(15.0)
+    };
+    p.text(egui::pos2(row.left() + 38.0, row.center().y), egui::Align2::LEFT_CENTER, name, font, color);
+    ui.add_space(2.0);
 }
 
 fn no_game(app: &mut App, ui: &mut egui::Ui) {
@@ -704,7 +720,7 @@ fn setup_screen(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &e
     auto_browse(play, ctx);
     let naming = play.needs_name.is_some();
     wizard(ui, if naming { 2 } else { 1 }, |ui| {
-        ui.label(RichText::new(if naming { "Pick your name" } else { "Choose a server" }).family(theme::strong()).size(24.0));
+        ui.label(theme::display(if naming { "Pick your name" } else { "Choose a server" }, 36.0));
         ui.add_space(4.0);
         if let Some(server) = &play.needs_name {
             ui.label(

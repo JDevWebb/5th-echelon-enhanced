@@ -80,6 +80,20 @@ fn screens_at_each_size() {
             println!("{}", path.display());
         }
     }
+    // The first run: no server chosen yet, so Play is the guided setup.
+    let config = std::env::var_os("XDG_CONFIG_HOME").unwrap();
+    let game = std::path::Path::new(&config).join("game");
+    let mut cfg = setup::config::Config::load(&game);
+    cfg.update(|c| c.profiles.clear()).unwrap();
+    for (size_name, size) in SIZES {
+        let mut h = egui_kittest::Harness::builder().with_size(size).wgpu().build_eframe(|cc| App::new(cc));
+        for _ in 0..6 {
+            h.run_steps(1);
+        }
+        let path = out.join(format!("setup-{size_name}.png"));
+        h.render().expect("rendered").save(&path).unwrap();
+        println!("{}", path.display());
+    }
 }
 
 /// Parts that need a server to fill them, drawn from sample data.
