@@ -192,6 +192,26 @@ listed=$(client curl -sf "http://$coord:8700/v1/servers" | grep -o '"note":"fede
 b_told=$(docker exec fes-fed-b curl -sf http://127.0.0.1/api/info | grep -c '"maintenance"' || true)
 [ -n "$told" ] && [ "${listed:-0}" -eq 1 ] && [ "${b_told:-0}" -eq 0 ] && echo "PASS a maintenance window reached server A's games and the directory, not server B" \
   || { echo "FAIL maintenance: server A ${told:-not told}, directory ${listed:-0}, server B ${b_told:-?}"; client curl -s "http://$coord:8700/v1/servers"; echo; rc=1; }
+echo "--- a ban across the network"
+# An identity with accounts on both servers, banned across the network (as the admin UI's ban
+# leaves it): server B, reporting its players as it starts, gets its account of it banned.
+server_b=$(coord_db "SELECT id FROM servers WHERE json_extract(listing, '$.name') = 'Server B'")
+who=$(coord_db "SELECT global_id FROM links GROUP BY global_id HAVING COUNT(DISTINCT server_id) = 2 ORDER BY global_id LIMIT 1")
+if [ -n "$who" ] && [ -n "$server_b" ]; then
+  coord_write "INSERT INTO identity_bans (identity, reason, until, at, by) VALUES ('$who', 'network test', NULL, CAST(strftime('%s','now') AS INTEGER), 'test')" >/dev/null
+  docker restart fes-fed-b >/dev/null
+  on_b=""
+  netbanned=0
+  for _ in $(seq 90); do
+    on_b=$(coord_db "SELECT id FROM players WHERE server_id = '$server_b' AND identity = '$who' LIMIT 1")
+    [ -n "$on_b" ] && netbanned=$(db fes-fed-b /srv/fe/5th-echelon.db "SELECT COUNT(*) FROM bans WHERE user_id = $on_b AND reason = 'network test'")
+    [ "${netbanned:-0}" -ge 1 ] && break; sleep 1
+  done
+  [ "${netbanned:-0}" -ge 1 ] && echo "PASS a ban across the network reached the identity's account on server B" \
+    || { echo "FAIL the network ban: account ${on_b:-none} on server B, banned ${netbanned:-0}"; rc=1; }
+else
+  echo "FAIL no identity with accounts on both servers to ban (${who:-none}, server B ${server_b:-?})"; rc=1
+fi
 if [ $rc -ne 0 ]; then
   for s in fes-fed-a fes-fed-b; do echo "--- $s"; docker exec "$s" grep -iE -A3 "federation|ERRO" /srv/fe/server.log | tail -40 || true; done
   echo "--- coordinator"; docker exec fes-fed-coord tail -30 /srv/c/log || true
