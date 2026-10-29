@@ -163,6 +163,17 @@ const preview = {
   suggestion_form: () => ({ areas: ['Launcher', 'In the game', 'Matches and joining', 'Servers', 'Other'], title_max: 80, text_max: 1000, identity: true }),
   check_suggestion: ({ title }) => (title.trim() ? null : 'Give it a title.'),
   suggest: () => null,
+  support: () => ({
+    identity: true, error: null, resolved: false, unread: 0, max_text: 2000, draft: null, has_game: true, sending: false,
+    messages: [
+      { admin: false, who: 'You', when: '28 Oct 20:14', text: 'My game froze joining a friend on Sydney.', files: 'Sent with bl-tracing.log, launcher.log' },
+      { admin: true, who: 'nexusx44', when: '28 Oct 21:02', text: 'Thanks: fixed in 0.4.7. Update and try again?', files: null },
+    ],
+    manual: [['Troubleshooting', 'https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Troubleshooting'], ['Error messages', 'https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Error-Messages'], ['Antivirus warnings', 'https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Antivirus-Warnings']],
+  }),
+  support_check: ({ text }) => (text.trim() ? null : 'Write your message first.'),
+  support_send: () => null,
+  ask_feedback: () => null,
   my_suggestions: () => [{ title: 'Voice chat', line: 'In the game · 3 Oct', status: 'Planned', reply: 'On the list for after 0.4.8.' }],
   feedback_send: () => { sample.feedback = null; },
   feedback_close: () => { sample.feedback = null; },

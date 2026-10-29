@@ -74,7 +74,7 @@ pub fn client() -> Result<reqwest::Client, String> {
 
 /// The answer's body, as text, up to [`setup::roadmap::MAX_BYTES`]; or the server's own words
 /// when it said no.
-pub(crate) async fn body(resp: reqwest::Response) -> Result<String, String> {
+pub async fn body(resp: reqwest::Response) -> Result<String, String> {
     let status = resp.status();
     let mut resp = resp;
     let mut body = Vec::new();

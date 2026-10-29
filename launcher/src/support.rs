@@ -7,32 +7,36 @@
 use std::time::Duration;
 use std::time::Instant;
 
+#[cfg(feature = "gui")]
 use eframe::egui;
+#[cfg(feature = "gui")]
 use eframe::egui::RichText;
 use setup::support::Thread;
 
 use crate::activity::Action;
+use crate::activity::Activities as Notices;
+#[cfg(feature = "gui")]
 use crate::app::App;
-use crate::app::Notices;
-use crate::app::Prefs;
+use crate::prefs::Prefs;
 use crate::task::Slot;
+#[cfg(feature = "gui")]
 use crate::theme;
 
 /// Where support lives: the community network's coordinator.
 const COORDINATOR: &str = setup::directory::COMMUNITY;
 /// How often the launcher looks for answers: while the screen shows, and otherwise.
-const LOOK_WHILE_OPEN: Duration = Duration::from_secs(60);
-const LOOK_EVERY: Duration = Duration::from_secs(10 * 60);
+pub const LOOK_WHILE_OPEN: Duration = Duration::from_secs(60);
+pub const LOOK_EVERY: Duration = Duration::from_secs(10 * 60);
 
 /// A message as sent, to send again.
 #[derive(Debug, Clone)]
-struct Draft {
-    text: String,
-    game_log: bool,
-    launcher_log: bool,
-    game_dir: Option<std::path::PathBuf>,
-    server: Option<String>,
-    name: String,
+pub struct Draft {
+    pub text: String,
+    pub game_log: bool,
+    pub launcher_log: bool,
+    pub game_dir: Option<std::path::PathBuf>,
+    pub server: Option<String>,
+    pub name: String,
 }
 
 pub struct Support {
@@ -71,7 +75,7 @@ impl Default for Support {
     }
 }
 
-fn read(read: bool) -> Result<(Thread, bool), String> {
+pub fn read(read: bool) -> Result<(Thread, bool), String> {
     let identity = crate::roadmap::load_identity()?;
     let url = setup::support::mine_url(COORDINATOR, &identity, identity::now(), read);
     crate::services::rt().block_on(async {
@@ -87,7 +91,7 @@ fn read(read: bool) -> Result<(Thread, bool), String> {
     })
 }
 
-fn send(draft: &Draft) -> Result<(), String> {
+pub fn send(draft: &Draft) -> Result<(), String> {
     let identity = crate::roadmap::load_identity()?;
     // The files, as reports send them: private details hidden, logs cut to their end.
     let files = if draft.game_log || draft.launcher_log {
@@ -149,6 +153,7 @@ pub fn available() -> bool {
     Prefs::directory().is_some_and(|d| Prefs::is_community(&d)) && crate::roadmap::has_identity()
 }
 
+#[cfg(feature = "gui")]
 impl Support {
     /// Starts a message with `text`, unless one is being written; without the logs (a name's
     /// review needs none: the player ticks them back if they want).
@@ -236,18 +241,20 @@ impl Support {
 
 /// The Support screen.
 /// The help pages beside the conversation.
-const MANUAL: [(&str, &str); 3] = [
+pub const MANUAL: [(&str, &str); 3] = [
     ("Troubleshooting", "https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Troubleshooting"),
     ("Error messages", "https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Error-Messages"),
     ("Antivirus warnings", "https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Antivirus-Warnings"),
 ];
 
+#[cfg(feature = "gui")]
 /// What the side panel asked for, done once the page is drawn.
 enum Side {
     Report,
     Checks,
 }
 
+#[cfg(feature = "gui")]
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let mut side = None;
@@ -298,6 +305,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
+#[cfg(feature = "gui")]
 /// Beside the conversation: a report with the logs, the checks, and the help pages.
 fn side_panel(ui: &mut egui::Ui) -> Option<Side> {
     let mut side = None;
@@ -333,6 +341,7 @@ fn side_panel(ui: &mut egui::Ui) -> Option<Side> {
     side
 }
 
+#[cfg(feature = "gui")]
 /// The messages, oldest first: the player's on the right, the admins' on the left.
 fn conversation(page: &Support, ui: &mut egui::Ui) {
     if let Some(e) = &page.error {
@@ -391,6 +400,7 @@ fn conversation(page: &Support, ui: &mut egui::Ui) {
     }
 }
 
+#[cfg(feature = "gui")]
 /// The text box, the logs to send with it, and Send.
 fn form(page: &mut Support, profile: Option<&setup::config::Profile>, game_dir: Option<std::path::PathBuf>, notices: &mut Notices, ctx: &egui::Context, ui: &mut egui::Ui) {
     theme::card().show(ui, |ui| {

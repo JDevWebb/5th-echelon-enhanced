@@ -4,6 +4,7 @@
 mod commands;
 mod feedback;
 mod intel;
+mod support;
 mod whats_new;
 
 fn main() {
@@ -15,8 +16,10 @@ fn main() {
         .manage(feedback::Feedback::default())
         .manage(whats_new::WhatsNew::default())
         .manage(intel::Intel::default())
+        .manage(support::Support::default())
         .setup(|app| {
             feedback::start(app.handle());
+            support::start(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -61,6 +64,9 @@ fn main() {
             commands::recent_servers,
             commands::usual_name,
             commands::use_network,
+            support::support,
+            support::support_check,
+            support::support_send,
             intel::roadmap,
             intel::suggestion_form,
             intel::check_suggestion,

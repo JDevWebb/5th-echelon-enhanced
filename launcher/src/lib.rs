@@ -35,8 +35,7 @@ mod settings;
 #[cfg(all(test, feature = "shots"))]
 mod shots;
 pub mod start;
-#[cfg(feature = "gui")]
-mod support;
+pub mod support;
 pub mod task;
 #[cfg(feature = "gui")]
 mod theme;
