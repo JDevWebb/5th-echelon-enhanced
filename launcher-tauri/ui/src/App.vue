@@ -9,6 +9,7 @@
             <Setup v-if="screen === 'play' && setupShown" key="setup" :info="info" :fresh="fresh" @changed="refresh" @cancel="editing = false" @finished="finishSetup" />
           <Play v-else-if="screen === 'play'" key="play" :info="info" @go="go" @played="played" @change-server="editing = true" />
             <Servers v-else-if="screen === 'servers'" key="servers" :info="info" @go="go" @account="(a) => (askedName = a)" @changed="refresh" />
+          <Intel v-else-if="screen === 'intel'" key="intel" :info="info" />
           <Placeholder v-else :key="screen" v-bind="PLACEHOLDERS[screen]" />
           </Transition>
         </main>
@@ -31,6 +32,7 @@ import Rail from './components/Rail.vue';
 import Play from './views/Play.vue';
 import Setup from './views/Setup.vue';
 import Servers from './views/Servers.vue';
+import Intel from './views/Intel.vue';
 import Placeholder from './views/Placeholder.vue';
 import ActivityBar from './components/ActivityBar.vue';
 import Questions from './components/Questions.vue';
@@ -42,7 +44,6 @@ import { call, inTauri, listen } from './lib/tauri.js';
 const PLACEHOLDERS = {
   host: { kicker: 'Host on this PC', title: 'Host a server', text: 'Run a server for your group: a LAN party, or friends over the internet.' },
   chat: { kicker: 'Comms', title: 'Chat', text: 'Global, Friends and your lobby, across the community network.' },
-  intel: { kicker: 'Intel', title: 'News and the roadmap', text: "What's new, and what's coming." },
   support: { kicker: 'Support', title: 'Support', text: 'Ask for help, send your logs, and read the manual.' },
   settings: { kicker: 'Settings', title: 'Settings', text: 'The game, the launcher, beta features and the advanced options.' },
 };

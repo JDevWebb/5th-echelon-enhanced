@@ -399,7 +399,7 @@ pub fn activity_action(app: tauri::AppHandle, state: tauri::State<Launcher>, id:
     };
     inner.notices.press(id, action);
     drop(inner);
-    if crate::feedback::take_action(&app, id, action) {
+    if crate::feedback::take_action(&app, id, action) || crate::intel::take_action(&app, id, action) {
         changed(&app);
         return None;
     }

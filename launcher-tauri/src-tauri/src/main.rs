@@ -3,6 +3,7 @@
 
 mod commands;
 mod feedback;
+mod intel;
 mod whats_new;
 
 fn main() {
@@ -13,6 +14,7 @@ fn main() {
         .manage(commands::Launcher::new())
         .manage(feedback::Feedback::default())
         .manage(whats_new::WhatsNew::default())
+        .manage(intel::Intel::default())
         .setup(|app| {
             feedback::start(app.handle());
             Ok(())
@@ -59,6 +61,11 @@ fn main() {
             commands::recent_servers,
             commands::usual_name,
             commands::use_network,
+            intel::roadmap,
+            intel::suggestion_form,
+            intel::check_suggestion,
+            intel::suggest,
+            intel::my_suggestions,
             whats_new::whats_new,
             whats_new::whats_new_again,
             whats_new::whats_new_seen,
