@@ -7,7 +7,7 @@ const sample = {
   info: {
     product: '5th Echelon Enhanced', release: '0.4.8-dev', game_dir: 'C:\\Games\\Splinter Cell Blacklist\\src\\SYSTEM',
     server: 'eu1.scbl.jdevwebb.net', account: 'Kiwi', community: true, play_mode: 'play', managed: false, running: false,
-    connecting: false, max_name: 24,
+    connecting: false, max_name: 24, identity: 'DNIC-JULS', beta: location.search.includes('beta') ? 1 : 0,
   },
   questions: {
     diagnostics: {
@@ -139,6 +139,7 @@ const preview = {
   join_friend: () => null,
   whats_new_seen: () => null,
   open_url: () => null,
+  key_art: () => null,
   feedback_send: () => { sample.feedback = null; },
   feedback_close: () => { sample.feedback = null; },
   player_action: () => null,

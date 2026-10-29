@@ -51,6 +51,7 @@ fn main() {
             feedback::feedback_close,
             feedback::ask_feedback,
             commands::open_url,
+            commands::key_art,
             whats_new::whats_new,
             whats_new::whats_new_again,
             whats_new::whats_new_seen,

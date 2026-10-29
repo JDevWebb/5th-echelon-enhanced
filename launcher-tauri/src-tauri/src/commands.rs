@@ -131,6 +131,10 @@ pub struct Info {
     connecting: bool,
     /// The longest name an account takes.
     max_name: usize,
+    /// This PC's identity in short ("K7QF-2M9D"), if it has one.
+    identity: Option<String>,
+    /// How many beta features are on (Settings › Game).
+    beta: usize,
 }
 
 #[tauri::command(async)]
@@ -154,6 +158,8 @@ pub fn info(state: tauri::State<Launcher>) -> Info {
         running,
         connecting: inner.setup_running,
         max_name: setup::account::MAX_NAME,
+        identity: identity_short(),
+        beta: game.map_or(0, |g| g.cfg.hook_config.beta.on().len()),
     }
 }
 
@@ -1222,4 +1228,32 @@ pub fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
         return Err("Not a link the launcher opens.".into());
     }
     app.opener().open_url(parsed.as_str(), None::<&str>).map_err(|e| e.to_string())
+}
+
+/// This PC's identity in short, read once (it's decrypted from disk).
+fn identity_short() -> Option<String> {
+    static SHORT: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    SHORT
+        .get_or_init(|| setup::player_identity::load().ok().flatten().map(|id| identity::short(&id.global_id())))
+        .clone()
+}
+
+/// One of the game's loading screens for the stage, a different one each start, as a JPEG
+/// data URL; None for a game without them (the night-vision backdrop stays).
+#[tauri::command(async)]
+pub fn key_art(state: tauri::State<Launcher>) -> Option<String> {
+    static ART: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    let dir = state.lock().game.as_ref()?.dir.clone();
+    ART.get_or_init(|| {
+        let art = setup::key_art::load(&dir, rand::random::<u32>() as usize)
+            .map_err(|e| tracing::info!("No banner art from the game: {e}"))
+            .ok()?;
+        let rgba = image::RgbaImage::from_raw(art.width as u32, art.height as u32, art.rgba)?;
+        let rgb = image::DynamicImage::ImageRgba8(rgba).to_rgb8();
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85).encode_image(&rgb).ok()?;
+        use base64::Engine;
+        Some(format!("data:image/jpeg;base64,{}", base64::engine::general_purpose::STANDARD.encode(jpeg)))
+    })
+    .clone()
 }

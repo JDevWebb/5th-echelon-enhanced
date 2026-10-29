@@ -1,13 +1,16 @@
 <template>
   <div class="play-screen">
     <section class="stage">
+      <Transition name="art">
+        <div v-if="art" class="art" :style="{ backgroundImage: `url(${art})` }" aria-hidden="true"></div>
+      </Transition>
       <div class="scan" aria-hidden="true"></div>
       <div class="glow" aria-hidden="true"></div>
       <div class="hud">
         <span class="caps">{{ inTauri ? 'Field ops' : 'Browser preview' }}</span>
-        <button v-if="info.account" class="player" type="button" @click="$emit('go', 'servers')">
-          <span class="avatar">{{ info.account[0].toUpperCase() }}</span>
-          <span><b>{{ info.account }}</b><small>{{ info.server }}</small></span>
+        <button class="player" type="button" title="Identity and friends" @click="$emit('go', 'settings')">
+          <span class="avatar">{{ (info.account || '?')[0].toUpperCase() }}<i :class="{ on: online }"></i></span>
+          <span><b>{{ info.account || 'No account yet' }}</b><small>{{ info.identity ? `ID ${info.identity}` : 'No identity yet' }}</small></span>
         </button>
       </div>
       <div class="hero">
@@ -132,6 +135,12 @@
             </div>
           </div>
         </Transition>
+        <p v-if="info.beta" class="beta">Beta features on ({{ info.beta }}): experimental, and your game's log is sent to the server's admins after each game. Settings › Game to turn off.</p>
+        <div v-if="news.length" class="newsline">
+          <span class="caps accent">Intel</span>
+          <Transition name="fade" mode="out-in"><span :key="newsAt" class="headline">{{ news[newsAt].title }}</span></Transition>
+          <a href="#" @click.prevent="$emit('go', 'intel')">All news</a>
+        </div>
       </div>
     </section>
 
@@ -410,6 +419,10 @@ async function switchToFriend() {
   await call('switch_to_friend', { host });
 }
 
+// The game's art behind the stage, and whether the account is signed in (the presence dot).
+const art = ref(null);
+const online = computed(() => list.value?.checks.some((c) => c.id === 'account' && c.status === 'ok') ?? false);
+
 // The Intel tab: the server's news, turning every 8 seconds.
 const news = ref([]);
 const newsAt = ref(0);
@@ -480,6 +493,7 @@ onMounted(async () => {
   loadSquad(false);
   loadNews();
   loadNotice();
+  call('key_art').then((a) => (art.value = a));
   checksTimer = setInterval(() => loadChecks(false), 30000);
   squadTimer = setInterval(() => loadSquad(false), 15000);
   newsTimer = setInterval(() => Date.now() - turned >= 8000 && turn(1), 1000);
@@ -505,6 +519,10 @@ onBeforeUnmount(() => {
 /* The stage: night vision, the name and the controls. */
 .stage { position: relative; flex: 1; min-width: 0; padding: 26px 36px; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden;
   background: radial-gradient(60% 70% at 70% 35%, rgba(155, 224, 90, .10), transparent 70%), var(--bg); }
+.art { position: absolute; inset: 0; background: center / cover no-repeat; opacity: .55; pointer-events: none; }
+.art::after { content: ""; position: absolute; inset: 0; background: linear-gradient(180deg, rgba(10, 14, 15, .55), rgba(10, 14, 15, .35) 40%, rgba(10, 14, 15, .92)), linear-gradient(90deg, rgba(10, 14, 15, .85), transparent 70%); }
+.art-enter-active { transition: opacity 1.2s ease; }
+.art-enter-from { opacity: 0; }
 .glow { position: absolute; inset: -20%; background: radial-gradient(35% 35% at 70% 40%, rgba(155, 224, 90, .10), transparent 70%); animation: drift 14s ease-in-out infinite alternate; pointer-events: none; }
 .scan { position: absolute; inset: 0; background: repeating-linear-gradient(0deg, rgba(155, 224, 90, .035) 0 1px, transparent 1px 4px); animation: scan 8s linear infinite; pointer-events: none; }
 .hud { position: relative; display: flex; justify-content: space-between; align-items: center; min-height: 58px; }
@@ -512,7 +530,7 @@ onBeforeUnmount(() => {
 .player:hover { border-color: var(--control-line); }
 .player b { display: block; font-weight: 600; }
 .player small { font: 11px PlexMono, monospace; color: var(--muted); }
-.avatar { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; color: var(--accent); font-weight: 600; border: 1.5px solid rgba(155, 224, 90, .5); background: var(--selected); }
+.avatar { position: relative; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; color: var(--accent); font-weight: 600; border: 1.5px solid rgba(155, 224, 90, .5); background: var(--selected); }
 
 .hero { position: relative; }
 .hero .kicker { margin: 0; font-size: 12px; letter-spacing: .2em; }
@@ -653,6 +671,13 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 .doing.now { color: var(--warn); } .doing.done { color: var(--accent); }
 .meter { display: block; height: 3px; margin-top: 6px; border-radius: 2px; background: var(--line); overflow: hidden; }
 .meter i { display: block; height: 100%; background: var(--warn); transition: width .4s var(--ease); }
+.avatar i { position: absolute; right: -2px; bottom: -2px; width: 12px; height: 12px; border-radius: 50%; background: var(--muted); border: 3px solid var(--bg); }
+.avatar i.on { background: var(--accent); }
+.beta { margin: 10px 0 0; max-width: 940px; color: var(--warn); font-size: 13px; }
+.newsline { display: flex; align-items: center; gap: 12px; margin-top: 22px; padding-top: 14px; border-top: 1px solid var(--control-line); color: var(--soft); max-width: 940px; }
+.newsline .headline { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fade-enter-active, .fade-leave-active { transition: opacity .4s; }
+.fade-enter-from, .fade-leave-to { opacity: 0; }
 @keyframes reveal { to { opacity: 1; transform: none; } }
 @keyframes drift { to { transform: translate(-6%, 4%) scale(1.08); } }
 @keyframes scan { to { background-position: 0 64px; } }

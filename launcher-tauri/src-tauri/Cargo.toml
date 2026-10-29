@@ -24,6 +24,9 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 url = "2"
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+base64 = "0.22"
+rand = "0.8"
 toml = "0.8"
 setup = { path = "../../setup" }
 # The egui launcher's library: the setup, the flows and the settings, without egui.
