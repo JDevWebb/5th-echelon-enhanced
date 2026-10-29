@@ -6,7 +6,7 @@
       <div class="column">
         <main class="screen">
           <Transition name="view" mode="out-in">
-            <Setup v-if="screen === 'play' && setupShown" key="setup" :info="info" :fresh="fresh" :asked-name="askedName" @changed="refresh" @cancel="editing = false; askedName = null" @finished="finishSetup" />
+            <Setup v-if="screen === 'play' && setupShown" key="setup" :info="info" :fresh="fresh" @changed="refresh" @cancel="editing = false" @finished="finishSetup" />
           <Play v-else-if="screen === 'play'" key="play" :info="info" @go="go" @played="played" @change-server="editing = true" />
             <Placeholder v-else :key="screen" v-bind="PLACEHOLDERS[screen]" />
           </Transition>
@@ -14,6 +14,7 @@
         <ActivityBar ref="bar" />
       </div>
     </div>
+    <AccountDialog :asked="askedName" :max-name="info.max_name" @close="askedName = null" />
     <Feedback />
     <WhatsNew ref="whatsNew" :waiting="questionsUp" :community="info.community" @network="refresh" />
     <Questions ref="questions" :with-options="!(setupShown && fresh)" @up="(up) => (questionsUp = up)" />
@@ -32,6 +33,7 @@ import Placeholder from './views/Placeholder.vue';
 import ActivityBar from './components/ActivityBar.vue';
 import Questions from './components/Questions.vue';
 import Feedback from './components/Feedback.vue';
+import AccountDialog from './components/AccountDialog.vue';
 import WhatsNew from './components/WhatsNew.vue';
 import { call, inTauri, listen } from './lib/tauri.js';
 
@@ -56,7 +58,7 @@ watch(
   (first) => first && (fresh.value = true),
 );
 
-// A server with no account yet, from outside the setup (a friend's): its name step.
+// A server with no account yet, from outside the setup (a friend's): the account dialog.
 const askedName = ref(null);
 let stopSetup = null;
 
@@ -94,10 +96,8 @@ onMounted(async () => {
   // Whether the game is running, and settings changed elsewhere (the egui launcher, by hand).
   timer = setInterval(refresh, 3000);
   stopSetup = await listen('setup', ({ payload }) => {
-    if (payload.kind === 'needs-name' && !setupShown.value) {
-      askedName.value = payload;
-      editing.value = true;
-    }
+    // Outside the guided setup (a friend's server, the menu's): the account dialog.
+    if (payload.kind === 'needs-name' && !setupShown.value) askedName.value = payload;
   });
   // No edge round a maximised window.
   if (inTauri) {

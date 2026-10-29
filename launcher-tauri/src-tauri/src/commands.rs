@@ -1257,3 +1257,98 @@ pub fn key_art(state: tauri::State<Launcher>) -> Option<String> {
     })
     .clone()
 }
+
+/// The account dialog's server: where and what it is, how far, and what the player leaves.
+#[derive(Serialize)]
+pub struct AccountServer {
+    /// Where it is ("North America"), and what it is ("5th Echelon Community NA · community
+    /// server", "A server of your own", "A friend's server").
+    place: String,
+    kind: String,
+    ping: Option<u32>,
+    /// A server of the player's own (one they typed): the dialog confirms it.
+    own: bool,
+    /// The server the player is on now, where they stay if they don't.
+    current: Option<String>,
+    /// The network a server of their own leaves ("the community network").
+    leaving: String,
+}
+
+/// What the account dialog says of `server`.
+#[tauri::command(async)]
+pub fn account_server(state: tauri::State<Launcher>, server: String) -> AccountServer {
+    let inner = state.lock();
+    let own = !inner.setup.as_ref().is_some_and(|a| a.plan.public_only);
+    let directory = inner.directory.as_deref().unwrap_or_default();
+    let listing = directory.iter().find(|(s, _)| s.host.eq_ignore_ascii_case(&server));
+    let (place, kind) = match listing {
+        Some((s, _)) => (connect::place(s), format!("{} · community server", s.name)),
+        None if own => (server.clone(), "A server of your own".to_string()),
+        None => (server.clone(), "A friend's server".to_string()),
+    };
+    let current = inner
+        .game
+        .as_ref()
+        .and_then(|g| g.cfg.current_profile())
+        .map(|p| p.server.clone())
+        .filter(|s| !s.is_empty())
+        .map(|host| directory.iter().find(|(s, _)| s.host == host).map_or(host, |(s, _)| connect::place(s)));
+    let leaving = match Prefs::directory() {
+        Some(url) if Prefs::is_community(&url) => "the community network".to_string(),
+        Some(url) => connect::url_host(&url).to_string(),
+        None => "your network".to_string(),
+    };
+    AccountServer {
+        place,
+        kind,
+        ping: listing.and_then(|(_, ping)| *ping),
+        own,
+        current,
+        leaving,
+    }
+}
+
+/// What the server says of itself for the account dialog: its API (to check names, when it
+/// can), its release and its ping.
+#[derive(Serialize)]
+pub struct ProbeView {
+    api: Option<String>,
+    version: String,
+    ping: Option<u32>,
+}
+
+#[tauri::command(async)]
+pub fn account_probe(state: tauri::State<Launcher>, server: String) -> Result<ProbeView, String> {
+    let dir = state.lock().game.as_ref().map(|g| g.dir.clone()).ok_or("Choose the game's folder first.")?;
+    let probe = launcher::task::guarded(|| launcher::flow::probe(&dir, &server))?;
+    Ok(ProbeView {
+        api: probe.name_check.then_some(probe.api),
+        version: probe.version,
+        ping: probe.ping,
+    })
+}
+
+/// Whether `name` is free on the server at `api`: "free", "taken", or why it isn't allowed.
+#[derive(Serialize)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum NameView {
+    Free,
+    Taken,
+    NotAllowed { why: String },
+}
+
+#[tauri::command(async)]
+pub fn check_name(api: String, name: String) -> Result<NameView, String> {
+    use launcher::flow::NameCheck;
+    Ok(match launcher::flow::check_name(&api, name.trim())? {
+        NameCheck::Free => NameView::Free,
+        NameCheck::Taken(_) => NameView::Taken,
+        NameCheck::NotAllowed(why) => NameView::NotAllowed { why },
+    })
+}
+
+/// Up to three free names like `name` on the server at `api`.
+#[tauri::command(async)]
+pub fn name_suggestions(api: String, name: String) -> Vec<String> {
+    launcher::task::guarded(|| launcher::flow::free_suggestions(&api, name.trim()))
+}

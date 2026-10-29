@@ -67,7 +67,7 @@
               </div>
               <p class="caps label">Or a server's address</p>
               <div class="row">
-                <input v-model="server" class="field address" type="text" placeholder="play.example.org or 192.168.1.20" spellcheck="false" @input="typed = true" />
+                <input v-model="server" class="field address" type="text" autocomplete="off" placeholder="play.example.org or 192.168.1.20" spellcheck="false" @input="typed = true" />
                 <template v-if="pinging || looking"><i class="spin"></i></template>
                 <template v-else>
                   <button v-if="servers && servers.network" type="button" class="btn" @click="loadServers(true)">Ping again</button>
@@ -93,7 +93,7 @@
             <p class="soft">You don't have an account on {{ naming.server }} yet. Choose the name other players will see; your identity signs you in to it from now on.</p>
             <p v-if="naming.taken" class="warn">Someone on {{ naming.server }} already has that name: choose another.</p>
             <p class="caps label">Your name</p>
-            <input v-model="nick" class="field name" type="text" placeholder="what other players see" :maxlength="info.max_name" spellcheck="false" :disabled="info.connecting" @keydown.enter="nick.trim() && connect(nick)" />
+            <input v-model="nick" class="field name" type="text" autocomplete="off" placeholder="what other players see" :maxlength="info.max_name" spellcheck="false" :disabled="info.connecting" @keydown.enter="nick.trim() && connect(nick)" />
             <div class="row go">
               <p v-if="info.connecting" class="working"><i class="spin"></i>Creating your account…</p>
               <button v-else type="button" class="btn primary big" :disabled="!nick.trim()" @click="connect(nick)">Create account</button>
@@ -135,8 +135,7 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { call, listen } from '../lib/tauri.js';
 
-// `askedName`: the name step for a server set up from elsewhere (a friend's), with no account.
-const props = defineProps({ info: { type: Object, required: true }, fresh: Boolean, askedName: { type: Object, default: null } });
+const props = defineProps({ info: { type: Object, required: true }, fresh: Boolean });
 const emit = defineEmits(['changed', 'cancel', 'finished']);
 
 const STEPS = ['Find the game', 'Choose a server', 'Pick your name', 'Game options', 'Play'];
@@ -149,8 +148,8 @@ const looking = ref(false);
 const lan = ref([]);
 const server = ref('');
 const typed = ref(false);
-const naming = ref(props.askedName);
-const nick = ref(props.askedName?.suggested ?? '');
+const naming = ref(null);
+const nick = ref('');
 const options = ref([]);
 const choices = ref([]);
 const later = ref('');
