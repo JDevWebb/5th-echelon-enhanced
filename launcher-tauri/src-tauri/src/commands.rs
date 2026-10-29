@@ -688,7 +688,7 @@ pub struct Checklist {
 /// The checklist: gathered again when `fresh` (Check again: signing in again too) or stale.
 /// `all`: every check, not only what matters.
 #[tauri::command(async)]
-pub fn checks(state: tauri::State<Launcher>, fresh: bool, all: bool) -> Checklist {
+pub fn checks(app: tauri::AppHandle, state: tauri::State<Launcher>, fresh: bool, all: bool) -> Checklist {
     let mut inner = state.lock();
     let stale = inner.checked.is_none_or(|t| t.elapsed() > CHECK_EVERY);
     let running = game_running(&mut inner);
@@ -704,6 +704,12 @@ pub fn checks(state: tauri::State<Launcher>, fresh: bool, all: bool) -> Checklis
             }
             let (facts, support) = launcher::task::guarded(|| launcher::flow::gather(&dir, &cfg, launcher::dll_utils::bundled()));
             inner = state.lock();
+            // The server refused this launcher as outdated: once per refusal, not on every
+            // look while it lasts.
+            let outdated = matches!(facts.account, Some(setup::diagnose::AccountFact::Outdated(_)));
+            if outdated && !inner.checks.iter().any(|c| c.fix == Some(Fix::UpdateLauncher)) {
+                crate::update::outdated(&app);
+            }
             inner.checks = setup::diagnose::checklist(&facts);
             inner.support = Some(support);
             inner.checked = Some(Instant::now());
@@ -1162,8 +1168,10 @@ pub struct NoticeView {
     eta: String,
     text: String,
     note: Option<String>,
-    /// Its button: playing on another server meanwhile (`host`), with its label.
+    /// Its button: playing on another server meanwhile (`host`), with its label; or updating
+    /// the launcher, with its label (`update`).
     play_on: Option<(String, String)>,
+    update: Option<String>,
     servers: Vec<NoticeRow>,
     /// What the launch bar says instead of how ready the player is, and whether Play waits.
     status: String,
@@ -1175,13 +1183,22 @@ pub struct NoticeView {
 /// The notice for the player, if there's one; the directory is read again as often as the
 /// notice says (every minute, or 15 s while their server restarts or is down).
 #[tauri::command(async)]
-pub fn notice(state: tauri::State<Launcher>) -> Option<NoticeView> {
+pub fn notice(state: tauri::State<Launcher>, update: tauri::State<crate::update::Update>) -> Option<NoticeView> {
+    // A newer launcher, for the notice to offer (not when another tool updates it: `make`
+    // gives none then).
+    let newer = update.newer();
     let make = |inner: &mut Inner| {
         let game = inner.game.as_ref().filter(|g| g.managed.is_none())?;
         let current = game.cfg.current_profile().map(|p| p.server.clone()).filter(|s| !s.is_empty())?;
         let servers = inner.directory.clone().unwrap_or_default();
-        // A newer launcher: this one updates itself from step 3 of its move to Tauri.
-        launcher::update_notice::for_player(&current, &servers, inner.rollout.as_ref(), inner.network_maintenance.as_ref(), &mut inner.my_listing, None)
+        launcher::update_notice::for_player(
+            &current,
+            &servers,
+            inner.rollout.as_ref(),
+            inner.network_maintenance.as_ref(),
+            &mut inner.my_listing,
+            newer.as_deref(),
+        )
     };
     let mut inner = state.lock();
     let first = make(&mut inner);
@@ -1204,10 +1221,11 @@ pub fn notice(state: tauri::State<Launcher>) -> Option<NoticeView> {
         eta: n.eta,
         text: n.text,
         note: n.note,
-        play_on: n.action.and_then(|(action, label)| match action {
+        play_on: n.action.clone().and_then(|(action, label)| match action {
             A::PlayOn { host, .. } => Some((host, label)),
             A::UpdateLauncher => None,
         }),
+        update: n.action.and_then(|(action, label)| matches!(action, A::UpdateLauncher).then_some(label)),
         servers: n
             .servers
             .into_iter()
@@ -1430,4 +1448,16 @@ pub fn ask_name_review(app: tauri::AppHandle, name: String) {
         &app,
         format!("Please review my name {name}: I was asked to choose another, and I think that's a mistake. What it means: "),
     );
+}
+
+/// At start, once: a player who agreed to the diagnostics before 0.4.3 is told what they now
+/// include (not asked again).
+pub fn told_once(app: &tauri::AppHandle) {
+    let state = app.state::<Launcher>();
+    let mut inner = state.lock();
+    if inner.game.as_ref().is_some_and(|g| g.cfg.hook_config.send_diagnostics) && Prefs::tell_log_excerpt() {
+        inner.notices.info(
+            "New in the game's diagnostics: when something goes wrong, the server can ask for the 15 minutes of the game's log before it (at most once an hour, never the whole log, private details hidden). Settings › Feedback turns the diagnostics off.",
+        );
+    }
 }

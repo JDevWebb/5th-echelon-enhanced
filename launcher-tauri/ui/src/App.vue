@@ -1,6 +1,7 @@
 <template>
   <div class="window" :class="{ framed: !maximised }">
     <TitleBar :product="info.product" :release="info.release" />
+    <UpdateBanner />
     <div class="body">
       <Rail :current="screen === 'host' ? 'servers' : screen" :release="info.release" :community="info.community" :unread="glance.unread" @go="go" @version="whatsNew?.again()" />
       <div class="column">
@@ -41,6 +42,7 @@ import Chat from './views/Chat.vue';
 import Settings from './views/Settings.vue';
 import Host from './views/Host.vue';
 import ActivityBar from './components/ActivityBar.vue';
+import UpdateBanner from './components/UpdateBanner.vue';
 import Questions from './components/Questions.vue';
 import Feedback from './components/Feedback.vue';
 import AccountDialog from './components/AccountDialog.vue';

@@ -722,10 +722,3 @@ pub fn my_reports() -> Result<Option<Vec<ReportView>>, String> {
             .collect(),
     ))
 }
-
-/// Whether a newer release is out: its version, or None when this one is the latest.
-#[tauri::command(async)]
-pub fn check_update() -> Result<(String, bool), String> {
-    let latest = launcher::updater::latest().map_err(|e| format!("Couldn't check: {e}"))?;
-    Ok((latest.version.clone(), latest.newer()))
-}

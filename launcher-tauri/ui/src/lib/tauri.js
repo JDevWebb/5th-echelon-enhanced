@@ -191,6 +191,10 @@ const preview = {
   my_reports: () => [{ line: '28 Oct · Falkenstein · open', said: '“froze joining a friend”', reply: '' }],
   connection_test: () => [['Config server (port 80)', 'ok', null], ['API and account', 'ok', null], ['How players reach this PC', 'ok', 'Direct: reachable without any router set-up'], ['Internet play helper', 'warn', 'reachable; matches go through the server’s relay']],
   check_update: () => ['0.4.7', false],
+  update_banner: () => (location.search.includes('update') ? { version: '0.4.9', page: 'https://github.com/JDevWebb/5th-echelon-enhanced/releases', updating: false } : null),
+  update_later: () => null,
+  update_now: () => null,
+  update_asked: () => null,
   host: () => ({
     exe_name: 'dedicated_server.exe', found: true, error: null, running: false, starting: false, downloading: false, listen: null,
     adapters: [['Ethernet', '192.168.1.20']], trusted_subnet: '', api: { info: true, presence: true, accounts: false, unhandled: false }, managing: null, local: false,

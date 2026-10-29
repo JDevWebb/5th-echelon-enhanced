@@ -136,6 +136,7 @@
               <div class="notice-act">
                 <small v-if="notice.note" class="muted">{{ notice.note }}</small>
                 <button v-if="notice.play_on" type="button" class="btn" :disabled="info.connecting" @click="switchTo({ host: notice.play_on[0], current: false })">{{ notice.play_on[1] }}</button>
+                <button v-if="notice.update" type="button" class="btn primary" @click="call('update_asked')">{{ notice.update }}</button>
               </div>
             </div>
             <div v-if="notice.servers.length" class="notice-servers">
@@ -480,6 +481,7 @@ async function loadChecks(fresh) {
 }
 
 async function runFix(fix) {
+  if (fix === 'update-launcher') return call('update_asked');
   // Choosing a server or setting up the account is the setup's server step.
   if (!(await call('fix', { fix }))) emit('change-server');
 }

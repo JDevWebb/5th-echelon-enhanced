@@ -10,6 +10,7 @@ mod host;
 mod intel;
 mod settings;
 mod support;
+mod update;
 mod whats_new;
 
 fn main() {
@@ -24,10 +25,13 @@ fn main() {
         .manage(support::Support::default())
         .manage(chat::Chat::default())
         .manage(host::Host::default())
+        .manage(update::Update::default())
         .setup(|app| {
             feedback::start(app.handle());
             support::start(app.handle());
             chat::start(app.handle());
+            update::start(app.handle());
+            commands::told_once(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -93,7 +97,11 @@ fn main() {
             settings::import_identity,
             settings::set_directory,
             settings::my_reports,
-            settings::check_update,
+            update::check_update,
+            update::update_banner,
+            update::update_later,
+            update::update_now,
+            update::update_asked,
             chat::chat,
             chat::chat_glance,
             chat::chat_check,
