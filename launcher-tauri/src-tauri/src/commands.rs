@@ -464,6 +464,8 @@ pub struct Servers {
     network: Option<String>,
     /// The server menu's header ("Community servers · scbl.jdevwebb.net").
     header: String,
+    /// The network is the community network.
+    community: bool,
     /// The player's server, for the card beside Play.
     card: Option<ServerCard>,
 }
@@ -502,6 +504,7 @@ pub fn servers(state: tauri::State<Launcher>, fresh: bool) -> Servers {
             .unwrap_or_default(),
         note: inner.directory_note.clone(),
         header: connect::menu_header(network.as_deref()),
+        community: network.as_deref().is_some_and(Prefs::is_community),
         network,
         card: (!current.is_empty()).then(|| ServerCard {
             caption: run_by.as_ref().map_or_else(|| "Server".to_string(), |(who, _)| format!("Server · {who}")),
@@ -1276,9 +1279,10 @@ pub struct AccountServer {
 
 /// What the account dialog says of `server`.
 #[tauri::command(async)]
-pub fn account_server(state: tauri::State<Launcher>, server: String) -> AccountServer {
+pub fn account_server(state: tauri::State<Launcher>, server: String, own: Option<bool>) -> AccountServer {
     let inner = state.lock();
-    let own = !inner.setup.as_ref().is_some_and(|a| a.plan.public_only);
+    // A server of the player's own, from the Servers screen; else as the setup that asked was.
+    let own = own.unwrap_or_else(|| !inner.setup.as_ref().is_some_and(|a| a.plan.public_only));
     let directory = inner.directory.as_deref().unwrap_or_default();
     let listing = directory.iter().find(|(s, _)| s.host.eq_ignore_ascii_case(&server));
     let (place, kind) = match listing {
@@ -1351,4 +1355,53 @@ pub fn check_name(api: String, name: String) -> Result<NameView, String> {
 #[tauri::command(async)]
 pub fn name_suggestions(api: String, name: String) -> Vec<String> {
     launcher::task::guarded(|| launcher::flow::free_suggestions(&api, name.trim()))
+}
+
+/// A server of the player's own they connected to, for the Servers screen's Recent.
+#[derive(Serialize)]
+pub struct RecentView {
+    address: String,
+    label: String,
+    /// "used 2 days ago".
+    when: String,
+}
+
+#[tauri::command(async)]
+pub fn recent_servers() -> Vec<RecentView> {
+    let now = identity::now();
+    Prefs::recent_servers()
+        .into_iter()
+        .map(|r| RecentView {
+            label: hooks_config::text::clip(r.name.as_deref().unwrap_or(&r.address), 40),
+            when: format!("used {}", setup::directory::ago(now - r.last_used).replace("within the last hour", "just now")),
+            address: r.address,
+        })
+        .collect()
+}
+
+/// The name a new account on a server of the player's own starts with: the one they use, or
+/// their Windows user name.
+#[tauri::command(async)]
+pub fn usual_name(state: tauri::State<Launcher>) -> String {
+    let dir = state.lock().game.as_ref().map(|g| g.dir.clone());
+    dir.and_then(|d| launcher::flow::usual_name(&d)).unwrap_or_else(launcher::flow::windows_user)
+}
+
+/// Uses another network (its address as typed), when it answers as one: its servers fill the
+/// server menu.
+#[tauri::command(async)]
+pub fn use_network(app: tauri::AppHandle, state: tauri::State<Launcher>, typed: String) -> Result<(), String> {
+    let (url, count) = launcher::services::rt().block_on(launcher::network::check_network(&typed))?;
+    Prefs::set_directory(Some(url.clone()));
+    let mut inner = state.lock();
+    inner.directory = None;
+    inner.directory_note = None;
+    let s = if count == 1 { "" } else { "s" };
+    inner.notices.info(format!(
+        "Using the network {}: its {count} server{s} are in the server menu on the Play screen.",
+        connect::url_host(&url)
+    ));
+    drop(inner);
+    changed(&app);
+    Ok(())
 }

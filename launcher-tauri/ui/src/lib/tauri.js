@@ -29,6 +29,7 @@ const sample = {
   servers: {
     network: 'https://scbl.jdevwebb.net',
     header: 'Community servers · scbl.jdevwebb.net',
+    community: true,
     card: { caption: 'Server', caption_why: null, place: 'Falkenstein, Germany', ping: 38, players: 24 },
     note: null,
     rows: [
@@ -140,10 +141,16 @@ const preview = {
   whats_new_seen: () => null,
   open_url: () => null,
   key_art: () => null,
-  account_server: ({ server }) => ({ place: 'Sydney, Australia', kind: '5th Echelon Community Oceania · community server', ping: 290, own: false, current: 'Falkenstein, Germany', leaving: 'the community network', server }),
+  account_server: ({ server, own }) => (own
+    ? { place: server, kind: 'A server of your own', ping: null, own: true, current: 'Falkenstein, Germany', leaving: 'the community network' }
+    : { place: 'Sydney, Australia', kind: '5th Echelon Community Oceania · community server', ping: 290, own: false, current: 'Falkenstein, Germany', leaving: 'the community network' }),
   account_probe: () => ({ api: 'https://oceania.scbl.jdevwebb.net', version: '0.4.7', ping: 290 }),
   check_name: ({ name }) => (name.toLowerCase() === 'kiwi' ? { kind: 'taken' } : { kind: 'free' }),
   name_suggestions: () => ['KiwiNZ', 'Kiwi2'],
+  recent_servers: () => [{ address: '192.168.1.20', label: 'LAN party', when: 'used 2 days ago' }],
+  usual_name: () => 'Kiwi',
+  use_network: () => null,
+  use_community_network: () => null,
   feedback_send: () => { sample.feedback = null; },
   feedback_close: () => { sample.feedback = null; },
   player_action: () => null,

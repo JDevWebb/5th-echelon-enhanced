@@ -84,7 +84,7 @@ watch(
     probed.value = false;
     probeError.value = null;
     nextTick(() => field.value?.focus());
-    server.value = await call('account_server', { server: asked.server });
+    server.value = await call('account_server', { server: asked.server, own: asked.own ?? null });
     try {
       probe.value = await call('account_probe', { server: asked.server });
     } catch (e) {
