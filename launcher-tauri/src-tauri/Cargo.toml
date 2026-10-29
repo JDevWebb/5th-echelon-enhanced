@@ -1,0 +1,27 @@
+# The launcher in Tauri 2 (0.4.8): the Field ops screens as a web page in a native window, Rust
+# behind it. Its own workspace for now, so the main workspace's tests and CI don't need
+# WebKitGTK; it uses the workspace's crates by path. On Linux the egui launcher stays the program
+# started, and opens this one when WebKitGTK 4.1 is there and it isn't gamescope (docs: plan L).
+[package]
+name = "launcher-tauri"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+setup = { path = "../../setup" }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,159 @@
+<template>
+  <div class="play-screen">
+    <section class="stage">
+      <div class="scan" aria-hidden="true"></div>
+      <div class="glow" aria-hidden="true"></div>
+      <div class="hud">
+        <span class="caps">{{ inTauri ? 'Field ops' : 'Browser preview' }}</span>
+        <button v-if="info.account" class="player" type="button" @click="$emit('go', 'servers')">
+          <span class="avatar">{{ info.account[0].toUpperCase() }}</span>
+          <span><b>{{ info.account }}</b><small>{{ info.server }}</small></span>
+        </button>
+      </div>
+      <div class="hero">
+        <p class="kicker reveal" style="--d: 0ms">Tom Clancy's</p>
+        <h1 class="reveal" style="--d: 80ms">Splinter Cell<br /><span>Blacklist</span></h1>
+        <p class="tag reveal" style="--d: 180ms">Co-op and Spies vs Mercs on community servers. No VPN, no port forwarding.</p>
+        <div class="launch reveal" style="--d: 260ms">
+          <button class="server" type="button" @click="$emit('go', 'servers')">
+            <span><span class="caps">Server</span><b>{{ info.server || 'None chosen' }}</b></span>
+            <svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" /></svg>
+          </button>
+          <span class="ready"><i :class="{ ok: ready }"></i><span>{{ readyText }}</span></span>
+          <button class="play" type="button" disabled title="Launching comes across in the next step">
+            <span>Play</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="drawer">
+      <div class="tabs" role="tablist">
+        <button
+          v-for="(t, i) in tabs"
+          :key="t.id"
+          type="button"
+          role="tab"
+          :aria-selected="tab === t.id"
+          :class="{ on: tab === t.id }"
+          @click="tab = t.id"
+        >
+          {{ t.label }}
+        </button>
+        <span class="underline" :style="{ width: `${100 / tabs.length}%`, transform: `translateX(${tabIndex * 100}%)` }"></span>
+      </div>
+      <Transition name="view" mode="out-in">
+        <section v-if="tab === 'status'" key="status" class="pane">
+          <ul>
+            <li>
+              <span class="edge" :class="{ busy: !info.game_dir }"></span>
+              <span><b>Game</b><small>{{ info.game_dir || 'Not found yet' }}</small></span>
+            </li>
+            <li>
+              <span class="edge" :class="{ busy: !info.server }"></span>
+              <span><b>Server</b><small>{{ info.server || 'None chosen' }}</small></span>
+            </li>
+            <li>
+              <span class="edge" :class="{ busy: !info.account }"></span>
+              <span><b>Account</b><small>{{ info.account || 'Not signed in' }}</small></span>
+            </li>
+          </ul>
+        </section>
+        <section v-else :key="tab" class="pane">
+          <p class="muted">{{ tab === 'squad' ? 'Friends and Global come across' : 'The news comes across' }} in the next step.</p>
+        </section>
+      </Transition>
+    </aside>
+  </div>
+</template>
+
+<script setup>
+// The Play screen, the trial's (trials/tauri-play) on the launcher's real data: the game, the
+// server and the account from the same files the egui launcher reads. Launching, the server
+// menu, friends and the news come across in step 2.
+import { computed, ref } from 'vue';
+import { inTauri } from '../lib/tauri.js';
+
+const props = defineProps({ info: { type: Object, required: true } });
+defineEmits(['go']);
+
+const tabs = computed(() => [
+  { id: 'status', label: 'Status' },
+  ...(props.info.community ? [{ id: 'squad', label: 'Squad' }] : []),
+  { id: 'intel', label: 'Intel' },
+]);
+const tab = ref('status');
+const tabIndex = computed(() => Math.max(0, tabs.value.findIndex((t) => t.id === tab.value)));
+
+const ready = computed(() => Boolean(props.info.game_dir && props.info.server && props.info.account));
+const readyText = computed(() => {
+  if (!props.info.game_dir) return 'Game not found';
+  if (!props.info.server) return 'Choose a server';
+  if (!props.info.account) return 'Sign in to play';
+  return 'Ready to play';
+});
+</script>
+
+<style scoped>
+.play-screen { display: flex; height: 100%; }
+
+/* The stage: night vision, the name and the controls. */
+.stage { position: relative; flex: 1; min-width: 0; padding: 26px 36px; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden;
+  background: radial-gradient(60% 70% at 70% 35%, rgba(155, 224, 90, .10), transparent 70%), var(--bg); }
+.glow { position: absolute; inset: -20%; background: radial-gradient(35% 35% at 70% 40%, rgba(155, 224, 90, .10), transparent 70%); animation: drift 14s ease-in-out infinite alternate; pointer-events: none; }
+.scan { position: absolute; inset: 0; background: repeating-linear-gradient(0deg, rgba(155, 224, 90, .035) 0 1px, transparent 1px 4px); animation: scan 8s linear infinite; pointer-events: none; }
+.hud { position: relative; display: flex; justify-content: space-between; align-items: center; min-height: 58px; }
+.player { display: flex; align-items: center; gap: 12px; padding: 8px 18px 8px 8px; text-align: left; border-radius: 6px; background: rgba(12, 17, 18, .7); border: 1px solid var(--line); backdrop-filter: blur(8px); transition: border-color .2s; }
+.player:hover { border-color: var(--control-line); }
+.player b { display: block; font-weight: 600; }
+.player small { font: 11px PlexMono, monospace; color: var(--muted); }
+.avatar { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; color: var(--accent); font-weight: 600; border: 1.5px solid rgba(155, 224, 90, .5); background: var(--selected); }
+
+.hero { position: relative; }
+.hero .kicker { margin: 0; font-size: 12px; letter-spacing: .2em; }
+h1 { margin: 4px 0 14px; font: 700 clamp(46px, 7.4vw, 92px)/.92 PlexCond, sans-serif; letter-spacing: .01em; text-transform: uppercase; }
+h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
+.tag { margin: 0 0 22px; color: var(--soft); font-size: 16px; }
+.reveal { opacity: 0; transform: translateY(14px); animation: reveal .7s var(--ease) forwards; animation-delay: var(--d); }
+
+.launch { display: flex; align-items: center; gap: 20px; max-width: 940px; }
+.server { flex: 0 0 300px; display: flex; align-items: center; gap: 10px; padding: 10px 12px 10px 16px; text-align: left; border-radius: 4px; background: rgba(12, 17, 18, .8); border: 1px solid var(--control-line); transition: border-color .2s; backdrop-filter: blur(8px); }
+.server:hover { border-color: var(--accent); }
+.server > span:first-child { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.server b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chev { width: 16px; height: 16px; color: var(--muted); }
+.ready { flex: 1; display: flex; align-items: center; gap: 10px; }
+.ready i { width: 10px; height: 10px; border-radius: 50%; background: var(--warn); animation: ping 2s ease-out infinite; }
+.ready i.ok { background: var(--accent); animation: none; box-shadow: 0 0 8px var(--accent); }
+.play { position: relative; height: 58px; padding: 0 64px; background: var(--accent); color: var(--on-accent); font: 700 24px PlexCond, sans-serif; letter-spacing: .14em; text-transform: uppercase; overflow: hidden;
+  clip-path: polygon(0 0, 100% 0, 100% 75%, calc(100% - 14px) 100%, 0 100%); transition: transform .12s, filter .2s; }
+.play::after { content: ""; position: absolute; top: 0; bottom: 0; width: 40%; left: -60%; background: linear-gradient(100deg, transparent, rgba(255, 255, 255, .35), transparent); animation: sheen 4.5s ease-in-out infinite; }
+.play:hover:not(:disabled) { filter: brightness(1.08); }
+.play:active:not(:disabled) { transform: scale(.98); }
+.play:disabled { cursor: not-allowed; filter: saturate(.6) brightness(.85); }
+
+/* The drawer: tabs with a sliding underline. */
+.drawer { width: clamp(300px, 30vw, 380px); flex: none; display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--line); animation: slide .5s var(--ease); }
+.tabs { position: relative; display: flex; border-bottom: 1px solid var(--line); }
+.tabs button { flex: 1; height: 52px; font: 11.5px PlexMono, monospace; letter-spacing: .14em; text-transform: uppercase; color: var(--muted); transition: color .2s; }
+.tabs button:hover { color: var(--soft); }
+.tabs button.on { color: var(--fg); }
+.underline { position: absolute; left: 0; bottom: -1px; height: 2px; background: var(--accent); box-shadow: 0 0 10px rgba(155, 224, 90, .6); transition: transform .3s var(--ease); }
+.pane { flex: 1; padding: 16px 18px; }
+.pane ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.pane li { display: flex; align-items: center; gap: 12px; padding: 10px; border-radius: 6px; transition: background .2s; }
+.pane li:hover { background: var(--control); }
+.pane li .edge { width: 3px; align-self: stretch; border-radius: 2px; background: var(--accent); }
+.pane li .edge.busy { background: var(--warn); }
+.pane li > span:nth-child(2) { flex: 1; min-width: 0; }
+.pane li b { display: block; font-weight: 600; }
+.pane li small { display: block; font: 11px PlexMono, monospace; color: var(--muted); overflow-wrap: anywhere; }
+
+@keyframes reveal { to { opacity: 1; transform: none; } }
+@keyframes drift { to { transform: translate(-6%, 4%) scale(1.08); } }
+@keyframes scan { to { background-position: 0 64px; } }
+@keyframes ping { 0% { box-shadow: 0 0 0 0 rgba(240, 180, 76, .5); } 70%, 100% { box-shadow: 0 0 0 9px rgba(240, 180, 76, 0); } }
+@keyframes sheen { 0%, 60% { left: -60%; } 100% { left: 130%; } }
+@keyframes slide { from { transform: translateX(40px); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .reveal { opacity: 1; transform: none; } }
+</style>

@@ -1,0 +1,17 @@
+{
+  "name": "fes-launcher-ui",
+  "private": true,
+  "description": "The launcher's screens in Tauri (Vue 3, built with Vite into dist/, which launcher-tauri embeds).",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build"
+  },
+  "dependencies": {
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-vue": "^5.2.1",
+    "vite": "^5.4.11"
+  }
+}

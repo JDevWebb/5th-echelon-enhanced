@@ -8,6 +8,7 @@
 #   build/build.sh windows   launcher.exe (DLL embedded), uplay_r1_loader.dll, dedicated_server.exe, testbot.exe -> dist/
 #   build/build.sh bots [scenario ...]
 #                            test players against a fresh local server (tools/testbot)
+#   build/build.sh tauri      the Tauri launcher for Windows and Linux x86_64 -> dist
 #   build/build.sh tauri-trial
 #                            the Tauri trial for Windows and Linux x86_64 -> dist/trials
 #   build/build.sh shots     every launcher screen at several window sizes -> dist/shots/*.png
@@ -104,6 +105,24 @@ case "${1:-test}" in
     run "$IMAGE" bash -c 'cargo build -q -p dedicated_server -p testbot && scripts/bots.sh /target/native/debug "$@" &&
       if [ $# -eq 0 ]; then FRIENDS_MODE=mutual scripts/bots.sh /target/native/debug friends-mutual &&
         REQUIRE_IDENTITY=1 scripts/bots.sh /target/native/debug identity-required; fi' bots "$@"
+    ;;
+  tauri)
+    # The Tauri launcher (launcher-tauri, 0.4.8) for Windows and for Linux x86_64 -> dist: its
+    # page (launcher-tauri/ui) built first, then embedded. Linux links against the WebKitGTK in
+    # fes-tauri, as tauri-trial does.
+    docker build -q -t fes-tauri:local -f build/Dockerfile.tauri build >/dev/null
+    run -v fes-npm-cache:/root/.npm "$IMAGE" sh -c '
+      set -e
+      cd launcher-tauri/ui
+      if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then npm ci --no-audit --no-fund; touch node_modules; fi
+      npm run build'
+    run -e CARGO_TARGET_DIR=/target/launcher-tauri -w /src/launcher-tauri/src-tauri "$IMAGE" \
+      sh -c 'cargo xwin build --release --target x86_64-pc-windows-msvc && cp /target/launcher-tauri/x86_64-pc-windows-msvc/release/launcher-tauri.exe /src/dist/'
+    sysroot="-C link-arg=-L/sysroot/usr/lib/x86_64-linux-gnu -C link-arg=-L/sysroot/lib/x86_64-linux-gnu"
+    sysroot="$sysroot -C link-arg=-Wl,-rpath-link=/sysroot/usr/lib/x86_64-linux-gnu -C link-arg=-Wl,-rpath-link=/sysroot/lib/x86_64-linux-gnu"
+    run -e CARGO_TARGET_DIR=/target/launcher-tauri -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="$sysroot" \
+      -w /src/launcher-tauri/src-tauri fes-tauri:local \
+      sh -c 'cargo build --release --target x86_64-unknown-linux-gnu && cp /target/launcher-tauri/x86_64-unknown-linux-gnu/release/launcher-tauri /src/dist/launcher-tauri-linux-x86_64'
     ;;
   tauri-trial)
     # The Tauri trial (trials/tauri-play) for Windows and for Linux x86_64 (the Steam Deck) ->
