@@ -50,7 +50,7 @@ pub enum Action {
 }
 
 impl Action {
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Self::Retry => "Try again",
             Self::WithoutLogs => "Without logs",
@@ -137,7 +137,7 @@ impl Activity {
     }
 
     /// The details to copy: what failed, and the steps before it.
-    fn details(&self) -> String {
+    pub fn details(&self) -> String {
         let mut text = self.title.clone();
         if let State::Failed { message, .. } = &self.state {
             if !message.is_empty() {
@@ -308,6 +308,18 @@ impl Activities {
         Some(self.pressed.remove(i).1)
     }
 
+    /// The player pressed `action` on activity `id` (not Copy details, which the interface
+    /// does): the activity goes, and its owner takes the action ([`Self::take_action`]).
+    pub fn press(&mut self, id: u64, action: Action) {
+        self.dismiss(id);
+        self.pressed.push((id, action));
+    }
+
+    /// The details of activity `id` to copy, if it's still there.
+    pub fn details(&self, id: u64) -> Option<String> {
+        self.list.iter().map(|a| lock(a)).find(|a| a.id == id).map(|a| a.details())
+    }
+
     pub fn dismiss(&mut self, id: u64) {
         self.list.retain(|a| lock(a).id != id);
     }
@@ -417,10 +429,7 @@ impl Activities {
                 ctx.copy_text(activity.details());
                 self.info("Copied the details.");
             }
-            Some(action) => {
-                self.dismiss(id);
-                self.pressed.push((id, action));
-            }
+            Some(action) => self.press(id, action),
             None => {}
         }
         if dismiss {

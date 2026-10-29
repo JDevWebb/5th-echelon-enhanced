@@ -9,6 +9,7 @@
         <span v-if="a.message" class="soft"> · {{ a.message }}</span>
       </span>
       <span v-if="a.waiting" class="caps">+{{ a.waiting }} more</span>
+      <button v-for="[id, label] in a.actions" :key="id" type="button" class="btn small" @click="act(id)">{{ label }}</button>
       <button v-if="a.state !== 'working'" type="button" class="close" aria-label="Dismiss" title="Dismiss" @click="dismiss">
         <svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" /></svg>
       </button>
@@ -28,6 +29,12 @@ let timer = null;
 
 async function refresh() {
   a.value = await call('activity');
+}
+
+async function act(action) {
+  const text = await call('activity_action', { id: a.value.id, action });
+  if (action === 'copy-details' && text) await navigator.clipboard.writeText(text).catch(() => {});
+  refresh();
 }
 
 async function dismiss() {
@@ -61,6 +68,7 @@ onBeforeUnmount(() => {
 .failed .mark { background: var(--bad); }
 .text { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .text b { font-weight: 600; }
+.btn.small { height: 30px; padding: 0 12px; font-size: 13.5px; }
 .close { width: 28px; height: 28px; border-radius: 4px; display: grid; place-items: center; color: var(--soft); }
 .close:hover { background: var(--control-hover); color: var(--fg); }
 .close svg { width: 10px; height: 10px; stroke-width: 1.4; }

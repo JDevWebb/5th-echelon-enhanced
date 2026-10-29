@@ -50,9 +50,11 @@
 // What the player answers once before the game starts (the egui launcher's diagnostics.rs and
 // new_options.rs, with their wording from the shared library): whether the game may send its
 // diagnostics, then the new game options. Not closed by a click beside it: the game waits.
-import { onMounted, ref } from 'vue';
+import { onMounted, ref, watch } from 'vue';
 import { call } from '../lib/tauri.js';
 
+// The guided setup asks about the options in a step of its own (`withOptions` off meanwhile).
+const props = defineProps({ withOptions: { type: Boolean, default: true } });
 const emit = defineEmits(['answered']);
 
 const diagnostics = ref(null);
@@ -65,8 +67,8 @@ const example = ref(null);
 async function refresh() {
   const q = await call('questions');
   diagnostics.value = q.diagnostics;
-  options.value = q.options;
-  choices.value = q.options.map((o) => o.on);
+  options.value = props.withOptions ? q.options : [];
+  choices.value = options.value.map((o) => o.on);
   intro.value = q.options_intro;
   later.value = q.options_later;
 }
@@ -90,6 +92,7 @@ async function saveOptions() {
 
 defineExpose({ refresh });
 onMounted(refresh);
+watch(() => props.withOptions, refresh);
 </script>
 
 <style scoped>

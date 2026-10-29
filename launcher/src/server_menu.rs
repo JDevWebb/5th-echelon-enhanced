@@ -20,6 +20,9 @@ pub struct Row {
     /// The network's name for it, without the words every server's name starts with
     /// ("Oceania" for "5th Echelon Community Oceania").
     pub name: String,
+    /// Its whole name with where it is ("5th Echelon Community EU (Falkenstein, Germany)"), as
+    /// the guided setup lists it.
+    pub title: String,
     pub ping: Option<u32>,
     pub players: u32,
     /// What's being played there ("SvM Classic 6/8 · 3 in lobbies"), shown on hover; empty
@@ -28,6 +31,8 @@ pub struct Row {
     /// The player is on it.
     pub current: bool,
     pub best: bool,
+    /// Only friends of friends can join its players' games.
+    pub friends_only: bool,
     /// Its maintenance, when a window shows ("Maintenance 8 pm", "Back 9 pm").
     pub maintenance: Option<String>,
 }
@@ -57,11 +62,13 @@ pub fn rows(servers: &[(Listing, Option<u32>)], current: &str, now: i64, clock: 
                 host: s.host.clone(),
                 place: if s.region.is_empty() { s.name.clone() } else { s.region.clone() },
                 name: names[i].clone(),
+                title: if s.region.is_empty() { s.name.clone() } else { format!("{} ({})", s.name, s.region) },
                 ping: *ping,
                 players: s.players_online,
                 playing: s.playing.as_ref().map(server_api::playing::Playing::summary).unwrap_or_default(),
                 current: s.host.eq_ignore_ascii_case(current.trim()),
                 best: best == Some(i),
+                friends_only: s.friends_mode == "mutual",
                 maintenance: crate::maintenance::tag(s, *ping, now, clock),
             }
         })

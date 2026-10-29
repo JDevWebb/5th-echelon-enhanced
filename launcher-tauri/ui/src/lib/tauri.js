@@ -7,6 +7,7 @@ const sample = {
   info: {
     product: '5th Echelon Enhanced', release: '0.4.8-dev', game_dir: 'C:\\Games\\Splinter Cell Blacklist\\src\\SYSTEM',
     server: 'eu1.scbl.jdevwebb.net', account: 'Kiwi', community: true, play_mode: 'play', managed: false, running: false,
+    connecting: false, max_name: 24,
   },
   questions: {
     diagnostics: {
@@ -24,7 +25,23 @@ const sample = {
   },
   diagnostics_example: ['[12:01:04] WARN net: join timed out after 20 s', '[12:01:05] INFO lobby: back to the menu'],
   activity: null,
+  find_games: ['C:\\Games\\Splinter Cell Blacklist\\src\\SYSTEM'],
+  servers: {
+    network: 'https://scbl.jdevwebb.net',
+    note: null,
+    rows: [
+      { host: 'eu1.scbl.jdevwebb.net', place: 'Falkenstein, Germany', name: 'EU', title: '5th Echelon Community EU (Falkenstein, Germany)', ping: 38, players: 24, playing: 'SvM Classic 6/8 · 3 in lobbies', current: false, best: true, friends_only: false, maintenance: null },
+      { host: 'na1.scbl.jdevwebb.net', place: 'Beauharnois, Canada', name: 'North America', title: '5th Echelon Community North America (Beauharnois, Canada)', ping: 112, players: 9, playing: '', current: false, best: false, friends_only: true, maintenance: null },
+      { host: 'oceania.scbl.jdevwebb.net', place: 'Sydney, Australia', name: 'Oceania', title: '5th Echelon Community Oceania (Sydney, Australia)', ping: 290, players: 4, playing: '', current: false, best: false, friends_only: true, maintenance: null },
+    ],
+  },
+  find_on_network: [],
 };
+// The preview starts as a first run (?first): no server yet.
+if (location.search.includes('first')) {
+  sample.info.server = null;
+  sample.info.account = null;
+}
 // What the browser preview's commands do to its made-up state.
 const preview = {
   play: () => {
@@ -36,6 +53,23 @@ const preview = {
   answer_options: () => { sample.questions.options = []; },
   set_play_mode: ({ mode }) => { sample.info.play_mode = mode; },
   dismiss: () => { sample.activity = null; },
+  choose_game: () => true,
+  pick_game_folder: () => false,
+  activity_action: () => null,
+  connect: ({ server, newName }) => {
+    sample.info.connecting = true;
+    setTimeout(() => {
+      sample.info.connecting = false;
+      if (newName) {
+        sample.info.server = server;
+        sample.info.account = newName;
+        previewEmit('setup', { kind: 'ready', server });
+      } else {
+        previewEmit('setup', { kind: 'needs-name', server, suggested: 'Kiwi', taken: false });
+      }
+    }, 900);
+    return true;
+  },
 };
 
 /** Calls a Rust command (`name`, with `args`): its answer. */
@@ -45,10 +79,16 @@ export async function call(name, args = {}) {
   return structuredClone(sample[name]);
 }
 
+const previewListeners = {};
+function previewEmit(event, payload) {
+  for (const h of previewListeners[event] ?? []) h({ payload });
+}
+
 /** Calls `handler` on each `event` from the Rust side; answers how to stop. */
 export async function listen(event, handler) {
   if (tauri) return tauri.event.listen(event, handler);
-  return () => {};
+  (previewListeners[event] ??= []).push(handler);
+  return () => (previewListeners[event] = previewListeners[event].filter((h) => h !== handler));
 }
 
 /** The window's own buttons. */

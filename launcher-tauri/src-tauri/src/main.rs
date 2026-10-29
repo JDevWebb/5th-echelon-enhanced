@@ -6,6 +6,7 @@ mod commands;
 fn main() {
     launcher::logging::init();
     tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
         .manage(commands::Launcher::new())
         .invoke_handler(tauri::generate_handler![
             commands::info,
@@ -17,6 +18,13 @@ fn main() {
             commands::answer_options,
             commands::activity,
             commands::dismiss,
+            commands::activity_action,
+            commands::find_games,
+            commands::choose_game,
+            commands::pick_game_folder,
+            commands::servers,
+            commands::find_on_network,
+            commands::connect,
         ])
         .run(tauri::generate_context!())
         .expect("the launcher's window");

@@ -299,7 +299,7 @@ impl Prefs {
         }
     }
 
-    pub(crate) fn remember(dir: &Path) {
+    pub fn remember(dir: &Path) {
         let mut prefs = Self::load();
         prefs.game_dir = Some(dir.to_path_buf());
         prefs.save();

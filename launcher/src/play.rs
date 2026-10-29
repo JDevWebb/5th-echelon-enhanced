@@ -19,7 +19,6 @@ use crate::app::Game;
 use crate::app::Notices;
 use crate::app::View;
 use crate::connect::place;
-use crate::connect::place;
 use crate::flow;
 use crate::flow::Support;
 use crate::server_menu::ping_text;
@@ -664,13 +663,7 @@ fn poll_lookups(play: &mut Play, notices: &mut Notices) {
 }
 
 fn find_on_network(play: &mut Play, ctx: &egui::Context) {
-    play.looking.start(ctx, || {
-        let adapters = setup::net::adapters();
-        let refs: Vec<(&str, IpAddr)> = adapters.iter().map(|(n, ip)| (n.as_str(), *ip)).collect();
-        crate::services::rt()
-            .block_on(crate::network::try_locate_server(None, &refs))
-            .map_err(|_| "No server answered on this network.".to_string())
-    });
+    play.looking.start(ctx, crate::connect::find_on_network);
 }
 
 fn ping_again(play: &mut Play, ctx: &egui::Context, url: String) {

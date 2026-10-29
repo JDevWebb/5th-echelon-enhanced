@@ -6,24 +6,26 @@
       <div class="column">
         <main class="screen">
           <Transition name="view" mode="out-in">
-            <Play v-if="screen === 'play'" key="play" :info="info" @go="go" @played="played" />
+            <Setup v-if="screen === 'play' && setupShown" key="setup" :info="info" :fresh="fresh" @changed="refresh" @cancel="editing = false" @finished="finishSetup" />
+          <Play v-else-if="screen === 'play'" key="play" :info="info" @go="go" @played="played" @change-server="editing = true" />
             <Placeholder v-else :key="screen" v-bind="PLACEHOLDERS[screen]" />
           </Transition>
         </main>
         <ActivityBar ref="bar" />
       </div>
     </div>
-    <Questions ref="questions" />
+    <Questions ref="questions" :with-options="!(setupShown && fresh)" />
   </div>
 </template>
 
 <script setup>
 // The launcher's window: its own title bar, the side menu, and the screen chosen, crossing over
 // as it changes. The screens not moved over from the egui launcher yet say so (step 2).
-import { onBeforeUnmount, onMounted, reactive, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import TitleBar from './components/TitleBar.vue';
 import Rail from './components/Rail.vue';
 import Play from './views/Play.vue';
+import Setup from './views/Setup.vue';
 import Placeholder from './views/Placeholder.vue';
 import ActivityBar from './components/ActivityBar.vue';
 import Questions from './components/Questions.vue';
@@ -39,6 +41,22 @@ const PLACEHOLDERS = {
 
 const info = reactive({ product: '5th Echelon Enhanced', release: '', game_dir: null, server: null, account: null, community: true, play_mode: 'play', managed: false, running: false });
 const screen = ref('play');
+// The guided setup: until there's a game and a server (or while changing server), and on a
+// first setup until its game options are chosen. Never where another tool manages the game.
+const editing = ref(false);
+const fresh = ref(false);
+const loaded = ref(false);
+const setupShown = computed(() => loaded.value && !info.managed && (!info.game_dir || !info.server || editing.value || fresh.value));
+watch(
+  () => loaded.value && !info.managed && (!info.game_dir || !info.server),
+  (first) => first && (fresh.value = true),
+);
+
+function finishSetup() {
+  editing.value = false;
+  fresh.value = false;
+  refresh();
+}
 const maximised = ref(false);
 
 const bar = ref(null);
@@ -51,6 +69,7 @@ function go(id) {
 
 async function refresh() {
   Object.assign(info, await call('info'));
+  loaded.value = true;
 }
 
 /** After Play: what it said is in the activity bar; a question it waits on comes up. */

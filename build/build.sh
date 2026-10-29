@@ -110,6 +110,8 @@ case "${1:-test}" in
     # The Tauri launcher (launcher-tauri, 0.4.8) for Windows and for Linux x86_64 -> dist: its
     # page (launcher-tauri/ui) built first, then embedded. Linux links against the WebKitGTK in
     # fes-tauri, as tauri-trial does.
+    # It carries the client DLL, as the egui launcher does.
+    [ -f dist/uplay_r1_loader.dll ] || { echo "build.sh windows first (the launcher carries its DLL)"; exit 1; }
     docker build -q -t fes-tauri:local -f build/Dockerfile.tauri build >/dev/null
     run -v fes-npm-cache:/root/.npm "$IMAGE" sh -c '
       set -e
@@ -122,13 +124,13 @@ case "${1:-test}" in
         cargo fetch -q
         mkdir -p /tmp/sodium
         cp "$(ls -d /usr/local/cargo/registry/src/*/libsodium-sys-0.2.7 | head -1)/msvc/x64/Release/v142/libsodium.lib" /tmp/sodium/sodium.lib
-        SODIUM_LIB_DIR=/tmp/sodium cargo xwin build --release --target x86_64-pc-windows-msvc
+        SODIUM_LIB_DIR=/tmp/sodium HOOKS_DLL=/src/dist/uplay_r1_loader.dll cargo xwin build --release --features embed-dll --target x86_64-pc-windows-msvc
         cp /target/launcher-tauri/x86_64-pc-windows-msvc/release/launcher-tauri.exe /src/dist/'
     sysroot="-C link-arg=-L/sysroot/usr/lib/x86_64-linux-gnu -C link-arg=-L/sysroot/lib/x86_64-linux-gnu"
     sysroot="$sysroot -C link-arg=-Wl,-rpath-link=/sysroot/usr/lib/x86_64-linux-gnu -C link-arg=-Wl,-rpath-link=/sysroot/lib/x86_64-linux-gnu"
     run -e CARGO_TARGET_DIR=/target/launcher-tauri -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="$sysroot" \
       -w /src/launcher-tauri/src-tauri fes-tauri:local \
-      sh -c 'cargo build --release --target x86_64-unknown-linux-gnu && cp /target/launcher-tauri/x86_64-unknown-linux-gnu/release/launcher-tauri /src/dist/launcher-tauri-linux-x86_64'
+      sh -c 'HOOKS_DLL=/src/dist/uplay_r1_loader.dll cargo build --release --features embed-dll --target x86_64-unknown-linux-gnu && cp /target/launcher-tauri/x86_64-unknown-linux-gnu/release/launcher-tauri /src/dist/launcher-tauri-linux-x86_64'
     ;;
   tauri-trial)
     # The Tauri trial (trials/tauri-play) for Windows and for Linux x86_64 (the Steam Deck) ->

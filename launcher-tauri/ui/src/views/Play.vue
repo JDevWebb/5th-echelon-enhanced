@@ -15,7 +15,7 @@
         <h1 class="reveal" style="--d: 80ms">Splinter Cell<br /><span>Blacklist</span></h1>
         <p class="tag reveal" style="--d: 180ms">Co-op and Spies vs Mercs on community servers. No VPN, no port forwarding.</p>
         <div class="launch reveal" style="--d: 260ms">
-          <button class="server" type="button" @click="$emit('go', 'servers')">
+          <button class="server" type="button" title="Change server" @click="$emit('change-server')">
             <span><span class="caps">Server</span><b>{{ info.server || 'None chosen' }}</b></span>
             <svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" /></svg>
           </button>
@@ -104,7 +104,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
 import { call, inTauri } from '../lib/tauri.js';
 
 const props = defineProps({ info: { type: Object, required: true } });
-const emit = defineEmits(['go', 'played']);
+const emit = defineEmits(['go', 'played', 'change-server']);
 
 // What the Play button starts (the shared library's PlayMode).
 const MODES = ['play', 'svm', 'coop'];

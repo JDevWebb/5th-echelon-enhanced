@@ -85,6 +85,15 @@ pub fn ready(asked: &Asked, server: &str, via_network: bool, directory: Option<&
     }
 }
 
+/// Looks for a server on this PC's networks: the ones that answered.
+pub fn find_on_network() -> Result<Vec<std::net::IpAddr>, String> {
+    let adapters = setup::net::adapters();
+    let refs: Vec<(&str, std::net::IpAddr)> = adapters.iter().map(|(n, ip)| (n.as_str(), *ip)).collect();
+    crate::services::rt()
+        .block_on(crate::network::try_locate_server(None, &refs))
+        .map_err(|_| "No server answered on this network.".to_string())
+}
+
 /// Where a server is: its region ("Sydney, Australia"), else its name.
 pub fn place(s: &setup::directory::Listing) -> String {
     if s.region.is_empty() {
