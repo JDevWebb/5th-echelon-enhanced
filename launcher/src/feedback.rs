@@ -8,6 +8,7 @@ use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
+#[cfg(feature = "gui")]
 use eframe::egui;
 use setup::config::Config;
 use setup::config::Profile;
@@ -15,13 +16,14 @@ use setup::feedback::Attachment;
 use setup::feedback::GameExit;
 
 use crate::activity::Action;
-use crate::app::Notices;
-use crate::app::Prefs;
+use crate::activity::Activities as Notices;
+use crate::prefs::Prefs;
 use crate::task::Slot;
+#[cfg(feature = "gui")]
 use crate::theme;
 
 /// The problems a player can tick: what the server takes, and how they read.
-const PROBLEMS: [(&str, &str); 7] = [
+pub const PROBLEMS: [(&str, &str); 7] = [
     ("join", "Couldn't join a match or a friend"),
     ("lag", "Lag, or things out of sync"),
     ("connection", "Lost the connection"),
@@ -32,7 +34,7 @@ const PROBLEMS: [(&str, &str); 7] = [
 ];
 
 /// What made the launcher ask, as one line for the player.
-fn why(triggers: &[&'static str]) -> &'static str {
+pub fn why(triggers: &[&'static str]) -> &'static str {
     match triggers.first().copied() {
         Some("panic" | "exit_code") => "The game seems to have crashed.",
         Some("froze") => "The game seems to have frozen.",
@@ -47,7 +49,7 @@ fn why(triggers: &[&'static str]) -> &'static str {
 }
 
 /// The problems to tick at first, from what went wrong.
-fn ticked(triggers: &[&'static str]) -> BTreeSet<&'static str> {
+pub fn ticked(triggers: &[&'static str]) -> BTreeSet<&'static str> {
     triggers
         .iter()
         .filter_map(|t| match *t {
@@ -63,21 +65,21 @@ fn ticked(triggers: &[&'static str]) -> BTreeSet<&'static str> {
 /// An open "How did that go?".
 #[derive(Clone)]
 pub struct Ask {
-    triggers: Vec<&'static str>,
+    pub triggers: Vec<&'static str>,
     /// Whose game data differs, after a join refused as a different version, when the
     /// server could tell.
-    mismatch: Option<String>,
-    profile: Profile,
-    files: Vec<Attachment>,
+    pub mismatch: Option<String>,
+    pub profile: Profile,
+    pub files: Vec<Attachment>,
     /// 👍 or 👎, if picked.
-    good: Option<bool>,
-    problems: BTreeSet<&'static str>,
-    comment: String,
-    attach: bool,
+    pub good: Option<bool>,
+    pub problems: BTreeSet<&'static str>,
+    pub comment: String,
+    pub attach: bool,
     /// The file shown in the preview.
-    viewing: Option<usize>,
+    pub viewing: Option<usize>,
     /// How the game ended, sent as the report's `exit_code` (and in its checklist.txt).
-    exit: GameExit,
+    pub exit: GameExit,
 }
 
 #[derive(Default)]
@@ -113,17 +115,17 @@ pub struct Feedback {
 /// The game's log, sent by itself when the game closes while beta features are on (the player
 /// was told so where they turned them on: Settings › Beta features). Filed with the logs the
 /// server asks for, not as a report of the player's: no rating, no comment.
-struct BetaLog {
-    server: String,
-    username: String,
-    password: String,
-    shown: String,
-    report: server_api::misc::ReportRequest,
+pub struct BetaLog {
+    pub server: String,
+    pub username: String,
+    pub password: String,
+    pub shown: String,
+    pub report: server_api::misc::ReportRequest,
 }
 
 /// The beta log of the game in `game_dir` that just closed, if there's one to send: beta features
 /// on, an account here, and not a run of a few seconds (see [`check`]).
-fn beta_log(game_dir: &std::path::Path, exit: GameExit, checks: &str) -> Result<Option<BetaLog>, String> {
+pub fn beta_log(game_dir: &std::path::Path, exit: GameExit, checks: &str) -> Result<Option<BetaLog>, String> {
     let on = Config::load(game_dir).hook_config.beta.on();
     if on.is_empty() {
         return Ok(None);
@@ -207,7 +209,7 @@ fn recent_session(started: i64, ended: i64, now: i64) -> bool {
     started > 0 && now - ended.max(started) < RECENT_SESSION_SECS
 }
 
-fn check(game_dir: PathBuf, exit: GameExit, checks: String, manual: bool) -> Result<Option<Ask>, String> {
+pub fn check(game_dir: PathBuf, exit: GameExit, checks: String, manual: bool) -> Result<Option<Ask>, String> {
     let profile = current_profile(&game_dir).ok_or("Connect to a server first.")?;
     let exit = if manual && setup::game::game_running() { GameExit::Running } else { exit };
     let log = std::fs::read(game_dir.join("bl-tracing.log"))
@@ -304,7 +306,7 @@ fn check(game_dir: PathBuf, exit: GameExit, checks: String, manual: bool) -> Res
 }
 
 /// The server's name for the bar: its name in the directory, else its address.
-fn server_shown(profile: &Profile) -> String {
+pub fn server_shown(profile: &Profile) -> String {
     if profile.name.is_empty() || profile.name == profile.server {
         profile.server.clone()
     } else {
@@ -313,7 +315,7 @@ fn server_shown(profile: &Profile) -> String {
 }
 
 /// Sends the player's answer to their server, reporting the bytes sent.
-fn send(ask: &Ask, activity: &crate::activity::Handle) -> Result<String, String> {
+pub fn send(ask: &Ask, activity: &crate::activity::Handle) -> Result<String, String> {
     let password = ask
         .profile
         .user
@@ -323,7 +325,7 @@ fn send(ask: &Ask, activity: &crate::activity::Handle) -> Result<String, String>
 }
 
 /// The report `ask` makes.
-fn report_of(ask: &Ask) -> server_api::misc::ReportRequest {
+pub fn report_of(ask: &Ask) -> server_api::misc::ReportRequest {
     let client = [
         ("launcher".to_string(), env!("FE_RELEASE").to_string()),
         ("os".to_string(), std::env::consts::OS.to_string()),
@@ -355,7 +357,7 @@ fn report_of(ask: &Ask) -> server_api::misc::ReportRequest {
 }
 
 /// Sends `report` to `server` as `username`, reporting the bytes sent.
-fn send_report_to(server: &str, username: &str, password: &str, report: server_api::misc::ReportRequest, activity: &crate::activity::Handle) -> Result<String, String> {
+pub fn send_report_to(server: &str, username: &str, password: &str, report: server_api::misc::ReportRequest, activity: &crate::activity::Handle) -> Result<String, String> {
     let total = crate::network::report_size(&report);
     activity.progress(crate::activity::Progress::Bytes { sent: 0, total });
     let progress = activity.clone();
@@ -387,7 +389,7 @@ fn send_report_to(server: &str, username: &str, password: &str, report: server_a
 /// arrived: the upload runs after **Send**, and closing the launcher before it finished
 /// dropped it without a word. The server and account it's for, never the password (the
 /// saved profile's is used).
-mod pending {
+pub mod pending {
     use std::path::PathBuf;
 
     use prost::Message as _;
@@ -480,7 +482,7 @@ mod pending {
 
 /// The player's reports, from the coordinator the launcher uses (the community network's
 /// unless they set another), signed with their identity.
-fn fetch_mine() -> Result<Vec<setup::feedback::MyReport>, String> {
+pub fn fetch_mine() -> Result<Vec<setup::feedback::MyReport>, String> {
     let identity = crate::roadmap::load_identity()?;
     let coordinator = Prefs::directory().unwrap_or_else(|| setup::directory::COMMUNITY.to_string());
     let url = setup::feedback::my_reports_url(&coordinator, &identity, identity::now());
@@ -496,6 +498,7 @@ fn fetch_mine() -> Result<Vec<setup::feedback::MyReport>, String> {
     })
 }
 
+#[cfg(feature = "gui")]
 impl Feedback {
     /// Reads the player's reports and the admins' replies (in the background).
     pub fn read_mine(&mut self, ctx: &egui::Context) {

@@ -6,14 +6,18 @@
 use std::time::Duration;
 use std::time::Instant;
 
+#[cfg(feature = "gui")]
 use eframe::egui;
+#[cfg(feature = "gui")]
 use eframe::egui::RichText;
 use setup::roadmap::Mine;
 
 use crate::activity::Action;
+use crate::activity::Activities as Notices;
+#[cfg(feature = "gui")]
 use crate::app::App;
-use crate::app::Notices;
 use crate::task::Slot;
+#[cfg(feature = "gui")]
 use crate::theme;
 
 /// Where the roadmap and suggestions live: the project's own coordinator.
@@ -25,12 +29,12 @@ const TIMEOUT: Duration = Duration::from_secs(10);
 
 /// A suggestion as sent, to send again.
 #[derive(Debug, Clone)]
-struct Draft {
-    area: String,
-    title: String,
-    text: String,
-    name: String,
-    server: Option<String>,
+pub struct Draft {
+    pub area: String,
+    pub title: String,
+    pub text: String,
+    pub name: String,
+    pub server: Option<String>,
 }
 
 #[derive(Default)]
@@ -60,7 +64,7 @@ pub struct Roadmap {
 }
 
 /// The project's server: a client that waits 10 s at most and follows no redirects.
-pub(crate) fn client() -> Result<reqwest::Client, String> {
+pub fn client() -> Result<reqwest::Client, String> {
     reqwest::Client::builder()
         .timeout(TIMEOUT)
         .redirect(reqwest::redirect::Policy::none())
@@ -87,7 +91,7 @@ pub(crate) async fn body(resp: reqwest::Response) -> Result<String, String> {
     Ok(body)
 }
 
-pub(crate) fn unreachable(e: reqwest::Error) -> String {
+pub fn unreachable(e: reqwest::Error) -> String {
     if e.is_timeout() {
         "The project's server didn't answer in time.".into()
     } else {
@@ -96,7 +100,7 @@ pub(crate) fn unreachable(e: reqwest::Error) -> String {
 }
 
 /// Reads the roadmap, and keeps it for when the server can't be reached.
-fn fetch_roadmap() -> Result<setup::roadmap::Roadmap, String> {
+pub fn fetch_roadmap() -> Result<setup::roadmap::Roadmap, String> {
     let roadmap = crate::services::rt().block_on(async {
         let resp = client()?
             .get(setup::roadmap::url(COORDINATOR))
@@ -114,7 +118,7 @@ fn fetch_roadmap() -> Result<setup::roadmap::Roadmap, String> {
 }
 
 /// The player's identity, which signs what they send.
-pub(crate) fn load_identity() -> Result<identity::Identity, String> {
+pub fn load_identity() -> Result<identity::Identity, String> {
     match setup::player_identity::load() {
         Ok(Some(identity)) => Ok(identity),
         Ok(None) => Err("Connect to a server first: your identity, which signs suggestions, is made then.".into()),
@@ -123,11 +127,11 @@ pub(crate) fn load_identity() -> Result<identity::Identity, String> {
 }
 
 /// Whether this PC has an identity yet (made when the player first connects).
-pub(crate) fn has_identity() -> bool {
+pub fn has_identity() -> bool {
     setup::player_identity::path().is_some_and(|p| p.exists())
 }
 
-fn send(draft: &Draft) -> Result<(), String> {
+pub fn send(draft: &Draft) -> Result<(), String> {
     let identity = load_identity()?;
     let sender = setup::roadmap::Sender {
         name: &draft.name,
@@ -147,7 +151,7 @@ fn send(draft: &Draft) -> Result<(), String> {
     })
 }
 
-fn fetch_mine() -> Result<Vec<Mine>, String> {
+pub fn fetch_mine() -> Result<Vec<Mine>, String> {
     let identity = load_identity()?;
     let url = setup::roadmap::mine_url(COORDINATOR, &identity, identity::now());
     crate::services::rt().block_on(async {
@@ -157,6 +161,7 @@ fn fetch_mine() -> Result<Vec<Mine>, String> {
     })
 }
 
+#[cfg(feature = "gui")]
 impl Roadmap {
     /// Every frame, on whatever screen: what came of sending a suggestion, and the activity
     /// bar's Try again.
@@ -243,6 +248,7 @@ impl Roadmap {
     }
 }
 
+#[cfg(feature = "gui")]
 /// The Roadmap screen.
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
@@ -274,6 +280,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
+#[cfg(feature = "gui")]
 /// The lanes as columns of cards (Shipping, Next, Later), and Requested below when it has
 /// anything public.
 fn lanes(page: &Roadmap, ui: &mut egui::Ui) {
@@ -338,6 +345,7 @@ fn lanes(page: &Roadmap, ui: &mut egui::Ui) {
     }
 }
 
+#[cfg(feature = "gui")]
 /// "SHIPPING  0.4.2  3": the lane's name, its release, and how many items.
 fn lane_header(ui: &mut egui::Ui, lane: &setup::roadmap::Lane) {
     ui.horizontal(|ui| {
@@ -352,6 +360,7 @@ fn lane_header(ui: &mut egui::Ui, lane: &setup::roadmap::Lane) {
     ui.add_space(4.0);
 }
 
+#[cfg(feature = "gui")]
 /// One item: its title and status, what it is, and its tags.
 fn item_card(ui: &mut egui::Ui, item: &setup::roadmap::Item, shipping: bool) {
     egui::Frame::new()
@@ -381,6 +390,7 @@ fn item_card(ui: &mut egui::Ui, item: &setup::roadmap::Item, shipping: bool) {
         });
 }
 
+#[cfg(feature = "gui")]
 /// A small outlined label.
 fn chip(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
     egui::Frame::new()
@@ -392,6 +402,7 @@ fn chip(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
         });
 }
 
+#[cfg(feature = "gui")]
 /// "Suggest a feature or improvement": what it's about, a title, the details, and Send.
 fn form(page: &mut Roadmap, profile: Option<&setup::config::Profile>, identity: bool, notices: &mut Notices, ctx: &egui::Context, ui: &mut egui::Ui) {
     theme::card().show(ui, |ui| {
@@ -459,6 +470,7 @@ fn form(page: &mut Roadmap, profile: Option<&setup::config::Profile>, identity: 
     });
 }
 
+#[cfg(feature = "gui")]
 /// Like `theme::segmented`, with buttons as wide as their words (five of them fit a row).
 fn segmented_small(ui: &mut egui::Ui, value: &mut usize, options: &[(usize, &str)]) {
     egui::Frame::new()
@@ -486,6 +498,7 @@ fn segmented_small(ui: &mut egui::Ui, value: &mut usize, options: &[(usize, &str
         });
 }
 
+#[cfg(feature = "gui")]
 /// "Your suggestions": each with its status and the admins' reply.
 fn mine(page: &mut Roadmap, identity: bool, clock: &setup::clock::Clock, ui: &mut egui::Ui) {
     ui.horizontal(|ui| {

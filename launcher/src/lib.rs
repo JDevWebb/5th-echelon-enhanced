@@ -14,8 +14,7 @@ pub mod checks;
 pub mod connect;
 pub mod diagnostics;
 pub mod dll_utils;
-#[cfg(feature = "gui")]
-mod feedback;
+pub mod feedback;
 pub mod flow;
 pub mod logging;
 pub mod maintenance;
@@ -24,8 +23,7 @@ pub mod new_options;
 #[cfg(feature = "gui")]
 mod play;
 pub mod prefs;
-#[cfg(feature = "gui")]
-mod roadmap;
+pub mod roadmap;
 #[cfg(feature = "gui")]
 mod scale;
 #[cfg(feature = "gui")]
