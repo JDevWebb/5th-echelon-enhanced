@@ -6,6 +6,18 @@
       </Transition>
       <div class="scan" aria-hidden="true"></div>
       <div class="glow" aria-hidden="true"></div>
+      <div v-if="info.name_not_allowed || (info.emulator_notice && !emulatorClosed)" class="banners">
+      <div v-if="info.name_not_allowed" class="banner bad" role="alert">
+        <span>Your name {{ info.name_not_allowed }} breaks this network's rules (no slurs or hate). Choose another to play: friends and invites carry on.</span>
+        <button type="button" class="btn small" @click="$emit('go', 'settings', 'servers')">Rename…</button>
+        <!-- Support is the community network's: elsewhere, the server's own admins. -->
+        <button v-if="info.community" type="button" class="btn small" title="Think it's a mistake? The admins check the name and can allow it" @click="askReview">Ask for a review</button>
+      </div>
+      <div v-if="info.emulator_notice && !emulatorClosed" class="banner warnbg" role="status">
+        <span>This game's Ubisoft Connect DLL has been replaced by an emulator. That's up to you and we don't mind, but it isn't a setup we support: if something doesn't work with it, we may not be able to help.</span>
+        <button type="button" class="x" aria-label="Dismiss" title="Dismiss: don't show this again" @click="closeEmulator"><svg viewBox="0 0 12 12"><path d="M2.5 2.5l7 7M9.5 2.5l-7 7" /></svg></button>
+      </div>
+      </div>
       <div class="hud">
         <span class="caps">{{ inTauri ? 'Field ops' : 'Browser preview' }}</span>
         <button class="player" type="button" title="Identity and friends" @click="$emit('go', 'settings', 'identity')">
@@ -426,6 +438,17 @@ async function switchToFriend() {
   await call('switch_to_friend', { host });
 }
 
+// The banners over the stage: a name the network refuses, and a Uplay emulator.
+const emulatorClosed = ref(false);
+async function closeEmulator() {
+  emulatorClosed.value = true;
+  await call('dismiss_emulator_notice');
+}
+async function askReview() {
+  await call('ask_name_review', { name: props.info.name_not_allowed });
+  emit('go', 'support');
+}
+
 // The game's art behind the stage, and whether the account is signed in (the presence dot).
 const art = ref(null);
 const online = computed(() => list.value?.checks.some((c) => c.id === 'account' && c.status === 'ok') ?? false);
@@ -688,6 +711,14 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 .newsline .headline { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .fade-enter-active, .fade-leave-active { transition: opacity .4s; }
 .fade-enter-from, .fade-leave-to { opacity: 0; }
+.banners { position: relative; z-index: 2; display: flex; flex-direction: column; gap: 8px; margin: -6px 0 12px; }
+.banner { display: flex; align-items: center; gap: 12px; padding: 10px 14px; border-radius: 6px; font-size: 14px; }
+.banner span { flex: 1; }
+.banner.bad { background: rgba(255, 122, 107, .12); border: 1px solid rgba(255, 122, 107, .4); }
+.banner.warnbg { background: rgba(240, 180, 76, .12); border: 1px solid rgba(240, 180, 76, .35); }
+.banner .x { width: 28px; height: 28px; border-radius: 4px; display: grid; place-items: center; color: var(--soft); flex: none; }
+.banner .x:hover { background: var(--control-hover); color: var(--fg); }
+.banner .x svg { width: 10px; height: 10px; stroke-width: 1.4; }
 @keyframes reveal { to { opacity: 1; transform: none; } }
 @keyframes drift { to { transform: translate(-6%, 4%) scale(1.08); } }
 @keyframes scan { to { background-position: 0 64px; } }

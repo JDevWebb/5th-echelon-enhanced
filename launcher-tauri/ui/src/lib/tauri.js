@@ -8,6 +8,7 @@ const sample = {
     product: '5th Echelon Enhanced', release: '0.4.8-dev', game_dir: 'C:\\Games\\Splinter Cell Blacklist\\src\\SYSTEM',
     server: 'eu1.scbl.jdevwebb.net', account: 'Kiwi', community: true, play_mode: 'play', managed: false, running: false,
     connecting: false, max_name: 24, identity: 'DNIC-JULS', beta: location.search.includes('beta') ? 1 : 0,
+    name_not_allowed: location.search.includes('banners') ? 'Kiwi' : null, emulator_notice: location.search.includes('banners'),
   },
   questions: {
     diagnostics: {
@@ -141,6 +142,8 @@ const preview = {
   whats_new_seen: () => null,
   open_url: () => null,
   key_art: () => null,
+  dismiss_emulator_notice: () => null,
+  ask_name_review: () => null,
   account_server: ({ server, own }) => (own
     ? { place: server, kind: 'A server of your own', ping: null, own: true, current: 'Falkenstein, Germany', leaving: 'the community network' }
     : { place: 'Sydney, Australia', kind: '5th Echelon Community Oceania · community server', ping: 290, own: false, current: 'Falkenstein, Germany', leaving: 'the community network' }),

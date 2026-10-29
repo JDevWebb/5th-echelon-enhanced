@@ -135,6 +135,10 @@ pub struct Info {
     identity: Option<String>,
     /// How many beta features are on (Settings › Game).
     beta: usize,
+    /// The player's name breaks the network's rules (the server said): the banner on Play.
+    name_not_allowed: Option<String>,
+    /// The game's Uplay DLL is an emulator, and the player hasn't closed the notice.
+    emulator_notice: bool,
 }
 
 #[tauri::command(async)]
@@ -160,6 +164,8 @@ pub fn info(state: tauri::State<Launcher>) -> Info {
         max_name: setup::account::MAX_NAME,
         identity: identity_short(),
         beta: game.map_or(0, |g| g.cfg.hook_config.beta.on().len()),
+        name_not_allowed: game.filter(|g| inner_name_not_allowed(&inner.friends, g)).and_then(|_| inner.friends.name_not_allowed.clone()),
+        emulator_notice: game.is_some_and(|g| g.uplay_emulator && !g.uplay_emulator_told),
     }
 }
 
@@ -1404,4 +1410,22 @@ pub fn use_network(app: tauri::AppHandle, state: tauri::State<Launcher>, typed: 
     drop(inner);
     changed(&app);
     Ok(())
+}
+
+/// Closes the notice that a Uplay emulator isn't a supported setup, for good.
+#[tauri::command(async)]
+pub fn dismiss_emulator_notice(state: tauri::State<Launcher>) {
+    if let Some(game) = state.lock().game.as_mut() {
+        game.uplay_emulator_told = true;
+    }
+    Prefs::set_uplay_emulator_told();
+}
+
+/// Starts a message in Support asking the admins to review the player's name.
+#[tauri::command(async)]
+pub fn ask_name_review(app: tauri::AppHandle, name: String) {
+    crate::support::draft(
+        &app,
+        format!("Please review my name {name}: I was asked to choose another, and I think that's a mistake. What it means: "),
+    );
 }

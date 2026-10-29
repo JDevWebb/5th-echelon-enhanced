@@ -61,6 +61,8 @@ fn main() {
             feedback::ask_feedback,
             commands::open_url,
             commands::key_art,
+            commands::dismiss_emulator_notice,
+            commands::ask_name_review,
             commands::account_server,
             commands::account_probe,
             commands::check_name,
