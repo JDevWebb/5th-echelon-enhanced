@@ -11,18 +11,24 @@ use std::process::Command;
 use std::process::Stdio;
 
 use dedicated_server_config::Config as ServerConfig;
+#[cfg(feature = "gui")]
 use eframe::egui;
+#[cfg(feature = "gui")]
 use eframe::egui::RichText;
 use serde::Deserialize;
 
+use crate::activity::Activities as Notices;
+#[cfg(feature = "gui")]
 use crate::app::App;
-use crate::app::Notices;
 use crate::services::Admin;
+#[cfg(feature = "gui")]
 use crate::task::Slot;
+#[cfg(feature = "gui")]
 use crate::theme;
 
-const SERVER_EXE: &str = crate::updater::SERVER_FILE;
+pub const SERVER_EXE: &str = crate::updater::SERVER_FILE;
 
+#[cfg(feature = "gui")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 enum Tab {
     #[default]
@@ -31,6 +37,7 @@ enum Tab {
     Logs,
 }
 
+#[cfg(feature = "gui")]
 #[derive(Default)]
 pub struct Server {
     loaded: bool,
@@ -63,6 +70,7 @@ pub struct Server {
     min_level: LogLevel,
 }
 
+#[cfg(feature = "gui")]
 impl Drop for Server {
     /// A server started here stops with the launcher.
     fn drop(&mut self) {
@@ -73,26 +81,21 @@ impl Drop for Server {
     }
 }
 
+#[cfg(feature = "gui")]
 impl Server {
     /// Finds `dedicated_server.exe` next to the launcher and reads its
     /// `service.toml` (the defaults when there's none yet).
     fn load(&mut self) {
         self.loaded = true;
-        self.exe = std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(SERVER_EXE))).filter(|p| p.is_file());
+        self.exe = server_exe();
         let Some(exe) = &self.exe else { return };
-        let path = exe.with_file_name("service.toml");
-        let cfg = if path.exists() {
-            ServerConfig::load_from_file(&path)
-        } else {
-            Ok(ServerConfig::default())
-        };
-        match cfg {
+        match load_config(exe) {
             Ok(cfg) => {
                 self.listen = Some(cfg.api_server.ip()).filter(|ip| !ip.is_unspecified());
-                self.trusted_subnet = secure_settings(&cfg).and_then(|s| s.get("trusted_subnet").cloned()).unwrap_or_default();
+                self.trusted_subnet = trusted_subnet(&cfg);
                 self.cfg = Some(cfg);
             }
-            Err(e) => self.cfg_error = Some(format!("{}: {e}", path.display())),
+            Err(e) => self.cfg_error = Some(e),
         }
     }
 
@@ -110,63 +113,15 @@ impl Server {
     /// Writes the addresses and switches into `service.toml` and starts the
     /// server. It prints its admin key on start (`--launcher`).
     fn start(&mut self, ctx: &egui::Context, notices: &mut Notices) {
-        // Read again first: changes made by hand while the launcher was open stay.
-        if let Some(path) = self.exe.as_ref().map(|e| e.with_file_name("service.toml")).filter(|p| p.exists()) {
-            match ServerConfig::load_from_file(&path) {
-                Ok(fresh) => self.cfg = Some(fresh),
-                Err(e) => return notices.error(format!("{}: {e}", path.display())),
-            }
-        }
         let (Some(exe), Some(cfg)) = (self.exe.clone(), self.cfg.as_mut()) else { return };
-        let ip = self.listen.unwrap_or(IpAddr::from([0, 0, 0, 0]));
-        let public = match self.public_ip.trim() {
-            "" => self.listen.unwrap_or(ip),
-            s => match s.parse() {
-                Ok(p) => p,
-                Err(_) => return notices.error(format!("\"{s}\" isn't an IP address.")),
-            },
-        };
-        set_ips(cfg, ip, public);
-        if let Some(settings) = secure_settings_mut(cfg) {
-            match self.trusted_subnet.trim() {
-                "" => {
-                    settings.remove("trusted_subnet");
-                }
-                s => {
-                    settings.insert("trusted_subnet".into(), s.to_string());
-                }
-            }
+        if let Err(e) = prepare(&exe, cfg, self.listen, &self.public_ip, &self.trusted_subnet) {
+            return notices.error(e);
         }
-        if let Err(e) = cfg.save_to_file(exe.with_file_name("service.toml")) {
-            return notices.error(format!("Couldn't save service.toml: {e}"));
-        }
-        self.starting.start(ctx, move || {
-            let mut child = Command::new(&exe)
-                .arg("--launcher")
-                .current_dir(exe.parent().unwrap_or(std::path::Path::new(".")))
-                .stdout(Stdio::piped())
-                .spawn()
-                .map_err(|e| format!("Couldn't start the server: {e}"))?;
-            let mut lines = BufReader::new(child.stdout.take().expect("piped")).lines();
-            let key = lines.by_ref().map_while(Result::ok).find_map(|l| l.strip_prefix("Admin Key: ").map(str::to_string));
-            // Keep reading, so a full pipe never blocks the server.
-            std::thread::spawn(move || lines.for_each(drop));
-            match key {
-                Some(key) => Ok((child, key)),
-                None => {
-                    let _ = child.kill();
-                    Err("The server stopped while starting. See its log below.".into())
-                }
-            }
-        });
+        self.starting.start(ctx, move || spawn(&exe));
     }
 
     fn local_api(&self) -> Option<String> {
-        let mut addr: SocketAddr = self.cfg.as_ref()?.api_server;
-        if addr.ip().is_unspecified() {
-            addr.set_ip(IpAddr::from([127, 0, 0, 1]));
-        }
-        Some(format!("http://{addr}"))
+        self.cfg.as_ref().map(local_api)
     }
 
     fn reload_lists(&mut self, ctx: &egui::Context) {
@@ -175,6 +130,105 @@ impl Server {
         self.players.start(ctx, move || a.users());
         self.games.start(ctx, move || admin.games());
     }
+}
+
+/// The server next to the launcher (`dedicated_server.exe`), if it's there.
+pub fn server_exe() -> Option<PathBuf> {
+    std::env::current_exe().ok().and_then(|e| e.parent().map(|d| d.join(SERVER_EXE))).filter(|p| p.is_file())
+}
+
+/// The server's `service.toml` (the defaults when there's none yet).
+pub fn load_config(exe: &std::path::Path) -> Result<ServerConfig, String> {
+    let path = exe.with_file_name("service.toml");
+    let cfg = if path.exists() {
+        ServerConfig::load_from_file(&path)
+    } else {
+        Ok(ServerConfig::default())
+    };
+    cfg.map_err(|e| format!("{}: {e}", path.display()))
+}
+
+/// The subnet whose players always advertise the address the server sees.
+pub fn trusted_subnet(cfg: &ServerConfig) -> String {
+    secure_settings(cfg).and_then(|s| s.get("trusted_subnet").cloned()).unwrap_or_default()
+}
+
+/// Writes the addresses and the trusted subnet into `service.toml`, and `cfg` with them. It's
+/// read again first, so changes made by hand while the launcher was open stay, with `cfg`'s
+/// community API switches on top. `listen`: None for every address; `public_ip`: what players
+/// connect to, behind NAT.
+pub fn prepare(exe: &std::path::Path, cfg: &mut ServerConfig, listen: Option<IpAddr>, public_ip: &str, trusted: &str) -> Result<(), String> {
+    let path = exe.with_file_name("service.toml");
+    if path.exists() {
+        let mut fresh = ServerConfig::load_from_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        std::mem::swap(&mut fresh.community_api, &mut cfg.community_api);
+        *cfg = fresh;
+    }
+    let ip = listen.unwrap_or(IpAddr::from([0, 0, 0, 0]));
+    let public = match public_ip.trim() {
+        "" => listen.unwrap_or(ip),
+        s => s.parse().map_err(|_| format!("\"{s}\" isn't an IP address."))?,
+    };
+    set_ips(cfg, ip, public);
+    if let Some(settings) = secure_settings_mut(cfg) {
+        match trusted.trim() {
+            "" => {
+                settings.remove("trusted_subnet");
+            }
+            s => {
+                settings.insert("trusted_subnet".into(), s.to_string());
+            }
+        }
+    }
+    cfg.save_to_file(&path).map_err(|e| format!("Couldn't save service.toml: {e}"))
+}
+
+/// Starts the server, which prints its admin key on start (`--launcher`): it, and the key.
+pub fn spawn(exe: &std::path::Path) -> Result<(Child, String), String> {
+    let mut child = Command::new(exe)
+        .arg("--launcher")
+        .current_dir(exe.parent().unwrap_or(std::path::Path::new(".")))
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Couldn't start the server: {e}"))?;
+    let mut lines = BufReader::new(child.stdout.take().expect("piped")).lines();
+    let key = lines.by_ref().map_while(Result::ok).find_map(|l| l.strip_prefix("Admin Key: ").map(str::to_string));
+    // Keep reading, so a full pipe never blocks the server.
+    std::thread::spawn(move || lines.for_each(drop));
+    match key {
+        Some(key) => Ok((child, key)),
+        None => {
+            let _ = child.kill();
+            Err("The server stopped while starting. See its log below.".into())
+        }
+    }
+}
+
+/// The server's admin API on this PC.
+pub fn local_api(cfg: &ServerConfig) -> String {
+    let mut addr: SocketAddr = cfg.api_server;
+    if addr.ip().is_unspecified() {
+        addr.set_ip(IpAddr::from([127, 0, 0, 1]));
+    }
+    format!("http://{addr}")
+}
+
+/// Downloads the server from the latest release, next to the launcher.
+pub fn download() -> anyhow::Result<()> {
+    let latest = crate::updater::latest()?;
+    anyhow::ensure!(latest.not_older(), "the latest release ({}) is older than this launcher", latest.version);
+    let to = std::env::current_exe()?.with_file_name(SERVER_EXE);
+    crate::updater::download(&latest, crate::updater::SERVER_ASSET, &to)
+}
+
+/// The last lines (at most `max`) of this PC's server log (`server.log.json`), from `min` up.
+pub fn read_logs(exe: &std::path::Path, min: LogLevel, max: usize) -> Vec<LogItem> {
+    let Ok(text) = std::fs::read_to_string(exe.with_file_name("server.log.json")) else {
+        return Vec::new();
+    };
+    let items: Vec<LogItem> = text.lines().filter_map(|l| serde_json::from_str::<LogItem>(l).ok()).filter(|i| i.level >= min).collect();
+    let skip = items.len().saturating_sub(max);
+    items.into_iter().skip(skip).collect()
 }
 
 fn secure_settings(cfg: &ServerConfig) -> Option<&std::collections::HashMap<String, String>> {
@@ -197,6 +251,7 @@ fn set_ips(cfg: &mut ServerConfig, ip: IpAddr, public: IpAddr) {
     cfg.set_addresses(ip, public);
 }
 
+#[cfg(feature = "gui")]
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     let (server, notices) = app.server_mut();
@@ -245,6 +300,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     manage(server, &ctx, ui);
 }
 
+#[cfg(feature = "gui")]
 fn local_server(server: &mut Server, notices: &mut Notices, ctx: &egui::Context, ui: &mut egui::Ui) {
     theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -256,12 +312,7 @@ fn local_server(server: &mut Server, notices: &mut Notices, ctx: &egui::Context,
                     ui.spinner();
                     ui.label("Downloading…");
                 } else if ui.add(theme::primary("Download the server")).clicked() {
-                    server.downloading.start(ctx, || {
-                        let latest = crate::updater::latest()?;
-                        anyhow::ensure!(latest.not_older(), "the latest release ({}) is older than this launcher", latest.version);
-                        let to = std::env::current_exe()?.with_file_name(SERVER_EXE);
-                        crate::updater::download(&latest, crate::updater::SERVER_ASSET, &to)
-                    });
+                    server.downloading.start(ctx, download);
                 }
                 ui.hyperlink_to("Releases", crate::updater::RELEASES_PAGE);
             });
@@ -336,7 +387,7 @@ fn local_server(server: &mut Server, notices: &mut Notices, ctx: &egui::Context,
 /// The admin API's URL for what the player typed (`host`, `host:port` or a
 /// URL), and whether it's plain HTTP to another machine that isn't on a
 /// private network.
-fn admin_url(typed: &str) -> Result<(String, bool), String> {
+pub fn admin_url(typed: &str) -> Result<(String, bool), String> {
     let typed = typed.trim();
     let with_scheme = if typed.starts_with("http://") || typed.starts_with("https://") {
         typed.to_string()
@@ -356,6 +407,7 @@ fn admin_url(typed: &str) -> Result<(String, bool), String> {
     Ok((url.as_str().trim_end_matches('/').to_string(), plain))
 }
 
+#[cfg(feature = "gui")]
 fn manage(server: &mut Server, ctx: &egui::Context, ui: &mut egui::Ui) {
     theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -467,6 +519,7 @@ fn manage(server: &mut Server, ctx: &egui::Context, ui: &mut egui::Ui) {
     });
 }
 
+#[cfg(feature = "gui")]
 fn confirm_delete(server: &mut Server, ctx: &egui::Context, ui: &mut egui::Ui) {
     let Some((tab, id, name)) = server.confirm.clone() else { return };
     ui.horizontal(|ui| {
@@ -495,7 +548,7 @@ fn confirm_delete(server: &mut Server, ctx: &egui::Context, ui: &mut egui::Ui) {
 }
 
 #[derive(Debug, Deserialize, PartialEq, Eq, PartialOrd, Ord, Clone, Copy, Default)]
-enum LogLevel {
+pub enum LogLevel {
     #[serde(rename = "TRCE")]
     Trace,
     #[serde(rename = "DEBG")]
@@ -512,18 +565,21 @@ enum LogLevel {
 }
 
 #[derive(Debug, Deserialize)]
-struct LogItem {
-    msg: String,
-    level: LogLevel,
-    ts: String,
+pub struct LogItem {
+    pub msg: String,
+    pub level: LogLevel,
+    pub ts: String,
 }
 
+#[cfg(feature = "gui")]
 /// The last lines of this PC's server log (`server.log.json`).
 fn logs(server: &mut Server, ui: &mut egui::Ui) {
     let Some(path) = server.exe.as_ref().map(|e| e.with_file_name("server.log.json")) else {
         return;
     };
-    let Ok(text) = std::fs::read_to_string(&path) else { return };
+    if !path.is_file() {
+        return;
+    }
     ui.add_space(6.0);
     ui.horizontal(|ui| {
         ui.label(theme::heading("Log"));
@@ -535,13 +591,9 @@ fn logs(server: &mut Server, ui: &mut egui::Ui) {
                 }
             });
     });
-    let items: Vec<LogItem> = text
-        .lines()
-        .filter_map(|l| serde_json::from_str::<LogItem>(l).ok())
-        .filter(|i| i.level >= server.min_level)
-        .collect();
+    let items = server.exe.as_deref().map(|exe| read_logs(exe, server.min_level, 300)).unwrap_or_default();
     egui::ScrollArea::vertical().max_height(260.0).stick_to_bottom(true).show(ui, |ui| {
-        for item in items.iter().skip(items.len().saturating_sub(300)) {
+        for item in &items {
             let color = match item.level {
                 LogLevel::Warn => theme::WARN,
                 LogLevel::Error | LogLevel::Critical => theme::BAD,

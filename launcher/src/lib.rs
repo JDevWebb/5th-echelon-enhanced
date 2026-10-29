@@ -25,8 +25,7 @@ pub mod prefs;
 pub mod roadmap;
 #[cfg(feature = "gui")]
 mod scale;
-#[cfg(feature = "gui")]
-mod server;
+pub mod server;
 pub mod server_menu;
 pub mod services;
 pub mod settings;
