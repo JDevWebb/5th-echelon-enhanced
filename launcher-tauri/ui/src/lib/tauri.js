@@ -38,6 +38,20 @@ const sample = {
     ],
   },
   find_on_network: [],
+  squad: {
+    online: [
+      { id: '1', name: 'Tank', activity: 'SvM Classic · Penthouse · 3 of 4', joinable: true },
+      { id: '2', name: 'Nova', activity: null, joinable: false },
+    ],
+    elsewhere: [{ name: 'Raven', place: 'Sydney, Australia', host: 'oceania.scbl.jdevwebb.net', public: true }],
+    others: [{ id: '9', name: 'Ghost', activity: 'In the lobby', asked: false, asked_us: false }],
+    offline: 5, requests: 1, join_offered: true, overlay_key: 'F1', name_not_allowed: null, managed: false,
+    playing: ['SvM Classic · Penthouse · 3/4', 'Co-op · Dead Drop · 2/4'], playing_more: 'Also: 3 in lobbies',
+  },
+  news: [
+    { title: '0.4.7 "Clear Channel"', text: 'Chat, friends and sign-in answer straight away again on busy servers.', link: '' },
+    { title: '0.4.6 "Comms Check"', text: 'Chat is here: Global, Friends and your lobby, across the community network.', link: '' },
+  ],
   checks: {
     checks: [
       { id: 'client', status: 'ok', title: 'The 5th Echelon client is installed', detail: '', fix: null },
@@ -85,6 +99,12 @@ const preview = {
   },
   fix_everything: () => true,
   switch_server: () => null,
+  join_friend: () => null,
+  player_action: () => null,
+  switch_to_friend: ({ host }) => {
+    setTimeout(() => previewEmit('setup', { kind: 'needs-name', server: host, suggested: 'Kiwi', taken: false }), 600);
+    return true;
+  },
   identify: () => null,
   connect: ({ server, newName }) => {
     sample.info.connecting = true;

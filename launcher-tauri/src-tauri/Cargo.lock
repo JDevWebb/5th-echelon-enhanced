@@ -2357,6 +2357,8 @@ dependencies = [
 name = "launcher-tauri"
 version = "0.0.0"
 dependencies = [
+ "api",
+ "hooks-config",
  "identity",
  "launcher",
  "serde",

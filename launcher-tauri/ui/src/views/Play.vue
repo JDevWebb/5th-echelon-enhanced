@@ -162,11 +162,94 @@
             <button v-if="list.fixable" type="button" class="btn primary" @click="fixEverything">Fix everything</button>
           </div>
         </section>
-        <section v-else :key="tab" class="pane">
-          <p class="muted">{{ tab === 'squad' ? 'Friends and Global come across' : 'The news comes across' }} in the next step.</p>
+        <section v-else-if="tab === 'squad'" key="squad" class="pane squad">
+          <p v-if="!squad" class="muted working"><i class="spin"></i>Looking for your friends…</p>
+          <template v-else>
+            <p v-if="squad.managed || (!squad.online.length && !squad.elsewhere.length)" class="soft">
+              {{ squad.offline ? 'None of your friends are online right now.' : `No friends yet. Add some in the game: press ${squad.overlay_key} for the overlay.` }}
+            </p>
+            <ul>
+              <li v-for="f in squad.online" :key="f.id">
+                <span class="edge"></span>
+                <span><b>{{ f.name }}</b><small>{{ f.activity || 'Online' }}</small></span>
+                <button
+                  v-if="squad.join_offered"
+                  type="button"
+                  class="fixbtn"
+                  :disabled="!f.joinable || info.connecting"
+                  :title="f.joinable ? 'Join this friend’s game' : f.activity ? `${f.name}’s match can’t be joined now: it’s a private match (you need an invitation), or it has started` : `${f.name} isn’t in a game right now`"
+                  @click="joinFriend(f)"
+                >Join</button>
+              </li>
+              <li v-for="f in squad.elsewhere" :key="f.name + f.host">
+                <span class="edge busy"></span>
+                <span><b>{{ f.name }}</b><small>On {{ f.place }}</small></span>
+                <button type="button" class="fixbtn" :disabled="!f.public || info.running || info.connecting" :title="info.running ? 'Quit the game first' : f.host" @click="confirmSwitch = f">Join</button>
+              </li>
+            </ul>
+            <template v-if="squad.others.length && !squad.managed">
+              <p class="soft sub">Online now · {{ squad.others.length }}</p>
+              <ul>
+                <li v-for="p in squad.others.slice(0, 8)" :key="p.id" @contextmenu.prevent="blockMenu = p">
+                  <span class="edge"></span>
+                  <span><b>{{ p.name }}</b><small>{{ p.activity || 'Online' }}</small></span>
+                  <button v-if="info.running" type="button" class="fixbtn" title="To the game you're in" @click="act('invite', p)">Invite</button>
+                  <button type="button" class="fixbtn" :disabled="p.asked && !p.asked_us" @click="act('request', p)">{{ p.asked_us ? 'Accept' : p.asked ? 'Asked' : 'Add friend' }}</button>
+                </li>
+              </ul>
+              <p v-if="squad.others.length > 8" class="muted small">and {{ squad.others.length - 8 }} more: Find players in the overlay lists them all</p>
+              <div v-if="blockMenu" class="block">
+                <span>Block {{ blockMenu.name }}? They can't message you, invite you or see you online.</span>
+                <span class="row"><button type="button" class="btn small danger" @click="act('block', blockMenu); blockMenu = null">Block</button><button type="button" class="btn small" @click="blockMenu = null">Cancel</button></span>
+              </div>
+            </template>
+            <template v-if="squad.playing">
+              <p class="caps sub">Playing now</p>
+              <p v-if="!squad.playing.length && !squad.playing_more" class="muted small">Nobody's in a match or a lobby here right now.</p>
+              <p v-for="line in squad.playing" :key="line" class="line">{{ line }}</p>
+              <p v-if="squad.playing_more" class="muted small">{{ squad.playing_more }}</p>
+            </template>
+            <div class="foot">
+              <p v-if="squad.requests" class="accent small">{{ squad.requests }} friend request{{ squad.requests === 1 ? '' : 's' }} waiting</p>
+              <p class="muted small">{{ squad.offline ? `${squad.offline} offline · ` : '' }}Add and invite friends in game with {{ squad.overlay_key }}</p>
+            </div>
+          </template>
+        </section>
+        <section v-else key="intel" class="pane intel">
+          <p v-if="!news.length" class="soft">No news from this server.</p>
+          <template v-else>
+            <p class="muted small">{{ newsAt + 1 }} of {{ news.length }}</p>
+            <Transition name="view" mode="out-in">
+              <article :key="newsAt">
+                <h3>{{ news[newsAt].title }}</h3>
+                <p class="soft">{{ news[newsAt].text }}</p>
+              </article>
+            </Transition>
+            <div class="foot dots">
+              <button type="button" aria-label="Newer" @click="turn(-1)"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" /></svg></button>
+              <button v-for="(_, i) in news.slice(0, 8)" :key="i" type="button" class="dot" :class="{ on: i === newsAt }" :aria-label="`News ${i + 1}`" @click="newsAt = i; turned = Date.now()"></button>
+              <button type="button" aria-label="Older" @click="turn(1)"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" /></svg></button>
+              <span class="grow"></span>
+              <a href="#" @click.prevent="$emit('go', 'intel')">View all</a>
+            </div>
+          </template>
         </section>
       </Transition>
     </aside>
+
+    <Transition name="modal">
+      <div v-if="confirmSwitch" class="backdrop" @click.self="confirmSwitch = null">
+        <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="switch-title">
+          <p class="kicker">Join {{ confirmSwitch.name }}</p>
+          <h2 id="switch-title">Switch to {{ confirmSwitch.place }}?</h2>
+          <p class="soft">Switch to your friend's server <b class="mono">{{ confirmSwitch.host }}</b>? This signs you in there with your identity (if you have no account there, you choose a name first).</p>
+          <div class="row end">
+            <button type="button" class="btn" @click="confirmSwitch = null">Cancel</button>
+            <button type="button" class="btn primary" @click="switchToFriend">Switch to {{ confirmSwitch.host }}</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
   </div>
 </template>
 
@@ -212,12 +295,15 @@ async function choose(mode) {
   play(mode);
 }
 
+// Status first when something needs fixing, else the squad.
+const trouble = computed(() => list.value?.tone === 'fail');
 const tabs = computed(() => [
-  { id: 'status', label: 'Status' },
-  ...(props.info.community ? [{ id: 'squad', label: 'Squad' }] : []),
+  { id: 'status', label: trouble.value ? 'Status · fix' : 'Status' },
+  { id: 'squad', label: squad.value?.online.length ? `Squad · ${squad.value.online.length}` : 'Squad' },
   { id: 'intel', label: 'Intel' },
 ]);
-const tab = ref('status');
+const picked = ref(null);
+const tab = computed({ get: () => picked.value ?? (trouble.value ? 'status' : 'squad'), set: (t) => (picked.value = t) });
 const tabIndex = computed(() => Math.max(0, tabs.value.findIndex((t) => t.id === tab.value)));
 
 // The server card and menu: the network's servers, pinged on the Rust side.
@@ -276,6 +362,49 @@ function pingClass(ms) {
   return ms <= 90 ? 'good' : ms <= 180 ? '' : 'far';
 }
 
+// The Squad tab: friends (fetched on the Rust side every half minute), others online, what's
+// played on the server.
+const squad = ref(null);
+const blockMenu = ref(null);
+const confirmSwitch = ref(null);
+
+async function loadSquad(fresh) {
+  squad.value = await call('squad', { fresh });
+}
+
+async function joinFriend(f) {
+  await call('join_friend', { id: f.id, name: f.name });
+  emit('played');
+}
+
+async function act(action, p) {
+  await call('player_action', { action, id: p.id, name: p.name });
+  loadSquad(true);
+}
+
+/** A friend on another server: set up there (the setup's name step if there's no account). */
+async function switchToFriend() {
+  const host = confirmSwitch.value.host;
+  confirmSwitch.value = null;
+  await call('switch_to_friend', { host });
+}
+
+// The Intel tab: the server's news, turning every 8 seconds.
+const news = ref([]);
+const newsAt = ref(0);
+let turned = Date.now();
+
+async function loadNews() {
+  news.value = await call('news');
+  newsAt.value = 0;
+}
+
+function turn(step) {
+  if (!news.value.length) return;
+  newsAt.value = (newsAt.value + step + news.value.length) % news.value.length;
+  turned = Date.now();
+}
+
 // The checklist (the shared library's), gathered on the Rust side; again every half minute.
 const list = ref(null);
 const allChecks = ref(false);
@@ -306,17 +435,27 @@ const readyText = computed(() => {
   return list.value?.line ?? 'Checking…';
 });
 
+let squadTimer = null;
+let newsTimer = null;
 onMounted(async () => {
   loadChecks(false);
   loadServers(false);
+  loadSquad(false);
+  loadNews();
   checksTimer = setInterval(() => loadChecks(false), 30000);
+  squadTimer = setInterval(() => loadSquad(false), 15000);
+  newsTimer = setInterval(() => Date.now() - turned >= 8000 && turn(1), 1000);
   stopChecks = await listen('checks', () => {
     loadChecks(false);
     loadServers(false);
+    loadSquad(false);
+    loadNews();
   });
 });
 onBeforeUnmount(() => {
   clearInterval(checksTimer);
+  clearInterval(squadTimer);
+  clearInterval(newsTimer);
   stopChecks?.();
 });
 </script>
@@ -429,6 +568,35 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 .links { margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13.5px; }
 .working { display: flex; align-items: center; gap: 10px; }
 .spin { display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--control-line); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+.squad, .intel { display: flex; flex-direction: column; }
+.squad li > button { flex: none; }
+.squad li > span:nth-child(2) small { font: 12px/1.4 Plex, sans-serif; letter-spacing: 0; text-transform: none; }
+.sub { margin: 14px 0 4px; font-size: 13px; }
+.squad .foot { gap: 4px; }
+.squad .foot p { margin: 0; }
+.small { font-size: 12.5px; }
+.accent { color: var(--accent); }
+.line { margin: 2px 0; font-size: 13px; }
+.block { margin-top: 8px; padding: 10px 12px; border-radius: 4px; background: var(--sunken); border: 1px solid rgba(255, 122, 107, .4); display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.row { display: flex; gap: 8px; }
+.row.end { justify-content: flex-end; margin-top: 16px; }
+.btn.small { height: 30px; padding: 0 12px; font-size: 13px; }
+.btn.danger { border-color: var(--bad); color: var(--bad); }
+.intel h3 { margin: 6px 0 4px; font-size: 16.5px; font-weight: 600; }
+.intel article p { margin: 0; font-size: 14px; }
+.dots { flex-direction: row !important; align-items: center; gap: 4px !important; }
+.dots button { width: 22px; height: 22px; display: grid; place-items: center; color: var(--muted); }
+.dots button svg { width: 14px; height: 14px; }
+.dots button:hover { color: var(--fg); }
+.dot::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--control-line); transition: background .2s, transform .2s; }
+.dot.on::before { background: var(--accent); transform: scale(1.35); }
+.grow { flex: 1; }
+.backdrop { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 24px; background: rgba(3, 5, 6, .62); backdrop-filter: blur(6px); }
+.dialog { width: min(540px, 100%); padding: 24px 26px 20px; border-radius: 6px; background: var(--surface); border: 1px solid var(--control-line); box-shadow: 0 24px 70px rgba(0, 0, 0, .6); }
+.dialog h2 { margin: 2px 0 10px; font: 700 26px/1.1 PlexCond, sans-serif; text-transform: uppercase; }
+.mono { font: 13px PlexMono, monospace; font-weight: 400; }
+.modal-enter-active, .modal-leave-active { transition: opacity .2s; }
+.modal-enter-from, .modal-leave-to { opacity: 0; }
 @keyframes reveal { to { opacity: 1; transform: none; } }
 @keyframes drift { to { transform: translate(-6%, 4%) scale(1.08); } }
 @keyframes scan { to { background-position: 0 64px; } }

@@ -6,7 +6,7 @@
       <div class="column">
         <main class="screen">
           <Transition name="view" mode="out-in">
-            <Setup v-if="screen === 'play' && setupShown" key="setup" :info="info" :fresh="fresh" @changed="refresh" @cancel="editing = false" @finished="finishSetup" />
+            <Setup v-if="screen === 'play' && setupShown" key="setup" :info="info" :fresh="fresh" :asked-name="askedName" @changed="refresh" @cancel="editing = false; askedName = null" @finished="finishSetup" />
           <Play v-else-if="screen === 'play'" key="play" :info="info" @go="go" @played="played" @change-server="editing = true" />
             <Placeholder v-else :key="screen" v-bind="PLACEHOLDERS[screen]" />
           </Transition>
@@ -29,7 +29,7 @@ import Setup from './views/Setup.vue';
 import Placeholder from './views/Placeholder.vue';
 import ActivityBar from './components/ActivityBar.vue';
 import Questions from './components/Questions.vue';
-import { call, inTauri } from './lib/tauri.js';
+import { call, inTauri, listen } from './lib/tauri.js';
 
 const PLACEHOLDERS = {
   servers: { kicker: 'Servers', title: 'Servers', text: 'The servers you can play on, how far they are, and your accounts on them.' },
@@ -52,7 +52,12 @@ watch(
   (first) => first && (fresh.value = true),
 );
 
+// A server with no account yet, from outside the setup (a friend's): its name step.
+const askedName = ref(null);
+let stopSetup = null;
+
 function finishSetup() {
+  askedName.value = null;
   editing.value = false;
   fresh.value = false;
   refresh();
@@ -81,6 +86,12 @@ onMounted(async () => {
   await refresh();
   // Whether the game is running, and settings changed elsewhere (the egui launcher, by hand).
   timer = setInterval(refresh, 3000);
+  stopSetup = await listen('setup', ({ payload }) => {
+    if (payload.kind === 'needs-name' && !setupShown.value) {
+      askedName.value = payload;
+      editing.value = true;
+    }
+  });
   // No edge round a maximised window.
   if (inTauri) {
     const w = window.__TAURI__.window.getCurrentWindow();
@@ -89,7 +100,10 @@ onMounted(async () => {
     w.onResized(check);
   }
 });
-onBeforeUnmount(() => clearInterval(timer));
+onBeforeUnmount(() => {
+  clearInterval(timer);
+  stopSetup?.();
+});
 </script>
 
 <style scoped>

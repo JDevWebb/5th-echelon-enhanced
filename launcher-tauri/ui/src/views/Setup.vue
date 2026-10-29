@@ -97,6 +97,7 @@
             <div class="row go">
               <p v-if="info.connecting" class="working"><i class="spin"></i>Creating your account…</p>
               <button v-else type="button" class="btn primary big" :disabled="!nick.trim()" @click="connect(nick)">Create account</button>
+              <button v-if="info.server && !info.connecting" type="button" class="btn big" @click="naming = null; $emit('cancel')">Cancel</button>
             </div>
           </div>
 
@@ -134,7 +135,8 @@
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { call, listen } from '../lib/tauri.js';
 
-const props = defineProps({ info: { type: Object, required: true }, fresh: Boolean });
+// `askedName`: the name step for a server set up from elsewhere (a friend's), with no account.
+const props = defineProps({ info: { type: Object, required: true }, fresh: Boolean, askedName: { type: Object, default: null } });
 const emit = defineEmits(['changed', 'cancel', 'finished']);
 
 const STEPS = ['Find the game', 'Choose a server', 'Pick your name', 'Game options', 'Play'];
@@ -147,8 +149,8 @@ const looking = ref(false);
 const lan = ref([]);
 const server = ref('');
 const typed = ref(false);
-const naming = ref(null);
-const nick = ref('');
+const naming = ref(props.askedName);
+const nick = ref(props.askedName?.suggested ?? '');
 const options = ref([]);
 const choices = ref([]);
 const later = ref('');

@@ -48,6 +48,12 @@ struct Inner {
     /// A fix running, and its activity with the fix when it failed (to try again).
     fixing: bool,
     fix_failed: Option<(u64, Fix)>,
+    /// Friends as last fetched (with the checklist), and whether a fetch is running.
+    friends: launcher::flow::Friends,
+    fetching_friends: bool,
+    /// The server's news and what's played there, with the server and when they were asked.
+    news: Option<(String, Instant, Vec<setup::server_info::NewsItem>)>,
+    playing: Option<(String, Instant, Option<server_api::playing::Playing>)>,
 }
 
 impl Launcher {
@@ -71,6 +77,10 @@ impl Launcher {
                 checking: false,
                 fixing: false,
                 fix_failed: None,
+                friends: Default::default(),
+                fetching_friends: false,
+                news: None,
+                playing: None,
             }),
         }
     }
@@ -158,7 +168,9 @@ pub fn set_play_mode(mode: PlayMode) {
 #[tauri::command(async)]
 pub fn play(app: tauri::AppHandle, state: tauri::State<Launcher>, mode: PlayMode) -> bool {
     let mut inner = state.lock();
-    let Inner { game, notices, running, .. } = &mut *inner;
+    let Inner {
+        game, notices, running, friends, ..
+    } = &mut *inner;
     let Some(game) = game.as_mut() else {
         notices.error("Choose the game's folder first.");
         changed(&app);
@@ -167,8 +179,9 @@ pub fn play(app: tauri::AppHandle, state: tauri::State<Launcher>, mode: PlayMode
     let mode = if game.managed.is_some() { PlayMode::Play } else { mode };
     use launcher::start::Refused;
     use setup::launch::Launched;
-    // The name check comes with friends (Squad, the next step); until then the server says.
-    let started = match launcher::start::start(game, notices, mode, false) {
+    // The server said the name breaks its rules, while it's still the player's name.
+    let name_not_allowed = inner_name_not_allowed(friends, game);
+    let started = match launcher::start::start(game, notices, mode, name_not_allowed) {
         Ok(Launched::Game(child)) => {
             *running = Some(child);
             true
@@ -522,7 +535,12 @@ pub fn connect(app: tauri::AppHandle, state: tauri::State<Launcher>, server: Str
     }
     let Some(game) = inner.game.as_ref() else { return false };
     let new_name = new_name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
-    let asked = connect::ask(game, &server, new_name, false, inner.directory.as_deref());
+    // The name step after a friend's server: still one the player didn't type.
+    let public_only = inner
+        .setup
+        .as_ref()
+        .is_some_and(|a| a.plan.public_only && a.plan.server.eq_ignore_ascii_case(server.trim()));
+    let asked = connect::ask(game, &server, new_name, public_only, inner.directory.as_deref());
     drop(inner);
     start_setup(&app, asked);
     true
@@ -799,4 +817,286 @@ pub fn switch_server(app: tauri::AppHandle, state: tauri::State<Launcher>, host:
     drop(inner);
     start_setup(&app, asked);
     Ok(())
+}
+
+/// The player's name, when the server said it breaks the rules: only while it's still their
+/// name (a rename takes effect at once).
+fn inner_name_not_allowed(friends: &launcher::flow::Friends, game: &Game) -> bool {
+    friends
+        .name_not_allowed
+        .as_ref()
+        .is_some_and(|name| game.cfg.current_profile().is_some_and(|p| &p.user.username == name))
+}
+
+#[derive(Serialize)]
+pub struct FriendView {
+    id: String,
+    name: String,
+    activity: Option<String>,
+    joinable: bool,
+}
+
+#[derive(Serialize)]
+pub struct OtherView {
+    id: String,
+    name: String,
+    activity: Option<String>,
+    asked: bool,
+    asked_us: bool,
+}
+
+#[derive(Serialize)]
+pub struct ElsewhereView {
+    name: String,
+    /// Where they are (the server's region, else its name), and its address.
+    place: String,
+    host: String,
+    /// On the internet: one server can't send players into their own network.
+    public: bool,
+}
+
+/// The Squad tab: friends here and on other servers, others online, what's played here.
+#[derive(Serialize)]
+pub struct Squad {
+    online: Vec<FriendView>,
+    others: Vec<OtherView>,
+    elsewhere: Vec<ElsewhereView>,
+    offline: usize,
+    requests: usize,
+    /// The server joins a friend's game without an invitation: the Join buttons show.
+    join_offered: bool,
+    /// The key that opens the game's overlay, for the hints.
+    overlay_key: String,
+    /// The player's name breaks the network's rules.
+    name_not_allowed: Option<String>,
+    managed: bool,
+    /// What's being played on the player's server: its public matches, and the rest in a line.
+    playing: Option<Vec<String>>,
+    playing_more: Option<String>,
+}
+
+/// How often what's played on the player's server is asked for.
+const PLAYING_EVERY: std::time::Duration = std::time::Duration::from_secs(15);
+/// The most of the server's matches the Squad tab lists.
+const PLAYING_SHOWN: usize = 4;
+
+/// The Squad tab: friends fetched again when `fresh` (after acting on someone), else every
+/// half minute; what's played every 15 seconds.
+#[tauri::command(async)]
+pub fn squad(state: tauri::State<Launcher>, fresh: bool) -> Squad {
+    let mut inner = state.lock();
+    let Some(game) = inner.game.as_ref() else { return empty_squad() };
+    let managed = game.managed.is_some();
+    let cfg = (*game.cfg).clone();
+    let server = game.cfg.current_profile().map(|p| p.server.clone()).filter(|s| !s.is_empty());
+    let overlay_key = game.cfg.hook_config.overlay_key.to_string();
+    let stale = fresh || inner.checked.is_none_or(|t| t.elapsed() > CHECK_EVERY) || inner.friends.online.is_empty() && inner.friends.offline == 0;
+    if !managed && stale && !inner.fetching_friends {
+        inner.fetching_friends = true;
+        drop(inner);
+        let friends = launcher::task::guarded(|| launcher::flow::friends(&cfg));
+        inner = state.lock();
+        inner.fetching_friends = false;
+        // A failed fetch keeps the last list: it's a hint, not a check.
+        if let Ok(friends) = friends {
+            inner.friends = friends;
+        }
+    }
+    if let Some(server) = server.clone() {
+        let fresh = inner.playing.as_ref().is_some_and(|(from, at, _)| *from == server && at.elapsed() < PLAYING_EVERY);
+        if !fresh {
+            drop(inner);
+            let playing = setup::server_info::playing(&server, std::time::Duration::from_secs(5));
+            inner = state.lock();
+            inner.playing = Some((server, Instant::now(), playing));
+        }
+    }
+    let f = &inner.friends;
+    let now = inner.playing.as_ref().filter(|(from, ..)| Some(from) == server.as_ref()).and_then(|(_, _, p)| p.clone());
+    let (playing, playing_more) = match now {
+        None => (None, None),
+        Some(now) => {
+            let lines = now.matches.iter().take(PLAYING_SHOWN).map(server_api::playing::Match::line).collect::<Vec<_>>();
+            let rest = server_api::playing::Playing {
+                matches: now.matches.iter().skip(PLAYING_SHOWN).cloned().collect(),
+                ..now.clone()
+            };
+            let more = rest.summary();
+            let lead = if now.matches.is_empty() { "" } else { "Also: " };
+            (Some(lines), (!more.is_empty()).then(|| format!("{lead}{more}")))
+        }
+    };
+    Squad {
+        online: f
+            .online
+            .iter()
+            .map(|o| FriendView {
+                id: o.id.clone(),
+                name: o.name.clone(),
+                activity: o.activity.clone(),
+                joinable: o.joinable,
+            })
+            .collect(),
+        others: f
+            .others
+            .iter()
+            .map(|o| OtherView {
+                id: o.id.clone(),
+                name: o.name.clone(),
+                activity: o.activity.clone(),
+                asked: o.asked,
+                asked_us: o.asked_us,
+            })
+            .collect(),
+        elsewhere: f
+            .elsewhere
+            .iter()
+            .map(|e| ElsewhereView {
+                name: e.username.clone(),
+                place: if e.region.is_empty() { e.server.clone() } else { e.region.clone() },
+                host: e.host.clone(),
+                public: setup::directory::listable_host(&e.host),
+            })
+            .collect(),
+        offline: f.offline,
+        requests: f.requests,
+        join_offered: f.join_offered,
+        overlay_key,
+        name_not_allowed: f.name_not_allowed.clone(),
+        managed,
+        playing,
+        playing_more,
+    }
+}
+
+fn empty_squad() -> Squad {
+    Squad {
+        online: Vec::new(),
+        others: Vec::new(),
+        elsewhere: Vec::new(),
+        offline: 0,
+        requests: 0,
+        join_offered: false,
+        overlay_key: String::new(),
+        name_not_allowed: None,
+        managed: false,
+        playing: None,
+        playing_more: None,
+    }
+}
+
+/// Joins a friend's game (`JoinNow`): the game is started first if it isn't running (not
+/// when the launcher holds back, for a question first). The activity bar says how it went.
+#[tauri::command(async)]
+pub fn join_friend(app: tauri::AppHandle, state: tauri::State<Launcher>, id: String, name: String) {
+    let mut inner = state.lock();
+    let running = game_running(&mut inner);
+    drop(inner);
+    if !running && !play(app.clone(), state.clone(), PlayMode::Play) {
+        return;
+    }
+    let inner = state.lock();
+    let Some(game) = inner.game.as_ref() else { return };
+    let (cfg, dir) = (game.cfg.clone(), game.dir.clone());
+    drop(inner);
+    let result = launcher::task::guarded(|| launcher::flow::join_friend(&cfg, &dir, &id, &name));
+    let mut inner = state.lock();
+    match result {
+        Ok(line) => inner.notices.info(line),
+        Err(line) => inner.notices.error(line),
+    }
+    drop(inner);
+    changed(&app);
+}
+
+/// Asks someone online to be friends ("request"), invites them to the game ("invite"), or
+/// blocks them ("block"). The activity bar says how it went.
+#[tauri::command(async)]
+pub fn player_action(app: tauri::AppHandle, state: tauri::State<Launcher>, action: String, id: String, name: String) {
+    use launcher::network::PlayerAction;
+    let action = match action.as_str() {
+        "request" => PlayerAction::Request,
+        "invite" => PlayerAction::Invite,
+        "block" => PlayerAction::Block,
+        _ => return,
+    };
+    let inner = state.lock();
+    let Some(game) = inner.game.as_ref() else { return };
+    let cfg = (*game.cfg).clone();
+    drop(inner);
+    let result = launcher::task::guarded(|| launcher::flow::player_action(&cfg, action, &id, "", &name));
+    let mut inner = state.lock();
+    match result {
+        Ok(line) => inner.notices.info(line),
+        Err(line) => inner.notices.error(line),
+    }
+    // Asked again, so "Add friend" turns into "Asked".
+    inner.checked = None;
+    drop(inner);
+    changed(&app);
+}
+
+#[derive(Serialize)]
+pub struct NewsView {
+    title: String,
+    text: String,
+    link: String,
+}
+
+/// How often the server's news is asked for.
+const NEWS_EVERY: std::time::Duration = std::time::Duration::from_secs(15 * 60);
+
+/// The player's server's news, newest first: the server's words, as text only.
+#[tauri::command(async)]
+pub fn news(state: tauri::State<Launcher>) -> Vec<NewsView> {
+    let inner = state.lock();
+    let Some(server) = inner
+        .game
+        .as_ref()
+        .and_then(|g| g.cfg.current_profile())
+        .map(|p| p.server.clone())
+        .filter(|s| !s.is_empty())
+    else {
+        return Vec::new();
+    };
+    let fresh = inner.news.as_ref().is_some_and(|(from, at, _)| *from == server && at.elapsed() < NEWS_EVERY);
+    drop(inner);
+    if !fresh {
+        let news = setup::server_info::news(&server, std::time::Duration::from_secs(5));
+        state.lock().news = Some((server.clone(), Instant::now(), news));
+    }
+    let inner = state.lock();
+    inner
+        .news
+        .as_ref()
+        .filter(|(from, ..)| *from == server)
+        .map(|(_, _, items)| {
+            items
+                .iter()
+                .map(|n| NewsView {
+                    title: hooks_config::text::clip(&n.title, 80),
+                    text: hooks_config::text::clip(&n.text, 500),
+                    link: n.link.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Switches to a friend's server (confirmed on the page): set up there with the player's
+/// identity, the name step following if they have no account there.
+#[tauri::command(async)]
+pub fn switch_to_friend(app: tauri::AppHandle, state: tauri::State<Launcher>, host: String) -> bool {
+    let mut inner = state.lock();
+    if game_running(&mut inner) || inner.setup_running {
+        return false;
+    }
+    let Some(game) = inner.game.as_ref() else { return false };
+    if !setup::directory::listable_host(&host) {
+        return false;
+    }
+    let asked = connect::ask(game, &host, None, true, inner.directory.as_deref());
+    drop(inner);
+    start_setup(&app, asked);
+    true
 }

@@ -30,6 +30,11 @@ fn main() {
             commands::identify,
             commands::fix_everything,
             commands::switch_server,
+            commands::squad,
+            commands::join_friend,
+            commands::player_action,
+            commands::news,
+            commands::switch_to_friend,
         ])
         .run(tauri::generate_context!())
         .expect("the launcher's window");
