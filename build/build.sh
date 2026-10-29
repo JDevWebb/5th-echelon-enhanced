@@ -56,7 +56,7 @@ ui() {
   run -v fes-npm-cache:/root/.npm "$IMAGE" sh -c '
     set -e
     cd coordinator/admin-ui
-    if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then npm ci --no-audit --no-fund; touch node_modules; fi
+    if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then npm ci --ignore-scripts --no-audit --no-fund; touch node_modules; fi
     if [ ! -f dist/index.html ] || [ -n "$(find src index.html public vite.config.js package-lock.json -newer dist/index.html | head -1)" ]; then npm run build; fi'
 }
 
@@ -114,7 +114,7 @@ case "${1:-test}" in
     run -v fes-npm-cache:/root/.npm "$IMAGE" sh -c '
       set -e
       cd launcher-tauri/ui
-      if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then npm ci --no-audit --no-fund; touch node_modules; fi
+      if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then npm ci --ignore-scripts --no-audit --no-fund; touch node_modules; fi
       npm run build'
     run -e CARGO_TARGET_DIR=/target/launcher-tauri -w /src/launcher-tauri/src-tauri "$IMAGE" \
       sh -c 'cargo xwin build --release --target x86_64-pc-windows-msvc && cp /target/launcher-tauri/x86_64-pc-windows-msvc/release/launcher-tauri.exe /src/dist/'
