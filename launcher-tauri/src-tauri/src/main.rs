@@ -5,6 +5,7 @@ mod chat;
 mod commands;
 mod feedback;
 mod intel;
+mod settings;
 mod support;
 mod whats_new;
 
@@ -67,6 +68,17 @@ fn main() {
             commands::recent_servers,
             commands::usual_name,
             commands::use_network,
+            settings::settings,
+            settings::set,
+            settings::profile_password,
+            settings::act,
+            settings::connection_test,
+            settings::identity,
+            settings::export_identity,
+            settings::import_identity,
+            settings::set_directory,
+            settings::my_reports,
+            settings::check_update,
             chat::chat,
             chat::chat_glance,
             chat::chat_check,
