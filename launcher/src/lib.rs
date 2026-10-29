@@ -43,8 +43,7 @@ mod theme;
 pub mod update_notice;
 pub mod updater;
 pub mod version;
-#[cfg(feature = "gui")]
-mod whats_new;
+pub mod whats_new;
 #[cfg(feature = "gui")]
 mod window_frame;
 

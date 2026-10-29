@@ -55,7 +55,7 @@ import { call } from '../lib/tauri.js';
 
 // The guided setup asks about the options in a step of its own (`withOptions` off meanwhile).
 const props = defineProps({ withOptions: { type: Boolean, default: true } });
-const emit = defineEmits(['answered']);
+const emit = defineEmits(['answered', 'up']);
 
 const diagnostics = ref(null);
 const options = ref([]);
@@ -70,6 +70,7 @@ async function refresh() {
   options.value = props.withOptions ? q.options : [];
   choices.value = options.value.map((o) => o.on);
   intro.value = q.options_intro;
+  emit('up', Boolean(diagnostics.value || options.value.length));
   later.value = q.options_later;
 }
 

@@ -1211,3 +1211,15 @@ pub fn notice(state: tauri::State<Launcher>) -> Option<NoticeView> {
         blocks_play: n.blocks_play,
     })
 }
+
+/// Opens a link in the player's browser: only `https://` ones (the page's links are the
+/// launcher's own, and the servers' news shown as text).
+#[tauri::command(async)]
+pub fn open_url(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let parsed = url::Url::parse(&url).map_err(|_| "Not a link the launcher opens.".to_string())?;
+    if parsed.scheme() != "https" {
+        return Err("Not a link the launcher opens.".into());
+    }
+    app.opener().open_url(parsed.as_str(), None::<&str>).map_err(|e| e.to_string())
+}

@@ -25,7 +25,7 @@
     >
       <svg viewBox="0 0 24 24" v-html="item.icon"></svg>
     </button>
-    <span class="version">{{ release.split('-')[0] }}</span>
+    <button type="button" class="version" title="What's new in this release" @click="$emit('version')">{{ release.split('-')[0] }}</button>
   </nav>
 </template>
 
@@ -35,7 +35,7 @@
 import { computed } from 'vue';
 
 const props = defineProps({ current: String, release: { type: String, default: '' }, community: Boolean, unread: { type: Number, default: 0 } });
-defineEmits(['go']);
+defineEmits(['go', 'version']);
 
 const ICONS = {
   play: '<path d="M7 4.5v15l12-7.5z"/>',
@@ -66,7 +66,8 @@ button.on { background: var(--selected); color: var(--accent); }
 button.on::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px; border-radius: 1px; background: var(--accent); animation: grow .35s var(--ease); }
 button.dot::after { content: ""; position: absolute; top: 7px; right: 7px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--rail); animation: breathe 2.4s ease-in-out infinite; }
 .grow { flex: 1; }
-.version { font: 10px PlexMono, monospace; color: var(--muted); margin-top: 6px; }
+.version { width: auto; height: auto; padding: 2px 6px; font: 10px PlexMono, monospace; color: var(--muted); margin-top: 6px; }
+.version:hover { color: var(--accent); background: none; }
 @keyframes grow { from { transform: scaleY(0); } }
 @keyframes breathe { 50% { opacity: .45; } }
 </style>

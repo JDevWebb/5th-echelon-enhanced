@@ -38,6 +38,16 @@ const sample = {
     ],
   },
   find_on_network: [],
+  // ?whatsnew: What's new after an update in the preview.
+  whats_new: location.search.includes('whatsnew')
+    ? {
+      from: '0.4.6', to: '0.4.8', headlines: 3, notes: ['All release notes', 'https://github.com/JDevWebb/5th-echelon-enhanced/releases'],
+      releases: [
+        { version: '0.4.8', thanks: 'Tank, Nova and Raven', new: [{ title: 'A new launcher', text: 'Field ops: a new look, smoother and quicker.', community: false }, { title: 'Global matchmaking', text: 'Find a match across every community server.', community: true }], fixed: [['Joins no longer time out', ' on a far server.']] },
+        { version: '0.4.7', thanks: null, new: [{ title: 'Chat answers straight away again', text: '', community: true }], fixed: [] },
+      ],
+    }
+    : null,
   // ?feedback: the ask after a game in the preview.
   feedback: location.search.includes('feedback')
     ? {
@@ -127,6 +137,8 @@ const preview = {
   fix_everything: () => true,
   switch_server: () => null,
   join_friend: () => null,
+  whats_new_seen: () => null,
+  open_url: () => null,
   feedback_send: () => { sample.feedback = null; },
   feedback_close: () => { sample.feedback = null; },
   player_action: () => null,

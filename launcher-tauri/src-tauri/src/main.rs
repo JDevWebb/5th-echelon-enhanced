@@ -3,13 +3,16 @@
 
 mod commands;
 mod feedback;
+mod whats_new;
 
 fn main() {
     launcher::logging::init();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
         .manage(commands::Launcher::new())
         .manage(feedback::Feedback::default())
+        .manage(whats_new::WhatsNew::default())
         .setup(|app| {
             feedback::start(app.handle());
             Ok(())
@@ -47,6 +50,11 @@ fn main() {
             feedback::feedback_send,
             feedback::feedback_close,
             feedback::ask_feedback,
+            commands::open_url,
+            whats_new::whats_new,
+            whats_new::whats_new_again,
+            whats_new::whats_new_seen,
+            whats_new::use_community_network,
         ])
         .run(tauri::generate_context!())
         .expect("the launcher's window");

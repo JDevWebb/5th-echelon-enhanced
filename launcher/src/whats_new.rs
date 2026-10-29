@@ -8,10 +8,13 @@
 //! builds never show it on their own. The version at the bottom of the side menu opens it
 //! again.
 
+#[cfg(feature = "gui")]
 use eframe::egui;
+#[cfg(feature = "gui")]
 use eframe::egui::RichText;
 use setup::update::Release as Version;
 
+#[cfg(feature = "gui")]
 use crate::theme;
 
 /// A change the player sees.
@@ -350,14 +353,14 @@ pub const RELEASES: &[Release] = &[
 ];
 
 /// Older releases shown under the newest, for a player who skipped some.
-const OLDER_SHOWN: usize = 2;
+pub const OLDER_SHOWN: usize = 2;
 /// Headlines shown for each of them.
-const OLDER_HEADLINES: usize = 3;
+pub const OLDER_HEADLINES: usize = 3;
 
 /// What to do on start: the releases to show (newest first), and whether to note the
 /// running release as seen without showing anything.
 #[derive(Debug, PartialEq)]
-enum Start {
+pub enum Start {
     Show(Vec<&'static str>),
     Note,
     Nothing,
@@ -365,7 +368,7 @@ enum Start {
 
 /// `seen`: the release last shown or noted, if any; `set_up`: the game has an account (so
 /// this isn't a fresh install).
-fn on_start(releases: &'static [Release], seen: Option<&str>, current: &str, set_up: bool) -> Start {
+pub fn on_start(releases: &'static [Release], seen: Option<&str>, current: &str, set_up: bool) -> Start {
     let Some(current) = Version::parse(current) else { return Start::Nothing };
     if current.pre.is_some() {
         return Start::Nothing;
@@ -391,7 +394,7 @@ fn on_start(releases: &'static [Release], seen: Option<&str>, current: &str, set
     Start::Show(show)
 }
 
-fn release(version: &str) -> Option<&'static Release> {
+pub fn release(version: &str) -> Option<&'static Release> {
     RELEASES.iter().find(|r| r.version == version)
 }
 
@@ -416,12 +419,12 @@ pub struct WhatsNew {
 
 impl WhatsNew {
     /// Decides once, when the game is open, whether to show what's new.
-    pub fn start(&mut self, game: Option<&crate::app::Game>) {
+    pub fn start(&mut self, game: Option<&crate::prefs::Game>) {
         let Some(game) = game else { return };
         if std::mem::replace(&mut self.started, true) {
             return;
         }
-        let seen = crate::app::Prefs::whats_new_seen();
+        let seen = crate::prefs::Prefs::whats_new_seen();
         let current = env!("FE_RELEASE");
         match on_start(RELEASES, seen.as_deref(), current, !game.cfg.profiles.is_empty()) {
             Start::Show(versions) => {
@@ -430,7 +433,7 @@ impl WhatsNew {
                 self.to = current.to_string();
                 self.note = true;
             }
-            Start::Note => crate::app::Prefs::set_whats_new_seen(&current),
+            Start::Note => crate::prefs::Prefs::set_whats_new_seen(&current),
             Start::Nothing => {}
         }
     }
@@ -446,6 +449,7 @@ impl WhatsNew {
         !self.open.is_empty()
     }
 
+    #[cfg(feature = "gui")]
     /// Draws it while it's open. `waiting`: another question is up first (the game's
     /// diagnostics); `community`: the player uses the community network.
     pub fn show(&mut self, ctx: &egui::Context, waiting: bool, community: bool) -> Option<Action> {
@@ -533,7 +537,7 @@ impl WhatsNew {
         });
         if close || modal.should_close() || action.is_some() {
             if std::mem::take(&mut self.note) {
-                crate::app::Prefs::set_whats_new_seen(&self.to);
+                crate::prefs::Prefs::set_whats_new_seen(&self.to);
             }
             self.open.clear();
         }
@@ -541,6 +545,7 @@ impl WhatsNew {
     }
 }
 
+#[cfg(feature = "gui")]
 /// "IN 0.4.2", "AND IN 0.4.1, WHICH YOU SKIPPED".
 fn version_caps(ui: &mut egui::Ui, before: &str, version: &str, after: Option<&str>) {
     ui.horizontal(|ui| {
@@ -553,17 +558,20 @@ fn version_caps(ui: &mut egui::Ui, before: &str, version: &str, after: Option<&s
     });
 }
 
+#[cfg(feature = "gui")]
 fn divider(ui: &mut egui::Ui) {
     let (line, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 9.0), egui::Sense::hover());
     ui.painter().hline(line.x_range(), line.center().y, egui::Stroke::new(1.0, theme::LINE));
 }
 
+#[cfg(feature = "gui")]
 /// A bullet: the accent dot new things have.
 fn dot(ui: &mut egui::Ui, top: f32) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, top + 8.0), egui::Sense::hover());
     ui.painter().circle_filled(egui::pos2(rect.left() + 3.5, rect.top() + top + 3.5), 3.5, theme::ACCENT);
 }
 
+#[cfg(feature = "gui")]
 /// A tick: what fixes have.
 fn tick(ui: &mut egui::Ui) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 18.0), egui::Sense::hover());
@@ -573,6 +581,7 @@ fn tick(ui: &mut egui::Ui) {
     ui.painter().line_segment([p(5.5, 10.5), p(11.5, 3.5)], s);
 }
 
+#[cfg(feature = "gui")]
 /// The players who sent reports for a release, thanked in a box above its changes.
 fn thanks_box(ui: &mut egui::Ui, names: &[&str]) {
     egui::Frame::new()
@@ -596,7 +605,7 @@ fn thanks_box(ui: &mut egui::Ui, names: &[&str]) {
 }
 
 /// "A", "A and B", "A, B and C".
-fn and_list(names: &[&str]) -> String {
+pub fn and_list(names: &[&str]) -> String {
     match names {
         [] => String::new(),
         [one] => (*one).to_string(),
@@ -604,6 +613,7 @@ fn and_list(names: &[&str]) -> String {
     }
 }
 
+#[cfg(feature = "gui")]
 /// "COMMUNITY NETWORK", beside a change only the community network has.
 fn community_badge(ui: &mut egui::Ui) {
     egui::Frame::new()
@@ -622,6 +632,7 @@ fn community_badge(ui: &mut egui::Ui) {
         });
 }
 
+#[cfg(feature = "gui")]
 /// A new thing, with its line, and with `offer`, the way to the community network. Says
 /// whether the player took it.
 fn new_item(ui: &mut egui::Ui, item: &Item, offer: bool) -> bool {
@@ -661,6 +672,7 @@ fn new_item(ui: &mut egui::Ui, item: &Item, offer: bool) -> bool {
     switch
 }
 
+#[cfg(feature = "gui")]
 /// A fix: `before`, the lead in bold, then `rest`.
 fn fix_line(ui: &mut egui::Ui, before: &str, lead: &str, rest: &str) {
     ui.horizontal_top(|ui| {
@@ -677,6 +689,7 @@ fn fix_line(ui: &mut egui::Ui, before: &str, lead: &str, rest: &str) {
     });
 }
 
+#[cfg(feature = "gui")]
 /// An older release's headline.
 fn headline(ui: &mut egui::Ui, title: &str) {
     ui.horizontal_top(|ui| {

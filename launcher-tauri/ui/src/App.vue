@@ -2,7 +2,7 @@
   <div class="window" :class="{ framed: !maximised }">
     <TitleBar :product="info.product" :release="info.release" />
     <div class="body">
-      <Rail :current="screen" :release="info.release" :community="info.community" @go="go" />
+      <Rail :current="screen" :release="info.release" :community="info.community" @go="go" @version="whatsNew?.again()" />
       <div class="column">
         <main class="screen">
           <Transition name="view" mode="out-in">
@@ -15,7 +15,8 @@
       </div>
     </div>
     <Feedback />
-    <Questions ref="questions" :with-options="!(setupShown && fresh)" />
+    <WhatsNew ref="whatsNew" :waiting="questionsUp" :community="info.community" @network="refresh" />
+    <Questions ref="questions" :with-options="!(setupShown && fresh)" @up="(up) => (questionsUp = up)" />
   </div>
 </template>
 
@@ -31,6 +32,7 @@ import Placeholder from './views/Placeholder.vue';
 import ActivityBar from './components/ActivityBar.vue';
 import Questions from './components/Questions.vue';
 import Feedback from './components/Feedback.vue';
+import WhatsNew from './components/WhatsNew.vue';
 import { call, inTauri, listen } from './lib/tauri.js';
 
 const PLACEHOLDERS = {
@@ -67,6 +69,9 @@ function finishSetup() {
 const maximised = ref(false);
 
 const bar = ref(null);
+const whatsNew = ref(null);
+// The first-run questions are up: What's new waits for them.
+const questionsUp = ref(true);
 const questions = ref(null);
 let timer = null;
 
