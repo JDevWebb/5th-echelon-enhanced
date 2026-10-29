@@ -1079,38 +1079,14 @@ fn update_notice(play: &mut Play, game: &Game, ctx: &egui::Context) -> Option<cr
     }
     let current = game.cfg.current_profile().map(|p| p.server.clone()).filter(|s| !s.is_empty())?;
     let servers = play.directory.clone().unwrap_or_default();
-    let listed = servers.iter().find(|(s, _)| s.host == current).cloned();
-    if let Some((listing, _)) = &listed {
-        play.my_listing = Some(listing.clone());
-    }
-    // Gone from the list while it restarts or is down for maintenance: as it was last
-    // listed, not answering.
-    let mine = listed.or_else(|| {
-        play.my_listing
-            .clone()
-            .filter(|l| l.host == current && (play.rollout.is_some() || !l.maintenance.is_empty()))
-            .map(|l| (l, None))
-    });
-    let clock = setup::clock::Clock::local();
-    let now = identity::now();
-    let mine = mine.as_ref().map(|(l, ping)| (l, *ping));
-    let release = crate::update_notice::notice(&crate::update_notice::Input {
-        rollout: play.rollout.as_ref(),
-        servers: &servers,
-        mine,
-        launcher: env!("FE_RELEASE"),
-        newer_launcher: play.newer_launcher.as_deref(),
-        now,
-        clock: &clock,
-    });
-    let maintenance = crate::maintenance::notice(&crate::maintenance::Input {
-        servers: &servers,
-        mine,
-        now,
-        clock: &clock,
-    });
-    let network = crate::maintenance::network_notice(play.network_maintenance.as_ref(), now, &clock);
-    let notice = crate::update_notice::most_pressing([release, maintenance, network]);
+    let notice = crate::update_notice::for_player(
+        &current,
+        &servers,
+        play.rollout.as_ref(),
+        play.network_maintenance.as_ref(),
+        &mut play.my_listing,
+        play.newer_launcher.as_deref(),
+    );
     if play.rollout.is_some() || notice.is_some() {
         let every = notice.as_ref().map_or(std::time::Duration::from_secs(60), crate::update_notice::Notice::refresh_every);
         let due = play.browsed_at.is_none_or(|t| t.elapsed() >= every);

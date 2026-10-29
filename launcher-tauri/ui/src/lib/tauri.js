@@ -38,6 +38,19 @@ const sample = {
     ],
   },
   find_on_network: [],
+  // ?notice: a release going out in the preview.
+  notice: location.search.includes('notice')
+    ? {
+      heading: 'Update 0.4.8 going out', eta: '8:40 pm', text: 'Your server updates at about 8:40 pm and is back a couple of minutes later. Sydney already runs it: play there meanwhile.',
+      note: null, play_on: ['oceania.scbl.jdevwebb.net', 'Play on Sydney'],
+      servers: [
+        { place: 'Falkenstein, Germany', mine: true, version: '0.4.7', doing: 'Updates at about 8:40 pm', meter: null, tone: 'waiting' },
+        { place: 'Beauharnois, Canada', mine: false, version: '0.4.7 → 0.4.8', doing: 'Installing and restarting', meter: 0.6, tone: 'now' },
+        { place: 'Sydney, Australia', mine: false, version: '0.4.8', doing: 'Updated', meter: null, tone: 'done' },
+      ],
+      status: 'Your server updates at 8:40 pm', blocks_play: null, every: 60,
+    }
+    : null,
   squad: {
     online: [
       { id: '1', name: 'Tank', activity: 'SvM Classic · Penthouse · 3 of 4', joinable: true },
@@ -66,6 +79,11 @@ const sample = {
     busy: false,
   },
 };
+// The preview with the first-run questions answered (?answered).
+if (location.search.includes('answered')) {
+  sample.questions.diagnostics = null;
+  sample.questions.options = [];
+}
 // The preview starts as a first run (?first): no server yet.
 if (location.search.includes('first')) {
   sample.info.server = null;

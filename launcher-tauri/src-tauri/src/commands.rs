@@ -36,6 +36,13 @@ struct Inner {
     /// The network's servers with this PC's ping to each, and what to say about the list.
     directory: Option<Vec<(Listing, Option<u32>)>>,
     directory_note: Option<String>,
+    /// What the directory last said about a release going out and the network's maintenance,
+    /// when it was read, and the player's server as last listed (it leaves the list while it
+    /// restarts).
+    rollout: Option<setup::directory::Rollout>,
+    network_maintenance: Option<setup::directory::Window>,
+    browsed_at: Option<Instant>,
+    my_listing: Option<Listing>,
     /// The setup running or last run (to try again), and its activity when it failed.
     setup: Option<connect::Asked>,
     setup_running: bool,
@@ -68,6 +75,10 @@ impl Launcher {
                 running: None,
                 directory: None,
                 directory_note: None,
+                rollout: None,
+                network_maintenance: None,
+                browsed_at: None,
+                my_listing: None,
                 setup: None,
                 setup_running: false,
                 setup_failed: None,
@@ -465,16 +476,8 @@ pub struct ServerCard {
 pub fn servers(state: tauri::State<Launcher>, fresh: bool) -> Servers {
     let network = Prefs::directory();
     let have = state.lock().directory.is_some();
-    if let Some(url) = network.clone().filter(|_| fresh || !have) {
-        let browsed = launcher::services::rt().block_on(launcher::network::server_directory(&url));
-        let mut inner = state.lock();
-        match browsed {
-            Ok(b) => {
-                inner.directory = Some(b.servers);
-                inner.directory_note = b.note;
-            }
-            Err(e) => inner.directory_note = Some(format!("The server directory couldn't be read: {e}")),
-        }
+    if fresh || !have {
+        browse(&state);
     }
     let inner = state.lock();
     let current = inner.game.as_ref().and_then(|g| g.cfg.current_profile().map(|p| p.server.clone())).unwrap_or_default();
@@ -1099,4 +1102,108 @@ pub fn switch_to_friend(app: tauri::AppHandle, state: tauri::State<Launcher>, ho
     drop(inner);
     start_setup(&app, asked);
     true
+}
+
+/// Reads the network's directory and pings its servers.
+fn browse(state: &Launcher) {
+    let Some(url) = Prefs::directory() else { return };
+    let browsed = launcher::services::rt().block_on(launcher::network::server_directory(&url));
+    let mut inner = state.lock();
+    inner.browsed_at = Some(Instant::now());
+    match browsed {
+        Ok(b) => {
+            inner.directory = Some(b.servers);
+            inner.directory_note = b.note;
+            inner.rollout = b.rollout;
+            inner.network_maintenance = b.network_maintenance;
+        }
+        Err(e) => inner.directory_note = Some(format!("The server directory couldn't be read: {e}")),
+    }
+}
+
+/// One server in the notice.
+#[derive(Serialize)]
+pub struct NoticeRow {
+    place: String,
+    mine: bool,
+    version: String,
+    doing: String,
+    meter: Option<f32>,
+    /// "waiting", "now" or "done".
+    tone: &'static str,
+}
+
+/// The notice under the launch bar: a release going out, or maintenance on the player's
+/// server or the network.
+#[derive(Serialize)]
+pub struct NoticeView {
+    heading: String,
+    eta: String,
+    text: String,
+    note: Option<String>,
+    /// Its button: playing on another server meanwhile (`host`), with its label.
+    play_on: Option<(String, String)>,
+    servers: Vec<NoticeRow>,
+    /// What the launch bar says instead of how ready the player is, and whether Play waits.
+    status: String,
+    blocks_play: Option<String>,
+    /// When to ask again, in seconds.
+    every: u64,
+}
+
+/// The notice for the player, if there's one; the directory is read again as often as the
+/// notice says (every minute, or 15 s while their server restarts or is down).
+#[tauri::command(async)]
+pub fn notice(state: tauri::State<Launcher>) -> Option<NoticeView> {
+    let make = |inner: &mut Inner| {
+        let game = inner.game.as_ref().filter(|g| g.managed.is_none())?;
+        let current = game.cfg.current_profile().map(|p| p.server.clone()).filter(|s| !s.is_empty())?;
+        let servers = inner.directory.clone().unwrap_or_default();
+        // A newer launcher: this one updates itself from step 3 of its move to Tauri.
+        launcher::update_notice::for_player(&current, &servers, inner.rollout.as_ref(), inner.network_maintenance.as_ref(), &mut inner.my_listing, None)
+    };
+    let mut inner = state.lock();
+    let first = make(&mut inner);
+    let every = first.as_ref().map_or(std::time::Duration::from_secs(60), launcher::update_notice::Notice::refresh_every);
+    let due = inner.browsed_at.is_none_or(|t| t.elapsed() >= every);
+    let watching = inner.rollout.is_some() || first.is_some();
+    let busy = inner.setup_running;
+    drop(inner);
+    let notice = if watching && due && !busy {
+        browse(&state);
+        make(&mut state.lock())
+    } else {
+        first
+    };
+    use launcher::update_notice::Action as A;
+    use launcher::update_notice::Tone;
+    notice.map(|n| NoticeView {
+        every: n.refresh_every().as_secs(),
+        heading: n.heading,
+        eta: n.eta,
+        text: n.text,
+        note: n.note,
+        play_on: n.action.and_then(|(action, label)| match action {
+            A::PlayOn { host, .. } => Some((host, label)),
+            A::UpdateLauncher => None,
+        }),
+        servers: n
+            .servers
+            .into_iter()
+            .map(|r| NoticeRow {
+                place: r.place,
+                mine: r.mine,
+                version: r.version,
+                doing: r.doing,
+                meter: r.meter,
+                tone: match r.tone {
+                    Tone::Waiting => "waiting",
+                    Tone::Now => "now",
+                    Tone::Done => "done",
+                },
+            })
+            .collect(),
+        status: n.status,
+        blocks_play: n.blocks_play,
+    })
 }

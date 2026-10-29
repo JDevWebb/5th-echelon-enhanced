@@ -106,6 +106,52 @@ pub fn most_pressing(notices: impl IntoIterator<Item = Option<Notice>>) -> Optio
     notices.into_iter().flatten().min_by_key(Notice::rank)
 }
 
+/// The notice for the player on `current` (their server's host), from the network's
+/// directory as last read: a release going out, maintenance on their server or on the
+/// network, the one that matters most. `last_mine` keeps their server's listing while it's
+/// listed, for when it leaves the list while it restarts or is down.
+pub fn for_player(
+    current: &str,
+    servers: &[(Listing, Option<u32>)],
+    rollout: Option<&Rollout>,
+    network_maintenance: Option<&setup::directory::Window>,
+    last_mine: &mut Option<Listing>,
+    newer_launcher: Option<&str>,
+) -> Option<Notice> {
+    let listed = servers.iter().find(|(s, _)| s.host == current).cloned();
+    if let Some((listing, _)) = &listed {
+        *last_mine = Some(listing.clone());
+    }
+    // Gone from the list while it restarts or is down for maintenance: as it was last
+    // listed, not answering.
+    let mine = listed.or_else(|| {
+        last_mine
+            .clone()
+            .filter(|l| l.host == current && (rollout.is_some() || !l.maintenance.is_empty()))
+            .map(|l| (l, None))
+    });
+    let clock = Clock::local();
+    let now = identity::now();
+    let mine = mine.as_ref().map(|(l, ping)| (l, *ping));
+    let release = notice(&Input {
+        rollout,
+        servers,
+        mine,
+        launcher: env!("FE_RELEASE"),
+        newer_launcher,
+        now,
+        clock: &clock,
+    });
+    let maintenance = crate::maintenance::notice(&crate::maintenance::Input {
+        servers,
+        mine,
+        now,
+        clock: &clock,
+    });
+    let network = crate::maintenance::network_notice(network_maintenance, now, &clock);
+    most_pressing([release, maintenance, network])
+}
+
 /// What the notice is worked out from.
 pub struct Input<'a> {
     pub rollout: Option<&'a Rollout>,

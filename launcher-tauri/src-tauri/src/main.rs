@@ -35,6 +35,7 @@ fn main() {
             commands::player_action,
             commands::news,
             commands::switch_to_friend,
+            commands::notice,
         ])
         .run(tauri::generate_context!())
         .expect("the launcher's window");

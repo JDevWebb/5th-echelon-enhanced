@@ -111,6 +111,27 @@
             </Transition>
           </span>
         </div>
+        <Transition name="view">
+          <div v-if="notice" class="notice" role="status">
+            <div class="notice-top">
+              <div>
+                <p class="notice-head"><b>{{ notice.heading }}</b><span class="eta">{{ notice.eta }}</span></p>
+                <p class="soft">{{ notice.text }}</p>
+              </div>
+              <div class="notice-act">
+                <small v-if="notice.note" class="muted">{{ notice.note }}</small>
+                <button v-if="notice.play_on" type="button" class="btn" :disabled="info.connecting" @click="switchTo({ host: notice.play_on[0], current: false })">{{ notice.play_on[1] }}</button>
+              </div>
+            </div>
+            <div v-if="notice.servers.length" class="notice-servers">
+              <div v-for="r in notice.servers" :key="r.place" class="nbox" :class="{ mine: r.mine }">
+                <p><b>{{ r.mine ? `${r.place} · yours` : r.place }}</b><span class="mono muted">{{ r.version }}</span></p>
+                <p class="doing" :class="r.tone">{{ r.doing }}</p>
+                <span v-if="r.meter != null" class="meter"><i :style="{ width: `${r.meter * 100}%` }"></i></span>
+              </div>
+            </div>
+          </div>
+        </Transition>
       </div>
     </section>
 
@@ -280,7 +301,7 @@ onBeforeUnmount(() => document.removeEventListener('click', closeMenu));
 const blocked = computed(() => {
   if (!props.info.game_dir) return "Choose the game's folder first.";
   if (props.info.running) return 'The game is running.';
-  return null;
+  return notice.value?.blocks_play ?? null;
 });
 
 async function play(mode) {
@@ -428,12 +449,28 @@ async function fixEverything() {
   await call('fix_everything');
 }
 
-const tone = computed(() => (props.info.running ? 'ok' : list.value?.tone ?? 'none'));
+// A release going out or maintenance says what it means for playing now, in place of how
+// ready the player is.
+const tone = computed(() => {
+  if (notice.value && !props.info.running) return notice.value.blocks_play ? 'fail' : 'warn';
+  return props.info.running ? 'ok' : list.value?.tone ?? 'none';
+});
 const readyText = computed(() => {
   if (!props.info.game_dir) return 'Game not found';
   if (!props.info.server) return 'Choose a server';
+  if (notice.value && !props.info.running) return notice.value.status;
   return list.value?.line ?? 'Checking…';
 });
+
+// The notice under the launch bar: a release going out, or maintenance (asked again as often
+// as it says).
+const notice = ref(null);
+let noticeTimer = null;
+async function loadNotice() {
+  notice.value = await call('notice');
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(loadNotice, (notice.value?.every ?? 60) * 1000);
+}
 
 let squadTimer = null;
 let newsTimer = null;
@@ -442,6 +479,7 @@ onMounted(async () => {
   loadServers(false);
   loadSquad(false);
   loadNews();
+  loadNotice();
   checksTimer = setInterval(() => loadChecks(false), 30000);
   squadTimer = setInterval(() => loadSquad(false), 15000);
   newsTimer = setInterval(() => Date.now() - turned >= 8000 && turn(1), 1000);
@@ -456,6 +494,7 @@ onBeforeUnmount(() => {
   clearInterval(checksTimer);
   clearInterval(squadTimer);
   clearInterval(newsTimer);
+  clearTimeout(noticeTimer);
   stopChecks?.();
 });
 </script>
@@ -557,7 +596,7 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 
 .status { display: flex; flex-direction: column; }
 .check { align-items: flex-start !important; }
-.check small { margin-top: 2px; font: 12.5px/1.4 Plex, sans-serif; color: var(--muted); }
+.pane li.check small { margin-top: 2px; font: 12.5px/1.4 Plex, sans-serif; color: var(--muted); }
 .mark { width: 9px; height: 9px; margin-top: 6px; border-radius: 50%; flex: none; background: var(--accent); }
 .mark.warn { background: var(--warn); }
 .mark.fail { background: var(--bad); }
@@ -570,7 +609,7 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 .spin { display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--control-line); border-top-color: var(--accent); animation: spin .8s linear infinite; }
 .squad, .intel { display: flex; flex-direction: column; }
 .squad li > button { flex: none; }
-.squad li > span:nth-child(2) small { font: 12px/1.4 Plex, sans-serif; letter-spacing: 0; text-transform: none; }
+.pane.squad li > span:nth-child(2) small { font: 12px/1.4 Plex, sans-serif; letter-spacing: 0; text-transform: none; }
 .sub { margin: 14px 0 4px; font-size: 13px; }
 .squad .foot { gap: 4px; }
 .squad .foot p { margin: 0; }
@@ -597,6 +636,23 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 .mono { font: 13px PlexMono, monospace; font-weight: 400; }
 .modal-enter-active, .modal-leave-active { transition: opacity .2s; }
 .modal-enter-from, .modal-leave-to { opacity: 0; }
+.notice { margin-top: 18px; max-width: 940px; padding: 14px 20px 16px; border-radius: 6px; background: rgba(240, 180, 76, .07); border: 1px solid rgba(240, 180, 76, .35); }
+.notice p { margin: 0; }
+.notice-top { display: flex; gap: 16px; justify-content: space-between; align-items: flex-start; }
+.notice-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 4px !important; }
+.notice-head b { font: 700 16px PlexCond, sans-serif; text-transform: uppercase; letter-spacing: .02em; color: var(--warn); }
+.eta { padding: 1px 8px; border-radius: 4px; background: rgba(240, 180, 76, .16); font: 13px PlexMono, monospace; }
+.notice .soft { font-size: 14px; }
+.notice-act { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; flex: none; }
+.notice-servers { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 8px; margin-top: 10px; }
+.nbox { padding: 8px 12px; border-radius: 6px; background: rgba(10, 14, 15, .55); border: 1px solid var(--line); }
+.nbox.mine { border-color: rgba(240, 180, 76, .55); }
+.nbox p:first-child { display: flex; justify-content: space-between; gap: 8px; font-size: 13.5px; }
+.nbox .mono { font-size: 12px; }
+.doing { font-size: 12.5px; color: var(--muted); }
+.doing.now { color: var(--warn); } .doing.done { color: var(--accent); }
+.meter { display: block; height: 3px; margin-top: 6px; border-radius: 2px; background: var(--line); overflow: hidden; }
+.meter i { display: block; height: 100%; background: var(--warn); transition: width .4s var(--ease); }
 @keyframes reveal { to { opacity: 1; transform: none; } }
 @keyframes drift { to { transform: translate(-6%, 4%) scale(1.08); } }
 @keyframes scan { to { background-position: 0 64px; } }
