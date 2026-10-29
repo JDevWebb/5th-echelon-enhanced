@@ -13,8 +13,25 @@ mod support;
 mod update;
 mod whats_new;
 
+/// Where Microsoft offers the WebView2 runtime, for a PC without it.
+#[cfg(target_os = "windows")]
+const WEBVIEW2_PAGE: &str = "https://developer.microsoft.com/microsoft-edge/webview2/";
+
 fn main() {
     launcher::logging::init();
+    // The window is a web view: on Windows it needs Microsoft's WebView2 runtime (part of
+    // Windows 11 and of Edge; an older Windows 10 may lack it). Without it, say so and open its
+    // download page, rather than fail to open.
+    #[cfg(target_os = "windows")]
+    if let Err(e) = tauri::webview_version() {
+        tracing::error!("No WebView2 runtime: {e}");
+        launcher::logging::show_msgbox(
+            "The launcher needs Microsoft's WebView2 runtime, which this PC doesn't have yet.\n\nPress OK to open Microsoft's download page: get the Evergreen Bootstrapper, run it, then start the launcher again.",
+            "5th Echelon",
+        );
+        let _ = std::process::Command::new("explorer").arg(WEBVIEW2_PAGE).spawn();
+        return;
+    }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
