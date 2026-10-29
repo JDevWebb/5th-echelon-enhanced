@@ -18,6 +18,11 @@ mod whats_new;
 const WEBVIEW2_PAGE: &str = "https://developer.microsoft.com/microsoft-edge/webview2/";
 
 fn main() {
+    // The egui launcher's test that this one starts here (Linux: every library it needs, such as
+    // WebKitGTK 4.1, is there): it got this far.
+    if std::env::args().nth(1).as_deref() == Some("--probe") {
+        return;
+    }
     launcher::logging::init();
     // The window is a web view: on Windows it needs Microsoft's WebView2 runtime (part of
     // Windows 11 and of Edge; an older Windows 10 may lack it). Without it, say so and open its
@@ -114,6 +119,7 @@ fn main() {
             settings::import_identity,
             settings::set_directory,
             settings::my_reports,
+            settings::use_classic,
             update::check_update,
             update::update_banner,
             update::update_later,

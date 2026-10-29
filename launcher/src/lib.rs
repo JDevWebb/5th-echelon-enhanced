@@ -15,6 +15,7 @@ pub mod diagnostics;
 pub mod dll_utils;
 pub mod feedback;
 pub mod flow;
+pub mod front_door;
 pub mod logging;
 pub mod maintenance;
 pub mod network;
@@ -83,6 +84,11 @@ mod gui {
 
     /// The egui launcher: its window, until it closes.
     pub fn run() -> eframe::Result {
+        // Linux: the Tauri interface when it can run (front_door.rs); this window otherwise.
+        // First, so its log isn't moved aside by this one's.
+        if let Some(code) = crate::front_door::try_tauri(scale::gamescope()) {
+            std::process::exit(code);
+        }
         logging::init();
         if scale::gamescope() {
             tracing::info!("Running in gamescope (gaming mode): full screen");

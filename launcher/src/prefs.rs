@@ -185,6 +185,9 @@ pub struct Prefs {
     /// lobby set there by hand is never touched by a plain Play.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     quick_start_set: bool,
+    /// Linux: the classic (egui) interface, not the Tauri one (front_door.rs).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    classic_interface: bool,
 }
 
 /// What the Play button starts: the game as it is, or straight into an online lobby
@@ -434,6 +437,17 @@ impl Prefs {
             prefs.quick_start_set = set;
             prefs.save();
         }
+    }
+
+    /// Linux: the player chose the classic (egui) interface.
+    pub fn classic_interface() -> bool {
+        Self::load().classic_interface
+    }
+
+    pub fn set_classic_interface(on: bool) {
+        let mut prefs = Self::load();
+        prefs.classic_interface = on;
+        prefs.save();
     }
 
     pub fn set_play_mode(mode: PlayMode) {

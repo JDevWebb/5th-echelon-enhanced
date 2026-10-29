@@ -296,6 +296,11 @@
               </div>
               <button type="button" class="btn" @click="$emit('fullscreen')">Full screen (F11)</button>
             </section>
+            <section v-if="view.classic !== null" class="card">
+              <h3>Interface</h3>
+              <p class="muted">The classic interface is the launcher as it was before 0.4.8: plainer, and it runs where this one can't (it's always used in the Steam Deck's gaming mode). Settings › Display there switches back.</p>
+              <button type="button" class="btn" @click="call('use_classic')">Use the classic interface</button>
+            </section>
           </div>
 
           <!-- Feedback -->
