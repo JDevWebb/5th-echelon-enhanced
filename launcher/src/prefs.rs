@@ -57,6 +57,15 @@ impl Game {
     }
 }
 
+impl Game {
+    /// Changes the settings, reporting a failure to save.
+    pub fn update(&mut self, notices: &mut crate::activity::Activities, f: impl FnOnce(&mut Config)) {
+        if let Err(e) = self.cfg.update(f) {
+            notices.error(format!("Couldn't save the settings: {e}"));
+        }
+    }
+}
+
 /// The size and time of the game folder's Uplay DLLs, to tell when one changes.
 fn uplay_dlls(dir: &Path) -> Vec<Option<(u64, std::time::SystemTime)>> {
     [setup::install::DLL_NAME, setup::install::ORIG_DLL_NAME]

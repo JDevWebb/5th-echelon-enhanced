@@ -5,7 +5,6 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use eframe::egui;
-use setup::config::Config;
 
 use crate::play::Play;
 use crate::server::Server;
@@ -51,22 +50,12 @@ pub enum View {
     Server,
 }
 
-pub use crate::prefs::Game;
-pub use crate::prefs::PlayMode;
-pub use crate::prefs::Prefs;
-
-impl Game {
-    /// Changes the settings, reporting a failure to save.
-    pub fn update(&mut self, notices: &mut Notices, f: impl FnOnce(&mut Config)) {
-        if let Err(e) = self.cfg.update(f) {
-            notices.error(format!("Couldn't save the settings: {e}"));
-        }
-    }
-}
-
 /// Notices and tasks, in the activity bar along the bottom (activity.rs): `info` and
 /// `error` make a one-line activity.
 pub use crate::activity::Activities as Notices;
+pub use crate::prefs::Game;
+pub use crate::prefs::PlayMode;
+pub use crate::prefs::Prefs;
 
 pub struct App {
     view: View,

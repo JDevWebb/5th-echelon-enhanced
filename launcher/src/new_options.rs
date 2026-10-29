@@ -8,12 +8,15 @@
 
 use std::path::Path;
 
+#[cfg(feature = "gui")]
 use eframe::egui;
+#[cfg(feature = "gui")]
 use eframe::egui::RichText;
 
-use crate::app::Game;
-use crate::app::Notices;
-use crate::app::Prefs;
+use crate::activity::Activities as Notices;
+use crate::prefs::Game;
+use crate::prefs::Prefs;
+#[cfg(feature = "gui")]
 use crate::theme;
 
 pub struct NewOption {
@@ -52,7 +55,7 @@ pub const OPTIONS: &[NewOption] = &[
         title: "Brighten the picture",
         text: "The game caps its brightness low, which can look dark (under Proton especially). This lifts the cap and sets a brighter picture by editing Blacklist.ini; turning it off puts the original back. Settings › Game sets how bright.",
         recommended: false,
-        setting: Setting::Launcher(crate::settings::set_brighten),
+        setting: Setting::Launcher(set_brighten),
         blocked: |_| None,
     },
     NewOption {
@@ -69,9 +72,9 @@ pub const OPTIONS: &[NewOption] = &[
 /// Settings › Game).
 pub const FUSION_FIX_MOUSE: &str = "Fusion Fix already removes it (DisableNegativeMouseAcceleration = 1 in SplinterCellBlacklist.FusionFix.ini). Set that to 0 to use this one: it keeps the spike limit, which matters under Proton.";
 
-const INTRO_UPDATE: &str = "This update adds options that change how the game plays. Each is set as we recommend; tick or untick any you like.";
-const INTRO_SETUP: &str = "These change how the game plays. Each is set as we recommend; tick or untick any you like.";
-const LATER: &str = "Change these any time in Settings › Game.";
+pub const INTRO_UPDATE: &str = "This update adds options that change how the game plays. Each is set as we recommend; tick or untick any you like.";
+pub const INTRO_SETUP: &str = "These change how the game plays. Each is set as we recommend; tick or untick any you like.";
+pub const LATER: &str = "Change these any time in Settings › Game.";
 
 /// The options in `options` the player hasn't been asked about (`asked`: their ids).
 fn not_asked<'a>(options: &'a [NewOption], asked: &[String]) -> Vec<&'a NewOption> {
@@ -92,6 +95,7 @@ pub fn offered(options: &[&NewOption], game_dir: &Path) -> Vec<bool> {
     options.iter().map(|o| o.recommended && (o.blocked)(game_dir).is_none()).collect()
 }
 
+#[cfg(feature = "gui")]
 /// The options as cards with a switch each, `choices` in the same order.
 pub fn list(ui: &mut egui::Ui, options: &[&NewOption], choices: &mut [bool], game_dir: &Path) {
     for (option, on) in options.iter().zip(choices.iter_mut()) {
@@ -140,6 +144,7 @@ pub fn save(game: &mut Game, notices: &mut Notices, options: &[&NewOption], choi
     Prefs::add_options_asked(options.iter().map(|o| o.id));
 }
 
+#[cfg(feature = "gui")]
 /// The guided setup's step: the intro over the list.
 pub fn setup_step(ui: &mut egui::Ui, options: &[&NewOption], choices: &mut [bool], game_dir: &Path) {
     ui.label(RichText::new(INTRO_SETUP).color(theme::SOFT));
@@ -147,6 +152,7 @@ pub fn setup_step(ui: &mut egui::Ui, options: &[&NewOption], choices: &mut [bool
     list(ui, options, choices, game_dir);
 }
 
+#[cfg(feature = "gui")]
 /// The window after an update, while it's open.
 #[derive(Default)]
 pub struct Ask {
@@ -156,6 +162,7 @@ pub struct Ask {
     done: bool,
 }
 
+#[cfg(feature = "gui")]
 impl Ask {
     /// Whether the window is up now (What's new waits for it).
     pub fn asking(&self) -> bool {
@@ -204,6 +211,24 @@ impl Ask {
             self.done = true;
             notices.info("Saved. Settings › Game changes them any time.");
         }
+    }
+}
+
+/// Turns "Brighten the picture" on or off: edits Blacklist.ini (the game must be closed), then
+/// notes it (here and in new_options.rs). On a failure the setting stays as it was.
+pub fn set_brighten(game: &mut Game, notices: &mut Notices, on: bool) {
+    let mut backup = game.cfg.gamma_backup.clone();
+    let res = if on {
+        setup::gamma::enable(&game.dir, game.cfg.brightness, &mut backup)
+    } else {
+        setup::gamma::disable(&game.dir, &mut backup)
+    };
+    match res {
+        Ok(()) => game.update(notices, |c| {
+            c.brighten = on;
+            c.gamma_backup = backup;
+        }),
+        Err(e) => notices.error(format!("Couldn't change the brightness: {e}")),
     }
 }
 

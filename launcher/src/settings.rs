@@ -609,7 +609,7 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
             )
             .changed();
         if toggled {
-            set_brighten(game, notices, brighten);
+            crate::new_options::set_brighten(game, notices, brighten);
         }
         if game.cfg.brighten {
             // Shown as it's dragged, written once: when the drag ends, or on a click or a key.
@@ -701,24 +701,6 @@ fn beta_features(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     }
     if beta != game.cfg.hook_config.beta {
         game.update(notices, |c| c.hook_config.beta = beta);
-    }
-}
-
-/// Turns "Brighten the picture" on or off: edits Blacklist.ini (the game must be closed), then
-/// notes it (here and in new_options.rs). On a failure the setting stays as it was.
-pub(crate) fn set_brighten(game: &mut Game, notices: &mut Notices, on: bool) {
-    let mut backup = game.cfg.gamma_backup.clone();
-    let res = if on {
-        setup::gamma::enable(&game.dir, game.cfg.brightness, &mut backup)
-    } else {
-        setup::gamma::disable(&game.dir, &mut backup)
-    };
-    match res {
-        Ok(()) => game.update(notices, |c| {
-            c.brighten = on;
-            c.gamma_backup = backup;
-        }),
-        Err(e) => notices.error(format!("Couldn't change the brightness: {e}")),
     }
 }
 

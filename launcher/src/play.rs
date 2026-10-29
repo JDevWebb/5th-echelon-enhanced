@@ -2724,43 +2724,8 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked:
 /// Starts the game, or says why not: whether it's starting. `mode` says whether it starts
 /// straight into an online lobby.
 fn launch(play: &mut Play, game: &mut Game, notices: &mut Notices, mode: crate::app::PlayMode) -> bool {
-    // The question about diagnostics is answered first (diagnostics.rs shows it).
-    if crate::diagnostics::Ask::pending(Some(game)) {
-        notices.info("First, say whether the game may send its diagnostics.");
-        return false;
-    }
-    // And the new game options (new_options.rs asks).
-    if !crate::new_options::pending(Some(game)).is_empty() {
-        notices.info("First, choose the new game options.");
-        return false;
-    }
-    if setup::game::game_running() {
-        notices.error("Splinter Cell: Blacklist is already running.");
-        return false;
-    }
-    // The server would keep the game out: say why here, and how to fix it.
-    if name_not_allowed(play, game).is_some() {
-        notices.error("Your name breaks this network's rules. Choose another first: Settings › Servers and accounts › Rename.");
-        return false;
-    }
-    // The hook reads uplay.toml when the game starts: make sure it has the
-    // current profile.
-    if game.managed.is_none() {
-        if let Some(profile) = game.cfg.current_profile().cloned() {
-            game.update(notices, |c| c.apply_profile(&profile));
-        }
-        // Straight into a lobby, or a plain start (which clears a lobby the launcher set before,
-        // never one set by hand). The game reads it on every start, through Steam too.
-        let set_before = crate::app::Prefs::quick_start_set();
-        let mut set = set_before;
-        game.update(notices, |c| set = mode.apply(c, set_before));
-        crate::app::Prefs::set_quick_start_set(set);
-    }
-    let Some(version) = setup::game::pick_version(&game.dir, game.cfg.default_game) else {
-        notices.error("The game's executable is missing.");
-        return false;
-    };
-    match setup::launch::launch(&game.dir, version, crate::app::Prefs::start_through_steam()) {
+    let name_not_allowed = name_not_allowed(play, game).is_some();
+    match crate::start::start(game, notices, mode, name_not_allowed) {
         Ok(setup::launch::Launched::Game(child)) => play.running = Some(child),
         Ok(setup::launch::Launched::Steam) => notices.info("Steam is starting the game."),
         Ok(setup::launch::Launched::GameNotSteam(child, why)) => {
@@ -2768,9 +2733,12 @@ fn launch(play: &mut Play, game: &mut Game, notices: &mut Notices, mode: crate::
             notices.error(format!("Steam couldn't start the game ({why}), so the launcher did: no Steam Input this time."));
         }
         Ok(setup::launch::Launched::Elevated) => notices.info("The game was started as administrator, because it's set to run that way."),
-        Err(e) => {
-            tracing::warn!("couldn't start the game: {e}");
-            notices.error(format!("Couldn't start the game: {e}"));
+        Err(crate::start::Refused::First(text)) => {
+            notices.info(text);
+            return false;
+        }
+        Err(crate::start::Refused::Error(text)) => {
+            notices.error(text);
             return false;
         }
     }

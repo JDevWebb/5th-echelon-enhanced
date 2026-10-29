@@ -10,8 +10,7 @@ pub mod activity;
 mod app;
 #[cfg(feature = "gui")]
 mod chat;
-#[cfg(feature = "gui")]
-mod diagnostics;
+pub mod diagnostics;
 mod dll_utils;
 #[cfg(feature = "gui")]
 mod feedback;
@@ -19,8 +18,7 @@ pub mod flow;
 pub mod logging;
 pub mod maintenance;
 pub mod network;
-#[cfg(feature = "gui")]
-mod new_options;
+pub mod new_options;
 #[cfg(feature = "gui")]
 mod play;
 pub mod prefs;
@@ -37,6 +35,7 @@ pub mod services;
 mod settings;
 #[cfg(all(test, feature = "shots"))]
 mod shots;
+pub mod start;
 #[cfg(feature = "gui")]
 mod support;
 pub mod task;
