@@ -365,3 +365,9 @@ pub fn take_action(app: &tauri::AppHandle, id: u64, action: Action) -> bool {
     }
     true
 }
+
+/// Whether a report is still sending (or the one left unsent last time), for the close ask.
+#[tauri::command(async)]
+pub fn report_sending(state: tauri::State<Feedback>) -> bool {
+    state.lock().sending
+}

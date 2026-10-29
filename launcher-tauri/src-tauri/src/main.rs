@@ -89,6 +89,7 @@ fn main() {
             feedback::feedback_send,
             feedback::feedback_close,
             feedback::ask_feedback,
+            feedback::report_sending,
             commands::open_url,
             commands::key_art,
             commands::dismiss_emulator_notice,

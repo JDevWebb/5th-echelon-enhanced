@@ -22,6 +22,19 @@
     </div>
     <AccountDialog :asked="askedName" :max-name="info.max_name" @close="askedName = null" />
     <Feedback />
+    <Transition name="modal">
+      <div v-if="closing" class="backdrop">
+        <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="closing-title">
+          <h2 id="closing-title">Your report is still sending</h2>
+          <p class="soft">Wait and the launcher closes as soon as it's sent, or close now and it's sent the next time you start the launcher.</p>
+          <p v-if="closing === 'waiting'" class="muted working"><i class="spin"></i>Waiting for it to send…</p>
+          <div class="row end">
+            <button type="button" class="btn" @click="closeNow">Close now, send it next time</button>
+            <button type="button" class="btn primary" :disabled="closing === 'waiting'" @click="waitThenClose">Wait, then close</button>
+          </div>
+        </div>
+      </div>
+    </Transition>
     <WhatsNew ref="whatsNew" :waiting="questionsUp" :community="info.community" @network="refresh" />
     <Questions ref="questions" :with-options="!(setupShown && fresh)" @up="(up) => (questionsUp = up)" />
   </div>
@@ -131,8 +144,29 @@ async function played() {
   await Promise.all([refresh(), bar.value?.refresh(), questions.value?.refresh()]);
 }
 
+// Closing while a report sends: wait for it, or close and send it next time (it's kept either
+// way), as egui asks.
+const closing = ref(null);
+let closeTimer = null;
+function closeNow() {
+  window.__TAURI__?.window.getCurrentWindow().destroy();
+}
+function waitThenClose() {
+  closing.value = 'waiting';
+  closeTimer = setInterval(async () => {
+    if (!(await call('report_sending'))) closeNow();
+  }, 500);
+}
+
 onMounted(async () => {
   await refresh();
+  if (inTauri) {
+    window.__TAURI__.window.getCurrentWindow().onCloseRequested(async (event) => {
+      if (closing.value || !(await call('report_sending'))) return;
+      event.preventDefault();
+      closing.value = 'asking';
+    });
+  }
   document.addEventListener('keydown', keys);
   // The size kept from before.
   const kept = (await call('settings')).size;
@@ -152,6 +186,7 @@ onMounted(async () => {
   }
 });
 onBeforeUnmount(() => {
+  clearInterval(closeTimer);
   document.removeEventListener('keydown', keys);
   clearInterval(timer);
   stopSetup?.();
@@ -165,4 +200,16 @@ onBeforeUnmount(() => {
 .column { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .screen { flex: 1; min-height: 0; position: relative; }
 .screen > * { height: 100%; }
+.backdrop { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; padding: 24px; background: rgba(3, 5, 6, .62); backdrop-filter: blur(6px); }
+.dialog { width: min(460px, 100%); padding: 24px 26px 20px; border-radius: 6px; background: var(--surface); border: 1px solid var(--control-line); box-shadow: 0 24px 70px rgba(0, 0, 0, .6); }
+.dialog h2 { margin: 0 0 10px; font: 700 22px/1.1 PlexCond, sans-serif; text-transform: uppercase; }
+.dialog p { margin: 0 0 10px; }
+.row { display: flex; gap: 10px; }
+.row.end { justify-content: flex-end; margin-top: 8px; }
+.btn:disabled { opacity: .45; cursor: default; }
+.working { display: flex; align-items: center; gap: 10px; }
+.spin { display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--control-line); border-top-color: var(--accent); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.modal-enter-active, .modal-leave-active { transition: opacity .2s; }
+.modal-enter-from, .modal-leave-to { opacity: 0; }
 </style>
