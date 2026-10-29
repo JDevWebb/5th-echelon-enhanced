@@ -2368,6 +2368,7 @@ dependencies = [
  "tauri-build",
  "tauri-plugin-dialog",
  "toml 0.8.23",
+ "tracing",
 ]
 
 [[package]]

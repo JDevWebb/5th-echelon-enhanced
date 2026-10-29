@@ -29,38 +29,38 @@ pub struct Launcher {
     inner: Mutex<Inner>,
 }
 
-struct Inner {
-    game: Option<Game>,
-    notices: Activities,
-    running: Option<Child>,
+pub(crate) struct Inner {
+    pub(crate) game: Option<Game>,
+    pub(crate) notices: Activities,
+    pub(crate) running: Option<Child>,
     /// The network's servers with this PC's ping to each, and what to say about the list.
-    directory: Option<Vec<(Listing, Option<u32>)>>,
-    directory_note: Option<String>,
+    pub(crate) directory: Option<Vec<(Listing, Option<u32>)>>,
+    pub(crate) directory_note: Option<String>,
     /// What the directory last said about a release going out and the network's maintenance,
     /// when it was read, and the player's server as last listed (it leaves the list while it
     /// restarts).
-    rollout: Option<setup::directory::Rollout>,
-    network_maintenance: Option<setup::directory::Window>,
-    browsed_at: Option<Instant>,
-    my_listing: Option<Listing>,
+    pub(crate) rollout: Option<setup::directory::Rollout>,
+    pub(crate) network_maintenance: Option<setup::directory::Window>,
+    pub(crate) browsed_at: Option<Instant>,
+    pub(crate) my_listing: Option<Listing>,
     /// The setup running or last run (to try again), and its activity when it failed.
-    setup: Option<connect::Asked>,
-    setup_running: bool,
-    setup_failed: Option<u64>,
+    pub(crate) setup: Option<connect::Asked>,
+    pub(crate) setup_running: bool,
+    pub(crate) setup_failed: Option<u64>,
     /// The checklist as last gathered, the game version's support, and when.
-    checks: Vec<setup::diagnose::Check>,
-    support: Option<launcher::flow::Support>,
-    checked: Option<Instant>,
-    checking: bool,
+    pub(crate) checks: Vec<setup::diagnose::Check>,
+    pub(crate) support: Option<launcher::flow::Support>,
+    pub(crate) checked: Option<Instant>,
+    pub(crate) checking: bool,
     /// A fix running, and its activity with the fix when it failed (to try again).
-    fixing: bool,
-    fix_failed: Option<(u64, Fix)>,
+    pub(crate) fixing: bool,
+    pub(crate) fix_failed: Option<(u64, Fix)>,
     /// Friends as last fetched (with the checklist), and whether a fetch is running.
-    friends: launcher::flow::Friends,
-    fetching_friends: bool,
+    pub(crate) friends: launcher::flow::Friends,
+    pub(crate) fetching_friends: bool,
     /// The server's news and what's played there, with the server and when they were asked.
-    news: Option<(String, Instant, Vec<setup::server_info::NewsItem>)>,
-    playing: Option<(String, Instant, Option<server_api::playing::Playing>)>,
+    pub(crate) news: Option<(String, Instant, Vec<setup::server_info::NewsItem>)>,
+    pub(crate) playing: Option<(String, Instant, Option<server_api::playing::Playing>)>,
 }
 
 impl Launcher {
@@ -96,18 +96,18 @@ impl Launcher {
         }
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+    pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 }
 
 /// Tells the page the activity bar changed (it asks for what to show, `activity`).
-fn changed(app: &tauri::AppHandle) {
+pub(crate) fn changed(app: &tauri::AppHandle) {
     let _ = app.emit("activity", ());
 }
 
 /// How an activity reports back while it runs, for `Activities::start_with`.
-fn notifier(app: &tauri::AppHandle) -> Option<Arc<dyn Fn() + Send + Sync>> {
+pub(crate) fn notifier(app: &tauri::AppHandle) -> Option<Arc<dyn Fn() + Send + Sync>> {
     let app = app.clone();
     Some(Arc::new(move || changed(&app)))
 }
@@ -158,13 +158,11 @@ pub fn info(state: tauri::State<Launcher>) -> Info {
 }
 
 /// Whether the game is running: the one started from here, or any (through Steam, as
-/// administrator, or by hand).
-fn game_running(inner: &mut Inner) -> bool {
-    if let Some(child) = inner.running.as_mut() {
-        if matches!(child.try_wait(), Ok(None)) {
-            return true;
-        }
-        inner.running = None;
+/// administrator, or by hand). The one started here stays until the watcher takes its exit
+/// (feedback.rs).
+pub(crate) fn game_running(inner: &mut Inner) -> bool {
+    if inner.running.as_mut().is_some_and(|child| matches!(child.try_wait(), Ok(None))) {
+        return true;
     }
     setup::game::game_running()
 }
@@ -394,6 +392,12 @@ pub fn activity_action(app: tauri::AppHandle, state: tauri::State<Launcher>, id:
         _ => return None,
     };
     inner.notices.press(id, action);
+    drop(inner);
+    if crate::feedback::take_action(&app, id, action) {
+        changed(&app);
+        return None;
+    }
+    let mut inner = state.lock();
     if let Some((failed, fix)) = inner.fix_failed.filter(|(failed, _)| *failed == id && action == Action::Retry) {
         let _ = failed;
         inner.fix_failed = None;

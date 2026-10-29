@@ -14,6 +14,7 @@
         <ActivityBar ref="bar" />
       </div>
     </div>
+    <Feedback />
     <Questions ref="questions" :with-options="!(setupShown && fresh)" />
   </div>
 </template>
@@ -29,6 +30,7 @@ import Setup from './views/Setup.vue';
 import Placeholder from './views/Placeholder.vue';
 import ActivityBar from './components/ActivityBar.vue';
 import Questions from './components/Questions.vue';
+import Feedback from './components/Feedback.vue';
 import { call, inTauri, listen } from './lib/tauri.js';
 
 const PLACEHOLDERS = {

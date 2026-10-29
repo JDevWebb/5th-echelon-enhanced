@@ -38,6 +38,15 @@ const sample = {
     ],
   },
   find_on_network: [],
+  // ?feedback: the ask after a game in the preview.
+  feedback: location.search.includes('feedback')
+    ? {
+      why: 'The game seems to have crashed.', mismatch: null,
+      problems: [['join', 'Couldn’t join a match or a friend'], ['lag', 'Lag, or things out of sync'], ['connection', 'Lost the connection'], ['crash', 'The game crashed or froze'], ['version', '"Different version of the game"'], ['signin', 'Couldn’t sign in'], ['other', 'Something else']],
+      ticked: ['crash'], files: [['bl-tracing.log', 412], ['launcher.log', 18], ['checklist.txt', 1]], attach: true, manual: false, server: 'Falkenstein, Germany',
+    }
+    : null,
+  feedback_file: '[20:14:02] WARN net: connection to host lost\n[20:14:03] ERROR game: unhandled exception',
   // ?notice: a release going out in the preview.
   notice: location.search.includes('notice')
     ? {
@@ -118,6 +127,8 @@ const preview = {
   fix_everything: () => true,
   switch_server: () => null,
   join_friend: () => null,
+  feedback_send: () => { sample.feedback = null; },
+  feedback_close: () => { sample.feedback = null; },
   player_action: () => null,
   switch_to_friend: ({ host }) => {
     setTimeout(() => previewEmit('setup', { kind: 'needs-name', server: host, suggested: 'Kiwi', taken: false }), 600);

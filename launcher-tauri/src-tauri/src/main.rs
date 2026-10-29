@@ -2,12 +2,18 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod feedback;
 
 fn main() {
     launcher::logging::init();
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(commands::Launcher::new())
+        .manage(feedback::Feedback::default())
+        .setup(|app| {
+            feedback::start(app.handle());
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::info,
             commands::set_play_mode,
@@ -36,6 +42,11 @@ fn main() {
             commands::news,
             commands::switch_to_friend,
             commands::notice,
+            feedback::feedback,
+            feedback::feedback_file,
+            feedback::feedback_send,
+            feedback::feedback_close,
+            feedback::ask_feedback,
         ])
         .run(tauri::generate_context!())
         .expect("the launcher's window");
