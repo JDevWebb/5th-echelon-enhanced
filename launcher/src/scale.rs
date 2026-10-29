@@ -7,11 +7,10 @@ use eframe::egui;
 
 /// The window's first size, in points (1120x760 until 0.4.8).
 pub const DESIGN: egui::Vec2 = egui::vec2(1280.0, 800.0);
-/// The player's size: from this...
-pub const MIN_SIZE: f32 = 0.7;
-/// ...to this, in steps of [`STEP`].
-pub const MAX_SIZE: f32 = 1.6;
-const STEP: f32 = 0.1;
+pub use crate::prefs::clamp;
+pub use crate::prefs::MAX_SIZE;
+pub use crate::prefs::MIN_SIZE;
+use crate::prefs::STEP;
 /// The window starts no larger than this share of the screen.
 const OF_SCREEN: f32 = 0.9;
 
@@ -21,14 +20,6 @@ const OF_SCREEN: f32 = 0.9;
 /// the further right and down; the launcher runs full screen there instead.
 pub fn gamescope() -> bool {
     std::env::var_os("GAMESCOPE_WAYLAND_DISPLAY").is_some() || std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|d| d.eq_ignore_ascii_case("gamescope"))
-}
-
-/// A size the player chose, kept within range and to a step.
-pub fn clamp(size: f32) -> f32 {
-    if !size.is_finite() {
-        return 1.0;
-    }
-    ((size / STEP).round() * STEP).clamp(MIN_SIZE, MAX_SIZE)
 }
 
 /// The zoom for the player's `size`: the screens lay themselves out at real size for whatever

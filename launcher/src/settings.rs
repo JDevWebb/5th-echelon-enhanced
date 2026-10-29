@@ -4,22 +4,27 @@
 
 use std::time::Duration;
 
+#[cfg(feature = "gui")]
 use eframe::egui;
+#[cfg(feature = "gui")]
 use eframe::egui::RichText;
 use hooks_config::Hook;
 use hooks_config::LogLevel;
 use setup::save::SaveState;
 
+use crate::activity::Activities as Notices;
+#[cfg(feature = "gui")]
 use crate::app::App;
-use crate::app::Game;
-use crate::app::Notices;
-use crate::app::Prefs;
 use crate::flow;
+use crate::prefs::Game;
+use crate::prefs::Prefs;
+#[cfg(feature = "gui")]
 use crate::task::Slot;
+#[cfg(feature = "gui")]
 use crate::theme;
 
 /// Each check's name, how it went, and what to say about it.
-type TestResults = Vec<(&'static str, setup::diagnose::Status, Option<String>)>;
+pub type TestResults = Vec<(&'static str, setup::diagnose::Status, Option<String>)>;
 
 /// The parts of Settings, one shown at a time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -39,7 +44,7 @@ pub enum Section {
 }
 
 impl Section {
-    pub(crate) const ALL: [Self; 11] = [
+    pub const ALL: [Self; 11] = [
         Self::Game,
         Self::Network,
         Self::Servers,
@@ -53,7 +58,7 @@ impl Section {
         Self::About,
     ];
 
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Self::Game => "Game",
             Self::Network => "Network",
@@ -70,6 +75,7 @@ impl Section {
     }
 }
 
+#[cfg(feature = "gui")]
 #[derive(Default)]
 pub struct Settings {
     /// The section shown.
@@ -99,6 +105,7 @@ pub struct Settings {
     ubisoft_save: Option<(std::time::Instant, Option<std::path::PathBuf>)>,
 }
 
+#[cfg(feature = "gui")]
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     egui::SidePanel::left("settings-nav")
         .resizable(false)
@@ -152,6 +159,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
+#[cfg(feature = "gui")]
 fn body(app: &mut App, ui: &mut egui::Ui) {
     let current = app.settings_mut().0.section;
     ui.label(RichText::new(current.label()).family(theme::strong()).size(22.0));
@@ -242,6 +250,7 @@ fn body(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
+#[cfg(feature = "gui")]
 impl Settings {
     /// Runs `f` in the background, shown in the activity bar as `title`.
     fn work(&mut self, ctx: &egui::Context, title: &'static str, f: impl FnOnce() -> Result<String, String> + Send + 'static) {
@@ -250,6 +259,7 @@ impl Settings {
     }
 }
 
+#[cfg(feature = "gui")]
 /// Asking how games went, and sending a report now.
 fn feedback(app: &mut App, ui: &mut egui::Ui) {
     let (_, game, notices) = app.settings_mut();
@@ -334,6 +344,7 @@ fn feedback(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
+#[cfg(feature = "gui")]
 /// The launcher's size: it fits its window, and the player's size comes on top.
 fn display(app: &mut App, ui: &mut egui::Ui) {
     section(ui, "Size", |ui| {
@@ -371,6 +382,7 @@ fn display(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
+#[cfg(feature = "gui")]
 fn about(app: &mut App, ui: &mut egui::Ui) {
     let ctx = ui.ctx().clone();
     section(ui, "About", |ui| {
@@ -393,6 +405,7 @@ fn about(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
+#[cfg(feature = "gui")]
 fn section(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
     theme::card().show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -403,6 +416,7 @@ fn section(ui: &mut egui::Ui, title: &str, body: impl FnOnce(&mut egui::Ui)) {
     ui.add_space(10.0);
 }
 
+#[cfg(feature = "gui")]
 fn game_folder(app: &mut App, ui: &mut egui::Ui) {
     let current = app.game.as_ref().map(|g| g.dir.clone());
     let found = app.found.clone();
@@ -439,9 +453,27 @@ fn game_folder(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
-/// The adapter choice that pins nothing.
-const AUTOMATIC: &str = "Automatic (the one that reaches the server)";
+/// Pins the game to a network adapter (None: automatic, the one that reaches the server), for
+/// the current server's account and the game's settings.
+pub fn set_adapter(game: &mut Game, notices: &mut Notices, adapter: Option<String>) {
+    game.update(notices, |c| {
+        if let Some(mut p) = c.current_profile().cloned() {
+            p.adapter = adapter.clone();
+            c.upsert_profile(p.clone());
+            c.apply_profile(&p);
+        } else {
+            c.hook_config.networking.adapter = adapter.clone();
+        }
+        if adapter.is_none() {
+            c.hook_config.networking.require_adapter = false;
+        }
+    });
+}
 
+/// The adapter choice that pins nothing.
+pub const AUTOMATIC: &str = "Automatic (the one that reaches the server)";
+
+#[cfg(feature = "gui")]
 fn network(game: &mut Game, notices: &mut Notices, locked: bool, ui: &mut egui::Ui) {
     let adapters = setup::net::adapters();
     let pinned = game.cfg.hook_config.networking.adapter.clone();
@@ -465,18 +497,7 @@ fn network(game: &mut Game, notices: &mut Notices, locked: bool, ui: &mut egui::
                 }
             });
             if let Some(adapter) = choice {
-                game.update(notices, |c| {
-                    if let Some(mut p) = c.current_profile().cloned() {
-                        p.adapter = adapter.clone();
-                        c.upsert_profile(p.clone());
-                        c.apply_profile(&p);
-                    } else {
-                        c.hook_config.networking.adapter = adapter.clone();
-                    }
-                    if adapter.is_none() {
-                        c.hook_config.networking.require_adapter = false;
-                    }
-                });
+                set_adapter(game, notices, adapter);
             }
         });
         let mut require = game.cfg.hook_config.networking.require_adapter;
@@ -490,6 +511,7 @@ fn network(game: &mut Game, notices: &mut Notices, locked: bool, ui: &mut egui::
     });
 }
 
+#[cfg(feature = "gui")]
 /// How other players reach this PC over the internet (NAT traversal).
 fn internet_play(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     use hooks_config::NatMode;
@@ -519,6 +541,7 @@ fn internet_play(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     }
 }
 
+#[cfg(feature = "gui")]
 fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     // DirectX 11 unless the player picks 9 here (only offered when both are installed).
     let installed = setup::game::installed_versions(&game.dir);
@@ -675,12 +698,13 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
 }
 
 /// What a beta feature's switch says, and its hover text.
-const BETA_FEATURES: [(&str, &str); 1] = [(
+pub const BETA_FEATURES: [(&str, &str); 1] = [(
     "Mouse turning the same at any frame rate",
     "Above 60 fps the game turns less for the same mouse movement, so turning feels slow and players cap their frame rate. \
      This scales the mouse's turn by the frame rate, so it turns as it does at 60 fps. Only the mouse: controllers are left as they are.",
 )];
 
+#[cfg(feature = "gui")]
 /// Settings › Game › Beta features: changes still being tried out, off unless turned on here,
 /// never asked about. While any is on, each game's whole log goes to the server's admins when
 /// the game closes (feedback.rs), and this says so before one is turned on.
@@ -704,6 +728,7 @@ fn beta_features(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     }
 }
 
+#[cfg(feature = "gui")]
 /// When chat messages pop up in the game's overlay, per room (written for the overlay).
 fn notifications(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     use hooks_config::ChatToasts;
@@ -730,6 +755,7 @@ fn notifications(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     }
 }
 
+#[cfg(feature = "gui")]
 fn save_game(settings: &mut Settings, game: &mut Game, ctx: &egui::Context, ui: &mut egui::Ui) {
     let Some(path) = setup::save::save_path(&game.cfg.hook_config.save, &game.dir) else {
         ui.label(theme::muted(setup::wine::no_save_folder(&game.dir)));
@@ -810,6 +836,7 @@ fn save_game(settings: &mut Settings, game: &mut Game, ctx: &egui::Context, ui: 
     });
 }
 
+#[cfg(feature = "gui")]
 fn servers(settings: &mut Settings, game: &mut Game, notices: &mut Notices, locked: bool, ctx: &egui::Context, ui: &mut egui::Ui) {
     let profiles = game.cfg.profiles.clone();
     if profiles.is_empty() {
@@ -878,8 +905,8 @@ fn servers(settings: &mut Settings, game: &mut Game, notices: &mut Notices, lock
     });
 }
 
-/// Makes `identity` this PC's, keeping the one it replaces.
-fn use_identity(settings: &mut Settings, identity: &setup::player_identity::Identity, notices: &mut Notices) {
+/// Makes `identity` this PC's, keeping the one it replaces: whether it did.
+pub fn replace_identity(identity: &setup::player_identity::Identity, notices: &mut Notices) -> bool {
     match setup::player_identity::replace(identity) {
         Ok(kept) => {
             let kept = kept.map(|p| format!(" The one it replaced is kept in {}.", p.display())).unwrap_or_default();
@@ -887,16 +914,28 @@ fn use_identity(settings: &mut Settings, identity: &setup::player_identity::Iden
                 "This PC now uses the identity {}. Press Connect on each server again to sign in with it.{kept}",
                 identity::short(&identity.global_id())
             ));
-            settings.identity_import.clear();
-            settings.identity = None;
-            settings.confirm_identity_import = false;
             // The checklist signs in again with the new identity's accounts.
             crate::flow::forget_account_check();
+            true
         }
-        Err(e) => notices.error(e.to_string()),
+        Err(e) => {
+            notices.error(e.to_string());
+            false
+        }
     }
 }
 
+#[cfg(feature = "gui")]
+/// Makes `identity` this PC's, keeping the one it replaces.
+fn use_identity(settings: &mut Settings, identity: &setup::player_identity::Identity, notices: &mut Notices) {
+    if replace_identity(identity, notices) {
+        settings.identity_import.clear();
+        settings.identity = None;
+        settings.confirm_identity_import = false;
+    }
+}
+
+#[cfg(feature = "gui")]
 /// The player's identity across servers (see `setup::player_identity`), and
 /// the server directory.
 /// `accounts`: how many of this install's servers have an account saved.
@@ -1017,6 +1056,7 @@ fn identity_section(settings: &mut Settings, accounts: usize, notices: &mut Noti
     ));
 }
 
+#[cfg(feature = "gui")]
 fn connection_test(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui: &mut egui::Ui) {
     let Some(profile) = game.cfg.current_profile().cloned() else {
         ui.label(theme::muted("Choose a server first."));
@@ -1049,7 +1089,7 @@ fn connection_test(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui
     }
 }
 
-fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>, nat_mode: hooks_config::NatMode) -> TestResults {
+pub fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>, nat_mode: hooks_config::NatMode) -> TestResults {
     use crate::network;
     let rt = crate::services::rt();
     let api = profile.api_server_url().to_string();
@@ -1161,6 +1201,7 @@ fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>, nat_m
     results
 }
 
+#[cfg(feature = "gui")]
 fn client(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui: &mut egui::Ui) {
     let state = crate::dll_utils::bundled().map(|dll| setup::install::client_state(&game.dir, dll));
     ui.label(theme::muted(match state {
@@ -1212,6 +1253,7 @@ fn client(settings: &mut Settings, game: &Game, ctx: &egui::Context, ui: &mut eg
     });
 }
 
+#[cfg(feature = "gui")]
 fn hooks(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     ui.label(theme::muted("Which parts of the game the client patches. Leave these alone unless you're debugging."));
     let mut hook = game.cfg.hook_config.clone();

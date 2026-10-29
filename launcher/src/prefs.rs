@@ -96,6 +96,20 @@ impl Game {
     }
 }
 
+/// The player's size for the launcher: from this...
+pub const MIN_SIZE: f32 = 0.7;
+/// ...to this, in steps of [`STEP`].
+pub const MAX_SIZE: f32 = 1.6;
+pub const STEP: f32 = 0.1;
+
+/// A size the player chose, kept within range and to a step.
+pub fn clamp(size: f32) -> f32 {
+    if !size.is_finite() {
+        return 1.0;
+    }
+    ((size / STEP).round() * STEP).clamp(MIN_SIZE, MAX_SIZE)
+}
+
 /// The size and time of the game folder's Uplay DLLs, to tell when one changes.
 fn uplay_dlls(dir: &Path) -> Vec<Option<(u64, std::time::SystemTime)>> {
     [setup::install::DLL_NAME, setup::install::ORIG_DLL_NAME]
@@ -325,15 +339,13 @@ impl Prefs {
     }
 
     /// The player's size for the launcher (Settings › Display).
-    #[cfg(feature = "gui")]
     pub fn ui_scale() -> f32 {
-        crate::scale::clamp(Self::load().ui_scale.unwrap_or(1.0))
+        clamp(Self::load().ui_scale.unwrap_or(1.0))
     }
 
-    #[cfg(feature = "gui")]
     pub fn set_ui_scale(size: f32) {
         let mut prefs = Self::load();
-        let size = crate::scale::clamp(size);
+        let size = clamp(size);
         prefs.ui_scale = ((size - 1.0).abs() > f32::EPSILON).then_some(size);
         prefs.save();
     }

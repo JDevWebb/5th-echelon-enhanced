@@ -29,8 +29,7 @@ mod scale;
 mod server;
 pub mod server_menu;
 pub mod services;
-#[cfg(feature = "gui")]
-mod settings;
+pub mod settings;
 #[cfg(all(test, feature = "shots"))]
 mod shots;
 pub mod start;
