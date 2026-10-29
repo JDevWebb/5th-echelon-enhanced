@@ -163,26 +163,9 @@ impl App {
         self.play.game_changed();
     }
 
-    /// Opens a game folder, saying so when its settings came from an earlier launcher and
-    /// started over.
+    /// Opens a game folder (prefs.rs tidies it and says what it did).
     fn open_game(&mut self, dir: PathBuf) {
-        let game = Game::open(dir);
-        // Data version logging's files, from before it was off by default (0.4.2).
-        if !game.cfg.hook_config.log_data_version {
-            hooks_config::remove_data_version_files(&game.dir);
-        }
-        // The addresses file earlier launchers left next to themselves (on the desktop, in
-        // Downloads): deleted when it's only a copy of the built-in addresses.
-        if let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
-            hooks_addresses::tidy_stray_addresses(&exe_dir, &game.dir);
-        }
-        if let Some(kept) = game.cfg.started_over() {
-            self.notices.info(format!(
-                "Settings from an earlier 5th Echelon were set aside (kept as {} in the game folder); this launcher starts from its own.",
-                kept.file_name().map_or_else(|| kept.display().to_string(), |n| n.to_string_lossy().into_owned())
-            ));
-        }
-        self.game = Some(game);
+        self.game = Some(Game::open_tidied(dir, &mut self.notices));
     }
 
     /// Asks for the game folder with a folder picker.

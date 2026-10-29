@@ -4,8 +4,20 @@
 mod commands;
 
 fn main() {
+    launcher::logging::init();
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![commands::info])
+        .manage(commands::Launcher::new())
+        .invoke_handler(tauri::generate_handler![
+            commands::info,
+            commands::set_play_mode,
+            commands::play,
+            commands::questions,
+            commands::diagnostics_example,
+            commands::answer_diagnostics,
+            commands::answer_options,
+            commands::activity,
+            commands::dismiss,
+        ])
         .run(tauri::generate_context!())
         .expect("the launcher's window");
 }

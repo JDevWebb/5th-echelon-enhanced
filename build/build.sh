@@ -117,7 +117,13 @@ case "${1:-test}" in
       if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then npm ci --ignore-scripts --no-audit --no-fund; touch node_modules; fi
       npm run build'
     run -e CARGO_TARGET_DIR=/target/launcher-tauri -w /src/launcher-tauri/src-tauri "$IMAGE" \
-      sh -c 'cargo xwin build --release --target x86_64-pc-windows-msvc && cp /target/launcher-tauri/x86_64-pc-windows-msvc/release/launcher-tauri.exe /src/dist/'
+      sh -c 'set -e
+        # libsodium as the windows target sets it up (the launcher library links it).
+        cargo fetch -q
+        mkdir -p /tmp/sodium
+        cp "$(ls -d /usr/local/cargo/registry/src/*/libsodium-sys-0.2.7 | head -1)/msvc/x64/Release/v142/libsodium.lib" /tmp/sodium/sodium.lib
+        SODIUM_LIB_DIR=/tmp/sodium cargo xwin build --release --target x86_64-pc-windows-msvc
+        cp /target/launcher-tauri/x86_64-pc-windows-msvc/release/launcher-tauri.exe /src/dist/'
     sysroot="-C link-arg=-L/sysroot/usr/lib/x86_64-linux-gnu -C link-arg=-L/sysroot/lib/x86_64-linux-gnu"
     sysroot="$sysroot -C link-arg=-Wl,-rpath-link=/sysroot/usr/lib/x86_64-linux-gnu -C link-arg=-Wl,-rpath-link=/sysroot/lib/x86_64-linux-gnu"
     run -e CARGO_TARGET_DIR=/target/launcher-tauri -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="$sysroot" \

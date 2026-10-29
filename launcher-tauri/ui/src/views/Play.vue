@@ -20,9 +20,38 @@
             <svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" /></svg>
           </button>
           <span class="ready"><i :class="{ ok: ready }"></i><span>{{ readyText }}</span></span>
-          <button class="play" type="button" disabled title="Launching comes across in the next step">
-            <span>Play</span>
-          </button>
+          <span class="split">
+            <button class="play" type="button" :disabled="!!blocked" :title="blocked || null" @click="play(info.play_mode)">
+              <span>{{ info.running ? 'In game' : LABELS[info.play_mode] }}</span>
+            </button>
+            <button
+              class="play-more"
+              type="button"
+              aria-label="Play SvM or Co-op"
+              aria-haspopup="menu"
+              :aria-expanded="menuOpen"
+              :disabled="!!blocked || info.managed"
+              :title="info.managed ? 'This game is set up by another tool, so the launcher starts it as it is.' : null"
+              @click.stop="menuOpen = !menuOpen"
+            >
+              <svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6" /></svg>
+            </button>
+            <Transition name="menu">
+              <span v-if="menuOpen" class="modes" role="menu">
+                <button
+                  v-for="mode in MODES"
+                  :key="mode"
+                  type="button"
+                  role="menuitemradio"
+                  :aria-checked="info.play_mode === mode"
+                  :class="{ on: info.play_mode === mode }"
+                  @click="choose(mode)"
+                >
+                  <b>{{ LABELS[mode] }}</b><small>{{ HINTS[mode] }}</small>
+                </button>
+              </span>
+            </Transition>
+          </span>
         </div>
       </div>
     </section>
@@ -69,13 +98,42 @@
 
 <script setup>
 // The Play screen, the trial's (trials/tauri-play) on the launcher's real data: the game, the
-// server and the account from the same files the egui launcher reads. Launching, the server
-// menu, friends and the news come across in step 2.
-import { computed, ref } from 'vue';
-import { inTauri } from '../lib/tauri.js';
+// server and the account, and Play (with its modes) starting the game through the shared
+// library. The server menu, friends and the news come next.
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { call, inTauri } from '../lib/tauri.js';
 
 const props = defineProps({ info: { type: Object, required: true } });
-defineEmits(['go']);
+const emit = defineEmits(['go', 'played']);
+
+// What the Play button starts (the shared library's PlayMode).
+const MODES = ['play', 'svm', 'coop'];
+const LABELS = { play: 'Play', svm: 'Play SvM', coop: 'Play Coop' };
+const HINTS = { play: 'The game as it is', svm: 'Straight into a Spies vs Mercs lobby', coop: 'Straight into a co-op lobby' };
+
+const menuOpen = ref(false);
+const closeMenu = () => (menuOpen.value = false);
+onMounted(() => document.addEventListener('click', closeMenu));
+onBeforeUnmount(() => document.removeEventListener('click', closeMenu));
+
+/** Why Play can't start now, if it can't. */
+const blocked = computed(() => {
+  if (!props.info.game_dir) return "Choose the game's folder first.";
+  if (props.info.running) return 'The game is running.';
+  return null;
+});
+
+async function play(mode) {
+  menuOpen.value = false;
+  const started = await call('play', { mode });
+  emit('played', started);
+}
+
+async function choose(mode) {
+  await call('set_play_mode', { mode });
+  props.info.play_mode = mode;
+  play(mode);
+}
 
 const tabs = computed(() => [
   { id: 'status', label: 'Status' },
@@ -130,7 +188,20 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 .play::after { content: ""; position: absolute; top: 0; bottom: 0; width: 40%; left: -60%; background: linear-gradient(100deg, transparent, rgba(255, 255, 255, .35), transparent); animation: sheen 4.5s ease-in-out infinite; }
 .play:hover:not(:disabled) { filter: brightness(1.08); }
 .play:active:not(:disabled) { transform: scale(.98); }
-.play:disabled { cursor: not-allowed; filter: saturate(.6) brightness(.85); }
+.play:disabled, .play-more:disabled { cursor: not-allowed; filter: saturate(.6) brightness(.85); }
+.split { position: relative; display: flex; }
+.play { clip-path: none; border-radius: 4px 0 0 4px; animation: pulse 2.8s ease-in-out infinite; }
+.play:disabled { animation: none; }
+.play-more { height: 58px; width: 42px; display: grid; place-items: center; background: var(--accent); color: var(--on-accent); border-left: 2px solid var(--bg); clip-path: polygon(0 0, 100% 0, 100% 75%, 75% 100%, 0 100%); }
+.play-more svg { width: 18px; height: 18px; stroke-width: 2.4; }
+.modes { position: absolute; right: 0; bottom: calc(100% + 10px); width: 300px; padding: 6px; display: flex; flex-direction: column; border-radius: 6px; background: rgba(12, 17, 18, .94); border: 1px solid var(--control-line); backdrop-filter: blur(14px); box-shadow: 0 18px 50px rgba(0, 0, 0, .55); z-index: 5; }
+.modes button { display: flex; flex-direction: column; align-items: flex-start; padding: 10px 12px; border-radius: 4px; text-align: left; transition: background .15s; }
+.modes button:hover { background: var(--control); }
+.modes button.on { background: var(--selected); box-shadow: inset 3px 0 0 var(--accent); }
+.modes b { font-weight: 600; }
+.modes small { color: var(--muted); font-size: 12.5px; }
+.menu-enter-active, .menu-leave-active { transition: opacity .18s, transform .18s; }
+.menu-enter-from, .menu-leave-to { opacity: 0; transform: translateY(8px) scale(.98); }
 
 /* The drawer: tabs with a sliding underline. */
 .drawer { width: clamp(300px, 30vw, 380px); flex: none; display: flex; flex-direction: column; background: var(--surface); border-left: 1px solid var(--line); animation: slide .5s var(--ease); }
@@ -153,6 +224,7 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 @keyframes drift { to { transform: translate(-6%, 4%) scale(1.08); } }
 @keyframes scan { to { background-position: 0 64px; } }
 @keyframes ping { 0% { box-shadow: 0 0 0 0 rgba(240, 180, 76, .5); } 70%, 100% { box-shadow: 0 0 0 9px rgba(240, 180, 76, 0); } }
+@keyframes pulse { 50% { box-shadow: 0 0 34px rgba(155, 224, 90, .35); } }
 @keyframes sheen { 0%, 60% { left: -60%; } 100% { left: 130%; } }
 @keyframes slide { from { transform: translateX(40px); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .reveal { opacity: 1; transform: none; } }

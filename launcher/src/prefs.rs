@@ -58,6 +58,36 @@ impl Game {
 }
 
 impl Game {
+    /// Opens a game folder to work on, tidying what earlier releases left there, and saying
+    /// so when its settings came from an earlier launcher and started over.
+    pub fn open_tidied(dir: PathBuf, notices: &mut crate::activity::Activities) -> Self {
+        let game = Self::open(dir);
+        // Data version logging's files, from before it was off by default (0.4.2).
+        if !game.cfg.hook_config.log_data_version {
+            hooks_config::remove_data_version_files(&game.dir);
+        }
+        // The addresses file earlier launchers left next to themselves (on the desktop, in
+        // Downloads): deleted when it's only a copy of the built-in addresses.
+        if let Some(exe_dir) = std::env::current_exe().ok().and_then(|e| e.parent().map(Path::to_path_buf)) {
+            hooks_addresses::tidy_stray_addresses(&exe_dir, &game.dir);
+        }
+        if let Some(kept) = game.cfg.started_over() {
+            notices.info(format!(
+                "Settings from an earlier 5th Echelon were set aside (kept as {} in the game folder); this launcher starts from its own.",
+                kept.file_name().map_or_else(|| kept.display().to_string(), |n| n.to_string_lossy().into_owned())
+            ));
+        }
+        game
+    }
+
+    /// The game folder chosen before, or else the first one found on this PC.
+    pub fn chosen_or_found() -> Option<PathBuf> {
+        Prefs::load()
+            .game_dir
+            .filter(|d| setup::game::is_game_dir(d))
+            .or_else(|| setup::game::find_game_dirs().into_iter().next())
+    }
+
     /// Changes the settings, reporting a failure to save.
     pub fn update(&mut self, notices: &mut crate::activity::Activities, f: impl FnOnce(&mut Config)) {
         if let Err(e) = self.cfg.update(f) {
