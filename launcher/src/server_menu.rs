@@ -2,14 +2,17 @@
 //! click. Anything else (a server of your own, a LAN party's, another network) is on the
 //! Servers screen.
 
+#[cfg(feature = "gui")]
 use eframe::egui;
+#[cfg(feature = "gui")]
 use eframe::egui::RichText;
 use setup::directory::Listing;
 
+#[cfg(feature = "gui")]
 use crate::theme;
 
 /// One server in the menu.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct Row {
     pub host: String,
     /// Where it is ("Sydney, Australia"), or its name when it doesn't say.
@@ -77,6 +80,7 @@ fn short_names(names: &[&str]) -> Vec<String> {
     words.iter().map(|w| w[common..].join(" ")).collect()
 }
 
+#[cfg(feature = "gui")]
 /// A ping, coloured by how it plays: green is good, amber is far.
 pub fn ping_text(ping: Option<u32>) -> RichText {
     match ping {
@@ -85,6 +89,7 @@ pub fn ping_text(ping: Option<u32>) -> RichText {
     }
 }
 
+#[cfg(feature = "gui")]
 pub fn ping_color(ms: u32) -> egui::Color32 {
     match ms {
         0..=90 => theme::OK,
@@ -101,6 +106,7 @@ pub enum Picked {
     ServersScreen,
 }
 
+#[cfg(feature = "gui")]
 /// The menu's contents: its header, a row a server, and the way to the Servers screen.
 /// `focus` is the row the arrow keys are on.
 pub fn show(ui: &mut egui::Ui, header: &str, rows: &[Row], pinging: bool, note: Option<&str>, focus: &mut usize) -> Option<Picked> {
@@ -186,6 +192,7 @@ pub fn show(ui: &mut egui::Ui, header: &str, rows: &[Row], pinging: bool, note: 
     picked
 }
 
+#[cfg(feature = "gui")]
 /// One server: a tick on the current one, where it is with a badge on the best, the
 /// network's name for it and its host, the ping, and players online.
 fn row_ui(ui: &mut egui::Ui, row: &Row, focused: bool) -> egui::Response {

@@ -10,8 +10,9 @@ pub mod activity;
 mod app;
 #[cfg(feature = "gui")]
 mod chat;
+pub mod connect;
 pub mod diagnostics;
-mod dll_utils;
+pub mod dll_utils;
 #[cfg(feature = "gui")]
 mod feedback;
 pub mod flow;
@@ -28,8 +29,7 @@ mod roadmap;
 mod scale;
 #[cfg(feature = "gui")]
 mod server;
-#[cfg(feature = "gui")]
-mod server_menu;
+pub mod server_menu;
 pub mod services;
 #[cfg(feature = "gui")]
 mod settings;

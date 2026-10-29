@@ -1,6 +1,5 @@
 //! The window: header, navigation, and the game the screens work on.
 
-use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 

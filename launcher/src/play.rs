@@ -18,6 +18,8 @@ use crate::app::App;
 use crate::app::Game;
 use crate::app::Notices;
 use crate::app::View;
+use crate::connect::place;
+use crate::connect::place;
 use crate::flow;
 use crate::flow::Support;
 use crate::server_menu::ping_text;
@@ -98,7 +100,7 @@ pub struct Play {
     checking_network: Slot<Result<(String, usize), String>>,
     /// The setup's activity, and what it was asked (to try again).
     setup_activity: Option<crate::activity::Handle>,
-    last_setup: Option<SetupAsked>,
+    last_setup: Option<crate::connect::Asked>,
     fixing: Slot<Result<String, String>>,
     identifying: Slot<Result<(), String>>,
     /// The fix's (or identifying the game's) activity, and the fix to try again.
@@ -141,17 +143,6 @@ pub struct Play {
     playing_from: Option<(String, Instant)>,
     /// What Play starts (the split button's choice), read from the launcher's settings once.
     play_mode: Option<crate::app::PlayMode>,
-}
-
-/// A setup as it was started, to start it again.
-#[derive(Debug, Clone)]
-struct SetupAsked {
-    server: String,
-    new_name: Option<String>,
-    public_only: bool,
-    /// What the activity says when it worked, and when it didn't.
-    done: String,
-    failed: String,
 }
 
 /// A friend's server to switch to.
@@ -247,15 +238,13 @@ impl Play {
             let asked = self.last_setup.clone();
             match result {
                 Ok((flow::Done::Ready, server, via_network)) => {
-                    flow::forget_account_check();
-                    if let (Some(a), Some(asked)) = (&activity, &asked) {
-                        a.done(asked.done.clone());
-                    }
-                    // A server of the player's own (not the network's, nor one a server named): kept
-                    // with the recent ones on the Servers screen.
-                    let listed = self.directory.as_ref().is_some_and(|d| d.iter().any(|(s, _)| s.host.eq_ignore_ascii_case(&server)));
-                    if !via_network && !listed && !asked.as_ref().is_some_and(|a| a.public_only) {
-                        crate::app::Prefs::remember_server(&server, None);
+                    if let Some(asked) = &asked {
+                        if let Some(a) = &activity {
+                            a.done(asked.done.clone());
+                        }
+                        crate::connect::ready(asked, &server, via_network, self.directory.as_deref());
+                    } else {
+                        flow::forget_account_check();
                     }
                     self.editing = false;
                     self.needs_name = None;
@@ -277,7 +266,7 @@ impl Play {
                         self.editing = true;
                     } else {
                         // The network's server, or a friend's: the account dialog asks.
-                        let own = !asked.as_ref().is_some_and(|a| a.public_only);
+                        let own = !asked.as_ref().is_some_and(|a| a.plan.public_only);
                         self.account = Some(AccountDialog::new(ctx, game, &server, suggested, taken, own, self.directory.as_deref()));
                     }
                 }
@@ -294,8 +283,8 @@ impl Play {
         // Try again, from the activity bar.
         if let (Some(id), Some(asked)) = (self.setup_failed, self.last_setup.clone()) {
             if notices.take_action(id) == Some(Action::Retry) && !self.busy() {
-                self.server = asked.server.clone();
-                start_setup(self, game, ctx, notices, asked.new_name.clone(), asked.public_only);
+                self.server = asked.plan.server.clone();
+                start_setup(self, game, ctx, notices, asked.plan.new_name.clone(), asked.plan.public_only);
             }
         }
         if let Some(result) = self
@@ -2479,73 +2468,16 @@ fn server_row(ui: &mut egui::Ui, label: &str, note: &str, enabled: bool) -> bool
 /// the server (None: the setup asks). `public_only` when another server named
 /// it (see [`flow::Plan`]). It reports in the activity bar.
 fn start_setup(play: &mut Play, game: &Game, ctx: &egui::Context, notices: &mut Notices, new_name: Option<String>, public_only: bool) {
-    let server = play.server.trim().to_string();
-    let current = game.cfg.current_profile().map(|p| p.server.clone()).filter(|s| !s.is_empty());
-    let shown = play
-        .directory
-        .as_ref()
-        .and_then(|d| d.iter().find(|(s, _)| s.host == server))
-        .map_or_else(|| server.clone(), |(s, _)| place(s));
-    let (title, done, failed) = match current.as_deref() {
-        Some(c) if c == server => (format!("Setting up {shown} again"), format!("You're set up on {shown}"), format!("Couldn't set up {shown}")),
-        Some(_) => (format!("Switching to {shown}"), format!("Switched to {shown}"), format!("Couldn't switch to {shown}")),
-        None => (
-            format!("Connecting to {shown}"),
-            format!("You're set up on {shown}"),
-            format!("Couldn't connect to {shown}"),
-        ),
-    };
-    // The name step: what failed is the account (a name refused, say), not the connection.
-    let failed = if new_name.is_some() {
-        format!("Couldn't create your account on {shown}")
-    } else {
-        failed
-    };
-    // A community server: an account is made there with the player's usual name, without asking.
-    let listed = play.directory.as_ref().is_some_and(|d| d.iter().any(|(s, _)| s.host.eq_ignore_ascii_case(&server)));
-    let mut plan = flow::Plan {
-        game_dir: game.dir.clone(),
-        server: server.clone(),
-        new_name: new_name.clone(),
-        public_only,
-        automatic: listed,
-    };
+    let asked = crate::connect::ask(game, &play.server, new_name, public_only, play.directory.as_deref());
     play.switching = None;
     if let Some(id) = play.setup_failed.take() {
         notices.dismiss(id);
     }
-    let log = notices.start(ctx, title);
+    let log = notices.start(ctx, asked.title.clone());
     play.setup_failed = Some(log.id());
     play.setup_activity = Some(log.clone());
-    play.last_setup = Some(SetupAsked {
-        server,
-        new_name,
-        public_only,
-        done,
-        failed,
-    });
-    play.setup.start(ctx, move || {
-        // A network's address: set up on its best server, which its directory named.
-        let via_network = match flow::pick_from_network(&plan.server, &log)? {
-            Some(host) => {
-                plan.server = host;
-                plan.public_only = true;
-                plan.automatic = true;
-                true
-            }
-            None => false,
-        };
-        flow::run_setup(&plan, crate::dll_utils::bundled(), &log).map(|done| (done, plan.server.clone(), via_network))
-    });
-}
-
-/// Where a server is: its region ("Sydney, Australia"), else its name.
-fn place(s: &setup::directory::Listing) -> String {
-    if s.region.is_empty() {
-        s.name.clone()
-    } else {
-        s.region.clone()
-    }
+    play.last_setup = Some(asked.clone());
+    play.setup.start(ctx, move || crate::connect::run(&asked, &log));
 }
 
 /// Asks before switching to a friend's server: its address in full, and what happens there.
