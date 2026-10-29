@@ -25,6 +25,10 @@ fn main() {
             commands::servers,
             commands::find_on_network,
             commands::connect,
+            commands::checks,
+            commands::fix,
+            commands::identify,
+            commands::fix_everything,
         ])
         .run(tauri::generate_context!())
         .expect("the launcher's window");

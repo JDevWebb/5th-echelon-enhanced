@@ -10,6 +10,7 @@ pub mod activity;
 mod app;
 #[cfg(feature = "gui")]
 mod chat;
+pub mod checks;
 pub mod connect;
 pub mod diagnostics;
 pub mod dll_utils;

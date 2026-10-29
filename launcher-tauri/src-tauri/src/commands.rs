@@ -15,6 +15,8 @@ use launcher::prefs::Game;
 use launcher::prefs::PlayMode;
 use launcher::prefs::Prefs;
 use serde::Serialize;
+use setup::diagnose::Fix;
+use setup::diagnose::Status;
 use setup::directory::Listing;
 use tauri::Emitter;
 use tauri::Manager;
@@ -38,6 +40,14 @@ struct Inner {
     setup: Option<connect::Asked>,
     setup_running: bool,
     setup_failed: Option<u64>,
+    /// The checklist as last gathered, the game version's support, and when.
+    checks: Vec<setup::diagnose::Check>,
+    support: Option<launcher::flow::Support>,
+    checked: Option<Instant>,
+    checking: bool,
+    /// A fix running, and its activity with the fix when it failed (to try again).
+    fixing: bool,
+    fix_failed: Option<(u64, Fix)>,
 }
 
 impl Launcher {
@@ -55,6 +65,12 @@ impl Launcher {
                 setup: None,
                 setup_running: false,
                 setup_failed: None,
+                checks: Vec::new(),
+                support: None,
+                checked: None,
+                checking: false,
+                fixing: false,
+                fix_failed: None,
             }),
         }
     }
@@ -354,6 +370,14 @@ pub fn activity_action(app: tauri::AppHandle, state: tauri::State<Launcher>, id:
         _ => return None,
     };
     inner.notices.press(id, action);
+    if let Some((failed, fix)) = inner.fix_failed.filter(|(failed, _)| *failed == id && action == Action::Retry) {
+        let _ = failed;
+        inner.fix_failed = None;
+        drop(inner);
+        start_fix(&app, fix);
+        changed(&app);
+        return None;
+    }
     let retry_setup = action == Action::Retry && inner.setup_failed == Some(id) && !inner.setup_running;
     let asked = inner.setup.clone().filter(|_| retry_setup);
     drop(inner);
@@ -500,6 +524,7 @@ fn start_setup(app: &tauri::AppHandle, asked: connect::Asked) {
                 log.done(asked.done.clone());
                 connect::ready(&asked, &server, via_network, inner.directory.as_deref());
                 inner.setup_failed = None;
+                inner.checked = None;
                 // The setup may have brought a directory: its servers are read again.
                 inner.directory = None;
                 if let Some(game) = inner.game.as_mut() {
@@ -520,6 +545,207 @@ fn start_setup(app: &tauri::AppHandle, asked: connect::Asked) {
         };
         drop(inner);
         let _ = app.emit("setup", ended);
+        let _ = app.emit("checks", ());
         changed(&app);
     });
+}
+
+/// How often the checklist is gathered again on its own.
+const CHECK_EVERY: std::time::Duration = std::time::Duration::from_secs(30);
+
+fn fix_id(fix: Fix) -> &'static str {
+    match fix {
+        Fix::FindGame => "find-game",
+        Fix::InstallClient => "install-client",
+        Fix::ChooseServer => "choose-server",
+        Fix::SetUpAccount => "set-up-account",
+        Fix::AutoAdapter => "auto-adapter",
+        Fix::CreateSave => "create-save",
+        Fix::RaiseSave => "raise-save",
+        Fix::UpdateLauncher => "update-launcher",
+    }
+}
+
+fn fix_from(id: &str) -> Option<Fix> {
+    [
+        Fix::FindGame,
+        Fix::InstallClient,
+        Fix::ChooseServer,
+        Fix::SetUpAccount,
+        Fix::AutoAdapter,
+        Fix::CreateSave,
+        Fix::RaiseSave,
+        Fix::UpdateLauncher,
+    ]
+    .into_iter()
+    .find(|f| fix_id(*f) == id)
+}
+
+fn status_id(status: Status) -> &'static str {
+    match status {
+        Status::Ok => "ok",
+        Status::Warn => "warn",
+        Status::Fail => "fail",
+    }
+}
+
+#[derive(Serialize)]
+pub struct CheckView {
+    id: &'static str,
+    status: &'static str,
+    title: String,
+    detail: String,
+    /// The fix's id and button, when the launcher can fix it (not where another tool manages
+    /// the game).
+    fix: Option<(&'static str, &'static str)>,
+}
+
+/// The Status tab's checklist and the line beside Play.
+#[derive(Serialize)]
+pub struct Checklist {
+    checks: Vec<CheckView>,
+    /// The game version's line, when it isn't supported ("fail", with Try to identify) or
+    /// couldn't be told ("warn").
+    support: Option<(&'static str, &'static str, String)>,
+    /// How ready: "ok", "warn", "fail", or None while checking; and the line.
+    tone: Option<&'static str>,
+    line: String,
+    /// "Fix everything" has something to do.
+    fixable: bool,
+    /// Gathering or fixing now.
+    busy: bool,
+}
+
+/// The checklist: gathered again when `fresh` (Check again: signing in again too) or stale.
+/// `all`: every check, not only what matters.
+#[tauri::command(async)]
+pub fn checks(state: tauri::State<Launcher>, fresh: bool, all: bool) -> Checklist {
+    let mut inner = state.lock();
+    let stale = inner.checked.is_none_or(|t| t.elapsed() > CHECK_EVERY);
+    let running = game_running(&mut inner);
+    let busy = inner.setup_running || inner.fixing;
+    if (fresh || stale) && !inner.checking && !busy {
+        if let Some(game) = inner.game.as_mut() {
+            game.reload();
+            let (dir, cfg) = (game.dir.clone(), (*game.cfg).clone());
+            inner.checking = true;
+            drop(inner);
+            if fresh {
+                launcher::flow::forget_account_check();
+            }
+            let (facts, support) = launcher::task::guarded(|| launcher::flow::gather(&dir, &cfg, launcher::dll_utils::bundled()));
+            inner = state.lock();
+            inner.checks = setup::diagnose::checklist(&facts);
+            inner.support = Some(support);
+            inner.checked = Some(Instant::now());
+            inner.checking = false;
+        }
+    }
+    let managed = inner.game.as_ref().is_some_and(|g| g.managed.is_some());
+    let has_server = inner.game.as_ref().and_then(|g| g.cfg.current_profile()).is_some_and(|p| !p.server.is_empty());
+    let (tone, line) = launcher::checks::readiness(&inner.checks, inner.support.as_ref(), running);
+    Checklist {
+        checks: launcher::checks::shown(&inner.checks, all)
+            .into_iter()
+            .map(|c| CheckView {
+                id: c.id,
+                status: status_id(c.status),
+                title: c.title.clone(),
+                detail: if c.status == Status::Ok { String::new() } else { c.detail.clone() },
+                fix: c.fix.filter(|_| c.status != Status::Ok && !managed).map(|f| (fix_id(f), launcher::checks::fix_label(f))),
+            })
+            .collect(),
+        support: launcher::checks::support_line(inner.support.as_ref()).map(|(s, title, why)| (status_id(s), title, why)),
+        tone: tone.map(status_id),
+        line,
+        fixable: launcher::checks::fixable(&inner.checks) && has_server && !managed && !busy,
+        busy: inner.checking || busy,
+    }
+}
+
+/// A check's fix. The ones the launcher makes run on (the activity bar says how it went, the
+/// `checks` event when it's done); "choose-server" and "set-up-account" answer false: the page
+/// opens the setup's server step.
+#[tauri::command(async)]
+pub fn fix(app: tauri::AppHandle, fix: String) -> bool {
+    let Some(fix) = fix_from(&fix) else { return false };
+    if launcher::checks::fix_title(fix).is_none() {
+        return false;
+    }
+    start_fix(&app, fix);
+    true
+}
+
+fn start_fix(app: &tauri::AppHandle, fix: Fix) {
+    let state = app.state::<Launcher>();
+    let mut inner = state.lock();
+    let (Some(game), Some(title)) = (inner.game.as_ref(), launcher::checks::fix_title(fix)) else {
+        return;
+    };
+    if inner.fixing || inner.setup_running {
+        return;
+    }
+    let dir = game.dir.clone();
+    let log = inner.notices.start_with(notifier(app), title);
+    inner.fixing = true;
+    drop(inner);
+    changed(app);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        let result = launcher::task::guarded(|| launcher::checks::run_fix(fix, &dir).unwrap_or_else(|| Ok(String::new())));
+        fixed(&app, log, result, Some(fix));
+    });
+}
+
+/// A fix (or identifying the game) ended: said in its activity, and the checklist gathered again.
+fn fixed(app: &tauri::AppHandle, log: launcher::activity::Handle, result: Result<String, String>, fix: Option<Fix>) {
+    let state = app.state::<Launcher>();
+    let mut inner = state.lock();
+    inner.fixing = false;
+    inner.checked = None;
+    match result {
+        Ok(done) => log.done(done),
+        Err(e) => {
+            log.fail(e, if fix.is_some() { &[Action::Retry, Action::CopyDetails] } else { &[Action::CopyDetails] });
+            inner.fix_failed = fix.map(|f| (log.id(), f));
+        }
+    }
+    drop(inner);
+    let _ = app.emit("checks", ());
+    changed(app);
+}
+
+/// Looks for the hooks' addresses in an unsupported game version.
+#[tauri::command(async)]
+pub fn identify(app: tauri::AppHandle, state: tauri::State<Launcher>) {
+    let mut inner = state.lock();
+    let Some(game) = inner.game.as_ref() else { return };
+    if inner.fixing {
+        return;
+    }
+    let (dir, version) = (game.dir.clone(), launcher::checks::game_version(game));
+    let log = inner.notices.start_with(notifier(&app), "Identifying the game's version");
+    inner.fixing = true;
+    drop(inner);
+    changed(&app);
+    std::thread::spawn(move || {
+        let result = launcher::task::guarded(|| launcher::checks::identify(&dir, version));
+        fixed(&app, log, result, None);
+    });
+}
+
+/// Fix everything: the setup again on the player's server, with their name.
+#[tauri::command(async)]
+pub fn fix_everything(app: tauri::AppHandle, state: tauri::State<Launcher>) -> bool {
+    let inner = state.lock();
+    if inner.setup_running {
+        return false;
+    }
+    let Some(game) = inner.game.as_ref() else { return false };
+    let profile = game.cfg.current_profile().cloned().unwrap_or_default();
+    let name = Some(profile.user.username).filter(|n| !n.is_empty());
+    let asked = connect::ask(game, &profile.server, name, false, inner.directory.as_deref());
+    drop(inner);
+    start_setup(&app, asked);
+    true
 }

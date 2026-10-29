@@ -11,7 +11,6 @@ use eframe::egui::RichText;
 use setup::diagnose::Check;
 use setup::diagnose::Fix;
 use setup::diagnose::Status;
-use setup::game::GameVersion;
 
 use crate::activity::Action;
 use crate::app::App;
@@ -1462,21 +1461,15 @@ fn profile_card(play: &mut Play, game: &Game, ui: &mut egui::Ui) -> egui::Respon
 
 /// How ready everything is, for the launch bar.
 fn readiness(play: &Play) -> (egui::Color32, String) {
-    if play.running.is_some() || play.game_seen {
-        return (theme::OK, "Splinter Cell: Blacklist is running".into());
-    }
-    if play.checks.is_empty() {
-        return (theme::MUTED, "Checking…".into());
-    }
-    let fails = play.checks.iter().filter(|c| c.status == Status::Fail).count() + usize::from(matches!(play.support, Some(Support::Unsupported(_))));
-    let warns = play.checks.iter().filter(|c| c.status == Status::Warn).count();
-    match (fails, warns) {
-        (0, 0) => (theme::OK, "Ready to play · everything checked".into()),
-        (0, 1) => (theme::WARN, "Ready to play · 1 note".into()),
-        (0, n) => (theme::WARN, format!("Ready to play · {n} notes")),
-        (1, _) => (theme::BAD, "1 thing to fix".into()),
-        (n, _) => (theme::BAD, format!("{n} things to fix")),
-    }
+    let running = play.running.is_some() || play.game_seen;
+    let (tone, line) = crate::checks::readiness(&play.checks, play.support.as_ref(), running);
+    let color = match tone {
+        None => theme::MUTED,
+        Some(Status::Ok) => theme::OK,
+        Some(Status::Warn) => theme::WARN,
+        Some(Status::Fail) => theme::BAD,
+    };
+    (color, line)
 }
 
 /// The bar under the banner: the server you're on, how ready you are, and Play.
@@ -1754,17 +1747,9 @@ fn home_card(ui: &mut egui::Ui, width: f32, title: &str, note: Option<RichText>,
 /// The checks: anything that needs fixing, with its fix; when all is well,
 /// a short summary that opens into the full list.
 fn status_card(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &egui::Context, to: &mut Option<Go>, width: f32, ui: &mut egui::Ui) {
-    let issues = play.checks.iter().any(|c| c.status != Status::Ok);
-    let fixable = play.checks.iter().any(|c| c.status == Status::Fail && c.fix.is_some());
+    let fixable = crate::checks::fixable(&play.checks);
     let has_server = game.cfg.current_profile().is_some_and(|p| !p.server.is_empty());
-    // All of them when asked; else the problems, or a few that matter when there are none.
-    const SUMMARY: [&str; 4] = ["client", "account", "network", "save"];
-    let checks: Vec<Check> = play
-        .checks
-        .iter()
-        .filter(|c| play.show_all_checks || if issues { c.status != Status::Ok } else { SUMMARY.contains(&c.id) })
-        .cloned()
-        .collect();
+    let checks: Vec<Check> = crate::checks::shown(&play.checks, play.show_all_checks).into_iter().cloned().collect();
     let mut fix = None;
     let mut fix_all = false;
     let mut toggle = false;
@@ -1796,7 +1781,7 @@ fn status_card(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &eg
                         }
                         // Under the problem, so the narrow card never has to fit it beside it.
                         if let Some(f) = check.fix.filter(|_| check.status != Status::Ok && !managed) {
-                            if ui.horizontal(|ui| ui.add_enabled(!busy, theme::secondary(fix_label(f)))).inner.clicked() {
+                            if ui.horizontal(|ui| ui.add_enabled(!busy, theme::secondary(crate::checks::fix_label(f)))).inner.clicked() {
                                 fix = Some(f);
                             }
                         }
@@ -2500,27 +2485,7 @@ fn confirm_switch(play: &mut Play, game: &Game, notices: &mut Notices, ctx: &egu
     ui.add_space(14.0);
 }
 
-fn fix_label(fix: Fix) -> &'static str {
-    match fix {
-        Fix::FindGame => "Find",
-        Fix::InstallClient => "Install",
-        Fix::ChooseServer => "Choose",
-        Fix::SetUpAccount => "Connect",
-        Fix::AutoAdapter => "Choose automatically",
-        Fix::CreateSave => "Set up a save",
-        Fix::RaiseSave => "Raise to rank 5",
-        Fix::UpdateLauncher => "Update",
-    }
-}
-
 fn run_fix(play: &mut Play, game: &Game, notices: &mut Notices, fix: Fix, ctx: &egui::Context) {
-    let dir = game.dir.clone();
-    let title = match fix {
-        Fix::InstallClient => "Installing the 5th Echelon client",
-        Fix::AutoAdapter => "Choosing the network adapter automatically",
-        Fix::CreateSave | Fix::RaiseSave => "Fixing your save",
-        Fix::FindGame | Fix::ChooseServer | Fix::SetUpAccount | Fix::UpdateLauncher => "",
-    };
     match fix {
         Fix::FindGame => {}
         Fix::ChooseServer | Fix::SetUpAccount => {
@@ -2529,35 +2494,32 @@ fn run_fix(play: &mut Play, game: &Game, notices: &mut Notices, fix: Fix, ctx: &
             play.needs_name = None;
             play.server = profile.server;
         }
-        Fix::InstallClient => play.fixing.start(ctx, move || flow::install_client(&dir, crate::dll_utils::bundled())),
-        Fix::AutoAdapter => play.fixing.start(ctx, move || flow::auto_adapter(&dir)),
-        Fix::CreateSave | Fix::RaiseSave => play.fixing.start(ctx, move || flow::fix_save(&dir)),
         Fix::UpdateLauncher => play.update_asked = true,
+        _ => {
+            let dir = game.dir.clone();
+            play.fixing.start(ctx, move || crate::checks::run_fix(fix, &dir).unwrap_or_else(|| Ok(String::new())));
+        }
     }
-    if !title.is_empty() {
+    if let Some(title) = crate::checks::fix_title(fix) {
         play.fix_activity = Some((notices.start(ctx, title), Some(fix)));
     }
 }
 
 fn support_row(play: &mut Play, game: &Game, notices: &mut Notices, ctx: &egui::Context, ui: &mut egui::Ui) {
-    let (status, title, detail) = match &play.support {
-        None | Some(Support::Supported) => return,
-        Some(Support::Unsupported(why)) => (Status::Fail, "This game version isn't supported yet", why.clone()),
-        Some(Support::Unknown(why)) => (Status::Warn, "Couldn't check the game version", why.clone()),
+    let Some((status, title, detail)) = crate::checks::support_line(play.support.as_ref()) else {
+        return;
     };
     ui.horizontal_top(|ui| {
         theme::status_marker(ui, status);
         ui.vertical(|ui| {
             ui.label(title);
-            ui.label(theme::muted(detail.lines().next().unwrap_or_default()).small());
+            ui.label(theme::muted(detail).small());
             if status == Status::Fail {
                 if play.identifying.running() {
                     ui.spinner();
                 } else if ui.horizontal(|ui| ui.add_enabled(!play.busy(), theme::secondary("Try to identify"))).inner.clicked() {
-                    let dir = game.dir.clone();
-                    let version = setup::game::pick_version(&dir, game.cfg.default_game).unwrap_or(GameVersion::SplinterCellBlacklistDx11);
-                    play.identifying
-                        .start(ctx, move || flow::identify(&dir, version).map_err(|e| format!("Couldn't identify it: {e}")));
+                    let (dir, version) = (game.dir.clone(), crate::checks::game_version(game));
+                    play.identifying.start(ctx, move || crate::checks::identify(&dir, version).map(|_| ()));
                     play.fix_activity = Some((notices.start(ctx, "Identifying the game's version"), None));
                 }
             }

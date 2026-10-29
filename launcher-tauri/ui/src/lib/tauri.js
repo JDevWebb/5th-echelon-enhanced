@@ -36,6 +36,19 @@ const sample = {
     ],
   },
   find_on_network: [],
+  checks: {
+    checks: [
+      { id: 'client', status: 'ok', title: 'The 5th Echelon client is installed', detail: '', fix: null },
+      { id: 'account', status: 'ok', title: 'Signed in as Kiwi', detail: '', fix: null },
+      { id: 'network', status: 'warn', title: 'Unencrypted connection', detail: 'Sign-ins travel readable to this server; ask its operator to set up HTTPS.', fix: null },
+      { id: 'save', status: 'fail', title: 'No save for this account', detail: 'Online play needs a save at rank 5 or more.', fix: ['create-save', 'Set up a save'] },
+    ],
+    support: null,
+    tone: 'fail',
+    line: '1 thing to fix',
+    fixable: true,
+    busy: false,
+  },
 };
 // The preview starts as a first run (?first): no server yet.
 if (location.search.includes('first')) {
@@ -56,6 +69,20 @@ const preview = {
   choose_game: () => true,
   pick_game_folder: () => false,
   activity_action: () => null,
+  fix: () => {
+    sample.activity = { id: 2, title: 'Fixing your save', step: 'Raising the save to rank 5', state: 'working', message: null, progress: null, steps: [], actions: [], waiting: 0 };
+    previewEmit('activity');
+    setTimeout(() => {
+      sample.activity = { id: 2, title: 'Your save is set up', step: null, state: 'done', message: null, progress: null, steps: [], actions: [], waiting: 0 };
+      sample.checks.checks[3] = { id: 'save', status: 'ok', title: 'Save at rank 5', detail: '', fix: null };
+      Object.assign(sample.checks, { tone: 'warn', line: 'Ready to play · 1 note', fixable: false });
+      previewEmit('activity');
+      previewEmit('checks');
+    }, 1500);
+    return true;
+  },
+  fix_everything: () => true,
+  identify: () => null,
   connect: ({ server, newName }) => {
     sample.info.connecting = true;
     setTimeout(() => {
