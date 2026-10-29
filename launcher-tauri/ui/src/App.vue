@@ -12,6 +12,7 @@
           <Intel v-else-if="screen === 'intel'" key="intel" :info="info" />
           <Support v-else-if="screen === 'support'" key="support" @go="go" />
           <Chat v-else-if="screen === 'chat'" key="chat" />
+          <Settings v-else-if="screen === 'settings'" key="settings" :open="settingsAt" :size="size" @size="setSize" @fullscreen="toggleFullscreen" @changed="refresh" />
           <Placeholder v-else :key="screen" v-bind="PLACEHOLDERS[screen]" />
           </Transition>
         </main>
@@ -37,6 +38,7 @@ import Servers from './views/Servers.vue';
 import Intel from './views/Intel.vue';
 import Support from './views/Support.vue';
 import Chat from './views/Chat.vue';
+import Settings from './views/Settings.vue';
 import Placeholder from './views/Placeholder.vue';
 import ActivityBar from './components/ActivityBar.vue';
 import Questions from './components/Questions.vue';
@@ -47,7 +49,6 @@ import { call, inTauri, listen } from './lib/tauri.js';
 
 const PLACEHOLDERS = {
   host: { kicker: 'Host on this PC', title: 'Host a server', text: 'Run a server for your group: a LAN party, or friends over the internet.' },
-  settings: { kicker: 'Settings', title: 'Settings', text: 'The game, the launcher, beta features and the advanced options.' },
 };
 
 const info = reactive({ product: '5th Echelon Enhanced', release: '', game_dir: null, server: null, account: null, community: true, play_mode: 'play', managed: false, running: false });
@@ -82,8 +83,40 @@ const questionsUp = ref(true);
 const questions = ref(null);
 let timer = null;
 
-function go(id) {
+/** To a screen; for Settings, at a section ("network", "identity"…). */
+function go(id, at = null) {
   screen.value = id;
+  if (id === 'settings') settingsAt.value = at;
+}
+const settingsAt = ref(null);
+
+// The player's size (Settings › Display, Ctrl + / Ctrl − / Ctrl 0) as the page's zoom, and
+// full screen (F11).
+const size = ref(1);
+async function setSize(to) {
+  size.value = Math.min(1.6, Math.max(0.7, Math.round(to * 10) / 10));
+  await call('set', { key: 'size', value: size.value });
+  if (inTauri) window.__TAURI__.webview.getCurrentWebview().setZoom(size.value);
+}
+async function toggleFullscreen() {
+  if (!inTauri) return;
+  const w = window.__TAURI__.window.getCurrentWindow();
+  w.setFullscreen(!(await w.isFullscreen()));
+}
+function keys(e) {
+  if (e.key === 'F11') {
+    e.preventDefault();
+    toggleFullscreen();
+  } else if (e.ctrlKey && (e.key === '+' || e.key === '=')) {
+    e.preventDefault();
+    setSize(size.value + 0.1);
+  } else if (e.ctrlKey && e.key === '-') {
+    e.preventDefault();
+    setSize(size.value - 0.1);
+  } else if (e.ctrlKey && e.key === '0') {
+    e.preventDefault();
+    setSize(1);
+  }
 }
 
 async function refresh() {
@@ -102,6 +135,10 @@ async function played() {
 
 onMounted(async () => {
   await refresh();
+  document.addEventListener('keydown', keys);
+  // The size kept from before.
+  const kept = (await call('settings')).size;
+  if (kept && Math.abs(kept - 1) > 0.01) setSize(kept);
   // Whether the game is running, and settings changed elsewhere (the egui launcher, by hand).
   timer = setInterval(refresh, 3000);
   stopSetup = await listen('setup', ({ payload }) => {
@@ -117,6 +154,7 @@ onMounted(async () => {
   }
 });
 onBeforeUnmount(() => {
+  document.removeEventListener('keydown', keys);
   clearInterval(timer);
   stopSetup?.();
 });

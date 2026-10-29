@@ -8,7 +8,7 @@
       <div class="glow" aria-hidden="true"></div>
       <div class="hud">
         <span class="caps">{{ inTauri ? 'Field ops' : 'Browser preview' }}</span>
-        <button class="player" type="button" title="Identity and friends" @click="$emit('go', 'settings')">
+        <button class="player" type="button" title="Identity and friends" @click="$emit('go', 'settings', 'identity')">
           <span class="avatar">{{ (info.account || '?')[0].toUpperCase() }}<i :class="{ on: online }"></i></span>
           <span><b>{{ info.account || 'No account yet' }}</b><small>{{ info.identity ? `ID ${info.identity}` : 'No identity yet' }}</small></span>
         </button>
@@ -187,7 +187,7 @@
               <i v-if="list.busy" class="spin"></i>
               <a v-else href="#" @click.prevent="loadChecks(true)">Check again</a>
               <span class="muted">·</span>
-              <a href="#" @click.prevent="$emit('go', 'settings')">Connection test</a>
+              <a href="#" @click.prevent="$emit('go', 'settings', 'network')">Connection test</a>
             </p>
             <button v-if="list.fixable" type="button" class="btn primary" @click="fixEverything">Fix everything</button>
           </div>
