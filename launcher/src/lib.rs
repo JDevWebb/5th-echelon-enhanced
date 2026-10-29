@@ -8,8 +8,7 @@
 pub mod activity;
 #[cfg(feature = "gui")]
 mod app;
-#[cfg(feature = "gui")]
-mod chat;
+pub mod chat;
 pub mod checks;
 pub mod connect;
 pub mod diagnostics;

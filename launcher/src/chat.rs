@@ -13,7 +13,9 @@ use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
+#[cfg(feature = "gui")]
 use eframe::egui;
+#[cfg(feature = "gui")]
 use eframe::egui::RichText;
 use server_api::chat::ChatFriend;
 use server_api::chat::Conversation;
@@ -22,34 +24,36 @@ use server_api::chat::Room;
 use server_api::chat::StatusResponse;
 use setup::config::Config;
 
+use crate::activity::Activities as Notices;
+#[cfg(feature = "gui")]
 use crate::app::App;
-use crate::app::Game;
-use crate::app::Notices;
-use crate::app::Prefs;
 use crate::flow;
 use crate::network::ChatApi;
 use crate::network::PlayerAction;
+use crate::prefs::Game;
+use crate::prefs::Prefs;
 use crate::task::Slot;
+#[cfg(feature = "gui")]
 use crate::theme;
 
 /// The messages kept per room or conversation.
-const KEEP: usize = 500;
+pub const KEEP: usize = 500;
 /// How often the status (and who's online) is asked again: while the screen shows, and not.
-const STATUS_WHILE_OPEN: Duration = Duration::from_secs(30);
-const STATUS_EVERY: Duration = Duration::from_secs(5 * 60);
+pub const STATUS_WHILE_OPEN: Duration = Duration::from_secs(30);
+pub const STATUS_EVERY: Duration = Duration::from_secs(5 * 60);
 /// What players read under the box.
-const RULES_LINE: &str = "Messages are kept for 7 days and the admins can read them. No links, keep it friendly.";
+pub const RULES_LINE: &str = "Messages are kept for 7 days and the admins can read them. No links, keep it friendly.";
 
 /// Which part of chat shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tab {
+pub enum Tab {
     Global,
     Lobby,
     Messages,
 }
 
 /// What the feed's thread hands over.
-enum FeedEvent {
+pub enum FeedEvent {
     /// Messages, and whether they're what the server kept before the feed began (the first
     /// answer): shown, but not counted as unseen.
     Messages(Vec<Message>, bool),
@@ -58,6 +62,7 @@ enum FeedEvent {
     Back,
 }
 
+#[cfg(feature = "gui")]
 /// The feed: a thread waiting on the server for messages, for one account on one server
 /// ([`Chat::key`]); stopped when dropped.
 struct Feed {
@@ -65,6 +70,7 @@ struct Feed {
     events: mpsc::Receiver<FeedEvent>,
 }
 
+#[cfg(feature = "gui")]
 impl Drop for Feed {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
@@ -73,7 +79,7 @@ impl Drop for Feed {
 
 /// The server and account chat is for, to tell when they change (the password too: the feed
 /// signs in with the one it started with, as `flow::api_session` keys its token).
-fn feed_key(cfg: &Config) -> Option<String> {
+pub fn feed_key(cfg: &Config) -> Option<String> {
     use sha2::Digest as _;
     let p = cfg.current_profile().filter(|p| !p.server.is_empty() && p.has_account())?;
     let secret = p.user.secret().unwrap_or_default();
@@ -82,7 +88,7 @@ fn feed_key(cfg: &Config) -> Option<String> {
 
 /// A call to chat as the current account; signed in again once if the server stopped taking
 /// the kept token.
-fn call<T>(cfg: &Config, f: impl Fn(String, String) -> Result<T, crate::network::Error>) -> Result<T, String> {
+pub fn call<T>(cfg: &Config, f: impl Fn(String, String) -> Result<T, crate::network::Error>) -> Result<T, String> {
     let (url, token) = flow::api_session(cfg, false)?;
     match f(url, token) {
         Err(crate::network::Error::InvalidPassword) => {
@@ -93,7 +99,7 @@ fn call<T>(cfg: &Config, f: impl Fn(String, String) -> Result<T, crate::network:
     }
 }
 
-fn says(e: &crate::network::Error) -> String {
+pub fn says(e: &crate::network::Error) -> String {
     match e {
         crate::network::Error::ServerFailure(s) if !s.is_empty() => s.clone(),
         crate::network::Error::ConnectionFailed => "Can't reach your server right now.".into(),
@@ -102,7 +108,7 @@ fn says(e: &crate::network::Error) -> String {
 }
 
 /// Runs a chat call on the shared runtime.
-fn with_api<T>(cfg: &Config, f: impl Fn(&mut ChatApi) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, crate::network::Error>> + '_>>) -> Result<T, String> {
+pub fn with_api<T>(cfg: &Config, f: impl Fn(&mut ChatApi) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, crate::network::Error>> + '_>>) -> Result<T, String> {
     call(cfg, |url, token| {
         crate::services::rt().block_on(async {
             let mut api = ChatApi::connect(&url, &token).await?;
@@ -113,7 +119,7 @@ fn with_api<T>(cfg: &Config, f: impl Fn(&mut ChatApi) -> std::pin::Pin<Box<dyn s
 
 /// The feed's thread: waits on the server for messages after the newest it has, again and
 /// again, until stopped.
-fn run_feed(cfg: Config, stop: Arc<AtomicBool>, tx: mpsc::Sender<FeedEvent>, ctx: egui::Context) {
+pub fn run_feed(cfg: Config, stop: Arc<AtomicBool>, tx: mpsc::Sender<FeedEvent>, notify: impl Fn()) {
     let mut after = 0;
     let mut primed = false;
     let mut failures = 0u32;
@@ -130,7 +136,7 @@ fn run_feed(cfg: Config, stop: Arc<AtomicBool>, tx: mpsc::Sender<FeedEvent>, ctx
                     if tx.send(FeedEvent::Messages(answer.messages, kept)).is_err() {
                         return;
                     }
-                    ctx.request_repaint();
+                    notify();
                 }
             }
             Err(e) => {
@@ -138,7 +144,7 @@ fn run_feed(cfg: Config, stop: Arc<AtomicBool>, tx: mpsc::Sender<FeedEvent>, ctx
                 if tx.send(FeedEvent::Trouble(e)).is_err() {
                     return;
                 }
-                ctx.request_repaint();
+                notify();
                 // 5 s, 10 s … a minute between tries; stopping is noticed within a second.
                 let wait = Duration::from_secs(u64::from(failures.min(12)) * 5);
                 let until = Instant::now() + wait;
@@ -150,6 +156,7 @@ fn run_feed(cfg: Config, stop: Arc<AtomicBool>, tx: mpsc::Sender<FeedEvent>, ctx
     }
 }
 
+#[cfg(feature = "gui")]
 /// A report being written for a message.
 struct Reporting {
     id: i64,
@@ -157,6 +164,7 @@ struct Reporting {
     why: String,
 }
 
+#[cfg(feature = "gui")]
 pub struct Chat {
     /// The server and account chat is for (see [`feed_key`]).
     key: Option<String>,
@@ -173,25 +181,17 @@ pub struct Chat {
     tab: Tab,
     /// The open direct conversation: the friend's identity.
     with: Option<String>,
-    global: Vec<Message>,
-    lobby: Vec<Message>,
-    /// The lobby the messages above are from.
+    /// The messages, by room, and what's unseen.
+    rooms: Rooms,
+    /// The lobby the lobby's messages are from.
     lobby_of: u32,
-    direct: BTreeMap<String, Vec<Message>>,
-    /// Names of the people direct conversations are with.
-    names: BTreeMap<String, String>,
     conversations: Vec<Conversation>,
     conversations_slot: Slot<Result<Vec<Conversation>, String>>,
-    conversations_stale: bool,
     /// Rooms and conversations whose history was asked for: Global, Lobby, or an identity.
     history_asked: std::collections::HashSet<String>,
     history_slot: Slot<Result<Vec<Message>, String>>,
     /// What the history being read is for.
     history_for: String,
-
-    /// Messages naming the player, and direct messages, not seen yet (the rail's count).
-    unseen_mentions: u32,
-    unseen_direct: BTreeMap<String, u32>,
 
     text: String,
     sending: Slot<Result<server_api::chat::SendResponse, String>>,
@@ -205,6 +205,7 @@ pub struct Chat {
     marked: BTreeMap<String, i64>,
 }
 
+#[cfg(feature = "gui")]
 impl Default for Chat {
     fn default() -> Self {
         Self {
@@ -219,19 +220,13 @@ impl Default for Chat {
             online: flow::Friends::default(),
             tab: Tab::Global,
             with: None,
-            global: Vec::new(),
-            lobby: Vec::new(),
+            rooms: Rooms::default(),
             lobby_of: 0,
-            direct: BTreeMap::new(),
-            names: BTreeMap::new(),
             conversations: Vec::new(),
             conversations_slot: Slot::default(),
-            conversations_stale: true,
             history_asked: std::collections::HashSet::new(),
             history_slot: Slot::default(),
             history_for: String::new(),
-            unseen_mentions: 0,
-            unseen_direct: BTreeMap::new(),
             text: String::new(),
             sending: Slot::default(),
             refused: None,
@@ -249,31 +244,42 @@ pub fn available() -> bool {
     Prefs::directory().is_some_and(|d| Prefs::is_community(&d))
 }
 
-/// Adds `m` to `list` (by id, once), keeping the newest [`KEEP`].
-fn keep(list: &mut Vec<Message>, m: Message) {
-    match list.binary_search_by_key(&m.id, |x| x.id) {
-        Ok(i) => list[i] = m,
-        Err(i) => list.insert(i, m),
-    }
-    if list.len() > KEEP {
-        let extra = list.len() - KEEP;
-        list.drain(..extra);
+/// The messages kept, by room and conversation, and what's unseen: shared by both interfaces.
+pub struct Rooms {
+    pub global: Vec<Message>,
+    pub lobby: Vec<Message>,
+    pub direct: BTreeMap<String, Vec<Message>>,
+    /// Names of the people direct conversations are with.
+    pub names: BTreeMap<String, String>,
+    /// Messages naming the player, and direct messages, not seen yet (the rail's count).
+    pub unseen_mentions: u32,
+    pub unseen_direct: BTreeMap<String, u32>,
+    /// The conversations list is to be read again.
+    pub conversations_stale: bool,
+}
+
+impl Default for Rooms {
+    fn default() -> Self {
+        Self {
+            global: Vec::new(),
+            lobby: Vec::new(),
+            direct: BTreeMap::new(),
+            names: BTreeMap::new(),
+            unseen_mentions: 0,
+            unseen_direct: BTreeMap::new(),
+            conversations_stale: true,
+        }
     }
 }
 
-impl Chat {
+impl Rooms {
     /// Unseen direct messages and mentions: the rail's count.
     pub fn unread(&self) -> u32 {
         self.unseen_mentions + self.unseen_direct.values().sum::<u32>()
     }
 
-    /// The latest in Global (who said it, and what), for the Play screen's drawer.
-    pub fn latest_global(&self) -> Option<(String, String)> {
-        self.global.last().map(|m| (m.from_name.clone(), m.body.clone()))
-    }
-
     /// Who a direct message is with, from the player's side.
-    fn other(m: &Message) -> String {
+    pub fn other(m: &Message) -> String {
         if m.mine {
             m.to.clone()
         } else {
@@ -281,10 +287,11 @@ impl Chat {
         }
     }
 
-    /// Takes messages from the feed (or a send): into their rooms, deletions applied. `kept`:
-    /// what the server had before the feed began, not counted as unseen (the conversations'
-    /// unread counts come from the server).
-    fn take(&mut self, messages: Vec<Message>, ctx: &egui::Context, showing: bool, kept: bool) -> bool {
+    /// Takes messages into their rooms, deletions applied. `kept`: what the server had before
+    /// the feed began, not counted as unseen (the conversations' unread counts come from the
+    /// server); `showing(tab)`: that tab shows now; `with`: the conversation open. Says whether
+    /// the player was named or sent a message they haven't seen.
+    pub fn take(&mut self, messages: Vec<Message>, kept: bool, showing: impl Fn(Tab) -> bool, with: Option<&str>) -> bool {
         let mut attention = false;
         for m in messages {
             if m.deletes != 0 {
@@ -296,7 +303,7 @@ impl Chat {
                 }
                 continue;
             }
-            let seen_here = |tab: Tab| kept || (showing && self.tab == tab);
+            let seen_here = |tab: Tab| kept || showing(tab);
             match m.room() {
                 Room::Global => {
                     if m.mentions_me && !seen_here(Tab::Global) {
@@ -313,10 +320,10 @@ impl Chat {
                     keep(&mut self.lobby, m);
                 }
                 Room::Direct => {
-                    let other = Self::other(&m);
+                    let other = Rooms::other(&m);
                     if !m.mine {
                         self.names.insert(other.clone(), m.from_name.clone());
-                        let open = kept || (seen_here(Tab::Messages) && self.with.as_deref() == Some(other.as_str()));
+                        let open = kept || (seen_here(Tab::Messages) && with == Some(other.as_str()));
                         if !open {
                             *self.unseen_direct.entry(other.clone()).or_default() += 1;
                             attention = true;
@@ -327,7 +334,40 @@ impl Chat {
                 }
             }
         }
-        // Named, or a message from a friend, while the launcher is behind another window.
+        attention
+    }
+}
+
+/// Adds `m` to `list` (by id, once), keeping the newest [`KEEP`].
+pub fn keep(list: &mut Vec<Message>, m: Message) {
+    match list.binary_search_by_key(&m.id, |x| x.id) {
+        Ok(i) => list[i] = m,
+        Err(i) => list.insert(i, m),
+    }
+    if list.len() > KEEP {
+        let extra = list.len() - KEEP;
+        list.drain(..extra);
+    }
+}
+
+#[cfg(feature = "gui")]
+impl Chat {
+    /// Unseen direct messages and mentions: the rail's count.
+    pub fn unread(&self) -> u32 {
+        self.rooms.unread()
+    }
+
+    /// The latest in Global (who said it, and what), for the Play screen's drawer.
+    pub fn latest_global(&self) -> Option<(String, String)> {
+        self.rooms.global.last().map(|m| (m.from_name.clone(), m.body.clone()))
+    }
+
+    /// Takes messages from the feed (or a send) into their rooms ([`Rooms::take`]), and asks
+    /// for the player's attention when they were named or sent a message while the launcher is
+    /// behind another window.
+    fn take(&mut self, messages: Vec<Message>, ctx: &egui::Context, showing: bool, kept: bool) -> bool {
+        let tab = self.tab;
+        let attention = self.rooms.take(messages, kept, |t| showing && tab == t, self.with.as_deref());
         if attention && !ctx.input(|i| i.focused) {
             ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Informational));
         }
@@ -354,7 +394,7 @@ impl Chat {
         match self.status_slot.poll() {
             Some(Ok((status, friends, online))) => {
                 if status.lobby != self.lobby_of {
-                    self.lobby.clear();
+                    self.rooms.lobby.clear();
                     self.lobby_of = status.lobby;
                     self.history_asked.remove("lobby");
                 }
@@ -389,7 +429,10 @@ impl Chat {
             let (tx, events) = mpsc::channel();
             let stop = Arc::new(AtomicBool::new(false));
             let (c, s, x) = (cfg.clone(), Arc::clone(&stop), ctx.clone());
-            std::thread::Builder::new().name("chat-feed".into()).spawn(move || run_feed(c, s, tx, x)).ok();
+            std::thread::Builder::new()
+                .name("chat-feed".into())
+                .spawn(move || run_feed(c, s, tx, move || x.request_repaint()))
+                .ok();
             self.feed = Some(Feed { stop, events });
         }
         let mut arrived = Vec::new();
@@ -428,9 +471,9 @@ impl Chat {
             match loaded {
                 Ok(messages) => {
                     let list = match what.as_str() {
-                        "global" => &mut self.global,
-                        "lobby" => &mut self.lobby,
-                        with => self.direct.entry(with.to_string()).or_default(),
+                        "global" => &mut self.rooms.global,
+                        "lobby" => &mut self.rooms.lobby,
+                        with => self.rooms.direct.entry(with.to_string()).or_default(),
                     };
                     for m in messages {
                         keep(list, m);
@@ -445,9 +488,9 @@ impl Chat {
         match self.conversations_slot.poll() {
             Some(Ok(list)) => {
                 for c in &list {
-                    self.names.insert(c.with.clone(), c.with_name.clone());
+                    self.rooms.names.insert(c.with.clone(), c.with_name.clone());
                     if c.unread > 0 && self.with.as_deref() != Some(c.with.as_str()) {
-                        self.unseen_direct.insert(c.with.clone(), c.unread);
+                        self.rooms.unseen_direct.insert(c.with.clone(), c.unread);
                     }
                 }
                 self.conversations = list;
@@ -455,8 +498,8 @@ impl Chat {
             Some(Err(e)) => self.trouble = Some(e),
             None => {}
         }
-        if open && self.conversations_stale && !self.conversations_slot.running() {
-            self.conversations_stale = false;
+        if open && self.rooms.conversations_stale && !self.conversations_slot.running() {
+            self.rooms.conversations_stale = false;
             let cfg = cfg.clone();
             self.conversations_slot.start(ctx, move || with_api(&cfg, |api| Box::pin(api.conversations())));
         }
@@ -471,11 +514,11 @@ impl Chat {
         // What the screen shows is seen.
         if showing {
             match self.tab {
-                Tab::Global | Tab::Lobby => self.unseen_mentions = 0,
+                Tab::Global | Tab::Lobby => self.rooms.unseen_mentions = 0,
                 Tab::Messages => {
                     if let Some(with) = self.with.clone() {
-                        self.unseen_direct.remove(&with);
-                        let last = self.direct.get(&with).and_then(|l| l.iter().rev().find(|m| !m.mine)).map(|m| m.id);
+                        self.rooms.unseen_direct.remove(&with);
+                        let last = self.rooms.direct.get(&with).and_then(|l| l.iter().rev().find(|m| !m.mine)).map(|m| m.id);
                         if let Some(last) = last.filter(|l| self.marked.get(&with).is_none_or(|m| m < l)) {
                             if !self.marking.running() {
                                 self.marked.insert(with.clone(), last);
@@ -505,6 +548,7 @@ impl Chat {
     }
 }
 
+#[cfg(feature = "gui")]
 /// The Chat screen.
 pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let (chat, game, notices) = app.chat_mut();
@@ -555,6 +599,7 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
     let _ = notices;
 }
 
+#[cfg(feature = "gui")]
 /// The Chat screen's columns: the rooms and conversations, the one open, and (for Global, with
 /// room for it) who's online here.
 fn layout(chat: &mut Chat, cfg: &Config, status: &StatusResponse, ui: &mut egui::Ui) {
@@ -575,9 +620,9 @@ fn layout(chat: &mut Chat, cfg: &Config, status: &StatusResponse, ui: &mut egui:
             match chat.tab {
                 Tab::Global => {
                     room_heading(ui, "# Global", "The whole community network");
-                    let list = std::mem::take(&mut chat.global);
+                    let list = std::mem::take(&mut chat.rooms.global);
                     messages(chat, cfg, &list, height, "global", ui);
-                    chat.global = list;
+                    chat.rooms.global = list;
                     if !status.may_post_global {
                         ui.label(theme::muted(&status.global_wait));
                     }
@@ -588,9 +633,9 @@ fn layout(chat: &mut Chat, cfg: &Config, status: &StatusResponse, ui: &mut egui:
                     if status.lobby == 0 {
                         ui.label(theme::muted("Join a lobby or a match in the game: its players can talk here, and in the game's overlay."));
                     } else {
-                        let list = std::mem::take(&mut chat.lobby);
+                        let list = std::mem::take(&mut chat.rooms.lobby);
                         messages(chat, cfg, &list, height, "lobby", ui);
-                        chat.lobby = list;
+                        chat.rooms.lobby = list;
                         composer(chat, cfg, Room::Lobby, "", true, "Say something to your lobby…", ui);
                     }
                 }
@@ -623,7 +668,7 @@ pub(crate) fn sample(ui: &mut egui::Ui, tab: &str) {
         ..Default::default()
     };
     let mut chat = Chat::default();
-    chat.global = vec![
+    chat.rooms.global = vec![
         msg(1, "t", "Tank", "Falkenstein, Germany", "anyone up for Blacklist mode on Penthouse?", false),
         msg(2, "n", "Nova", "Sydney, Australia", "after this match, 10 min", false),
         msg(3, "r", "Raven", "Beauharnois, Canada", "@Kiwi you hosting tonight?", true),
@@ -633,13 +678,13 @@ pub(crate) fn sample(ui: &mut egui::Ui, tab: &str) {
         with_name: "Raven".into(),
         ..Default::default()
     }];
-    chat.unseen_direct.insert("r".into(), 2);
+    chat.rooms.unseen_direct.insert("r".into(), 2);
     chat.friends = vec![ChatFriend {
         identity: "t".into(),
         name: "Tank".into(),
         online: true,
     }];
-    chat.direct.insert(
+    chat.rooms.direct.insert(
         "r".into(),
         vec![Message {
             to: "me".into(),
@@ -647,7 +692,7 @@ pub(crate) fn sample(ui: &mut egui::Ui, tab: &str) {
             ..msg(4, "r", "Raven", "Beauharnois, Canada", "you hosting tonight?", false)
         }],
     );
-    chat.lobby = vec![Message {
+    chat.rooms.lobby = vec![Message {
         room: Room::Lobby as i32,
         ..msg(5, "t", "Tank", "Falkenstein, Germany", "ready when you are", false)
     }];
@@ -658,7 +703,7 @@ pub(crate) fn sample(ui: &mut egui::Ui, tab: &str) {
     };
     if tab == "messages" {
         chat.with = Some("r".into());
-        chat.names.insert("r".into(), "Raven".into());
+        chat.rooms.names.insert("r".into(), "Raven".into());
     }
     let status = StatusResponse {
         available: true,
@@ -669,6 +714,7 @@ pub(crate) fn sample(ui: &mut egui::Ui, tab: &str) {
     layout(&mut chat, &Config::default(), &status, ui);
 }
 
+#[cfg(feature = "gui")]
 /// A room's name over the conversation, and what it is.
 fn room_heading(ui: &mut egui::Ui, name: &str, what: &str) {
     ui.horizontal(|ui| {
@@ -678,6 +724,7 @@ fn room_heading(ui: &mut egui::Ui, name: &str, what: &str) {
     ui.add_space(4.0);
 }
 
+#[cfg(feature = "gui")]
 /// One entry of the rooms column: `name` over `what`, lit when it's open, with its unread count.
 fn room_button(ui: &mut egui::Ui, on: bool, name: &str, what: &str, unread: u32, enabled: bool) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 50.0), if enabled { egui::Sense::click() } else { egui::Sense::hover() });
@@ -721,6 +768,7 @@ fn room_button(ui: &mut egui::Ui, on: bool, name: &str, what: &str, unread: u32,
     response
 }
 
+#[cfg(feature = "gui")]
 /// The rooms column: Global and the lobby, then conversations with friends (and friends to start
 /// one with).
 fn rooms(chat: &mut Chat, status: &StatusResponse, height: f32, ui: &mut egui::Ui) {
@@ -745,7 +793,7 @@ fn rooms(chat: &mut Chat, status: &StatusResponse, height: f32, ui: &mut egui::U
         }
         let mut pick = None;
         for c in &chat.conversations {
-            let unread = chat.unseen_direct.get(&c.with).copied().unwrap_or(0);
+            let unread = chat.rooms.unseen_direct.get(&c.with).copied().unwrap_or(0);
             let name = if c.with_name.is_empty() { identity::short(&c.with) } else { c.with_name.clone() };
             let on = chat.tab == Tab::Messages && chat.with.as_deref() == Some(c.with.as_str());
             if room_button(ui, on, &name, "Direct", unread, true).clicked() {
@@ -756,7 +804,7 @@ fn rooms(chat: &mut Chat, status: &StatusResponse, height: f32, ui: &mut egui::U
         for f in new {
             let on = chat.tab == Tab::Messages && chat.with.as_deref() == Some(f.identity.as_str());
             if room_button(ui, on, &f.name, if f.online { "Friend · online" } else { "Friend" }, 0, true).clicked() {
-                chat.names.insert(f.identity.clone(), f.name.clone());
+                chat.rooms.names.insert(f.identity.clone(), f.name.clone());
                 pick = Some(f.identity.clone());
             }
         }
@@ -767,20 +815,22 @@ fn rooms(chat: &mut Chat, status: &StatusResponse, height: f32, ui: &mut egui::U
     });
 }
 
+#[cfg(feature = "gui")]
 /// The open conversation with a friend.
 fn conversation(chat: &mut Chat, cfg: &Config, height: f32, ui: &mut egui::Ui) {
     let Some(with) = chat.with.clone() else {
         ui.label(theme::muted("Pick a conversation, or a friend to start one."));
         return;
     };
-    let name = chat.names.get(&with).cloned().unwrap_or_else(|| identity::short(&with));
+    let name = chat.rooms.names.get(&with).cloned().unwrap_or_else(|| identity::short(&with));
     room_heading(ui, &name, "Direct messages");
-    let list = chat.direct.remove(&with).unwrap_or_default();
+    let list = chat.rooms.direct.remove(&with).unwrap_or_default();
     messages(chat, cfg, &list, height, &with, ui);
-    chat.direct.insert(with.clone(), list);
+    chat.rooms.direct.insert(with.clone(), list);
     composer(chat, cfg, Room::Direct, &with, true, &format!("Message {name}…"), ui);
 }
 
+#[cfg(feature = "gui")]
 /// Who's online on the player's server, beside Global.
 fn online(chat: &mut Chat, cfg: &Config, height: f32, ui: &mut egui::Ui) {
     ui.label(theme::caps(&format!("Online here · {}", chat.online.online.len() + chat.online.others.len())));
@@ -828,6 +878,7 @@ fn online(chat: &mut Chat, cfg: &Config, height: f32, ui: &mut egui::Ui) {
         });
 }
 
+#[cfg(feature = "gui")]
 /// Does `action` to a player: by account id (who's online here), or by identity (chat's
 /// senders), never by name alone.
 fn start_action(chat: &mut Chat, cfg: &Config, action: PlayerAction, id: String, identity: String, name: String, ctx: &egui::Context) {
@@ -838,6 +889,7 @@ fn start_action(chat: &mut Chat, cfg: &Config, action: PlayerAction, id: String,
     chat.acting.start(ctx, move || flow::player_action(&cfg, action, &id, &identity, &name));
 }
 
+#[cfg(feature = "gui")]
 /// A room's or a conversation's messages, newest at the bottom.
 fn messages(chat: &mut Chat, cfg: &Config, list: &[Message], height: f32, salt: &str, ui: &mut egui::Ui) {
     let clock = setup::clock::Clock::local();
@@ -864,6 +916,7 @@ fn messages(chat: &mut Chat, cfg: &Config, list: &[Message], height: f32, salt: 
         });
 }
 
+#[cfg(feature = "gui")]
 /// One message: when, who (right-click for more), and what, with a Discord invite as a link.
 fn message(chat: &mut Chat, cfg: &Config, m: &Message, clock: &setup::clock::Clock, ui: &mut egui::Ui) {
     let row = egui::Frame::new()
@@ -897,6 +950,7 @@ fn message(chat: &mut Chat, cfg: &Config, m: &Message, clock: &setup::clock::Clo
     }
 }
 
+#[cfg(feature = "gui")]
 /// A message's text: plain, but a Discord invite in its own form is a link (opened after asking).
 fn body(chat: &mut Chat, text: &str, ui: &mut egui::Ui) {
     let invites = moderation::discord_invites(text);
@@ -916,6 +970,7 @@ fn body(chat: &mut Chat, text: &str, ui: &mut egui::Ui) {
     }
 }
 
+#[cfg(feature = "gui")]
 /// What can be done about a message and its sender.
 fn message_menu(chat: &mut Chat, cfg: &Config, m: &Message, ui: &mut egui::Ui) {
     if m.mine {
@@ -929,7 +984,7 @@ fn message_menu(chat: &mut Chat, cfg: &Config, m: &Message, ui: &mut egui::Ui) {
     }
     let friend = chat.friends.iter().any(|f| f.identity == m.from);
     if friend && m.room() != Room::Direct && ui.button(format!("Message {}", m.from_name)).clicked() {
-        chat.names.insert(m.from.clone(), m.from_name.clone());
+        chat.rooms.names.insert(m.from.clone(), m.from_name.clone());
         chat.with = Some(m.from.clone());
         chat.tab = Tab::Messages;
         ui.close();
@@ -953,6 +1008,7 @@ fn message_menu(chat: &mut Chat, cfg: &Config, m: &Message, ui: &mut egui::Ui) {
     }
 }
 
+#[cfg(feature = "gui")]
 /// Why a message is reported, under it.
 fn report_form(chat: &mut Chat, cfg: &Config, ui: &mut egui::Ui) {
     let Some(r) = chat.reporting.as_mut() else { return };
@@ -983,6 +1039,7 @@ fn report_form(chat: &mut Chat, cfg: &Config, ui: &mut egui::Ui) {
     }
 }
 
+#[cfg(feature = "gui")]
 /// Asks before opening a Discord invite someone sent: a dialog over the page (Escape or a
 /// click outside cancels).
 fn confirm_link(chat: &mut Chat, link: &str, ui: &mut egui::Ui) {
@@ -1022,6 +1079,7 @@ fn confirm_link(chat: &mut Chat, link: &str, ui: &mut egui::Ui) {
     }
 }
 
+#[cfg(feature = "gui")]
 /// The text box: the rules checked while typing, Enter sends.
 fn composer(chat: &mut Chat, cfg: &Config, room: Room, to: &str, allowed: bool, hint: &str, ui: &mut egui::Ui) {
     ui.add_space(8.0);
@@ -1104,7 +1162,7 @@ mod tests {
             ..message(7, Room::Global)
         };
         chat.take(vec![deletion], &ctx, false, false);
-        assert_eq!(chat.global.iter().map(|m| m.id).collect::<Vec<_>>(), [6], "deleted, and the deletion isn't shown");
+        assert_eq!(chat.rooms.global.iter().map(|m| m.id).collect::<Vec<_>>(), [6], "deleted, and the deletion isn't shown");
 
         // A friend's message, and a mention, while elsewhere: counted for the rail.
         let direct = Message {
@@ -1117,12 +1175,12 @@ mod tests {
             ..message(9, Room::Global)
         };
         chat.take(vec![direct.clone(), mention.clone()], &ctx, false, false);
-        assert_eq!((chat.unread(), chat.names.get("FRIEND").map(String::as_str)), (2, Some("Kiwi")));
+        assert_eq!((chat.unread(), chat.rooms.names.get("FRIEND").map(String::as_str)), (2, Some("Kiwi")));
 
         // The same, as what the server kept before the launcher started: shown, not counted
         // (the conversations' own unread counts follow from the server).
         let mut chat = Chat::default();
         chat.take(vec![direct, mention], &ctx, false, true);
-        assert_eq!((chat.unread(), chat.global.len(), chat.conversations_stale), (0, 1, true));
+        assert_eq!((chat.unread(), chat.rooms.global.len(), chat.rooms.conversations_stale), (0, 1, true));
     }
 }
