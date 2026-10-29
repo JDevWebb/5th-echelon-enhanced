@@ -191,6 +191,11 @@ const preview = {
   my_reports: () => [{ line: '28 Oct · Falkenstein · open', said: '“froze joining a friend”', reply: '' }],
   connection_test: () => [['Config server (port 80)', 'ok', null], ['API and account', 'ok', null], ['How players reach this PC', 'ok', 'Direct: reachable without any router set-up'], ['Internet play helper', 'warn', 'reachable; matches go through the server’s relay']],
   check_update: () => ['0.4.7', false],
+  host: () => ({
+    exe_name: 'dedicated_server.exe', found: true, error: null, running: false, starting: false, downloading: false, listen: null,
+    adapters: [['Ethernet', '192.168.1.20']], trusted_subnet: '', api: { info: true, presence: true, accounts: false, unhandled: false }, managing: null, local: false,
+  }),
+  host_logs: () => [{ time: '20:14:02', tone: '', msg: 'Listening on 0.0.0.0:21126' }, { time: '20:14:09', tone: 'warn', msg: 'A client sent an unknown call' }],
   chat_glance: () => ({ unread: 2, latest: ['Raven', '@Kiwi you hosting tonight?'] }),
   chat: ({ tab, with: w }) => ({
     state: 'open', why: null, trouble: null, read_only: false, may_post_global: true, global_wait: '', lobby: false, unread: 2,

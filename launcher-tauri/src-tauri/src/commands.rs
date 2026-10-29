@@ -164,7 +164,9 @@ pub fn info(state: tauri::State<Launcher>) -> Info {
         max_name: setup::account::MAX_NAME,
         identity: identity_short(),
         beta: game.map_or(0, |g| g.cfg.hook_config.beta.on().len()),
-        name_not_allowed: game.filter(|g| inner_name_not_allowed(&inner.friends, g)).and_then(|_| inner.friends.name_not_allowed.clone()),
+        name_not_allowed: game
+            .filter(|g| inner_name_not_allowed(&inner.friends, g))
+            .and_then(|_| inner.friends.name_not_allowed.clone()),
         emulator_notice: game.is_some_and(|g| g.uplay_emulator && !g.uplay_emulator_told),
     }
 }

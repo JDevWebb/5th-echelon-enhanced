@@ -2,7 +2,7 @@
   <div class="window" :class="{ framed: !maximised }">
     <TitleBar :product="info.product" :release="info.release" />
     <div class="body">
-      <Rail :current="screen" :release="info.release" :community="info.community" :unread="glance.unread" @go="go" @version="whatsNew?.again()" />
+      <Rail :current="screen === 'host' ? 'servers' : screen" :release="info.release" :community="info.community" :unread="glance.unread" @go="go" @version="whatsNew?.again()" />
       <div class="column">
         <main class="screen">
           <Transition name="view" mode="out-in">
@@ -13,7 +13,7 @@
           <Support v-else-if="screen === 'support'" key="support" @go="go" />
           <Chat v-else-if="screen === 'chat'" key="chat" />
           <Settings v-else-if="screen === 'settings'" key="settings" :open="settingsAt" :size="size" @size="setSize" @fullscreen="toggleFullscreen" @changed="refresh" />
-          <Placeholder v-else :key="screen" v-bind="PLACEHOLDERS[screen]" />
+          <Host v-else-if="screen === 'host'" key="host" />
           </Transition>
         </main>
         <ActivityBar ref="bar" />
@@ -28,7 +28,7 @@
 
 <script setup>
 // The launcher's window: its own title bar, the side menu, and the screen chosen, crossing over
-// as it changes. The screens not moved over from the egui launcher yet say so (step 2).
+// as it changes.
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import TitleBar from './components/TitleBar.vue';
 import Rail from './components/Rail.vue';
@@ -39,17 +39,13 @@ import Intel from './views/Intel.vue';
 import Support from './views/Support.vue';
 import Chat from './views/Chat.vue';
 import Settings from './views/Settings.vue';
-import Placeholder from './views/Placeholder.vue';
+import Host from './views/Host.vue';
 import ActivityBar from './components/ActivityBar.vue';
 import Questions from './components/Questions.vue';
 import Feedback from './components/Feedback.vue';
 import AccountDialog from './components/AccountDialog.vue';
 import WhatsNew from './components/WhatsNew.vue';
 import { call, inTauri, listen } from './lib/tauri.js';
-
-const PLACEHOLDERS = {
-  host: { kicker: 'Host on this PC', title: 'Host a server', text: 'Run a server for your group: a LAN party, or friends over the internet.' },
-};
 
 const info = reactive({ product: '5th Echelon Enhanced', release: '', game_dir: null, server: null, account: null, community: true, play_mode: 'play', managed: false, running: false });
 const screen = ref('play');

@@ -1,9 +1,12 @@
 //! The launcher in Tauri: the window and the commands the page calls (commands.rs).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use tauri::Manager;
+
 mod chat;
 mod commands;
 mod feedback;
+mod host;
 mod intel;
 mod settings;
 mod support;
@@ -20,6 +23,7 @@ fn main() {
         .manage(intel::Intel::default())
         .manage(support::Support::default())
         .manage(chat::Chat::default())
+        .manage(host::Host::default())
         .setup(|app| {
             feedback::start(app.handle());
             support::start(app.handle());
@@ -70,6 +74,15 @@ fn main() {
             commands::recent_servers,
             commands::usual_name,
             commands::use_network,
+            host::host,
+            host::host_start,
+            host::host_stop,
+            host::host_download,
+            host::host_connect,
+            host::host_disconnect,
+            host::host_lists,
+            host::host_delete,
+            host::host_logs,
             settings::settings,
             settings::set,
             settings::profile_password,
@@ -101,6 +114,12 @@ fn main() {
             whats_new::whats_new_seen,
             whats_new::use_community_network,
         ])
-        .run(tauri::generate_context!())
-        .expect("the launcher's window");
+        .build(tauri::generate_context!())
+        .expect("the launcher's window")
+        .run(|app, event| {
+            // A server started here stops with the launcher.
+            if let tauri::RunEvent::Exit = event {
+                app.state::<host::Host>().stop();
+            }
+        });
 }

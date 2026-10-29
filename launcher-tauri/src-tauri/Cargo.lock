@@ -2562,6 +2562,7 @@ version = "0.0.0"
 dependencies = [
  "api",
  "base64 0.22.1",
+ "dedicated_server_config",
  "hooks-config",
  "identity",
  "image",
