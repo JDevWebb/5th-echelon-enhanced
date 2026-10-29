@@ -428,6 +428,23 @@ pub struct Servers {
     note: Option<String>,
     /// The network's directory, when the launcher has one.
     network: Option<String>,
+    /// The server menu's header ("Community servers · scbl.jdevwebb.net").
+    header: String,
+    /// The player's server, for the card beside Play.
+    card: Option<ServerCard>,
+}
+
+/// The card beside Play: the player's server.
+#[derive(Serialize)]
+pub struct ServerCard {
+    /// "Server", or who runs it when it isn't the community network ("Server · Self-hosted"),
+    /// with a line saying so.
+    caption: String,
+    caption_why: Option<String>,
+    /// Where it is, for a listed server; its address otherwise.
+    place: String,
+    ping: Option<u32>,
+    players: Option<u32>,
 }
 
 /// The network's servers, pinged now when `fresh` or not yet.
@@ -449,6 +466,8 @@ pub fn servers(state: tauri::State<Launcher>, fresh: bool) -> Servers {
     let inner = state.lock();
     let current = inner.game.as_ref().and_then(|g| g.cfg.current_profile().map(|p| p.server.clone())).unwrap_or_default();
     let clock = setup::clock::Clock::local();
+    let listing = inner.directory.as_deref().and_then(|d| d.iter().find(|(s, _)| s.host == current));
+    let run_by = connect::run_by(listing.is_some(), inner.directory.is_some());
     Servers {
         rows: inner
             .directory
@@ -456,7 +475,15 @@ pub fn servers(state: tauri::State<Launcher>, fresh: bool) -> Servers {
             .map(|d| launcher::server_menu::rows(d, &current, identity::now(), &clock))
             .unwrap_or_default(),
         note: inner.directory_note.clone(),
+        header: connect::menu_header(network.as_deref()),
         network,
+        card: (!current.is_empty()).then(|| ServerCard {
+            caption: run_by.as_ref().map_or_else(|| "Server".to_string(), |(who, _)| format!("Server · {who}")),
+            caption_why: run_by.map(|(_, why)| why),
+            place: listing.map_or_else(|| current.clone(), |(s, _)| connect::place(s)),
+            ping: listing.and_then(|(_, ping)| *ping),
+            players: listing.map(|(s, _)| s.players_online),
+        }),
     }
 }
 
@@ -748,4 +775,28 @@ pub fn fix_everything(app: tauri::AppHandle, state: tauri::State<Launcher>) -> b
     drop(inner);
     start_setup(&app, asked);
     true
+}
+
+/// Switches to a server from the menu (the network's): set up at once with the player's name,
+/// in the activity bar. Why not, when it can't now.
+#[tauri::command(async)]
+pub fn switch_server(app: tauri::AppHandle, state: tauri::State<Launcher>, host: String) -> Result<(), String> {
+    let mut inner = state.lock();
+    if game_running(&mut inner) {
+        return Err("Quit the game first".into());
+    }
+    if inner.setup_running || inner.fixing {
+        return Err("Wait for the current task to finish".into());
+    }
+    let Some(game) = inner.game.as_ref() else {
+        return Err("Choose the game's folder first.".into());
+    };
+    if game.managed.is_some() {
+        return Err("Another tool manages this install: change the server there".into());
+    }
+    let name = game.cfg.current_profile().map(|p| p.user.username.clone()).filter(|n| !n.is_empty());
+    let asked = connect::ask(game, &host, name, true, inner.directory.as_deref());
+    drop(inner);
+    start_setup(&app, asked);
+    Ok(())
 }

@@ -28,9 +28,11 @@ const sample = {
   find_games: ['C:\\Games\\Splinter Cell Blacklist\\src\\SYSTEM'],
   servers: {
     network: 'https://scbl.jdevwebb.net',
+    header: 'Community servers · scbl.jdevwebb.net',
+    card: { caption: 'Server', caption_why: null, place: 'Falkenstein, Germany', ping: 38, players: 24 },
     note: null,
     rows: [
-      { host: 'eu1.scbl.jdevwebb.net', place: 'Falkenstein, Germany', name: 'EU', title: '5th Echelon Community EU (Falkenstein, Germany)', ping: 38, players: 24, playing: 'SvM Classic 6/8 · 3 in lobbies', current: false, best: true, friends_only: false, maintenance: null },
+      { host: 'eu1.scbl.jdevwebb.net', place: 'Falkenstein, Germany', name: 'EU', title: '5th Echelon Community EU (Falkenstein, Germany)', ping: 38, players: 24, playing: 'SvM Classic 6/8 · 3 in lobbies', current: true, best: true, friends_only: false, maintenance: null },
       { host: 'na1.scbl.jdevwebb.net', place: 'Beauharnois, Canada', name: 'North America', title: '5th Echelon Community North America (Beauharnois, Canada)', ping: 112, players: 9, playing: '', current: false, best: false, friends_only: true, maintenance: null },
       { host: 'oceania.scbl.jdevwebb.net', place: 'Sydney, Australia', name: 'Oceania', title: '5th Echelon Community Oceania (Sydney, Australia)', ping: 290, players: 4, playing: '', current: false, best: false, friends_only: true, maintenance: null },
     ],
@@ -82,6 +84,7 @@ const preview = {
     return true;
   },
   fix_everything: () => true,
+  switch_server: () => null,
   identify: () => null,
   connect: ({ server, newName }) => {
     sample.info.connecting = true;

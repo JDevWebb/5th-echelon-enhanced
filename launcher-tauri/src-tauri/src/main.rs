@@ -29,6 +29,7 @@ fn main() {
             commands::fix,
             commands::identify,
             commands::fix_everything,
+            commands::switch_server,
         ])
         .run(tauri::generate_context!())
         .expect("the launcher's window");

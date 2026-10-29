@@ -1473,38 +1473,13 @@ fn readiness(play: &Play) -> (egui::Color32, String) {
 }
 
 /// The bar under the banner: the server you're on, how ready you are, and Play.
-/// Who runs the server, for the server card's caption, when it isn't the community
-/// network: "Self-hosted" for a server on no network, or the other network's name, with
-/// a line saying so (`listed`: in the directory in use; `loaded`: the directory is known,
-/// so a server missing from it really isn't there, and the label doesn't flash).
-fn run_by(listed: bool, loaded: bool) -> Option<(String, String)> {
-    let network = crate::app::Prefs::directory();
-    // With no network there's no list to wait for.
-    let loaded = loaded || network.is_none();
-    if network.as_deref().is_some_and(crate::app::Prefs::is_community) && listed {
-        return None;
-    }
-    match network {
-        Some(url) if listed => {
-            let host = url_host(&url).to_string();
-            let why = format!("On {host}'s network, run by its admins, not by the community network.");
-            Some((hooks_config::text::clip(&host, 22), why))
-        }
-        _ if !listed && loaded => Some((
-            "Self-hosted".to_string(),
-            "Run by whoever hosts it, not by the community network. Fine for your own or a friend's server.".to_string(),
-        )),
-        _ => None,
-    }
-}
-
 fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: Option<&crate::update_notice::Notice>, to: &mut Option<Go>, ui: &mut egui::Ui) {
     let profile = game.cfg.current_profile().cloned().unwrap_or_default();
     let listing = play.directory.as_ref().and_then(|d| d.iter().find(|(s, _)| s.host == profile.server)).cloned();
     let playing = play.game_seen || play.running.is_some();
     let menu_id = egui::Id::new("server-menu");
     let menu_open = egui::Popup::is_id_open(ui.ctx(), menu_id);
-    let run_by = run_by(listing.is_some(), play.directory.is_some());
+    let run_by = crate::connect::run_by(listing.is_some(), play.directory.is_some());
     let mut caption_rect = None;
     egui::Frame::new().show(ui, |ui| {
         ui.set_width(ui.available_width());
@@ -1631,11 +1606,7 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: O
                         }),
                 );
             let network = crate::app::Prefs::directory();
-            let header = match &network {
-                Some(url) if crate::app::Prefs::is_community(url) => format!("Community servers · {}", url_host(url)),
-                Some(url) => format!("Servers · {}", url_host(url)),
-                None => "No network".to_string(),
-            };
+            let header = crate::connect::menu_header(network.as_deref());
             let clock = setup::clock::Clock::local();
             let rows = play
                 .directory
@@ -1696,11 +1667,6 @@ fn launch_bar(play: &mut Play, game: &mut Game, notices: &mut Notices, notice: O
             );
         }
     });
-}
-
-/// A network's host, from its address.
-fn url_host(url: &str) -> &str {
-    url.trim_start_matches("https://").trim_end_matches('/')
 }
 
 /// The chevron on the server card: down, or up while the menu is open.
@@ -2274,7 +2240,7 @@ fn servers_page(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &e
                 let s = if count == 1 { "" } else { "s" };
                 notices.info(format!(
                     "Using the network {}: its {count} server{s} are in the server menu on the Play screen.",
-                    url_host(&url)
+                    crate::connect::url_host(&url)
                 ));
             }
             Err(e) => notices.error(e),
@@ -2368,7 +2334,7 @@ fn network_card(play: &mut Play, notices: &mut Notices, ctx: &egui::Context, ui:
                 ui.spacing_mut().item_spacing.y = 2.0;
                 match &network {
                     Some(url) => {
-                        ui.label(RichText::new(url_host(url)).family(theme::strong()).size(18.0));
+                        ui.label(RichText::new(crate::connect::url_host(url)).family(theme::strong()).size(18.0));
                         let count = match play.directory.as_ref().map(Vec::len) {
                             Some(1) => "1 server · ".to_string(),
                             Some(n) => format!("{n} servers · "),
@@ -2890,7 +2856,7 @@ fn account_dialog(ctx: &egui::Context, dialog: &mut AccountDialog, current: Opti
             if dialog.own {
                 let leaving = match network {
                     Some(url) if crate::app::Prefs::is_community(url) => "the community network".to_string(),
-                    Some(url) => url_host(url).to_string(),
+                    Some(url) => crate::connect::url_host(url).to_string(),
                     None => "your network".to_string(),
                 };
                 ui.label(theme::muted(format!(

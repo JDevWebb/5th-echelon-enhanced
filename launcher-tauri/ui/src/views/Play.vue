@@ -15,10 +15,68 @@
         <h1 class="reveal" style="--d: 80ms">Splinter Cell<br /><span>Blacklist</span></h1>
         <p class="tag reveal" style="--d: 180ms">Co-op and Spies vs Mercs on community servers. No VPN, no port forwarding.</p>
         <div class="launch reveal" style="--d: 260ms">
-          <button class="server" type="button" title="Change server" @click="$emit('change-server')">
-            <span><span class="caps">Server</span><b>{{ info.server || 'None chosen' }}</b></span>
-            <svg class="chev" viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" /></svg>
-          </button>
+          <span class="server-wrap">
+            <button
+              class="server"
+              :class="{ open: serverMenu }"
+              type="button"
+              aria-haspopup="menu"
+              :aria-expanded="serverMenu"
+              :title="serverBlocked || null"
+              @click.stop="openServerMenu"
+              @keydown.down.prevent="openServerMenu"
+            >
+              <span class="who">
+                <span class="caps" :title="servers?.card?.caption_why || null">{{ servers?.card?.caption ?? 'Server' }}</span>
+                <b>{{ servers?.card?.place ?? info.server ?? 'None chosen' }}</b>
+              </span>
+              <span v-if="servers?.card?.ping !== undefined && servers?.card?.players != null" class="ping">
+                <span :class="pingClass(servers.card.ping)">{{ servers.card.ping == null ? 'no answer' : `${servers.card.ping} ms` }}</span>
+                <small>{{ servers.card.players }} online</small>
+              </span>
+              <svg class="chev" viewBox="0 0 24 24"><path d="M6 9l6 6 6-6" /></svg>
+            </button>
+            <Transition name="menu">
+              <div v-if="serverMenu" class="server-menu" role="menu" @click.stop @keydown="menuKeys">
+                <p class="menu-head">
+                  <span class="caps">{{ servers.header }}</span>
+                  <i v-if="pinging" class="spin"></i>
+                  <a v-else-if="servers.network" href="#" @click.prevent="loadServers(true)">Ping again</a>
+                </p>
+                <p v-if="!servers.rows.length" class="muted">{{ pinging ? 'Pinging the servers…' : 'This network lists no servers right now.' }}</p>
+                <button
+                  v-for="(r, i) in servers.rows"
+                  :key="r.host"
+                  :ref="(el) => (menuItems[i] = el)"
+                  type="button"
+                  role="menuitemradio"
+                  :aria-checked="r.current"
+                  :class="{ on: r.current }"
+                  :title="r.playing ? `Playing now: ${r.playing}` : null"
+                  @click="switchTo(r)"
+                >
+                  <span class="row-main">
+                    <b>{{ r.place }}</b>
+                    <small>{{ r.name }} · {{ r.host }}</small>
+                  </span>
+                  <span class="tags">
+                    <span v-if="r.best" class="mtag best">Best for you</span>
+                    <span v-else-if="r.current" class="mtag current">Current</span>
+                    <span v-if="r.maintenance" class="mtag warn">{{ r.maintenance }}</span>
+                  </span>
+                  <span class="ping">
+                    <span :class="pingClass(r.ping)">{{ r.ping == null ? 'no answer' : `${r.ping} ms` }}</span>
+                    <small>{{ r.players }} online</small>
+                  </span>
+                </button>
+                <p v-if="servers.note" class="muted note">{{ servers.note }}</p>
+                <button type="button" class="to-servers" @click="serverMenu = false; $emit('go', 'servers')">
+                  <span class="soft">A server of your own, a LAN server or another network</span>
+                  <b>Servers ›</b>
+                </button>
+              </div>
+            </Transition>
+          </span>
           <span class="ready"><i :class="tone"></i><span>{{ readyText }}</span></span>
           <span class="split">
             <button class="play" type="button" :disabled="!!blocked" :title="blocked || null" @click="play(info.play_mode)">
@@ -116,7 +174,7 @@
 // The Play screen, the trial's (trials/tauri-play) on the launcher's real data: the game, the
 // server and the account, and Play (with its modes) starting the game through the shared
 // library. The server menu, friends and the news come next.
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { call, inTauri, listen } from '../lib/tauri.js';
 
 const props = defineProps({ info: { type: Object, required: true } });
@@ -128,7 +186,10 @@ const LABELS = { play: 'Play', svm: 'Play SvM', coop: 'Play Coop' };
 const HINTS = { play: 'The game as it is', svm: 'Straight into a Spies vs Mercs lobby', coop: 'Straight into a co-op lobby' };
 
 const menuOpen = ref(false);
-const closeMenu = () => (menuOpen.value = false);
+const closeMenu = () => {
+  menuOpen.value = false;
+  serverMenu.value = false;
+};
 onMounted(() => document.addEventListener('click', closeMenu));
 onBeforeUnmount(() => document.removeEventListener('click', closeMenu));
 
@@ -158,6 +219,62 @@ const tabs = computed(() => [
 ]);
 const tab = ref('status');
 const tabIndex = computed(() => Math.max(0, tabs.value.findIndex((t) => t.id === tab.value)));
+
+// The server card and menu: the network's servers, pinged on the Rust side.
+const servers = ref(null);
+const serverMenu = ref(false);
+const pinging = ref(false);
+const menuItems = ref([]);
+
+async function loadServers(fresh) {
+  pinging.value = true;
+  servers.value = await call('servers', { fresh });
+  pinging.value = false;
+}
+
+/** Why the server can't be changed now, if it can't. */
+const serverBlocked = computed(() => {
+  if (props.info.running) return 'Quit the game first';
+  if (props.info.connecting || list.value?.busy) return 'Wait for the current task to finish';
+  if (props.info.managed) return 'Another tool manages this install: change the server there';
+  return null;
+});
+
+function openServerMenu() {
+  if (serverBlocked.value) return;
+  menuOpen.value = false;
+  serverMenu.value = !serverMenu.value;
+  if (serverMenu.value) {
+    if (!servers.value) loadServers(false);
+    // The arrow keys start on the player's server.
+    nextTick(() => {
+      const at = Math.max(0, servers.value?.rows.findIndex((r) => r.current) ?? 0);
+      menuItems.value[at]?.focus();
+    });
+  }
+}
+
+function menuKeys(e) {
+  const items = menuItems.value.filter(Boolean);
+  const at = items.indexOf(document.activeElement);
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+    e.preventDefault();
+    items[(at + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus();
+  } else if (e.key === 'Escape') {
+    serverMenu.value = false;
+  }
+}
+
+async function switchTo(row) {
+  serverMenu.value = false;
+  // A community server: switched to at once, in the activity bar.
+  if (!row.current) await call('switch_server', { host: row.host }).catch(() => {});
+}
+
+function pingClass(ms) {
+  if (ms == null) return 'none';
+  return ms <= 90 ? 'good' : ms <= 180 ? '' : 'far';
+}
 
 // The checklist (the shared library's), gathered on the Rust side; again every half minute.
 const list = ref(null);
@@ -191,8 +308,12 @@ const readyText = computed(() => {
 
 onMounted(async () => {
   loadChecks(false);
+  loadServers(false);
   checksTimer = setInterval(() => loadChecks(false), 30000);
-  stopChecks = await listen('checks', () => loadChecks(false));
+  stopChecks = await listen('checks', () => {
+    loadChecks(false);
+    loadServers(false);
+  });
 });
 onBeforeUnmount(() => {
   clearInterval(checksTimer);
@@ -223,8 +344,33 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 .reveal { opacity: 0; transform: translateY(14px); animation: reveal .7s var(--ease) forwards; animation-delay: var(--d); }
 
 .launch { display: flex; align-items: center; gap: 20px; max-width: 940px; }
-.server { flex: 0 0 300px; display: flex; align-items: center; gap: 10px; padding: 10px 12px 10px 16px; text-align: left; border-radius: 4px; background: rgba(12, 17, 18, .8); border: 1px solid var(--control-line); transition: border-color .2s; backdrop-filter: blur(8px); }
-.server:hover { border-color: var(--accent); }
+.server-wrap { position: relative; flex: 0 0 300px; display: flex; }
+.server { flex: 1; display: flex; align-items: center; gap: 10px; padding: 10px 12px 10px 16px; text-align: left; border-radius: 4px; background: rgba(12, 17, 18, .8); border: 1px solid var(--control-line); transition: border-color .2s; backdrop-filter: blur(8px); }
+.server:hover, .server.open { border-color: var(--accent); }
+.server .ping { display: flex; flex-direction: column; align-items: flex-end; font: 13px PlexMono, monospace; }
+.server .ping small, .server-menu .ping small { font: 12px Plex, sans-serif; color: var(--muted); }
+.good { color: var(--accent); } .far { color: var(--warn); } .none { color: var(--muted); font-family: Plex, sans-serif; }
+.chev { transition: transform .25s; }
+.server.open .chev { transform: rotate(180deg); }
+.server-menu { position: absolute; left: 0; bottom: calc(100% + 8px); width: 440px; padding: 8px; display: flex; flex-direction: column; gap: 2px; border-radius: 6px; background: rgba(12, 17, 18, .95); border: 1px solid var(--control-line); backdrop-filter: blur(14px); box-shadow: 0 18px 50px rgba(0, 0, 0, .55); z-index: 6; }
+.menu-head { display: flex; align-items: center; justify-content: space-between; margin: 6px 8px 8px; font-size: 13px; }
+.server-menu > .muted { margin: 4px 8px 8px; }
+.server-menu > button[role="menuitemradio"] { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-radius: 4px; text-align: left; transition: background .15s; }
+.server-menu > button[role="menuitemradio"]:hover, .server-menu > button[role="menuitemradio"]:focus-visible { background: var(--control); outline: none; }
+.server-menu > button.on { background: var(--selected); box-shadow: inset 3px 0 0 var(--accent); }
+.row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.row-main b { font-weight: 600; }
+.row-main small { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.server-menu .ping { display: flex; flex-direction: column; align-items: flex-end; font: 13px PlexMono, monospace; min-width: 72px; }
+.tags { display: flex; gap: 6px; }
+.mtag { padding: 0 6px; border-radius: 3px; font: 10px/17px PlexMono, monospace; letter-spacing: .08em; text-transform: uppercase; border: 1px solid var(--control-line); color: var(--muted); }
+.mtag.best { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
+.mtag.current { color: var(--accent); border-color: rgba(155, 224, 90, .4); }
+.mtag.warn { color: var(--warn); border-color: rgba(240, 180, 76, .4); }
+.note { font-size: 12.5px; margin: 6px 8px; }
+.to-servers { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 6px; padding: 12px; border-top: 1px solid var(--line); text-align: left; font-size: 13px; }
+.to-servers b { color: var(--accent); font-weight: 600; white-space: nowrap; }
+.to-servers:hover b { text-decoration: underline; }
 .server > span:first-child { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .server b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chev { width: 16px; height: 16px; color: var(--muted); }

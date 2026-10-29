@@ -94,6 +94,45 @@ pub fn find_on_network() -> Result<Vec<std::net::IpAddr>, String> {
         .map_err(|_| "No server answered on this network.".to_string())
 }
 
+/// Who runs the server, for the server card's caption, when it isn't the community
+/// network: "Self-hosted" for a server on no network, or the other network's name, with
+/// a line saying so (`listed`: in the directory in use; `loaded`: the directory is known,
+/// so a server missing from it really isn't there, and the label doesn't flash).
+pub fn run_by(listed: bool, loaded: bool) -> Option<(String, String)> {
+    let network = Prefs::directory();
+    // With no network there's no list to wait for.
+    let loaded = loaded || network.is_none();
+    if network.as_deref().is_some_and(Prefs::is_community) && listed {
+        return None;
+    }
+    match network {
+        Some(url) if listed => {
+            let host = url_host(&url).to_string();
+            let why = format!("On {host}'s network, run by its admins, not by the community network.");
+            Some((hooks_config::text::clip(&host, 22), why))
+        }
+        _ if !listed && loaded => Some((
+            "Self-hosted".to_string(),
+            "Run by whoever hosts it, not by the community network. Fine for your own or a friend's server.".to_string(),
+        )),
+        _ => None,
+    }
+}
+
+/// A network's host, from its address.
+pub fn url_host(url: &str) -> &str {
+    url.trim_start_matches("https://").trim_end_matches('/')
+}
+
+/// The server menu's header: the network its servers are from.
+pub fn menu_header(network: Option<&str>) -> String {
+    match network {
+        Some(url) if Prefs::is_community(url) => format!("Community servers · {}", url_host(url)),
+        Some(url) => format!("Servers · {}", url_host(url)),
+        None => "No network".to_string(),
+    }
+}
+
 /// Where a server is: its region ("Sydney, Australia"), else its name.
 pub fn place(s: &setup::directory::Listing) -> String {
     if s.region.is_empty() {
