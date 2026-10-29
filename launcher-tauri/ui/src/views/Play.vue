@@ -239,6 +239,12 @@
               <p v-for="line in squad.playing" :key="line" class="line">{{ line }}</p>
               <p v-if="squad.playing_more" class="muted small">{{ squad.playing_more }}</p>
             </template>
+            <div v-if="info.community" class="comms">
+              <p class="caps">Global · latest</p>
+              <p v-if="latest" class="soft"><b class="accent">{{ latest[0] }}</b> {{ latest[1] }}</p>
+              <p v-else class="muted small">Nothing in Global yet.</p>
+              <button type="button" class="btn" @click="$emit('go', 'chat')">Open Chat</button>
+            </div>
             <div class="foot">
               <p v-if="squad.requests" class="accent small">{{ squad.requests }} friend request{{ squad.requests === 1 ? '' : 's' }} waiting</p>
               <p class="muted small">{{ squad.offline ? `${squad.offline} offline · ` : '' }}Add and invite friends in game with {{ squad.overlay_key }}</p>
@@ -290,7 +296,8 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { call, inTauri, listen } from '../lib/tauri.js';
 
-const props = defineProps({ info: { type: Object, required: true } });
+// `latest`: the latest in Global (who, what), for the Squad tab on the community network.
+const props = defineProps({ info: { type: Object, required: true }, latest: { type: Array, default: null } });
 const emit = defineEmits(['go', 'played', 'change-server']);
 
 // What the Play button starts (the shared library's PlayMode).
@@ -630,6 +637,9 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 .pane.squad li > span:nth-child(2) small { font: 12px/1.4 Plex, sans-serif; letter-spacing: 0; text-transform: none; }
 .sub { margin: 14px 0 4px; font-size: 13px; }
 .squad .foot { gap: 4px; }
+.comms { margin-top: 14px; padding: 12px; border-radius: 4px; background: var(--rail); border: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
+.comms p { margin: 0; }
+.comms .btn { width: 100%; height: 34px; }
 .squad .foot p { margin: 0; }
 .small { font-size: 12.5px; }
 .accent { color: var(--accent); }

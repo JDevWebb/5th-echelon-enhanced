@@ -1,6 +1,7 @@
 //! The launcher in Tauri: the window and the commands the page calls (commands.rs).
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod chat;
 mod commands;
 mod feedback;
 mod intel;
@@ -17,9 +18,11 @@ fn main() {
         .manage(whats_new::WhatsNew::default())
         .manage(intel::Intel::default())
         .manage(support::Support::default())
+        .manage(chat::Chat::default())
         .setup(|app| {
             feedback::start(app.handle());
             support::start(app.handle());
+            chat::start(app.handle());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -64,6 +67,13 @@ fn main() {
             commands::recent_servers,
             commands::usual_name,
             commands::use_network,
+            chat::chat,
+            chat::chat_glance,
+            chat::chat_check,
+            chat::chat_send,
+            chat::chat_delete,
+            chat::chat_report,
+            chat::chat_act,
             support::support,
             support::support_check,
             support::support_send,

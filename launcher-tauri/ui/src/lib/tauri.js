@@ -163,6 +163,23 @@ const preview = {
   suggestion_form: () => ({ areas: ['Launcher', 'In the game', 'Matches and joining', 'Servers', 'Other'], title_max: 80, text_max: 1000, identity: true }),
   check_suggestion: ({ title }) => (title.trim() ? null : 'Give it a title.'),
   suggest: () => null,
+  chat_glance: () => ({ unread: 2, latest: ['Raven', '@Kiwi you hosting tonight?'] }),
+  chat: ({ tab, with: w }) => ({
+    state: 'open', why: null, trouble: null, read_only: false, may_post_global: true, global_wait: '', lobby: false, unread: 2,
+    rules: 'Messages are kept for 7 days and the admins can read them. No links, keep it friendly.', max_message: 500,
+    with_name: w ? 'Tank' : null,
+    messages: tab === 'global'
+      ? [
+        { id: 1, time: '20:01', from: 'a', from_name: 'Raven', server: 'Sydney', parts: [{ text: '@Kiwi you hosting tonight?', link: false }], mine: false, mentions_me: true, friend: true },
+        { id: 2, time: '20:02', from: 'me', from_name: 'Kiwi', server: '', parts: [{ text: 'Yep, Penthouse at 8', link: false }], mine: true, mentions_me: false, friend: false },
+        { id: 3, time: '20:04', from: 'b', from_name: 'Ghost', server: 'EU', parts: [{ text: 'Join us: ', link: false }, { text: 'discord.gg/scbl', link: true }], mine: false, mentions_me: false, friend: false },
+      ]
+      : [],
+    conversations: [{ with: 't', name: 'Tank', what: 'Direct', unread: 2 }, { with: 'n', name: 'Nova', what: 'Friend · online', unread: 0 }],
+    online: [{ id: '1', name: 'Tank', activity: 'SvM Classic', friend: true, asked: false }, { id: '9', name: 'Ghost', activity: null, friend: false, asked: false }],
+  }),
+  chat_check: ({ text }) => ({ why: /https?:\/\//.test(text) ? 'Links aren’t allowed in chat (a Discord invite is).' : null, masked: false }),
+  chat_send: () => null,
   support: () => ({
     identity: true, error: null, resolved: false, unread: 0, max_text: 2000, draft: null, has_game: true, sending: false,
     messages: [

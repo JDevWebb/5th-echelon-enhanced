@@ -2,15 +2,16 @@
   <div class="window" :class="{ framed: !maximised }">
     <TitleBar :product="info.product" :release="info.release" />
     <div class="body">
-      <Rail :current="screen" :release="info.release" :community="info.community" @go="go" @version="whatsNew?.again()" />
+      <Rail :current="screen" :release="info.release" :community="info.community" :unread="glance.unread" @go="go" @version="whatsNew?.again()" />
       <div class="column">
         <main class="screen">
           <Transition name="view" mode="out-in">
             <Setup v-if="screen === 'play' && setupShown" key="setup" :info="info" :fresh="fresh" @changed="refresh" @cancel="editing = false" @finished="finishSetup" />
-          <Play v-else-if="screen === 'play'" key="play" :info="info" @go="go" @played="played" @change-server="editing = true" />
+          <Play v-else-if="screen === 'play'" key="play" :info="info" :latest="glance.latest" @go="go" @played="played" @change-server="editing = true" />
             <Servers v-else-if="screen === 'servers'" key="servers" :info="info" @go="go" @account="(a) => (askedName = a)" @changed="refresh" />
           <Intel v-else-if="screen === 'intel'" key="intel" :info="info" />
           <Support v-else-if="screen === 'support'" key="support" @go="go" />
+          <Chat v-else-if="screen === 'chat'" key="chat" />
           <Placeholder v-else :key="screen" v-bind="PLACEHOLDERS[screen]" />
           </Transition>
         </main>
@@ -35,6 +36,7 @@ import Setup from './views/Setup.vue';
 import Servers from './views/Servers.vue';
 import Intel from './views/Intel.vue';
 import Support from './views/Support.vue';
+import Chat from './views/Chat.vue';
 import Placeholder from './views/Placeholder.vue';
 import ActivityBar from './components/ActivityBar.vue';
 import Questions from './components/Questions.vue';
@@ -45,7 +47,6 @@ import { call, inTauri, listen } from './lib/tauri.js';
 
 const PLACEHOLDERS = {
   host: { kicker: 'Host on this PC', title: 'Host a server', text: 'Run a server for your group: a LAN party, or friends over the internet.' },
-  chat: { kicker: 'Comms', title: 'Chat', text: 'Global, Friends and your lobby, across the community network.' },
   settings: { kicker: 'Settings', title: 'Settings', text: 'The game, the launcher, beta features and the advanced options.' },
 };
 
@@ -88,7 +89,11 @@ function go(id) {
 async function refresh() {
   Object.assign(info, await call('info'));
   loaded.value = true;
+  if (info.community) Object.assign(glance, await call('chat_glance'));
 }
+
+// Chat at a glance: unseen mentions and messages (the side menu's dot), the latest in Global.
+const glance = reactive({ unread: 0, latest: null });
 
 /** After Play: what it said is in the activity bar; a question it waits on comes up. */
 async function played() {
