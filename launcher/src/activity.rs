@@ -8,9 +8,12 @@ use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
+#[cfg(feature = "gui")]
 use eframe::egui;
+#[cfg(feature = "gui")]
 use eframe::egui::RichText;
 
+#[cfg(feature = "gui")]
 use crate::theme;
 
 /// How long a finished task shows before it goes.
@@ -164,7 +167,8 @@ impl Activity {
 pub struct Handle {
     id: u64,
     inner: Arc<Mutex<Activity>>,
-    ctx: Option<egui::Context>,
+    /// Called after each change, so the interface shows it (egui: a repaint).
+    notify: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl Handle {
@@ -174,8 +178,8 @@ impl Handle {
 
     fn update(&self, f: impl FnOnce(&mut Activity)) {
         f(&mut self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
-        if let Some(ctx) = &self.ctx {
-            ctx.request_repaint();
+        if let Some(notify) = &self.notify {
+            notify();
         }
     }
 
@@ -260,15 +264,18 @@ impl Activities {
     }
 
     /// Starts an activity for a task: it shows as working until the handle says otherwise.
+    #[cfg(feature = "gui")]
     pub fn start(&mut self, ctx: &egui::Context, title: impl Into<String>) -> Handle {
+        ctx.request_repaint();
+        let ctx = ctx.clone();
+        self.start_with(Some(Arc::new(move || ctx.request_repaint())), title)
+    }
+
+    /// Starts an activity, `notify` called after each change it reports.
+    pub fn start_with(&mut self, notify: Option<Arc<dyn Fn() + Send + Sync>>, title: impl Into<String>) -> Handle {
         let id = self.new_id();
         let inner = self.push(Activity::new(id, title.into()));
-        ctx.request_repaint();
-        Handle {
-            id,
-            inner,
-            ctx: Some(ctx.clone()),
-        }
+        Handle { id, inner, notify }
     }
 
     /// A one-line confirmation ("Saved"): shown for a few seconds, longer for a long one.
@@ -306,12 +313,15 @@ impl Activities {
     }
 
     /// Drops what has gone, and answers the activity to show with how many others wait.
-    fn current(&mut self, now: Instant) -> Option<(Activity, usize)> {
+    pub fn current(&mut self, now: Instant) -> Option<(Activity, usize)> {
         self.list.retain(|a| !lock(a).expired(now));
         let shown = self.list.iter().map(|a| lock(a).clone()).enumerate().min_by_key(|(i, a)| (a.rank(), *i))?.1;
         Some((shown, self.list.len() - 1))
     }
+}
 
+#[cfg(feature = "gui")]
+impl Activities {
     /// The bar, along the bottom of the main area (call after the side menu's panel).
     pub fn show(&mut self, ctx: &egui::Context) {
         let now = Instant::now();
@@ -430,11 +440,13 @@ fn reading_time(text: &str) -> Duration {
     DONE_FOR.max(Duration::from_millis(words * 300)).min(NOTICE_AT_MOST)
 }
 
+#[cfg(feature = "gui")]
 /// "1.4 MB".
 fn megabytes(bytes: u64) -> String {
     format!("{:.1} MB", bytes as f64 / 1_000_000.0)
 }
 
+#[cfg(feature = "gui")]
 /// The 3 px line along the top of the bar: moving while the progress is unknown, real when
 /// known, red when failed, green when done.
 fn track(ui: &mut egui::Ui, a: &Activity, now: Instant) {
@@ -463,6 +475,7 @@ fn track(ui: &mut egui::Ui, a: &Activity, now: Instant) {
     };
 }
 
+#[cfg(feature = "gui")]
 /// "Steps" with a chevron (painted: the fonts have no arrows), down to open, up to close.
 fn steps_button(ui: &mut egui::Ui, open: bool) -> egui::Response {
     let galley = ui.fonts_mut(|f| f.layout_no_wrap("Steps".into(), egui::FontId::new(13.5, theme::strong()), theme::SOFT));
@@ -483,6 +496,7 @@ fn steps_button(ui: &mut egui::Ui, open: bool) -> egui::Response {
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+#[cfg(feature = "gui")]
 /// A small painted cross, to dismiss.
 pub(crate) fn close_button(ui: &mut egui::Ui) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(egui::vec2(28.0, 28.0), egui::Sense::click());
@@ -498,6 +512,7 @@ pub(crate) fn close_button(ui: &mut egui::Ui) -> egui::Response {
     response.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
+#[cfg(feature = "gui")]
 /// A spinner while working, a tick when done, a cross when failed.
 fn mark(ui: &mut egui::Ui, state: &State) {
     if *state == State::Working && !reduced_motion() {
@@ -525,6 +540,7 @@ fn mark(ui: &mut egui::Ui, state: &State) {
     }
 }
 
+#[cfg(feature = "gui")]
 /// The steps list: each step with how long it took, the one it's at, and the stages to come.
 fn steps(ui: &mut egui::Ui, a: &Activity, now: Instant) {
     let (rect, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
@@ -563,6 +579,7 @@ fn steps(ui: &mut egui::Ui, a: &Activity, now: Instant) {
         });
 }
 
+#[cfg(feature = "gui")]
 fn step_row(ui: &mut egui::Ui, dot: egui::Color32, text: RichText, time: &str) {
     ui.horizontal(|ui| {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 16.0), egui::Sense::hover());
@@ -574,6 +591,7 @@ fn step_row(ui: &mut egui::Ui, dot: egui::Color32, text: RichText, time: &str) {
     });
 }
 
+#[cfg(feature = "gui")]
 fn seconds(d: Duration) -> String {
     format!("{:.1} s", d.as_secs_f32())
 }
@@ -617,7 +635,7 @@ fn system_reduced_motion() -> bool {
         .is_ok_and(|o| o.status.success() && String::from_utf8_lossy(&o.stdout).trim() == "false")
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "gui"))]
 mod tests {
     use super::*;
 

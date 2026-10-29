@@ -2,13 +2,16 @@
 //! directory): a notice under the launch bar saying when the player's server updates and
 //! is back, in the player's own time, and what to do meanwhile.
 
+#[cfg(feature = "gui")]
 use eframe::egui;
+#[cfg(feature = "gui")]
 use eframe::egui::RichText;
 use setup::clock::Clock;
 use setup::directory::Listing;
 use setup::directory::Rollout;
 use setup::directory::Stage;
 
+#[cfg(feature = "gui")]
 use crate::theme;
 
 /// About how long a server is down while it installs a release and restarts.
@@ -323,6 +326,7 @@ fn rows(input: &Input, rollout: &Rollout, testing_ends: i64, latest: i64) -> Vec
         .collect()
 }
 
+#[cfg(feature = "gui")]
 /// The notice, under the launch bar: a warm strip with the heading and time, what's
 /// happening, its button, and each server. Answers the button pressed.
 pub fn show(ui: &mut egui::Ui, notice: &Notice) -> Option<Action> {
@@ -390,6 +394,7 @@ pub fn show(ui: &mut egui::Ui, notice: &Notice) -> Option<Action> {
     pressed
 }
 
+#[cfg(feature = "gui")]
 fn server_box(ui: &mut egui::Ui, row: &Row, width: f32) {
     let stroke = if row.mine { theme::WARN.linear_multiply(0.55) } else { theme::LINE };
     egui::Frame::new()

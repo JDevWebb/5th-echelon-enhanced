@@ -5,11 +5,23 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "launcher"
+path = "src/main.rs"
+required-features = ["gui"]
+
 [features]
+# The egui interface (the launcher as built). Off, the crate is what launcher-tauri shares:
+# the setup, the flows and the settings, without egui.
+default = ["gui"]
+gui = ["dep:eframe", "dep:wgpu", "dep:rfd"]
 embed-dll = ["brotli"]
 GetAdapterInfos = []
 # Headless tests of the launcher's screens (build.sh test and CI run them).
-ui-tests = ["dep:egui_kittest", "dep:egui-winit"]
+ui-tests = ["gui", "dep:egui_kittest", "dep:egui-winit"]
 # Screenshots of every screen at several window sizes (build.sh shots: wgpu on a software
 # Vulkan, in the fes-shots image).
 shots = ["ui-tests", "egui_kittest/wgpu", "egui_kittest/snapshot", "egui_kittest/eframe"]
@@ -24,7 +36,7 @@ anyhow = { workspace = true }
 bytes = "1"
 brotli = { workspace = true, optional = true }
 dedicated_server_config = { path = "../dedicated_server/config" }
-eframe = { version = "0.33", default-features = false, features = ["glow", "default_fonts"] }
+eframe = { version = "0.33", default-features = false, features = ["glow", "default_fonts"], optional = true }
 goblin = { workspace = true, default-features = false, features = [
     "pe32",
     "pe64",
@@ -61,16 +73,16 @@ url = { workspace = true }
 # Direct3D 12 through wgpu as well as OpenGL: virtual machines without a GPU
 # driver only have OpenGL 1.1, but Direct3D 12 always has WARP, Windows' own
 # software renderer.
-eframe = { version = "0.33", default-features = false, features = ["glow", "wgpu", "default_fonts"] }
+eframe = { version = "0.33", default-features = false, features = ["glow", "wgpu", "default_fonts"], optional = true }
 # eframe's wgpu has no backends of its own: Direct3D 12 (with WARP), and Vulkan.
-wgpu = { version = "27", default-features = false, features = ["dx12", "vulkan"] }
-rfd = "0.15"
+wgpu = { version = "27", default-features = false, features = ["dx12", "vulkan"], optional = true }
+rfd = { version = "0.15", optional = true }
 
 # Linux (and Steam Deck): X11 (XWayland on Wayland desktops), and the
 # desktop's own file picker through its portal, so GTK isn't needed.
 [target.'cfg(target_os = "linux")'.dependencies]
-eframe = { version = "0.33", default-features = false, features = ["glow", "default_fonts", "x11"] }
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
+eframe = { version = "0.33", default-features = false, features = ["glow", "default_fonts", "x11"], optional = true }
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"], optional = true }
 
 [target.'cfg(target_os = "windows")'.dependencies.windows]
 version = "0.54.0" # hudhook

@@ -48,6 +48,22 @@ impl FromPanic for (setup::diagnose::Facts, crate::flow::Support) {
     }
 }
 
+/// Runs `f` as a task, on this thread: a panic in it gives [`FromPanic`]'s result instead of
+/// ending the launcher.
+pub fn guarded<T: FromPanic>(f: impl FnOnce() -> T) -> T {
+    IN_TASK.with(|t| t.set(true));
+    let value = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|payload| {
+        let message = payload
+            .downcast_ref::<&str>()
+            .map(|s| (*s).to_string())
+            .or_else(|| payload.downcast_ref::<String>().cloned())
+            .unwrap_or_else(|| "unknown".into());
+        T::from_panic(format!("Something went wrong inside the launcher: {message}"))
+    });
+    IN_TASK.with(|t| t.set(false));
+    value
+}
+
 /// A result that arrives later.
 pub struct Task<T> {
     result: Arc<Mutex<Option<T>>>,
@@ -57,20 +73,13 @@ pub struct Task<T> {
 impl<T: FromPanic + Send + 'static> Task<T> {
     /// Runs `f` on a new thread and repaints `ctx` when it's done, also when
     /// it panicked (its result is then [`FromPanic`]'s).
+    #[cfg(feature = "gui")]
     pub fn spawn(ctx: &eframe::egui::Context, f: impl FnOnce() -> T + Send + 'static) -> Self {
         let result = Arc::new(Mutex::new(None));
         let slot = Arc::clone(&result);
         let ctx = ctx.clone();
         std::thread::spawn(move || {
-            IN_TASK.with(|t| t.set(true));
-            let value = std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).unwrap_or_else(|payload| {
-                let message = payload
-                    .downcast_ref::<&str>()
-                    .map(|s| (*s).to_string())
-                    .or_else(|| payload.downcast_ref::<String>().cloned())
-                    .unwrap_or_else(|| "unknown".into());
-                T::from_panic(format!("Something went wrong inside the launcher: {message}"))
-            });
+            let value = guarded(f);
             *slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(value);
             ctx.request_repaint();
         });
@@ -98,6 +107,7 @@ impl<T: Send + 'static> Default for Slot<T> {
 }
 
 impl<T: FromPanic + Send + 'static> Slot<T> {
+    #[cfg(feature = "gui")]
     pub fn start(&mut self, ctx: &eframe::egui::Context, f: impl FnOnce() -> T + Send + 'static) {
         self.0 = Some(Task::spawn(ctx, f));
     }

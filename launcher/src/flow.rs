@@ -485,7 +485,7 @@ pub fn pick_from_network(address: &str, log: &Log) -> Result<Option<String>, Str
         return Ok(None);
     }
     say(log, format!("{address} is a network of servers: finding the best one for you…"));
-    crate::app::Prefs::set_directory(Some(url.clone()));
+    crate::prefs::Prefs::set_directory(Some(url.clone()));
     let crate::network::Browsed { servers, note, .. } = rt.block_on(crate::network::server_directory(&url))?;
     if let Some(note) = note {
         say(log, note);
@@ -635,9 +635,9 @@ pub fn run_setup(plan: &Plan, bundled: Option<&[u8]>, log: &Log) -> Result<Done,
                 log,
                 format!("The server names the server directory {shown}, but not over HTTPS, so it isn't used. If you trust it, set it in Settings."),
             );
-        } else if crate::app::Prefs::adopt_directory(&coordinator) {
+        } else if crate::prefs::Prefs::adopt_directory(&coordinator) {
             say(log, format!("Using the server directory at {shown}."));
-        } else if crate::app::Prefs::directory().is_none_or(|d| !setup::directory::same_directory(&d, &coordinator)) {
+        } else if crate::prefs::Prefs::directory().is_none_or(|d| !setup::directory::same_directory(&d, &coordinator)) {
             say(
                 log,
                 format!("The server names the server directory {shown}. Yours stays as it is; if you trust it, set it in Settings."),

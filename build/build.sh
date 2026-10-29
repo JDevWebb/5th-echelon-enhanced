@@ -147,7 +147,7 @@ case "${1:-test}" in
     rm -rf dist/shots
     # Built with the network (cargo fetches its git dependencies), run with none, so nothing the
     # app asks for reaches the community network it's set up for.
-    shots=$(run fes-shots:local cargo test -q -p launcher --features shots --no-run --message-format=json \
+    shots=$(run fes-shots:local cargo test -q -p launcher --lib --features shots --no-run --message-format=json \
       | grep -o '"executable":"[^"]*"' | grep '/launcher-' | tail -1 | cut -d'"' -f4)
     [ -n "$shots" ] || { echo "the shots test didn't build"; exit 1; }
     run --network none -e XDG_CONFIG_HOME=/tmp/fe-shots -e SHOTS_OUT=/src/dist/shots -e WGPU_BACKEND=vulkan fes-shots:local \
