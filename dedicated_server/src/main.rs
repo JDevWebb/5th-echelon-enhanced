@@ -671,13 +671,19 @@ fn main() -> color_eyre::Result<()> {
     if nat.enabled {
         let pairs = Arc::clone(&storage);
         // A relay alone doesn't see the games, so it can't tell who the matchmaking server put
-        // together: it relays between any players registered with it until that's shared.
+        // together. Until those pairs are shared with it, it relays nobody ([nat] relay_pairs,
+        // on by default, asks this for every pair), unless its operator chose to relay between
+        // any registered players (relay_pairs = false, which never asks).
         let may_relay: nat_helper::MayRelay = if relay_only {
-            warn!(
-                logger,
-                "Role relay: relaying between any registered players (the matchmaking server's pairs aren't shared yet)"
-            );
-            Box::new(|_, _| Ok(()))
+            if nat.relay_pairs {
+                warn!(
+                    logger,
+                    "Role relay: relaying nobody, as the matchmaking server's pairs aren't shared yet; [nat] relay_pairs = false relays between any registered players"
+                );
+            } else {
+                warn!(logger, "Role relay: relaying between any registered players ([nat] relay_pairs = false)");
+            }
+            Box::new(|_, _| Err("a relay alone doesn't know the matchmaking server's pairs yet".into()))
         } else {
             Box::new(move |a, b| match pairs.may_relay(a, b) {
                 Ok(true) => Ok(()),
