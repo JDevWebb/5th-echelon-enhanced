@@ -68,14 +68,15 @@ pub fn from_heartbeat(answer: &serde_json::Value) {
     *network() = relays;
 }
 
-/// The relay addresses this server works with: its own helper's, and the network's when it's
-/// the matchmaking server.
-pub fn ips() -> Vec<Ipv4Addr> {
-    let mut ips: Vec<Ipv4Addr> = crate::nat_helper::relay_ip().into_iter().collect();
+/// The relays this server works with, as address and port range: its own helper's, and the
+/// network's when it's the matchmaking server. Only an address in one of these ranges is a
+/// relayed player's: another port on a relay's address is no player's.
+pub fn ranges() -> Vec<(Ipv4Addr, (u16, u16))> {
+    let mut ranges: Vec<(Ipv4Addr, (u16, u16))> = crate::nat_helper::relay_range().into_iter().collect();
     if NETWORK_RELAYS.load(Ordering::Relaxed) {
-        ips.extend(network().iter().map(|r| r.ip).filter(|ip| !ips.contains(ip)).collect::<Vec<_>>());
+        ranges.extend(network().iter().map(|r| (r.ip, r.ports)));
     }
-    ips
+    ranges
 }
 
 /// The relays to offer launchers (`/api/info`): the network's, when this is the matchmaking
@@ -106,10 +107,11 @@ mod tests {
         assert_eq!(network().len(), 1);
         // Offered, and their addresses worked with, only on the matchmaking server.
         init(false);
-        assert!(offered().is_empty() && !ips().contains(&Ipv4Addr::new(5, 6, 7, 8)));
+        let syd = (Ipv4Addr::new(5, 6, 7, 8), (40000, 40999));
+        assert!(offered().is_empty() && !ranges().contains(&syd));
         init(true);
         assert_eq!(offered().len(), 1);
-        assert!(ips().contains(&Ipv4Addr::new(5, 6, 7, 8)));
+        assert!(ranges().contains(&syd));
         init(false);
     }
 }

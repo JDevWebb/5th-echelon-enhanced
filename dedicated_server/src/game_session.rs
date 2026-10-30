@@ -354,11 +354,14 @@ pub(crate) fn is_public(ip: std::net::IpAddr) -> bool {
 /// have other players' games send traffic wherever a client said. LAN
 /// addresses stay, for players on one network. URLs players can't be sent to
 /// at all (another scheme, a host name: [`station_url_parts`]) are left out.
-pub(crate) fn only_reachable_addresses(urls: Vec<String>, observed: std::net::IpAddr, relays: &[std::net::Ipv4Addr]) -> Vec<String> {
+pub(crate) fn only_reachable_addresses(urls: Vec<String>, observed: std::net::IpAddr, relays: &[(std::net::Ipv4Addr, (u16, u16))]) -> Vec<String> {
     urls.iter()
         .filter_map(|url| {
+            // A relayed player's address: a relay's, with a port in its range.
+            let port: Option<u16> = station_url_parts(url).and_then(|(_, params)| params.iter().find(|(k, _)| *k == "port").and_then(|(_, v)| v.parse().ok()));
+            let relayed = |ip: std::net::Ipv4Addr| port.is_some_and(|port| relays.iter().any(|(r, (first, last))| *r == ip && (*first..=*last).contains(&port)));
             rewrite_addresses(url, |ip| {
-                let foreign = is_public(std::net::IpAddr::V4(ip)) && std::net::IpAddr::V4(ip) != observed && !relays.contains(&ip);
+                let foreign = is_public(std::net::IpAddr::V4(ip)) && std::net::IpAddr::V4(ip) != observed && !relayed(ip);
                 foreign.then_some(observed)
             })
         })
@@ -976,7 +979,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 urls = crate::nat_helper::urls_with_public_address(urls, advertise);
             }
         }
-        let urls = only_reachable_addresses(urls, ci.address().ip(), &crate::relays::ips());
+        let urls = only_reachable_addresses(urls, ci.address().ip(), &crate::relays::ranges());
         if urls != sent {
             info!(logger, "station urls {:?} -> {:?} (the address this client connected from)", sent, urls);
         }
@@ -2230,7 +2233,11 @@ mod tests {
         assert_eq!(only_reachable_addresses(own.clone(), observed, &[]), own);
         // An address on one of the network's relays is a relayed player's: left as it is.
         let relayed = vec!["prudp:/address=5.6.7.8;port=40012;type=3".to_string()];
-        assert_eq!(only_reachable_addresses(relayed.clone(), observed, &["5.6.7.8".parse().unwrap()]), relayed);
+        let relays = [("5.6.7.8".parse().unwrap(), (40000, 40999))];
+        assert_eq!(only_reachable_addresses(relayed.clone(), observed, &relays), relayed);
+        // Another port on a relay's address is no relayed player's: the address seen.
+        let other_port = vec!["prudp:/address=5.6.7.8;port=22;type=3".to_string()];
+        assert_eq!(only_reachable_addresses(other_port, observed, &relays), ["prudp:/address=203.0.113.9;port=22;type=3"]);
     }
 
     #[test]

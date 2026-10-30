@@ -866,6 +866,14 @@ pub fn relay_ip() -> Option<Ipv4Addr> {
     TABLE.get().map(|t| t.lock().unwrap_or_else(std::sync::PoisonError::into_inner).relay_ip)
 }
 
+/// The address and port range relayed players are given (this server's), once the helper runs.
+pub fn relay_range() -> Option<(Ipv4Addr, (u16, u16))> {
+    TABLE.get().map(|t| {
+        let t = t.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        (t.relay_ip, t.cfg.relay_ports)
+    })
+}
+
 /// `name`'s round trip to this server, as their game last measured it.
 pub fn ping_of(name: &str) -> Option<u16> {
     let t = TABLE.get()?.lock().ok()?;
