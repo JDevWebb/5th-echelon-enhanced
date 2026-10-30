@@ -17,10 +17,25 @@ use crate::network;
 
 const TIMEOUT: Duration = Duration::from_secs(6);
 
-/// The runtime the gRPC calls run on.
-pub fn rt() -> &'static tokio::runtime::Runtime {
-    static RT: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
-    RT.get_or_init(|| tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("tokio runtime"))
+/// The runtime the network calls run on.
+pub fn rt() -> &'static Rt {
+    static RT: OnceLock<Rt> = OnceLock::new();
+    RT.get_or_init(|| Rt(tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().expect("tokio runtime")))
+}
+
+/// The launcher's runtime, waited on from anywhere.
+pub struct Rt(tokio::runtime::Runtime);
+
+impl Rt {
+    /// Runs `f` to its end on the runtime. From a plain thread (egui's) it simply waits; from a
+    /// thread of another runtime (the Tauri launcher's commands run on Tauri's), where tokio
+    /// refuses to start one runtime inside another, the thread first hands its other work on.
+    pub fn block_on<F: Future>(&self, f: F) -> F::Output {
+        match tokio::runtime::Handle::try_current() {
+            Ok(h) if h.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread => tokio::task::block_in_place(|| self.0.block_on(f)),
+            _ => self.0.block_on(f),
+        }
+    }
 }
 
 /// Runs `f` on the runtime from a plain thread, giving up after [`TIMEOUT`].
@@ -143,5 +158,18 @@ impl Admin {
             c.delete(games::DeleteRequest { id }).await?;
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Waiting on the launcher's runtime from another runtime, as the Tauri launcher's commands
+    /// do (on a worker or a blocking thread of Tauri's), works rather than panicking.
+    #[test]
+    fn waits_from_inside_another_runtime() {
+        let other = tokio::runtime::Builder::new_multi_thread().worker_threads(1).enable_all().build().unwrap();
+        let on_worker = other.block_on(async { tokio::spawn(async { super::rt().block_on(async { 1 }) }).await.unwrap() });
+        let on_blocking = other.block_on(async { tokio::task::spawn_blocking(|| super::rt().block_on(async { 2 })).await.unwrap() });
+        assert_eq!((on_worker, on_blocking, super::rt().block_on(async { 3 })), (1, 2, 3));
     }
 }
