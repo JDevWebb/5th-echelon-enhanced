@@ -1861,11 +1861,12 @@ fn link_key(secret: &[u8; 32], a: (&str, &str), b: (&str, &str)) -> String {
 }
 
 /// A member's NAT helper and relay as the directory lists it, from its listing's `relay` (a
-/// public IPv4 address, its helper port, a sane port range); None when that doesn't read.
-fn helper_entry(id: &str, v: &Value) -> Option<Value> {
+/// public IPv4 address, or with `private` (a LAN or test network) a private one too; its helper
+/// port; a sane port range); None when that doesn't read.
+fn helper_entry(id: &str, v: &Value, private: bool) -> Option<Value> {
     let relay = &v["relay"];
     let ip: std::net::Ipv4Addr = relay["ip"].as_str()?.parse().ok()?;
-    if ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() || ip.is_broadcast() || ip.is_documentation() {
+    if (ip.is_private() && !private) || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() || ip.is_broadcast() || ip.is_documentation() {
         return None;
     }
     let port = u16::try_from(relay["port"].as_u64()?).ok().filter(|p| *p > 0)?;
@@ -1956,7 +1957,8 @@ impl Coordinator {
             if !offered || !v["relay"].is_object() || updates::delisted(&rollout, version, auto_update, now).is_some() {
                 continue;
             }
-            let Some(helper) = helper_entry(&id, &v) else { continue };
+            let private = self.host_checks_private.load(std::sync::atomic::Ordering::Relaxed);
+            let Some(helper) = helper_entry(&id, &v, private) else { continue };
             // The relay is at an address the host check found answering as this member: a
             // member can't send launchers' probes and players' traffic to an address that
             // isn't its own (nor one its name resolves to later). Without host checks (tests,
