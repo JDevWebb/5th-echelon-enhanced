@@ -217,6 +217,8 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
                 }
             }
         }
+        // The rooms it answered with, to follow a search to the join or refusal after it.
+        detail["rooms"] = sessions.iter().take(10).map(|s| s.session_id).collect::<Vec<_>>().into();
         crate::session_events::note(crate::session_events::Who::Id(user_id), "search", detail);
         if !invitation_search {
             crate::join_targets::searched(user_id, sessions.iter().map(|s| (s.session_id, s.creator_id)));

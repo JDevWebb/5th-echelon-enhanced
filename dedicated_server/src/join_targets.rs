@@ -24,8 +24,9 @@ const MAX_PLAYERS: usize = 10_000;
 /// What a player was last given to join.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Offer {
-    /// One room: an invitation's, a search's only result, or the one whose host they probed.
-    Room(u32),
+    /// One room: an invitation's, a search's only result, or the one whose host they probed;
+    /// and whether a matchmaking search gave it (not an invitation).
+    Room(u32, bool),
     /// A matchmaking search's results, room and host, until a probe picks one.
     Rooms(Vec<(u32, u32)>),
     /// A host they probed, with no search to say which of their rooms.
@@ -50,7 +51,7 @@ fn put(user: u32, offer: Offer) {
 
 /// `user`'s search for an invitation was answered with room `session`.
 pub fn invited(user: u32, session: u32) {
-    put(user, Offer::Room(session));
+    put(user, Offer::Room(session, false));
 }
 
 /// `user`'s matchmaking search offered these rooms (room, host). Nothing found leaves what
@@ -59,7 +60,7 @@ pub fn searched(user: u32, rooms: impl IntoIterator<Item = (u32, u32)>) {
     let rooms: Vec<(u32, u32)> = rooms.into_iter().filter(|(_, host)| *host != user).collect();
     match rooms[..] {
         [] => {}
-        [(room, _)] => put(user, Offer::Room(room)),
+        [(room, _)] => put(user, Offer::Room(room, true)),
         _ => put(user, Offer::Rooms(rooms)),
     }
 }
@@ -73,7 +74,7 @@ pub fn probed(user: u32, other: u32) {
         Some((offer, at)) if at.elapsed() < FRESH_FOR => {
             if let Offer::Rooms(rooms) = offer {
                 if let Some(&(room, _)) = rooms.iter().find(|(_, host)| *host == other) {
-                    *offer = Offer::Room(room);
+                    *offer = Offer::Room(room, true);
                     *at = Instant::now();
                 }
             }
@@ -90,9 +91,20 @@ pub fn probed(user: u32, other: u32) {
 pub fn target(user: u32, host_room: impl FnOnce(u32) -> Option<u32>) -> Option<u32> {
     let offer = offers().get(&user).filter(|(_, at)| at.elapsed() < FRESH_FOR).map(|(o, _)| o.clone())?;
     match offer {
-        Offer::Room(room) => Some(room),
+        Offer::Room(room, _) => Some(room),
         // Several and no probe: which one isn't known.
         Offer::Rooms(_) => None,
+        Offer::Host(host) => host_room(host),
+    }
+}
+
+/// [`target`], only when a matchmaking search (and the probe after it) gave it, not an
+/// invitation.
+pub fn searched_target(user: u32, host_room: impl FnOnce(u32) -> Option<u32>) -> Option<u32> {
+    let offer = offers().get(&user).filter(|(_, at)| at.elapsed() < FRESH_FOR).map(|(o, _)| o.clone())?;
+    match offer {
+        Offer::Room(room, true) => Some(room),
+        Offer::Room(_, false) | Offer::Rooms(_) => None,
         Offer::Host(host) => host_room(host),
     }
 }

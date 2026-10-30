@@ -1868,9 +1868,13 @@ fn failed_join(storage: &Storage, user: u32, reported: u32, code: u32) -> Failed
     let own_party = reported_facts.as_ref().is_some_and(|(creator, _, _)| *creator == user);
     let elsewhere = reported == 0 || (own_party && !matches!(outcome, JoinOutcome::Locked | JoinOutcome::Closed));
     let given = || crate::join_targets::target(user, |host| storage.public_room_for(host, user).ok().flatten());
-    let target = elsewhere
-        .then(&given)
-        .flatten()
+    // A matchmaking search's join refused as locked, named as the player's own room or one
+    // that has ended: the game names its own ended room for a match under way that refused
+    // it (31 of 37 LOCKED refusals on eu1, 29-30 October), so the room the search gave is the
+    // one, and `match_started` can mark it. An invitation's stays the game's own churn.
+    let refused_by_match = matches!(outcome, JoinOutcome::Locked) && reported_facts.as_ref().is_some_and(|(creator, ended, _)| *creator == user || *ended);
+    let searched = || crate::join_targets::searched_target(user, |host| storage.public_room_for(host, user).ok().flatten());
+    let target = (if elsewhere { given() } else { refused_by_match.then(searched).flatten() })
         .filter(|&room| room != reported)
         .and_then(|room| room_of(room).filter(|(creator, _, _)| *creator != user).map(|facts| (room, facts)));
     let moved = target.is_some();
@@ -2363,6 +2367,19 @@ mod tests {
         assert_eq!((join.room, join.reported_room, join.own), (party, None, true));
         assert!(!join.counts());
         assert_eq!(join.detail(crate::reports::LOCKED_SESSION)["own"], true);
+        // Theusma01's quick match is refused by a match under way, and the game names his own
+        // party, ended as he searched: the room the search gave is the one refused.
+        let match_room = storage.create_game_session(tacit, 1, stock.into()).unwrap();
+        let his_party = storage.create_game_session(theusma, 1, stock.into()).unwrap();
+        storage.delete_game_session(theusma, 1, his_party).unwrap();
+        crate::join_targets::searched(theusma, [(match_room, tacit)]);
+        let join = failed_join(&storage, theusma, his_party, crate::reports::LOCKED_SESSION);
+        assert_eq!((join.room, join.reported_room, join.own), (match_room, Some(his_party), false));
+        assert!(join.counts());
+        // Several rooms and no probe: which one isn't known, so it stays his own.
+        crate::join_targets::searched(theusma, [(match_room, tacit), (invited, playskill)]);
+        let join = failed_join(&storage, theusma, his_party, crate::reports::LOCKED_SESSION);
+        assert_eq!((join.room, join.own), (his_party, true));
         // With nothing given lately, their own room is theirs.
         let own = storage.create_game_session(tacit, 1, stock.into()).unwrap();
         let join = failed_join(&storage, tacit, own, 0xb08a_1a05);
