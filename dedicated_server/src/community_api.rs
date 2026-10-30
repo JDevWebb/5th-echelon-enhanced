@@ -72,6 +72,14 @@ pub fn publish(ports: PublicPorts, host: Option<String>) {
     let _ = PUBLIC.set((ports, host));
 }
 
+/// A NAT helper and relay alone (`[role] kind = "relay"`): `/api/info` says so, and offers
+/// nothing of the games (no features, only the helper's port).
+static RELAY_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn publish_relay_only() {
+    RELAY_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// What `/api/info` says about friends: this server's id (players sign it
 /// into identity links and key logins), the friend list mode, and the
 /// coordinator it shares friends with, if any.
@@ -229,6 +237,24 @@ fn info(cfg: CommunityApiConfig) -> Value {
         if let Some(host) = host {
             info["host"] = json!(host);
         }
+    }
+    if RELAY_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
+        return relay_only_info(info);
+    }
+    info
+}
+
+/// `/api/info` on a relay alone: what it is, its id and coordinator, its host and the helper's
+/// port; no features, nothing a launcher could take for a place to sign in.
+fn relay_only_info(full: Value) -> Value {
+    let mut info = json!({ "name": full["name"], "version": full["version"], "revision": full["revision"], "role": "relay", "features": [] });
+    for key in ["id", "coordinator", "coordinator_seen", "maintenance", "host"] {
+        if !full[key].is_null() {
+            info[key] = full[key].clone();
+        }
+    }
+    if let Some(nat) = full["ports"]["nat"].as_u64() {
+        info["ports"] = json!({ "nat": nat });
     }
     info
 }
@@ -464,6 +490,25 @@ mod tests {
         assert_eq!(v["ports"], json!({ "api": 80, "login": 31126, "secure": 31127, "content": 80, "nat": 31128 }));
         assert_eq!(v["host"], "blacklist.example.com");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// A relay alone says what it is and offers nothing of the games: no features, only the
+    /// helper's port, so no launcher takes it for a place to sign in.
+    #[test]
+    fn a_relay_alone_says_so() {
+        let full = json!({
+            "name": "5th Echelon Enhanced", "version": "0.4.8", "revision": "r", "id": "abc",
+            "features": ["invites", "join-now"], "friends_mode": "everyone", "minimum_client": "0.4.8",
+            "ports": { "api": 50051, "login": 21126, "secure": 21127, "content": 8000, "nat": 21128 },
+            "host": "syd.example.net",
+        });
+        assert_eq!(
+            relay_only_info(full),
+            json!({
+                "name": "5th Echelon Enhanced", "version": "0.4.8", "revision": "r", "role": "relay", "features": [],
+                "id": "abc", "host": "syd.example.net", "ports": { "nat": 21128 },
+            })
+        );
     }
 
     #[test]

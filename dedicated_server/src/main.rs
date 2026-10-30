@@ -659,19 +659,42 @@ fn main() -> color_eyre::Result<()> {
         .unwrap_or(std::net::Ipv4Addr::LOCALHOST);
 
     let mut threads = vec![];
+    // A NAT helper and relay alone (`[role] kind = "relay"`): no game services or API here.
+    let relay_only = config.role.is_relay();
+    if relay_only {
+        community_api::publish_relay_only();
+        info!(logger, "Role: a NAT helper and relay only (no game services, no API)");
+        if !nat.enabled {
+            crit!(logger, "A relay-only server with its NAT helper off does nothing: turn [nat] on");
+        }
+    }
     if nat.enabled {
         let pairs = Arc::clone(&storage);
-        let may_relay: nat_helper::MayRelay = Box::new(move |a, b| match pairs.may_relay(a, b) {
-            Ok(true) => Ok(()),
-            Ok(false) => Err("the server didn't put them together (no room together, no public room the receiver hosts, no invitation, not joining one)".into()),
-            Err(e) => Err(format!("the lookup failed ({e})")),
-        });
+        // A relay alone doesn't see the games, so it can't tell who the matchmaking server put
+        // together: it relays between any players registered with it until that's shared.
+        let may_relay: nat_helper::MayRelay = if relay_only {
+            warn!(
+                logger,
+                "Role relay: relaying between any registered players (the matchmaking server's pairs aren't shared yet)"
+            );
+            Box::new(|_, _| Ok(()))
+        } else {
+            Box::new(move |a, b| match pairs.may_relay(a, b) {
+                Ok(true) => Ok(()),
+                Ok(false) => Err("the server didn't put them together (no room together, no public room the receiver hosts, no invitation, not joining one)".into()),
+                Err(e) => Err(format!("the lookup failed ({e})")),
+            })
+        };
         match nat_helper::start(&logger.new(o!("service" => "nat")), nat, relay_ip, may_relay) {
             Ok(t) => threads.extend(t),
             Err(e) => crit!(logger, "Couldn't start the NAT helper on UDP {}: {e}", nat.listen),
         }
     }
     for (name, svc) in config.quazal.into_services()? {
+        // A relay alone keeps the config server (port 80: /api/info), nothing the game signs in to.
+        if relay_only && !matches!(svc, quazal::Service::Config(_)) {
+            continue;
+        }
         let logger = logger.new(o!("service" => name.clone()));
         info!(logger, "Loaded service {:#?}", svc);
         let storage = Arc::clone(&storage);
@@ -747,7 +770,7 @@ fn main() -> color_eyre::Result<()> {
             auto_update: federation_config.auto_update && self_update::updater_installed(),
             online: Vec::new(),
             playing: Default::default(),
-            role: "game",
+            role: if relay_only { "relay" } else { "game" },
             relay: (nat.enabled && !relay_ip.is_loopback()).then_some(federation::RelayListing {
                 ip: relay_ip,
                 port: nat.listen.port(),
@@ -762,6 +785,18 @@ fn main() -> color_eyre::Result<()> {
             .spawn(move || {
                 let logger = logger.new(o!("service" => "api"));
                 let rt = tokio::runtime::Runtime::new().unwrap();
+                // A relay alone: the federation heartbeat (its listing, the network's relays)
+                // and metrics, nothing of the games.
+                if relay_only {
+                    metrics::start(Arc::new(geo::Geo::new("geoip")));
+                    if federation_config.enabled() {
+                        rt.spawn(federation::run(logger.new(o!("service" => "federation")), Arc::clone(&storage), federation_config, listing));
+                    } else {
+                        warn!(logger, "A relay-only server outside a network ([federation] off) is found by no launcher");
+                    }
+                    rt.block_on(std::future::pending::<()>());
+                    return;
+                }
                 // Ended sessions and old invitations go every few minutes, not only at a restart.
                 {
                     let storage = Arc::clone(&storage);

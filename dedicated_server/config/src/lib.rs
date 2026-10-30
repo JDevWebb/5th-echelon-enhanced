@@ -420,6 +420,37 @@ pub struct Config {
     pub federation: FederationConfig,
     #[serde(default, skip_serializing_if = "MatchmakingConfig::is_default")]
     pub matchmaking: MatchmakingConfig,
+    #[serde(default, skip_serializing_if = "RoleConfig::is_default")]
+    pub role: RoleConfig,
+}
+
+/// What this server is for (global matchmaking): a game server, or a NAT helper and relay
+/// alone, near a region's players, for a network whose one matchmaking server runs the games.
+#[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+pub struct RoleConfig {
+    #[serde(default)]
+    pub kind: Role,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Role {
+    /// Players sign in and play here (the game's services, the API), with its own helper.
+    #[default]
+    Game,
+    /// The NAT helper and relay only: no game services, no API; the federation heartbeat,
+    /// metrics and /api/info stay. Listed among the network's relays, never as a place to play.
+    Relay,
+}
+
+impl RoleConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+
+    pub fn is_relay(&self) -> bool {
+        self.kind == Role::Relay
+    }
 }
 
 /// Global matchmaking: this server as the one matchmaking server of a network whose regions
@@ -639,6 +670,7 @@ impl Default for Config {
             clients: ClientsConfig::default(),
             federation: FederationConfig::default(),
             matchmaking: MatchmakingConfig::default(),
+            role: RoleConfig::default(),
         }
     }
 }
