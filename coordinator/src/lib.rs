@@ -1410,6 +1410,12 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, body: axum::body
         Ok(rules) => answer["clients"] = rules,
         Err(e) => return internal(e),
     }
+    // The network's relays, for a matchmaking server to work with (its players' games may use
+    // any of them).
+    match c.helpers().await {
+        Ok(helpers) => answer["relays"] = json!(helpers),
+        Err(e) => return internal(e),
+    }
     ok(answer)
 }
 
@@ -1772,9 +1778,6 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
         Err(e) => return internal(e),
     };
     let network_maintenance = maintenance.network.clone();
-    // The network's NAT helpers and relays (global matchmaking): every member running one,
-    // relay-only members too, listed or not, for launchers to pick the relay nearest them.
-    let mut helpers: Vec<Value> = Vec::new();
     let mut list: Vec<Value> = rows
         .into_iter()
         .filter_map(|(id, listing, last_seen, checked)| {
@@ -1783,15 +1786,8 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
             if !v.is_object() {
                 return None;
             }
-            let relay_only = v["role"].as_str() == Some("relay");
-            if (relay_only || v["listed"].as_bool().unwrap_or(true)) && v["relay"].is_object() {
-                // Only once the server at its host said it's this one, as for a listing.
-                let checked_ok = serde_json::from_str::<Listing>(&listing).ok().is_some_and(|l| c.host_passed(checked.as_deref(), &l));
-                if let Some(helper) = checked_ok.then(|| helper_entry(&id, &v)).flatten() {
-                    helpers.push(helper);
-                }
-            }
-            if relay_only || !v["listed"].as_bool().unwrap_or(true) {
+            // A relay is never a place to play (it's among the helpers).
+            if v["role"].as_str() == Some("relay") || !v["listed"].as_bool().unwrap_or(true) {
                 return None;
             }
             // Only once the server at its host said it's this one.
@@ -1815,6 +1811,10 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
     list.sort_by_key(|v| std::cmp::Reverse(v["players_online"].as_u64().unwrap_or(0)));
     // A release going out: launchers tell their players when their server updates.
     let mut answer = json!({ "servers": list });
+    let helpers = match c.helpers().await {
+        Ok(h) => h,
+        Err(e) => return internal(e),
+    };
     if !helpers.is_empty() {
         answer["helpers"] = json!(helpers);
     }
@@ -1859,6 +1859,58 @@ fn helper_entry(id: &str, v: &Value) -> Option<Value> {
 }
 
 impl Coordinator {
+    /// The network's NAT helpers and relays (global matchmaking): every member running one that
+    /// has sent a heartbeat lately and passed its host check: listed game servers and
+    /// relay-only members ([`helper_entry`]), most players first.
+    async fn helpers(&self) -> sqlx::Result<Vec<Value>> {
+        let now = identity::now();
+        let since = now - i64::try_from(LISTED_FOR.as_secs()).unwrap_or(120);
+        let rows: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as("SELECT id, listing, host_check FROM servers WHERE last_seen >= ?")
+            .bind(since)
+            .fetch_all(&self.pool)
+            .await?;
+        let rollout = self.rollout().await?;
+        let mut helpers: Vec<(u64, Value)> = Vec::new();
+        for (id, listing) in rows.into_iter().filter_map(|(id, listing, checked)| {
+            let listing = listing?;
+            // Only once the server at its host said it's this one.
+            self.host_passed(checked.as_deref(), &serde_json::from_str::<Listing>(&listing).ok()?)
+                .then_some((id, listing))
+        }) {
+            let Ok(v) = serde_json::from_str::<Value>(&listing) else { continue };
+            // An unlisted game server keeps its relay to itself; a relay-only member is unlisted
+            // for play but there to be used.
+            let offered = v["role"].as_str() == Some("relay") || v["listed"].as_bool().unwrap_or(true);
+            // Members keep up with the network's releases, or leave the directory.
+            let (version, auto_update) = (v["version"].as_str().unwrap_or_default(), v["auto_update"].as_bool().unwrap_or(false));
+            if !offered || !v["relay"].is_object() || updates::delisted(&rollout, version, auto_update, now).is_some() {
+                continue;
+            }
+            let Some(helper) = helper_entry(&id, &v) else { continue };
+            // The relay is at the host the check proved is this member's: a member can't send
+            // launchers' probes and players' traffic to an address that isn't its own.
+            if !self.resolves_to(v["host"].as_str().unwrap_or_default(), helper["ip"].as_str().unwrap_or_default()).await {
+                continue;
+            }
+            helpers.push((v["players_online"].as_u64().unwrap_or(0), helper));
+        }
+        helpers.sort_by_key(|(players, _)| std::cmp::Reverse(*players));
+        Ok(helpers.into_iter().map(|(_, h)| h).collect())
+    }
+
+    /// Whether `host` (a name or an address) resolves to `ip`; an address is itself. Without
+    /// host checks (a coordinator for tests, or one that doesn't check), any host does.
+    async fn resolves_to(&self, host: &str, ip: &str) -> bool {
+        let Ok(ip) = ip.parse::<std::net::IpAddr>() else { return false };
+        if host.parse::<std::net::IpAddr>().is_ok_and(|h| h == ip) || !self.checks_hosts() {
+            return true;
+        }
+        match tokio::time::timeout(std::time::Duration::from_secs(3), tokio::net::lookup_host((host, 0))).await {
+            Ok(Ok(mut addrs)) => addrs.any(|a| a.ip() == ip),
+            _ => false,
+        }
+    }
+
     /// Lists a server only once the server at its listed host answers with its id
     /// ([`host_check`]).
     pub fn check_hosts(&self) {
