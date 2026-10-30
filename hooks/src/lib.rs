@@ -281,7 +281,16 @@ fn check_orig_library(hmodule: Option<HMODULE>) {
     }
 
     let my_info = dll_utils::get_dll_info(myself).expect("couldn't parse myself");
-    let orig_info = dll_utils::get_dll_info(orig).expect("couldn't parse uplay_r1_loader.orig.dll");
+    // Only to tell our own copy from Ubisoft's: one this parser can't read is let through (a
+    // panic here closed the game at once with 0xC0000142, saying nothing; oceania, 29 Oct), and
+    // loading it says whether it's usable.
+    let orig_info = match dll_utils::get_dll_info(&orig) {
+        Ok(info) => info,
+        Err(err) => {
+            warn!("Couldn't read uplay_r1_loader.orig.dll's version info ({err:?}); taking it for Ubisoft's");
+            return;
+        }
+    };
     info!("My info: {:?}", my_info);
     info!("Orig info: {:?}", orig_info);
 

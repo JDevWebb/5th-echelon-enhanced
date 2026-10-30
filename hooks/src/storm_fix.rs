@@ -99,14 +99,21 @@ fn remove_observer(ticket: *mut u8, result: *mut c_void, observer: *mut c_void) 
 }
 
 /// Whether `observer` looks like a live object: a plausible pointer whose first word (its
-/// vtable) is in the game's `.rdata`.
+/// vtable) is in the game's `.rdata`. The game is large address aware: on 64-bit Windows its
+/// heap runs up to 4 GB, and a long session's observers are mostly above 2 GB. Taking those for
+/// dead (0.4.6 and 0.4.7) dropped live observers by the million (eu1, 28-30 Oct: every one of
+/// 44,734 drops logged was at 0x8000_0000 or above), and their packets' acks never reached them.
 fn looks_live(observer: *mut c_void, rdata: &std::ops::Range<usize>) -> bool {
-    let at = observer as usize;
-    if !(0x10000..0x8000_0000).contains(&at) || at % 4 != 0 {
+    if !plausible(observer as usize) {
         return false;
     }
     let vtable = unsafe { std::ptr::read(observer.cast::<usize>()) };
     rdata.contains(&vtable) && vtable % 4 == 0
+}
+
+/// An aligned address in a 32-bit process's user space, below 4 GB less the top 64 KB.
+fn plausible(at: usize) -> bool {
+    (0x10000..0xffff_0000).contains(&at) && at % 4 == 0
 }
 
 /// Drops every observer of `ticket` that doesn't look live, keeping the others in order.
@@ -127,6 +134,11 @@ unsafe fn drop_dead_observers(ticket: *mut u8, from: &str) {
             kept += 1;
         } else {
             let n = DROPPED.fetch_add(1, Ordering::Relaxed) + 1;
+            // The first few, then at each power of two: a game dropping them by the thousand
+            // wrote a 500 MB log.
+            if n > 16 && !n.is_power_of_two() {
+                continue;
+            }
             let seq = std::ptr::read_unaligned(ticket.add(0x4).cast::<i32>());
             let state = std::ptr::read_unaligned(ticket.add(0xc).cast::<i32>());
             warn!("storm-fix: dropped a dead observer {observer:p} from a sent-packet ticket before its {from} (ticket seq {seq}, state {state}, {} listed; {n} so far): the game would have called freed memory", list.len());
@@ -197,6 +209,15 @@ mod tests {
         assert!(!looks_live(std::ptr::addr_of_mut!(float).cast(), &rdata), "a float's bits");
         assert!(!looks_live(std::ptr::null_mut(), &rdata));
         assert!(!looks_live(0x71 as *mut c_void, &rdata), "a small int as a pointer");
+    }
+
+    #[test]
+    fn takes_addresses_above_2_gb() {
+        // Observers the guard dropped on eu1 (28-30 Oct), all live: the game is large address aware.
+        for at in [0x8009_a85c, 0x9839_b7c4, 0xa00d_6fe0, 0xb000_0010] {
+            assert!(plausible(at), "{at:#x}");
+        }
+        assert!(!plausible(0xffff_0000) && !plausible(0x9839_b7c5) && !plausible(0x71));
     }
 
     #[test]
