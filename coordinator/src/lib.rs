@@ -362,6 +362,10 @@ struct Listing {
     /// Its NAT helper and relay, when it runs one ([`helper_entry`] checks it before listing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     relay: Option<Relay>,
+    /// The network's matchmaking server (global matchmaking): relays report to it and ask it
+    /// who it put together.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    matchmaking: bool,
 }
 
 /// A member's NAT helper and relay, as it sends it.
@@ -1411,9 +1415,30 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, body: axum::body
         Err(e) => return internal(e),
     }
     // The network's relays, for a matchmaking server to work with (its players' games may use
-    // any of them).
+    // any of them), and this member's links to the others: a key per pair of members, which
+    // the two use to sign what they send each other (relays' reports to the matchmaking server,
+    // its answers, forwarding between relays). Only a member running a helper gets them.
     match c.helpers().await {
-        Ok(helpers) => answer["relays"] = json!(helpers),
+        Ok(helpers) => {
+            if listing.relay.is_some() {
+                match c.link_secret().await {
+                    Ok(secret) => {
+                        let links: Vec<Value> = helpers
+                            .iter()
+                            .filter(|h| h["id"].as_str().is_some_and(|id| id != server))
+                            .map(|h| {
+                                let mut link = h.clone();
+                                link["key"] = json!(link_key(&secret, &server, h["id"].as_str().unwrap_or_default()));
+                                link
+                            })
+                            .collect();
+                        answer["links"] = json!(links);
+                    }
+                    Err(e) => return internal(e),
+                }
+            }
+            answer["relays"] = json!(helpers);
+        }
         Err(e) => return internal(e),
     }
     ok(answer)
@@ -1831,6 +1856,19 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
     ok(answer)
 }
 
+/// The key members `a` and `b` share for their link (either way round): an HMAC of the pair under
+/// the coordinator's link secret, in base32. Given only to the two of them, in their heartbeats.
+fn link_key(secret: &[u8; 32], a: &str, b: &str) -> String {
+    use hmac::Mac as _;
+    let (first, second) = if a <= b { (a, b) } else { (b, a) };
+    let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(secret).expect("any key length");
+    for part in [b"fes-link-v1".as_slice(), first.as_bytes(), second.as_bytes()] {
+        mac.update(&(part.len() as u32).to_be_bytes());
+        mac.update(part);
+    }
+    identity::base32_encode(&mac.finalize().into_bytes())
+}
+
 /// A member's NAT helper and relay as the directory lists it, from its listing's `relay` (a
 /// public IPv4 address, its helper port, a sane port range); None when that doesn't read.
 fn helper_entry(id: &str, v: &Value) -> Option<Value> {
@@ -1852,6 +1890,7 @@ fn helper_entry(id: &str, v: &Value) -> Option<Value> {
         "region": text("region"),
         "host": text("host"),
         "role": if v["role"].as_str() == Some("relay") { "relay" } else { "game" },
+        "matchmaking": v["matchmaking"].as_bool().unwrap_or(false) && v["role"].as_str() != Some("relay"),
         "ip": ip.to_string(),
         "port": port,
         "ports": [first, last],
@@ -1859,6 +1898,17 @@ fn helper_entry(id: &str, v: &Value) -> Option<Value> {
 }
 
 impl Coordinator {
+    /// The secret members' link keys are made from ([`link_key`]), made on first use and kept.
+    async fn link_secret(&self) -> sqlx::Result<[u8; 32]> {
+        let fresh: [u8; 32] = rand::random();
+        sqlx::query("INSERT OR IGNORE INTO settings (key, value) VALUES ('link_secret', ?)")
+            .bind(identity::base32_encode(&fresh))
+            .execute(&self.pool)
+            .await?;
+        let kept: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'link_secret'").fetch_one(&self.pool).await?;
+        Ok(identity::base32_decode(&kept).and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok()).unwrap_or(fresh))
+    }
+
     /// The network's NAT helpers and relays (global matchmaking): every member running one that
     /// has sent a heartbeat lately and passed its host check: listed game servers and
     /// relay-only members ([`helper_entry`]), most players first.

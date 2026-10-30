@@ -223,6 +223,43 @@ async fn the_directory_lists_the_networks_relays() {
     assert!(helpers.contains(&("game", "game", "1.2.3.4")) && helpers.contains(&("relay", "relay", "5.6.7.8")));
 }
 
+/// Members running a helper get a link to each other in their heartbeats: the same key both
+/// ways, a different one per pair, flagged when the other end is the matchmaking server; a
+/// member without a helper gets none, and keys never reach the public directory.
+#[tokio::test]
+async fn members_with_helpers_get_a_key_per_link() {
+    let t = start("links").await;
+    let relay = |ip: &str| json!({ "ip": ip, "port": 21128, "ports": [40000, 40999] });
+    let mut secrets = std::collections::HashMap::new();
+    for (id, body) in [
+        ("mm", json!({ "name": "mm", "host": "mm", "relay": relay("1.2.3.4"), "matchmaking": true })),
+        ("syd", json!({ "name": "syd", "host": "syd", "role": "relay", "listed": false, "relay": relay("5.6.7.8") })),
+        ("eu", json!({ "name": "eu", "host": "eu", "relay": relay("9.9.9.9") })),
+        ("lan", json!({ "name": "lan", "host": "lan" })),
+    ] {
+        let secret = t.join(id).await;
+        t.call("POST", "/v1/heartbeat", Some(&secret), Some(body)).await;
+        secrets.insert(id, secret);
+    }
+    let links = |id: &'static str| {
+        let secret = secrets[id].clone();
+        let t = &t;
+        async move {
+            let (_, v) = t.call("POST", "/v1/heartbeat", Some(&secret), Some(json!({ "name": id, "host": id, "relay": if id == "lan" { Value::Null } else { json!({ "ip": "1.1.1.1", "port": 21128, "ports": [40000, 40999] }) }, "role": if id == "syd" { "relay" } else { "game" }, "listed": id != "syd", "matchmaking": id == "mm" }))).await;
+            v["links"].clone()
+        }
+    };
+    let (syd, mm, lan) = (links("syd").await, links("mm").await, links("lan").await);
+    let key = |links: &Value, to: &str| links.as_array().unwrap().iter().find(|l| l["id"] == to).map(|l| l["key"].as_str().unwrap().to_string());
+    assert!(key(&syd, "mm").is_some() && key(&syd, "mm") == key(&mm, "syd"), "the same key both ways: {syd} {mm}");
+    assert_ne!(key(&syd, "mm"), key(&syd, "eu"), "a key per pair");
+    assert!(key(&syd, "syd").is_none(), "no link to itself");
+    assert!(syd.as_array().unwrap().iter().any(|l| l["id"] == "mm" && l["matchmaking"] == true));
+    assert!(lan.is_null(), "a member without a helper gets no links: {lan}");
+    let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
+    assert!(!dir.to_string().contains("\"key\""), "keys stay out of the directory");
+}
+
 #[tokio::test]
 async fn the_directory_carries_a_rollout_through_its_stages() {
     let t = start("rollout").await;
