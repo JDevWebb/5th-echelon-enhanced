@@ -374,7 +374,7 @@ fn describe_unreachable(why: crate::hooks::nat::Unreachable) -> String {
     use crate::hooks::nat::Unreachable;
     let port = crate::hooks::nat::helper_port();
     match why {
-        Unreachable::NoServer => String::from("The server's NAT helper can't be found, so matches with other players won't connect. Check this PC's internet connection."),
+        Unreachable::NoServer => String::from("The NAT helper (relay) can't be found, so matches with other players won't connect. Check this PC's internet connection."),
         Unreachable::CantSend => {
             format!("Windows won't let the game send to the server (UDP port {port}), so matches with other players won't connect. Allow the game in your firewall or antivirus.")
         }

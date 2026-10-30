@@ -6,7 +6,7 @@
 //! answered, so it gave up and stayed local.
 //!
 //! This module:
-//! - probes the server's NAT helper **from Storm's socket** (so the helper
+//! - probes the NAT helper **from Storm's socket** (so the helper
 //!   sees that socket's public mapping), keeps probing as a keepalive, and
 //!   compares the mapping seen on a second port to spot symmetric NATs;
 //! - answers the game's NAT echo itself, by handing the game's own reply
@@ -232,7 +232,7 @@ pub fn helper_port() -> u16 {
     HELPER_PORT.load(Ordering::Relaxed)
 }
 
-/// How long since the server's NAT helper last answered this game, if it ever did.
+/// How long since the NAT helper last answered this game, if it ever did.
 pub fn quiet_for() -> Option<Duration> {
     state().last_answer.map(|t| t.elapsed())
 }
@@ -265,10 +265,10 @@ pub fn status() -> Option<String> {
     if let Some(why) = unreachable {
         return Some(
             match why {
-                Unreachable::NoServer => "Nobody: the server's NAT helper can't be found",
-                Unreachable::CantSend => "Nobody: this PC can't send to the server's NAT helper",
-                Unreachable::NoAnswer => "Nobody: the server's NAT helper doesn't hear from this PC",
-                Unreachable::NotRegistered => "Nobody yet: the server hasn't registered this game",
+                Unreachable::NoServer => "Nobody: the NAT helper (relay) can't be found",
+                Unreachable::CantSend => "Nobody: this PC can't send to the NAT helper (relay)",
+                Unreachable::NoAnswer => "Nobody: the NAT helper (relay) doesn't hear from this PC",
+                Unreachable::NotRegistered => "Nobody yet: the relay hasn't registered this game",
             }
             .into(),
         );
@@ -276,16 +276,16 @@ pub fn status() -> Option<String> {
     let Some(r) = st.reply else {
         return Some(
             if st.server.is_some() {
-                "Asking the server for this PC's public address..."
+                "Asking the relay for this PC's public address..."
             } else {
-                "The server's NAT helper isn't known"
+                "The NAT helper (relay) isn't known"
             }
             .into(),
         );
     };
-    let ping = st.rtt_ms.map(|ms| format!(" · {ms} ms to the server")).unwrap_or_default();
+    let ping = st.rtt_ms.map(|ms| format!(" · {ms} ms to the relay")).unwrap_or_default();
     let line = if r.relayed {
-        format!("Through the server's relay ({})", r.advertise)
+        format!("Through the relay ({})", r.advertise)
     } else if st.mapping.is_some_and(|m| m == r.advertise) {
         format!("Direct, router port opened ({})", r.advertise)
     } else if nat_proto::is_private(*r.advertise.ip()) {
@@ -592,14 +592,14 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
                 }
                 if st.silence_said {
                     let quiet = st.last_answer.map_or(0, |t| t.elapsed().as_secs());
-                    info!("NAT: the server's NAT helper answers again (after {quiet} s)");
+                    info!("NAT: the NAT helper answers again (after {quiet} s)");
                     st.silence_said = false;
                 }
                 st.last_answer = Some(Instant::now());
                 if sender != second {
                     if tag == [0; 8] {
                         if st.tag != [0; 8] {
-                            info!("NAT: the server's NAT helper no longer knows this game; registering again");
+                            info!("NAT: the NAT helper no longer knows this game; registering again");
                             st.tag = [0; 8];
                             st.lost_at = Some(Instant::now());
                         }
@@ -655,7 +655,7 @@ fn on_reply(from_second: bool, observed: SocketAddrV4, advertise: SocketAddrV4, 
     if changed {
         info!(
             "NAT: this PC is {observed} to the server; advertising {advertise}{}",
-            if reply.relayed { " (through the server's relay)" } else { "" }
+            if reply.relayed { " (through the relay)" } else { "" }
         );
         if st.told_game.is_some_and(|t| t != advertise) {
             warn!("NAT: the game already advertises {:?}; the server corrects it where it can", st.told_game);
@@ -706,7 +706,7 @@ fn echo_send(engine: *mut c_void) {
     }
 }
 
-/// The round trip to the server's NAT helper, in ms: the best of three probes that only
+/// The round trip to the NAT helper, in ms: the best of three probes that only
 /// ask for an address, from a socket of its own. Answers on the Storm socket wait until the
 /// game reads them, which would add up to a frame.
 fn round_trip(server: SocketAddrV4) -> Option<u16> {
@@ -770,7 +770,7 @@ fn worker(host: String, port: u16) {
             last_resolve = Some(Instant::now());
             match resolve(&host, port) {
                 Some(server) => {
-                    info!("NAT: the server's NAT helper is {server}");
+                    info!("NAT: the NAT helper is {server}");
                     let mut st = state();
                     st.server = Some(server);
                     st.second = Some(SocketAddrV4::new(*server.ip(), port.wrapping_add(1)));
@@ -791,7 +791,7 @@ fn worker(host: String, port: u16) {
             if let (Some(quiet), false) = (quiet, st.silence_said) {
                 if quiet >= SILENCE {
                     warn!(
-                        "NAT: no answer from the server's NAT helper for {} s (probing every {}); it forgets this game after 90 s, and nobody can join it then",
+                        "NAT: no answer from the NAT helper for {} s (probing every {}); it forgets this game after 90 s, and nobody can join it then",
                         quiet.as_secs(),
                         if interval < Duration::from_secs(1) {
                             format!("{} ms", interval.as_millis())
@@ -869,10 +869,10 @@ fn worker(host: String, port: u16) {
                 }
                 let mut st = state();
                 if sent < 0 && !st.send_failing {
-                    warn!("NAT: sending a probe to the server's NAT helper {to} failed ({sent})");
+                    warn!("NAT: sending a probe to the NAT helper {to} failed ({sent})");
                     st.send_failing = true;
                 } else if sent >= 0 && st.send_failing {
-                    info!("NAT: probes to the server's NAT helper go again");
+                    info!("NAT: probes to the NAT helper go again");
                     st.send_failing = false;
                 }
             }
@@ -910,10 +910,14 @@ pub unsafe fn init_hooks(config: &Config, addr: &Addresses) {
         info!("NAT: off; the game advertises its local address");
         return;
     }
-    let Some(host) = config.config_server.clone() else {
+    // The relay the launcher picked, else the game server's own helper.
+    let Some(host) = config.networking.nat_host.clone().filter(|h| !h.is_empty()).or_else(|| config.config_server.clone()) else {
         warn!("NAT: no server configured");
         return;
     };
+    if config.networking.nat_host.as_deref().is_some_and(|h| !h.is_empty()) {
+        info!("NAT: using the relay {host}, not the game server's own helper");
+    }
     match (addr.func_nat_echo_send, addr.func_nat_packet_parse) {
         (Some(send), Some(parse)) => {
             let _ = PARSE.set(parse);

@@ -703,6 +703,11 @@ pub struct Networking {
     /// The server's NAT helper port (UDP, 21128 unless the server changed it).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nat_port: Option<u16>,
+    /// The NAT helper and relay to use, when it isn't the game server's own (global
+    /// matchmaking: one server for the whole network, a relay near each region's players; the
+    /// launcher picks the nearest). None: the game server's (`config_server`), as before.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nat_host: Option<String>,
     /// `ip_address` was worked out at start (nothing pinned), not set by the player.
     #[serde(skip)]
     pub ip_address_automatic: bool,
@@ -726,6 +731,7 @@ impl Default for Networking {
             nat: NatMode::default(),
             port_mapping: true,
             nat_port: None,
+            nat_host: None,
             ip_address_automatic: false,
         }
     }
