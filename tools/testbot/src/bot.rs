@@ -932,6 +932,24 @@ impl Bot {
             .into_inner())
     }
 
+    /// Joins a public match picked from the lobby browser by its room (`JoinRoom`).
+    pub async fn join_room(&self, room: u32) -> std::result::Result<server_api::friends::JoinNowResponse, tonic::Status> {
+        Ok(FriendsClient::new(self.api.clone())
+            .join_room(self.authed(server_api::friends::JoinRoomRequest { room }))
+            .await?
+            .into_inner())
+    }
+
+    /// Asks for (or takes back) a new match: searches find nothing until this player hosts
+    /// (`NewMatch`). The seconds it holds.
+    pub async fn new_match(&self, on: bool) -> std::result::Result<u32, tonic::Status> {
+        Ok(FriendsClient::new(self.api.clone())
+            .new_match(self.authed(server_api::friends::NewMatchRequest { on }))
+            .await?
+            .into_inner()
+            .seconds)
+    }
+
     /// Friends as the game's friend list shows them: (name, online).
     pub async fn friends(&self) -> Result<Vec<(String, bool)>> {
         let resp = FriendsClient::new(self.api.clone())

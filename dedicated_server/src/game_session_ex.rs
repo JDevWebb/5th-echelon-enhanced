@@ -148,6 +148,10 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
             .into_iter()
             .partition(|(session, _)| invitation_search || !crate::match_started::started(session.session_id));
         let started = started.iter().filter(|(_, attrs)| answers(&req_attrs, attrs, false)).count();
+        // The player asked for a new match (search_steer.rs): nothing is found, so their game
+        // hosts one, and none of what's open is theirs to hear about.
+        let steered = !invitation_search && crate::search_steer::wants_new(user_id);
+        let scanned = if steered { Vec::new() } else { scanned };
         let hidden = if invitation_search {
             None
         } else {
@@ -175,6 +179,10 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
         if started > 0 {
             info!(logger, "Left out {started} matches under way");
             detail["started"] = serde_json::json!(started);
+        }
+        if steered {
+            info!(logger, "{user_id} asked for a new match: nothing found, so the game hosts");
+            detail["steered"] = "new".into();
         }
         // Found nothing, but there are lobbies their game data keeps from them: the game
         // says nothing of it, so the player and the admins hear it from us.

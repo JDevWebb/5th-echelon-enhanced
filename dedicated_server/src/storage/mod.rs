@@ -1439,6 +1439,25 @@ impl Storage {
         .fetch_optional(&self.pool))??)
     }
 
+    /// Room `session_id`, when it's live and anyone may join it (as [`Self::public_room_for`]
+    /// counts them) and `joiner` isn't in it: its host, type and attributes. For joining a
+    /// public match picked from the lobby browser (the API's JoinRoom).
+    pub async fn joinable_public_room_async(&self, session_id: u32, joiner: u32) -> Result<Option<(u32, u32, String)>> {
+        let row: Option<(u32, u32, Option<String>)> = sqlx::query_as(&format!(
+            "SELECT g.creator_id, g.type_id, g.attributes FROM game_sessions g WHERE g.id = ?1 AND g.destroyed_at IS NULL
+               AND EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = g.creator_id)
+               AND NOT EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?2)
+               AND NOT EXISTS (SELECT 1 FROM guests gu WHERE gu.game_id = g.id AND gu.user_id = ?2)
+               AND NOT EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.user_id = g.creator_id AND a.invite_only = 1)
+               AND NOT {PRIVATE_SEATS_ONLY}"
+        ))
+        .bind(session_id)
+        .bind(joiner)
+        .fetch_optional(&self.pool)
+        .await?;
+        Ok(row.map(|(host, type_id, attributes)| (host, type_id, attributes.unwrap_or_default())))
+    }
+
     /// Whether `user_id` joined session `session_id` as a guest (from a search: see the
     /// `guests` table) and is still in it, whether or not the session has ended.
     pub fn is_guest(&self, session_id: u32, user_id: u32) -> Result<bool> {

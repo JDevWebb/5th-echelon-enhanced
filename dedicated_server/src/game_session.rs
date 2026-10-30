@@ -535,12 +535,17 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             .map(|p| format!("{} => {}", p.id, p.value))
             .collect::<Vec<_>>()
             .join(";");
+        let hosts_match = attribute_value(&attributes, PROPERTY_ROOM_KIND) == Some(0);
         let session_id = rmc_err!(
             self.storage.create_game_session(user_id, request.game_session.type_id, attributes),
             logger,
             "error creating game session"
         )?;
         made(ci, user_id, session_id);
+        // The new match a player asked for (search_steer.rs): their searches find matches again.
+        if hosts_match {
+            crate::search_steer::done(user_id);
+        }
         crate::session_events::note(crate::session_events::Who::Id(user_id), "room", serde_json::json!({ "room": session_id }));
         self.went_online(user_id);
         Ok(CreateSessionResponse {

@@ -1359,6 +1359,82 @@ async fn join_now_match(ctx: &mut Ctx) -> Result<()> {
     stranger_host.disconnect().await
 }
 
+/// Choosing your match (the 0.4.8 plan's L2): "New match" makes the player's searches find
+/// nothing until they host one, so their game starts a fresh match rather than join an open
+/// one; taken back, or once they host, searches find matches again. A public match picked from
+/// the lobby browser is joined by its room (`JoinRoom`, the requested invitation from its
+/// host); a private match, a party, or a host who blocked the caller answer NOT_FOUND alike,
+/// and the caller's own block of the host is named.
+async fn choose_match(ctx: &mut Ctx) -> Result<()> {
+    // A map no other scenario's matches have, so only these are found.
+    let map = 910_000 + ctx.run;
+    let open = format!("113 => 0;103 => 1;3 => 8;4 => 0;102 => 8;101 => {map}");
+    let mut camper = ctx.player("Host").await?;
+    camper.register_urls(&["prudp:/address=127.0.0.1;port=3091;sid=15;type=3"]).await?;
+    let camped = camper.create_session(&open).await?;
+    camper.add_participants(camped, &[camper.pid], &[]).await?;
+    let mut seeker = ctx.player("Guest").await?;
+    seeker.register_urls(&["prudp:/address=127.0.0.1;port=3092;sid=15;type=3"]).await?;
+    let finds = |found: &[(u32, u32)], room: u32| found.iter().any(|(s, _)| *s == room);
+    ensure!(finds(&seeker.search_sessions(&open).await?, camped), "the open match isn't found to begin with");
+
+    // New match: nothing found, for both of the game's searches; taken back, found again.
+    ensure!(seeker.new_match(true).await? > 0, "a new match asked for doesn't say how long it holds");
+    ensure!(seeker.search_sessions(&open).await?.is_empty(), "a player who asked for a new match was offered an open one");
+    ensure!(seeker.search_sessions(&open).await?.is_empty(), "the game's second search found an open match");
+    ensure!(seeker.new_match(false).await? == 0, "taking it back still holds");
+    ensure!(finds(&seeker.search_sessions(&open).await?, camped), "taken back, the open match isn't found");
+
+    // Asked again, then hosting: their own match is open to others, and their searches find
+    // matches again.
+    seeker.new_match(true).await?;
+    ensure!(seeker.search_sessions(&open).await?.is_empty(), "asked again, an open match was offered");
+    let fresh = seeker.create_session(&open).await?;
+    seeker.add_participants(fresh, &[seeker.pid], &[]).await?;
+    ensure!(finds(&seeker.search_sessions(&open).await?, camped), "after hosting, the player's searches still find nothing");
+    let mut other = ctx.player("Guest").await?;
+    other.register_urls(&["prudp:/address=127.0.0.1;port=3093;sid=15;type=3"]).await?;
+    let found = other.search_sessions(&open).await?;
+    ensure!(finds(&found, fresh) && finds(&found, camped), "another player doesn't find both matches: {found:?}");
+
+    // Join room: a public match picked from the browser, joined with its host's invitation.
+    let picker = ctx.player("Guest").await?;
+    let answer = picker.join_room(fresh).await?;
+    ensure!(answer.status() == JoinStatus::Ok, "joining a picked public match answered {:?}: {}", answer.status(), answer.detail);
+    ensure!(answer.host_id == seeker.id, "the picked match's host isn't named for the join request: {:?}", answer.host_id);
+    let got = picker.poll_invite_event(Duration::from_secs(3)).await?;
+    ensure!(
+        got.as_ref().is_some_and(|(from, requested)| *from == seeker.name && *requested),
+        "the picked match's host's invitation isn't delivered as the requested join: {got:?}"
+    );
+    // Not a match: a party, a private match, a room that isn't there.
+    let mut partying = ctx.player("Host").await?;
+    partying.register_urls(&["prudp:/address=127.0.0.1;port=3094;sid=15;type=3"]).await?;
+    let party = partying.create_session(LOBBY).await?;
+    partying.add_participants(party, &[partying.pid], &[]).await?;
+    let private = partying.create_session(PRIVATE_MATCH).await?;
+    partying.add_participants(private, &[], &[partying.pid]).await?;
+    for (room, what) in [(party, "a party"), (private, "a private match"), (u32::MAX - 1, "a room that isn't there")] {
+        let refused = picker.join_room(room).await?;
+        ensure!(refused.status() == JoinStatus::NotFound, "joining {what} from the browser answered {:?}", refused.status());
+    }
+    ensure!(picker.poll_invite_event(Duration::from_secs(1)).await?.is_none(), "a refused pick still queued an invitation");
+    // Blocks: the host's is unsaid, the caller's own is named.
+    camper.friend_change("block", &picker.name).await?;
+    let refused = picker.join_room(camped).await?;
+    ensure!(refused.status() == JoinStatus::NotFound, "a host who blocked the picker answered {:?}", refused.status());
+    camper.friend_change("unblock", &picker.name).await?;
+    picker.friend_change("block", &camper.name).await?;
+    let refused = picker.join_room(camped).await?;
+    ensure!(refused.status() == JoinStatus::NotFriends, "picking a match of a host one blocked answered {:?}", refused.status());
+
+    camper.disconnect().await?;
+    seeker.disconnect().await?;
+    other.disconnect().await?;
+    partying.disconnect().await?;
+    picker.disconnect().await
+}
+
 /// A public Spies vs Mercs match room (room kind 0, public seats), as matchmaking makes it.
 const PUBLIC_MATCH: &str = "113 => 0;103 => 1;3 => 8;4 => 0;102 => 8";
 
@@ -2887,6 +2963,7 @@ const SCENARIOS: &[&str] = &[
     "invite-queue",
     "join-now",
     "join-now-match",
+    "choose-match",
     "identity-login",
     "rename",
     "direct-test",
@@ -3017,6 +3094,7 @@ async fn run() -> Result<()> {
                 "invite-queue" => invite_queue(&mut ctx).await,
                 "join-now" => join_now(&mut ctx).await,
                 "join-now-match" => join_now_match(&mut ctx).await,
+                "choose-match" => choose_match(&mut ctx).await,
                 "identity-login" => identity_login(&mut ctx).await,
                 "rename" => rename(&mut ctx).await,
                 "direct-test" => direct_test(&mut ctx).await,

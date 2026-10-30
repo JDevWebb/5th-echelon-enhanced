@@ -100,6 +100,7 @@ mod probe_wants;
 mod rate_limit;
 mod recent_log;
 mod reports;
+mod search_steer;
 mod secure;
 mod self_update;
 mod session_events;

@@ -488,6 +488,7 @@ impl Friends for MyFriends {
             Ok(Response::new(friends::JoinNowResponse {
                 status: status as i32,
                 detail: detail.to_string(),
+                ..Default::default()
             }))
         };
         let target = request.into_inner().id;
@@ -622,6 +623,75 @@ impl Friends for MyFriends {
             Some(via) => info!(self.logger, "JoinNow: {me} joins {host}'s session {room_id} through {via} (invitation {invite}, requested)"),
         }
         reply(JoinStatus::Ok, "")
+    }
+
+    /// A public match picked from the lobby browser, joined as JoinNow joins a friend's: an
+    /// invitation from its host, delivered as a join the caller asked for. Anyone may join a
+    /// public match (a search would have offered it), so no friendship is needed.
+    async fn join_room(&self, request: Request<friends::JoinRoomRequest>) -> Result<Response<friends::JoinNowResponse>, Status> {
+        use friends::join_now_response::Status as JoinStatus;
+        let me = caller(&request)?;
+        if !crate::rate_limit::invites().check(me) {
+            return Err(Status::resource_exhausted("Too many requests; try again in a minute"));
+        }
+        let reply = |status: JoinStatus, detail: &str| {
+            Ok(Response::new(friends::JoinNowResponse {
+                status: status as i32,
+                detail: detail.to_string(),
+                ..Default::default()
+            }))
+        };
+        // Gone, private, a party rather than a match, one they're in or their own, or one whose
+        // host blocked them: all the same answer, so nobody learns they were blocked.
+        const GONE: &str = "That match isn't open any more.";
+        let room = request.into_inner().room;
+        let Some((host, session_type, attributes)) = self.storage.joinable_public_room_async(room, me).await.map_err(internal)? else {
+            return reply(JoinStatus::NotFound, GONE);
+        };
+        if crate::game_session::attribute_value(&attributes, 113) != Some(0) {
+            return reply(JoinStatus::NotFound, GONE);
+        }
+        match self.storage.relation(me, host).await.map_err(internal)? {
+            Relation::Blocked => return reply(JoinStatus::NotFriends, "You've blocked that match's host."),
+            Relation::BlockedBy => return reply(JoinStatus::NotFound, GONE),
+            _ => {}
+        }
+        if crate::match_started::started(room) {
+            return reply(JoinStatus::Started, "That match has started - pick another, or start a new one.");
+        }
+        let invite = self.storage.add_join_request_async(host, None, me, session_type, room).await.map_err(|e| {
+            warn!(self.logger, "JoinRoom: {me} couldn't queue the join to {host}'s session {room}: {e}");
+            Status::resource_exhausted("Couldn't queue the join: answer or let some of your waiting invitations go first.")
+        })?;
+        info!(
+            self.logger,
+            "JoinRoom: {me} joins {host}'s public match {room} from the lobby browser (invitation {invite}, requested)"
+        );
+        Ok(Response::new(friends::JoinNowResponse {
+            status: JoinStatus::Ok as i32,
+            host_id: self.storage.find_ubi_id_by_user_id_async(host).await.map_err(internal)?.unwrap_or_default(),
+            ..Default::default()
+        }))
+    }
+
+    /// The caller's quick match searches find nothing until they host a match (search_steer.rs),
+    /// or find matches again when they take it back.
+    async fn new_match(&self, request: Request<friends::NewMatchRequest>) -> Result<Response<friends::NewMatchResponse>, Status> {
+        let me = caller(&request)?;
+        if !crate::rate_limit::invites().check(me) {
+            return Err(Status::resource_exhausted("Too many requests; try again in a minute"));
+        }
+        if !request.into_inner().on {
+            crate::search_steer::done(me);
+            return Ok(Response::new(friends::NewMatchResponse { seconds: 0 }));
+        }
+        if !crate::search_steer::new_match(me) {
+            return Err(Status::resource_exhausted("Too many players asked at once; try again in a minute"));
+        }
+        info!(self.logger, "NewMatch: {me}'s searches find nothing until they host a match");
+        Ok(Response::new(friends::NewMatchResponse {
+            seconds: u32::try_from(crate::search_steer::FOR.as_secs()).unwrap_or(u32::MAX),
+        }))
     }
 
     /// The game's friend list: every player in the "everyone" mode (as before friend lists

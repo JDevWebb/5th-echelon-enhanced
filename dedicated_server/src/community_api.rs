@@ -54,6 +54,7 @@ const FEATURES: &[&str] = &[
     "rename",
     "name-check",
     "join-now",
+    "choose-match",
 ];
 
 /// Session attributes (see game_session.rs): 101 map, 102 mode, 113 room kind

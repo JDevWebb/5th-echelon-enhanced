@@ -36,6 +36,13 @@ pub struct Match {
     /// The players its mode is made for (0 when not known); a host can raise the seats past it.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub mode_size: u32,
+    /// Its room (session id), for joining it from the lobby browser (the API's JoinRoom); 0
+    /// from a server before 0.4.8. A search in the game hands anyone the same id.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub room: u32,
+    /// Under way: its host's game turns joiners away until it's over.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub started: bool,
 }
 
 #[allow(clippy::trivially_copy_pass_by_ref)]
@@ -220,7 +227,7 @@ mod tests {
             map: Some(1),
             players: 2,
             seats: 0,
-            mode_size: 0,
+            ..Match::default()
         };
         assert_eq!(unknown.line(), "Co-op · 2 players");
         let raised = Match { mode_size: 8, ..svm(7, 9, 10) };

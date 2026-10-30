@@ -47,6 +47,8 @@ pub fn of(sessions: &[LiveSession]) -> Playing {
             players: count(s.players.len()),
             seats,
             mode_size: crate::game_session::mode_size(&s.attributes).unwrap_or(0),
+            room: s.id,
+            started: crate::match_started::started(s.id),
         });
     }
     // The busiest first; then the newest (sessions come newest first, and the sort keeps it).
