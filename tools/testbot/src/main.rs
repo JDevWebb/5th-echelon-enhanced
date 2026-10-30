@@ -1417,7 +1417,10 @@ async fn choose_match(ctx: &mut Ctx) -> Result<()> {
     let mut bystander = ctx.player("Guest").await?;
     bystander.register_urls(&["prudp:/address=127.0.0.1;port=3095;sid=15;type=3"]).await?;
     let found = bystander.search_sessions(&open).await?;
-    ensure!(finds(&found, fresh) && finds(&found, camped), "someone else's block hid matches from another player: {found:?}");
+    ensure!(
+        finds(&found, fresh) && finds(&found, camped),
+        "someone else's block hid matches from another player: {found:?}"
+    );
     bystander.disconnect().await?;
     other.friend_change("unblock", &camper.name).await?;
     other.friend_change("unblock", &member.name).await?;
