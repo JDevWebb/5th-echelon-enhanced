@@ -1380,7 +1380,10 @@ async fn choose_match(ctx: &mut Ctx) -> Result<()> {
 
     // New match: nothing found, for both of the game's searches; taken back, found again.
     ensure!(seeker.new_match(true).await? > 0, "a new match asked for doesn't say how long it holds");
-    ensure!(seeker.search_sessions(&open).await?.is_empty(), "a player who asked for a new match was offered an open one");
+    ensure!(
+        seeker.search_sessions(&open).await?.is_empty(),
+        "a player who asked for a new match was offered an open one"
+    );
     ensure!(seeker.search_sessions(&open).await?.is_empty(), "the game's second search found an open match");
     ensure!(seeker.new_match(false).await? == 0, "taking it back still holds");
     ensure!(finds(&seeker.search_sessions(&open).await?, camped), "taken back, the open match isn't found");
@@ -1391,7 +1394,10 @@ async fn choose_match(ctx: &mut Ctx) -> Result<()> {
     ensure!(seeker.search_sessions(&open).await?.is_empty(), "asked again, an open match was offered");
     let fresh = seeker.create_session(&open).await?;
     seeker.add_participants(fresh, &[seeker.pid], &[]).await?;
-    ensure!(finds(&seeker.search_sessions(&open).await?, camped), "after hosting, the player's searches still find nothing");
+    ensure!(
+        finds(&seeker.search_sessions(&open).await?, camped),
+        "after hosting, the player's searches still find nothing"
+    );
     let mut other = ctx.player("Guest").await?;
     other.register_urls(&["prudp:/address=127.0.0.1;port=3093;sid=15;type=3"]).await?;
     let found = other.search_sessions(&open).await?;
@@ -1400,8 +1406,17 @@ async fn choose_match(ctx: &mut Ctx) -> Result<()> {
     // Join room: a public match picked from the browser, joined with its host's invitation.
     let picker = ctx.player("Guest").await?;
     let answer = picker.join_room(fresh).await?;
-    ensure!(answer.status() == JoinStatus::Ok, "joining a picked public match answered {:?}: {}", answer.status(), answer.detail);
-    ensure!(answer.host_id == seeker.id, "the picked match's host isn't named for the join request: {:?}", answer.host_id);
+    ensure!(
+        answer.status() == JoinStatus::Ok,
+        "joining a picked public match answered {:?}: {}",
+        answer.status(),
+        answer.detail
+    );
+    ensure!(
+        answer.host_id == seeker.id,
+        "the picked match's host isn't named for the join request: {:?}",
+        answer.host_id
+    );
     let got = picker.poll_invite_event(Duration::from_secs(3)).await?;
     ensure!(
         got.as_ref().is_some_and(|(from, requested)| *from == seeker.name && *requested),
@@ -1418,7 +1433,10 @@ async fn choose_match(ctx: &mut Ctx) -> Result<()> {
         let refused = picker.join_room(room).await?;
         ensure!(refused.status() == JoinStatus::NotFound, "joining {what} from the browser answered {:?}", refused.status());
     }
-    ensure!(picker.poll_invite_event(Duration::from_secs(1)).await?.is_none(), "a refused pick still queued an invitation");
+    ensure!(
+        picker.poll_invite_event(Duration::from_secs(1)).await?.is_none(),
+        "a refused pick still queued an invitation"
+    );
     // Blocks: the host's is unsaid, the caller's own is named.
     camper.friend_change("block", &picker.name).await?;
     let refused = picker.join_room(camped).await?;
@@ -1426,7 +1444,11 @@ async fn choose_match(ctx: &mut Ctx) -> Result<()> {
     camper.friend_change("unblock", &picker.name).await?;
     picker.friend_change("block", &camper.name).await?;
     let refused = picker.join_room(camped).await?;
-    ensure!(refused.status() == JoinStatus::NotFriends, "picking a match of a host one blocked answered {:?}", refused.status());
+    ensure!(
+        refused.status() == JoinStatus::NotFriends,
+        "picking a match of a host one blocked answered {:?}",
+        refused.status()
+    );
 
     camper.disconnect().await?;
     seeker.disconnect().await?;
