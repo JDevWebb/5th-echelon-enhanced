@@ -117,7 +117,8 @@ case "${1:-test}" in
     # server in the "mutual" mode, and one on a server requiring identities.
     run "$IMAGE" bash -c 'cargo build -q -p dedicated_server -p testbot && scripts/bots.sh /target/native/debug "$@" &&
       if [ $# -eq 0 ]; then FRIENDS_MODE=mutual scripts/bots.sh /target/native/debug friends-mutual &&
-        REQUIRE_IDENTITY=1 scripts/bots.sh /target/native/debug identity-required; fi' bots "$@"
+        REQUIRE_IDENTITY=1 scripts/bots.sh /target/native/debug identity-required &&
+        MATCHMAKING=1 scripts/bots.sh /target/native/debug relay-pass; fi' bots "$@"
     ;;
   tauri)
     # The Tauri launcher (launcher-tauri, 0.4.8) for Windows and for Linux x86_64 -> dist: its

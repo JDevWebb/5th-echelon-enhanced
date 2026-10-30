@@ -121,6 +121,8 @@ pub struct Bot {
     pub pid: u32,
     /// The NAT helper ticket from signing in.
     pub nat_ticket: nat_proto::Ticket,
+    /// The relay pass from signing in (a network's matchmaking server's; empty elsewhere).
+    pub relay_pass: Vec<u8>,
     token: String,
     api: Channel,
     secure: Conn,
@@ -197,6 +199,30 @@ pub struct NatRegistration {
 
 /// Registers `name` (with its `ticket`) from `socket` at the NAT helper
 /// `nat`: a probe for the cookie, then one with it.
+/// Shows a relay pass (4 bytes of day, 64 of signature) for `name` to the helper at `nat`, as
+/// the game does at a relay other than its server's own: the ticket it grants, if it does.
+pub async fn present_pass(socket: &tokio::net::UdpSocket, nat: std::net::SocketAddrV4, name: &str, pass: &[u8]) -> Result<Option<nat_proto::Ticket>> {
+    let (Some(day), Some(signature)) = (pass.get(..4), pass.get(4..68)) else {
+        return Ok(None);
+    };
+    let nonce = rand::random::<u32>() | 1;
+    let present = nat_proto::Message::TicketPresent {
+        nonce,
+        name: name.into(),
+        day: u32::from_be_bytes(day.try_into()?),
+        signature: signature.try_into()?,
+    };
+    socket.send_to(&present.encode(), nat).await?;
+    let mut buf = [0u8; 256];
+    match tokio::time::timeout(std::time::Duration::from_millis(800), socket.recv_from(&mut buf)).await {
+        Ok(Ok((n, _))) => match nat_proto::Message::decode(&buf[..n]) {
+            Some(nat_proto::Message::TicketGrant { nonce: n2, ticket }) if n2 == nonce => Ok(Some(ticket)),
+            _ => Ok(None),
+        },
+        _ => Ok(None),
+    }
+}
+
 pub async fn nat_register(socket: &tokio::net::UdpSocket, nat: std::net::SocketAddrV4, flags: u8, name: &str, ticket: nat_proto::Ticket) -> Result<NatRegistration> {
     use nat_proto::Message;
     let mut cookie = [0u8; 16];
@@ -440,6 +466,7 @@ impl Bot {
             id: login.user.map(|u| u.id).unwrap_or_default(),
             pid,
             nat_ticket,
+            relay_pass: login.relay_pass,
             token: login.token,
             api,
             secure,

@@ -2265,6 +2265,43 @@ async fn nat_probe_scenario(ctx: &mut Ctx) -> Result<()> {
 /// Two players, one relayed: packets reach each other through the relay,
 /// each seeing the other at its advertised address; strangers, and packets
 /// without the right tag, get nowhere.
+/// Relay passes (global matchmaking): a network's matchmaking server signs one at sign-in,
+/// which its own helper (and the network's relays that trust its key) answers with a ticket
+/// for that name, good to register with; a pass changed by a bit, or shown for another name,
+/// gets nothing. Any other server signs none, and a made-up pass gets nothing there either.
+async fn relay_pass(ctx: &mut Ctx) -> Result<()> {
+    let nat = nat_addr(ctx.server, false)?;
+    let player = ctx.player("Relayed").await?;
+    let other = ctx.player("Direct").await?;
+    let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+    if player.relay_pass.is_empty() {
+        // bots.sh's MATCHMAKING=1 run is against a matchmaking server, which signs them.
+        ensure!(std::env::var_os("MATCHMAKING").is_none(), "the matchmaking server signed no relay pass");
+        let made_up = [7u8; 68];
+        ensure!(
+            testbot::bot::present_pass(&socket, nat, &player.name, &made_up).await?.is_none(),
+            "a server that signs no passes took a made-up one"
+        );
+        return Ok(());
+    }
+    ensure!(player.relay_pass.len() == 68, "a relay pass is 68 bytes, not {}", player.relay_pass.len());
+    let granted = testbot::bot::present_pass(&socket, nat, &player.name, &player.relay_pass).await?;
+    ensure!(granted == Some(player.nat_ticket), "the pass wasn't answered with the player's ticket: {granted:?}");
+    let registered = testbot::bot::nat_register(&socket, nat, 0, &player.name, granted.unwrap_or_default()).await?;
+    ensure!(registered.tag != [0; 8], "the granted ticket didn't register the game");
+    let mut changed = player.relay_pass.clone();
+    changed[20] ^= 1;
+    ensure!(
+        testbot::bot::present_pass(&socket, nat, &player.name, &changed).await?.is_none(),
+        "a changed pass was taken"
+    );
+    ensure!(
+        testbot::bot::present_pass(&socket, nat, &other.name, &player.relay_pass).await?.is_none(),
+        "a pass was taken for another player's name"
+    );
+    Ok(())
+}
+
 async fn nat_relay(ctx: &mut Ctx) -> Result<()> {
     use nat_proto::Message;
     let nat = nat_addr(ctx.server, false)?;
@@ -3009,6 +3046,7 @@ const SCENARIOS: &[&str] = &[
     "join-now",
     "join-now-match",
     "choose-match",
+    "relay-pass",
     "identity-login",
     "rename",
     "direct-test",
@@ -3140,6 +3178,7 @@ async fn run() -> Result<()> {
                 "join-now" => join_now(&mut ctx).await,
                 "join-now-match" => join_now_match(&mut ctx).await,
                 "choose-match" => choose_match(&mut ctx).await,
+                "relay-pass" => relay_pass(&mut ctx).await,
                 "identity-login" => identity_login(&mut ctx).await,
                 "rename" => rename(&mut ctx).await,
                 "direct-test" => direct_test(&mut ctx).await,

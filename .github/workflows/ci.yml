@@ -49,6 +49,7 @@ jobs:
           scripts/bots.sh target/debug
           FRIENDS_MODE=mutual scripts/bots.sh target/debug friends-mutual
           REQUIRE_IDENTITY=1 scripts/bots.sh target/debug identity-required
+          MATCHMAKING=1 scripts/bots.sh target/debug relay-pass
       - name: Shell scripts (ShellCheck comes with the runner)
         run: |
           shellcheck -S warning scripts/install-server.sh scripts/harden-host.sh scripts/bots.sh \

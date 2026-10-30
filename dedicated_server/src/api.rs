@@ -1487,8 +1487,10 @@ impl MyUsers {
         let person = self.storage.find_person(user_id).await.map_err(internal)?;
         let epoch = self.storage.token_epoch(user_id).await.map_err(internal)?;
         let nat_ticket = person.as_ref().and_then(|p| crate::nat_helper::ticket_for(&p.username)).map(Vec::from).unwrap_or_default();
+        let relay_pass = person.as_ref().and_then(|p| crate::relay_pass::issue(&p.username)).unwrap_or_default();
         Ok(Response::new(users::LoginResponse {
             nat_ticket,
+            relay_pass,
             error: String::new(),
             token: issue_token(&self.key, user_id, epoch),
             user: person.map(|p| User {

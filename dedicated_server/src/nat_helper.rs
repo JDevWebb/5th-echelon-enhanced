@@ -1428,6 +1428,23 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
             continue;
         }
 
+        // A game with a relay pass from the network's matchmaking server (relay_pass.rs): this
+        // helper's own ticket for its name, which its probes then carry.
+        if let Some(Message::TicketPresent { nonce, name, day, signature }) = Message::decode(data) {
+            if let Some(keys) = KEYS.get() {
+                if crate::relay_pass::valid(&name, day, &signature) {
+                    let grant = Message::TicketGrant {
+                        nonce,
+                        ticket: ticket_on(keys, &name, today()),
+                    };
+                    let _ = socket.send_to(&grant.encode(), src);
+                } else {
+                    debug!(logger, "NAT helper: a relay pass from {src} for {name:?} didn't hold");
+                }
+            }
+            continue;
+        }
+
         if let Some(Message::Bye { tag }) = Message::decode(data) {
             // The game went offline (or quit): nobody can join it now, and that's no fault.
             if let Some(name) = table.lock().ok().and_then(|mut t| t.bye(src, tag)) {

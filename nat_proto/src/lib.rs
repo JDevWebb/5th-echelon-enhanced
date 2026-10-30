@@ -133,6 +133,14 @@ pub enum Message {
     /// the address registered, with its tag. A server from before it ignores it, and the
     /// registration lapses as before.
     Bye { tag: Tag },
+    /// Hook → a relay that isn't its game server's own (global matchmaking): the relay pass
+    /// the matchmaking server signed at sign-in, for `name` on `day` (days since 1970). A
+    /// relay that trusts that server's key answers with a [`Message::TicketGrant`]: its own
+    /// ticket for `name`, which the probes then carry as usual. Larger than the answer, so
+    /// the relay can't be used to amplify traffic.
+    TicketPresent { nonce: u32, name: String, day: u32, signature: [u8; 64] },
+    /// Relay → hook: the ticket for the name a [`Message::TicketPresent`] proved.
+    TicketGrant { nonce: u32, ticket: Ticket },
 }
 
 const OP_PROBE: u8 = 1;
@@ -140,6 +148,8 @@ const OP_PROBE_REPLY: u8 = 2;
 const OP_DATA_TO: u8 = 3;
 const OP_DATA_FROM: u8 = 4;
 const OP_BYE: u8 = 5;
+const OP_TICKET_PRESENT: u8 = 6;
+const OP_TICKET_GRANT: u8 = 7;
 
 /// Whether `data` looks like one of these messages (and not a game packet).
 pub fn is_nat_message(data: &[u8]) -> bool {
@@ -209,6 +219,20 @@ impl Message {
                 out.push(OP_BYE);
                 out.extend_from_slice(tag);
             }
+            Message::TicketPresent { nonce, name, day, signature } => {
+                out.push(OP_TICKET_PRESENT);
+                out.extend_from_slice(&nonce.to_be_bytes());
+                out.extend_from_slice(&day.to_be_bytes());
+                out.extend_from_slice(signature);
+                let name = truncate(name, MAX_NAME);
+                out.push(name.len() as u8);
+                out.extend_from_slice(name.as_bytes());
+            }
+            Message::TicketGrant { nonce, ticket } => {
+                out.push(OP_TICKET_GRANT);
+                out.extend_from_slice(&nonce.to_be_bytes());
+                out.extend_from_slice(ticket);
+            }
         }
         out
     }
@@ -268,6 +292,21 @@ impl Message {
             }
             OP_BYE => Some(Message::Bye {
                 tag: body.get(..8)?.try_into().ok()?,
+            }),
+            OP_TICKET_PRESENT => {
+                let fixed = 4 + 4 + 64 + 1;
+                let len = usize::from(*body.get(fixed - 1)?).min(MAX_NAME);
+                let name = body.get(fixed..fixed + len)?;
+                Some(Message::TicketPresent {
+                    nonce: u32::from_be_bytes(body.get(0..4)?.try_into().ok()?),
+                    day: u32::from_be_bytes(body.get(4..8)?.try_into().ok()?),
+                    signature: body.get(8..72)?.try_into().ok()?,
+                    name: String::from_utf8_lossy(name).into_owned(),
+                })
+            }
+            OP_TICKET_GRANT => Some(Message::TicketGrant {
+                nonce: u32::from_be_bytes(body.get(0..4)?.try_into().ok()?),
+                ticket: body.get(4..20)?.try_into().ok()?,
             }),
             _ => None,
         }
@@ -345,6 +384,29 @@ pub fn station_url(addr: SocketAddrV4) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A relay pass and the ticket it's answered with read back as sent, and the answer is
+    /// never bigger than the question (no amplification).
+    #[test]
+    fn a_relay_pass_and_its_ticket_round_trip() {
+        let present = Message::TicketPresent {
+            nonce: 7,
+            name: "Kiwi".into(),
+            day: 20_400,
+            signature: [9; 64],
+        };
+        let grant = Message::TicketGrant { nonce: 7, ticket: [3; 16] };
+        assert_eq!(Message::decode(&present.encode()), Some(present.clone()));
+        assert_eq!(Message::decode(&grant.encode()), Some(grant.clone()));
+        let shortest = Message::TicketPresent {
+            nonce: 1,
+            name: String::new(),
+            day: 0,
+            signature: [0; 64],
+        };
+        assert!(grant.encode().len() < shortest.encode().len());
+        assert_eq!(Message::decode(&present.encode()[..40]), None, "cut short");
+    }
+
     use super::*;
 
     fn a(s: &str) -> SocketAddrV4 {

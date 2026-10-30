@@ -426,10 +426,15 @@ pub struct Config {
 
 /// What this server is for (global matchmaking): a game server, or a NAT helper and relay
 /// alone, near a region's players, for a network whose one matchmaking server runs the games.
-#[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Default, Deserialize, Serialize, Clone, PartialEq, Eq)]
 pub struct RoleConfig {
     #[serde(default)]
     pub kind: Role,
+    /// The network's matchmaking server's relay-pass key (the global-id form it logs at
+    /// start): this server's helper gives a ticket to a game that shows a pass signed with it,
+    /// so the players of that server can use this relay. None: only its own players.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ticket_key: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]

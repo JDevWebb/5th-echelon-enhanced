@@ -99,6 +99,7 @@ mod privileges;
 mod probe_wants;
 mod rate_limit;
 mod recent_log;
+mod relay_pass;
 mod relays;
 mod reports;
 mod search_steer;
@@ -643,6 +644,28 @@ fn main() -> color_eyre::Result<()> {
     );
     let nat = config.nat;
     relays::init(config.matchmaking.network_relays);
+    // Relay passes: signed here on the network's matchmaking server, for relays elsewhere to
+    // take (relay_pass.rs); taken here from the key the operator set.
+    if config.matchmaking.network_relays {
+        match relay_pass::start_issuing() {
+            Ok(key) => info!(
+                logger,
+                "Relay passes are signed with the key {key}: set [role] ticket_key = \"{key}\" on the network's relays"
+            ),
+            Err(e) => crit!(
+                logger,
+                "Couldn't load or make the relay-pass key ({}): players can't use the network's other relays: {e}",
+                relay_pass::KEY_FILE
+            ),
+        }
+    }
+    if let Some(key) = config.role.ticket_key.as_deref().filter(|k| !identity::is_global_id(k.trim())) {
+        crit!(
+            logger,
+            "[role] ticket_key {key:?} isn't a key (the global-id form the matchmaking server logs): no passes are taken"
+        );
+    }
+    relay_pass::accept(config.role.ticket_key.as_deref());
     // Relay addresses use the address players reach this server on.
     let relay_ip = nat
         .public_address

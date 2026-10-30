@@ -6,7 +6,8 @@
 #
 # FRIENDS_MODE=mutual runs the server with friends-only lists (for the
 # friends-mutual scenario); REQUIRE_IDENTITY=1 with `[limits]
-# require_identity` (for identity-required). On Windows (Git Bash) the
+# require_identity` (for identity-required); MATCHMAKING=1 as a network's
+# matchmaking server, signing relay passes (for relay-pass). On Windows (Git Bash) the
 # folder has dedicated_server.exe and testbot.exe.
 set -euo pipefail
 bin=$(cd "$1" && pwd); shift
@@ -30,6 +31,10 @@ fi
 if [ -n "${REQUIRE_IDENTITY:-}" ]; then
   sed -i "/^\[limits\]/,/^\[/ s/^require_identity = .*/require_identity = true/" service.toml
   grep -q "^require_identity = true" service.toml || { echo "couldn't set [limits] require_identity"; exit 1; }
+fi
+if [ -n "${MATCHMAKING:-}" ]; then
+  # The network's matchmaking server: it signs relay passes (relay_pass.rs).
+  printf '\n[matchmaking]\nnetwork_relays = true\n' >> service.toml
 fi
 RUST_LOG=info "./dedicated_server$exe" >server.log 2>&1 & srv=$!
 for _ in $(seq 100); do (echo >/dev/tcp/127.0.0.1/50051) 2>/dev/null && break; sleep 0.1; done
