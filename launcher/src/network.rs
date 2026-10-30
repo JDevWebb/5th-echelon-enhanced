@@ -37,6 +37,11 @@ pub use quazal::test_quazal_login;
 pub use rpc::account_id;
 pub use rpc::identity_login;
 pub use rpc::join_now;
+
+/// One probe to the NAT helper at `ip`:`port` (a relay's), answered or not.
+pub async fn probe_helper(ip: &str, port: u16) -> Result<std::net::SocketAddr, Error> {
+    nat::probe_once(ip, port).await
+}
 pub use rpc::join_room;
 pub use rpc::link_identity;
 pub use rpc::name_available;

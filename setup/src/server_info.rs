@@ -53,6 +53,16 @@ pub struct ServerInfo {
     pub coordinator: Option<String>,
     #[serde(default)]
     pub features: Vec<String>,
+    /// The network's relays, when this is its matchmaking server (servers from 0.4.8 with
+    /// `[matchmaking] network_relays`): the launcher has the game use the nearest. Entries that
+    /// don't read, or aren't on a public address, are left out.
+    #[serde(default, deserialize_with = "relays")]
+    pub relays: Vec<crate::directory::Helper>,
+}
+
+fn relays<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<crate::directory::Helper>, D::Error> {
+    let list = serde_json::Value::deserialize(d)?;
+    Ok(crate::directory::parse_helpers(&serde_json::json!({ "helpers": list }).to_string()))
 }
 
 /// Asks `server` (an IP or host name, as typed) for `/api/info`. None when

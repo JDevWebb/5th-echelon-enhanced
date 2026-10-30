@@ -24,6 +24,7 @@ pub mod new_options;
 #[cfg(feature = "gui")]
 mod play;
 pub mod prefs;
+pub mod relays;
 pub mod roadmap;
 #[cfg(feature = "gui")]
 mod scale;

@@ -38,7 +38,16 @@ pub fn start(game: &mut Game, notices: &mut Notices, mode: PlayMode, name_not_al
     // The hook reads uplay.toml when the game starts: make sure it has the current profile.
     if game.managed.is_none() {
         if let Some(profile) = game.cfg.current_profile().cloned() {
-            game.update(notices, |c| c.apply_profile(&profile));
+            // The relay nearest the player, when the server is a network's matchmaking server
+            // offering its relays (relays.rs); else its own helper.
+            let relay = crate::relays::pick_for(&profile.server);
+            game.update(notices, |c| {
+                c.apply_profile(&profile);
+                if let Some(relay) = &relay {
+                    c.hook_config.networking.nat_host = Some(relay.host.clone());
+                    c.hook_config.networking.nat_port = Some(relay.port).filter(|p| *p != nat_proto::DEFAULT_PORT);
+                }
+            });
         }
         // Straight into a lobby, or a plain start (which clears a lobby the launcher set before,
         // never one set by hand). The game reads it on every start, through Steam too.

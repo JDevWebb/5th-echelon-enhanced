@@ -191,8 +191,9 @@ struct Helpers {
 /// The network's helpers from the coordinator's answer (coordinators from 0.4.8 list them): at
 /// most [`MAX_HELPERS`], skipping any that don't parse or aren't on a public address.
 pub fn parse_helpers(json: &str) -> Vec<Helper> {
-    let Ok(Helpers { helpers }) = serde_json::from_str::<Helpers>(json) else {
-        return Vec::new();
+    let helpers = match serde_json::from_str::<Helpers>(json) {
+        Ok(Helpers { helpers }) => helpers,
+        Err(_) => return Vec::new(),
     };
     helpers
         .into_iter()

@@ -194,6 +194,8 @@ impl Config {
         };
         hook.networking.adapter = profile.adapter.clone();
         hook.networking.nat_port = profile.nat_port;
+        // The server's own helper until the launcher picks one of its network's relays.
+        hook.networking.nat_host = None;
         self.default_profile = profile.name.clone();
     }
 
