@@ -58,6 +58,10 @@ struct Args {
     /// without it, only public addresses are asked, and others aren't listed
     #[argh(switch)]
     check_private_hosts: bool,
+    /// the member server that is the network's matchmaking server (its id): relays report to
+    /// it and ask it who it put together; no member can say so of itself
+    #[argh(option)]
+    matchmaking_server: Option<String>,
     #[argh(subcommand)]
     command: Option<Command>,
 }
@@ -386,6 +390,10 @@ async fn main() -> eyre::Result<()> {
             tracing::warn!("--chat-unverified: servers not checked against the signed release may pass chat");
             coordinator.chat_from_unverified();
         }
+    }
+    if let Some(id) = args.matchmaking_server.as_deref().map(str::trim).filter(|id| !id.is_empty()) {
+        tracing::info!("the network's matchmaking server: {id}");
+        coordinator.set_matchmaking_server(id);
     }
     if args.no_host_check {
         tracing::warn!("--no-host-check: member servers are listed at whatever host they say, unchecked");

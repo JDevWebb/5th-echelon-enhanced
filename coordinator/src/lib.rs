@@ -362,10 +362,6 @@ struct Listing {
     /// Its NAT helper and relay, when it runs one ([`helper_entry`] checks it before listing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     relay: Option<Relay>,
-    /// The network's matchmaking server (global matchmaking): relays report to it and ask it
-    /// who it put together.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    matchmaking: bool,
 }
 
 /// A member's NAT helper and relay, as it sends it.
@@ -578,6 +574,8 @@ pub struct Coordinator {
     host_checks: std::sync::atomic::AtomicBool,
     /// Whether hosts on private addresses are checked too (a LAN or test network).
     host_checks_private: std::sync::atomic::AtomicBool,
+    /// The member that is the network's matchmaking server (`--matchmaking-server`).
+    matchmaking_server: std::sync::OnceLock<String>,
     /// Where servers' plain HTTP is asked (80; a test's own server's port in tests).
     host_check_http_port: std::sync::atomic::AtomicU16,
     /// The servers whose host is being checked now, and what's checked ([`host_check::target`]).
@@ -706,6 +704,7 @@ impl Coordinator {
             names: std::sync::OnceLock::new(),
             host_checks: std::sync::atomic::AtomicBool::new(false),
             host_checks_private: std::sync::atomic::AtomicBool::new(false),
+            matchmaking_server: std::sync::OnceLock::new(),
             host_check_http_port: std::sync::atomic::AtomicU16::new(80),
             host_checks_running: tokio::sync::Mutex::default(),
             budgets: limits::Budgets::default(),
@@ -1420,20 +1419,10 @@ async fn heartbeat(State(c): State<Shared>, headers: HeaderMap, body: axum::body
     // its answers, forwarding between relays). Only a member running a helper gets them.
     match c.helpers().await {
         Ok(helpers) => {
-            if listing.relay.is_some() {
-                match c.link_secret().await {
-                    Ok(secret) => {
-                        let links: Vec<Value> = helpers
-                            .iter()
-                            .filter(|h| h["id"].as_str().is_some_and(|id| id != server))
-                            .map(|h| {
-                                let mut link = h.clone();
-                                link["key"] = json!(link_key(&secret, &server, h["id"].as_str().unwrap_or_default()));
-                                link
-                            })
-                            .collect();
-                        answer["links"] = json!(links);
-                    }
+            // Only a member among the helpers (its relay checked, offered, up to date).
+            if helpers.iter().any(|h| h["id"].as_str() == Some(server.as_str())) {
+                match c.links_for(&server, &helpers).await {
+                    Ok(links) => answer["links"] = json!(links),
                     Err(e) => return internal(e),
                 }
             }
@@ -1856,13 +1845,15 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
     ok(answer)
 }
 
-/// The key members `a` and `b` share for their link (either way round): an HMAC of the pair under
-/// the coordinator's link secret, in base32. Given only to the two of them, in their heartbeats.
-fn link_key(secret: &[u8; 32], a: &str, b: &str) -> String {
+/// The key members `a` and `b` share for their link (either way round): an HMAC of the pair, each
+/// with its current credential (the hash of its secret, so a member that joins again, or is
+/// removed, no longer matches keys made before), under the coordinator's link secret, in base32.
+/// Given only to the two of them, in their heartbeats.
+fn link_key(secret: &[u8; 32], a: (&str, &str), b: (&str, &str)) -> String {
     use hmac::Mac as _;
-    let (first, second) = if a <= b { (a, b) } else { (b, a) };
+    let (first, second) = if a.0 <= b.0 { (a, b) } else { (b, a) };
     let mut mac = hmac::Hmac::<sha2::Sha256>::new_from_slice(secret).expect("any key length");
-    for part in [b"fes-link-v1".as_slice(), first.as_bytes(), second.as_bytes()] {
+    for part in [b"fes-link-v2".as_slice(), first.0.as_bytes(), first.1.as_bytes(), second.0.as_bytes(), second.1.as_bytes()] {
         mac.update(&(part.len() as u32).to_be_bytes());
         mac.update(part);
     }
@@ -1890,7 +1881,6 @@ fn helper_entry(id: &str, v: &Value) -> Option<Value> {
         "region": text("region"),
         "host": text("host"),
         "role": if v["role"].as_str() == Some("relay") { "relay" } else { "game" },
-        "matchmaking": v["matchmaking"].as_bool().unwrap_or(false) && v["role"].as_str() != Some("relay"),
         "ip": ip.to_string(),
         "port": port,
         "ports": [first, last],
@@ -1898,6 +1888,35 @@ fn helper_entry(id: &str, v: &Value) -> Option<Value> {
 }
 
 impl Coordinator {
+    /// Sets the member that is the network's matchmaking server.
+    pub fn set_matchmaking_server(&self, id: &str) {
+        let _ = self.matchmaking_server.set(id.to_string());
+    }
+
+    /// `server`'s links to the other `helpers`, each with the key the two share and whether it's
+    /// the network's matchmaking server (as the coordinator's operator set it).
+    async fn links_for(&self, server: &str, helpers: &[Value]) -> sqlx::Result<Vec<Value>> {
+        let secret = self.link_secret().await?;
+        let credentials: HashMap<String, String> = sqlx::query_as::<_, (String, String)>("SELECT id, secret_hash FROM servers")
+            .fetch_all(&self.pool)
+            .await?
+            .into_iter()
+            .collect();
+        let Some(own) = credentials.get(server) else { return Ok(Vec::new()) };
+        let matchmaking = self.matchmaking_server.get();
+        Ok(helpers
+            .iter()
+            .filter_map(|h| {
+                let id = h["id"].as_str().filter(|id| *id != server)?;
+                let theirs = credentials.get(id)?;
+                let mut link = h.clone();
+                link["key"] = json!(link_key(&secret, (server, own), (id, theirs)));
+                link["matchmaking"] = json!(matchmaking.is_some_and(|m| m == id));
+                Some(link)
+            })
+            .collect())
+    }
+
     /// The secret members' link keys are made from ([`link_key`]), made on first use and kept.
     async fn link_secret(&self) -> sqlx::Result<[u8; 32]> {
         let fresh: [u8; 32] = rand::random();

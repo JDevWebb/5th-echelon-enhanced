@@ -229,12 +229,15 @@ async fn the_directory_lists_the_networks_relays() {
 #[tokio::test]
 async fn members_with_helpers_get_a_key_per_link() {
     let t = start("links").await;
+    // Its operator says which member is the matchmaking server; a member saying so of itself
+    // (eu, below) isn't taken.
+    t.c.set_matchmaking_server("mm");
     let relay = |ip: &str| json!({ "ip": ip, "port": 21128, "ports": [40000, 40999] });
     let mut secrets = std::collections::HashMap::new();
     for (id, body) in [
         ("mm", json!({ "name": "mm", "host": "mm", "relay": relay("1.2.3.4"), "matchmaking": true })),
         ("syd", json!({ "name": "syd", "host": "syd", "role": "relay", "listed": false, "relay": relay("5.6.7.8") })),
-        ("eu", json!({ "name": "eu", "host": "eu", "relay": relay("9.9.9.9") })),
+        ("eu", json!({ "name": "eu", "host": "eu", "relay": relay("9.9.9.9"), "matchmaking": true })),
         ("lan", json!({ "name": "lan", "host": "lan" })),
     ] {
         let secret = t.join(id).await;
@@ -255,9 +258,19 @@ async fn members_with_helpers_get_a_key_per_link() {
     assert_ne!(key(&syd, "mm"), key(&syd, "eu"), "a key per pair");
     assert!(key(&syd, "syd").is_none(), "no link to itself");
     assert!(syd.as_array().unwrap().iter().any(|l| l["id"] == "mm" && l["matchmaking"] == true));
+    assert!(
+        syd.as_array().unwrap().iter().any(|l| l["id"] == "eu" && l["matchmaking"] == false),
+        "a member can't make itself the matchmaking server"
+    );
     assert!(lan.is_null(), "a member without a helper gets no links: {lan}");
     let (_, dir) = t.call("GET", "/v1/servers", None, None).await;
     assert!(!dir.to_string().contains("\"key\""), "keys stay out of the directory");
+    // A member that joins again (new credentials) gets new keys, and its peers with it.
+    let before = key(&syd, "eu");
+    let (status, v) = t.call("POST", "/v1/join", Some(&secrets["eu"]), Some(json!({ "token": "TOKEN", "server_id": "eu" }))).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let syd = links("syd").await;
+    assert!(key(&syd, "eu").is_some() && key(&syd, "eu") != before, "keys follow a member's credentials");
 }
 
 #[tokio::test]
