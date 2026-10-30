@@ -1,7 +1,7 @@
 <template>
   <Transition name="modal">
     <div v-if="diagnostics || options.length" class="backdrop">
-      <div class="dialog" role="dialog" aria-modal="true" :aria-labelledby="diagnostics ? 'q-diagnostics' : 'q-options'">
+      <div v-modal class="dialog" role="dialog" aria-modal="true" :aria-labelledby="diagnostics ? 'q-diagnostics' : 'q-options'">
         <template v-if="diagnostics">
           <p class="kicker">Before you play</p>
           <h2 id="q-diagnostics">{{ diagnostics.title }}</h2>

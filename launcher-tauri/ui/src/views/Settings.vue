@@ -19,7 +19,7 @@
               <h3>Game folder</h3>
               <p>{{ view.game?.dir ?? 'Not found yet.' }}</p>
               <div class="row">
-                <select v-if="found.length > 1" class="select" @change="choose($event.target.value)">
+                <select v-if="found.length > 1" class="select" aria-label="Other installs found" @change="choose($event.target.value)">
                   <option value="">Other installs found</option>
                   <option v-for="d in found" :key="d" :value="d">{{ d }}</option>
                 </select>
@@ -50,7 +50,7 @@
                 </template>
                 <div class="row">
                   <Switch :on="g.overlay" label="In-game overlay, opened with" @set="set('overlay', $event)" />
-                  <select class="select narrow" :value="g.overlay_key" :disabled="!g.overlay" @change="set('overlay_key', $event.target.value)">
+                  <select class="select narrow" aria-label="Overlay key" :value="g.overlay_key" :disabled="!g.overlay" @change="set('overlay_key', $event.target.value)">
                     <option v-for="k in g.overlay_keys" :key="k" :value="k">{{ k }}</option>
                   </select>
                 </div>
@@ -92,7 +92,7 @@
                 <p v-if="g.running" class="muted">Close the game to change automatic climbing.</p>
                 <div class="row">
                   <span>Client log detail</span>
-                  <select class="select narrow" :value="g.log_level" @change="set('log_level', $event.target.value)">
+                  <select class="select narrow" aria-label="Client log detail" :value="g.log_level" @change="set('log_level', $event.target.value)">
                     <option v-for="l in g.log_levels" :key="l" :value="l">{{ l }}</option>
                   </select>
                 </div>
@@ -142,7 +142,7 @@
               <p class="muted">The game uses one network adapter for matches: automatically, the one that reaches your server, chosen each time the game starts. Pin one only if your group plays over a VPN on purpose.</p>
               <div class="row">
                 <span>Adapter</span>
-                <select class="select" :value="n.adapter ?? ''" :disabled="!!view.managed" @change="set('adapter', $event.target.value || null)">
+                <select class="select" aria-label="Adapter" :value="n.adapter ?? ''" :disabled="!!view.managed" @change="set('adapter', $event.target.value || null)">
                   <option value="">{{ n.automatic }}</option>
                   <option v-for="[name, ip] in n.adapters" :key="name" :value="name">{{ name }} · {{ ip }}</option>
                 </select>
@@ -219,7 +219,7 @@
               <div class="grid">
                 <template v-for="([key, l], i) in [['notify_global', 'Global'], ['notify_lobby', 'Lobby'], ['notify_direct', 'Messages from friends']]" :key="key">
                   <span>{{ l }}</span>
-                  <select class="select" :value="view.notifications[i]" @change="set(key, $event.target.value)">
+                  <select class="select" :aria-label="l" :value="view.notifications[i]" @change="set(key, $event.target.value)">
                     <option v-for="[id, t] in view.toasts" :key="id" :value="id">{{ t }}</option>
                   </select>
                 </template>

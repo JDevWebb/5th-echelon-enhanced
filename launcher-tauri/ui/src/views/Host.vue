@@ -20,7 +20,7 @@
           <fieldset :disabled="view.running || view.starting">
             <div class="grid">
               <span>Listen on</span>
-              <select v-model="listen" class="select">
+              <select v-model="listen" class="select" aria-label="Listen on">
                 <option value="">Every address</option>
                 <option v-for="[name, ip] in view.adapters" :key="ip" :value="ip">{{ ip }} · {{ name }}</option>
               </select>
@@ -104,7 +104,7 @@
         <template v-if="(!view.managing || tab === 'logs') && view.found">
           <div class="row">
             <h3>Log</h3>
-            <select v-model="minLevel" class="select narrow">
+            <select v-model="minLevel" class="select narrow" aria-label="Log detail">
               <option value="debug">Debug and above</option>
               <option value="info">Info and above</option>
               <option value="warn">Warn and above</option>

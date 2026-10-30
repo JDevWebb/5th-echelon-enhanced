@@ -97,7 +97,7 @@
 
     <Transition name="modal">
       <div v-if="invite" class="backdrop" @click.self="invite = null">
-        <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="invite-title">
+        <div v-modal="() => (invite = null)" class="dialog" role="dialog" aria-modal="true" aria-labelledby="invite-title">
           <h2 id="invite-title">Open a Discord invite?</h2>
           <p><b>{{ invite }}</b></p>
           <p class="soft">It opens in your browser. Someone in chat sent it: only join Discord servers you trust.</p>
@@ -249,6 +249,7 @@ onBeforeUnmount(() => {
 .msg > b { margin-right: 6px; font-weight: 600; cursor: pointer; }
 .msg > b.mine { color: var(--accent); }
 .body { user-select: text; overflow-wrap: anywhere; }
+.body a { text-decoration: underline; text-underline-offset: 2px; }
 .report .field { flex: none; }
 .report { margin: 6px 0; padding: 10px 12px; border-radius: 6px; background: var(--surface); border: 1px solid var(--control-line); display: flex; flex-direction: column; gap: 8px; }
 .composer { display: flex; gap: 8px; align-items: center; margin-top: 8px; }

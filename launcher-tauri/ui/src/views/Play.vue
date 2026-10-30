@@ -32,6 +32,7 @@
         <div class="launch reveal" style="--d: 260ms">
           <span class="server-wrap">
             <button
+              ref="serverButton"
               class="server"
               :class="{ open: serverMenu }"
               type="button"
@@ -53,12 +54,12 @@
             </button>
             <Transition name="menu">
               <div v-if="serverMenu" class="server-menu" role="menu" @click.stop @keydown="menuKeys">
-                <p class="menu-head">
+                <p class="menu-head" role="none">
                   <span class="caps">{{ servers.header }}</span>
                   <i v-if="pinging" class="spin"></i>
-                  <a v-else-if="servers.network" href="#" @click.prevent="loadServers(true)">Ping again</a>
+                  <a v-else-if="servers.network" href="#" role="menuitem" @click.prevent="loadServers(true)">Ping again</a>
                 </p>
-                <p v-if="!servers.rows.length" class="muted">{{ pinging ? 'Pinging the servers…' : 'This network lists no servers right now.' }}</p>
+                <p v-if="!servers.rows.length" class="muted" role="none">{{ pinging ? 'Pinging the servers…' : 'This network lists no servers right now.' }}</p>
                 <button
                   v-for="(r, i) in servers.rows"
                   :key="r.host"
@@ -84,8 +85,8 @@
                     <small>{{ r.players }} online</small>
                   </span>
                 </button>
-                <p v-if="servers.note" class="muted note">{{ servers.note }}</p>
-                <button type="button" class="to-servers" @click="serverMenu = false; $emit('go', 'servers')">
+                <p v-if="servers.note" class="muted note" role="none">{{ servers.note }}</p>
+                <button type="button" class="to-servers" role="menuitem" @click="serverMenu = false; $emit('go', 'servers')">
                   <span class="soft">A server of your own, a LAN server or another network</span>
                   <b>Servers ›</b>
                 </button>
@@ -98,6 +99,7 @@
               <span>{{ info.running ? 'In game' : LABELS[info.play_mode] }}</span>
             </button>
             <button
+              ref="modesButton"
               class="play-more"
               type="button"
               aria-label="Play SvM or Co-op"
@@ -105,16 +107,18 @@
               :aria-expanded="menuOpen"
               :disabled="!!blocked || info.managed"
               :title="info.managed ? 'This game is set up by another tool, so the launcher starts it as it is.' : null"
-              @click.stop="menuOpen = !menuOpen"
+              @click.stop="toggleModes"
+              @keydown.up.prevent="menuOpen || toggleModes()"
             >
               <svg viewBox="0 0 24 24"><path d="M6 15l6-6 6 6" /></svg>
             </button>
             <Transition name="menu">
-              <span v-if="menuOpen" class="modes" role="menu">
+              <span v-if="menuOpen" class="modes" role="menu" @keydown="modeKeys">
                 <button
-                  v-for="mode in MODES"
+                  v-for="(mode, i) in MODES"
                   :key="mode"
                   type="button"
+                  :ref="(el) => (modeItems[i] = el)"
                   role="menuitemradio"
                   :aria-checked="info.play_mode === mode"
                   :class="{ on: info.play_mode === mode }"
@@ -288,7 +292,7 @@
 
     <Transition name="modal">
       <div v-if="confirmSwitch" class="backdrop" @click.self="confirmSwitch = null">
-        <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="switch-title">
+        <div v-modal="() => (confirmSwitch = null)" class="dialog" role="dialog" aria-modal="true" aria-labelledby="switch-title">
           <p class="kicker">Join {{ confirmSwitch.name }}</p>
           <h2 id="switch-title">Switch to {{ confirmSwitch.place }}?</h2>
           <p class="soft">Switch to your friend's server <b class="mono">{{ confirmSwitch.host }}</b>? This signs you in there with your identity (if you have no account there, you choose a name first).</p>
@@ -390,16 +394,31 @@ function openServerMenu() {
   }
 }
 
-function menuKeys(e) {
-  const items = menuItems.value.filter(Boolean);
+/** A menu's keys: the arrows move between its items, Escape closes it back to its button. */
+function keysIn(e, items, closed, button) {
+  items = items.filter(Boolean);
   const at = items.indexOf(document.activeElement);
   if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
     e.preventDefault();
     items[(at + (e.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length]?.focus();
   } else if (e.key === 'Escape') {
-    serverMenu.value = false;
+    e.preventDefault();
+    closed();
+    button?.focus();
   }
 }
+const serverButton = ref(null);
+const menuKeys = (e) => keysIn(e, menuItems.value, () => (serverMenu.value = false), serverButton.value);
+
+// The play modes' menu, as the server menu: opened on the player's mode.
+const modeItems = ref([]);
+const modesButton = ref(null);
+function toggleModes() {
+  serverMenu.value = false;
+  menuOpen.value = !menuOpen.value;
+  if (menuOpen.value) nextTick(() => modeItems.value[Math.max(0, MODES.indexOf(props.info.play_mode))]?.focus());
+}
+const modeKeys = (e) => keysIn(e, modeItems.value, () => (menuOpen.value = false), modesButton.value);
 
 async function switchTo(row) {
   serverMenu.value = false;

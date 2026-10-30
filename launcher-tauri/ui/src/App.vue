@@ -24,7 +24,7 @@
     <Feedback />
     <Transition name="modal">
       <div v-if="closing" class="backdrop">
-        <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="closing-title">
+        <div v-modal class="dialog" role="dialog" aria-modal="true" aria-labelledby="closing-title">
           <h2 id="closing-title">Your report is still sending</h2>
           <p class="soft">Wait and the launcher closes as soon as it's sent, or close now and it's sent the next time you start the launcher.</p>
           <p v-if="closing === 'waiting'" class="muted working"><i class="spin"></i>Waiting for it to send…</p>

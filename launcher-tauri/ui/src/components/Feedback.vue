@@ -1,7 +1,7 @@
 <template>
   <Transition name="modal">
     <div v-if="ask" class="backdrop">
-      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="fb-title">
+      <div v-modal="() => close(false)" class="dialog" role="dialog" aria-modal="true" aria-labelledby="fb-title">
         <h2 id="fb-title">How did that go?</h2>
         <p class="muted">{{ ask.why }}</p>
         <p v-if="ask.mismatch" class="muted">{{ ask.mismatch }}</p>
@@ -15,8 +15,8 @@
             <input v-model="problems" type="checkbox" :value="id" />
             <span>{{ label }}</span>
           </label>
-          <p class="label">Anything else? (who you played with, what you were doing)</p>
-          <textarea v-model="comment" rows="3" maxlength="2000"></textarea>
+          <p id="fb-comment" class="label">Anything else? (who you played with, what you were doing)</p>
+          <textarea v-model="comment" aria-labelledby="fb-comment" rows="3" maxlength="2000"></textarea>
           <label class="tick">
             <input v-model="attach" type="checkbox" />
             <span>Send my logs too</span>

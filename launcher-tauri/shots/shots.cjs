@@ -4,7 +4,10 @@
 // made-up answers in ui/src/lib/tauri.js; its URL flags (?answered, ?notice…) set the scene.
 //
 // Each shot also fails on what a player would see go wrong: an error on the page, the page
-// wider than the window, or a button with no name for a screen reader.
+// wider than the window, a button with no name for a screen reader or one cut off at the side,
+// and what axe-core finds against WCAG 2.1 A and AA. Then the keyboard: Tab through each
+// screen (every stop shown and looking focused), the menus by their keys, and the dialogs
+// keeping the keyboard (Escape closing those that can be closed).
 //
 //   node shots.cjs <dist folder> <out folder>
 const http = require('http');
@@ -102,6 +105,104 @@ function problemsOnPage() {
   return found;
 }
 
+// The keyboard, as a player without a mouse uses it (at the first size, no pictures).
+const dialogShown = (page) => page.locator('[role="dialog"]').count();
+
+/** Tab through a screen: each stop is on screen and looks focused (it changes when it isn't). */
+async function tabWalk(page) {
+  const found = [];
+  for (let i = 0; i < 60; i++) {
+    await page.keyboard.press('Tab');
+    const stop = await page.evaluate(() => {
+      const a = document.activeElement;
+      if (!a || a === document.body) return null;
+      const style = () => { const c = getComputedStyle(a); return [c.outlineStyle, c.outlineWidth, c.outlineColor, c.boxShadow, c.borderColor, c.backgroundColor, c.color, c.textDecorationLine].join('|'); };
+      const r = a.getBoundingClientRect();
+      const name = (a.getAttribute('aria-label') || a.textContent || a.getAttribute('placeholder') || a.getAttribute('title') || a.tagName).trim().replace(/\s+/g, ' ').slice(0, 40);
+      const on = style();
+      a.blur();
+      const off = style();
+      a.focus();
+      return { name, seen: r.width > 0 && r.height > 0 && getComputedStyle(a).visibility !== 'hidden', looks: on !== off };
+    });
+    if (!stop) continue;
+    if (!stop.seen) found.push(`Tab stops on something not shown: "${stop.name}"`);
+    else if (!stop.looks) found.push(`Tab stops on "${stop.name}" with nothing showing it`);
+  }
+  return found;
+}
+
+/** A dialog keeps the keyboard: focus is in it and Tab never leaves it. */
+async function keepsKeys(page) {
+  const found = [];
+  await page.waitForTimeout(300);
+  if (!(await page.evaluate(() => !!document.activeElement.closest('[role="dialog"]')))) found.push('focus is not in the dialog when it opens');
+  for (let i = 0; i < 25; i++) {
+    await page.keyboard.press(i % 7 === 6 ? 'Shift+Tab' : 'Tab');
+    if (!(await page.evaluate(() => !!document.activeElement.closest('[role="dialog"]')))) {
+      found.push('Tab leaves the dialog');
+      break;
+    }
+  }
+  return found;
+}
+
+/** A menu from its button: Enter opens it on an item, the arrows move, Escape is back on the button. */
+async function menuKeys(page, button) {
+  const found = [];
+  await page.locator(button).focus();
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(300);
+  const first = await page.evaluate(() => document.activeElement.textContent.trim());
+  if (!(await page.evaluate(() => document.activeElement.getAttribute('role') === 'menuitemradio'))) found.push(`the menu from ${button} opens without focus on an item`);
+  await page.keyboard.press('ArrowDown');
+  if ((await page.evaluate(() => document.activeElement.textContent.trim())) === first) found.push(`the arrow keys don't move in the menu from ${button}`);
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(300);
+  if ((await page.locator('[role="menu"]').count()) > 0) found.push(`Escape doesn't close the menu from ${button}`);
+  if (!(await page.evaluate((b) => document.activeElement.matches(b), button))) found.push(`Escape doesn't go back to ${button}`);
+  return found;
+}
+
+const KEYS = [
+  ['tab-play', '?answered', [], tabWalk],
+  ['tab-servers', '?answered', [rail('Servers')], tabWalk],
+  ['tab-host', '?answered', [rail('Servers'), button('Host a server')], tabWalk],
+  ['tab-chat', '?answered', [rail('Chat')], tabWalk],
+  ['tab-intel', '?answered', [rail('Intel: news and the roadmap')], tabWalk],
+  ['tab-support', '?answered', [rail('Support')], tabWalk],
+  ['tab-settings', '?answered', [rail('Settings')], tabWalk],
+  ['tab-setup', '?first&answered', [], tabWalk],
+  ['server-menu', '?answered', [], (page) => menuKeys(page, 'button.server')],
+  ['mode-menu', '?answered', [], (page) => menuKeys(page, 'button.play-more')],
+  ['questions', '', [], async (page) => {
+    const found = await keepsKeys(page);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(300);
+    if (!(await dialogShown(page))) found.push('Escape dismisses the questions, which must be answered');
+    return found;
+  }],
+  ...[['whats-new', '?answered&whatsnew'], ['feedback', '?answered&feedback']].map(([name, query]) => [name, query, [], async (page) => {
+    const found = await keepsKeys(page);
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(500);
+    if (await dialogShown(page)) found.push("Escape doesn't close the dialog");
+    return found;
+  }]),
+];
+
+const AXE = fs.readFileSync(require.resolve('axe-core/axe.min.js'), 'utf8');
+
+/** What axe finds against WCAG 2.1 A and AA on the page as it is now. */
+async function accessibility(page) {
+  await page.addScriptTag({ content: AXE });
+  const found = await page.evaluate(async () => {
+    const r = await window.axe.run(document, { runOnly: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa'] });
+    return r.violations.map((v) => `${v.id}: ${v.help} (${v.nodes.map((n) => n.target.join(' ')).slice(0, 4).join(', ')}${v.nodes.length > 4 ? ` and ${v.nodes.length - 4} more` : ''})`);
+  });
+  return found.map((f) => `accessibility: ${f}`);
+}
+
 (async () => {
   const server = await serve();
   const base = `http://127.0.0.1:${server.address().port}/index.html`;
@@ -131,6 +232,8 @@ function problemsOnPage() {
         await page.screenshot({ path: file });
         console.log(file);
         errors.push(...(await page.evaluate(problemsOnPage)));
+        // The WCAG 2.1 A and AA rules axe checks (once a shot: they don't change with the size).
+        if (size === SIZES[0][0]) errors.push(...(await accessibility(page)));
       } catch (e) {
         errors.push(String(e.message ?? e).split('\n')[0]);
       }
@@ -138,11 +241,35 @@ function problemsOnPage() {
       await context.close();
     }));
   }
+  // The keyboard checks, one at a time, with reduced motion so a focus style is there at once
+  // rather than fading in.
+  for (const [name, query, steps, check] of KEYS) {
+    const context = await browser.newContext({ viewport: { width: SIZES[0][1], height: SIZES[0][2] }, reducedMotion: 'reduce' });
+    const page = await context.newPage();
+    const errors = [];
+    page.on('pageerror', (e) => errors.push(`page error: ${e.message}`));
+    try {
+      await page.goto(base + query);
+      await page.locator('nav.rail').waitFor();
+      await page.waitForTimeout(400);
+      for (const step of steps) {
+        await step(page);
+        await page.waitForTimeout(400);
+      }
+      await page.waitForTimeout(1200);
+      errors.push(...(await check(page)));
+    } catch (e) {
+      errors.push(String(e.message ?? e).split('\n')[0]);
+    }
+    for (const e of new Set(errors)) failed.push(`keyboard, ${name}: ${e}`);
+    console.log(`keyboard: ${name}`);
+    await context.close();
+  }
   await browser.close();
   server.close();
   if (failed.length) {
     console.error(`\n${failed.length} problem(s):\n  ${failed.join('\n  ')}`);
     process.exit(1);
   }
-  console.log(`\nevery screen at ${SIZES.length} sizes, no problems`);
+  console.log(`\nevery screen at ${SIZES.length} sizes and the keyboard checks, no problems`);
 })();

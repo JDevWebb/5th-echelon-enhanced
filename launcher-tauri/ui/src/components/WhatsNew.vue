@@ -1,7 +1,7 @@
 <template>
   <Transition name="modal">
     <div v-if="view && !waiting" class="backdrop" @click.self="close">
-      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="wn-title">
+      <div v-modal="close" class="dialog" role="dialog" aria-modal="true" aria-labelledby="wn-title">
         <p class="top"><span class="caps">Updated</span><span class="mono soft">{{ view.from ? `${view.from} → ${view.to}` : view.to }}</span></p>
         <h2 id="wn-title">What's new</h2>
         <div class="middle">

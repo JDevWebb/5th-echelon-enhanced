@@ -1,11 +1,11 @@
-# A headless Chromium (Playwright's, pinned) for screenshots and checks of the Tauri launcher's
-# page in its browser preview (launcher-tauri/shots, build.sh tauri-shots). Made from fes-build so
-# the Node there runs it; the browser and the libraries it needs are fetched when the image is
+# A headless Chromium (Playwright's, pinned) and axe-core (accessibility checks) for screenshots
+# and checks of the Tauri launcher's page in its browser preview (launcher-tauri/shots, build.sh
+# tauri-shots). Made from fes-build so the Node there runs it; the browser and the libraries it needs are fetched when the image is
 # built, and nothing is fetched when the shots run (they run without a network).
 FROM fes-build:local
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/shots/browsers NODE_PATH=/opt/shots/node_modules
 RUN mkdir -p /opt/shots && cd /opt/shots \
  && npm init -y >/dev/null \
- && npm install --ignore-scripts --no-audit --no-fund playwright-core@1.48.2 playwright@1.48.2 \
+ && npm install --ignore-scripts --no-audit --no-fund playwright-core@1.48.2 playwright@1.48.2 axe-core@4.10.2 \
  && npx playwright install --with-deps chromium \
  && rm -rf /var/lib/apt/lists/* /root/.npm

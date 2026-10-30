@@ -1,7 +1,7 @@
 <template>
   <Transition name="modal">
     <div v-if="asked" class="backdrop">
-      <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="acc-title">
+      <div v-modal="close" class="dialog" role="dialog" aria-modal="true" aria-labelledby="acc-title">
         <h2 id="acc-title">{{ server?.own ? `Connect to ${asked.server}` : 'Choose your name on this server' }}</h2>
         <div class="srv">
           <span>
