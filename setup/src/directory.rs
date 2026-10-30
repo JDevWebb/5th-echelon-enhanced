@@ -158,6 +158,65 @@ pub fn parse(json: &str) -> anyhow::Result<Vec<Listing>> {
         .collect())
 }
 
+/// A NAT helper and relay on the network (global matchmaking): a member's own, or a relay-only
+/// one. The launcher pings them and has the game use the nearest (`nat_host`).
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct Helper {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub region: String,
+    /// The member's host name, when it has one: what the game is told to use.
+    #[serde(default)]
+    pub host: String,
+    /// "game" (a server players play on, with its own helper) or "relay" (a helper alone).
+    #[serde(default)]
+    pub role: String,
+    /// The helper's address, and relayed players' addresses (with a port from `ports`).
+    pub ip: std::net::Ipv4Addr,
+    pub port: u16,
+    pub ports: (u16, u16),
+}
+
+/// The most helpers read from a directory.
+pub const MAX_HELPERS: usize = 64;
+
+#[derive(Debug, Deserialize)]
+struct Helpers {
+    #[serde(default)]
+    helpers: Vec<serde_json::Value>,
+}
+
+/// The network's helpers from the coordinator's answer (coordinators from 0.4.8 list them): at
+/// most [`MAX_HELPERS`], skipping any that don't parse or aren't on a public address.
+pub fn parse_helpers(json: &str) -> Vec<Helper> {
+    let Ok(Helpers { helpers }) = serde_json::from_str::<Helpers>(json) else {
+        return Vec::new();
+    };
+    helpers
+        .into_iter()
+        .filter_map(|v| serde_json::from_value::<Helper>(v).ok())
+        .filter(|h| crate::net::is_public(std::net::IpAddr::V4(h.ip)) && h.port > 0 && h.ports.0 > 0 && h.ports.0 <= h.ports.1)
+        .filter(|h| h.host.is_empty() || listable_host(&h.host))
+        .map(|mut h| {
+            h.name = clean(&h.name);
+            h.region = clean(&h.region);
+            h
+        })
+        .take(MAX_HELPERS)
+        .collect()
+}
+
+/// Where the game reaches `helper`: its host name when it has one, else its address.
+pub fn helper_host(helper: &Helper) -> String {
+    if helper.host.is_empty() {
+        helper.ip.to_string()
+    } else {
+        helper.host.clone()
+    }
+}
+
 /// A release going out to the network's servers, as the directory says while it lasts.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rollout {
@@ -410,6 +469,26 @@ pub fn ago(secs: i64) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// The network's helpers as a coordinator lists them: kept when on a public address with a
+    /// sane port range, the game told the member's host name (else its address).
+    #[test]
+    fn helpers_are_read_from_the_directory() {
+        let json = r#"{"servers": [], "helpers": [
+            {"id": "na1", "name": "North America", "region": "Canada", "host": "na1.example.net", "role": "game", "ip": "1.2.3.4", "port": 21128, "ports": [40000, 40999]},
+            {"id": "syd", "name": "Sydney relay", "role": "relay", "ip": "5.6.7.8", "port": 21128, "ports": [40000, 40999]},
+            {"id": "lan", "role": "relay", "ip": "192.168.1.20", "port": 21128, "ports": [40000, 40999]},
+            {"id": "upside-down", "role": "relay", "ip": "9.9.9.9", "port": 21128, "ports": [40999, 40000]},
+            {"id": "local-name", "host": "localhost", "role": "relay", "ip": "9.9.9.10", "port": 21128, "ports": [40000, 40999]},
+            {"id": "no-ip", "role": "relay", "port": 21128, "ports": [40000, 40999]}
+        ]}"#;
+        let helpers = parse_helpers(json);
+        let ids: Vec<&str> = helpers.iter().map(|h| h.id.as_str()).collect();
+        assert_eq!(ids, ["na1", "syd"]);
+        assert_eq!(helper_host(&helpers[0]), "na1.example.net");
+        assert_eq!(helper_host(&helpers[1]), "5.6.7.8");
+        assert!(parse_helpers(r#"{"servers": []}"#).is_empty(), "a coordinator before 0.4.8 lists none");
+    }
+
     use super::*;
 
     #[test]

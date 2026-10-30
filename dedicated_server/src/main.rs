@@ -745,6 +745,12 @@ fn main() -> color_eyre::Result<()> {
             auto_update: federation_config.auto_update && self_update::updater_installed(),
             online: Vec::new(),
             playing: Default::default(),
+            role: "game",
+            relay: (nat.enabled && !relay_ip.is_loopback()).then_some(federation::RelayListing {
+                ip: relay_ip,
+                port: nat.listen.port(),
+                ports: nat.relay_ports,
+            }),
         }
     };
 

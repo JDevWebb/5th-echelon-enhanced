@@ -181,6 +181,48 @@ async fn directory_lists_live_listed_servers_busiest_first() {
     assert_eq!(v["servers"][0]["id"], "busy");
 }
 
+/// The network's NAT helpers and relays (global matchmaking): every member running one is in
+/// `helpers`, a relay-only member too (listed or not); a relay is never a place to play, so it
+/// stays out of `servers`; a relay on a private address, or one that doesn't read, is left out.
+#[tokio::test]
+async fn the_directory_lists_the_networks_relays() {
+    let t = start("helpers").await;
+    let relay = |ip: &str| json!({ "ip": ip, "port": 21128, "ports": [40000, 40999] });
+    for (id, role, listed, relay) in [
+        ("game", "game", true, relay("1.2.3.4")),
+        ("relay", "relay", false, relay("5.6.7.8")),
+        ("private", "game", true, relay("192.168.1.20")),
+        ("broken", "game", true, json!({ "ip": "9.9.9.9", "port": 21128, "ports": [40999, 40000] })),
+        ("unlisted", "game", false, relay("9.9.9.10")),
+    ] {
+        let secret = t.join(id).await;
+        let (status, v) = t
+            .call(
+                "POST",
+                "/v1/heartbeat",
+                Some(&secret),
+                Some(json!({ "name": id, "host": id, "listed": listed, "role": role, "relay": relay })),
+            )
+            .await;
+        assert_eq!(status, StatusCode::OK, "{v}");
+    }
+    let old = t.join("old").await;
+    t.call("POST", "/v1/heartbeat", Some(&old), Some(json!({ "name": "old", "host": "old", "listed": true })))
+        .await;
+    let (_, v) = t.call("GET", "/v1/servers", None, None).await;
+    let mut servers: Vec<&str> = v["servers"].as_array().unwrap().iter().map(|s| s["id"].as_str().unwrap()).collect();
+    servers.sort_unstable();
+    assert_eq!(servers, ["broken", "game", "old", "private"], "a relay is no place to play");
+    let helpers: Vec<(&str, &str, &str)> = v["helpers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| (h["id"].as_str().unwrap(), h["role"].as_str().unwrap(), h["ip"].as_str().unwrap()))
+        .collect();
+    assert_eq!(helpers.len(), 2, "{helpers:?}");
+    assert!(helpers.contains(&("game", "game", "1.2.3.4")) && helpers.contains(&("relay", "relay", "5.6.7.8")));
+}
+
 #[tokio::test]
 async fn the_directory_carries_a_rollout_through_its_stages() {
     let t = start("rollout").await;

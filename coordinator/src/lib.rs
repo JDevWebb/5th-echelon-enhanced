@@ -355,6 +355,26 @@ struct Listing {
     /// Bounded by [`Playing::bound`] before it's kept.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     playing: Option<Playing>,
+    /// "relay" for a NAT helper and relay alone (global matchmaking: never a place to play),
+    /// "game" for a server players play on; anything else reads as "game".
+    #[serde(default, deserialize_with = "role", skip_serializing_if = "String::is_empty")]
+    role: String,
+    /// Its NAT helper and relay, when it runs one ([`helper_entry`] checks it before listing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    relay: Option<Relay>,
+}
+
+/// A member's NAT helper and relay, as it sends it.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+struct Relay {
+    ip: std::net::Ipv4Addr,
+    port: u16,
+    ports: (u16, u16),
+}
+
+fn role<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let role = String::deserialize(d)?;
+    Ok(if role == "relay" { role } else { "game".into() })
 }
 
 fn yes() -> bool {
@@ -1752,12 +1772,26 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
         Err(e) => return internal(e),
     };
     let network_maintenance = maintenance.network.clone();
+    // The network's NAT helpers and relays (global matchmaking): every member running one,
+    // relay-only members too, listed or not, for launchers to pick the relay nearest them.
+    let mut helpers: Vec<Value> = Vec::new();
     let mut list: Vec<Value> = rows
         .into_iter()
         .filter_map(|(id, listing, last_seen, checked)| {
             let listing = listing?;
             let mut v: Value = serde_json::from_str(&listing).ok()?;
-            if !v.is_object() || !v["listed"].as_bool().unwrap_or(true) {
+            if !v.is_object() {
+                return None;
+            }
+            let relay_only = v["role"].as_str() == Some("relay");
+            if (relay_only || v["listed"].as_bool().unwrap_or(true)) && v["relay"].is_object() {
+                // Only once the server at its host said it's this one, as for a listing.
+                let checked_ok = serde_json::from_str::<Listing>(&listing).ok().is_some_and(|l| c.host_passed(checked.as_deref(), &l));
+                if let Some(helper) = checked_ok.then(|| helper_entry(&id, &v)).flatten() {
+                    helpers.push(helper);
+                }
+            }
+            if relay_only || !v["listed"].as_bool().unwrap_or(true) {
                 return None;
             }
             // Only once the server at its host said it's this one.
@@ -1781,6 +1815,9 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
     list.sort_by_key(|v| std::cmp::Reverse(v["players_online"].as_u64().unwrap_or(0)));
     // A release going out: launchers tell their players when their server updates.
     let mut answer = json!({ "servers": list });
+    if !helpers.is_empty() {
+        answer["helpers"] = json!(helpers);
+    }
     let window_open = match c.update_windows_open(now).await {
         Ok((any, _)) => any,
         Err(e) => return internal(e),
@@ -1792,6 +1829,33 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
         answer["network_maintenance"] = json!(window);
     }
     ok(answer)
+}
+
+/// A member's NAT helper and relay as the directory lists it, from its listing's `relay` (a
+/// public IPv4 address, its helper port, a sane port range); None when that doesn't read.
+fn helper_entry(id: &str, v: &Value) -> Option<Value> {
+    let relay = &v["relay"];
+    let ip: std::net::Ipv4Addr = relay["ip"].as_str()?.parse().ok()?;
+    if ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() || ip.is_broadcast() || ip.is_documentation() {
+        return None;
+    }
+    let port = u16::try_from(relay["port"].as_u64()?).ok().filter(|p| *p > 0)?;
+    let ports = relay["ports"].as_array()?;
+    let (first, last) = (u16::try_from(ports.first()?.as_u64()?).ok()?, u16::try_from(ports.get(1)?.as_u64()?).ok()?);
+    if first == 0 || first > last {
+        return None;
+    }
+    let text = |key: &str| v[key].as_str().unwrap_or_default().chars().take(64).collect::<String>();
+    Some(json!({
+        "id": id,
+        "name": text("name"),
+        "region": text("region"),
+        "host": text("host"),
+        "role": if v["role"].as_str() == Some("relay") { "relay" } else { "game" },
+        "ip": ip.to_string(),
+        "port": port,
+        "ports": [first, last],
+    }))
 }
 
 impl Coordinator {

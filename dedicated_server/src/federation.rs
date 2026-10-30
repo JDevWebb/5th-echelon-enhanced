@@ -210,6 +210,24 @@ pub struct Listing {
     pub online: Vec<String>,
     /// What's being played here (crate::playing), for the directory to show players.
     pub playing: server_api::playing::Playing,
+    /// "game", or "relay" for a NAT helper and relay alone (global matchmaking): the directory
+    /// lists a relay among its `helpers`, never as a place to play.
+    pub role: &'static str,
+    /// This server's NAT helper and relay, when it runs one: launchers ping it to pick the
+    /// relay nearest them, and the matchmaking server leaves addresses in its range alone.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub relay: Option<RelayListing>,
+}
+
+/// A NAT helper and relay, as the directory lists it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct RelayListing {
+    /// Its address: the helper answers on it, and relayed players' addresses are on it.
+    pub ip: std::net::Ipv4Addr,
+    /// The helper's UDP port (the game's probes; the next one up too).
+    pub port: u16,
+    /// The range relayed players' addresses take their ports from.
+    pub ports: (u16, u16),
 }
 
 struct State {
