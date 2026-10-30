@@ -44,6 +44,7 @@ function serve() {
 // Ways to the screens, as a player gets there.
 const rail = (label) => async (page) => page.locator(`nav.rail button[aria-label="${label}"]`).click();
 const button = (name) => async (page) => page.getByRole('button', { name }).first().click();
+const menuItem = (name) => async (page) => page.getByRole('menuitem', { name }).first().click();
 const tab = (name) => async (page) => page.getByRole('tab', { name }).first().click();
 const settings = (label) => [rail('Settings'), async (page) => page.locator('nav.nav').getByRole('button', { name: label, exact: true }).click()];
 
@@ -51,6 +52,8 @@ const SHOTS = [
   ['play', '?answered', []],
   ['play-server-menu', '?answered', [async (page) => page.locator('button.server').click()]],
   ['play-mode-menu', '?answered', [async (page) => page.locator('button.play-more').click()]],
+  ['match-picker', '?answered', [async (page) => page.locator('button.play-more').click(), menuItem(/Choose a match/)]],
+  ['match-picker-empty', '?answered&nomatches', [async (page) => page.locator('button.play-more').click(), menuItem(/Choose a match/)]],
   ['play-squad', '?answered', [tab(/^Squad/)]],
   ['play-intel', '?answered', [tab('Intel')]],
   ['play-notice', '?answered&notice', []],
@@ -182,7 +185,7 @@ const KEYS = [
     if (!(await dialogShown(page))) found.push('Escape dismisses the questions, which must be answered');
     return found;
   }],
-  ...[['whats-new', '?answered&whatsnew'], ['feedback', '?answered&feedback']].map(([name, query]) => [name, query, [], async (page) => {
+  ...[['whats-new', '?answered&whatsnew', []], ['feedback', '?answered&feedback', []], ['match-picker', '?answered', [async (page) => page.locator('button.play-more').click(), menuItem(/Choose a match/)]]].map(([name, query, steps]) => [name, query, steps, async (page) => {
     const found = await keepsKeys(page);
     await page.keyboard.press('Escape');
     await page.waitForTimeout(500);

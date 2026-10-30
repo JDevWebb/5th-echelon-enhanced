@@ -191,6 +191,21 @@ const preview = {
   my_reports: () => [{ line: '28 Oct · Falkenstein · open', said: '“froze joining a friend”', reply: '' }],
   connection_test: () => [['Config server (port 80)', 'ok', null], ['API and account', 'ok', null], ['How players reach this PC', 'ok', 'Direct: reachable without any router set-up'], ['Internet play helper', 'warn', 'reachable; matches go through the server’s relay']],
   check_update: () => ['0.4.7', false],
+  choose_match_offered: () => true,
+  matches: () => (location.search.includes('nomatches')
+    ? { offered: true, answered: true, rows: [], others: '' }
+    : {
+      offered: true, answered: true, others: '1 private match · 3 in lobbies',
+      rows: [
+        { room: 4375, mode: 'SvM Classic', map: 'Virus Vault', players: '6/8', started: true, full: false },
+        { room: 4391, mode: 'SvM Blacklist', map: 'Penthouse', players: '3/8', started: false, full: false },
+        { room: 4402, mode: 'Co-op', map: 'Billionaire’s Yacht', players: '2/2', started: false, full: true },
+        { room: 4410, mode: 'Grim (Ghost)', map: null, players: '1/4', started: false, full: false },
+      ],
+    }),
+  join_match: () => null,
+  new_match: () => null,
+  cancel_new_match: () => null,
   update_banner: () => (location.search.includes('update') ? { version: '0.4.9', page: 'https://github.com/JDevWebb/5th-echelon-enhanced/releases', updating: false } : null),
   update_later: () => null,
   update_now: () => null,

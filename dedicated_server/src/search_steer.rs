@@ -12,8 +12,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
-/// How long an ask holds: time to press the game's matchmaking and for its two searches.
-pub const FOR: Duration = Duration::from_secs(120);
+/// How long an ask holds: time for the launcher to start the game (about a minute to its
+/// lobby), the player to start matchmaking, and the game's two searches.
+pub const FOR: Duration = Duration::from_secs(300);
 /// The most players kept; past it, the lapsed asks go, and then new ones are refused.
 const MAX_PLAYERS: usize = 10_000;
 

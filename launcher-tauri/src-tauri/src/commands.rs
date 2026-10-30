@@ -1039,6 +1039,103 @@ pub fn join_friend(app: tauri::AppHandle, state: tauri::State<Launcher>, id: Str
     changed(&app);
 }
 
+/// The open public matches on the player's server, to pick one or start a new one
+/// (launcher::matches).
+#[tauri::command(async)]
+pub fn matches(state: tauri::State<Launcher>) -> launcher::matches::Matches {
+    let inner = state.lock();
+    let server = inner.game.as_ref().and_then(|g| g.cfg.current_profile().map(|p| p.server.clone())).unwrap_or_default();
+    drop(inner);
+    if server.is_empty() {
+        return launcher::matches::Matches::default();
+    }
+    launcher::task::guarded(|| Ok::<_, String>(launcher::matches::list(&server))).unwrap_or_default()
+}
+
+/// Whether the player's server lets them pick a match or start a new one ("choose-match"; asked
+/// of it at most every 10 minutes).
+#[tauri::command(async)]
+pub fn choose_match_offered(state: tauri::State<Launcher>) -> bool {
+    let inner = state.lock();
+    let server = inner.game.as_ref().and_then(|g| g.cfg.current_profile().map(|p| p.server.clone())).unwrap_or_default();
+    drop(inner);
+    !server.is_empty() && launcher::task::guarded(|| Ok::<_, String>(launcher::flow::offers(&server, "choose-match"))).unwrap_or(false)
+}
+
+/// Joins the public match in `room`, picked from the list: the game is started first if it
+/// isn't running, as for a friend's Join. The activity bar says how it went.
+#[tauri::command(async)]
+pub fn join_match(app: tauri::AppHandle, state: tauri::State<Launcher>, room: u32) {
+    let mut inner = state.lock();
+    let running = game_running(&mut inner);
+    drop(inner);
+    if !running && !play(app.clone(), state.clone(), PlayMode::Play) {
+        return;
+    }
+    let inner = state.lock();
+    let Some(game) = inner.game.as_ref() else { return };
+    let (cfg, dir) = (game.cfg.clone(), game.dir.clone());
+    drop(inner);
+    let result = launcher::task::guarded(|| launcher::matches::join(&cfg, &dir, room));
+    let mut inner = state.lock();
+    match result {
+        Ok(line) => inner.notices.info(line),
+        Err(line) => inner.notices.error(line),
+    }
+    drop(inner);
+    changed(&app);
+}
+
+/// A brand-new public match of `mode` ("svm" or "coop"): the player's searches find nothing
+/// until they host one, and the game is started into that mode's lobby if it isn't running.
+/// The activity bar says what to do next.
+#[tauri::command(async)]
+pub fn new_match(app: tauri::AppHandle, state: tauri::State<Launcher>, mode: PlayMode) {
+    let inner = state.lock();
+    let Some(game) = inner.game.as_ref() else { return };
+    let cfg = (*game.cfg).clone();
+    drop(inner);
+    let result = launcher::task::guarded(|| launcher::matches::new_match(&cfg));
+    let mut inner = state.lock();
+    let holds = match result {
+        Ok(holds) => holds,
+        Err(line) => {
+            inner.notices.error(line);
+            drop(inner);
+            return changed(&app);
+        }
+    };
+    let running = game_running(&mut inner);
+    let minutes = holds.as_secs().div_ceil(60);
+    inner.notices.info(if running {
+        format!("Start matchmaking in the game: it hosts a new public match rather than join an open one (for the next {minutes} minutes).")
+    } else {
+        format!("The game starts in the lobby: start matchmaking there and it hosts a new public match (for the next {minutes} minutes).")
+    });
+    drop(inner);
+    if !running {
+        play(app.clone(), state.clone(), mode);
+    }
+    changed(&app);
+}
+
+/// Takes a new match back: searches find open matches again.
+#[tauri::command(async)]
+pub fn cancel_new_match(app: tauri::AppHandle, state: tauri::State<Launcher>) {
+    let inner = state.lock();
+    let Some(game) = inner.game.as_ref() else { return };
+    let cfg = (*game.cfg).clone();
+    drop(inner);
+    let result = launcher::task::guarded(|| launcher::matches::cancel_new_match(&cfg));
+    let mut inner = state.lock();
+    match result {
+        Ok(()) => inner.notices.info("Matchmaking finds open matches again."),
+        Err(line) => inner.notices.error(line),
+    }
+    drop(inner);
+    changed(&app);
+}
+
 /// Asks someone online to be friends ("request"), invites them to the game ("invite"), or
 /// blocks them ("block"). The activity bar says how it went.
 #[tauri::command(async)]

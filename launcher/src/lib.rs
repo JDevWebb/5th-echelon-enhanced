@@ -18,6 +18,7 @@ pub mod flow;
 pub mod front_door;
 pub mod logging;
 pub mod maintenance;
+pub mod matches;
 pub mod network;
 pub mod new_options;
 #[cfg(feature = "gui")]

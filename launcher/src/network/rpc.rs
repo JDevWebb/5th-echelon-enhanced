@@ -354,6 +354,38 @@ pub async fn join_now(api_url: String, token: &str, friend_id: String) -> Result
     }
 }
 
+/// The server's own words for a refusal (already in that game, too many requests), cut short
+/// like anything it sends; not the RPC's dump.
+fn refusal(status: tonic::Status) -> Error {
+    match status.code() {
+        tonic::Code::Unauthenticated => Error::InvalidPassword,
+        tonic::Code::InvalidArgument | tonic::Code::ResourceExhausted | tonic::Code::FailedPrecondition if !status.message().is_empty() => {
+            Error::ServerFailure(hooks_config::text::clip(status.message(), 200))
+        }
+        _ => status.into(),
+    }
+}
+
+/// Joins a public match picked from the lobby browser by its room (`JoinRoom`): as
+/// [`join_now`], an invitation from its host marked as a join the caller asked for; the answer
+/// names the host (`host_id`) for the game's join request.
+pub async fn join_room(api_url: String, token: &str, room: u32) -> Result<server_api::friends::JoinNowResponse, Error> {
+    let (mut client, token) = friends_client(&api_url, token).await?;
+    client
+        .join_room(authed(server_api::friends::JoinRoomRequest { room }, &token))
+        .await
+        .map(tonic::Response::into_inner)
+        .map_err(refusal)
+}
+
+/// Asks for a new match (`NewMatch`): the player's searches find nothing until they host one,
+/// so the game starts a fresh public match. `on` false takes it back. How long it holds.
+pub async fn new_match(api_url: String, token: &str, on: bool) -> Result<std::time::Duration, Error> {
+    let (mut client, token) = friends_client(&api_url, token).await?;
+    let resp = client.new_match(authed(server_api::friends::NewMatchRequest { on }, &token)).await.map_err(refusal)?;
+    Ok(std::time::Duration::from_secs(resp.into_inner().seconds.into()))
+}
+
 /// A session token for the account, and a channel to its server.
 async fn signed_in(api_url: &str, username: &str, password: &str) -> Result<(tonic::transport::Channel, tonic::metadata::MetadataValue<tonic::metadata::Ascii>), Error> {
     let channel = super::endpoint(api_url)?.connect().await.map_err(|_| Error::ConnectionFailed)?;

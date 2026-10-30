@@ -20,7 +20,7 @@ service Friends {
     // NOT_FRIENDS when the caller blocked its host; STARTED when it's under way. Servers that
     // offer it list "choose-match" in /api/info's features.
     rpc JoinRoom (JoinRoomRequest) returns (JoinNowResponse);
-    // The caller's quick match searches find nothing until they host a match (two minutes at
+    // The caller's quick match searches find nothing until they host a match (five minutes at
     // most), so their game starts a brand-new public match rather than join an open one.
     rpc NewMatch (NewMatchRequest) returns (NewMatchResponse);
     // Publishes the game session the caller is currently in, so that it shows up in the

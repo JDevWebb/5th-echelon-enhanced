@@ -275,7 +275,7 @@ pub fn join_friend(cfg: &Config, game_dir: &Path, friend_id: &str, friend_name: 
 /// Runs `call` (an API request taking the API's URL and a token) as the current account, with
 /// the token kept from the last call ([`api_session`]), signing in for a new one when the kept
 /// one is refused (a new password elsewhere, or expired).
-fn with_api_token<T>(cfg: &Config, call: impl Fn(String, String) -> Result<T, crate::network::Error>) -> Result<T, String> {
+pub(crate) fn with_api_token<T>(cfg: &Config, call: impl Fn(String, String) -> Result<T, crate::network::Error>) -> Result<T, String> {
     let (url, token) = api_session(cfg, false)?;
     match call(url, token) {
         Err(crate::network::Error::InvalidPassword) => {
@@ -287,22 +287,30 @@ fn with_api_token<T>(cfg: &Config, call: impl Fn(String, String) -> Result<T, cr
 }
 
 /// Whether `server` joins a friend's game without an invitation ("join-now" among `/api/info`'s
-/// features). Asked again after 10 minutes, not on every friends refresh (each would wait on the
-/// server); a server that doesn't answer keeps the last answer, and is asked again in a minute.
+/// features).
 fn join_offered(server: &str) -> bool {
-    static KNOWN: Mutex<Option<(String, Instant, Duration, bool)>> = Mutex::new(None);
+    offers(server, "join-now")
+}
+
+/// Whether `server` offers `feature` (among `/api/info`'s features). Asked again after 10
+/// minutes, not on every refresh (each would wait on the server); a server that doesn't answer
+/// keeps the last answer, and is asked again in a minute.
+pub fn offers(server: &str, feature: &str) -> bool {
+    type Known = std::collections::HashMap<(String, String), (Instant, Duration, bool)>;
+    static KNOWN: std::sync::LazyLock<Mutex<Known>> = std::sync::LazyLock::new(Mutex::default);
     let lock = || KNOWN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    let last = lock().as_ref().filter(|(s, ..)| s == server).map(|(_, at, good_for, offered)| (*at, *good_for, *offered));
+    let key = (server.to_string(), feature.to_string());
+    let last = lock().get(&key).copied();
     if let Some((at, good_for, offered)) = last {
         if at.elapsed() < good_for {
             return offered;
         }
     }
     let (good_for, offered) = match setup::server_info::fetch(server, crate::network::INFO_TIMEOUT) {
-        Some(info) => (Duration::from_secs(600), info.features.iter().any(|f| f == "join-now")),
+        Some(info) => (Duration::from_secs(600), info.features.iter().any(|f| f == feature)),
         None => (Duration::from_secs(60), last.is_some_and(|(.., offered)| offered)),
     };
-    *lock() = Some((server.to_string(), Instant::now(), good_for, offered));
+    lock().insert(key, (Instant::now(), good_for, offered));
     offered
 }
 

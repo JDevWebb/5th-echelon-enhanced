@@ -126,6 +126,22 @@
                 >
                   <b>{{ LABELS[mode] }}</b><small>{{ HINTS[mode] }}</small>
                 </button>
+                <template v-if="chooseOffered">
+                  <span class="sep" role="separator"></span>
+                  <button
+                    v-for="(mode, j) in ['svm', 'coop']"
+                    :key="`new-${mode}`"
+                    type="button"
+                    :ref="(el) => (modeItems[MODES.length + j] = el)"
+                    role="menuitem"
+                    @click="newMatch(mode)"
+                  >
+                    <b>New {{ mode === 'svm' ? 'SvM' : 'Co-op' }} match</b><small>Skip the open ones and host</small>
+                  </button>
+                  <button type="button" :ref="(el) => (modeItems[MODES.length + 2] = el)" role="menuitem" @click="menuOpen = false; picking = true">
+                    <b>Choose a match…</b><small>See the open ones and pick</small>
+                  </button>
+                </template>
               </span>
             </Transition>
           </span>
@@ -290,6 +306,8 @@
       </Transition>
     </aside>
 
+    <MatchPicker :open="picking" @close="picking = false" />
+
     <Transition name="modal">
       <div v-if="confirmSwitch" class="backdrop" @click.self="confirmSwitch = null">
         <div v-modal="() => (confirmSwitch = null)" class="dialog" role="dialog" aria-modal="true" aria-labelledby="switch-title">
@@ -312,6 +330,7 @@
 // library. The server menu, friends and the news come next.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { call, inTauri, listen } from '../lib/tauri.js';
+import MatchPicker from '../components/MatchPicker.vue';
 
 // `latest`: the latest in Global (who, what), for the Squad tab on the community network.
 const props = defineProps({ info: { type: Object, required: true }, latest: { type: Array, default: null } });
@@ -412,6 +431,16 @@ const menuKeys = (e) => keysIn(e, menuItems.value, () => (serverMenu.value = fal
 
 // The play modes' menu, as the server menu: opened on the player's mode.
 const modeItems = ref([]);
+
+// Choosing your match (the server's "choose-match"): a new public match, or one picked from the
+// open ones (MatchPicker).
+const chooseOffered = ref(false);
+const picking = ref(false);
+onMounted(async () => (chooseOffered.value = await call('choose_match_offered')));
+function newMatch(mode) {
+  menuOpen.value = false;
+  call('new_match', { mode });
+}
 const modesButton = ref(null);
 function toggleModes() {
   serverMenu.value = false;
@@ -639,9 +668,10 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 .play:disabled { animation: none; }
 .play-more { height: 58px; width: 42px; display: grid; place-items: center; background: var(--accent); color: var(--on-accent); border-left: 2px solid var(--bg); clip-path: polygon(0 0, 100% 0, 100% 75%, 75% 100%, 0 100%); }
 .play-more svg { width: 18px; height: 18px; stroke-width: 2.4; }
-.modes { position: absolute; right: 0; bottom: calc(100% + 10px); width: 300px; padding: 6px; display: flex; flex-direction: column; border-radius: 6px; background: rgba(12, 17, 18, .94); border: 1px solid var(--control-line); backdrop-filter: blur(14px); box-shadow: 0 18px 50px rgba(0, 0, 0, .55); z-index: 5; }
+.modes { position: absolute; right: 0; bottom: calc(100% + 10px); width: 300px; max-height: calc(100vh - 200px); overflow-y: auto; padding: 6px; display: flex; flex-direction: column; border-radius: 6px; background: rgba(12, 17, 18, .94); border: 1px solid var(--control-line); backdrop-filter: blur(14px); box-shadow: 0 18px 50px rgba(0, 0, 0, .55); z-index: 5; }
 .modes button { display: flex; flex-direction: column; align-items: flex-start; padding: 10px 12px; border-radius: 4px; text-align: left; transition: background .15s; }
 .modes button:hover { background: var(--control); }
+.modes .sep { height: 1px; margin: 4px 6px; background: var(--line); }
 .modes button.on { background: var(--selected); box-shadow: inset 3px 0 0 var(--accent); }
 .modes b { font-weight: 600; }
 .modes small { color: var(--muted); font-size: 12.5px; }
