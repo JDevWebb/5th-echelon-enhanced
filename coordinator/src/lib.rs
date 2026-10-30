@@ -1871,11 +1871,12 @@ impl Coordinator {
             .await?;
         let rollout = self.rollout().await?;
         let mut helpers: Vec<(u64, Value)> = Vec::new();
-        for (id, listing) in rows.into_iter().filter_map(|(id, listing, checked)| {
+        for (id, listing, verified) in rows.into_iter().filter_map(|(id, listing, checked)| {
             let listing = listing?;
             // Only once the server at its host said it's this one.
-            self.host_passed(checked.as_deref(), &serde_json::from_str::<Listing>(&listing).ok()?)
-                .then_some((id, listing))
+            let parsed = serde_json::from_str::<Listing>(&listing).ok()?;
+            let verified = host_check::verified_addresses(checked.as_deref(), &parsed);
+            self.host_passed(checked.as_deref(), &parsed).then_some((id, listing, verified))
         }) {
             let Ok(v) = serde_json::from_str::<Value>(&listing) else { continue };
             // An unlisted game server keeps its relay to itself; a relay-only member is unlisted
@@ -1887,28 +1888,18 @@ impl Coordinator {
                 continue;
             }
             let Some(helper) = helper_entry(&id, &v) else { continue };
-            // The relay is at the host the check proved is this member's: a member can't send
-            // launchers' probes and players' traffic to an address that isn't its own.
-            if !self.resolves_to(v["host"].as_str().unwrap_or_default(), helper["ip"].as_str().unwrap_or_default()).await {
+            // The relay is at an address the host check found answering as this member: a
+            // member can't send launchers' probes and players' traffic to an address that
+            // isn't its own (nor one its name resolves to later). Without host checks (tests,
+            // or a coordinator that doesn't check), any.
+            let at: Option<std::net::IpAddr> = helper["ip"].as_str().and_then(|ip| ip.parse().ok());
+            if self.checks_hosts() && !at.is_some_and(|ip| verified.contains(&ip)) {
                 continue;
             }
             helpers.push((v["players_online"].as_u64().unwrap_or(0), helper));
         }
         helpers.sort_by_key(|(players, _)| std::cmp::Reverse(*players));
         Ok(helpers.into_iter().map(|(_, h)| h).collect())
-    }
-
-    /// Whether `host` (a name or an address) resolves to `ip`; an address is itself. Without
-    /// host checks (a coordinator for tests, or one that doesn't check), any host does.
-    async fn resolves_to(&self, host: &str, ip: &str) -> bool {
-        let Ok(ip) = ip.parse::<std::net::IpAddr>() else { return false };
-        if host.parse::<std::net::IpAddr>().is_ok_and(|h| h == ip) || !self.checks_hosts() {
-            return true;
-        }
-        match tokio::time::timeout(std::time::Duration::from_secs(3), tokio::net::lookup_host((host, 0))).await {
-            Ok(Ok(mut addrs)) => addrs.any(|a| a.ip() == ip),
-            _ => false,
-        }
     }
 
     /// Lists a server only once the server at its listed host answers with its id

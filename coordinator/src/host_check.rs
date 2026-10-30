@@ -55,6 +55,10 @@ pub struct Checked {
     /// Why it failed, for the admin UI and the server's log.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub why: String,
+    /// The addresses that answered as the member when it passed: its relay must be one of
+    /// them (the directory's helpers), not an address its name might resolve to later.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub addrs: Vec<IpAddr>,
 }
 
 /// What a listing's check covers: its host (as names compare) and its HTTPS port, if any.
@@ -68,6 +72,16 @@ pub fn passed(checked: Option<&str>, listing: &Listing) -> bool {
     checked
         .and_then(|c| serde_json::from_str::<Checked>(c).ok())
         .is_some_and(|c| c.ok && c.target == target(listing))
+}
+
+/// The addresses `checked` (the kept result, as text) found answering as `listing`'s server,
+/// when it passed.
+pub fn verified_addresses(checked: Option<&str>, listing: &Listing) -> Vec<IpAddr> {
+    checked
+        .and_then(|c| serde_json::from_str::<Checked>(c).ok())
+        .filter(|c| c.ok && c.target == target(listing))
+        .map(|c| c.addrs)
+        .unwrap_or_default()
 }
 
 /// Whether `listing` is due a check, given the kept result.
@@ -107,8 +121,8 @@ fn askable(ip: IpAddr, private: bool) -> bool {
 }
 
 /// Asks `host` (each of its addresses) for the id of the server there: the one all that
-/// answer give.
-async fn ask(https: bool, host: &str, port: u16, private: bool) -> Result<String, String> {
+/// answer give, and the addresses asked.
+async fn ask(https: bool, host: &str, port: u16, private: bool) -> Result<(String, Vec<IpAddr>), String> {
     let mut addrs: Vec<SocketAddr> = tokio::time::timeout(TIMEOUT, tokio::net::lookup_host((host, port)))
         .await
         .map_err(|_| "its name didn't resolve in time".to_string())?
@@ -122,7 +136,8 @@ async fn ask(https: bool, host: &str, port: u16, private: bool) -> Result<String
     if let Some(a) = addrs.iter().find(|a| !askable(a.ip(), private)) {
         return Err(format!("{host} is at {}, not a public address", a.ip()));
     }
-    ask_each(https, host, port, addrs).await
+    let ips: Vec<IpAddr> = addrs.iter().map(|a| a.ip().to_canonical()).filter(|ip| routable(SocketAddr::new(*ip, port))).collect();
+    ask_each(https, host, port, addrs).await.map(|id| (id, ips))
 }
 
 /// Whether this machine has a route to `addr` (an IPv6 address on a machine without IPv6
@@ -195,16 +210,17 @@ pub async fn check(server: &str, listing: &Listing, now: i64, private: bool, htt
     let mut why = Vec::new();
     for (https, host, port) in urls(listing, http_port) {
         match ask(https, &host, port, private).await {
-            Ok(id) if id == server => {
+            Ok((id, addrs)) if id == server => {
                 return Checked {
                     target: target(listing),
                     ok: true,
                     at: now,
                     why: String::new(),
+                    addrs,
                 }
             }
             // Another server's id: the listing names someone else's address.
-            Ok(id) => why.push(format!("the server at {host}:{port} is {id:?}, not this one")),
+            Ok((id, _)) => why.push(format!("the server at {host}:{port} is {id:?}, not this one")),
             Err(e) => why.push(e),
         }
     }
@@ -213,6 +229,7 @@ pub async fn check(server: &str, listing: &Listing, now: i64, private: bool, htt
         ok: false,
         at: now,
         why: why.join("; "),
+        addrs: Vec::new(),
     }
 }
 
@@ -235,9 +252,13 @@ mod tests {
             ok: true,
             at: 100,
             why: String::new(),
+            addrs: vec!["203.0.113.5".parse().unwrap()],
         })
         .unwrap();
         assert!(passed(Some(&ok), &l));
+        // The addresses that answered, for the relay it lists; none for another host.
+        assert_eq!(verified_addresses(Some(&ok), &l), ["203.0.113.5".parse::<IpAddr>().unwrap()]);
+        assert!(verified_addresses(Some(&ok), &listing("other.example.org", 80, Some(443))).is_empty());
         assert!(passed(Some(&ok), &listing("PLAY.example.ORG", 80, Some(443))), "the same name, spelled otherwise");
         assert!(!passed(Some(&ok), &listing("other.example.org", 80, Some(443))), "another host");
         assert!(!passed(Some(&ok), &listing("play.example.org", 80, Some(8443))), "another HTTPS port");
@@ -251,6 +272,7 @@ mod tests {
             ok: false,
             at: 100,
             why: "no".into(),
+            addrs: Vec::new(),
         })
         .unwrap();
         assert!(!passed(Some(&failed), &l));
