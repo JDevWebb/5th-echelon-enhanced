@@ -1364,7 +1364,8 @@ async fn join_now_match(ctx: &mut Ctx) -> Result<()> {
 /// one; taken back, or once they host, searches find matches again. A public match picked from
 /// the lobby browser is joined by its room (`JoinRoom`, the requested invitation from its
 /// host); a private match, a party, or a host who blocked the caller answer NOT_FOUND alike,
-/// and the caller's own block of the host is named.
+/// and the caller's own block of the host is named. A match with someone the searcher blocked
+/// in it is left out of their searches.
 async fn choose_match(ctx: &mut Ctx) -> Result<()> {
     // A map no other scenario's matches have, so only these are found.
     let map = 910_000 + ctx.run;
@@ -1402,6 +1403,25 @@ async fn choose_match(ctx: &mut Ctx) -> Result<()> {
     other.register_urls(&["prudp:/address=127.0.0.1;port=3093;sid=15;type=3"]).await?;
     let found = other.search_sessions(&open).await?;
     ensure!(finds(&found, fresh) && finds(&found, camped), "another player doesn't find both matches: {found:?}");
+
+    // Someone blocked in a match, its host or one of its players: that match is left out of
+    // the blocker's searches, and only theirs.
+    other.friend_change("block", &camper.name).await?;
+    let found = other.search_sessions(&open).await?;
+    ensure!(finds(&found, fresh) && !finds(&found, camped), "a match hosted by someone blocked was offered: {found:?}");
+    let mut member = ctx.player("Guest").await?;
+    member.register_urls(&["prudp:/address=127.0.0.1;port=3096;sid=15;type=3"]).await?;
+    member.join_session(fresh).await?;
+    other.friend_change("block", &member.name).await?;
+    ensure!(other.search_sessions(&open).await?.is_empty(), "a match with a blocked player in it was offered");
+    let mut bystander = ctx.player("Guest").await?;
+    bystander.register_urls(&["prudp:/address=127.0.0.1;port=3095;sid=15;type=3"]).await?;
+    let found = bystander.search_sessions(&open).await?;
+    ensure!(finds(&found, fresh) && finds(&found, camped), "someone else's block hid matches from another player: {found:?}");
+    bystander.disconnect().await?;
+    other.friend_change("unblock", &camper.name).await?;
+    other.friend_change("unblock", &member.name).await?;
+    member.disconnect().await?;
 
     // Join room: a public match picked from the browser, joined with its host's invitation.
     let picker = ctx.player("Guest").await?;

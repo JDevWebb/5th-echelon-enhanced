@@ -812,6 +812,31 @@ impl Storage {
         Ok(query.build_query_scalar().fetch_all(&self.pool).await?)
     }
 
+    /// Which of `session_ids` have someone `me` blocked in them (a participant, the host among
+    /// them, or a guest): quick match leaves them out (the 0.4.8 plan's L2).
+    pub fn with_blocked_among(&self, me: u32, session_ids: &[u32]) -> Result<Vec<u32>> {
+        if session_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut query = sqlx::QueryBuilder::new(
+            "SELECT g.id FROM game_sessions g WHERE EXISTS (
+               SELECT 1 FROM relationships r WHERE r.user_id = ",
+        );
+        query.push_bind(me);
+        query.push(
+            " AND r.kind = 'block' AND (
+                 r.other_id IN (SELECT p.user_id FROM participants p WHERE p.game_id = g.id)
+                 OR r.other_id IN (SELECT gu.user_id FROM guests gu WHERE gu.game_id = g.id)))
+             AND g.id IN (",
+        );
+        let mut ids = query.separated(",");
+        for id in session_ids {
+            ids.push_bind(*id);
+        }
+        query.push(") ORDER BY g.id");
+        Ok(run(query.build_query_scalar().fetch_all(&self.pool))??)
+    }
+
     pub fn add_participants(&self, _type_id: u32, session_id: u32, private_participants: Vec<u32>, public_participants: Vec<u32>) -> Result<()> {
         if private_participants.is_empty() && public_participants.is_empty() {
             warn!(self.logger, "Empty participant list");

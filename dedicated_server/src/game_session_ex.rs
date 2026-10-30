@@ -152,6 +152,19 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
         // hosts one, and none of what's open is theirs to hear about.
         let steered = !invitation_search && crate::search_steer::wants_new(user_id);
         let scanned = if steered { Vec::new() } else { scanned };
+        // Nor a match with someone they've blocked in it (the 0.4.8 plan's L2): they avoid them
+        // without a word to anyone. An invitation goes where it was asked to.
+        let blocked = if invitation_search {
+            Vec::new()
+        } else {
+            let ids: Vec<u32> = scanned.iter().map(|(s, _)| s.session_id).collect();
+            self.storage.with_blocked_among(user_id, &ids).unwrap_or_else(|e| {
+                warn!(logger, "couldn't check the sessions for players {user_id} blocked: {e}");
+                Vec::new()
+            })
+        };
+        let (scanned, avoided): (Vec<_>, Vec<_>) = scanned.into_iter().partition(|(s, _)| !blocked.contains(&s.session_id));
+        let avoided = avoided.iter().filter(|(_, attrs)| answers(&req_attrs, attrs, false)).count();
         let hidden = if invitation_search {
             None
         } else {
@@ -183,6 +196,10 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
         if steered {
             info!(logger, "{user_id} asked for a new match: nothing found, so the game hosts");
             detail["steered"] = "new".into();
+        }
+        if avoided > 0 {
+            info!(logger, "Left out {avoided} matches with someone {user_id} blocked");
+            detail["avoided"] = serde_json::json!(avoided);
         }
         // Found nothing, but there are lobbies their game data keeps from them: the game
         // says nothing of it, so the player and the admins hear it from us.
