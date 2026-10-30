@@ -9,6 +9,9 @@
 #   build/build.sh bots [scenario ...]
 #                            test players against a fresh local server (tools/testbot)
 #   build/build.sh tauri      the Tauri launcher for Windows and Linux x86_64 -> dist
+#   build/build.sh tauri-shots
+#                            every screen of the Tauri launcher at several window sizes, checked
+#                            -> dist/tauri-shots/*.png
 #   build/build.sh tauri-trial
 #                            the Tauri trial for Windows and Linux x86_64 -> dist/trials
 #   build/build.sh shots     every launcher screen at several window sizes -> dist/shots/*.png
@@ -58,6 +61,16 @@ ui() {
     cd coordinator/admin-ui
     if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then npm ci --ignore-scripts --no-audit --no-fund; touch node_modules; fi
     if [ ! -f dist/index.html ] || [ -n "$(find src index.html public vite.config.js package-lock.json -newer dist/index.html | head -1)" ]; then npm run build; fi'
+}
+
+# The Tauri launcher's page (launcher-tauri/ui/dist, embedded in launcher-tauri), built the same
+# way.
+tauri_ui() {
+  run -v fes-npm-cache:/root/.npm "$IMAGE" sh -c '
+    set -e
+    cd launcher-tauri/ui
+    if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then npm ci --ignore-scripts --no-audit --no-fund; touch node_modules; fi
+    npm run build'
 }
 
 mkdir -p dist
@@ -113,11 +126,7 @@ case "${1:-test}" in
     # It carries the client DLL, as the egui launcher does.
     [ -f dist/uplay_r1_loader.dll ] || { echo "build.sh windows first (the launcher carries its DLL)"; exit 1; }
     docker build -q -t fes-tauri:local -f build/Dockerfile.tauri build >/dev/null
-    run -v fes-npm-cache:/root/.npm "$IMAGE" sh -c '
-      set -e
-      cd launcher-tauri/ui
-      if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then npm ci --ignore-scripts --no-audit --no-fund; touch node_modules; fi
-      npm run build'
+    tauri_ui
     run -e CARGO_TARGET_DIR=/target/launcher-tauri -w /src/launcher-tauri/src-tauri "$IMAGE" \
       sh -c 'set -e
         # libsodium as the windows target sets it up (the launcher library links it).
@@ -131,6 +140,16 @@ case "${1:-test}" in
     run -e CARGO_TARGET_DIR=/target/launcher-tauri -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="$sysroot" \
       -w /src/launcher-tauri/src-tauri fes-tauri:local \
       sh -c 'HOOKS_DLL=/src/dist/uplay_r1_loader.dll cargo build --release --features embed-dll --target x86_64-unknown-linux-gnu && cp /target/launcher-tauri/x86_64-unknown-linux-gnu/release/launcher-tauri /src/dist/launcher-tauri-linux-x86_64'
+    ;;
+  tauri-shots)
+    # Every screen of the Tauri launcher at several window sizes -> dist/tauri-shots/*.png, its
+    # page in the browser preview in a headless Chromium (launcher-tauri/shots); it fails on an
+    # error on the page, a page wider than its window or a button without a name. Run without a
+    # network: the preview's answers are made up.
+    docker build -q -t fes-tauri-shots:local -f build/Dockerfile.tauri-shots build >/dev/null
+    tauri_ui
+    rm -rf dist/tauri-shots
+    run --network none fes-tauri-shots:local node launcher-tauri/shots/shots.cjs launcher-tauri/ui/dist dist/tauri-shots
     ;;
   tauri-trial)
     # The Tauri trial (trials/tauri-play) for Windows and for Linux x86_64 (the Steam Deck) ->

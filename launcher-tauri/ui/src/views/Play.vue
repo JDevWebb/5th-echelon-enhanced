@@ -572,7 +572,9 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 .reveal { opacity: 0; transform: translateY(14px); animation: reveal .7s var(--ease) forwards; animation-delay: var(--d); }
 
 .launch { display: flex; align-items: center; gap: 20px; max-width: 940px; }
-.server-wrap { position: relative; flex: 0 0 300px; display: flex; }
+/* In a narrow window the server shrinks first, then the button's padding, so Play and its menu
+   always fit. */
+.server-wrap { position: relative; flex: 0 1 300px; min-width: 190px; display: flex; }
 .server { flex: 1; display: flex; align-items: center; gap: 10px; padding: 10px 12px 10px 16px; text-align: left; border-radius: 4px; background: rgba(12, 17, 18, .8); border: 1px solid var(--control-line); transition: border-color .2s; backdrop-filter: blur(8px); }
 .server:hover, .server.open { border-color: var(--accent); }
 .server .ping { display: flex; flex-direction: column; align-items: flex-end; font: 13px PlexMono, monospace; }
@@ -602,18 +604,18 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 .server > span:first-child { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .server b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chev { width: 16px; height: 16px; color: var(--muted); }
-.ready { flex: 1; display: flex; align-items: center; gap: 10px; }
+.ready { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; }
 .ready i { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
 .ready i.ok { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
 .ready i.warn { background: var(--warn); animation: ping 2s ease-out infinite; }
 .ready i.fail { background: var(--bad); animation: ping-bad 2s ease-out infinite; }
-.play { position: relative; height: 58px; padding: 0 64px; background: var(--accent); color: var(--on-accent); font: 700 24px PlexCond, sans-serif; letter-spacing: .14em; text-transform: uppercase; overflow: hidden;
+.play { position: relative; height: 58px; padding: 0 clamp(26px, 4.5vw, 64px); background: var(--accent); color: var(--on-accent); font: 700 24px PlexCond, sans-serif; letter-spacing: .14em; text-transform: uppercase; overflow: hidden;
   clip-path: polygon(0 0, 100% 0, 100% 75%, calc(100% - 14px) 100%, 0 100%); transition: transform .12s, filter .2s; }
 .play::after { content: ""; position: absolute; top: 0; bottom: 0; width: 40%; left: -60%; background: linear-gradient(100deg, transparent, rgba(255, 255, 255, .35), transparent); animation: sheen 4.5s ease-in-out infinite; }
 .play:hover:not(:disabled) { filter: brightness(1.08); }
 .play:active:not(:disabled) { transform: scale(.98); }
 .play:disabled, .play-more:disabled { cursor: not-allowed; filter: saturate(.6) brightness(.85); }
-.split { position: relative; display: flex; }
+.split { position: relative; display: flex; flex: none; }
 .play { clip-path: none; border-radius: 4px 0 0 4px; animation: pulse 2.8s ease-in-out infinite; }
 .play:disabled { animation: none; }
 .play-more { height: 58px; width: 42px; display: grid; place-items: center; background: var(--accent); color: var(--on-accent); border-left: 2px solid var(--bg); clip-path: polygon(0 0, 100% 0, 100% 75%, 75% 100%, 0 100%); }
