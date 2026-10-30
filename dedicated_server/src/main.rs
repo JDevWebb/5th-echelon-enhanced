@@ -99,6 +99,7 @@ mod privileges;
 mod probe_wants;
 mod rate_limit;
 mod recent_log;
+mod relays;
 mod reports;
 mod search_steer;
 mod secure;
@@ -641,6 +642,7 @@ fn main() -> color_eyre::Result<()> {
         federation_config.enabled().then(|| federation_config.coordinator.trim().to_string()),
     );
     let nat = config.nat;
+    relays::init(config.matchmaking.network_relays);
     // Relay addresses use the address players reach this server on.
     let relay_ip = nat
         .public_address

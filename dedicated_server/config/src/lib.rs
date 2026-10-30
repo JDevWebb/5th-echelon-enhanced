@@ -418,6 +418,26 @@ pub struct Config {
     pub clients: ClientsConfig,
     #[serde(default, skip_serializing_if = "FederationConfig::is_off")]
     pub federation: FederationConfig,
+    #[serde(default, skip_serializing_if = "MatchmakingConfig::is_default")]
+    pub matchmaking: MatchmakingConfig,
+}
+
+/// Global matchmaking: this server as the one matchmaking server of a network whose regions
+/// each keep a NAT helper and relay near their players.
+#[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]
+pub struct MatchmakingConfig {
+    /// Work with every relay the coordinator lists, not only this server's own: addresses in
+    /// their ranges are left as they are, and /api/info offers them to launchers, which pick
+    /// the nearest. Off (the default), players use this server's own helper, as before. Only
+    /// for the network's matchmaking server, once its relays share their registrations with it.
+    #[serde(default)]
+    pub network_relays: bool,
+}
+
+impl MatchmakingConfig {
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
 }
 
 impl FederationConfig {
@@ -618,6 +638,7 @@ impl Default for Config {
             friends: FriendsConfig::default(),
             clients: ClientsConfig::default(),
             federation: FederationConfig::default(),
+            matchmaking: MatchmakingConfig::default(),
         }
     }
 }

@@ -51,8 +51,8 @@ fn probe_address_allowed(address: &str, observed: std::net::IpAddr) -> bool {
 /// gives out 26.x.x.x), where nobody else can reach the game; their station URLs are
 /// corrected the same way ([`crate::game_session::only_reachable_addresses`]). `None` when
 /// no probe may go there ([`probe_address_allowed`]).
-fn probe_station(offered: &StationURL, observed: std::net::IpAddr, relay: Option<std::net::Ipv4Addr>) -> Option<StationURL> {
-    crate::game_session::only_reachable_addresses(vec![offered.to_string()], observed, relay)
+fn probe_station(offered: &StationURL, observed: std::net::IpAddr, relays: &[std::net::Ipv4Addr]) -> Option<StationURL> {
+    crate::game_session::only_reachable_addresses(vec![offered.to_string()], observed, relays)
         .pop()
         .and_then(|url| url.parse::<StationURL>().ok())
         .filter(|station| probe_address_allowed(&station.address, observed))
@@ -110,7 +110,7 @@ impl<T> NatTraversalProtocolServerTrait<T> for NatTraversalProtocolServerImpl {
         if request.url_target_list.len() > MAX_PROBE_TARGETS || !crate::rate_limit::game_requests().check(user_id) {
             return Err(Error::AccessDenied);
         }
-        let Some(station) = probe_station(&request.url_station_to_probe, ci.address().ip(), crate::nat_helper::relay_ip()) else {
+        let Some(station) = probe_station(&request.url_station_to_probe, ci.address().ip(), &crate::relays::ips()) else {
             warn!(logger, "User {user_id} asked for probes to an address not their own; refused");
             return Err(Error::AccessDenied);
         };
@@ -262,11 +262,16 @@ mod tests {
     #[test]
     fn probes_go_where_the_caller_can_be_reached() {
         let observed = "203.0.113.9".parse().unwrap();
-        let relay = Some("198.51.100.1".parse().unwrap());
-        let probe = |url: &str| probe_station(&url.parse().unwrap(), observed, relay).map(|s| s.address);
+        let relays = ["198.51.100.1".parse().unwrap(), "198.51.100.77".parse().unwrap()];
+        let probe = |url: &str| probe_station(&url.parse().unwrap(), observed, &relays).map(|s| s.address);
         assert_eq!(probe("udp:/address=203.0.113.9;port=13000").as_deref(), Some("203.0.113.9"));
         assert_eq!(probe("udp:/address=192.168.1.70;port=13000").as_deref(), Some("192.168.1.70"), "a LAN address stays");
         assert_eq!(probe("udp:/address=198.51.100.1;port=40000").as_deref(), Some("198.51.100.1"), "the relay");
+        assert_eq!(
+            probe("udp:/address=198.51.100.77;port=40000").as_deref(),
+            Some("198.51.100.77"),
+            "another of the network's relays"
+        );
         assert_eq!(
             probe("udp:/address=26.70.109.161;port=13000").as_deref(),
             Some("203.0.113.9"),

@@ -199,6 +199,11 @@ fn info(cfg: CommunityApiConfig) -> Value {
         "revision": env!("FE_REVISION"),
         "features": features,
     });
+    // The network's relays, on its matchmaking server (relays.rs): launchers pick the nearest.
+    let relays = crate::relays::offered();
+    if !relays.is_empty() {
+        info["relays"] = json!(relays);
+    }
     // The oldest launcher and client it lets play: launchers say so before signing in.
     if let Some(minimum) = crate::clients::minimum() {
         info["minimum_client"] = json!(minimum);
