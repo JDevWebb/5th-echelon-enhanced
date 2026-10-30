@@ -1432,7 +1432,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
         // helper's own ticket for its name, which its probes then carry.
         if let Some(Message::TicketPresent { nonce, name, day, signature }) = Message::decode(data) {
             if let Some(keys) = KEYS.get() {
-                if crate::relay_pass::valid(&name, day, &signature) {
+                if crate::relay_pass::valid(&name, day, &signature, IpAddr::V4(*src.ip())) {
                     let grant = Message::TicketGrant {
                         nonce,
                         ticket: ticket_on(keys, &name, today()),

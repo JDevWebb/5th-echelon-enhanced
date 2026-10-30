@@ -7,7 +7,9 @@
 //! (nat_proto's TicketPresent and TicketGrant), and the game's probes carry that as usual.
 //!
 //! A pass is good for the day it was signed and the next six, as tickets are. Checking one costs
-//! a signature check, so a helper checks at most [`CHECKS_PER_SECOND`].
+//! a signature check, so a helper checks at most [`CHECKS_PER_ADDRESS`] from one address in
+//! [`ADDRESS_WINDOW`], and [`CHECKS_PER_SECOND`] in all; the game shows its pass again at its
+//! next probe, so one not checked is only late.
 
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
@@ -17,8 +19,13 @@ use std::sync::OnceLock;
 pub const KEY_FILE: &str = "relay-pass.key";
 /// Days a pass works: the day it was signed and the next six.
 const PASS_DAYS: u32 = 7;
-/// The most passes a helper checks a second; the rest wait for the game's next try.
-const CHECKS_PER_SECOND: u64 = 200;
+/// The most passes a helper checks a second, from everyone (a backstop).
+const CHECKS_PER_SECOND: u64 = 1000;
+/// The most passes checked from one address in [`ADDRESS_WINDOW`].
+const CHECKS_PER_ADDRESS: u32 = 5;
+const ADDRESS_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+/// The most addresses kept for that.
+const MAX_ADDRESSES: usize = 10_000;
 
 static ISSUER: OnceLock<identity::Identity> = OnceLock::new();
 static ACCEPTED: OnceLock<Vec<String>> = OnceLock::new();
@@ -63,8 +70,27 @@ pub fn issue(name: &str) -> Option<Vec<u8>> {
 
 /// Whether `signature` is a pass for `name` signed on `day` with a key this helper takes, and
 /// still good today.
-pub fn valid(name: &str, day: u32, signature: &[u8; 64]) -> bool {
-    valid_on(name, day, signature, today())
+pub fn valid(name: &str, day: u32, signature: &[u8; 64], from: std::net::IpAddr) -> bool {
+    may_check_from(from, std::time::Instant::now()) && valid_on(name, day, signature, today())
+}
+
+/// Whether `from` may have one more pass checked now ([`CHECKS_PER_ADDRESS`]).
+fn may_check_from(from: std::net::IpAddr, now: std::time::Instant) -> bool {
+    type Seen = std::collections::HashMap<std::net::IpAddr, (std::time::Instant, u32)>;
+    static SEEN: std::sync::LazyLock<std::sync::Mutex<Seen>> = std::sync::LazyLock::new(Default::default);
+    let mut seen = SEEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if seen.len() >= MAX_ADDRESSES && !seen.contains_key(&from) {
+        seen.retain(|_, (at, _)| now.duration_since(*at) < ADDRESS_WINDOW);
+        if seen.len() >= MAX_ADDRESSES {
+            return false;
+        }
+    }
+    let entry = seen.entry(from).or_insert((now, 0));
+    if now.duration_since(entry.0) >= ADDRESS_WINDOW {
+        *entry = (now, 0);
+    }
+    entry.1 += 1;
+    entry.1 <= CHECKS_PER_ADDRESS
 }
 
 fn valid_on(name: &str, day: u32, signature: &[u8; 64], today: u32) -> bool {
@@ -121,5 +147,17 @@ mod tests {
         assert!(!valid_on("Tank", day, &pass, day), "another name");
         assert!(!valid_on("Kiwi", day + 1, &pass, day + 1), "another day than signed");
         assert!(!valid_on("Kiwi", day, &sign(&stranger, "Kiwi", day), day), "a key not trusted");
+    }
+
+    #[test]
+    fn one_address_gets_a_few_checks_at_a_time() {
+        let t0 = std::time::Instant::now();
+        let (a, b): (std::net::IpAddr, std::net::IpAddr) = ("198.51.100.4".parse().unwrap(), "198.51.100.5".parse().unwrap());
+        for _ in 0..CHECKS_PER_ADDRESS {
+            assert!(may_check_from(a, t0));
+        }
+        assert!(!may_check_from(a, t0), "one too many from one address");
+        assert!(may_check_from(b, t0), "another address isn't held up");
+        assert!(may_check_from(a, t0 + ADDRESS_WINDOW), "the next window");
     }
 }
