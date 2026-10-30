@@ -2422,6 +2422,90 @@ async fn relay_ping(ctx: &mut Ctx) -> Result<()> {
 
 /// A game that still registers its local address gets the public one the
 /// NAT helper found (with the local one kept for players on its network).
+/// Global matchmaking (G1 items 5 and 7): players signed in to the network's matchmaking
+/// server (`--server`) use a relay elsewhere (`--other`, a relay-only server trusting its
+/// passes). Each shows the relay its pass for a ticket and registers there, relayed; the relay
+/// reports them to the matchmaking server, which then gives the relay's address for them in
+/// their station URLs; and the relay carries traffic to a player only once the matchmaking
+/// server says it put the two together (here, a public match the receiver hosts, which anyone
+/// may join), never before.
+async fn cross_relay(ctx: &mut Ctx, relay: IpAddr) -> Result<()> {
+    use nat_proto::Message;
+    let at_relay = nat_addr(relay, false)?;
+    let mut host = ctx.player("Host").await?;
+    let mut guest = ctx.player("Guest").await?;
+    let stranger = ctx.player("Stranger").await?;
+    let mut sockets = Vec::new();
+    let mut regs = Vec::new();
+    for p in [&host, &guest, &stranger] {
+        ensure!(p.relay_pass.len() == 68, "{} got no relay pass from the matchmaking server", p.name);
+        let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+        let ticket = testbot::bot::present_pass(&socket, at_relay, &p.name, &p.relay_pass)
+            .await?
+            .ok_or_else(|| eyre!("the relay didn't take {}'s pass", p.name))?;
+        let reg = testbot::bot::nat_register(&socket, at_relay, nat_proto::probe_flags::WANT_RELAY, &p.name, ticket).await?;
+        ensure!(
+            reg.relayed
+                && reg.advertise.ip()
+                    == &match relay {
+                        IpAddr::V4(v4) => v4,
+                        IpAddr::V6(_) => return Err(eyre!("IPv4 only")),
+                    },
+            "{} isn't relayed at the relay: {reg:?}",
+            p.name
+        );
+        sockets.push(socket);
+        regs.push(reg);
+    }
+    // The relay reports every 2 s.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let send = |tag, to, payload: &[u8]| {
+        Message::DataTo {
+            tag,
+            to,
+            payload: payload.to_vec(),
+        }
+        .encode()
+    };
+    // Before the host is in any room the matchmaking server put nobody with them: refused.
+    let host_at = regs[0].advertise;
+    sockets[2].send_to(&send(regs[2].tag, host_at, b"from a stranger"), at_relay).await?;
+    ensure!(
+        nat_wait_data(&sockets[0], Duration::from_millis(2500)).await.is_none(),
+        "the relay carried a packet to a player the matchmaking server put with nobody"
+    );
+    host.register_urls(&["prudp:/address=127.0.0.1;port=13000;RVCID=5;hdrType=0;type=2"]).await?;
+    let game = host.create_session(PUBLIC_MATCH).await?;
+    host.add_participants(game, &[host.pid], &[]).await?;
+    let found = guest.search_with_participants(&[host.pid]).await?;
+    let room = found
+        .iter()
+        .find(|r| r.game_session_search_result.session_key.session_id == game)
+        .ok_or_else(|| eyre!("the host's match isn't found"))?;
+    let advertised: Vec<(String, u16)> = room.game_session_search_result.host_urls.0.iter().map(|u| (u.address.clone(), u.port)).collect();
+    ensure!(
+        advertised.contains(&(host_at.ip().to_string(), host_at.port())),
+        "the matchmaking server doesn't give the relay's address {host_at} for the host: {advertised:?}"
+    );
+    // The guest, to the host of a public match: asked, allowed, carried (the game resends, so
+    // a packet sent while the relay asks may be the one that's carried).
+    let mut carried = None;
+    for _ in 0..4 {
+        sockets[1].send_to(&send(regs[1].tag, host_at, b"from the guest"), at_relay).await?;
+        if let Some(Message::DataFrom { payload, .. }) = nat_wait_data(&sockets[0], Duration::from_millis(800)).await {
+            carried = Some(payload);
+            break;
+        }
+    }
+    ensure!(
+        carried.as_deref() == Some(b"from the guest".as_slice()),
+        "the relay didn't carry the guest's packet: {carried:?}"
+    );
+    host.disconnect().await?;
+    guest.disconnect().await?;
+    stranger.disconnect().await
+}
+
 async fn nat_public_address(ctx: &mut Ctx) -> Result<()> {
     let mut a = ctx.player("Host").await?;
     let mut b = ctx.player("Guest").await?;
@@ -3148,6 +3232,7 @@ async fn run() -> Result<()> {
     for name in names {
         let limit = match name {
             "federation" => 300,
+            "cross-relay" => 60,
             "chat" => 120,
             "reconnect" | "closing-note" => 180,
             // About a dozen players and three parts (private refusals, a public match, one
@@ -3226,6 +3311,10 @@ async fn run() -> Result<()> {
                 "chat" => match other {
                     Some(other) => chat(&mut ctx, other).await,
                     None => Err(eyre!("chat needs --other <second server>")),
+                },
+                "cross-relay" => match other {
+                    Some(relay) => cross_relay(&mut ctx, relay).await,
+                    None => Err(eyre!("cross-relay needs --other <the relay>")),
                 },
                 other => Err(eyre!("unknown scenario {other:?} (known: {})", SCENARIOS.join(", "))),
             }

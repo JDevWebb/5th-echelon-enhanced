@@ -866,6 +866,23 @@ pub fn relay_ip() -> Option<Ipv4Addr> {
     TABLE.get().map(|t| t.lock().unwrap_or_else(std::sync::PoisonError::into_inner).relay_ip)
 }
 
+/// Every game registered with this helper, for the network's matchmaking server (link.rs's
+/// reports, from a relay elsewhere).
+pub fn registrations() -> Vec<crate::link::Reg> {
+    let Some(t) = TABLE.get() else { return Vec::new() };
+    let t = t.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    t.peers
+        .values()
+        .map(|p| crate::link::Reg {
+            name: p.name.clone(),
+            real: p.real,
+            advertise: p.advertise,
+            relayed: p.relayed,
+            rtt_ms: p.rtt_ms,
+        })
+        .collect()
+}
+
 /// The address and port range relayed players are given (this server's), once the helper runs.
 pub fn relay_range() -> Option<(Ipv4Addr, (u16, u16))> {
     TABLE.get().map(|t| {
@@ -1425,6 +1442,13 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                     *drops.entry((src, to)).or_default() += 1;
                 }
             }
+            continue;
+        }
+
+        // Another member's helper (relays.rs: a relay's report or question, the matchmaking
+        // server's answer).
+        if crate::link::is_link(data) {
+            crate::relays::on_link(data, src, socket);
             continue;
         }
 

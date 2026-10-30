@@ -83,6 +83,7 @@ mod game_session_ex;
 mod join_targets;
 mod keys;
 mod ladder;
+mod link;
 mod locale;
 mod match_started;
 mod metrics;
@@ -637,6 +638,7 @@ fn main() -> color_eyre::Result<()> {
     let federation_config = config.federation.clone();
     let server_id = federation::load_or_create_server_id(Path::new(federation::SERVER_ID_FILE))?;
     federation::init(server_id.clone(), federation_config.enabled());
+    relays::set_own_id(&server_id);
     community_api::publish_friends(
         server_id,
         friends_mode,
@@ -690,23 +692,27 @@ fn main() -> color_eyre::Result<()> {
         if !nat.enabled {
             crit!(logger, "A relay-only server with its NAT helper off does nothing: turn [nat] on");
         }
+        // Its registrations to the matchmaking server, and its questions about pairs.
+        threads.push(relays::start_link(logger.new(o!("service" => "relay-link")))?);
+    }
+    // The network's matchmaking server answers relays' questions about pairs.
+    if config.matchmaking.network_relays {
+        threads.push(relays::serve(Arc::clone(&storage))?);
     }
     if nat.enabled {
         let pairs = Arc::clone(&storage);
-        // A relay alone doesn't see the games, so it can't tell who the matchmaking server put
-        // together. Until those pairs are shared with it, it relays nobody ([nat] relay_pairs,
-        // on by default, asks this for every pair), unless its operator chose to relay between
-        // any registered players (relay_pairs = false, which never asks).
+        // A relay alone doesn't see the games: it asks the network's matchmaking server who it
+        // put together ([nat] relay_pairs, on by default, asks this for every new pair), unless
+        // its operator chose to relay between any registered players (relay_pairs = false,
+        // which never asks).
         let may_relay: nat_helper::MayRelay = if relay_only {
             if nat.relay_pairs {
-                warn!(
-                    logger,
-                    "Role relay: relaying nobody, as the matchmaking server's pairs aren't shared yet; [nat] relay_pairs = false relays between any registered players"
-                );
+                info!(logger, "Role relay: relaying the pairs the network's matchmaking server put together (it's asked)");
             } else {
                 warn!(logger, "Role relay: relaying between any registered players ([nat] relay_pairs = false)");
             }
-            Box::new(|_, _| Err("a relay alone doesn't know the matchmaking server's pairs yet".into()))
+            // It asks the matchmaking server (relays.rs), on the helper's pair thread.
+            Box::new(|a, b| relays::ask_matchmaking(a, b))
         } else {
             Box::new(move |a, b| match pairs.may_relay(a, b) {
                 Ok(true) => Ok(()),

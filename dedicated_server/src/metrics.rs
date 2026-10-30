@@ -450,9 +450,14 @@ fn online_player(id: u32, name: String, since: Option<i64>, sessions: &[crate::s
     let ip = address_of(id);
     let place = ip.and_then(|ip| GEO.get().and_then(|g| g.lookup(ip))).unwrap_or_default();
     let activity = activity_of(&name, sessions);
-    let network = match (crate::nat_helper::relay_ip(), ip) {
-        (None, _) | (_, None) => "",
-        (Some(relay), Some(ip)) => match crate::nat_helper::advertised_for(&name, ip) {
+    // On the network's matchmaking server, a player may be registered with a relay elsewhere
+    // (relays.rs), which reports whether it relays them and their ping to it.
+    let remote = crate::relays::remote_relay_of(&name);
+    let network = match (crate::nat_helper::relay_ip(), ip, &remote) {
+        (_, _, Some((_, true, _))) => "relayed",
+        (_, _, Some((_, false, _))) => "direct",
+        (None, _, None) | (_, None, None) => "",
+        (Some(relay), Some(ip), None) => match crate::nat_helper::advertised_for(&name, ip) {
             Some(a) if *a.ip() == relay => "relayed",
             Some(_) => "direct",
             None => "unregistered",
@@ -471,7 +476,7 @@ fn online_player(id: u32, name: String, since: Option<i64>, sessions: &[crate::s
         with: activity.map(|a| a.with).unwrap_or_default(),
         since,
         network,
-        ping_ms: crate::nat_helper::ping_of(&name),
+        ping_ms: crate::nat_helper::ping_of(&name).or_else(|| remote.and_then(|(_, _, ms)| ms)),
         name,
     }
 }

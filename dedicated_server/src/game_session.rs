@@ -975,7 +975,11 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // the game registered, local or public.
         if urls == allowed {
             let name = self.storage.find_username_by_user_id(user_id).ok().flatten();
-            if let Some(advertise) = name.and_then(|name| crate::nat_helper::advertised_for(&name, ci.address().ip())) {
+            // This server's own helper, else (on the network's matchmaking server) a relay
+            // elsewhere that reported the player lately (relays.rs).
+            let checked =
+                name.and_then(|name| crate::nat_helper::advertised_for(&name, ci.address().ip()).or_else(|| crate::relays::remote_advertised_for(&name, ci.address().ip())));
+            if let Some(advertise) = checked {
                 urls = crate::nat_helper::urls_with_public_address(urls, advertise);
             }
         }

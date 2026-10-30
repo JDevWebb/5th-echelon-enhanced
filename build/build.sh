@@ -26,6 +26,9 @@
 #   build/build.sh federation-test
 #                            two servers sharing friends through a coordinator
 #                            (docs/friends.md)
+#   build/build.sh relay-test
+#                            global matchmaking: a matchmaking server and a relay
+#                            elsewhere, players across it
 #   build/build.sh ui        the coordinator's admin UI (Vue, coordinator/admin-ui -> dist/,
 #                            embedded in the coordinator; the targets building it run this first)
 #   build/build.sh crash-fixes <game folder>
@@ -75,7 +78,7 @@ tauri_ui() {
 
 mkdir -p dist
 case "${1:-test}" in
-  test|server|linux|federation-test) ui ;;
+  test|server|linux|federation-test|relay-test) ui ;;
 esac
 case "${1:-test}" in
   ui)
@@ -189,6 +192,10 @@ case "${1:-test}" in
   federation-test)
     run "$IMAGE" cargo build -q -p dedicated_server -p testbot -p coordinator
     IMAGE="$IMAGE" scripts/federation-test.sh /target/native/debug
+    ;;
+  relay-test)
+    run "$IMAGE" cargo build -q -p dedicated_server -p testbot -p coordinator
+    IMAGE="$IMAGE" scripts/relay-test.sh /target/native/debug
     ;;
   load)
     shift
