@@ -41,6 +41,11 @@ pub fn set_nat_ticket(ticket: &[u8]) {
     nat::set_ticket(ticket);
 }
 
+/// Takes the relay pass the network's matchmaking server gave at sign-in.
+pub fn set_relay_pass(pass: &[u8]) {
+    nat::set_pass(pass);
+}
+
 /// Removes the router port mapping (the game is exiting normally).
 pub fn remove_port_mapping() {
     portmap::remove_mapping();

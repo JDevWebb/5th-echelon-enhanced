@@ -376,6 +376,8 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
         }
         // The NAT helper registers this game under our name only with this ticket.
         crate::hooks::set_nat_ticket(&response.nat_ticket);
+        // At a relay other than the server's own, this pass gets a ticket of its own.
+        crate::hooks::set_relay_pass(&response.relay_pass);
         // The game copies it into a 64-byte buffer: only a short, plain id is taken.
         match response.user.map(|u| u.id).filter(|id| !id.is_empty()) {
             Some(id) if is_plain_id(&id) => *ACCOUNT_ID.lock().unwrap() = Some(id),

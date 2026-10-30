@@ -138,6 +138,13 @@ struct State {
     /// registered a problem.
     signed_in_at: Option<Instant>,
     lost_at: Option<Instant>,
+    /// The relay isn't the game server's own (`networking.nat_host`): its ticket comes from
+    /// showing it the relay pass from signing in, not from the sign-in itself.
+    use_pass: bool,
+    /// The relay pass from signing in (day, signature), and the nonce of the last time it was
+    /// shown, while the relay hasn't answered with a ticket.
+    pass: Option<(u32, [u8; 64])>,
+    pass_nonce: u32,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -165,6 +172,9 @@ static STATE: Mutex<State> = Mutex::new(State {
     rtt_at: None,
     signed_in_at: None,
     lost_at: None,
+    use_pass: false,
+    pass: None,
+    pass_nonce: 0,
 });
 
 /// The helper not answering this long (three keepalives) is worth a line: it forgets a game
@@ -237,10 +247,34 @@ pub fn quiet_for() -> Option<Duration> {
     state().last_answer.map(|t| t.elapsed())
 }
 
+/// Takes the relay pass the network's matchmaking server gave at sign-in (4 bytes of day, 64
+/// of signature): shown to a relay other than the server's own, for a ticket of its own.
+pub fn set_pass(pass: &[u8]) {
+    let (Some(day), Some(signature)) = (
+        pass.get(..4).and_then(|d| <[u8; 4]>::try_from(d).ok()),
+        pass.get(4..68).and_then(|s| <[u8; 64]>::try_from(s).ok()),
+    ) else {
+        return;
+    };
+    let pass = (u32::from_be_bytes(day), signature);
+    let mut st = state();
+    if st.use_pass && st.pass != Some(pass) {
+        st.pass = Some(pass);
+        // A ticket for the new pass: shown again at once.
+        st.ticket = [0; 16];
+        st.signed_in_at = Some(Instant::now());
+        st.last_probe = None;
+    }
+}
+
 /// Takes the ticket the server gave at sign-in (it names this account).
 pub fn set_ticket(ticket: &[u8]) {
     if let Ok(ticket) = <nat_proto::Ticket>::try_from(ticket) {
         let mut st = state();
+        // Another relay than the server's own takes the pass instead (see [`set_pass`]).
+        if st.use_pass {
+            return;
+        }
         if st.ticket != ticket {
             st.ticket = ticket;
             st.signed_in_at = Some(Instant::now());
@@ -573,6 +607,18 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
             }
             return n;
         }
+        if let Some(Message::TicketGrant { nonce, ticket }) = Message::decode(data) {
+            let mut st = state();
+            // Only the answer to our own last showing of the pass, from the helper.
+            if st.use_pass && nonce != 0 && nonce == st.pass_nonce && sender.is_some() && sender == st.server {
+                info!("NAT: the relay took the relay pass; registering");
+                st.pass_nonce = 0;
+                st.ticket = ticket;
+                st.last_answer = Some(Instant::now());
+                st.last_probe = None;
+            }
+            continue;
+        }
         if let Some(Message::ProbeReply {
             nonce,
             observed,
@@ -803,39 +849,54 @@ fn worker(host: String, port: u16) {
                 }
             }
             st.last_probe = Some(Instant::now());
-            // Random and never 0: whoever can send as the helper (e.g. on the LAN) can't
-            // guess the next one, so can't answer for it.
-            st.nonce = rand::random::<u32>() | 1;
-            let nonce = st.nonce;
-            st.sent.rotate_right(1);
-            st.sent[0] = nonce;
-            let mut flags = 0;
-            if st.mode == Some(NatMode::Relay) {
-                flags |= probe_flags::WANT_RELAY;
-            }
-            if st.symmetric {
-                flags |= probe_flags::SYMMETRIC;
-            }
-            if st.mapping.is_some() {
-                flags |= probe_flags::HAS_MAPPING;
-            }
-            let probe = |flags| {
-                Message::Probe {
-                    flags,
-                    nonce: st.nonce,
-                    mapping: st.mapping,
+            // At another relay than the server's own, with no ticket from it yet: the pass
+            // first (or nothing, until signing in gives one).
+            if st.use_pass && st.ticket == [0; 16] {
+                let Some((day, signature)) = st.pass else { continue };
+                st.pass_nonce = rand::random::<u32>() | 1;
+                let present = Message::TicketPresent {
+                    nonce: st.pass_nonce,
                     name: st.name.clone(),
-                    ticket: st.ticket,
-                    cookie: st.cookie,
-                    rtt_ms: st.rtt_ms,
+                    day,
+                    signature,
                 }
-                .encode()
-            };
-            let mut probes = vec![(probe(flags), st.server)];
-            if st.second_observed.is_none() {
-                probes.push((probe(flags | probe_flags::SECOND_PORT), st.second));
+                .encode();
+                vec![(present, st.server)]
+            } else {
+                // Random and never 0: whoever can send as the helper (e.g. on the LAN) can't
+                // guess the next one, so can't answer for it.
+                st.nonce = rand::random::<u32>() | 1;
+                let nonce = st.nonce;
+                st.sent.rotate_right(1);
+                st.sent[0] = nonce;
+                let mut flags = 0;
+                if st.mode == Some(NatMode::Relay) {
+                    flags |= probe_flags::WANT_RELAY;
+                }
+                if st.symmetric {
+                    flags |= probe_flags::SYMMETRIC;
+                }
+                if st.mapping.is_some() {
+                    flags |= probe_flags::HAS_MAPPING;
+                }
+                let probe = |flags| {
+                    Message::Probe {
+                        flags,
+                        nonce: st.nonce,
+                        mapping: st.mapping,
+                        name: st.name.clone(),
+                        ticket: st.ticket,
+                        cookie: st.cookie,
+                        rtt_ms: st.rtt_ms,
+                    }
+                    .encode()
+                };
+                let mut probes = vec![(probe(flags), st.server)];
+                if st.second_observed.is_none() {
+                    probes.push((probe(flags | probe_flags::SECOND_PORT), st.second));
+                }
+                probes
             }
-            probes
         };
         // Measured once registered, as often as the keepalive: the next probe tells the
         // server.
@@ -917,6 +978,8 @@ pub unsafe fn init_hooks(config: &Config, addr: &Addresses) {
     };
     if config.networking.nat_host.as_deref().is_some_and(|h| !h.is_empty()) {
         info!("NAT: using the relay {host}, not the game server's own helper");
+        // Its ticket comes from showing it the relay pass (set_pass), not from signing in.
+        state().use_pass = true;
     }
     match (addr.func_nat_echo_send, addr.func_nat_packet_parse) {
         (Some(send), Some(parse)) => {
