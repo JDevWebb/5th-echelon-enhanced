@@ -3,7 +3,7 @@
 //! - A toast when the game starts (how to open the overlay), one for each
 //!   invite, and a banner when the server can't be reached.
 //! - F5 (or the key the player chose in the launcher) opens a panel (it or Esc closes it) with Players, Invites, Match (the
-//!   lobby's player counts) and Server.
+//!   lobby's player counts, and choosing your match: a new one or an open one) and Server.
 //!
 //! Sizes are designed for 1080p and scale with the screen height. Fonts are
 //! rasterised at the size they're drawn at, and again when the screen's size
@@ -1482,8 +1482,11 @@ impl MyRenderLoop {
         let max = unsafe { get_max_players_var().as_mut() };
         let (Some(min), Some(max)) = (min, max) else {
             self.pane_title(ui, "Match", "Host or join a lobby to change these.");
-            let _c = ui.push_style_color(StyleColor::Text, MUTED);
-            ui.text_wrapped("While you're in a lobby: the players needed to start the match, and the most players allowed in it.");
+            {
+                let _c = ui.push_style_color(StyleColor::Text, MUTED);
+                ui.text_wrapped("While you're in a lobby: the players needed to start the match, and the most players allowed in it.");
+            }
+            self.choose_match(ui);
             return;
         };
         self.pane_title(ui, "Match", "Settings for the lobby you're in. Change them before the match starts.");
@@ -1497,6 +1500,57 @@ impl MyRenderLoop {
             ui.dummy([0.0, self.s(4.0)]);
             let _c = ui.push_style_color(StyleColor::Text, WARN);
             ui.text_wrapped(format!("More than {size} players can crash or freeze the game for some players in this mode."));
+        }
+        self.choose_match(ui);
+    }
+
+    /// Choosing your match (the 0.4.8 plan's L2), on servers that offer it: a new public match
+    /// of your own (quick match then skips every open one and you host), or one of the open
+    /// public matches to join. For players avoiding someone who sits in a public lobby.
+    fn choose_match(&self, ui: &Ui) {
+        if !self.data.choose_offered() {
+            return;
+        }
+        self.section(ui, "Choose your match");
+        let pending = crate::community::new_match_pending();
+        let new_label = if pending { "Cancel##fe-new-match" } else { "New match##fe-new-match" };
+        let join_label = "Join##fe-room";
+        let w = self.button_width(ui, new_label).max(self.button_width(ui, join_label));
+        let (title, detail) = if pending {
+            ("New match asked for", "Start matchmaking now: you host, skipping every open match")
+        } else {
+            ("Start a new match", "Quick match skips every open match and you host your own")
+        };
+        self.row(ui, 0, None, title, detail, w, || {
+            if self.button(ui, new_label, !pending) {
+                crate::community::new_match(!pending);
+            }
+        });
+        let Some(playing) = &self.data.playing else {
+            let _c = ui.push_style_color(StyleColor::Text, MUTED);
+            ui.text_wrapped("The server hasn't said what's open.");
+            return;
+        };
+        let open: Vec<_> = playing.matches.iter().filter(|m| m.room != 0).collect();
+        if open.is_empty() {
+            let _c = ui.push_style_color(StyleColor::Text, MUTED);
+            ui.text_wrapped("No public matches are open right now.");
+        }
+        for (i, m) in open.into_iter().enumerate() {
+            let full = m.seats > 0 && m.players >= m.seats;
+            let detail = if m.started {
+                "Under way: you can join when it's over"
+            } else if full {
+                "Full"
+            } else {
+                "Open"
+            };
+            let label = format!("Join##fe-room-{}", m.room);
+            self.row(ui, i + 1, None, &m.line(), detail, w, || {
+                if !m.started && !full && self.button(ui, &label, false) {
+                    crate::community::join_room(m.room, m.mode_name().to_string());
+                }
+            });
         }
     }
 

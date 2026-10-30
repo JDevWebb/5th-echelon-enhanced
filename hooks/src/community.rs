@@ -263,6 +263,12 @@ impl Snapshot {
         self.server.as_ref().is_some_and(|s| s.features.iter().any(|f| f == "join-now"))
     }
 
+    /// Whether this server lets players pick a match or start a new one (`JoinRoom`,
+    /// `NewMatch`; the 0.4.8 plan's L2).
+    pub fn choose_offered(&self) -> bool {
+        self.server.as_ref().is_some_and(|s| s.features.iter().any(|f| f == "choose-match"))
+    }
+
     /// The activity of the named player, if they're online and doing something.
     pub fn activity_of(&self, name: &str) -> Option<&str> {
         self.friends
@@ -284,6 +290,10 @@ enum Action {
         name: String,
     },
     Search(String),
+    /// A public match picked from the Match tab's list (its room, and its line for messages).
+    JoinRoom(u32, String),
+    /// A new match asked for (true) or taken back.
+    NewMatch(bool),
     Change {
         change: FriendChange,
         id: String,
@@ -485,6 +495,34 @@ pub fn join(id: String, name: String) {
     send(Action::Join { id, name });
 }
 
+/// Joins the public match in `room` (`line` names it in messages): its host's invitation is
+/// then taken without a click, as a friend's Join is.
+pub fn join_room(room: u32, line: String) {
+    send(Action::JoinRoom(room, line));
+}
+
+/// Asks for a new match (`on`), or takes it back: our quick match searches find nothing until
+/// we host one, so the game starts a fresh public match.
+pub fn new_match(on: bool) {
+    send(Action::NewMatch(on));
+}
+
+/// Until when a new match we asked for holds (the server forgets it once we host).
+static NEW_MATCH_UNTIL: Mutex<Option<Instant>> = Mutex::new(None);
+
+/// Whether a new match we asked for still holds.
+pub fn new_match_pending() -> bool {
+    NEW_MATCH_UNTIL
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .is_some_and(|until| Instant::now() < until)
+}
+
+/// We host a match: a new match asked for is done.
+pub fn hosted_match() {
+    *NEW_MATCH_UNTIL.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+}
+
 /// Searches players by part of their name (everyone online for "").
 pub fn search(query: String) {
     send(Action::Search(query));
@@ -601,6 +639,8 @@ pub fn start() {
                 Ok(Action::Invite { id, name }) => invite_now(&id, &name),
                 Ok(Action::Join { id, name }) => join_now_impl(&id, &name),
                 Ok(Action::Search(query)) => search_now(&query),
+                Ok(Action::JoinRoom(room, line)) => join_room_now(room, &line),
+                Ok(Action::NewMatch(on)) => new_match_now(on),
                 Ok(Action::Change { change, id, identity, name }) => {
                     change_now(change, &id, &identity, &name);
                     refresh_now();
@@ -663,6 +703,45 @@ fn join_now_impl(id: &str, name: &str) {
     forget_join_request(id);
 }
 
+fn join_room_now(room: u32, line: &str) {
+    use server_api::friends::join_now_response::Status as JoinStatus;
+    match crate::api::join_room(room) {
+        Ok(resp) => match JoinStatus::try_from(resp.status).unwrap_or(JoinStatus::NotFound) {
+            // The invitation comes on a later poll: the host it's from is the join asked for.
+            JoinStatus::Ok if !resp.host_id.is_empty() => {
+                note_join_request(&resp.host_id);
+                say(format!("Joining {line}..."), false);
+            }
+            JoinStatus::Ok => say(format!("Joining {line}: accept the invitation."), false),
+            _ if !resp.detail.is_empty() => say(clip(&resp.detail, MAX_TEXT), true),
+            JoinStatus::Started => say(String::from("That match has started - pick another, or start a new one."), true),
+            JoinStatus::NotFriends => say(String::from("You've blocked that match's host."), true),
+            _ => say(String::from("That match isn't open any more."), true),
+        },
+        Err(e) => {
+            warn!("Joining room {room} failed: {e}");
+            say(reason(&e).unwrap_or_else(|| String::from("Couldn't join that match; try again.")), true);
+        }
+    }
+}
+
+fn new_match_now(on: bool) {
+    match crate::api::new_match(on) {
+        Ok(seconds) if on => {
+            *NEW_MATCH_UNTIL.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Instant::now() + Duration::from_secs(seconds.into()));
+            say(String::from("Now start matchmaking: you'll host a new public match, skipping every open one."), false);
+        }
+        Ok(_) => {
+            hosted_match();
+            say(String::from("Matchmaking finds open matches again."), false);
+        }
+        Err(e) => {
+            warn!("New match ({on}) failed: {e}");
+            say(reason(&e).unwrap_or_else(|| String::from("Couldn't ask for a new match; try again.")), true);
+        }
+    }
+}
+
 fn search_now(query: &str) {
     match crate::api::search_players(query) {
         Ok(found) => update(|s| {
@@ -705,7 +784,7 @@ fn refresh_now() {
         version: clip(&i.version, MAX_NAME),
         revision: clip(&i.revision, MAX_NAME),
         // Only the one looked at, kept short: a server's list, like all its text.
-        features: i.features.iter().filter(|f| *f == "join-now").map(|f| clip(f, MAX_NAME)).collect(),
+        features: i.features.iter().filter(|f| *f == "join-now" || *f == "choose-match").map(|f| clip(f, MAX_NAME)).collect(),
         maintenance: i
             .maintenance
             .into_iter()

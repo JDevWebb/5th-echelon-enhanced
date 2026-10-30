@@ -7,7 +7,9 @@ use server_api::friends::friends_client::FriendsClient;
 use server_api::friends::InviteRequest;
 use server_api::friends::JoinNowRequest;
 use server_api::friends::JoinNowResponse;
+use server_api::friends::JoinRoomRequest;
 use server_api::friends::ListRequest;
+use server_api::friends::NewMatchRequest;
 use server_api::friends::Player;
 use server_api::friends::RelationshipsRequest;
 use server_api::friends::RelationshipsResponse;
@@ -202,6 +204,24 @@ pub fn join_friend(id: &str) -> Result<JoinNowResponse, Error> {
         let mut client = connect!(FriendsClient);
         let request = tonic::Request::new(JoinNowRequest { id: id.into() });
         Ok(client.join_now(request).await?.into_inner())
+    }))
+}
+
+/// Joins a public match picked from the overlay's list by its room (`JoinRoom`): its host's
+/// invitation comes on our next event poll; the answer names that host (`host_id`).
+pub fn join_room(room: u32) -> Result<JoinNowResponse, Error> {
+    run(signed_in(|| async {
+        let mut client = connect!(FriendsClient);
+        Ok(client.join_room(tonic::Request::new(JoinRoomRequest { room })).await?.into_inner())
+    }))
+}
+
+/// Asks for a new match (`NewMatch`), or takes it back: our quick match searches find nothing
+/// until we host one. How long it holds, in seconds.
+pub fn new_match(on: bool) -> Result<u32, Error> {
+    run(signed_in(|| async {
+        let mut client = connect!(FriendsClient);
+        Ok(client.new_match(tonic::Request::new(NewMatchRequest { on })).await?.into_inner().seconds)
     }))
 }
 
