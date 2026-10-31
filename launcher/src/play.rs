@@ -141,6 +141,18 @@ pub struct Play {
     playing_from: Option<(String, Instant)>,
     /// What Play starts (the split button's choice), read from the launcher's settings once.
     play_mode: Option<crate::app::PlayMode>,
+    /// Choosing your match (matches.rs): whether the player's server offers it (and which
+    /// server that was), asked with the checklist.
+    asking_offered: Slot<Result<(String, bool), String>>,
+    offers_matches: Option<(String, bool)>,
+    /// The open matches' window, its list, and a join in flight.
+    choosing: bool,
+    listing: Slot<Result<crate::matches::Matches, String>>,
+    open_matches: Option<crate::matches::Matches>,
+    joining_match: Slot<Result<String, String>>,
+    /// A new match asked for (into this mode's lobby once the server said yes).
+    asking_new: Slot<Result<Duration, String>>,
+    new_mode: Option<crate::app::PlayMode>,
 }
 
 /// A friend's server to switch to.
@@ -196,6 +208,14 @@ impl Play {
             let cfg = cfg.clone();
             self.fetching_friends.start(ctx, move || flow::friends(&cfg));
         }
+        let server = cfg.current_profile().map(|p| p.server.clone()).unwrap_or_default();
+        if !server.is_empty() && !self.asking_offered.running() && game.managed.is_none() {
+            // Asked of the server at most every 10 minutes (flow::offers).
+            self.asking_offered.start(ctx, move || {
+                let offered = flow::offers(&server, "choose-match");
+                Ok((server, offered))
+            });
+        }
         self.facts.start(ctx, move || flow::gather(&dir, &cfg, crate::dll_utils::bundled()));
     }
 
@@ -215,6 +235,18 @@ impl Play {
             }
         }
         if let Some(result) = self.joining.poll() {
+            match result {
+                Ok(msg) => notices.info(msg),
+                Err(msg) => notices.error(msg),
+            }
+        }
+        if let Some(Ok(offered)) = self.asking_offered.poll() {
+            self.offers_matches = Some(offered);
+        }
+        if let Some(listed) = self.listing.poll() {
+            self.open_matches = Some(listed.unwrap_or_default());
+        }
+        if let Some(result) = self.joining_match.poll() {
             match result {
                 Ok(msg) => notices.info(msg),
                 Err(msg) => notices.error(msg),
@@ -2475,6 +2507,7 @@ const SPLIT_PLAY_WIDTH: f32 = 220.0 + 2.0 + 42.0;
 
 fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked: Option<&str>, ui: &mut egui::Ui) {
     let ready = !play.checks.is_empty() && setup::diagnose::ready(&play.checks) && !matches!(play.support, Some(Support::Unsupported(_)));
+    choose_match(play, game, notices, ui);
     if play.running.is_some() || play.game_seen {
         ui.add_enabled(false, theme::play_button("Playing").min_size(egui::vec2(SPLIT_PLAY_WIDTH, 58.0)));
         return;
@@ -2520,6 +2553,12 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked:
         })
         .inner;
     let mut picked = None;
+    let mut picked_match = None;
+    let offered = !managed
+        && play
+            .offers_matches
+            .as_ref()
+            .is_some_and(|(s, on)| *on && game.cfg.current_profile().is_some_and(|p| &p.server == s));
     egui::Popup::menu(&arrow).show(|ui| {
         ui.set_min_width(160.0);
         for choice in crate::app::PlayMode::ALL {
@@ -2532,11 +2571,41 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked:
                 picked = Some(choice);
             }
         }
+        // Choosing your match, where the server offers it (matches.rs).
+        if offered {
+            ui.separator();
+            if ui.button("New SvM match").on_hover_text("Host a new public match, whatever is open").clicked() {
+                picked_match = Some(MatchAction::New(crate::app::PlayMode::Svm));
+            }
+            if ui.button("New Co-op match").on_hover_text("Host a new public match, whatever is open").clicked() {
+                picked_match = Some(MatchAction::New(crate::app::PlayMode::Coop));
+            }
+            if ui
+                .button("Choose a match...")
+                .on_hover_text("The open public matches on your server, to join one")
+                .clicked()
+            {
+                picked_match = Some(MatchAction::Choose);
+            }
+        }
     });
     if let Some(choice) = picked {
         crate::app::Prefs::set_play_mode(choice);
         play.play_mode = Some(choice);
         ui.close();
+    }
+    if let Some(action) = picked_match {
+        match action {
+            MatchAction::New(mode) => {
+                let cfg = (*game.cfg).clone();
+                play.new_mode = Some(mode);
+                play.asking_new.start(ui.ctx(), move || crate::matches::new_match(&cfg));
+            }
+            MatchAction::Choose => {
+                play.choosing = true;
+                list_matches(play, game, ui.ctx());
+            }
+        }
     }
     let button = if let Some(why) = blocked {
         button.on_disabled_hover_text(why)
@@ -2547,6 +2616,117 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked:
     };
     if button.clicked() {
         launch(play, game, notices, mode);
+    }
+}
+
+/// What the Play menu's match items asked for.
+#[derive(Debug, Clone, Copy)]
+enum MatchAction {
+    New(crate::app::PlayMode),
+    Choose,
+}
+
+/// Asks the player's server for its open matches (the window shows them).
+fn list_matches(play: &mut Play, game: &Game, ctx: &egui::Context) {
+    let server = game.cfg.current_profile().map(|p| p.server.clone()).unwrap_or_default();
+    if !server.is_empty() && !play.listing.running() {
+        play.listing.start(ctx, move || Ok(crate::matches::list(&server)));
+    }
+}
+
+/// Choosing your match: a new match the server agreed to (the game started into that mode's
+/// lobby, if it isn't running), and the open matches' window (Join starts the game first if
+/// it isn't running, as a friend's Join does).
+fn choose_match(play: &mut Play, game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
+    let running = play.running.is_some() || play.game_seen;
+    if let Some(result) = play.asking_new.poll() {
+        let mode = play.new_mode.take().unwrap_or(crate::app::PlayMode::Svm);
+        match result {
+            Ok(holds) => {
+                let minutes = holds.as_secs().div_ceil(60);
+                if running {
+                    notices.info(format!(
+                        "Start matchmaking in the game: it hosts a new public match rather than join an open one (for the next {minutes} minutes)."
+                    ));
+                } else {
+                    notices.info(format!(
+                        "The game starts in the lobby: start matchmaking there and it hosts a new public match (for the next {minutes} minutes)."
+                    ));
+                    launch(play, game, notices, mode);
+                }
+            }
+            Err(line) => notices.error(line),
+        }
+    }
+    if !play.choosing {
+        return;
+    }
+    let mut open = true;
+    let mut join = None;
+    let mut refresh = false;
+    egui::Window::new("Choose a match")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .show(ui.ctx(), |ui| {
+            ui.set_min_width(420.0);
+            match &play.open_matches {
+                None => {
+                    ui.label(theme::muted("Asking your server for its open matches..."));
+                }
+                Some(m) if !m.answered => {
+                    ui.label(theme::muted("Your server didn't answer. Try again in a moment."));
+                }
+                Some(m) if m.rows.is_empty() => {
+                    ui.label(theme::muted(
+                        "No public match is open on your server right now: New match in the menu beside Play hosts one.",
+                    ));
+                }
+                Some(m) => {
+                    egui::Grid::new("open-matches").striped(true).num_columns(4).spacing([12.0, 6.0]).show(ui, |ui| {
+                        for r in &m.rows {
+                            ui.label(&r.mode);
+                            ui.label(r.map.as_deref().unwrap_or(""));
+                            ui.label(&r.players);
+                            let why = if r.started {
+                                Some("Under way: its host lets nobody in until it's over")
+                            } else if r.full {
+                                Some("Every seat is taken")
+                            } else {
+                                None
+                            };
+                            let button = ui.add_enabled(why.is_none() && !play.joining_match.running(), egui::Button::new("Join"));
+                            if let Some(why) = why {
+                                button.on_disabled_hover_text(why);
+                            } else if button.clicked() {
+                                join = Some(r.room);
+                            }
+                            ui.end_row();
+                        }
+                    });
+                }
+            }
+            if let Some(m) = play.open_matches.as_ref().filter(|m| !m.others.is_empty()) {
+                ui.label(theme::muted(&m.others));
+            }
+            ui.add_space(6.0);
+            if ui.add_enabled(!play.listing.running(), egui::Button::new("Refresh")).clicked() {
+                refresh = true;
+            }
+        });
+    if refresh {
+        list_matches(play, game, ui.ctx());
+    }
+    if let Some(room) = join {
+        if running || launch(play, game, notices, crate::app::PlayMode::Play) {
+            let (cfg, dir) = ((*game.cfg).clone(), game.dir.clone());
+            play.joining_match.start(ui.ctx(), move || crate::matches::join(&cfg, &dir, room));
+            play.choosing = false;
+        }
+    }
+    if !open {
+        play.choosing = false;
+        play.open_matches = None;
     }
 }
 
@@ -2906,6 +3086,35 @@ mod split_button_tests {
         for d in [dir, dir2] {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+
+    /// Choose a match: the open matches, a started or full one not joinable, and the others.
+    #[test]
+    fn the_match_window_lists_the_open_matches() {
+        let (dir, mut game) = crate::theme::ui_test::game("matches");
+        let row = |room: u32, mode: &str, started: bool, full: bool| crate::matches::Row {
+            room,
+            mode: mode.into(),
+            map: Some("Mining Town".into()),
+            players: "3/8".into(),
+            started,
+            full,
+        };
+        let mut play = Play {
+            choosing: true,
+            open_matches: Some(crate::matches::Matches {
+                offered: true,
+                answered: true,
+                rows: vec![row(1, "SvM Blacklist", false, false), row(2, "SvM Classic", true, false)],
+                others: "1 private match".into(),
+            }),
+            ..Play::default()
+        };
+        let h = shown(&mut play, &mut game);
+        assert!(h.query_by_label("SvM Blacklist").is_some() && h.query_by_label("SvM Classic").is_some());
+        assert_eq!(h.query_all_by_label("Join").count(), 2);
+        assert!(h.query_by_label("1 private match").is_some());
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
