@@ -1438,6 +1438,7 @@ impl MyUsers {
                 warn!(self.logger, "Refused {username}'s outdated client {client:?} (said once an hour; Sessions counts them all)");
             }
             crate::session_events::refused(crate::session_events::Who::Id(user_id), "outdated", "api", Some(client));
+            let why = if client.starts_with("game/") { crate::clients::started_without_launcher(user_id, why) } else { why };
             Status::failed_precondition(why)
         })
     }

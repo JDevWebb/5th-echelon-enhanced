@@ -91,12 +91,28 @@ pub fn check(client: &str) -> Result<(), String> {
 
 fn refusal(kind: &str, what: &str, minimum: [u32; 3]) -> String {
     let fix = if kind == "game" {
-        "Start the game from the launcher to update it"
+        "Start the game with Play in the 5th Echelon launcher to update it: started from Steam or Ubisoft Connect, the game keeps its old add-on"
     } else {
         "Update the launcher (it updates itself when it starts, or download the latest release)"
     };
     format!("This server needs 5th Echelon {} or newer, and this is {what}. {fix}.", show(minimum))
 }
+
+/// The refusal of `user`'s outdated game when their launcher is current and running (it
+/// made an API call with their token in the last [`LAUNCHER_RUNNING`]; an outdated launcher
+/// gets no token): the game was started without it, from Steam or Ubisoft Connect (R16: 17 of
+/// 64 players refused as outdated on eu1 never came back).
+pub fn started_without_launcher(user: u32, why: String) -> String {
+    if last_api_call(user).is_some_and(|at| at.elapsed() < LAUNCHER_RUNNING) {
+        return String::from(
+            "Your 5th Echelon launcher is up to date, but this game was started without it (from Steam or Ubisoft Connect), so its add-on is the old one. Close the game and press Play in the launcher once: that updates it. To keep starting from Steam, turn on Settings › Game › Start the game through Steam in the launcher.",
+        );
+    }
+    why
+}
+
+/// How recent a launcher's API call shows it's running.
+const LAUNCHER_RUNNING: Duration = Duration::from_secs(15 * 60);
 
 fn refusal_key(username: &str, client: &str, password: &str) -> [u8; 32] {
     let mut h = Sha256::new();
