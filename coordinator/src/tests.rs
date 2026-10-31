@@ -816,6 +816,14 @@ async fn links_are_limited_per_server() {
     // A link it has already (a retry) is no new one.
     let r = t.changes(&a, json!([first])).await;
     assert!(r[0].get("error").is_none(), "{r:?}");
+    // The network's matchmaking server takes a region's players at once.
+    t.c.set_matchmaking_server("server-mm");
+    let mm = t.join("server-mm").await;
+    let many: Vec<Value> = (0..MAX_NEW_LINKS_PER_HOUR + 50)
+        .map(|i| link(&identity::Identity::generate(), "server-mm", &format!("M{i}")))
+        .collect();
+    let r = t.changes(&mm, json!(many)).await;
+    assert!(r.iter().all(|r| r.get("error").is_none()), "the matchmaking server's links were limited as another's");
 }
 
 #[tokio::test]

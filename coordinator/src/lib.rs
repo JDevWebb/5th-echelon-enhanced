@@ -99,6 +99,9 @@ const MAX_LISTED_PLAYERS: u32 = 5_000;
 /// reserve names by the thousand with throwaway identities.
 const MAX_NEW_LINKS_PER_HOUR: i64 = 120;
 const MAX_LINKS_PER_SERVER: i64 = 50_000;
+/// The network's matchmaking server's new links an hour: when a region moves to it, every
+/// player there links within hours, and their friends are missing until their link lands.
+const MAX_NEW_LINKS_PER_HOUR_MATCHMAKING: i64 = 1_200;
 /// A link's signature is taken this long after it was made (a server queues links while the
 /// coordinator is down, and sends them when it's back).
 const LINK_SIGNED_FOR: i64 = 7 * 24 * 3600;
@@ -1255,7 +1258,13 @@ impl Coordinator {
             .await?;
         Ok(if all + new > MAX_LINKS_PER_SERVER {
             Err("this server has as many links as a server may have")
-        } else if lately + new > MAX_NEW_LINKS_PER_HOUR {
+        } else if lately + new
+            > if self.matchmaking_server.get().is_some_and(|m| m == server) {
+                MAX_NEW_LINKS_PER_HOUR_MATCHMAKING
+            } else {
+                MAX_NEW_LINKS_PER_HOUR
+            }
+        {
             Err("too many new links this hour; send them again later")
         } else {
             Ok(())
