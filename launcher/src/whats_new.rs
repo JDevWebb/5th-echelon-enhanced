@@ -42,6 +42,78 @@ pub struct Release {
 /// Newest first. A release with nothing a player would notice has no entry.
 pub const RELEASES: &[Release] = &[
     Release {
+        version: "0.4.8",
+        thanks: &["Tea_bag", "Cloud", "Ghost_Leader", "curryman", "omar", "Agent1", "EitherBat2025", "Gex"],
+        new: &[
+            Item {
+                title: "A new look",
+                text: "The launcher is redrawn: the Play button says whether you're ready and why not, and every page is easier to read and to use with a keyboard. On Linux and the Steam Deck the classic look stays where the new one can't run (Game Mode), and Settings switches between them.",
+                community: false,
+            },
+            Item {
+                title: "Choose your match",
+                text: "Beside Play: Choose a match... lists the open public matches to join one, and New match starts one of your own whatever is open. Quick match leaves out matches with someone you've blocked. The overlay's Match tab does the same.",
+                community: false,
+            },
+            Item {
+                title: "Friends and blocked players",
+                text: "One Friends page for friends, requests and blocked players, with the same in the overlay's menus, each asking before it does something you can't undo.",
+                community: false,
+            },
+            Item {
+                title: "Report a player",
+                text: "The overlay's Match tab lists who's in your match and who you played with lately: Report sends the admins what happened, with the match.",
+                community: false,
+            },
+            Item {
+                title: "Match recordings",
+                text: "Your game records each match (where everyone was, faced and shot) in the game folder's replays, and sends it to your server, which keeps it a week for the admins to watch when a match is reported. ReplayRecording = false in uplay.toml turns it off, ReplayUpload = false keeps them on your PC.",
+                community: false,
+            },
+            Item {
+                title: "Fair play",
+                text: "The game checks that its clocks run at real time and its code is as it shipped, and watches for players moving faster than the game allows: report only, for the admins to look at. Bans hold for the PC, not just the account. Settings › Feedback says what's checked and sent.",
+                community: true,
+            },
+            Item {
+                title: "Without Ubisoft Connect",
+                text: "Settings › Game: once the game has started through Ubisoft Connect on this PC, it can start without it, saves and achievements as before (Ubisoft's own overlay is what you lose).",
+                community: false,
+            },
+            Item {
+                title: "Which DirectX it ran with",
+                text: "Settings › Game shows the DirectX the game last ran with under Renderer, and says why when it isn't the one you picked.",
+                community: false,
+            },
+        ],
+        fixed: &[
+            Fix {
+                lead: "Rubberbanding, hits not landing and joins timing out in long sessions",
+                rest: ": a crash fix in 0.4.6 dropped the game's notes of which packets had arrived once it used more than 2 GB of memory, and wrote a log line for each. Both are fixed.",
+            },
+            Fix {
+                lead: "A game started again is let in straight away",
+                rest: ", instead of waiting up to a minute for its old connection to the server to time out.",
+            },
+            Fix {
+                lead: "Sign-ins are tried again only when it can help",
+                rest: ": a server out of reach after a growing wait, wrong details three times then not for 30 minutes, an outdated launcher not until it's updated.",
+            },
+            Fix {
+                lead: "An outdated game says how to update",
+                rest: ": started from Steam or Ubisoft Connect it keeps its old add-on, so Play in the launcher once.",
+            },
+            Fix {
+                lead: "A game that closed at start (0xC0000142)",
+                rest: " when Ubisoft's loader DLL couldn't be read starts again.",
+            },
+            Fix {
+                lead: "Searches skip matches whose round has started",
+                rest: ", as the host's game now tells the server.",
+            },
+        ],
+    },
+    Release {
         version: "0.4.6",
         thanks: &[
             "Matt",
