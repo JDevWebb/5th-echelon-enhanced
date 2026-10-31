@@ -157,18 +157,40 @@ pub fn offline_switch(options: &str) -> Option<&str> {
         .find(|a| a.eq_ignore_ascii_case("-offline") || a.eq_ignore_ascii_case("-offline_mode"))
 }
 
-/// The game's launch options in this PC's Steam, for any player who signed in to it there,
-/// when they keep the game offline (Wikowikor's: `-offline -offline_mode`).
+/// The game's launch options in this PC's Steam, for the player signed in to it last (R6:
+/// only theirs, not every account's that ever signed in there), when they keep the game
+/// offline (Wikowikor's: `-offline -offline_mode`).
 pub fn steam_offline_options() -> Option<String> {
     for steam in crate::sys::steam_installs() {
-        let Ok(users) = std::fs::read_dir(steam.join("userdata")) else { continue };
-        for user in users.flatten() {
-            let Ok(vdf) = std::fs::read_to_string(user.path().join("config").join("localconfig.vdf")) else {
-                continue;
-            };
-            if let Some(options) = steam_launch_options(&vdf, crate::wine::STEAM_APP_ID).filter(|o| offline_switch(o).is_some()) {
-                return Some(options);
+        let Some(account) = std::fs::read_to_string(steam.join("config").join("loginusers.vdf"))
+            .ok()
+            .and_then(|v| most_recent_account(&v))
+        else {
+            continue;
+        };
+        let Ok(vdf) = std::fs::read_to_string(steam.join("userdata").join(account.to_string()).join("config").join("localconfig.vdf")) else {
+            continue;
+        };
+        if let Some(options) = steam_launch_options(&vdf, crate::wine::STEAM_APP_ID).filter(|o| offline_switch(o).is_some()) {
+            return Some(options);
+        }
+    }
+    None
+}
+
+/// The account id (its `userdata` folder) of the user Steam's `loginusers.vdf` marks
+/// `MostRecent`: their SteamID64 less the individual-account base.
+fn most_recent_account(vdf: &str) -> Option<u64> {
+    const BASE: u64 = 76_561_197_960_265_728;
+    let mut current: Option<u64> = None;
+    for line in vdf.lines() {
+        let parts: Vec<&str> = line.split('"').filter(|p| !p.trim().is_empty()).collect();
+        match parts.as_slice() {
+            [id] if id.len() == 17 && id.bytes().all(|b| b.is_ascii_digit()) => current = id.parse().ok(),
+            [key, value] if key.eq_ignore_ascii_case("MostRecent") && *value == "1" => {
+                return current.and_then(|id| id.checked_sub(BASE));
             }
+            _ => {}
         }
     }
     None
@@ -242,6 +264,25 @@ pub fn game_running() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_the_last_steam_user_is_read() {
+        let vdf = r#""users"
+{
+	"76561197960265729"
+	{
+		"AccountName"		"someone"
+		"MostRecent"		"0"
+	}
+	"76561197960265740"
+	{
+		"AccountName"		"player"
+		"MostRecent"		"1"
+	}
+}"#;
+        assert_eq!(most_recent_account(vdf), Some(12));
+        assert_eq!(most_recent_account("\"users\"\n{\n}"), None);
+    }
 
     #[test]
     fn steam_launch_options_are_read_for_the_game_only() {

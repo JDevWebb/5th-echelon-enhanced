@@ -54,8 +54,10 @@ pub fn start(game: &mut Game, notices: &mut Notices, mode: PlayMode, name_not_al
         // never one set by hand). The game reads it on every start, through Steam too.
         let set_before = Prefs::quick_start_set();
         let mut set = set_before;
-        game.update(notices, |c| set = mode.apply(c, set_before));
+        let mut by_hand = Prefs::quick_start_by_hand();
+        game.update(notices, |c| set = mode.apply(c, set_before, &mut by_hand));
         Prefs::set_quick_start_set(set);
+        Prefs::set_quick_start_by_hand(by_hand);
     }
     let Some(version) = setup::game::pick_version(&game.dir, game.cfg.default_game) else {
         return Err(Refused::Error("The game's executable is missing.".into()));

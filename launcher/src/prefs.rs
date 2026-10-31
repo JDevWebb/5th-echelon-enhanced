@@ -185,6 +185,10 @@ pub struct Prefs {
     /// lobby set there by hand is never touched by a plain Play.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     quick_start_set: bool,
+    /// The `QuickStartLobby` set by hand that the launcher's choice replaced: back with the
+    /// next plain Play.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    quick_start_by_hand: Option<hooks_config::QuickStartLobby>,
     /// Linux: the classic (egui) interface, not the Tauri one (front_door.rs).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     classic_interface: bool,
@@ -233,17 +237,21 @@ impl PlayMode {
     }
 
     /// Sets this start in the settings the game reads when it starts. A plain Play clears only a
-    /// lobby the launcher set itself (`set_before`); one set by hand stays. Says whether the
-    /// launcher has a lobby set now.
-    pub fn apply(self, cfg: &mut setup::config::Config, set_before: bool) -> bool {
+    /// lobby the launcher set itself (`set_before`); one set by hand stays, and one a launcher
+    /// choice replaced (`by_hand`, kept meanwhile) comes back (R6). Says whether the launcher
+    /// has a lobby set now.
+    pub fn apply(self, cfg: &mut setup::config::Config, set_before: bool, by_hand: &mut Option<hooks_config::QuickStartLobby>) -> bool {
         match self.lobby() {
             Some(lobby) => {
+                if !set_before {
+                    *by_hand = cfg.hook_config.quick_start_lobby;
+                }
                 cfg.hook_config.quick_start_lobby = Some(lobby);
                 true
             }
             None => {
                 if set_before {
-                    cfg.hook_config.quick_start_lobby = None;
+                    cfg.hook_config.quick_start_lobby = by_hand.take();
                 }
                 false
             }
@@ -443,6 +451,18 @@ impl Prefs {
         }
     }
 
+    pub fn quick_start_by_hand() -> Option<hooks_config::QuickStartLobby> {
+        Self::load().quick_start_by_hand
+    }
+
+    pub fn set_quick_start_by_hand(lobby: Option<hooks_config::QuickStartLobby>) {
+        let mut prefs = Self::load();
+        if prefs.quick_start_by_hand != lobby {
+            prefs.quick_start_by_hand = lobby;
+            prefs.save();
+        }
+    }
+
     /// Linux: the player chose the classic (egui) interface.
     pub fn classic_interface() -> bool {
         Self::load().classic_interface
@@ -584,23 +604,31 @@ mod tests {
         let read = |cfg: &setup::config::Config| toml::from_str::<hooks_config::Config>(&toml::to_string_pretty(cfg).unwrap()).unwrap().quick_start_lobby;
         let mut cfg = setup::config::Config::default();
         let mut set = false;
+        let mut by_hand = None;
         for (mode, lobby) in [
             (PlayMode::Svm, Some(hooks_config::QuickStartLobby::Svm)),
             (PlayMode::Coop, Some(hooks_config::QuickStartLobby::Coop)),
             (PlayMode::Play, None),
             (PlayMode::Play, None),
         ] {
-            set = mode.apply(&mut cfg, set);
+            set = mode.apply(&mut cfg, set, &mut by_hand);
             assert_eq!(read(&cfg), lobby, "{mode:?}");
             assert_eq!(set, lobby.is_some());
         }
-        // A lobby set by hand: a plain Play leaves it, a launcher choice replaces it.
+        // A lobby set by hand: a plain Play leaves it, a launcher choice replaces it for that
+        // start, and the next plain Play puts it back.
         cfg.hook_config.quick_start_lobby = Some(hooks_config::QuickStartLobby::Coop);
-        assert!(!PlayMode::Play.apply(&mut cfg, false));
+        assert!(!PlayMode::Play.apply(&mut cfg, false, &mut by_hand));
         assert_eq!(read(&cfg), Some(hooks_config::QuickStartLobby::Coop), "set by hand, kept");
-        assert!(PlayMode::Svm.apply(&mut cfg, false));
+        assert!(PlayMode::Svm.apply(&mut cfg, false, &mut by_hand));
         assert_eq!(read(&cfg), Some(hooks_config::QuickStartLobby::Svm));
-        assert!(!PlayMode::Play.apply(&mut cfg, true));
+        assert!(!PlayMode::Play.apply(&mut cfg, true, &mut by_hand));
+        assert_eq!(read(&cfg), Some(hooks_config::QuickStartLobby::Coop), "the hand-set one, back");
+        assert_eq!(by_hand, None);
+        // None set by hand: the launcher's own, cleared.
+        cfg.hook_config.quick_start_lobby = None;
+        assert!(PlayMode::Coop.apply(&mut cfg, false, &mut by_hand));
+        assert!(!PlayMode::Play.apply(&mut cfg, true, &mut by_hand));
         assert_eq!(read(&cfg), None, "the launcher's own, cleared");
     }
 
