@@ -6103,6 +6103,7 @@ version = "0.2.5"
 dependencies = [
  "api",
  "eyre",
+ "hwid",
  "identity",
  "md-5",
  "nat_proto",

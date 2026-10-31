@@ -112,12 +112,15 @@ fn reported_ids(v: &Value) -> Vec<(String, String)> {
                     let (kind, hash) = (i["kind"].as_str()?, i["hash"].as_str()?);
                     (KINDS.contains(&kind) && hash.len() == 64 && hash.bytes().all(|b| b.is_ascii_hexdigit())).then(|| (kind.to_string(), hash.to_ascii_lowercase()))
                 })
-                .take(MOST_IDS)
                 .collect()
         })
         .unwrap_or_default();
     ids.sort();
     ids.dedup();
+    // The client's ids, then the network's (which a server always sends): neither crowds out the other.
+    let (network, mut ids): (Vec<_>, Vec<_>) = ids.into_iter().partition(|(kind, _)| kind == "network");
+    ids.truncate(MOST_IDS);
+    ids.extend(network.into_iter().take(1));
     ids
 }
 

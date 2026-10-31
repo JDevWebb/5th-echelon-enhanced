@@ -191,6 +191,32 @@ pub async fn login_as_client(server: IpAddr, name: &str, password: &str, client:
     Ok(UsersClient::new(channel).login(request).await?.into_inner())
 }
 
+/// The game's API sign-in from a PC with these hardware ids (F10): the server's answer, or
+/// its refusal (a banned PC is refused once the coordinator has banned it).
+pub async fn api_sign_in_on_pc(
+    server: IpAddr,
+    name: &str,
+    password: &str,
+    hardware: Vec<server_api::users::HardwareId>,
+) -> std::result::Result<server_api::users::LoginResponse, tonic::Status> {
+    let channel = api_endpoint(server)
+        .map_err(tonic::Status::internal)?
+        .connect()
+        .await
+        .map_err(|e| tonic::Status::unavailable(e.to_string()))?;
+    Ok(UsersClient::new(channel)
+        .login(server_api::users::LoginRequest {
+            username: name.into(),
+            password: password.into(),
+            client: GAME_CLIENT.into(),
+            build: String::new(),
+            hardware,
+            vm: String::new(),
+        })
+        .await?
+        .into_inner())
+}
+
 /// A registration with the NAT helper, as the hook makes it.
 #[derive(Debug, Clone, Copy)]
 pub struct NatRegistration {

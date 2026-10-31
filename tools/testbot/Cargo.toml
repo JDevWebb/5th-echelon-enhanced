@@ -6,6 +6,7 @@ license = "MIT"
 description = "Headless test players for 5th Echelon Enhanced: speak the game's Quazal protocol and the launcher's gRPC API, without the game"
 
 [dependencies]
+hwid = { path = "../../hwid" }
 quazal = { path = "../../quazal" }
 sc_bl_protocols = { path = "../../dedicated_server/sc_bl_protocols" }
 server_api = { path = "../../api", package = "api" }

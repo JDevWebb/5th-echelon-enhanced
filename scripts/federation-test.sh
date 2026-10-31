@@ -50,7 +50,7 @@ client() { docker run --rm --network "$net" $mount "$image" "$@"; }
 rc=0
 echo "--- directory"
 for _ in $(seq 30); do
-  n=$(client curl -sf "http://$coord:8700/v1/servers" | grep -o '"name":"Server [AB]"' | wc -l || true)
+  n=$(client curl -sf "http://$coord:8700/v1/servers" | grep -o '"name":"Server [AB]"' | sort -u | wc -l || true)
   [ "$n" -eq 2 ] && break; sleep 1
 done
 client curl -sf "http://$coord:8700/v1/servers"; echo
@@ -113,6 +113,31 @@ if [ -n "$player" ]; then
   marked=$(db fes-fed-a /srv/fe/5th-echelon.db "SELECT name_not_allowed FROM users WHERE id = ${other:-0}")
   [ "$status" = "done" ] && [ "${marked:-0}" -eq 1 ] && echo "PASS an admin's request for another name reached server A and marked the account" \
     || { echo "FAIL the name request: status ${status:-none}, marked ${marked:-0}"; rc=1; }
+fi
+echo "--- a ban holds for the PC (F10)"
+# A player signs in on server A from a test PC; an admin bans their identity; a new player with
+# another identity, on server B, from the same PC, is refused once the coordinator matches it.
+seed="fed$RANDOM$RANDOM"
+first=$(client env FES_HW_SEED="$seed" "$bin/testbot" --server "$a" hardware-first || true)
+echo "$first" | grep -v '^HW_'
+hw_identity=$(echo "$first" | sed -n 's/^HW_IDENTITY=//p')
+kept=0
+for _ in $(seq 60); do
+  kept=$(coord_db "SELECT COUNT(*) FROM player_hardware h JOIN players p ON p.server_id = h.server_id AND p.id = h.player WHERE p.identity = '${hw_identity:-none}' AND h.kind != 'network'")
+  [ "${kept:-0}" -ge 3 ] && break; sleep 1
+done
+if [ "${kept:-0}" -ge 3 ]; then
+  echo "PASS the test PC's 3 ids reached the coordinator (keyed, never as sent)"
+  coord_write "INSERT INTO identity_bans (identity, reason, until, at, by) VALUES ('$hw_identity', 'federation test', NULL, CAST(strftime('%s','now') AS INTEGER) + 1, 'test') RETURNING identity" >/dev/null
+  second=$(client env FES_HW_SEED="$seed" "$bin/testbot" --server "$b" hardware-second) || rc=1
+  echo "$second" | grep -v '^HW_'
+  hw_second=$(echo "$second" | sed -n 's/^HW_REFUSED=//p')
+  by=$(coord_db "SELECT by FROM identity_bans WHERE identity = '${hw_second:-none}'")
+  [ "$by" = "hardware" ] && echo "PASS the new identity on the banned PC is banned across the network" || { echo "FAIL the new identity's ban: '${by}'"; rc=1; }
+  sent=$(coord_db "SELECT COUNT(*) FROM player_hardware WHERE hash IN (SELECT hash FROM player_hardware) AND length(hash) = 64")
+  [ "${sent:-0}" -gt 0 ] && echo "PASS ids are kept as 64-hex keyed hashes" || { echo "FAIL ids kept"; rc=1; }
+else
+  echo "FAIL the test PC's ids didn't reach the coordinator ($kept)"; rc=1
 fi
 echo "--- global stats"
 # A ladder kill for a player with an identity on server A, as the game's write leaves it.

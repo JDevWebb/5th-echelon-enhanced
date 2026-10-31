@@ -336,7 +336,7 @@
             </section>
             <section class="card">
               <h3>Fair play: bans hold for the PC</h3>
-              <p class="muted">When the launcher and the game sign in, they send your server a fingerprint of this PC: one-way hashes of its hardware ids (the Windows install's id, the board's and disks' serials; on a Steam Deck or Linux, the system's machine id and the drive's serial), never the ids themselves. Servers keep them in memory only; the network keeps them keyed again with a secret of its own, for 180 days after you last played, or while a ban on the account runs, and deletes them with your account. They're used for one thing: an account on the PC of a banned player is banned too, for as long as that ban runs.</p>
+              <p class="muted">When the launcher and the game sign in, they send your server a fingerprint of this PC: one-way hashes of its hardware ids (the Windows install's id, the board's and disks' serials; on a Steam Deck or Linux, the system's machine id and the drive's serial), never the ids themselves; your server adds a one-way hash of the network you're on (its first three parts, never your address). Servers keep them in memory only; the network keeps them keyed again with a secret of its own, for 180 days after you last played, or while a ban on the account runs, and deletes them with your account. They're used for one thing: an account on the PC of a banned player is banned too, for as long as that ban runs, and a new account that looks like a banned player back (the same network, the same friends) is shown to the admins to look at.</p>
             </section>
             <section class="card">
               <h3>Report a problem</h3>

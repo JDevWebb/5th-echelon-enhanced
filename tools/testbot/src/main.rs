@@ -843,6 +843,55 @@ async fn chat(ctx: &mut Ctx, other: IpAddr) -> Result<()> {
     Ok(())
 }
 
+/// This run's PC: hardware ids made from `FES_HW_SEED` (the federation test sets one per run).
+fn test_pc() -> Vec<server_api::users::HardwareId> {
+    let seed = std::env::var("FES_HW_SEED").unwrap_or_else(|_| String::from("testbot"));
+    ["machine-guid", "smbios-uuid", "disk-serial"]
+        .into_iter()
+        .filter_map(|kind| hwid::hash(kind, &format!("{seed}-{kind}-pc")))
+        .map(|id| server_api::users::HardwareId {
+            kind: id.kind.to_string(),
+            hash: id.hash,
+        })
+        .collect()
+}
+
+/// F10, first half: a player with an identity signs in from the test PC (prints the identity,
+/// for the admin's ban the script makes next).
+async fn hardware_first(ctx: &mut Ctx) -> Result<()> {
+    let key = identity::Identity::generate();
+    let bot = ctx.player("HwA").await?;
+    bot.link(&key, &server_id(ctx.server)?, identity::now()).await?;
+    testbot::bot::api_sign_in_on_pc(ctx.server, &bot.name, PASSWORD, test_pc())
+        .await
+        .map_err(|e| eyre!("signing in from the test PC: {e}"))?;
+    println!("HW_IDENTITY={}", key.global_id());
+    Ok(())
+}
+
+/// F10, second half (after an admin banned the first half's identity): a new player, another
+/// identity, on another server, from the same PC is let in at first, then refused once the
+/// coordinator has matched the PC and the server carried out its ban.
+async fn hardware_second(ctx: &mut Ctx) -> Result<()> {
+    let key = identity::Identity::generate();
+    let bot = ctx.player("HwB").await?;
+    bot.link(&key, &server_id(ctx.server)?, identity::now()).await?;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+    loop {
+        match testbot::bot::api_sign_in_on_pc(ctx.server, &bot.name, PASSWORD, test_pc()).await {
+            Err(status) if status.code() == tonic::Code::PermissionDenied => {
+                ensure!(status.message().contains("PC"), "refused, but not for the PC: {}", status.message());
+                println!("HW_REFUSED={}", key.global_id());
+                return Ok(());
+            }
+            Err(status) => return Err(eyre!("signing in from the test PC: {status}")),
+            Ok(_) => {}
+        }
+        ensure!(tokio::time::Instant::now() < deadline, "a new account on a banned player's PC was still let in after 120 s");
+        tokio::time::sleep(Duration::from_secs(3)).await;
+    }
+}
+
 async fn federation(ctx: &mut Ctx, other: IpAddr) -> Result<()> {
     let (id_a, id_b) = (server_id(ctx.server)?, server_id(other)?);
     let (kiwi_key, tank_key) = (identity::Identity::generate(), identity::Identity::generate());
@@ -3354,6 +3403,7 @@ async fn run() -> Result<()> {
     for name in names {
         let limit = match name {
             "federation" => 300,
+            "hardware-second" => 150,
             "cross-relay" => 60,
             "cross-relay-forward" => 60,
             "chat" => 120,
@@ -3432,6 +3482,10 @@ async fn run() -> Result<()> {
                     Some(other) => federation(&mut ctx, other).await,
                     None => Err(eyre!("federation needs --other <second server>")),
                 },
+                // The two halves of the federation test's hardware ban (F10), an admin's ban
+                // between them (scripts/federation-test.sh).
+                "hardware-first" => hardware_first(&mut ctx).await,
+                "hardware-second" => hardware_second(&mut ctx).await,
                 "chat" => match other {
                     Some(other) => chat(&mut ctx, other).await,
                     None => Err(eyre!("chat needs --other <second server>")),

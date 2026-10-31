@@ -19,7 +19,7 @@ pub struct Id {
     pub hash: String,
 }
 
-/// The kinds taken (the hwid crate's), and the most ids per sign-in.
+/// The kinds taken (the hwid crate's), and the most ids per sign-in, the network's included.
 const KINDS: [&str; 5] = ["machine-guid", "smbios-uuid", "board-serial", "disk-serial", "linux-machine-id"];
 const MOST_IDS: usize = 12;
 /// How long a player's ids are kept after they sent them: long enough for the roster to take
@@ -48,10 +48,11 @@ pub fn valid(ids: &[server_api::users::HardwareId]) -> Vec<Id> {
             kind: i.kind.clone(),
             hash: i.hash.to_ascii_lowercase(),
         })
-        .take(MOST_IDS)
         .collect();
     out.sort_by(|a, b| (&a.kind, &a.hash).cmp(&(&b.kind, &b.hash)));
     out.dedup();
+    // Room for the network's, always added after.
+    out.truncate(MOST_IDS - 1);
     out
 }
 
@@ -82,11 +83,11 @@ pub fn network(ip: std::net::IpAddr) -> Id {
 /// roster, which goes soon after.
 pub fn note(user: u32, ids: &[server_api::users::HardwareId], vm: &str, ip: Option<std::net::IpAddr>) {
     let mut ids = valid(ids);
+    // The network, whatever the client sent of its PC (an older client, or one sending none).
+    ids.extend(ip.map(network));
     if ids.is_empty() && vm.is_empty() {
-        // An older client: nothing of its PC, so nothing of its network either.
         return;
     }
-    ids.extend(ip.map(network));
     let vm: String = vm.chars().filter(|c| !c.is_control()).take(32).collect();
     let mut all = seen();
     if all.len() >= MOST_PLAYERS && !all.contains_key(&user) {
@@ -152,6 +153,14 @@ mod tests {
         assert_eq!(ids[1], network("203.0.113.9".parse().unwrap()), "the same /24");
         assert_ne!(ids[1], network("203.0.114.9".parse().unwrap()));
         assert_eq!(network("::ffff:203.0.113.1".parse().unwrap()), ids[1]);
+        // An older client, or one sending nothing of its PC: its network all the same.
+        note(900_003, &[], "", Some("198.51.100.4".parse().unwrap()));
+        assert_eq!(of(900_003).0, [network("198.51.100.9".parse().unwrap())]);
+        // A full list of ids still leaves room for it.
+        let many: Vec<_> = (0..20).map(|i| id("disk-serial", &format!("{i:064x}"))).collect();
+        note(900_004, &many, "", Some("198.51.100.4".parse().unwrap()));
+        let (ids, _) = of(900_004);
+        assert_eq!((ids.len(), ids.last().map(|i| i.kind.as_str())), (MOST_IDS, Some("network")));
         assert_eq!(of(900_002), (Vec::new(), None));
     }
 }
