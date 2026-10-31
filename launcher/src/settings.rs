@@ -578,19 +578,18 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
              This widens that cap for a linear, 1:1 feel (a wide limit stays, so a bad input spike can't flip the camera).",
         );
     }
-    // Picture brightness (opt-in): lifts Blacklist.ini's dark gamma cap. The file is edited
-    // statically while the game is off and put back when the option is turned off, so the
-    // controls are locked while the game runs.
+    // Picture brightness (opt-in). Windows: lifts Blacklist.ini's dark gamma cap; the file is
+    // edited statically while the game is off and put back when the option is turned off.
+    // Linux: vkBasalt, set up when the game starts. Either way the controls are locked while the
+    // game runs.
     let running = setup::game::game_running();
+    // Linux without vkBasalt's 32-bit layer: can't be turned on (only off, if it was on).
+    let missing = BRIGHTEN_WITH_VKBASALT && vkbasalt_missing();
     ui.add_enabled_ui(!running, |ui| {
         let mut brighten = game.cfg.brighten;
         let toggled = ui
-            .checkbox(&mut brighten, "Brighten the picture")
-            .on_hover_text(
-                "Blacklist caps its brightness low, which looks dark under Proton. This lifts the cap and \
-                 sets a brighter picture by editing Blacklist.ini while the game is closed; turning it off \
-                 puts the original back.",
-            )
+            .add_enabled(brighten || !missing, egui::Checkbox::new(&mut brighten, "Brighten the picture"))
+            .on_hover_text(BRIGHTEN_HOVER)
             .changed();
         if toggled {
             set_brighten(game, notices, brighten);
@@ -601,25 +600,42 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
             let mut level = ui.data(|d| d.get_temp::<u8>(id)).unwrap_or(game.cfg.brightness);
             let slider = egui::Slider::new(&mut level, setup::gamma::MIN_BRIGHTNESS..=setup::gamma::MAX_BRIGHTNESS)
                 .text("Brightness")
-                .custom_formatter(|n, _| format!("{:.2}", n / 100.0));
+                .custom_formatter(|n, _| {
+                    if BRIGHTEN_WITH_VKBASALT {
+                        // vkBasalt's curve: 1.00 leaves the picture as it is.
+                        format!("{:.2}", setup::vkbasalt::strength(n as u8))
+                    } else {
+                        format!("{:.2}", n / 100.0)
+                    }
+                });
             let response = ui.add(slider);
             if response.dragged() {
                 ui.data_mut(|d| d.insert_temp(id, level));
             } else {
                 ui.data_mut(|d| d.remove::<u8>(id));
                 if level != game.cfg.brightness && (response.drag_stopped() || response.changed()) {
-                    let mut backup = game.cfg.gamma_backup.clone();
-                    match setup::gamma::enable(&game.dir, level, &mut backup) {
-                        Ok(()) => game.update(notices, |c| {
-                            c.brightness = level;
-                            c.gamma_backup = backup;
-                        }),
-                        Err(e) => notices.error(format!("Couldn't change the brightness: {e}")),
+                    if BRIGHTEN_WITH_VKBASALT {
+                        // Written for vkBasalt when the game next starts.
+                        game.update(notices, |c| c.brightness = level);
+                    } else {
+                        let mut backup = game.cfg.gamma_backup.clone();
+                        match setup::gamma::enable(&game.dir, level, &mut backup) {
+                            Ok(()) => game.update(notices, |c| {
+                                c.brightness = level;
+                                c.gamma_backup = backup;
+                            }),
+                            Err(e) => notices.error(format!("Couldn't change the brightness: {e}")),
+                        }
                     }
                 }
             }
         }
     });
+    if missing {
+        ui.label(theme::muted(VKBASALT_MISSING));
+    } else if BRIGHTEN_WITH_VKBASALT && game.cfg.brighten {
+        ui.label(theme::muted("In the game, Home turns the brightening off and on."));
+    }
     if running && game.cfg.brighten {
         ui.label(theme::muted("Close the game to change the picture brightness."));
     }
@@ -688,11 +704,84 @@ fn beta_features(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     }
 }
 
-/// Turns "Brighten the picture" on or off: edits Blacklist.ini (the game must be closed), then
-/// notes it (here and in new_options.rs). On a failure the setting stays as it was.
+/// Whether "Brighten the picture" goes through vkBasalt (Linux: the game's own gamma does
+/// nothing under Proton) rather than Blacklist.ini (Windows).
+pub(crate) const BRIGHTEN_WITH_VKBASALT: bool = cfg!(target_os = "linux");
+
+/// What "Brighten the picture" does, on this system.
+const BRIGHTEN_HOVER: &str = if BRIGHTEN_WITH_VKBASALT {
+    "Blacklist's own brightness does nothing under Proton. This brightens the picture with \
+     vkBasalt, a Vulkan layer, when the launcher starts the game: the mid-tones get lighter, \
+     black and white stay. In the game, Home turns it off and on."
+} else {
+    "Blacklist caps its brightness low, which looks dark under Proton. This lifts the cap and \
+     sets a brighter picture by editing Blacklist.ini while the game is closed; turning it off \
+     puts the original back."
+};
+
+/// Said where "Brighten the picture" can't be used on Linux.
+pub(crate) const VKBASALT_MISSING: &str = "Install vkBasalt (32-bit) to use this: the game is 32-bit and needs vkBasalt's 32-bit layer (on Arch, lib32-vkbasalt).";
+
+/// Whether vkBasalt's 32-bit layer is missing. Looked up at most every few seconds, so
+/// installing it shows without a restart.
+pub(crate) fn vkbasalt_missing() -> bool {
+    static SEEN: std::sync::Mutex<Option<(std::time::Instant, bool)>> = std::sync::Mutex::new(None);
+    let mut seen = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    match *seen {
+        Some((at, missing)) if at.elapsed() < Duration::from_secs(5) => missing,
+        _ => {
+            let missing = setup::vkbasalt::installed().bits32.is_none();
+            *seen = Some((std::time::Instant::now(), missing));
+            missing
+        }
+    }
+}
+
+/// On Linux with "Brighten the picture" on: writes vkBasalt's colour table and config for the
+/// current brightness and gives the game's environment to use them. Nothing otherwise, or
+/// when vkBasalt's 32-bit layer is missing or the files can't be written (then a notice says so;
+/// the game starts anyway).
+pub(crate) fn brighten_env(game: &Game, notices: &mut Notices) -> Vec<(&'static str, std::ffi::OsString)> {
+    if !BRIGHTEN_WITH_VKBASALT || !game.cfg.brighten {
+        return Vec::new();
+    }
+    if vkbasalt_missing() {
+        notices.error(format!("The picture isn't brightened. {VKBASALT_MISSING}"));
+        return Vec::new();
+    }
+    let written = setup::vkbasalt::files_dir()
+        .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no home folder"))
+        .and_then(|dir| setup::vkbasalt::write(&dir, game.cfg.brightness));
+    match written {
+        Ok(config) => {
+            tracing::info!(
+                "brightening with vkBasalt: {} (strength {:.2})",
+                config.display(),
+                setup::vkbasalt::strength(game.cfg.brightness)
+            );
+            setup::vkbasalt::env(&config)
+        }
+        Err(e) => {
+            tracing::warn!("couldn't write vkBasalt's files: {e}");
+            notices.error(format!("The picture isn't brightened: couldn't write vkBasalt's files ({e})."));
+            Vec::new()
+        }
+    }
+}
+
+/// Turns "Brighten the picture" on or off, then notes it (here and in new_options.rs). On
+/// Windows that edits Blacklist.ini (the game must be closed). On Linux turning it on changes no
+/// file (vkBasalt is set up when the game starts); turning it off still puts back what an earlier
+/// version changed in Blacklist.ini. On a failure the setting stays as it was.
 pub(crate) fn set_brighten(game: &mut Game, notices: &mut Notices, on: bool) {
+    if on && BRIGHTEN_WITH_VKBASALT && vkbasalt_missing() {
+        notices.error(VKBASALT_MISSING);
+        return;
+    }
     let mut backup = game.cfg.gamma_backup.clone();
-    let res = if on {
+    let res = if on && BRIGHTEN_WITH_VKBASALT {
+        Ok(())
+    } else if on {
         setup::gamma::enable(&game.dir, game.cfg.brightness, &mut backup)
     } else {
         setup::gamma::disable(&game.dir, &mut backup)
