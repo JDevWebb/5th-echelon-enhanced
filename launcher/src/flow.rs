@@ -1013,12 +1013,14 @@ pub fn wine_facts(game_dir: &Path) -> Option<setup::diagnose::WineFacts> {
             steam: false,
             prefix_ready: true,
             launch_options: None,
+            no_umu: false,
         });
     }
     setup::wine::prefix_for(game_dir).map(|p| setup::diagnose::WineFacts {
         steam: p.steam,
         prefix_ready: p.ready(),
         launch_options: if p.steam { setup::wine::steam_launch_options() } else { None },
+        no_umu: setup::launch::proton_without_umu(game_dir),
     })
 }
 

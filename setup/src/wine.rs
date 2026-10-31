@@ -100,6 +100,74 @@ fn steam_prefix(steamapps: &Path, libraries: impl FnOnce() -> Vec<PathBuf>) -> P
         .unwrap_or(own)
 }
 
+/// A Wine prefix that Proton made outside Steam (`umu-run`, Lutris or Heroic with a
+/// Proton runner): Proton keeps its own files beside `drive_c` (or in the folder above a
+/// `pfx` folder), and the prefix is meant to be run by Proton, not by the system's Wine.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProtonPrefix {
+    /// The folder with Proton's own files (`version`, `config_info`): what umu takes as
+    /// `WINEPREFIX`. The prefix itself, or the folder above its `pfx`.
+    pub compat_dir: PathBuf,
+    /// The Proton version that made the prefix (its `version` file, "11.0-100").
+    pub version: Option<String>,
+    /// The Proton that made the prefix, if it's still installed (from `config_info`).
+    pub proton_dir: Option<PathBuf>,
+}
+
+impl ProtonPrefix {
+    /// Whether `dir` has the files Proton leaves in a prefix it made.
+    fn files_in(dir: &Path) -> bool {
+        dir.join("version").is_file() && ["config_info", "pfx.lock", "creation_sync_guard"].iter().any(|f| dir.join(f).is_file())
+    }
+
+    /// The Proton prefix `prefix` is, or `None` for a Steam prefix (Steam starts it) or a
+    /// plain Wine prefix.
+    pub fn of(prefix: &Prefix) -> Option<Self> {
+        if prefix.steam {
+            return None;
+        }
+        let above = prefix.root.file_name().is_some_and(|n| n == "pfx").then(|| prefix.root.parent()).flatten();
+        let compat_dir = [Some(prefix.root.as_path()), above].into_iter().flatten().find(|d| Self::files_in(d))?;
+        let version = std::fs::read_to_string(compat_dir.join("version"))
+            .ok()
+            .and_then(|v| v.lines().next().map(|l| l.trim().to_string()))
+            .filter(|v| !v.is_empty());
+        Some(Self {
+            compat_dir: compat_dir.to_path_buf(),
+            version,
+            proton_dir: proton_dir_in(&compat_dir.join("config_info")),
+        })
+    }
+}
+
+/// The Proton that made a prefix, from its `config_info`: a line that points into
+/// `<Proton>/files/` (the fonts folder, say). Only if that Proton is still there.
+fn proton_dir_in(config_info: &Path) -> Option<PathBuf> {
+    let text = std::fs::read_to_string(config_info).ok()?;
+    text.lines()
+        .filter_map(|l| l.trim().split_once("/files/").map(|(dir, _)| PathBuf::from(dir)))
+        .find(|dir| dir.is_absolute() && dir.join("proton").is_file())
+}
+
+/// Where the program `name` is, in `PATH` or the user's `~/.local/bin` (a launcher started
+/// from a menu may not have that in its `PATH`).
+pub fn find_program(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    let local = std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/bin"));
+    std::env::split_paths(&path).chain(local).map(|d| d.join(name)).find(|p| is_executable(p))
+}
+
+#[cfg(unix)]
+fn is_executable(path: &Path) -> bool {
+    use std::os::unix::fs::PermissionsExt as _;
+    path.metadata().is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &Path) -> bool {
+    path.is_file()
+}
+
 /// Why the game's save folder can't be found, for the player.
 pub fn no_save_folder(game_dir: &Path) -> String {
     match prefix_for(game_dir) {
@@ -174,6 +242,56 @@ mod tests {
         // One beside the game wins.
         std::fs::create_dir_all(proton_prefix(&sd).join("drive_c")).unwrap();
         assert_eq!(steam_prefix(&sd, || vec![internal]), proton_prefix(&sd));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn a_prefix_proton_made_is_told_by_its_files() {
+        let root = temp_dir("wine-proton");
+        let proton = root.join("Proton 11.0");
+        std::fs::create_dir_all(proton.join("files/share/fonts")).unwrap();
+        std::fs::write(proton.join("proton"), "").unwrap();
+        let config = format!("11.0-100\n{}/files/share/fonts/\n{}/files/lib/\n\n0\n", proton.display(), proton.display());
+        let prefix = |dir: &Path| Prefix {
+            root: dir.to_path_buf(),
+            steam: false,
+        };
+
+        // umu-run: Proton's files and drive_c in one folder.
+        let umu = root.join("umu");
+        std::fs::create_dir_all(umu.join("drive_c")).unwrap();
+        assert_eq!(ProtonPrefix::of(&prefix(&umu)), None, "no Proton files yet: plain Wine");
+        std::fs::write(umu.join("version"), "11.0-100\n").unwrap();
+        assert_eq!(ProtonPrefix::of(&prefix(&umu)), None, "a version file alone isn't enough");
+        std::fs::write(umu.join("config_info"), &config).unwrap();
+        let found = ProtonPrefix::of(&prefix(&umu)).unwrap();
+        assert_eq!(found.compat_dir, umu);
+        assert_eq!(found.version.as_deref(), Some("11.0-100"));
+        assert_eq!(found.proton_dir, Some(proton.clone()));
+
+        // Lutris or Heroic: the files are above `pfx`.
+        let heroic = root.join("heroic");
+        std::fs::create_dir_all(heroic.join("pfx/drive_c")).unwrap();
+        std::fs::write(heroic.join("version"), "GE-Proton9-1\n").unwrap();
+        std::fs::write(heroic.join("pfx.lock"), "").unwrap();
+        let found = ProtonPrefix::of(&prefix(&heroic.join("pfx"))).unwrap();
+        assert_eq!(found.compat_dir, heroic);
+        assert_eq!(found.version.as_deref(), Some("GE-Proton9-1"));
+        assert_eq!(found.proton_dir, None, "no config_info");
+        // The folder above a prefix that isn't called pfx doesn't count.
+        let other = root.join("other");
+        std::fs::create_dir_all(other.join("wineprefix/drive_c")).unwrap();
+        std::fs::write(other.join("version"), "1").unwrap();
+        std::fs::write(other.join("pfx.lock"), "").unwrap();
+        assert_eq!(ProtonPrefix::of(&prefix(&other.join("wineprefix"))), None);
+
+        // A Proton that has been removed isn't named.
+        std::fs::remove_file(proton.join("proton")).unwrap();
+        assert_eq!(ProtonPrefix::of(&prefix(&umu)).unwrap().proton_dir, None);
+
+        // Steam's own prefix is Steam's business.
+        let steam = Prefix { root: umu.clone(), steam: true };
+        assert_eq!(ProtonPrefix::of(&steam), None);
         std::fs::remove_dir_all(root).unwrap();
     }
 

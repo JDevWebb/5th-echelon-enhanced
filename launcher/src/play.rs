@@ -2401,6 +2401,10 @@ fn launch(play: &mut Play, game: &mut Game, notices: &mut Notices, mode: crate::
     };
     match setup::launch::launch(&game.dir, version, crate::app::Prefs::start_through_steam()) {
         Ok(setup::launch::Launched::Game(child)) => play.running = Some(child),
+        Ok(setup::launch::Launched::GameProtonWithoutUmu(child)) => {
+            play.running = Some(child);
+            notices.error(setup::diagnose::NO_UMU);
+        }
         Ok(setup::launch::Launched::Steam) => notices.info("Steam is starting the game."),
         Ok(setup::launch::Launched::GameNotSteam(child, why)) => {
             play.running = Some(child);
