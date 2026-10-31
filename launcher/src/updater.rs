@@ -184,7 +184,16 @@ fn from_github(url: &str) -> bool {
 
 /// Asks GitHub for the latest release.
 pub fn latest() -> anyhow::Result<Latest> {
-    let body = crate::services::rt().block_on(get(&format!("https://api.github.com/repos/{REPO}/releases/latest"), Duration::from_secs(15), MAX_SMALL))?;
+    release_at(&format!("https://api.github.com/repos/{REPO}/releases/latest"))
+}
+
+/// This launcher's own release (its tag), for what goes beside it.
+pub fn this_release() -> anyhow::Result<Latest> {
+    release_at(&format!("https://api.github.com/repos/{REPO}/releases/tags/v{}", env!("FE_RELEASE")))
+}
+
+fn release_at(api: &str) -> anyhow::Result<Latest> {
+    let body = crate::services::rt().block_on(get(api, Duration::from_secs(15), MAX_SMALL))?;
     let r: GhRelease = serde_json::from_slice(&body)?;
     Ok(Latest {
         version: r.tag_name.trim_start_matches('v').to_string(),
@@ -261,6 +270,20 @@ pub fn update_self(latest: &Latest) -> anyhow::Result<()> {
     swap_in(&front_door, &new)?;
     std::process::Command::new(&front_door).spawn()?;
     std::process::exit(0);
+}
+
+/// Linux, a first start (the release's two files, only this one downloaded): the Tauri
+/// interface of this launcher's own release, fetched beside it, verified as updates are. Not
+/// for a development build (no release of its own).
+pub fn fetch_tauri_beside() -> anyhow::Result<PathBuf> {
+    let me = std::env::current_exe()?;
+    let to = tauri_beside(&me).ok_or_else(|| anyhow::anyhow!("only Linux has a Tauri interface beside it"))?;
+    if is_dev_build() {
+        anyhow::bail!("a development build has no release to fetch it from");
+    }
+    let release = this_release()?;
+    download(&release, TAURI_ASSET, &to)?;
+    Ok(to)
 }
 
 /// Linux: the egui launcher beside the Tauri interface `exe`, by the names it's published and

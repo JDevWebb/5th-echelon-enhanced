@@ -4,7 +4,9 @@
 //! (`--probe`: it starts and exits at once, so every library it needs is there), then run, and
 //! this one waits. Not in gamescope (gaming mode), where the egui launcher runs full screen, nor
 //! when the player chose the classic interface. If the Tauri one fails soon after it starts, or
-//! the player switches to the classic interface from it, this one opens its own window.
+//! the player switches to the classic interface from it, this one opens its own window. On a
+//! first start (only this file downloaded) the Tauri interface of its release is fetched
+//! beside it for the next.
 
 use std::path::PathBuf;
 use std::process::Command;
@@ -55,7 +57,15 @@ pub fn try_tauri(gamescope: bool) -> Option<i32> {
     if !cfg!(target_os = "linux") || gamescope || crate::prefs::Prefs::classic_interface() || std::env::var_os("FE_CLASSIC").is_some() {
         return None;
     }
-    let exe = tauri_exe()?;
+    let Some(exe) = tauri_exe() else {
+        // A first start: only this file was downloaded. Its release's Tauri interface comes
+        // beside it in the background, for the next start; this one opens its own window.
+        let _ = std::thread::Builder::new().name("fetch-tauri".into()).spawn(|| match crate::updater::fetch_tauri_beside() {
+            Ok(to) => tracing::info!("The new interface is ready ({}): it opens next time", to.display()),
+            Err(e) => tracing::info!("The new interface wasn't fetched ({e}); the classic one stays"),
+        });
+        return None;
+    };
     if !starts(&exe) {
         eprintln!("The Tauri interface can't start here (no WebKitGTK 4.1?): the classic one");
         return None;
