@@ -55,6 +55,8 @@ const FEATURES: &[&str] = &[
     "name-check",
     "join-now",
     "choose-match",
+    // Reporting a player from the overlay's Match tab (MatchPlayers, ReportPlayer; F5).
+    "report-player",
 ];
 
 /// Session attributes (see game_session.rs): 101 map, 102 mode, 113 room kind

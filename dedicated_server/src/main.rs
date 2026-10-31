@@ -95,6 +95,7 @@ mod overlord_challenge;
 mod overlord_core;
 mod overlord_news;
 mod pending_joins;
+mod player_reports;
 mod player_stats;
 mod players;
 mod playing;

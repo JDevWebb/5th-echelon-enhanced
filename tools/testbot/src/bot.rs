@@ -1144,6 +1144,28 @@ impl Bot {
     }
 
     /// Says whether this player's match is under way, as a 0.4.8 game does (`MatchState`).
+    /// Who this player can report: in their match, or lately (F5).
+    pub async fn match_players(&self) -> std::result::Result<Vec<server_api::misc::MatchPlayer>, tonic::Status> {
+        Ok(MiscClient::new(self.api.clone())
+            .match_players(self.authed(server_api::misc::MatchPlayersRequest {}))
+            .await?
+            .into_inner()
+            .players)
+    }
+
+    /// Reports player `id` (F5): the report's id.
+    pub async fn report_player(&self, id: u32, reason: &str, text: &str) -> std::result::Result<String, tonic::Status> {
+        Ok(MiscClient::new(self.api.clone())
+            .report_player(self.authed(server_api::misc::ReportPlayerRequest {
+                id: id.to_string(),
+                reason: reason.into(),
+                text: text.into(),
+            }))
+            .await?
+            .into_inner()
+            .id)
+    }
+
     pub async fn match_state(&self, under_way: bool, state: &str) -> std::result::Result<(), tonic::Status> {
         MiscClient::new(self.api.clone())
             .match_state(self.authed(server_api::misc::MatchStateRequest { under_way, state: state.into() }))

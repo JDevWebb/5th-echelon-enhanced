@@ -2340,6 +2340,54 @@ async fn match_state(ctx: &mut Ctx) -> Result<()> {
     seeker.disconnect().await
 }
 
+/// Reporting a player (F5): a guest in the host's match sees the host to report, and reports
+/// them; again soon is refused, as are a player they never played with and a reason that
+/// isn't one. The host sees the guest the same way.
+async fn report_player(ctx: &mut Ctx) -> Result<()> {
+    let open = format!("113 => 0;103 => 0;102 => 6;101 => {}", 930_000 + ctx.run);
+    let mut host = ctx.player("Host").await?;
+    host.register_urls(&["prudp:/address=127.0.0.1;port=3097;sid=15;type=3"]).await?;
+    let room = host.create_session(&open).await?;
+    host.add_participants(room, &[host.pid], &[]).await?;
+    let mut guest = ctx.player("Guest").await?;
+    let stranger = ctx.player("Stranger").await?;
+    ensure!(guest.search_sessions(&open).await?.iter().any(|(s, _)| *s == room), "the match isn't found");
+    guest.add_participants(room, &[guest.pid], &[]).await?;
+    guest.join_session(room).await?;
+    let seen = guest.match_players().await?;
+    ensure!(
+        seen.iter().any(|p| p.id == host.pid.to_string() && p.name == host.name && p.now),
+        "the guest doesn't see the host to report: {seen:?}"
+    );
+    ensure!(host.match_players().await?.iter().any(|p| p.id == guest.pid.to_string()), "the host doesn't see the guest");
+    let refused = |r: std::result::Result<String, tonic::Status>, code: tonic::Code, what: &str| -> Result<()> {
+        match r {
+            Err(s) if s.code() == code => Ok(()),
+            other => Err(eyre!("{what}: {other:?}")),
+        }
+    };
+    refused(
+        guest.report_player(host.pid, "wallhacks", "").await,
+        tonic::Code::InvalidArgument,
+        "a reason that isn't one",
+    )?;
+    refused(
+        guest.report_player(stranger.pid, "cheating", "").await,
+        tonic::Code::FailedPrecondition,
+        "a player never played with",
+    )?;
+    let id = guest.report_player(host.pid, "cheating", "Shot through walls all round").await?;
+    ensure!(!id.is_empty(), "no report id");
+    refused(
+        guest.report_player(host.pid, "griefing", "").await,
+        tonic::Code::ResourceExhausted,
+        "the same player again at once",
+    )?;
+    host.disconnect().await?;
+    stranger.disconnect().await?;
+    guest.disconnect().await
+}
+
 /// Relay passes (global matchmaking): a network's matchmaking server signs one at sign-in,
 /// which its own helper (and the network's relays that trust its key) answers with a ticket
 /// for that name, good to register with; a pass changed by a bit, or shown for another name,
@@ -3295,6 +3343,7 @@ const SCENARIOS: &[&str] = &[
     "choose-match",
     "relay-pass",
     "match-state",
+    "report-player",
     "identity-login",
     "rename",
     "direct-test",
@@ -3438,6 +3487,7 @@ async fn run() -> Result<()> {
                 "choose-match" => choose_match(&mut ctx).await,
                 "relay-pass" => relay_pass(&mut ctx).await,
                 "match-state" => match_state(&mut ctx).await,
+                "report-player" => report_player(&mut ctx).await,
                 "identity-login" => identity_login(&mut ctx).await,
                 "rename" => rename(&mut ctx).await,
                 "direct-test" => direct_test(&mut ctx).await,

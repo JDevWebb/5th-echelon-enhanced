@@ -226,6 +226,10 @@ pub struct Snapshot {
     /// What's being played on this server (`/api/playing`, servers from 0.4.4): public
     /// matches by mode, map and players, private matches and lobbies counted.
     pub playing: Option<server_api::playing::Playing>,
+    /// Who's in our match (`true`) or was in the last 30 minutes, to report (F5): id, name.
+    pub match_players: Vec<(String, String, bool)>,
+    /// The players we reported this game, by id.
+    pub reported: Vec<String>,
     /// Friends we know from other servers, by name key.
     known: std::collections::HashMap<String, Vec<Known>>,
 }
@@ -269,6 +273,11 @@ impl Snapshot {
         self.server.as_ref().is_some_and(|s| s.features.iter().any(|f| f == "choose-match"))
     }
 
+    /// Whether this server takes reports of players from the Match tab (F5).
+    pub fn report_offered(&self) -> bool {
+        self.server.as_ref().is_some_and(|s| s.features.iter().any(|f| f == "report-player"))
+    }
+
     /// The activity of the named player, if they're online and doing something.
     pub fn activity_of(&self, name: &str) -> Option<&str> {
         self.friends
@@ -294,6 +303,10 @@ enum Action {
     JoinRoom(u32, String),
     /// A new match asked for (true) or taken back.
     NewMatch(bool),
+    /// Who's in our match, or was lately (the Match tab's Report).
+    MatchPlayers,
+    /// A report of one of them: id, name, reason, our words.
+    ReportPlayer(String, String, &'static str, String),
     Change {
         change: FriendChange,
         id: String,
@@ -523,6 +536,16 @@ pub fn hosted_match() {
     *NEW_MATCH_UNTIL.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
 }
 
+/// Asks who's in our match, or was lately (the Match tab, as it's shown).
+pub fn match_players() {
+    send(Action::MatchPlayers);
+}
+
+/// Reports player `id` (`name`) for `reason` (cheating, griefing, name, other) in our words.
+pub fn report_player(id: String, name: String, reason: &'static str, text: String) {
+    send(Action::ReportPlayer(id, name, reason, text));
+}
+
 /// Searches players by part of their name (everyone online for "").
 pub fn search(query: String) {
     send(Action::Search(query));
@@ -641,6 +664,8 @@ pub fn start() {
                 Ok(Action::Search(query)) => search_now(&query),
                 Ok(Action::JoinRoom(room, line)) => join_room_now(room, &line),
                 Ok(Action::NewMatch(on)) => new_match_now(on),
+                Ok(Action::MatchPlayers) => match_players_now(),
+                Ok(Action::ReportPlayer(id, name, reason, text)) => report_player_now(&id, &name, reason, &text),
                 Ok(Action::Change { change, id, identity, name }) => {
                     change_now(change, &id, &identity, &name);
                     refresh_now();
@@ -738,6 +763,26 @@ fn new_match_now(on: bool) {
         Err(e) => {
             warn!("New match ({on}) failed: {e}");
             say(reason(&e).unwrap_or_else(|| String::from("Couldn't ask for a new match; try again.")), true);
+        }
+    }
+}
+
+fn match_players_now() {
+    match crate::api::match_players() {
+        Ok(players) => update(|s| s.match_players = players.into_iter().map(|p| (p.id, hooks_config::text::clip(&p.name, 32), p.now)).collect()),
+        Err(e) => warn!("Who's in our match: {e}"),
+    }
+}
+
+fn report_player_now(id: &str, name: &str, why: &str, text: &str) {
+    match crate::api::report_player(id, why, text) {
+        Ok(()) => {
+            update(|s| s.reported.push(id.to_string()));
+            say(format!("Reported {name} to the admins. Thanks: they'll look at the match."), false);
+        }
+        Err(e) => {
+            warn!("Reporting {name} failed: {e}");
+            say(reason(&e).unwrap_or_else(|| format!("Couldn't report {name}; try again.")), true);
         }
     }
 }

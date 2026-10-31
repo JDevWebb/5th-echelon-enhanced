@@ -225,6 +225,33 @@ pub fn new_match(on: bool) -> Result<u32, Error> {
     }))
 }
 
+/// Who we can report: in our match now, or in one in the last 30 minutes (F5).
+pub fn match_players() -> Result<Vec<server_api::misc::MatchPlayer>, Error> {
+    run(signed_in(|| async {
+        let mut client = connect!(MiscClient);
+        Ok(client
+            .match_players(tonic::Request::new(server_api::misc::MatchPlayersRequest {}))
+            .await?
+            .into_inner()
+            .players)
+    }))
+}
+
+/// Reports a player we played with lately to the network's admins (F5).
+pub fn report_player(id: &str, reason: &str, text: &str) -> Result<(), Error> {
+    run(signed_in(|| async {
+        let mut client = connect!(MiscClient);
+        client
+            .report_player(tonic::Request::new(server_api::misc::ReportPlayerRequest {
+                id: id.to_string(),
+                reason: reason.to_string(),
+                text: text.to_string(),
+            }))
+            .await?;
+        Ok(())
+    }))
+}
+
 /// Tells the server whether this game's match is under way (round_state.rs): it leaves a match
 /// its host says is under way out of searches. Failures are only logged.
 pub fn match_state(under_way: bool, state: &str) {

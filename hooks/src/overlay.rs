@@ -311,6 +311,9 @@ struct MyRenderLoop {
     /// A row's ⋯ menu asking first (Block or Remove), with the player's id: the menu shows what
     /// it does and Block / Remove or Cancel (the launcher's words).
     confirming: std::sync::Mutex<Option<(community::FriendChange, String)>>,
+    /// The Match tab's report being written: the player (id, name), the reason picked and
+    /// our words; and when it last asked who's in the match.
+    reporting: std::sync::Mutex<(Option<(String, String, usize, String)>, Option<Instant>)>,
     /// The panel just opened: log what it's drawn with on the next frame.
     log_draw_state: bool,
     /// Chat as last read (each frame the panel shows), the room shown, the open conversation,
@@ -1568,6 +1571,7 @@ impl MyRenderLoop {
                 ui.text_wrapped("While you're in a lobby: the players needed to start the match, and the most players allowed in it.");
             }
             self.choose_match(ui);
+            self.report_players(ui);
             return;
         };
         self.pane_title(ui, "Match", "Settings for the lobby you're in. Change them before the match starts.");
@@ -1583,6 +1587,74 @@ impl MyRenderLoop {
             ui.text_wrapped(format!("More than {size} players can crash or freeze the game for some players in this mode."));
         }
         self.choose_match(ui);
+        self.report_players(ui);
+    }
+
+    /// Report a player (the 0.4.8 plan's F5): who's in our match, or was in the last 30
+    /// minutes, each with Report; the report asks why and what happened, then goes to the
+    /// network's admins with the match.
+    fn report_players(&self, ui: &Ui) {
+        const REASONS: [(&str, &str); 4] = [("cheating", "Cheating"), ("griefing", "Griefing"), ("name", "Their name"), ("other", "Something else")];
+        if !self.data.report_offered() {
+            return;
+        }
+        let mut state = self.reporting.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        // Asked as the tab shows, every 10 s at most.
+        if state.1.is_none_or(|at| at.elapsed() > Duration::from_secs(10)) {
+            state.1 = Some(Instant::now());
+            community::match_players();
+        }
+        self.section(ui, "Report a player");
+        if self.data.match_players.is_empty() {
+            let _c = ui.push_style_color(StyleColor::Text, MUTED);
+            ui.text_wrapped("Players in your match, and in your matches of the last 30 minutes, show here to report to the admins.");
+            return;
+        }
+        let label = "Report##fe-report";
+        let w = self.button_width(ui, label);
+        for (i, (id, name, now)) in self.data.match_players.iter().enumerate() {
+            let reported = self.data.reported.contains(id);
+            let detail = match (reported, now) {
+                (true, _) => "Reported: the admins have it",
+                (false, true) => "In your match",
+                (false, false) => "In a match of yours lately",
+            };
+            let open = state.0.as_ref().is_some_and(|(o, ..)| o == id);
+            self.row_colored(ui, i, None, name, detail, MUTED, if reported || open { 0.0 } else { w }, || {
+                if self.button(ui, &format!("Report##fe-report-{:016x}", ui_id(id)), false) {
+                    state.0 = Some((id.clone(), name.clone(), 0, String::new()));
+                }
+            });
+            let Some((form_id, form_name, reason, text)) = state.0.as_mut().filter(|(o, ..)| o == id) else {
+                continue;
+            };
+            ui.text(format!("Why are you reporting {form_name}?"));
+            for (n, (_, shown)) in REASONS.iter().enumerate() {
+                if n > 0 {
+                    ui.same_line();
+                }
+                ui.radio_button(format!("{shown}##fe-report-reason-{n}"), reason, n);
+            }
+            ui.set_next_item_width(ui.content_region_avail()[0]);
+            ui.input_text("##fe-report-text", text).hint("What happened (optional)").build();
+            if text.chars().count() > 500 {
+                *text = text.chars().take(500).collect();
+            }
+            {
+                let _c = ui.push_style_color(StyleColor::Text, MUTED);
+                ui.text_wrapped("The admins get your report with the match and the server's log of it. Reports are for the admins only; the player isn't told who reported them.");
+            }
+            let send = self.button(ui, "Send report##fe-report-send", true);
+            ui.same_line();
+            let cancel = self.button(ui, "Cancel##fe-report-cancel", false);
+            if send {
+                community::report_player(form_id.clone(), form_name.clone(), REASONS[*reason].0, text.trim().to_string());
+            }
+            if send || cancel {
+                state.0 = None;
+            }
+            ui.dummy([0.0, self.s(6.0)]);
+        }
     }
 
     /// Choosing your match (the 0.4.8 plan's L2), on servers that offer it: a new public match
@@ -1942,6 +2014,7 @@ fn init_hudhook<T: hudhook::Hooks + 'static>(invites: crossbeam_channel::Receive
             search_text: String::new(),
             searched: false,
             confirming: std::sync::Mutex::new(None),
+            reporting: std::sync::Mutex::new((None, None)),
             log_draw_state: false,
             chat: chat::View::default(),
             chat_room: server_api::chat::Room::Global,

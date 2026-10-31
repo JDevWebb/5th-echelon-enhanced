@@ -1832,6 +1832,44 @@ impl Misc for MyMisc {
         }
     }
 
+    /// Who the player can report: in their match now, or in one in the last 30 minutes (F5).
+    async fn match_players(&self, request: Request<misc::MatchPlayersRequest>) -> Result<Response<misc::MatchPlayersResponse>, Status> {
+        let user_id = caller(&request)?;
+        if !crate::rate_limit::polls().check(user_id) {
+            return Err(Status::resource_exhausted("Too many requests; slow down"));
+        }
+        let players = crate::player_reports::players(&self.storage, user_id).await.map_err(internal)?;
+        Ok(Response::new(misc::MatchPlayersResponse {
+            players: players.into_iter().map(|(id, name, now)| misc::MatchPlayer { id: id.to_string(), name, now }).collect(),
+        }))
+    }
+
+    /// A report of a player the caller played with lately, for the network's admins (F5).
+    async fn report_player(&self, request: Request<misc::ReportPlayerRequest>) -> Result<Response<misc::ReportResponse>, Status> {
+        let user_id = caller(&request)?;
+        let peer = client_addr(&request);
+        let r = request.into_inner();
+        let target: u32 = r.id.parse().map_err(|_| Status::invalid_argument("Not a player"))?;
+        match crate::player_reports::report(&self.storage, user_id, peer, target, &r.reason, &r.text)
+            .await
+            .map_err(internal)?
+        {
+            Ok(id) => {
+                info!(self.logger, "Report {id}: {user_id} reported player {target} ({})", r.reason);
+                Ok(Response::new(misc::ReportResponse { id }))
+            }
+            Err(refused) => {
+                use crate::player_reports::Refused;
+                let message = refused.message();
+                Err(match refused {
+                    Refused::NotSeen => Status::failed_precondition(message),
+                    Refused::BadReason => Status::invalid_argument(message),
+                    Refused::Again | Refused::TooMany => Status::resource_exhausted(message),
+                })
+            }
+        }
+    }
+
     async fn test_p2p(&self, request: Request<misc::TestP2pRequest>) -> Result<Response<misc::TestP2pResponse>, Status> {
         if !crate::rate_limit::game_requests().check(caller(&request)?) {
             return Err(Status::resource_exhausted("Too many requests; slow down"));

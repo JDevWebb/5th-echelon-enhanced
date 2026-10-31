@@ -59,6 +59,7 @@ const KINDS: &[&str] = &[
     "log_sent",
     "room_update",
     "match_state",
+    "player_report",
     "relay_address_mismatch",
 ];
 
@@ -712,6 +713,12 @@ fn describe(e: &Event) -> String {
             if e.detail["under_way"] == true { "under way" } else { "joinable" },
             e.detail["state"].as_str().unwrap_or("?")
         ),
+        "player_report" => format!(
+            "Reported {} for {} (report {})",
+            e.detail["reported_name"].as_str().unwrap_or("a player"),
+            e.detail["reason"].as_str().unwrap_or("?"),
+            e.detail["report"].as_str().unwrap_or("?")
+        ),
         "relay_address_mismatch" => format!(
             "The relay {} sees this player on another network than this server does (carrier-grade NAT?): its address for them wasn't used",
             e.detail["relay"].as_str().unwrap_or("?")
@@ -902,6 +909,7 @@ fn mark_level(e: &Event) -> Option<&'static str> {
         "relay_drop" if e.detail["player_quiet"] == true => Some("warn"),
         "login_stalled" => Some("warn"),
         "search" if other_data(e).is_some() => Some("warn"),
+        "player_report" => Some("warn"),
         _ => None,
     }
 }

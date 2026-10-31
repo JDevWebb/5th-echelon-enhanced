@@ -24,6 +24,33 @@ service Misc {
     // JoinNow leave the match it hosts out while it is. Said on each change and every 30 s
     // while under way; forgotten 90 s after the last.
     rpc MatchState(MatchStateRequest) returns (MatchStateResponse);
+    // Who's in the player's match now, and who they played with in the last 30 minutes: who
+    // they can report (F5).
+    rpc MatchPlayers(MatchPlayersRequest) returns (MatchPlayersResponse);
+    // Reports a player they're playing or just played with to the network's admins, with the
+    // match and the server's log of it (F5). Limited as feedback is, and once a player a while.
+    rpc ReportPlayer(ReportPlayerRequest) returns (ReportResponse);
+}
+
+message MatchPlayersRequest {}
+message MatchPlayersResponse {
+    repeated MatchPlayer players = 1;
+}
+message MatchPlayer {
+    // The account id, what ReportPlayer takes.
+    string id = 1;
+    string name = 2;
+    // In the player's match now; else in one in the last 30 minutes.
+    bool now = 3;
+}
+
+message ReportPlayerRequest {
+    // A MatchPlayer's id.
+    string id = 1;
+    // "cheating", "griefing", "name" or "other".
+    string reason = 2;
+    // What happened, in the player's words (at most 500 characters).
+    string text = 3;
 }
 
 message MatchStateRequest {
