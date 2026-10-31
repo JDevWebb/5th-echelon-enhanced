@@ -14,11 +14,31 @@
   <template v-else>
     <section class="panel">
       <header>
-        <h2>Top down</h2>
-        <span class="small muted">positions only: the map isn't drawn (it would come from a copy of the game)</span>
+        <h2>{{ view === '3d' ? '3D' : 'Top down' }}</h2>
+        <span class="small muted">{{ mapNote }}</span>
+        <span class="spacer"></span>
+        <div class="seg" role="group" aria-label="View">
+          <button type="button" :aria-pressed="view === 'top'" @click="view = 'top'">Top down</button>
+          <button type="button" :aria-pressed="view === '3d'" @click="view = '3d'">3D</button>
+        </div>
       </header>
       <div class="viewer">
-        <canvas ref="canvas" class="map" :width="size.w" :height="size.h" role="img" :aria-label="`Characters at ${clock(t)}`"></canvas>
+        <canvas v-show="view === 'top'" ref="canvas" class="map" :width="size.w" :height="size.h" role="img" :aria-label="`Characters at ${clock(t)}`"></canvas>
+        <Replay3D v-if="view === '3d'" :rec="rec" :map="map" :t="t" :cut="cutOn ? cut : Infinity" :follow="follow" />
+        <div v-if="view === '3d'" class="controls">
+          <label class="small nowrap"><input v-model="cutOn" type="checkbox" /> Cut away above</label>
+          <input v-model.number="cut" :disabled="!cutOn" type="range" :min="cutRange[0]" :max="cutRange[1]" step="10" aria-label="Height cut away above" />
+          <span class="mono small nowrap">{{ Math.round(cut) }}</span>
+          <label class="small">Follow
+            <select v-model="follow">
+              <option :value="null">nobody (drag to look around)</option>
+              <option v-for="p in table" :key="p.id" :value="p.id">{{ p.name || `#${p.id}` }}</option>
+            </select>
+          </label>
+          <label class="small file">{{ map ? 'Another map file…' : 'Load the map file…' }}
+            <input type="file" accept=".femg" @change="loadMap" />
+          </label>
+        </div>
         <div class="controls">
           <button type="button" @click="toggle">{{ playing ? 'Pause' : 'Play' }}</button>
           <label class="small">Speed
@@ -29,7 +49,7 @@
           <input v-model.number="t" class="scrub" type="range" min="0" :max="rec.duration" step="100" aria-label="Time in the recording" />
           <span class="mono small nowrap">{{ clock(t) }} / {{ clock(rec.duration) }}</span>
         </div>
-        <div v-if="rec.box && rec.box.z1 - rec.box.z0 > 300" class="controls">
+        <div v-if="view === 'top' && rec.box && rec.box.z1 - rec.box.z0 > 300" class="controls">
           <label class="small nowrap">Heights {{ Math.round(zFrom) }} to {{ Math.round(zTo) }}</label>
           <input v-model.number="zFrom" type="range" :min="rec.box.z0" :max="rec.box.z1" step="10" aria-label="Lowest height shown" />
           <input v-model.number="zTo" type="range" :min="rec.box.z0" :max="rec.box.z1" step="10" aria-label="Highest height shown" />
@@ -84,9 +104,11 @@
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import PageTop from '../components/PageTop.vue';
+import Replay3D from '../components/Replay3D.vue';
 import Stat from '../components/Stat.vue';
 import { api, ApiError } from '../lib/api.js';
 import { fmt } from '../lib/fmt.js';
+import { keepMap, keptMap, readMap } from '../lib/mapgeo.js';
 import { findings, frameAt, index, readRecording } from '../lib/replay.js';
 import { session } from '../lib/session.js';
 
@@ -102,6 +124,44 @@ const speed = ref(1);
 const zFrom = ref(0);
 const zTo = ref(0);
 const size = ref({ w: 900, h: 600 });
+
+// The 3D view, and the map's geometry (map-geometry's file, from the admin's own game).
+const view = ref('top');
+const map = ref(null);
+const cutOn = ref(true);
+const cut = ref(0);
+const follow = ref(null);
+const cutRange = computed(() => (rec.value?.box ? [rec.value.box.z0 - 200, rec.value.box.z1 + 800] : [0, 1000]));
+const mapNote = computed(() => {
+  if (view.value === 'top') return 'positions only: the map is drawn in 3D';
+  if (map.value) return `the map from your game (${map.value.name}): drag to turn, scroll to zoom, right-drag to move`;
+  return `no map yet: make it with map-geometry from your game and load ${rec.value?.header.map || 'the map'}.femg`;
+});
+async function useMap(bytes, keep) {
+  try {
+    const m = await readMap(bytes);
+    if (rec.value?.header.map && m.name.toLowerCase() !== rec.value.header.map.toLowerCase()) {
+      error.value = `That's ${m.name}; this recording is on ${rec.value.header.map}.`;
+      setTimeout(() => { error.value = ''; }, 4000);
+      return;
+    }
+    map.value = Object.freeze(m);
+    if (keep) await keepMap(m.name, bytes);
+  } catch (e) {
+    error.value = `Couldn't read the map file: ${e.message}`;
+  }
+}
+async function loadMap(e) {
+  const file = e.target.files?.[0];
+  if (file) await useMap(new Uint8Array(await file.arrayBuffer()), true);
+  e.target.value = '';
+}
+watch(view, async v => {
+  if (v === '3d' && !map.value && rec.value?.header.map) {
+    const kept = await keptMap(rec.value.header.map);
+    if (kept) await useMap(kept, false);
+  }
+});
 
 const title = computed(() => rec.value?.header.map ? `Replay: ${rec.value.header.map}` : 'Replay');
 const sub = computed(() => {
@@ -160,7 +220,7 @@ async function load() {
       try {
         const { header, records } = await readRecording(new Uint8Array(await resp.arrayBuffer()));
         rec.value = { header, ...index(records) };
-        if (rec.value.box) { zFrom.value = rec.value.box.z0; zTo.value = rec.value.box.z1; }
+        if (rec.value.box) { zFrom.value = rec.value.box.z0; zTo.value = rec.value.box.z1; cut.value = rec.value.box.z1 + 150; }
         await nextTick();
         fit();
         draw();
@@ -325,6 +385,11 @@ onBeforeUnmount(() => {
 <style scoped>
 .viewer { display: grid; gap: 10px; }
 .map { width: 100%; height: auto; border-radius: var(--radius); border: 1px solid var(--line); }
+.spacer { flex: 1 1 auto; }
+.seg { display: inline-flex; gap: 4px; }
+.seg button[aria-pressed='true'] { background: var(--accent-soft); color: var(--text); }
+.file { position: relative; cursor: pointer; text-decoration: underline; }
+.file input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
 .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .scrub { flex: 1 1 240px; min-width: 0; }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; }

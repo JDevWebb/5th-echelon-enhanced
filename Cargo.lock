@@ -3558,6 +3558,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "map_geometry"
+version = "0.3.0"
+dependencies = [
+ "flate2",
+]
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -27,6 +27,7 @@ members = [
   "coordinator",
   "setup",
   "tools/umd_browser",
+  "tools/map_geometry",
   "tools/testbot",
 ]
 exclude = ["vendor"]

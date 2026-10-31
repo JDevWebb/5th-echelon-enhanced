@@ -1,0 +1,8 @@
+[package]
+name = "map_geometry"
+version = "0.3.0"
+edition = "2021"
+description = "A Spies vs Mercs map's geometry from the player's own copy of the game, for the 3D replay viewer (never shipped: built where the game is)"
+
+[dependencies]
+flate2 = { workspace = true }

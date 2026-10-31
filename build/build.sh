@@ -5,7 +5,8 @@
 #   build/build.sh server    Linux x86_64 dedicated_server and coordinator -> dist/
 #   build/build.sh linux     launcher-linux-x86_64 (DLL embedded) + dedicated_server-linux-x86_64 -> dist/
 #   build/build.sh sums      dist/SHA256SUMS for a release
-#   build/build.sh windows   launcher.exe (DLL embedded), uplay_r1_loader.dll, dedicated_server.exe, testbot.exe -> dist/
+#   build/build.sh windows   launcher.exe (DLL embedded), uplay_r1_loader.dll, dedicated_server.exe, testbot.exe,
+#                            map-geometry.exe -> dist/
 #   build/build.sh bots [scenario ...]
 #                            test players against a fresh local server (tools/testbot)
 #   build/build.sh tauri      the Tauri launcher for Windows and Linux x86_64 -> dist
@@ -112,7 +113,10 @@ case "${1:-test}" in
       cp /target/win/x86_64-pc-windows-msvc/release/dedicated_server.exe dist/dedicated_server.exe
       # The test bots, for running against the node from a Windows test PC.
       SODIUM_LIB_DIR=/tmp/sodium cargo xwin build -p testbot --release --target x86_64-pc-windows-msvc
-      cp /target/win/x86_64-pc-windows-msvc/release/testbot.exe dist/testbot.exe'
+      cp /target/win/x86_64-pc-windows-msvc/release/testbot.exe dist/testbot.exe
+      # The replay viewer'"'"'s map files, made by an admin from their own game.
+      cargo xwin build -p map_geometry --release --target x86_64-pc-windows-msvc
+      cp /target/win/x86_64-pc-windows-msvc/release/map-geometry.exe dist/map-geometry.exe'
     ;;
   bots)
     shift
