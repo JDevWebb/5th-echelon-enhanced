@@ -2506,6 +2506,79 @@ async fn cross_relay(ctx: &mut Ctx, relay: IpAddr) -> Result<()> {
     stranger.disconnect().await
 }
 
+/// Global matchmaking (G1 item 8): two players signed in to the matchmaking server
+/// (`--server`), each relayed at a different relay (`--other`, `--third`). The host's game
+/// sends to the guest's address on the other relay through its own, which forwards it; it
+/// arrives as relayed data from the host's address, once the matchmaking server says it put
+/// them together (the guest hosts a public match), and the reply finds its way back.
+async fn cross_relay_forward(ctx: &mut Ctx, relay_a: IpAddr, relay_b: IpAddr) -> Result<()> {
+    use nat_proto::Message;
+    let (at_a, at_b) = (nat_addr(relay_a, false)?, nat_addr(relay_b, false)?);
+    let near = ctx.player("Host").await?;
+    let mut far = ctx.player("Guest").await?;
+    let mut register = |p: &testbot::bot::Bot, at| {
+        let (name, pass) = (p.name.clone(), p.relay_pass.clone());
+        async move {
+            let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+            let ticket = testbot::bot::present_pass(&socket, at, &name, &pass)
+                .await?
+                .ok_or_else(|| eyre!("the relay didn't take {name}'s pass"))?;
+            let reg = testbot::bot::nat_register(&socket, at, nat_proto::probe_flags::WANT_RELAY, &name, ticket).await?;
+            ensure!(reg.relayed, "{name} isn't relayed: {reg:?}");
+            Ok::<_, eyre::Report>((socket, reg))
+        }
+    };
+    let (sa, ra) = register(&near, at_a).await?;
+    let (sb, rb) = register(&far, at_b).await?;
+    // Both relays report every 2 s.
+    tokio::time::sleep(Duration::from_secs(5)).await;
+    let send = |tag, to, payload: &[u8]| {
+        Message::DataTo {
+            tag,
+            to,
+            payload: payload.to_vec(),
+        }
+        .encode()
+    };
+    // Before the matchmaking server put them together: forwarded, but not delivered there.
+    sa.send_to(&send(ra.tag, rb.advertise, b"too soon"), at_a).await?;
+    ensure!(
+        nat_wait_data(&sb, Duration::from_millis(2500)).await.is_none(),
+        "relay B delivered a forwarded packet between players the matchmaking server didn't put together"
+    );
+    let game = far.create_session(PUBLIC_MATCH).await?;
+    far.add_participants(game, &[far.pid], &[]).await?;
+    // Near to far: through relay A, forwarded to relay B (asked about there first, so a packet
+    // or two may go before one is carried, as a game resends).
+    let mut carried = None;
+    for _ in 0..5 {
+        sa.send_to(&send(ra.tag, rb.advertise, b"to the far relay"), at_a).await?;
+        if let Some(Message::DataFrom { from, payload, .. }) = nat_wait_data(&sb, Duration::from_millis(800)).await {
+            carried = Some((from, payload));
+            break;
+        }
+    }
+    ensure!(
+        carried == Some((ra.advertise, b"to the far relay".to_vec())),
+        "the packet wasn't forwarded from relay A to relay B as from the host's address: {carried:?}"
+    );
+    // And back: far to near.
+    let mut back = None;
+    for _ in 0..5 {
+        sb.send_to(&send(rb.tag, ra.advertise, b"back again"), at_b).await?;
+        if let Some(Message::DataFrom { from, payload, .. }) = nat_wait_data(&sa, Duration::from_millis(800)).await {
+            back = Some((from, payload));
+            break;
+        }
+    }
+    ensure!(
+        back == Some((rb.advertise, b"back again".to_vec())),
+        "the reply didn't come back through both relays: {back:?}"
+    );
+    near.disconnect().await?;
+    far.disconnect().await
+}
+
 async fn nat_public_address(ctx: &mut Ctx) -> Result<()> {
     let mut a = ctx.player("Host").await?;
     let mut b = ctx.player("Guest").await?;
@@ -3186,6 +3259,13 @@ async fn run() -> Result<()> {
         other_host = Some(o);
         args.drain(i..=i + 1);
     }
+    // A third server (cross-relay-forward: a second relay).
+    let mut third: Option<IpAddr> = None;
+    if let Some(i) = args.iter().position(|a| a == "--third") {
+        let t = args.get(i + 1).ok_or_else(|| eyre!("--third needs an address"))?.clone();
+        third = Some(t.parse().ok().or_else(|| setup::net::resolve(&t)).ok_or_else(|| eyre!("can't resolve {t}"))?);
+        args.drain(i..=i + 1);
+    }
     let server: IpAddr = match host.parse() {
         Ok(ip) => ip,
         Err(_) => setup::net::resolve(&host).ok_or_else(|| eyre!("can't resolve {host}"))?,
@@ -3233,6 +3313,7 @@ async fn run() -> Result<()> {
         let limit = match name {
             "federation" => 300,
             "cross-relay" => 60,
+            "cross-relay-forward" => 60,
             "chat" => 120,
             "reconnect" | "closing-note" => 180,
             // About a dozen players and three parts (private refusals, a public match, one
@@ -3315,6 +3396,10 @@ async fn run() -> Result<()> {
                 "cross-relay" => match other {
                     Some(relay) => cross_relay(&mut ctx, relay).await,
                     None => Err(eyre!("cross-relay needs --other <the relay>")),
+                },
+                "cross-relay-forward" => match (other, third) {
+                    (Some(a), Some(b)) => cross_relay_forward(&mut ctx, a, b).await,
+                    _ => Err(eyre!("cross-relay-forward needs --other <a relay> --third <another relay>")),
                 },
                 other => Err(eyre!("unknown scenario {other:?} (known: {})", SCENARIOS.join(", "))),
             }

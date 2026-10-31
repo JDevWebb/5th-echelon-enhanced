@@ -29,6 +29,7 @@ const OP_REPORT: u8 = 1;
 const OP_ASK: u8 = 2;
 const OP_ANSWER: u8 = 3;
 const OP_EVENT: u8 = 4;
+const OP_FORWARD: u8 = 5;
 
 /// A player registered with a relay.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +62,15 @@ pub enum Body {
         name: String,
         kind: String,
         detail: String,
+    },
+    /// A game packet from a player of the sending relay (`from_name`, seen by the game at
+    /// `from`) for an address on the receiving relay (`to`): delivered there as relayed data
+    /// from `from`, once the matchmaking server says it put the two together (G1 item 8).
+    Forward {
+        from_name: String,
+        from: SocketAddrV4,
+        to: SocketAddrV4,
+        payload: Vec<u8>,
     },
 }
 
@@ -102,6 +112,7 @@ pub fn seal(key: &[u8; 32], from: &str, time: i64, body: &Body) -> Vec<u8> {
         Body::Ask { .. } => OP_ASK,
         Body::Answer { .. } => OP_ANSWER,
         Body::Event { .. } => OP_EVENT,
+        Body::Forward { .. } => OP_FORWARD,
     });
     out.extend_from_slice(&time.to_be_bytes());
     put_text(&mut out, from);
@@ -135,6 +146,14 @@ pub fn seal(key: &[u8; 32], from: &str, time: i64, body: &Body) -> Vec<u8> {
             }
             out.extend_from_slice(&(end as u16).to_be_bytes());
             out.extend_from_slice(&detail.as_bytes()[..end]);
+        }
+        Body::Forward { from_name, from, to, payload } => {
+            put_text(&mut out, from_name);
+            put_addr(&mut out, *from);
+            put_addr(&mut out, *to);
+            let payload = &payload[..payload.len().min(nat_proto::MAX_PAYLOAD)];
+            out.extend_from_slice(&(payload.len() as u16).to_be_bytes());
+            out.extend_from_slice(payload);
         }
     }
     let m = mac(key, &out);
@@ -234,6 +253,21 @@ pub fn open(data: &[u8], key: &[u8; 32], now: i64) -> Option<(String, Body)> {
                 detail: String::from_utf8_lossy(r.take(len)?).into_owned(),
             }
         }
+        OP_FORWARD => {
+            let from_name = r.text()?;
+            let from = r.addr()?;
+            let to = r.addr()?;
+            let len = usize::from(u16::from_be_bytes(r.take(2)?.try_into().ok()?));
+            if len > nat_proto::MAX_PAYLOAD {
+                return None;
+            }
+            Body::Forward {
+                from_name,
+                from,
+                to,
+                payload: r.take(len)?.to_vec(),
+            }
+        }
         _ => return None,
     };
     Some((from, body))
@@ -273,6 +307,12 @@ mod tests {
                 name: "Kiwi".into(),
                 kind: "relay_drop".into(),
                 detail: r#"{"direction":"to"}"#.into(),
+            },
+            Body::Forward {
+                from_name: "Kiwi".into(),
+                from: "5.6.7.8:40012".parse().unwrap(),
+                to: "9.9.9.9:40003".parse().unwrap(),
+                payload: vec![1; nat_proto::MAX_PAYLOAD],
             },
         ] {
             assert_eq!(open(&seal(&key, "mm", 5, &body), &key, 5), Some(("mm".to_string(), body)));

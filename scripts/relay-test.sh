@@ -4,7 +4,8 @@
 # server trusting its passes. Test players sign in to the matchmaking server, register at the
 # relay with their passes, and the matchmaking server gives the relay's addresses for them; the
 # relay carries traffic only between players the matchmaking server put together
-# (tools/testbot's cross-relay).
+# (tools/testbot's cross-relay). A second relay: players at the two reach each other, each
+# relay forwarding to the other (cross-relay-forward).
 #
 #   scripts/relay-test.sh <folder with dedicated_server, testbot and coordinator, in the build image>
 #
@@ -14,7 +15,7 @@ bin=${1:?folder with dedicated_server, testbot and coordinator}
 image=${IMAGE:-fes-build:local}
 mount=${BIN_MOUNT:--v fes-target:/target:ro}
 net=fes-relay-test
-cleanup() { docker rm -f fes-relay-coord fes-relay-mm fes-relay-syd >/dev/null 2>&1 || true; docker network rm "$net" >/dev/null 2>&1 || true; }
+cleanup() { docker rm -f fes-relay-coord fes-relay-mm fes-relay-syd fes-relay-eu >/dev/null 2>&1 || true; docker network rm "$net" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 cleanup
 docker network create "$net" >/dev/null
@@ -46,22 +47,25 @@ for _ in $(seq 100); do
 done
 [ -n "$key" ] || { echo "FAIL the matchmaking server logged no relay-pass key"; docker exec fes-relay-mm tail -20 /srv/fe/server.log; exit 1; }
 server fes-relay-syd relay-test "\n[role]\nkind = \"relay\"\nticket_key = \"$key\"\n"
-mm=$(ip fes-relay-mm) syd=$(ip fes-relay-syd)
+server fes-relay-eu relay-eu "\n[role]\nkind = \"relay\"\nticket_key = \"$key\"\n"
+mm=$(ip fes-relay-mm) syd=$(ip fes-relay-syd) eu=$(ip fes-relay-eu)
 for _ in $(seq 100); do docker exec fes-relay-mm bash -c 'exec 3<>/dev/tcp/127.0.0.1/50051' 2>/dev/null && break; sleep 0.2; done
 
 client() { docker run --rm --network "$net" $mount "$image" "$@"; }
 rc=0
-echo "--- the directory lists both helpers"
+echo "--- the directory lists both relays"
 n=0
 for _ in $(seq 60); do
-  n=$(client curl -sf "http://$coord:8700/v1/servers" | grep -o '"role":"\(game\|relay\)"' | wc -l || true)
+  n=$(client curl -sf "http://$coord:8700/v1/servers" | grep -o '"role":"relay"' | wc -l || true)
   [ "$n" -ge 2 ] && break; sleep 2
 done
-[ "$n" -ge 2 ] && echo "PASS both helpers listed" || { echo "FAIL helpers: $n"; client curl -s "http://$coord:8700/v1/servers"; rc=1; }
+[ "$n" -ge 2 ] && echo "PASS both relays listed" || { echo "FAIL helpers: $n"; client curl -s "http://$coord:8700/v1/servers"; rc=1; }
 # Links come with each member's next heartbeat (every 30 s) once both are listed.
 sleep 35
 echo "--- test players across the relay"
 client "$bin/testbot" --server "$mm" --other "$syd" cross-relay || rc=1
+echo "--- test players at two relays, forwarded between them"
+client "$bin/testbot" --server "$mm" --other "$syd" --third "$eu" cross-relay-forward || rc=1
 echo "--- the relay's session events reach the matchmaking server"
 events=0
 for _ in $(seq 20); do
@@ -70,6 +74,6 @@ for _ in $(seq 20); do
 done
 [ "$events" -ge 3 ] && echo "PASS the relay's registrations are in the matchmaking server's session events" || { echo "FAIL relay events: $events"; rc=1; }
 if [ $rc -ne 0 ]; then
-  for s in fes-relay-mm fes-relay-syd; do echo "--- $s (last 40 lines)"; docker exec "$s" tail -40 /srv/fe/server.log; done
+  for s in fes-relay-mm fes-relay-syd fes-relay-eu; do echo "--- $s (last 40 lines)"; docker exec "$s" tail -40 /srv/fe/server.log; done
 fi
 exit $rc

@@ -375,7 +375,22 @@ fn send_raw(socket: usize, data: &[u8], to: SocketAddrV4) -> i32 {
 }
 
 fn is_relay_address(r: &Reply, addr: SocketAddrV4) -> bool {
-    *addr.ip() == r.relay_ip && (r.relay_ports.0..=r.relay_ports.1).contains(&addr.port())
+    (*addr.ip() == r.relay_ip && (r.relay_ports.0..=r.relay_ports.1).contains(&addr.port()))
+        || NETWORK_RELAYS
+            .get()
+            .is_some_and(|relays| relays.iter().any(|(ip, first, last)| addr.ip() == ip && (*first..=*last).contains(&addr.port())))
+}
+
+/// The network's other relays' ranges (`networking.relays`): a player relayed at one is reached
+/// through this game's own relay, which forwards to theirs (global matchmaking).
+static NETWORK_RELAYS: OnceLock<Vec<(Ipv4Addr, u16, u16)>> = OnceLock::new();
+
+/// "IP:first-last" as a relay's range.
+fn relay_range(text: &str) -> Option<(Ipv4Addr, u16, u16)> {
+    let (ip, ports) = text.split_once(':')?;
+    let (first, last) = ports.split_once('-')?;
+    let (first, last) = (first.parse().ok()?, last.parse().ok()?);
+    (first > 0 && first <= last).then_some((ip.parse().ok()?, first, last))
 }
 
 fn to_hex(data: &[u8]) -> String {
@@ -981,6 +996,11 @@ pub unsafe fn init_hooks(config: &Config, addr: &Addresses) {
         // Its ticket comes from showing it the relay pass (set_pass), not from signing in.
         state().use_pass = true;
     }
+    let relays: Vec<_> = config.networking.relays.iter().filter_map(|r| relay_range(r)).take(64).collect();
+    if !relays.is_empty() {
+        info!("NAT: {} relays on the network; players at them are reached through ours", relays.len());
+        let _ = NETWORK_RELAYS.set(relays);
+    }
     match (addr.func_nat_echo_send, addr.func_nat_packet_parse) {
         (Some(send), Some(parse)) => {
             let _ = PARSE.set(parse);
@@ -1009,6 +1029,15 @@ pub unsafe fn deinit_hooks() {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_relays_range_reads_as_written() {
+        assert_eq!(relay_range("5.6.7.8:40000-40999"), Some((Ipv4Addr::new(5, 6, 7, 8), 40000, 40999)));
+        assert_eq!(relay_range("5.6.7.8:40999-40000"), None, "upside down");
+        assert_eq!(relay_range("5.6.7.8:0-10"), None);
+        assert_eq!(relay_range("relay.example:40000-40999"), None, "an address, not a name");
+        assert_eq!(relay_range("5.6.7.8"), None);
+    }
+
     use super::*;
 
     fn online(now: Instant) -> State {

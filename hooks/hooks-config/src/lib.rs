@@ -708,6 +708,10 @@ pub struct Networking {
     /// launcher picks the nearest). None: the game server's (`config_server`), as before.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nat_host: Option<String>,
+    /// The network's relays' address ranges ("IP:first-last"), from the matchmaking server: a
+    /// game packet for an address in one goes through this game's own relay, which forwards it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relays: Vec<String>,
     /// `ip_address` was worked out at start (nothing pinned), not set by the player.
     #[serde(skip)]
     pub ip_address_automatic: bool,
@@ -732,6 +736,7 @@ impl Default for Networking {
             port_mapping: true,
             nat_port: None,
             nat_host: None,
+            relays: Vec::new(),
             ip_address_automatic: false,
         }
     }
