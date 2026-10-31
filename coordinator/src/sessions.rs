@@ -704,8 +704,9 @@ fn describe(e: &Event) -> String {
                 .map(|(k, v)| format!("{k}: {} → {}", v[0].as_str().unwrap_or("none"), v[1].as_str().unwrap_or("none")))
                 .collect();
             format!(
-                "Room {} changed ({} in it): {}",
+                "Room {} changed{} ({} in it): {}",
                 e.detail["room"],
+                if e.detail["under_way"] == true { " during the match" } else { "" },
                 e.detail["members"].as_u64().map_or_else(|| "?".to_string(), |m| m.to_string()),
                 changes.join(", ")
             )
@@ -920,6 +921,14 @@ fn other_data(e: &Event) -> Option<String> {
 /// A timeline mark's level, where it isn't the kind's own (the admin UI colours the rest by
 /// kind): failed joins that are the game's churn or a full lobby, a player's own connection
 /// stalling, and a sign-in whose replies were lost.
+/// The attributes of a room's change that are its settings, not who's in it (seats 3 and 4, and
+/// 112, the free seats, move as players come and go).
+fn settings_changed(e: &Event) -> Vec<String> {
+    e.detail["changes"]
+        .as_object()
+        .map_or_else(Vec::new, |c| c.keys().filter(|k| !matches!(k.as_str(), "3" | "4" | "112")).cloned().collect())
+}
+
 /// Times a player's relayed traffic goes silent then floods (F6) before it's a problem, and
 /// over at least this long (seconds): more than one match.
 const LAG_SWITCH_TIMES: usize = 3;
@@ -937,6 +946,9 @@ fn mark_level(e: &Event) -> Option<&'static str> {
         "login_stalled" => Some("warn"),
         "search" if other_data(e).is_some() => Some("warn"),
         "player_report" => Some("warn"),
+        // F4: the host changed the match's settings, or removed someone, during the match.
+        "room_update" if e.detail["under_way"] == true && !settings_changed(e).is_empty() => Some("warn"),
+        "leave" if e.detail["under_way"] == true && e.str("how") == "removed" => Some("warn"),
         "fair_play" => Some("warn"),
         "relay_gaps" if e.detail["bursts"].as_i64().unwrap_or(0) > 0 => Some("warn"),
         _ => None,
@@ -1131,6 +1143,26 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
                         format!("{to} didn't pick it up within two minutes (offline, or their game had left the online menus)"),
                     ));
                 }
+            }
+            // The host changed the match's settings during it (F4): once a room, on the first.
+            "room_update" if e.detail["under_way"] == true && !settings_changed(e).is_empty() => {
+                let Some(list) = by_who.get(&e.who()) else { continue };
+                let earlier = list
+                    .iter()
+                    .any(|o| o.kind == "room_update" && o.room() == e.room() && o.detail["under_way"] == true && o.at < e.at && !settings_changed(o).is_empty());
+                if earlier {
+                    continue;
+                }
+                out.push(problem(
+                    e,
+                    "warn",
+                    format!("{} changed their match's settings during it", e.name),
+                    format!(
+                        "Attributes {} of room {} changed while the host's game said the round was running (respawn times or round length, perhaps: the host's 2013 trick). Watch their matches",
+                        settings_changed(e).join(", "),
+                        e.detail["room"]
+                    ),
+                ));
             }
             // Silences then bursts in what they send through the relay (F6), again and again
             // and over more than one match's time: how a lag switch looks. Once, on the third.
@@ -1835,6 +1867,26 @@ mod tests {
         // An old failed join that was no fault of the game's keeps the kind's colour.
         let t = super::timelines(&old[3..], &[], &std::collections::HashMap::new(), 0, 100);
         assert!(t[0]["marks"][0].get("level").is_none());
+    }
+
+    /// F4: a host changing a running match's settings is a problem once a room; seats moving
+    /// as players come and go, or a change in the lobby, isn't; a removal mid-match is marked.
+    #[test]
+    fn a_host_changing_settings_mid_match_is_a_problem_once() {
+        let u = |at: i64, under_way: bool, changes: serde_json::Value| ev("eu", at, 9, "Oni", "room_update", json!({ "room": 77, "changes": changes, "under_way": under_way }));
+        let seats = u(1000, true, json!({ "112": ["4", "3"] }));
+        let lobby = u(1010, false, json!({ "105": ["0", "2"] }));
+        let respawn = u(1100, true, json!({ "105": ["2", "9"], "112": ["3", "2"] }));
+        let again = u(1200, true, json!({ "105": ["9", "12"] }));
+        assert_eq!(mark_level(&seats), None);
+        assert_eq!(mark_level(&lobby), None);
+        assert_eq!(mark_level(&respawn), Some("warn"));
+        assert!(describe(&respawn).starts_with("Room 77 changed during the match"));
+        let found = problems(&[seats, lobby, respawn, again]);
+        let titles: Vec<&str> = found.iter().filter_map(|p| p["title"].as_str()).collect();
+        assert_eq!(titles, ["Oni changed their match's settings during it"]);
+        let removed = ev("eu", 1300, 5, "Kiwi", "leave", json!({ "room": 77, "how": "removed", "by": 9, "under_way": true }));
+        assert_eq!(mark_level(&removed), Some("warn"));
     }
 
     /// Silences then bursts through the relay (F6): one problem on the third, over more than one

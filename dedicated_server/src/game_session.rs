@@ -625,6 +625,11 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // round settings changed mid-match), with how many are in the room then.
         if let Some(changes) = before.as_deref().and_then(|b| attribute_changes(b, &attributes)) {
             let mut detail = serde_json::json!({ "room": session_id, "changes": changes });
+            // During the match, as the host's game says (F4: a host changing the round's
+            // settings mid-match).
+            if crate::match_started::host_says_under_way(session_id) {
+                detail["under_way"] = true.into();
+            }
             if let Ok(Some((members, seats))) = self.storage.room_seats(session_id) {
                 detail["members"] = members.into();
                 detail["seats"] = seats.into();
@@ -943,7 +948,10 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             crate::session_events::note(
                 crate::session_events::Who::Id(removed),
                 "leave",
-                serde_json::json!({ "room": request.game_session_key.session_id, "how": "removed", "by": user_id }),
+                serde_json::json!({
+                    "room": request.game_session_key.session_id, "how": "removed", "by": user_id,
+                    "under_way": crate::match_started::host_says_under_way(request.game_session_key.session_id),
+                }),
             );
         }
         Ok(RemoveParticipantsResponse)

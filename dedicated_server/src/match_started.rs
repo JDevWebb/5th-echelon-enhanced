@@ -101,6 +101,16 @@ pub fn host_says(rooms: &[u32], under_way: bool) {
     }
 }
 
+/// Whether `room`'s host's game says its match is under way now (M2): what it does then is
+/// done mid-match (F4). Not refusal marks, which are about joins.
+pub fn host_says_under_way(room: u32) -> bool {
+    let state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    state
+        .hosts
+        .get(&room)
+        .is_some_and(|(under_way, at)| *under_way && Instant::now().saturating_duration_since(*at) < HOST_SAYS_FOR)
+}
+
 /// Whether `room`'s match looks started (see the module's comment), or its host's game says
 /// it's under way.
 pub fn started(room: u32) -> bool {
