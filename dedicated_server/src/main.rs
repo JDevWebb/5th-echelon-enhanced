@@ -106,6 +106,7 @@ mod recent_log;
 mod relay_pass;
 mod relays;
 mod reports;
+mod round_settings;
 mod search_steer;
 mod secure;
 mod self_update;

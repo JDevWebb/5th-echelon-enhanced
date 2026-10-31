@@ -55,6 +55,7 @@ const KINDS: &[&str] = &[
     "relay_drop",
     "relay_gaps",
     "fair_play",
+    "round_settings",
     "login_stalled",
     "request_error",
     "report_refused",
@@ -745,6 +746,14 @@ fn describe(e: &Event) -> String {
             "In a room, but the game hadn't registered for online play {} s later: nobody could reach it",
             e.detail["after_secs"]
         ),
+        "round_settings" if e.detail["during"] == true => format!("The round's settings changed while it ran: {}", setting_changes(e)),
+        "round_settings" => format!(
+            "A round started: {}",
+            e.detail["settings"]
+                .as_object()
+                .map(|m| m.iter().map(|(k, v)| format!("{} {}", setting_name(k), v)).collect::<Vec<_>>().join(", "))
+                .unwrap_or_default()
+        ),
         "fair_play" => format!(
             "The add-on's {} check: {}{}",
             match e.detail["check"].as_str() {
@@ -921,6 +930,44 @@ fn other_data(e: &Event) -> Option<String> {
 /// A timeline mark's level, where it isn't the kind's own (the admin UI colours the rest by
 /// kind): failed joins that are the game's churn or a full lobby, a player's own connection
 /// stalling, and a sign-in whose replies were lost.
+/// A round setting's script name as the admins read it ("m_fRespawnTimeSpyTeam": "spies'
+/// respawn time").
+fn setting_name(name: &str) -> String {
+    match name {
+        "m_fRespawnTime" => "respawn time".into(),
+        "m_fGenericRespawnTime" => "respawn time (generic)".into(),
+        "m_fRespawnTimeSpyTeam" => "spies' respawn time".into(),
+        "m_fRespawnTimeMercTeam" => "mercs' respawn time".into(),
+        "m_fRespawnTimeDefendingTeam" => "defenders' respawn time".into(),
+        "m_fRespawnTimeCourierTeam" => "couriers' respawn time".into(),
+        "m_fRespawnDelayMin" => "least respawn delay".into(),
+        "m_fRespawnDelayMax" => "most respawn delay".into(),
+        "m_fAutoRespawnTime" => "auto respawn time".into(),
+        "m_fCurrentRoundTimeLimit" => "round time limit".into(),
+        "m_iScoreLimit" => "score limit".into(),
+        "m_iSuddenDeathScoreLimit" => "sudden death score limit".into(),
+        "m_nSecondRoundScoreLimit" => "second round score limit".into(),
+        "m_iRespawnLimit" => "respawn limit".into(),
+        other => other.to_string(),
+    }
+}
+
+/// A round's settings changes, "spies' respawn time 5 → 500".
+fn setting_changes(e: &Event) -> String {
+    e.detail["changes"]
+        .as_object()
+        .map(|m| {
+            m.iter()
+                .map(|(k, v)| {
+                    let at = |i: usize| v[i].as_f64().map_or_else(|| "none".to_string(), |x| x.to_string());
+                    format!("{} {} → {}", setting_name(k), at(0), at(1))
+                })
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_default()
+}
+
 /// The attributes of a room's change that are its settings, not who's in it (seats 3 and 4, and
 /// 112, the free seats, move as players come and go).
 fn settings_changed(e: &Event) -> Vec<String> {
@@ -950,6 +997,7 @@ fn mark_level(e: &Event) -> Option<&'static str> {
         "room_update" if e.detail["under_way"] == true && !settings_changed(e).is_empty() => Some("warn"),
         "leave" if e.detail["under_way"] == true && e.str("how") == "removed" => Some("warn"),
         "fair_play" => Some("warn"),
+        "round_settings" if e.detail["during"] == true => Some("warn"),
         "relay_gaps" if e.detail["bursts"].as_i64().unwrap_or(0) > 0 => Some("warn"),
         _ => None,
     }
@@ -1143,6 +1191,18 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
                         format!("{to} didn't pick it up within two minutes (offline, or their game had left the online menus)"),
                     ));
                 }
+            }
+            // The host's game's round settings changed while the round ran (F4): each time.
+            "round_settings" if e.detail["during"] == true => {
+                out.push(problem(
+                    e,
+                    "bad",
+                    format!("{}'s round settings changed while the round ran", e.name),
+                    format!(
+                        "{} (the host's 2013 trick: the other team's respawn pushed out). Watch the match and their reports",
+                        setting_changes(e)
+                    ),
+                ));
             }
             // The host changed the match's settings during it (F4): once a room, on the first.
             "room_update" if e.detail["under_way"] == true && !settings_changed(e).is_empty() => {
@@ -1887,6 +1947,33 @@ mod tests {
         assert_eq!(titles, ["Oni changed their match's settings during it"]);
         let removed = ev("eu", 1300, 5, "Kiwi", "leave", json!({ "room": 77, "how": "removed", "by": 9, "under_way": true }));
         assert_eq!(mark_level(&removed), Some("warn"));
+    }
+
+    /// F4: a round's settings as it starts are described; a change while it runs is a problem.
+    #[test]
+    fn round_settings_changed_while_it_ran_are_a_problem() {
+        let start = ev(
+            "eu",
+            1000,
+            9,
+            "Oni",
+            "round_settings",
+            json!({ "start": true, "settings": { "m_fRespawnTimeSpyTeam": 5.0, "m_iScoreLimit": 3 } }),
+        );
+        let during = ev(
+            "eu",
+            1100,
+            9,
+            "Oni",
+            "round_settings",
+            json!({ "during": true, "changes": { "m_fRespawnTimeMercTeam": [5.0, 500.0] } }),
+        );
+        assert_eq!(describe(&start), "A round started: spies' respawn time 5.0, score limit 3");
+        assert_eq!(describe(&during), "The round's settings changed while it ran: mercs' respawn time 5 → 500");
+        assert_eq!((mark_level(&start), mark_level(&during)), (None, Some("warn")));
+        let found = problems(&[start, during]);
+        let titles: Vec<&str> = found.iter().filter_map(|p| p["title"].as_str()).collect();
+        assert_eq!(titles, ["Oni's round settings changed while the round ran"]);
     }
 
     /// Silences then bursts through the relay (F6): one problem on the third, over more than one

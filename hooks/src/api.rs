@@ -273,13 +273,14 @@ pub fn report_player(id: &str, reason: &str, text: &str) -> Result<(), Error> {
 
 /// Tells the server whether this game's match is under way (round_state.rs): it leaves a match
 /// its host says is under way out of searches. Failures are only logged.
-pub fn match_state(under_way: bool, state: &str) {
+pub fn match_state(under_way: bool, state: &str, settings: &std::collections::BTreeMap<String, f32>) {
     let result = run(signed_in(|| async {
         let mut client = connect!(MiscClient);
         client
             .match_state(tonic::Request::new(server_api::misc::MatchStateRequest {
                 under_way,
                 state: state.to_string(),
+                settings: settings.iter().map(|(k, v)| (k.clone(), *v)).collect(),
             }))
             .await?;
         Ok(())

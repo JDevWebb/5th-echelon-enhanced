@@ -18,6 +18,11 @@
 //! - a property's byte offset in its object: the u16 at `+0x3a` (`UByteProperty`'s reads
 //!   and its link, which aligns it).
 //!
+//! With the state go the round's settings as the manager has them ([`SETTINGS`]: respawn
+//! times, the time limit, score and respawn limits; F4), found the same way on the manager's
+//! class or the classes it's made from: a host changing them during a round is shown to the
+//! admins. Floats are `m_f…`, the rest 32-bit integers.
+//!
 //! The live match manager is an instance of one of the concrete classes below, named after its
 //! class with a number (suffix + 1) that rises with each match. Only the DirectX 11 build
 //! (Steam's and Ubisoft's are the same code), checked by the hash lookup's bytes before any
@@ -81,6 +86,21 @@ const ROUND_STATES: [&str; 7] = [
     "RoundState_SuddenDeath",
     "RoundState_PostMatch",
 ];
+/// The round's settings read from the match manager (F4), with the class each is on
+/// (echelon.u's exports): EAdversarialMatchManager's for every Spies vs Mercs mode,
+/// ESpyVSMercMatchManager's team respawn times, ECTIMatchManager's (extraction).
+const SETTINGS: [&str; 9] = [
+    "m_fGenericRespawnTime",
+    "m_fAutoRespawnTime",
+    "m_fCurrentRoundTimeLimit",
+    "m_iScoreLimit",
+    "m_iSuddenDeathScoreLimit",
+    "m_fRespawnTimeSpyTeam",
+    "m_fRespawnTimeMercTeam",
+    "m_fRespawnTimeDefendingTeam",
+    "m_fRespawnTimeCourierTeam",
+];
+
 const MISSION_STATES: [&str; 3] = ["CoopMissionState_None", "CoopMissionState_InGame", "CoopMissionState_Results"];
 
 /// What the game's match state says: its name, and whether the match is under way.
@@ -135,6 +155,8 @@ struct Found {
     classes: HashMap<&'static str, usize>,
     round_offset: Option<u16>,
     mission_offset: Option<u16>,
+    /// Each setting's properties (objects named so, of whichever class).
+    settings: Vec<(&'static str, Vec<usize>)>,
 }
 
 /// The name indices of `wanted`, from the name table (once: it holds tens of thousands).
@@ -159,6 +181,7 @@ fn name_indices(wanted: &[&'static str]) -> HashMap<&'static str, u32> {
 fn look_up() -> Option<Found> {
     let mut wanted: Vec<&'static str> = ADVERSARIAL.iter().chain(COOPERATIVE.iter()).copied().collect();
     wanted.extend(["Class", "m_eRoundState", "m_missionState"]);
+    wanted.extend(SETTINGS);
     let names = name_indices(&wanted);
     let class_name = *names.get("Class")?;
     // A class: the object with the class's name whose own class is named "Class".
@@ -178,12 +201,49 @@ fn look_up() -> Option<Found> {
         let object = named(pack(*names.get(property)?, 0)).into_iter().find(|o| read_u32(o + 0x18) == Some(owner as u32))?;
         read::<u16>(object + 0x3a)
     };
+    let settings = SETTINGS
+        .iter()
+        .filter_map(|s| Some((*s, named(pack(*names.get(s)?, 0)))))
+        .filter(|(_, props)| !props.is_empty())
+        .collect();
     Some(Found {
         round_offset: offset("m_eRoundState", "EAdversarialMatchManager"),
         mission_offset: offset("m_missionState", "ECooperativeMatchManager"),
+        settings,
         names,
         classes,
     })
+}
+
+/// A class and those it's made from (its supers), nearest first.
+fn chain(class: usize) -> Vec<u32> {
+    let mut out = Vec::new();
+    let mut c = class as u32;
+    while c != 0 && out.len() < 32 {
+        out.push(c);
+        c = read_u32(c as usize + 0x28).unwrap_or(0);
+    }
+    out
+}
+
+/// The round's settings on the match manager `object`: each of [`SETTINGS`] its class (or one
+/// it's made from) has, with its value.
+fn settings_of(found: &Found, object: usize) -> std::collections::BTreeMap<String, f32> {
+    let classes = read_u32(object + 0x24).map(|c| chain(c as usize)).unwrap_or_default();
+    let mut out = std::collections::BTreeMap::new();
+    for (name, props) in &found.settings {
+        let Some(prop) = props.iter().find(|p| read_u32(*p + 0x18).is_some_and(|outer| classes.contains(&outer))) else {
+            continue;
+        };
+        let Some(offset) = read::<u16>(prop + 0x3a) else { continue };
+        let at = object + usize::from(offset);
+        #[allow(clippy::cast_precision_loss)]
+        let value = if name.starts_with("m_f") { read::<f32>(at) } else { read::<i32>(at).map(|v| v as f32) };
+        if let Some(v) = value.filter(|v| v.is_finite()) {
+            out.insert((*name).to_string(), v);
+        }
+    }
+    out
 }
 
 /// The live match manager: a living instance of one of the concrete classes, searched from the
@@ -223,6 +283,7 @@ pub fn start() {
         let mut looked: Option<Instant> = None;
         let mut numbers = HashMap::new();
         let mut said: Option<(String, bool, Instant)> = None;
+        let mut said_settings: Option<std::collections::BTreeMap<String, f32>> = None;
         loop {
             std::thread::sleep(READ_EVERY);
             // Looked up once the script classes are loaded (the first match manager).
@@ -241,12 +302,19 @@ pub fn start() {
                 }
             }
             let Some(f) = &found else { continue };
-            let now = manager(f, &mut numbers).and_then(|(object, adversarial)| {
+            let live = manager(f, &mut numbers);
+            let now = live.and_then(|(object, adversarial)| {
                 let offset = if adversarial { f.round_offset } else { f.mission_offset }?;
                 Some(meaning(adversarial, read::<u8>(object + usize::from(offset))?))
             });
+            let settings = live.map(|(object, _)| settings_of(f, object)).unwrap_or_default();
             let (state, under_way) = now.unwrap_or_else(|| ("none".to_string(), false));
-            let changed = said.as_ref().is_none_or(|(s, _, _)| *s != state);
+            // The round's settings changing while it runs is said at once too (F4).
+            let settings_changed = under_way && said_settings.as_ref().is_some_and(|s| *s != settings);
+            if settings != said_settings.clone().unwrap_or_default() {
+                info!("Match settings: {settings:?}");
+            }
+            let changed = said.as_ref().is_none_or(|(s, _, _)| *s != state) || settings_changed;
             let again = under_way && said.as_ref().is_some_and(|(_, _, at)| at.elapsed() >= SAY_AGAIN);
             if changed || again {
                 if changed {
@@ -254,10 +322,11 @@ pub fn start() {
                 }
                 // Nothing to say before the first match, nor of no match after a joinable one.
                 if under_way || said.as_ref().is_some_and(|(_, u, _)| *u) || (changed && said.is_some()) {
-                    crate::api::match_state(under_way, &state);
+                    crate::api::match_state(under_way, &state, &settings);
                 }
                 said = Some((state, under_way, Instant::now()));
             }
+            said_settings = Some(settings);
         }
     });
     if let Err(e) = spawned {

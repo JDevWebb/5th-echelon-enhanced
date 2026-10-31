@@ -1181,7 +1181,11 @@ impl Bot {
 
     pub async fn match_state(&self, under_way: bool, state: &str) -> std::result::Result<(), tonic::Status> {
         MiscClient::new(self.api.clone())
-            .match_state(self.authed(server_api::misc::MatchStateRequest { under_way, state: state.into() }))
+            .match_state(self.authed(server_api::misc::MatchStateRequest {
+                under_way,
+                state: state.into(),
+                settings: Default::default(),
+            }))
             .await?;
         Ok(())
     }

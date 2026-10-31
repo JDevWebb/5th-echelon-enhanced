@@ -1752,6 +1752,14 @@ impl Misc for MyMisc {
                 serde_json::json!({ "state": state, "under_way": r.under_way, "rooms": rooms }),
             );
         }
+        // The round's settings (F4): noted as a round starts, and any change while it runs.
+        if !rooms.is_empty() {
+            if let Some(detail) = crate::round_settings::said(user_id, r.under_way, &r.settings) {
+                let mut detail = detail;
+                detail["rooms"] = serde_json::json!(rooms);
+                crate::session_events::note(crate::session_events::Who::Id(user_id), "round_settings", detail);
+            }
+        }
         Ok(Response::new(misc::MatchStateResponse {}))
     }
 
