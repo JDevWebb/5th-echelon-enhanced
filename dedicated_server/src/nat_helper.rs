@@ -99,8 +99,10 @@ fn mac(key: &[u8; 32], parts: &[&[u8]]) -> [u8; 32] {
 /// The ticket that lets `name`'s game register with the helper: handed out at
 /// sign-in (`Users.Login`), good for [`TICKET_DAYS`] days. None when the
 /// helper isn't running.
-pub fn ticket_for(name: &str) -> Option<nat_proto::Ticket> {
-    Some(ticket_on(KEYS.get()?, name, today()))
+/// With the game's session key (`key`, 0.4.8 on), the ticket names it, and only a probe signed
+/// with that key may use it.
+pub fn ticket_for(name: &str, key: Option<&nat_proto::SessionKey>) -> Option<nat_proto::Ticket> {
+    Some(ticket_on(KEYS.get()?, name, today(), key))
 }
 
 /// Days a ticket works: the day it was issued and the next six. The game
@@ -114,20 +116,53 @@ fn today() -> u64 {
 }
 
 /// The ticket for `name` issued on `day` (days since 1970): the day's low 16
-/// bits, then a MAC of the name and the day.
-fn ticket_on(keys: &Keys, name: &str, day: u64) -> nat_proto::Ticket {
-    let full = mac(&keys.ticket, &[b"fes-nat-ticket-v2", identity::name_key(name).as_bytes(), &day.to_be_bytes()]);
+/// bits, then a MAC of the name and the day (and the game's session key, when it has one).
+fn ticket_on(keys: &Keys, name: &str, day: u64, key: Option<&nat_proto::SessionKey>) -> nat_proto::Ticket {
+    let name = identity::name_key(name);
+    let day_bytes = day.to_be_bytes();
+    let full = match key {
+        None => mac(&keys.ticket, &[b"fes-nat-ticket-v2", name.as_bytes(), &day_bytes]),
+        Some(k) => mac(&keys.ticket, &[b"fes-nat-ticket-v3", name.as_bytes(), &day_bytes, k]),
+    };
     let mut ticket = [0; 16];
     ticket[..2].copy_from_slice(&(day as u16).to_be_bytes());
     ticket[2..].copy_from_slice(&full[..14]);
     ticket
 }
 
-/// Whether `ticket` is `name`'s and still good on `today`.
-fn ticket_valid(keys: &Keys, name: &str, ticket: &nat_proto::Ticket, today: u64) -> bool {
+/// Whether `ticket` is `name`'s (for the session key `key`, when the probe carries one) and
+/// still good on `today`.
+fn ticket_valid(keys: &Keys, name: &str, ticket: &nat_proto::Ticket, today: u64, key: Option<&nat_proto::SessionKey>) -> bool {
     let issued = u16::from_be_bytes([ticket[0], ticket[1]]);
     let age = u64::from((today as u16).wrapping_sub(issued));
-    age < TICKET_DAYS && same(&ticket_on(keys, name, today - age), ticket)
+    age < TICKET_DAYS && same(&ticket_on(keys, name, today - age, key), ticket)
+}
+
+/// Whether probes and relay passes must carry the game's session key: once every client the
+/// server lets in sends one (0.4.8 on). Until then a ticket without one works as before.
+fn keyed_only() -> bool {
+    crate::clients::minimum_at_least([0, 4, 8])
+}
+
+/// Whether `from` may have one more session signature checked now (a check costs a little;
+/// a game probes a few times a second while it finds its address, then every 20 s).
+fn may_check_signature(from: IpAddr, now: Instant) -> bool {
+    const PER_ADDRESS: u32 = 40;
+    const WINDOW: Duration = Duration::from_secs(10);
+    static SEEN: std::sync::LazyLock<Mutex<HashMap<IpAddr, (Instant, u32)>>> = std::sync::LazyLock::new(Default::default);
+    let mut seen = SEEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if seen.len() >= 20_000 && !seen.contains_key(&from) {
+        seen.retain(|_, (at, _)| now.duration_since(*at) < WINDOW);
+        if seen.len() >= 20_000 {
+            return false;
+        }
+    }
+    let entry = seen.entry(from).or_insert((now, 0));
+    if now.duration_since(entry.0) >= WINDOW {
+        *entry = (now, 0);
+    }
+    entry.1 += 1;
+    entry.1 <= PER_ADDRESS
 }
 
 /// The cookie for a probe from `src` for `name`, in time bucket `bucket`
@@ -1821,10 +1856,17 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
         // helper's own ticket for its name, which its probes then carry.
         if let Some(Message::TicketPresent { nonce, name, day, signature }) = Message::decode(data) {
             if let Some(keys) = KEYS.get() {
-                if crate::relay_pass::valid(&name, day, &signature, IpAddr::V4(*src.ip())) {
+                // A pass for a session key: the present signed with it, and the pass naming it.
+                let session = nat_proto::key_of(data);
+                let signed = match &session {
+                    Some((k, sig)) => may_check_signature(IpAddr::V4(*src.ip()), now) && identity::verify_bytes(k, &nat_proto::present_message(nonce, &name, day), sig),
+                    None => !keyed_only(),
+                };
+                let key = session.as_ref().map(|(k, _)| k);
+                if signed && crate::relay_pass::valid(&name, day, &signature, IpAddr::V4(*src.ip()), key) {
                     let grant = Message::TicketGrant {
                         nonce,
-                        ticket: ticket_on(keys, &name, today()),
+                        ticket: ticket_on(keys, &name, today(), key),
                     };
                     let _ = socket.send_to(&grant.encode(), src);
                 } else {
@@ -1856,8 +1898,12 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                 continue;
             }
             let Some(keys) = KEYS.get() else { continue };
+            // The game's session key (0.4.8 on): its ticket names it. Without one, a ticket
+            // works as before until the server takes only clients that send one.
+            let session = nat_proto::key_of(data);
+            let key = session.as_ref().map(|(k, _)| k);
             // No ticket for this name: it only learns its address (the launcher's test).
-            if name.is_empty() || !ticket_valid(keys, &name, &ticket, today()) {
+            if name.is_empty() || (key.is_none() && keyed_only()) || !ticket_valid(keys, &name, &ticket, today(), key) {
                 let _ = socket.send_to(&address_only(nonce, src, [0; 16]).encode(), src);
                 continue;
             }
@@ -1867,6 +1913,14 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
             if !proved {
                 let _ = socket.send_to(&address_only(nonce, src, cookie_for(keys, src, &name, bucket)).encode(), src);
                 continue;
+            }
+            // And holds the key: the probe that echoes the cookie signs it (a ticket copied off
+            // the wire, with its key's public half, isn't enough).
+            if let Some((k, sig)) = &session {
+                if !may_check_signature(IpAddr::V4(*src.ip()), now) || !identity::verify_bytes(k, &nat_proto::probe_message(nonce, &cookie, &name), sig) {
+                    debug!(logger, "NAT helper: a probe from {src} for {name:?} wasn't signed with its session key");
+                    continue;
+                }
             }
             let (reply, count, relayed, new) = {
                 let Ok(mut t) = table.lock() else { continue };
@@ -2387,22 +2441,29 @@ mod tests {
     #[test]
     fn tickets_name_one_account_and_cookies_one_address() {
         let _ = KEYS.set(Keys { ticket: [1; 32], cookie: [2; 32] });
-        assert_eq!(ticket_for("Kiwi"), ticket_for("kiwi"), "any case");
-        assert_ne!(ticket_for("Kiwi"), ticket_for("Tank"));
+        assert_eq!(ticket_for("Kiwi", None), ticket_for("kiwi", None), "any case");
+        assert_ne!(ticket_for("Kiwi", None), ticket_for("Tank", None));
         let keys = KEYS.get().unwrap();
         // Good for a week from the day it's issued, then not.
         let day = 20_000;
-        let t = ticket_on(keys, "Kiwi", day);
-        assert!(ticket_valid(keys, "kiwi", &t, day) && ticket_valid(keys, "Kiwi", &t, day + TICKET_DAYS - 1));
-        assert!(!ticket_valid(keys, "Kiwi", &t, day + TICKET_DAYS), "expired");
-        assert!(!ticket_valid(keys, "Kiwi", &t, day - 1), "not issued yet");
-        assert!(!ticket_valid(keys, "Tank", &t, day), "another name");
+        let t = ticket_on(keys, "Kiwi", day, None);
+        assert!(ticket_valid(keys, "kiwi", &t, day, None) && ticket_valid(keys, "Kiwi", &t, day + TICKET_DAYS - 1, None));
+        assert!(!ticket_valid(keys, "Kiwi", &t, day + TICKET_DAYS, None), "expired");
+        assert!(!ticket_valid(keys, "Kiwi", &t, day - 1, None), "not issued yet");
+        assert!(!ticket_valid(keys, "Tank", &t, day, None), "another name");
         let mut later = t;
         later[..2].copy_from_slice(&((day + 3) as u16).to_be_bytes());
-        assert!(!ticket_valid(keys, "Kiwi", &later, day + 3), "the day can't be changed");
+        assert!(!ticket_valid(keys, "Kiwi", &later, day + 3, None), "the day can't be changed");
         // Across the 16-bit wrap of the day number.
         let wrap = 65_535 + 65_536;
-        assert!(ticket_valid(keys, "Kiwi", &ticket_on(keys, "Kiwi", wrap), wrap + 2));
+        assert!(ticket_valid(keys, "Kiwi", &ticket_on(keys, "Kiwi", wrap, None), wrap + 2, None));
+        // A ticket for a session key is good with that key only, and never as a keyless one.
+        let (k1, k2) = ([7u8; 32], [8u8; 32]);
+        let keyed = ticket_on(keys, "Kiwi", day, Some(&k1));
+        assert!(ticket_valid(keys, "Kiwi", &keyed, day, Some(&k1)));
+        assert!(!ticket_valid(keys, "Kiwi", &keyed, day, Some(&k2)), "another key");
+        assert!(!ticket_valid(keys, "Kiwi", &keyed, day, None), "copied without its key");
+        assert!(!ticket_valid(keys, "Kiwi", &t, day, Some(&k1)), "a keyless ticket with a key");
         let c = cookie_for(keys, a("198.51.100.7:1"), "kiwi", 5);
         assert_ne!(c, cookie_for(keys, a("198.51.100.7:2"), "kiwi", 5), "another address");
         assert_ne!(c, cookie_for(keys, a("198.51.100.7:1"), "tank", 5), "another name");

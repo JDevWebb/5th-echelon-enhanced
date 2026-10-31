@@ -73,6 +73,11 @@ message LoginRequest {
   repeated HardwareId hardware = 5;
   // The PC is a virtual machine: its maker as its firmware names it ("VMware"), else empty.
   string vm = 6;
+  // The game's session key (Ed25519 public key, 32 bytes, made for each run; 0.4.8 on): the
+  // NAT ticket and relay pass in the answer name it, and the game signs its NAT probes with
+  // it, so a copied ticket is no use without the key (nat_proto's SessionKey). Empty from
+  // older clients and the launcher.
+  bytes nat_key = 7;
 }
 
 // One hardware id: its kind ("machine-guid", "smbios-uuid", "board-serial", "disk-serial",

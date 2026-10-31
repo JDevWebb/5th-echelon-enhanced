@@ -30,9 +30,13 @@ const MAX_ADDRESSES: usize = 10_000;
 static ISSUER: OnceLock<identity::Identity> = OnceLock::new();
 static ACCEPTED: OnceLock<Vec<String>> = OnceLock::new();
 
-/// What a pass signs.
-fn message(name: &str, day: u32) -> String {
-    format!("fes-relay-pass-v1\n{}\n{day}", identity::name_key(name))
+/// What a pass signs: the name and day, and from 0.4.8 the game's session key (a pass for a
+/// key is only good with it: nat_proto's SessionKey).
+fn message(name: &str, day: u32, key: Option<&nat_proto::SessionKey>) -> String {
+    match key {
+        None => format!("fes-relay-pass-v1\n{}\n{day}", identity::name_key(name)),
+        Some(k) => format!("fes-relay-pass-v2\n{}\n{day}\n{}", identity::name_key(name), identity::base32_encode(k)),
+    }
 }
 
 fn today() -> u32 {
@@ -59,10 +63,10 @@ pub fn accept(configured: Option<&str>) {
 
 /// `name`'s pass for today, for the sign-in answer (4 bytes of day, 64 of signature); None
 /// when this server doesn't sign them.
-pub fn issue(name: &str) -> Option<Vec<u8>> {
+pub fn issue(name: &str, key: Option<&nat_proto::SessionKey>) -> Option<Vec<u8>> {
     let issuer = ISSUER.get()?;
     let day = today();
-    let signature = identity::base32_decode(&issuer.sign(&message(name, day)))?;
+    let signature = identity::base32_decode(&issuer.sign(&message(name, day, key)))?;
     let mut pass = day.to_be_bytes().to_vec();
     pass.extend_from_slice(&signature);
     Some(pass)
@@ -70,8 +74,8 @@ pub fn issue(name: &str) -> Option<Vec<u8>> {
 
 /// Whether `signature` is a pass for `name` signed on `day` with a key this helper takes, and
 /// still good today.
-pub fn valid(name: &str, day: u32, signature: &[u8; 64], from: std::net::IpAddr) -> bool {
-    may_check_from(from, std::time::Instant::now()) && valid_on(name, day, signature, today())
+pub fn valid(name: &str, day: u32, signature: &[u8; 64], from: std::net::IpAddr, key: Option<&nat_proto::SessionKey>) -> bool {
+    may_check_from(from, std::time::Instant::now()) && valid_on(name, day, signature, today(), key)
 }
 
 /// Whether `from` may have one more pass checked now ([`CHECKS_PER_ADDRESS`]).
@@ -93,12 +97,12 @@ fn may_check_from(from: std::net::IpAddr, now: std::time::Instant) -> bool {
     entry.1 <= CHECKS_PER_ADDRESS
 }
 
-fn valid_on(name: &str, day: u32, signature: &[u8; 64], today: u32) -> bool {
+fn valid_on(name: &str, day: u32, signature: &[u8; 64], today: u32, key: Option<&nat_proto::SessionKey>) -> bool {
     let Some(keys) = ACCEPTED.get().filter(|k| !k.is_empty()) else { return false };
     if name.is_empty() || day > today || today - day >= PASS_DAYS || !may_check() {
         return false;
     }
-    let message = message(name, day);
+    let message = message(name, day, key);
     let signature = identity::base32_encode(signature);
     keys.iter().any(|key| identity::verify(key, &message, &signature))
 }

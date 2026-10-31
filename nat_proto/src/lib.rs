@@ -65,6 +65,60 @@ pub type Ticket = [u8; 16];
 pub type Cookie = [u8; 16];
 /// A registration's secret, carried by relayed data both ways.
 pub type Tag = [u8; 8];
+/// The game's session key (Ed25519, made for each run): the ticket and the relay pass name it,
+/// and the probe that registers signs the server's cookie with it, so a ticket or pass someone
+/// copied off the wire is no use without the key (the 0.4.8 plan's G6).
+pub type SessionKey = [u8; 32];
+pub type SessionSignature = [u8; 64];
+
+/// The session key's extension: after a probe (its [`PROBE_SIZE`] bytes) or a ticket present
+/// (after its name), `K1`, the public key and the signature ([`probe_message`],
+/// [`present_message`]). A helper from before it reads the message without it.
+const KEY_MARK: [u8; 2] = *b"K1";
+pub const KEY_EXTENSION: usize = 2 + 32 + 64;
+
+/// What a probe's signature covers: its nonce, the cookie it echoes and the name.
+pub fn probe_message(nonce: u32, cookie: &Cookie, name: &str) -> Vec<u8> {
+    let mut m = b"fes-nat-probe-v3\0".to_vec();
+    m.extend_from_slice(&nonce.to_be_bytes());
+    m.extend_from_slice(cookie);
+    m.extend_from_slice(truncate(name, MAX_NAME).as_bytes());
+    m
+}
+
+/// What a ticket present's signature covers: its nonce, the name and the pass's day.
+pub fn present_message(nonce: u32, name: &str, day: u32) -> Vec<u8> {
+    let mut m = b"fes-nat-present-v3\0".to_vec();
+    m.extend_from_slice(&nonce.to_be_bytes());
+    m.extend_from_slice(&day.to_be_bytes());
+    m.extend_from_slice(truncate(name, MAX_NAME).as_bytes());
+    m
+}
+
+/// Adds the session key and its signature to an encoded probe or ticket present.
+pub fn add_key(encoded: &mut Vec<u8>, key: &SessionKey, signature: &SessionSignature) {
+    encoded.extend_from_slice(&KEY_MARK);
+    encoded.extend_from_slice(key);
+    encoded.extend_from_slice(signature);
+}
+
+/// The session key and signature a probe or ticket present carries, if it does: right where
+/// the message itself ends.
+pub fn key_of(data: &[u8]) -> Option<(SessionKey, SessionSignature)> {
+    if !is_nat_message(data) {
+        return None;
+    }
+    let base = match data[5] {
+        OP_PROBE => PROBE_SIZE,
+        OP_TICKET_PRESENT => HEADER + 4 + 4 + 64 + 1 + usize::from(*data.get(HEADER + 72)?).min(MAX_NAME),
+        _ => return None,
+    };
+    let ext = data.get(base..base + KEY_EXTENSION)?;
+    if ext[..2] != KEY_MARK {
+        return None;
+    }
+    Some((ext[2..34].try_into().ok()?, ext[34..98].try_into().ok()?))
+}
 
 /// [`Message::Probe`] flags.
 pub mod probe_flags {
@@ -408,6 +462,38 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_session_key_rides_after_a_probe_or_a_present() {
+        let probe = Message::Probe {
+            flags: 0,
+            nonce: 7,
+            mapping: None,
+            name: "Kiwi".into(),
+            ticket: [1; 16],
+            cookie: [2; 16],
+            rtt_ms: Some(40),
+        };
+        let mut data = probe.encode();
+        assert_eq!(key_of(&data), None, "none yet");
+        add_key(&mut data, &[3; 32], &[4; 64]);
+        assert_eq!(data.len(), PROBE_SIZE + KEY_EXTENSION);
+        assert_eq!(key_of(&data), Some(([3; 32], [4; 64])));
+        assert_eq!(Message::decode(&data), Some(probe), "read as before by any helper");
+        let present = Message::TicketPresent {
+            nonce: 9,
+            name: "Kiwi".into(),
+            day: 20_000,
+            signature: [5; 64],
+        };
+        let mut data = present.encode();
+        add_key(&mut data, &[6; 32], &[7; 64]);
+        assert_eq!(key_of(&data), Some(([6; 32], [7; 64])));
+        assert_eq!(Message::decode(&data), Some(present));
+        // The messages signed name what they're about.
+        assert_ne!(probe_message(7, &[2; 16], "Kiwi"), probe_message(8, &[2; 16], "Kiwi"));
+        assert_ne!(present_message(9, "Kiwi", 1), probe_message(9, &[0; 16], "Kiwi"));
+    }
 
     fn a(s: &str) -> SocketAddrV4 {
         s.parse().unwrap()

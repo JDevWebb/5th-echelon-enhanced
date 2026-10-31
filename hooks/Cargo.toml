@@ -27,6 +27,7 @@ goblin = { workspace = true }
 hooks-addresses = { path = "hooks-addresses" }
 hooks-config = { path = "hooks-config" }
 hwid = { path = "../hwid" }
+identity = { path = "../identity" }
 hooks-proc = { path = "hooks-proc" }
 portmap = { path = "../portmap" }
 imgui = { workspace = true }

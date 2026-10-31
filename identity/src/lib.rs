@@ -54,6 +54,17 @@ impl Identity {
         base32_encode(&self.key.sign(message.as_bytes()).to_bytes())
     }
 
+    /// The public key as it is (32 bytes), for messages that carry it raw (the NAT helper's
+    /// probes: nat_proto).
+    pub fn public_key(&self) -> [u8; 32] {
+        self.key.verifying_key().to_bytes()
+    }
+
+    /// Signs `message`; the signature as it is (64 bytes).
+    pub fn sign_bytes(&self, message: &[u8]) -> [u8; 64] {
+        self.key.sign(message).to_bytes()
+    }
+
     /// Everything a server needs to link an account to this identity.
     pub fn sign_link(&self, host: &str, username: &str, time: i64) -> String {
         self.sign(&link_message(host, username, time))
@@ -194,6 +205,15 @@ fn sha256(data: &[u8]) -> [u8; 32] {
     sha2::Sha256::digest(data).into()
 }
 
+/// Whether `signature` is the signature of `message` by the key `public_key` (both as they
+/// are), strictly as [`verify`] checks.
+pub fn verify_bytes(public_key: &[u8; 32], message: &[u8], signature: &[u8; 64]) -> bool {
+    let Ok(key) = ed25519_dalek::VerifyingKey::from_bytes(public_key) else {
+        return false;
+    };
+    !key.is_weak() && key.verify_strict(message, &ed25519_dalek::Signature::from_bytes(signature)).is_ok()
+}
+
 /// Whether `signature` (base32) is `global_id`'s signature of `message`.
 pub fn verify(global_id: &str, message: &str, signature: &str) -> bool {
     let (Some(key), Some(sig)) = (base32_decode(global_id), base32_decode(signature)) else {
@@ -307,6 +327,16 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn raw_signatures_check_against_their_key_only() {
+        let (a, b) = (Identity::generate(), Identity::generate());
+        let sig = a.sign_bytes(b"probe");
+        assert!(verify_bytes(&a.public_key(), b"probe", &sig));
+        assert!(!verify_bytes(&b.public_key(), b"probe", &sig), "another key");
+        assert!(!verify_bytes(&a.public_key(), b"probe2", &sig), "another message");
+        assert!(!verify_bytes(&[0; 32], b"probe", &sig), "a weak key");
+    }
 
     #[test]
     fn release_signatures_bind_the_version() {

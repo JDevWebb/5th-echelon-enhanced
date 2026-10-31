@@ -1113,6 +1113,7 @@ impl Users for MyUsers {
         let client = request.client;
         let build = request.build;
         let (hardware, vm) = (request.hardware, request.vm);
+        let nat_key: Option<nat_proto::SessionKey> = request.nat_key.as_slice().try_into().ok();
         // Nothing costly for what can't be an account.
         if username.chars().count() > 32 || password.len() > 128 {
             return Err(Status::unauthenticated("Invalid login"));
@@ -1182,7 +1183,7 @@ impl Users for MyUsers {
         if let Some(ip) = peer {
             crate::clients::note_api_address(user_id, ip);
         }
-        self.signed_in(user_id).await
+        self.signed_in(user_id, nat_key).await
     }
 
     /// Handles user registration requests.
@@ -1406,7 +1407,7 @@ impl Users for MyUsers {
         if let Some(ip) = peer {
             crate::clients::note_api_address(person.id, ip);
         }
-        self.signed_in(person.id).await
+        self.signed_in(person.id, None).await
     }
 }
 
@@ -1438,7 +1439,11 @@ impl MyUsers {
                 warn!(self.logger, "Refused {username}'s outdated client {client:?} (said once an hour; Sessions counts them all)");
             }
             crate::session_events::refused(crate::session_events::Who::Id(user_id), "outdated", "api", Some(client));
-            let why = if client.starts_with("game/") { crate::clients::started_without_launcher(user_id, why) } else { why };
+            let why = if client.starts_with("game/") {
+                crate::clients::started_without_launcher(user_id, why)
+            } else {
+                why
+            };
             Status::failed_precondition(why)
         })
     }
@@ -1484,15 +1489,20 @@ impl MyUsers {
 
     /// The answer to a successful sign-in: a token, and who they are (the
     /// account id the game should use).
-    async fn signed_in(&self, user_id: u32) -> Result<Response<users::LoginResponse>, Status> {
+    /// `nat_key`: the game's session key, which its NAT ticket and relay pass then name.
+    async fn signed_in(&self, user_id: u32, nat_key: Option<nat_proto::SessionKey>) -> Result<Response<users::LoginResponse>, Status> {
         // Every way in ends here: a password, or the identity key.
         if let Some(ban) = self.storage.active_ban(user_id).await.map_err(internal)? {
             return Err(Status::permission_denied(crate::players::banned_message(&ban)));
         }
         let person = self.storage.find_person(user_id).await.map_err(internal)?;
         let epoch = self.storage.token_epoch(user_id).await.map_err(internal)?;
-        let nat_ticket = person.as_ref().and_then(|p| crate::nat_helper::ticket_for(&p.username)).map(Vec::from).unwrap_or_default();
-        let relay_pass = person.as_ref().and_then(|p| crate::relay_pass::issue(&p.username)).unwrap_or_default();
+        let nat_ticket = person
+            .as_ref()
+            .and_then(|p| crate::nat_helper::ticket_for(&p.username, nat_key.as_ref()))
+            .map(Vec::from)
+            .unwrap_or_default();
+        let relay_pass = person.as_ref().and_then(|p| crate::relay_pass::issue(&p.username, nat_key.as_ref())).unwrap_or_default();
         Ok(Response::new(users::LoginResponse {
             nat_ticket,
             relay_pass,

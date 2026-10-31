@@ -2670,6 +2670,7 @@ dependencies = [
  "hooks-proc",
  "hudhook",
  "hwid",
+ "identity",
  "imgui",
  "nat_proto",
  "portmap",
@@ -6132,6 +6133,7 @@ dependencies = [
  "sc_bl_protocols",
  "serde_json",
  "setup",
+ "sha2",
  "tokio",
  "tonic",
 ]

@@ -477,6 +477,8 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
             })
             .collect(),
         vm: hardware().vm.clone().unwrap_or_default(),
+        // The session key the NAT ticket and relay pass then name (G6).
+        nat_key: crate::hooks::nat::session_key().public_key().to_vec(),
     });
 
     debug!("logging in");

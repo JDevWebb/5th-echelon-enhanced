@@ -295,7 +295,7 @@ pub async fn run(server: IpAddr, o: Options) -> Result<()> {
                                 cookie,
                                 rtt_ms: None,
                             };
-                            let _ = socket.send_to(&again.encode(), nat).await;
+                            let _ = socket.send_to(&signed(again.encode(), nonce, &cookie, &name), nat).await;
                         }
                         continue;
                     }
@@ -352,7 +352,7 @@ pub async fn run(server: IpAddr, o: Options) -> Result<()> {
                             cookie: reg.cookie,
                             rtt_ms: None,
                         };
-                        let _ = socket.send_to(&msg.encode(), nat).await;
+                        let _ = socket.send_to(&signed(msg.encode(), seq | 1, &reg.cookie, &name), nat).await;
                     }
                 }
             }));
@@ -466,4 +466,11 @@ pub async fn run(server: IpAddr, o: Options) -> Result<()> {
         println!("{label}: {n} done, {errors} failed");
     }
     Ok(())
+}
+
+/// A probe signed with the player's session key, as the hook signs its own (G6).
+fn signed(mut probe: Vec<u8>, nonce: u32, cookie: &nat_proto::Cookie, name: &str) -> Vec<u8> {
+    let key = crate::bot::session_key(name);
+    nat_proto::add_key(&mut probe, &key.public_key(), &key.sign_bytes(&nat_proto::probe_message(nonce, cookie, name)));
+    probe
 }

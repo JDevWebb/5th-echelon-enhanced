@@ -184,6 +184,7 @@ pub async fn login_as_client(server: IpAddr, name: &str, password: &str, client:
         build: String::new(),
         hardware: Vec::new(),
         vm: String::new(),
+        nat_key: vec![],
     });
     request
         .metadata_mut()
@@ -212,6 +213,7 @@ pub async fn api_sign_in_on_pc(
             build: String::new(),
             hardware,
             vm: String::new(),
+            nat_key: vec![],
         })
         .await?
         .into_inner())
@@ -232,17 +234,33 @@ pub struct NatRegistration {
 /// Shows a relay pass (4 bytes of day, 64 of signature) for `name` to the helper at `nat`, as
 /// the game does at a relay other than its server's own: the ticket it grants, if it does.
 pub async fn present_pass(socket: &tokio::net::UdpSocket, nat: std::net::SocketAddrV4, name: &str, pass: &[u8]) -> Result<Option<nat_proto::Ticket>> {
+    present_pass_with_key(socket, nat, name, pass, Some(&session_key(name))).await
+}
+
+/// [`present_pass`] signed with the game's session key, as a 0.4.8 game shows it.
+pub async fn present_pass_with_key(
+    socket: &tokio::net::UdpSocket,
+    nat: std::net::SocketAddrV4,
+    name: &str,
+    pass: &[u8],
+    key: Option<&identity::Identity>,
+) -> Result<Option<nat_proto::Ticket>> {
     let (Some(day), Some(signature)) = (pass.get(..4), pass.get(4..68)) else {
         return Ok(None);
     };
     let nonce = rand::random::<u32>() | 1;
+    let day = u32::from_be_bytes(day.try_into()?);
     let present = nat_proto::Message::TicketPresent {
         nonce,
         name: name.into(),
-        day: u32::from_be_bytes(day.try_into()?),
+        day,
         signature: signature.try_into()?,
     };
-    socket.send_to(&present.encode(), nat).await?;
+    let mut data = present.encode();
+    if let Some(k) = key {
+        nat_proto::add_key(&mut data, &k.public_key(), &k.sign_bytes(&nat_proto::present_message(nonce, name, day)));
+    }
+    socket.send_to(&data, nat).await?;
     let mut buf = [0u8; 256];
     match tokio::time::timeout(std::time::Duration::from_millis(800), socket.recv_from(&mut buf)).await {
         Ok(Ok((n, _))) => match nat_proto::Message::decode(&buf[..n]) {
@@ -254,6 +272,18 @@ pub async fn present_pass(socket: &tokio::net::UdpSocket, nat: std::net::SocketA
 }
 
 pub async fn nat_register(socket: &tokio::net::UdpSocket, nat: std::net::SocketAddrV4, flags: u8, name: &str, ticket: nat_proto::Ticket) -> Result<NatRegistration> {
+    nat_register_with_key(socket, nat, flags, name, ticket, Some(&session_key(name))).await
+}
+
+/// [`nat_register`] with the probes signed with the game's session key, as a 0.4.8 game does.
+pub async fn nat_register_with_key(
+    socket: &tokio::net::UdpSocket,
+    nat: std::net::SocketAddrV4,
+    flags: u8,
+    name: &str,
+    ticket: nat_proto::Ticket,
+    key: Option<&identity::Identity>,
+) -> Result<NatRegistration> {
     use nat_proto::Message;
     let mut cookie = [0u8; 16];
     let mut buf = [0u8; 256];
@@ -265,7 +295,7 @@ pub async fn nat_register(socket: &tokio::net::UdpSocket, nat: std::net::SocketA
     let want_relay = flags & nat_proto::probe_flags::WANT_RELAY != 0;
     for _ in 0..10 {
         let nonce: u32 = rand::random::<u32>() | 1;
-        let msg = Message::Probe {
+        let mut msg = Message::Probe {
             flags,
             nonce,
             mapping,
@@ -275,6 +305,9 @@ pub async fn nat_register(socket: &tokio::net::UdpSocket, nat: std::net::SocketA
             rtt_ms,
         }
         .encode();
+        if let Some(k) = key {
+            nat_proto::add_key(&mut msg, &k.public_key(), &k.sign_bytes(&nat_proto::probe_message(nonce, &cookie, name)));
+        }
         let sent = std::time::Instant::now();
         socket.send_to(&msg, nat).await?;
         if let Ok(Ok((n, _))) = tokio::time::timeout(Duration::from_millis(500), socket.recv_from(&mut buf)).await {
@@ -320,6 +353,29 @@ pub fn properties(attrs: &str) -> QList<Property> {
 /// server. Returns the player's pid, the secure server's address and the ticket.
 /// Signs in to the gRPC API as `client` ("game/…" for the DLL, "launcher/…").
 pub async fn api_sign_in(server: IpAddr, name: &str, password: &str, client: &str) -> Result<(Channel, server_api::users::LoginResponse)> {
+    // A game's sign-in carries its session key, as a 0.4.8 game's does (servers whose oldest
+    // client is 0.4.8 take only probes signed with it).
+    let key = client.starts_with("game/").then(|| session_key(name));
+    api_sign_in_with_key(server, name, password, client, key.as_ref()).await
+}
+
+/// A test player's session key (G6): the same for a name every time, so [`nat_register`] and
+/// [`present_pass`] sign with the key the player's sign-in named, whoever calls them.
+pub fn session_key(name: &str) -> identity::Identity {
+    use sha2::Digest as _;
+    let seed: [u8; 32] = sha2::Sha256::digest(format!("testbot-session\0{}", name.to_lowercase())).into();
+    identity::Identity::from_secret(&seed)
+}
+
+/// [`api_sign_in`] with the game's session key (0.4.8 on): its NAT ticket and relay pass then
+/// name it.
+pub async fn api_sign_in_with_key(
+    server: IpAddr,
+    name: &str,
+    password: &str,
+    client: &str,
+    key: Option<&identity::Identity>,
+) -> Result<(Channel, server_api::users::LoginResponse)> {
     let api = api_endpoint(server).map_err(|e| eyre!(e))?.connect().await?;
     let login = UsersClient::new(api.clone())
         .login(server_api::users::LoginRequest {
@@ -329,6 +385,7 @@ pub async fn api_sign_in(server: IpAddr, name: &str, password: &str, client: &st
             build: String::new(),
             hardware: Vec::new(),
             vm: String::new(),
+            nat_key: key.map(|k| k.public_key().to_vec()).unwrap_or_default(),
         })
         .await?
         .into_inner();

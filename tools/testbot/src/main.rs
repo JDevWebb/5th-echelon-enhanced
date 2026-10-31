@@ -2313,6 +2313,46 @@ async fn nat_probe_scenario(ctx: &mut Ctx) -> Result<()> {
     player.disconnect().await
 }
 
+/// The game's session key (G6): a game that signs in with one gets a ticket for that key,
+/// and registers with probes signed with it; the same ticket copied without the key, or
+/// shown with another key, registers nothing. A relay pass for the key is taken only signed
+/// with it.
+async fn nat_key(ctx: &mut Ctx) -> Result<()> {
+    let nat = nat_addr(ctx.server, false)?;
+    let player = ctx.player("Keyed").await?;
+    let key = identity::Identity::generate();
+    let (_, signed_in) = testbot::bot::api_sign_in_with_key(ctx.server, &player.name, PASSWORD, testbot::bot::GAME_CLIENT, Some(&key)).await?;
+    let ticket: nat_proto::Ticket = signed_in.nat_ticket.as_slice().try_into().map_err(|_| eyre!("no NAT ticket"))?;
+    ensure!(ticket != player.nat_ticket, "the ticket for a session key is the keyless one");
+    let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+    let registered = testbot::bot::nat_register_with_key(&socket, nat, 0, &player.name, ticket, Some(&key)).await?;
+    ensure!(registered.tag != [0; 8], "a keyed game didn't register");
+    // Copied off the wire: the ticket without the key, or with another.
+    let thief = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+    ensure!(
+        testbot::bot::nat_register_with_key(&thief, nat, 0, &player.name, ticket, None).await.is_err(),
+        "a keyed ticket registered without its key"
+    );
+    let other = identity::Identity::generate();
+    ensure!(
+        testbot::bot::nat_register_with_key(&thief, nat, 0, &player.name, ticket, Some(&other)).await.is_err(),
+        "a keyed ticket registered with another key"
+    );
+    // A relay pass for the key (on a matchmaking server, which signs them).
+    if !signed_in.relay_pass.is_empty() {
+        let pass_socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
+        ensure!(
+            testbot::bot::present_pass_with_key(&pass_socket, nat, &player.name, &signed_in.relay_pass, None)
+                .await?
+                .is_none(),
+            "a keyed pass was taken without its key"
+        );
+        let granted = testbot::bot::present_pass_with_key(&pass_socket, nat, &player.name, &signed_in.relay_pass, Some(&key)).await?;
+        ensure!(granted == Some(ticket), "the keyed pass wasn't answered with the keyed ticket: {granted:?}");
+    }
+    player.disconnect().await
+}
+
 /// Two players, one relayed: packets reach each other through the relay,
 /// each seeing the other at its advertised address; strangers, and packets
 /// without the right tag, get nowhere.
@@ -3445,6 +3485,7 @@ const SCENARIOS: &[&str] = &[
     "join-now-match",
     "choose-match",
     "relay-pass",
+    "nat-key",
     "match-state",
     "report-player",
     "fair-play-check",
@@ -3592,6 +3633,7 @@ async fn run() -> Result<()> {
                 "join-now-match" => join_now_match(&mut ctx).await,
                 "choose-match" => choose_match(&mut ctx).await,
                 "relay-pass" => relay_pass(&mut ctx).await,
+                "nat-key" => nat_key(&mut ctx).await,
                 "match-state" => match_state(&mut ctx).await,
                 "report-player" => report_player(&mut ctx).await,
                 "fair-play-check" => fair_play_check(&mut ctx).await,

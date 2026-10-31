@@ -89,6 +89,12 @@ pub fn check(client: &str) -> Result<(), String> {
     }
 }
 
+/// Whether the oldest client this server lets in is `version` or newer (so every client it
+/// lets in does what that release does).
+pub fn minimum_at_least(version: [u32; 3]) -> bool {
+    MINIMUM.get().copied().flatten().is_some_and(|m| m >= version)
+}
+
 fn refusal(kind: &str, what: &str, minimum: [u32; 3]) -> String {
     let fix = if kind == "game" {
         "Start the game with Play in the 5th Echelon launcher to update it: started from Steam or Ubisoft Connect, the game keeps its old add-on"

@@ -66,6 +66,14 @@ const KEEPALIVE: Duration = Duration::from_secs(20);
 /// How long to wait for the second port's answer before trusting the first.
 const DETECT_WAIT: Duration = Duration::from_millis(1500);
 
+/// This game's session key (made for each run): its public half goes with the sign-in, so the
+/// NAT ticket and relay pass name it, and the probes and pass presents are signed with it
+/// (nat_proto's SessionKey): a ticket copied off the wire is no use without it.
+pub fn session_key() -> &'static identity::Identity {
+    static KEY: std::sync::LazyLock<identity::Identity> = std::sync::LazyLock::new(identity::Identity::generate);
+    &KEY
+}
+
 /// No socket yet.
 const NO_SOCKET: usize = usize::MAX;
 static STORM_SOCKET: AtomicUsize = AtomicUsize::new(NO_SOCKET);
@@ -874,13 +882,15 @@ fn worker(host: String, port: u16) {
             if st.use_pass && st.ticket == [0; 16] {
                 let Some((day, signature)) = st.pass else { continue };
                 st.pass_nonce = rand::random::<u32>() | 1;
-                let present = Message::TicketPresent {
+                let mut present = Message::TicketPresent {
                     nonce: st.pass_nonce,
                     name: st.name.clone(),
                     day,
                     signature,
                 }
                 .encode();
+                let key = session_key();
+                nat_proto::add_key(&mut present, &key.public_key(), &key.sign_bytes(&nat_proto::present_message(st.pass_nonce, &st.name, day)));
                 vec![(present, st.server)]
             } else {
                 // Random and never 0: whoever can send as the helper (e.g. on the LAN) can't
@@ -900,7 +910,7 @@ fn worker(host: String, port: u16) {
                     flags |= probe_flags::HAS_MAPPING;
                 }
                 let probe = |flags| {
-                    Message::Probe {
+                    let mut data = Message::Probe {
                         flags,
                         nonce: st.nonce,
                         mapping: st.mapping,
@@ -909,7 +919,13 @@ fn worker(host: String, port: u16) {
                         cookie: st.cookie,
                         rtt_ms: st.rtt_ms,
                     }
-                    .encode()
+                    .encode();
+                    // With a ticket: signed with the session key it names.
+                    if st.ticket != [0; 16] {
+                        let key = session_key();
+                        nat_proto::add_key(&mut data, &key.public_key(), &key.sign_bytes(&nat_proto::probe_message(st.nonce, &st.cookie, &st.name)));
+                    }
+                    data
                 };
                 let mut probes = vec![(probe(flags), st.server)];
                 if st.second_observed.is_none() {
