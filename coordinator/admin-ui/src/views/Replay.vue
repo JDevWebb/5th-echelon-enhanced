@@ -69,7 +69,7 @@
               <td><span class="swatch" :style="{ background: colour(p) }"></span> <b>{{ p.name || `#${p.id}` }}</b></td>
               <td class="small">{{ p.class }}</td>
               <td class="small">{{ p.team < 0 ? '?' : p.team }}</td>
-              <td v-if="rec.sources" class="small">{{ rec.sources.get(p.id)?.own ? 'their own recording' : `seen by ${rec.sources.get(p.id)?.recorder || '?'}` }}</td>
+              <td v-if="rec.sources" class="small">{{ sourceText(rec.sources.get(p.id)) }}</td>
               <td>{{ p.shots }}</td>
               <td>{{ p.deaths }}</td>
               <td>{{ p.kills }}</td>
@@ -188,6 +188,15 @@ const feed = computed(() =>
     .filter(Boolean),
 );
 
+// Whose recording a character came from; for a player's own, how far the others saw them
+// from it (their own track is their own word: a doctored one, or rubberbanding, shows here).
+const sourceText = s => {
+  if (!s) return '?';
+  if (s.conflict) return `claimed by two recordings: shown as ${s.recorder}'s game saw them`;
+  if (!s.own) return `seen by ${s.recorder || '?'}`;
+  return s.apart == null ? 'their own recording' : `their own recording; others saw them ${(s.apart / 100).toFixed(1)} m from it (median)`;
+};
+
 const closer = computed(() => {
   if (!rec.value) return [];
   const f = findings(rec.value);
@@ -210,14 +219,16 @@ const colour = p => (p.team === 0 ? css('--info') : p.team === 1 ? css('--warn')
 // The recordings to play: this one, and with `?with=server~player~id,...` the others of
 // the same match (the Match page's "Replay the whole match"), merged into one.
 const route = useRoute();
+// Each with the name of the account that sent it (`as`, and the fourth part of each `with`):
+// the Match page's, from the server's own records.
 const wanted = computed(() => [
-  { server: props.server, player: props.player, id: props.id },
+  { server: props.server, player: props.player, id: props.id, name: String(route.query.as || '') },
   ...String(route.query.with || '')
     .split(',')
     .filter(Boolean)
     .map(w => {
-      const [server, player, id] = w.split('~');
-      return { server, player, id };
+      const [server, player, id, ...name] = w.split('~');
+      return { server, player, id, name: name.join('~') };
     })
     .filter(w => w.server && w.player && /^[0-9a-f]{16}$/.test(w.id || '')),
 ]);
@@ -244,6 +255,7 @@ async function load() {
   const results = await Promise.allSettled(wanted.value.map(fetchOne));
   if (stopped) return;
   const got = results.filter(r => r.status === 'fulfilled').map(r => r.value);
+  const owners = results.map((r, i) => (r.status === 'fulfilled' ? wanted.value[i].name : null)).filter(n => n !== null);
   missing.value = results.map((r, i) => (r.status === 'rejected' ? `${wanted.value[i].id}: ${r.reason?.message || r.reason}` : null)).filter(Boolean);
   if (!got.length) {
     error.value = missing.value.join('; ') || 'No recording came.';
@@ -253,8 +265,9 @@ async function load() {
     if (got.length === 1) {
       rec.value = { header: got[0].header, ...index(got[0].records), sources: null };
     } else {
-      const m = merge(got);
-      rec.value = { header: m.header, ...index(m.records), sources: m.sources, merged: got.length };
+      const m = merge(got, owners);
+      rec.value = { header: m.header, ...index(m.records), sources: m.sources, merged: got.length - m.left.length };
+      missing.value = [...missing.value, ...m.left.map(w => `${w}'s: too far in time from the others to be the same match`)];
     }
     if (rec.value.box) { zFrom.value = rec.value.box.z0; zTo.value = rec.value.box.z1; cut.value = rec.value.box.z1 + 150; }
     await nextTick();

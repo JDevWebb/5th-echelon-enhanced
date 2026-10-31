@@ -189,27 +189,43 @@ export function findings(rec, most = 8) {
   return { turns: top(turns), shots: top(shots), speeds: top(speeds) };
 }
 
-/** Several players' recordings of one match as one: `{ header, records, sources }` for
- * `index`. Each player's own character comes from their own recording (their game is the
- * one that moves it); a character nobody recorded comes from the recording that saw it in
- * the most samples. Recordings are lined up by when the round started (every game sees it
- * within moments), else by their start times (the recorders' own clocks). Shots come from
- * the recording the shooter's frames come from; deaths and kills once each, from wherever
- * they were seen. `sources` says whose recording each character came from. */
-export function merge(recordings) {
+/** The most two recordings of one match may be apart, and the longest a merged match runs. */
+const MOST_APART = 10 * 60 * 1000;
+const LONGEST = 3 * 3600 * 1000;
+
+/** Several players' recordings of one match as one: `{ header, records, sources, left }` for
+ * `index`. `owners[i]` is the name of the account that sent recording i (from the server,
+ * not the recording's own word). Each player's character comes from their own recording
+ * (their game moves it) when exactly one recording is that account's; a character nobody
+ * recorded, or two recordings claim, comes from the recording that saw it in the most
+ * samples. Recordings are lined up by when the round started (every game sees it within
+ * moments), else by their start times; one more than [`MOST_APART`] from the first is left
+ * out (`left`). Shots come from the recording the shooter's frames come from; deaths and
+ * kills once each. `sources` says whose recording each character came from, and for a
+ * player's own track how far the others' games saw them from it (`apart`, game units: a
+ * doctored track, or rubberbanding, shows as distance). */
+export function merge(recordings, owners = []) {
   const lower = s => (s || '').toLowerCase();
   const started = r => r.records.find(x => x.kind === 'round' && /Started$/.test(x.state))?.t;
   const anchor = recordings.find(r => started(r) != null);
-  const offsets = recordings.map(r => {
+  const rawOffsets = recordings.map(r => {
     if (anchor && started(r) != null) return started(anchor) - started(r);
     return (r.header.started - recordings[0].header.started) * 1000;
   });
+  const left = [];
+  const keep = recordings.map((r, i) => {
+    const ok = Number.isFinite(rawOffsets[i]) && Math.abs(rawOffsets[i]) <= MOST_APART;
+    if (!ok) left.push(owners[i] || r.header.recorder || `recording ${i + 1}`);
+    return ok;
+  });
+  const offsets = rawOffsets.map((o, i) => (keep[i] ? o : 0));
   // Characters by name across recordings; an unnamed one stays its recording's own.
   const names = new Map();
   const keyOf = (i, p) => (p.name ? `name:${lower(p.name)}` : `rec${i}:${p.id}`);
   const perRec = recordings.map((r, i) => {
     const pawns = new Map();
     const samples = new Map();
+    if (!keep[i]) return { pawns, samples };
     for (const x of r.records) {
       if (x.kind === 'pawn') pawns.set(x.id, { ...pawns.get(x.id), ...x, name: x.name || pawns.get(x.id)?.name || '' });
       if (x.kind === 'frame') for (const p of x.pawns) samples.set(p.id, (samples.get(p.id) || 0) + 1);
@@ -217,38 +233,40 @@ export function merge(recordings) {
     for (const p of pawns.values()) if (!names.has(keyOf(i, p))) names.set(keyOf(i, p), { name: p.name, class: p.class, team: p.team });
     return { pawns, samples };
   });
-  // Who each character's frames come from: its own player's recording, else the most samples.
+  // Who each character's frames come from: its own player's recording (exactly one), else the most samples.
   const source = new Map();
   for (const key of names.keys()) {
-    let best = null;
+    const seen = [];
     recordings.forEach((r, i) => {
       for (const p of perRec[i].pawns.values()) {
         if (keyOf(i, p) !== key) continue;
-        const own = p.name && lower(p.name) === lower(r.header.recorder);
-        const score = (own ? 1e9 : 0) + (perRec[i].samples.get(p.id) || 0);
-        if (!best || score > best.score) best = { rec: i, id: p.id, score, own };
+        seen.push({ rec: i, id: p.id, samples: perRec[i].samples.get(p.id) || 0, own: !!(p.name && owners[i] && lower(p.name) === lower(owners[i])) });
       }
     });
-    if (best) source.set(key, best);
+    const own = seen.filter(s => s.own);
+    const conflict = own.length > 1;
+    const pick = own.length === 1 ? own[0] : seen.sort((a, b) => b.samples - a.samples)[0];
+    if (pick) source.set(key, { ...pick, own: own.length === 1, conflict, seenBy: seen.filter(s => s.rec !== pick.rec) });
   }
   const ids = new Map([...names.keys()].map((k, n) => [k, n + 1]));
   const out = [];
   for (const [key, info] of names) out.push({ kind: 'pawn', t: 0, id: ids.get(key), class: info.class, name: info.name, team: info.team });
+  const trackOf = (rec, id) => {
+    const list = [];
+    for (const x of recordings[rec].records) {
+      if (x.kind !== 'frame') continue;
+      const p = x.pawns.find(q => q.id === id);
+      if (p) list.push({ t: x.t + offsets[rec], p });
+    }
+    return list;
+  };
   // Frames on a common 100 ms clock: each character's sample nearest to each tick.
   const tracks = new Map();
-  for (const [key, s] of source) {
-    const list = [];
-    for (const x of recordings[s.rec].records) {
-      if (x.kind !== 'frame') continue;
-      const p = x.pawns.find(q => q.id === s.id);
-      if (p) list.push({ t: x.t + offsets[s.rec], p });
-    }
-    tracks.set(key, list);
-  }
-  const from = Math.min(0, ...[...tracks.values()].map(l => l[0]?.t ?? 0));
-  const to = Math.max(0, ...[...tracks.values()].map(l => l[l.length - 1]?.t ?? 0));
+  for (const [key, s] of source) tracks.set(key, trackOf(s.rec, s.id));
+  const from = Math.max(0, Math.min(0, ...[...tracks.values()].map(l => l[0]?.t ?? 0)));
+  const to = Math.min(from + LONGEST, Math.max(0, ...[...tracks.values()].map(l => l[l.length - 1]?.t ?? 0)));
   const at = new Map([...tracks.keys()].map(k => [k, 0]));
-  for (let t = Math.max(0, from); t <= to; t += 100) {
+  for (let t = from; t <= to; t += 100) {
     const pawns = [];
     for (const [key, list] of tracks) {
       let i = at.get(key);
@@ -260,16 +278,45 @@ export function merge(recordings) {
     }
     out.push({ kind: 'frame', t, pawns });
   }
-  // Shots from the shooter's own recording when there is one; deaths and kills once each.
+  // How far the others saw each own-recorded character from its own track: the median, over
+  // the seconds both have it, of the distance across the ground.
+  const nearest = (list, t) => {
+    let lo = 0;
+    let hi = list.length - 1;
+    while (lo < hi) {
+      const mid = (lo + hi + 1) >> 1;
+      if (list[mid].t <= t) lo = mid; else hi = mid - 1;
+    }
+    return list[lo] && Math.abs(list[lo].t - t) <= 300 ? list[lo].p : null;
+  };
+  const apart = new Map();
+  for (const [key, s] of source) {
+    if (!s.own || !s.seenBy.length) continue;
+    const mine = tracks.get(key);
+    const theirs = s.seenBy.map(o => trackOf(o.rec, o.id));
+    const d = [];
+    for (let t = from; t <= to; t += 1000) {
+      const a = nearest(mine, t);
+      if (!a) continue;
+      for (const list of theirs) {
+        const b = list.length ? nearest(list, t) : null;
+        if (b) d.push(Math.hypot(a.at[0] - b.at[0], a.at[1] - b.at[1]));
+      }
+    }
+    if (d.length) apart.set(key, d.sort((x, y) => x - y)[d.length >> 1]);
+  }
+  // Shots from the recording each character's frames come from; deaths and kills once each.
   const seenEvents = new Set();
+  const anchorAt = recordings.indexOf(anchor ?? recordings[0]);
   recordings.forEach((r, i) => {
+    if (!keep[i]) return;
     const local = id => {
       const p = perRec[i].pawns.get(id);
       return p ? keyOf(i, p) : null;
     };
     for (const x of r.records) {
       const t = x.t + offsets[i];
-      if (t < 0) continue;
+      if (t < from || t > to) continue;
       if (x.kind === 'shot') {
         const key = local(x.id);
         const s = source.get(key);
@@ -282,13 +329,15 @@ export function merge(recordings) {
         if (!a || seenEvents.has(tag)) continue;
         seenEvents.add(tag);
         out.push(x.kind === 'death' ? { kind: 'death', t, id: ids.get(a) } : { kind: 'kill', t, killer: ids.get(a), victim: ids.get(b) });
-      } else if (x.kind === 'round' && i === recordings.indexOf(anchor ?? recordings[0])) {
+      } else if (x.kind === 'round' && i === anchorAt) {
         out.push({ ...x, t });
       }
     }
   });
   out.sort((a, b) => a.t - b.t || (a.kind === 'pawn' ? -1 : 0));
-  const header = { ...recordings[0].header, recorder: recordings.map(r => r.header.recorder).filter(Boolean).join(', ') };
-  const sources = new Map([...source].map(([key, s]) => [ids.get(key), { recorder: recordings[s.rec].header.recorder, own: s.own }]));
-  return { header, records: out, sources };
+  const header = { ...recordings[0].header, recorder: owners.filter(Boolean).join(', ') || recordings.map(r => r.header.recorder).filter(Boolean).join(', ') };
+  const sources = new Map(
+    [...source].map(([key, s]) => [ids.get(key), { recorder: owners[s.rec] || recordings[s.rec].header.recorder, own: s.own, conflict: s.conflict, apart: apart.get(key) ?? null }]),
+  );
+  return { header, records: out, sources, left };
 }
