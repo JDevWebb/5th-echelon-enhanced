@@ -225,6 +225,24 @@ pub fn new_match(on: bool) -> Result<u32, Error> {
     }))
 }
 
+/// Tells the server whether this game's match is under way (round_state.rs): it leaves a match
+/// its host says is under way out of searches. Failures are only logged.
+pub fn match_state(under_way: bool, state: &str) {
+    let result = run(signed_in(|| async {
+        let mut client = connect!(MiscClient);
+        client
+            .match_state(tonic::Request::new(server_api::misc::MatchStateRequest {
+                under_way,
+                state: state.to_string(),
+            }))
+            .await?;
+        Ok(())
+    }));
+    if let Err(e) = result {
+        tracing::warn!("Telling the server the match state failed: {e}");
+    }
+}
+
 /// The friend list, giving up after `limit` (the game waits on it).
 pub fn list_friends_within(limit: std::time::Duration) -> Result<Vec<Friend>, Error> {
     runtime()?.block_on(async { tokio::time::timeout(limit, async { list_friends_async().await }).await.map_err(|_| Error::NotConnected)? })

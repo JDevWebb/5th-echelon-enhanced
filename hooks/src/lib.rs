@@ -50,6 +50,7 @@ mod overlay;
 mod overlay_input;
 mod particle_fix;
 mod quickstart;
+mod round_state;
 mod scheme_pool_fix;
 mod storm_fix;
 mod uplay_r1_loader;
@@ -391,6 +392,8 @@ fn init(hmodule: Option<HMODULE>) {
             }
             None => warn!("Data version check: left as it is"),
         }
+        // Whether this game's match is under way, for the server (round_state.rs).
+        round_state::start();
     }
 
     // needs to be done in a separate thread, otherwise it'll block indefinitely

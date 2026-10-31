@@ -49,7 +49,7 @@ const WAIT: Duration = Duration::from_secs(15 * 60);
 const MAX_NAMES: usize = 200_000;
 
 /// Reads a `T` at `addr`, if the memory there is readable.
-fn read<T: Copy>(addr: usize) -> Option<T> {
+pub(crate) fn read<T: Copy>(addr: usize) -> Option<T> {
     let size = std::mem::size_of::<T>();
     let region = region::query(addr as *const u8).ok()?;
     let end = region.as_ptr::<u8>() as usize + region.len();
@@ -59,12 +59,12 @@ fn read<T: Copy>(addr: usize) -> Option<T> {
     Some(unsafe { std::ptr::read_unaligned(addr as *const T) })
 }
 
-fn read_u32(addr: usize) -> Option<u32> {
+pub(crate) fn read_u32(addr: usize) -> Option<u32> {
     read::<u32>(addr)
 }
 
 /// A C string at `addr`, up to `max` bytes.
-fn read_string(addr: usize, max: usize) -> Option<String> {
+pub(crate) fn read_string(addr: usize, max: usize) -> Option<String> {
     let mut bytes = Vec::new();
     for i in 0..max {
         let b = read::<u8>(addr + i)?;
