@@ -1733,6 +1733,103 @@ async fn too_few_gains_of_a_stat_flag_nothing() {
     assert!(f["flags"].as_array().unwrap().is_empty(), "one gain is no normal to compare with: {f}");
 }
 
+/// A reported player with hardware ids (`ids`: (kind, a letter its hash is made of)).
+fn on_pc(id: i64, name: &str, identity: Option<&str>, ids: &[(&str, char)]) -> Value {
+    let mut p = player(id, name, identity);
+    p["hardware"] = json!(ids.iter().map(|(kind, c)| json!({ "kind": kind, "hash": c.to_string().repeat(64) })).collect::<Vec<_>>());
+    p
+}
+
+#[tokio::test]
+async fn a_ban_holds_for_the_pc_two_ids_ban_one_flags() {
+    let t = start("hardware-bans").await;
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    let roster = |players: Vec<Value>| Some(json!({ "full": false, "players": players }));
+    let until = identity::now() + 30 * 86_400;
+    // Exo is banned on A until `until`; his PC: a machine id, a board and a disk.
+    let mut exo = on_pc(1, "Exo", Some("ab12"), &[("machine-guid", 'a'), ("board-serial", 'b'), ("disk-serial", 'c')]);
+    exo["banned"] = json!({ "reason": "aimbot", "until": until, "at": identity::now() });
+    t.call("POST", "/v1/players", Some(&a), roster(vec![exo])).await;
+    // A new identity on B with two of them: banned, as long as Exo is; one with one: flagged.
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&b),
+        roster(vec![
+            on_pc(7, "Exo2", Some("cd34"), &[("machine-guid", 'a'), ("disk-serial", 'c'), ("smbios-uuid", 'd')]),
+            on_pc(8, "Sibling", Some("ef56"), &[("board-serial", 'b'), ("disk-serial", 'e')]),
+        ]),
+    )
+    .await;
+    let on_b = t.pulse_actions(&b).await;
+    assert_eq!(
+        on_b.iter().map(|a| (a["kind"].as_str(), a["player"].as_i64(), a["until"].as_i64())).collect::<Vec<_>>(),
+        [(Some("ban"), Some(7), Some(until))],
+        "{on_b:?}"
+    );
+    assert!(on_b[0]["reason"].as_str().unwrap().contains("aimbot"));
+    let ban = t.c.identity_ban("cd34").await.unwrap().expect("the new identity is banned across the network");
+    assert_eq!((ban.1, ban.3.as_str()), (Some(until), "hardware"));
+    assert!(t.c.identity_ban("ef56").await.unwrap().is_none(), "one id in common only flags");
+    let d = t.c.player_detail("server-b", 8).await.unwrap().unwrap();
+    assert_eq!(
+        (d["hardware"]["matches"][0]["outcome"].as_str(), d["hardware"]["matches"][0]["name"].as_str()),
+        (Some("flag"), Some("Exo")),
+        "{d}"
+    );
+    let d = t.c.player_detail("server-b", 7).await.unwrap().unwrap();
+    assert_eq!(d["hardware"]["matches"][0]["matched"].as_i64(), Some(2), "{d}");
+    assert!(d.to_string().find(&"a".repeat(64)).is_none(), "never the hashes");
+    // Reported again: not asked twice.
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&b),
+        roster(vec![on_pc(7, "Exo2", Some("cd34"), &[("machine-guid", 'a'), ("disk-serial", 'c')])]),
+    )
+    .await;
+    assert_eq!(t.pulse_actions(&b).await.len(), 1);
+}
+
+#[tokio::test]
+async fn ids_many_share_never_ban_nor_do_ended_bans() {
+    let t = start("hardware-shared").await;
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    let roster = |players: Vec<Value>| Some(json!({ "full": false, "players": players }));
+    // Five players who aren't banned share an OEM's board serial and a cloned machine id.
+    let shared: Vec<Value> = (20..25)
+        .map(|i| on_pc(i, &format!("P{i}"), Some(&format!("id{i}")), &[("board-serial", 'f'), ("machine-guid", '9')]))
+        .collect();
+    t.call("POST", "/v1/players", Some(&b), roster(shared)).await;
+    let mut cheat = on_pc(1, "Cheat", Some("ab12"), &[("board-serial", 'f'), ("machine-guid", '9')]);
+    cheat["banned"] = json!({ "reason": "wallhack", "until": null, "at": identity::now() });
+    // A ban that ran out holds nothing.
+    let mut old = on_pc(2, "Old", Some("cd34"), &[("disk-serial", '1'), ("smbios-uuid", '2')]);
+    old["banned"] = json!({ "reason": "spam", "until": identity::now() - 60, "at": identity::now() - 86_400 });
+    t.call("POST", "/v1/players", Some(&a), roster(vec![cheat, old])).await;
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&b),
+        roster(vec![
+            on_pc(30, "New", Some("gh78"), &[("board-serial", 'f'), ("machine-guid", '9')]),
+            on_pc(31, "Back", Some("ij90"), &[("disk-serial", '1'), ("smbios-uuid", '2')]),
+        ]),
+    )
+    .await;
+    assert!(t.pulse_actions(&b).await.is_empty());
+    // A new account on a virtual machine is flagged for the admins.
+    let mut vm = on_pc(40, "Vee", Some("kl12"), &[("machine-guid", '3')]);
+    vm["vm"] = json!("VMware");
+    t.call("POST", "/v1/players", Some(&b), roster(vec![vm])).await;
+    let d = t.c.player_detail("server-b", 40).await.unwrap().unwrap();
+    assert_eq!(
+        (d["hardware"]["vm"].as_str(), d["hardware"]["matches"][0]["outcome"].as_str()),
+        (Some("VMware"), Some("vm")),
+        "{d}"
+    );
+}
+
 /// A stat write: `value` to `stat` on `board` in `context`, for `who` (named after them).
 fn sw(id: i64, who: &str, board: u32, context: u32, stat: u32, value: f64) -> Value {
     json!({ "id": id, "global_id": who, "name": format!("Name{who}"), "board": board, "context": context, "stat": stat, "value": value })

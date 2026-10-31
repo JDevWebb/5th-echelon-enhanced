@@ -45,8 +45,8 @@ const title = computed(() => ({
 })[props.kind]);
 const intro = computed(() => ({
   ban: props.player.identity
-    ? 'Across the network: every account of theirs, on every server, and any they make or link later. They\'re signed out and can\'t sign in until the ban ends.'
-    : `They're signed out and can't sign in on ${props.server} until the ban ends (this account has no identity, so only it).`,
+    ? 'Across the network: every account of theirs, on every server, and any they make or link later, and their PC: a new account on it is banned too. They\'re signed out and can\'t sign in until the ban ends.'
+    : `They're signed out and can't sign in on ${props.server} until the ban ends (this account has no identity, so only it and their PC: a new account on it is banned too).`,
   rename: 'They\'re signed out, and their friends on every server see the new name.',
   delete: `Their account on ${props.server} is removed for good: stats, friends and all. This can't be undone.`,
   reset_password: 'Their server makes a temporary password. You see it once, here, to give them privately.',

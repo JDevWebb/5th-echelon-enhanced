@@ -161,6 +161,8 @@ pub async fn key_login(server: IpAddr, identity: &identity::Identity, host: &str
             host: host.into(),
             client: LAUNCHER_CLIENT.into(),
             build: String::new(),
+            hardware: Vec::new(),
+            vm: String::new(),
         })
         .await?;
     Ok(answer.into_inner().user.map(|u| u.username).unwrap_or_default())
@@ -180,6 +182,8 @@ pub async fn login_as_client(server: IpAddr, name: &str, password: &str, client:
         password: password.into(),
         client: LAUNCHER_CLIENT.into(),
         build: String::new(),
+        hardware: Vec::new(),
+        vm: String::new(),
     });
     request
         .metadata_mut()
@@ -297,6 +301,8 @@ pub async fn api_sign_in(server: IpAddr, name: &str, password: &str, client: &st
             password: password.into(),
             client: client.into(),
             build: String::new(),
+            hardware: Vec::new(),
+            vm: String::new(),
         })
         .await?
         .into_inner();

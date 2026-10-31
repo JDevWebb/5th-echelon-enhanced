@@ -42,6 +42,12 @@ pub struct PlayerRecord {
     pub sessions: u32,
     pub matches: u32,
     pub banned: Option<Ban>,
+    /// Their PC's hardware ids, hashed, from a sign-in lately (memory only: `hardware.rs`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub hardware: Vec<crate::hardware::Id>,
+    /// Their PC is a virtual machine: its maker.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vm: Option<String>,
 }
 
 /// A play session as sent to the coordinator.
@@ -287,8 +293,9 @@ impl Storage {
         let rows = run(query.fetch_all(&self.pool))??;
         Ok(rows
             .into_iter()
-            .map(
-                |(id, name, global_id, created_at, last_seen, online, play_seconds, sessions, matches, reason, until, at)| PlayerRecord {
+            .map(|(id, name, global_id, created_at, last_seen, online, play_seconds, sessions, matches, reason, until, at)| {
+                let (hardware, vm) = crate::hardware::of(id);
+                PlayerRecord {
                     id,
                     name,
                     identity: global_id,
@@ -303,8 +310,10 @@ impl Storage {
                         until,
                         at,
                     }),
-                },
-            )
+                    hardware,
+                    vm,
+                }
+            })
             .collect())
     }
 

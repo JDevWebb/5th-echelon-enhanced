@@ -167,6 +167,8 @@ async fn identity_login(ctx: &mut Ctx) -> Result<()> {
                 host: "rogue.example".into(),
                 client: testbot::bot::LAUNCHER_CLIENT.into(),
                 build: String::new(),
+                hardware: Vec::new(),
+                vm: String::new(),
             })
             .await?;
         Ok::<(), eyre::Report>(())

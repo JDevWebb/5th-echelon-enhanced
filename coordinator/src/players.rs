@@ -282,12 +282,19 @@ impl Coordinator {
                 if let Some(identity) = identity {
                     sqlx::query(crate::support::FORGET).bind(identity).bind(server).execute(&mut *tx).await?;
                 }
-                // Their game's uploads go with them (ids come again on the server).
+                // Their game's uploads go with them (ids come again on the server), and their
+                // PC's hardware ids.
                 sqlx::query("DELETE FROM player_content WHERE server_id = ? AND player_id = ?")
                     .bind(server)
                     .bind(id)
                     .execute(&mut *tx)
                     .await?;
+                for table in [
+                    "DELETE FROM player_hardware WHERE server_id = ? AND player = ?",
+                    "DELETE FROM hardware_matches WHERE server_id = ? AND player = ?",
+                ] {
+                    sqlx::query(table).bind(server).bind(id).execute(&mut *tx).await?;
+                }
                 removed += 1;
             }
             known.retain(|id| listed.contains(id));
@@ -799,6 +806,8 @@ impl Coordinator {
             "mutes_identity": linked,
             // Banned across the network, by identity: every account of theirs, now and later.
             "network_ban": network_ban.map(|(reason, until, at, by)| json!({ "reason": reason, "until": until, "at": at, "by": by })),
+            // Their PC (F10): its ids' kinds, a virtual machine, and what it shares with banned players'.
+            "hardware": self.hardware_of(server, id).await?,
             "mutes": mutes.into_iter().map(|(room, until, by, reason, at)| json!({ "room": room, "until": until, "by": by, "reason": reason, "at": at })).collect::<Vec<_>>(),
             "actions": actions.into_iter().map(|(aid, kind, args, by, at, status, message, done)| json!({
                 "id": aid, "kind": kind, "args": serde_json::from_str::<Value>(&args).unwrap_or_default(), "created_by": by,

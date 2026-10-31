@@ -1112,6 +1112,7 @@ impl Users for MyUsers {
         let password = request.password;
         let client = request.client;
         let build = request.build;
+        let (hardware, vm) = (request.hardware, request.vm);
         // Nothing costly for what can't be an account.
         if username.chars().count() > 32 || password.len() > 128 {
             return Err(Status::unauthenticated("Invalid login"));
@@ -1157,6 +1158,8 @@ impl Users for MyUsers {
             return Err(Status::unauthenticated("Invalid login"));
         }
         attempt.succeeded();
+        // Their PC's ids, for the coordinator (F10): a PC tied to a banned player's is banned.
+        crate::hardware::note(user_id, &hardware, &vm);
         if let Err(refusal) = self.admit(user_id, &username, &client, &build).await {
             if refusal.code() == tonic::Code::FailedPrecondition {
                 crate::clients::refused(user_id, &username, &client, &password);
@@ -1385,6 +1388,7 @@ impl Users for MyUsers {
             return Err(Status::permission_denied(crate::players::banned_message(&ban)));
         }
         // Before the password changes: an outdated launcher changes nothing.
+        crate::hardware::note(person.id, &request.hardware, &request.vm);
         self.admit(person.id, &person.username, &request.client, &request.build).await?;
         if !self.storage.use_key_login(person.id, request.time).await.map_err(internal)? {
             return Err(refused("That signature was already used"));

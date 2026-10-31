@@ -2667,6 +2667,7 @@ dependencies = [
  "hooks-config",
  "hooks-proc",
  "hudhook",
+ "hwid",
  "imgui",
  "nat_proto",
  "portmap",
@@ -2786,6 +2787,13 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "windows 0.54.0",
+]
+
+[[package]]
+name = "hwid"
+version = "0.3.0"
+dependencies = [
+ "sha2",
 ]
 
 [[package]]
@@ -3364,6 +3372,7 @@ dependencies = [
  "http",
  "http-body",
  "http-body-util",
+ "hwid",
  "identity",
  "image",
  "jzon",

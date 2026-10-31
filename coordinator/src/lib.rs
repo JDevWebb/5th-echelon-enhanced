@@ -45,6 +45,7 @@ pub mod chat;
 pub mod clients;
 pub mod content;
 pub mod game_names;
+pub mod hardware;
 mod host_check;
 pub mod limits;
 pub mod maintenance;
@@ -1560,7 +1561,11 @@ async fn players_report(State(c): State<Shared>, headers: HeaderMap, body: axum:
     }
     match c.record_players(&server, &roster).await {
         Ok(answer) => {
-            // Its players of identities banned across the network, banned here too.
+            // Players on a banned player's PC, banned too (F10); then its players of identities
+            // banned across the network, banned here too.
+            if let Err(e) = c.record_hardware(&server, roster["players"].as_array().map_or(&[][..], Vec::as_slice)).await {
+                tracing::warn!("hardware bans for {server}: {e}");
+            }
             if let Err(e) = c.enforce_identity_bans(&server).await {
                 tracing::warn!("network bans for {server}: {e}");
             }

@@ -14,6 +14,13 @@
     <template v-else>
       <p v-if="d.network_ban" class="callout bad">Banned across the network {{ d.network_ban.until ? `until ${fmt.when(d.network_ban.until)}` : 'for good' }}{{ d.network_ban.reason ? `: ${d.network_ban.reason}` : '' }}: every account of theirs, on every server, and any they make. <span class="muted small">(by {{ d.network_ban.by }}, {{ fmt.when(d.network_ban.at) }})</span></p>
       <p v-else-if="p.banned" class="callout bad">Banned {{ p.banned.until ? `until ${fmt.when(p.banned.until)}` : 'for good' }}{{ p.banned.reason ? `: ${p.banned.reason}` : '' }} <span class="muted small">(since {{ fmt.when(p.banned.at) }})</span></p>
+      <!-- Their PC (F10): what it shares with banned players', never the ids themselves. -->
+      <p v-for="m in (d.hardware?.matches || []).filter((m) => m.outcome !== 'vm')" :key="`${m.outcome}${m.server}${m.player}`" class="callout" :class="m.outcome === 'ban' ? 'bad' : 'warn'">
+        {{ m.outcome === 'ban' ? 'Banned for their PC' : 'Maybe the same PC' }}: {{ m.matched }} hardware id{{ m.matched === 1 ? '' : 's' }} in common with banned
+        <RouterLink :to="`/players/${encodeURIComponent(m.server)}/${m.player}`">{{ m.name || `#${m.player}` }}</RouterLink> on {{ m.server }}{{ m.outcome === 'ban' ? '' : ' (one id: a shared or second-hand PC is possible, so it\'s only flagged)' }}.
+        <span class="muted small">({{ fmt.when(m.at) }})</span>
+      </p>
+      <p v-if="d.hardware?.vm" class="callout warn">Plays on a virtual machine ({{ d.hardware.vm }}){{ (d.hardware.matches || []).some((m) => m.outcome === 'vm') ? ': flagged as a new account on one, a way round a ban on a PC' : '' }}.</p>
       <div class="facts">
         <div class="fact"><b>{{ fmt.dur(p.play_seconds) }}</b><span>played in all</span></div>
         <div class="fact"><b>{{ fmt.dur(p.week_seconds) }}</b><span>last 7 days</span></div>

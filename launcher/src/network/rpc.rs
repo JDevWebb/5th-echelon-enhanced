@@ -31,6 +31,8 @@ pub async fn test_login(api_url: String, username: &str, password: &str) -> Resu
             password: password.to_string(),
             client: super::CLIENT.into(),
             build: super::build(),
+            hardware: super::hardware(),
+            vm: super::vm(),
         })
         .await
     {
@@ -130,6 +132,8 @@ pub async fn account_id(api_url: String, username: &str, password: &str) -> Resu
             password: password.to_string(),
             client: super::CLIENT.into(),
             build: super::build(),
+            hardware: super::hardware(),
+            vm: super::vm(),
         })
         .await?
         .into_inner();
@@ -147,6 +151,8 @@ pub async fn rename(api_url: String, username: &str, password: &str, new_name: &
             password: password.to_string(),
             client: super::CLIENT.into(),
             build: super::build(),
+            hardware: super::hardware(),
+            vm: super::vm(),
         })
         .await?
         .into_inner()
@@ -188,6 +194,8 @@ pub async fn identity_login(api_url: String, identity: &identity::Identity, host
         host: identity::host_key(host),
         client: super::CLIENT.into(),
         build: super::build(),
+        hardware: super::hardware(),
+        vm: super::vm(),
     };
     match client.key_login(request).await {
         Ok(resp) => Ok(resp.into_inner().user.map(|u| u.username).filter(|u| !u.is_empty())),
@@ -208,6 +216,8 @@ pub async fn link_identity(api_url: String, identity: &identity::Identity, host:
             password: password.to_string(),
             client: super::CLIENT.into(),
             build: super::build(),
+            hardware: super::hardware(),
+            vm: super::vm(),
         })
         .await?
         .into_inner()
@@ -239,6 +249,8 @@ pub async fn sign_in(api_url: String, username: &str, password: &str) -> Result<
             password: password.to_string(),
             client: super::CLIENT.into(),
             build: super::build(),
+            hardware: super::hardware(),
+            vm: super::vm(),
         })
         .await
     {
@@ -412,6 +424,8 @@ async fn signed_in(api_url: &str, username: &str, password: &str) -> Result<(ton
             password: password.to_string(),
             client: super::CLIENT.into(),
             build: super::build(),
+            hardware: super::hardware(),
+            vm: super::vm(),
         })
         .await?
         .into_inner()

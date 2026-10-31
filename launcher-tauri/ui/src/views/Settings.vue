@@ -335,6 +335,10 @@
               <Switch :on="view.ask_feedback" label="Ask me how my games went" @set="set('ask_feedback', $event)" />
             </section>
             <section class="card">
+              <h3>Fair play: bans hold for the PC</h3>
+              <p class="muted">When the launcher and the game sign in, they send your server a fingerprint of this PC: one-way hashes of its hardware ids (the Windows install's id, the board's and disks' serials; on a Steam Deck or Linux, the system's machine id and the drive's serial), never the ids themselves. Servers keep them in memory only; the network keeps them keyed again with a secret of its own, for 180 days after you last played, or while a ban on the account runs, and deletes them with your account. They're used for one thing: an account on the PC of a banned player is banned too, for as long as that ban runs.</p>
+            </section>
+            <section class="card">
               <h3>Report a problem</h3>
               <p class="muted">Something wrong now? Tell the admins of the server you play on, with your logs.</p>
               <button type="button" class="btn" @click="call('ask_feedback')">Send feedback</button>

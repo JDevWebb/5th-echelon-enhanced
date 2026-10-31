@@ -22,6 +22,7 @@ members = [
   "identity",
   "moderation",
   "geo",
+  "hwid",
   "coordinator",
   "setup",
   "tools/umd_browser",

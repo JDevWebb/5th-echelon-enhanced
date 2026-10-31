@@ -1,0 +1,8 @@
+[package]
+name = "hwid"
+version = "0.3.0"
+edition = "2021"
+description = "This PC's hardware ids, hashed, for bans that hold for the PC (the 0.4.8 plan's F10)"
+
+[dependencies]
+sha2 = { workspace = true }

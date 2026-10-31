@@ -67,6 +67,19 @@ message LoginRequest {
   // add-on's DLL. Servers tell the project's signed releases from other builds by it.
   // Empty from clients before 0.4.5.
   string build = 4;
+  // This PC's hardware ids, hashed (the hwid crate; 0.4.8 on): servers keep them in memory
+  // only and pass them to the coordinator, which keys them again and refuses a PC that two of
+  // them tie to a banned player's (F10).
+  repeated HardwareId hardware = 5;
+  // The PC is a virtual machine: its maker as its firmware names it ("VMware"), else empty.
+  string vm = 6;
+}
+
+// One hardware id: its kind ("machine-guid", "smbios-uuid", "board-serial", "disk-serial",
+// "linux-machine-id") and its hash (64 hex characters).
+message HardwareId {
+  string kind = 1;
+  string hash = 2;
 }
 
 message LoginResponse {
@@ -121,6 +134,8 @@ message KeyLoginRequest {
   string client = 7;
   // As LoginRequest's.
   string build = 8;
+  repeated HardwareId hardware = 9;
+  string vm = 10;
 }
 
 message RegisterResponse {

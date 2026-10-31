@@ -327,6 +327,21 @@ pub fn set_game_session(session_id: Option<u32>, invite_only: bool, session_data
     }))
 }
 
+/// This PC's hardware ids, found once (under Wine or Proton, the Linux machine's).
+fn hardware() -> &'static hwid::Hardware {
+    static FOUND: std::sync::OnceLock<hwid::Hardware> = std::sync::OnceLock::new();
+    FOUND.get_or_init(|| {
+        let found = hwid::collect(hooks_config::running_under_wine());
+        info!(
+            "Hardware ids for sign-in: {} ({}){}",
+            found.ids.len(),
+            found.ids.iter().map(|i| i.kind).collect::<Vec<_>>().join(", "),
+            found.vm.as_ref().map(|v| format!(", a {v} virtual machine")).unwrap_or_default()
+        );
+        found
+    })
+}
+
 async fn login_async(username: &str, password: &str) -> Result<(), Error> {
     {
         let mut guard = CREDS.lock().unwrap();
@@ -342,6 +357,16 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
         // a current one has.
         client: concat!("game/", env!("FE_RELEASE")).into(),
         build: BUILD.get().cloned().unwrap_or_default(),
+        // This PC's hardware ids, hashed (F10: a ban holds for the PC too).
+        hardware: hardware()
+            .ids
+            .iter()
+            .map(|i| server_api::users::HardwareId {
+                kind: i.kind.to_string(),
+                hash: i.hash.clone(),
+            })
+            .collect(),
+        vm: hardware().vm.clone().unwrap_or_default(),
     });
 
     debug!("logging in");

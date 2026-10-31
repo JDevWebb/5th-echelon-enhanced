@@ -16,6 +16,29 @@ pub use discover::try_locate_server;
 /// What this launcher signs in to servers as: they refuse launchers older than they allow.
 pub const CLIENT: &str = concat!("launcher/", env!("FE_RELEASE"));
 
+/// This PC's hardware ids, hashed, as found once (the hwid crate; F10): sent when signing in.
+fn found_hardware() -> &'static hwid::Hardware {
+    static FOUND: std::sync::OnceLock<hwid::Hardware> = std::sync::OnceLock::new();
+    FOUND.get_or_init(|| hwid::collect(hooks_config::running_under_wine()))
+}
+
+/// The hardware ids for a sign-in.
+pub fn hardware() -> Vec<server_api::users::HardwareId> {
+    found_hardware()
+        .ids
+        .iter()
+        .map(|i| server_api::users::HardwareId {
+            kind: i.kind.to_string(),
+            hash: i.hash.clone(),
+        })
+        .collect()
+}
+
+/// The virtual machine's maker, for a sign-in (empty on a real PC).
+pub fn vm() -> String {
+    found_hardware().vm.clone().unwrap_or_default()
+}
+
 /// The SHA-256 (hex) of this launcher's own executable, sent when it signs in: servers tell
 /// the project's signed releases from other builds by it. Empty if it can't be read.
 pub fn build() -> String {

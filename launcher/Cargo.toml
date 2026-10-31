@@ -44,6 +44,7 @@ goblin = { workspace = true, default-features = false, features = [
 ] }
 hooks-addresses = { path = "../hooks/hooks-addresses" }
 hooks-config = { path = "../hooks/hooks-config" }
+hwid = { path = "../hwid" }
 http = "1"
 http-body = "1"
 nat_proto = { path = "../nat_proto" }
