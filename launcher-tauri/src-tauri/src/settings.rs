@@ -583,6 +583,28 @@ pub fn act(app: tauri::AppHandle, action: String, arg: Option<Value>) -> Result<
     Ok(())
 }
 
+/// The relays the player's server offers (a network's matchmaking server), each pinged now, the
+/// one chosen (None: the nearest) and the one the game would use. Empty elsewhere.
+#[tauri::command(async)]
+pub fn relays(app: tauri::AppHandle) -> serde_json::Value {
+    let server = {
+        let launcher = app.state::<Launcher>();
+        let inner = launcher.lock();
+        inner.game.as_ref().and_then(|g| g.cfg.current_profile().map(|p| p.server.clone())).unwrap_or_default()
+    };
+    if server.is_empty() {
+        return serde_json::json!({ "list": [] });
+    }
+    let (list, in_use) = launcher::task::guarded(|| Ok::<_, String>(launcher::relays::offered(&server))).unwrap_or_default();
+    serde_json::json!({ "list": list, "in_use": in_use, "chosen": launcher::prefs::Prefs::relay() })
+}
+
+/// Chooses the relay the game uses (None: the nearest), from the next start.
+#[tauri::command(async)]
+pub fn choose_relay(relay: Option<String>) {
+    launcher::relays::choose(relay);
+}
+
 /// The connection test's results: each part's name, how it went ("ok", "warn", "fail") and
 /// what to say about it. Runs now, in the activity bar too.
 #[tauri::command(async)]

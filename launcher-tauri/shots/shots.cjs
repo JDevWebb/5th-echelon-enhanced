@@ -76,6 +76,8 @@ const SHOTS = [
     ['notifications', 'Notifications'], ['save', 'Save game'], ['client', '5th Echelon client'], ['advanced', 'Advanced'],
     ['display', 'Display'], ['feedback', 'Feedback'], ['about', 'About'],
   ].map(([id, label]) => [`settings-${id}`, '?answered&beta', settings(label)]),
+  // A network's matchmaking server offering its relays.
+  ['settings-network-relays', '?answered&relays', settings('Network')],
 ];
 
 /** What's wrong on the page as it is now: wider than the window, buttons without a name. */

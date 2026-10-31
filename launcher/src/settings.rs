@@ -1195,8 +1195,14 @@ pub fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>, n
         (_, outcome) => outcome,
     };
     add("How players reach this PC", direct);
-    let nat_port = game_nat_port.unwrap_or(nat_proto::DEFAULT_PORT);
-    let nat = match rt.block_on(async { tokio::time::timeout(t, network::test_nat_helper(&profile.server, nat_port)).await }) {
+    // The helper the game will use: a relay of the network's when the server offers them
+    // (relays.rs), else the server's own.
+    let relay = crate::relays::pick_for(&profile.server);
+    let (nat_host, nat_port) = match &relay {
+        Some(r) => (r.host.clone(), r.port),
+        None => (profile.server.clone(), game_nat_port.unwrap_or(nat_proto::DEFAULT_PORT)),
+    };
+    let nat = match rt.block_on(async { tokio::time::timeout(t, network::test_nat_helper(&nat_host, nat_port)).await }) {
         Ok(Ok(check)) => match check.symmetric {
             Some(true) => (
                 Status::Warn,
@@ -1209,6 +1215,10 @@ pub fn run_tests(profile: &setup::config::Profile, game_nat_port: Option<u16>, n
         },
         Ok(Err(e)) => (Status::Fail, Some(format!("{e} (UDP {nat_port}-{}): only LAN or VPN play works", nat_port + 1))),
         Err(_) => (Status::Fail, Some(format!("no answer (UDP {nat_port}-{}): only LAN or VPN play works", nat_port + 1))),
+    };
+    let nat = match (&relay, nat) {
+        (Some(r), (status, why)) => (status, Some(format!("the relay {}{}", r.name, why.map(|w| format!(": {w}")).unwrap_or_default()))),
+        (None, outcome) => outcome,
     };
     add("Internet play helper", nat);
     results

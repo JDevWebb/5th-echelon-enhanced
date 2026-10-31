@@ -188,6 +188,10 @@ pub struct Prefs {
     /// Linux: the classic (egui) interface, not the Tauri one (front_door.rs).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     classic_interface: bool,
+    /// The relay the player chose (its id; relays.rs), where their server offers it; None: the
+    /// nearest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    relay: Option<String>,
 }
 
 /// What the Play button starts: the game as it is, or straight into an online lobby
@@ -442,6 +446,16 @@ impl Prefs {
     /// Linux: the player chose the classic (egui) interface.
     pub fn classic_interface() -> bool {
         Self::load().classic_interface
+    }
+
+    pub fn relay() -> Option<String> {
+        Self::load().relay
+    }
+
+    pub fn set_relay(relay: Option<String>) {
+        let mut prefs = Self::load();
+        prefs.relay = relay;
+        prefs.save();
     }
 
     pub fn set_classic_interface(on: bool) {

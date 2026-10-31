@@ -128,6 +128,18 @@
                 @set="set('port_mapping', $event)"
               />
             </section>
+            <section v-if="relays?.list.length" class="card">
+              <h3>Relay</h3>
+              <p class="muted">Your server works with relays near its players: matches with players who can't reach each other directly go through one. The nearest is used unless you choose one.</p>
+              <div class="row">
+                <span>Relay</span>
+                <select class="select" aria-label="Relay" :value="relays.chosen ?? ''" @change="chooseRelay($event.target.value || null)">
+                  <option value="">The nearest{{ nearestName ? ` (now ${nearestName})` : '' }}</option>
+                  <option v-for="r in relays.list" :key="r.id" :value="r.id">{{ r.name }}{{ r.region ? ` · ${r.region}` : '' }} · {{ r.ms == null ? 'no answer' : `${r.ms} ms` }}</option>
+                </select>
+              </div>
+              <p class="muted small">Used from the next time the game starts.</p>
+            </section>
             <section class="card">
               <h3>Connection test</h3>
               <p class="muted">Checks each part of the connection in turn: the server's config, its API, signing in to the game service, how other players reach this PC (as the overlay shows it in game), and the server's helper for playing over the internet.</p>
@@ -522,7 +534,17 @@ async function checkUpdate() {
   }
 }
 
+// The relays the server offers (only a network's matchmaking server does), pinged when the
+// Network section opens.
+const relays = ref(null);
+const nearestName = computed(() => (relays.value?.chosen ? null : relays.value?.list.find((r) => r.id === relays.value.in_use)?.name));
+async function chooseRelay(id) {
+  await call('choose_relay', { relay: id });
+  relays.value = await call('relays');
+}
+
 watch(section, (s) => {
+  if (s === 'network') call('relays').then((r) => (relays.value = r));
   if (s === 'identity') call('identity').then((i) => (identity.value = i));
   if (s === 'feedback') loadReports();
   if (s === 'game') call('find_games').then((f) => (found.value = f));
