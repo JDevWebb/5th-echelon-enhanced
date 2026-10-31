@@ -96,6 +96,8 @@ pub struct Link {
     pub id: String,
     pub ip: Ipv4Addr,
     pub port: u16,
+    /// The range its relayed players' addresses take their ports from.
+    pub ports: (u16, u16),
     pub key: [u8; 32],
     /// It's the network's matchmaking server: relays report to it and ask it about pairs.
     pub matchmaking: bool,
@@ -124,6 +126,10 @@ fn links_from_heartbeat(answer: &serde_json::Value) {
                 id: v["id"].as_str()?.chars().take(crate::link::MAX_TEXT).collect(),
                 ip: v["ip"].as_str()?.parse().ok()?,
                 port: u16::try_from(v["port"].as_u64()?).ok()?,
+                ports: {
+                    let p = v["ports"].as_array()?;
+                    (u16::try_from(p.first()?.as_u64()?).ok()?, u16::try_from(p.get(1)?.as_u64()?).ok()?)
+                },
                 key: identity::base32_decode(v["key"].as_str()?).and_then(|k| <[u8; 32]>::try_from(k.as_slice()).ok())?,
                 matchmaking: v["matchmaking"].as_bool().unwrap_or(false),
             })
@@ -142,14 +148,16 @@ pub fn on_link(data: &[u8], src: std::net::SocketAddrV4, socket: &std::net::UdpS
     };
     let Some((_, body)) = crate::link::open(data, &link.key, identity::now()) else { return };
     match body {
-        crate::link::Body::Report(regs) => remote_report(&link.id, regs),
+        // Only the network's matchmaking server keeps relays' reports.
+        crate::link::Body::Report(regs) if NETWORK_RELAYS.load(Ordering::Relaxed) => remote_report(&link, regs),
+        crate::link::Body::Report(_) => {}
         // Looked up beside the packets: a slow database never holds up the relay's traffic.
         crate::link::Body::Ask { nonce, a, b } => {
             if let (Some(queue), Ok(socket)) = (ASKS.get(), socket.try_clone()) {
                 let _ = queue.try_send(Question { link, nonce, a, b, src, socket });
             }
         }
-        crate::link::Body::Answer { nonce, yes } => answered(nonce, yes),
+        crate::link::Body::Answer { nonce, yes } => answered(nonce, yes, &link.id),
     }
 }
 
@@ -204,20 +212,37 @@ const MAX_REMOTE: usize = 50_000;
 type Remotes = std::collections::HashMap<String, Remote>;
 static REMOTE: std::sync::LazyLock<Mutex<Remotes>> = std::sync::LazyLock::new(Mutex::default);
 
-fn remote_report(relay: &str, regs: Vec<crate::link::Reg>) {
+/// Whether a relay's report of `reg` can be so: a relayed player's address is on that relay, in
+/// its range; a direct one's is where the relay saw them (their public address, or a port
+/// their router mapped on it). Anything else would point other players' games elsewhere.
+fn plausible(link: &Link, reg: &crate::link::Reg) -> bool {
+    if reg.relayed {
+        *reg.advertise.ip() == link.ip && (link.ports.0..=link.ports.1).contains(&reg.advertise.port())
+    } else {
+        reg.advertise.ip() == reg.real.ip()
+    }
+}
+
+fn remote_report(link: &Link, regs: Vec<crate::link::Reg>) {
     let now = std::time::Instant::now();
     let mut remote = REMOTE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if remote.len() >= MAX_REMOTE {
         remote.retain(|_, r| now.duration_since(r.at) < REMOTE_FRESH);
     }
-    for reg in regs {
+    for reg in regs.into_iter().filter(|r| plausible(link, r)) {
         if remote.len() >= MAX_REMOTE {
             break;
         }
+        let key = identity::name_key(&reg.name);
+        // Another relay's fresh entry stands until it lapses: one relay can't take over a
+        // player another reports.
+        if remote.get(&key).is_some_and(|r| r.relay != link.id && now.duration_since(r.at) < REMOTE_FRESH) {
+            continue;
+        }
         remote.insert(
-            identity::name_key(&reg.name),
+            key,
             Remote {
-                relay: relay.to_string(),
+                relay: link.id.clone(),
                 real: reg.real,
                 advertise: reg.advertise,
                 relayed: reg.relayed,
@@ -258,15 +283,19 @@ pub const REPORT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
 const ASK_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(1500);
 
 static LINK_SOCKET: std::sync::OnceLock<std::net::UdpSocket> = std::sync::OnceLock::new();
-type Waiting = std::collections::HashMap<u32, Option<bool>>;
+/// Questions waiting, by nonce: the link asked, and its answer once it comes.
+type Waiting = std::collections::HashMap<u32, (String, Option<bool>)>;
 static WAITING: std::sync::LazyLock<(Mutex<Waiting>, std::sync::Condvar)> = std::sync::LazyLock::new(Default::default);
 
-fn answered(nonce: u32, yes: bool) {
+/// The answer to the question with `nonce`, taken only from the link it went to.
+fn answered(nonce: u32, yes: bool, from: &str) {
     let (waiting, ready) = &*WAITING;
     let mut w = waiting.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
-    if let Some(slot) = w.get_mut(&nonce) {
-        *slot = Some(yes);
-        ready.notify_all();
+    if let Some((asked, slot)) = w.get_mut(&nonce) {
+        if asked == from {
+            *slot = Some(yes);
+            ready.notify_all();
+        }
     }
 }
 
@@ -320,13 +349,13 @@ pub fn ask_matchmaking(a: &str, b: &str) -> Result<(), String> {
     };
     let nonce = rand::random::<u32>() | 1;
     let (waiting, ready) = &*WAITING;
-    waiting.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(nonce, None);
+    waiting.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(nonce, (link.id.clone(), None));
     let ask = crate::link::seal(&link.key, own, identity::now(), &crate::link::Body::Ask { nonce, a: a.into(), b: b.into() });
     let _ = socket.send_to(&ask, std::net::SocketAddrV4::new(link.ip, link.port));
     let deadline = std::time::Instant::now() + ASK_TIMEOUT;
     let mut w = waiting.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let answer = loop {
-        if let Some(Some(yes)) = w.get(&nonce) {
+        if let Some((_, Some(yes))) = w.get(&nonce) {
             break Some(*yes);
         }
         let left = deadline.saturating_duration_since(std::time::Instant::now());
@@ -346,6 +375,37 @@ pub fn ask_matchmaking(a: &str, b: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_relays_report_is_kept_only_where_it_can_be_so() {
+        let link = |id: &str, ip: [u8; 4]| Link {
+            id: id.into(),
+            ip: ip.into(),
+            port: 21128,
+            ports: (40000, 40999),
+            key: [0; 32],
+            matchmaking: false,
+        };
+        let (syd, eu) = (link("syd", [5, 6, 7, 8]), link("eu", [9, 9, 9, 9]));
+        let reg = |name: &str, advertise: &str, relayed: bool| crate::link::Reg {
+            name: name.into(),
+            real: "203.0.113.9:13000".parse().unwrap(),
+            advertise: advertise.parse().unwrap(),
+            relayed,
+            rtt_ms: None,
+        };
+        assert!(plausible(&syd, &reg("a", "5.6.7.8:40012", true)));
+        assert!(!plausible(&syd, &reg("a", "5.6.7.8:22", true)), "outside its range");
+        assert!(!plausible(&syd, &reg("a", "9.9.9.9:40012", true)), "another relay's address");
+        assert!(plausible(&syd, &reg("a", "203.0.113.9:3074", false)), "a direct player's mapped port");
+        assert!(!plausible(&syd, &reg("a", "198.51.100.1:13000", false)), "somewhere the player isn't");
+        let seen: std::net::IpAddr = "203.0.113.9".parse().unwrap();
+        remote_report(&syd, vec![reg("Taken", "5.6.7.8:40012", true)]);
+        remote_report(&eu, vec![reg("Taken", "9.9.9.9:40001", true)]);
+        assert_eq!(remote_advertised_for("Taken", seen), Some("5.6.7.8:40012".parse().unwrap()), "the first relay's stands");
+        remote_report(&syd, vec![reg("Elsewhere", "198.51.100.1:13000", false)]);
+        assert_eq!(remote_advertised_for("Elsewhere", seen), None, "an implausible report isn't kept");
+    }
 
     #[test]
     fn the_networks_relays_come_from_the_heartbeat() {
