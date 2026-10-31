@@ -465,7 +465,7 @@ impl Chat for MyChat {
     }
 
     async fn wait(&self, request: Request<WaitRequest>) -> Result<Response<WaitResponse>, Status> {
-        let c = self.caller(&request).await?;
+        let mut c = self.caller(&request).await?;
         if !crate::rate_limit::polls().check(c.user) {
             return Err(Status::resource_exhausted("Too many requests; slow down"));
         }
@@ -480,10 +480,17 @@ impl Chat for MyChat {
         };
         let blocked = self.storage.blocked_global_ids(c.user).await.map_err(internal)?;
         let deadline = tokio::time::Instant::now() + hold;
+        let mut woken = false;
         loop {
             let notified = arrived().notified();
             tokio::pin!(notified);
             notified.as_mut().enable();
+            // Woken by new messages: the lobby the player is in now, not when the wait began
+            // (R4: one who left kept getting its messages for the rest of the wait).
+            if woken {
+                c.lobby = self.storage.current_room(c.user).await.map_err(internal)?;
+            }
+            woken = true;
             let (messages, newest) = {
                 let all = kept().lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                 let newest = all.back().map_or(after, |m| m.id.max(after));
