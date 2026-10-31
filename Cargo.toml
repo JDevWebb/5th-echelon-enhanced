@@ -23,6 +23,7 @@ members = [
   "moderation",
   "geo",
   "hwid",
+  "replay",
   "coordinator",
   "setup",
   "tools/umd_browser",

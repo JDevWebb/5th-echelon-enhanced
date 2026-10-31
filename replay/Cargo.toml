@@ -1,0 +1,10 @@
+[package]
+name = "replay"
+version = "0.3.0"
+edition = "2021"
+description = "Match recordings (the add-on's replay research): the file format, read and written, and a dump tool"
+
+[dependencies]
+flate2 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

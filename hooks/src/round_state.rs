@@ -149,6 +149,52 @@ pub(crate) fn named(packed: u32) -> Vec<usize> {
     found
 }
 
+/// A packed name's text (`Name` or `Name_N` for number N + 1), from the name table.
+pub(crate) fn name_text(packed: u32) -> Option<String> {
+    let (index, number) = (packed & 0x7_ffff, packed >> 19);
+    let (table, count) = (read_u32(NAMES)?, read_u32(NAMES_COUNT)?);
+    if index >= count.min(MAX_NAMES as u32) {
+        return None;
+    }
+    let entry = read_u32(table as usize + index as usize * 4).filter(|e| *e != 0)?;
+    let text = read_string(entry as usize + 8, 64)?;
+    Some(if number == 0 { text } else { format!("{text}_{}", number - 1) })
+}
+
+/// The map loaded: the package holding a living level info (`LevelInfo0` and on, of
+/// `LevelInfo` or a class made from it), its outermost object's name. `names` holds "Class"
+/// and "LevelInfo".
+pub(crate) fn map_name(names: &HashMap<&'static str, u32>) -> Option<String> {
+    let index = *names.get("LevelInfo")?;
+    let class = class_named(names, "LevelInfo")? as u32;
+    for number in 1..8 {
+        for o in named(pack(index, number)) {
+            if !alive(o) || !read_u32(o + 0x24).is_some_and(|c| chain(c as usize).contains(&class)) {
+                continue;
+            }
+            let mut outermost = o;
+            for _ in 0..8 {
+                match read_u32(outermost + 0x18) {
+                    Some(outer) if outer != 0 => outermost = outer as usize,
+                    _ => break,
+                }
+            }
+            if outermost != o {
+                return name_text(read_u32(outermost + 0x20)?);
+            }
+        }
+    }
+    None
+}
+
+/// The match state as last read: its name, whether it's under way, and the match manager's
+/// class (the mode), for the recorder (recording.rs).
+pub(crate) fn current() -> (String, bool, String) {
+    CURRENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+}
+
+static CURRENT: std::sync::Mutex<(String, bool, String)> = std::sync::Mutex::new((String::new(), false, String::new()));
+
 /// What's looked up once: the names' indices, the classes, and the two properties' offsets.
 struct Found {
     names: HashMap<&'static str, u32>,
@@ -333,6 +379,10 @@ pub fn start() {
             });
             let settings = live.map(|(object, _)| settings_of(f, object)).unwrap_or_default();
             let (state, under_way) = now.unwrap_or_else(|| ("none".to_string(), false));
+            let mode = live
+                .and_then(|(object, _)| name_text(read_u32(read_u32(object + 0x24)? as usize + 0x20)?))
+                .unwrap_or_default();
+            *CURRENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = (state.clone(), under_way, mode);
             // The round's settings changing while it runs is said at once too (F4).
             let settings_changed = under_way && said_settings.as_ref().is_some_and(|s| *s != settings);
             if settings != said_settings.clone().unwrap_or_default() {

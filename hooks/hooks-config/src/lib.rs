@@ -366,6 +366,12 @@ pub struct Config {
     /// (all are its testers, the user decided 2026-10-31); `WitnessReports = false` turns it off.
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub witness_reports: bool,
+    /// Match recordings (the 0.4.8 plan's replay research): the add-on records where every
+    /// character is, faces and shoots in each match to the game folder's `replays` (the newest
+    /// 20 kept; on this PC only for now). On for every player, as witness reports;
+    /// `ReplayRecording = false` turns it off.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub replay_recording: bool,
     /// Removes the engine's negative mouse acceleration (widens the per-frame look-delta clamp,
     /// see the hooks' `mouse_fix`). Off until the player chose: the launcher asks once, with it
     /// on as the recommendation (its `new_options`), and Settings › Game changes it. Nothing to

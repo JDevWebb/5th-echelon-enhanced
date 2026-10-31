@@ -21,6 +21,7 @@ patch-free = []
 [dependencies]
 anyhow = { workspace = true }
 flate2 = { workspace = true }
+replay = { path = "../replay" }
 crossbeam-channel = { workspace = true }
 goblin = { workspace = true }
 hooks-addresses = { path = "hooks-addresses" }

@@ -50,7 +50,9 @@ mod mouse_turn_fix;
 mod overlay;
 mod overlay_input;
 mod particle_fix;
+mod pawns;
 mod quickstart;
+mod recording;
 mod round_state;
 mod scheme_pool_fix;
 mod speed_check;
@@ -404,10 +406,16 @@ fn init(hmodule: Option<HMODULE>) {
         speed_check::start();
         // Whether the game's code is as it shipped, but for our own changes (F8, report only).
         code_check::start();
-        // Witness reports (F9, research): testers only.
+        // The characters, sampled for witness reports (F9) and match recordings (replays),
+        // each on for every player unless turned off.
+        let mut watchers: Vec<Box<dyn pawns::Watcher>> = Vec::new();
         if config.witness_reports {
-            witness::start(config.user.username.clone());
+            watchers.push(Box::new(witness::Witness::new(config.user.username.clone())));
         }
+        if config.replay_recording {
+            watchers.push(Box::new(recording::Recorder::new(&game_dir, config.user.username.clone())));
+        }
+        pawns::start(watchers);
     }
 
     // needs to be done in a separate thread, otherwise it'll block indefinitely
