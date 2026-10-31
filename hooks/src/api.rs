@@ -69,6 +69,22 @@ static BACK_OFF_UNTIL: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 const BACK_OFF: std::time::Duration = std::time::Duration::from_secs(600);
 const BUSY_BACK_OFF: std::time::Duration = std::time::Duration::from_secs(20);
 
+/// Signing in again waits until then, and why (the game's other calls go on): after wrong
+/// details ([`WRONG_TRIES`] of them, then [`WRONG_WAIT`]) or the server out of reach (a wait
+/// growing with each try, [`UNREACHABLE_WAITS`]). Each success starts over.
+static LOGIN_HOLD: Mutex<Option<(std::time::Instant, String)>> = Mutex::new(None);
+static WRONG: Mutex<u32> = Mutex::new(0);
+static UNREACHABLE: Mutex<u32> = Mutex::new(0);
+const WRONG_TRIES: u32 = 3;
+const WRONG_WAIT: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+const UNREACHABLE_WAITS: [u64; 6] = [5, 15, 30, 60, 120, 300];
+
+/// Holds signing in for `wait`, saying why.
+fn hold_login(wait: std::time::Duration, why: String) {
+    error!("{why}; not signing in again for {} s", wait.as_secs());
+    *LOGIN_HOLD.lock().unwrap() = Some((std::time::Instant::now() + wait, why));
+}
+
 /// The refusal standing, if any: calls give up before reaching the server.
 fn refusal() -> Result<(), Error> {
     if let Some(why) = REFUSED.lock().unwrap().clone() {
@@ -406,9 +422,32 @@ fn hardware() -> &'static hwid::Hardware {
 async fn login_async(username: &str, password: &str) -> Result<(), Error> {
     {
         let mut guard = CREDS.lock().unwrap();
+        // Other details than those refused: tried at once.
+        if guard.as_ref().is_some_and(|(u, p)| u != username || p != password) {
+            *WRONG.lock().unwrap() = 0;
+            let _ = LOGIN_HOLD.lock().unwrap().take();
+        }
         *guard = Some((String::from(username), String::from(password)));
     }
+    if let Some((until, why)) = LOGIN_HOLD.lock().unwrap().clone().filter(|(until, _)| std::time::Instant::now() < *until) {
+        let _ = until;
+        return Err(Error::Refused(why));
+    }
 
+    // No connection at all is the server out of reach too: the same growing wait.
+    if let Err(e) = create_channel().await {
+        let tries = {
+            let mut n = UNREACHABLE.lock().unwrap();
+            *n += 1;
+            *n
+        };
+        let wait = UNREACHABLE_WAITS[(tries as usize - 1).min(UNREACHABLE_WAITS.len() - 1)];
+        hold_login(
+            std::time::Duration::from_secs(wait),
+            format!("Couldn't connect to the server to sign in ({e}, {tries} times)"),
+        );
+        return Err(e);
+    }
     let mut client = connect!(UsersClient);
 
     let request = tonic::Request::new(LoginRequest {
@@ -461,7 +500,30 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
                 tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Cancelled | tonic::Code::Unknown
             ) =>
         {
-            error!("Couldn't reach the server to sign in: {}", status.message());
+            let tries = {
+                let mut n = UNREACHABLE.lock().unwrap();
+                *n += 1;
+                *n
+            };
+            let wait = UNREACHABLE_WAITS[(tries as usize - 1).min(UNREACHABLE_WAITS.len() - 1)];
+            hold_login(
+                std::time::Duration::from_secs(wait),
+                format!("Couldn't reach the server to sign in ({}, {tries} times)", status.message()),
+            );
+            return Err(status.into());
+        }
+        // Wrong details: three tries, then half an hour off (other details are tried at once).
+        Err(status) if matches!(status.code(), tonic::Code::Unauthenticated | tonic::Code::NotFound) => {
+            error!("Sign-in failed: {}", status.message());
+            let tries = {
+                let mut n = WRONG.lock().unwrap();
+                *n += 1;
+                *n
+            };
+            if tries >= WRONG_TRIES {
+                *WRONG.lock().unwrap() = 0;
+                hold_login(WRONG_WAIT, format!("The server refused this account's details {tries} times"));
+            }
             return Err(status.into());
         }
         Err(status) => {
@@ -469,11 +531,15 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
             return Err(status.into());
         }
     };
+    // Through to the server: each hold starts over.
+    *UNREACHABLE.lock().unwrap() = 0;
     if !response.error.is_empty() {
         error!("Login error: {}", response.error);
         return Err(Error::LoginFailure);
     } else if !response.token.is_empty() {
         info!("Login successful");
+        *WRONG.lock().unwrap() = 0;
+        let _ = LOGIN_HOLD.lock().unwrap().take();
         crate::uplay_r1_loader::signed_in();
         {
             let mut guard = TOKEN.lock().unwrap();

@@ -7,6 +7,7 @@ mod discover;
 mod nat;
 mod quazal;
 mod rpc;
+pub mod sign_in_gate;
 
 /// The game's Quazal port on the server, and the local port the game uses.
 pub const QUAZAL_DEFAULT_LOCAL_PORT: u16 = 3074;
@@ -111,6 +112,9 @@ pub async fn test_cfg_server(hostname: &str) -> Result<(), Error> {
 pub enum Error {
     #[error("Invalid password")]
     InvalidPassword,
+    /// Not tried: a past refusal holds it (sign_in_gate.rs), and why.
+    #[error("{0}")]
+    Held(String),
     #[error("Username not found")]
     UserNotFound,
     #[error("Connection failed")]

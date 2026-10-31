@@ -9,8 +9,6 @@ use quazal::prudp::packet::QPacket;
 use quazal::Context;
 use server_api::misc::misc_client::MiscClient;
 use server_api::misc::TestP2pRequest;
-use server_api::users::users_client::UsersClient;
-use server_api::users::LoginRequest;
 use tokio::net::UdpSocket;
 
 use super::Error;
@@ -295,37 +293,8 @@ impl Quazal {
 /// listens for a UDP packet from the server containing a challenge. It then
 /// sends the challenge back to the server to confirm connectivity.
 pub async fn test_p2p(api_url: String, username: &str, password: &str) -> Result<(), Error> {
-    // Log in to the API server to get an authentication token.
-    let Ok(channel) = super::endpoint(&api_url)?.connect().await else {
-        return Err(Error::ConnectionFailed);
-    };
-    let mut client = UsersClient::new(channel);
-
-    let resp = match client
-        .login(LoginRequest {
-            username: username.to_string(),
-            password: password.to_string(),
-            client: super::CLIENT.into(),
-            build: super::build(),
-            hardware: super::hardware(),
-            vm: super::vm(),
-        })
-        .await
-    {
-        Ok(resp) => resp,
-        Err(status) => {
-            if matches!(status.code(), tonic::Code::Unauthenticated) {
-                return Err(Error::InvalidPassword);
-            } else {
-                return Err(Error::SendingRequestFailed);
-            }
-        }
-    };
-
-    let resp = resp.into_inner();
-    if !resp.error.is_empty() {
-        return Err(Error::ServerFailure(resp.error));
-    }
+    // Signed in to the API server for a token (as every sign-in, held after refusals).
+    let (_, resp) = super::rpc::login(&api_url, username, password).await?;
     let token: tonic::metadata::MetadataValue<tonic::metadata::Ascii> = resp.token.parse().map_err(|_| Error::ServerFailure("the server's sign-in token isn't readable".into()))?;
     let Ok(channel) = super::endpoint(&api_url)?.connect().await else {
         return Err(Error::ConnectionFailed);
