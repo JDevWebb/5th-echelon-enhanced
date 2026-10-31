@@ -61,6 +61,11 @@ pub struct ChatState {
     notify: tokio::sync::Notify,
     recent: std::sync::Mutex<HashMap<String, Recent>>,
     rules: std::sync::Mutex<Option<(i64, moderation::Rules)>>,
+    /// This run of the coordinator: a random epoch and the newest message when it began, said
+    /// with every wait's answer (R3: a standby restored from a snapshot can number new
+    /// messages from below a server's cursor, which then skipped them; seeing a new epoch, a
+    /// server ahead of `since` goes back to it).
+    run: std::sync::OnceLock<(u64, i64)>,
 }
 
 #[derive(Default)]
@@ -555,10 +560,18 @@ pub(crate) async fn wait(State(c): State<Shared>, headers: HeaderMap, Query(q): 
     if let Err(e) = c.chat_gate(&server).await {
         return e;
     }
+    let (epoch, since) = match c.chat.run.get() {
+        Some(r) => *r,
+        None => {
+            let newest: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM chat_messages").fetch_one(&c.pool).await.unwrap_or(0);
+            *c.chat.run.get_or_init(|| (rand::random::<u64>() | 1, newest))
+        }
+    };
+    let answer = |messages: Vec<Value>, last: i64| ok(json!({ "messages": messages, "last": last, "epoch": epoch, "since": since }));
     // A server starting out: from now on (history is asked for separately).
     if q.after < 0 {
         let last: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(id), 0) FROM chat_messages").fetch_one(&c.pool).await.unwrap_or(0);
-        return ok(json!({ "messages": [], "last": last }));
+        return answer(Vec::new(), last);
     }
     let deadline = tokio::time::Instant::now() + WAIT;
     loop {
@@ -573,10 +586,10 @@ pub(crate) async fn wait(State(c): State<Shared>, headers: HeaderMap, Query(q): 
             let last = rows.last().map_or(q.after, |r| r.id);
             let names = c.chat_server_names().await;
             let messages: Vec<Value> = rows.iter().map(|row| Coordinator::chat_message_json(row, &names)).collect();
-            return ok(json!({ "messages": messages, "last": last }));
+            return answer(messages, last);
         }
         if tokio::time::timeout_at(deadline, notified).await.is_err() {
-            return ok(json!({ "messages": [], "last": q.after }));
+            return answer(Vec::new(), q.after);
         }
     }
 }

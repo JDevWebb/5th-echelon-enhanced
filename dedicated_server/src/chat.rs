@@ -228,8 +228,21 @@ pub fn start_relay(logger: Logger) {
     });
 }
 
+/// The coordinator run the cursor's from (its answers' `epoch`; 0 before the first).
+static EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Keeps a wait's answer's messages and wakes the players waiting.
 fn take(answer: &Value) {
+    // Another run of the coordinator, maybe restored from a snapshot older than our cursor (it
+    // numbers new messages from its own newest on, `since`): back to that, this answer left
+    // (asked for again from there). After a plain restart the cursor isn't past it: no change.
+    if let (Some(epoch), Some(since)) = (answer["epoch"].as_u64(), answer["since"].as_i64()) {
+        let was = EPOCH.swap(epoch, Ordering::Relaxed);
+        if was != 0 && was != epoch && LAST.load(Ordering::Relaxed) > since {
+            LAST.store(since, Ordering::Relaxed);
+            return;
+        }
+    }
     let messages: Vec<Kept> = answer["messages"].as_array().into_iter().flatten().filter_map(Kept::from_json).collect();
     if let Some(last) = answer["last"].as_i64() {
         LAST.fetch_max(last, Ordering::Relaxed);
@@ -613,6 +626,23 @@ impl Chat for MyChat {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A coordinator restored from an older snapshot (a new epoch, its newest message below
+    /// our cursor): the cursor goes back to it; after a plain restart it stays.
+    #[test]
+    fn a_restored_coordinator_takes_the_cursor_back() {
+        let answer = |epoch: u64, since: i64, last: i64| serde_json::json!({ "messages": [], "last": last, "epoch": epoch, "since": since });
+        take(&answer(11, 0, 100));
+        assert_eq!(LAST.load(Ordering::Relaxed), 100);
+        // Restarted, not restored: its newest was 100 when it began.
+        take(&answer(13, 100, 120));
+        assert_eq!(LAST.load(Ordering::Relaxed), 120);
+        // Restored from a snapshot whose newest was 90: back to 90, that answer left.
+        take(&answer(15, 90, 130));
+        assert_eq!(LAST.load(Ordering::Relaxed), 90);
+        take(&answer(15, 90, 95));
+        assert_eq!(LAST.load(Ordering::Relaxed), 95);
+    }
 
     #[test]
     fn a_player_holds_only_a_few_waits_at_once() {
