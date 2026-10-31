@@ -64,7 +64,13 @@ const ADVERSARIAL: [&str; 7] = [
     "ETeamDMMatchManager",
     "EAdversarialMatchManager",
 ];
-const COOPERATIVE: [&str; 5] = ["EHunterMatchManager", "EGhostMatchManager", "EExtractionMatchManager", "ECombinedOpsMatchManager", "ECooperativeMatchManager"];
+const COOPERATIVE: [&str; 5] = [
+    "EHunterMatchManager",
+    "EGhostMatchManager",
+    "EExtractionMatchManager",
+    "ECombinedOpsMatchManager",
+    "ECooperativeMatchManager",
+];
 
 const ROUND_STATES: [&str; 7] = [
     "RoundState_PreMatch",
@@ -84,7 +90,9 @@ fn meaning(adversarial: bool, value: u8) -> (String, bool) {
         // A round running (or about to end, or in sudden death): the host's game turns joiners away.
         (name, matches!(value, 2 | 3 | 5))
     } else {
-        let name = MISSION_STATES.get(usize::from(value)).map_or_else(|| format!("CoopMissionState_{value}"), |s| (*s).to_string());
+        let name = MISSION_STATES
+            .get(usize::from(value))
+            .map_or_else(|| format!("CoopMissionState_{value}"), |s| (*s).to_string());
         (name, value == 1)
     }
 }
@@ -132,7 +140,9 @@ struct Found {
 /// The name indices of `wanted`, from the name table (once: it holds tens of thousands).
 fn name_indices(wanted: &[&'static str]) -> HashMap<&'static str, u32> {
     let mut indices = HashMap::new();
-    let (Some(table), Some(count)) = (read_u32(NAMES), read_u32(NAMES_COUNT)) else { return indices };
+    let (Some(table), Some(count)) = (read_u32(NAMES), read_u32(NAMES_COUNT)) else {
+        return indices;
+    };
     for i in 0..(count as usize).min(MAX_NAMES) {
         let Some(entry) = read_u32(table as usize + i * 4).filter(|e| *e != 0) else { continue };
         let Some(text) = read_string(entry as usize + 8, 64) else { continue };
@@ -180,7 +190,9 @@ fn look_up() -> Option<Found> {
 /// number found last (each match spawns one with the next). Whether it's adversarial.
 fn manager(found: &Found, from: &mut HashMap<&'static str, u32>) -> Option<(usize, bool)> {
     for (name, adversarial) in ADVERSARIAL.iter().map(|n| (n, true)).chain(COOPERATIVE.iter().map(|n| (n, false))) {
-        let (Some(index), Some(class)) = (found.names.get(name), found.classes.get(name)) else { continue };
+        let (Some(index), Some(class)) = (found.names.get(name), found.classes.get(name)) else {
+            continue;
+        };
         let start = from.get(name).copied().unwrap_or(1);
         let mut last = None;
         for number in start..start + NUMBERS {
