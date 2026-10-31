@@ -5,6 +5,7 @@
       <Stat :value="dur(span.to - span.from) || '<1 s'" label="Lasted" :sub="stillOpen ? 'still going' : 'from first to last'" />
       <Stat :value="fmt.n(trouble)" label="Trouble" :tone="trouble ? 'warn' : ''" sub="removals, drops and restarts" />
     </template>
+    <RouterLink v-if="replay" :to="replay.to" class="small">Replay the whole match ({{ replay.count }} recording{{ replay.count === 1 ? '' : 's' }})</RouterLink>
     <RouterLink :to="'/sessions'" class="small">← Sessions</RouterLink>
   </PageTop>
   <div v-if="error && !data" class="panel"><p class="err">{{ error }}</p></div>
@@ -65,6 +66,23 @@ const sub = computed(() => {
   if (!r) return '';
   const host = r.host ? r.name : r.host_name;
   return `${roomKind(r).replace(/^./, c => c.toUpperCase())}${host ? `, hosted by ${host}` : ''} · room ${props.room} on ${props.server}`;
+});
+// The players' match recordings: each sent after they left (the recording ends then), so
+// any from joining until 15 minutes after leaving, one a player.
+const replay = computed(() => {
+  const found = new Map();
+  for (const s of stays.value) {
+    for (const m of s.player.marks) {
+      if (m.kind === 'recording' && m.recording && m.at >= s.from && m.at <= s.to + 900 && !found.has(s.player.player)) {
+        found.set(s.player.player, { server: s.player.server, player: s.player.player, id: m.recording });
+      }
+    }
+  }
+  const list = [...found.values()];
+  if (!list.length) return null;
+  const [first, ...rest] = list;
+  const others = rest.map(r => `${r.server}~${r.player}~${r.id}`).join(',');
+  return { count: list.length, to: { path: `/replay/${first.server}/${first.player}/${first.id}`, query: others ? { with: others } : {} } };
 });
 const time = t => new Date(t * 1000).toLocaleString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 

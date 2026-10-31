@@ -188,3 +188,107 @@ export function findings(rec, most = 8) {
   };
   return { turns: top(turns), shots: top(shots), speeds: top(speeds) };
 }
+
+/** Several players' recordings of one match as one: `{ header, records, sources }` for
+ * `index`. Each player's own character comes from their own recording (their game is the
+ * one that moves it); a character nobody recorded comes from the recording that saw it in
+ * the most samples. Recordings are lined up by when the round started (every game sees it
+ * within moments), else by their start times (the recorders' own clocks). Shots come from
+ * the recording the shooter's frames come from; deaths and kills once each, from wherever
+ * they were seen. `sources` says whose recording each character came from. */
+export function merge(recordings) {
+  const lower = s => (s || '').toLowerCase();
+  const started = r => r.records.find(x => x.kind === 'round' && /Started$/.test(x.state))?.t;
+  const anchor = recordings.find(r => started(r) != null);
+  const offsets = recordings.map(r => {
+    if (anchor && started(r) != null) return started(anchor) - started(r);
+    return (r.header.started - recordings[0].header.started) * 1000;
+  });
+  // Characters by name across recordings; an unnamed one stays its recording's own.
+  const names = new Map();
+  const keyOf = (i, p) => (p.name ? `name:${lower(p.name)}` : `rec${i}:${p.id}`);
+  const perRec = recordings.map((r, i) => {
+    const pawns = new Map();
+    const samples = new Map();
+    for (const x of r.records) {
+      if (x.kind === 'pawn') pawns.set(x.id, { ...pawns.get(x.id), ...x, name: x.name || pawns.get(x.id)?.name || '' });
+      if (x.kind === 'frame') for (const p of x.pawns) samples.set(p.id, (samples.get(p.id) || 0) + 1);
+    }
+    for (const p of pawns.values()) if (!names.has(keyOf(i, p))) names.set(keyOf(i, p), { name: p.name, class: p.class, team: p.team });
+    return { pawns, samples };
+  });
+  // Who each character's frames come from: its own player's recording, else the most samples.
+  const source = new Map();
+  for (const key of names.keys()) {
+    let best = null;
+    recordings.forEach((r, i) => {
+      for (const p of perRec[i].pawns.values()) {
+        if (keyOf(i, p) !== key) continue;
+        const own = p.name && lower(p.name) === lower(r.header.recorder);
+        const score = (own ? 1e9 : 0) + (perRec[i].samples.get(p.id) || 0);
+        if (!best || score > best.score) best = { rec: i, id: p.id, score, own };
+      }
+    });
+    if (best) source.set(key, best);
+  }
+  const ids = new Map([...names.keys()].map((k, n) => [k, n + 1]));
+  const out = [];
+  for (const [key, info] of names) out.push({ kind: 'pawn', t: 0, id: ids.get(key), class: info.class, name: info.name, team: info.team });
+  // Frames on a common 100 ms clock: each character's sample nearest to each tick.
+  const tracks = new Map();
+  for (const [key, s] of source) {
+    const list = [];
+    for (const x of recordings[s.rec].records) {
+      if (x.kind !== 'frame') continue;
+      const p = x.pawns.find(q => q.id === s.id);
+      if (p) list.push({ t: x.t + offsets[s.rec], p });
+    }
+    tracks.set(key, list);
+  }
+  const from = Math.min(0, ...[...tracks.values()].map(l => l[0]?.t ?? 0));
+  const to = Math.max(0, ...[...tracks.values()].map(l => l[l.length - 1]?.t ?? 0));
+  const at = new Map([...tracks.keys()].map(k => [k, 0]));
+  for (let t = Math.max(0, from); t <= to; t += 100) {
+    const pawns = [];
+    for (const [key, list] of tracks) {
+      let i = at.get(key);
+      while (i + 1 < list.length && list[i + 1].t <= t) i++;
+      at.set(key, i);
+      const s = list[i];
+      // Only while it was there (within half a second of a sample).
+      if (s && Math.abs(s.t - t) <= 500) pawns.push({ ...s.p, id: ids.get(key) });
+    }
+    out.push({ kind: 'frame', t, pawns });
+  }
+  // Shots from the shooter's own recording when there is one; deaths and kills once each.
+  const seenEvents = new Set();
+  recordings.forEach((r, i) => {
+    const local = id => {
+      const p = perRec[i].pawns.get(id);
+      return p ? keyOf(i, p) : null;
+    };
+    for (const x of r.records) {
+      const t = x.t + offsets[i];
+      if (t < 0) continue;
+      if (x.kind === 'shot') {
+        const key = local(x.id);
+        const s = source.get(key);
+        // From the recording its frames come from: one shot, once.
+        if (s && s.rec === i) out.push({ ...x, t, id: ids.get(key) });
+      } else if (x.kind === 'death' || x.kind === 'kill') {
+        const a = local(x.kind === 'death' ? x.id : x.killer);
+        const b = x.kind === 'kill' ? local(x.victim) : '';
+        const tag = `${x.kind}:${a}:${b}:${Math.round(t / 2000)}`;
+        if (!a || seenEvents.has(tag)) continue;
+        seenEvents.add(tag);
+        out.push(x.kind === 'death' ? { kind: 'death', t, id: ids.get(a) } : { kind: 'kill', t, killer: ids.get(a), victim: ids.get(b) });
+      } else if (x.kind === 'round' && i === recordings.indexOf(anchor ?? recordings[0])) {
+        out.push({ ...x, t });
+      }
+    }
+  });
+  out.sort((a, b) => a.t - b.t || (a.kind === 'pawn' ? -1 : 0));
+  const header = { ...recordings[0].header, recorder: recordings.map(r => r.header.recorder).filter(Boolean).join(', ') };
+  const sources = new Map([...source].map(([key, s]) => [ids.get(key), { recorder: recordings[s.rec].header.recorder, own: s.own }]));
+  return { header, records: out, sources };
+}

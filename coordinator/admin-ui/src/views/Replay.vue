@@ -59,15 +59,17 @@
     </section>
 
     <section class="panel">
-      <header><h2>Characters</h2><span class="small muted">as {{ rec.header.recorder || 'the recording player' }}'s game saw them</span></header>
+      <header><h2>Characters</h2><span class="small muted">{{ rec.merged ? `${rec.merged} players' recordings together: each player from their own where there is one` : `as ${rec.header.recorder || 'the recording player'}'s game saw them` }}</span></header>
+      <p v-if="missing.length" class="small warn-text">Not here: {{ missing.join('; ') }}</p>
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Who</th><th>Character</th><th>Team</th><th>Shots</th><th>Deaths</th><th>Kills</th><th>Fastest (units/s)</th></tr></thead>
+          <thead><tr><th>Who</th><th>Character</th><th>Team</th><th v-if="rec.sources">From</th><th>Shots</th><th>Deaths</th><th>Kills</th><th>Fastest (units/s)</th></tr></thead>
           <tbody>
             <tr v-for="p in table" :key="p.id">
               <td><span class="swatch" :style="{ background: colour(p) }"></span> <b>{{ p.name || `#${p.id}` }}</b></td>
               <td class="small">{{ p.class }}</td>
               <td class="small">{{ p.team < 0 ? '?' : p.team }}</td>
+              <td v-if="rec.sources" class="small">{{ rec.sources.get(p.id)?.own ? 'their own recording' : `seen by ${rec.sources.get(p.id)?.recorder || '?'}` }}</td>
               <td>{{ p.shots }}</td>
               <td>{{ p.deaths }}</td>
               <td>{{ p.kills }}</td>
@@ -103,13 +105,14 @@
 
 <script setup>
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { useRoute } from 'vue-router';
 import PageTop from '../components/PageTop.vue';
 import Replay3D from '../components/Replay3D.vue';
 import Stat from '../components/Stat.vue';
 import { api, ApiError } from '../lib/api.js';
 import { fmt } from '../lib/fmt.js';
 import { keepMap, keptMap, readMap } from '../lib/mapgeo.js';
-import { findings, frameAt, index, readRecording } from '../lib/replay.js';
+import { findings, frameAt, index, merge, readRecording } from '../lib/replay.js';
 import { session } from '../lib/session.js';
 
 const props = defineProps({ server: { type: String, required: true }, player: { type: String, required: true }, id: { type: String, required: true } });
@@ -163,7 +166,7 @@ watch(view, async v => {
   }
 });
 
-const title = computed(() => rec.value?.header.map ? `Replay: ${rec.value.header.map}` : 'Replay');
+const title = computed(() => `${wanted.value.length > 1 ? 'Match replay' : 'Replay'}${rec.value?.header.map ? `: ${rec.value.header.map}` : ''}`);
 const sub = computed(() => {
   const h = rec.value?.header;
   if (!h) return `Recording ${props.id} on ${props.server}`;
@@ -204,43 +207,62 @@ const clock = ms => {
 const css = name => getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#888';
 const colour = p => (p.team === 0 ? css('--info') : p.team === 1 ? css('--warn') : css('--muted'));
 
-async function load() {
-  // Asked for once (it says when it's here already), then fetched until the server sent it.
-  try {
-    const asked = await api('POST', `/recordings/${encodeURIComponent(props.server)}/${encodeURIComponent(props.player)}/${encodeURIComponent(props.id)}`);
-    if (asked.status === 'pending') waiting.value = 'Asked the player\'s server for it: it comes with the server\'s next pulse or two…';
-  } catch (e) {
-    error.value = e.message;
-    return;
-  }
+// The recordings to play: this one, and with `?with=server~player~id,...` the others of
+// the same match (the Match page's "Replay the whole match"), merged into one.
+const route = useRoute();
+const wanted = computed(() => [
+  { server: props.server, player: props.player, id: props.id },
+  ...String(route.query.with || '')
+    .split(',')
+    .filter(Boolean)
+    .map(w => {
+      const [server, player, id] = w.split('~');
+      return { server, player, id };
+    })
+    .filter(w => w.server && w.player && /^[0-9a-f]{16}$/.test(w.id || '')),
+]);
+const missing = ref([]);
+
+/** One recording: asked for once (it says when it's here already), then fetched until the
+ * server sent it, about three minutes at most. */
+async function fetchOne(w) {
+  const asked = await api('POST', `/recordings/${encodeURIComponent(w.server)}/${encodeURIComponent(w.player)}/${encodeURIComponent(w.id)}`);
+  if (asked.status === 'pending') waiting.value = 'Asked the players\' servers for the recordings: they come with each server\'s next pulse or two…';
   for (let tries = 0; tries < 60 && !stopped; tries++) {
-    const resp = await fetch(`/api/recordings/${encodeURIComponent(props.server)}/${encodeURIComponent(props.id)}`, { credentials: 'same-origin' });
-    if (resp.status === 401) { session.signedOut(); return; }
-    if (resp.ok && resp.status === 200) {
-      try {
-        const { header, records } = await readRecording(new Uint8Array(await resp.arrayBuffer()));
-        rec.value = { header, ...index(records) };
-        if (rec.value.box) { zFrom.value = rec.value.box.z0; zTo.value = rec.value.box.z1; cut.value = rec.value.box.z1 + 150; }
-        await nextTick();
-        fit();
-        draw();
-      } catch (e) {
-        error.value = `Couldn't read the recording: ${e.message}`;
-      }
-      return;
-    }
+    const resp = await fetch(`/api/recordings/${encodeURIComponent(w.server)}/${encodeURIComponent(w.id)}`, { credentials: 'same-origin' });
+    if (resp.status === 401) { session.signedOut(); throw new Error('signed out'); }
+    if (resp.ok && resp.status === 200) return readRecording(new Uint8Array(await resp.arrayBuffer()));
     const body = await resp.json().catch(() => ({}));
-    if (resp.status === 202 && (body.status === 'failed' || body.status === 'expired')) {
-      error.value = body.message || 'The server couldn\'t send it.';
-      return;
-    }
-    if (resp.status !== 202) {
-      error.value = new ApiError(resp.status, body).message;
-      return;
-    }
+    if (resp.status === 202 && (body.status === 'failed' || body.status === 'expired')) throw new Error(body.message || 'The server couldn\'t send it.');
+    if (resp.status !== 202) throw new ApiError(resp.status, body);
     await new Promise(r => setTimeout(r, 3000));
   }
-  if (!rec.value && !error.value && !stopped) error.value = 'The server hasn\'t sent it in three minutes: it may be offline. Try again later.';
+  throw new Error('The server hasn\'t sent it in three minutes: it may be offline.');
+}
+
+async function load() {
+  const results = await Promise.allSettled(wanted.value.map(fetchOne));
+  if (stopped) return;
+  const got = results.filter(r => r.status === 'fulfilled').map(r => r.value);
+  missing.value = results.map((r, i) => (r.status === 'rejected' ? `${wanted.value[i].id}: ${r.reason?.message || r.reason}` : null)).filter(Boolean);
+  if (!got.length) {
+    error.value = missing.value.join('; ') || 'No recording came.';
+    return;
+  }
+  try {
+    if (got.length === 1) {
+      rec.value = { header: got[0].header, ...index(got[0].records), sources: null };
+    } else {
+      const m = merge(got);
+      rec.value = { header: m.header, ...index(m.records), sources: m.sources, merged: got.length };
+    }
+    if (rec.value.box) { zFrom.value = rec.value.box.z0; zTo.value = rec.value.box.z1; cut.value = rec.value.box.z1 + 150; }
+    await nextTick();
+    fit();
+    draw();
+  } catch (e) {
+    error.value = `Couldn't read the recordings: ${e.message}`;
+  }
 }
 
 // Playback: the clock moves with the frames the browser draws.
@@ -386,6 +408,7 @@ onBeforeUnmount(() => {
 .viewer { display: grid; gap: 10px; }
 .map { width: 100%; height: auto; border-radius: var(--radius); border: 1px solid var(--line); }
 .spacer { flex: 1 1 auto; }
+.warn-text { color: var(--warn); }
 .seg { display: inline-flex; gap: 4px; }
 .seg button[aria-pressed='true'] { background: var(--accent-soft); color: var(--text); }
 .file { position: relative; cursor: pointer; text-decoration: underline; }
