@@ -35,6 +35,7 @@ export const router = createRouter({
     { path: '/live', component: () => import('./views/Live.vue') },
     { path: '/match/:server/:room/:since', component: () => import('./views/Match.vue'), props: true },
     { path: '/sessions', component: () => import('./views/Sessions.vue') },
+    { path: '/replay/:server/:player/:id', component: () => import('./views/Replay.vue'), props: true },
     { path: '/players', component: () => import('./views/Players.vue') },
     { path: '/players/:server/:id', component: () => import('./views/Players.vue') },
     { path: '/alerts', component: () => import('./views/Alerts.vue') },

@@ -26,6 +26,7 @@ pub mod live;
 mod moderation;
 mod planning;
 mod players;
+mod recordings;
 mod reports;
 mod sessions;
 mod support;
@@ -240,6 +241,7 @@ pub fn router(c: Shared) -> Router {
         .merge(support::routes())
         .merge(moderation::routes())
         .merge(sessions::routes())
+        .merge(recordings::routes())
         .merge(leaderboards::routes());
     Router::new()
         .route("/", get(page))

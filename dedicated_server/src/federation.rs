@@ -1142,7 +1142,11 @@ async fn carry_out_actions(logger: &Logger, storage: &Arc<Storage>, client: &Coo
         let outcome = match done.iter().find(|(id, _)| *id == action.id) {
             Some((_, outcome)) => outcome.clone(),
             None => {
-                let outcome = crate::players::perform(logger, storage, &action).await;
+                let outcome = if action.kind == "send_recording" {
+                    send_recording(client, &action).await
+                } else {
+                    crate::players::perform(logger, storage, &action).await
+                };
                 done.push((action.id, outcome.clone()));
                 if done.len() > ACTIONS_KEPT {
                     done.remove(0);
@@ -1159,6 +1163,22 @@ async fn carry_out_actions(logger: &Logger, storage: &Arc<Storage>, client: &Coo
     }
 }
 
+/// An admin's ask for a match recording a player's game sent (recordings.rs): posted to the
+/// coordinator (`POST /v1/recordings/<id>`), which takes only one it asked for.
+async fn send_recording(client: &Coordinator<'_>, action: &crate::players::Action) -> crate::players::Outcome {
+    let id = action.recording.clone().unwrap_or_default();
+    let Some((kept, data)) = tokio::task::spawn_blocking(move || crate::recordings::file(&id)).await.ok().flatten() else {
+        return crate::players::Outcome::failed("No such recording on this server (they're kept a week)");
+    };
+    if kept.player != action.player {
+        return crate::players::Outcome::failed("That recording isn't that player's");
+    }
+    match client.post_bytes(&format!("/v1/recordings/{}", kept.id), data).await {
+        Ok(_) => crate::players::Outcome::done(format!("Sent the recording ({} KB)", kept.size / 1024)),
+        Err(e) => crate::players::Outcome::failed(format!("Sending it failed: {e:#}")),
+    }
+}
+
 struct Coordinator<'a> {
     http: &'a reqwest::Client,
     base: &'a str,
@@ -1168,6 +1188,24 @@ struct Coordinator<'a> {
 impl Coordinator<'_> {
     async fn post<T: Serialize + ?Sized>(&self, path: &str, body: &T) -> eyre::Result<serde_json::Value> {
         let resp = self.http.post(format!("{}{path}", self.base)).bearer_auth(self.secret).json(body).send().await?;
+        let status = resp.status();
+        let value = read_json(resp).await?;
+        if !status.is_success() {
+            return Err(eyre::eyre!("{status}: {}", value["error"].as_str().unwrap_or_default()));
+        }
+        Ok(value)
+    }
+
+    /// Posts raw bytes (a recording), as `application/octet-stream`.
+    async fn post_bytes(&self, path: &str, body: Vec<u8>) -> eyre::Result<serde_json::Value> {
+        let resp = self
+            .http
+            .post(format!("{}{path}", self.base))
+            .bearer_auth(self.secret)
+            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
+            .body(body)
+            .send()
+            .await?;
         let status = resp.status();
         let value = read_json(resp).await?;
         if !status.is_success() {

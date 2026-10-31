@@ -4978,3 +4978,65 @@ async fn admins_moderate_chat_and_names() {
         assert!(events.iter().any(|x| x == e), "{e} in {events:?}");
     }
 }
+
+/// A match recording comes here only once an admin asked its server for it, from that server,
+/// and only when it reads as a recording; the pulse carries the ask with the recording's id.
+#[tokio::test]
+async fn a_recording_is_taken_only_when_asked_for() {
+    let t = start("recordings").await;
+    let _ = t.c.data_dir.set(t.dir.clone());
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    let now = identity::now();
+    let id = "0123456789abcdef";
+    let events = json!({ "events": [{ "id": 1, "at": now - 60, "last_at": now - 60, "player": 11, "name": "Viper", "kind": "recording",
+        "detail": { "id": id, "map": "ADV_01", "seconds": 612, "characters": 8, "named": 8, "shots": 120, "kills": 9 }, "count": 1 }] });
+    assert_eq!(t.call("POST", "/v1/events", Some(&a), Some(events)).await.0, StatusCode::OK);
+    assert!(t.c.recording_known("server-a", 11, id).await.unwrap());
+    assert!(!t.c.recording_known("server-a", 12, id).await.unwrap(), "another player's");
+    let post = |secret: &str, id: &str, body: Vec<u8>| {
+        let req = Request::builder()
+            .method("POST")
+            .uri(format!("/v1/recordings/{id}"))
+            .header("content-type", "application/octet-stream")
+            .header("host", "coordinator.test")
+            .header("authorization", format!("Bearer {secret}"))
+            .body(Body::from(body))
+            .unwrap();
+        let router = t.router.clone();
+        async move { router.oneshot(req).await.unwrap().status() }
+    };
+    let recording = {
+        let mut w = replay::Writer::new(
+            Vec::new(),
+            &replay::Header {
+                map: "ADV_01".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        w.write(&replay::Record::Pawn {
+            t: 0,
+            id: 1,
+            class: "EMPSpy".into(),
+            name: "Viper".into(),
+            team: 0,
+        })
+        .unwrap();
+        w.finish().unwrap()
+    };
+    assert_eq!(post(&a, id, recording.clone()).await, StatusCode::NOT_FOUND, "nobody asked");
+    let action = t.c.ask_for_recording("server-a", 11, id, "admin1").await.unwrap();
+    let sent = t.c.pending_actions("server-a").await.unwrap();
+    assert_eq!(
+        (sent[0]["id"].as_i64(), sent[0]["kind"].as_str(), sent[0]["recording"].as_str()),
+        (Some(action), Some("send_recording"), Some(id))
+    );
+    assert_eq!(post(&b, id, recording.clone()).await, StatusCode::NOT_FOUND, "another server's");
+    assert_eq!(post(&a, id, b"not one".to_vec()).await, StatusCode::BAD_REQUEST);
+    assert_eq!(post(&a, "../../etc", recording.clone()).await, StatusCode::NOT_FOUND);
+    assert_eq!(post(&a, id, recording.clone()).await, StatusCode::OK);
+    let kept = t.c.recording_path("server-a", id).unwrap();
+    assert_eq!(std::fs::read(&kept).unwrap(), recording);
+    assert!(t.c.recording_path("../server-a", id).is_none());
+    assert_eq!(t.c.recording_asked("server-a", id).await.unwrap().map(|(s, _)| s), Some("pending".to_string()));
+}

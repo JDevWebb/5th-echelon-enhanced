@@ -191,6 +191,7 @@ impl<W: Write> Writer<W> {
 pub enum Error {
     NotARecording,
     Version(u16),
+    TooBig,
     Io(std::io::Error),
 }
 
@@ -199,6 +200,7 @@ impl std::fmt::Display for Error {
         match self {
             Self::NotARecording => write!(f, "not a match recording"),
             Self::Version(v) => write!(f, "a recording of version {v}, this reads {VERSION}"),
+            Self::TooBig => write!(f, "a recording that unpacks to more than a recording can hold"),
             Self::Io(e) => write!(f, "{e}"),
         }
     }
@@ -292,9 +294,18 @@ impl Cursor<'_> {
     }
 }
 
+/// The most a recording unpacks to: 2 hours of 32 characters ten times a second is about
+/// 50 MB; anything bigger is refused before it's all in memory (a file made to unpack huge).
+pub const MAX_UNPACKED: usize = 96 * 1024 * 1024;
+
 /// A recording's header and records: every whole record before the end, or before a cut
 /// (a game that ended mid-write) or anything this version doesn't know.
 pub fn read(input: impl Read) -> Result<(Header, Vec<Record>), Error> {
+    read_limited(input, MAX_UNPACKED)
+}
+
+/// As [`read`], refusing one that unpacks to more than `max` bytes ([`Error::TooBig`]).
+pub fn read_limited(input: impl Read, max: usize) -> Result<(Header, Vec<Record>), Error> {
     let mut bytes = Vec::new();
     // A cut gzip stream errors at its end: what came before it is kept.
     let mut gz = flate2::read::GzDecoder::new(input);
@@ -302,7 +313,12 @@ pub fn read(input: impl Read) -> Result<(Header, Vec<Record>), Error> {
     loop {
         match gz.read(&mut chunk) {
             Ok(0) => break,
-            Ok(n) => bytes.extend_from_slice(&chunk[..n]),
+            Ok(n) => {
+                if bytes.len() + n > max {
+                    return Err(Error::TooBig);
+                }
+                bytes.extend_from_slice(&chunk[..n]);
+            }
             Err(e) if bytes.is_empty() => return Err(Error::Io(e)),
             Err(_) => break,
         }
@@ -506,6 +522,13 @@ mod tests {
         let (_, back) = read(&bytes[..]).unwrap();
         assert_eq!(back, records[..10]);
         assert!(matches!(read(&b"not gzip"[..]), Err(Error::Io(_))));
+        // One that unpacks past the limit is refused.
+        let mut w = Writer::new(Vec::new(), &header).unwrap();
+        for r in &records {
+            w.write(r).unwrap();
+        }
+        let whole = w.finish().unwrap();
+        assert!(matches!(read_limited(&whole[..], 100), Err(Error::TooBig)));
     }
 
     #[test]

@@ -407,7 +407,7 @@ impl Coordinator {
             .into_iter()
             .map(|(id, player, kind, args)| {
                 let a: Value = serde_json::from_str(&args).unwrap_or_default();
-                json!({ "id": id, "kind": kind, "player": player, "reason": a["reason"].as_str().unwrap_or_default(), "until": a["until"], "name": a["name"] })
+                json!({ "id": id, "kind": kind, "player": player, "reason": a["reason"].as_str().unwrap_or_default(), "until": a["until"], "name": a["name"], "recording": a["recording"] })
             })
             .collect())
     }

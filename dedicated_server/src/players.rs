@@ -88,6 +88,9 @@ pub struct Action {
     /// For a rename.
     #[serde(default)]
     pub name: Option<String>,
+    /// For `send_recording`: which (recordings.rs).
+    #[serde(default)]
+    pub recording: Option<String>,
 }
 
 /// What came of an action, for the admin.
@@ -100,7 +103,7 @@ pub struct Outcome {
 }
 
 impl Outcome {
-    fn done(message: impl Into<String>) -> Self {
+    pub(crate) fn done(message: impl Into<String>) -> Self {
         Self {
             ok: true,
             message: message.into(),
@@ -108,7 +111,7 @@ impl Outcome {
         }
     }
 
-    fn failed(message: impl Into<String>) -> Self {
+    pub(crate) fn failed(message: impl Into<String>) -> Self {
         Self {
             ok: false,
             message: message.into(),

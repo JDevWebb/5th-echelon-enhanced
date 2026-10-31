@@ -58,6 +58,7 @@ const KINDS: &[&str] = &[
     "round_settings",
     "witness",
     "witnessed",
+    "recording",
     "login_stalled",
     "request_error",
     "report_refused",
@@ -586,6 +587,10 @@ fn timelines(events: &[Event], sessions: &[(String, i64, i64, Option<i64>)], nam
                 if let Some(level) = mark_level(e) {
                     m["level"] = json!(level);
                 }
+                // A recording's id, for the replay viewer.
+                if e.kind == "recording" {
+                    m["recording"] = e.detail["id"].clone();
+                }
                 m
             })
         });
@@ -802,6 +807,15 @@ fn describe(e: &Event) -> String {
             e.detail["over_seconds"].as_i64().unwrap_or(0),
             e.detail["max_speed"],
             e.detail["ground_speed"]
+        ),
+        "recording" => format!(
+            "Sent a match recording{}: {} min, {} characters ({} named), {} shots, {} kills (open it to watch)",
+            Some(e.str("map")).filter(|m| !m.is_empty()).map(|m| format!(" on {m}")).unwrap_or_default(),
+            (e.detail["seconds"].as_f64().unwrap_or(0.0) / 60.0).round(),
+            e.detail["characters"].as_i64().unwrap_or(0),
+            e.detail["named"].as_i64().unwrap_or(0),
+            e.detail["shots"].as_i64().unwrap_or(0),
+            e.detail["kills"].as_i64().unwrap_or(0)
         ),
         "fair_play" => format!(
             "The add-on's {} check: {}{}",

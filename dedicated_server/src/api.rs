@@ -1903,6 +1903,30 @@ impl Misc for MyMisc {
         Ok(Response::new(misc::WitnessResponse {}))
     }
 
+    /// A match recording from the player's game (the replay research): kept a week
+    /// (recordings.rs), a `recording` event on the player saying what it holds.
+    async fn recording(&self, request: Request<misc::RecordingRequest>) -> Result<Response<misc::RecordingResponse>, Status> {
+        let user_id = caller(&request)?;
+        let data = request.into_inner().data;
+        // Unpacking it to check it is work: off the runtime's threads.
+        let kept = tokio::task::spawn_blocking(move || crate::recordings::keep(user_id, &data)).await.map_err(internal)?;
+        match kept {
+            Ok(k) => {
+                crate::session_events::note(
+                    crate::session_events::Who::Id(user_id),
+                    "recording",
+                    serde_json::json!({
+                        "id": k.id, "map": k.map, "mode": k.mode, "seconds": k.seconds.round(), "size": k.size,
+                        "characters": k.characters, "named": k.named, "shots": k.shots, "kills": k.kills, "started": k.started,
+                    }),
+                );
+                Ok(Response::new(misc::RecordingResponse { id: k.id }))
+            }
+            Err(why @ (crate::recordings::Refused::TooSoon | crate::recordings::Refused::TooMany)) => Err(Status::resource_exhausted(why.to_string())),
+            Err(why) => Err(Status::invalid_argument(why.to_string())),
+        }
+    }
+
     /// What the add-on's fair-play checks found (F7, F8): a session event, report only.
     async fn fair_play_check(&self, request: Request<misc::FairPlayCheckRequest>) -> Result<Response<misc::FairPlayCheckResponse>, Status> {
         let user_id = caller(&request)?;

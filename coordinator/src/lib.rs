@@ -51,6 +51,7 @@ pub mod limits;
 pub mod maintenance;
 pub mod metrics;
 pub mod players;
+pub mod recordings;
 pub mod reports;
 pub mod roadmap;
 pub mod sessions;
@@ -864,6 +865,7 @@ impl Coordinator {
             .route("/v1/pulse", post(pulse))
             .route("/v1/players", post(players_report).layer(DefaultBodyLimit::max(players::MAX_BODY)))
             .route("/v1/actions/{id}", post(action_result))
+            .route("/v1/recordings/{id}", post(recording_post).layer(DefaultBodyLimit::max(recordings::MAX_BODY)))
             .route("/v1/pings", post(pings))
             .route("/v1/stats", post(stats_report).layer(DefaultBodyLimit::max(stats::MAX_BODY)))
             .route("/v1/stats/players", post(stats_of_players))
@@ -1595,6 +1597,27 @@ async fn action_result(State(c): State<Shared>, headers: HeaderMap, Path(id): Pa
         Ok(true) => ok(json!({ "ok": true })),
         // Another server's, or none: nothing said about which.
         Ok(false) => fail(StatusCode::NOT_FOUND, "no such action for this server"),
+        Err(e) => internal(e),
+    }
+}
+
+/// A match recording an admin asked a server for (see [`recordings`]).
+async fn recording_post(State(c): State<Shared>, headers: HeaderMap, Path(id): Path<String>, body: axum::body::Bytes) -> Answer {
+    let server = match c.server(&headers).await {
+        Ok(s) => s,
+        Err(e) => return e,
+    };
+    if !c.action_posts.check(&server) {
+        return fail(StatusCode::TOO_MANY_REQUESTS, "too many results; slow down");
+    }
+    match c.take_recording(&server, &id, body.to_vec()).await {
+        Ok(Ok(())) => ok(json!({ "ok": true })),
+        Ok(Err(recordings::Refused::NotAsked)) => fail(StatusCode::NOT_FOUND, "no admin asked this server for that recording"),
+        Ok(Err(recordings::Refused::NoFolder)) => fail(StatusCode::SERVICE_UNAVAILABLE, "this coordinator keeps no recordings"),
+        Ok(Err(recordings::Refused::NotARecording(why))) => {
+            tracing::warn!("server {server}: refused recording {id}: {why}");
+            fail(StatusCode::BAD_REQUEST, "not a match recording")
+        }
         Err(e) => internal(e),
     }
 }

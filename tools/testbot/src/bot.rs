@@ -1156,6 +1156,14 @@ impl Bot {
         Ok(())
     }
 
+    /// Sends a match recording (the replay research): the server's id for it.
+    pub async fn recording(&self, data: Vec<u8>) -> std::result::Result<String, tonic::Status> {
+        let answer = MiscClient::new(self.api.clone())
+            .recording(self.authed(server_api::misc::RecordingRequest { data }))
+            .await?;
+        Ok(answer.into_inner().id)
+    }
+
     /// What the add-on's fair-play checks found (F7, F8).
     pub async fn fair_play_check(&self, check: &str, detail: &str, value: f64) -> std::result::Result<(), tonic::Status> {
         MiscClient::new(self.api.clone())

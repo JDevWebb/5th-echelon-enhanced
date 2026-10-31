@@ -368,10 +368,15 @@ pub struct Config {
     pub witness_reports: bool,
     /// Match recordings (the 0.4.8 plan's replay research): the add-on records where every
     /// character is, faces and shoots in each match to the game folder's `replays` (the newest
-    /// 20 kept; on this PC only for now). On for every player, as witness reports;
+    /// 20 kept; sent to the player's server too, `replay_upload`). On for every player, as witness reports;
     /// `ReplayRecording = false` turns it off.
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub replay_recording: bool,
+    /// Each finished recording (a minute or longer, two characters or more) goes to the
+    /// player's server, which keeps it a week for its admins (the replay viewer). On with
+    /// recordings; `ReplayUpload = false` keeps them on this PC.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub replay_upload: bool,
     /// Removes the engine's negative mouse acceleration (widens the per-frame look-delta clamp,
     /// see the hooks' `mouse_fix`). Off until the player chose: the launcher asks once, with it
     /// on as the recommendation (its `new_options`), and Settings › Game changes it. Nothing to

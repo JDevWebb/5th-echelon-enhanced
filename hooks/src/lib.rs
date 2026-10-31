@@ -413,7 +413,7 @@ fn init(hmodule: Option<HMODULE>) {
             watchers.push(Box::new(witness::Witness::new(config.user.username.clone())));
         }
         if config.replay_recording {
-            watchers.push(Box::new(recording::Recorder::new(&game_dir, config.user.username.clone())));
+            watchers.push(Box::new(recording::Recorder::new(&game_dir, config.user.username.clone(), config.replay_upload)));
         }
         pawns::start(watchers);
     }

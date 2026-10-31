@@ -6,7 +6,9 @@
 //! the `replay` crate's; `replay-dump` reads it. The newest [`KEPT`] are kept.
 //!
 //! On for every player (all are its testers, the user decided 2026-10-31); `ReplayRecording =
-//! false` turns it off. Nothing is sent anywhere yet: what the logs' lines say (how many
+//! false` turns it off. Each finished one of a minute or more with two characters or more goes
+//! to the player's server (step 2, `Misc.Recording`; `ReplayUpload = false` keeps them here),
+//! which keeps it a week for its admins' replay viewer. What the logs' lines say (how many
 //! characters, how many named, shots, kills) is what step 1 is to learn.
 
 use std::collections::HashMap;
@@ -32,6 +34,10 @@ const ENDS_AFTER: Duration = Duration::from_secs(30);
 const LONGEST: Duration = Duration::from_secs(2 * 3600);
 const FLUSH_EVERY: Duration = Duration::from_secs(5);
 const MAP_CHECK_EVERY: Duration = Duration::from_secs(10);
+/// Recordings this long or longer go to the server.
+const UPLOAD_FROM: Duration = Duration::from_secs(60);
+/// The most one may be to go (the server's limit is 7.5 MB).
+const MAX_UPLOAD: u64 = 7 * 1024 * 1024;
 
 pub struct Recorder {
     dir: PathBuf,
@@ -39,6 +45,7 @@ pub struct Recorder {
     open: Option<Open>,
     last_seen: Option<Instant>,
     failed: bool,
+    upload: bool,
 }
 
 struct Open {
@@ -75,13 +82,14 @@ struct Counts {
 }
 
 impl Recorder {
-    pub fn new(game_dir: &std::path::Path, me: String) -> Self {
+    pub fn new(game_dir: &std::path::Path, me: String, upload: bool) -> Self {
         Self {
             dir: game_dir.join("replays"),
             me,
             open: None,
             last_seen: None,
             failed: false,
+            upload,
         }
     }
 
@@ -158,7 +166,34 @@ impl Recorder {
         );
         if let Err(e) = o.writer.finish() {
             warn!("Recording: couldn't finish {} ({e})", o.path.display());
+            return;
         }
+        if self.upload && o.began.elapsed() >= UPLOAD_FROM && c.characters.len() >= 2 {
+            let path = o.path.clone();
+            // Off the sampling thread: the next match mustn't wait on the server.
+            let _ = std::thread::Builder::new().name("fe-recording-send".into()).spawn(move || send(&path));
+        }
+    }
+}
+
+/// Sends a finished recording to the player's server.
+fn send(path: &std::path::Path) {
+    match std::fs::metadata(path).map(|m| m.len()) {
+        Ok(size) if size > MAX_UPLOAD => {
+            info!("Recording: {} is {} MB, more than the server takes; kept here only", path.display(), size / (1024 * 1024));
+            return;
+        }
+        Err(e) => {
+            warn!("Recording: couldn't read {} ({e})", path.display());
+            return;
+        }
+        Ok(_) => {}
+    }
+    let Ok(data) = std::fs::read(path) else { return };
+    let size = data.len();
+    match crate::api::recording(data) {
+        Ok(id) => info!("Recording: sent to the server ({} KB, kept there as {id})", size / 1024),
+        Err(e) => warn!("Recording: the server didn't take it ({e}); kept here"),
     }
 }
 

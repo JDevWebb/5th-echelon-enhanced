@@ -255,6 +255,16 @@ pub fn witness(seen: Vec<server_api::misc::Witnessed>, pawns: u32, named: u32) {
     }
 }
 
+/// Sends the player's server a match recording (the replay research): its id there, or why not.
+pub fn recording(data: Vec<u8>) -> Result<String, String> {
+    run(signed_in(|| async {
+        let mut client = connect!(MiscClient);
+        let answer = client.recording(tonic::Request::new(server_api::misc::RecordingRequest { data: data.clone() })).await?;
+        Ok(answer.into_inner().id)
+    }))
+    .map_err(|e| e.to_string())
+}
+
 /// Tells the server what a fair-play check found (F7, F8): report only. Failures are logged.
 pub fn fair_play_check(check: &str, detail: &str, value: f64, wine: bool) {
     let result = run(signed_in(|| async {

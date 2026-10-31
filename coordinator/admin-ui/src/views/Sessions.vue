@@ -220,7 +220,7 @@ const pickedRows = computed(() => {
       { at: r.from, text: `${stayTitle(r)}${netText(r.net) ? ' · ' + netText(r.net) : ''}`, cls: r.kind === 'match' ? 'ok' : '', link: r.kind === 'match' ? matchLink(p.server, r.room, r.since) : null },
       { at: r.to, text: endText(r), cls: endClass(r) },
     ]),
-    ...p.marks.map(m => ({ at: m.at, text: m.text, cls: markClass(m), link: m.kind === 'log_sent' && m.report ? `/reports/${m.report}` : null })),
+    ...p.marks.map(m => ({ at: m.at, text: m.text, cls: markClass(m), link: m.kind === 'log_sent' && m.report ? `/reports/${m.report}` : m.kind === 'recording' && m.recording ? `/replay/${p.server}/${p.player}/${m.recording}` : null })),
   ];
   return rows.sort((a, b) => a.at - b.at);
 });

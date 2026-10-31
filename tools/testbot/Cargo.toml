@@ -8,6 +8,7 @@ description = "Headless test players for 5th Echelon Enhanced: speak the game's 
 [dependencies]
 hwid = { path = "../../hwid" }
 quazal = { path = "../../quazal" }
+replay = { path = "../../replay" }
 sc_bl_protocols = { path = "../../dedicated_server/sc_bl_protocols" }
 server_api = { path = "../../api", package = "api" }
 md-5 = { workspace = true }

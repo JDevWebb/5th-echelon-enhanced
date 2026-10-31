@@ -65,6 +65,9 @@
 //! - `client_log`: `level` (`error`, `warn`, `info`), `target`, `message`: a line
 //!   of the game's own log (its warnings, errors and network events), sent by the game
 //!   (Misc.ClientLog) unless the player turned it off.
+//! - `recording`: the player's game sent a match recording (Misc.Recording, recordings.rs):
+//!   `id` (to ask for it), `map`, `mode`, `seconds`, `size` (bytes, packed), `characters`,
+//!   `named`, `shots`, `kills`, `started` (Unix seconds, the recorder's clock).
 //!
 //! Every `room` gets `since` (when it was made: ids come again once old rooms are gone),
 //! `room_kind` (`party` or `match`), `mode` (`coop`, `svm`), `private`, `map`, `game_mode` and

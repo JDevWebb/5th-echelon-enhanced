@@ -2369,6 +2369,58 @@ async fn witness(ctx: &mut Ctx) -> Result<()> {
     guest.disconnect().await
 }
 
+/// A match recording (the replay research) is kept and given an id; another at once is
+/// refused (one a minute), as is one that isn't a recording or has nobody in it.
+async fn recording(ctx: &mut Ctx) -> Result<()> {
+    let bot = ctx.player("Recorder").await?;
+    let made = |characters: u16| -> Result<Vec<u8>> {
+        let mut w = replay::Writer::new(
+            Vec::new(),
+            &replay::Header {
+                recorder: bot.name.clone(),
+                map: "ADV_01".into(),
+                ..Default::default()
+            },
+        )?;
+        for id in 1..=characters {
+            w.write(&replay::Record::Pawn {
+                t: 0,
+                id,
+                class: "EMPSpy".into(),
+                name: format!("P{id}"),
+                team: 0,
+            })?;
+        }
+        for i in 0..=610u32 {
+            let pawns = (1..=characters)
+                .map(|id| replay::PawnState {
+                    id,
+                    at: [i as f32 * 10.0, f32::from(id) * 100.0, 0.0],
+                    yaw: 0,
+                    pitch: 0,
+                    health: 100,
+                    firing: false,
+                })
+                .collect();
+            w.write(&replay::Record::Frame { t: i * 100, pawns })?;
+        }
+        Ok(w.finish()?)
+    };
+    for (what, data) in [("garbage", b"not a recording".to_vec()), ("nobody in it", made(0)?)] {
+        match bot.recording(data).await {
+            Err(s) if s.code() == tonic::Code::InvalidArgument => {}
+            other => return Err(eyre!("a recording of {what}: {other:?}")),
+        }
+    }
+    let id = bot.recording(made(2)?).await?;
+    ensure!(id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit()), "the id {id:?}");
+    match bot.recording(made(2)?).await {
+        Err(s) if s.code() == tonic::Code::ResourceExhausted => {}
+        other => return Err(eyre!("a second recording at once: {other:?}")),
+    }
+    bot.disconnect().await
+}
+
 /// The add-on's fair-play checks (F7, F8) are taken, again within a minute quietly, and a
 /// check that isn't one is refused.
 async fn fair_play_check(ctx: &mut Ctx) -> Result<()> {
@@ -3389,6 +3441,7 @@ const SCENARIOS: &[&str] = &[
     "report-player",
     "fair-play-check",
     "witness",
+    "recording",
     "identity-login",
     "rename",
     "direct-test",
@@ -3535,6 +3588,7 @@ async fn run() -> Result<()> {
                 "report-player" => report_player(&mut ctx).await,
                 "fair-play-check" => fair_play_check(&mut ctx).await,
                 "witness" => witness(&mut ctx).await,
+                "recording" => recording(&mut ctx).await,
                 "identity-login" => identity_login(&mut ctx).await,
                 "rename" => rename(&mut ctx).await,
                 "direct-test" => direct_test(&mut ctx).await,

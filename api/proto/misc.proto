@@ -35,8 +35,20 @@ service Misc {
     // (F8). A session event for the admins, once a minute a check at most.
     rpc FairPlayCheck(FairPlayCheckRequest) returns (FairPlayCheckResponse);
     // What the player's game saw of the others' characters moving (F9 witness reports,
-    // research: testers only). The server keeps it for players the witness shared a room with.
+    // research: every player's). The server keeps it for players the witness shared a room with.
     rpc Witness(WitnessRequest) returns (WitnessResponse);
+    // A match recording the player's game made (the replay research: the replay crate's
+    // format, gzipped, as the file is). The server keeps it a week for its admins, who can
+    // have it sent to the network's admin UI to watch.
+    rpc Recording(RecordingRequest) returns (RecordingResponse);
+}
+
+message RecordingRequest {
+    bytes data = 1;
+}
+message RecordingResponse {
+    // What the server keeps it as.
+    string id = 1;
 }
 
 message WitnessRequest {

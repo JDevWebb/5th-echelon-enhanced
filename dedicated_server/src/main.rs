@@ -103,6 +103,7 @@ mod privileges;
 mod probe_wants;
 mod rate_limit;
 mod recent_log;
+mod recordings;
 mod relay_pass;
 mod relays;
 mod reports;
