@@ -1144,6 +1144,18 @@ impl Bot {
     }
 
     /// Says whether this player's match is under way, as a 0.4.8 game does (`MatchState`).
+    /// What this player's game saw of the others moving (F9).
+    pub async fn witness(&self, seen: Vec<server_api::misc::Witnessed>) -> std::result::Result<(), tonic::Status> {
+        MiscClient::new(self.api.clone())
+            .witness(self.authed(server_api::misc::WitnessRequest {
+                pawns: u32::try_from(seen.len()).unwrap_or(0) + 1,
+                named: u32::try_from(seen.len()).unwrap_or(0),
+                seen,
+            }))
+            .await?;
+        Ok(())
+    }
+
     /// What the add-on's fair-play checks found (F7, F8).
     pub async fn fair_play_check(&self, check: &str, detail: &str, value: f64) -> std::result::Result<(), tonic::Status> {
         MiscClient::new(self.api.clone())

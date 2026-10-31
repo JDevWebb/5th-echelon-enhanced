@@ -56,6 +56,8 @@ const KINDS: &[&str] = &[
     "relay_gaps",
     "fair_play",
     "round_settings",
+    "witness",
+    "witnessed",
     "login_stalled",
     "request_error",
     "report_refused",
@@ -754,6 +756,22 @@ fn describe(e: &Event) -> String {
                 .map(|m| m.iter().map(|(k, v)| format!("{} {}", setting_name(k), v)).collect::<Vec<_>>().join(", "))
                 .unwrap_or_default()
         ),
+        "witness" => format!(
+            "Their game watched {} player characters ({} named){}",
+            e.detail["pawns"].as_i64().unwrap_or(0),
+            e.detail["named"].as_i64().unwrap_or(0),
+            e.detail["over"].as_array().filter(|o| !o.is_empty()).map_or_else(String::new, |o| format!(
+                ": too fast, {}",
+                o.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", ")
+            ))
+        ),
+        "witnessed" => format!(
+            "Seen moving faster than the game allows by player {} ({} s over; fastest {} against a walk of {})",
+            e.detail["by"],
+            e.detail["over_seconds"].as_i64().unwrap_or(0),
+            e.detail["max_speed"],
+            e.detail["ground_speed"]
+        ),
         "fair_play" => format!(
             "The add-on's {} check: {}{}",
             match e.detail["check"].as_str() {
@@ -997,6 +1015,7 @@ fn mark_level(e: &Event) -> Option<&'static str> {
         "room_update" if e.detail["under_way"] == true && !settings_changed(e).is_empty() => Some("warn"),
         "leave" if e.detail["under_way"] == true && e.str("how") == "removed" => Some("warn"),
         "fair_play" => Some("warn"),
+        "witnessed" => Some("warn"),
         "round_settings" if e.detail["during"] == true => Some("warn"),
         "relay_gaps" if e.detail["bursts"].as_i64().unwrap_or(0) > 0 => Some("warn"),
         _ => None,
@@ -1191,6 +1210,29 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
                         format!("{to} didn't pick it up within two minutes (offline, or their game had left the online menus)"),
                     ));
                 }
+            }
+            // Seen too fast by independent witnesses (F9): two or more players, in two or more
+            // rooms, before it's a problem; once, on the event that makes it so.
+            "witnessed" => {
+                let Some(list) = by_who.get(&e.who()) else { continue };
+                let mut seen: Vec<&&Event> = list.iter().filter(|o| o.kind == "witnessed" && o.at <= e.at).collect();
+                seen.sort_by_key(|o| o.at);
+                let witnesses = |events: &[&&Event]| events.iter().map(|o| o.detail["by"].to_string()).collect::<HashSet<_>>().len();
+                let rooms = |events: &[&&Event]| events.iter().map(|o| o.detail["room"].to_string()).collect::<HashSet<_>>().len();
+                let now_enough = witnesses(&seen) >= 2 && rooms(&seen) >= 2;
+                let before = &seen[..seen.len().saturating_sub(1)];
+                if !now_enough || (witnesses(before) >= 2 && rooms(before) >= 2) {
+                    continue;
+                }
+                out.push(problem(
+                    e,
+                    "bad",
+                    format!("{} moved faster than the game allows, seen by {} players", e.name, witnesses(&seen)),
+                    format!(
+                        "Independent witnesses in {} matches (witness reports, a research prototype: check before acting)",
+                        rooms(&seen)
+                    ),
+                ));
             }
             // The host's game's round settings changed while the round ran (F4): each time.
             "round_settings" if e.detail["during"] == true => {
@@ -1947,6 +1989,27 @@ mod tests {
         assert_eq!(titles, ["Oni changed their match's settings during it"]);
         let removed = ev("eu", 1300, 5, "Kiwi", "leave", json!({ "room": 77, "how": "removed", "by": 9, "under_way": true }));
         assert_eq!(mark_level(&removed), Some("warn"));
+    }
+
+    /// F9: one witness, or one room, isn't enough; two witnesses in two rooms is a problem, once.
+    #[test]
+    fn independent_witnesses_in_two_matches_are_a_problem_once() {
+        let w = |at: i64, by: i64, room: i64| {
+            ev(
+                "eu",
+                at,
+                7,
+                "Zoomer",
+                "witnessed",
+                json!({ "by": by, "room": room, "max_speed": 1400.0, "ground_speed": 450.0, "over_seconds": 6 }),
+            )
+        };
+        assert!(problems(&[w(1000, 1, 10), w(1100, 1, 11)]).is_empty(), "one witness");
+        assert!(problems(&[w(1000, 1, 10), w(1100, 2, 10)]).is_empty(), "one room");
+        let found = problems(&[w(1000, 1, 10), w(1100, 2, 10), w(1200, 2, 11), w(1300, 3, 12)]);
+        let titles: Vec<&str> = found.iter().filter_map(|p| p["title"].as_str()).collect();
+        assert_eq!(titles, ["Zoomer moved faster than the game allows, seen by 2 players"]);
+        assert_eq!(mark_level(&w(1000, 1, 10)), Some("warn"));
     }
 
     /// F4: a round's settings as it starts are described; a change while it runs is a problem.

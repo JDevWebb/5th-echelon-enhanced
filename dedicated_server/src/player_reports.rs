@@ -59,7 +59,7 @@ fn note(user: u32, room: u32, players: impl IntoIterator<Item = (u32, String)>) 
 }
 
 /// Who `user` shared a room with lately and isn't in one with now: id, name, room.
-fn recent(user: u32) -> Vec<(u32, String, u32)> {
+pub fn recent(user: u32) -> Vec<(u32, String, u32)> {
     seen()
         .get(&user)
         .map(|list| {

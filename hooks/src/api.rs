@@ -225,6 +225,20 @@ pub fn new_match(on: bool) -> Result<u32, Error> {
     }))
 }
 
+/// Tells the server what our game saw of the others moving (F9 witness reports, research).
+pub fn witness(seen: Vec<server_api::misc::Witnessed>, pawns: u32, named: u32) {
+    let result = run(signed_in(|| async {
+        let mut client = connect!(MiscClient);
+        client
+            .witness(tonic::Request::new(server_api::misc::WitnessRequest { seen: seen.clone(), pawns, named }))
+            .await?;
+        Ok(())
+    }));
+    if let Err(e) = result {
+        tracing::warn!("Telling the server what we saw failed: {e}");
+    }
+}
+
 /// Tells the server what a fair-play check found (F7, F8): report only. Failures are logged.
 pub fn fair_play_check(check: &str, detail: &str, value: f64, wine: bool) {
     let result = run(signed_in(|| async {

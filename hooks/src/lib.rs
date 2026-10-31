@@ -57,6 +57,7 @@ mod speed_check;
 mod storm_fix;
 mod uplay_r1_loader;
 mod voice_device_fix;
+mod witness;
 
 use macros::fatal_error;
 
@@ -403,6 +404,10 @@ fn init(hmodule: Option<HMODULE>) {
         speed_check::start();
         // Whether the game's code is as it shipped, but for our own changes (F8, report only).
         code_check::start();
+        // Witness reports (F9, research): testers only.
+        if config.witness_reports {
+            witness::start(config.user.username.clone());
+        }
     }
 
     // needs to be done in a separate thread, otherwise it'll block indefinitely

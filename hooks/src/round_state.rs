@@ -118,23 +118,23 @@ fn meaning(adversarial: bool, value: u8) -> (String, bool) {
 }
 
 /// The bucket of a packed name.
-fn bucket(packed: u32) -> u32 {
+pub(crate) fn bucket(packed: u32) -> u32 {
     ((packed >> 19).wrapping_mul(0x141).wrapping_add(packed)) & 0xffff
 }
 
-fn pack(index: u32, number: u32) -> u32 {
+pub(crate) fn pack(index: u32, number: u32) -> u32 {
     index | (number << 19)
 }
 
 /// An object as the engine's own lookup takes it: not pending kill nor unreachable.
-fn alive(object: usize) -> bool {
+pub(crate) fn alive(object: usize) -> bool {
     let flags = read_u32(object + 0x1c).unwrap_or(u32::MAX);
     let internal = read_u32(object + 4).unwrap_or(u32::MAX);
     flags & 0x0080_0400 == 0 && (internal >> 0x14) & 4 == 0
 }
 
 /// The objects named `packed`, in its bucket.
-fn named(packed: u32) -> Vec<usize> {
+pub(crate) fn named(packed: u32) -> Vec<usize> {
     let mut found = Vec::new();
     let mut object = read_u32(OBJECT_HASH + bucket(packed) as usize * 4).unwrap_or(0) as usize;
     for _ in 0..4096 {
@@ -160,7 +160,7 @@ struct Found {
 }
 
 /// The name indices of `wanted`, from the name table (once: it holds tens of thousands).
-fn name_indices(wanted: &[&'static str]) -> HashMap<&'static str, u32> {
+pub(crate) fn name_indices(wanted: &[&'static str]) -> HashMap<&'static str, u32> {
     let mut indices = HashMap::new();
     let (Some(table), Some(count)) = (read_u32(NAMES), read_u32(NAMES_COUNT)) else {
         return indices;
@@ -216,7 +216,7 @@ fn look_up() -> Option<Found> {
 }
 
 /// A class and those it's made from (its supers), nearest first.
-fn chain(class: usize) -> Vec<u32> {
+pub(crate) fn chain(class: usize) -> Vec<u32> {
     let mut out = Vec::new();
     let mut c = class as u32;
     while c != 0 && out.len() < 32 {
@@ -272,9 +272,33 @@ fn manager(found: &Found, from: &mut HashMap<&'static str, u32>) -> Option<(usiz
 
 /// Reads the match state every [`READ_EVERY`] and tells the server of each change (and every
 /// [`SAY_AGAIN`] while under way). DX11 only, once the hash lookup's bytes are where expected.
-pub fn start() {
+/// Whether the engine's tables are where this build has them (DirectX 11): checked by the hash
+/// lookup's bytes before any of them is read.
+pub(crate) fn tables_here() -> bool {
     let bytes: Option<Vec<u8>> = (0..HASH_LOOKUP_BYTES.len()).map(|i| read::<u8>(HASH_LOOKUP + i)).collect();
-    if bytes.as_deref() != Some(&HASH_LOOKUP_BYTES[..]) {
+    bytes.as_deref() == Some(&HASH_LOOKUP_BYTES[..])
+}
+
+/// A class named `name` (its object, whose own class is named "Class"), with the name table's
+/// indices of "Class" and of `name`.
+pub(crate) fn class_named(names: &HashMap<&'static str, u32>, name: &str) -> Option<usize> {
+    let class_name = *names.get("Class")?;
+    named(pack(*names.get(name)?, 0))
+        .into_iter()
+        .find(|o| read_u32(o + 0x24).is_some_and(|c| read_u32(c as usize + 0x20) == Some(pack(class_name, 0))))
+}
+
+/// The byte offset of property `property` in objects of class `class` (or one it's made from).
+pub(crate) fn offset_in(names: &HashMap<&'static str, u32>, property: &str, class: usize) -> Option<u16> {
+    let classes = chain(class);
+    let object = named(pack(*names.get(property)?, 0))
+        .into_iter()
+        .find(|o| read_u32(o + 0x18).is_some_and(|outer| classes.contains(&outer)))?;
+    read::<u16>(object + 0x3a)
+}
+
+pub fn start() {
+    if !tables_here() {
         info!("Match state: not this build's (DirectX 11 only); the server learns of started matches from refused joins");
         return;
     }

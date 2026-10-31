@@ -1840,6 +1840,46 @@ impl Misc for MyMisc {
         }
     }
 
+    /// What a tester's game saw of the others moving (F9 witness reports, research): the
+    /// counts as a `witness` event on them, and each player they shared a room with lately seen
+    /// over the game's speed for [`WITNESS_OVER`] s or more as a `witnessed` event on that
+    /// player, naming the witness (the Sessions page counts independent witnesses).
+    async fn witness(&self, request: Request<misc::WitnessRequest>) -> Result<Response<misc::WitnessResponse>, Status> {
+        const WITNESS_OVER: u32 = 3;
+        let user_id = caller(&request)?;
+        if !crate::rate_limit::polls().check(user_id) {
+            return Err(Status::resource_exhausted("Too many requests; slow down"));
+        }
+        let r = request.into_inner();
+        // Refreshed first, then only players they shared a room with lately.
+        let _ = crate::player_reports::players(&self.storage, user_id).await.map_err(internal)?;
+        let known = crate::player_reports::recent(user_id);
+        let mut over = Vec::new();
+        for seen in r.seen.iter().take(32) {
+            let Some((id, name, room)) = known.iter().find(|(_, n, _)| n.eq_ignore_ascii_case(&seen.name)) else {
+                continue;
+            };
+            if seen.over_seconds < WITNESS_OVER || !seen.max_speed.is_finite() {
+                continue;
+            }
+            over.push(name.clone());
+            crate::session_events::note(
+                crate::session_events::Who::Id(*id),
+                "witnessed",
+                serde_json::json!({
+                    "by": user_id, "room": room, "max_speed": seen.max_speed.round(),
+                    "ground_speed": seen.ground_speed.round(), "over_seconds": seen.over_seconds,
+                }),
+            );
+        }
+        crate::session_events::note(
+            crate::session_events::Who::Id(user_id),
+            "witness",
+            serde_json::json!({ "pawns": r.pawns, "named": r.named, "seen": r.seen.len(), "over": over }),
+        );
+        Ok(Response::new(misc::WitnessResponse {}))
+    }
+
     /// What the add-on's fair-play checks found (F7, F8): a session event, report only.
     async fn fair_play_check(&self, request: Request<misc::FairPlayCheckRequest>) -> Result<Response<misc::FairPlayCheckResponse>, Status> {
         let user_id = caller(&request)?;

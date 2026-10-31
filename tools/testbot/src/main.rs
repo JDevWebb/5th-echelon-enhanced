@@ -2340,6 +2340,29 @@ async fn match_state(ctx: &mut Ctx) -> Result<()> {
     seeker.disconnect().await
 }
 
+/// Witness reports (F9): a guest in the host's match reports seeing the host too fast, and a
+/// player they never played with; both are taken (the stranger quietly left out).
+async fn witness(ctx: &mut Ctx) -> Result<()> {
+    let open = format!("113 => 0;103 => 0;102 => 6;101 => {}", 940_000 + ctx.run);
+    let mut host = ctx.player("Host").await?;
+    host.register_urls(&["prudp:/address=127.0.0.1;port=3097;sid=15;type=3"]).await?;
+    let room = host.create_session(&open).await?;
+    host.add_participants(room, &[host.pid], &[]).await?;
+    let mut guest = ctx.player("Guest").await?;
+    ensure!(guest.search_sessions(&open).await?.iter().any(|(s, _)| *s == room), "the match isn't found");
+    guest.add_participants(room, &[guest.pid], &[]).await?;
+    guest.join_session(room).await?;
+    let seen = |name: &str| server_api::misc::Witnessed {
+        name: name.into(),
+        max_speed: 1400.0,
+        ground_speed: 450.0,
+        over_seconds: 6,
+    };
+    guest.witness(vec![seen(&host.name), seen("NoSuchPlayer")]).await?;
+    host.disconnect().await?;
+    guest.disconnect().await
+}
+
 /// The add-on's fair-play checks (F7, F8) are taken, again within a minute quietly, and a
 /// check that isn't one is refused.
 async fn fair_play_check(ctx: &mut Ctx) -> Result<()> {
@@ -3359,6 +3382,7 @@ const SCENARIOS: &[&str] = &[
     "match-state",
     "report-player",
     "fair-play-check",
+    "witness",
     "identity-login",
     "rename",
     "direct-test",
@@ -3504,6 +3528,7 @@ async fn run() -> Result<()> {
                 "match-state" => match_state(&mut ctx).await,
                 "report-player" => report_player(&mut ctx).await,
                 "fair-play-check" => fair_play_check(&mut ctx).await,
+                "witness" => witness(&mut ctx).await,
                 "identity-login" => identity_login(&mut ctx).await,
                 "rename" => rename(&mut ctx).await,
                 "direct-test" => direct_test(&mut ctx).await,

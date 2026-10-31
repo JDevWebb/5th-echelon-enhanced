@@ -361,6 +361,11 @@ pub struct Config {
     /// a start through Ubisoft Connect worked on this copy (`last_run::ubisoft_connect_worked`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub without_ubisoft_connect: bool,
+    /// Witness reports (the 0.4.8 plan's F9, research): the add-on watches the other players'
+    /// characters move and tells the server of speeds past what the game allows. Off for
+    /// players; testers turn it on here (`WitnessReports = true` in uplay.toml).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub witness_reports: bool,
     /// Removes the engine's negative mouse acceleration (widens the per-frame look-delta clamp,
     /// see the hooks' `mouse_fix`). Off until the player chose: the launcher asks once, with it
     /// on as the recommendation (its `new_options`), and Settings › Game changes it. Nothing to

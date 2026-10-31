@@ -34,7 +34,28 @@ service Misc {
     // faster than real time (F7), the game's code changed by something other than 5th Echelon
     // (F8). A session event for the admins, once a minute a check at most.
     rpc FairPlayCheck(FairPlayCheckRequest) returns (FairPlayCheckResponse);
+    // What the player's game saw of the others' characters moving (F9 witness reports,
+    // research: testers only). The server keeps it for players the witness shared a room with.
+    rpc Witness(WitnessRequest) returns (WitnessResponse);
 }
+
+message WitnessRequest {
+    repeated Witnessed seen = 1;
+    // How many player characters the game had, and how many it could name (research).
+    uint32 pawns = 2;
+    uint32 named = 3;
+}
+message Witnessed {
+    // Their online name, as their character's controller has it.
+    string name = 1;
+    // The fastest they moved over a second (game units a second), and the speed their
+    // character walks at (its GroundSpeed).
+    float max_speed = 2;
+    float ground_speed = 3;
+    // Seconds they moved over 1.5x that.
+    uint32 over_seconds = 4;
+}
+message WitnessResponse {}
 
 message FairPlayCheckRequest {
     // "speed" or "code".
