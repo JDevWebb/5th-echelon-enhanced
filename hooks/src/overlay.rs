@@ -253,11 +253,16 @@ fn ui_id(id: &str) -> u64 {
     h.finish()
 }
 
+/// What a block does, as the launcher says it.
+const BLOCK_MEANS: &str = "Neither of you can message, invite or friend the other, you don't see each other online, and quick match leaves out matches they're in.";
+
 /// A row button and what it does to the player on that row.
 #[derive(Clone, Copy)]
 enum RowAction {
     Invite,
     Join,
+    /// The ⋯ menu (Block and Remove, which ask first).
+    More,
     Change(community::FriendChange, &'static str),
 }
 
@@ -303,6 +308,9 @@ struct MyRenderLoop {
     search_text: String,
     /// Whether Find players has searched since the panel opened.
     searched: bool,
+    /// A row's ⋯ menu asking first (Block or Remove), with the player's id: the menu shows what
+    /// it does and Block / Remove or Cancel (the launcher's words).
+    confirming: std::sync::Mutex<Option<(community::FriendChange, String)>>,
     /// The panel just opened: log what it's drawn with on the next frame.
     log_draw_state: bool,
     /// Chat as last read (each frame the panel shows), the room shown, the open conversation,
@@ -987,12 +995,17 @@ impl MyRenderLoop {
 
     /// Buttons on a player's row, right-aligned; runs what was clicked.
     fn player_row(&self, ui: &Ui, i: usize, section: &str, p: &community::Player, detail: &str, actions: &[RowAction]) {
-        let labels: Vec<(String, RowAction)> = actions
+        use community::FriendChange as C;
+        // Block and Remove go in the row's ⋯ menu, which asks first; the rest are buttons.
+        let more: Vec<RowAction> = actions.iter().copied().filter(|a| matches!(a, RowAction::Change(C::Block | C::Remove, _))).collect();
+        let mut labels: Vec<(String, RowAction)> = actions
             .iter()
+            .filter(|a| !matches!(a, RowAction::Change(C::Block | C::Remove, _)))
             .map(|a| {
                 let text = match a {
                     RowAction::Invite => "Invite",
                     RowAction::Join => "Join",
+                    RowAction::More => "...",
                     RowAction::Change(_, text) => text,
                 };
                 // Ids come from the server: hashed, so none can collide with ImGui's own
@@ -1000,6 +1013,11 @@ impl MyRenderLoop {
                 (format!("{text}##fe-{section}-{:016x}-{text}", ui_id(&p.id)), *a)
             })
             .collect();
+        let popup = format!("##fe-{section}-{:016x}-menu", ui_id(&p.id));
+        if !more.is_empty() {
+            // Last, at the row's right edge.
+            labels.push((format!("...##fe-{section}-{:016x}-more", ui_id(&p.id)), RowAction::More));
+        }
         let gap = self.s(8.0);
         #[allow(clippy::cast_precision_loss)]
         let w = labels.iter().map(|(l, _)| self.button_width(ui, l)).sum::<f32>() + gap * labels.len().saturating_sub(1) as f32;
@@ -1015,16 +1033,79 @@ impl MyRenderLoop {
                 if n > 0 {
                     ui.same_line_with_spacing(0.0, gap);
                 }
+                if matches!(action, RowAction::More) {
+                    if self.button(ui, label, false) {
+                        *self.confirming.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                        ui.open_popup(&popup);
+                    }
+                    if ui.is_item_hovered() {
+                        ui.tooltip_text(format!("More for {}", p.name));
+                    }
+                    ui.popup(&popup, || self.more_menu(ui, p, &more));
+                    continue;
+                }
                 let primary = matches!(action, RowAction::Change(community::FriendChange::Accept, _));
                 if self.button(ui, label, primary) {
                     match action {
                         RowAction::Invite => community::invite(p.id.clone(), p.name.clone()),
                         RowAction::Join => community::join(p.id.clone(), p.name.clone()),
+                        RowAction::More => {}
                         RowAction::Change(change, _) => community::change(*change, p.id.clone(), p.name.clone()),
                     }
                 }
             }
         });
+    }
+
+    /// A row's ⋯ menu: Remove and Block, each asking first with what it does.
+    fn more_menu(&self, ui: &Ui, p: &community::Player, more: &[RowAction]) {
+        use community::FriendChange as C;
+        let asking = self
+            .confirming
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+            .filter(|(_, id)| *id == p.id)
+            .map(|(c, _)| c);
+        if let Some(change) = asking {
+            let (title, text, yes) = if change == C::Block {
+                (format!("Block {}?", p.name), BLOCK_MEANS, "Block")
+            } else {
+                (format!("Remove {} from your friends?", p.name), "You can ask them to be friends again later.", "Remove")
+            };
+            self.with_font(ui, |f| f.strong, || ui.text(title));
+            ui.dummy([0.0, self.s(2.0)]);
+            {
+                let _w = ui.push_text_wrap_pos_with_pos(ui.cursor_pos()[0] + self.s(340.0));
+                ui.text_colored(MUTED, text);
+            }
+            ui.dummy([0.0, self.s(4.0)]);
+            let _c = (
+                ui.push_style_color(StyleColor::Button, BAD),
+                ui.push_style_color(StyleColor::ButtonHovered, BAD),
+                ui.push_style_color(StyleColor::Text, ON_ACCENT),
+            );
+            if self.with_font(ui, |f| f.strong, || ui.button(format!("{yes}##fe-confirm"))) {
+                community::change(change, p.id.clone(), p.name.clone());
+                *self.confirming.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                ui.close_current_popup();
+            }
+            drop(_c);
+            ui.same_line();
+            if self.button(ui, "Cancel##fe-confirm-cancel", false) {
+                *self.confirming.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                ui.close_current_popup();
+            }
+            return;
+        }
+        for action in more {
+            let RowAction::Change(change, text) = action else { continue };
+            let label = if *change == C::Remove { "Remove friend" } else { *text };
+            let _c = (*change == C::Block).then(|| ui.push_style_color(StyleColor::Text, BAD));
+            if ui.selectable(label) {
+                *self.confirming.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((*change, p.id.clone()));
+            }
+        }
     }
 
     fn status(p: &community::Player) -> String {
@@ -1860,6 +1941,7 @@ fn init_hudhook<T: hudhook::Hooks + 'static>(invites: crossbeam_channel::Receive
             last_refresh: Instant::now(),
             search_text: String::new(),
             searched: false,
+            confirming: std::sync::Mutex::new(None),
             log_draw_state: false,
             chat: chat::View::default(),
             chat_room: server_api::chat::Room::Global,
