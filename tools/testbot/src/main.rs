@@ -2340,6 +2340,20 @@ async fn match_state(ctx: &mut Ctx) -> Result<()> {
     seeker.disconnect().await
 }
 
+/// The add-on's fair-play checks (F7, F8) are taken, again within a minute quietly, and a
+/// check that isn't one is refused.
+async fn fair_play_check(ctx: &mut Ctx) -> Result<()> {
+    let bot = ctx.player("Checked").await?;
+    bot.fair_play_check("speed", "the game's clocks ran 1.50x real time for 30 s", 1.5).await?;
+    bot.fair_play_check("speed", "again", 1.5).await?;
+    bot.fair_play_check("code", "2 chunks of the game's code changed", 2.0).await?;
+    match bot.fair_play_check("aimbot", "", 1.0).await {
+        Err(s) if s.code() == tonic::Code::InvalidArgument => {}
+        other => return Err(eyre!("a check that isn't one: {other:?}")),
+    }
+    bot.disconnect().await
+}
+
 /// Reporting a player (F5): a guest in the host's match sees the host to report, and reports
 /// them; again soon is refused, as are a player they never played with and a reason that
 /// isn't one. The host sees the guest the same way.
@@ -3344,6 +3358,7 @@ const SCENARIOS: &[&str] = &[
     "relay-pass",
     "match-state",
     "report-player",
+    "fair-play-check",
     "identity-login",
     "rename",
     "direct-test",
@@ -3488,6 +3503,7 @@ async fn run() -> Result<()> {
                 "relay-pass" => relay_pass(&mut ctx).await,
                 "match-state" => match_state(&mut ctx).await,
                 "report-player" => report_player(&mut ctx).await,
+                "fair-play-check" => fair_play_check(&mut ctx).await,
                 "identity-login" => identity_login(&mut ctx).await,
                 "rename" => rename(&mut ctx).await,
                 "direct-test" => direct_test(&mut ctx).await,

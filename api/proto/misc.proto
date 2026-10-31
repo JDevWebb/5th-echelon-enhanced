@@ -30,7 +30,23 @@ service Misc {
     // Reports a player they're playing or just played with to the network's admins, with the
     // match and the server's log of it (F5). Limited as feedback is, and once a player a while.
     rpc ReportPlayer(ReportPlayerRequest) returns (ReportResponse);
+    // What the add-on's own fair-play checks found (report only): the game's clocks running
+    // faster than real time (F7), the game's code changed by something other than 5th Echelon
+    // (F8). A session event for the admins, once a minute a check at most.
+    rpc FairPlayCheck(FairPlayCheckRequest) returns (FairPlayCheckResponse);
 }
+
+message FairPlayCheckRequest {
+    // "speed" or "code".
+    string check = 1;
+    // What it saw, for the admins ("QueryPerformanceCounter 1.48x real time for 30 s").
+    string detail = 2;
+    // Its measure: the clock's speed against real time, or how many code chunks changed.
+    double value = 3;
+    // The game runs under Wine or Proton (whose clocks and code differ: weigh it so).
+    bool wine = 4;
+}
+message FairPlayCheckResponse {}
 
 message MatchPlayersRequest {}
 message MatchPlayersResponse {

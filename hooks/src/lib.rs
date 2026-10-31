@@ -52,6 +52,7 @@ mod particle_fix;
 mod quickstart;
 mod round_state;
 mod scheme_pool_fix;
+mod speed_check;
 mod storm_fix;
 mod uplay_r1_loader;
 mod voice_device_fix;
@@ -395,6 +396,8 @@ fn init(hmodule: Option<HMODULE>) {
         }
         // Whether this game's match is under way, for the server (round_state.rs).
         round_state::start();
+        // Whether the game's clocks run at real time (F7, report only).
+        speed_check::start();
     }
 
     // needs to be done in a separate thread, otherwise it'll block indefinitely

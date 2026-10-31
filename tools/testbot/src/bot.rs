@@ -1144,6 +1144,19 @@ impl Bot {
     }
 
     /// Says whether this player's match is under way, as a 0.4.8 game does (`MatchState`).
+    /// What the add-on's fair-play checks found (F7, F8).
+    pub async fn fair_play_check(&self, check: &str, detail: &str, value: f64) -> std::result::Result<(), tonic::Status> {
+        MiscClient::new(self.api.clone())
+            .fair_play_check(self.authed(server_api::misc::FairPlayCheckRequest {
+                check: check.into(),
+                detail: detail.into(),
+                value,
+                wine: false,
+            }))
+            .await?;
+        Ok(())
+    }
+
     /// Who this player can report: in their match, or lately (F5).
     pub async fn match_players(&self) -> std::result::Result<Vec<server_api::misc::MatchPlayer>, tonic::Status> {
         Ok(MiscClient::new(self.api.clone())

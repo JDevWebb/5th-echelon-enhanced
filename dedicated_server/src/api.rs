@@ -1832,6 +1832,42 @@ impl Misc for MyMisc {
         }
     }
 
+    /// What the add-on's fair-play checks found (F7, F8): a session event, report only.
+    async fn fair_play_check(&self, request: Request<misc::FairPlayCheckRequest>) -> Result<Response<misc::FairPlayCheckResponse>, Status> {
+        let user_id = caller(&request)?;
+        let r = request.into_inner();
+        if !matches!(r.check.as_str(), "speed" | "code") {
+            return Err(Status::invalid_argument("Not a check"));
+        }
+        // Once a minute a check at most; more say nothing new.
+        static LAST: std::sync::LazyLock<std::sync::Mutex<HashMap<(u32, String), std::time::Instant>>> = std::sync::LazyLock::new(Default::default);
+        {
+            let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if last.len() >= 50_000 {
+                last.retain(|_, at| at.elapsed() < std::time::Duration::from_secs(60));
+            }
+            let key = (user_id, r.check.clone());
+            if last.get(&key).is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(60)) {
+                return Ok(Response::new(misc::FairPlayCheckResponse {}));
+            }
+            last.insert(key, std::time::Instant::now());
+        }
+        let detail = printable(&r.detail, 300);
+        let value = if r.value.is_finite() { (r.value * 100.0).round() / 100.0 } else { 0.0 };
+        warn!(
+            self.logger,
+            "Fair play check from {user_id}: {} {value} ({detail}){}",
+            r.check,
+            if r.wine { ", under Wine" } else { "" }
+        );
+        crate::session_events::note(
+            crate::session_events::Who::Id(user_id),
+            "fair_play",
+            serde_json::json!({ "check": r.check, "detail": detail, "value": value, "wine": r.wine }),
+        );
+        Ok(Response::new(misc::FairPlayCheckResponse {}))
+    }
+
     /// Who the player can report: in their match now, or in one in the last 30 minutes (F5).
     async fn match_players(&self, request: Request<misc::MatchPlayersRequest>) -> Result<Response<misc::MatchPlayersResponse>, Status> {
         let user_id = caller(&request)?;

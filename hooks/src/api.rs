@@ -225,6 +225,25 @@ pub fn new_match(on: bool) -> Result<u32, Error> {
     }))
 }
 
+/// Tells the server what a fair-play check found (F7, F8): report only. Failures are logged.
+pub fn fair_play_check(check: &str, detail: &str, value: f64, wine: bool) {
+    let result = run(signed_in(|| async {
+        let mut client = connect!(MiscClient);
+        client
+            .fair_play_check(tonic::Request::new(server_api::misc::FairPlayCheckRequest {
+                check: check.to_string(),
+                detail: detail.to_string(),
+                value,
+                wine,
+            }))
+            .await?;
+        Ok(())
+    }));
+    if let Err(e) = result {
+        tracing::warn!("Telling the server a fair-play check failed: {e}");
+    }
+}
+
 /// Who we can report: in our match now, or in one in the last 30 minutes (F5).
 pub fn match_players() -> Result<Vec<server_api::misc::MatchPlayer>, Error> {
     run(signed_in(|| async {

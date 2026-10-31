@@ -54,6 +54,7 @@ const KINDS: &[&str] = &[
     "client_log",
     "relay_drop",
     "relay_gaps",
+    "fair_play",
     "login_stalled",
     "request_error",
     "report_refused",
@@ -743,6 +744,20 @@ fn describe(e: &Event) -> String {
             "In a room, but the game hadn't registered for online play {} s later: nobody could reach it",
             e.detail["after_secs"]
         ),
+        "fair_play" => format!(
+            "The add-on's {} check: {}{}",
+            match e.detail["check"].as_str() {
+                Some("speed") => "speed",
+                Some("code") => "game code",
+                _ => "fair play",
+            },
+            e.detail["detail"].as_str().unwrap_or("?"),
+            if e.detail["wine"] == true {
+                " (under Wine or Proton, whose clocks and code differ: weigh it so)"
+            } else {
+                ""
+            }
+        ),
         "relay_gaps" => format!(
             "Their traffic through the relay went silent {} times (longest {:.1} s), {} with a burst after: held packets let go at once, as a lag switch does",
             e.detail["gaps"].as_i64().unwrap_or(0),
@@ -922,6 +937,7 @@ fn mark_level(e: &Event) -> Option<&'static str> {
         "login_stalled" => Some("warn"),
         "search" if other_data(e).is_some() => Some("warn"),
         "player_report" => Some("warn"),
+        "fair_play" => Some("warn"),
         "relay_gaps" if e.detail["bursts"].as_i64().unwrap_or(0) > 0 => Some("warn"),
         _ => None,
     }
