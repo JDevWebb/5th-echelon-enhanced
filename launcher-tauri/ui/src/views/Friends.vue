@@ -57,8 +57,11 @@
                   <span class="avatar" aria-hidden="true">{{ initial(e.name) }}<i></i></span>
                   <span class="names">
                     <b :title="e.name">{{ e.name }}</b>
-                    <small>On {{ e.server }}<template v-if="e.region"> ({{ e.region }})</template>: to play together, one of you joins the other's server (the server menu on Play)</small>
+                    <small>On {{ e.server }}<template v-if="e.region"> ({{ e.region }})</template>: to play together, one of you joins the other's server</small>
                   </span>
+                </span>
+                <span class="acts">
+                  <button type="button" class="btn small" :disabled="busy || info.running" :title="info.running ? 'Close the game first' : null" @click="ask('switch', e)">Switch server</button>
                 </span>
               </li>
             </ul>
@@ -159,11 +162,11 @@
     <Transition name="modal">
       <div v-if="asking" class="backdrop" @click.self="asking = null">
         <div v-modal class="dialog" role="dialog" aria-modal="true" aria-labelledby="ask-title" @keydown.esc="asking = null">
-          <h2 id="ask-title">{{ asking.action === 'block' ? `Block ${asking.p.name}?` : `Remove ${asking.p.name} from your friends?` }}</h2>
-          <p class="soft">{{ asking.action === 'block' ? BLOCK_MEANS : 'You can ask them to be friends again later.' }}</p>
+          <h2 id="ask-title">{{ ASKS[asking.action].title(asking.p) }}</h2>
+          <p class="soft">{{ ASKS[asking.action].means(asking.p) }}</p>
           <div class="row end">
             <button type="button" class="btn" @click="asking = null">Cancel</button>
-            <button type="button" class="btn danger" @click="confirm">{{ asking.action === 'block' ? 'Block' : 'Remove' }}</button>
+            <button type="button" class="btn" :class="asking.action === 'switch' ? 'primary' : 'danger'" @click="confirm">{{ ASKS[asking.action].button }}</button>
           </div>
         </div>
       </div>
@@ -219,6 +222,17 @@ function tabKeys(e) {
 
 const initial = (name) => (name || '?').trim().charAt(0).toUpperCase();
 
+// What each ask says.
+const ASKS = {
+  block: { title: (p) => `Block ${p.name}?`, means: () => BLOCK_MEANS, button: 'Block' },
+  remove: { title: (p) => `Remove ${p.name} from your friends?`, means: () => 'You can ask them to be friends again later.', button: 'Remove' },
+  switch: {
+    title: (e) => `Switch to ${e.server}?`,
+    means: (e) => `To play with ${e.name}, the launcher sets you up on their server with your identity (your friends come with you), and asks for a name there if you have no account on it yet.`,
+    button: 'Switch',
+  },
+};
+
 /** Asks first for what can't be taken back lightly. */
 function ask(action, p) {
   menu.value = null;
@@ -231,6 +245,11 @@ function confirm() {
 }
 
 async function act(action, p) {
+  if (action === 'switch') {
+    // The setup runs on Play, with its own steps.
+    if (await call('switch_to_friend', { host: p.host })) emit('go', 'play');
+    return;
+  }
   busy.value = true;
   try {
     if (action === 'join') await call('join_friend', { id: p.id, name: p.name });
