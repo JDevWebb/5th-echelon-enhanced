@@ -61,6 +61,8 @@ pub(crate) struct Inner {
     /// The server's news and what's played there, with the server and when they were asked.
     pub(crate) news: Option<(String, Instant, Vec<setup::server_info::NewsItem>)>,
     pub(crate) playing: Option<(String, Instant, Option<server_api::playing::Playing>)>,
+    /// Until when the player's "new match" holds (L2): the Play button says so.
+    pub(crate) new_match_until: Option<Instant>,
 }
 
 impl Launcher {
@@ -92,6 +94,7 @@ impl Launcher {
                 fetching_friends: false,
                 news: None,
                 playing: None,
+                new_match_until: None,
             }),
         }
     }
@@ -139,6 +142,8 @@ pub struct Info {
     name_not_allowed: Option<String>,
     /// The game's Uplay DLL is an emulator, and the player hasn't closed the notice.
     emulator_notice: bool,
+    /// A new match asked for still holds (the Play button says so; the mode menu takes it back).
+    new_match: bool,
 }
 
 #[tauri::command(async)]
@@ -168,6 +173,7 @@ pub fn info(state: tauri::State<Launcher>) -> Info {
             .filter(|g| inner_name_not_allowed(&inner.friends, g))
             .and_then(|_| inner.friends.name_not_allowed.clone()),
         emulator_notice: game.is_some_and(|g| g.uplay_emulator && !g.uplay_emulator_told),
+        new_match: inner.new_match_until.is_some_and(|until| Instant::now() < until),
     }
 }
 
@@ -1105,6 +1111,7 @@ pub fn new_match(app: tauri::AppHandle, state: tauri::State<Launcher>, mode: Pla
             return changed(&app);
         }
     };
+    inner.new_match_until = Some(Instant::now() + holds);
     let running = game_running(&mut inner);
     let minutes = holds.as_secs().div_ceil(60);
     inner.notices.info(if running {
@@ -1129,7 +1136,10 @@ pub fn cancel_new_match(app: tauri::AppHandle, state: tauri::State<Launcher>) {
     let result = launcher::task::guarded(|| launcher::matches::cancel_new_match(&cfg));
     let mut inner = state.lock();
     match result {
-        Ok(()) => inner.notices.info("Matchmaking finds open matches again."),
+        Ok(()) => {
+            inner.new_match_until = None;
+            inner.notices.info("Matchmaking finds open matches again.");
+        }
         Err(line) => inner.notices.error(line),
     }
     drop(inner);

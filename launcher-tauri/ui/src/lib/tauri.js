@@ -9,6 +9,7 @@ const sample = {
     server: 'eu1.scbl.jdevwebb.net', account: 'Kiwi', community: true, play_mode: 'play', managed: false, running: false,
     connecting: false, max_name: 24, identity: 'DNIC-JULS', beta: location.search.includes('beta') ? 1 : 0,
     name_not_allowed: location.search.includes('banners') ? 'Kiwi' : null, emulator_notice: location.search.includes('banners'),
+    new_match: false,
   },
   questions: {
     diagnostics: {
@@ -110,6 +111,16 @@ if (location.search.includes('first')) {
   sample.info.server = null;
   sample.info.account = null;
 }
+// The Play button's states in the preview (P2): ?ready (nothing to fix or note), ?warn (a
+// note), ?newmatch (a new match asked for), ?running.
+if (location.search.includes('ready') || location.search.includes('warn') || location.search.includes('newmatch')) {
+  const warn = location.search.includes('warn');
+  sample.checks.checks[3] = { id: 'save', status: 'ok', title: 'Save at rank 5', detail: '', fix: null };
+  if (!warn) sample.checks.checks[2] = { id: 'network', status: 'ok', title: 'Encrypted connection', detail: '', fix: null };
+  Object.assign(sample.checks, { tone: warn ? 'warn' : 'ok', line: warn ? '1 warning' : 'Ready to play', fixable: false });
+  sample.info.new_match = location.search.includes('newmatch');
+}
+if (location.search.includes('running')) sample.info.running = true;
 // What the browser preview's commands do to its made-up state.
 const preview = {
   play: () => {

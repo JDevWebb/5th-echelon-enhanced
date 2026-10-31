@@ -93,10 +93,10 @@
               </div>
             </Transition>
           </span>
-          <span class="ready"><i :class="tone"></i><span>{{ readyText }}</span></span>
-          <span class="split">
-            <button class="play" type="button" :disabled="!!blocked" :title="blocked || null" @click="play(info.play_mode)">
-              <span>{{ info.running ? 'In game' : LABELS[info.play_mode] }}</span>
+          <span class="split" :class="button.tone">
+            <button class="play" type="button" :disabled="button.disabled" :title="blocked || null" @click="button.act()">
+              <span class="label">{{ button.label }}</span>
+              <small v-if="button.sub" class="sub">{{ button.sub }}</small>
             </button>
             <button
               ref="modesButton"
@@ -105,7 +105,7 @@
               aria-label="Play SvM or Co-op"
               aria-haspopup="menu"
               :aria-expanded="menuOpen"
-              :disabled="!!blocked || info.managed"
+              :disabled="!!blocked || info.managed || !info.game_dir || !info.server"
               :title="info.managed ? 'This game is set up by another tool, so the launcher starts it as it is.' : null"
               @click.stop="toggleModes"
               @keydown.up.prevent="menuOpen || toggleModes()"
@@ -140,6 +140,9 @@
                   </button>
                   <button type="button" :ref="(el) => (modeItems[MODES.length + 2] = el)" role="menuitem" @click="menuOpen = false; picking = true">
                     <b>Choose a match…</b><small>See the open ones and pick</small>
+                  </button>
+                  <button v-if="info.new_match" type="button" :ref="(el) => (modeItems[MODES.length + 3] = el)" role="menuitem" @click="cancelNewMatch">
+                    <b>Join open matches again</b><small>Take back the new match</small>
                   </button>
                 </template>
               </span>
@@ -441,6 +444,10 @@ function newMatch(mode) {
   menuOpen.value = false;
   call('new_match', { mode });
 }
+function cancelNewMatch() {
+  menuOpen.value = false;
+  call('cancel_new_match');
+}
 const modesButton = ref(null);
 function toggleModes() {
   serverMenu.value = false;
@@ -542,17 +549,37 @@ async function fixEverything() {
   await call('fix_everything');
 }
 
-// A release going out or maintenance says what it means for playing now, in place of how
-// ready the player is.
-const tone = computed(() => {
-  if (notice.value && !props.info.running) return notice.value.blocks_play ? 'fail' : 'warn';
-  return props.info.running ? 'ok' : list.value?.tone ?? 'none';
-});
-const readyText = computed(() => {
-  if (!props.info.game_dir) return 'Game not found';
-  if (!props.info.server) return 'Choose a server';
-  if (notice.value && !props.info.running) return notice.value.status;
-  return list.value?.line ?? 'Checking…';
+// The Play button says whether the player can play and what pressing it does (the 0.4.8
+// plan's P2): its label, a second line with the status, and a tone (ok, warn, fail, checking,
+// muted) that the text says too, never the colour alone. With something to fix, the button is
+// the fix; playing anyway stays in the mode menu.
+const button = computed(() => {
+  const mode = LABELS[props.info.play_mode];
+  const go = () => play(props.info.play_mode);
+  const failing = list.value?.checks.filter((c) => c.status === 'fail') ?? [];
+  if (props.info.running) return { label: 'In game', sub: null, tone: 'ok', disabled: true, act: go };
+  if (!props.info.game_dir) {
+    const find = failing.find((c) => c.fix);
+    return { label: 'Find the game', sub: 'Game not found', tone: 'muted', disabled: !find, act: () => find && runFix(find.fix[0]) };
+  }
+  if (!props.info.server) return { label: 'Choose a server', sub: 'No server yet', tone: 'muted', disabled: false, act: () => emit('change-server') };
+  // A release going out or maintenance says what it means for playing now.
+  if (notice.value?.blocks_play) return { label: 'Server updating', sub: notice.value.status, tone: 'muted', disabled: true, act: go };
+  const newMatch = props.info.new_match ? 'New match · ' : '';
+  if (!list.value) return { label: mode, sub: `${newMatch}Checking…`, tone: 'checking', disabled: false, act: go };
+  if (list.value.tone === 'fail') {
+    const fixes = failing.filter((c) => c.fix);
+    const sub = list.value.line;
+    if (list.value.busy) return { label: 'Fixing…', sub, tone: 'fail', disabled: true, act: go };
+    if (fixes.length === 1) return { label: fixes[0].fix[1], sub, tone: 'fail', disabled: false, act: () => runFix(fixes[0].fix[0]) };
+    if (fixes.length > 1 && list.value.fixable) return { label: `Fix ${fixes.length} things`, sub, tone: 'fail', disabled: false, act: fixEverything };
+    return { label: 'See what to fix', sub, tone: 'fail', disabled: false, act: () => (tab.value = 'status') };
+  }
+  if (list.value.tone === 'warn' || notice.value) {
+    return { label: mode, sub: newMatch + (notice.value?.status ?? list.value.line), tone: 'warn', disabled: false, act: go };
+  }
+  // The server and its ping are on the card beside it.
+  return { label: mode, sub: props.info.new_match ? 'Ready · a new match' : list.value.line || 'Ready to play', tone: 'ok', disabled: false, act: go };
 });
 
 // The notice under the launch bar: a release going out, or maintenance (asked again as often
@@ -622,7 +649,7 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 .launch { display: flex; align-items: center; gap: 20px; max-width: 940px; }
 /* In a narrow window the server shrinks first, then the button's padding, so Play and its menu
    always fit. */
-.server-wrap { position: relative; flex: 0 1 300px; min-width: 190px; display: flex; }
+.server-wrap { position: relative; flex: 1 1 300px; max-width: 420px; min-width: 190px; display: flex; }
 .server { flex: 1; display: flex; align-items: center; gap: 10px; padding: 10px 12px 10px 16px; text-align: left; border-radius: 4px; background: rgba(12, 17, 18, .8); border: 1px solid var(--control-line); transition: border-color .2s; backdrop-filter: blur(8px); }
 .server:hover, .server.open { border-color: var(--accent); }
 .server .ping { display: flex; flex-direction: column; align-items: flex-end; font: 13px PlexMono, monospace; }
@@ -652,18 +679,30 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 .server > span:first-child { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .server b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chev { width: 16px; height: 16px; color: var(--muted); }
-.ready { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; }
-.ready i { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); }
-.ready i.ok { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
-.ready i.warn { background: var(--warn); animation: ping 2s ease-out infinite; }
-.ready i.fail { background: var(--bad); animation: ping-bad 2s ease-out infinite; }
 .play { position: relative; height: 58px; padding: 0 clamp(26px, 4.5vw, 64px); background: var(--accent); color: var(--on-accent); font: 700 24px PlexCond, sans-serif; letter-spacing: .14em; text-transform: uppercase; overflow: hidden;
   clip-path: polygon(0 0, 100% 0, 100% 75%, calc(100% - 14px) 100%, 0 100%); transition: transform .12s, filter .2s; }
 .play::after { content: ""; position: absolute; top: 0; bottom: 0; width: 40%; left: -60%; background: linear-gradient(100deg, transparent, rgba(255, 255, 255, .35), transparent); animation: sheen 4.5s ease-in-out infinite; }
 .play:hover:not(:disabled) { filter: brightness(1.08); }
 .play:active:not(:disabled) { transform: scale(.98); }
 .play:disabled, .play-more:disabled { cursor: not-allowed; filter: saturate(.6) brightness(.85); }
-.split { position: relative; display: flex; flex: none; }
+.split { position: relative; display: flex; flex: none; margin-left: auto; }
+/* The label, and under it the status (P2). */
+.play { min-width: 210px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; }
+.play .label { line-height: 1; }
+.play .label { white-space: nowrap; }
+/* The status never widens the button (the label does): it takes the width there is. */
+.play .sub { width: 0; min-width: 100%; text-align: center; font: 600 11.5px/1.2 Plex, sans-serif; letter-spacing: .02em; text-transform: none; opacity: .82; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Its tone: ready (the accent), warnings, something to fix, can't play now, checking. */
+.split.warn .play, .split.warn .play-more { background: var(--warn); }
+.split.fail .play, .split.fail .play-more { background: var(--bad); }
+.split.fail .play, .split.muted .play { padding: 0 clamp(18px, 2.4vw, 40px); }
+.split.fail .play { font-size: 20px; letter-spacing: .08em; }
+.split.warn .play, .split.fail .play { animation: none; }
+.split.muted .play, .split.muted .play-more { background: var(--control); color: var(--fg); border-color: var(--control-line); }
+.split.muted .play { font-size: 20px; letter-spacing: .08em; animation: none; }
+.split.muted .play::after, .split.fail .play::after, .split.warn .play::after { display: none; }
+.split.muted .play .sub { color: var(--soft); opacity: 1; }
+.split.checking .play { animation: breathe 1.6s ease-in-out infinite; }
 .play { clip-path: none; border-radius: 4px 0 0 4px; animation: pulse 2.8s ease-in-out infinite; }
 .play:disabled { animation: none; }
 .play-more { height: 58px; width: 42px; display: grid; place-items: center; background: var(--accent); color: var(--on-accent); border-left: 2px solid var(--bg); clip-path: polygon(0 0, 100% 0, 100% 75%, 75% 100%, 0 100%); }
@@ -779,6 +818,7 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 @keyframes pulse { 50% { box-shadow: 0 0 34px rgba(155, 224, 90, .35); } }
 @keyframes ping-bad { 0% { box-shadow: 0 0 0 0 rgba(255, 122, 107, .5); } 70%, 100% { box-shadow: 0 0 0 9px rgba(255, 122, 107, 0); } }
 @keyframes spin { to { transform: rotate(360deg); } }
+@keyframes breathe { 50% { filter: brightness(.88); } }
 @keyframes sheen { 0%, 60% { left: -60%; } 100% { left: 130%; } }
 @keyframes slide { from { transform: translateX(40px); opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .reveal { opacity: 1; transform: none; } }
