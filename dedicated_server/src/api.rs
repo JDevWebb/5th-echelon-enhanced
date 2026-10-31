@@ -1853,9 +1853,12 @@ impl Misc for MyMisc {
             return Err(Status::resource_exhausted("Too many requests; slow down"));
         }
         // Every player reports (all are its testers: the user, 2026-10-31). A witness is counted
-        // by their network as well (a hash of its /24 from their sign-in: hardware.rs), so many
-        // accounts on one connection are one witness on the Sessions page.
-        let network = crate::hardware::of(user_id).0.into_iter().find(|i| i.kind == "network").map(|i| i.hash[..16].to_string());
+        // by their network and their PC as well (hashes from their sign-in: hardware.rs), so many
+        // accounts on one connection, or one PC behind many connections, are one witness on the
+        // Sessions page.
+        let ids = crate::hardware::of(user_id).0;
+        let network = ids.iter().find(|i| i.kind == "network").map(|i| i.hash[..16].to_string());
+        let pc: Vec<String> = ids.iter().filter(|i| i.kind != "network").map(|i| i.hash[..16].to_string()).collect();
         // One report a minute a witness, and each player they saw once in it.
         static LAST: std::sync::LazyLock<std::sync::Mutex<HashMap<u32, std::time::Instant>>> = std::sync::LazyLock::new(Default::default);
         {
@@ -1889,7 +1892,7 @@ impl Misc for MyMisc {
                 crate::session_events::Who::Id(*id),
                 "witnessed",
                 serde_json::json!({
-                    "by": user_id, "by_network": network, "room": room, "max_speed": seen.max_speed.round(),
+                    "by": user_id, "by_network": network, "by_pc": pc, "room": room, "max_speed": seen.max_speed.round(),
                     "ground_speed": seen.ground_speed.round(), "over_seconds": seen.over_seconds,
                 }),
             );

@@ -1217,13 +1217,21 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
                 let Some(list) = by_who.get(&e.who()) else { continue };
                 let mut seen: Vec<&&Event> = list.iter().filter(|o| o.kind == "witnessed" && o.at <= e.at).collect();
                 seen.sort_by_key(|o| o.at);
-                // A witness is their network when known (many accounts on one connection are one).
+                // A witness is new only if neither their account, network nor PC was seen
+                // already (many accounts on one connection, or one PC on many, are one).
                 let witnesses = |events: &[&&Event]| {
-                    events
-                        .iter()
-                        .map(|o| o.detail["by_network"].as_str().map_or_else(|| o.detail["by"].to_string(), str::to_string))
-                        .collect::<HashSet<_>>()
-                        .len()
+                    let mut known = HashSet::new();
+                    let mut count = 0;
+                    for o in events {
+                        let mut marks = vec![format!("by {}", o.detail["by"])];
+                        marks.extend(o.detail["by_network"].as_str().map(|n| format!("network {n}")));
+                        marks.extend(o.detail["by_pc"].as_array().into_iter().flatten().filter_map(|h| h.as_str()).map(|h| format!("pc {h}")));
+                        if !marks.iter().any(|m| known.contains(m)) {
+                            count += 1;
+                        }
+                        known.extend(marks);
+                    }
+                    count
                 };
                 let rooms = |events: &[&&Event]| events.iter().map(|o| o.detail["room"].to_string()).collect::<HashSet<_>>().len();
                 let now_enough = witnesses(&seen) >= 2 && rooms(&seen) >= 2;
@@ -2023,6 +2031,14 @@ mod tests {
             e
         };
         assert!(problems(&[net(1000, 1, 10), net(1100, 2, 11)]).is_empty(), "one connection");
+        // One PC on two connections is one witness too.
+        let pc = |at: i64, by: i64, room: i64, network: &str| {
+            let mut e = w(at, by, room);
+            e.detail["by_network"] = json!(network);
+            e.detail["by_pc"] = json!(["bbbb", "cccc"]);
+            e
+        };
+        assert!(problems(&[pc(1000, 1, 10, "aaaa"), pc(1100, 2, 11, "dddd")]).is_empty(), "one PC");
         assert_eq!(mark_level(&w(1000, 1, 10)), Some("warn"));
     }
 
