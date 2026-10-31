@@ -59,6 +59,19 @@
     </section>
 
     <section class="panel">
+      <header><h2>Look closer</h2><span class="small muted">each character's most, largest first: numbers to check, not verdicts</span></header>
+      <div class="closer">
+        <div v-for="[label, unit, list] in closer" :key="label">
+          <h3 class="small">{{ label }}</h3>
+          <div v-if="!list.length" class="small muted">none recorded</div>
+          <ul v-else class="feed">
+            <li v-for="x in list" :key="x.id"><button type="button" class="ghost small" @click="seek(x.t)"><span class="mono">{{ clock(x.t) }}</span> {{ nameOf(x.id) }}: {{ Math.round(x.value) }} {{ unit }}</button></li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
       <header><h2>What happened</h2><span class="small muted">click one to go there</span></header>
       <div v-if="!feed.length" class="empty">No rounds, deaths or kills recorded.</div>
       <ul v-else class="feed">
@@ -74,7 +87,7 @@ import PageTop from '../components/PageTop.vue';
 import Stat from '../components/Stat.vue';
 import { api, ApiError } from '../lib/api.js';
 import { fmt } from '../lib/fmt.js';
-import { frameAt, index, readRecording } from '../lib/replay.js';
+import { findings, frameAt, index, readRecording } from '../lib/replay.js';
 import { session } from '../lib/session.js';
 
 const props = defineProps({ server: { type: String, required: true }, player: { type: String, required: true }, id: { type: String, required: true } });
@@ -111,6 +124,16 @@ const feed = computed(() =>
     })
     .filter(Boolean),
 );
+
+const closer = computed(() => {
+  if (!rec.value) return [];
+  const f = findings(rec.value);
+  return [
+    ['Sharpest turn just before a shot', '° in 100 ms', f.turns],
+    ['Longest shot', 'm', f.shots],
+    ['Fastest over a second', 'units/s', f.speeds],
+  ];
+});
 
 const clock = ms => {
   const s = Math.floor(ms / 1000);
@@ -305,6 +328,8 @@ onBeforeUnmount(() => {
 .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
 .scrub { flex: 1 1 240px; min-width: 0; }
 .swatch { display: inline-block; width: 10px; height: 10px; border-radius: 50%; vertical-align: middle; }
+.closer { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+.closer h3 { margin: 0 0 6px; }
 .feed { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; max-height: 360px; overflow: auto; }
 .feed button { width: 100%; text-align: left; color: var(--text); }
 </style>

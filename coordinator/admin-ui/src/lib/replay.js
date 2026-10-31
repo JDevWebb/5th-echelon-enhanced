@@ -142,3 +142,49 @@ export function frameAt(frames, t) {
   }
   return lo;
 }
+
+/** What's worth a closer look, largest first (no verdicts: the numbers a real match makes
+ * aren't known yet): the sharpest turn just before each shot (degrees in the 200 ms before
+ * it, an aimbot's snap), the longest shots (metres), and the fastest a character moved over
+ * a second (as witness reports measure it). Each with when, to jump there. */
+export function findings(rec, most = 8) {
+  const turns = [];
+  const yawAt = (id, t) => {
+    const i = frameAt(rec.frames, t);
+    return i == null ? null : rec.frames[i].pawns.find(p => p.id === id)?.yaw ?? null;
+  };
+  for (const s of rec.shots) {
+    // The turn over each 100 ms step of the 200 ms before the shot; the largest step counts.
+    let sharpest = 0;
+    for (let dt = 200; dt > 0; dt -= 100) {
+      const a = yawAt(s.id, s.t - dt);
+      const b = yawAt(s.id, s.t - dt + 100);
+      if (a == null || b == null) continue;
+      const d = Math.abs(((b - a + 98304) % 65536) - 32768);
+      sharpest = Math.max(sharpest, (d / 65536) * 360);
+    }
+    turns.push({ t: s.t, id: s.id, value: sharpest });
+  }
+  const shots = rec.shots.map(s => ({ t: s.t, id: s.id, value: Math.hypot(s.to[0] - s.from[0], s.to[1] - s.from[1], s.to[2] - s.from[2]) / 100 }));
+  // Speeds: over each second, across the ground; a jump past 1500 units is a respawn.
+  const speeds = [];
+  const trail = new Map();
+  for (const f of rec.frames) {
+    for (const p of f.pawns) {
+      let q = trail.get(p.id);
+      if (!q) trail.set(p.id, (q = []));
+      if (q.length && Math.hypot(q[q.length - 1][1][0] - p.at[0], q[q.length - 1][1][1] - p.at[1]) > 1500) q.length = 0;
+      q.push([f.t, p.at]);
+      while (q.length && f.t - q[0][0] > 1000) q.shift();
+      const span = (f.t - q[0][0]) / 1000;
+      if (span >= 0.9) speeds.push({ t: f.t, id: p.id, value: Math.hypot(p.at[0] - q[0][1][0], p.at[1] - q[0][1][1]) / span });
+    }
+  }
+  // Each character's worst only, then the worst of those.
+  const top = list => {
+    const best = new Map();
+    for (const x of list) if (!best.has(x.id) || x.value > best.get(x.id).value) best.set(x.id, x);
+    return [...best.values()].sort((a, b) => b.value - a.value).slice(0, most);
+  };
+  return { turns: top(turns), shots: top(shots), speeds: top(speeds) };
+}
