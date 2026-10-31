@@ -1877,6 +1877,68 @@ async fn what_a_server_says_of_its_players_bans_no_one_elsewhere() {
     .await;
     assert_eq!(t.pulse_actions(&rogue).await.len(), 1);
     assert!(t.c.identity_ban("vv11").await.unwrap().is_none(), "an identity named, not linked");
+    // The victim linked on the rogue server once as "RealV"; another row it says is theirs isn't.
+    sqlx::query("INSERT INTO links (global_id, server_id, username, linked_at) VALUES ('vv11', 'server-r', 'RealV', 0)")
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&rogue),
+        roster(vec![on_pc(3, "Spoof2", Some("vv11"), &[("machine-guid", 'a'), ("board-serial", 'b')])]),
+    )
+    .await;
+    assert!(t.c.identity_ban("vv11").await.unwrap().is_none(), "an identity on a row that didn't link it");
+    // An admin's ban of an account, then their unban: the server still saying it's banned holds nothing.
+    let mut held = on_pc(4, "Held", None, &[("disk-serial", '7'), ("smbios-uuid", '8')]);
+    held["banned"] = json!({ "reason": "test", "until": null, "at": identity::now() });
+    t.call("POST", "/v1/players", Some(&a), roster(vec![held])).await;
+    for (kind, status) in [("ban", "done"), ("unban", "pending")] {
+        sqlx::query("INSERT INTO player_actions (server_id, player, kind, args, created_by, created_at, status) VALUES ('server-a', 4, ?, '{\"reason\":\"test\",\"until\":null}', 'admin1', ?, ?)")
+            .bind(kind)
+            .bind(identity::now() + 10)
+            .bind(status)
+            .execute(&t.c.pool)
+            .await
+            .unwrap();
+    }
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&b),
+        roster(vec![on_pc(6, "Fresh", None, &[("disk-serial", '7'), ("smbios-uuid", '8')])]),
+    )
+    .await;
+    assert!(t.pulse_actions(&b).await.is_empty(), "a ban an admin took back");
+    // An admin's ban of an account it carried out, not taken back: its PC holds, for that ban's end.
+    let end = identity::now() + 3600;
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&a),
+        roster(vec![on_pc(9, "Kept", None, &[("disk-serial", '4'), ("smbios-uuid", '3')])]),
+    )
+    .await;
+    sqlx::query("INSERT INTO player_actions (server_id, player, kind, args, created_by, created_at, status) VALUES ('server-a', 9, 'ban', ?, 'admin1', ?, 'done')")
+        .bind(json!({ "reason": "griefing", "until": end }).to_string())
+        .bind(identity::now() + 10)
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&b),
+        roster(vec![on_pc(10, "Fresh2", None, &[("disk-serial", '4'), ("smbios-uuid", '3')])]),
+    )
+    .await;
+    let on_b = t.pulse_actions(&b).await;
+    assert_eq!(
+        on_b.iter().map(|a| (a["player"].as_i64(), a["until"].as_i64())).collect::<Vec<_>>(),
+        [(Some(10), Some(end))],
+        "{on_b:?}"
+    );
 }
 
 #[tokio::test]

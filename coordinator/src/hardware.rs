@@ -11,7 +11,7 @@
 //!
 //! What a member server says of its own players (a ban, an identity, ids) is never enough to
 //! ban anyone elsewhere (security review, 2026-10-31): only a ban an admin made here counts
-//! ([`ADMIN_BANNED`]; a ban made for a PC never leads to another), only the ids the banned
+//! ([`admin_banned`]; a ban made for a PC never leads to another), only the ids the banned
 //! player had before that ban count, and only an identity the player linked with their own
 //! signature (`links`) is banned across the network; otherwise only the account is.
 
@@ -31,27 +31,56 @@ const MOST_IDS: usize = 12;
 const KEPT_FOR: i64 = 180 * 86_400;
 /// An account this new on a virtual machine is flagged.
 const NEW_ACCOUNT: i64 = 7 * 86_400;
-const KINDS: [&str; 5] = ["machine-guid", "smbios-uuid", "board-serial", "disk-serial", "linux-machine-id"];
+const KINDS: [&str; 6] = ["machine-guid", "smbios-uuid", "board-serial", "disk-serial", "linux-machine-id", "network"];
 
 /// Whether a player row is banned now: their own ban, or their identity's across the network.
 const BANNED: &str = "((p.banned_at IS NOT NULL AND (p.banned_until IS NULL OR p.banned_until > ?now))
      OR EXISTS (SELECT 1 FROM identity_bans ib WHERE ib.identity = p.identity AND (ib.until IS NULL OR ib.until > ?now)))";
 
+/// Player row `b`'s identity, when the account it names linked it with its own signature
+/// (`links`, by name: a server can report any identity on any row).
+const B_LINKED: &str = "JOIN links l ON l.global_id = ib.identity AND l.server_id = b.server_id AND lower(l.username) = lower(b.name)";
+
 /// Whether player row `b` is under a ban an admin made here and still running: their linked
-/// identity's network ban, or a ban an admin queued for the account that its server carried
-/// out. Never a ban made for a PC, nor one a server only says it has.
-const ADMIN_BANNED: &str = "(EXISTS (SELECT 1 FROM identity_bans ib JOIN links l ON l.global_id = ib.identity AND l.server_id = b.server_id
-                 WHERE ib.identity = b.identity AND ib.by != 'hardware' AND (ib.until IS NULL OR ib.until > ?3))
-      OR (b.banned_at IS NOT NULL AND (b.banned_until IS NULL OR b.banned_until > ?3)
-          AND EXISTS (SELECT 1 FROM player_actions a WHERE a.server_id = b.server_id AND a.player = b.id AND a.kind = 'ban'
-                       AND a.created_by != 'hardware' AND a.status = 'done')))";
+/// identity's network ban, or a ban an admin queued for the account, carried out by its
+/// server, with no unban queued after it and not yet ended (by the action's own end). Never a
+/// ban made for a PC, nor what a server only says of its players.
+fn admin_banned() -> String {
+    format!(
+        "(EXISTS (SELECT 1 FROM identity_bans ib {B_LINKED} WHERE ib.identity = b.identity AND ib.by != 'hardware' AND (ib.until IS NULL OR ib.until > ?3))
+          OR EXISTS ({LAST_ADMIN_BAN} AND (json_extract(a.args, '$.until') IS NULL OR json_extract(a.args, '$.until') > ?3)))"
+    )
+}
+
+/// The latest ban an admin queued for account `b` that its server carried out, unless an
+/// unban was queued after it.
+const LAST_ADMIN_BAN: &str = "SELECT 1 FROM player_actions a WHERE a.server_id = b.server_id AND a.player = b.id AND a.kind = 'ban'
+       AND a.created_by != 'hardware' AND a.status = 'done'
+       AND NOT EXISTS (SELECT 1 FROM player_actions u WHERE u.server_id = a.server_id AND u.player = a.player AND u.kind = 'unban' AND u.id > a.id)";
 
 /// When that admin ban was made: the banned player's ids first seen after it don't count.
-const ADMIN_BANNED_AT: &str = "COALESCE(
-      (SELECT MAX(ib.at) FROM identity_bans ib JOIN links l ON l.global_id = ib.identity AND l.server_id = b.server_id
-        WHERE ib.identity = b.identity AND ib.by != 'hardware'),
-      (SELECT MIN(a.created_at) FROM player_actions a WHERE a.server_id = b.server_id AND a.player = b.id AND a.kind = 'ban'
-        AND a.created_by != 'hardware' AND a.status = 'done'))";
+fn admin_banned_at() -> String {
+    format!(
+        "COALESCE(
+          (SELECT ib.at FROM identity_bans ib {B_LINKED} WHERE ib.identity = b.identity AND ib.by != 'hardware'),
+          (SELECT MIN(a.created_at) FROM player_actions a WHERE a.server_id = b.server_id AND a.player = b.id AND a.kind = 'ban'
+            AND a.created_by != 'hardware' AND a.status = 'done'))"
+    )
+}
+
+/// That ban's reason and end, from the admin's ban itself (never the server's report).
+fn admin_ban_terms() -> String {
+    format!(
+        "CASE WHEN EXISTS (SELECT 1 FROM identity_bans ib {B_LINKED} WHERE ib.identity = b.identity AND ib.by != 'hardware' AND (ib.until IS NULL OR ib.until > ?3))
+              THEN (SELECT ib.reason FROM identity_bans ib WHERE ib.identity = b.identity)
+              ELSE (SELECT json_extract(a.args, '$.reason') FROM player_actions a WHERE a.server_id = b.server_id AND a.player = b.id AND a.kind = 'ban'
+                     AND a.created_by != 'hardware' AND a.status = 'done' ORDER BY a.id DESC LIMIT 1) END,
+         CASE WHEN EXISTS (SELECT 1 FROM identity_bans ib {B_LINKED} WHERE ib.identity = b.identity AND ib.by != 'hardware' AND (ib.until IS NULL OR ib.until > ?3))
+              THEN (SELECT ib.until FROM identity_bans ib WHERE ib.identity = b.identity)
+              ELSE (SELECT json_extract(a.args, '$.until') FROM player_actions a WHERE a.server_id = b.server_id AND a.player = b.id AND a.kind = 'ban'
+                     AND a.created_by != 'hardware' AND a.status = 'done' ORDER BY a.id DESC LIMIT 1) END"
+    )
+}
 
 /// The well-formed ids in a reported player (`hardware`: [{kind, hash}]).
 fn reported_ids(v: &Value) -> Vec<(String, String)> {
@@ -171,30 +200,38 @@ impl Coordinator {
         if vm.is_some() && created_at.is_some_and(|c| c > now - NEW_ACCOUNT) {
             self.note_match(server, player, ("", 0), 0, "vm", now).await?;
         }
-        // Only an identity they linked with their own signature: a server can say any.
-        let identity = self.linked_identity_of(server, player).await?;
+        // Only an identity this account linked with its own signature: a server can report
+        // any identity on any row.
+        let identity: Option<String> = sqlx::query_scalar(
+            "SELECT p.identity FROM players p JOIN links l ON l.global_id = p.identity AND l.server_id = p.server_id AND lower(l.username) = lower(p.name)
+              WHERE p.server_id = ? AND p.id = ?",
+        )
+        .bind(server)
+        .bind(player)
+        .fetch_optional(&self.pool)
+        .await?
+        .flatten();
         // The banned player whose PC shares the most of this one's ids (theirs from before
         // the ban), leaving out the ids that many who aren't banned share, and the player's
         // own identity's other accounts.
         let best: Option<(String, i64, i64, Option<String>, Option<i64>, Option<String>)> = sqlx::query_as(&format!(
-            "SELECT b.server_id, b.id, COUNT(DISTINCT mine.hash) AS n,
-                    COALESCE((SELECT ib.reason FROM identity_bans ib WHERE ib.identity = b.identity), b.banned_reason),
-                    CASE WHEN EXISTS (SELECT 1 FROM identity_bans ib WHERE ib.identity = b.identity AND (ib.until IS NULL OR ib.until > ?3))
-                         THEN (SELECT ib.until FROM identity_bans ib WHERE ib.identity = b.identity) ELSE b.banned_until END,
-                    b.identity
+            "SELECT b.server_id, b.id, COUNT(DISTINCT mine.hash) AS n, {terms}, b.identity
                FROM player_hardware mine
                JOIN player_hardware theirs ON theirs.hash = mine.hash AND NOT (theirs.server_id = mine.server_id AND theirs.player = mine.player)
                JOIN players b ON b.server_id = theirs.server_id AND b.id = theirs.player
               WHERE mine.server_id = ?1 AND mine.player = ?2
                 AND (b.identity IS NULL OR ?4 IS NULL OR b.identity != ?4)
-                AND {ADMIN_BANNED}
-                AND theirs.first_seen <= {ADMIN_BANNED_AT}
+                AND mine.kind != 'network' AND {banned}
+                AND theirs.first_seen <= {banned_at}
                 AND (SELECT COUNT(DISTINCT COALESCE(o.identity, o.server_id || '/' || o.id))
                        FROM player_hardware x JOIN players o ON o.server_id = x.server_id AND o.id = x.player
                       WHERE x.hash = mine.hash AND NOT {}) < ?5
               GROUP BY b.server_id, b.id
               ORDER BY n DESC LIMIT 1",
             BANNED.replace("p.", "o.").replace("?now", "?3"),
+            terms = admin_ban_terms(),
+            banned = admin_banned(),
+            banned_at = admin_banned_at(),
         ))
         .bind(server)
         .bind(player)
