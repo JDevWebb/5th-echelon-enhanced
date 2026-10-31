@@ -123,19 +123,54 @@ pub struct BetaLog {
     pub report: server_api::misc::ReportRequest,
 }
 
+/// The beta features a game ran with, as its log says at its start (the add-on's "Beta
+/// features on: a, b; ..." line; the last one, for a log a run was added to).
+pub fn betas_in_log(log: &str) -> Vec<String> {
+    log.lines()
+        .rev()
+        .find_map(|l| l.split_once("Beta features on: ").map(|(_, rest)| rest))
+        .map(|rest| {
+            rest.split(';')
+                .next()
+                .unwrap_or_default()
+                .split(',')
+                .map(|b| b.trim().to_string())
+                .filter(|b| !b.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// The beta log of the game in `game_dir` that just closed, if there's one to send: beta features
 /// on, an account here, and not a run of a few seconds (see [`check`]).
 pub fn beta_log(game_dir: &std::path::Path, exit: GameExit, checks: &str) -> Result<Option<BetaLog>, String> {
-    let on = Config::load(game_dir).hook_config.beta.on();
+    let Some(profile) = current_profile(game_dir) else { return Ok(None) };
+    let path = game_dir.join("bl-tracing.log");
+    let log = std::fs::read(&path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+    if setup::game::game_running() || log.is_empty() || hooks_config::diagnostics::short_run(&log, SHORT_RUN_SECS) {
+        return Ok(None);
+    }
+    // The betas the game ran with, from its own log (R5: not what's on now, which the player
+    // may have changed since); none, nothing to send.
+    let on = betas_in_log(&log);
     if on.is_empty() {
         return Ok(None);
     }
-    let Some(profile) = current_profile(game_dir) else { return Ok(None) };
-    let log = std::fs::read(game_dir.join("bl-tracing.log"))
-        .map(|b| String::from_utf8_lossy(&b).into_owned())
-        .unwrap_or_default();
-    if setup::game::game_running() || log.is_empty() || hooks_config::diagnostics::short_run(&log, SHORT_RUN_SECS) {
+    // A log already sent isn't sent again (R5: a game that died before writing its log left
+    // the last one, which went once already).
+    let stamp = std::fs::metadata(&path).ok().map(|m| {
+        (
+            m.len(),
+            m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs()),
+        )
+    });
+    let sent = game_dir.join("bl-tracing.sent");
+    let stamp_text = stamp.map(|(len, at)| format!("{at} {len}"));
+    if stamp_text.is_some() && std::fs::read_to_string(&sent).ok().as_deref().map(str::trim) == stamp_text.as_deref() {
         return Ok(None);
+    }
+    if let Some(t) = &stamp_text {
+        let _ = std::fs::write(&sent, t);
     }
     let password = profile
         .user
@@ -863,5 +898,16 @@ mod tests {
         assert_eq!(crashed.client.get("exit_code").map(String::as_str), Some("0xC0000005"));
         let started_elsewhere = report_of(&ask(GameExit::Unknown));
         assert_eq!(started_elsewhere.client.get("exit_code").map(String::as_str), Some("unknown"));
+    }
+
+    #[test]
+    fn a_logs_betas_are_the_ones_it_started_with() {
+        let log =
+            "2026-10-31T01:00:00Z INFO hooks: Beta features on: mouse_turn_per_second, other_one; the launcher sends this log to the server's admins when the game closes\nmore";
+        assert_eq!(betas_in_log(log), ["mouse_turn_per_second", "other_one"]);
+        assert!(betas_in_log("no betas here").is_empty());
+        // A log a second run was added to: the later run's.
+        let two = "Beta features on: a; x\nBeta features on: b; y";
+        assert_eq!(betas_in_log(two), ["b"]);
     }
 }
