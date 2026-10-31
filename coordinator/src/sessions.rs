@@ -289,20 +289,6 @@ impl Coordinator {
         .fetch_all(&self.pool)
         .await?;
         let cut = rows.len() as i64 > MOST_SHOWN;
-        let events: Vec<Event> = rows
-            .into_iter()
-            .take(MOST_SHOWN as usize)
-            .map(|(server, at, last_at, player, name, kind, detail, count)| Event {
-                server,
-                at,
-                last_at,
-                player,
-                name: name.unwrap_or_default(),
-                kind,
-                detail: serde_json::from_str(&detail).unwrap_or_else(|_| json!({})),
-                count,
-            })
-            .collect();
         let sessions: Vec<(String, i64, i64, Option<i64>)> = sqlx::query_as(
             "SELECT server_id, player, started, ended FROM play_sessions
              WHERE started <= ?2 AND COALESCE(ended, ?2) >= ?1 AND (?3 = '' OR server_id = ?3) ORDER BY started",
@@ -345,10 +331,34 @@ impl Coordinator {
             .collect();
         outages.extend(unanswered_pings(&pings));
 
+        // Reading up to MOST_SHOWN events and working out the timelines and problems is
+        // seconds of work on a busy week: off the runtime's threads, which servers' calls need
+        // (R14: one Sessions page held them 2-4 s).
         let names: HashMap<(String, i64), String> = names.into_iter().map(|(s, id, name)| ((s, id), name)).collect();
-        let timelines = timelines(&events, &sessions, &names, from, to);
+        let (events, timelines) = tokio::task::spawn_blocking(move || {
+            let events: Vec<Event> = rows
+                .into_iter()
+                .take(MOST_SHOWN as usize)
+                .map(|(server, at, last_at, player, name, kind, detail, count)| Event {
+                    server,
+                    at,
+                    last_at,
+                    player,
+                    name: name.unwrap_or_default(),
+                    kind,
+                    detail: serde_json::from_str(&detail).unwrap_or_else(|_| json!({})),
+                    count,
+                })
+                .collect();
+            let timelines = timelines(&events, &sessions, &names, from, to);
+            (events, timelines)
+        })
+        .await
+        .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
         let events = self.mark_witnesses(events).await?;
-        let mut problems = problems(&events);
+        let mut problems = tokio::task::spawn_blocking(move || problems(&events))
+            .await
+            .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
         problems.retain(|p| p["at"].as_i64().is_some_and(|at| (from..=to).contains(&at)));
         // A match the server reported finished with players in it wasn't waited in alone
         // (they may have joined in a way no event shows).
