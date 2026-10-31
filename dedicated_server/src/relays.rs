@@ -141,13 +141,18 @@ fn links_from_heartbeat(answer: &serde_json::Value) {
 /// A link message that came to the helper's port from `src`: opened only with the key of the
 /// link its sender names, from that link's address. On the matchmaking server: a relay's
 /// report is kept, and a relay's question about a pair answered.
-pub fn on_link(data: &[u8], src: std::net::SocketAddrV4, socket: &std::net::UdpSocket) {
-    let Some(sender) = crate::link::sender(data) else { return };
-    let Some(link) = links().iter().find(|l| l.id == sender && l.ip == *src.ip()).cloned() else {
-        return;
-    };
-    let Some((_, body)) = crate::link::open(data, &link.key, identity::now()) else { return };
+/// Returns a game packet another relay forwarded, for the helper to deliver ([`Forwarded`]).
+pub fn on_link(data: &[u8], src: std::net::SocketAddrV4, socket: &std::net::UdpSocket) -> Option<Forwarded> {
+    let sender = crate::link::sender(data)?;
+    let link = links().iter().find(|l| l.id == sender && l.ip == *src.ip()).cloned()?;
+    let (_, body) = crate::link::open(data, &link.key, identity::now())?;
     match body {
+        // Another relay's player's packet for one of this helper's: the address it came from is
+        // that relay's from now on (a reply to it goes back there).
+        crate::link::Body::Forward { from_name, from, to, payload } => {
+            learn(from, &link.id);
+            return Some(Forwarded { from_name, from, to, payload });
+        }
         // Only the network's matchmaking server keeps relays' reports.
         crate::link::Body::Report(regs) if NETWORK_RELAYS.load(Ordering::Relaxed) => remote_report(&link, regs),
         crate::link::Body::Report(_) => {}
@@ -160,17 +165,82 @@ pub fn on_link(data: &[u8], src: std::net::SocketAddrV4, socket: &std::net::UdpS
         crate::link::Body::Answer { nonce, yes } => answered(nonce, yes, &link.id),
         // A relay's event about its player, kept here with the player's sessions; only the
         // relay's own kinds, so a relay can't write anything else into them.
+        // Only about a player that relay reports (its events follow its reports), and only
+        // the fields each kind has.
         crate::link::Body::Event { name, kind, detail } if NETWORK_RELAYS.load(Ordering::Relaxed) => {
-            let Some(kind) = RELAY_EVENTS.iter().copied().find(|k| *k == kind) else { return };
-            let mut detail: serde_json::Value = serde_json::from_str(&detail).unwrap_or_default();
-            if !detail.is_object() {
-                detail = serde_json::json!({});
+            let (kind, fields) = RELAY_EVENTS.iter().copied().find(|(k, _)| *k == kind)?;
+            if remote_entry(&name).is_none_or(|(relay, ..)| relay != link.id) {
+                return None;
             }
-            detail["relay"] = link.id.clone().into();
+            let sent: serde_json::Value = serde_json::from_str(&detail).unwrap_or_default();
+            let mut detail = serde_json::json!({ "relay": link.id });
+            for field in fields {
+                if let Some(v) = sent.get(*field).filter(|v| v.is_number() || v.is_boolean() || v.as_str().is_some_and(|s| s.len() <= 16)) {
+                    detail[*field] = v.clone();
+                }
+            }
             crate::session_events::note(crate::session_events::Who::Name(name), kind, detail);
         }
         crate::link::Body::Event { .. } => {}
     }
+    None
+}
+
+/// A game packet another relay forwarded: from its player `from_name`, whose game is seen at
+/// `from`, for `to` (an address on this helper).
+pub struct Forwarded {
+    pub from_name: String,
+    pub from: std::net::SocketAddrV4,
+    pub to: std::net::SocketAddrV4,
+    pub payload: Vec<u8>,
+}
+
+/// How long an address stays with the relay its packets were forwarded from.
+const LEARNED_FOR: std::time::Duration = std::time::Duration::from_secs(120);
+const MAX_LEARNED: usize = 50_000;
+type Learned = std::collections::HashMap<std::net::SocketAddrV4, (String, std::time::Instant)>;
+static LEARNED: std::sync::LazyLock<Mutex<Learned>> = std::sync::LazyLock::new(Mutex::default);
+
+fn learn(from: std::net::SocketAddrV4, link: &str) {
+    let now = std::time::Instant::now();
+    let mut learned = LEARNED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if learned.len() >= MAX_LEARNED && !learned.contains_key(&from) {
+        learned.retain(|_, (_, at)| now.duration_since(*at) < LEARNED_FOR);
+        if learned.len() >= MAX_LEARNED {
+            return;
+        }
+    }
+    learned.insert(from, (link.to_string(), now));
+}
+
+/// The relay to forward a packet for `to` to: the one whose range `to` is in (a player relayed
+/// there), else the one packets from `to` lately came through (a player there reached directly).
+pub fn forward_link(to: std::net::SocketAddrV4) -> Option<Link> {
+    let links = links();
+    if let Some(l) = links.iter().find(|l| l.ip == *to.ip() && (l.ports.0..=l.ports.1).contains(&to.port())) {
+        return Some(l.clone());
+    }
+    let learned = LEARNED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (id, at) = learned.get(&to)?;
+    if at.elapsed() >= LEARNED_FOR {
+        return None;
+    }
+    links.iter().find(|l| &l.id == id).cloned()
+}
+
+/// Forwards a packet of this helper's player `from_name` (seen by the others at `from`) for `to`
+/// to the relay of `link`, over the helper's own socket (the address the link lists).
+pub fn send_forward(socket: &std::net::UdpSocket, link: &Link, from_name: &str, from: std::net::SocketAddrV4, to: std::net::SocketAddrV4, payload: &[u8]) -> bool {
+    let Some(own) = OWN_ID.get() else { return false };
+    let body = crate::link::Body::Forward {
+        from_name: from_name.into(),
+        from,
+        to,
+        payload: payload.to_vec(),
+    };
+    socket
+        .send_to(&crate::link::seal(&link.key, own, identity::now(), &body), std::net::SocketAddrV4::new(link.ip, link.port))
+        .is_ok()
 }
 
 // The matchmaking server's side.
@@ -196,7 +266,8 @@ pub fn serve(storage: std::sync::Arc<crate::storage::Storage>) -> std::io::Resul
     let _ = ASKS.set(queue);
     std::thread::Builder::new().name("relay-pairs".into()).spawn(move || {
         while let Ok(q) = questions.recv() {
-            let yes = storage.may_relay(&q.a, &q.b).unwrap_or(false);
+            // Either way round, as a helper's own pairs are.
+            let yes = storage.may_relay(&q.a, &q.b).unwrap_or(false) || storage.may_relay(&q.b, &q.a).unwrap_or(false);
             let Some(own) = OWN_ID.get() else { continue };
             let answer = crate::link::seal(&q.link.key, own, identity::now(), &crate::link::Body::Answer { nonce: q.nonce, yes });
             let _ = q.socket.send_to(&answer, q.src);
@@ -319,8 +390,13 @@ pub fn remote_relay_of(name: &str) -> Option<(String, bool, Option<u16>)> {
         .map(|r| (r.relay.clone(), r.relayed, r.rtt_ms))
 }
 
-/// The session events a relay sends the matchmaking server.
-const RELAY_EVENTS: [&str; 4] = ["nat", "relay_drop", "nat_missing", "nat_lost"];
+/// The session events a relay sends the matchmaking server, and the fields each keeps.
+const RELAY_EVENTS: [(&str, &[&str]); 4] = [
+    ("nat", &["relayed"]),
+    ("relay_drop", &["direction", "before", "after", "player_quiet"]),
+    ("nat_missing", &["after_secs"]),
+    ("nat_lost", &["probe_secs"]),
+];
 
 /// A player's registration with a relay elsewhere, as last reported: the relay's id, where it
 /// sees them, whether it relays them, and their ping to it.
@@ -348,17 +424,22 @@ pub fn forward_event(name: &str, kind: &str, detail: &serde_json::Value) -> bool
     if !RELAY_ONLY.load(Ordering::Relaxed) {
         return false;
     }
-    let (Some(socket), Some(own)) = (LINK_SOCKET.get(), OWN_ID.get()) else { return true };
-    let body = crate::link::Body::Event {
-        name: name.into(),
-        kind: kind.into(),
-        detail: detail.to_string(),
-    };
-    for link in links().iter().filter(|l| l.matchmaking) {
-        let _ = socket.send_to(&crate::link::seal(&link.key, own, identity::now(), &body), std::net::SocketAddrV4::new(link.ip, link.port));
+    // Sent after the next report, which names the player: the matchmaking server takes an
+    // event only about a player the relay reports.
+    let mut queued = EVENTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if queued.len() < MAX_EVENTS_QUEUED {
+        queued.push(crate::link::Body::Event {
+            name: name.into(),
+            kind: kind.into(),
+            detail: detail.to_string(),
+        });
     }
     true
 }
+
+/// The most events waiting for the next report; more are dropped.
+const MAX_EVENTS_QUEUED: usize = 500;
+static EVENTS: Mutex<Vec<crate::link::Body>> = Mutex::new(Vec::new());
 
 /// How often a relay reports its registrations to the matchmaking server.
 pub const REPORT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);
@@ -409,11 +490,17 @@ pub fn start_link(logger: slog::Logger) -> std::io::Result<std::thread::JoinHand
                             let report = crate::link::seal(&link.key, own, identity::now(), &crate::link::Body::Report(chunk.to_vec()));
                             let _ = socket.send_to(&report, to);
                         }
+                        // Its players' events, now that the report naming them went.
+                        let events = std::mem::take(&mut *EVENTS.lock().unwrap_or_else(std::sync::PoisonError::into_inner));
+                        for event in &events {
+                            let _ = socket.send_to(&crate::link::seal(&link.key, own, identity::now(), event), to);
+                        }
                     }
                 }
             }
             if let Ok((len, std::net::SocketAddr::V4(src))) = socket.recv_from(&mut buf) {
-                on_link(&buf[..len], src, &socket);
+                // Forwards come to the helper's port, never here.
+                let _ = on_link(&buf[..len], src, &socket);
             }
         }
     })
