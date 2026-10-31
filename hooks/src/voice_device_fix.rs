@@ -148,9 +148,14 @@ pub unsafe fn guard_voice_devices() {
     let playback_delete_fn: Delete = playback_delete;
     let capture_delete_fn: Delete = capture_delete;
     let callback_fn: Callback = on_state_changed;
-    crate::writemem(playback_vtable as *mut u8, &(playback_delete_fn as usize as u32).to_le_bytes());
-    crate::writemem(capture_vtable as *mut u8, &(capture_delete_fn as usize as u32).to_le_bytes());
-    crate::writemem(callback_slot as *mut u8, &(callback_fn as usize as u32).to_le_bytes());
+    // In order, stopping at the first that can't be written (the three go together).
+    let written = crate::writemem(playback_vtable as *mut u8, &(playback_delete_fn as usize as u32).to_le_bytes())
+        && crate::writemem(capture_vtable as *mut u8, &(capture_delete_fn as usize as u32).to_le_bytes())
+        && crate::writemem(callback_slot as *mut u8, &(callback_fn as usize as u32).to_le_bytes());
+    if !written {
+        warn!("voice-device-fix: not (fully) in: the game's memory couldn't be written");
+        return;
+    }
     info!("voice-device-fix: voice devices close before they're deleted, and the sound-device callback skips dead ones (vtables {playback_vtable:#010x}, {capture_vtable:#010x}; callback slot {callback_slot:#010x})");
 }
 

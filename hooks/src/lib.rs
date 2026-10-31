@@ -64,11 +64,21 @@ mod witness;
 
 use macros::fatal_error;
 
-unsafe fn writemem(ptr: *mut u8, data: &[u8]) {
+/// Writes `data` over the game's memory at `ptr`; whether it could (R7: when the page can't
+/// be made writable nothing is written, and callers mustn't say their change is in).
+#[must_use]
+unsafe fn writemem(ptr: *mut u8, data: &[u8]) -> bool {
     // Our own change to the game's code: the code check (F8) never reports it.
     code_check::ours(ptr as usize, data.len());
-    if let Ok(_handle) = region::protect_with_handle(ptr, data.len(), region::Protection::READ_WRITE) {
-        std::ptr::copy(data.as_ptr(), ptr, data.len());
+    match region::protect_with_handle(ptr, data.len(), region::Protection::READ_WRITE) {
+        Ok(_handle) => {
+            std::ptr::copy(data.as_ptr(), ptr, data.len());
+            true
+        }
+        Err(e) => {
+            error!("Couldn't make {} bytes at {ptr:?} writable ({e}): left as they were", data.len());
+            false
+        }
     }
 }
 
@@ -92,8 +102,7 @@ unsafe fn write_c_string_in_place(ptr: *mut u8, new: &CString) -> bool {
         error!("The server address {new:?} is too long for the game: at most {} characters here", room.saturating_sub(1));
         return false;
     }
-    writemem(ptr, new.as_bytes_with_nul());
-    true
+    writemem(ptr, new.as_bytes_with_nul())
 }
 
 /// The host's data version check, in a game's join handling: `mov ecx,[global]`,
@@ -197,7 +206,9 @@ unsafe fn data_version_check() -> Option<*mut u8> {
 /// found exactly once, so an unknown build is left as it is.
 unsafe fn allow_data_mismatch(check: *mut u8) {
     let jz = check.add(DATA_VERSION_CHECK.len() - 1);
-    writemem(jz, &[0xEB]);
+    if !writemem(jz, &[0xEB]) {
+        return;
+    }
     info!("Data version check: off at {jz:?} (AllowDataMismatch), so players whose game data differs can join this game's lobbies");
 }
 
@@ -273,7 +284,7 @@ unsafe fn enable_debug_print(addrs: &Addresses) {
     *target = debug_print;
 
     for addr in to_nop {
-        writemem(addr.start as *mut u8, &vec![0xccu8; addr.end - addr.start]);
+        let _ = writemem(addr.start as *mut u8, &vec![0xccu8; addr.end - addr.start]);
         // writemem(addr.start as *mut u8, &vec![0x90u8; addr.end - addr.start]);
     }
 }

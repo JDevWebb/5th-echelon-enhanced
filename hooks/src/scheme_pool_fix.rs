@@ -90,7 +90,9 @@ pub unsafe fn keep_shared_scheme_pool() {
     let mut patch = [0x90u8; HOOK_LEN];
     patch[0] = 0xE9;
     patch[1..5].copy_from_slice(&(stub as u32).wrapping_sub(hook + 5).to_le_bytes());
-    crate::writemem(hook as *mut u8, &patch);
+    if !crate::writemem(hook as *mut u8, &patch) {
+        return;
+    }
     info!(
         "scheme-pool-fix: pawn teardown @ {hook:#010x} now keeps the shared action-scheme pool (stub {:#010x}, skip {skip:#010x})",
         stub as u32

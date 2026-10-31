@@ -92,7 +92,8 @@ pub unsafe fn disable_negative_mouse_acceleration() {
     info!("mouse-accel-fix: clamp verified @ .text+{off:#x}; lower->{lower_ptr:#010x} upper->{upper_ptr:#010x}");
     // disp32 of the lower (-500) mulsd sits at +4, of the upper (+500) mulsd at +15.
     let text = image.as_ptr();
-    crate::writemem(text.add(off + 4).cast_mut(), &lower_ptr.to_le_bytes());
-    crate::writemem(text.add(off + 15).cast_mut(), &upper_ptr.to_le_bytes());
+    if !(crate::writemem(text.add(off + 4).cast_mut(), &lower_ptr.to_le_bytes()) && crate::writemem(text.add(off + 15).cast_mut(), &upper_ptr.to_le_bytes())) {
+        return;
+    }
     info!("mouse-accel-fix: bounds widened - negative acceleration OFF, camera clamp still active");
 }

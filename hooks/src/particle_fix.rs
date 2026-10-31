@@ -73,6 +73,8 @@ pub unsafe fn guard_particle_fills() {
     FILL.store(fill, Ordering::Relaxed);
     STREAMS.store(streams, Ordering::Relaxed);
     let guard = guarded_fill as Fill as usize as u32;
-    crate::writemem(fill_slot as *mut u8, &guard.to_le_bytes());
+    if !crate::writemem(fill_slot as *mut u8, &guard.to_le_bytes()) {
+        return;
+    }
     info!("particle-fix: particle fills ({fill:#010x}) now check their vertex stream (streams {streams:#010x})");
 }

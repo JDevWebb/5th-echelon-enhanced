@@ -104,7 +104,14 @@ fn remove_observer(ticket: *mut u8, result: *mut c_void, observer: *mut c_void) 
 /// dead (0.4.6 and 0.4.7) dropped live observers by the million (eu1, 28-30 Oct: every one of
 /// 44,734 drops logged was at 0x8000_0000 or above), and their packets' acks never reached them.
 fn looks_live(observer: *mut c_void, rdata: &std::ops::Range<usize>) -> bool {
-    if !plausible(observer as usize) {
+    let at = observer as usize;
+    if !plausible(at) {
+        return false;
+    }
+    // Only read from memory that's there (R7: a freed observer's page can be released): the
+    // whole word in a committed, readable region, as voice_device_fix checks its objects.
+    let readable = region::query(observer as *const u8).is_ok_and(|r| r.is_committed() && !r.is_guarded() && r.is_readable() && r.as_range().contains(&(at + 3)));
+    if !readable {
         return false;
     }
     let vtable = unsafe { std::ptr::read(observer.cast::<usize>()) };

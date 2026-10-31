@@ -206,7 +206,7 @@ pub unsafe fn install(lobby: QuickStartLobby) {
     let rel = (e.video_skip as u32).wrapping_sub(e.video_gate_jne as u32 + 5);
     let mut patch = [0xE9, 0, 0, 0, 0, 0x90];
     patch[1..5].copy_from_slice(&rel.to_le_bytes());
-    crate::writemem(e.video_gate_jne as *mut u8, &patch);
+    let _ = crate::writemem(e.video_gate_jne as *mut u8, &patch);
     if bytes_at(e.video_gate_jne, &patch) {
         info!("quickstart: {}: boot videos skipped (video gate @ {:#x} -> {:#x})", e.name, e.video_gate_jne, e.video_skip);
     } else {

@@ -83,7 +83,9 @@ pub unsafe fn disable_auto_climb() {
     for (load, site) in LOADS.iter().zip(sites) {
         // xorps xmmN,xmmN ; nop ; nop ; nop ; nop ; nop  (3 + 5 = the 8 bytes of the movss)
         let patch = [0x0F, 0x57, load.xorps_modrm, 0x90, 0x90, 0x90, 0x90, 0x90];
-        crate::writemem(text.add(site).cast_mut(), &patch);
+        if !crate::writemem(text.add(site).cast_mut(), &patch) {
+            return;
+        }
     }
     info!("auto-climb-fix: scan volume collapsed @ .text+{marker:#x} - automatic climbing OFF");
 }

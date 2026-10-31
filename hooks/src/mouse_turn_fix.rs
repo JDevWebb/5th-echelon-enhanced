@@ -97,7 +97,9 @@ pub unsafe fn turn_per_second() {
     let mut patch = [0x90u8; mouse_turn::ORIGINAL.len()];
     patch[0] = 0xE9;
     patch[1..5].copy_from_slice(&(stub as u32).wrapping_sub(site.patch as u32 + 5).to_le_bytes());
-    crate::writemem(site.patch as *mut u8, &patch);
+    if !crate::writemem(site.patch as *mut u8, &patch) {
+        return;
+    }
     info!(
         "mouse-turn-fix (beta): the mouse turns as at 60 fps at any frame rate (look routine @ {:#010x}, stub {:#010x})",
         site.patch, stub as u32

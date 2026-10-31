@@ -311,9 +311,15 @@ pub fn start() {
                     take(history, false);
                 }
             }
+            let asked = Instant::now();
             match crate::api::chat_wait(after) {
                 Ok(answer) => {
                     failures = 0;
+                    // A wait answered at once with nothing (a server that doesn't hold it, or a
+                    // stale cursor) mustn't make this thread ask again and again (R7).
+                    if answer.messages.is_empty() && asked.elapsed() < Duration::from_secs(1) {
+                        std::thread::sleep(Duration::from_secs(1));
+                    }
                     after = answer.last.max(after);
                     // The first answer is what the server kept: no pop-ups for it.
                     take(answer.messages, primed);
