@@ -1852,12 +1852,10 @@ impl Misc for MyMisc {
         if !crate::rate_limit::polls().check(user_id) {
             return Err(Status::resource_exhausted("Too many requests; slow down"));
         }
-        // Testers only (security review): the add-on's switch is the player's own, so the server
-        // takes reports only from identities the admins allowed (Security › Client builds).
-        let identity = self.storage.find_person(user_id).await.map_err(internal)?.and_then(|p| p.global_id);
-        if !identity.as_deref().is_some_and(crate::clients::allowed_identity) {
-            return Err(Status::permission_denied("Witness reports are for the network's testers"));
-        }
+        // Every player reports (all are its testers: the user, 2026-10-31). A witness is counted
+        // by their network as well (a hash of its /24 from their sign-in: hardware.rs), so many
+        // accounts on one connection are one witness on the Sessions page.
+        let network = crate::hardware::of(user_id).0.into_iter().find(|i| i.kind == "network").map(|i| i.hash[..16].to_string());
         // One report a minute a witness, and each player they saw once in it.
         static LAST: std::sync::LazyLock<std::sync::Mutex<HashMap<u32, std::time::Instant>>> = std::sync::LazyLock::new(Default::default);
         {
@@ -1891,7 +1889,7 @@ impl Misc for MyMisc {
                 crate::session_events::Who::Id(*id),
                 "witnessed",
                 serde_json::json!({
-                    "by": user_id, "room": room, "max_speed": seen.max_speed.round(),
+                    "by": user_id, "by_network": network, "room": room, "max_speed": seen.max_speed.round(),
                     "ground_speed": seen.ground_speed.round(), "over_seconds": seen.over_seconds,
                 }),
             );

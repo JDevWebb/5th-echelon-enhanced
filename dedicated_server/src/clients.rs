@@ -284,13 +284,6 @@ pub enum Verdict {
     Unverified { why: &'static str, enforced: bool },
 }
 
-/// Whether `identity` is one the network's admins allowed (developers and testers: Security ›
-/// Client builds): what the testers' research reports (F9 witness reports) are taken from.
-pub fn allowed_identity(identity: &str) -> bool {
-    let rules = BUILD_RULES.read().unwrap_or_else(std::sync::PoisonError::into_inner);
-    rules.as_ref().is_some_and(|r| r.allowed.contains(identity))
-}
-
 /// Judges a sign-in by its build's SHA-256 (`build`) and the player's identity.
 pub fn judge(build: &str, identity: Option<&str>) -> Verdict {
     let rules = BUILD_RULES.read().unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -322,8 +315,6 @@ mod tests {
         assert_eq!(judge(&release, None), Verdict::Fine);
         assert_eq!(judge(&release.to_ascii_uppercase(), None), Verdict::Fine, "as hex, either case");
         assert_eq!(judge(&"b".repeat(64), Some(&dev)), Verdict::Fine, "an allowed developer");
-        assert!(super::allowed_identity(&dev), "a tester's research reports are taken");
-        assert!(!super::allowed_identity("someone-else"));
         assert_eq!(
             judge(&"b".repeat(64), None),
             Verdict::Unverified {

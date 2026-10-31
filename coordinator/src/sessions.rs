@@ -1217,7 +1217,14 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
                 let Some(list) = by_who.get(&e.who()) else { continue };
                 let mut seen: Vec<&&Event> = list.iter().filter(|o| o.kind == "witnessed" && o.at <= e.at).collect();
                 seen.sort_by_key(|o| o.at);
-                let witnesses = |events: &[&&Event]| events.iter().map(|o| o.detail["by"].to_string()).collect::<HashSet<_>>().len();
+                // A witness is their network when known (many accounts on one connection are one).
+                let witnesses = |events: &[&&Event]| {
+                    events
+                        .iter()
+                        .map(|o| o.detail["by_network"].as_str().map_or_else(|| o.detail["by"].to_string(), str::to_string))
+                        .collect::<HashSet<_>>()
+                        .len()
+                };
                 let rooms = |events: &[&&Event]| events.iter().map(|o| o.detail["room"].to_string()).collect::<HashSet<_>>().len();
                 let now_enough = witnesses(&seen) >= 2 && rooms(&seen) >= 2;
                 let before = &seen[..seen.len().saturating_sub(1)];
@@ -2009,6 +2016,13 @@ mod tests {
         let found = problems(&[w(1000, 1, 10), w(1100, 2, 10), w(1200, 2, 11), w(1300, 3, 12)]);
         let titles: Vec<&str> = found.iter().filter_map(|p| p["title"].as_str()).collect();
         assert_eq!(titles, ["Zoomer moved faster than the game allows, seen by 2 players"]);
+        // Two accounts on one network are one witness.
+        let net = |at: i64, by: i64, room: i64| {
+            let mut e = w(at, by, room);
+            e.detail["by_network"] = json!("aaaa");
+            e
+        };
+        assert!(problems(&[net(1000, 1, 10), net(1100, 2, 11)]).is_empty(), "one connection");
         assert_eq!(mark_level(&w(1000, 1, 10)), Some("warn"));
     }
 
