@@ -33,6 +33,14 @@
 #   --binary FILE         install this dedicated_server-linux-x86_64 instead
 #                         of downloading one
 #   --relay auto|all|off  who plays through the server's relay (default: auto)
+#   --role game|relay     global matchmaking: a game server (the default), or a
+#                         NAT helper and relay alone near a region's players
+#                         (needs --coordinator); kept for later runs
+#   --ticket-key KEY      the network's matchmaking server's relay-pass key (it
+#                         logs it at start): this relay then takes its players
+#   --matchmaking, --no-matchmaking
+#                         this server is (or isn't) the network's matchmaking
+#                         server, working with every relay the coordinator lists
 #   --friends mutual|everyone
 #                         who is on a player's friend list: only friends,
 #                         who alone can invite (mutual, the default for a new
@@ -213,6 +221,7 @@ friends="" server_name="" region="" coordinator="" join_token="" coord_domain=""
 https_api=1 allow_unsigned=0 coord_only=0 admin="" registration="" listed="" command=""
 metrics_cert="" metrics_key="" metrics_domain="" origin_pull=0 admin_name="" auto_update="" release_version=""
 coord_cert="" coord_key="" standby="" standby_me=""
+role="" ticket_key="" matchmaking=""
 aliases=() coord_aliases=() coord_aliases_given=0
 # Only HTTPS, and TLS 1.2 or newer, for every download, and none larger
 # than a release's binaries could be (SMALL: for listings, checksums and
@@ -256,6 +265,10 @@ while [ $# -gt 0 ]; do
     --version) version="${2:?}"; shift ;;
     --binary) binary="${2:?}"; shift ;;
     --relay) relay="${2:?}"; shift ;;
+    --role) role="${2:?}"; shift ;;
+    --ticket-key) ticket_key="${2:?}"; shift ;;
+    --matchmaking) matchmaking=true ;;
+    --no-matchmaking) matchmaking=false ;;
     --friends) friends="${2:?}"; shift ;;
     --server-name) server_name="${2:?}"; shift ;;
     --region) region="${2:?}"; shift ;;
@@ -482,6 +495,9 @@ if [ -n "$coordinator" ]; then
     || die "--coordinator is an https:// address with no path, e.g. https://coordinator.example.com"
 fi
 [ -z "$join_token" ] || [[ "$join_token" =~ ^[A-Z2-7]{16,128}$ ]] || die "that isn't a join token (letters A-Z and digits 2-7)"
+[ -z "$role" ] || [ "$role" = game ] || [ "$role" = relay ] || die "--role is game or relay"
+[ -z "$ticket_key" ] || [[ "$ticket_key" =~ ^[A-Z2-7]{52}$ ]] || die "that isn't a relay-pass key (52 letters A-Z and digits 2-7, as the matchmaking server logs it)"
+[ "$role" != relay ] || [ "$matchmaking" != true ] || die "a relay alone can't be the matchmaking server"
 [ -z "$server_name" ] || [[ "$server_name" =~ $NAME_RE ]] || die "--server-name is up to 64 letters, digits, spaces and . _ ( ) , ' -"
 [ -z "$region" ] || [[ "$region" =~ $NAME_RE ]] || die "--region is up to 64 letters, digits, spaces and . _ ( ) , ' -"
 [ "$version" = latest ] || [[ "$version" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+(-[A-Za-z0-9.]+)?$ ]] || die "--version is a release number, e.g. 0.4.0"
@@ -1459,6 +1475,23 @@ toml_put() { toml_edit add "$@"; }
 if [ -n "$relay" ]; then
   toml_set nat relay "\"$relay\""
   say "Relay: $relay"
+fi
+# Global matchmaking: what this server is for, and the matchmaking server's key; each kept
+# from an earlier run unless given again.
+if [ -n "$role" ]; then
+  toml_put role kind "\"$role\""
+  say "Role: $([ "$role" = relay ] && echo "a NAT helper and relay alone" || echo "a game server")"
+fi
+if [ -n "$ticket_key" ]; then
+  toml_put role ticket_key "\"$ticket_key\""
+  say "Takes the players of the matchmaking server with relay-pass key $ticket_key"
+fi
+if [ -n "$matchmaking" ]; then
+  toml_put matchmaking network_relays "$matchmaking"
+  [ "$matchmaking" = true ] && notes+=("This is the network's matchmaking server: its coordinator's operator names it with --matchmaking-server <its server id>, and its relay-pass key (in its log at start: \"Relay passes are signed with the key ...\") goes to each relay with --ticket-key.")
+fi
+if [ "$(checked_value role kind '^(game|relay)$')" = relay ] && [ -z "$coordinator" ] && ! grep -q '^\[federation\]$' "$CONFIG"; then
+  die "a relay alone is found only through the network: give --coordinator (and --join-token)"
 fi
 # [public] (the host name and ports players use) is rewritten below; its
 # aliases stay unless new ones are given.
