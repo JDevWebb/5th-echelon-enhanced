@@ -83,10 +83,12 @@ fn may_check_from(from: std::net::IpAddr, now: std::time::Instant) -> bool {
     type Seen = std::collections::HashMap<std::net::IpAddr, (std::time::Instant, u32)>;
     static SEEN: std::sync::LazyLock<std::sync::Mutex<Seen>> = std::sync::LazyLock::new(Default::default);
     let mut seen = SEEN.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    // Full (forged sources can fill it: a pass needs no round trip): it starts again rather
+    // than refusing every new address; CHECKS_PER_SECOND still caps the work.
     if seen.len() >= MAX_ADDRESSES && !seen.contains_key(&from) {
         seen.retain(|_, (at, _)| now.duration_since(*at) < ADDRESS_WINDOW);
         if seen.len() >= MAX_ADDRESSES {
-            return false;
+            seen.clear();
         }
     }
     let entry = seen.entry(from).or_insert((now, 0));
@@ -141,16 +143,25 @@ mod tests {
         let matchmaking = identity::Identity::from_secret(&[7; 32]);
         let stranger = identity::Identity::from_secret(&[8; 32]);
         let _ = ACCEPTED.set(vec![matchmaking.global_id()]);
-        let sign = |who: &identity::Identity, name: &str, day: u32| -> [u8; 64] { identity::base32_decode(&who.sign(&message(name, day))).unwrap().try_into().unwrap() };
+        let sign = |who: &identity::Identity, name: &str, day: u32, key: Option<&nat_proto::SessionKey>| -> [u8; 64] {
+            identity::base32_decode(&who.sign(&message(name, day, key))).unwrap().try_into().unwrap()
+        };
         let day = 20_400;
-        let pass = sign(&matchmaking, "Kiwi", day);
-        assert!(valid_on("Kiwi", day, &pass, day));
-        assert!(valid_on("kiwi", day, &pass, day + 6), "the same name, any case, the seventh day");
-        assert!(!valid_on("Kiwi", day, &pass, day + 7), "a week old");
-        assert!(!valid_on("Kiwi", day, &pass, day - 1), "dated ahead");
-        assert!(!valid_on("Tank", day, &pass, day), "another name");
-        assert!(!valid_on("Kiwi", day + 1, &pass, day + 1), "another day than signed");
-        assert!(!valid_on("Kiwi", day, &sign(&stranger, "Kiwi", day), day), "a key not trusted");
+        let pass = sign(&matchmaking, "Kiwi", day, None);
+        assert!(valid_on("Kiwi", day, &pass, day, None));
+        assert!(valid_on("kiwi", day, &pass, day + 6, None), "the same name, any case, the seventh day");
+        assert!(!valid_on("Kiwi", day, &pass, day + 7, None), "a week old");
+        assert!(!valid_on("Kiwi", day, &pass, day - 1, None), "dated ahead");
+        assert!(!valid_on("Tank", day, &pass, day, None), "another name");
+        assert!(!valid_on("Kiwi", day + 1, &pass, day + 1, None), "another day than signed");
+        assert!(!valid_on("Kiwi", day, &sign(&stranger, "Kiwi", day, None), day, None), "a key not trusted");
+        // A pass for a session key holds with that key only, and never as a keyless one.
+        let (k1, k2) = ([1u8; 32], [2u8; 32]);
+        let keyed = sign(&matchmaking, "Kiwi", day, Some(&k1));
+        assert!(valid_on("Kiwi", day, &keyed, day, Some(&k1)));
+        assert!(!valid_on("Kiwi", day, &keyed, day, Some(&k2)), "another key");
+        assert!(!valid_on("Kiwi", day, &keyed, day, None), "without its key");
+        assert!(!valid_on("Kiwi", day, &pass, day, Some(&k1)), "a keyless pass with a key");
     }
 
     #[test]

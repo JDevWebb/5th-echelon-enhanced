@@ -144,8 +144,10 @@ fn keyed_only() -> bool {
     crate::clients::minimum_at_least([0, 4, 8])
 }
 
-/// Whether `from` may have one more session signature checked now (a check costs a little;
-/// a game probes a few times a second while it finds its address, then every 20 s).
+/// Whether `from` may have one more probe signature checked now (a check costs a little; a
+/// game probes a few times a second while it finds its address, then every 20 s). Asked only
+/// once a probe's cookie came back, so only for addresses that really receive (a forged
+/// source can't fill it); when full, it starts again rather than refusing new addresses.
 fn may_check_signature(from: IpAddr, now: Instant) -> bool {
     const PER_ADDRESS: u32 = 40;
     const WINDOW: Duration = Duration::from_secs(10);
@@ -154,7 +156,7 @@ fn may_check_signature(from: IpAddr, now: Instant) -> bool {
     if seen.len() >= 20_000 && !seen.contains_key(&from) {
         seen.retain(|_, (at, _)| now.duration_since(*at) < WINDOW);
         if seen.len() >= 20_000 {
-            return false;
+            seen.clear();
         }
     }
     let entry = seen.entry(from).or_insert((now, 0));
@@ -1856,14 +1858,17 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
         // helper's own ticket for its name, which its probes then carry.
         if let Some(Message::TicketPresent { nonce, name, day, signature }) = Message::decode(data) {
             if let Some(keys) = KEYS.get() {
-                // A pass for a session key: the present signed with it, and the pass naming it.
+                // A pass for a session key: the pass naming it (checked first, under the pass
+                // checks' own limits, so a forged source never gets further), then the present
+                // signed with it.
                 let session = nat_proto::key_of(data);
-                let signed = match &session {
-                    Some((k, sig)) => may_check_signature(IpAddr::V4(*src.ip()), now) && identity::verify_bytes(k, &nat_proto::present_message(nonce, &name, day), sig),
-                    None => !keyed_only(),
-                };
                 let key = session.as_ref().map(|(k, _)| k);
-                if signed && crate::relay_pass::valid(&name, day, &signature, IpAddr::V4(*src.ip()), key) {
+                let allowed = key.is_some() || !keyed_only();
+                let signed = |session: &Option<(nat_proto::SessionKey, nat_proto::SessionSignature)>| match session {
+                    Some((k, sig)) => identity::verify_bytes(k, &nat_proto::present_message(nonce, &name, day), sig),
+                    None => true,
+                };
+                if allowed && crate::relay_pass::valid(&name, day, &signature, IpAddr::V4(*src.ip()), key) && signed(&session) {
                     let grant = Message::TicketGrant {
                         nonce,
                         ticket: ticket_on(keys, &name, today(), key),
