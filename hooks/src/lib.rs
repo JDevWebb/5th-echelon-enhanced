@@ -47,6 +47,7 @@ mod macros;
 mod migration_fix;
 mod mouse_fix;
 mod mouse_turn_fix;
+mod net_capture;
 mod overlay;
 mod overlay_input;
 mod particle_fix;
@@ -411,6 +412,9 @@ fn init(hmodule: Option<HMODULE>) {
         let mut watchers: Vec<Box<dyn pawns::Watcher>> = Vec::new();
         if config.witness_reports {
             watchers.push(Box::new(witness::Witness::new(config.user.username.clone())));
+        }
+        if config.replay_recording && config.net_capture {
+            net_capture::enable();
         }
         if config.replay_recording {
             watchers.push(Box::new(recording::Recorder::new(&game_dir, config.user.username.clone(), config.replay_upload)));

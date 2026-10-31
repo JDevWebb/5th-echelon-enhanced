@@ -510,6 +510,7 @@ fn sendto(s: usize, buf: *const u8, len: i32, flags: i32, to: *const u8, tolen: 
             info!("sendto {dest:?}: {}", to_hex(data));
         }
         if let Some(dest) = dest {
+            crate::net_capture::packet(true, false, dest, data);
             let relay = {
                 let st = state();
                 match (st.reply, st.server) {
@@ -587,6 +588,9 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
             if LOG_PACKETS.load(Ordering::Relaxed) {
                 info!("recvfrom {sender:?}: {}", to_hex(data));
             }
+            if let Some(sender) = sender {
+                crate::net_capture::packet(false, false, sender, data);
+            }
             return if small { hand_over(data, buf, len) } else { n };
         }
         let (server, second) = {
@@ -607,6 +611,7 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
             if LOG_PACKETS.load(Ordering::Relaxed) {
                 info!("recvfrom {relayed_from} (relayed): {}", to_hex(&data[offset..]));
             }
+            crate::net_capture::packet(false, true, relayed_from, &data[offset..]);
             let n = if small {
                 hand_over(&data[offset..], buf, len)
             } else {

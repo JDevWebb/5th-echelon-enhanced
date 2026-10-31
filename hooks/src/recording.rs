@@ -122,6 +122,7 @@ impl Recorder {
         };
         let mut writer = replay::Writer::new(BufWriter::new(file), &header).ok()?;
         let _ = writer.write(&Record::Round { t: 0, state: round.clone() });
+        crate::net_capture::begin(&path, &self.me);
         info!(
             "Recording: the match on {} ({}) to {}",
             if map.is_empty() { "an unknown map" } else { &map },
@@ -149,6 +150,7 @@ impl Recorder {
 
     fn end(&mut self) {
         let Some(mut o) = self.open.take() else { return };
+        crate::net_capture::end();
         let t = ms(o.began);
         for id in o.ids.values() {
             let _ = o.writer.write(&Record::Gone { t, id: *id });
@@ -244,6 +246,7 @@ impl pawns::Watcher for Recorder {
         let Some(o) = &mut self.open else { return };
         if let Err(e) = record(o, tables, characters) {
             warn!("Recording: writing {} failed ({e}); not recording again this run", o.path.display());
+            crate::net_capture::end();
             self.open = None;
             self.failed = true;
         }

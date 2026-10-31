@@ -377,6 +377,12 @@ pub struct Config {
     /// recordings; `ReplayUpload = false` keeps them on this PC.
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub replay_upload: bool,
+    /// Match traffic captures (the replay research, way 3): while a match is recorded, the
+    /// game's Storm packets (sent and received, the relay's wrapping off) go to a `.fen` beside
+    /// the recording, on this PC only (the newest 10). On for every player with recordings;
+    /// `NetCapture = false` turns it off.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub net_capture: bool,
     /// Removes the engine's negative mouse acceleration (widens the per-frame look-delta clamp,
     /// see the hooks' `mouse_fix`). Off until the player chose: the launcher asks once, with it
     /// on as the recommendation (its `new_options`), and Settings › Game changes it. Nothing to
