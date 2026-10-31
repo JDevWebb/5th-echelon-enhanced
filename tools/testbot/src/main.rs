@@ -2265,6 +2265,30 @@ async fn nat_probe_scenario(ctx: &mut Ctx) -> Result<()> {
 /// Two players, one relayed: packets reach each other through the relay,
 /// each seeing the other at its advertised address; strangers, and packets
 /// without the right tag, get nowhere.
+/// The host's game says its match is under way (0.4.8 plan M2, from the game's own round
+/// state): searches leave the match out, and find it again once the host says it's joinable;
+/// another player saying so of a match they don't host changes nothing.
+async fn match_state(ctx: &mut Ctx) -> Result<()> {
+    let map = 920_000 + ctx.run;
+    let open = format!("113 => 0;103 => 1;3 => 8;4 => 0;102 => 8;101 => {map}");
+    let mut host = ctx.player("Host").await?;
+    host.register_urls(&["prudp:/address=127.0.0.1;port=3097;sid=15;type=3"]).await?;
+    let game = host.create_session(&open).await?;
+    host.add_participants(game, &[host.pid], &[]).await?;
+    let mut seeker = ctx.player("Guest").await?;
+    seeker.register_urls(&["prudp:/address=127.0.0.1;port=3098;sid=15;type=3"]).await?;
+    let finds = |found: &[(u32, u32)]| found.iter().any(|(s, _)| *s == game);
+    ensure!(finds(&seeker.search_sessions(&open).await?), "the match isn't found to begin with");
+    seeker.match_state(true, "RoundState_Started").await?;
+    ensure!(finds(&seeker.search_sessions(&open).await?), "someone else's word hid the host's match");
+    host.match_state(true, "RoundState_Started").await?;
+    ensure!(!finds(&seeker.search_sessions(&open).await?), "a match its host says is under way was offered");
+    host.match_state(false, "RoundState_PreRound").await?;
+    ensure!(finds(&seeker.search_sessions(&open).await?), "the host said it's joinable, but it isn't found");
+    host.disconnect().await?;
+    seeker.disconnect().await
+}
+
 /// Relay passes (global matchmaking): a network's matchmaking server signs one at sign-in,
 /// which its own helper (and the network's relays that trust its key) answers with a ticket
 /// for that name, good to register with; a pass changed by a bit, or shown for another name,
@@ -3219,6 +3243,7 @@ const SCENARIOS: &[&str] = &[
     "join-now-match",
     "choose-match",
     "relay-pass",
+    "match-state",
     "identity-login",
     "rename",
     "direct-test",
@@ -3360,6 +3385,7 @@ async fn run() -> Result<()> {
                 "join-now-match" => join_now_match(&mut ctx).await,
                 "choose-match" => choose_match(&mut ctx).await,
                 "relay-pass" => relay_pass(&mut ctx).await,
+                "match-state" => match_state(&mut ctx).await,
                 "identity-login" => identity_login(&mut ctx).await,
                 "rename" => rename(&mut ctx).await,
                 "direct-test" => direct_test(&mut ctx).await,

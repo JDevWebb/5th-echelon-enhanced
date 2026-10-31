@@ -34,9 +34,16 @@ const PER_REPORTER: usize = 3;
 /// player's refusal keeps a match that's still under way marked.
 const MARKS_KEPT: Duration = Duration::from_secs(60 * 60);
 
+/// How long a host's word on its match counts without being said again (the game says it every
+/// 30 s while under way).
+const HOST_SAYS_FOR: Duration = Duration::from_secs(90);
+
 #[derive(Default)]
 struct State {
     rooms: HashMap<u32, Instant>,
+    /// What the hosts' games said of their matches (0.4.8 plan M2: the round under way, read
+    /// from the game's own match state), and when.
+    hosts: HashMap<u32, (bool, Instant)>,
     /// Which rooms each player marked when, within [`MARKS_KEPT`].
     marks: HashMap<u32, Vec<(u32, Instant)>>,
 }
@@ -55,7 +62,7 @@ pub fn refused(room: u32, reporter: u32) -> bool {
 
 fn refused_at(room: u32, reporter: u32, now: Instant) -> bool {
     let mut state = state().lock().unwrap_or_else(PoisonError::into_inner);
-    let State { rooms, marks } = &mut *state;
+    let State { rooms, marks, .. } = &mut *state;
     if rooms.len() >= MAX_ROOMS {
         rooms.retain(|_, at| now.saturating_duration_since(*at) < FOR);
         marks.retain(|_, m| {
@@ -80,13 +87,35 @@ fn refused_at(room: u32, reporter: u32, now: Instant) -> bool {
     true
 }
 
-/// Whether `room`'s match looks started (see the module's comment).
+/// The host's game said whether the match in `rooms` (the ones it hosts) is under way.
+pub fn host_says(rooms: &[u32], under_way: bool) {
+    let now = Instant::now();
+    let mut state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    if state.hosts.len() >= MAX_ROOMS {
+        state.hosts.retain(|_, (_, at)| now.saturating_duration_since(*at) < HOST_SAYS_FOR);
+    }
+    for room in rooms {
+        if state.hosts.len() < MAX_ROOMS || state.hosts.contains_key(room) {
+            state.hosts.insert(*room, (under_way, now));
+        }
+    }
+}
+
+/// Whether `room`'s match looks started (see the module's comment), or its host's game says
+/// it's under way.
 pub fn started(room: u32) -> bool {
     started_at(room, Instant::now())
 }
 
 fn started_at(room: u32, now: Instant) -> bool {
     let mut state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    if state
+        .hosts
+        .get(&room)
+        .is_some_and(|(under_way, at)| *under_way && now.saturating_duration_since(*at) < HOST_SAYS_FOR)
+    {
+        return true;
+    }
     let rooms = &mut state.rooms;
     match rooms.get(&room) {
         Some(at) if now.saturating_duration_since(*at) < FOR => true,
@@ -101,6 +130,17 @@ fn started_at(room: u32, now: Instant) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_hosts_word_holds_while_said_again() {
+        let room = 3_100_001;
+        assert!(!started(room));
+        host_says(&[room], true);
+        assert!(started(room), "the host's game says it's under way");
+        assert!(!started_at(room, Instant::now() + HOST_SAYS_FOR), "not said again: forgotten");
+        host_says(&[room], false);
+        assert!(!started(room), "joinable again");
+    }
 
     #[test]
     fn a_refused_room_counts_as_started_for_a_while() {

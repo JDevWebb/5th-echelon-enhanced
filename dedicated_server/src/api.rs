@@ -1708,6 +1708,49 @@ impl Misc for MyMisc {
     /// The player's game is closing normally (0.4.5 games, as they quit; they send no goodbye
     /// on the game connection): its connection going in the next couple of minutes is the
     /// quit, not a drop or a restart, and asks for no log (session_events::closing).
+    /// The host's game says whether its match is under way (0.4.8 plan M2): the match rooms it
+    /// hosts are left out of searches, the friend list's Join and JoinNow while it is.
+    async fn match_state(&self, request: Request<misc::MatchStateRequest>) -> Result<Response<misc::MatchStateResponse>, Status> {
+        let user_id = caller(&request)?;
+        if !crate::rate_limit::polls().check(user_id) {
+            return Err(Status::resource_exhausted("Too many requests; slow down"));
+        }
+        let r = request.into_inner();
+        let rooms: Vec<u32> = self
+            .storage
+            .find_host_sessions_async(user_id)
+            .await
+            .map_err(internal)?
+            .iter()
+            .filter(|s| is_match_room(s))
+            .map(|s| s.session_id)
+            .collect();
+        crate::match_started::host_says(&rooms, r.under_way);
+        // Each change, for the Sessions page (and to check the game's state against joins).
+        static LAST: std::sync::LazyLock<std::sync::Mutex<HashMap<u32, String>>> = std::sync::LazyLock::new(Default::default);
+        let state = printable(&r.state, 40);
+        let changed = {
+            let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if last.len() >= 50_000 {
+                last.clear();
+            }
+            last.insert(user_id, state.clone()).as_deref() != Some(state.as_str())
+        };
+        if changed {
+            info!(
+                self.logger,
+                "User {user_id}'s match: {state} ({}), rooms {rooms:?}",
+                if r.under_way { "under way" } else { "joinable" }
+            );
+            crate::session_events::note(
+                crate::session_events::Who::Id(user_id),
+                "match_state",
+                serde_json::json!({ "state": state, "under_way": r.under_way, "rooms": rooms }),
+            );
+        }
+        Ok(Response::new(misc::MatchStateResponse {}))
+    }
+
     async fn closing(&self, request: Request<misc::ClosingRequest>) -> Result<Response<misc::ClosingResponse>, Status> {
         let user_id = caller(&request)?;
         let name = self.storage.find_username_by_user_id_async(user_id).await.ok().flatten();

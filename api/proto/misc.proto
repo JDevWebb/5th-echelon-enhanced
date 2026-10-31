@@ -19,7 +19,19 @@ service Misc {
     // in the next couple of minutes is the quit, not a drop or a restart, and asks for no
     // log. Games before 0.4.5 don't say; their quits look as they always did.
     rpc Closing(ClosingRequest) returns (ClosingResponse);
+    // The host's game says whether its match is under way (a Spies vs Mercs round running, a
+    // co-op mission in play), from the game's own match state: searches, the friend list and
+    // JoinNow leave the match it hosts out while it is. Said on each change and every 30 s
+    // while under way; forgotten 90 s after the last.
+    rpc MatchState(MatchStateRequest) returns (MatchStateResponse);
 }
+
+message MatchStateRequest {
+    bool under_way = 1;
+    // The game's own word for it, for the server's log ("RoundState_Started", ...).
+    string state = 2;
+}
+message MatchStateResponse {}
 
 message ClosingRequest {}
 message ClosingResponse {}

@@ -58,6 +58,7 @@ const KINDS: &[&str] = &[
     "report_refused",
     "log_sent",
     "room_update",
+    "match_state",
     "relay_address_mismatch",
 ];
 
@@ -694,6 +695,11 @@ fn describe(e: &Event) -> String {
                 changes.join(", ")
             )
         }
+        "match_state" => format!(
+            "The host's game says its match is {} ({})",
+            if e.detail["under_way"] == true { "under way" } else { "joinable" },
+            e.detail["state"].as_str().unwrap_or("?")
+        ),
         "relay_address_mismatch" => format!(
             "The relay {} sees this player on another network than this server does (carrier-grade NAT?): its address for them wasn't used",
             e.detail["relay"].as_str().unwrap_or("?")

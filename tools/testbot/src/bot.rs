@@ -1111,6 +1111,14 @@ impl Bot {
             .into_inner())
     }
 
+    /// Says whether this player's match is under way, as a 0.4.8 game does (`MatchState`).
+    pub async fn match_state(&self, under_way: bool, state: &str) -> std::result::Result<(), tonic::Status> {
+        MiscClient::new(self.api.clone())
+            .match_state(self.authed(server_api::misc::MatchStateRequest { under_way, state: state.into() }))
+            .await?;
+        Ok(())
+    }
+
     /// Sends the game's diagnostic lines, as the hooks DLL does; answers how many were kept.
     pub async fn client_log(&self, lines: Vec<server_api::misc::ClientLogLine>) -> std::result::Result<u32, tonic::Status> {
         Ok(MiscClient::new(self.api.clone())

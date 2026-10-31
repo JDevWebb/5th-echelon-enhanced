@@ -34,6 +34,9 @@
 //!   and `room` is the one the server had just given the player (join_targets.rs). For
 //!   `data_mismatch`: `data` (`mine`, `theirs`: each side's attribute 107, hex, either may be
 //!   absent) and `mine_name`, `theirs_name` (`server_api::data_versions`, null if unknown).
+//! - `match_state`: `state` (the host's game's match state: "RoundState_Started" and so on, or
+//!   "CoopMissionState_InGame"), `under_way`, `rooms` (the match rooms it hosts): from 0.4.8
+//!   games (plan M2).
 //! - `room_update`: `room`, `changes` (each attribute the host's game changed: its id, and its
 //!   old and new values, null when absent), `members` and `seats` then: which attribute moves
 //!   as a round starts (0.4.8 plan M2), and settings changed mid-match (F4).
