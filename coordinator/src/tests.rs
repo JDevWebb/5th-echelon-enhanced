@@ -2048,6 +2048,42 @@ async fn ids_many_share_never_ban_nor_do_ended_bans() {
     );
 }
 
+/// F1: a high score far above everyone else's on that mission, or a best time far below, is
+/// flagged once enough players have one there; ordinary ones aren't.
+#[tokio::test]
+async fn records_far_from_everyone_elses_are_flagged() {
+    let t = start("record-flags").await;
+    let context = 101;
+    let mut put = |who: String, board: u32, stat: u32, value: f64| {
+        let pool = t.c.pool.clone();
+        async move {
+            sqlx::query("INSERT INTO global_stats (global_id, board, context, stat, value, updated_at) VALUES (?, ?, ?, ?, ?, 0)")
+                .bind(who)
+                .bind(board)
+                .bind(context)
+                .bind(stat)
+                .bind(value)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+    };
+    for i in 0..25 {
+        put(format!("p{i}"), 22, 153, 1000.0 + f64::from(i) * 10.0).await;
+        put(format!("p{i}"), 23, 154, 600.0 + f64::from(i) * 5.0).await;
+    }
+    put(String::from("cheat"), 22, 153, 9000.0).await;
+    put(String::from("speedy"), 23, 154, 50.0).await;
+    let v = t.c.stat_flags().await.unwrap();
+    let found: Vec<(&str, &str)> = v["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["global_id"].as_str().unwrap(), r["kind"].as_str().unwrap()))
+        .collect();
+    assert_eq!(found, [("speedy", "fast"), ("cheat", "high")], "{v}");
+}
+
 /// A stat write: `value` to `stat` on `board` in `context`, for `who` (named after them).
 fn sw(id: i64, who: &str, board: u32, context: u32, stat: u32, value: f64) -> Value {
     json!({ "id": id, "global_id": who, "name": format!("Name{who}"), "board": board, "context": context, "stat": stat, "value": value })

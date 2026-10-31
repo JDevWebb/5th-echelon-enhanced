@@ -23,6 +23,23 @@
       </table>
     </div>
     <p class="small muted" style="margin-top: 8px">What a stat write added, per minute the player had been playing, against that stat's 99th percentile across the network. Nothing is hidden or changed for players: check their Sessions and reports, then remove their stats or ban them if it's cheating.</p>
+    <h3 style="margin-top: 18px">Records far from everyone else's <span class="muted small">{{ data ? fmt.n((data.records || []).length) : '' }}</span></h3>
+    <div v-if="data && !(data.records || []).length" class="empty">None. A high score is flagged at over {{ data.record_times }}× the 90th percentile on its mission or mode, a best time at under a {{ data.record_times }}rd of the 10th, once {{ data.record_samples }} players have one there.</div>
+    <div v-else-if="data" class="table-wrap">
+      <table>
+        <thead><tr><th>Name</th><th>Record</th><th class="r">Theirs</th><th class="r">Usual best</th><th class="r">× usual</th><th></th></tr></thead>
+        <tbody>
+          <tr v-for="r in data.records" :key="`${r.global_id}${r.board}${r.stat}${r.context}`">
+            <td><b>{{ r.name || '–' }}</b> <span class="muted small mono" :title="r.global_id">{{ r.global_id.slice(0, 10) }}…</span></td>
+            <td class="small">{{ r.kind === 'fast' ? 'best time' : 'high score' }} · board {{ r.board }} · stat {{ r.stat }} · {{ r.context }}</td>
+            <td class="r">{{ fmt.n(Math.round(r.value)) }}</td>
+            <td class="r">{{ fmt.n(Math.round(r.normal)) }}</td>
+            <td class="r"><span class="pill bad">{{ r.times_normal.toFixed(1) }}×</span></td>
+            <td class="r"><button class="ghost small danger" type="button" :disabled="removing === r.global_id" @click="remove(r)">Remove stats</button></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
   </section>
 </template>
 

@@ -51,6 +51,12 @@ const FLAG_TIMES: f64 = 10.0;
 const FLAG_SAMPLES: usize = 50;
 /// The most flags answered.
 const MAX_FLAGS: usize = 100;
+/// A record (what a leaderboard ranks: a high score, or a best time) is flagged at this many
+/// times its stat's 90th percentile across the network in that context (a third of its 10th,
+/// for a time: with a few dozen records, the 99th is the outlier itself)...
+const RECORD_TIMES: f64 = 3.0;
+/// ...among at least this many players' records there.
+const RECORD_SAMPLES: usize = 20;
 
 /// The `p` quantile (0 to 1) of `sorted`, which is sorted and not empty.
 fn quantile(sorted: &[f64], p: f64) -> f64 {
@@ -358,7 +364,70 @@ impl Coordinator {
                 })
             })
             .collect();
-        Ok(json!({ "days": GAINS_FOR / 86_400, "times": FLAG_TIMES, "min_samples": FLAG_SAMPLES, "stats": stats, "flags": flags }))
+        let records = self.record_flags().await?;
+        Ok(json!({
+            "days": GAINS_FOR / 86_400, "times": FLAG_TIMES, "min_samples": FLAG_SAMPLES, "stats": stats, "flags": flags,
+            "records": records, "record_times": RECORD_TIMES, "record_samples": RECORD_SAMPLES,
+        }))
+    }
+
+    /// Records far from everyone else's (fair play F1): for each stat a leaderboard ranks (a
+    /// high score, highest first; a best time, lowest first) in each context (a mission, a
+    /// mode), the players whose record is over
+    /// [`RECORD_TIMES`] its 90th percentile (or under a [`RECORD_TIMES`]th of its 10th, for a
+    /// time), once [`RECORD_SAMPLES`] players have one there. Worst first.
+    async fn record_flags(&self) -> sqlx::Result<Vec<Value>> {
+        let mut found: Vec<(f64, Value)> = Vec::new();
+        let mut ranked: Vec<(u32, u32, bool)> = stat_boards::LEADERBOARDS.iter().map(|l| (l.board, l.stat, l.descending)).collect();
+        ranked.sort_unstable();
+        ranked.dedup();
+        for (board_id, stat, highest) in ranked {
+            {
+                let rows: Vec<(u32, String, f64)> = sqlx::query_as("SELECT context, global_id, value FROM global_stats WHERE board = ? AND stat = ? AND value > 0")
+                    .bind(board_id)
+                    .bind(stat)
+                    .fetch_all(&self.pool)
+                    .await?;
+                let mut by_context: BTreeMap<u32, Vec<(String, f64)>> = BTreeMap::new();
+                for (context, who, value) in rows {
+                    by_context.entry(context).or_default().push((who, value));
+                }
+                for (context, list) in by_context {
+                    if list.len() < RECORD_SAMPLES {
+                        continue;
+                    }
+                    let mut values: Vec<f64> = list.iter().map(|(_, v)| *v).collect();
+                    values.sort_by(f64::total_cmp);
+                    let normal = quantile(&values, if highest { 0.9 } else { 0.1 });
+                    for (who, value) in list {
+                        let times = if highest {
+                            value / normal.max(f64::MIN_POSITIVE)
+                        } else {
+                            normal / value.max(f64::MIN_POSITIVE)
+                        };
+                        if times > RECORD_TIMES {
+                            found.push((
+                                times,
+                                json!({ "global_id": who, "board": board_id, "stat": stat, "context": context, "value": value,
+                                        "normal": normal, "times_normal": times, "kind": if highest { "high" } else { "fast" } }),
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+        found.sort_by(|a, b| b.0.total_cmp(&a.0));
+        found.truncate(MAX_FLAGS);
+        let mut out = Vec::new();
+        for (_, mut v) in found {
+            let name: Option<String> = sqlx::query_scalar("SELECT name FROM global_names WHERE global_id = ?")
+                .bind(v["global_id"].as_str().unwrap_or_default())
+                .fetch_optional(&self.pool)
+                .await?;
+            v["name"] = json!(name);
+            out.push(v);
+        }
+        Ok(out)
     }
 
     /// The top `count` of a leaderboard in `context`.
