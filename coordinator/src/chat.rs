@@ -231,14 +231,17 @@ impl Coordinator {
     }
 
     /// A message as servers get it.
-    async fn chat_message_json(&self, row: &Row) -> Value {
-        let server_name: Option<String> = sqlx::query_scalar("SELECT json_extract(listing, '$.name') FROM servers WHERE id = ?")
-            .bind(&row.server)
-            .fetch_optional(&self.pool)
+    /// The servers' names, for a batch of messages (R8: once per batch, not per message).
+    async fn chat_server_names(&self) -> HashMap<String, String> {
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as("SELECT id, json_extract(listing, '$.name') FROM servers")
+            .fetch_all(&self.pool)
             .await
-            .ok()
-            .flatten()
-            .flatten();
+            .unwrap_or_default();
+        rows.into_iter().filter_map(|(id, name)| Some((id, name?))).collect()
+    }
+
+    fn chat_message_json(row: &Row, names: &HashMap<String, String>) -> Value {
+        let server_name = names.get(&row.server).cloned();
         json!({
             "id": row.id,
             "room": row.room,
@@ -531,7 +534,8 @@ pub(crate) async fn send(State(c): State<Shared>, headers: HeaderMap, body: axum
         body: checked.text,
         deletes: None,
     };
-    ok(json!({ "message": c.chat_message_json(&row).await }))
+    let names = c.chat_server_names().await;
+    ok(json!({ "message": Coordinator::chat_message_json(&row, &names) }))
 }
 
 #[derive(Deserialize)]
@@ -567,10 +571,8 @@ pub(crate) async fn wait(State(c): State<Shared>, headers: HeaderMap, Query(q): 
         };
         if !rows.is_empty() {
             let last = rows.last().map_or(q.after, |r| r.id);
-            let mut messages = Vec::with_capacity(rows.len());
-            for row in &rows {
-                messages.push(c.chat_message_json(row).await);
-            }
+            let names = c.chat_server_names().await;
+            let messages: Vec<Value> = rows.iter().map(|row| Coordinator::chat_message_json(row, &names)).collect();
             return ok(json!({ "messages": messages, "last": last }));
         }
         if tokio::time::timeout_at(deadline, notified).await.is_err() {
@@ -627,10 +629,8 @@ pub(crate) async fn history(State(c): State<Shared>, headers: HeaderMap, Query(q
         Ok(rows) => rows,
         Err(e) => return internal(e),
     };
-    let mut messages = Vec::with_capacity(rows.len());
-    for row in rows.iter().rev() {
-        messages.push(c.chat_message_json(row).await);
-    }
+    let names = c.chat_server_names().await;
+    let messages: Vec<Value> = rows.iter().rev().map(|row| Coordinator::chat_message_json(row, &names)).collect();
     ok(json!({ "messages": messages }))
 }
 

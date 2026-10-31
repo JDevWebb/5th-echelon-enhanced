@@ -353,15 +353,22 @@ async fn mute(State(c): State<Shared>, Extension(client): Extension<Client>, hea
         Some(h) if (1..=24 * 3650).contains(&h) => Some(now + h * 3600),
         Some(_) => return fail(StatusCode::BAD_REQUEST, "a mute is 1 hour to ten years, or for good"),
     };
-    let done = sqlx::query("INSERT OR REPLACE INTO chat_mutes (global_id, room, until, by_admin, reason, at) VALUES (?, ?, ?, ?, ?, ?)")
-        .bind(&req.identity)
-        .bind(&req.room)
-        .bind(until)
-        .bind(&s.username)
-        .bind(reason)
-        .bind(now)
-        .execute(&c.pool)
-        .await;
+    // A mute in force is never shortened by another (R8: two admins, one muting for good):
+    // the longer stays, for good the longest; lifting one is its own action.
+    let done = sqlx::query(
+        "INSERT INTO chat_mutes (global_id, room, until, by_admin, reason, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+         ON CONFLICT (global_id, room) DO UPDATE SET
+             until = CASE WHEN chat_mutes.until IS NULL OR excluded.until IS NULL THEN NULL ELSE MAX(chat_mutes.until, excluded.until) END,
+             by_admin = excluded.by_admin, reason = excluded.reason, at = excluded.at",
+    )
+    .bind(&req.identity)
+    .bind(&req.room)
+    .bind(until)
+    .bind(&s.username)
+    .bind(reason)
+    .bind(now)
+    .execute(&c.pool)
+    .await;
     if let Err(e) = done {
         return internal(e);
     }

@@ -4953,6 +4953,13 @@ async fn admins_moderate_chat_and_names() {
     assert_eq!(send(&kiwi, "am I muted?").await["refused"], "muted");
     let (_, v) = admin_call(&r, "GET", "/api/moderation", &stale, None).await;
     assert_eq!((v["mutes"][0]["name"].as_str(), v["mutes"][0]["room"].as_str()), (Some("Kiwi"), Some("global")));
+    // For good, then another admin's hour: still for good.
+    let for_good = json!({ "identity": kiwi.global_id(), "room": "global", "hours": null, "reason": "for good" });
+    assert_eq!(admin_call(&r, "POST", "/api/moderation/mutes", &fresh, Some(for_good)).await.0, StatusCode::OK);
+    let hour = json!({ "identity": kiwi.global_id(), "room": "global", "hours": 1, "reason": "an hour" });
+    assert_eq!(admin_call(&r, "POST", "/api/moderation/mutes", &fresh, Some(hour)).await.0, StatusCode::OK);
+    let until: Option<i64> = sqlx::query_scalar("SELECT until FROM chat_mutes WHERE room = 'global'").fetch_one(&t.c.pool).await.unwrap();
+    assert_eq!(until, None, "a mute for good isn't shortened");
     let unmute = format!("/api/moderation/mutes/{}/global", kiwi.global_id());
     assert_eq!(admin_call(&r, "DELETE", &unmute, &stale, None).await.0, StatusCode::OK);
     assert!(send(&kiwi, "back again").await["message"].is_object());
