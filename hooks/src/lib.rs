@@ -35,6 +35,7 @@ mod addresses;
 mod api;
 mod autoclimb;
 mod chat;
+mod code_check;
 mod community;
 mod crash;
 mod dataversion;
@@ -60,6 +61,8 @@ mod voice_device_fix;
 use macros::fatal_error;
 
 unsafe fn writemem(ptr: *mut u8, data: &[u8]) {
+    // Our own change to the game's code: the code check (F8) never reports it.
+    code_check::ours(ptr as usize, data.len());
     if let Ok(_handle) = region::protect_with_handle(ptr, data.len(), region::Protection::READ_WRITE) {
         std::ptr::copy(data.as_ptr(), ptr, data.len());
     }
@@ -398,6 +401,8 @@ fn init(hmodule: Option<HMODULE>) {
         round_state::start();
         // Whether the game's clocks run at real time (F7, report only).
         speed_check::start();
+        // Whether the game's code is as it shipped, but for our own changes (F8, report only).
+        code_check::start();
     }
 
     // needs to be done in a separate thread, otherwise it'll block indefinitely
