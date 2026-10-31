@@ -251,13 +251,17 @@ pub struct Table {
     remote_pairs: HashMap<(String, Id), Instant>,
     remote_refused: HashMap<(String, Id), Instant>,
     remote_asking: HashMap<(String, Id), Instant>,
-    /// Addresses on other relays our players sent to (their packets forwarded there), and when:
-    /// what comes back from one to that player is a reply, as on a stateful firewall.
-    outbound: HashMap<(Id, SocketAddrV4), Instant>,
+    /// Addresses on other relays our players sent to (their packets forwarded there), when, and
+    /// who first replied from there: what comes back from one to that player is a reply, as on a
+    /// stateful firewall, from that same player only (an address can pass to someone else).
+    outbound: HashMap<(Id, SocketAddrV4), (Instant, Option<String>)>,
+    /// How many of [`Self::outbound`] each player has.
+    outbound_per_player: HashMap<Id, usize>,
 }
 
-/// The most addresses kept for replies ([`Table::outbound`]).
+/// The most addresses kept for replies ([`Table::outbound`]), in all and per player.
 const MAX_OUTBOUND: usize = 50_000;
+const MAX_OUTBOUND_PER_PLAYER: usize = 64;
 
 /// Where a packet another relay forwarded goes ([`Table::deliver`]).
 #[derive(Debug, PartialEq, Eq)]
@@ -299,6 +303,7 @@ impl Table {
             remote_refused: HashMap::new(),
             remote_asking: HashMap::new(),
             outbound: HashMap::new(),
+            outbound_per_player: HashMap::new(),
             echoes_swept: Instant::now(),
         }
     }
@@ -571,8 +576,11 @@ impl Table {
         }
         let from = self.charge(sender_id, len, now)?;
         // What comes back from `to` to this player is a reply ([`Self::deliver`]).
-        if self.outbound.len() < MAX_OUTBOUND || self.outbound.contains_key(&(sender_id, to)) {
-            self.outbound.insert((sender_id, to), now);
+        if let Some((at, _)) = self.outbound.get_mut(&(sender_id, to)) {
+            *at = now;
+        } else if self.outbound.len() < MAX_OUTBOUND && self.outbound_per_player.get(&sender_id).copied().unwrap_or(0) < MAX_OUTBOUND_PER_PLAYER {
+            self.outbound.insert((sender_id, to), (now, None));
+            *self.outbound_per_player.entry(sender_id).or_insert(0) += 1;
         }
         let sender = self.peers.get_mut(&sender_id)?;
         sender.data_from = Some((src, now));
@@ -592,7 +600,20 @@ impl Table {
         };
         // A reply to what our player sent there; else the matchmaking server is asked, the way
         // the packet goes (sender to receiver), as for this helper's own pairs.
-        let reply = self.outbound.get(&(target_id, from)).is_some_and(|at| now.duration_since(*at) < PAIR_FRESH);
+        let reply = match self.outbound.get_mut(&(target_id, from)) {
+            Some((at, who)) if now.duration_since(*at) < PAIR_FRESH => {
+                let key = identity::name_key(from_name);
+                match who {
+                    Some(k) => *k == key,
+                    // The first to reply from there is who the address is.
+                    None => {
+                        *who = Some(key);
+                        true
+                    }
+                }
+            }
+            _ => false,
+        };
         if self.cfg.relay_pairs && !reply {
             let key = (identity::name_key(from_name), target_id);
             match self.remote_pairs.get_mut(&key) {
@@ -814,7 +835,11 @@ impl Table {
         self.remote_pairs.retain(|(_, b), at| now.duration_since(*at) < PAIR_FRESH && peers.contains_key(b));
         self.remote_refused.retain(|_, at| now.duration_since(*at) < REFUSED_FOR);
         self.remote_asking.retain(|_, at| now.duration_since(*at) < ASKING_FOR);
-        self.outbound.retain(|(id, _), at| now.duration_since(*at) < PAIR_FRESH && peers.contains_key(id));
+        self.outbound.retain(|(id, _), (at, _)| now.duration_since(*at) < PAIR_FRESH && peers.contains_key(id));
+        self.outbound_per_player.clear();
+        for (id, _) in self.outbound.keys() {
+            *self.outbound_per_player.entry(*id).or_insert(0) += 1;
+        }
         self.asking.retain(|_, at| now.duration_since(*at) < ASKING_FOR);
         self.asks_by_ip.retain(|_, (at, _)| now.duration_since(*at) < Duration::from_secs(1));
         self.sweep_echoes(now);
