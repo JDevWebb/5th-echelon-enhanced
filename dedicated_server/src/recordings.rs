@@ -23,6 +23,31 @@ const KEEP_FOR: i64 = 7 * 86_400;
 const MOST_KEPT_BYTES: u64 = 3 * 1024 * 1024 * 1024;
 const EVERY: Duration = Duration::from_secs(60);
 const MOST_A_DAY: u32 = 40;
+/// The most a recording unpacks to here: 2 hours of 16 characters is about 24 MB.
+const MAX_UNPACKED: usize = 32 * 1024 * 1024;
+/// Recordings checked (unpacked and read) at once, everyone's.
+const CHECKS_AT_ONCE: usize = 2;
+
+/// One of the [`CHECKS_AT_ONCE`] checks, given back when dropped.
+struct Checking;
+
+static CHECKING: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+impl Checking {
+    fn start() -> Option<Self> {
+        use std::sync::atomic::Ordering;
+        CHECKING
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| (n < CHECKS_AT_ONCE).then_some(n + 1))
+            .ok()
+            .map(|_| Self)
+    }
+}
+
+impl Drop for Checking {
+    fn drop(&mut self) {
+        CHECKING.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
 
 fn dir() -> PathBuf {
     PathBuf::from("data").join("recordings")
@@ -53,6 +78,7 @@ pub enum Refused {
     TooSoon,
     TooMany,
     TooBig,
+    Busy,
     NotARecording(String),
     Empty,
 }
@@ -62,6 +88,7 @@ impl std::fmt::Display for Refused {
         match self {
             Self::TooSoon => write!(f, "one recording a minute"),
             Self::TooMany => write!(f, "{MOST_A_DAY} recordings a day"),
+            Self::Busy => write!(f, "the server is checking other recordings; send it again later"),
             Self::TooBig => write!(f, "a recording is at most {} MB", MAX_UPLOAD / (1024 * 1024)),
             Self::NotARecording(why) => write!(f, "not a match recording ({why})"),
             Self::Empty => write!(f, "a recording with no characters in it"),
@@ -101,7 +128,7 @@ pub fn describe(player: u32, data: &[u8], received: i64) -> Result<Kept, Refused
     if data.len() > MAX_UPLOAD {
         return Err(Refused::TooBig);
     }
-    let (header, records) = replay::read(data).map_err(|e| Refused::NotARecording(e.to_string()))?;
+    let (header, records) = replay::read_limited(data, MAX_UNPACKED).map_err(|e| Refused::NotARecording(e.to_string()))?;
     let s = replay::summary(&records);
     if s.pawns == 0 {
         return Err(Refused::Empty);
@@ -128,9 +155,11 @@ pub fn describe(player: u32, data: &[u8], received: i64) -> Result<Kept, Refused
 /// Keeps `player`'s recording `data`: what it was kept as.
 pub fn keep(player: u32, data: &[u8]) -> Result<Kept, Refused> {
     let now = identity::now();
-    // Checked before it's counted, so a broken file doesn't use up the minute.
-    let kept = describe(player, data, now)?;
+    // Every try counts, a broken file too (each is unpacked to be checked), and only
+    // [`CHECKS_AT_ONCE`] are checked at once on the whole server.
     may_send(player, Instant::now())?;
+    let _checking = Checking::start().ok_or(Refused::Busy)?;
+    let kept = describe(player, data, now)?;
     let dir = dir();
     let written = std::fs::create_dir_all(&dir)
         .and_then(|()| std::fs::write(dir.join(format!("{}.{}", kept.id, replay::EXTENSION)), data))
@@ -217,6 +246,12 @@ mod tests {
         }
         assert_eq!(may_send(900_001, t + Duration::from_secs(60 * 41)), Err(Refused::TooMany));
         assert_eq!(may_send(900_001, t + Duration::from_secs(86_400 + 60)), Ok(()));
+        // Two checks at once, everyone's; a third waits.
+        let (one, two) = (Checking::start().unwrap(), Checking::start().unwrap());
+        assert!(Checking::start().is_none());
+        drop(one);
+        assert!(Checking::start().is_some());
+        drop(two);
         assert!(file("../../etc/passwd").is_none());
         assert!(file("0123456789abcdeg").is_none());
     }

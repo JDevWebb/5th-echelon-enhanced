@@ -1922,7 +1922,9 @@ impl Misc for MyMisc {
                 );
                 Ok(Response::new(misc::RecordingResponse { id: k.id }))
             }
-            Err(why @ (crate::recordings::Refused::TooSoon | crate::recordings::Refused::TooMany)) => Err(Status::resource_exhausted(why.to_string())),
+            Err(why @ (crate::recordings::Refused::TooSoon | crate::recordings::Refused::TooMany | crate::recordings::Refused::Busy)) => {
+                Err(Status::resource_exhausted(why.to_string()))
+            }
             Err(why) => Err(Status::invalid_argument(why.to_string())),
         }
     }

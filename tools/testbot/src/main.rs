@@ -2370,14 +2370,14 @@ async fn witness(ctx: &mut Ctx) -> Result<()> {
 }
 
 /// A match recording (the replay research) is kept and given an id; another at once is
-/// refused (one a minute), as is one that isn't a recording or has nobody in it.
+/// refused (one a minute), as is one that isn't a recording or has nobody in it, and a
+/// refused one counts towards the minute too (each is unpacked to be checked).
 async fn recording(ctx: &mut Ctx) -> Result<()> {
-    let bot = ctx.player("Recorder").await?;
-    let made = |characters: u16| -> Result<Vec<u8>> {
+    let made = |recorder: &str, characters: u16| -> Result<Vec<u8>> {
         let mut w = replay::Writer::new(
             Vec::new(),
             &replay::Header {
-                recorder: bot.name.clone(),
+                recorder: recorder.into(),
                 map: "ADV_01".into(),
                 ..Default::default()
             },
@@ -2406,19 +2406,27 @@ async fn recording(ctx: &mut Ctx) -> Result<()> {
         }
         Ok(w.finish()?)
     };
-    for (what, data) in [("garbage", b"not a recording".to_vec()), ("nobody in it", made(0)?)] {
-        match bot.recording(data).await {
-            Err(s) if s.code() == tonic::Code::InvalidArgument => {}
-            other => return Err(eyre!("a recording of {what}: {other:?}")),
-        }
-    }
-    let id = bot.recording(made(2)?).await?;
+    let refused = |what: &str, got: std::result::Result<String, tonic::Status>, code: tonic::Code| match got {
+        Err(s) if s.code() == code => Ok(()),
+        other => Err(eyre!("{what}: {other:?}")),
+    };
+    let garbage = ctx.player("Garbage").await?;
+    refused("garbage", garbage.recording(b"not a recording".to_vec()).await, tonic::Code::InvalidArgument)?;
+    refused(
+        "a good one right after garbage",
+        garbage.recording(made(&garbage.name, 2)?).await,
+        tonic::Code::ResourceExhausted,
+    )?;
+    let empty = ctx.player("Empty").await?;
+    refused("nobody in it", empty.recording(made(&empty.name, 0)?).await, tonic::Code::InvalidArgument)?;
+    let bot = ctx.player("Recorder").await?;
+    let id = bot.recording(made(&bot.name, 2)?).await?;
     ensure!(id.len() == 16 && id.bytes().all(|b| b.is_ascii_hexdigit()), "the id {id:?}");
-    match bot.recording(made(2)?).await {
-        Err(s) if s.code() == tonic::Code::ResourceExhausted => {}
-        other => return Err(eyre!("a second recording at once: {other:?}")),
+    refused("a second recording at once", bot.recording(made(&bot.name, 2)?).await, tonic::Code::ResourceExhausted)?;
+    for b in [garbage, empty, bot] {
+        b.disconnect().await?;
     }
-    bot.disconnect().await
+    Ok(())
 }
 
 /// The add-on's fair-play checks (F7, F8) are taken, again within a minute quietly, and a
