@@ -75,6 +75,7 @@ mod clan;
 mod clients;
 mod community_api;
 mod config;
+mod far_rooms;
 mod federation;
 mod friends_policy;
 mod full_logs;
@@ -646,6 +647,7 @@ fn main() -> color_eyre::Result<()> {
     );
     let nat = config.nat;
     relays::init(config.matchmaking.network_relays);
+    far_rooms::init(config.matchmaking.far_ms, config.matchmaking.far_strict);
     // Relay passes: signed here on the network's matchmaking server, for relays elsewhere to
     // take (relay_pass.rs); taken here from the key the operator set.
     if config.matchmaking.network_relays {

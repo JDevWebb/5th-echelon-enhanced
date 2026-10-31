@@ -642,8 +642,20 @@ fn describe(e: &Event) -> String {
         "search" => {
             let found = e.detail["found"].as_i64().unwrap_or(0);
             let hidden = other_data(e).map_or_else(String::new, |hidden| format!(" ({hidden})"));
+            // What the server left out, and why (0.4.8 servers).
+            let left_out: Vec<String> = [("started", "under way"), ("avoided", "with someone they blocked"), ("far", "with far hosts")]
+                .iter()
+                .filter_map(|(key, why)| e.detail[*key].as_i64().filter(|n| *n > 0).map(|n| format!("{n} {why}")))
+                .collect();
+            let left_out = if e.detail["steered"] == "new" {
+                "; they asked for a new match".to_string()
+            } else if left_out.is_empty() {
+                String::new()
+            } else {
+                format!("; left out {}", left_out.join(", "))
+            };
             format!(
-                "Searched for {}: {}{hidden}",
+                "Searched for {}: {}{hidden}{left_out}",
                 query_name(e.detail["query"].as_i64().unwrap_or(0)),
                 if found == 0 { "nothing found".into() } else { format!("{found} found") }
             )
@@ -1765,6 +1777,18 @@ mod tests {
         // An old failed join that was no fault of the game's keeps the kind's colour.
         let t = super::timelines(&old[3..], &[], &std::collections::HashMap::new(), 0, 100);
         assert!(t[0]["marks"][0].get("level").is_none());
+    }
+
+    /// What a 0.4.8 server left out of a search, and why.
+    #[test]
+    fn searches_say_what_was_left_out() {
+        let e = ev("na", 1000, 7, "Gyro", "search", json!({ "query": 8, "found": 3, "started": 1, "far": 4 }));
+        assert_eq!(
+            describe(&e),
+            "Searched for Spies vs Mercs (or an invited room): 3 found; left out 1 under way, 4 with far hosts"
+        );
+        let e = ev("na", 1000, 7, "Gyro", "search", json!({ "query": 8, "found": 0, "steered": "new", "avoided": 2 }));
+        assert_eq!(describe(&e), "Searched for Spies vs Mercs (or an invited room): nothing found; they asked for a new match");
     }
 
     /// PlaySkill's balaclava mod against Theusma01's unmodified game: whose data is the odd

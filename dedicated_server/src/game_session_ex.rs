@@ -179,8 +179,24 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
             .into_iter()
             .filter(|(_, attrs)| invitation_search || answers(&req_attrs, attrs, false))
             .map(|(session, _)| session)
-            .take(crate::game_session::MAX_SEARCH_RESULTS as usize)
             .collect();
+        // Nearest first, and the far ones left out as `[matchmaking] far_ms` says (far_rooms.rs):
+        // before the cut, so the near ones are what the game gets.
+        let (sessions, far) = if invitation_search || !crate::far_rooms::enabled() {
+            (sessions, 0)
+        } else {
+            let me = ci.address().ip();
+            crate::far_rooms::order(
+                sessions
+                    .into_iter()
+                    .map(|s| {
+                        let ms = crate::metrics::address_of(s.creator_id).and_then(|host| crate::far_rooms::estimate_ms(me, host));
+                        (s, ms)
+                    })
+                    .collect(),
+            )
+        };
+        let sessions: Vec<_> = sessions.into_iter().take(crate::game_session::MAX_SEARCH_RESULTS as usize).collect();
         // The invited room comes with its participants already.
         let sessions = if invitation_search {
             sessions
@@ -200,6 +216,10 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
         if avoided > 0 {
             info!(logger, "Left out {avoided} matches with someone {user_id} blocked");
             detail["avoided"] = serde_json::json!(avoided);
+        }
+        if far > 0 {
+            info!(logger, "Left out {far} matches whose hosts are far from {user_id}");
+            detail["far"] = serde_json::json!(far);
         }
         // Found nothing, but there are lobbies their game data keeps from them: the game
         // says nothing of it, so the player and the admins hear it from us.
