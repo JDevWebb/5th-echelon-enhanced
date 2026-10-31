@@ -1740,17 +1740,31 @@ fn on_pc(id: i64, name: &str, identity: Option<&str>, ids: &[(&str, char)]) -> V
     p
 }
 
+/// Exo (identity ab12, linked on server A) on his PC, banned by an admin until `until`.
+async fn banned_exo(t: &Test, a: &str, until: i64) {
+    let roster = |players: Vec<Value>| Some(json!({ "full": false, "players": players }));
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(a),
+        roster(vec![on_pc(1, "Exo", Some("ab12"), &[("machine-guid", 'a'), ("board-serial", 'b'), ("disk-serial", 'c')])]),
+    )
+    .await;
+    sqlx::query("INSERT INTO links (global_id, server_id, username, linked_at) VALUES ('ab12', 'server-a', 'Exo', 0), ('cd34', 'server-b', 'Exo2', 0)")
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    t.c.set_identity_ban("ab12", Some(("aimbot", Some(until))), "admin1").await.unwrap();
+}
+
 #[tokio::test]
 async fn a_ban_holds_for_the_pc_two_ids_ban_one_flags() {
     let t = start("hardware-bans").await;
     let (a, b) = (t.join("server-a").await, t.join("server-b").await);
     let roster = |players: Vec<Value>| Some(json!({ "full": false, "players": players }));
     let until = identity::now() + 30 * 86_400;
-    // Exo is banned on A until `until`; his PC: a machine id, a board and a disk.
-    let mut exo = on_pc(1, "Exo", Some("ab12"), &[("machine-guid", 'a'), ("board-serial", 'b'), ("disk-serial", 'c')]);
-    exo["banned"] = json!({ "reason": "aimbot", "until": until, "at": identity::now() });
-    t.call("POST", "/v1/players", Some(&a), roster(vec![exo])).await;
-    // A new identity on B with two of them: banned, as long as Exo is; one with one: flagged.
+    banned_exo(&t, &a, until).await;
+    // A new identity on B with two of his ids: banned, as long as Exo is; one with one: flagged.
     t.call(
         "POST",
         "/v1/players",
@@ -1768,7 +1782,7 @@ async fn a_ban_holds_for_the_pc_two_ids_ban_one_flags() {
         "{on_b:?}"
     );
     assert!(on_b[0]["reason"].as_str().unwrap().contains("aimbot"));
-    let ban = t.c.identity_ban("cd34").await.unwrap().expect("the new identity is banned across the network");
+    let ban = t.c.identity_ban("cd34").await.unwrap().expect("the new, linked identity is banned across the network");
     assert_eq!((ban.1, ban.3.as_str()), (Some(until), "hardware"));
     assert!(t.c.identity_ban("ef56").await.unwrap().is_none(), "one id in common only flags");
     let d = t.c.player_detail("server-b", 8).await.unwrap().unwrap();
@@ -1789,6 +1803,80 @@ async fn a_ban_holds_for_the_pc_two_ids_ban_one_flags() {
     )
     .await;
     assert_eq!(t.pulse_actions(&b).await.len(), 1);
+    // A ban made for a PC never leads to another: Exo2's PC bans nobody.
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&b),
+        roster(vec![on_pc(9, "Other", Some("gh78"), &[("smbios-uuid", 'd'), ("disk-serial", 'e')])]),
+    )
+    .await;
+    assert_eq!(t.pulse_actions(&b).await.len(), 1);
+}
+
+/// A member server can't ban anyone elsewhere with what it says of its own players: a ban it
+/// only claims, ids it adds to a banned player afterwards, or an identity it names unlinked.
+#[tokio::test]
+async fn what_a_server_says_of_its_players_bans_no_one_elsewhere() {
+    let t = start("hardware-forged").await;
+    let (a, b, rogue) = (t.join("server-a").await, t.join("server-b").await, t.join("server-r").await);
+    let roster = |players: Vec<Value>| Some(json!({ "full": false, "players": players }));
+    // The victim plays on B.
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&b),
+        roster(vec![on_pc(5, "Victim", Some("vv11"), &[("machine-guid", '5'), ("disk-serial", '6')])]),
+    )
+    .await;
+    // The rogue server claims a banned player of its own with the victim's ids: no admin made that ban.
+    let mut fake = on_pc(1, "Fake", Some("ff00"), &[("machine-guid", '5'), ("disk-serial", '6')]);
+    fake["banned"] = json!({ "reason": "made up", "until": null, "at": identity::now() });
+    t.call("POST", "/v1/players", Some(&rogue), roster(vec![fake])).await;
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&b),
+        roster(vec![on_pc(5, "Victim", Some("vv11"), &[("machine-guid", '5'), ("disk-serial", '6')])]),
+    )
+    .await;
+    assert!(t.pulse_actions(&b).await.is_empty(), "a ban a server only claims");
+    // An admin banned Exo; ids added to him after the ban don't count.
+    let until = identity::now() + 86_400;
+    banned_exo(&t, &a, until).await;
+    sqlx::query("UPDATE player_hardware SET first_seen = first_seen - 1000 WHERE server_id = 'server-a'")
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE identity_bans SET at = at - 500 WHERE identity = 'ab12'")
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&a),
+        roster(vec![on_pc(1, "Exo", Some("ab12"), &[("machine-guid", '5'), ("disk-serial", '6')])]),
+    )
+    .await;
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&b),
+        roster(vec![on_pc(5, "Victim", Some("vv11"), &[("machine-guid", '5'), ("disk-serial", '6')])]),
+    )
+    .await;
+    assert!(t.pulse_actions(&b).await.is_empty(), "ids added after the ban");
+    // On Exo's PC, a player the rogue server says is the victim's identity: only that account.
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&rogue),
+        roster(vec![on_pc(2, "Spoof", Some("vv11"), &[("machine-guid", 'a'), ("board-serial", 'b')])]),
+    )
+    .await;
+    assert_eq!(t.pulse_actions(&rogue).await.len(), 1);
+    assert!(t.c.identity_ban("vv11").await.unwrap().is_none(), "an identity named, not linked");
 }
 
 #[tokio::test]
@@ -1803,6 +1891,11 @@ async fn ids_many_share_never_ban_nor_do_ended_bans() {
     t.call("POST", "/v1/players", Some(&b), roster(shared)).await;
     let mut cheat = on_pc(1, "Cheat", Some("ab12"), &[("board-serial", 'f'), ("machine-guid", '9')]);
     cheat["banned"] = json!({ "reason": "wallhack", "until": null, "at": identity::now() });
+    sqlx::query("INSERT INTO links (global_id, server_id, username, linked_at) VALUES ('ab12', 'server-a', 'Cheat', 0)")
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    t.c.set_identity_ban("ab12", Some(("wallhack", None)), "admin1").await.unwrap();
     // A ban that ran out holds nothing.
     let mut old = on_pc(2, "Old", Some("cd34"), &[("disk-serial", '1'), ("smbios-uuid", '2')]);
     old["banned"] = json!({ "reason": "spam", "until": identity::now() - 60, "at": identity::now() - 86_400 });
