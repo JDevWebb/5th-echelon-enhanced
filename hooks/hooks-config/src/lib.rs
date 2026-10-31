@@ -289,6 +289,9 @@ pub struct Beta {
 }
 
 impl Beta {
+    /// Every beta feature's name, as reports and logs use them.
+    pub const NAMES: [&'static str; 1] = ["mouse_turn_per_second"];
+
     /// The beta features on, by the names reports and logs use.
     #[must_use]
     pub fn on(&self) -> Vec<&'static str> {

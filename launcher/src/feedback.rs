@@ -123,19 +123,31 @@ pub struct BetaLog {
     pub report: server_api::misc::ReportRequest,
 }
 
-/// The beta features a game ran with, as its log says at its start (the add-on's "Beta
-/// features on: a, b; ..." line; the last one, for a log a run was added to).
+/// The beta features a game ran with, as its log says at its start: the add-on's own line
+/// (`hooks::hooks: <line>: Beta features on: a, b; ...`; the last one, for a log a run was
+/// added to), only names of betas there are.
 pub fn betas_in_log(log: &str) -> Vec<String> {
+    let own = |l: &&str| {
+        l.split_once("Beta features on: ").is_some_and(|(before, _)| {
+            before
+                .trim_end()
+                .strip_suffix(':')
+                .and_then(|b| b.rsplit_once(" hooks::hooks: "))
+                .is_some_and(|(_, line)| !line.is_empty() && line.bytes().all(|c| c.is_ascii_digit()))
+        })
+    };
     log.lines()
         .rev()
-        .find_map(|l| l.split_once("Beta features on: ").map(|(_, rest)| rest))
+        .find(own)
+        .and_then(|l| l.split_once("Beta features on: ").map(|(_, rest)| rest))
         .map(|rest| {
             rest.split(';')
                 .next()
                 .unwrap_or_default()
                 .split(',')
-                .map(|b| b.trim().to_string())
-                .filter(|b| !b.is_empty())
+                .map(str::trim)
+                .filter(|b| hooks_config::Beta::NAMES.contains(b))
+                .map(str::to_string)
                 .collect()
         })
         .unwrap_or_default()
@@ -150,9 +162,12 @@ pub fn beta_log(game_dir: &std::path::Path, exit: GameExit, checks: &str) -> Res
     if setup::game::game_running() || log.is_empty() || hooks_config::diagnostics::short_run(&log, SHORT_RUN_SECS) {
         return Ok(None);
     }
-    // The betas the game ran with, from its own log (R5: not what's on now, which the player
-    // may have changed since); none, nothing to send.
-    let on = betas_in_log(&log);
+    // The betas both on now (the player's consent stands) and on when the game started, as
+    // the add-on's own start-up line says (R5: a game started without them sends nothing);
+    // none, nothing to send. The log's line alone never sends it: other text reaches the log.
+    let now = Config::load(game_dir).hook_config.beta.on();
+    let ran = betas_in_log(&log);
+    let on: Vec<&str> = now.into_iter().filter(|b| ran.iter().any(|r| r == b)).collect();
     if on.is_empty() {
         return Ok(None);
     }
@@ -902,12 +917,18 @@ mod tests {
 
     #[test]
     fn a_logs_betas_are_the_ones_it_started_with() {
-        let log =
-            "2026-10-31T01:00:00Z INFO hooks: Beta features on: mouse_turn_per_second, other_one; the launcher sends this log to the server's admins when the game closes\nmore";
-        assert_eq!(betas_in_log(log), ["mouse_turn_per_second", "other_one"]);
+        let line = |rest: &str| format!("2026-10-31T01:00:00.000Z  INFO ThreadId(01) hooks::hooks: 796: Beta features on: {rest}; the launcher sends this log");
+        assert_eq!(
+            betas_in_log(&format!("{}\nmore", line("mouse_turn_per_second, made_up"))),
+            ["mouse_turn_per_second"],
+            "only betas there are"
+        );
         assert!(betas_in_log("no betas here").is_empty());
+        // Text from elsewhere in the log (a chat line, say) doesn't count.
+        assert!(betas_in_log("2026-10-31T01:00:00Z  INFO hooks::chat: 12: Kiwi: Beta features on: mouse_turn_per_second; x").is_empty());
+        assert!(betas_in_log("Beta features on: mouse_turn_per_second; x").is_empty());
         // A log a second run was added to: the later run's.
-        let two = "Beta features on: a; x\nBeta features on: b; y";
-        assert_eq!(betas_in_log(two), ["b"]);
+        let two = format!("{}\n{}", line("mouse_turn_per_second"), line(""));
+        assert!(betas_in_log(&two).is_empty());
     }
 }
