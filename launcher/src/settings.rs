@@ -554,6 +554,51 @@ fn internet_play(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     }
 }
 
+/// What the game last ran with, beside the Renderer setting (the 0.4.8 plan's P3), and whether
+/// it isn't what was chosen: from the add-on's note of its last start (`bl-last-run.txt`).
+pub fn renderer_note(game_dir: &std::path::Path, chosen: setup::game::GameVersion) -> Option<(String, bool)> {
+    let last = hooks_config::last_run::read(game_dir)?;
+    let ran = if last.dx9() { "DirectX 9" } else { "DirectX 11" };
+    let wanted_dx9 = chosen == setup::game::GameVersion::SplinterCellBlacklistDx9;
+    if last.dx9() == wanted_dx9 {
+        return Some((format!("The game last ran with {ran}."), false));
+    }
+    let why = if last.launcher {
+        "the Renderer changed since: it applies from the next start."
+    } else if last.steam {
+        "Steam started it and chose that itself (its Play menu or launch options). Pick the other in Steam's Play menu, or start the game with Play here and Start through Steam off."
+    } else {
+        "it was started from somewhere else (a shortcut or Ubisoft Connect), which chooses its own. Start it with Play here for the Renderer to hold."
+    };
+    Some((format!("The game last ran with {ran}: {why}"), !last.launcher))
+}
+
+#[cfg(test)]
+mod renderer_note_tests {
+    use setup::game::GameVersion;
+
+    use super::renderer_note;
+
+    fn note(text: &str, chosen: GameVersion) -> Option<(String, bool)> {
+        let dir = std::env::temp_dir().join(format!("fes-renderer-note-{}-{}", std::process::id(), text.len()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join(hooks_config::last_run::FILE), text).unwrap();
+        let n = renderer_note(&dir, chosen);
+        let _ = std::fs::remove_dir_all(&dir);
+        n
+    }
+
+    #[test]
+    fn says_what_ran_and_why_it_differs() {
+        let (text, warn) = note("exe=Blacklist_game.exe\nsteam=false\nlauncher=true\n", GameVersion::SplinterCellBlacklistDx9).unwrap();
+        assert_eq!((text.as_str(), warn), ("The game last ran with DirectX 9.", false));
+        let (text, warn) = note("exe=Blacklist_DX11_game.exe\nsteam=true\nlauncher=false\n", GameVersion::SplinterCellBlacklistDx9).unwrap();
+        assert!(warn && text.starts_with("The game last ran with DirectX 11: Steam started it"), "{text}");
+        let (_, warn) = note("exe=Blacklist_DX11_game.exe\nsteam=false\nlauncher=true\n\n", GameVersion::SplinterCellBlacklistDx9).unwrap();
+        assert!(!warn, "changed since, not a problem");
+    }
+}
+
 #[cfg(feature = "gui")]
 fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     // DirectX 11 unless the player picks 9 here (only offered when both are installed).
@@ -568,6 +613,9 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
         ];
         if theme::segmented(ui, &mut version, &options) {
             game.update(notices, |c| c.default_game = version);
+        }
+        if let Some((text, warn)) = renderer_note(&game.dir, game.cfg.default_game) {
+            ui.label(if warn { RichText::new(text).color(theme::WARN) } else { theme::muted(&text) });
         }
         ui.add_space(6.0);
     }

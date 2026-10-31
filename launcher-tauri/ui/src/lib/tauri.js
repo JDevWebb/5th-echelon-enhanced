@@ -170,7 +170,7 @@ const preview = {
     sections: [['game', 'Game'], ['network', 'Network'], ['servers', 'Servers and accounts'], ['identity', 'Identity and friends'], ['notifications', 'Notifications'], ['save', 'Save game'], ['client', '5th Echelon client'], ['advanced', 'Advanced'], ['display', 'Display'], ['feedback', 'Feedback'], ['about', 'About']],
     managed: null,
     game: {
-      dir: 'C:\\Games\\Splinter Cell Blacklist\\src\\SYSTEM', renderer: 'dx11', through_steam: false, proton: null, overlay: true, overlay_key: 'F1',
+      dir: 'C:\\Games\\Splinter Cell Blacklist\\src\\SYSTEM', renderer: 'dx11', renderer_note: 'The game last ran with DirectX 11.', renderer_warn: false, through_steam: false, proton: null, overlay: true, overlay_key: 'F1',
       overlay_keys: ['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12', 'Insert', 'Home'], auto_join_invite: true, mouse_accel_blocked: null,
       disable_mouse_accel: true, brighten: true, brightness: 140, brightness_range: [100, 220], disable_autoclimb: false, log_level: 'Info',
       log_levels: ['Error', 'Warning', 'Info', 'Debug', 'Trace'], command_line: '', running: false, mouse_turn_per_second: false,

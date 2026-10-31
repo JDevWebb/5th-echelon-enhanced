@@ -61,7 +61,7 @@ pub fn launch(game_dir: &Path, version: GameVersion, through_steam: bool) -> std
             None
         };
         let mut cmd = Command::new(&exe);
-        cmd.current_dir(game_dir);
+        cmd.current_dir(game_dir).env(hooks_config::last_run::LAUNCHER_ENV, "1");
         // A Windows launcher running under Wine: keep the game from freezing
         // on CPUs with many threads, as a Linux launcher would.
         if hooks_config::running_under_wine() && crate::wine::cpu_threads() > crate::wine::MAX_THREADS {
@@ -80,7 +80,7 @@ pub fn launch(game_dir: &Path, version: GameVersion, through_steam: bool) -> std
         Some(prefix) if prefix.steam => start_through_steam().map(|()| Launched::Steam),
         prefix => {
             let mut cmd = Command::new("wine");
-            cmd.arg(&exe).current_dir(game_dir);
+            cmd.arg(&exe).current_dir(game_dir).env(hooks_config::last_run::LAUNCHER_ENV, "1");
             if let Some(prefix) = prefix {
                 cmd.env("WINEPREFIX", &prefix.root);
             }

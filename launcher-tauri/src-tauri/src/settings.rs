@@ -51,6 +51,9 @@ pub struct GameView {
     dir: Option<String>,
     /// Both renderers installed: the choice ("dx11", "dx9").
     renderer: Option<&'static str>,
+    /// What the game last ran with, and whether that isn't what was chosen (with why).
+    renderer_note: Option<String>,
+    renderer_warn: bool,
     /// A Steam copy on Windows: whether Play asks Steam to start it.
     through_steam: Option<bool>,
     /// Under Proton through Steam: the launch options this CPU needs, if any.
@@ -164,12 +167,15 @@ pub fn settings(state: tauri::State<Launcher>) -> View {
     let game_view = game.map(|g| {
         let h = &g.cfg.hook_config;
         let installed = setup::game::installed_versions(&g.dir);
+        let renderer_note = (installed.len() > 1).then(|| launcher::settings::renderer_note(&g.dir, g.cfg.default_game)).flatten();
         GameView {
             dir: Some(g.dir.display().to_string()),
             renderer: (installed.len() > 1).then_some(match g.cfg.default_game {
                 setup::game::GameVersion::SplinterCellBlacklistDx9 => "dx9",
                 setup::game::GameVersion::SplinterCellBlacklistDx11 => "dx11",
             }),
+            renderer_note: renderer_note.as_ref().map(|(t, _)| t.clone()),
+            renderer_warn: renderer_note.as_ref().is_some_and(|(_, w)| *w),
             through_steam: (cfg!(target_os = "windows") && !hooks_config::running_under_wine() && setup::launch::steam_copy(&g.dir)).then(Prefs::start_through_steam),
             proton: launcher::flow::wine_facts(&g.dir).filter(|w| w.steam).map(|w| w.launch_options),
             overlay: h.enable_overlay,

@@ -36,6 +36,7 @@
                     <button type="button" :class="{ on: g.renderer === 'dx11' }" @click="set('renderer', 'dx11')">DirectX 11 (recommended)</button>
                     <button type="button" :class="{ on: g.renderer === 'dx9' }" @click="set('renderer', 'dx9')">DirectX 9</button>
                   </div>
+                  <p v-if="g.renderer_note" :class="g.renderer_warn ? 'warn' : 'muted'" role="status">{{ g.renderer_note }}</p>
                 </template>
                 <template v-if="g.through_steam !== null">
                   <Switch :on="g.through_steam" label="Start the game through Steam (for Steam Input and controllers)" @set="set('through_steam', $event)" />

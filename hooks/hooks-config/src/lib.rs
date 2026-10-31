@@ -14,6 +14,7 @@ pub mod clock;
 pub mod diagnostics;
 pub mod fusion_fix;
 pub mod join_request;
+pub mod last_run;
 pub mod redact;
 
 #[cfg(target_os = "windows")]
