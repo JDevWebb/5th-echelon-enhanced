@@ -53,6 +53,7 @@ const KINDS: &[&str] = &[
     "nat_lost",
     "client_log",
     "relay_drop",
+    "relay_gaps",
     "login_stalled",
     "request_error",
     "report_refused",
@@ -742,6 +743,12 @@ fn describe(e: &Event) -> String {
             "In a room, but the game hadn't registered for online play {} s later: nobody could reach it",
             e.detail["after_secs"]
         ),
+        "relay_gaps" => format!(
+            "Their traffic through the relay went silent {} times (longest {:.1} s), {} with a burst after: held packets let go at once, as a lag switch does",
+            e.detail["gaps"].as_i64().unwrap_or(0),
+            e.detail["longest_ms"].as_f64().unwrap_or(0.0) / 1000.0,
+            e.detail["bursts"].as_i64().unwrap_or(0)
+        ),
         "relay_drop" => {
             let pps = |k: &str| e.detail[k].as_f64().map_or_else(|| "?".into(), |v| format!("{v:.0}"));
             let which = if e.str("direction") == "sending" { "from them" } else { "to them" };
@@ -898,6 +905,11 @@ fn other_data(e: &Event) -> Option<String> {
 /// A timeline mark's level, where it isn't the kind's own (the admin UI colours the rest by
 /// kind): failed joins that are the game's churn or a full lobby, a player's own connection
 /// stalling, and a sign-in whose replies were lost.
+/// Times a player's relayed traffic goes silent then floods (F6) before it's a problem, and
+/// over at least this long (seconds): more than one match.
+const LAG_SWITCH_TIMES: usize = 3;
+const LAG_SWITCH_SPREAD: i64 = 600;
+
 fn mark_level(e: &Event) -> Option<&'static str> {
     match e.kind.as_str() {
         "join_failed" if e.detail["own"] == true => Some("info"),
@@ -910,6 +922,7 @@ fn mark_level(e: &Event) -> Option<&'static str> {
         "login_stalled" => Some("warn"),
         "search" if other_data(e).is_some() => Some("warn"),
         "player_report" => Some("warn"),
+        "relay_gaps" if e.detail["bursts"].as_i64().unwrap_or(0) > 0 => Some("warn"),
         _ => None,
     }
 }
@@ -1102,6 +1115,27 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
                         format!("{to} didn't pick it up within two minutes (offline, or their game had left the online menus)"),
                     ));
                 }
+            }
+            // Silences then bursts in what they send through the relay (F6), again and again
+            // and over more than one match's time: how a lag switch looks. Once, on the third.
+            "relay_gaps" if e.detail["bursts"].as_i64().unwrap_or(0) > 0 => {
+                let Some(list) = by_who.get(&e.who()) else { continue };
+                let mut bursty: Vec<&&Event> = list.iter().filter(|o| o.kind == "relay_gaps" && o.detail["bursts"].as_i64().unwrap_or(0) > 0).collect();
+                bursty.sort_by_key(|o| o.at);
+                let at = bursty.iter().position(|o| std::ptr::eq(**o, e));
+                if at != Some(LAG_SWITCH_TIMES - 1) || e.at - bursty[0].at < LAG_SWITCH_SPREAD {
+                    continue;
+                }
+                let bursts: i64 = bursty.iter().map(|o| o.detail["bursts"].as_i64().unwrap_or(0)).sum();
+                out.push(problem(
+                    e,
+                    "warn",
+                    format!("{}'s traffic goes silent then floods, again and again", e.name),
+                    format!(
+                        "{bursts} bursts after silences through the relay in {} minutes: how a lag switch looks (or a very bad connection). Watch their matches before acting",
+                        (e.at - bursty[0].at) / 60
+                    ),
+                ));
             }
             // Their launcher and game went quiet to the server too (0.4.4 servers): their own
             // connection stalled, whatever came after. One problem for each run of them.
@@ -1785,6 +1819,23 @@ mod tests {
         // An old failed join that was no fault of the game's keeps the kind's colour.
         let t = super::timelines(&old[3..], &[], &std::collections::HashMap::new(), 0, 100);
         assert!(t[0]["marks"][0].get("level").is_none());
+    }
+
+    /// Silences then bursts through the relay (F6): one problem on the third, over more than one
+    /// match's time; two, or three within minutes, none.
+    #[test]
+    fn a_lag_switch_pattern_is_a_problem_once() {
+        let g = |at: i64, bursts: i64| ev("na", at, 4, "Laggy", "relay_gaps", json!({ "gaps": 2, "bursts": bursts, "longest_ms": 2400 }));
+        let two = vec![g(1000, 1), g(1400, 2)];
+        assert!(problems(&two).is_empty());
+        assert_eq!(mark_level(&two[0]), Some("warn"));
+        let quick = vec![g(1000, 1), g(1100, 1), g(1200, 1)];
+        assert!(problems(&quick).is_empty(), "within minutes: one bad stretch");
+        let spread = vec![g(1000, 1), g(1300, 0), g(1400, 2), g(1900, 1), g(2500, 3)];
+        let found = problems(&spread);
+        let titles: Vec<&str> = found.iter().filter_map(|p| p["title"].as_str()).collect();
+        assert_eq!(titles, ["Laggy's traffic goes silent then floods, again and again"]);
+        assert!(describe(&spread[0]).starts_with("Their traffic through the relay went silent 2 times (longest 2.4 s)"));
     }
 
     /// What a 0.4.8 server left out of a search, and why.

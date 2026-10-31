@@ -184,6 +184,79 @@ struct Peer {
     data_from: Option<(SocketAddrV4, Instant)>,
     /// Since when this player has been registered from `real` (a new socket starts over).
     since: Instant,
+    /// The rhythm of what they send through the relay: gaps and bursts (F6).
+    cadence: Cadence,
+}
+
+/// A silence in a player's relayed traffic this long, after steady sending, is a gap (F6).
+const GAP: Duration = Duration::from_secs(1);
+/// What comes in this long after a gap is its burst.
+const BURST_WINDOW: Duration = Duration::from_millis(250);
+/// A burst is this many times the packets steady sending brings in [`BURST_WINDOW`], and at
+/// least [`BURST_LEAST`]: held packets let go at once, as a lag switch does.
+const BURST_TIMES: f64 = 3.0;
+const BURST_LEAST: u32 = 8;
+/// Steady sending: at least this many packets a second before the gap (the game sends 30).
+const STEADY: f64 = 10.0;
+
+/// A player's relayed sending rhythm (the 0.4.8 plan's F6): gaps after steady sending, the
+/// bursts after them, and the longest gap, since [`Cadence::take`] last looked.
+#[derive(Debug, Clone, Default)]
+struct Cadence {
+    last: Option<Instant>,
+    /// Packets since `window_start`, and the rate of the window before (packets a second).
+    window_start: Option<Instant>,
+    window_packets: u32,
+    rate: f64,
+    /// A gap just ended: when, the rate before it, and the packets since.
+    burst: Option<(Instant, f64, u32)>,
+    gaps: u32,
+    bursts: u32,
+    longest_ms: u32,
+}
+
+impl Cadence {
+    fn packet(&mut self, now: Instant) {
+        if let Some((at, rate, n)) = self.burst {
+            if now.duration_since(at) <= BURST_WINDOW {
+                self.burst = Some((at, rate, n + 1));
+            } else {
+                self.burst = None;
+                #[allow(clippy::cast_precision_loss)]
+                let expected = rate * BURST_WINDOW.as_secs_f64();
+                if n >= BURST_LEAST && f64::from(n) >= expected * BURST_TIMES {
+                    self.bursts += 1;
+                }
+            }
+        }
+        if let Some(last) = self.last {
+            let gap = now.duration_since(last);
+            if gap >= GAP && self.rate >= STEADY {
+                self.gaps += 1;
+                self.longest_ms = self.longest_ms.max(u32::try_from(gap.as_millis()).unwrap_or(u32::MAX));
+                self.burst = Some((now, self.rate, 1));
+                // The silence isn't steady sending: start the rate over.
+                self.window_start = Some(now);
+                self.window_packets = 0;
+            }
+        }
+        self.last = Some(now);
+        let start = *self.window_start.get_or_insert(now);
+        self.window_packets += 1;
+        let span = now.duration_since(start);
+        if span >= Duration::from_secs(2) {
+            self.rate = f64::from(self.window_packets) / span.as_secs_f64();
+            self.window_start = Some(now);
+            self.window_packets = 0;
+        }
+    }
+
+    /// Gaps, bursts and the longest gap (ms) since the last call.
+    fn take(&mut self) -> (u32, u32, u32) {
+        let out = (self.gaps, self.bursts, self.longest_ms);
+        (self.gaps, self.bursts, self.longest_ms) = (0, 0, 0);
+        out
+    }
 }
 
 /// How long a direct player's address must stand before the address echo gives it out: the
@@ -441,6 +514,7 @@ impl Table {
                 .unwrap_or_default(),
             data_from: old.as_ref().and_then(|(_, o)| o.data_from).filter(|(a, _)| a.ip() == src.ip()),
             since: old.as_ref().filter(|(_, o)| o.real == src).map_or(now, |(_, o)| o.since),
+            cadence: old.as_ref().map(|(_, o)| o.cadence.clone()).unwrap_or_default(),
         };
         let tag = peer.tag;
         for a in &peer.aliases {
@@ -560,6 +634,7 @@ impl Table {
             return None;
         }
         sender.sent += 1;
+        sender.cadence.packet(now);
         Some(sender.advertise)
     }
 
@@ -749,6 +824,18 @@ impl Table {
             .values_mut()
             .filter(|p| p.sent + p.received > 0 || p.relayed)
             .map(|p| (p.name.clone(), std::mem::take(&mut p.sent), std::mem::take(&mut p.received)))
+            .collect()
+    }
+
+    /// Each relayed player's gaps after steady sending, the bursts after them, and the longest
+    /// gap (ms), when there were any, since the last call (F6).
+    pub fn cadences(&mut self) -> Vec<(String, u32, u32, u32)> {
+        self.peers
+            .values_mut()
+            .filter_map(|p| {
+                let (gaps, bursts, longest) = p.cadence.take();
+                (gaps > 0).then(|| (p.name.clone(), gaps, bursts, longest))
+            })
             .collect()
     }
 
@@ -1545,7 +1632,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
             let secs = now.duration_since(last_expiry).as_secs_f64();
             let since = last_expiry;
             last_expiry = now;
-            let (gone, players, relayed, flows, late, dropped_from, lapsed) = table
+            let (gone, players, relayed, flows, late, dropped_from, lapsed, cadences) = table
                 .lock()
                 .map(|mut t| {
                     // Who sent the packets the relay dropped, and whose port they were for: a
@@ -1562,7 +1649,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                         Vec::new()
                     };
                     let lapsed = lapsed_while_signed_in(&t.expiring(now), now);
-                    (t.expire(now), t.len(), t.relayed(), t.flows(), unregistered(&t, now), told, lapsed)
+                    (t.expire(now), t.len(), t.relayed(), t.flows(), unregistered(&t, now), told, lapsed, t.cadences())
                 })
                 .unwrap_or_default();
             if !dropped_from.is_empty() {
@@ -1598,6 +1685,17 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                     crate::session_events::Who::Name(name),
                     "relay_drop",
                     serde_json::json!({ "direction": direction, "before": before.round(), "after": after.round(), "player_quiet": quiet }),
+                );
+            }
+            // Silences in what a player sends through the relay, each with what came after it:
+            // a burst after a gap is how a lag switch looks (F6). Bursts only: plain gaps are
+            // a bad connection.
+            for (name, gaps, bursts, longest_ms) in cadences.into_iter().filter(|c| c.2 > 0) {
+                info!(logger, "NAT relay: {name} went silent {gaps} times (longest {longest_ms} ms), {bursts} with a burst after");
+                crate::session_events::note(
+                    crate::session_events::Who::Name(name),
+                    "relay_gaps",
+                    serde_json::json!({ "gaps": gaps, "bursts": bursts, "longest_ms": longest_ms }),
                 );
             }
             for name in gone.iter().filter(|n| !lapsed.iter().any(|(l, _)| l == *n)) {
@@ -1901,6 +1999,34 @@ mod tests {
 
     /// A relay drop says whether the player's game and launcher went quiet too: nothing from
     /// either since the look before. A game not signed in here can't be told.
+    #[test]
+    fn a_gap_then_a_burst_is_counted_as_a_lag_switch_looks() {
+        let t0 = Instant::now();
+        let mut c = Cadence::default();
+        let mut at = |c: &mut Cadence, ms: u64| c.packet(t0 + Duration::from_millis(ms));
+        // Steady at 30 a second for 3 s.
+        for i in 0..90 {
+            at(&mut c, i * 33);
+        }
+        // Silent for 2 s, then the 60 packets held meanwhile let go at once, then steady again.
+        for i in 0..60 {
+            at(&mut c, 5_000 + i * 2);
+        }
+        for i in 0..30 {
+            at(&mut c, 5_300 + i * 33);
+        }
+        assert_eq!(c.take(), (1, 1, 2_063));
+        // A gap that ends in steady sending: a bad connection, not a burst.
+        for i in 0..90 {
+            at(&mut c, 6_290 + i * 33);
+        }
+        for i in 0..30 {
+            at(&mut c, 15_000 + i * 33);
+        }
+        let (gaps, bursts, _) = c.take();
+        assert_eq!((gaps, bursts), (1, 0));
+    }
+
     #[test]
     fn a_relay_drop_says_whether_the_player_went_quiet_too() {
         let now = Instant::now();

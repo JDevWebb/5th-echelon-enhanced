@@ -391,9 +391,10 @@ pub fn remote_relay_of(name: &str) -> Option<(String, bool, Option<u16>)> {
 }
 
 /// The session events a relay sends the matchmaking server, and the fields each keeps.
-const RELAY_EVENTS: [(&str, &[&str]); 4] = [
+const RELAY_EVENTS: [(&str, &[&str]); 5] = [
     ("nat", &["relayed"]),
     ("relay_drop", &["direction", "before", "after", "player_quiet"]),
+    ("relay_gaps", &["gaps", "bursts", "longest_ms"]),
     ("nat_missing", &["after_secs"]),
     ("nat_lost", &["probe_secs"]),
 ];
