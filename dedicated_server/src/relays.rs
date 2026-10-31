@@ -266,8 +266,8 @@ pub fn serve(storage: std::sync::Arc<crate::storage::Storage>) -> std::io::Resul
     let _ = ASKS.set(queue);
     std::thread::Builder::new().name("relay-pairs".into()).spawn(move || {
         while let Ok(q) = questions.recv() {
-            // Either way round, as a helper's own pairs are.
-            let yes = storage.may_relay(&q.a, &q.b).unwrap_or(false) || storage.may_relay(&q.b, &q.a).unwrap_or(false);
+            // The way the packet goes: sender (a) to receiver (b).
+            let yes = storage.may_relay(&q.a, &q.b).unwrap_or(false);
             let Some(own) = OWN_ID.get() else { continue };
             let answer = crate::link::seal(&q.link.key, own, identity::now(), &crate::link::Body::Answer { nonce: q.nonce, yes });
             let _ = q.socket.send_to(&answer, q.src);

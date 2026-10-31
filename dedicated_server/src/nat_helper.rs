@@ -251,7 +251,13 @@ pub struct Table {
     remote_pairs: HashMap<(String, Id), Instant>,
     remote_refused: HashMap<(String, Id), Instant>,
     remote_asking: HashMap<(String, Id), Instant>,
+    /// Addresses on other relays our players sent to (their packets forwarded there), and when:
+    /// what comes back from one to that player is a reply, as on a stateful firewall.
+    outbound: HashMap<(Id, SocketAddrV4), Instant>,
 }
+
+/// The most addresses kept for replies ([`Table::outbound`]).
+const MAX_OUTBOUND: usize = 50_000;
 
 /// Where a packet another relay forwarded goes ([`Table::deliver`]).
 #[derive(Debug, PartialEq, Eq)]
@@ -292,6 +298,7 @@ impl Table {
             remote_pairs: HashMap::new(),
             remote_refused: HashMap::new(),
             remote_asking: HashMap::new(),
+            outbound: HashMap::new(),
             echoes_swept: Instant::now(),
         }
     }
@@ -554,7 +561,7 @@ impl Table {
     /// The player sending from `src` with `tag`, whose packet for another relay's address goes
     /// there (G1 item 8): their name and the address the others see them at, charged to their
     /// allowance as relayed data is. None drops it.
-    pub fn forwarder(&mut self, src: SocketAddrV4, tag: nat_proto::Tag, len: usize, now: Instant) -> Option<(String, SocketAddrV4)> {
+    pub fn forwarder(&mut self, src: SocketAddrV4, tag: nat_proto::Tag, to: SocketAddrV4, len: usize, now: Instant) -> Option<(String, SocketAddrV4)> {
         let sender_id = match self.by_real.get(&src).or_else(|| self.by_alias.get(&src)) {
             Some(id) => *id,
             None => self.adopt_port(src, &tag)?,
@@ -563,6 +570,10 @@ impl Table {
             return None;
         }
         let from = self.charge(sender_id, len, now)?;
+        // What comes back from `to` to this player is a reply ([`Self::deliver`]).
+        if self.outbound.len() < MAX_OUTBOUND || self.outbound.contains_key(&(sender_id, to)) {
+            self.outbound.insert((sender_id, to), now);
+        }
         let sender = self.peers.get_mut(&sender_id)?;
         sender.data_from = Some((src, now));
         Some((sender.name.clone(), from))
@@ -571,7 +582,7 @@ impl Table {
     /// Where a packet another relay forwarded from its player `from_name` for `to` (an address of
     /// one of ours) goes: to our player, once the matchmaking server said it put the two
     /// together ([`NatConfig::relay_pairs`]), asked about first when nobody knows yet.
-    pub fn deliver(&mut self, from_name: &str, to: SocketAddrV4, now: Instant) -> Delivery {
+    pub fn deliver(&mut self, from_name: &str, from: SocketAddrV4, to: SocketAddrV4, now: Instant) -> Delivery {
         let (first, last) = self.cfg.relay_ports;
         let relayed = (*to.ip() == self.relay_ip && (first..=last).contains(&to.port()))
             .then(|| self.by_vport.get(&to.port()))
@@ -579,7 +590,10 @@ impl Table {
         let Some(target_id) = relayed.or_else(|| self.by_advertise.get(&to)).or_else(|| self.by_real.get(&to)).copied() else {
             return Delivery::Drop;
         };
-        if self.cfg.relay_pairs {
+        // A reply to what our player sent there; else the matchmaking server is asked, the way
+        // the packet goes (sender to receiver), as for this helper's own pairs.
+        let reply = self.outbound.get(&(target_id, from)).is_some_and(|at| now.duration_since(*at) < PAIR_FRESH);
+        if self.cfg.relay_pairs && !reply {
             let key = (identity::name_key(from_name), target_id);
             match self.remote_pairs.get_mut(&key) {
                 Some(at) if now.duration_since(*at) < PAIR_FRESH => *at = now,
@@ -800,6 +814,7 @@ impl Table {
         self.remote_pairs.retain(|(_, b), at| now.duration_since(*at) < PAIR_FRESH && peers.contains_key(b));
         self.remote_refused.retain(|_, at| now.duration_since(*at) < REFUSED_FOR);
         self.remote_asking.retain(|_, at| now.duration_since(*at) < ASKING_FOR);
+        self.outbound.retain(|(id, _), at| now.duration_since(*at) < PAIR_FRESH && peers.contains_key(id));
         self.asking.retain(|_, at| now.duration_since(*at) < ASKING_FOR);
         self.asks_by_ip.retain(|_, (at, _)| now.duration_since(*at) < Duration::from_secs(1));
         self.sweep_echoes(now);
@@ -1221,13 +1236,13 @@ struct RemoteAsk {
 fn remote_pair_worker(socket: &UdpSocket, table: &Mutex<Table>, may_relay: &MayRelay, asked: &std::sync::mpsc::Receiver<RemoteAsk>) {
     let mut out = Vec::with_capacity(2048);
     while let Ok(ask) = asked.recv() {
-        // Either way round, as this helper's own pairs are.
-        let may = may_relay(&ask.from_name, &ask.target_name).is_ok() || may_relay(&ask.target_name, &ask.from_name).is_ok();
+        // The way the packet goes: sender to receiver.
+        let may = may_relay(&ask.from_name, &ask.target_name).is_ok();
         let now = Instant::now();
         let delivery = table.lock().map_or(Delivery::Drop, |mut t| {
             t.remote_decided(&ask.from_name, ask.target_id, may, now);
             if may {
-                t.deliver(&ask.from_name, ask.to, now)
+                t.deliver(&ask.from_name, ask.from, ask.to, now)
             } else {
                 Delivery::Drop
             }
@@ -1616,7 +1631,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
             // forwarded there (G1 item 8), charged to the sender as relayed data is.
             if route.is_none() {
                 if let Some(link) = crate::relays::forward_link(to) {
-                    if let Some((name, from)) = table.lock().ok().and_then(|mut t| t.forwarder(src, tag, len - offset, now)) {
+                    if let Some((name, from)) = table.lock().ok().and_then(|mut t| t.forwarder(src, tag, to, len - offset, now)) {
                         if crate::relays::send_forward(socket, &link, &name, from, to, &data[offset..]) {
                             forwarded += 1;
                         } else {
@@ -1652,7 +1667,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
         if crate::link::is_link(data) {
             // Another relay's player's packet for one of ours (G1 item 8).
             if let Some(f) = crate::relays::on_link(data, src, socket) {
-                match table.lock().map_or(Delivery::Drop, |mut t| t.deliver(&f.from_name, f.to, now)) {
+                match table.lock().map_or(Delivery::Drop, |mut t| t.deliver(&f.from_name, f.from, f.to, now)) {
                     Delivery::Send(target, tag) => {
                         nat_proto::encode_data_from(&mut out, tag, f.from, &f.payload);
                         match socket.send_to(&out, target) {

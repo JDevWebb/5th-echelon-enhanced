@@ -2575,6 +2575,21 @@ async fn cross_relay_forward(ctx: &mut Ctx, relay_a: IpAddr, relay_b: IpAddr) ->
         back == Some((rb.advertise, b"back again".to_vec())),
         "the reply didn't come back through both relays: {back:?}"
     );
+    // A stranger at relay B hosting a public match of their own can't reach the near player,
+    // who never sent them anything (the pair is asked the way the packet goes).
+    let mut stranger = ctx.player("Stranger").await?;
+    let (ss, rs) = register(&stranger, at_b).await?;
+    let own = stranger.create_session(PUBLIC_MATCH).await?;
+    stranger.add_participants(own, &[stranger.pid], &[]).await?;
+    tokio::time::sleep(Duration::from_secs(3)).await;
+    for _ in 0..3 {
+        ss.send_to(&send(rs.tag, ra.advertise, b"from a stranger"), at_b).await?;
+    }
+    ensure!(
+        nat_wait_data(&sa, Duration::from_millis(2500)).await.is_none(),
+        "a stranger hosting a public match reached a player at another relay"
+    );
+    stranger.disconnect().await?;
     near.disconnect().await?;
     far.disconnect().await
 }
