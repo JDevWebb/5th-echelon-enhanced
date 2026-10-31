@@ -268,9 +268,25 @@ unsafe extern "cdecl" fn UPLAY_Release(ptr: *mut List) -> bool {
     true
 }
 
+/// This start went through Ubisoft Connect (Ubisoft's own UPLAY_Startup was called).
+static UBISOFT_STARTUP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The game signed in to our server: after a start through Ubisoft Connect, this copy has shown
+/// it starts that way, and the launcher may offer starting without it (the 0.4.8 plan's P4).
+pub fn signed_in() {
+    if UBISOFT_STARTUP.load(std::sync::atomic::Ordering::Relaxed) {
+        if let Some(dir) = crate::community::folder() {
+            hooks_config::last_run::note_ubisoft_connect(dir);
+        }
+    }
+}
+
 #[forwardable_export(always_call)]
 unsafe extern "cdecl" fn UPLAY_Startup(uplay_id: usize, game_version: usize, language_country_code_utf8: *const c_char) -> isize {
     if let Some(config) = crate::config::get() {
+        if config.forward_calls.iter().any(|c| c == "UPLAY_Startup") {
+            UBISOFT_STARTUP.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
         if config.enable_overlay {
             info!("Initializing overlay");
             let (tx, rx) = crossbeam_channel::unbounded();

@@ -573,6 +573,21 @@ pub fn renderer_note(game_dir: &std::path::Path, chosen: setup::game::GameVersio
     Some((format!("The game last ran with {ran}: {why}"), !last.launcher))
 }
 
+/// The "Start without Ubisoft Connect" switch (the 0.4.8 plan's P4): Some(true) where it's
+/// offered, Some(false) where it will be once a start through Ubisoft Connect worked on this copy
+/// (so it's for the copy the player owns), None where it means nothing (Wine and Proton start
+/// without it already).
+pub fn ubisoft_connect_offer(game_dir: &std::path::Path, on: bool) -> Option<bool> {
+    if !cfg!(target_os = "windows") || hooks_config::running_under_wine() {
+        return None;
+    }
+    Some(on || hooks_config::last_run::ubisoft_connect_worked(game_dir))
+}
+
+pub const WITHOUT_UBISOFT_CONNECT: &str = "Start without Ubisoft Connect";
+pub const WITHOUT_UBISOFT_CONNECT_ON: &str = "The game starts without opening Ubisoft Connect. Ubisoft's own overlay isn't there; everything 5th Echelon does works as before.";
+pub const WITHOUT_UBISOFT_CONNECT_LATER: &str = "Starting without Ubisoft Connect is offered here once the game has started through it and signed in on this PC.";
+
 #[cfg(test)]
 mod renderer_note_tests {
     use setup::game::GameVersion;
@@ -665,6 +680,15 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
         )));
     }
     theme::switch(ui, &mut hook.auto_join_invite, "Join invites automatically");
+    match ubisoft_connect_offer(&game.dir, hook.without_ubisoft_connect) {
+        Some(true) => {
+            theme::switch(ui, &mut hook.without_ubisoft_connect, WITHOUT_UBISOFT_CONNECT).on_hover_text(WITHOUT_UBISOFT_CONNECT_ON);
+        }
+        Some(false) => {
+            ui.label(theme::muted(WITHOUT_UBISOFT_CONNECT_LATER));
+        }
+        None => {}
+    }
     // Fusion Fix's own fix, when it's on, NOPs the clamp ours widens: nothing to do here then.
     if hooks_config::fusion_fix::removes_mouse_accel(&game.dir) {
         let mut off = false;

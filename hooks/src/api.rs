@@ -388,6 +388,7 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
         return Err(Error::LoginFailure);
     } else if !response.token.is_empty() {
         info!("Login successful");
+        crate::uplay_r1_loader::signed_in();
         {
             let mut guard = TOKEN.lock().unwrap();
             *guard = Some(response.token.parse()?);

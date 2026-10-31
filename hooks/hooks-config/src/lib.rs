@@ -356,6 +356,11 @@ pub struct Config {
     pub logging: Logging,
     #[serde(default)]
     pub auto_join_invite: bool,
+    /// Start without Ubisoft Connect: the add-on answers the game's startup itself instead of
+    /// Ubisoft's DLL, which starts Ubisoft Connect (as under Wine). The launcher offers it once
+    /// a start through Ubisoft Connect worked on this copy (`last_run::ubisoft_connect_worked`).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub without_ubisoft_connect: bool,
     /// Removes the engine's negative mouse acceleration (widens the per-frame look-delta clamp,
     /// see the hooks' `mouse_fix`). Off until the player chose: the launcher asks once, with it
     /// on as the recommendation (its `new_options`), and Settings › Game changes it. Nothing to
@@ -1238,6 +1243,8 @@ fn _get_or_load(path: &Path) -> anyhow::Result<&'static Config> {
         // game hangs waiting for it; run without it there.
         if running_under_wine() {
             info!("Wine detected: running without Ubisoft Connect");
+        } else if cfg.without_ubisoft_connect {
+            info!("Running without Ubisoft Connect (the launcher's setting)");
         } else {
             info!("Passing startup to original dll");
             cfg.forward_calls.push("UPLAY_Startup".into());

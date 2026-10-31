@@ -57,6 +57,11 @@
                 </div>
                 <p v-if="g.overlay && /^F\d/.test(g.overlay_key)" class="muted">On most laptops, and some keyboards, hold Fn and press {{ g.overlay_key }}. If nothing happens, pick another key here.</p>
                 <Switch :on="g.auto_join_invite" label="Join invites automatically" @set="set('auto_join_invite', $event)" />
+                <template v-if="g.without_ubisoft_connect !== null">
+                  <Switch :on="g.without_ubisoft_connect" label="Start without Ubisoft Connect" @set="set('without_ubisoft_connect', $event)" />
+                  <p class="muted">The game starts without opening Ubisoft Connect. Ubisoft's own overlay isn't there; everything 5th Echelon does works as before.</p>
+                </template>
+                <p v-else-if="g.ubisoft_connect_later" class="muted">Starting without Ubisoft Connect is offered here once the game has started through it and signed in on this PC.</p>
                 <template v-if="g.mouse_accel_blocked">
                   <Switch :on="false" disabled label="Remove negative mouse acceleration" />
                   <p class="muted">{{ g.mouse_accel_blocked }}</p>

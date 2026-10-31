@@ -62,6 +62,10 @@ pub struct GameView {
     overlay_key: String,
     overlay_keys: Vec<&'static str>,
     auto_join_invite: bool,
+    /// Start without Ubisoft Connect: on or off where offered; None where it isn't (yet).
+    without_ubisoft_connect: Option<bool>,
+    /// Not offered yet: a start through Ubisoft Connect must work first.
+    ubisoft_connect_later: bool,
     /// Fusion Fix removes the mouse acceleration itself: why this one is off.
     mouse_accel_blocked: Option<&'static str>,
     disable_mouse_accel: bool,
@@ -167,6 +171,7 @@ pub fn settings(state: tauri::State<Launcher>) -> View {
     let game_view = game.map(|g| {
         let h = &g.cfg.hook_config;
         let installed = setup::game::installed_versions(&g.dir);
+        let offer = launcher::settings::ubisoft_connect_offer(&g.dir, h.without_ubisoft_connect);
         let renderer_note = (installed.len() > 1).then(|| launcher::settings::renderer_note(&g.dir, g.cfg.default_game)).flatten();
         GameView {
             dir: Some(g.dir.display().to_string()),
@@ -182,6 +187,8 @@ pub fn settings(state: tauri::State<Launcher>) -> View {
             overlay_key: h.overlay_key.clone(),
             overlay_keys: hooks_config::OVERLAY_KEYS.iter().map(|(n, _)| *n).collect(),
             auto_join_invite: h.auto_join_invite,
+            without_ubisoft_connect: (offer == Some(true)).then_some(h.without_ubisoft_connect),
+            ubisoft_connect_later: offer == Some(false),
             mouse_accel_blocked: hooks_config::fusion_fix::removes_mouse_accel(&g.dir).then_some(launcher::new_options::FUSION_FIX_MOUSE),
             disable_mouse_accel: h.disable_mouse_accel,
             brighten: g.cfg.brighten,
@@ -343,6 +350,13 @@ pub fn set(app: tauri::AppHandle, state: tauri::State<Launcher>, key: String, va
                 return Err("Not a key the overlay opens with.".into());
             }
             game.update(notices, |c| c.hook_config.overlay_key = key);
+        }
+        "without_ubisoft_connect" => {
+            let on = b()?;
+            if on && launcher::settings::ubisoft_connect_offer(&game.dir, false) != Some(true) {
+                return Err(launcher::settings::WITHOUT_UBISOFT_CONNECT_LATER.into());
+            }
+            game.update(notices, |c| c.hook_config.without_ubisoft_connect = on);
         }
         "auto_join_invite" => {
             let on = b()?;

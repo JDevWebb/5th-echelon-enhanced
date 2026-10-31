@@ -32,6 +32,23 @@ impl LastRun {
     }
 }
 
+/// Written once a start through Ubisoft Connect signed in to a server: the copy starts that
+/// way, so the launcher offers starting without it ([`crate::Config::without_ubisoft_connect`]).
+pub const UBISOFT_CONNECT_FILE: &str = "bl-ubisoft-connect.txt";
+
+/// Notes that a start through Ubisoft Connect worked (once; later ones leave it).
+pub fn note_ubisoft_connect(game_dir: &Path) {
+    let path = game_dir.join(UBISOFT_CONNECT_FILE);
+    if !path.exists() {
+        let _ = std::fs::write(&path, "This copy of the game started through Ubisoft Connect and signed in.\n");
+    }
+}
+
+/// Whether a start through Ubisoft Connect worked in `game_dir`.
+pub fn ubisoft_connect_worked(game_dir: &Path) -> bool {
+    game_dir.join(UBISOFT_CONNECT_FILE).is_file()
+}
+
 /// The file's text.
 pub fn write(exe: &str, steam: bool, launcher: bool) -> String {
     format!("exe={exe}\nsteam={steam}\nlauncher={launcher}\n")
