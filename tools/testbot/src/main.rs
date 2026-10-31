@@ -2340,8 +2340,8 @@ async fn match_state(ctx: &mut Ctx) -> Result<()> {
     seeker.disconnect().await
 }
 
-/// Witness reports (F9): a guest in the host's match reports seeing the host too fast, and a
-/// player they never played with; both are taken (the stranger quietly left out).
+/// Witness reports (F9): only from testers the admins allowed, so a guest in the host's match
+/// who isn't one is refused. (Allowed testers need the federation's rules: unit-tested there.)
 async fn witness(ctx: &mut Ctx) -> Result<()> {
     let open = format!("113 => 0;103 => 0;102 => 6;101 => {}", 940_000 + ctx.run);
     let mut host = ctx.player("Host").await?;
@@ -2358,7 +2358,11 @@ async fn witness(ctx: &mut Ctx) -> Result<()> {
         ground_speed: 450.0,
         over_seconds: 6,
     };
-    guest.witness(vec![seen(&host.name), seen("NoSuchPlayer")]).await?;
+    // Not a tester the admins allowed: refused (the add-on's switch is the player's own).
+    match guest.witness(vec![seen(&host.name), seen("NoSuchPlayer")]).await {
+        Err(s) if s.code() == tonic::Code::PermissionDenied => {}
+        other => return Err(eyre!("a witness report from someone who isn't a tester: {other:?}")),
+    }
     host.disconnect().await?;
     guest.disconnect().await
 }

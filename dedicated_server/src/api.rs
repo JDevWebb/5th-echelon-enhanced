@@ -1846,11 +1846,35 @@ impl Misc for MyMisc {
     /// player, naming the witness (the Sessions page counts independent witnesses).
     async fn witness(&self, request: Request<misc::WitnessRequest>) -> Result<Response<misc::WitnessResponse>, Status> {
         const WITNESS_OVER: u32 = 3;
+        // A report covers a minute: more over seconds than that aren't a game's.
+        const MOST_OVER: u32 = 60;
         let user_id = caller(&request)?;
         if !crate::rate_limit::polls().check(user_id) {
             return Err(Status::resource_exhausted("Too many requests; slow down"));
         }
-        let r = request.into_inner();
+        // Testers only (security review): the add-on's switch is the player's own, so the server
+        // takes reports only from identities the admins allowed (Security › Client builds).
+        let identity = self.storage.find_person(user_id).await.map_err(internal)?.and_then(|p| p.global_id);
+        if !identity.as_deref().is_some_and(crate::clients::allowed_identity) {
+            return Err(Status::permission_denied("Witness reports are for the network's testers"));
+        }
+        // One report a minute a witness, and each player they saw once in it.
+        static LAST: std::sync::LazyLock<std::sync::Mutex<HashMap<u32, std::time::Instant>>> = std::sync::LazyLock::new(Default::default);
+        {
+            let mut last = LAST.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if last.get(&user_id).is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(50)) {
+                return Err(Status::resource_exhausted("One witness report a minute"));
+            }
+            if last.len() >= 10_000 {
+                last.retain(|_, at| at.elapsed() < std::time::Duration::from_secs(60));
+            }
+            last.insert(user_id, std::time::Instant::now());
+        }
+        let mut r = request.into_inner();
+        r.seen
+            .retain(|s| s.max_speed.is_finite() && s.max_speed >= 0.0 && s.ground_speed.is_finite() && s.ground_speed > 0.0 && s.over_seconds <= MOST_OVER);
+        let mut names = std::collections::HashSet::new();
+        r.seen.retain(|s| names.insert(s.name.to_lowercase()));
         // Refreshed first, then only players they shared a room with lately.
         let _ = crate::player_reports::players(&self.storage, user_id).await.map_err(internal)?;
         let known = crate::player_reports::recent(user_id);
