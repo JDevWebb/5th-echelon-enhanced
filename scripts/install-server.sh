@@ -1652,6 +1652,14 @@ UMask=0077
 [Install]
 WantedBy=multi-user.target
 UNIT
+    # A drop-in of someone's own that sets ExecStart= wins over the unit just written, so
+    # its arguments (the names, --chat, the admin UI) wouldn't be these (R9).
+    for d in "/etc/systemd/system/${COORD_SERVICE}.service.d"/*.conf; do
+      [ -f "$d" ] || continue
+      if grep -q '^ExecStart=' "$d"; then
+        notes+=("$d sets ExecStart=, which overrides the coordinator's unit this script writes: its arguments aren't this run's. Remove it, or check it by hand (systemctl cat $COORD_SERVICE).")
+      fi
+    done
     systemctl daemon-reload
     if [ -n "$standby" ] && ! systemctl is-active --quiet "$COORD_SERVICE"; then
       # A standby: its coordinator starts when the coordinator's record points here, and
