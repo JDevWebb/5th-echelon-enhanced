@@ -1159,7 +1159,7 @@ impl Users for MyUsers {
         }
         attempt.succeeded();
         // Their PC's ids, for the coordinator (F10): a PC tied to a banned player's is banned.
-        crate::hardware::note(user_id, &hardware, &vm);
+        crate::hardware::note(user_id, &hardware, &vm, peer);
         if let Err(refusal) = self.admit(user_id, &username, &client, &build).await {
             if refusal.code() == tonic::Code::FailedPrecondition {
                 crate::clients::refused(user_id, &username, &client, &password);
@@ -1388,7 +1388,7 @@ impl Users for MyUsers {
             return Err(Status::permission_denied(crate::players::banned_message(&ban)));
         }
         // Before the password changes: an outdated launcher changes nothing.
-        crate::hardware::note(person.id, &request.hardware, &request.vm);
+        crate::hardware::note(person.id, &request.hardware, &request.vm, peer);
         self.admit(person.id, &person.username, &request.client, &request.build).await?;
         if !self.storage.use_key_login(person.id, request.time).await.map_err(internal)? {
             return Err(refused("That signature was already used"));

@@ -1,7 +1,9 @@
 //! Players' hardware ids, hashed, as their game or launcher sent them at sign-in (the 0.4.8
 //! plan's F10): kept in memory only, never in the database, and sent with the player's roster
 //! entry to the coordinator, which keys them again with a secret of its own and refuses a PC
-//! that two of them tie to a banned player's.
+//! that two of them tie to a banned player's. With them goes a hash of the network the player
+//! signed in from (an IPv4 /24 or IPv6 /48, never the address): a sign of a banned player back
+//! under a new name, only ever flagged for the admins.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -53,14 +55,39 @@ pub fn valid(ids: &[server_api::users::HardwareId]) -> Vec<Id> {
     out
 }
 
-/// `user` signed in with these ids (and on a virtual machine, `vm`): kept for the roster,
-/// which goes soon after.
-pub fn note(user: u32, ids: &[server_api::users::HardwareId], vm: &str) {
-    let ids = valid(ids);
-    let vm: String = vm.chars().filter(|c| !c.is_control()).take(32).collect();
+/// The hash of the network `ip` is in: its /24 (IPv4) or /48 (IPv6), never the address.
+pub fn network(ip: std::net::IpAddr) -> Id {
+    use sha2::Digest as _;
+    let prefix = match ip {
+        std::net::IpAddr::V4(v4) => {
+            let o = v4.octets();
+            format!("{}.{}.{}.0/24", o[0], o[1], o[2])
+        }
+        std::net::IpAddr::V6(v6) => match v6.to_ipv4_mapped() {
+            Some(v4) => return network(std::net::IpAddr::V4(v4)),
+            None => {
+                let s = v6.segments();
+                format!("{:x}:{:x}:{:x}::/48", s[0], s[1], s[2])
+            }
+        },
+    };
+    let digest = sha2::Sha256::digest(format!("fes-net-v1\0{prefix}").as_bytes());
+    Id {
+        kind: String::from("network"),
+        hash: digest.iter().map(|b| format!("{b:02x}")).collect(),
+    }
+}
+
+/// `user` signed in from `ip` with these ids (and on a virtual machine, `vm`): kept for the
+/// roster, which goes soon after.
+pub fn note(user: u32, ids: &[server_api::users::HardwareId], vm: &str, ip: Option<std::net::IpAddr>) {
+    let mut ids = valid(ids);
     if ids.is_empty() && vm.is_empty() {
+        // An older client: nothing of its PC, so nothing of its network either.
         return;
     }
+    ids.extend(ip.map(network));
+    let vm: String = vm.chars().filter(|c| !c.is_control()).take(32).collect();
     let mut all = seen();
     if all.len() >= MOST_PLAYERS && !all.contains_key(&user) {
         all.retain(|_, s| s.at.elapsed() < KEPT_FOR);
@@ -119,9 +146,12 @@ mod tests {
 
     #[test]
     fn noted_for_the_roster() {
-        note(900_001, &[id("linux-machine-id", &"b".repeat(64))], "");
+        note(900_001, &[id("linux-machine-id", &"b".repeat(64))], "", Some("203.0.113.77".parse().unwrap()));
         let (ids, vm) = of(900_001);
-        assert_eq!((ids.len(), vm), (1, None));
+        assert_eq!((ids.len(), vm), (2, None));
+        assert_eq!(ids[1], network("203.0.113.9".parse().unwrap()), "the same /24");
+        assert_ne!(ids[1], network("203.0.114.9".parse().unwrap()));
+        assert_eq!(network("::ffff:203.0.113.1".parse().unwrap()), ids[1]);
         assert_eq!(of(900_002), (Vec::new(), None));
     }
 }

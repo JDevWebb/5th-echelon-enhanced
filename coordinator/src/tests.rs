@@ -1941,6 +1941,69 @@ async fn what_a_server_says_of_its_players_bans_no_one_elsewhere() {
     );
 }
 
+/// A new account soon after an admin's ban that signs in from the banned player's network, or
+/// whose friends are mostly theirs, is flagged (never banned); one with neither isn't.
+#[tokio::test]
+async fn a_banned_player_back_under_a_new_name_is_flagged() {
+    let t = start("hardware-evasion").await;
+    let (a, b) = (t.join("server-a").await, t.join("server-b").await);
+    let roster = |players: Vec<Value>| Some(json!({ "full": false, "players": players }));
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&a),
+        roster(vec![on_pc(1, "Exo", Some("ab12"), &[("machine-guid", 'a'), ("network", '1')])]),
+    )
+    .await;
+    sqlx::query("UPDATE player_hardware SET first_seen = first_seen - 100").execute(&t.c.pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO links (global_id, server_id, username, linked_at) VALUES ('ab12', 'server-a', 'Exo', 0), ('cd34', 'server-b', 'Neo', 0), ('ef56', 'server-b', 'Pal', 0), ('gh78', 'server-b', 'Stranger', 0)",
+    )
+    .execute(&t.c.pool)
+    .await
+    .unwrap();
+    for (x, y) in [
+        ("ab12", "f1"),
+        ("f2", "ab12"),
+        ("ab12", "f3"),
+        ("ef56", "f1"),
+        ("f2", "ef56"),
+        ("ef56", "f3"),
+        ("ef56", "f4"),
+    ] {
+        sqlx::query("INSERT INTO friendships (a, b, friends, updated) VALUES (?, ?, 1, 0)")
+            .bind(x)
+            .bind(y)
+            .execute(&t.c.pool)
+            .await
+            .unwrap();
+    }
+    t.c.set_identity_ban("ab12", Some(("aimbot", None)), "admin1").await.unwrap();
+    let new = |id: i64, name: &str, identity: &str, ids: &[(&str, char)]| {
+        let mut p = on_pc(id, name, Some(identity), ids);
+        p["created_at"] = json!(identity::now());
+        p
+    };
+    t.call(
+        "POST",
+        "/v1/players",
+        Some(&b),
+        roster(vec![
+            new(7, "Neo", "cd34", &[("machine-guid", 'b'), ("network", '1')]),
+            new(8, "Pal", "ef56", &[("machine-guid", 'c'), ("network", '2')]),
+            new(9, "Stranger", "gh78", &[("machine-guid", 'd'), ("network", '3')]),
+        ]),
+    )
+    .await;
+    assert!(t.pulse_actions(&b).await.is_empty(), "flags only, never a ban (one network id isn't a PC)");
+    let evasion = |d: Value| d["hardware"]["matches"].as_array().unwrap().iter().find(|m| m["outcome"] == "evasion").cloned();
+    let neo = evasion(t.c.player_detail("server-b", 7).await.unwrap().unwrap()).expect("the same network");
+    assert!(neo["detail"].as_str().unwrap().contains("same network"), "{neo}");
+    let pal = evasion(t.c.player_detail("server-b", 8).await.unwrap().unwrap()).expect("friends mostly theirs");
+    assert!(pal["detail"].as_str().unwrap().contains("3 of their 4 friends"), "{pal}");
+    assert!(evasion(t.c.player_detail("server-b", 9).await.unwrap().unwrap()).is_none());
+}
+
 #[tokio::test]
 async fn ids_many_share_never_ban_nor_do_ended_bans() {
     let t = start("hardware-shared").await;

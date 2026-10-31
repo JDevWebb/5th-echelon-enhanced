@@ -15,7 +15,11 @@
       <p v-if="d.network_ban" class="callout bad">Banned across the network {{ d.network_ban.until ? `until ${fmt.when(d.network_ban.until)}` : 'for good' }}{{ d.network_ban.reason ? `: ${d.network_ban.reason}` : '' }}: every account of theirs, on every server, and any they make. <span class="muted small">(by {{ d.network_ban.by }}, {{ fmt.when(d.network_ban.at) }})</span></p>
       <p v-else-if="p.banned" class="callout bad">Banned {{ p.banned.until ? `until ${fmt.when(p.banned.until)}` : 'for good' }}{{ p.banned.reason ? `: ${p.banned.reason}` : '' }} <span class="muted small">(since {{ fmt.when(p.banned.at) }})</span></p>
       <!-- Their PC (F10): what it shares with banned players', never the ids themselves. -->
-      <p v-for="m in (d.hardware?.matches || []).filter((m) => m.outcome !== 'vm')" :key="`${m.outcome}${m.server}${m.player}`" class="callout" :class="m.outcome === 'ban' ? 'bad' : 'warn'">
+      <p v-for="m in (d.hardware?.matches || []).filter((m) => m.outcome === 'evasion')" :key="`evasion${m.server}${m.player}`" class="callout warn">
+        Maybe banned <RouterLink :to="`/players/${encodeURIComponent(m.server)}/${m.player}`">{{ m.name || `#${m.player}` }}</RouterLink> back under a new name: {{ m.detail }}. Only flagged: networks and friends are shared.
+        <span class="muted small">({{ fmt.when(m.at) }})</span>
+      </p>
+      <p v-for="m in (d.hardware?.matches || []).filter((m) => m.outcome === 'ban' || m.outcome === 'flag')" :key="`${m.outcome}${m.server}${m.player}`" class="callout" :class="m.outcome === 'ban' ? 'bad' : 'warn'">
         {{ m.outcome === 'ban' ? 'Banned for their PC' : 'Maybe the same PC' }}: {{ m.matched }} hardware id{{ m.matched === 1 ? '' : 's' }} in common with banned
         <RouterLink :to="`/players/${encodeURIComponent(m.server)}/${m.player}`">{{ m.name || `#${m.player}` }}</RouterLink> on {{ m.server }}{{ m.outcome === 'ban' ? '' : ' (one id: a shared or second-hand PC is possible, so it\'s only flagged)' }}.
         <span class="muted small">({{ fmt.when(m.at) }})</span>
