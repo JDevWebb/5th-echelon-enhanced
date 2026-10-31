@@ -1847,6 +1847,9 @@ impl Misc for MyMisc {
     /// A report of a player the caller played with lately, for the network's admins (F5).
     async fn report_player(&self, request: Request<misc::ReportPlayerRequest>) -> Result<Response<misc::ReportResponse>, Status> {
         let user_id = caller(&request)?;
+        if !crate::rate_limit::polls().check(user_id) {
+            return Err(Status::resource_exhausted("Too many requests; slow down"));
+        }
         let peer = client_addr(&request);
         let r = request.into_inner();
         let target: u32 = r.id.parse().map_err(|_| Status::invalid_argument("Not a player"))?;

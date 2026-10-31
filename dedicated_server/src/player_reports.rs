@@ -128,9 +128,20 @@ pub async fn report(storage: &Storage, user: u32, peer: Option<std::net::IpAddr>
     let Some((_, name, room)) = recent(user).into_iter().find(|(id, ..)| *id == target) else {
         return Ok(Err(Refused::NotSeen));
     };
-    if reported().get(&(user, target)).is_some_and(|at| at.elapsed() < AGAIN_AFTER) {
-        return Ok(Err(Refused::Again));
+    // Marked before it's filed, so two at once can't both pass; taken back if it isn't filed.
+    {
+        let mut all = reported();
+        if all.get(&(user, target)).is_some_and(|at| at.elapsed() < AGAIN_AFTER) {
+            return Ok(Err(Refused::Again));
+        }
+        if all.len() >= MOST_REPORTERS {
+            all.retain(|_, at| at.elapsed() < AGAIN_AFTER);
+        }
+        all.insert((user, target), Instant::now());
     }
+    let unmark = || {
+        reported().remove(&(user, target));
+    };
     let text: String = text.chars().filter(|c| !c.is_control() || *c == '\n').take(MOST_TEXT).collect();
     let text = text.trim();
     let incoming = crate::reports::Incoming {
@@ -146,17 +157,17 @@ pub async fn report(storage: &Storage, user: u32, peer: Option<std::net::IpAddr>
         ]),
         files: Vec::new(),
     };
-    let id = match crate::reports::accept(storage, user, peer, incoming, false).await? {
-        Ok(id) => id,
-        Err(_) => return Ok(Err(Refused::TooMany)),
-    };
-    {
-        let mut all = reported();
-        if all.len() >= MOST_REPORTERS {
-            all.retain(|_, at| at.elapsed() < AGAIN_AFTER);
+    let id = match crate::reports::accept(storage, user, peer, incoming, false).await {
+        Ok(Ok(id)) => id,
+        Ok(Err(_)) => {
+            unmark();
+            return Ok(Err(Refused::TooMany));
         }
-        all.insert((user, target), Instant::now());
-    }
+        Err(e) => {
+            unmark();
+            return Err(e);
+        }
+    };
     crate::federation::report_queued();
     crate::session_events::note(
         crate::session_events::Who::Id(user),
