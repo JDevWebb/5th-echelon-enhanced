@@ -84,7 +84,7 @@ const MAX_ECHO_SOURCES: usize = 10_000;
 /// is still answered as a repeat.
 const REPEAT_WINDOW: Duration = Duration::from_secs(5);
 /// How long a connection must have been quiet for a new handshake from its address to take
-/// its signature when all are in use ([`Server::take_over_quiet`]).
+/// its signature when all are in use ([`Server::quiet_signature`], [`Server::takes_over`]).
 const TAKE_OVER_AFTER: Duration = Duration::from_secs(20);
 
 /// Connections one address may hold: 256 (a LAN party behind one router), or
@@ -938,7 +938,7 @@ where
         // signature a new game's handshake would get (a game started again, by chance, with
         // the same session number): the new one gets the next generation's.
         let free = signatures.iter().copied().find(|sig| !self.client_registry.clients.contains_key(sig));
-        let Some(sig) = free.or_else(|| self.take_over_quiet(logger, client, &signatures)) else {
+        let Some(sig) = free.or_else(|| self.quiet_signature(client, &signatures)) else {
             if let Some(skipped) = self.noise.allow() {
                 warn!(logger, "Refusing a handshake from {client}: its signatures are all in use"; "similar_skipped" => skipped);
             }
@@ -967,11 +967,12 @@ where
 
     /// Every signature this address and session can be offered is held by an earlier
     /// connection (a game restarted, and its old connections linger up to
-    /// [`SESSION_TIMEOUT`]: refused for a minute, 131 times for two players on 30 Oct). The
-    /// one quiet longest goes, if it's from this same address and quiet for [`TAKE_OVER_AFTER`]
-    /// (a live game is never that quiet, so a forged SYN can't end one), and its signature is
-    /// the new handshake's.
-    fn take_over_quiet(&mut self, logger: &Logger, client: SocketAddr, signatures: &[u32]) -> Option<u32> {
+    /// [`SESSION_TIMEOUT`]: refused for a minute, 131 times for two players on 30 Oct): the
+    /// signature of the one quiet longest, if it's from this same address and quiet for
+    /// [`TAKE_OVER_AFTER`]. Nothing is ended here (a SYN's address can be forged): the old
+    /// connection goes only when a CONNECT brings the signature back from that address
+    /// ([`Server::takes_over`]).
+    fn quiet_signature(&self, client: SocketAddr, signatures: &[u32]) -> Option<u32> {
         let (sig, quiet) = signatures
             .iter()
             .filter_map(|sig| {
@@ -979,13 +980,18 @@ where
                 (*ci.address() == client).then(|| (*sig, ci.last_seen.elapsed()))
             })
             .max_by_key(|(_, quiet)| *quiet)?;
-        if quiet < TAKE_OVER_AFTER {
-            return None;
-        }
-        let old = self.client_registry.clients.remove(&sig)?.into_inner();
-        info!(logger, "A new game at {client}: its earlier connection, quiet for {} s, goes", quiet.as_secs());
-        self.expire(old);
-        Some(sig)
+        (quiet >= TAKE_OVER_AFTER).then_some(sig)
+    }
+
+    /// A CONNECT with the signature of an earlier connection from the same address that has
+    /// been quiet [`TAKE_OVER_AFTER`], valid for this address (so its sender got our SYN answer
+    /// there): the new game's, which takes the place of the old one.
+    fn takes_over(&self, client: SocketAddr, signature: u32) -> bool {
+        self.client_registry
+            .clients
+            .get(&signature)
+            .is_some_and(|ci| ci.try_borrow().is_ok_and(|ci| *ci.address() == client && ci.last_seen.elapsed() >= TAKE_OVER_AFTER))
+            && self.cookies.valid(client, signature)
     }
 
     /// Whether `ci` is the connection a repeated SYN or CONNECT from `client` with this
@@ -1007,6 +1013,23 @@ where
             return;
         };
 
+        // A game started again, on the signature of its own quiet earlier connection
+        // (handle_syn): the old one goes, and this CONNECT is handled as a new one.
+        if self
+            .client_registry
+            .clients
+            .get(&packet.signature)
+            .is_some_and(|ci| !self.is_repeat(ci, client, packet.session_id))
+            && self.takes_over(client, packet.signature)
+        {
+            let old = self.client_registry.clients.remove(&packet.signature).expect("just found").into_inner();
+            info!(
+                logger,
+                "A new game at {client} took the place of its earlier connection, quiet for {} s",
+                old.last_seen.elapsed().as_secs()
+            );
+            self.expire(old);
+        }
         // The same CONNECT again (our answer was slow, or lost): answer it again.
         if let Some(ci) = self.client_registry.clients.get(&packet.signature) {
             if !self.is_repeat(ci, client, packet.session_id) {
@@ -1584,9 +1607,9 @@ mod tests {
     }
 
     /// Every signature an address and session can get held by its earlier connections (a
-    /// game restarted again and again): a new handshake takes the one quiet longest once it's
-    /// been quiet [`TAKE_OVER_AFTER`], and is refused while they're all fresher (a forged SYN
-    /// can't end a live game).
+    /// game restarted again and again): a new handshake is offered the one quiet longest once
+    /// it's been quiet [`TAKE_OVER_AFTER`] (refused while they're all fresher), and the old
+    /// connection goes only when the CONNECT comes back from the same address.
     #[test]
     fn a_restarted_game_takes_over_its_quiet_old_connection() {
         let ctx = Context::splinter_cell_blacklist();
@@ -1610,7 +1633,21 @@ mod tests {
         server.handle_syn(&logger, handshake(PacketType::Syn, 0, 9), from);
         let n = game.recv(&mut buf).unwrap();
         assert_eq!(QPacket::from_bytes(&ctx, &buf[..n]).unwrap().0.conn_signature, Some(sigs[2]));
-        assert_eq!(server.client_registry.clients.len(), 3, "the quiet one went");
+        assert_eq!(server.client_registry.clients.len(), 4, "a SYN alone ends nothing");
+        // From another address (a forger's), the CONNECT is ignored.
+        let elsewhere = SocketAddr::from(([127, 0, 0, 2], from.port()));
+        server.handle_connect(&logger, handshake(PacketType::Connect, sigs[2], 9), elsewhere);
+        assert!(
+            server.client_registry.clients[&sigs[2]].borrow().last_seen.elapsed() >= TAKE_OVER_AFTER,
+            "still the old one"
+        );
+        // From the game's address: the old one goes, the new one is made.
+        server.handle_connect(&logger, handshake(PacketType::Connect, sigs[2], 9), from);
+        assert_eq!(server.client_registry.clients.len(), 4);
+        assert!(
+            server.client_registry.clients[&sigs[2]].borrow().last_seen.elapsed() < Duration::from_secs(1),
+            "the new connection"
+        );
     }
 
     /// A CONNECT on a fresh connection's signature and session is a resend when it's the
