@@ -228,7 +228,7 @@ The game runs under Proton (Steam) or Wine (Lutris, Heroic, …), and 5th Echelo
    ```sh
    chmod +x launcher-linux-x86_64 && ./launcher-linux-x86_64
    ```
-   On a Steam Deck, do this in **Desktop Mode**.
+   On a Steam Deck, do this in **Desktop Mode**. On its first start it fetches the launcher's new interface (`launcher-tauri-linux-x86_64` from the same release, saved beside it as `launcher-tauri`) and opens it from the next start where WebKitGTK 4.1 is installed; otherwise, and in Game Mode, the classic interface opens. Download both files to skip the wait.
 2. **If you've never started the game on this PC, start it once from Steam and quit.** Proton only creates the game's Wine files on its first run, and your save goes in there; the launcher's Status card reminds you.
 3. **Join a server and press Connect**, as on Windows. The launcher finds the game in any Steam library (native, Flatpak or Snap, SD card included), or in Lutris, Heroic and `~/.wine` prefixes. You can also choose the folder yourself.
 4. **Press Play.**

@@ -74,11 +74,15 @@ jobs:
         run: |
           cargo build --locked --release -p hooks --target i686-pc-windows-msvc
           dll="$PWD/target/i686-pc-windows-msvc/release/hooks.dll"
-          HOOKS_DLL="$dll" cargo build --locked --release -p launcher --features embed-dll
           cargo build --locked --release -p dedicated_server -p testbot -p map_geometry
+          # launcher.exe is the Tauri launcher (0.4.8), carrying the client DLL: its page,
+          # then the program, in its own workspace.
+          (cd launcher-tauri/ui && npm ci --ignore-scripts --no-audit --no-fund && npm run build)
+          (cd launcher-tauri/src-tauri && HOOKS_DLL="$dll" cargo build --locked --release --features embed-dll)
           mkdir dist
           cp "$dll" dist/uplay_r1_loader.dll
-          cp target/release/launcher.exe target/release/dedicated_server.exe target/release/testbot.exe target/release/map-geometry.exe dist/
+          cp launcher-tauri/src-tauri/target/release/launcher-tauri.exe dist/launcher.exe
+          cp target/release/dedicated_server.exe target/release/testbot.exe target/release/map-geometry.exe dist/
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows
@@ -106,8 +110,13 @@ jobs:
         run: |
           HOOKS_DLL="$PWD/windows/uplay_r1_loader.dll" cargo build --locked --release -p launcher --features embed-dll
           cargo build --locked --release -p dedicated_server -p coordinator
+          # The Tauri interface the egui launcher opens where WebKitGTK 4.1 is (front_door.rs).
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libssl-dev libxdo-dev librsvg2-dev
+          (cd launcher-tauri/ui && npm ci --ignore-scripts --no-audit --no-fund && npm run build)
+          (cd launcher-tauri/src-tauri && HOOKS_DLL="$PWD/../../windows/uplay_r1_loader.dll" cargo build --locked --release --features embed-dll)
           mkdir dist
           cp target/release/launcher dist/launcher-linux-x86_64
+          cp launcher-tauri/src-tauri/target/release/launcher-tauri dist/launcher-tauri-linux-x86_64
           cp target/release/dedicated_server dist/dedicated_server-linux-x86_64
           cp target/release/coordinator dist/coordinator-linux-x86_64
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -158,7 +167,7 @@ jobs:
           if [ -z "$VT_API_KEY" ]; then echo "No VT_API_KEY secret; skipping the scan"; exit 1; fi
           # Into vt.md only when it finished: a half table would replace the plain links.
           scripts/virustotal.sh dist/launcher.exe dist/uplay_r1_loader.dll dist/dedicated_server.exe \
-            dist/launcher-linux-x86_64 dist/dedicated_server-linux-x86_64 dist/coordinator-linux-x86_64 > vt.tmp
+            dist/launcher-linux-x86_64 dist/launcher-tauri-linux-x86_64 dist/dedicated_server-linux-x86_64 dist/coordinator-linux-x86_64 > vt.tmp
           mv vt.tmp vt.md
           cat vt.md
       - name: Write the release notes
@@ -197,7 +206,7 @@ jobs:
             else
               echo "| File | Report |"
               echo "|---|---|"
-              for f in launcher.exe uplay_r1_loader.dll dedicated_server.exe launcher-linux-x86_64 dedicated_server-linux-x86_64 coordinator-linux-x86_64; do
+              for f in launcher.exe uplay_r1_loader.dll dedicated_server.exe launcher-linux-x86_64 launcher-tauri-linux-x86_64 dedicated_server-linux-x86_64 coordinator-linux-x86_64; do
                 sha="$(sha256sum "dist/$f" | cut -d' ' -f1)"
                 echo "| \`$f\` | [VirusTotal](https://www.virustotal.com/gui/file/$sha) |"
               done
