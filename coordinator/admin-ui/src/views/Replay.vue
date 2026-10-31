@@ -219,30 +219,29 @@ const colour = p => (p.team === 0 ? css('--info') : p.team === 1 ? css('--warn')
 // The recordings to play: this one, and with `?with=server~player~id,...` the others of
 // the same match (the Match page's "Replay the whole match"), merged into one.
 const route = useRoute();
-// Each with the name of the account that sent it (`as`, and the fourth part of each `with`):
-// the Match page's, from the server's own records.
 const wanted = computed(() => [
-  { server: props.server, player: props.player, id: props.id, name: String(route.query.as || '') },
+  { server: props.server, player: props.player, id: props.id },
   ...String(route.query.with || '')
     .split(',')
     .filter(Boolean)
     .map(w => {
-      const [server, player, id, ...name] = w.split('~');
-      return { server, player, id, name: name.join('~') };
+      const [server, player, id] = w.split('~');
+      return { server, player, id };
     })
     .filter(w => w.server && w.player && /^[0-9a-f]{16}$/.test(w.id || '')),
 ]);
 const missing = ref([]);
 
-/** One recording: asked for once (it says when it's here already), then fetched until the
- * server sent it, about three minutes at most. */
+/** One recording, with the name of the account that sent it (the coordinator's, never the
+ * recording's or the address's): asked for once (it says when it's here already), then
+ * fetched until the server sent it, about three minutes at most. */
 async function fetchOne(w) {
   const asked = await api('POST', `/recordings/${encodeURIComponent(w.server)}/${encodeURIComponent(w.player)}/${encodeURIComponent(w.id)}`);
   if (asked.status === 'pending') waiting.value = 'Asked the players\' servers for the recordings: they come with each server\'s next pulse or two…';
   for (let tries = 0; tries < 60 && !stopped; tries++) {
     const resp = await fetch(`/api/recordings/${encodeURIComponent(w.server)}/${encodeURIComponent(w.id)}`, { credentials: 'same-origin' });
     if (resp.status === 401) { session.signedOut(); throw new Error('signed out'); }
-    if (resp.ok && resp.status === 200) return readRecording(new Uint8Array(await resp.arrayBuffer()));
+    if (resp.ok && resp.status === 200) return { ...(await readRecording(new Uint8Array(await resp.arrayBuffer()))), owner: asked.name || '' };
     const body = await resp.json().catch(() => ({}));
     if (resp.status === 202 && (body.status === 'failed' || body.status === 'expired')) throw new Error(body.message || 'The server couldn\'t send it.');
     if (resp.status !== 202) throw new ApiError(resp.status, body);
@@ -255,7 +254,7 @@ async function load() {
   const results = await Promise.allSettled(wanted.value.map(fetchOne));
   if (stopped) return;
   const got = results.filter(r => r.status === 'fulfilled').map(r => r.value);
-  const owners = results.map((r, i) => (r.status === 'fulfilled' ? wanted.value[i].name : null)).filter(n => n !== null);
+  const owners = got.map(g => g.owner);
   missing.value = results.map((r, i) => (r.status === 'rejected' ? `${wanted.value[i].id}: ${r.reason?.message || r.reason}` : null)).filter(Boolean);
   if (!got.length) {
     error.value = missing.value.join('; ') || 'No recording came.';

@@ -1,7 +1,8 @@
 //! The admin UI's replay viewer's recordings (see [`crate::recordings`]).
 //!
 //! * `POST /api/recordings/<server>/<player>/<id>`: asks the player's server for a recording
-//!   its `recording` event names (the server sends it within a pulse or two).
+//!   its `recording` event names (the server sends it within a pulse or two); with the
+//!   account's name, whose own character the recording holds.
 //! * `GET /api/recordings/<server>/<id>`: the recording as it was sent (gzip, the `replay`
 //!   crate's format, which the page unpacks), or while it isn't here, how the ask is going.
 
@@ -43,13 +44,18 @@ async fn ask(State(c): State<Shared>, Extension(client): Extension<Client>, head
         Ok(false) => return fail(StatusCode::NOT_FOUND, "that player's server never told of that recording"),
         Err(e) => return internal(e),
     }
+    // The account's name as the network has it: whose own character the recording holds.
+    let name = match c.player_name(&server, player).await {
+        Ok(n) => n,
+        Err(e) => return internal(e),
+    };
     if c.recording_path(&server, &id).is_some_and(|p| p.exists()) {
-        return ok(json!({ "status": "here" }));
+        return ok(json!({ "status": "here", "name": name }));
     }
     match c.ask_for_recording(&server, player, &id, &s.username).await {
         Ok(action) => {
             c.audit(&s.username, Some(&client), "recording: asked for", &format!("{id} of #{player} on {server}")).await;
-            ok(json!({ "status": "pending", "action": action }))
+            ok(json!({ "status": "pending", "action": action, "name": name }))
         }
         Err(e) => internal(e),
     }

@@ -74,16 +74,15 @@ const replay = computed(() => {
   for (const s of stays.value) {
     for (const m of s.player.marks) {
       if (m.kind === 'recording' && m.recording && m.at >= s.from && m.at <= s.to + 900 && !found.has(s.player.player)) {
-        found.set(s.player.player, { server: s.player.server, player: s.player.player, id: m.recording, name: s.name });
+        found.set(s.player.player, { server: s.player.server, player: s.player.player, id: m.recording });
       }
     }
   }
   const list = [...found.values()];
   if (!list.length) return null;
   const [first, ...rest] = list;
-  // The accounts' names as the server has them: whose own character each recording holds.
-  const others = rest.map(r => `${r.server}~${r.player}~${r.id}~${r.name}`).join(',');
-  return { count: list.length, to: { path: `/replay/${first.server}/${first.player}/${first.id}`, query: { as: first.name, ...(others ? { with: others } : {}) } } };
+  const others = rest.map(r => `${r.server}~${r.player}~${r.id}`).join(',');
+  return { count: list.length, to: { path: `/replay/${first.server}/${first.player}/${first.id}`, query: others ? { with: others } : {} } };
 });
 const time = t => new Date(t * 1000).toLocaleString(undefined, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
