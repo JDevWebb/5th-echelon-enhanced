@@ -101,6 +101,26 @@ const sample = {
     busy: false,
   },
 };
+// The Friends screen (P1): ?nofriends for its empty states.
+const person = (name, relation, online, activity = null, extra = {}) => ({ id: name.toLowerCase(), name, identity: null, online, activity, joinable: false, relation, ...extra });
+sample.people = location.search.includes('nofriends')
+  ? { friends: [], received: [], sent: [], blocked: [], elsewhere: [], everyone: true, signed_in: true, error: null }
+  : {
+      friends: [
+        person('Tank', 'friend', true, 'SvM Classic · Penthouse · in a match with Raven', { joinable: true, identity: 'K7QF-2M9D' }),
+        person('Nova', 'friend', true),
+        person('AVeryLongNameThatGoesOnAndOn', 'friend', true, 'Co-op · Dead Drop · in a lobby'),
+        person('Ghost', 'friend', false),
+      ],
+      received: [person('Raven', 'received', true)],
+      sent: [person('Wraith', 'sent', false)],
+      blocked: [person('Spammer', 'blocked', false, null, { identity: 'Q2ZX-8HNM' })],
+      elsewhere: [{ name: 'Echo', server: '5th Echelon Community North America', region: 'Beauharnois, Canada', host: 'na1.scbl.jdevwebb.net' }],
+      everyone: true,
+      signed_in: true,
+      error: null,
+    };
+sample.find_players = location.search.includes('nofriends') ? [] : [person('Kestrel', '', true, 'In a lobby'), person('Raven', 'received', true), person('Tank', 'friend', true)];
 // The preview with the first-run questions answered (?answered).
 if (location.search.includes('answered')) {
   sample.questions.diagnostics = null;

@@ -232,7 +232,7 @@
           <p v-if="!squad" class="muted working"><i class="spin"></i>Looking for your friends…</p>
           <template v-else>
             <p v-if="squad.managed || (!squad.online.length && !squad.elsewhere.length)" class="soft">
-              {{ squad.offline ? 'None of your friends are online right now.' : `No friends yet. Add some in the game: press ${squad.overlay_key} for the overlay.` }}
+              {{ squad.offline ? 'None of your friends are online right now.' : 'No friends yet: Find players in Friends.' }}
             </p>
             <ul>
               <li v-for="f in squad.online" :key="f.id">
@@ -263,9 +263,9 @@
                   <button type="button" class="fixbtn" :disabled="p.asked && !p.asked_us" @click="act('request', p)">{{ p.asked_us ? 'Accept' : p.asked ? 'Asked' : 'Add friend' }}</button>
                 </li>
               </ul>
-              <p v-if="squad.others.length > 8" class="muted small">and {{ squad.others.length - 8 }} more: Find players in the overlay lists them all</p>
+              <p v-if="squad.others.length > 8" class="muted small">and {{ squad.others.length - 8 }} more: Find players in Friends lists them all</p>
               <div v-if="blockMenu" class="block">
-                <span>Block {{ blockMenu.name }}? They can't message you, invite you or see you online.</span>
+                <span>Block {{ blockMenu.name }}? Neither of you can message, invite or friend the other, you don't see each other online, and quick match leaves out matches they're in.</span>
                 <span class="row"><button type="button" class="btn small danger" @click="act('block', blockMenu); blockMenu = null">Block</button><button type="button" class="btn small" @click="blockMenu = null">Cancel</button></span>
               </div>
             </template>
@@ -283,7 +283,7 @@
             </div>
             <div class="foot">
               <p v-if="squad.requests" class="accent small">{{ squad.requests }} friend request{{ squad.requests === 1 ? '' : 's' }} waiting</p>
-              <p class="muted small">{{ squad.offline ? `${squad.offline} offline · ` : '' }}Add and invite friends in game with {{ squad.overlay_key }}</p>
+              <p class="muted small">{{ squad.offline ? `${squad.offline} offline · ` : '' }}<a href="#" class="to-friends" @click.prevent="$emit('go', 'friends')">Friends, requests and blocked players ›</a></p>
             </div>
           </template>
         </section>
@@ -676,6 +676,7 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 .to-servers { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 6px; padding: 12px; border-top: 1px solid var(--line); text-align: left; font-size: 13px; }
 .to-servers b { color: var(--accent); font-weight: 600; white-space: nowrap; }
 .to-servers:hover b { text-decoration: underline; }
+.to-friends { color: var(--accent); text-decoration: underline; }
 .server > span:first-child { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .server b { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chev { width: 16px; height: 16px; color: var(--muted); }

@@ -398,7 +398,113 @@ pub fn player_action(cfg: &Config, action: crate::network::PlayerAction, id: &st
         PlayerAction::Request => format!("Asked {name} to be friends."),
         PlayerAction::Invite => format!("Invited {name} to your game."),
         PlayerAction::Block => format!("Blocked {name}: neither of you sees the other now."),
+        PlayerAction::Accept => format!("You and {name} are friends now."),
+        PlayerAction::Decline => format!("No friend request between you and {name} now."),
+        PlayerAction::Remove => format!("Removed {name} from your friends."),
+        PlayerAction::Unblock => format!("Unblocked {name}."),
     })
+}
+
+/// A player in the launcher's Friends screen (the 0.4.8 plan's P1).
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct Person {
+    /// Their account id, what the friend calls take.
+    pub id: String,
+    pub name: String,
+    /// Their identity in short ("K7QF-2M9D"), when linked.
+    pub identity: Option<String>,
+    pub online: bool,
+    /// What they're doing, when online and the server says.
+    pub activity: Option<String>,
+    /// A friend in a party or public match: Join takes the player there.
+    pub joinable: bool,
+    /// "friend", "sent", "received", "blocked" or "" (none).
+    pub relation: &'static str,
+}
+
+/// A friend playing on another server sharing friends.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct Elsewhere {
+    pub name: String,
+    pub server: String,
+    pub region: String,
+    pub host: String,
+}
+
+/// Everyone the player has something to do with: friends (online first), requests both ways,
+/// who they blocked, and friends on other servers.
+#[derive(Debug, Clone, Default, serde::Serialize)]
+pub struct People {
+    pub friends: Vec<Person>,
+    pub received: Vec<Person>,
+    pub sent: Vec<Person>,
+    pub blocked: Vec<Person>,
+    pub elsewhere: Vec<Elsewhere>,
+    /// The server lists everyone on the game's friend list ("everyone"), or only friends.
+    pub everyone: bool,
+}
+
+fn person(p: &server_api::friends::Player) -> Person {
+    use server_api::friends::Relation;
+    let clip = hooks_config::text::clip;
+    Person {
+        id: p.id.clone(),
+        name: clip(&p.username, 32),
+        identity: Some(p.identity.clone()).filter(|i| !i.is_empty()),
+        online: p.is_online,
+        activity: p.activity.as_ref().filter(|_| p.is_online).map(describe),
+        joinable: p.is_online && p.activity.as_ref().is_some_and(|a| a.joinable),
+        relation: match p.relation() {
+            Relation::Friend => "friend",
+            Relation::RequestSent => "sent",
+            Relation::RequestReceived => "received",
+            Relation::Blocked => "blocked",
+            Relation::None => "",
+        },
+    }
+}
+
+/// The lists the most kept of each, as the overlay does.
+const MOST_PEOPLE: usize = 500;
+
+/// The current account's people (Friends screen).
+pub fn people(cfg: &Config) -> Result<People, String> {
+    if !cfg.current_profile().is_some_and(|p| !p.server.is_empty() && p.has_account()) {
+        return Ok(People::default());
+    }
+    let lists = with_api_token(cfg, |url, token| crate::services::rt().block_on(crate::network::relationships(url, &token)))?;
+    let list = |players: &[server_api::friends::Player]| {
+        let mut people: Vec<Person> = players.iter().take(MOST_PEOPLE).map(person).collect();
+        people.sort_by_key(|p| (!p.online, p.name.to_lowercase()));
+        people
+    };
+    Ok(People {
+        friends: list(&lists.friends),
+        received: list(&lists.requests_received),
+        sent: list(&lists.requests_sent),
+        blocked: list(&lists.blocked),
+        elsewhere: lists
+            .elsewhere
+            .iter()
+            .take(100)
+            .map(|e| Elsewhere {
+                name: hooks_config::text::clip(&e.username, 32),
+                server: hooks_config::text::clip(&e.server, 64),
+                region: hooks_config::text::clip(&e.region, 64),
+                host: e.host.clone(),
+            })
+            .collect(),
+        everyone: lists.mode == "everyone",
+    })
+}
+
+/// Players whose names hold `query` (Find players): online first.
+pub fn find_players(cfg: &Config, query: &str) -> Result<Vec<Person>, String> {
+    let query: String = query.trim().chars().take(32).collect();
+    let found = with_api_token(cfg, |url, token| crate::services::rt().block_on(crate::network::search_players(url, &token, &query)))?;
+    let mut people: Vec<Person> = found.iter().filter(|p| !p.id.is_empty()).take(50).map(person).collect();
+    people.sort_by_key(|p| (!p.online, p.name.to_lowercase()));
+    Ok(people)
 }
 
 /// "SvM Classic · Virus Vault · in a match with Tank", as the overlay says it; "In a lobby

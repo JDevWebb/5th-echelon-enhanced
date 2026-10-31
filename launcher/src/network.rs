@@ -52,6 +52,7 @@ pub use rpc::register;
 pub use rpc::relationships;
 pub use rpc::rename;
 pub use rpc::report_size;
+pub use rpc::search_players;
 pub use rpc::send_report;
 pub use rpc::session_summary;
 pub use rpc::sign_in;

@@ -3,7 +3,7 @@
     <TitleBar :product="info.product" :release="info.release" />
     <UpdateBanner />
     <div class="body">
-      <Rail :current="screen === 'host' ? 'servers' : screen" :release="info.release" :community="info.community" :unread="glance.unread" @go="go" @version="whatsNew?.again()" />
+      <Rail :current="screen === 'host' ? 'servers' : screen" :release="info.release" :community="info.community" :unread="glance.unread" :requests="info.requests || 0" @go="go" @version="whatsNew?.again()" />
       <div class="column">
         <main class="screen">
           <Transition name="view" mode="out-in">
@@ -13,6 +13,7 @@
           <Intel v-else-if="screen === 'intel'" key="intel" :info="info" />
           <Support v-else-if="screen === 'support'" key="support" @go="go" />
           <Chat v-else-if="screen === 'chat'" key="chat" />
+          <Friends v-else-if="screen === 'friends'" key="friends" :info="info" @go="go" @changed="refresh" />
           <Settings v-else-if="screen === 'settings'" key="settings" :open="settingsAt" :size="size" @size="setSize" @fullscreen="toggleFullscreen" @changed="refresh" />
           <Host v-else-if="screen === 'host'" key="host" />
           </Transition>
@@ -52,6 +53,7 @@ import Servers from './views/Servers.vue';
 import Intel from './views/Intel.vue';
 import Support from './views/Support.vue';
 import Chat from './views/Chat.vue';
+import Friends from './views/Friends.vue';
 import Settings from './views/Settings.vue';
 import Host from './views/Host.vue';
 import ActivityBar from './components/ActivityBar.vue';

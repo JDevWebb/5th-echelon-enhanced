@@ -294,8 +294,14 @@ fn authed<T>(message: T, token: &tonic::metadata::MetadataValue<tonic::metadata:
 /// typed (an empty search): everyone in the "everyone" friends mode, only friends in
 /// "mutual"; never anyone blocked either way, nor the caller.
 pub async fn online_players(api_url: String, token: &str) -> Result<Vec<server_api::friends::Player>, Error> {
+    search_players(api_url, token, "").await
+}
+
+/// Players whose names hold `query` (the overlay's Find players; at most 32 characters, as the
+/// server takes), never anyone blocked either way, nor the caller.
+pub async fn search_players(api_url: String, token: &str, query: &str) -> Result<Vec<server_api::friends::Player>, Error> {
     let (mut client, token) = friends_client(&api_url, token).await?;
-    match client.search(authed(server_api::friends::SearchRequest { query: String::new() }, &token)).await {
+    match client.search(authed(server_api::friends::SearchRequest { query: query.to_string() }, &token)).await {
         Ok(resp) => Ok(resp.into_inner().players),
         Err(status) if status.code() == tonic::Code::Unauthenticated => Err(Error::InvalidPassword),
         Err(status) => Err(status.into()),
@@ -310,6 +316,13 @@ pub enum PlayerAction {
     /// Invites them to the game session the player is in (needs the game running).
     Invite,
     Block,
+    /// Takes their request.
+    Accept,
+    /// Turns their request down, or takes the player's own back.
+    Decline,
+    /// Ends the friendship.
+    Remove,
+    Unblock,
 }
 
 /// Does `action` to the player with account id `id` (none known, from chat: by their identity,
@@ -325,6 +338,10 @@ pub async fn player_action(api_url: String, token: &str, action: PlayerAction, i
         PlayerAction::Request => client.request(authed(target(), &token)).await.map(|_| ()),
         PlayerAction::Block => client.block(authed(target(), &token)).await.map(|_| ()),
         PlayerAction::Invite => client.invite(authed(server_api::friends::InviteRequest { id: id.to_string() }, &token)).await.map(|_| ()),
+        PlayerAction::Accept => client.accept(authed(target(), &token)).await.map(|_| ()),
+        PlayerAction::Decline => client.decline(authed(target(), &token)).await.map(|_| ()),
+        PlayerAction::Remove => client.remove(authed(target(), &token)).await.map(|_| ()),
+        PlayerAction::Unblock => client.unblock(authed(target(), &token)).await.map(|_| ()),
     };
     match result {
         Ok(()) => Ok(()),

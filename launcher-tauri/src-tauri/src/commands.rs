@@ -144,6 +144,8 @@ pub struct Info {
     emulator_notice: bool,
     /// A new match asked for still holds (the Play button says so; the mode menu takes it back).
     new_match: bool,
+    /// Friend requests waiting for the player's answer (the side menu's Friends dot).
+    requests: usize,
 }
 
 #[tauri::command(async)]
@@ -174,6 +176,7 @@ pub fn info(state: tauri::State<Launcher>) -> Info {
             .and_then(|_| inner.friends.name_not_allowed.clone()),
         emulator_notice: game.is_some_and(|g| g.uplay_emulator && !g.uplay_emulator_told),
         new_match: inner.new_match_until.is_some_and(|until| Instant::now() < until),
+        requests: inner.friends.requests,
     }
 }
 
@@ -1155,6 +1158,10 @@ pub fn player_action(app: tauri::AppHandle, state: tauri::State<Launcher>, actio
         "request" => PlayerAction::Request,
         "invite" => PlayerAction::Invite,
         "block" => PlayerAction::Block,
+        "accept" => PlayerAction::Accept,
+        "decline" => PlayerAction::Decline,
+        "remove" => PlayerAction::Remove,
+        "unblock" => PlayerAction::Unblock,
         _ => return,
     };
     let inner = state.lock();
@@ -1171,6 +1178,39 @@ pub fn player_action(app: tauri::AppHandle, state: tauri::State<Launcher>, actio
     inner.checked = None;
     drop(inner);
     changed(&app);
+}
+
+/// The Friends screen's lists (P1), or why they couldn't be read.
+#[derive(Serialize)]
+pub struct PeopleView {
+    #[serde(flatten)]
+    people: launcher::flow::People,
+    /// The player has an account to manage friends with.
+    signed_in: bool,
+    error: Option<String>,
+}
+
+#[tauri::command(async)]
+pub fn people(state: tauri::State<Launcher>) -> PeopleView {
+    let inner = state.lock();
+    let Some(cfg) = inner.game.as_ref().map(|g| (*g.cfg).clone()) else {
+        return PeopleView { people: Default::default(), signed_in: false, error: None };
+    };
+    drop(inner);
+    let signed_in = cfg.current_profile().is_some_and(|p| !p.server.is_empty() && p.has_account());
+    match launcher::task::guarded(|| launcher::flow::people(&cfg)) {
+        Ok(people) => PeopleView { people, signed_in, error: None },
+        Err(e) => PeopleView { people: Default::default(), signed_in, error: Some(e) },
+    }
+}
+
+/// Find players: by name, or who's online when `query` is empty.
+#[tauri::command(async)]
+pub fn find_players(state: tauri::State<Launcher>, query: String) -> Result<Vec<launcher::flow::Person>, String> {
+    let inner = state.lock();
+    let Some(cfg) = inner.game.as_ref().map(|g| (*g.cfg).clone()) else { return Ok(Vec::new()) };
+    drop(inner);
+    launcher::task::guarded(|| launcher::flow::find_players(&cfg, &query))
 }
 
 #[derive(Serialize)]

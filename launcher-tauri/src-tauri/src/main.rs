@@ -86,6 +86,8 @@ fn main() {
             commands::new_match,
             commands::cancel_new_match,
             commands::player_action,
+            commands::people,
+            commands::find_players,
             commands::news,
             commands::switch_to_friend,
             commands::notice,
