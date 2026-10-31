@@ -57,6 +57,8 @@ const KINDS: &[&str] = &[
     "request_error",
     "report_refused",
     "log_sent",
+    "room_update",
+    "relay_address_mismatch",
 ];
 
 /// How long after a relay drop a player leaving their match counts as dropping out, and
@@ -677,6 +679,25 @@ fn describe(e: &Event) -> String {
         },
         "invite_delivered" => format!("Got {}'s invitation", e.detail["from_name"].as_str().unwrap_or("an")),
         "stats" => format!("Stats written: a mission or match ended{times}"),
+        "room_update" => {
+            let changes: Vec<String> = e.detail["changes"]
+                .as_object()
+                .into_iter()
+                .flatten()
+                .take(12)
+                .map(|(k, v)| format!("{k}: {} → {}", v[0].as_str().unwrap_or("none"), v[1].as_str().unwrap_or("none")))
+                .collect();
+            format!(
+                "Room {} changed ({} in it): {}",
+                e.detail["room"],
+                e.detail["members"].as_u64().map_or_else(|| "?".to_string(), |m| m.to_string()),
+                changes.join(", ")
+            )
+        }
+        "relay_address_mismatch" => format!(
+            "The relay {} sees this player on another network than this server does (carrier-grade NAT?): its address for them wasn't used",
+            e.detail["relay"].as_str().unwrap_or("?")
+        ),
         "nat" => {
             if e.detail["relayed"].as_bool().unwrap_or(false) {
                 "Online play relayed by the server".into()

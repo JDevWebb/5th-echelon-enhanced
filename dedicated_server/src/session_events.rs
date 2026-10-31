@@ -34,6 +34,9 @@
 //!   and `room` is the one the server had just given the player (join_targets.rs). For
 //!   `data_mismatch`: `data` (`mine`, `theirs`: each side's attribute 107, hex, either may be
 //!   absent) and `mine_name`, `theirs_name` (`server_api::data_versions`, null if unknown).
+//! - `room_update`: `room`, `changes` (each attribute the host's game changed: its id, and its
+//!   old and new values, null when absent), `members` and `seats` then: which attribute moves
+//!   as a round starts (0.4.8 plan M2), and settings changed mid-match (F4).
 //! - `leave`: `room`, `how` (`left`, `abandoned`, `removed` by the host: `by`; `dropped`: an
 //!   earlier game of theirs went without a word; `closed`: it went after saying it was
 //!   closing), `ended`.

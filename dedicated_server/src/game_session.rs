@@ -155,6 +155,27 @@ fn full_for_invitee(has_seat: bool, room: Option<(u32, u32)>) -> Option<(u32, u3
 /// Reads one property out of an `"id => value;..."` attribute string.
 ///
 /// Returns `None` if the property is absent or unparsable; callers treat both the same way.
+/// What changed between a room's attributes `before` and `after` ("id => value;..."): each
+/// changed id with its old and new value (null when it wasn't there, or isn't now); None when
+/// nothing did.
+fn attribute_changes(before: &str, after: &str) -> Option<serde_json::Value> {
+    let read = |text: &str| -> std::collections::BTreeMap<String, String> {
+        text.split(';')
+            .filter_map(|p| p.split_once(" => "))
+            .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+            .collect()
+    };
+    let (old, new) = (read(before), read(after));
+    let mut changes = serde_json::Map::new();
+    for key in old.keys().chain(new.keys()) {
+        let (a, b) = (old.get(key), new.get(key));
+        if a != b && !changes.contains_key(key) {
+            changes.insert(key.clone(), serde_json::json!([a, b]));
+        }
+    }
+    (!changes.is_empty()).then(|| changes.into())
+}
+
 pub(crate) fn attribute_value(attributes: &str, wanted_id: u32) -> Option<u32> {
     attributes.split(';').find_map(|part| {
         let (id, value) = part.split_once("=>")?;
@@ -592,15 +613,24 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             .map(|p| format!("{} => {}", p.id, p.value))
             .collect::<Vec<_>>()
             .join(";");
+        let session_id = request.game_session_update.session_key.session_id;
+        let before = self.storage.room_of_failed_join(session_id).ok().flatten().map(|(_, _, a)| a);
         rmc_err!(
-            self.storage.update_game_session(
-                request.game_session_update.session_key.type_id,
-                request.game_session_update.session_key.session_id,
-                attributes,
-            ),
+            self.storage
+                .update_game_session(request.game_session_update.session_key.type_id, session_id, attributes.clone()),
             logger,
             "error updating game session"
         )?;
+        // What the host's game changed (M2: which attribute, if any, flips as a round starts; F4:
+        // round settings changed mid-match), with how many are in the room then.
+        if let Some(changes) = before.as_deref().and_then(|b| attribute_changes(b, &attributes)) {
+            let mut detail = serde_json::json!({ "room": session_id, "changes": changes });
+            if let Ok(Some((members, seats))) = self.storage.room_seats(session_id) {
+                detail["members"] = members.into();
+                detail["seats"] = seats.into();
+            }
+            crate::session_events::note(crate::session_events::Who::Id(user_id), "room_update", detail);
+        }
         Ok(UpdateSessionResponse)
     }
 
@@ -2317,6 +2347,15 @@ mod tests {
         assert_eq!(full_for_invitee(false, Some((3, 0))), None, "no seats sent: as before");
         assert_eq!(full_for_invitee(true, Some((2, 2))), None, "a guest of it already has a seat");
         assert_eq!(full_for_invitee(false, None), None, "the room is gone");
+    }
+
+    #[test]
+    fn a_rooms_changed_attributes_are_what_changed() {
+        assert_eq!(super::attribute_changes("3 => 8;4 => 0;112 => 4", "3 => 8;4 => 0;112 => 4"), None);
+        assert_eq!(
+            super::attribute_changes("3 => 8;4 => 0;112 => 4", "3 => 8;112 => 3;120 => 1"),
+            Some(serde_json::json!({ "112": ["4", "3"], "120": [null, "1"], "4": ["0", null] }))
+        );
     }
 
     #[test]
