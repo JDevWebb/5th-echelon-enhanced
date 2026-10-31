@@ -365,6 +365,9 @@ struct Listing {
     /// Its NAT helper and relay, when it runs one ([`helper_entry`] checks it before listing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     relay: Option<Relay>,
+    /// The players its relay carries now (a relay alone updates when it carries nobody).
+    #[serde(default, skip_serializing_if = "is_zero")]
+    relayed: u32,
 }
 
 /// A member's NAT helper and relay, as it sends it.

@@ -811,6 +811,7 @@ fn main() -> color_eyre::Result<()> {
                 port: nat.listen.port(),
                 ports: nat.relay_ports,
             }),
+            relayed: 0,
         }
     };
 

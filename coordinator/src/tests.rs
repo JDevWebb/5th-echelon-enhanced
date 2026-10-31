@@ -403,6 +403,48 @@ async fn heartbeats_tell_each_server_when_to_update() {
     assert_eq!(stage(&t).await, ("halted".to_string(), "an admin's test".to_string()));
 }
 
+/// Global matchmaking: a relay alone is never the canary (it has no players to prove a release
+/// with); in the rolling stage it updates only when it relays nobody; and the network's
+/// matchmaking server goes last, once every other member runs the release.
+#[tokio::test]
+async fn rollouts_know_relays_and_the_matchmaking_server() {
+    let t = start("rollout-roles").await;
+    t.c.set_matchmaking_server("mm");
+    let beat = |secret: String, id: &'static str, version: &'static str, relay: bool, relayed: u32| {
+        let t = &t;
+        async move {
+            let body = json!({ "name": id, "host": id, "listed": !relay, "auto_update": true, "version": version,
+                "players_online": if relay { 0 } else { 5 }, "role": if relay { "relay" } else { "game" }, "relayed": relayed });
+            t.c.heartbeats.seen.lock().unwrap().clear();
+            let (status, answer) = t.call("POST", "/v1/heartbeat", Some(&secret), Some(body)).await;
+            assert_eq!(status, StatusCode::OK, "{answer}");
+            answer["update"]["version"].as_str().map(str::to_string)
+        }
+    };
+    let (mm, game, syd) = (t.join("mm").await, t.join("game").await, t.join("syd").await);
+    beat(mm.clone(), "mm", "1.0.0", false, 0).await;
+    beat(game.clone(), "game", "1.0.0", false, 0).await;
+    beat(syd.clone(), "syd", "1.0.0", true, 3).await;
+    update_window(&t, None).await;
+    t.c.start_rollout("1.1.0", "a test").await.unwrap();
+    // The quietest is the relay (no players), but it's never the canary.
+    assert_eq!(beat(syd.clone(), "syd", "1.0.0", true, 3).await, None, "a relay alone isn't the canary");
+    let canary = t.c.rollout().await.unwrap().canary;
+    assert!(canary.as_deref() == Some("game") || canary.as_deref() == Some("mm"), "{canary:?}");
+    // Straight to rolling.
+    sqlx::query("UPDATE rollout SET stage = 'rolling', stage_since = ?")
+        .bind(identity::now())
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+    assert_eq!(beat(syd.clone(), "syd", "1.0.0", true, 3).await, None, "a relay carrying players waits");
+    assert_eq!(beat(syd.clone(), "syd", "1.0.0", true, 0).await.as_deref(), Some("1.1.0"), "then, carrying nobody, updates");
+    assert_eq!(beat(mm.clone(), "mm", "1.0.0", false, 0).await, None, "the matchmaking server waits for the others");
+    beat(game.clone(), "game", "1.1.0", false, 0).await;
+    beat(syd.clone(), "syd", "1.1.0", true, 0).await;
+    assert_eq!(beat(mm.clone(), "mm", "1.0.0", false, 0).await.as_deref(), Some("1.1.0"), "then last");
+}
+
 /// Releases go out only in update windows, booked ahead so players know: nobody is asked
 /// without one, a server's own window lets only it update, and other maintenance stops it.
 #[tokio::test]

@@ -190,6 +190,10 @@ struct Member {
     version: String,
     auto_update: bool,
     players_online: u64,
+    /// A relay alone (global matchmaking): no players of its own.
+    relay_only: bool,
+    /// The players its relay carries now.
+    relayed: u64,
     last_seen: i64,
     updater_state: String,
     updater_version: String,
@@ -289,6 +293,8 @@ impl Coordinator {
                     version: l["version"].as_str().unwrap_or_default().to_string(),
                     auto_update: l["auto_update"].as_bool().unwrap_or(false),
                     players_online: l["players_online"].as_u64().unwrap_or(0),
+                    relay_only: l["role"].as_str() == Some("relay"),
+                    relayed: l["relayed"].as_u64().unwrap_or(0),
                     last_seen: last_seen.unwrap_or(0),
                     updater_state: s["updater"]["state"].as_str().unwrap_or_default().to_string(),
                     updater_version: s["updater"]["version"].as_str().unwrap_or_default().to_string(),
@@ -377,7 +383,12 @@ impl Coordinator {
                         // which would then carry on the rollout under the new release's rules (on
                         // 2026-10-13, 0.4.3's picked eu1 and 0.4.4 took over half-way). Those
                         // update last, with the coordinator.
-                        let candidates: Vec<&&Member> = fresh.iter().filter(|m| m.auto_update && m.version != target && !local.contains(&m.id)).collect();
+                        // Nor a relay alone: with no players of its own it would always be the
+                        // quietest, and can't show a release works for players.
+                        let candidates: Vec<&&Member> = fresh
+                            .iter()
+                            .filter(|m| m.auto_update && m.version != target && !local.contains(&m.id) && !m.relay_only)
+                            .collect();
                         let mut ready = Vec::new();
                         for m in candidates.iter().copied() {
                             if self.may_update(&r, &m.id, now).await? {
@@ -491,6 +502,30 @@ impl Coordinator {
                 let fresh: Vec<&Member> = members.iter().filter(|m| now - m.last_seen <= FRESH).collect();
                 if !others_done(&fresh, &local, &target) && now - r.stage_since < LAST_WAIT {
                     return Ok(None);
+                }
+            }
+        }
+        // Global matchmaking: a relay alone updates when it carries nobody (or the stage has
+        // waited long enough), and never while another relay is restarting; the network's
+        // matchmaking server goes last, after every other member, as its players are everyone's.
+        if matches!(r.stage.as_str(), "rolling" | "done") {
+            let members = self.members().await?;
+            if let Some(me) = members.iter().find(|m| m.id == server) {
+                let waited = now - r.stage_since >= LAST_WAIT;
+                if me.relay_only && !waited {
+                    let restarting = members
+                        .iter()
+                        .any(|m| m.relay_only && m.id != server && m.auto_update && m.version != target && now - m.last_seen > FRESH / 3 && now - m.last_seen <= FRESH * 3);
+                    if me.relayed > 0 || restarting {
+                        return Ok(None);
+                    }
+                }
+                if self.matchmaking_server.get().is_some_and(|mm| mm == server) && !waited {
+                    let fresh: Vec<&Member> = members.iter().filter(|m| now - m.last_seen <= FRESH).collect();
+                    let others: Vec<String> = vec![server.to_string()];
+                    if !others_done(&fresh, &others, &target) {
+                        return Ok(None);
+                    }
                 }
             }
         }

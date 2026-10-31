@@ -866,6 +866,13 @@ pub fn relay_ip() -> Option<Ipv4Addr> {
     TABLE.get().map(|t| t.lock().unwrap_or_else(std::sync::PoisonError::into_inner).relay_ip)
 }
 
+/// How many players this helper relays now (a relay updates when it relays nobody).
+pub fn relayed_now() -> u32 {
+    TABLE.get().map_or(0, |t| {
+        u32::try_from(t.lock().unwrap_or_else(std::sync::PoisonError::into_inner).relayed()).unwrap_or(u32::MAX)
+    })
+}
+
 /// Every game registered with this helper, for the network's matchmaking server (link.rs's
 /// reports, from a relay elsewhere).
 pub fn registrations() -> Vec<crate::link::Reg> {

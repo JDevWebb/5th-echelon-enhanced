@@ -217,6 +217,8 @@ pub struct Listing {
     /// relay nearest them, and the matchmaking server leaves addresses in its range alone.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub relay: Option<RelayListing>,
+    /// The players its relay carries now: a relay updates when it carries nobody.
+    pub relayed: u32,
 }
 
 /// A NAT helper and relay, as the directory lists it.
@@ -725,6 +727,7 @@ pub async fn run(logger: Logger, storage: Arc<Storage>, cfg: FederationConfig, l
                 if let Ok(sessions) = storage.live_sessions_async().await {
                     listing.playing = crate::playing::of(&sessions);
                 }
+                listing.relayed = crate::nat_helper::relayed_now();
                 match client.post("/v1/heartbeat", &listing).await {
                     Ok(answer) => {
                         heartbeats.worked(&logger, "the heartbeat");
