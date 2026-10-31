@@ -184,6 +184,36 @@ fn query_name(query: i64) -> &'static str {
 }
 
 impl Coordinator {
+    /// Adds to each witness report (`witnessed`) what tells its witness apart (`marks`): their
+    /// PC's and network's ids as kept here (player_hardware, keyed with this coordinator's
+    /// secret), each as a number standing for it in this answer only. The events keep no ids,
+    /// and the numbers never leave the problems worked out from them.
+    async fn mark_witnesses(&self, mut events: Vec<Event>) -> sqlx::Result<Vec<Event>> {
+        let mut numbers: HashMap<String, usize> = HashMap::new();
+        let mut looked: HashMap<(String, i64), Vec<String>> = HashMap::new();
+        for e in events.iter_mut().filter(|e| e.kind == "witnessed") {
+            let Some(by) = e.detail["by"].as_i64() else { continue };
+            let key = (e.server.clone(), by);
+            if !looked.contains_key(&key) {
+                let ids: Vec<(String, String)> = sqlx::query_as("SELECT kind, hash FROM player_hardware WHERE server_id = ? AND player = ?")
+                    .bind(&e.server)
+                    .bind(by)
+                    .fetch_all(&self.pool)
+                    .await?;
+                let marks = ids
+                    .into_iter()
+                    .map(|(kind, hash)| {
+                        let next = numbers.len();
+                        format!("{kind} {}", numbers.entry(hash).or_insert(next))
+                    })
+                    .collect();
+                looked.insert(key.clone(), marks);
+            }
+            e.detail["marks"] = json!(looked[&key]);
+        }
+        Ok(events)
+    }
+
     /// Takes a server's events. Answers how many were kept.
     pub(crate) async fn record_events(&self, server: &str, body: &Value) -> sqlx::Result<usize> {
         let Some(list) = body["events"].as_array() else { return Ok(0) };
@@ -316,6 +346,7 @@ impl Coordinator {
 
         let names: HashMap<(String, i64), String> = names.into_iter().map(|(s, id, name)| ((s, id), name)).collect();
         let timelines = timelines(&events, &sessions, &names, from, to);
+        let events = self.mark_witnesses(events).await?;
         let mut problems = problems(&events);
         problems.retain(|p| p["at"].as_i64().is_some_and(|at| (from..=to).contains(&at)));
         // A match the server reported finished with players in it wasn't waited in alone
@@ -1217,15 +1248,15 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
                 let Some(list) = by_who.get(&e.who()) else { continue };
                 let mut seen: Vec<&&Event> = list.iter().filter(|o| o.kind == "witnessed" && o.at <= e.at).collect();
                 seen.sort_by_key(|o| o.at);
-                // A witness is new only if neither their account, network nor PC was seen
-                // already (many accounts on one connection, or one PC on many, are one).
+                // A witness is new only if neither their account nor any of their PC's or
+                // network's ids (marks: Coordinator::mark_witnesses) was seen already (many
+                // accounts on one connection, or one PC on many, are one).
                 let witnesses = |events: &[&&Event]| {
                     let mut known = HashSet::new();
                     let mut count = 0;
                     for o in events {
-                        let mut marks = vec![format!("by {}", o.detail["by"])];
-                        marks.extend(o.detail["by_network"].as_str().map(|n| format!("network {n}")));
-                        marks.extend(o.detail["by_pc"].as_array().into_iter().flatten().filter_map(|h| h.as_str()).map(|h| format!("pc {h}")));
+                        let mut marks = vec![format!("by {} {}", o.server, o.detail["by"])];
+                        marks.extend(o.detail["marks"].as_array().into_iter().flatten().filter_map(|m| m.as_str()).map(str::to_string));
                         if !marks.iter().any(|m| known.contains(m)) {
                             count += 1;
                         }
@@ -2024,21 +2055,20 @@ mod tests {
         let found = problems(&[w(1000, 1, 10), w(1100, 2, 10), w(1200, 2, 11), w(1300, 3, 12)]);
         let titles: Vec<&str> = found.iter().filter_map(|p| p["title"].as_str()).collect();
         assert_eq!(titles, ["Zoomer moved faster than the game allows, seen by 2 players"]);
-        // Two accounts on one network are one witness.
-        let net = |at: i64, by: i64, room: i64| {
+        // Two accounts on one network are one witness, and one PC on two networks.
+        let marked = |at: i64, by: i64, room: i64, marks: &[&str]| {
             let mut e = w(at, by, room);
-            e.detail["by_network"] = json!("aaaa");
+            e.detail["marks"] = json!(marks);
             e
         };
-        assert!(problems(&[net(1000, 1, 10), net(1100, 2, 11)]).is_empty(), "one connection");
-        // One PC on two connections is one witness too.
-        let pc = |at: i64, by: i64, room: i64, network: &str| {
-            let mut e = w(at, by, room);
-            e.detail["by_network"] = json!(network);
-            e.detail["by_pc"] = json!(["bbbb", "cccc"]);
-            e
-        };
-        assert!(problems(&[pc(1000, 1, 10, "aaaa"), pc(1100, 2, 11, "dddd")]).is_empty(), "one PC");
+        assert!(
+            problems(&[marked(1000, 1, 10, &["network 0"]), marked(1100, 2, 11, &["network 0"])]).is_empty(),
+            "one connection"
+        );
+        assert!(
+            problems(&[marked(1000, 1, 10, &["network 0", "machine-guid 1"]), marked(1100, 2, 11, &["network 2", "machine-guid 1"])]).is_empty(),
+            "one PC"
+        );
         assert_eq!(mark_level(&w(1000, 1, 10)), Some("warn"));
     }
 
