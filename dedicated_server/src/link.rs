@@ -28,6 +28,7 @@ const MAC: usize = 16;
 const OP_REPORT: u8 = 1;
 const OP_ASK: u8 = 2;
 const OP_ANSWER: u8 = 3;
+const OP_EVENT: u8 = 4;
 
 /// A player registered with a relay.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,9 +46,26 @@ pub struct Reg {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Body {
     Report(Vec<Reg>),
-    Ask { nonce: u32, a: String, b: String },
-    Answer { nonce: u32, yes: bool },
+    Ask {
+        nonce: u32,
+        a: String,
+        b: String,
+    },
+    Answer {
+        nonce: u32,
+        yes: bool,
+    },
+    /// A relay's session event about one of its players (its `nat`, `relay_drop`...), for the
+    /// matchmaking server to keep with the player's sessions: a relay alone has no database.
+    Event {
+        name: String,
+        kind: String,
+        detail: String,
+    },
 }
+
+/// The longest event detail carried (JSON).
+pub const MAX_DETAIL: usize = 600;
 
 /// Whether `data` is a link message (and not a game's).
 pub fn is_link(data: &[u8]) -> bool {
@@ -83,6 +101,7 @@ pub fn seal(key: &[u8; 32], from: &str, time: i64, body: &Body) -> Vec<u8> {
         Body::Report(_) => OP_REPORT,
         Body::Ask { .. } => OP_ASK,
         Body::Answer { .. } => OP_ANSWER,
+        Body::Event { .. } => OP_EVENT,
     });
     out.extend_from_slice(&time.to_be_bytes());
     put_text(&mut out, from);
@@ -106,6 +125,16 @@ pub fn seal(key: &[u8; 32], from: &str, time: i64, body: &Body) -> Vec<u8> {
         Body::Answer { nonce, yes } => {
             out.extend_from_slice(&nonce.to_be_bytes());
             out.push(u8::from(*yes));
+        }
+        Body::Event { name, kind, detail } => {
+            put_text(&mut out, name);
+            put_text(&mut out, kind);
+            let mut end = detail.len().min(MAX_DETAIL);
+            while !detail.is_char_boundary(end) {
+                end -= 1;
+            }
+            out.extend_from_slice(&(end as u16).to_be_bytes());
+            out.extend_from_slice(&detail.as_bytes()[..end]);
         }
     }
     let m = mac(key, &out);
@@ -195,6 +224,16 @@ pub fn open(data: &[u8], key: &[u8; 32], now: i64) -> Option<(String, Body)> {
             nonce: r.u32()?,
             yes: r.u8()? != 0,
         },
+        OP_EVENT => {
+            let name = r.text()?;
+            let kind = r.text()?;
+            let len = usize::from(u16::from_be_bytes(r.take(2)?.try_into().ok()?)).min(MAX_DETAIL);
+            Body::Event {
+                name,
+                kind,
+                detail: String::from_utf8_lossy(r.take(len)?).into_owned(),
+            }
+        }
         _ => return None,
     };
     Some((from, body))
@@ -230,6 +269,11 @@ mod tests {
                 b: "Tank".into(),
             },
             Body::Answer { nonce: 9, yes: true },
+            Body::Event {
+                name: "Kiwi".into(),
+                kind: "relay_drop".into(),
+                detail: r#"{"direction":"to"}"#.into(),
+            },
         ] {
             assert_eq!(open(&seal(&key, "mm", 5, &body), &key, 5), Some(("mm".to_string(), body)));
         }

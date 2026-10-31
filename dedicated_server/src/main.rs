@@ -688,6 +688,7 @@ fn main() -> color_eyre::Result<()> {
     let relay_only = config.role.is_relay();
     if relay_only {
         community_api::publish_relay_only();
+        relays::set_relay_only();
         info!(logger, "Role: a NAT helper and relay only (no game services, no API)");
         if !nat.enabled {
             crit!(logger, "A relay-only server with its NAT helper off does nothing: turn [nat] on");

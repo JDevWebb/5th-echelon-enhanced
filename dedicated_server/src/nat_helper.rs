@@ -843,12 +843,48 @@ impl Path {
 /// How `guest` and the `host` they joined reach each other, as event detail
 /// ([`Path::detail`]), when the helper runs and the guest's game registered with it.
 pub fn path_detail(guest: &str, host: &str) -> Option<serde_json::Value> {
-    let path = TABLE.get()?.lock().ok()?.path(guest, host)?;
+    let local = TABLE.get().and_then(|t| t.lock().ok()?.path(guest, host));
+    // On the network's matchmaking server, either of them may be with a relay elsewhere.
+    let (path, relays) = match local {
+        Some(p) => (p, Vec::new()),
+        None => remote_path(guest, host)?,
+    };
     // Looked up with the table let go: relaying waits on it.
-    Some(path.detail(|a, b| {
+    let mut detail = path.detail(|a, b| {
         let (a, b) = (crate::metrics::place(IpAddr::V4(a))?, crate::metrics::place(IpAddr::V4(b))?);
         (a.located() && b.located()).then(|| a.km_to(&b))
-    }))
+    });
+    if relays.iter().any(Option::is_some) {
+        detail["relays"] = relays.into();
+    }
+    Some(detail)
+}
+
+/// A guest's and host's path when either is registered with a relay elsewhere (relays.rs): each
+/// one's address, relaying and ping, from this helper or the relay's report; and which relays
+/// (None for this helper).
+fn remote_path(guest: &str, host: &str) -> Option<(Path, Vec<Option<String>>)> {
+    let local = |name: &str| -> Option<(SocketAddrV4, bool, Option<u16>)> {
+        let t = TABLE.get()?.lock().ok()?;
+        let p = t.peers.get(t.by_name.get(&name.to_lowercase())?)?;
+        Some((p.real, p.relayed, p.rtt_ms))
+    };
+    let entry = |name: &str| {
+        local(name)
+            .map(|(real, relayed, rtt)| (real, relayed, rtt, None))
+            .or_else(|| crate::relays::remote_entry(name).map(|(relay, real, relayed, rtt)| (real, relayed, rtt, Some(relay))))
+    };
+    let g = entry(guest)?;
+    let h = entry(host);
+    Some((
+        Path {
+            ping_ms: g.2,
+            host_ping_ms: h.as_ref().and_then(|h| h.2),
+            relayed: g.1 || h.as_ref().is_some_and(|h| h.1),
+            ips: h.as_ref().map(|h| (*g.0.ip(), *h.0.ip())),
+        },
+        vec![g.3, h.and_then(|h| h.3)],
+    ))
 }
 
 static TABLE: OnceLock<Arc<Mutex<Table>>> = OnceLock::new();
@@ -1189,7 +1225,8 @@ fn lapsed_while_signed_in(gone: &[(String, Instant)], now: Instant) -> Vec<(Stri
 fn unregistered(table: &Table, now: Instant) -> Vec<(String, u64)> {
     let mut late = Vec::new();
     awaiting().retain(|name, at| {
-        if table.probed_since(name, *at) {
+        // Registered with this helper, or (on the network's matchmaking server) a relay elsewhere.
+        if table.probed_since(name, *at) || crate::relays::remote_entry(name).is_some() {
             return false;
         }
         let waited = now.duration_since(*at);

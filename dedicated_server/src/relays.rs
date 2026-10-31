@@ -158,6 +158,18 @@ pub fn on_link(data: &[u8], src: std::net::SocketAddrV4, socket: &std::net::UdpS
             }
         }
         crate::link::Body::Answer { nonce, yes } => answered(nonce, yes, &link.id),
+        // A relay's event about its player, kept here with the player's sessions; only the
+        // relay's own kinds, so a relay can't write anything else into them.
+        crate::link::Body::Event { name, kind, detail } if NETWORK_RELAYS.load(Ordering::Relaxed) => {
+            let Some(kind) = RELAY_EVENTS.iter().copied().find(|k| *k == kind) else { return };
+            let mut detail: serde_json::Value = serde_json::from_str(&detail).unwrap_or_default();
+            if !detail.is_object() {
+                detail = serde_json::json!({});
+            }
+            detail["relay"] = link.id.clone().into();
+            crate::session_events::note(crate::session_events::Who::Name(name), kind, detail);
+        }
+        crate::link::Body::Event { .. } => {}
     }
 }
 
@@ -262,7 +274,39 @@ pub fn remote_advertised_for(name: &str, ip: std::net::IpAddr) -> Option<std::ne
     let remote = REMOTE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let r = remote.get(&identity::name_key(name)).filter(|r| r.at.elapsed() < REMOTE_FRESH)?;
     let same_24 = r.real.ip().octets()[..3] == ip.octets()[..3];
-    same_24.then_some(r.advertise)
+    if !same_24 {
+        // Carrier-grade NAT can show a player at two addresses: said once in a while, so the
+        // admins see why the relay's address wasn't taken (no addresses in it).
+        let relay = r.relay.clone();
+        drop(remote);
+        if mismatch_told(name) {
+            crate::session_events::note(
+                crate::session_events::Who::Name(name.to_string()),
+                "relay_address_mismatch",
+                serde_json::json!({ "relay": relay }),
+            );
+        }
+        return None;
+    }
+    Some(r.advertise)
+}
+
+/// Whether a mismatch for `name` is to be said now (once in ten minutes each).
+fn mismatch_told(name: &str) -> bool {
+    type Told = std::collections::HashMap<String, std::time::Instant>;
+    static TOLD: std::sync::LazyLock<Mutex<Told>> = std::sync::LazyLock::new(Mutex::default);
+    let mut told = TOLD.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let now = std::time::Instant::now();
+    if told.len() >= 10_000 {
+        told.retain(|_, at| now.duration_since(*at) < std::time::Duration::from_secs(600));
+    }
+    match told.get(&identity::name_key(name)) {
+        Some(at) if now.duration_since(*at) < std::time::Duration::from_secs(600) => false,
+        _ => {
+            told.insert(identity::name_key(name), now);
+            true
+        }
+    }
 }
 
 /// The relay elsewhere that reported `name` lately: its id, whether it relays them, and their
@@ -275,7 +319,46 @@ pub fn remote_relay_of(name: &str) -> Option<(String, bool, Option<u16>)> {
         .map(|r| (r.relay.clone(), r.relayed, r.rtt_ms))
 }
 
+/// The session events a relay sends the matchmaking server.
+const RELAY_EVENTS: [&str; 4] = ["nat", "relay_drop", "nat_missing", "nat_lost"];
+
+/// A player's registration with a relay elsewhere, as last reported: the relay's id, where it
+/// sees them, whether it relays them, and their ping to it.
+pub fn remote_entry(name: &str) -> Option<(String, std::net::SocketAddrV4, bool, Option<u16>)> {
+    let remote = REMOTE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    remote
+        .get(&identity::name_key(name))
+        .filter(|r| r.at.elapsed() < REMOTE_FRESH)
+        .map(|r| (r.relay.clone(), r.real, r.relayed, r.rtt_ms))
+}
+
 // A relay's side.
+
+static RELAY_ONLY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// This server is a relay alone: its session events go to the matchmaking server
+/// ([`forward_event`]). Called once at start.
+pub fn set_relay_only() {
+    RELAY_ONLY.store(true, Ordering::Relaxed);
+}
+
+/// Sends a session event about `name` to the network's matchmaking server, when this is a
+/// relay alone (which keeps none itself); false when it isn't (the caller keeps it).
+pub fn forward_event(name: &str, kind: &str, detail: &serde_json::Value) -> bool {
+    if !RELAY_ONLY.load(Ordering::Relaxed) {
+        return false;
+    }
+    let (Some(socket), Some(own)) = (LINK_SOCKET.get(), OWN_ID.get()) else { return true };
+    let body = crate::link::Body::Event {
+        name: name.into(),
+        kind: kind.into(),
+        detail: detail.to_string(),
+    };
+    for link in links().iter().filter(|l| l.matchmaking) {
+        let _ = socket.send_to(&crate::link::seal(&link.key, own, identity::now(), &body), std::net::SocketAddrV4::new(link.ip, link.port));
+    }
+    true
+}
 
 /// How often a relay reports its registrations to the matchmaking server.
 pub const REPORT_EVERY: std::time::Duration = std::time::Duration::from_secs(2);

@@ -62,6 +62,13 @@ done
 sleep 35
 echo "--- test players across the relay"
 client "$bin/testbot" --server "$mm" --other "$syd" cross-relay || rc=1
+echo "--- the relay's session events reach the matchmaking server"
+events=0
+for _ in $(seq 20); do
+  events=$(docker exec fes-relay-mm python3 -c "import sqlite3; print(sqlite3.connect('/srv/fe/5th-echelon.db').execute(\"SELECT COUNT(*) FROM session_events WHERE kind = 'nat' AND detail LIKE '%relay-test%'\").fetchone()[0])" 2>/dev/null || echo 0)
+  [ "$events" -ge 3 ] && break; sleep 1
+done
+[ "$events" -ge 3 ] && echo "PASS the relay's registrations are in the matchmaking server's session events" || { echo "FAIL relay events: $events"; rc=1; }
 if [ $rc -ne 0 ]; then
   for s in fes-relay-mm fes-relay-syd; do echo "--- $s (last 40 lines)"; docker exec "$s" tail -40 /srv/fe/server.log; done
 fi

@@ -136,6 +136,12 @@ fn now() -> i64 {
 
 /// Notes an event; [`run`] saves it in a moment.
 pub fn note(who: Who, kind: &'static str, detail: Value) {
+    // A relay alone keeps no events: its players' go to the matchmaking server (relays.rs).
+    if let Who::Name(name) = &who {
+        if crate::relays::forward_event(name, kind, &detail) {
+            return;
+        }
+    }
     // Worth the game's whole log, for a player who agreed (full_logs.rs).
     if let Some(problem) = crate::full_logs::problem_of(kind, &detail) {
         let (id, name) = match &who {
