@@ -2736,6 +2736,10 @@ fn launch(play: &mut Play, game: &mut Game, notices: &mut Notices, mode: crate::
     let name_not_allowed = name_not_allowed(play, game).is_some();
     match crate::start::start(game, notices, mode, name_not_allowed) {
         Ok(setup::launch::Launched::Game(child)) => play.running = Some(child),
+        Ok(setup::launch::Launched::GameProtonWithoutUmu(child)) => {
+            play.running = Some(child);
+            notices.error(setup::diagnose::NO_UMU);
+        }
         Ok(setup::launch::Launched::Steam) => notices.info("Steam is starting the game."),
         Ok(setup::launch::Launched::GameNotSteam(child, why)) => {
             play.running = Some(child);

@@ -218,6 +218,11 @@ pub fn play(app: tauri::AppHandle, state: tauri::State<Launcher>, mode: PlayMode
             *running = Some(child);
             true
         }
+        Ok(Launched::GameProtonWithoutUmu(child)) => {
+            *running = Some(child);
+            notices.error(setup::diagnose::NO_UMU);
+            true
+        }
         Ok(Launched::Steam) => {
             notices.info("Steam is starting the game.");
             true

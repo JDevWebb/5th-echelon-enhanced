@@ -150,7 +150,12 @@ pub struct WineFacts {
     pub prefix_ready: bool,
     /// Steam launch options this CPU needs, if any (see `wine::steam_launch_options`).
     pub launch_options: Option<String>,
+    /// The prefix is Proton's (made outside Steam) and umu-launcher isn't installed to run it.
+    pub no_umu: bool,
 }
+
+/// What to tell the player when Proton's prefix would be run by the system's Wine.
+pub const NO_UMU: &str = "The prefix comes from Proton; install umu-launcher, otherwise the system Wine can hang.";
 
 /// What the hook logged in the last game session.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -266,6 +271,9 @@ pub fn checklist(f: &Facts) -> Vec<Check> {
                 format!("Start Splinter Cell: Blacklist once from {from} and quit it, so its Wine files exist; then check again."),
                 None,
             ));
+        }
+        if wine.no_umu {
+            checks.push(Check::new("umu", Status::Warn, "Install umu-launcher", NO_UMU, None));
         }
         if let (true, Some(options)) = (wine.steam, &wine.launch_options) {
             checks.push(Check::new(
@@ -787,6 +795,7 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
                 steam: true,
                 prefix_ready,
                 launch_options: launch_options.map(String::from),
+                no_umu: false,
             }),
             ..ready_facts()
         };
@@ -796,6 +805,10 @@ thread '<unnamed>' panicked at hooks/src/overlay.rs:10:5"#;
         assert!(!ready(&checklist(&wine(false, None))));
         assert_eq!(ids(wine(true, Some("WINE_CPU_TOPOLOGY=16:0 %command%"))), ["cpu"]);
         assert!(ready(&checklist(&wine(true, Some("x")))), "a warning, not a failure");
+        let mut f = wine(true, None);
+        f.wine.as_mut().unwrap().no_umu = true;
+        assert_eq!(ids(f.clone()), ["umu"]);
+        assert!(ready(&checklist(&f)), "a warning, not a failure");
     }
 }
 
