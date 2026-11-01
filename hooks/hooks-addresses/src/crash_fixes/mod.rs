@@ -4,10 +4,13 @@
 //! runs them on an executable on disk, to see that every fix finds its place in a build without
 //! starting the game. Nothing here writes anything.
 
+pub mod disruption;
+pub mod load_order;
 pub mod migration;
 pub mod particle;
 pub mod scheme_pool;
 pub mod storm;
+pub mod tagging_device;
 pub mod voice_device;
 
 use std::ops::Range;

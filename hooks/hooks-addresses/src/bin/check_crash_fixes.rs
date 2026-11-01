@@ -11,10 +11,13 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use hooks_addresses::crash_fixes::disruption;
+use hooks_addresses::crash_fixes::load_order;
 use hooks_addresses::crash_fixes::migration;
 use hooks_addresses::crash_fixes::particle;
 use hooks_addresses::crash_fixes::scheme_pool;
 use hooks_addresses::crash_fixes::storm;
+use hooks_addresses::crash_fixes::tagging_device;
 use hooks_addresses::crash_fixes::voice_device;
 use hooks_addresses::crash_fixes::Image;
 use hooks_addresses::host_migration;
@@ -79,6 +82,18 @@ fn check(path: &Path) -> bool {
                 s.playback_vtable, s.capture_vtable, s.playback_teardown, s.capture_teardown, s.callback, s.callback_slot
             )
         }),
+    );
+    report(
+        "tagging-device-fix",
+        tagging_device::locate(&img).map(|s| format!("hook {:#010x}, end {:#010x}, continue {:#010x}", s.hook, s.skip, s.cont)),
+    );
+    report(
+        "disruption-fix",
+        disruption::locate(&img).map(|s| format!("lookup {:#010x}, nav-disruption tick {:#010x} (end {:#010x})", s.lookup, s.tick, s.tick_end)),
+    );
+    report(
+        "load-order-fix",
+        load_order::locate(&img).map(|s| format!("reads {:#010x}, {:#010x}, end {:#010x}", s.first, s.second, s.done)),
     );
     report(
         "migration-fix",

@@ -786,6 +786,9 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
         crate::particle_fix::guard_particle_fills();
         crate::storm_fix::fix_ticket_observers();
         crate::voice_device_fix::guard_voice_devices();
+        crate::tagging_device_fix::guard_tagging_devices();
+        crate::disruption_fix::guard_disruption();
+        crate::load_order_fix::guard_load_order();
         crate::migration_fix::end_stuck_migrations();
     }
 
