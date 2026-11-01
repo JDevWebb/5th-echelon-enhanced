@@ -1788,14 +1788,16 @@ impl Storage {
         )
     }
 
-    /// Whether `user_id` hosts, takes part in or joined (a guest) live session `session_id`.
-    /// The game session `user_id` is in now (a participant or a guest, the newest), for Lobby chat.
+    /// The game session `user_id` is in now (a participant or a guest), for Lobby chat: their
+    /// match room if they're in one, else the newest. A player who joins an open match keeps
+    /// their own party, made after the match (a higher id), so the newest alone was often a
+    /// party of one (Gex, eu1, 2026-10-31: "lobby chat isnt working").
     pub async fn current_room(&self, user_id: u32) -> Result<Option<u32>> {
         Ok(sqlx::query_scalar(
             "SELECT g.id FROM game_sessions g WHERE g.destroyed_at IS NULL
                AND (EXISTS (SELECT 1 FROM participants p WHERE p.game_id = g.id AND p.user_id = ?1)
                     OR EXISTS (SELECT 1 FROM guests q WHERE q.game_id = g.id AND q.user_id = ?1))
-             ORDER BY g.id DESC LIMIT 1",
+             ORDER BY ';' || COALESCE(g.attributes, '') || ';' LIKE '%;113 => 0;%' DESC, g.id DESC LIMIT 1",
         )
         .bind(user_id)
         .fetch_optional(&self.pool)
@@ -2088,6 +2090,28 @@ pub(crate) mod tests {
         let db = dir.join("test.db");
         let logger = Logger::root(slog::Discard, slog::o!());
         (Storage::open(logger, db.to_str().unwrap()).unwrap(), dir)
+    }
+
+    /// Lobby chat goes to the match a player joined, not the party they made after it.
+    #[test]
+    fn the_current_room_is_the_match_before_a_newer_party() {
+        let (storage, dir) = temp_storage("current-room");
+        let mut ids = vec![];
+        for name in ["Host", "Joiner"] {
+            storage.register_user(name, "pw", Some(name)).unwrap();
+            ids.push(storage.find_user_id_by_name(name).unwrap().unwrap());
+        }
+        let [host, joiner] = ids[..] else { unreachable!() };
+        let current = |user| run(storage.current_room(user)).unwrap().unwrap();
+        let game = storage.create_game_session(host, 1, "113 => 0;3 => 4;4 => 0".into()).unwrap();
+        storage.add_participants(1, game, vec![], vec![host]).unwrap();
+        let party = storage.create_game_session(joiner, 1, "113 => 1;3 => 8;4 => 0".into()).unwrap();
+        storage.add_participants(1, party, vec![], vec![joiner]).unwrap();
+        assert_eq!(current(joiner), Some(party), "only in their party");
+        storage.add_guest(game, joiner, false).unwrap();
+        assert_eq!(current(joiner), Some(game), "in the match too");
+        assert_eq!(current(host), Some(game));
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
