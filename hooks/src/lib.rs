@@ -52,6 +52,7 @@ mod particle_fix;
 mod quickstart;
 mod scheme_pool_fix;
 mod storm_fix;
+mod umd_read_fix;
 mod uplay_r1_loader;
 mod voice_device_fix;
 

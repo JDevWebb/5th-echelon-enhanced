@@ -782,6 +782,11 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
         crate::storm_fix::fix_ticket_observers();
         crate::voice_device_fix::guard_voice_devices();
         crate::migration_fix::end_stuck_migrations();
+        if config.disable_umd_read_fix {
+            tracing::info!("umd-read-fix: off (disable_umd_read_fix)");
+        } else {
+            crate::umd_read_fix::serve_reads_off_the_sequence();
+        }
     }
 
     // Beta features (Settings › Beta features), each off unless turned on. Said in the log
