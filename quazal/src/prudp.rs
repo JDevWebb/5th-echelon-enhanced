@@ -413,6 +413,22 @@ impl<T> ClientRegistry<T> {
             .min()
     }
 
+    /// [`Self::user_silence`] of one of their connections, `None` when it's gone: a game that
+    /// dropped and signed in again talks on its new connection, while what the old one made
+    /// has nobody behind it.
+    #[must_use]
+    pub fn connection_silence(&self, user_id: u32, connection: crate::ConnectionID) -> Option<Duration> {
+        self.clients
+            .values()
+            .filter_map(|c| {
+                c.try_borrow()
+                    .ok()
+                    .filter(|ci| ci.user_id == Some(user_id) && ci.connection_id == Some(connection))
+                    .map(|ci| ci.last_seen.elapsed())
+            })
+            .min()
+    }
+
     /// Finds a logged-in client by its player id.
     ///
     /// Needed to send something to a *different* client on our own initiative: whoever adds a
@@ -1622,6 +1638,26 @@ mod tests {
         // Repeated now, the SYN gets the new connection's signature.
         server.handle_syn(&logger, handshake(PacketType::Syn, 0, 9), from);
         assert_eq!(answer().conn_signature, Some(new));
+    }
+
+    /// How quiet a player is: on their freshest connection, or on one of them (what a host's
+    /// old connection made has nobody behind it, though the player talks on a new one).
+    #[test]
+    fn silence_is_told_per_player_and_per_connection() {
+        let mut registry: ClientRegistry<()> = ClientRegistry::default();
+        for (sig, conn, quiet) in [(1u32, 11u32, 30u64), (2, 12, 1)] {
+            let mut ci = ClientInfo::new(SocketAddr::from(([127, 0, 0, 1], 3000 + sig as u16)));
+            ci.user_id = Some(7);
+            ci.connection_id = Some(crate::ConnectionID(conn));
+            ci.last_seen = Instant::now() - Duration::from_secs(quiet);
+            registry.clients.insert(sig, RefCell::new(ci));
+        }
+        let secs = |d: Option<Duration>| d.map(|d| d.as_secs());
+        assert_eq!(secs(registry.user_silence(7)), Some(1), "the freshest connection");
+        assert_eq!(secs(registry.connection_silence(7, crate::ConnectionID(11))), Some(30), "the old one");
+        assert_eq!(registry.connection_silence(7, crate::ConnectionID(13)), None, "one that's gone");
+        assert_eq!(registry.connection_silence(8, crate::ConnectionID(11)), None, "someone else's");
+        assert_eq!(registry.user_silence(8), None, "nobody's");
     }
 
     /// Every signature an address and session can get held by its earlier connections (a

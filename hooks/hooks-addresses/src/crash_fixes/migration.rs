@@ -6,7 +6,7 @@ use super::parse;
 use super::Image;
 
 /// The tick's start, up to `push ebx` (the same in both executables).
-const TICK: &str = "55 8B EC 56 8B F1 83 7E 30 00 0F 84 ?? ?? ?? ?? 83 3D ?? ?? ?? ?? 00 0F 85 ?? ?? ?? ?? 83 7E 34 00 53";
+pub(crate) const TICK: &str = "55 8B EC 56 8B F1 83 7E 30 00 0F 84 ?? ?? ?? ?? 83 3D ?? ?? ?? ?? 00 0F 85 ?? ?? ?? ?? 83 7E 34 00 53";
 
 /// The wait's end: `mov edx,[esi+0x48]`, the spinner closed, `[esi+0x48] = -1`, the state cleared.
 struct Close {

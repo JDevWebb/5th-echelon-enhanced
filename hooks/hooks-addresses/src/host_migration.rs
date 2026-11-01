@@ -209,6 +209,119 @@ mod tests {
         }
     }
 
+    /// A made-up `.text` with every piece in it, the globals filled in where the code reads them.
+    struct Built {
+        text: Vec<u8>,
+        at: std::collections::HashMap<&'static str, usize>,
+    }
+
+    const BASE: usize = 0x40_1000;
+    const NET_CORE: u32 = 0x40_1100;
+    const NET_ONLINE: u32 = 0x40_1104;
+    const STATE_NONE: u32 = 0x40_1108;
+    const IN_SESSION: u32 = 0x40_110c;
+    const FACADE: u32 = 0x40_1110;
+    const GATE: u32 = 0x40_1114;
+
+    fn build() -> Built {
+        let mut text = vec![0xCCu8; 0x200];
+        let mut at = std::collections::HashMap::new();
+        let mut place = |text: &mut Vec<u8>, name: &'static str, mut piece: Vec<u8>, globals: &[(usize, u32)]| {
+            for (off, value) in globals {
+                piece[*off..*off + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            at.insert(name, BASE + text.len());
+            text.extend(piece);
+            text.extend([0xCC; 0x20]);
+        };
+        place(&mut text, "setter", SETTER.to_vec(), &[]);
+        place(&mut text, "check", CHECK.to_vec(), &[]);
+        let action = &[
+            (LEADER_ACTION_NET_CORE[0], NET_CORE),
+            (LEADER_ACTION_NET_CORE[1], NET_CORE),
+            (LEADER_ACTION_STATE_NONE, STATE_NONE),
+            (LEADER_ACTION_IN_SESSION, IN_SESSION),
+        ];
+        place(&mut text, "leader_action", bytes(LEADER_ACTION, 0x11), action);
+        // The enter with its host test 0x40 bytes in.
+        let mut enter = bytes(SYNC_ENTER, 0x12);
+        enter.resize(0x40, 0x90);
+        enter.extend(bytes(HOST_TEST, 0x13));
+        place(&mut text, "sync_enter", enter, &[]);
+        place(&mut text, "sync_tick", bytes(SYNC_TICK, 0x14), &[(SYNC_TICK_NET_ONLINE, NET_ONLINE)]);
+        place(&mut text, "follow_task", bytes(FOLLOW_TASK, 0x15), &[(FOLLOW_TASK_NET_ONLINE, NET_ONLINE)]);
+        place(&mut text, "follow_delegate", bytes(FOLLOW_DELEGATE, 0x16), &[(FOLLOW_DELEGATE_NET_ONLINE, NET_ONLINE)]);
+        let facade = &[(FACADE_USER_GATE, GATE), (FACADE_USER_NET_ONLINE, NET_ONLINE), (FACADE_USER_FACADE, FACADE)];
+        place(&mut text, "facade_user", bytes(FACADE_USER, 0x17), facade);
+        place(&mut text, "facade_tick", bytes(crate::crash_fixes::migration::TICK, 0x18), &[]);
+        Built { text, at }
+    }
+
+    #[test]
+    fn finds_every_piece_and_its_globals() {
+        let b = build();
+        let img = crate::crash_fixes::tests::image(&b.text, BASE, &[], 0x60_0000);
+        let s = locate(&img).unwrap();
+        assert_eq!((s.setter, s.check), (b.at["setter"], b.at["check"]));
+        assert_eq!((s.leader_action, s.sync_enter, s.sync_tick), (b.at["leader_action"], b.at["sync_enter"], b.at["sync_tick"]));
+        assert_eq!(s.host_test_je, b.at["sync_enter"] + 0x40 + HOST_TEST_JE_AT);
+        assert_eq!(
+            (s.follow_task, s.follow_delegate, s.facade_tick),
+            (b.at["follow_task"], b.at["follow_delegate"], b.at["facade_tick"])
+        );
+        assert_eq!(
+            [s.net_core, s.net_online, s.state_none, s.state_in_session, s.facade, s.facade_gate],
+            [NET_CORE, NET_ONLINE, STATE_NONE, IN_SESSION, FACADE, GATE].map(|g| g as usize)
+        );
+    }
+
+    #[test]
+    fn every_piece_is_needed() {
+        let b = build();
+        for (name, start) in &b.at {
+            let mut text = b.text.clone();
+            // Spoil the piece's first byte: it isn't there any more.
+            text[start - BASE] ^= 0xFF;
+            let img = crate::crash_fixes::tests::image(&text, BASE, &[], 0x60_0000);
+            assert!(locate(&img).is_err(), "found without {name}");
+        }
+    }
+
+    #[test]
+    fn a_piece_twice_is_no_place() {
+        let b = build();
+        let mut text = b.text.clone();
+        text.extend(CHECK);
+        let img = crate::crash_fixes::tests::image(&text, BASE, &[], 0x60_0000);
+        assert!(locate(&img).unwrap_err().contains("2 times"));
+    }
+
+    #[test]
+    fn the_globals_must_agree() {
+        let b = build();
+        // The follow task reading another NetOnline.
+        let mut text = b.text.clone();
+        let at = b.at["follow_task"] - BASE + FOLLOW_TASK_NET_ONLINE;
+        text[at..at + 4].copy_from_slice(&0x40_1200u32.to_le_bytes());
+        let img = crate::crash_fixes::tests::image(&text, BASE, &[], 0x60_0000);
+        assert!(locate(&img).unwrap_err().contains("NetOnline"));
+        // A global outside the image.
+        let mut text = b.text.clone();
+        let at = b.at["facade_user"] - BASE + FACADE_USER_FACADE;
+        text[at..at + 4].copy_from_slice(&0x7000_0000u32.to_le_bytes());
+        let img = crate::crash_fixes::tests::image(&text, BASE, &[], 0x60_0000);
+        assert!(locate(&img).unwrap_err().contains("image"));
+        // The host test outside the enter.
+        let mut text = b.text.clone();
+        let host_test = parse(HOST_TEST);
+        let at = b.at["sync_enter"] - BASE + 0x40;
+        text[at] ^= 0xFF;
+        text.extend(vec![0x90; HOST_TEST_WITHIN + 0x10]);
+        text.extend(host_test.iter().map(|b| b.unwrap_or(0x13)));
+        let img = crate::crash_fixes::tests::image(&text, BASE, &[], 0x60_0000);
+        assert!(locate(&img).unwrap_err().contains("isn't in"));
+    }
+
     #[test]
     fn a_build_missing_a_piece_gets_none() {
         // The setter and the check alone: not enough.

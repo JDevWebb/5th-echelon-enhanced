@@ -54,6 +54,14 @@ That registers throwaway accounts (`Host…`, `Guest…`) on that server.
 | `host-migration-claims` | Only a member still in a room takes it over: one who left it and splits it once the host has gone splits off alone. A member's claim on a room whose host then ends it (DeleteSession) and signs out hands nobody over and tells nobody it moved. |
 | `party-return` | The way back of that party: the match is dissolved, the leader leaves its party and opens a new one, the member that came along migrates the old party alone. The server asks that member (not one that stayed behind, not while the match still goes on, and not one in someone else's room since) into the leader's new party with an invitation delivered as the requested join, once. |
 | `party-member-leaves-for-match` | A party member (not the leader) invited into a private match leaves its party alone; when the leader leaves later, the party's other members are not moved into the session the member split off. |
+| `host-migration-silent` | A host that goes quiet while a member's split waits for it: after 20 s of silence the others move to the member's room and are told (7001), and the quiet host's lobby isn't offered until it speaks again; a host that keeps talking is never taken over. |
+| `host-migration-cascade` | The new host goes too: the room is taken over again, and a member's late split of any room of the chain is answered with the room it's in now. |
+| `host-migration-invite` | An invitation pending when the host goes (the game's own, and one through the friend list) names the new host's room, from the new host. |
+| `host-migration-host-returns` | The host's game drops and signs in again while a member's split waits: its old connection's silence lets the takeover through, though the player talks on the new one. |
+| `host-migration-parties` | A public match whose players have parties of their own migrates; every party stays as it was, and nobody from a party outside the match is taken in. |
+| `private-match-ends` | A private match its host ends isn't migrated: a guest's late split takes nobody along, and nobody is told it moved. |
+| `party-return-stays` | After a private match, a party member still playing in it isn't called back into the leader's new party; one who left it is. |
+| `friend-list-private-match` | The friend list tells a private match from an invite-only party (`private_match`). |
 | `split-limits` | Splitting makes sessions: only of a session the player is in (or just left), and no more than creating them would. |
 | `private-room-hidden` | A private match isn't handed to strangers: not in matchmaking, and not by searching for its host. Its own players, and the invited, still find it. |
 | `station-url-schemes` | A station URL's address is checked whatever its scheme: a `udp:` URL naming someone else's address is corrected, and a host name never reaches other players. |

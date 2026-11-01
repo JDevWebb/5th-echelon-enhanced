@@ -2393,6 +2393,40 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_split_copy_is_as_private_as_its_room() {
+        let (storage, dir) = temp_storage("split-private");
+        let mut ids = vec![];
+        for name in ["Host", "Member", "Other"] {
+            storage.register_user(name, "pw", Some(name)).unwrap();
+            ids.push(storage.find_user_id_by_name(name).unwrap().unwrap());
+        }
+        let [host, member, other] = ids[..] else { unreachable!() };
+        let announce = |user, session, invite_only| run(storage.set_advertised_session_async(user, Some(session), invite_only, b"data")).unwrap().unwrap();
+        // A party its host announced invite-only.
+        let party = storage.create_game_session(host, 1, "113 => 1".into()).unwrap();
+        storage.add_participants(1, party, vec![], vec![host, member, other]).unwrap();
+        announce(host, party, true);
+        let copy = storage.split_game_session(member, 1, party).unwrap().unwrap();
+        assert!(storage.is_invite_only_session(copy).unwrap(), "the copy isn't open to anyone");
+        // The member's own announcement of the room goes first, and keeps its data.
+        announce(other, party, true);
+        let again = storage.split_game_session(other, 1, party).unwrap().unwrap();
+        assert!(storage.is_invite_only_session(again).unwrap());
+        let ads = run(storage.list_advertised_sessions_async()).unwrap().unwrap();
+        assert_eq!(ads.get(&other), Some(&(again, true, b"data".to_vec())));
+        // A public room's copy stays public.
+        let public = storage.create_game_session(host, 1, "113 => 0".into()).unwrap();
+        storage.add_participants(1, public, vec![], vec![host, member]).unwrap();
+        announce(host, public, false);
+        let open = storage.split_game_session(member, 1, public).unwrap().unwrap();
+        assert!(!storage.is_invite_only_session(open).unwrap(), "a public match's copy is public");
+        // Matches and parties told apart for the friend list.
+        let matches = run(storage.matches_among_async(&[party, copy, public, open, 999_999])).unwrap().unwrap();
+        assert_eq!(matches, vec![public, open]);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
     fn a_pending_invitation_follows_a_host_migration() {
         let (storage, dir) = temp_storage("invite-rebind");
         let mut ids = vec![];

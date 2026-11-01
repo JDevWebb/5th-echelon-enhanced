@@ -493,7 +493,12 @@ Takeovers (`split_session`, `resolve_silent_hosts`):
   overwrite it and is taken for a follower (moved into the first splitter's session, `taken_over_by`).
 - **A silent host.** A host counts as silent after 20 s without a ping (two missed pings, `HOST_SILENT_AFTER`); a
   parked takeover then goes through. Matchmaking stops offering a lobby that migrated on, or one whose host is
-  silent (`lobby_is_dead`). A host without a connection to look at (`user_silence` is `None`) is still offered.
+  silent (`lobby_is_dead`). The silence is that of the connection that made the room (`room_silence`): a host
+  whose game dropped and signed in again talks on its new connection, but the rooms the old one made have
+  nobody behind them, so their takeovers go through after 20 s instead of lapsing when the old connection
+  expires a minute later. A room whose host has no connection to look at is still offered.
+- **Along the chain.** A late split of a room that moved more than once (its new host gone too) is answered
+  with the room the player is in now (up to eight moves).
   `JoinSession` itself is unchanged: its response has no fields, so there is nothing to redirect; a stale join into
   a dead room fails in the game as before.
 - **The host deletes the session.** A pending takeover is cleared: a dissolve is not a migration.
@@ -553,7 +558,7 @@ second member, and a follower's own split looks the same as a competitor's. Docu
   log line `... skipped: N is still in match session M`; the escort survives until the `PARTY_BACK_TRIES` are used
   up, so a member who leaves the match in between is asked at the next try, and a member who stays is
   never pulled out of a running match.
-- Searches filter on a silent host by `user_silence`; a host that pings late (packet loss) disappears from
+- Searches filter on a silent host by its room's connection (`room_silence`); a host that pings late (packet loss) disappears from
   the lists for the length of the silence only.
 - **One switch for all three.** The client hooks of this design go on and off together with the "Host migration"
   beta. There is no separate switch for the lobby migration, the running-match fallback, `follow_unblock`/`follow-dup`

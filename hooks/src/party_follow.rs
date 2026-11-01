@@ -600,6 +600,55 @@ mod tests {
         assert_eq!(HOST_TEST_PATCH.len(), HOST_TEST_JE.len());
     }
 
+    /// In real memory (the test's own): the goal is shown as a private custom match for the
+    /// length of the call and put back after; what the game changed meanwhile is left as it is.
+    #[test]
+    fn what_is_shown_is_put_back_unless_the_game_changed_it() {
+        let mut goal = vec![0u8; 0x40].into_boxed_slice();
+        let at = goal.as_mut_ptr();
+        let (kind, private) = unsafe { (at.add(GOAL_KIND as usize).cast::<u32>(), at.add(GOAL_PRIVATE as usize)) };
+        unsafe {
+            kind.write_unaligned(3);
+            private.write(0);
+        }
+        let g = Game(Globals {
+            net_core: 0,
+            net_online: 0,
+            state_in_session: 0,
+            state_none: 0,
+        });
+        {
+            let _shown = Shown::new(&g, at as u32, false).expect("writable");
+            assert_eq!(
+                unsafe { (kind.read_unaligned(), private.read()) },
+                (GOAL_CUSTOM_MATCH, 1),
+                "shown as a private custom match"
+            );
+        }
+        assert_eq!(unsafe { (kind.read_unaligned(), private.read()) }, (3, 0), "put back");
+        {
+            let _shown = Shown::new(&g, at as u32, false).expect("writable");
+            // The game's call ends the goal and sets another kind.
+            unsafe { kind.write_unaligned(9) };
+        }
+        assert_eq!(unsafe { kind.read_unaligned() }, 9, "the game's own change is left alone");
+        drop(goal);
+    }
+
+    /// The host test's `je` is two `nop`s only while [`HostTestOff`] lives.
+    #[test]
+    fn the_host_test_is_off_only_around_the_call() {
+        let mut code = HOST_TEST_JE.to_vec().into_boxed_slice();
+        let at = code.as_mut_ptr();
+        HOST_TEST_AT.set(at as usize).expect("set once in this test");
+        {
+            let _off = unsafe { HostTestOff::new() }.expect("writable");
+            assert_eq!(unsafe { std::slice::from_raw_parts(at, 2) }, HOST_TEST_PATCH);
+        }
+        assert_eq!(unsafe { std::slice::from_raw_parts(at, 2) }, HOST_TEST_JE);
+        drop(code);
+    }
+
     #[test]
     fn a_party_with_other_members_is_one_to_keep() {
         assert!(!leads_members(&leader_with(&[ME])), "alone in its party");

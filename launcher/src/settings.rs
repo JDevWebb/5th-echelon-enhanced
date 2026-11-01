@@ -1440,6 +1440,15 @@ mod tests {
         assert!(game.cfg.hook_config.beta.mouse_turn_per_second);
         let written = std::fs::read_to_string(dir.join("uplay.toml")).unwrap_or_default();
         assert!(written.contains("[Beta]") && written.contains("MouseTurnPerSecond = true"), "{written}");
+        {
+            let mut h = crate::theme::ui_test::harness(egui::vec2(900.0, 700.0), |ui| beta_features(&mut game, &mut notices, ui));
+            h.get_by_label("Host migration").click();
+            h.run();
+        }
+        assert!(game.cfg.hook_config.beta.host_migration);
+        let written = std::fs::read_to_string(dir.join("uplay.toml")).unwrap_or_default();
+        assert!(written.contains("HostMigration = true"), "{written}");
+        assert_eq!(BETA_FEATURES.len(), hooks_config::Beta::NAMES.len(), "a switch for every beta");
         let _ = std::fs::remove_dir_all(dir);
     }
 }

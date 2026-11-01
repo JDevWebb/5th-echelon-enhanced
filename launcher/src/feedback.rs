@@ -923,6 +923,11 @@ mod tests {
             ["mouse_turn_per_second"],
             "only betas there are"
         );
+        assert_eq!(
+            betas_in_log(&line("mouse_turn_per_second, host_migration")),
+            ["mouse_turn_per_second", "host_migration"],
+            "both betas"
+        );
         assert!(betas_in_log("no betas here").is_empty());
         // Text from elsewhere in the log (a chat line, say) doesn't count.
         assert!(betas_in_log("2026-10-31T01:00:00Z  INFO hooks::chat: 12: Kiwi: Beta features on: mouse_turn_per_second; x").is_empty());

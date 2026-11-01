@@ -103,6 +103,9 @@ struct GameSessionProtocolServerImpl {
 /// How long after leaving a session a player may still split it.
 const SPLIT_AFTER_LEAVING: std::time::Duration = std::time::Duration::from_secs(60);
 
+/// How many moves of one room (its new host gone too, and so on) a late split follows.
+const MAX_MIGRATION_CHAIN: usize = 8;
+
 /// How long after abandoning a session a player's split of it can still be a host migration:
 /// the game sends the two back to back (`StateAbandon`, then `StateMigrateHost`), within a
 /// second live. A player who left earlier is no member to hand the room to.
@@ -221,7 +224,7 @@ pub fn resolve_silent_hosts<CI>(logger: &Logger, storage: &Storage, registry: &C
     };
     for from in waiting {
         let Some(host) = storage.session_creator(from).ok().flatten() else { continue };
-        if registry.user_silence(host).is_none_or(|quiet| quiet >= HOST_SILENT_AFTER) {
+        if room_silence(registry, host, from).is_none_or(|quiet| quiet >= HOST_SILENT_AFTER) {
             info!(logger, "Host {host} of session {from} has been silent; the takeover of it goes through");
             host_gone(logger, storage, host, Some(from));
         }
@@ -239,7 +242,17 @@ fn host_silent(silence: Option<std::time::Duration>) -> bool {
 /// [`HOST_SILENT_AFTER`] (cut off, or about to be): a join would only fail, or land in a room
 /// that migrates a moment later. A host without a connection to look at (nobody's) is offered.
 pub fn lobby_is_dead<CI>(registry: &ClientRegistry<CI>, session_id: u32, creator: u32) -> bool {
-    host_migrated_to(session_id).is_some() || host_silent(registry.user_silence(creator))
+    host_migrated_to(session_id).is_some() || host_silent(room_silence(registry, creator, session_id))
+}
+
+/// How long the host's game that made `room` has said nothing: the connection that made it
+/// when that's known (a game that dropped and came back talks on a new one, and the room has
+/// nobody behind it; `None` once that connection is gone), else the host's on any.
+fn room_silence<CI>(registry: &ClientRegistry<CI>, host: u32, room: u32) -> Option<std::time::Duration> {
+    match room_connection(host, room) {
+        Some(conn) => registry.connection_silence(host, conn),
+        None => registry.user_silence(host),
+    }
 }
 
 /// Sends the migration notifications `host_gone` queued.
@@ -1797,9 +1810,14 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 }
             }
         }
-        if let Some(to) = self.migrated_to(key.session_id) {
+        // Along the chain of moves (a new host that went too, its room taken over again): the
+        // room the player is in now.
+        let mut next = self.migrated_to(key.session_id);
+        for _ in 0..MAX_MIGRATION_CHAIN {
+            let Some(to) = next else { break };
             let along = rmc_err!(self.storage.session_members(to), logger, "error reading session members")?.is_some_and(|(_, p)| p.contains(&user_id))
                 || rmc_err!(self.storage.is_guest(to, user_id), logger, "error reading session guests")?;
+            next = self.migrated_to(to).filter(|n| *n != key.session_id);
             if along {
                 info!(logger, "User {user_id} splits session {}, which migrated to {to}; answered with {to}", key.session_id);
                 return Ok(SplitSessionResponse {
@@ -2411,6 +2429,15 @@ fn made<CI>(ci: &ClientInfo<CI>, user_id: u32, session_id: u32) {
             .or_default()
             .push((conn, session_id));
     }
+}
+
+/// The connection of `user_id` that made `room`, if it's one of theirs here.
+fn room_connection(user_id: u32, room: u32) -> Option<quazal::ConnectionID> {
+    ROOMS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&user_id)
+        .and_then(|made| made.iter().find(|(_, r)| *r == room).map(|(c, _)| *c))
 }
 
 /// The rooms `conn` of `user_id` made, forgotten here: it's gone.

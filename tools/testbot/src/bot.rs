@@ -1075,6 +1075,16 @@ impl Bot {
         Ok(resp.friends.into_iter().map(|f| (f.username, f.is_online)).collect())
     }
 
+    /// The friend list's sessions: (name, session, invite only, private match), as the game
+    /// gets them.
+    pub async fn friend_sessions(&self) -> Result<Vec<(String, u32, bool, bool)>> {
+        let resp = FriendsClient::new(self.api.clone())
+            .list(self.authed(server_api::friends::ListRequest {}))
+            .await?
+            .into_inner();
+        Ok(resp.friends.into_iter().map(|f| (f.username, f.session_id, f.invite_only, f.private_match)).collect())
+    }
+
     /// Tries to invite a player, returning the server's refusal if any.
     pub async fn try_invite(&self, friend: &str) -> std::result::Result<(), tonic::Status> {
         FriendsClient::new(self.api.clone())

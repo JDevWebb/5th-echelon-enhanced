@@ -1372,6 +1372,16 @@ mod tests {
         assert!(written.contains("[Beta]") && written.contains("MouseTurnPerSecond = true"), "{written}");
         let back: Config = toml::from_str(&written).unwrap();
         assert_eq!(back.beta.on(), ["mouse_turn_per_second"]);
+        cfg.beta.host_migration = true;
+        let written = toml::to_string(&cfg).unwrap();
+        assert!(written.contains("HostMigration = true"), "{written}");
+        let back: Config = toml::from_str(&written).unwrap();
+        assert_eq!(back.beta.on(), ["mouse_turn_per_second", "host_migration"]);
+        assert_eq!(Beta::NAMES.len(), back.beta.on().len(), "every beta has a name");
+        // As a player would write it by hand.
+        let by_hand = format!("{}\n[Beta]\nHostMigration = true\n", toml::to_string(&super::default()).unwrap());
+        let back: Config = toml::from_str(&by_hand).unwrap();
+        assert!(back.beta.host_migration && !back.beta.mouse_turn_per_second);
     }
 
     #[test]

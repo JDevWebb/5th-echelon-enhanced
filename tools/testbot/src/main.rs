@@ -21,6 +21,8 @@ use testbot::bot::Variant;
 use testbot::bot::LOBBY;
 use testbot::bot::PRIVATE_MATCH;
 
+mod migration_scenarios;
+
 const PASSWORD: &str = "testbot-password";
 
 struct Ctx {
@@ -2005,6 +2007,23 @@ async fn private_room_join(ctx: &mut Ctx) -> Result<()> {
         .await?
         .ok_or_else(|| eyre!("no 'come in' push for the party"))?;
     ensure!(push.ui_type == 7003 && push.ui_param_2 == game, "wrong push: {push:?}");
+    // A guest of the match brings in only a friend of its own the host invited too.
+    let mut invitee = ctx.player("Invitee").await?;
+    let partys_friend = ctx.player("Friend").await?;
+    befriend(&party, &partys_friend).await?;
+    befriend(&party, &invitee).await?;
+    ensure!(
+        party.add_participants(game, &[], &[partys_friend.pid]).await.is_err(),
+        "a guest of a private match brought its own friend in"
+    );
+    host.send_invitation(game, &[invitee.pid], "come in").await?;
+    party
+        .add_participants(game, &[], &[invitee.pid])
+        .await
+        .map_err(|e| eyre!("a guest couldn't bring in a player the host invited: {e}"))?;
+    while invitee.wait_notification(Duration::from_millis(300)).await?.is_some() {}
+    invitee.disconnect().await?;
+    partys_friend.disconnect().await?;
     // A stranger who adds themselves to the host's (public) party after the match was made
     // isn't the party that follows it: they can't walk in that way either.
     stranger.add_participants(lobby, &[stranger.pid], &[]).await?;
@@ -2061,6 +2080,27 @@ async fn host_migration_claims(ctx: &mut Ctx) -> Result<()> {
         room_in(&found, taken)
     );
 
+    // One who abandoned the match more than a few seconds before splitting it is no member to
+    // hand it to (the game abandons and splits back to back).
+    let game = host.create_session(attributes).await?;
+    host.add_participants(game, &[], &[host.pid]).await?;
+    let mut late = ctx.player("Guest").await?;
+    let mut left_behind = ctx.player("Guest").await?;
+    late.join_session(game).await?;
+    left_behind.join_session(game).await?;
+    late.abandon_session(game).await?;
+    tokio::time::sleep(Duration::from_secs(11)).await;
+    host.abandon_session(game).await?;
+    let own = late.split_session(game).await.map_err(|e| eyre!("a late split was refused: {e}"))?;
+    let found = friend.search_with_participants(&[left_behind.pid]).await?;
+    ensure!(
+        room_in(&found, own).is_none_or(|(_, members)| !members.contains(&left_behind.pid)),
+        "a player who abandoned the match 11 s earlier took it over: {:?}",
+        room_in(&found, own)
+    );
+    late.disconnect().await?;
+    left_behind.disconnect().await?;
+
     // A claim on a match its host then ends.
     let game = host.create_session(attributes).await?;
     host.add_participants(game, &[], &[host.pid]).await?;
@@ -2101,6 +2141,8 @@ async fn party_escort(ctx: &mut Ctx) -> Result<()> {
     let mut other = ctx.player("Member").await?;
     let mut stray = ctx.player("Stray").await?;
     let mut unknown = ctx.player("Unknown").await?;
+    let mut blocker = ctx.player("Blocker").await?;
+    let mut outsider = ctx.player("Outsider").await?;
     for (bot, port) in [
         (&mut host, 3074),
         (&mut leader, 3075),
@@ -2108,12 +2150,18 @@ async fn party_escort(ctx: &mut Ctx) -> Result<()> {
         (&mut other, 3077),
         (&mut stray, 3078),
         (&mut unknown, 3079),
+        (&mut blocker, 3081),
+        (&mut outsider, 3082),
     ] {
         bot.register_urls(&[&format!("prudp:/address=127.0.0.1;port={port};sid=15;type=3")]).await?;
     }
-    // The host knows two of the leader's party; the third is a stranger to it.
+    // The host knows two of the leader's party; the third is a stranger to it, and the fourth
+    // was a friend and blocked it. One friend of the host's isn't in the party at all.
     befriend(&host, &member).await?;
     befriend(&host, &other).await?;
+    befriend(&host, &blocker).await?;
+    blocker.friend_change("block", &host.name).await?;
+    befriend(&host, &outsider).await?;
     let sorted = |mut pids: Vec<u32>| {
         pids.sort_unstable();
         pids
@@ -2128,7 +2176,7 @@ async fn party_escort(ctx: &mut Ctx) -> Result<()> {
     // The leader's party, with two members in it (as invited players join).
     let party = leader.create_session(LOBBY).await?;
     leader.add_participants(party, &[leader.pid], &[]).await?;
-    for p in [&mut member, &mut other, &mut unknown] {
+    for p in [&mut member, &mut other, &mut unknown, &mut blocker] {
         p.add_participants(party, &[p.pid], &[]).await?;
         p.join_session(party).await?;
     }
@@ -2156,7 +2204,7 @@ async fn party_escort(ctx: &mut Ctx) -> Result<()> {
     ensure!(push.ui_type == 7003 && push.ui_param_2 == game, "wrong push for the leader: {push:?}");
     let found = stray.search_with_participants(&[leader.pid]).await?;
     ensure!(
-        room_in(&found, party) == Some((leader.pid, sorted(vec![leader.pid, member.pid, other.pid, unknown.pid]))),
+        room_in(&found, party) == Some((leader.pid, sorted(vec![leader.pid, member.pid, other.pid, unknown.pid, blocker.pid]))),
         "the leader's party isn't kept: {:?}",
         room_in(&found, party)
     );
@@ -2204,6 +2252,14 @@ async fn party_escort(ctx: &mut Ctx) -> Result<()> {
         "the host's game took in a party member who isn't its friend"
     );
     ensure!(
+        blocker.add_participants(game, &[], &[blocker.pid]).await.is_err(),
+        "a party member who blocked the host joined its private match"
+    );
+    ensure!(
+        outsider.add_participants(game, &[], &[outsider.pid]).await.is_err(),
+        "a friend of the host outside the leader's party walked in uninvited"
+    );
+    ensure!(
         stray.add_participants(game, &[], &[stray.pid]).await.is_err(),
         "a stranger joined the private match with the party"
     );
@@ -2226,7 +2282,7 @@ async fn party_escort(ctx: &mut Ctx) -> Result<()> {
         late.add_participants(game, &[], &[late.pid]).await.is_err(),
         "a party member followed its leader into the match after the leader had left it"
     );
-    for bot in [host, leader, member, other, stray, unknown, late] {
+    for bot in [host, leader, member, other, stray, unknown, blocker, outsider, late] {
         bot.disconnect().await?;
     }
     Ok(())
@@ -4134,6 +4190,14 @@ const SCENARIOS: &[&str] = &[
     "party-return",
     "party-member-leaves-for-match",
     "host-migration-claims",
+    "host-migration-silent",
+    "host-migration-cascade",
+    "host-migration-invite",
+    "host-migration-host-returns",
+    "host-migration-parties",
+    "private-match-ends",
+    "party-return-stays",
+    "friend-list-private-match",
     "split-limits",
     "private-room-hidden",
     "station-url-schemes",
@@ -4239,6 +4303,9 @@ async fn run() -> Result<()> {
             // started): 18-21 s of the 30 on main's CI, and over it in every run of PRs #7
             // and #8 (MPW1412's note on #7).
             "join-now-match" => 60,
+            // A host's 20 s of silence, and an abandon 11 s before its split.
+            "host-migration-silent" | "host-migration-host-returns" => 90,
+            "host-migration-claims" => 60,
             _ => 30,
         };
         let result = tokio::time::timeout(Duration::from_secs(limit), async {
@@ -4289,6 +4356,14 @@ async fn run() -> Result<()> {
                 "party-return" => party_return(&mut ctx).await,
                 "party-member-leaves-for-match" => party_member_leaves_for_match(&mut ctx).await,
                 "host-migration-claims" => host_migration_claims(&mut ctx).await,
+                "host-migration-silent" => migration_scenarios::host_migration_silent(&mut ctx).await,
+                "host-migration-cascade" => migration_scenarios::host_migration_cascade(&mut ctx).await,
+                "host-migration-invite" => migration_scenarios::host_migration_invite(&mut ctx).await,
+                "host-migration-host-returns" => migration_scenarios::host_migration_host_returns(&mut ctx).await,
+                "host-migration-parties" => migration_scenarios::host_migration_parties(&mut ctx).await,
+                "private-match-ends" => migration_scenarios::private_match_ends(&mut ctx).await,
+                "party-return-stays" => migration_scenarios::party_return_stays(&mut ctx).await,
+                "friend-list-private-match" => migration_scenarios::friend_list_private_match(&mut ctx).await,
                 "public-match-probes" => public_match_probes(&mut ctx).await,
                 "party-probes" => party_probes(&mut ctx).await,
                 "party-member-split" => party_member_split(&mut ctx).await,
