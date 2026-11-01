@@ -2652,6 +2652,20 @@ fn failed_join(storage: &Storage, user: u32, reported: u32, code: u32) -> Failed
         },
         _ => (outcome, None),
     };
+    // A join that failed from a game the NAT helper never heard from, to a host the relay
+    // carries: the relay only carries registered games, so the two can't reach each other (Sem
+    // and Sokolev, eu1, 1 Nov: 17 in 40 minutes, Sem's game over a VPN that kept cutting its
+    // connection to the API). Said so, rather than "try again".
+    let outcome = match (outcome, creator) {
+        (JoinOutcome::Failed, Some(host)) if !own && host != user => {
+            let name = |id| storage.find_username_by_user_id(id).ok().flatten();
+            match (name(user), name(host)) {
+                (Some(me), Some(them)) if unreachable(crate::nat_helper::registration(&me), crate::nat_helper::registration(&them)) => JoinOutcome::Unreachable,
+                _ => outcome,
+            }
+        }
+        _ => outcome,
+    };
     FailedJoin {
         room,
         reported_room,
@@ -2660,6 +2674,12 @@ fn failed_join(storage: &Storage, user: u32, reported: u32, code: u32) -> Failed
         mismatch,
         follows: false,
     }
+}
+
+/// Whether a joiner and host with these registrations ([`crate::nat_helper::registration`]) can't
+/// reach each other: the joiner's game isn't registered, the host's is and is relayed.
+fn unreachable(joiner: Option<Option<bool>>, host: Option<Option<bool>>) -> bool {
+    joiner == Some(None) && host == Some(Some(true))
 }
 
 /// A failed join the player was just told about, for the game's TICKET_PENDING after it.
@@ -2740,6 +2760,18 @@ mod tests {
     /// A player whose game splits a match its host left moves into the copy and out of the
     /// match: it ends once they were the last in it, and only the copy is live. It used to
     /// keep them and stay listed until its host signed out (eu1 2026-10-13: hours).
+    /// Only a joiner the helper knows to be unregistered, joining a relayed host, can't reach it.
+    #[test]
+    fn an_unregistered_joiner_cant_reach_a_relayed_host() {
+        use super::unreachable;
+        assert!(unreachable(Some(None), Some(Some(true))));
+        assert!(!unreachable(Some(None), Some(Some(false))), "a direct host may still be reached");
+        assert!(!unreachable(Some(Some(false)), Some(Some(true))), "a registered joiner goes through the relay");
+        assert!(!unreachable(None, Some(Some(true))), "a game that may still be registering");
+        assert!(!unreachable(Some(None), None), "a host the helper knows nothing of");
+        assert!(!unreachable(None, None), "no helper here");
+    }
+
     #[test]
     fn a_migration_note_waits_for_a_reconnect_until_its_ttl() {
         assert!(super::note_still_due(std::time::Duration::from_secs(5)));

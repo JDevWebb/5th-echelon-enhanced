@@ -67,6 +67,9 @@ pub enum JoinProblem {
     DataMismatch,
     /// The join itself failed: the host's game didn't answer, or let them in, in time.
     Failed,
+    /// The joiner's game never registered with the server's NAT helper, and the host plays
+    /// through the relay, which only carries registered games: the two can't reach each other.
+    Unreachable,
 }
 
 /// The overlay's notice for a failed join: a title and a line. `host`, `mine` and `theirs`
@@ -94,6 +97,10 @@ pub fn join_notice(problem: JoinProblem, host: &str, mine: &str, theirs: &str) -
             "Couldn't join",
             "The host's game didn't let you in in time. Try again; if it keeps happening, the launcher will ask how it went after you quit.".to_string(),
         ),
+        JoinProblem::Unreachable => (
+            "Couldn't join: your game can't reach the relay",
+            "This host plays through the server's relay, and your game hasn't been able to sign up with it, so the two can't reach each other. A VPN or a firewall usually stops it: turn the VPN off for the game, or let Blacklist through the firewall, then start the game again.".to_string(),
+        ),
     };
     (title.to_string(), text)
 }
@@ -103,6 +110,15 @@ impl JoinProblem {
     pub fn explained(self) -> bool {
         self != Self::Failed
     }
+}
+
+/// The overlay's notice for a game that went online and hasn't signed up with the server's NAT
+/// helper: players who play through the relay can't reach it, nor it them.
+pub fn unregistered_notice() -> (String, String) {
+    (
+        "Your game can't reach the server's relay".to_string(),
+        "It hasn't been able to sign up with the server's NAT helper, so players who play through the relay can't join you, and you can't join them. A VPN or a firewall usually stops it: turn the VPN off for the game, or let Blacklist through the firewall, then start the game again.".to_string(),
+    )
 }
 
 /// The overlay's notice for a search that found nothing while lobbies with other game data

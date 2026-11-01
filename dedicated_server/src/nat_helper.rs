@@ -557,6 +557,7 @@ impl Table {
         for a in &peer.aliases {
             self.by_alias.insert(*a, id);
         }
+        missed().remove(&key);
         self.by_name.insert(key, id);
         self.by_real.insert(src, id);
         self.by_ip.entry(*src.ip()).or_default().push(id);
@@ -1159,6 +1160,23 @@ pub fn relay_ip() -> Option<Ipv4Addr> {
     TABLE.get().map(|t| t.lock().unwrap_or_else(std::sync::PoisonError::into_inner).relay_ip)
 }
 
+/// Whether `name`'s game is registered with this helper or a relay elsewhere, and if so whether
+/// it's relayed (`Some(Some(relayed))`); `Some(None)` when it went online and hasn't registered
+/// in time (`nat_missing`) since; `None` when there's nothing to tell (the helper doesn't run
+/// here, or the game may still be registering).
+pub fn registration(name: &str) -> Option<Option<bool>> {
+    let table = TABLE.get()?;
+    let key = name.to_lowercase();
+    let local = {
+        let t = table.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        t.by_name.get(&key).and_then(|id| t.peers.get(id)).map(|p| p.relayed)
+    };
+    match local.or_else(|| crate::relays::remote_entry(name).map(|(_, _, relayed, _)| relayed)) {
+        Some(relayed) => Some(Some(relayed)),
+        None => missed().contains(&key).then_some(None),
+    }
+}
+
 /// How many players this helper relays now (a relay updates when it relays nobody).
 pub fn relayed_now() -> u32 {
     TABLE.get().map_or(0, |t| {
@@ -1461,6 +1479,13 @@ fn awaiting() -> std::sync::MutexGuard<'static, HashMap<String, Instant>> {
     AWAITING.get_or_init(Mutex::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
+/// Games that went online and didn't register with the helper in time (`nat_missing`), by name,
+/// until they register or sign out: those the relay can't carry ([`registration`]).
+fn missed() -> std::sync::MutexGuard<'static, std::collections::HashSet<String>> {
+    static MISSED: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    MISSED.get_or_init(Mutex::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Games signed in to the server now, by name, with when they signed in: a registration
 /// that lapses while its game is still signed in leaves it unreachable.
 fn signed_in() -> std::sync::MutexGuard<'static, HashMap<String, Instant>> {
@@ -1495,6 +1520,7 @@ pub fn game_went_online(name: &str) {
 /// `name`'s game signed out (or its connection timed out): nothing to wait for.
 pub fn game_signed_out(name: &str) {
     awaiting().remove(&name.to_lowercase());
+    missed().remove(&name.to_lowercase());
     signed_in().remove(&name.to_lowercase());
     ids().remove(&name.to_lowercase());
 }
@@ -1697,6 +1723,14 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                     logger,
                     "NAT helper: {name}'s game went online {secs} s ago (opened or joined a room) and hasn't registered with the helper: nobody can reach it until it does"
                 );
+                // Told once a sign-in, in the game's overlay: players who play through the relay
+                // can't reach this game, nor it them, and its joins to them fail.
+                if missed().insert(name.to_lowercase()) {
+                    if let Some(&user) = ids().get(&name.to_lowercase()) {
+                        let (title, text) = server_api::notices::unregistered_notice();
+                        crate::reports::tell(user, title, text, None);
+                    }
+                }
                 crate::session_events::note(crate::session_events::Who::Name(name), "nat_missing", serde_json::json!({ "after_secs": secs }));
             }
             for (name, direction, before, after) in watch.tick(&flows, secs) {

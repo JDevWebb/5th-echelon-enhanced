@@ -46,6 +46,9 @@ pub enum JoinOutcome {
     Closed,
     DataMismatch,
     Failed,
+    /// Failed, between a joiner whose game never registered with the NAT helper and a host the
+    /// relay carries: the cause is known.
+    Unreachable,
 }
 
 impl JoinOutcome {
@@ -70,6 +73,7 @@ impl JoinOutcome {
             Self::Closed => "closed",
             Self::DataMismatch => "data_mismatch",
             Self::Failed => "failed",
+            Self::Unreachable => "unreachable",
         }
     }
 
@@ -88,6 +92,7 @@ impl JoinOutcome {
             Self::Closed => JoinProblem::Closed,
             Self::DataMismatch => JoinProblem::DataMismatch,
             Self::Failed => JoinProblem::Failed,
+            Self::Unreachable => JoinProblem::Unreachable,
         }
     }
 
@@ -104,6 +109,7 @@ impl JoinOutcome {
             Some("locked") => Self::Locked,
             Some("closed") => Self::Closed,
             Some("data_mismatch") => Self::DataMismatch,
+            Some("unreachable") => Self::Unreachable,
             Some(_) => Self::Failed,
             None => detail["code"]
                 .as_str()
