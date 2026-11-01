@@ -286,16 +286,23 @@ pub struct Beta {
     /// movement above 60 fps (`hooks::mouse_turn_fix`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mouse_turn_per_second: bool,
+    /// Host migration: a match lobby carries on under a new host when its host leaves, and a
+    /// party's leader invited into a private match takes its party along and gets it back
+    /// afterwards (`hooks::migrate_lobby`, `party_follow`, `follow_unblock`; DX11 only, all or
+    /// none).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub host_migration: bool,
 }
 
 impl Beta {
-    /// Every beta feature's name, as reports and logs use them.
-    pub const NAMES: [&'static str; 1] = ["mouse_turn_per_second"];
+    /// Every beta feature's name, as reports and logs use them (and the launcher, in this
+    /// order).
+    pub const NAMES: [&'static str; 2] = ["mouse_turn_per_second", "host_migration"];
 
     /// The beta features on, by the names reports and logs use.
     #[must_use]
     pub fn on(&self) -> Vec<&'static str> {
-        [(self.mouse_turn_per_second, "mouse_turn_per_second")]
+        [(self.mouse_turn_per_second, "mouse_turn_per_second"), (self.host_migration, "host_migration")]
             .into_iter()
             .filter(|(on, _)| *on)
             .map(|(_, name)| name)

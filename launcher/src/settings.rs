@@ -809,12 +809,21 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     }
 }
 
-/// What a beta feature's switch says, and its hover text.
-pub const BETA_FEATURES: [(&str, &str); 1] = [(
-    "Mouse turning the same at any frame rate",
-    "Above 60 fps the game turns less for the same mouse movement, so turning feels slow and players cap their frame rate. \
-     This scales the mouse's turn by the frame rate, so it turns as it does at 60 fps. Only the mouse: controllers are left as they are.",
-)];
+/// What a beta feature's switch says, and its hover text, in the order of
+/// `hooks_config::Beta::NAMES`.
+pub const BETA_FEATURES: [(&str, &str); 2] = [
+    (
+        "Mouse turning the same at any frame rate",
+        "Above 60 fps the game turns less for the same mouse movement, so turning feels slow and players cap their frame rate. \
+         This scales the mouse's turn by the frame rate, so it turns as it does at 60 fps. Only the mouse: controllers are left as they are.",
+    ),
+    (
+        "Host migration",
+        "When the host of a public match lobby leaves, the lobby carries on under one of the other players instead of breaking up. \
+         A party's leader invited into a friend's private match takes along the party members who are the host's friends, and the party \
+         comes back together after the match. Players without it on leave as before. DirectX 11 only.",
+    ),
+];
 
 #[cfg(feature = "gui")]
 /// Settings › Game › Beta features: changes still being tried out, off unless turned on here,
@@ -827,7 +836,7 @@ fn beta_features(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     ));
     ui.add_space(6.0);
     let mut beta = game.cfg.hook_config.beta.clone();
-    let switches: [&mut bool; 1] = [&mut beta.mouse_turn_per_second];
+    let switches: [&mut bool; 2] = [&mut beta.mouse_turn_per_second, &mut beta.host_migration];
     for (on, (label, hover)) in switches.into_iter().zip(BETA_FEATURES) {
         theme::switch(ui, on, label).on_hover_text(hover);
     }

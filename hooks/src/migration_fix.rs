@@ -27,6 +27,8 @@
 //! The tick also reads the game's sessions once a second for `game_state::online` (reads and
 //! the game's own in-match check only, nothing written).
 
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering;
 use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -64,6 +66,15 @@ static GAME: OnceLock<Game> = OnceLock::new();
 static ONLINE_READ: Mutex<Option<Instant>> = Mutex::new(None);
 /// Whether this build tests the lock at [`LOCKED`] (`migration::lock_test`).
 static LOCK_KNOWN: OnceLock<bool> = OnceLock::new();
+
+/// Whether the tick is hooked here: `follow_unblock` (the member's stale follow task) then runs from
+/// this tick instead of hooking the same function a second time.
+static HOOKED: AtomicBool = AtomicBool::new(false);
+
+/// See [`HOOKED`].
+pub fn tick_hooked() -> bool {
+    HOOKED.load(Ordering::Relaxed)
+}
 
 /// The migration being watched: the state machine, its reason, and since when.
 static WAITING: Mutex<Option<(usize, u32, Instant)>> = Mutex::new(None);
@@ -143,6 +154,7 @@ unsafe fn online(game: &Game) -> crate::game_state::Online {
 }
 
 fn tick(this: *mut u8, seconds: f32) {
+    crate::follow_unblock::before_tick(this.cast());
     unsafe { TickHook.call(this, seconds) };
     let Some(game) = GAME.get() else { return };
     if LOCK_KNOWN.get() == Some(&true) {
@@ -242,10 +254,13 @@ pub unsafe fn end_stuck_migrations() {
         .initialize(std::mem::transmute::<usize, unsafe extern "thiscall" fn(*mut u8, f32)>(at), tick)
         .and_then(|h| h.enable())
     {
-        Ok(()) => info!(
-            "migration-fix: a host migration still running after {} s leaves the match (tick @ {at:#010x})",
-            GIVE_UP_AFTER.as_secs()
-        ),
+        Ok(()) => {
+            HOOKED.store(true, Ordering::Relaxed);
+            info!(
+                "migration-fix: a host migration still running after {} s leaves the match (tick @ {at:#010x})",
+                GIVE_UP_AFTER.as_secs()
+            );
+        }
         Err(err) => warn!("migration-fix: the tick's detour failed: {err:?}"),
     }
 }

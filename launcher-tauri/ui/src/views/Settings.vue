@@ -113,8 +113,8 @@
                 <h3>Beta features</h3>
                 <p class="warn">Experimental: these may feel wrong, stutter, or crash the game. Turn one off if it gives you trouble.</p>
                 <p class="muted">While any of them is on, the launcher sends the game's full log (names, folders and addresses on your PC hidden) to your server's admins each time the game closes, so they can see how it went. Each takes effect the next time the game starts.</p>
-                <Switch v-for="[l, hover] in g.beta_features" :key="l" :on="g.mouse_turn_per_second" :label="l" :title="hover" @set="set('mouse_turn_per_second', $event)" />
-                <p v-if="g.mouse_turn_per_second" class="accent">Beta on: your game's log is sent after each game.</p>
+                <Switch v-for="[k, l, hover, on] in g.beta_features" :key="k" :on="on" :label="l" :title="hover" @set="set(k, $event)" />
+                <p v-if="g.beta_features.some(b => b[3])" class="accent">Beta on: your game's log is sent after each game.</p>
               </section>
             </template>
           </div>

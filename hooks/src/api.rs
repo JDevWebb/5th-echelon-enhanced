@@ -154,6 +154,9 @@ pub struct Friend {
     pub session_data: Vec<u8>,
     /// Principal id as Quazal uses it - needed to search for the session this friend is in.
     pub pid: u32,
+    /// That session is a private match, not an invite-only party (a server before 0.4.8 never
+    /// says so).
+    pub private_match: bool,
 }
 
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
@@ -359,6 +362,7 @@ async fn list_friends_async() -> Result<Vec<Friend>, Error> {
                 invite_only: f.invite_only,
                 session_data: crate::uplay_r1_loader::session_data_for_game(f.session_data),
                 pid: f.pid,
+                private_match: f.private_match,
             })
             .collect())
     })

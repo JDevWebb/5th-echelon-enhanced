@@ -714,6 +714,8 @@ impl Friends for MyFriends {
         let sessions = self.storage.list_advertised_sessions_async().await.map_err(internal)?;
         let friend_ids: std::collections::HashSet<u32> = self.storage.friends_of(me).await.map_err(internal)?.into_iter().map(|p| p.id).collect();
         let inviters: std::collections::HashSet<u32> = self.storage.pending_inviters(me).await.map_err(internal)?.into_iter().collect();
+        let advertised: Vec<u32> = sessions.values().filter(|(_, invite_only, _)| *invite_only).map(|(id, _, _)| *id).collect();
+        let matches: std::collections::HashSet<u32> = self.storage.matches_among_async(&advertised).await.map_err(internal)?.into_iter().collect();
         let friends = people
             .into_iter()
             .map(|u| {
@@ -730,6 +732,7 @@ impl Friends for MyFriends {
                     session_id,
                     invite_only,
                     session_data,
+                    private_match: invite_only && session_id != 0 && matches.contains(&session_id),
                 }
             })
             .collect();
@@ -1622,7 +1625,7 @@ impl Misc for MyMisc {
                 // The invitation a launcher/overlay "join a friend" (JoinNow) queued: a join the
                 // player asked for (the game takes it without a click only if it asked for it
                 // itself); any other waiting invitation isn't.
-                requested: invite.join_request && invite.session_id.is_some(),
+                requested: (invite.join_request || crate::escorts::is_return_invite(invite.id)) && invite.session_id.is_some(),
             }),
             friend: None,
             notice: notice(),

@@ -17,6 +17,7 @@ use hooks_addresses::crash_fixes::scheme_pool;
 use hooks_addresses::crash_fixes::storm;
 use hooks_addresses::crash_fixes::voice_device;
 use hooks_addresses::crash_fixes::Image;
+use hooks_addresses::host_migration;
 use hooks_addresses::mouse_turn;
 use hooks_addresses::quick_start;
 
@@ -96,6 +97,16 @@ fn check(path: &Path) -> bool {
         "beta: mouse turn",
         mouse_turn::locate(&img).map(|s| format!("{:#010x}, back to {:#010x}", s.patch, s.resume)),
     );
+    // DX11 only: the DX9 build lacks pieces of it, and the beta stays off there.
+    let dx9 = path.file_name().is_some_and(|n| n.eq_ignore_ascii_case("Blacklist_game.exe"));
+    match host_migration::locate(&img) {
+        Ok(s) => println!(
+            "  ok      {:<18} setter {:#010x}, check {:#010x}, leader action {:#010x}, sync {:#010x}/{:#010x}, follow task {:#010x}",
+            "beta: host migr.", s.setter, s.check, s.leader_action, s.sync_enter, s.sync_tick, s.follow_task
+        ),
+        Err(why) if dx9 => println!("  -       {:<18} DX11 only ({why})", "beta: host migr."),
+        Err(why) => report("beta: host migr.", Err(why)),
+    }
     ok
 }
 

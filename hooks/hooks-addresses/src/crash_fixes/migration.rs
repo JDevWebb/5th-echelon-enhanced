@@ -119,6 +119,11 @@ fn find_one<'a, T>(code: &[u8], options: &'a [T], signature: impl Fn(&T) -> &str
     }
 }
 
+/// The tick alone (`host_migration`'s `follow_unblock` runs from it).
+pub fn tick(img: &Image) -> Result<usize, &'static str> {
+    img.find(&parse(TICK)).map_err(|_| "the disconnect state machine's tick")
+}
+
 /// Reads the pieces from `code` (loaded at `base`); `Err` names what didn't check out.
 fn locate_in(code: &[u8], base: usize) -> Result<(usize, Game), &'static str> {
     let tick = find_unique(code, &parse(TICK)).map_err(|_| "the disconnect state machine's tick")?;

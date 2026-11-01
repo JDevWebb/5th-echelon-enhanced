@@ -205,6 +205,9 @@ message Friend {
     // guest finds the host through SearchSessionsWithParticipants, which takes participant
     // ids - so without the pid the game has nothing to search with.
     uint32 pid = 7;
+    // That session is a private match (an invite-only room of kind 0), not an invite-only
+    // party: a party's leader invited into it keeps its party (the host-migration beta).
+    bool private_match = 8;
 }
 
 message SetSessionRequest {

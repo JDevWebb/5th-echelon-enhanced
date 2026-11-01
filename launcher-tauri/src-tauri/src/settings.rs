@@ -83,8 +83,9 @@ pub struct GameView {
     log_levels: Vec<&'static str>,
     command_line: String,
     running: bool,
-    mouse_turn_per_second: bool,
-    beta_features: Vec<(&'static str, &'static str)>,
+    /// Each beta feature: its name (also its setting's key), switch label, hover text, and
+    /// whether it's on.
+    beta_features: Vec<(&'static str, &'static str, &'static str, bool)>,
 }
 
 #[derive(Serialize)]
@@ -209,8 +210,14 @@ pub fn settings(state: tauri::State<Launcher>) -> View {
             log_levels: LOG_LEVELS.into_iter().map(level_name).collect(),
             command_line: h.internal_command_line.clone(),
             running,
-            mouse_turn_per_second: h.beta.mouse_turn_per_second,
-            beta_features: launcher::settings::BETA_FEATURES.to_vec(),
+            beta_features: {
+                let on = h.beta.on();
+                hooks_config::Beta::NAMES
+                    .into_iter()
+                    .zip(launcher::settings::BETA_FEATURES)
+                    .map(|(name, (label, hover))| (name, label, hover, on.contains(&name)))
+                    .collect()
+            },
         }
     });
     let network = game.map(|g| {
@@ -412,6 +419,10 @@ pub fn set(app: tauri::AppHandle, state: tauri::State<Launcher>, key: String, va
         "mouse_turn_per_second" => {
             let on = b()?;
             game.update(notices, |c| c.hook_config.beta.mouse_turn_per_second = on);
+        }
+        "host_migration" => {
+            let on = b()?;
+            game.update(notices, |c| c.hook_config.beta.host_migration = on);
         }
         "nat" => {
             let mode = match s()?.as_str() {

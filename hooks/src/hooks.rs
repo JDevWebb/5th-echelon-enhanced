@@ -801,6 +801,12 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
     if config.beta.mouse_turn_per_second {
         crate::mouse_turn_fix::turn_per_second();
     }
+    // Beta: a match lobby carries on under a new host, and a party follows its leader into a
+    // private match (host_migration.rs; all three parts or none).
+    #[cfg(not(feature = "patch-free"))]
+    if config.beta.host_migration {
+        crate::host_migration::install();
+    }
 
     // Opt-in: straight into the Spies vs Mercs or Co-op online lobby (see quickstart.rs).
     #[cfg(not(feature = "patch-free"))]
@@ -847,6 +853,11 @@ pub unsafe fn deinit(config: &Config) {
     disable_configurable_hook!(config, Hook::Thread, ThreadStarterHook);
     #[cfg(feature = "modding")]
     disable_configurable_hook!(config, Hook::OverridePackaged, ArcOpenFileHook);
+    #[cfg(not(feature = "patch-free"))]
+    {
+        crate::party_follow::deinit();
+        crate::follow_unblock::deinit();
+    }
     nat::deinit_hooks();
     storm::deinit_hooks(config);
     quazal::deinit_hooks(config);
