@@ -122,10 +122,12 @@ pub struct Config {
     pub default_game: GameVersion,
     #[serde(default)]
     pub ui_version: Option<UIVersion>,
-    /// Opt-in: brighten the picture by lifting Blacklist.ini's dark gamma cap (see [`crate::gamma`]).
+    /// Opt-in: brighten the picture by lifting Blacklist.ini's dark gamma cap (see [`crate::gamma`]);
+    /// on Linux through vkBasalt (see [`crate::vkbasalt`]).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub brighten: bool,
-    /// The brightness the option writes (hundredths of `m_fVideoGamma`), when `brighten` is on.
+    /// The brightness the option writes (hundredths of `m_fVideoGamma`), when `brighten` is on;
+    /// on Linux, vkBasalt's curve ([`crate::vkbasalt::strength`]).
     #[serde(default = "default_brightness")]
     pub brightness: u8,
     /// The gamma values Blacklist.ini had before `brighten` changed them, to put back when it's off.

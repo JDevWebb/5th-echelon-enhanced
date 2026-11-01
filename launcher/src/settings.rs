@@ -16,6 +16,14 @@ use crate::activity::Activities as Notices;
 #[cfg(feature = "gui")]
 use crate::app::App;
 use crate::flow;
+#[cfg(feature = "gui")]
+use crate::new_options::vkbasalt_missing;
+#[cfg(feature = "gui")]
+use crate::new_options::BRIGHTEN_HOVER;
+#[cfg(feature = "gui")]
+use crate::new_options::BRIGHTEN_WITH_VKBASALT;
+#[cfg(feature = "gui")]
+use crate::new_options::VKBASALT_MISSING;
 use crate::prefs::Game;
 use crate::prefs::Prefs;
 #[cfg(feature = "gui")]
@@ -703,18 +711,20 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
             ui.label(theme::kicker("Recommended").size(10.5));
         });
     }
-    // Picture brightness (opt-in): lifts Blacklist.ini's dark gamma cap. The file is edited
-    // statically while the game is off and put back when the option is turned off, so the
-    // controls are locked while the game runs.
+    // Picture brightness (opt-in). Windows: lifts Blacklist.ini's dark gamma cap; the file is
+    // edited statically while the game is off and put back when the option is turned off.
+    // Linux: vkBasalt, set up when the game starts. Either way the controls are locked while the
+    // game runs.
     let running = setup::game::game_running();
+    // Linux without vkBasalt's 32-bit layer: can't be turned on (only off, if it was on).
+    let missing = BRIGHTEN_WITH_VKBASALT && vkbasalt_missing();
     ui.add_enabled_ui(!running, |ui| {
         let mut brighten = game.cfg.brighten;
-        let toggled = theme::switch(ui, &mut brighten, "Brighten the picture")
-            .on_hover_text(
-                "Blacklist caps its brightness low, which looks dark under Proton. This lifts the cap and \
-                 sets a brighter picture by editing Blacklist.ini while the game is closed; turning it off \
-                 puts the original back.",
-            )
+        let toggled = ui
+            .add_enabled_ui(brighten || !missing, |ui| {
+                theme::switch(ui, &mut brighten, "Brighten the picture").on_hover_text(BRIGHTEN_HOVER)
+            })
+            .inner
             .changed();
         if toggled {
             crate::new_options::set_brighten(game, notices, brighten);
@@ -725,25 +735,42 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
             let mut level = ui.data(|d| d.get_temp::<u8>(id)).unwrap_or(game.cfg.brightness);
             let slider = egui::Slider::new(&mut level, setup::gamma::MIN_BRIGHTNESS..=setup::gamma::MAX_BRIGHTNESS)
                 .text("Brightness")
-                .custom_formatter(|n, _| format!("{:.2}", n / 100.0));
+                .custom_formatter(|n, _| {
+                    if BRIGHTEN_WITH_VKBASALT {
+                        // vkBasalt's curve: 1.00 leaves the picture as it is.
+                        format!("{:.2}", setup::vkbasalt::strength(n as u8))
+                    } else {
+                        format!("{:.2}", n / 100.0)
+                    }
+                });
             let response = ui.add(slider);
             if response.dragged() {
                 ui.data_mut(|d| d.insert_temp(id, level));
             } else {
                 ui.data_mut(|d| d.remove::<u8>(id));
                 if level != game.cfg.brightness && (response.drag_stopped() || response.changed()) {
-                    let mut backup = game.cfg.gamma_backup.clone();
-                    match setup::gamma::enable(&game.dir, level, &mut backup) {
-                        Ok(()) => game.update(notices, |c| {
-                            c.brightness = level;
-                            c.gamma_backup = backup;
-                        }),
-                        Err(e) => notices.error(format!("Couldn't change the brightness: {e}")),
+                    if BRIGHTEN_WITH_VKBASALT {
+                        // Written for vkBasalt when the game next starts.
+                        game.update(notices, |c| c.brightness = level);
+                    } else {
+                        let mut backup = game.cfg.gamma_backup.clone();
+                        match setup::gamma::enable(&game.dir, level, &mut backup) {
+                            Ok(()) => game.update(notices, |c| {
+                                c.brightness = level;
+                                c.gamma_backup = backup;
+                            }),
+                            Err(e) => notices.error(format!("Couldn't change the brightness: {e}")),
+                        }
                     }
                 }
             }
         }
     });
+    if missing {
+        ui.label(theme::muted(VKBASALT_MISSING));
+    } else if BRIGHTEN_WITH_VKBASALT && game.cfg.brighten {
+        ui.label(theme::muted("In the game, Home turns the brightening off and on."));
+    }
     if running && game.cfg.brighten {
         ui.label(theme::muted("Close the game to change the picture brightness."));
     }

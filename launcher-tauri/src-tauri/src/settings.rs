@@ -70,6 +70,12 @@ pub struct GameView {
     mouse_accel_blocked: Option<&'static str>,
     disable_mouse_accel: bool,
     brighten: bool,
+    /// What the switch does here (Blacklist.ini on Windows, vkBasalt on Linux).
+    brighten_hover: &'static str,
+    /// Linux: brightened with vkBasalt (the slider shows its strength, Home toggles it).
+    brighten_vkbasalt: bool,
+    /// Linux without vkBasalt's 32-bit layer: why it can't be turned on.
+    brighten_missing: Option<&'static str>,
     brightness: u8,
     brightness_range: (u8, u8),
     disable_autoclimb: bool,
@@ -192,6 +198,10 @@ pub fn settings(state: tauri::State<Launcher>) -> View {
             mouse_accel_blocked: hooks_config::fusion_fix::removes_mouse_accel(&g.dir).then_some(launcher::new_options::FUSION_FIX_MOUSE),
             disable_mouse_accel: h.disable_mouse_accel,
             brighten: g.cfg.brighten,
+            brighten_hover: launcher::new_options::BRIGHTEN_HOVER,
+            brighten_vkbasalt: launcher::new_options::BRIGHTEN_WITH_VKBASALT,
+            brighten_missing: (launcher::new_options::BRIGHTEN_WITH_VKBASALT && launcher::new_options::vkbasalt_missing())
+                .then_some(launcher::new_options::VKBASALT_MISSING),
             brightness: g.cfg.brightness,
             brightness_range: (setup::gamma::MIN_BRIGHTNESS, setup::gamma::MAX_BRIGHTNESS),
             disable_autoclimb: h.disable_autoclimb,
@@ -376,13 +386,18 @@ pub fn set(app: tauri::AppHandle, state: tauri::State<Launcher>, key: String, va
                 .as_u64()
                 .ok_or("brightness wants a number")?
                 .clamp(u64::from(setup::gamma::MIN_BRIGHTNESS), u64::from(setup::gamma::MAX_BRIGHTNESS)) as u8;
-            let mut backup = game.cfg.gamma_backup.clone();
-            match setup::gamma::enable(&game.dir, level, &mut backup) {
-                Ok(()) => game.update(notices, |c| {
-                    c.brightness = level;
-                    c.gamma_backup = backup;
-                }),
-                Err(e) => notices.error(format!("Couldn't change the brightness: {e}")),
+            if launcher::new_options::BRIGHTEN_WITH_VKBASALT {
+                // Written for vkBasalt when the game next starts.
+                game.update(notices, |c| c.brightness = level);
+            } else {
+                let mut backup = game.cfg.gamma_backup.clone();
+                match setup::gamma::enable(&game.dir, level, &mut backup) {
+                    Ok(()) => game.update(notices, |c| {
+                        c.brightness = level;
+                        c.gamma_backup = backup;
+                    }),
+                    Err(e) => notices.error(format!("Couldn't change the brightness: {e}")),
+                }
             }
         }
         "log_level" => {

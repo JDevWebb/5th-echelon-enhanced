@@ -1,6 +1,7 @@
 //! Starting the game. The hook in `uplay_r1_loader.dll` does the rest:
 //! it reads `uplay.toml` (and `uplay.override.toml`) from the game folder.
 
+use std::ffi::OsString;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Child;
@@ -48,7 +49,11 @@ const ERROR_ELEVATION_REQUIRED: i32 = 740;
 /// launch options the player set there); a prefix Proton made outside Steam (`umu-run`,
 /// Lutris, Heroic) starts with `umu-run`, in the Proton that made it; other Wine installs
 /// start with `wine` in their own prefix.
-pub fn launch(game_dir: &Path, version: GameVersion, through_steam: bool) -> std::io::Result<Launched> {
+///
+/// `env` is added to the game's environment where the launcher starts the game's process
+/// itself (Wine or umu-run on Linux: vkBasalt's switches for "Brighten the picture"); Steam
+/// starts the game on its own and doesn't pass it on.
+pub fn launch(game_dir: &Path, version: GameVersion, through_steam: bool, env: &[(&str, OsString)]) -> std::io::Result<Launched> {
     let exe = version.full_path(game_dir);
     if !exe.is_file() {
         return Err(std::io::Error::new(
@@ -67,6 +72,7 @@ pub fn launch(game_dir: &Path, version: GameVersion, through_steam: bool) -> std
         };
         let mut cmd = Command::new(&exe);
         cmd.current_dir(game_dir).env(hooks_config::last_run::LAUNCHER_ENV, "1");
+        with_env(&mut cmd, env);
         // A Windows launcher running under Wine: keep the game from freezing
         // on CPUs with many threads, as a Linux launcher would.
         if hooks_config::running_under_wine() && crate::wine::cpu_threads() > crate::wine::MAX_THREADS {
@@ -87,6 +93,7 @@ pub fn launch(game_dir: &Path, version: GameVersion, through_steam: bool) -> std
         return start_through_steam().map(|()| Launched::Steam);
     }
     let mut cmd = linux_command(&start, &exe, game_dir, |name| std::env::var_os(name).is_some());
+    with_env(&mut cmd, env);
     if crate::wine::cpu_threads() > crate::wine::MAX_THREADS {
         cmd.env("WINE_CPU_TOPOLOGY", crate::wine::cpu_topology(crate::wine::MAX_THREADS));
     }
@@ -188,6 +195,12 @@ pub fn proton_without_umu(game_dir: &Path) -> bool {
     matches!(choose_start(prefix.as_ref(), crate::wine::find_program("umu-run")), LinuxStart::Wine { proton: true, .. })
 }
 
+/// Adds `env` to the environment `cmd` starts the game's process with. Every place the launcher
+/// starts the game itself calls this (whatever it runs: `wine`, `umu-run`, the game's own exe).
+fn with_env<'a>(cmd: &'a mut Command, env: &[(&str, OsString)]) -> &'a mut Command {
+    cmd.envs(env.iter().map(|(k, v)| (k, v)))
+}
+
 /// Asks Steam on Windows to start the game: its own program (`-applaunch`), else a `steam://`
 /// link through the shell.
 fn start_through_steam_on_windows() -> std::io::Result<()> {
@@ -284,9 +297,13 @@ mod tests {
         }
     }
 
+    /// The variables `cmd` sets, but for the launcher's start marker (every start has it).
     fn envs(cmd: &Command) -> Vec<(String, String)> {
+        let marker = hooks_config::last_run::LAUNCHER_ENV;
+        assert!(cmd.get_envs().any(|(k, v)| k == marker && v == Some("1".as_ref())), "the launcher's marker");
         let mut envs: Vec<_> = cmd
             .get_envs()
+            .filter(|(k, _)| *k != marker)
             .filter_map(|(k, v)| Some((k.to_string_lossy().into_owned(), v?.to_string_lossy().into_owned())))
             .collect();
         envs.sort();
@@ -380,5 +397,35 @@ mod tests {
         let cmd = linux_command(&choose_start(None, None), Path::new("/g/game.exe"), Path::new("/g"), |_| false);
         assert!(envs(&cmd).is_empty());
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    /// The game's process gets `env`: a stand-in for the game (a script run by `sh`) writes down
+    /// its environment.
+    #[cfg(unix)]
+    #[test]
+    fn the_games_process_gets_the_extra_environment() {
+        let dir = std::env::temp_dir().join(format!("fe-launch-env-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let exe = dir.join("Blacklist_DX11_game.exe");
+        std::fs::write(&exe, "env > env.txt\n").unwrap();
+        let config = dir.join("vk dir/vkBasalt.conf");
+        let env = crate::vkbasalt::env(&config);
+        let status = with_env(Command::new("sh").arg(&exe).current_dir(&dir).env("WINEPREFIX", dir.join("pfx")), &env)
+            .status()
+            .unwrap();
+        assert!(status.success());
+        let seen = std::fs::read_to_string(dir.join("env.txt")).unwrap();
+        assert!(seen.lines().any(|l| l == "ENABLE_VKBASALT=1"), "{seen}");
+        assert!(seen.lines().any(|l| l == format!("VKBASALT_CONFIG_FILE={}", config.display())), "{seen}");
+        assert!(seen.lines().any(|l| l == format!("WINEPREFIX={}", dir.join("pfx").display())));
+        // Without it, nothing of vkBasalt's is added.
+        std::fs::remove_file(dir.join("env.txt")).unwrap();
+        with_env(Command::new("sh").arg(&exe).current_dir(&dir).env_remove("ENABLE_VKBASALT"), &[])
+            .status()
+            .unwrap();
+        let seen = std::fs::read_to_string(dir.join("env.txt")).unwrap();
+        assert!(!seen.contains("ENABLE_VKBASALT=") && !seen.contains(&config.display().to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

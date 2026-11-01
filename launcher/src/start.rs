@@ -62,8 +62,19 @@ pub fn start(game: &mut Game, notices: &mut Notices, mode: PlayMode, name_not_al
     let Some(version) = setup::game::pick_version(&game.dir, game.cfg.default_game) else {
         return Err(Refused::Error("The game's executable is missing.".into()));
     };
-    setup::launch::launch(&game.dir, version, Prefs::start_through_steam()).map_err(|e| {
+    // Linux, "Brighten the picture": vkBasalt's switches for the game's process.
+    let env = crate::new_options::brighten_env(game, notices);
+    let launched = setup::launch::launch(&game.dir, version, Prefs::start_through_steam(), &env).map_err(|e| {
         tracing::warn!("couldn't start the game: {e}");
         Refused::Error(format!("Couldn't start the game: {e}"))
-    })
+    })?;
+    // Steam starts the game itself, without the launcher's environment.
+    if let (Launched::Steam, [(enable, on), (config, path)]) = (&launched, env.as_slice()) {
+        notices.info(format!(
+            "To brighten the picture when Steam starts the game, put this in its Launch Options in Steam: {enable}={} {config}=\"{}\" %command%",
+            on.to_string_lossy(),
+            path.to_string_lossy()
+        ));
+    }
+    Ok(launched)
 }

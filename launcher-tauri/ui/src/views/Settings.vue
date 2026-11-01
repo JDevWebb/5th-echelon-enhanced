@@ -77,16 +77,18 @@
                 </div>
                 <Switch
                   :on="g.brighten"
-                  :disabled="g.running"
+                  :disabled="g.running || (!g.brighten && !!g.brighten_missing)"
                   label="Brighten the picture"
-                  title="Blacklist caps its brightness low, which looks dark under Proton. This lifts the cap and sets a brighter picture by editing Blacklist.ini while the game is closed; turning it off puts the original back."
+                  :title="g.brighten_hover"
                   @set="set('brighten', $event)"
                 />
                 <label v-if="g.brighten" class="slider">
                   <span>Brightness</span>
                   <input v-model.number="brightness" type="range" :min="g.brightness_range[0]" :max="g.brightness_range[1]" :disabled="g.running" @change="set('brightness', brightness)" />
-                  <span class="mono">{{ (brightness / 100).toFixed(2) }}</span>
+                  <span class="mono">{{ brightnessShown }}</span>
                 </label>
+                <p v-if="g.brighten_missing" class="muted">{{ g.brighten_missing }}</p>
+                <p v-else-if="g.brighten_vkbasalt && g.brighten" class="muted">In the game, Home turns the brightening off and on.</p>
                 <p v-if="g.running && g.brighten" class="muted">Close the game to change the picture brightness.</p>
                 <Switch
                   :on="g.disable_autoclimb"
@@ -408,6 +410,13 @@ const view = ref(null);
 const section = ref(props.open ?? 'game');
 const found = ref([]);
 const brightness = ref(100);
+// vkBasalt's strength on Linux (1.00 leaves the picture as it is), else the game's gamma.
+const brightnessShown = computed(() => {
+  const g = view.value.game;
+  if (!g?.brighten_vkbasalt) return (brightness.value / 100).toFixed(2);
+  const [min, max] = g.brightness_range;
+  return (1 + (Math.min(Math.max(brightness.value, min), max) - min) / (max - min)).toFixed(2);
+});
 const commandLine = ref('');
 const tests = ref([]);
 const testing = ref(false);
