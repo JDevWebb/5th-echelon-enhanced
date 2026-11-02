@@ -18,6 +18,7 @@ use hooks_addresses::crash_fixes::particle;
 use hooks_addresses::crash_fixes::scheme_pool;
 use hooks_addresses::crash_fixes::storm;
 use hooks_addresses::crash_fixes::tagging_device;
+use hooks_addresses::crash_fixes::umd_read;
 use hooks_addresses::crash_fixes::voice_device;
 use hooks_addresses::crash_fixes::Image;
 use hooks_addresses::host_migration;
@@ -102,6 +103,15 @@ fn check(path: &Path) -> bool {
             .map_err(|what| format!("{what} wasn't found or didn't match")),
     );
     report("session lock", migration::lock_test(&img).map(|at| format!("test {at:#010x}")));
+    report(
+        "umd-read-fix",
+        umd_read::locate(&img).map(|s| {
+            format!(
+                "vtable {:#010x} (Serialize {:#010x}, sync slot {:#010x}, Precache {:#010x}), sync {:#010x}, switches {:#010x}/{:#010x}",
+                s.vtable, s.serialize, s.sync_only, s.precache, s.sync, s.linear_on, s.linear_off
+            )
+        }),
+    );
     // Not a crash fix, but found the same way: the quick start (QuickStartLobby).
     report(
         "quick-start",

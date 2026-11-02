@@ -11,6 +11,7 @@ pub mod particle;
 pub mod scheme_pool;
 pub mod storm;
 pub mod tagging_device;
+pub mod umd_read;
 pub mod voice_device;
 
 use std::ops::Range;

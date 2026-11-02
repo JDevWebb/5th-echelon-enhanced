@@ -8,6 +8,12 @@
 //! last entry, the code that moves it along (`0x450730`) sets the current entry and table to 0,
 //! and the next read's check uses them unchecked: the game reads address 0 and crashes.
 //!
+//! Since 0.4.8 umd_read_fix (PR #12, mpw) is the fix for the cause: a read the sequence can't
+//! place (Play SvM skips the hub, so `PEC-Main.umd`'s reads were never recorded) gets its bytes
+//! from the UMD files, and the sync never runs off the table. This fix stays as the backstop for
+//! what umd_read_fix leaves to the game (a cursor it can't follow, a read no UMD has, or that fix
+//! off or skipped): no crash, though the read past the table may then get the wrong bytes.
+//!
 //! The fix: the check's two reads of the current entry (DX11 `0x4504e2`, and `0x450657` on its
 //! other path; 6 bytes each, two `mov`s) jump to stubs that, with no entry left, end the check
 //! as "fine" through the function's own end (`mov al,1` ... `ret 0x10`): there is nothing left

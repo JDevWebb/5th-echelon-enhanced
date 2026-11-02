@@ -2699,6 +2699,7 @@ version = "0.2.5"
 dependencies = [
  "anyhow",
  "argh",
+ "flate2",
  "goblin",
  "hooks-config",
  "iced-x86",

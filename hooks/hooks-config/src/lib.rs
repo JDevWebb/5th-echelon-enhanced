@@ -404,9 +404,13 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disable_autoclimb: bool,
     /// Turns off the fixes for the game's own crashes and hangs (hooks' `scheme_pool_fix`, `particle_fix`, `storm_fix`,
-    /// `voice_device_fix`, `migration_fix`), which are on otherwise. Not shown in the launcher: for ruling them out when something goes wrong.
+    /// `voice_device_fix`, `tagging_device_fix`, `disruption_fix`, `umd_read_fix`, `load_order_fix`, `migration_fix`), which are on otherwise. Not shown in the launcher: for ruling them out when something goes wrong.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disable_crash_fixes: bool,
+    /// Turns off only `umd_read_fix` (package reads off a UMD's recorded read sequence), for comparing with and without it.
+    /// Not shown in the launcher.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disable_umd_read_fix: bool,
     /// Opt-in: start straight into an online lobby, `"svm"` (Spies vs Mercs) or `"coop"`
     /// (Co-op), skipping the boot videos and the title screen. Unset by default: the game starts
     /// as it always did. The launcher's Play button sets it on each start (its Play SvM / Play

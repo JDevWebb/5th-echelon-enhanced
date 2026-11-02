@@ -66,6 +66,7 @@ mod scheme_pool_fix;
 mod speed_check;
 mod storm_fix;
 mod tagging_device_fix;
+mod umd_read_fix;
 mod unblock_logic;
 mod uplay_r1_loader;
 mod voice_device_fix;

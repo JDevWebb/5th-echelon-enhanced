@@ -17,6 +17,7 @@ modding = []
 [dependencies]
 argh = { workspace = true, optional = true }
 anyhow = { workspace = true }
+flate2 = { workspace = true }
 goblin = { workspace = true }
 hooks-config = { path = "../hooks-config" }
 iced-x86 = { workspace = true, default-features = false, features = [

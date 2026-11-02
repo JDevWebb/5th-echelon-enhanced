@@ -788,6 +788,15 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
         crate::voice_device_fix::guard_voice_devices();
         crate::tagging_device_fix::guard_tagging_devices();
         crate::disruption_fix::guard_disruption();
+        // Before load_order_fix: umd_read_fix checks the read-sequence sync's code as the game
+        // has it, and load_order_fix then patches two reads inside that sync. Each read the
+        // sequence can't serve is served from the files; load_order_fix stays as the backstop
+        // for what umd_read_fix leaves to the game (or when it's off or skipped).
+        if config.disable_umd_read_fix {
+            tracing::info!("umd-read-fix: off (disable_umd_read_fix)");
+        } else {
+            crate::umd_read_fix::serve_reads_off_the_sequence();
+        }
         crate::load_order_fix::guard_load_order();
         crate::migration_fix::end_stuck_migrations();
     }
