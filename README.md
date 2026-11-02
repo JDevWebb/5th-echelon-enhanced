@@ -529,7 +529,8 @@ Command-line options: `--public-address <ip>`, `--listen <ip>`, and `-c <file>` 
 Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echelon/releases/tag/v0.2.5):
 
 **Launcher**
-- Rewritten in egui around a new `setup` library, for Windows and Linux (Steam, Flatpak, Steam Deck, Lutris, Heroic).
+- Rewritten around a new `setup` library, for Windows and Linux (Steam, Flatpak, Steam Deck, Lutris, Heroic): in Tauri since 0.4.8 (the Field ops look), with the classic egui interface where the new one can't run (Game Mode on a Steam Deck).
+- A Play button that says whether you're ready and why not, a Friends page (requests, finding players, blocks), and **Choose a match...** to pick an open public match or start a new one.
 - A guided first-run setup, and a Status card with fixes. **Connect** finds your account with your identity, and asks for a name only when you have none on that server.
 - Typing a network's address (a coordinator) sets you up on its best server by ping; the server menu moves you to another.
 - Adapter pinning that works (upstream's saved a value that never matched an adapter).
@@ -562,6 +563,7 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
   - the coordinator rolls out each release signed with the release key to its servers: one first, watched for 10 minutes, then the rest when they're quiet;
   - each machine's root updater checks the signature again, keeps the previous binaries, and puts them back if the new release doesn't come back healthy;
   - admins can pause, pin, halt or roll back.
+- **Global matchmaking:** one matchmaking server for a network, with relays near each region's players (`--role relay`); the launcher picks the nearest relay, and relays pass packets between each other for players the matchmaking server put together, with passes bound to each game's session key.
 - **Membership is kept current:** servers that don't install updates, or still run an old release a day after a rollout, leave the directory.
 - **Metrics from every server:** players, cities (DB-IP, looked up on the server; no addresses sent), what's being played, sign-ins, load, bandwidth and relayed traffic. Pings come from the coordinator and from players' launchers.
 - **An admin UI:**
@@ -593,6 +595,8 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
 - **Hosts:** `harden-host.sh`, for SSH, fail2ban, the kernel, and automatic updates (Caddy's included) with reboots at a quiet hour.
 
 **Invites and matches**
+- **Host migration** (from [#8](https://github.com/JDevWebb/5th-echelon-enhanced/pull/8) by Matthias Walther): a match lobby carries on under another player when its host leaves, and a party's leader brings the party into a friend's private match and back. On unless turned off (Settings › Game); DirectX 11.
+- Searches leave out matches whose round has started (the host's game says so), matches with someone you blocked, and, where a server asks for it, far hosts while a near one matches.
 - Invites into private matches, from [#123](https://github.com/unixoide/5th-echelon/pull/123) by Matthias Walther, with follow-up fixes:
   - pushes are resent until acknowledged;
   - duplicate packets are answered, not handled twice.
@@ -600,6 +604,11 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
 - Private matches (co-op and Spies vs Mercs) stay out of matchmaking: a room with only private seats counts as invite-only, whatever the game announces, so Find Teammate no longer drops a stranger into someone's private co-op match.
 - Co-op loads over the relay: it carries the game's largest packets (up to 1,472 bytes), which co-op sends while a mission loads.
 - The `trusted_subnet` address fix for VPN play.
+
+**Fair play**
+- Bans hold for the identity on every server of a network, and for the PC (hashed hardware ids).
+- Report-only checks for the admins: stats far from the network's normal, round settings changed mid-round, lag-switch rhythms at the relay, the game's clocks against Windows' own (speed hacks), the game's code against its executable, and other players' games seeing someone move faster than the game allows (counted only from independent witnesses).
+- **Report a player** from the overlay, and match recordings the admins can replay (top down, in 3D among the map's walls, and whole matches from every player's recording).
 
 **Server stability and security**
 - Crashes fixed:
