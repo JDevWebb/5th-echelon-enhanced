@@ -816,13 +816,11 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
 
 /// What a beta feature's switch says, and its hover text, in the order of
 /// `hooks_config::Beta::NAMES`.
-pub const BETA_FEATURES: [(&str, &str); 1] = [
-    (
-        "Mouse turning the same at any frame rate",
-        "Above 60 fps the game turns less for the same mouse movement, so turning feels slow and players cap their frame rate. \
+pub const BETA_FEATURES: [(&str, &str); 1] = [(
+    "Mouse turning the same at any frame rate",
+    "Above 60 fps the game turns less for the same mouse movement, so turning feels slow and players cap their frame rate. \
          This scales the mouse's turn by the frame rate, so it turns as it does at 60 fps. Only the mouse: controllers are left as they are.",
-    ),
-];
+)];
 
 /// Settings › Game › Host migration's switch and hover text (on unless turned off).
 pub const HOST_MIGRATION: (&str, &str) = (

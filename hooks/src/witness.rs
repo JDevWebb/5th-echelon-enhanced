@@ -33,13 +33,15 @@ struct Track {
 
 impl Track {
     fn sample(&mut self, at: [f32; 3], now: Instant) {
-        if let Some((before, _)) = self.last {
+        if let Some((before, then)) = self.last {
             // Across the ground only: a fall isn't speed.
             let step = ((at[0] - before[0]).powi(2) + (at[1] - before[1]).powi(2)).sqrt();
             if step > TELEPORT {
                 self.second = None;
             } else {
-                let (start, gone) = self.second.get_or_insert((now, 0.0));
+                // The second starts where this step did (the previous sample), so its time covers
+                // all the movement it counts.
+                let (start, gone) = self.second.get_or_insert((then, 0.0));
                 *gone += step;
                 let span = now.duration_since(*start).as_secs_f32();
                 if span >= 1.0 {
@@ -136,7 +138,8 @@ mod tests {
             t.sample([i as f32 * 100.0, 0.0, 0.0], t0 + Duration::from_millis(u64::from(i) * 100));
         }
         assert_eq!(t.over_seconds, 2);
-        assert!(t.max_speed > 900.0);
+        // Measured as it was, not 10% over (a second's time covers every step it counts).
+        assert!((t.max_speed - 1000.0).abs() < 1.0, "{}", t.max_speed);
         // A respawn across the map, then standing still.
         let mut r = Track {
             ground_speed: 400.0,
