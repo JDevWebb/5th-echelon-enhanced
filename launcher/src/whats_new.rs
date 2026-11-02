@@ -43,11 +43,16 @@ pub struct Release {
 pub const RELEASES: &[Release] = &[
     Release {
         version: "0.4.8",
-        thanks: &["Tea_bag", "Cloud", "Ghost_Leader", "curryman", "omar", "Agent1", "EitherBat2025", "Gex"],
+        thanks: &["Tea_bag", "Cloud", "Ghost_Leader", "curryman", "omar", "Agent1", "EitherBat2025", "Gex", "Ronis", "Sem", "Sokolev", "mpw"],
         new: &[
             Item {
                 title: "A new look",
                 text: "The launcher is redrawn: the Play button says whether you're ready and why not, and every page is easier to read and to use with a keyboard. On Linux and the Steam Deck the classic look stays where the new one can't run (Game Mode), and Settings switches between them.",
+                community: false,
+            },
+            Item {
+                title: "The lobby carries on when its host leaves",
+                text: "When the host of a public match's lobby leaves, one of the other players takes it over and everyone stays together, instead of each landing back in their own lobby. A party's leader invited into a friend's private match brings along the members who are the host's friends, and the party comes back together after it. On unless you turn it off in Settings › Game. DirectX 11 only; thanks to mpw, who wrote it.",
                 community: false,
             },
             Item {
@@ -81,6 +86,11 @@ pub const RELEASES: &[Release] = &[
                 community: false,
             },
             Item {
+                title: "Linux",
+                text: "Brighten the picture works under Proton, through vkBasalt (its 32-bit layer needed), and Proton prefixes made outside Steam (Lutris, Heroic) start with umu-run in their own Proton instead of the system's Wine. Thanks to mpw.",
+                community: false,
+            },
+            Item {
                 title: "Which DirectX it ran with",
                 text: "Settings › Game shows the DirectX the game last ran with under Renderer, and says why when it isn't the one you picked.",
                 community: false,
@@ -90,6 +100,18 @@ pub const RELEASES: &[Release] = &[
             Fix {
                 lead: "Rubberbanding, hits not landing and joins timing out in long sessions",
                 rest: ": a crash fix in 0.4.6 dropped the game's notes of which packets had arrived once it used more than 2 GB of memory, and wrote a log line for each. Both are fixed.",
+            },
+            Fix {
+                lead: "Crashes fixed",
+                rest: ": when a spy destroyed tagging devices with EMP or the overcharge suit, on the way back to the lobby after a match (most often after Play SvM), and when a player's navigation was disrupted while holding no item.",
+            },
+            Fix {
+                lead: "A join that can't work says why",
+                rest: ": when your game can't sign up with the server's relay (a VPN or firewall usually stops it), it tells you once, and a join that fails for it says so instead of \"try again\".",
+            },
+            Fix {
+                lead: "Lobby chat after joining from a search",
+                rest: " reaches the match you're in, not a party of your own.",
             },
             Fix {
                 lead: "A game started again is let in straight away",

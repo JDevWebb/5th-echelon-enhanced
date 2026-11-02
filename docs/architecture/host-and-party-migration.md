@@ -9,12 +9,12 @@ Sections: 1 goals · 2 findings (questions A–F) · 3 architecture · 4 decisio
 6 open points for live tests · 7 order and dependencies · 8 implementation notes · 9 case matrix ·
 10 server rules · 11 known limits · 12 live round.
 
-> **How it ships: a beta feature.** The three client hooks of this design are one beta feature, **off by
-> default**: `migrate_lobby.rs` (the match lobby migration and the running-match fallback), `party_follow.rs` (the
-> leader's party following an invitation, H1/H2) and `follow_unblock.rs` (with `follow-dup`). A player switches
-> them on in the launcher under **Settings › Beta features › Host migration**; the launcher stores it as
-> `HostMigration = true` under `[Beta]` in `uplay.toml`. Like every beta feature, it uploads the full log when the game
-> closes, so what it does can be seen in real games.
+> **How it ships: one setting, on by default (0.4.8).** The three client hooks of this design go together:
+> `migrate_lobby.rs` (the match lobby migration and the running-match fallback), `party_follow.rs` (the
+> leader's party following an invitation, H1/H2) and `follow_unblock.rs` (with `follow-dup`). They're on unless a
+> player turns them off in the launcher under **Settings › Game › Host migration**, stored as
+> `DisableHostMigration = true` in `uplay.toml`. (During 0.4.8's development they were a beta, `[Beta] HostMigration`;
+> that key is ignored now.)
 >
 > - **DX11 only, all or nothing.** On DX9, or on any build where one piece isn't found, none of the three is
 >   installed (one warning in the log). Not in the `patch-free` build.
@@ -24,7 +24,7 @@ Sections: 1 goals · 2 findings (questions A–F) · 3 architecture · 4 decisio
 > - The old opt-in keys `MigrateMatchLobby`, `MigrateRunningMatch` and `PartyFollowsInvite` are gone (a file that
 >   still has them is read as before, the keys are ignored); `PartyStaysAfterMatch` (H3) and `TraceMemberLeave`
 >   (`member_trace.rs`) were removed. The design and the live reports below keep those names where they describe
->   what was run at the time. Players without the beta: §11, "Mixed clients".
+>   what was run at the time. Players without it: §11, "Mixed clients".
 
 ---
 
@@ -115,7 +115,7 @@ M (113 ⇒ 0), A (113 ⇒ 1)"; then **the member's `SplitSession(P)`** (the memb
 | Component | Owns | Changes in this design |
 |---|---|---|
 | **Game** (unchanged code paths) | Party messages, Storm joins, team balancing by `party_session`, the party return (`PartyRestore`/`PartyWaitSync`) | none, but relied on |
-| **Client hook** (`hooks/src/party_follow.rs`; part of the "Host migration" beta; DX11 only) | On the **leader** only: (H1) don't secede when accepting an invitation into a private match while the party has members — tell the party "I'm joining a session" instead (LeaderAction 2, what the friends-list route does); (H2) let `StateLeaderPartyWaitSync` send FollowLeader for a match the leader *joined* (not hosts): skip the host check, present the join as a private custom match to `vf08`/`vf00`. Members and the match host need **no** hook (their code paths are the original ones). | new file + 2 detours + 1 two-byte patch, applied around the hook's own call only |
+| **Client hook** (`hooks/src/party_follow.rs`; part of host migration; DX11 only) | On the **leader** only: (H1) don't secede when accepting an invitation into a private match while the party has members — tell the party "I'm joining a session" instead (LeaderAction 2, what the friends-list route does); (H2) let `StateLeaderPartyWaitSync` send FollowLeader for a match the leader *joined* (not hosts): skip the host check, present the join as a private custom match to `vf08`/`vf00`. Members and the match host need **no** hook (their code paths are the original ones). | new file + 2 detours + 1 two-byte patch, applied around the hook's own call only |
 | **Server** (`dedicated_server/src/game_session.rs`, `escorts.rs`) | Admission: a member of the invited leader's party may be added to the private match (by the match host's `AddParticipants`, or by itself) and gets the 7003 gate (rules in §10); a member's split of a party whose leader was only seceded from doesn't make a takeover. Already there: host migration (SplitSession takeover, 7001, silent-host takeover). | small, see §5 S1–S4 |
 | **Testbot** | Scenarios for the server rules | §5 |
 
@@ -232,8 +232,8 @@ pushed right to left, callee cleans (`ret n`).
 
 ### H0 Switch
 
-Planned as a `PartyFollowsInvite` key in `uplay.toml`. Superseded: `party_follow::install` runs when the "Host
-migration" beta is on (`HostMigration = true` under `[Beta]`), together with the other two hooks of this design, and only
+Planned as a `PartyFollowsInvite` key in `uplay.toml`. Superseded: `party_follow::install` runs unless host
+migration is turned off (`DisableHostMigration = true`), together with the other two hooks of this design, and only
 when all three can be installed.
 
 ### H1 Leader keeps its party when accepting an invitation into a private match
@@ -306,7 +306,7 @@ fn sync_tick(this, dt):
 
 - Addresses: `hooks_addresses::host_migration::locate` finds the three functions, the host test and the
   globals by signature (`check_crash_fixes` reports them); `host_migration::install` reports a miss and, as for
-  every piece of the beta, installs none of the three hooks when anything isn't found exactly once.
+  every piece of it, installs none of the three hooks when anything isn't found exactly once.
 - Unit tests: the signatures' wildcards and offsets, and a build missing a piece (`hooks-addresses`).
 - Risks: the JoinMatch goal's `+0x10` byte might be read elsewhere during `vf08` (it isn't: `vf08` is
   synchronous, C); `local_11` also makes `vf00` kick members that don't arrive within 15 s (original behaviour
@@ -449,7 +449,7 @@ Checked against the disassembly of `Blacklist_DX11_game.exe` while implementing;
   the party session's running state and its `+0x5de` locked byte (as `FUN_00879b20` itself does); a separate
   "not migrating" test was dropped (unverified, and a migrating party isn't running).
 - **Signatures, all or nothing.** The H2(a) pattern has a wildcard for the call offset and must lie within 0x1c0
-  bytes of `vf08`. Every signature is found before anything is patched or hooked; any miss skips the whole beta
+  bytes of `vf08`. Every signature is found before anything is patched or hooked; any miss skips all of it
   (all three hooks).
 - **Server:** `escorts.rs` window `BOARDING_FOR` = 10 min as planned. `add_participants` also refuses a party member
   that adds itself before its leader was invited (no boarding yet), and logs `<member> follows its party leader
@@ -468,7 +468,7 @@ the lobby rules below apply ("as for a lobby migration"). Every wait for a vanis
 waiting for its host, parties included). With the earlier 12 s limit and the game's own detection (~10 s) a hard
 drop was taken over after ~14 s (measured for a public lobby); with 20 s expect a little over 20 s.
 
-All of these need the "Host migration" beta on every player's game (§11, "Mixed clients").
+All of these need host migration on in every player's game (0.4.8 or later, not turned off) (§11, "Mixed clients").
 
 | # | Case | Wanted behaviour | Mechanism | Status |
 |---|---|---|---|---|
@@ -561,24 +561,24 @@ second member, and a follower's own split looks the same as a competitor's. Docu
 - Searches filter on a silent host by its room's connection (`room_silence`); a host that pings late (packet loss) disappears from
   the lists for the length of the silence only.
 - **One switch for all three.** The client hooks of this design go on and off together with the "Host migration"
-  beta. There is no separate switch for the lobby migration, the running-match fallback, `follow_unblock`/`follow-dup`
+  setting. There is no separate switch for the lobby migration, the running-match fallback, `follow_unblock`/`follow-dup`
   or the party following. `DisableCrashFixes` and the `patch-free` build still leave the game's code alone, the
   latter for all of them. On DX9, or when any piece isn't found, none of the three is installed.
 
 ### Mixed clients
 
-Derived from the code, **not tested live** as a mixed setup. A player without the hooks (the beta off, DX9, an
+Derived from the code, **not tested live** as a mixed setup. A player without the hooks (host migration off, DX9, an
 older release, or the original game) runs the original code paths in a lobby with players who have them:
 
 - **Lobby, host leaves (public match).** That player's match session keeps the original flag (`kind == 1`, 0 for a
   match): it raises `LostConnectionToHost` and falls back into its own online lobby, as in the original. The players
-  with the beta migrate the lobby among themselves (SplitSession, 7001). If the host is the one without it, its game
+  with host migration migrate the lobby among themselves (SplitSession, 7001). If the host is the one without it, its game
   dissolves the lobby (Shutdown and Dissolve, DeleteSession) as in the original, so nobody migrates.
-- **Running public match, host drops.** The player without the beta is sent to its party lobby (the engine's check
+- **Running public match, host drops.** The player without it is sent to its party lobby (the engine's check
   answers by kind, F8 of `running-match-host-loss.md`); the others fall back into the migrated lobby.
-- **Party leader without the beta** accepting an invitation into someone else's private match secedes, as in the
+- **Party leader without it** accepting an invitation into someone else's private match secedes, as in the
   original: the party falls apart and the members migrate it on without the leader. The other way round needs no
-  hook on the members or the match's host (H1/H2 run on the leader only), so a leader with the beta takes members
+  hook on the members or the match's host (H1/H2 run on the leader only), so a leader with it takes members
   without it along.
 - **Return after the private match.** The server's `bring_party_back` invites the members into the leader's new
   party. A member without `follow_unblock`/`follow-dup` may be unable to accept that invitation: in live case 15

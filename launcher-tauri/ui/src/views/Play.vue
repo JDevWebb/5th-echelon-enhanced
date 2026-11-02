@@ -579,7 +579,7 @@ const button = computed(() => {
     return { label: mode, sub: newMatch + (notice.value?.status ?? list.value.line), tone: 'warn', disabled: false, act: go };
   }
   // The server and its ping are on the card beside it.
-  return { label: mode, sub: props.info.new_match ? 'Ready · a new match' : list.value.line || 'Ready to play', tone: 'ok', disabled: false, act: go };
+  return { label: mode, sub: props.info.new_match ? 'A new match' : list.value.line || 'Ready to play', tone: 'ok', disabled: false, act: go };
 });
 
 // The notice under the launch bar: a release going out, or maintenance (asked again as often
@@ -688,11 +688,14 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 .play:disabled, .play-more:disabled { cursor: not-allowed; filter: saturate(.6) brightness(.85); }
 .split { position: relative; display: flex; flex: none; margin-left: auto; }
 /* The label, and under it the status (P2). */
-.play { min-width: 210px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px; }
-.play .label { line-height: 1; }
-.play .label { white-space: nowrap; }
+.play { min-width: 210px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; }
+/* Tight around the capitals (line-height under 1), and the letter spacing after the last letter
+   given back on the left, so the word sits in the middle over the status. */
+.play .label { line-height: .78; white-space: nowrap; padding-left: .14em; }
+.split.fail .play .label, .split.muted .play .label { padding-left: .08em; }
 /* The status never widens the button (the label does): it takes the width there is. */
-.play .sub { width: 0; min-width: 100%; text-align: center; font: 600 11.5px/1.2 Plex, sans-serif; letter-spacing: .02em; text-transform: none; opacity: .82; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* margin: 0, as the page's own .sub (a heading's subtitle) would push it 14px down. */
+.play .sub { margin: 0; width: 0; min-width: 100%; text-align: center; font: 600 11.5px/1 Plex, sans-serif; letter-spacing: .02em; text-transform: none; opacity: .82; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* Its tone: ready (the accent), warnings, something to fix, can't play now, checking. */
 .split.warn .play, .split.warn .play-more { background: var(--warn); }
 .split.fail .play, .split.fail .play-more { background: var(--bad); }

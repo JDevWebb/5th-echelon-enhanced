@@ -1902,6 +1902,7 @@ name = "hooks-addresses"
 version = "0.2.5"
 dependencies = [
  "anyhow",
+ "flate2",
  "goblin",
  "hooks-config",
  "iced-x86",

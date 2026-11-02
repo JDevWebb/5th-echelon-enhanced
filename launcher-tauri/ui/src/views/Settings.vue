@@ -98,6 +98,13 @@
                   @set="set('disable_autoclimb', $event)"
                 />
                 <p v-if="g.running" class="muted">Close the game to change automatic climbing.</p>
+                <Switch
+                  :on="g.host_migration[2]"
+                  :disabled="g.running"
+                  :label="g.host_migration[0]"
+                  :title="g.host_migration[1]"
+                  @set="set('host_migration', $event)"
+                />
                 <div class="row">
                   <span>Client log detail</span>
                   <select class="select narrow" aria-label="Client log detail" :value="g.log_level" @change="set('log_level', $event.target.value)">

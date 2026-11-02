@@ -286,23 +286,17 @@ pub struct Beta {
     /// movement above 60 fps (`hooks::mouse_turn_fix`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub mouse_turn_per_second: bool,
-    /// Host migration: a match lobby carries on under a new host when its host leaves, and a
-    /// party's leader invited into a private match takes its party along and gets it back
-    /// afterwards (`hooks::migrate_lobby`, `party_follow`, `follow_unblock`; DX11 only, all or
-    /// none).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub host_migration: bool,
 }
 
 impl Beta {
     /// Every beta feature's name, as reports and logs use them (and the launcher, in this
     /// order).
-    pub const NAMES: [&'static str; 2] = ["mouse_turn_per_second", "host_migration"];
+    pub const NAMES: [&'static str; 1] = ["mouse_turn_per_second"];
 
     /// The beta features on, by the names reports and logs use.
     #[must_use]
     pub fn on(&self) -> Vec<&'static str> {
-        [(self.mouse_turn_per_second, "mouse_turn_per_second"), (self.host_migration, "host_migration")]
+        [(self.mouse_turn_per_second, "mouse_turn_per_second")]
             .into_iter()
             .filter(|(on, _)| *on)
             .map(|(_, name)| name)
@@ -403,6 +397,13 @@ pub struct Config {
     /// edges is only ever manual. Off by default. See `hooks::autoclimb`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disable_autoclimb: bool,
+    /// Turns host migration off (on otherwise; Settings › Game › Host migration): a match lobby
+    /// carries on under a new host when its host leaves, and a party's leader invited into a
+    /// private match takes its party along and gets it back afterwards (`hooks::migrate_lobby`,
+    /// `party_follow`, `follow_unblock`; DX11 only, all or none). A beta in 0.4.8's development,
+    /// on for everyone since (the user, 2026-11-02); an old `[Beta] HostMigration` key is ignored.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub disable_host_migration: bool,
     /// Turns off the fixes for the game's own crashes and hangs (hooks' `scheme_pool_fix`, `particle_fix`, `storm_fix`,
     /// `voice_device_fix`, `tagging_device_fix`, `disruption_fix`, `umd_read_fix`, `load_order_fix`, `migration_fix`), which are on otherwise. Not shown in the launcher: for ruling them out when something goes wrong.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1376,16 +1377,28 @@ mod tests {
         assert!(written.contains("[Beta]") && written.contains("MouseTurnPerSecond = true"), "{written}");
         let back: Config = toml::from_str(&written).unwrap();
         assert_eq!(back.beta.on(), ["mouse_turn_per_second"]);
-        cfg.beta.host_migration = true;
-        let written = toml::to_string(&cfg).unwrap();
-        assert!(written.contains("HostMigration = true"), "{written}");
-        let back: Config = toml::from_str(&written).unwrap();
-        assert_eq!(back.beta.on(), ["mouse_turn_per_second", "host_migration"]);
         assert_eq!(Beta::NAMES.len(), back.beta.on().len(), "every beta has a name");
         // As a player would write it by hand.
-        let by_hand = format!("{}\n[Beta]\nHostMigration = true\n", toml::to_string(&super::default()).unwrap());
+        let by_hand = format!("{}\n[Beta]\nMouseTurnPerSecond = true\n", toml::to_string(&super::default()).unwrap());
         let back: Config = toml::from_str(&by_hand).unwrap();
-        assert!(back.beta.host_migration && !back.beta.mouse_turn_per_second);
+        assert!(back.beta.mouse_turn_per_second);
+    }
+
+    #[test]
+    fn host_migration_is_on_unless_turned_off_and_the_old_beta_key_is_ignored() {
+        let mut cfg = super::default();
+        assert!(!cfg.disable_host_migration, "on by default");
+        assert!(!toml::to_string(&cfg).unwrap().contains("HostMigration"), "nothing written while on");
+        cfg.disable_host_migration = true;
+        let written = toml::to_string(&cfg).unwrap();
+        assert!(written.contains("DisableHostMigration = true"), "{written}");
+        assert!(toml::from_str::<Config>(&written).unwrap().disable_host_migration);
+        // A 0.4.8 test build's beta key, on or off, still reads, and changes nothing.
+        for on in [true, false] {
+            let old = format!("{}\n[Beta]\nHostMigration = {on}\n", toml::to_string(&super::default()).unwrap());
+            let back: Config = toml::from_str(&old).unwrap();
+            assert!(!back.disable_host_migration && back.beta.is_off());
+        }
     }
 
     #[test]

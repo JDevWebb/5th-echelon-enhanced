@@ -2,7 +2,7 @@
 //!
 //! The game moves a party into a match over Storm, on the leader's word: the leader sends the
 //! members a `FollowLeader` message naming the match, and each joins it as the leader did (the
-//! leader's game says so only when it *hosts* the match; the client hook `party_follow`, part of the "host migration" beta,
+//! leader's game says so only when it *hosts* the match; the client hook `party_follow`, part of host migration,
 //! has it say so for a match it was invited to). Nothing of this passes the server, which sees
 //! only the members' joins afterwards: the match's host adds each member that comes in
 //! (`AddParticipants`, whose private-match notification opens the member's join gate), or the

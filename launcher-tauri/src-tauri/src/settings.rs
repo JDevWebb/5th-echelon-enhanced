@@ -79,6 +79,8 @@ pub struct GameView {
     brightness: u8,
     brightness_range: (u8, u8),
     disable_autoclimb: bool,
+    /// Host migration: its switch's label, hover text and whether it's on (on unless turned off).
+    host_migration: (&'static str, &'static str, bool),
     log_level: &'static str,
     log_levels: Vec<&'static str>,
     command_line: String,
@@ -206,6 +208,7 @@ pub fn settings(state: tauri::State<Launcher>) -> View {
             brightness: g.cfg.brightness,
             brightness_range: (setup::gamma::MIN_BRIGHTNESS, setup::gamma::MAX_BRIGHTNESS),
             disable_autoclimb: h.disable_autoclimb,
+            host_migration: (launcher::settings::HOST_MIGRATION.0, launcher::settings::HOST_MIGRATION.1, !h.disable_host_migration),
             log_level: level_name(h.logging.level),
             log_levels: LOG_LEVELS.into_iter().map(level_name).collect(),
             command_line: h.internal_command_line.clone(),
@@ -422,7 +425,7 @@ pub fn set(app: tauri::AppHandle, state: tauri::State<Launcher>, key: String, va
         }
         "host_migration" => {
             let on = b()?;
-            game.update(notices, |c| c.hook_config.beta.host_migration = on);
+            game.update(notices, |c| c.hook_config.disable_host_migration = !on);
         }
         "nat" => {
             let mode = match s()?.as_str() {
