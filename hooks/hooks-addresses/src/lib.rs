@@ -20,6 +20,7 @@ use tracing::info;
 use tracing::instrument;
 
 pub mod crash_fixes;
+pub mod engine_tables;
 pub mod host_migration;
 pub mod mouse_turn;
 pub mod patterns;

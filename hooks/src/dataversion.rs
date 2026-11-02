@@ -4,7 +4,7 @@
 //!
 //! The host compares the version in a join request with its own (lib.rs,
 //! `DATA_VERSION_CHECK`). The game works its own out once its startup packages are loaded
-//! (`FUN_00829060` in the DirectX 11 build):
+//! (`FUN_00829060` in the DirectX 11 build, `FUN_00ac43e0` in the DirectX 9 one):
 //!
 //! ```text
 //! names    = Σ over the name table (GNames) entries, in two ranges, of
@@ -21,8 +21,9 @@
 //! blocks, so two players' files show where their copies part (`bl-dataversion.full` in the
 //! game's folder lists every name too, in `bl-dataversion-full.txt`).
 //!
-//! Only for the DirectX 11 build (Steam's and Ubisoft's are the same code): the addresses
-//! are that build's, checked by finding the data version check where that build has it.
+//! In both builds (Steam's and Ubisoft's are the same code): the engine global is the one the
+//! data version check reads, and the name table is found by signature
+//! (`hooks_addresses::engine_tables`, through `round_state::tables`).
 
 use std::fmt::Write as _;
 use std::path::PathBuf;
@@ -32,17 +33,14 @@ use std::time::Instant;
 use tracing::info;
 use tracing::warn;
 
-/// Where the DirectX 11 build has the data version check (lib.rs `DATA_VERSION_CHECK`).
-pub const DX11_CHECK: usize = 0x0085_9d72;
-/// The engine object the version hangs off (`[engine + 0x70] + 0x418` is the version).
-const ENGINE: usize = 0x0338_3df8;
-/// The name table: its entries and their number.
-const NAMES: usize = 0x0333_cd60;
-const NAMES_COUNT: usize = 0x0333_cd64;
-/// The ranges counted: [0, NATIVE_END) and [STARTUP_START, STARTUP_END).
-const NATIVE_END: usize = 0x0333_cd54;
-const STARTUP_START: usize = 0x0333_cd58;
-const STARTUP_END: usize = 0x0333_cd5c;
+/// The global holding the engine object the version hangs off (`[engine + 0x70] + 0x418` is
+/// the version): the one the data version check reads (its `mov ecx,[global]`), DX11
+/// `0x03383df8`, DX9 `0x032b5dc8`. Set once the check is found.
+static ENGINE: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+
+fn engine() -> Option<usize> {
+    read_u32(*ENGINE.get()?).map(|e| e as usize)
+}
 /// How long to wait for the game to work its version out.
 const WAIT: Duration = Duration::from_secs(15 * 60);
 /// The most names written (the table holds tens of thousands).
@@ -87,7 +85,7 @@ fn gear_string(object: usize) -> Option<String> {
 
 /// The data version the game worked out, once it has.
 fn version() -> Option<u32> {
-    let engine = read_u32(ENGINE)? as usize;
+    let engine = engine()?;
     let online = read_u32(engine.checked_add(0x70)?)? as usize;
     read_u32(online.checked_add(0x418)?).filter(|v| *v != 0)
 }
@@ -95,7 +93,7 @@ fn version() -> Option<u32> {
 /// The engine's other two inputs: the number at `[+0x64][+0x410]` and the string at
 /// `[+0x68][+0x40c]`.
 fn inputs() -> (Option<u32>, Option<String>) {
-    let Some(engine) = read_u32(ENGINE).map(|e| e as usize) else { return (None, None) };
+    let Some(engine) = engine() else { return (None, None) };
     let number = read_u32(engine + 0x64).and_then(|o| read_u32(o as usize + 0x410));
     let string = read_u32(engine + 0x68).and_then(|o| gear_string(o as usize + 0x40c));
     (number, string)
@@ -144,18 +142,22 @@ fn report(version: u32, full: bool) -> (String, Option<String>) {
     let (number, string) = inputs();
     let _ = writeln!(out, "engine[+0x64][+0x410]: {}", number.map_or("unreadable".into(), |n| format!("{n:#010x}")));
     let _ = writeln!(out, "engine[+0x68][+0x40c]: {:?}", string.as_deref().unwrap_or("(unreadable)"));
+    let Some(t) = crate::round_state::tables() else {
+        let _ = writeln!(out, "(the name table isn't found in this game)");
+        return (out, None);
+    };
     let field = |a| read_u32(a).map_or("unreadable".into(), |v| v.to_string());
-    let (count, native_end, start, end) = (read_u32(NAMES_COUNT), read_u32(NATIVE_END), read_u32(STARTUP_START), read_u32(STARTUP_END));
+    let (count, native_end, start, end) = (read_u32(t.names_count), read_u32(t.native_end), read_u32(t.startup_start), read_u32(t.startup_end));
     let _ = writeln!(
         out,
         "names: {} in all; counted: [0, {}) and [{}, {})",
-        field(NAMES_COUNT),
-        field(NATIVE_END),
-        field(STARTUP_START),
-        field(STARTUP_END)
+        field(t.names_count),
+        field(t.native_end),
+        field(t.startup_start),
+        field(t.startup_end)
     );
-    let _ = writeln!(out, "game version count: {}", field(0x0330_c478));
-    let (Some(table), Some(count), Some(native_end), Some(start), Some(end)) = (read_u32(NAMES), count, native_end, start, end) else {
+    let _ = writeln!(out, "game version count: {}", field(t.game_version_count));
+    let (Some(table), Some(count), Some(native_end), Some(start), Some(end)) = (read_u32(t.names), count, native_end, start, end) else {
         let _ = writeln!(out, "(the name table couldn't be read)");
         return (out, None);
     };
@@ -210,13 +212,19 @@ fn report(version: u32, full: bool) -> (String, Option<String>) {
 }
 
 /// Waits (on a thread of its own) for the game to work its data version out, then writes
-/// what it's made of to `bl-dataversion.txt` in `dir`. Only when the data version check is
-/// at `check`, where the DirectX 11 build has it.
+/// what it's made of to `bl-dataversion.txt` in `dir`. `check` is where the data version check
+/// is (lib.rs `DATA_VERSION_CHECK`, found by signature), whose first instruction reads the engine
+/// global; only when the engine's tables are found too, in either build.
 pub fn write_when_ready(check: usize, dir: PathBuf) {
-    if check != DX11_CHECK {
-        info!("Data version: the check is at {check:#x}, not where the DirectX 11 build has it; what the version is made of isn't written");
+    let Some(global) = read_u32(check + 2).map(|g| g as usize) else {
+        info!("Data version: the check at {check:#x} couldn't be read; what the version is made of isn't written");
+        return;
+    };
+    if crate::round_state::tables().is_none() {
+        info!("Data version: the engine's tables aren't found in this game; what the version is made of isn't written");
         return;
     }
+    let _ = ENGINE.set(global);
     let _ = std::thread::Builder::new().name("fe-dataversion".into()).spawn(move || {
         let started = Instant::now();
         while started.elapsed() < WAIT {

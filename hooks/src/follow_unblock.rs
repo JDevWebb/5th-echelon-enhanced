@@ -1,5 +1,5 @@
 //! Frees a party member's UI facade when a stale follow task blocks the host-loss exit (part of
-//! the beta "host migration", `host_migration.rs`; the DX11 build only). Background, addresses and the
+//! the beta "host migration", `host_migration.rs`; the DX9 and DX11 builds). Background, addresses and the
 //! measurement in `docs/architecture/member-stuck-after-private-match.md` (§12.3 "R-B", §13).
 //!
 //! A second `PartyFollowLeaderTask` for a match the member is already in never gets an answer, so
@@ -33,7 +33,7 @@ static_detour! {
 }
 
 /// The globals (pointers to the UI facade, its task runner, `NetOnline`), found by
-/// `hooks_addresses::host_migration` (DX11 `0x0344d668`, `0x0344d640`, `0x03383df8`).
+/// `hooks_addresses::host_migration` (DX11 `0x0344d668`, `0x0344d640`, `0x03383df8`; DX9 `0x034430fc`, `0x034420c8`, `0x032b5dc8`).
 struct Globals {
     facade: u32,
     facade_gate: u32,

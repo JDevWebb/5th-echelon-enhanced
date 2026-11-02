@@ -16,7 +16,7 @@ Sections: 1 goals · 2 findings (questions A–F) · 3 architecture · 4 decisio
 > `DisableHostMigration = true` in `uplay.toml`. (During 0.4.8's development they were a beta, `[Beta] HostMigration`;
 > that key is ignored now.)
 >
-> - **DX11 only, all or nothing.** On DX9, or on any build where one piece isn't found, none of the three is
+> - **DX9 and DX11, all or nothing.** On any build where one piece isn't found, none of the three is
 >   installed (one warning in the log). Not in the `patch-free` build.
 > - **Found by signature.** The game's addresses are found by signature (`hooks/hooks-addresses`, reported by
 >   `check_crash_fixes`), not taken from a fixed table. The addresses in this document are where those signatures
@@ -115,7 +115,7 @@ M (113 ⇒ 0), A (113 ⇒ 1)"; then **the member's `SplitSession(P)`** (the memb
 | Component | Owns | Changes in this design |
 |---|---|---|
 | **Game** (unchanged code paths) | Party messages, Storm joins, team balancing by `party_session`, the party return (`PartyRestore`/`PartyWaitSync`) | none, but relied on |
-| **Client hook** (`hooks/src/party_follow.rs`; part of host migration; DX11 only) | On the **leader** only: (H1) don't secede when accepting an invitation into a private match while the party has members — tell the party "I'm joining a session" instead (LeaderAction 2, what the friends-list route does); (H2) let `StateLeaderPartyWaitSync` send FollowLeader for a match the leader *joined* (not hosts): skip the host check, present the join as a private custom match to `vf08`/`vf00`. Members and the match host need **no** hook (their code paths are the original ones). | new file + 2 detours + 1 two-byte patch, applied around the hook's own call only |
+| **Client hook** (`hooks/src/party_follow.rs`; part of host migration; DX9 and DX11) | On the **leader** only: (H1) don't secede when accepting an invitation into a private match while the party has members — tell the party "I'm joining a session" instead (LeaderAction 2, what the friends-list route does); (H2) let `StateLeaderPartyWaitSync` send FollowLeader for a match the leader *joined* (not hosts): skip the host check, present the join as a private custom match to `vf08`/`vf00`. Members and the match host need **no** hook (their code paths are the original ones). | new file + 2 detours + 1 two-byte patch, applied around the hook's own call only |
 | **Server** (`dedicated_server/src/game_session.rs`, `escorts.rs`) | Admission: a member of the invited leader's party may be added to the private match (by the match host's `AddParticipants`, or by itself) and gets the 7003 gate (rules in §10); a member's split of a party whose leader was only seceded from doesn't make a takeover. Already there: host migration (SplitSession takeover, 7001, silent-host takeover). | small, see §5 S1–S4 |
 | **Testbot** | Scenarios for the server rules | §5 |
 
@@ -226,7 +226,8 @@ Both, match: `JoinMatch → NetSetupVoice → NetMatchEnter → … → LeaveNet
 ## 5. Implementation tasks (in order)
 
 Conventions: hook code in Rust, `retour::static_detour` as in `hooks/src/hooks.rs` (`hook_with_name`), addresses
-found by signature through `hooks/hooks-addresses` (DX11 only; none for DX9), byte patches through
+found by signature through `hooks/hooks-addresses` (both builds; `FollowDelegate` and the facade check have a form for
+each, since DX9 compiles them differently), byte patches through
 `crate::game_code()` + `find_once` as in `hooks/src/migrate_lobby.rs`. All thiscall: `this` in `ecx`, arguments
 pushed right to left, callee cleans (`ret n`).
 

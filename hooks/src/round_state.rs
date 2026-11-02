@@ -8,10 +8,10 @@
 //! PreMatch, PreRound, Started, PreEnded, Ended, SuddenDeath, PostMatch) and
 //! `ECooperativeMatchManager.m_missionState` (co-op: None, InGame, Results). Script classes
 //! have no fixed native offsets, so they're found through the engine's own tables, as its
-//! `StaticFindObject` (DX11 `FUN_004d7480`) does:
+//! `StaticFindObject` (DX11 `FUN_004d7480`, DX9 `FUN_007846a0`) does:
 //!
-//! - names: the name table (`dataversion::NAMES`), each entry's text at `+8`;
-//! - objects: a hash of 0x10000 buckets at [`OBJECT_HASH`], bucket
+//! - names: the name table (`hooks_addresses::engine_tables`), each entry's text at `+8`;
+//! - objects: a hash of 0x10000 buckets (`engine_tables`), bucket
 //!   `((name >> 19) * 0x141 + name) & 0xffff` for a packed name (index, number << 19), each
 //!   object's next at `+0x08`, outer at `+0x18`, flags at `+0x1c`, name at `+0x20`, class at
 //!   `+0x24`; a class's super at `+0x28` (`execIsA`, `FUN_0051be40`);
@@ -24,31 +24,56 @@
 //! admins. Floats are `m_f…`, the rest 32-bit integers.
 //!
 //! The live match manager is an instance of one of the concrete classes below, named after its
-//! class with a number (suffix + 1) that rises with each match. Only the DirectX 11 build
-//! (Steam's and Ubisoft's are the same code), checked by the hash lookup's bytes before any
-//! address is used; elsewhere nothing is read, and the server's locked refusals stay the only
-//! word on started matches.
+//! class with a number (suffix + 1) that rises with each match. Both builds (DirectX 9 and 11;
+//! Steam's and Ubisoft's are the same code): the tables are found by signature
+//! (`hooks_addresses::engine_tables`) and the hash lookup's bytes checked before any of them is
+//! read. A build where they aren't found reads nothing, and the server's locked refusals stay the
+//! only word on started matches.
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 use std::time::Duration;
 use std::time::Instant;
 
+use hooks_addresses::engine_tables;
+use hooks_addresses::engine_tables::Tables;
 use tracing::info;
 
 use crate::dataversion::read;
 use crate::dataversion::read_string;
 use crate::dataversion::read_u32;
 
-/// The object hash's buckets, and the code that reads them, with its bytes (DX11).
-const OBJECT_HASH: usize = 0x0333_cde8;
-const HASH_LOOKUP: usize = 0x004d_74ad;
-const HASH_LOOKUP_BYTES: [u8; 23] = [
-    0xc1, 0xe8, 0x13, 0x69, 0xc0, 0x41, 0x01, 0x00, 0x00, 0x03, 0xc2, 0x25, 0xff, 0xff, 0x00, 0x00, 0x8b, 0x04, 0x85, 0xe8, 0xcd, 0x33, 0x03,
-];
-/// The name table (as dataversion.rs reads it): its entries, and their number.
-const NAMES: usize = 0x0333_cd60;
-const NAMES_COUNT: usize = 0x0333_cd64;
 const MAX_NAMES: usize = 400_000;
+
+/// The engine's tables in this game, found once (by signature, in either build), and only if
+/// the hash lookup's bytes are where they were found as the game runs.
+pub(crate) fn tables() -> Option<&'static Tables> {
+    static TABLES: OnceLock<Option<Tables>> = OnceLock::new();
+    TABLES
+        .get_or_init(|| {
+            // SAFETY: the game's own sections, as loaded.
+            let image = unsafe { crate::game_image() }?;
+            let tables = match engine_tables::locate(&image) {
+                Ok(t) => t,
+                Err(why) => {
+                    info!("Engine tables: not found ({why})");
+                    return None;
+                }
+            };
+            let want = engine_tables::hash_lookup_bytes(&tables);
+            let bytes: Option<Vec<u8>> = (0..want.len()).map(|i| read::<u8>(tables.hash_lookup + i)).collect();
+            if bytes.as_deref() != Some(&want[..]) {
+                info!("Engine tables: the hash lookup at {:#010x} isn't as found", tables.hash_lookup);
+                return None;
+            }
+            info!(
+                "Engine tables: objects {:#010x}, names {:#010x} (lookup {:#010x})",
+                tables.object_hash, tables.names, tables.hash_lookup
+            );
+            Some(tables)
+        })
+        .as_ref()
+}
 
 /// How often the state is read, and said again while under way.
 const READ_EVERY: Duration = Duration::from_secs(2);
@@ -136,7 +161,8 @@ pub(crate) fn alive(object: usize) -> bool {
 /// The objects named `packed`, in its bucket.
 pub(crate) fn named(packed: u32) -> Vec<usize> {
     let mut found = Vec::new();
-    let mut object = read_u32(OBJECT_HASH + bucket(packed) as usize * 4).unwrap_or(0) as usize;
+    let Some(tables) = tables() else { return found };
+    let mut object = read_u32(tables.object_hash + bucket(packed) as usize * 4).unwrap_or(0) as usize;
     for _ in 0..4096 {
         if object == 0 {
             break;
@@ -152,7 +178,8 @@ pub(crate) fn named(packed: u32) -> Vec<usize> {
 /// A packed name's text (`Name` or `Name_N` for number N + 1), from the name table.
 pub(crate) fn name_text(packed: u32) -> Option<String> {
     let (index, number) = (packed & 0x7_ffff, packed >> 19);
-    let (table, count) = (read_u32(NAMES)?, read_u32(NAMES_COUNT)?);
+    let tables = tables()?;
+    let (table, count) = (read_u32(tables.names)?, read_u32(tables.names_count)?);
     if index >= count.min(MAX_NAMES as u32) {
         return None;
     }
@@ -208,7 +235,8 @@ struct Found {
 /// The name indices of `wanted`, from the name table (once: it holds tens of thousands).
 pub(crate) fn name_indices(wanted: &[&'static str]) -> HashMap<&'static str, u32> {
     let mut indices = HashMap::new();
-    let (Some(table), Some(count)) = (read_u32(NAMES), read_u32(NAMES_COUNT)) else {
+    let Some(tables) = tables() else { return indices };
+    let (Some(table), Some(count)) = (read_u32(tables.names), read_u32(tables.names_count)) else {
         return indices;
     };
     for i in 0..(count as usize).min(MAX_NAMES) {
@@ -317,12 +345,10 @@ fn manager(found: &Found, from: &mut HashMap<&'static str, u32>) -> Option<(usiz
 }
 
 /// Reads the match state every [`READ_EVERY`] and tells the server of each change (and every
-/// [`SAY_AGAIN`] while under way). DX11 only, once the hash lookup's bytes are where expected.
-/// Whether the engine's tables are where this build has them (DirectX 11): checked by the hash
-/// lookup's bytes before any of them is read.
+/// [`SAY_AGAIN`] while under way), once the engine's tables are found ([`tables`]).
+/// Whether the engine's tables were found in this game, in either build.
 pub(crate) fn tables_here() -> bool {
-    let bytes: Option<Vec<u8>> = (0..HASH_LOOKUP_BYTES.len()).map(|i| read::<u8>(HASH_LOOKUP + i)).collect();
-    bytes.as_deref() == Some(&HASH_LOOKUP_BYTES[..])
+    tables().is_some()
 }
 
 /// A class named `name` (its object, whose own class is named "Class"), with the name table's
@@ -345,7 +371,7 @@ pub(crate) fn offset_in(names: &HashMap<&'static str, u32>, property: &str, clas
 
 pub fn start() {
     if !tables_here() {
-        info!("Match state: not this build's (DirectX 11 only); the server learns of started matches from refused joins");
+        info!("Match state: the engine's tables aren't found in this game; the server learns of started matches from refused joins");
         return;
     }
     let spawned = std::thread::Builder::new().name("fe-round-state".into()).spawn(|| {

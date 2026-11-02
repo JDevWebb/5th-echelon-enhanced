@@ -52,7 +52,7 @@ pub const RELEASES: &[Release] = &[
             },
             Item {
                 title: "The lobby carries on when its host leaves",
-                text: "When the host of a public match's lobby leaves, one of the other players takes it over and everyone stays together, instead of each landing back in their own lobby. A party's leader invited into a friend's private match brings along the members who are the host's friends, and the party comes back together after it. On unless you turn it off in Settings › Game. DirectX 11 only; thanks to mpw, who wrote it.",
+                text: "When the host of a public match's lobby leaves, one of the other players takes it over and everyone stays together, instead of each landing back in their own lobby. A party's leader invited into a friend's private match brings along the members who are the host's friends, and the party comes back together after it. On unless you turn it off in Settings › Game, on DirectX 9 and 11; thanks to mpw, who wrote it.",
                 community: false,
             },
             Item {

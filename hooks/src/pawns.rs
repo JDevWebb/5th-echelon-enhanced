@@ -277,14 +277,14 @@ pub trait Watcher: Send {
     fn sample(&mut self, tables: &Tables, now: Instant, characters: &[Sample]);
 }
 
-/// Samples the characters every [`SAMPLE`] for each of `watchers` (none: nothing starts).
-/// DirectX 11 only.
+/// Samples the characters every [`SAMPLE`] for each of `watchers` (none: nothing starts), in
+/// either build once the engine's tables are found.
 pub fn start(mut watchers: Vec<Box<dyn Watcher>>) {
     if watchers.is_empty() {
         return;
     }
     if !rs::tables_here() {
-        info!("Characters: not this build's (DirectX 11 only): no witness reports nor recordings");
+        info!("Characters: the engine's tables aren't found in this game: no witness reports nor recordings");
         return;
     }
     let spawned = std::thread::Builder::new().name("fe-pawns".into()).spawn(move || {

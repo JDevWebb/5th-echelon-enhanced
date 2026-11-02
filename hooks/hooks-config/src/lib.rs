@@ -400,7 +400,7 @@ pub struct Config {
     /// Turns host migration off (on otherwise; Settings › Game › Host migration): a match lobby
     /// carries on under a new host when its host leaves, and a party's leader invited into a
     /// private match takes its party along and gets it back afterwards (`hooks::migrate_lobby`,
-    /// `party_follow`, `follow_unblock`; DX11 only, all or none). A beta in 0.4.8's development,
+    /// `party_follow`, `follow_unblock`; DX9 and DX11, all or none). A beta in 0.4.8's development,
     /// on for everyone since (the user, 2026-11-02); an old `[Beta] HostMigration` key is ignored.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disable_host_migration: bool,

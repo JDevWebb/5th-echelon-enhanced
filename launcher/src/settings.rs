@@ -827,7 +827,7 @@ pub const HOST_MIGRATION: (&str, &str) = (
     "Host migration",
     "When the host of a public match lobby leaves, the lobby carries on under one of the other players instead of breaking up. \
      A party's leader invited into a friend's private match takes along the party members who are the host's friends, and the party \
-     comes back together after the match. Players with it off leave as before. DirectX 11 only. Takes effect the next time the game starts.",
+     comes back together after the match. Players with it off leave as before. DirectX 9 and 11. Takes effect the next time the game starts.",
 );
 
 #[cfg(feature = "gui")]

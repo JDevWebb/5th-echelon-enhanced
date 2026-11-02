@@ -1,6 +1,6 @@
 //! A party's leader that accepts an invitation into someone else's private match keeps its party
-//! and takes it along (part of the beta "host migration", `host_migration.rs`; the DX11 build
-//! only).
+//! and takes it along (part of the beta "host migration", `host_migration.rs`; the DX9 and
+//! DX11 builds).
 //! Background and the evidence for every address and offset below in
 //! `docs/architecture/host-and-party-migration.md`.
 //!

@@ -135,7 +135,7 @@ pub struct Facts {
 /// Whether the game's data is the unmodified game's (see [`STOCK_DATA_VERSION`]).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DataFacts {
-    /// The data version of the last game started (the hook writes it, DX11 only).
+    /// The data version of the last game started (the hook writes it).
     pub version: Option<u32>,
     /// The known mods in the game folder, by name, and the file each is in.
     pub mods: Vec<(&'static str, &'static str)>,

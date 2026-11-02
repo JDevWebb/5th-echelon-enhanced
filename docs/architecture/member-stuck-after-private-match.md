@@ -7,7 +7,7 @@ disassembly, **R** seen in the client trace logs and the server log of the test 
 
 > **How it ships.** `follow_unblock.rs` (with `follow-dup`) is one of the three hooks of **host migration**
 > (with `migrate_lobby` and `party_follow`): on by default since 0.4.8, turned off in the launcher's
-> Settings › Game › Host migration, stored as `DisableHostMigration = true` in `uplay.toml`. DX11 only, all or nothing: on DX9, or on any build where one piece
+> Settings › Game › Host migration, stored as `DisableHostMigration = true` in `uplay.toml`. DX9 and DX11, all or nothing: on any build where one piece
 > isn't found, none of the three is installed. `follow_unblock` sets its own observer hooks on
 > `PartyFollowLeaderTask::vf04` and `FollowDelegate`. The trace hook `member_trace` used for the measurements
 > below (`TraceMemberLeave`) and H3's `leave_without_party` detour (H7 below) were removed. The measurement
@@ -336,7 +336,7 @@ reads the pending host-loss error (`[[0x3383df8]+0x10]`, `[err+4]==1`, 30 s late
 is in state 0 and `eGoal_LeaveMatch` runs.
 
 **Intervention** (`hooks/src/follow_unblock.rs`, decision in `hooks/src/unblock_logic.rs`; part of host migration, log prefix `follow-unblock:`): R-B of 12.4.
-`UI::FacadeScreen::vf03` (`0x18eab60`) is detoured (found by signature; DX11 only). A passive observer on `PartyFollowLeaderTask::vf04` (`0x18eae00`) stores
+`UI::FacadeScreen::vf03` (`0x18eab60`) is detoured (found by signature; DX9 `0x43def0`). A passive observer on `PartyFollowLeaderTask::vf04` (`0x18eae00`) stores
 the task's vtable. Before the original tick, when on two consecutive ticks state34==7, phase38==2, `party414==0`, a category-1 error is pending and the task
 slot `[[0x344d640]+0x30]` holds an object with the stored vtable, the slot and `facade+0x34/+0x38` are set to 0 and the original runs: in state 0 it reads
 the error and starts `LeaveMatchTask(1,4)` as on the leader. The task is not freed (its pending goal may still write to it, 12.4). One firing per error

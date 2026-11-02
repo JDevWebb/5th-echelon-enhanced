@@ -15,8 +15,8 @@ Sections: 1 summary · 2 findings (F1–F14) · 3 design · 4 tasks · 5 test ri
 
 > **How it ships.** The running-match check is part of `migrate_lobby`, one of the three hooks of **host
 > migration** (with `party_follow` and `follow_unblock`): on by default since 0.4.8, turned off in the
-> launcher's Settings › Game › Host migration, stored as `DisableHostMigration = true` in `uplay.toml`. DX11 only,
-> all or nothing: on DX9, or on any build where one piece isn't found, none of the three is installed. With it on, the public variant of the check
+> launcher's Settings › Game › Host migration, stored as `DisableHostMigration = true` in `uplay.toml`. DX9 and DX11,
+> all or nothing: on any build where one piece isn't found, none of the three is installed. With it on, the public variant of the check
 > (`CHECK_PATCH_PUBLIC`, §3.2) is the one applied; there is no separate `MigrateRunningMatch` switch any more. A
 > client without it behaves as in the original (F8), see `host-and-party-migration.md` §11, "Mixed clients".
 > The text below keeps the old key names where it describes the plan as it was.

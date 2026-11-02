@@ -1,8 +1,9 @@
 //! Where the beta "host migration" goes (the hooks' `migrate_lobby`, `party_follow` and
 //! `follow_unblock`): every function, site and global it uses, by signature, and checked
 //! against each other where two read the same global. All or nothing: the hooks install the
-//! three only when everything here is found. Found in the DX11 build; the DX9 one lacks two of
-//! them (`FollowDelegate` and the facade code), so the beta stays off there.
+//! three only when everything here is found. Found in both builds: the DX9 one compiles two of
+//! them (`FollowDelegate` and the facade code) differently, so those have a form for each, and
+//! exactly one form of each must match.
 
 use crate::crash_fixes::parse;
 use crate::crash_fixes::Image;
@@ -63,17 +64,43 @@ const SYNC_TICK_NET_ONLINE: usize = 43;
 const FOLLOW_TASK: &str = "55 8B EC 83 EC 08 A1 ?? ?? ?? ?? 56 8B F1 8B 48 58 6A 06 E8";
 const FOLLOW_TASK_NET_ONLINE: usize = 7;
 
-/// `FollowDelegate` (`0x01886720`): thiscall, one stack argument (the result).
-const FOLLOW_DELEGATE: &str = "55 8B EC 33 C0 89 41 34 89 41 38 39 45 08 75 2C 8B 0D ?? ?? ?? ?? 6A 03 81 C1 50 01 00 00";
-const FOLLOW_DELEGATE_NET_ONLINE: usize = 18;
+/// `FollowDelegate`: thiscall, one stack argument (the result). It clears the facade-like
+/// object's `+0x34`/`+0x38`, returns on a result other than 0, else reads `NetOnline`. A form for
+/// each build, with where `NetOnline` is read: DX11 (`0x01886720`), and DX9 (`0x0043eb10`, which
+/// keeps its zero in `esi` and queues the next UI message inline).
+const FOLLOW_DELEGATE: [(&str, usize); 2] = [
+    ("55 8B EC 33 C0 89 41 34 89 41 38 39 45 08 75 2C 8B 0D ?? ?? ?? ?? 6A 03 81 C1 50 01 00 00", 18),
+    ("55 8B EC 56 33 F6 89 71 34 89 71 38 39 75 08 75 ?? 8B 0D ?? ?? ?? ?? 6A 03 81 C1 50 01 00 00", 19),
+];
 
-/// A small UI function (`0x018f5ac0`) that reads the facade's task runner (its slot at `+0x30`),
-/// `NetOnline` and the facade: where those two globals of the UI are read from.
-const FACADE_USER: &str = "56 8B F1 83 BE 64 02 00 00 FF 74 42 A1 ?? ?? ?? ?? 83 78 30 00 75 37 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 75 28 \
-    8B 8E 64 02 00 00 51 E8 ?? ?? ?? ?? 8B C8 E8 ?? ?? ?? ?? C7 86 64 02 00 00 FF FF FF FF 8B 0D ?? ?? ?? ??";
-const FACADE_USER_GATE: usize = 13;
-const FACADE_USER_NET_ONLINE: usize = 25;
-const FACADE_USER_FACADE: usize = 69;
+/// A small UI function that reads the facade's task runner (its slot at `+0x30`), `NetOnline`
+/// and the facade: where those two globals of the UI are read from. A form for each build, with
+/// where the task runner, `NetOnline` and the facade are read: DX11 (`0x018f5ac0`, which clears
+/// the facade's state through a call), and DX9 (`0x00516930`, which clears `+0x34`/`+0x38`
+/// itself).
+struct FacadeUser {
+    signature: &'static str,
+    gate: usize,
+    net_online: usize,
+    facade: usize,
+}
+const FACADE_USER: [FacadeUser; 2] = [
+    FacadeUser {
+        signature: "56 8B F1 83 BE 64 02 00 00 FF 74 42 A1 ?? ?? ?? ?? 83 78 30 00 75 37 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 75 28 \
+            8B 8E 64 02 00 00 51 E8 ?? ?? ?? ?? 8B C8 E8 ?? ?? ?? ?? C7 86 64 02 00 00 FF FF FF FF 8B 0D ?? ?? ?? ??",
+        gate: 13,
+        net_online: 25,
+        facade: 69,
+    },
+    FacadeUser {
+        signature: "56 8B F1 83 BE 64 02 00 00 FF 74 ?? A1 ?? ?? ?? ?? 83 78 30 00 75 ?? 8B 0D ?? ?? ?? ?? E8 ?? ?? ?? ?? 84 C0 75 ?? \
+            8B 8E 64 02 00 00 8B 15 ?? ?? ?? ?? 51 52 E8 ?? ?? ?? ?? A1 ?? ?? ?? ?? C7 86 64 02 00 00 FF FF FF FF 8B 35 ?? ?? ?? ?? \
+            85 C0 74 ?? 8B 48 4C E8 ?? ?? ?? ?? C7 46 34 00 00 00 00 C7 46 38 00 00 00 00",
+        gate: 13,
+        net_online: 25,
+        facade: 74,
+    },
+];
 
 /// Everything the three hooks use, by address.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -111,6 +138,23 @@ fn find_bytes(img: &Image, what: &str, bytes: &[u8]) -> Result<usize, String> {
         .map_err(|n| format!("{what} matched {n} times"))
 }
 
+/// The one form of several that's in `img`, once: its index and where.
+fn find_form<'s>(img: &Image, what: &str, signatures: impl IntoIterator<Item = &'s str>) -> Result<(usize, usize), String> {
+    let mut found = Vec::new();
+    for (i, signature) in signatures.into_iter().enumerate() {
+        match img.find(&parse(signature)) {
+            Ok(at) => found.push((i, at)),
+            Err(0) => {}
+            Err(n) => return Err(format!("{what} (form {}) matched {n} times", i + 1)),
+        }
+    }
+    match found[..] {
+        [one] => Ok(one),
+        [] => Err(format!("{what} matched 0 times")),
+        _ => Err(format!("{what} matched in {} forms", found.len())),
+    }
+}
+
 fn word(img: &Image, at: usize, what: &str) -> Result<usize, String> {
     img.u32(at).ok_or_else(|| format!("{what} couldn't be read"))
 }
@@ -138,13 +182,14 @@ pub fn locate(img: &Image) -> Result<Sites, String> {
     }
     let sync_tick = find(img, "the party sync's tick", SYNC_TICK)?;
     let follow_task = find(img, "the follow task", FOLLOW_TASK)?;
-    let follow_delegate = find(img, "FollowDelegate", FOLLOW_DELEGATE)?;
-    let facade_user = find(img, "the facade's task check", FACADE_USER)?;
+    let (delegate_form, follow_delegate) = find_form(img, "FollowDelegate", FOLLOW_DELEGATE.map(|(s, _)| s))?;
+    let (user_form, facade_user) = find_form(img, "the facade's task check", FACADE_USER.iter().map(|u| u.signature))?;
+    let user = &FACADE_USER[user_form];
     let net_online = word(img, sync_tick + SYNC_TICK_NET_ONLINE, "NetOnline")?;
     for (at, what) in [
         (follow_task + FOLLOW_TASK_NET_ONLINE, "the follow task"),
-        (follow_delegate + FOLLOW_DELEGATE_NET_ONLINE, "FollowDelegate"),
-        (facade_user + FACADE_USER_NET_ONLINE, "the facade's task check"),
+        (follow_delegate + FOLLOW_DELEGATE[delegate_form].1, "FollowDelegate"),
+        (facade_user + user.net_online, "the facade's task check"),
     ] {
         if img.u32(at) != Some(net_online) {
             return Err(format!("{what} reads another NetOnline than the party sync"));
@@ -152,8 +197,8 @@ pub fn locate(img: &Image) -> Result<Sites, String> {
     }
     let facade_tick = crate::crash_fixes::migration::tick(img).map_err(String::from)?;
     let globals = [net_core, net_online, state_none, state_in_session];
-    let facade = word(img, facade_user + FACADE_USER_FACADE, "the facade")?;
-    let facade_gate = word(img, facade_user + FACADE_USER_GATE, "the facade's task runner")?;
+    let facade = word(img, facade_user + user.facade, "the facade")?;
+    let facade_gate = word(img, facade_user + user.gate, "the facade's task runner")?;
     if globals.iter().chain([&facade, &facade_gate]).any(|g| !img.image.contains(g)) {
         return Err("a global read isn't in the game's image".into());
     }
@@ -186,7 +231,8 @@ mod tests {
 
     #[test]
     fn the_signatures_parse() {
-        for s in [LEADER_ACTION, SYNC_ENTER, HOST_TEST, SYNC_TICK, FOLLOW_TASK, FOLLOW_DELEGATE, FACADE_USER] {
+        let forms = FOLLOW_DELEGATE.map(|(s, _)| s).into_iter().chain(FACADE_USER.iter().map(|u| u.signature));
+        for s in [LEADER_ACTION, SYNC_ENTER, HOST_TEST, SYNC_TICK, FOLLOW_TASK].into_iter().chain(forms) {
             assert!(parse(s).iter().filter(|b| b.is_some()).count() >= 8, "{s}");
             assert_eq!(parse(s).len(), s.split_whitespace().count());
         }
@@ -200,10 +246,14 @@ mod tests {
             (LEADER_ACTION, LEADER_ACTION_IN_SESSION),
             (SYNC_TICK, SYNC_TICK_NET_ONLINE),
             (FOLLOW_TASK, FOLLOW_TASK_NET_ONLINE),
-            (FOLLOW_DELEGATE, FOLLOW_DELEGATE_NET_ONLINE),
-            (FACADE_USER, FACADE_USER_GATE),
-            (FACADE_USER, FACADE_USER_NET_ONLINE),
-            (FACADE_USER, FACADE_USER_FACADE),
+            (FOLLOW_DELEGATE[0].0, FOLLOW_DELEGATE[0].1),
+            (FOLLOW_DELEGATE[1].0, FOLLOW_DELEGATE[1].1),
+            (FACADE_USER[0].signature, FACADE_USER[0].gate),
+            (FACADE_USER[0].signature, FACADE_USER[0].net_online),
+            (FACADE_USER[0].signature, FACADE_USER[0].facade),
+            (FACADE_USER[1].signature, FACADE_USER[1].gate),
+            (FACADE_USER[1].signature, FACADE_USER[1].net_online),
+            (FACADE_USER[1].signature, FACADE_USER[1].facade),
         ] {
             assert!(parse(s)[at..at + 4].iter().all(Option::is_none), "{at} in {s}");
         }
@@ -224,6 +274,11 @@ mod tests {
     const GATE: u32 = 0x40_1114;
 
     fn build() -> Built {
+        build_in(0)
+    }
+
+    /// With the forms of `FollowDelegate` and the facade check of build `form` (0 DX11, 1 DX9).
+    fn build_in(form: usize) -> Built {
         let mut text = vec![0xCCu8; 0x200];
         let mut at = std::collections::HashMap::new();
         let mut place = |text: &mut Vec<u8>, name: &'static str, mut piece: Vec<u8>, globals: &[(usize, u32)]| {
@@ -250,9 +305,11 @@ mod tests {
         place(&mut text, "sync_enter", enter, &[]);
         place(&mut text, "sync_tick", bytes(SYNC_TICK, 0x14), &[(SYNC_TICK_NET_ONLINE, NET_ONLINE)]);
         place(&mut text, "follow_task", bytes(FOLLOW_TASK, 0x15), &[(FOLLOW_TASK_NET_ONLINE, NET_ONLINE)]);
-        place(&mut text, "follow_delegate", bytes(FOLLOW_DELEGATE, 0x16), &[(FOLLOW_DELEGATE_NET_ONLINE, NET_ONLINE)]);
-        let facade = &[(FACADE_USER_GATE, GATE), (FACADE_USER_NET_ONLINE, NET_ONLINE), (FACADE_USER_FACADE, FACADE)];
-        place(&mut text, "facade_user", bytes(FACADE_USER, 0x17), facade);
+        let (delegate, delegate_net_online) = FOLLOW_DELEGATE[form];
+        place(&mut text, "follow_delegate", bytes(delegate, 0x16), &[(delegate_net_online, NET_ONLINE)]);
+        let user = &FACADE_USER[form];
+        let facade = &[(user.gate, GATE), (user.net_online, NET_ONLINE), (user.facade, FACADE)];
+        place(&mut text, "facade_user", bytes(user.signature, 0x17), facade);
         place(&mut text, "facade_tick", bytes(crate::crash_fixes::migration::TICK, 0x18), &[]);
         Built { text, at }
     }
@@ -273,6 +330,21 @@ mod tests {
             [s.net_core, s.net_online, s.state_none, s.state_in_session, s.facade, s.facade_gate],
             [NET_CORE, NET_ONLINE, STATE_NONE, IN_SESSION, FACADE, GATE].map(|g| g as usize)
         );
+    }
+
+    /// The DX9 build's forms of `FollowDelegate` and the facade check are found as the DX11
+    /// ones are, with the globals where that form reads them; one of each in both forms at once
+    /// is no place.
+    #[test]
+    fn the_dx9_forms_are_found_too() {
+        let b = build_in(1);
+        let img = crate::crash_fixes::tests::image(&b.text, BASE, &[], 0x60_0000);
+        let s = locate(&img).unwrap();
+        assert_eq!((s.follow_delegate, s.facade, s.facade_gate), (b.at["follow_delegate"], FACADE as usize, GATE as usize));
+        let mut text = b.text.clone();
+        text.extend(bytes(FOLLOW_DELEGATE[0].0, 0x16));
+        let img = crate::crash_fixes::tests::image(&text, BASE, &[], 0x60_0000);
+        assert!(locate(&img).unwrap_err().contains("in 2 forms"));
     }
 
     #[test]
@@ -307,7 +379,7 @@ mod tests {
         assert!(locate(&img).unwrap_err().contains("NetOnline"));
         // A global outside the image.
         let mut text = b.text.clone();
-        let at = b.at["facade_user"] - BASE + FACADE_USER_FACADE;
+        let at = b.at["facade_user"] - BASE + FACADE_USER[0].facade;
         text[at..at + 4].copy_from_slice(&0x7000_0000u32.to_le_bytes());
         let img = crate::crash_fixes::tests::image(&text, BASE, &[], 0x60_0000);
         assert!(locate(&img).unwrap_err().contains("image"));

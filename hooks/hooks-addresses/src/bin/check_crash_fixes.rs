@@ -21,6 +21,7 @@ use hooks_addresses::crash_fixes::tagging_device;
 use hooks_addresses::crash_fixes::umd_read;
 use hooks_addresses::crash_fixes::voice_device;
 use hooks_addresses::crash_fixes::Image;
+use hooks_addresses::engine_tables;
 use hooks_addresses::host_migration;
 use hooks_addresses::mouse_turn;
 use hooks_addresses::quick_start;
@@ -122,16 +123,27 @@ fn check(path: &Path) -> bool {
         "beta: mouse turn",
         mouse_turn::locate(&img).map(|s| format!("{:#010x}, back to {:#010x}", s.patch, s.resume)),
     );
-    // DX11 only: the DX9 build lacks pieces of it, and the beta stays off there.
-    let dx9 = path.file_name().is_some_and(|n| n.eq_ignore_ascii_case("Blacklist_game.exe"));
-    match host_migration::locate(&img) {
-        Ok(s) => println!(
-            "  ok      {:<18} setter {:#010x}, check {:#010x}, leader action {:#010x}, sync {:#010x}/{:#010x}, follow task {:#010x}",
-            "beta: host migr.", s.setter, s.check, s.leader_action, s.sync_enter, s.sync_tick, s.follow_task
-        ),
-        Err(why) if dx9 => println!("  -       {:<18} DX11 only ({why})", "beta: host migr."),
-        Err(why) => report("beta: host migr.", Err(why)),
-    }
+    // Host migration (on by default): both builds.
+    report(
+        "host migration",
+        host_migration::locate(&img).map(|s| {
+            format!(
+                "setter {:#010x}, check {:#010x}, leader action {:#010x}, sync {:#010x}/{:#010x}, follow task {:#010x}, \
+                 FollowDelegate {:#010x}, facade {:#010x}, task runner {:#010x}",
+                s.setter, s.check, s.leader_action, s.sync_enter, s.sync_tick, s.follow_task, s.follow_delegate, s.facade, s.facade_gate
+            )
+        }),
+    );
+    // The engine's tables (match state, witness reports, recordings, the data version file).
+    report(
+        "engine tables",
+        engine_tables::locate(&img).map(|t| {
+            format!(
+                "objects {:#010x} (lookup {:#010x}), names {:#010x}/{:#010x}, ranges {:#010x} {:#010x} {:#010x}, version count {:#010x}",
+                t.object_hash, t.hash_lookup, t.names, t.names_count, t.native_end, t.startup_start, t.startup_end, t.game_version_count
+            )
+        }),
+    );
     ok
 }
 

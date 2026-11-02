@@ -7,8 +7,8 @@
 //!
 //! The three go in together or not at all: a lobby that migrates without the follow fixes, or
 //! a party taken along without them, leaves players worse off than the game's own way. So
-//! everything is found first (`hooks_addresses::host_migration`, by signature: the DX11 build;
-//! the DX9 one lacks pieces of it), and a part that doesn't go in takes the others out again.
+//! everything is found first (`hooks_addresses::host_migration`, by signature, in both the DX9
+//! and DX11 builds), and a part that doesn't go in takes the others out again.
 
 use tracing::info;
 use tracing::warn;
@@ -23,7 +23,7 @@ pub unsafe fn install() {
     let sites = match hooks_addresses::host_migration::locate(&image) {
         Ok(sites) => sites,
         Err(why) => {
-            warn!("host-migration (beta): {why} -> off (the DX11 build only)");
+            warn!("host-migration (beta): {why} -> off (this game build isn't one it knows)");
             return;
         }
     };
