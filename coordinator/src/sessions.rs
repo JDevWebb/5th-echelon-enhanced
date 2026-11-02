@@ -335,7 +335,7 @@ impl Coordinator {
         // seconds of work on a busy week: off the runtime's threads, which servers' calls need
         // (R14: one Sessions page held them 2-4 s).
         let names: HashMap<(String, i64), String> = names.into_iter().map(|(s, id, name)| ((s, id), name)).collect();
-        let (events, timelines) = tokio::task::spawn_blocking(move || {
+        let (events, timelines, graphics) = tokio::task::spawn_blocking(move || {
             let events: Vec<Event> = rows
                 .into_iter()
                 .take(MOST_SHOWN as usize)
@@ -351,7 +351,8 @@ impl Coordinator {
                 })
                 .collect();
             let timelines = timelines(&events, &sessions, &names, from, to);
-            (events, timelines)
+            let graphics = graphics_split(&events, from);
+            (events, timelines, graphics)
         })
         .await
         .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
@@ -381,6 +382,7 @@ impl Coordinator {
             "players": timelines,
             "problems": problems,
             "outages": outages,
+            "graphics": graphics,
             "cut": cut,
         }))
     }
@@ -393,6 +395,24 @@ impl Coordinator {
             .await?;
         Ok(())
     }
+}
+
+/// The players whose game signed in from `from` on, by the renderer it said (0.4.8 games
+/// on): each player once, by the last one their game said, since a player can switch.
+/// `unknown` are those whose game never said (an older add-on).
+fn graphics_split(events: &[Event], from: i64) -> Value {
+    let mut players: HashMap<(&str, i64), (i64, Option<&str>)> = HashMap::new();
+    for e in events.iter().filter(|e| e.kind == "signin" && e.last_at >= from) {
+        let Some(player) = e.player else { continue };
+        let said = e.detail["graphics"].as_str().filter(|g| matches!(*g, "dx9" | "dx11"));
+        let seen = players.entry((e.server.as_str(), player)).or_insert((i64::MIN, None));
+        // The latest that said one; one that didn't never hides one that did.
+        if said.is_some() && e.last_at >= seen.0 {
+            *seen = (e.last_at, said);
+        }
+    }
+    let count = |g: Option<&str>| players.values().filter(|(_, said)| *said == g).count();
+    json!({ "dx9": count(Some("dx9")), "dx11": count(Some("dx11")), "unknown": count(None) })
 }
 
 /// Times a server's API didn't answer two pings or more in a row (pings come every minute).
@@ -1589,6 +1609,7 @@ mod tests {
     use serde_json::json;
 
     use super::describe;
+    use super::graphics_split;
     use super::mark_level;
     use super::problems;
     use super::Event;
@@ -1609,6 +1630,28 @@ mod tests {
 
     fn titles(events: &[Event]) -> Vec<String> {
         problems(events).iter().map(|p| p["title"].as_str().unwrap_or_default().to_string()).collect()
+    }
+
+    /// Each player counts once, by the renderer their game said last; a sign-in that said
+    /// nothing (an older add-on) doesn't hide one that did, and one before the range is left out.
+    #[test]
+    fn players_are_counted_by_their_games_renderer() {
+        let signin = |server: &str, at: i64, player: i64, graphics: Option<&str>| {
+            let detail = graphics.map_or_else(|| json!({}), |g| json!({ "graphics": g }));
+            ev(server, at, player, "p", "signin", detail)
+        };
+        let events = vec![
+            signin("eu", 100, 1, Some("dx11")),
+            signin("eu", 200, 1, Some("dx11")),
+            signin("eu", 150, 2, Some("dx11")),
+            signin("eu", 250, 2, Some("dx9")),
+            signin("eu", 300, 2, None),
+            signin("na", 100, 2, None),
+            signin("eu", 120, 3, Some("dx9")),
+            signin("eu", 10, 4, Some("dx9")),
+            ev("eu", 130, 5, "p", "join", json!({ "graphics": "dx9" })),
+        ];
+        assert_eq!(graphics_split(&events, 50), json!({ "dx9": 2, "dx11": 1, "unknown": 1 }));
     }
 
     /// Ghost_Leader on eu1, 10-09: a game signing in again and again, every time fine, was

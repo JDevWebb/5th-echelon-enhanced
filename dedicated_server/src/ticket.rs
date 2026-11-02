@@ -283,7 +283,12 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
             return Err(quazal::rmc::Error::AccessDenied);
         }
         info!(logger, "login successful for {:?}", ubi_username);
-        crate::session_events::note(crate::session_events::Who::Id(user_id), "signin", serde_json::json!({}));
+        // The game's renderer, as its add-on said at its sign-in (the Sessions page counts each).
+        let detail = match crate::clients::graphics(user_id) {
+            Some(graphics) => serde_json::json!({ "graphics": graphics }),
+            None => serde_json::json!({}),
+        };
+        crate::session_events::note(crate::session_events::Who::Id(user_id), "signin", detail);
 
         ci.user_id = Some(user_id);
         let session_key = self.get_session_key(logger, user_id);

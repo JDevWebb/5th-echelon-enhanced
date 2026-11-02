@@ -5,6 +5,7 @@
       <Stat :value="fmt.n(matchPlayers)" label="In a match" sub="played with someone" />
       <Stat :value="fmt.n(counts.bad)" label="Problems" :tone="counts.bad ? 'bad' : ''" :sub="`${fmt.n(counts.warn)} warnings · ${fmt.n(counts.info)} notes`" />
       <Stat v-if="relayStats.joins" :value="relayStats.relayMs != null ? relayStats.relayMs + ' ms' : '–'" label="Relayed round trip" :sub="`median · ${fmt.n(relayStats.relayed)} of ${fmt.n(relayStats.joins)} joins relayed${relayStats.directMs != null ? ` · direct at best ${relayStats.directMs} ms` : ''}`" title="Joins into someone's room where the relay carried the guest's or the host's traffic: their round trip through the server (each one's ping to it, added), next to the least a direct one could take over the distance between them." />
+      <Stat v-if="graphics.said" :value="fmt.pct(100 * graphics.dx11 / graphics.said)" label="On DirectX 11" :sub="`${fmt.n(graphics.dx11)} DX11 · ${fmt.n(graphics.dx9)} DX9${graphics.unknown ? ` · ${fmt.n(graphics.unknown)} not saying` : ''}`" title="Players whose game signed in during this period, each counted once by the renderer it last said (from 0.4.8; an older game doesn't say)." />
       <Stat :value="fmt.n(data.outages.length)" label="Server trouble" :tone="data.outages.length ? 'warn' : ''" sub="alerts and unanswered pings" />
     </template>
     <div class="seg" role="group" aria-label="Server">
@@ -196,6 +197,11 @@ const groups = computed(() => {
   return [...by.entries()]
     .map(([server, players]) => ({ server, players: players.sort((a, b) => first(a) - first(b)) }))
     .sort((a, b) => serverLabel(a.server).localeCompare(serverLabel(b.server)));
+});
+const graphics = computed(() => {
+  const g = data.value?.graphics || {};
+  const dx9 = g.dx9 || 0, dx11 = g.dx11 || 0;
+  return { dx9, dx11, unknown: g.unknown || 0, said: dx9 + dx11 };
 });
 const outagesOf = sv => (data.value?.outages || []).filter(o => !o.server || o.server === sv);
 

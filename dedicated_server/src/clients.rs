@@ -167,6 +167,26 @@ pub fn admitted(user_id: u32) {
     }
 }
 
+/// The game's renderer each account's add-on said at its last sign-in ("dx9", "dx11").
+static GRAPHICS: Mutex<Option<HashMap<u32, &'static str>>> = Mutex::new(None);
+
+/// Notes the renderer the game's add-on said it runs on; anything but "dx9" or "dx11" (an
+/// older add-on says nothing) forgets the last one.
+pub fn note_graphics(user_id: u32, said: &str) {
+    let mut graphics = GRAPHICS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let map = graphics.get_or_insert_with(HashMap::new);
+    match said.trim().to_ascii_lowercase().as_str() {
+        "dx9" => map.insert(user_id, "dx9"),
+        "dx11" => map.insert(user_id, "dx11"),
+        _ => map.remove(&user_id),
+    };
+}
+
+/// The renderer the account's game said at its last sign-in, if it said one.
+pub fn graphics(user_id: u32) -> Option<&'static str> {
+    GRAPHICS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref()?.get(&user_id).copied()
+}
+
 /// Whether a refusal of `who` is worth a line in the log: once an hour each. A game or
 /// launcher not yet updated retries every few seconds (Renegade's 0.4.1 game: 494 times in
 /// half an hour, eu1, 2026-10-06), and each was a warning; the Sessions page still counts them.
@@ -415,5 +435,22 @@ mod tests {
         // A current client signing in to the account clears it.
         admitted(7);
         assert_eq!(refused_lately("ana", "launcher/0.4.0", "secret1"), None);
+    }
+
+    /// The renderer the game said is kept for its sign-in event, only as "dx9" or "dx11"; an
+    /// older add-on, saying nothing, forgets the last one.
+    #[test]
+    fn the_games_renderer_is_kept_as_said() {
+        use super::graphics;
+        use super::note_graphics;
+        assert_eq!(graphics(900_001), None);
+        note_graphics(900_001, "DX11");
+        assert_eq!(graphics(900_001), Some("dx11"));
+        note_graphics(900_002, "dx9");
+        assert_eq!(graphics(900_002), Some("dx9"));
+        note_graphics(900_001, "vulkan");
+        assert_eq!(graphics(900_001), None, "only the two the game has");
+        note_graphics(900_002, "");
+        assert_eq!(graphics(900_002), None, "an older add-on says nothing");
     }
 }

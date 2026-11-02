@@ -12,7 +12,8 @@
 //!
 //! Kinds, and what their detail holds:
 //! - `server_start`: `version`.
-//! - `signin`: the game signed in.
+//! - `signin`: the game signed in; `graphics` (`dx9`, `dx11`): its renderer, as its add-on said
+//!   at its sign-in to the API (0.4.8 on; left out by older ones).
 //! - `signin_refused`: `reason` (`outdated`, `too_many`: too many failed sign-ins,
 //!   `too_many_signins`: too many sign-ins from the address, failed or not, `wrong_password`,
 //!   `banned`, `no_current_client`, `name_not_allowed`), `via` (`game` or `api`), `client` when known.

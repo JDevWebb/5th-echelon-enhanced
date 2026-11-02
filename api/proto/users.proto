@@ -78,6 +78,10 @@ message LoginRequest {
   // it, so a copied ticket is no use without the key (nat_proto's SessionKey). Empty from
   // older clients and the launcher.
   bytes nat_key = 7;
+  // The game's renderer, as its executable shows it: "dx9" or "dx11" (0.4.8 on). Servers pass
+  // it on with the game's sign-in, for the Sessions page's count of each. Empty from the
+  // launcher and older clients.
+  string graphics = 8;
 }
 
 // One hardware id: its kind ("machine-guid", "smbios-uuid", "board-serial", "disk-serial",

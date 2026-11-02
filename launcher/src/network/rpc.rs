@@ -25,6 +25,7 @@ pub(super) async fn login(api_url: &str, username: &str, password: &str) -> Resu
                 hardware: super::hardware(),
                 vm: super::vm(),
                 nat_key: vec![],
+                graphics: String::new(),
             })
             .await
             .map_err(|status| match status.code() {

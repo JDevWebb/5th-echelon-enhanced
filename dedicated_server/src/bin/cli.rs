@@ -106,6 +106,7 @@ pub fn main() -> color_eyre::Result<()> {
                     hardware: Vec::new(),
                     vm: String::new(),
                     nat_key: vec![],
+                    graphics: String::new(),
                 });
                 let response = client.login(request).await?.into_inner();
                 let token = response.token;
@@ -131,6 +132,7 @@ pub fn main() -> color_eyre::Result<()> {
                     hardware: Vec::new(),
                     vm: String::new(),
                     nat_key: vec![],
+                    graphics: String::new(),
                 });
                 let response = client.login(request).await?.into_inner();
                 let token = response.token;

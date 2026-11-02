@@ -209,6 +209,14 @@ impl Engine {
             _ => None,
         }
     }
+
+    /// As the sign-in tells the server ("dx9", "dx11").
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::DX9 => "dx9",
+            Self::DX11 => "dx11",
+        }
+    }
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
