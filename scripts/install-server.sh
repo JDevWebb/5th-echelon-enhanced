@@ -105,6 +105,16 @@
 #                         Needs --coordinator-domain (the same on each) with
 #                         --coordinator-cert, backups, and
 #                         /etc/5th-echelon/standby.env. Kept for later runs
+#   --mm-standby NAME=HOST,NAME=HOST,...
+#                         global matchmaking's failover (docs/failover.md):
+#                         the matchmaking server first, then the relays that
+#                         stand by for it, in the order they take over. NAME
+#                         is a server's backup name, HOST its --domain. Needs
+#                         --mm-record, backups and /etc/5th-echelon/standby.env.
+#                         Kept for later runs
+#   --mm-record NAME      the matchmaking server's own name (DNS only, a short
+#                         TTL), which players and servers use and the standby
+#                         moves; served here as an alias
 #   --add-admin NAME      print a one-time setup link for a new admin of the
 #                         admin UI
 #   --reset-admin NAME    for an admin who lost their second factor: a new
@@ -192,6 +202,13 @@ STANDBY_CONF="$ETC_DIR/standby.conf"
 STANDBY_ENV="$ETC_DIR/standby.env"
 STANDBY_SERVICE="5th-echelon-standby"
 STANDBY_UNIT="/etc/systemd/system/$STANDBY_SERVICE.service"
+# Global matchmaking's failover group (install_mm_standby): its servers, the matchmaking
+# server's name, the standby's settings. Cloudflare's token and zone are standby.env's.
+MM_STANDBY_LIST="$ETC_DIR/mm-standby"
+MM_RECORD_FILE="$ETC_DIR/mm-record"
+MM_STANDBY_CONF="$ETC_DIR/mm-standby.conf"
+MM_STANDBY_SERVICE="5th-echelon-mm-standby"
+MM_STANDBY_UNIT="/etc/systemd/system/$MM_STANDBY_SERVICE.service"
 # The coordinator's Cloudflare Origin CA certificate, when its record is proxied.
 COORD_CERT="/etc/caddy/5th-echelon-coordinator.crt"
 COORD_KEY="/etc/caddy/5th-echelon-coordinator.key"
@@ -220,7 +237,7 @@ COMMUNITY_COORDINATORS="scbl.jdevwebb.net play.scbl.jdevwebb.net"
 friends="" server_name="" region="" coordinator="" join_token="" coord_domain="" coord_binary=""
 https_api=1 allow_unsigned=0 coord_only=0 admin="" registration="" listed="" command=""
 metrics_cert="" metrics_key="" metrics_domain="" origin_pull=0 admin_name="" auto_update="" release_version=""
-coord_cert="" coord_key="" standby="" standby_me=""
+coord_cert="" coord_key="" standby="" standby_me="" mm_standby="" mm_record="" mm_me=""
 role="" ticket_key="" matchmaking=""
 aliases=() coord_aliases=() coord_aliases_given=0
 # Only HTTPS, and TLS 1.2 or newer, for every download, and none larger
@@ -283,6 +300,8 @@ while [ $# -gt 0 ]; do
     --coordinator-cert) coord_cert="${2:?}"; shift ;;
     --coordinator-key) coord_key="${2:?}"; shift ;;
     --standby) standby="${2:?}"; shift ;;
+    --mm-standby) mm_standby="${2:?}"; shift ;;
+    --mm-record) mm_record="${2:?}"; shift ;;
     --add-admin) command=add-admin; admin_name="${2:?}"; shift ;;
     --reset-admin) command=reset-admin; admin_name="${2:?}"; shift ;;
     --admin-open-access) command="admin-open-access" ;;
@@ -354,7 +373,7 @@ fi
 
 if [ "$command" = status ]; then
   printf '%-30s %s\n' "Service" "State"
-  for s in "$SERVICE" "$COORD_SERVICE" "$STANDBY_SERVICE" caddy; do
+  for s in "$SERVICE" "$COORD_SERVICE" "$STANDBY_SERVICE" "$MM_STANDBY_SERVICE" caddy; do
     if systemctl cat "$s" >/dev/null 2>&1; then printf '%-30s %s\n' "$s" "$(systemctl is-active "$s" 2>/dev/null || true)"; fi
   done
   if [ -f "$CONFIG" ]; then
@@ -400,6 +419,10 @@ if [ "$command" = status ]; then
     echo
     echo "Failover:      a standby in $(head -c 2048 "$STANDBY_LIST" 2>/dev/null | printable) (docs/failover.md)"
     if [ -f "$STANDBY_ENV" ]; then "$PROGRAM_DIR/coordinator" standby --config "$STANDBY_CONF" --status 2>&1 | tr -d '\000-\011\013-\037\177' | sed 's/^/               /' || true; fi
+  fi
+  if [ -s "$MM_STANDBY_LIST" ]; then
+    echo "Matchmaking failover: $(head -c 256 "$MM_RECORD_FILE" 2>/dev/null | printable), a group of $(head -c 2048 "$MM_STANDBY_LIST" | printable) (docs/failover.md)"
+    if [ -f "$STANDBY_ENV" ] && [ -f "$MM_STANDBY_CONF" ]; then "$PROGRAM_DIR/coordinator" standby --config "$MM_STANDBY_CONF" --status 2>&1 | tr -d '\000-\011\013-\037\177' | sed 's/^/               /' || true; fi
   fi
   exit 0
 fi
@@ -480,6 +503,25 @@ if [ -n "$standby" ]; then
     [[ "$standby_names" != *" ${entry%%=*} "* ]] || die "--standby: ${entry%%=*} is in the list twice"
     standby_names="$standby_names${entry%%=*} "
   done
+fi
+# Global matchmaking's failover group stays once joined, as the coordinator's does.
+if [ -z "$mm_standby" ] && [ -s "$MM_STANDBY_LIST" ]; then mm_standby="$(head -c 2048 "$MM_STANDBY_LIST" | tr -d '[:space:]')"; fi
+if [ -z "$mm_record" ] && [ -s "$MM_RECORD_FILE" ]; then mm_record="$(head -c 256 "$MM_RECORD_FILE" | tr -d '[:space:]')"; fi
+if [ -n "$mm_standby" ]; then
+  mm_standby="${mm_standby,,}" mm_record="${mm_record,,}"
+  [ -n "$mm_record" ] && [[ "$mm_record" =~ $DOMAIN_RE ]] || die "--mm-standby needs --mm-record: the matchmaking server's own name (DNS only), the same on every server of the group"
+  [ "$coord_only" -eq 0 ] || die "--mm-standby is for game servers and relays"
+  [ "$no_caddy" -eq 0 ] && [ "$https_api" -eq 1 ] || die "--mm-standby needs the API over HTTPS (no --no-caddy or --no-https-api): the standbys ask each other's /api/info over HTTPS"
+  IFS=, read -r -a mm_entries <<< "$mm_standby"
+  [ "${#mm_entries[@]}" -ge 2 ] || die "--mm-standby lists the matchmaking server and one relay or more: NAME=HOST,NAME=HOST"
+  mm_names=" "
+  for entry in "${mm_entries[@]}"; do
+    [[ "$entry" =~ ^[a-z0-9-]{1,64}=.+$ ]] && [[ "${entry#*=}" =~ $DOMAIN_RE ]] || die "--mm-standby: \"$entry\" isn't NAME=HOST (a backup name of letters, digits and -, then the server's domain)"
+    [[ "$mm_names" != *" ${entry%%=*} "* ]] || die "--mm-standby: ${entry%%=*} is in the list twice"
+    mm_names="$mm_names${entry%%=*} "
+    if [ "${entry#*=}" = "$domain" ]; then mm_me="${entry%%=*}"; fi
+  done
+  [ -n "$mm_me" ] || die "--mm-standby doesn't list this server ($domain): each server is NAME=its --domain"
 fi
 if [ "$coord_only" -eq 1 ]; then
   [ -n "$coord_domain" ] || die "--coordinator-only needs --coordinator-domain"
@@ -625,8 +667,8 @@ if [ "$uninstall" -eq 1 ]; then
       rm -f "/etc/systemd/system/$u" "/etc/systemd/system/${u%.timer}.service"
     done
     rm -f "$BACKUP_SCRIPT" "$ETC_DIR"/litestream-*.yml
-    systemctl disable --now "$STANDBY_SERVICE" 2>/dev/null || true
-    rm -f "$STANDBY_UNIT" "$STANDBY_CONF" "$STANDBY_LIST"
+    systemctl disable --now "$STANDBY_SERVICE" "$MM_STANDBY_SERVICE" 2>/dev/null || true
+    rm -f "$STANDBY_UNIT" "$STANDBY_CONF" "$STANDBY_LIST" "$MM_STANDBY_UNIT" "$MM_STANDBY_CONF" "$MM_STANDBY_LIST" "$MM_RECORD_FILE"
     rm -f "$UNIT" "$COORD_UNIT" "$UPDATE_PATH_UNIT" "$UPDATE_SERVICE_UNIT" "$CADDY_DROPIN"
     systemctl daemon-reload
   fi
@@ -799,13 +841,16 @@ write_backup_script() {
 #   backup.sh snapshot                  each database, and the coordinator's join token and
 #                                       reports, to R2 (its timer runs it every few hours)
 #   backup.sh archive                   the daily archive to B2 (its timer runs it)
-#   backup.sh files                     the coordinator's join token and reports alone
+#   backup.sh files                     the coordinator's join token and reports, and the game
+#                                       server's key files and settings, alone
 #   backup.sh restore game|coordinator [--time 2026-10-05T03:00:00Z] [--archive 2026-10-05|2026-10]
 #                     [--from NAME]     put a copy back: a snapshot (the latest, or the last
 #                     [--with-files]    one at or before --time), or an archive (a day, or a
 #                                       month's), from this machine's backups or another's
-#                                       (--from); the coordinator's join token and reports
-#                                       too (--with-files, from R2)
+#                                       (--from); the coordinator's join token and reports, or
+#                                       the game server's key files and settings, too
+#                                       (--with-files, from R2: a matchmaking standby takes
+#                                       over as the same server)
 set -euo pipefail
 umask 077
 die() { printf 'error: %s\n' "$*" >&2; exit 1; }
@@ -928,6 +973,28 @@ copy_files() {
   date -u +%FT%TZ > "$BACKUP_STATE/last-files"
 }
 
+# The game server's key files and settings, to R2 (where it runs): what makes it the same
+# server to the network (its id, its federation secret, its NAT, API, metrics and relay-pass
+# keys) and its service.toml, so a matchmaking standby restores it as itself
+# (docs/failover.md). Through a copy only root touches, links never followed, as above.
+GAME_FILES=(server-id.txt federation.key api.key nat.key metrics.key relay-pass.key service.toml)
+copy_game_files() {
+  runs game || return 0
+  local mirror="$BACKUP_STATE/game-files" f
+  rm -rf "$mirror"
+  install -d -m 700 "$mirror"
+  for f in "${GAME_FILES[@]}"; do
+    # A regular file only: a link the server's user put there is skipped.
+    if [ -f "$STATE_DIR/$f" ] && [ ! -L "$STATE_DIR/$f" ]; then
+      tar -C "$STATE_DIR" -cf - "$f" | tar -C "$mirror" --no-same-owner -xf -
+      if [ -L "$mirror/$f" ]; then rm -f "$mirror/$f"; fi
+    fi
+  done
+  [ -s "$mirror/server-id.txt" ] || return 0
+  "${RCLONE[@]}" sync "$mirror" "R2:$BACKUP_R2_BUCKET/live/$BACKUP_NAME/game-files"
+  date -u +%FT%TZ > "$BACKUP_STATE/last-game-files"
+}
+
 case "${1:-status}" in
   status)
     echo "Backups of $BACKUP_NAME: snapshots to $BACKUP_R2_BUCKET (R2)$(has_b2 && echo ", archive to $BACKUP_B2_BUCKET (B2)" || echo ", no archive (B2 isn't set)")"
@@ -939,6 +1006,7 @@ case "${1:-status}" in
     echo "  last snapshot run: $(cat "$BACKUP_STATE/last-snapshot" 2>/dev/null || echo never)"
     echo "  last archive:      $(cat "$BACKUP_STATE/last-archive" 2>/dev/null || echo never)"
     echo "  last files:        $(cat "$BACKUP_STATE/last-files" 2>/dev/null || echo never)"
+    echo "  last game files:   $(cat "$BACKUP_STATE/last-game-files" 2>/dev/null || echo never)"
     ;;
   snapshot)
     lock
@@ -967,6 +1035,7 @@ case "${1:-status}" in
       done < <(snapshots "$BACKUP_NAME" "$what")
     done
     copy_files
+    copy_game_files
     date -u +%FT%TZ > "$BACKUP_STATE/last-snapshot"
     ;;
   archive)
@@ -1002,7 +1071,7 @@ case "${1:-status}" in
     date -u +%FT%TZ > "$BACKUP_STATE/last-archive"
     echo "Archived $BACKUP_NAME for $day"
     ;;
-  files) copy_files ;;
+  files) copy_files; copy_game_files ;;
   restore)
     what="${2:-}"; shift 2 || die "restore game|coordinator"
     time="" archive="" from="$BACKUP_NAME" with_files=0
@@ -1035,10 +1104,15 @@ case "${1:-status}" in
     fi
     sound "$work/restored.db" || die "the copy isn't a whole database; nothing changed"
     if [ "$with_files" -eq 1 ]; then
-      [ "$what" = coordinator ] && [ -z "$archive" ] || die "--with-files is the coordinator's, from R2 (an archive's are in its coordinator-files.tar.gz)"
+      [ -z "$archive" ] || die "--with-files comes from R2, not an archive"
       install -d -m 700 "$work/files"
-      "${RCLONE[@]}" copy "R2:$BACKUP_R2_BUCKET/live/$from/coordinator-files" "$work/files"
-      [ -s "$work/files/join-token.txt" ] || die "there's no join token in $from's backup in R2; nothing changed"
+      if [ "$what" = coordinator ]; then
+        "${RCLONE[@]}" copy "R2:$BACKUP_R2_BUCKET/live/$from/coordinator-files" "$work/files"
+        [ -s "$work/files/join-token.txt" ] || die "there's no join token in $from's backup in R2; nothing changed"
+      else
+        "${RCLONE[@]}" copy "R2:$BACKUP_R2_BUCKET/live/$from/game-files" "$work/files"
+        [ -s "$work/files/server-id.txt" ] || die "there's no server id in $from's game files in R2; nothing changed"
+      fi
     fi
     svc="$(service "$what")"
     echo "Stopping $svc to put the copy in place…"
@@ -1050,7 +1124,15 @@ case "${1:-status}" in
     done
     owner="$(stat -c %U "$(dirname "$db")")" group="$(stat -c %G "$(dirname "$db")")"
     install -m 600 -o "$owner" -g "$group" "$work/restored.db" "$db"
-    if [ "$with_files" -eq 1 ]; then
+    if [ "$with_files" -eq 1 ] && [ "$what" = game ]; then
+      # Each one's own copy as it was, kept beside it; whatever is there goes first (never
+      # written through a link the server's user left).
+      for f in "${GAME_FILES[@]}"; do
+        [ -f "$work/files/$f" ] || continue
+        if [ -e "$STATE_DIR/$f" ] || [ -L "$STATE_DIR/$f" ]; then mv -f -- "$STATE_DIR/$f" "$STATE_DIR/$f.before-restore-$stamp"; fi
+        install -m 600 -o "$owner" -g "$group" "$work/files/$f" "$STATE_DIR/$f"
+      done
+    elif [ "$with_files" -eq 1 ]; then
       # Whatever is there goes first: root writing through a link the coordinator's user left
       # would write where it points.
       rm -f -- "$COORD_DIR/join-token.txt"
@@ -1065,7 +1147,7 @@ case "${1:-status}" in
       fi
     fi
     systemctl start "$svc"
-    echo "Restored $what from $( [ -n "$archive" ] && echo "the $kind archive $archive" || echo "the snapshot ${picked%.db.gz}" ) of $from$( [ "$with_files" -eq 1 ] && echo ", with its join token and reports")."
+    echo "Restored $what from $( [ -n "$archive" ] && echo "the $kind archive $archive" || echo "the snapshot ${picked%.db.gz}" ) of $from$( [ "$with_files" -eq 1 ] && { [ "$what" = game ] && echo ", with its key files and settings" || echo ", with its join token and reports"; })."
     echo "The one it replaced: $db.before-restore-$stamp"
     ;;
   *) die "status, snapshot, archive, files or restore (see the top of $0)" ;;
@@ -1094,7 +1176,7 @@ need=()
 command -v curl >/dev/null || need+=(curl)
 [ -e /etc/ssl/certs/ca-certificates.crt ] || [ -e /etc/pki/tls/certs/ca-bundle.crt ] || [ -e /etc/ssl/ca-bundle.pem ] || need+=(ca-certificates)
 command -v sha256sum >/dev/null || need+=(coreutils)
-if { [ "$coord_only" -eq 0 ] && [ -z "$binary" ]; } || { [ -n "$coord_domain" ] && [ -z "$coord_binary" ]; }; then
+if { [ "$coord_only" -eq 0 ] && [ -z "$binary" ]; } || { { [ -n "$coord_domain" ] || [ -n "$mm_standby" ]; } && [ -z "$coord_binary" ]; }; then
   command -v openssl >/dev/null || need+=(openssl)
 fi
 command -v ss >/dev/null || case "$family" in debian|arch) need+=(iproute2) ;; fedora) need+=(iproute) ;; esac
@@ -1306,7 +1388,8 @@ else
 fi
 [ "$coord_only" -eq 1 ] || chmod 755 "$work/$ASSET"
 chmod 711 "$work"
-if [ -n "$coord_domain" ]; then
+# The coordinator program also runs a matchmaking standby (`coordinator standby`).
+if [ -n "$coord_domain" ] || [ -n "$mm_standby" ]; then
   if [ -n "$coord_binary" ]; then
     [ -f "$coord_binary" ] || die "$coord_binary doesn't exist"
     cp "$coord_binary" "$work/$COORD_ASSET"
@@ -1507,6 +1590,9 @@ else
     if [[ "$a" =~ $DOMAIN_RE ]] || [[ "$a" =~ $IPV4_RE ]]; then kept+=("$a"); elif [ -n "$a" ]; then warn "dropped the alias \"$a\" from $CONFIG: it isn't a domain name or IPv4 address"; fi
   done < <(printf '%s' "$aliases_line" | grep -o '"[^"]*"' | tr -d '"')
   aliases=("${kept[@]}")
+  # The matchmaking server's own name, served on every server of its failover group, so
+  # whichever runs it answers for it (Caddy gets its certificate where it points).
+  if [ -n "$mm_record" ] && [[ " ${aliases[*]} " != *" $mm_record "* ]] && [ "$mm_record" != "$domain" ]; then aliases+=("$mm_record"); fi
   aliases_line=""
   if [ "${#aliases[@]}" -gt 0 ]; then aliases_line="[$(printf '"%s", ' "${aliases[@]}" | sed 's/, $//')]"; fi
 fi
@@ -1850,8 +1936,8 @@ install_updater() {
     echo '# Written by install-server.sh: installs the release a coordinator rolls out.'
     echo 'set -euo pipefail'
     echo 'umask 022'
-    printf 'REPO=%q\nPROGRAM_DIR=%q\nSTATE_DIR=%q\nCOORD_DIR=%q\nCOORD_ADDR=%q\nSERVICE=%q\nCOORD_SERVICE=%q\nSTANDBY_SERVICE=%q\nCONFIG=%q\nETC_DIR=%q\nUPDATE_DIR=%q\n' \
-      "$REPO" "$PROGRAM_DIR" "$STATE_DIR" "$COORD_DIR" "$COORD_ADDR" "$SERVICE" "$COORD_SERVICE" "$STANDBY_SERVICE" "$CONFIG" "$ETC_DIR" "$UPDATE_DIR"
+    printf 'REPO=%q\nPROGRAM_DIR=%q\nSTATE_DIR=%q\nCOORD_DIR=%q\nCOORD_ADDR=%q\nSERVICE=%q\nCOORD_SERVICE=%q\nSTANDBY_SERVICE=%q\nMM_STANDBY_SERVICE=%q\nCONFIG=%q\nETC_DIR=%q\nUPDATE_DIR=%q\n' \
+      "$REPO" "$PROGRAM_DIR" "$STATE_DIR" "$COORD_DIR" "$COORD_ADDR" "$SERVICE" "$COORD_SERVICE" "$STANDBY_SERVICE" "$MM_STANDBY_SERVICE" "$CONFIG" "$ETC_DIR" "$UPDATE_DIR"
     printf 'RELEASE_KEY_PEM=%q\n' "$RELEASE_KEY_PEM"
     cat <<'UPDATER'
 CURL=(curl --proto '=https' --tlsv1.2 -fsSL --retry 3 --connect-timeout 20 --max-time 600 --max-filesize 268435456)
@@ -2028,8 +2114,9 @@ databases() {
   done
 }
 stop_all() {
-  # The standby (failover) would start the coordinator again part way.
+  # The standbys (failover) would start the coordinator or the matchmaking server again part way.
   systemctl stop "$STANDBY_SERVICE" 2>/dev/null || true
+  systemctl stop "$MM_STANDBY_SERVICE" 2>/dev/null || true
   for p in "${parts[@]}"; do
     case "$p" in dedicated_server) systemctl stop "$SERVICE" ;; coordinator) systemctl stop "$COORD_SERVICE" ;; esac
   done
@@ -2039,6 +2126,7 @@ restart_all() {
     case "$p" in dedicated_server) systemctl restart "$SERVICE" ;; coordinator) [ "$coord_running" -eq 0 ] || systemctl restart "$COORD_SERVICE" ;; esac
   done
   if systemctl is-enabled --quiet "$STANDBY_SERVICE" 2>/dev/null; then systemctl start "$STANDBY_SERVICE" || true; fi
+  if systemctl is-enabled --quiet "$MM_STANDBY_SERVICE" 2>/dev/null; then systemctl start "$MM_STANDBY_SERVICE" || true; fi
 }
 # Copies each database (and its WAL) into $UPDATE_DIR/databases, root's
 # only. Links aren't followed: the services own their folders.
@@ -2365,6 +2453,86 @@ UNIT
   fi
 }
 if [ "$use_systemd" -eq 1 ]; then install_standby; fi
+
+# Global matchmaking's failover group (docs/failover.md): the coordinator program as root,
+# watching the matchmaking server's record (DNS only) through Cloudflare's API, on the
+# matchmaking server and each relay standing by for it.
+install_mm_standby() {
+  [ -n "$mm_standby" ] || return 0
+  if [ "$(backup_name)" != "$mm_me" ]; then
+    warn "BACKUP_NAME in $BACKUP_ENV is $(backup_name), not $mm_me: the relays restore the matchmaking server from snapshots/$mm_me. Remove BACKUP_NAME (or make it $mm_me)"
+  fi
+  [ -x "$PROGRAM_DIR/coordinator" ] || install -m 755 "$work/$COORD_ASSET" "$PROGRAM_DIR/coordinator"
+  # The matchmaking server's id: this server's, if it's the first listed (the matchmaking
+  # server); else what answers at its name.
+  local mm_id="" control=""
+  if [ "$mm_me" = "${mm_entries[0]%%=*}" ] && [ -s "$STATE_DIR/server-id.txt" ]; then
+    mm_id="$(head -c 64 "$STATE_DIR/server-id.txt" | tr -d '[:space:]')"
+  else
+    mm_id="$("${CURL[@]}" -fsS --max-time 10 "https://$mm_record/api/info" 2>/dev/null | python3 -c 'import json,sys; print(json.load(sys.stdin).get("id",""))' 2>/dev/null || true)"
+  fi
+  [[ "$mm_id" =~ ^[A-Za-z0-9]{1,64}$ ]] || die "couldn't find the matchmaking server's id (https://$mm_record/api/info): install it first, with its record pointing at it"
+  coord_url="$(config_text | sed -n '/^\[federation\]$/,/^\[/ s/^coordinator = "\(https:[^"]*\)"$/\1/p' | head -1)"
+  [ -n "$coord_url" ] || coord_url="${coordinator:-}"
+  [ -z "$coord_url" ] || control="$coord_url/v1/info"
+  printf '%s\n' "$mm_standby" > "$MM_STANDBY_LIST"
+  printf '%s\n' "$mm_record" > "$MM_RECORD_FILE"
+  {
+    echo "# Written by install-server.sh: global matchmaking's failover group (docs/failover.md)."
+    echo "kind matchmaking"
+    echo "server-id $mm_id"
+    echo "record $mm_record"
+    echo "me $mm_me"
+    echo "address $public_address"
+    echo "# The group, in the order they take over: the matchmaking server, then its relays."
+    for entry in "${mm_entries[@]}"; do echo "server ${entry%%=*} ${entry#*=}"; done
+    [ -z "$control" ] || echo "control $control"
+    echo "secrets $STANDBY_ENV"
+    echo "state /var/lib/5th-echelon-mm-standby"
+    echo "service $SERVICE"
+    echo "game-state $STATE_DIR"
+    echo "backup $BACKUP_SCRIPT"
+  } > "$MM_STANDBY_CONF.new"
+  chmod 644 "$MM_STANDBY_CONF.new" && mv -f "$MM_STANDBY_CONF.new" "$MM_STANDBY_CONF"
+  cat > "$MM_STANDBY_UNIT.new" <<UNIT
+# Written by install-server.sh (docs/failover.md).
+[Unit]
+Description=5th Echelon: standby for the matchmaking server (runs it here when its record points here; takes over if it's down)
+Documentation=https://github.com/$REPO/blob/main/docs/failover.md
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=$STANDBY_ENV
+
+[Service]
+ExecStart=$PROGRAM_DIR/coordinator standby --config $MM_STANDBY_CONF
+Restart=always
+RestartSec=10
+StateDirectory=5th-echelon-mm-standby
+StateDirectoryMode=0700
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+LockPersonality=yes
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+  chmod 644 "$MM_STANDBY_UNIT.new" && mv -f "$MM_STANDBY_UNIT.new" "$MM_STANDBY_UNIT"
+  systemctl daemon-reload
+  systemctl enable "$MM_STANDBY_SERVICE" >/dev/null 2>&1
+  [ -f "$BACKUP_ENV" ] || notes+=("The matchmaking failover needs backups: the relays restore it from its backup. Write $BACKUP_ENV (docs/backups.md) and run this again.")
+  if [ -f "$STANDBY_ENV" ]; then
+    [ "$(stat -c '%u %a' "$STANDBY_ENV")" = "0 600" ] || die "$STANDBY_ENV must be root's, mode 600"
+    systemctl restart "$MM_STANDBY_SERVICE"
+    say "Matchmaking standby: $mm_me, in a group of$mm_names(in that order). Check: $PROGRAM_DIR/coordinator standby --config $MM_STANDBY_CONF --status"
+  else
+    notes+=("The matchmaking standby waits for $STANDBY_ENV (Cloudflare's API token and zone; docs/failover.md). Until then nothing takes over.")
+  fi
+}
+if [ "$use_systemd" -eq 1 ]; then install_mm_standby; fi
 
 # --- Firewall -----------------------------------------------------------
 

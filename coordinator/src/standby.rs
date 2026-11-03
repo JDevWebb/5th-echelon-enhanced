@@ -24,6 +24,16 @@
 //! Cloudflare challenge, say). Coming back isn't automatic: a server that
 //! was replaced stays a standby until an admin moves the coordinator back
 //! (`coordinator standby --take-over` there).
+//!
+//! The same program stands by for a network's **matchmaking server** (`kind matchmaking`, the
+//! 0.4.8 plan's phase 4), on its relays. Game traffic can't go through Cloudflare's proxy, so
+//! its record is DNS only (a short TTL) and the matchmaking server is asked directly
+//! (`/api/info`, its server id): no answer counts as down only when this machine reaches the
+//! internet (`control`). The relays say whether they still hear from it (`matchmaking_seen`).
+//! Taking over moves the relay's own state aside, restores the matchmaking server's database,
+//! key files and settings from its backup (backup.sh `restore game --with-files`), so it's the
+//! same server to the network, and starts it in the relay's place; standing down puts the
+//! relay back.
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -50,6 +60,35 @@ pub const REACHED_WITHIN: u64 = 90;
 /// What the coordinator's `/v1/info` calls itself.
 const COORDINATOR_NAME: &str = "5th Echelon coordinator";
 
+/// What the group stands by for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Kind {
+    Coordinator,
+    Matchmaking,
+}
+
+impl Kind {
+    pub fn what(self) -> &'static str {
+        match self {
+            Kind::Coordinator => "coordinator",
+            Kind::Matchmaking => "matchmaking server",
+        }
+    }
+    /// Where a server answers for itself, and what peers' `/api/info` says of reaching it.
+    fn info_path(self) -> &'static str {
+        match self {
+            Kind::Coordinator => "/v1/info",
+            Kind::Matchmaking => "/api/info",
+        }
+    }
+    fn seen_key(self) -> &'static str {
+        match self {
+            Kind::Coordinator => "coordinator_seen",
+            Kind::Matchmaking => "matchmaking_seen",
+        }
+    }
+}
+
 /// A server of the group, in the order they take over.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Server {
@@ -63,6 +102,15 @@ pub struct Server {
 /// `/etc/5th-echelon/standby.conf`, written by install-server.sh.
 #[derive(Debug, Clone)]
 pub struct Config {
+    pub kind: Kind,
+    /// The matchmaking server's id (its server-id.txt): what answers for it must be it.
+    pub server_id: Option<String>,
+    /// A page any working internet connection reaches (the coordinator's `/v1/info`): the
+    /// matchmaking server not answering counts as down only when this does.
+    pub control: Option<String>,
+    /// The game server's folder (a matchmaking standby swaps the relay's state for the
+    /// matchmaking server's there).
+    pub game_state: PathBuf,
     /// The coordinator's record first, then any that follow it (the admin UI's).
     pub records: Vec<String>,
     /// This server's name in `servers`.
@@ -115,7 +163,8 @@ impl Config {
                         host: (*host).to_string(),
                     });
                 }
-                [key @ ("secrets" | "state" | "service" | "local" | "backup" | "database" | "api" | "probe" | "peer-scheme" | "wait"), value] => {
+                [key @ ("secrets" | "state" | "service" | "local" | "backup" | "database" | "api" | "probe" | "peer-scheme" | "wait" | "kind" | "server-id" | "control"
+                | "game-state"), value] => {
                     set.insert(key, (*value).to_string());
                 }
                 _ => return Err(bad()),
@@ -131,19 +180,45 @@ impl Config {
         if !servers.iter().any(|s| s.name == me) {
             return Err(format!("{me} (me) isn't one of the servers"));
         }
+        let kind = match set.remove("kind").as_deref() {
+            None | Some("coordinator") => Kind::Coordinator,
+            Some("matchmaking") => Kind::Matchmaking,
+            Some(other) => return Err(format!("`kind` is coordinator or matchmaking, not {other}")),
+        };
+        let server_id = set.remove("server-id");
+        if kind == Kind::Matchmaking
+            && !server_id
+                .as_deref()
+                .is_some_and(|id| !id.is_empty() && id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric()))
+        {
+            return Err("a matchmaking group needs `server-id` (the matchmaking server's server-id.txt)".into());
+        }
+        let mm = kind == Kind::Matchmaking;
         let mut take = |key: &str, default: &str| set.remove(key).unwrap_or_else(|| default.to_string());
         Ok(Self {
-            probe: take("probe", &format!("https://{}/v1/info", records[0])),
+            kind,
+            server_id,
+            control: Some(take("control", "")).filter(|c| !c.is_empty()),
+            game_state: take("game-state", "/var/lib/5th-echelon").into(),
+            probe: take("probe", &format!("https://{}{}", records[0], kind.info_path())),
             records,
             me,
             address: address.ok_or("no `address` (this server's public address)")?,
             servers,
             secrets: take("secrets", "/etc/5th-echelon/standby.env").into(),
             state: take("state", "/var/lib/5th-echelon-standby").into(),
-            service: take("service", "5th-echelon-coordinator"),
-            local: take("local", "http://127.0.0.2:8700"),
+            service: take("service", if mm { "5th-echelon" } else { "5th-echelon-coordinator" }),
+            local: take("local", if mm { "http://127.0.0.1:8080" } else { "http://127.0.0.2:8700" }),
             backup: take("backup", "/opt/5th-echelon/backup.sh").into(),
-            database: take("database", "/var/lib/5th-echelon-coordinator/coordinator.db").into(),
+            database: take(
+                "database",
+                if mm {
+                    "/var/lib/5th-echelon/5th-echelon.db"
+                } else {
+                    "/var/lib/5th-echelon-coordinator/coordinator.db"
+                },
+            )
+            .into(),
             api: take("api", "https://api.cloudflare.com/client/v4"),
             peer_scheme: Some(take("peer-scheme", "https"))
                 .filter(|s| s == "https" || s == "http")
@@ -413,9 +488,49 @@ pub async fn probe(http: &reqwest::Client, url: &str) -> Health {
 
 /// Whether a server reaches the coordinator (its `/api/info`); None if it doesn't answer.
 pub async fn reaches(http: &reqwest::Client, scheme: &str, host: &str) -> Option<bool> {
+    reaches_by(http, scheme, host, Kind::Coordinator).await
+}
+
+/// Whether a server reaches what the group stands by for (its `/api/info`'s `coordinator_seen`
+/// or `matchmaking_seen`); None if it doesn't answer.
+pub async fn reaches_by(http: &reqwest::Client, scheme: &str, host: &str, kind: Kind) -> Option<bool> {
     let response = http.get(format!("{scheme}://{host}/api/info")).timeout(Duration::from_secs(10)).send().await.ok()?;
     let info: Value = response.json().await.ok()?;
-    Some(info["coordinator_seen"].as_u64().is_some_and(|ago| ago <= REACHED_WITHIN))
+    Some(info[kind.seen_key()].as_u64().is_some_and(|ago| ago <= REACHED_WITHIN))
+}
+
+/// Asks the matchmaking server for itself, directly (its record is DNS only): its `/api/info`
+/// with its own id is up; an error from its machine (Caddy without the server) is down; no
+/// answer at all is down only when this machine reaches `control` (else it's this machine's
+/// network); anything else says nothing.
+pub async fn probe_direct(http: &reqwest::Client, url: &str, id: &str, control: Option<&str>) -> Health {
+    match http.get(url).timeout(Duration::from_secs(10)).send().await {
+        Ok(response) => {
+            let status = response.status();
+            if status.is_server_error() {
+                return Health::Down(format!("HTTP {}", status.as_u16()));
+            }
+            if !status.is_success() {
+                return Health::Unknown(format!("HTTP {}", status.as_u16()));
+            }
+            match response.json::<Value>().await {
+                Ok(v) if v["id"] == id => Health::Up,
+                Ok(v) if v["id"].is_string() => Health::Unknown(format!("another server answers for it ({})", v["id"])),
+                _ => Health::Unknown(String::from("an answer that isn't a server's")),
+            }
+        }
+        Err(e) => {
+            let online = match control {
+                Some(c) => http.get(c).timeout(Duration::from_secs(10)).send().await.is_ok_and(|r| r.status().is_success()),
+                None => false,
+            };
+            if online {
+                Health::Down(format!("no answer ({})", e.without_url()))
+            } else {
+                Health::Unknown(format!("no answer, and this machine doesn't reach {} either", control.unwrap_or("the control page")))
+            }
+        }
+    }
 }
 
 /// What a standby does to this machine.
@@ -426,6 +541,132 @@ pub trait Machine: Send + Sync {
     /// Restores the coordinator (its database, join token and reports) from `from`'s live
     /// backup, and starts it.
     fn restore(&self, from: &str) -> Result<(), String>;
+    /// Whether what it would start is here (the coordinator kind checks its database itself).
+    fn has_data(&self) -> bool {
+        true
+    }
+}
+
+/// A relay standing by for the network's matchmaking server: the game server's service runs
+/// the relay (its own state) or, after a takeover, the matchmaking server (its state restored
+/// from its backup into the same folder, the relay's kept beside it as `<folder>.own`).
+pub struct Matchmaking {
+    pub service: String,
+    pub backup: PathBuf,
+    pub state: PathBuf,
+    /// The matchmaking server's id: the folder holds it when its server-id.txt says so.
+    pub id: String,
+}
+
+impl Matchmaking {
+    fn own(&self) -> PathBuf {
+        let mut own = self.state.clone().into_os_string();
+        own.push(".own");
+        own.into()
+    }
+    fn holds_it(&self) -> bool {
+        Self::holds(&self.state, &self.id)
+    }
+    fn holds(folder: &Path, id: &str) -> bool {
+        std::fs::read_to_string(folder.join("server-id.txt")).is_ok_and(|held| held.trim() == id)
+    }
+    fn aside(&self, what: &str) -> std::ffi::OsString {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let mut aside = self.state.clone().into_os_string();
+        aside.push(format!(".{what}-{stamp}"));
+        aside
+    }
+    fn systemctl(&self, verb: &str) -> Result<(), String> {
+        run(std::process::Command::new("systemctl").args([verb, &self.service]))
+    }
+}
+
+impl Machine for Matchmaking {
+    fn running(&self) -> bool {
+        self.holds_it()
+            && std::process::Command::new("systemctl")
+                .args(["is-active", "--quiet", &self.service])
+                .status()
+                .is_ok_and(|s| s.success())
+    }
+
+    fn has_data(&self) -> bool {
+        self.holds_it()
+    }
+
+    fn start(&self) -> Result<(), String> {
+        if !self.holds_it() {
+            return Err(String::from("the matchmaking server's state isn't here"));
+        }
+        self.systemctl("start")
+    }
+
+    /// Standing down: the relay's own state back, and the relay started again. A machine with no
+    /// relay's state kept (the matchmaking server's own machine) stays stopped until an admin
+    /// says: never a second, stale matchmaking server started.
+    fn stop(&self) -> Result<(), String> {
+        self.systemctl("stop")?;
+        let own = self.own();
+        if !own.is_dir() || Self::holds(&own, &self.id) {
+            return Ok(());
+        }
+        let aside = self.aside("matchmaking");
+        std::fs::rename(&self.state, &aside).map_err(|e| format!("moving the matchmaking server's state aside: {e}"))?;
+        std::fs::rename(&own, &self.state).map_err(|e| format!("putting the relay's state back: {e}"))?;
+        self.systemctl("start")
+    }
+
+    /// Taking over: the relay stops, its state goes aside (once: a second try keeps the first
+    /// copy), a folder of the same owner takes its place with its geolocation data, and
+    /// backup.sh restores the matchmaking server into it and starts it.
+    fn restore(&self, from: &str) -> Result<(), String> {
+        self.systemctl("stop")?;
+        let own = self.own();
+        if self.holds_it() {
+            // A stale matchmaking server's state (this machine ran it before): aside, never kept
+            // as the relay's own.
+            let aside = self.aside("matchmaking");
+            let reference = self.own_or_state_owner()?;
+            std::fs::rename(&self.state, &aside).map_err(|e| format!("moving the old matchmaking state aside: {e}"))?;
+            run(std::process::Command::new("install")
+                .args(["-d", "-m", "750", "-o", &reference.0, "-g", &reference.1])
+                .arg(&self.state))?;
+            for keep in ["geoip", "data"] {
+                let from = Path::new(&aside).join(keep);
+                if from.is_dir() {
+                    run(std::process::Command::new("cp").arg("-a").arg(&from).arg(self.state.join(keep)))?;
+                }
+            }
+        } else if !own.exists() {
+            std::fs::rename(&self.state, &own).map_err(|e| format!("moving the relay's state aside: {e}"))?;
+            run(std::process::Command::new("install")
+                .args(["-d", "-m", "750", "-o", &owner_of(&own)?, "-g", &group_of(&own)?])
+                .arg(&self.state))?;
+            for keep in ["geoip", "data"] {
+                if own.join(keep).is_dir() {
+                    run(std::process::Command::new("cp").arg("-a").arg(own.join(keep)).arg(self.state.join(keep)))?;
+                }
+            }
+        }
+        run(std::process::Command::new(&self.backup).args(["restore", "game", "--from", from, "--with-files"]))
+    }
+}
+
+impl Matchmaking {
+    /// The owner and group the game server's folder has (its own state's, or the folder's).
+    fn own_or_state_owner(&self) -> Result<(String, String), String> {
+        Ok((owner_of(&self.state)?, group_of(&self.state)?))
+    }
+}
+
+fn owner_of(path: &Path) -> Result<String, String> {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::metadata(path).map(|m| m.uid().to_string()).map_err(|e| e.to_string())
+}
+
+fn group_of(path: &Path) -> Result<String, String> {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::metadata(path).map(|m| m.gid().to_string()).map_err(|e| e.to_string())
 }
 
 /// systemd and backup.sh.
@@ -540,12 +781,21 @@ impl Standby {
         tokio::task::spawn_blocking(move || job(machine.as_ref())).await.expect("a machine call panicked")
     }
 
+    /// What's asked for what the group stands by for: through Cloudflare (the coordinator), or
+    /// directly (the matchmaking server).
+    pub async fn health(&self) -> Health {
+        match self.cfg.kind {
+            Kind::Coordinator => probe(&self.http, &self.cfg.probe).await,
+            Kind::Matchmaking => probe_direct(&self.http, &self.cfg.probe, self.cfg.server_id.as_deref().unwrap_or_default(), self.cfg.control.as_deref()).await,
+        }
+    }
+
     /// The other servers (not this one, not the coordinator's) that still reach the
     /// coordinator.
     pub async fn reached_by(&self, primary: usize) -> Vec<String> {
         let mut by = Vec::new();
         for (i, server) in self.cfg.servers.iter().enumerate() {
-            if i != primary && server.name != self.cfg.me && reaches(&self.http, &self.cfg.peer_scheme, &server.host).await == Some(true) {
+            if i != primary && server.name != self.cfg.me && reaches_by(&self.http, &self.cfg.peer_scheme, &server.host, self.cfg.kind).await == Some(true) {
                 by.push(server.name.clone());
             }
         }
@@ -568,14 +818,14 @@ impl Standby {
         };
         let running = self.blocking(|m| m.running()).await;
         let health = match &place {
-            Some(Where::There(_)) => probe(&self.http, &self.cfg.probe).await,
+            Some(Where::There(_)) => self.health().await,
             _ => Health::Unknown(String::from("not asked")),
         };
         let action = self.watch.decide(&self.cfg, place.as_ref(), &health, running, now);
         match (&place, &action) {
             (Some(Where::Here), _) => {
                 self.remember(&self.cfg.me.clone());
-                self.say(String::from("The coordinator runs here"));
+                self.say(format!("The {} runs here", self.cfg.kind.what()));
                 if self.followed.is_none_or(|t| t.elapsed() >= FOLLOW_EVERY) {
                     self.follow().await;
                 }
@@ -584,16 +834,20 @@ impl Standby {
                 let name = self.cfg.servers[*i].name.clone();
                 self.remember(&name);
                 match &health {
-                    Health::Up => self.say(format!("Standing by: the coordinator runs on {name}")),
-                    Health::Down(why) => self.say(format!("The coordinator on {name} is down ({why})")),
-                    Health::Unknown(why) => self.say(format!("Can't ask for the coordinator on {name}: {why}")),
+                    Health::Up => self.say(format!("Standing by: the {} runs on {name}", self.cfg.kind.what())),
+                    Health::Down(why) => self.say(format!("The {} on {name} is down ({why})", self.cfg.kind.what())),
+                    Health::Unknown(why) => self.say(format!("Can't ask for the {} on {name}: {why}", self.cfg.kind.what())),
                 }
             }
             (Some(Where::Elsewhere(ip)), _) => self.say(format!("The coordinator's record points at {ip}, none of this group's servers: left alone")),
             (None, _) => {}
         }
         match &action {
-            Action::Start if !self.cfg.database.exists() => self.say(format!(
+            Action::Start if self.cfg.kind == Kind::Matchmaking && !self.machine.has_data() => self.say(format!(
+                "The matchmaking server's record points here, but its state isn't here: not starting the relay in its place (move it here: coordinator standby --config {} --take-over)",
+                "/etc/5th-echelon/mm-standby.conf"
+            )),
+            Action::Start if self.cfg.kind == Kind::Coordinator && !self.cfg.database.exists() => self.say(format!(
                 "The coordinator's record points here, but there's no {}: not starting a coordinator without its data (restore it: backup.sh restore coordinator --from NAME --with-files)",
                 self.cfg.database.display()
             )),
@@ -663,7 +917,7 @@ impl Standby {
         for _ in 0..30 {
             if self
                 .http
-                .get(format!("{}/v1/info", self.cfg.local))
+                .get(format!("{}{}", self.cfg.local, self.cfg.kind.info_path()))
                 .timeout(Duration::from_secs(3))
                 .send()
                 .await
@@ -685,7 +939,7 @@ impl Standby {
         // And the coordinator itself, which may have come back while this one restored: it
         // has taken writes since the backup, which moving the record here would lose.
         let ready = match ready {
-            Ok(()) if because_down => match probe(&self.http, &self.cfg.probe).await {
+            Ok(()) if because_down => match self.health().await {
                 Health::Up => Err(format!("the coordinator on {from} answers again")),
                 _ => Ok(()),
             },
@@ -713,7 +967,7 @@ impl Standby {
             self.cfg.servers.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ")
         )];
         let running = self.blocking(|m| m.running()).await;
-        lines.push(format!("Coordinator here: {}", if running { "running" } else { "stopped" }));
+        lines.push(format!("{} here: {}", self.cfg.kind.what(), if running { "running" } else { "stopped" }));
         match self.cloudflare.record(&self.cfg.records[0]).await {
             Err(e) => lines.push(format!("Record: {e}")),
             Ok(r) => match self.where_is(r.content).await {
@@ -722,16 +976,16 @@ impl Standby {
                 Where::There(i) => {
                     let name = self.cfg.servers[i].name.clone();
                     lines.push(format!("Record: {} points at {name}", r.name));
-                    lines.push(format!("Through Cloudflare: {:?}", probe(&self.http, &self.cfg.probe).await));
+                    lines.push(format!("Asked for it: {:?}", self.health().await));
                     lines.push(format!("This server takes over after {} s down", self.cfg.wait(i).as_secs()));
                 }
             },
         }
         for server in &self.cfg.servers {
             if server.name != self.cfg.me {
-                let reach = match reaches(&self.http, &self.cfg.peer_scheme, &server.host).await {
-                    Some(true) => "reaches the coordinator",
-                    Some(false) => "doesn't reach the coordinator (or says nothing)",
+                let reach = match reaches_by(&self.http, &self.cfg.peer_scheme, &server.host, self.cfg.kind).await {
+                    Some(true) => "reaches it",
+                    Some(false) => "doesn't reach it (or says nothing)",
                     None => "doesn't answer",
                 };
                 lines.push(format!("{}: {reach}", server.name));
@@ -747,10 +1001,18 @@ pub async fn main(config: &Path, status: bool, take_over: bool) -> eyre::Result<
     let (token, zone) = secrets(&cfg.secrets).map_err(|e| eyre::eyre!(e))?;
     let http = reqwest::Client::builder().user_agent(concat!("5th-echelon-standby/", env!("FE_RELEASE"))).build()?;
     let cloudflare = Cloudflare::new(http.clone(), &cfg.api, &zone, &token);
-    let machine = Arc::new(Systemd {
-        service: cfg.service.clone(),
-        backup: cfg.backup.clone(),
-    });
+    let machine: Arc<dyn Machine> = match cfg.kind {
+        Kind::Coordinator => Arc::new(Systemd {
+            service: cfg.service.clone(),
+            backup: cfg.backup.clone(),
+        }),
+        Kind::Matchmaking => Arc::new(Matchmaking {
+            service: cfg.service.clone(),
+            backup: cfg.backup.clone(),
+            state: cfg.game_state.clone(),
+            id: cfg.server_id.clone().unwrap_or_default(),
+        }),
+    };
     let mut standby = Standby::new(cfg, cloudflare, machine, http);
     if status {
         for line in standby.status().await {
@@ -760,7 +1022,10 @@ pub async fn main(config: &Path, status: bool, take_over: bool) -> eyre::Result<
     }
     if take_over {
         // The standby here would stop the restored coordinator before the record moves.
-        let unit = "5th-echelon-standby";
+        let unit = match standby.cfg.kind {
+            Kind::Coordinator => "5th-echelon-standby",
+            Kind::Matchmaking => "5th-echelon-mm-standby",
+        };
         let paused = std::process::Command::new("systemctl")
             .args(["is-active", "--quiet", unit])
             .status()
@@ -775,8 +1040,9 @@ pub async fn main(config: &Path, status: bool, take_over: bool) -> eyre::Result<
         return done;
     }
     tracing::info!(
-        "Standby for {} as {}: takes over after the coordinator is down {} s for each place in line",
+        "Standby for {} as {}: takes over after the {} is down {} s for each place in line",
         standby.cfg.records[0],
+        standby.cfg.kind.what(),
         standby.cfg.me,
         standby.cfg.wait.as_secs()
     );
@@ -792,11 +1058,15 @@ pub async fn main(config: &Path, status: bool, take_over: bool) -> eyre::Result<
 async fn take_over_here(standby: &mut Standby) -> eyre::Result<()> {
     let record = standby.cloudflare.record(&standby.cfg.records[0]).await.map_err(|e| eyre::eyre!(e))?;
     match standby.where_is(record.content).await {
-        Where::Here => Ok(println!("The coordinator already runs here.")),
+        Where::Here => Ok(println!("The {} already runs here.", standby.cfg.kind.what())),
         Where::Elsewhere(ip) => Err(eyre::eyre!("{} points at {ip}, none of the group's servers", record.name)),
         Where::There(i) => {
             standby.take_over(i, false).await.map_err(|e| eyre::eyre!(e))?;
-            println!("The coordinator runs here now; {} stands down within a minute.", standby.cfg.servers[i].name);
+            println!(
+                "The {} runs here now; {} stands down within a minute.",
+                standby.cfg.kind.what(),
+                standby.cfg.servers[i].name
+            );
             Ok(())
         }
     }
@@ -1074,6 +1344,54 @@ server oceania oceania.example.net
         *mock.seen.lock().unwrap() = Some(400);
         assert_eq!(reaches(&http, "http", host).await, Some(false));
         assert_eq!(reaches(&http, "http", "127.0.0.1:9").await, None);
+    }
+
+    /// A matchmaking group: its own defaults (the game server's service, `/api/info` asked
+    /// directly), and none without the matchmaking server's id.
+    #[test]
+    fn a_matchmaking_group_is_read_with_its_own_defaults() {
+        let text = "kind matchmaking\nserver-id mm123\ncontrol https://play.example.net/v1/info\nrecord match.example.net\nme eu1\naddress 198.51.100.1\nserver na1 na1.example.net\nserver eu1 eu1.example.net\n";
+        let cfg = Config::parse(text).unwrap();
+        assert_eq!(cfg.kind, Kind::Matchmaking);
+        assert_eq!(cfg.probe, "https://match.example.net/api/info");
+        assert_eq!((cfg.service.as_str(), cfg.local.as_str()), ("5th-echelon", "http://127.0.0.1:8080"));
+        assert_eq!(cfg.control.as_deref(), Some("https://play.example.net/v1/info"));
+        assert!(Config::parse(&text.replace("server-id mm123\n", "")).unwrap_err().contains("server-id"));
+        assert!(Config::parse(&text.replace("kind matchmaking", "kind other")).is_err());
+    }
+
+    /// The matchmaking server asked directly: its own id up, another's or nothing to say
+    /// unknown, its machine's error down, no answer down only while the control page answers.
+    #[tokio::test]
+    async fn the_matchmaking_server_is_asked_directly() {
+        use axum::routing::get;
+        use axum::Json;
+        let app = axum::Router::new()
+            .route("/mm/api/info", get(|| async { Json(serde_json::json!({ "id": "mm123", "matchmaking_seen": 3 })) }))
+            .route("/other/api/info", get(|| async { Json(serde_json::json!({ "id": "eu1" })) }))
+            .route("/broken/api/info", get(|| async { axum::http::StatusCode::BAD_GATEWAY }))
+            .route("/control", get(|| async { "ok" }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let http = reqwest::Client::new();
+        let url = |p: &str| format!("http://{addr}{p}");
+        let control = url("/control");
+        assert_eq!(probe_direct(&http, &url("/mm/api/info"), "mm123", Some(&control)).await, Health::Up);
+        assert!(matches!(probe_direct(&http, &url("/other/api/info"), "mm123", Some(&control)).await, Health::Unknown(_)));
+        assert!(matches!(probe_direct(&http, &url("/broken/api/info"), "mm123", Some(&control)).await, Health::Down(_)));
+        assert!(
+            matches!(probe_direct(&http, "http://127.0.0.1:9/api/info", "mm123", Some(&control)).await, Health::Down(_)),
+            "no answer, online"
+        );
+        assert!(
+            matches!(
+                probe_direct(&http, "http://127.0.0.1:9/api/info", "mm123", Some("http://127.0.0.1:9/")).await,
+                Health::Unknown(_)
+            ),
+            "no answer, offline"
+        );
+        assert_eq!(reaches_by(&http, "http", &format!("{addr}/mm"), Kind::Matchmaking).await, Some(true));
     }
 
     #[test]

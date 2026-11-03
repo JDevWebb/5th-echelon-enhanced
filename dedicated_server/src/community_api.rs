@@ -242,6 +242,11 @@ fn info(cfg: CommunityApiConfig) -> Value {
             info["host"] = json!(host);
         }
     }
+    // A relay: when it last heard from the network's matchmaking server (the MM standby asks,
+    // as the coordinator's asks for `coordinator_seen`).
+    if let Some(ago) = crate::relays::matchmaking_seen_ago() {
+        info["matchmaking_seen"] = json!(ago);
+    }
     if RELAY_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
         return relay_only_info(info);
     }
@@ -252,7 +257,7 @@ fn info(cfg: CommunityApiConfig) -> Value {
 /// port; no features, nothing a launcher could take for a place to sign in.
 fn relay_only_info(full: Value) -> Value {
     let mut info = json!({ "name": full["name"], "version": full["version"], "revision": full["revision"], "role": "relay", "features": [] });
-    for key in ["id", "coordinator", "coordinator_seen", "maintenance", "host"] {
+    for key in ["id", "coordinator", "coordinator_seen", "matchmaking_seen", "maintenance", "host"] {
         if !full[key].is_null() {
             info[key] = full[key].clone();
         }

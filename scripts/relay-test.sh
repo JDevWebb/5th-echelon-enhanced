@@ -79,6 +79,13 @@ client "$bin/testbot" --server "$mm" nat-key || rc=1
 echo "--- an ordinary regional server beside them: its own helper relays, and friends span it and the matchmaking server"
 client "$bin/testbot" --server "$region" nat-relay || rc=1
 client "$bin/testbot" --server "$mm" --other "$region" federation || rc=1
+echo "--- the relays say they hear from the matchmaking server (its standby asks them)"
+seen=""
+for _ in $(seq 20); do
+  seen=$(client curl -sf "http://$syd/api/info" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("matchmaking_seen",""))' 2>/dev/null || true)
+  [ -n "$seen" ] && [ "$seen" -le 30 ] && break; sleep 1
+done
+[ -n "$seen" ] && [ "$seen" -le 30 ] && echo "PASS a relay's /api/info has matchmaking_seen ($seen s)" || { echo "FAIL matchmaking_seen: '$seen'"; rc=1; }
 echo "--- the relay's session events reach the matchmaking server"
 events=0
 for _ in $(seq 20); do

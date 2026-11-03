@@ -152,6 +152,10 @@ pub fn on_link(data: &[u8], src: std::net::SocketAddrV4, socket: &std::net::UdpS
     let sender = crate::link::sender(data)?;
     let link = links().iter().find(|l| l.id == sender && l.ip == *src.ip()).cloned()?;
     let (_, body) = crate::link::open(data, &link.key, identity::now())?;
+    // Anything from the matchmaking server, signed: it's up and reaches this relay.
+    if link.matchmaking {
+        MM_SEEN.store(identity::now(), Ordering::Relaxed);
+    }
     match body {
         // Another relay's player's packet for one of this helper's: the address it came from is
         // that relay's from now on (a reply to it goes back there).
@@ -159,8 +163,15 @@ pub fn on_link(data: &[u8], src: std::net::SocketAddrV4, socket: &std::net::UdpS
             learn(from, &link.id);
             return Some(Forwarded { from_name, from, to, payload });
         }
-        // Only the network's matchmaking server keeps relays' reports.
-        crate::link::Body::Report(regs) if NETWORK_RELAYS.load(Ordering::Relaxed) => remote_report(&link, regs),
+        // Only the network's matchmaking server keeps relays' reports; it answers each (nonce 0,
+        // no question's), so the relay knows it's heard (`matchmaking_seen`).
+        crate::link::Body::Report(regs) if NETWORK_RELAYS.load(Ordering::Relaxed) => {
+            remote_report(&link, regs);
+            if let Some(own) = OWN_ID.get() {
+                let heard = crate::link::seal(&link.key, own, identity::now(), &crate::link::Body::Answer { nonce: 0, yes: true });
+                let _ = socket.send_to(&heard, src);
+            }
+        }
         crate::link::Body::Report(_) => {}
         // Looked up beside the packets: a slow database never holds up the relay's traffic.
         crate::link::Body::Ask { nonce, a, b } => {
@@ -193,6 +204,17 @@ pub fn on_link(data: &[u8], src: std::net::SocketAddrV4, socket: &std::net::UdpS
         crate::link::Body::Event { .. } => {}
     }
     None
+}
+
+/// When this relay last had a signed message from the network's matchmaking server (Unix
+/// seconds; 0: never).
+static MM_SEEN: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// How long ago this relay last heard from the matchmaking server, in seconds (None: never, or
+/// it's no relay of one).
+pub fn matchmaking_seen_ago() -> Option<u64> {
+    let at = MM_SEEN.load(Ordering::Relaxed);
+    (at > 0).then(|| u64::try_from(identity::now() - at).unwrap_or(0))
 }
 
 /// The helper's socket, on the network's matchmaking server (taken with the first link message).

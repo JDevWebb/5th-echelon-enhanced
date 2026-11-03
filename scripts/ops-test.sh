@@ -329,6 +329,8 @@ cat > /tmp/cf.py <<'PY'
 import json, http.server, urllib.request, urllib.parse
 STATE = "/tmp/records.json"
 ORIGIN = {"192.0.2.1": "127.0.0.2", "192.0.2.2": "127.0.0.3"}
+# The matchmaking server's record is DNS only: /mm/... goes straight to where match.test points.
+MM_ORIGIN = {"192.0.2.4": "127.0.0.4", "192.0.2.5": "127.0.0.5"}
 def load(): return json.load(open(STATE))
 class H(http.server.BaseHTTPRequestHandler):
     def log_message(self, *a): pass
@@ -337,6 +339,15 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send_response(code); self.send_header("content-type", "application/json"); self.send_header("content-length", str(len(b))); self.end_headers(); self.wfile.write(b)
     def do_GET(self):
         u = urllib.parse.urlparse(self.path)
+        if u.path == "/control":
+            return self.send(200, {"ok": True})
+        if u.path.startswith("/mm/"):
+            rec = [r for r in load() if r["name"] == "match.test"][0]
+            try:
+                with urllib.request.urlopen(f"http://{MM_ORIGIN[rec['content']]}:8080{u.path[len('/mm'):]}", timeout=3) as r:
+                    return self.send(r.status, json.loads(r.read()))
+            except Exception:
+                return self.send(502, {"error": "no answer"})
         if u.path.startswith("/probe/"):
             rec = [r for r in load() if r["name"] == "play.test"][0]
             try:
@@ -357,7 +368,7 @@ class H(http.server.BaseHTTPRequestHandler):
         self.send(200, {"success": True, "result": {}})
 http.server.ThreadingHTTPServer(("127.0.0.1", 8443), H).serve_forever()
 PY
-echo '[{"id":"r1","name":"play.test","type":"A","content":"192.0.2.1","proxied":true},{"id":"r2","name":"metrics.test","type":"A","content":"192.0.2.1","proxied":true}]' > /tmp/records.json
+echo '[{"id":"r1","name":"play.test","type":"A","content":"192.0.2.1","proxied":true},{"id":"r2","name":"metrics.test","type":"A","content":"192.0.2.1","proxied":true},{"id":"r3","name":"match.test","type":"A","content":"192.0.2.4","proxied":false}]' > /tmp/records.json
 python3 /tmp/cf.py >/tmp/cf.log 2>&1 &
 printf 'CLOUDFLARE_API_TOKEN=tok\nCLOUDFLARE_ZONE_ID=z\n' > "$STANDBY_ENV"; chmod 600 "$STANDBY_ENV"
 for m in eu1:192.0.2.1:127.0.0.2 na1:192.0.2.2:127.0.0.3; do
@@ -381,7 +392,8 @@ wait 10
 CONF
   echo "exec fes-coordinator standby --config /tmp/$name.conf" > "/tmp/svc-$name-standby.cmd"
 done
-records() { python3 -c 'import json; print(" ".join(r["content"] for r in json.load(open("/tmp/records.json"))))'; }
+records() { python3 -c 'import json; print(" ".join(r["content"] for r in json.load(open("/tmp/records.json")) if r["name"] != "match.test"))'; }
+mm_record() { python3 -c 'import json; print([r["content"] for r in json.load(open("/tmp/records.json")) if r["name"] == "match.test"][0])'; }
 servers() { curl -fs "http://$1:8700/v1/info" | python3 -c 'import json,sys; print(json.load(sys.stdin)["servers"])'; }
 wait_for() { for _ in $(seq "$1"); do if eval "$2"; then return 0; fi; sleep 1; done; return 1; }
 took_eu1s_data() { [ "$(servers 127.0.0.3)" = 1 ] && [ "$(cat /var/lib/na1-coord/join-token.txt)" = "$token" ] && [ -f /var/lib/na1-coord/reports/1/report.txt ]; }
@@ -408,6 +420,92 @@ if [ "$rc" -ne 0 ]; then
   for m in na1 eu1; do echo "--- $m standby"; tail -20 "/tmp/svc-$m-standby.log" 2>/dev/null; done
   echo "--- take-over"; cat /tmp/take-over.log
 fi
+# --- The matchmaking server's failover --------------------------------------------
+
+echo "--- the matchmaking server's failover"
+# Global matchmaking's phase 4: mmna1 runs the matchmaking server (id mmid1); mmeu1 is a relay
+# (id relay1) standing by for it. Each machine's game server is a stand-in answering /api/info
+# with the id in its folder; backup.sh is each machine's as the installer writes it.
+cat > /tmp/game.py <<'PY'
+import http.server, json, sys
+state, addr = sys.argv[1], sys.argv[2]
+class H(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_GET(self):
+        sid = open(f"{state}/server-id.txt").read().strip()
+        b = json.dumps({"id": sid, "matchmaking_seen": 1}).encode()
+        self.send_response(200); self.send_header("content-type", "application/json"); self.send_header("content-length", str(len(b))); self.end_headers(); self.wfile.write(b)
+http.server.ThreadingHTTPServer((addr, 8080), H).serve_forever()
+PY
+mm_machine() { # mm_machine NAME LOCAL ADDRESS ID
+  local state="/var/lib/$1-game"
+  STATE_DIR="$state" SERVICE="$1-game" BACKUP_SCRIPT="/tmp/$1-mmbackup.sh" standby_me="$1" BACKUP_STATE="/tmp/$1-mmbstate" COORD_DIR="/var/lib/$1-none" COORD_SERVICE="$1-none"
+  mkdir -p "$state/geoip" "$BACKUP_STATE"
+  echo "$4" > "$state/server-id.txt"
+  for f in federation.key api.key nat.key metrics.key; do echo "$4-$f" > "$state/$f"; done
+  printf '[public]\nhost = "%s"\n' "$1.test" > "$state/service.toml"
+  echo "geo" > "$state/geoip/db"
+  python3 -c 'import sqlite3,sys; c=sqlite3.connect(sys.argv[1]); c.execute("CREATE TABLE who (id TEXT)"); c.execute("INSERT INTO who VALUES (?)", (sys.argv[2],)); c.commit()' "$state/5th-echelon.db" "$4"
+  touch "/etc/systemd/system/$SERVICE.service"
+  write_backup_script
+  echo "exec python3 /tmp/game.py $state $2" > "/tmp/svc-$1-game.cmd"
+  cat > "/tmp/$1-mm.conf" <<CONF
+kind matchmaking
+server-id mmid1
+record match.test
+me $1
+address $3
+server mmna1 192.0.2.4
+server mmeu1 192.0.2.5
+secrets $STANDBY_ENV
+state /tmp/$1-mmstate
+service $1-game
+game-state $state
+local http://$2:8080
+backup /tmp/$1-mmbackup.sh
+api http://127.0.0.1:8443/client/v4
+probe http://127.0.0.1:8443/mm/api/info
+control http://127.0.0.1:8443/control
+peer-scheme http
+wait 10
+CONF
+  echo "exec fes-coordinator standby --config /tmp/$1-mm.conf" > "/tmp/svc-$1-mmstandby.cmd"
+}
+mm_machine mmna1 127.0.0.4 192.0.2.4 mmid1
+mm_machine mmeu1 127.0.0.5 192.0.2.5 relay1
+id_in() { head -c 64 "/var/lib/$1-game/server-id.txt"; }
+db_of() { python3 -c 'import sqlite3,sys; print(sqlite3.connect(sys.argv[1]).execute("SELECT id FROM who").fetchone()[0])' "/var/lib/$1-game/5th-echelon.db"; }
+systemctl start mmna1-game; systemctl start mmeu1-game
+check "the matchmaking server's key files and settings go to R2 with its snapshot" bash -c "/tmp/mmna1-mmbackup.sh snapshot >/dev/null && rclone --config /dev/null lsf T:live/live/mmna1/game-files | grep -q server-id.txt && rclone --config /dev/null lsf T:live/live/mmna1/game-files | grep -q service.toml"
+systemctl start mmna1-mmstandby; systemctl start mmeu1-mmstandby
+sleep 5
+mm_stays() { [ "$(mm_record)" = 192.0.2.4 ] && [ "$(id_in mmeu1)" = relay1 ]; }
+mm_as_itself() { [ "$(id_in mmeu1)" = mmid1 ] && [ "$(db_of mmeu1)" = mmid1 ] && grep -q mmid1-federation.key /var/lib/mmeu1-game/federation.key && grep -q mmna1.test /var/lib/mmeu1-game/service.toml; }
+relay_kept() { [ "$(head -c 64 /var/lib/mmeu1-game.own/server-id.txt)" = relay1 ] && [ -f /var/lib/mmeu1-game/geoip/db ]; }
+mm_moved_back() { [ "$(mm_record)" = 192.0.2.4 ] && [ "$(id_in mmna1)" = mmid1 ] && [ ! -e /var/lib/mmna1-game.own ] && ls -d /var/lib/mmna1-game.matchmaking-* >/dev/null 2>&1; }
+check "the relay stands by while the matchmaking server answers" mm_stays
+# mmna1 goes down, machine and all.
+systemctl stop mmna1-mmstandby; systemctl stop mmna1-game
+check "the relay takes over a matchmaking server that stays down, and moves its record" wait_for 120 '[ "$(mm_record)" = 192.0.2.5 ]'
+check "  as the same server: its id, keys, settings and database" mm_as_itself
+check "  the relay's own state kept beside it, the geolocation data carried over" relay_kept
+check "  answering at its name" bash -c "curl -fs http://127.0.0.1:8443/mm/api/info | grep -q mmid1"
+# mmna1 comes back with its old matchmaking server running.
+systemctl start mmna1-game; systemctl start mmna1-mmstandby
+check "the one replaced stops when it's back, and stays stopped" wait_for 40 '! systemctl is-active --quiet mmna1-game'
+# Moving it back: a fresh snapshot where it runs, then --take-over on mmna1.
+/tmp/mmeu1-mmbackup.sh snapshot >/dev/null
+systemctl stop mmna1-mmstandby
+fes-coordinator standby --config /tmp/mmna1-mm.conf --take-over >/tmp/mm-take-over.log 2>&1 || true
+systemctl start mmna1-mmstandby
+check "--take-over moves it back, the old copy set aside, not kept as a relay's" mm_moved_back
+check "  and the relay becomes the relay again" wait_for 40 '[ "$(id_in mmeu1)" = relay1 ] && systemctl is-active --quiet mmeu1-game'
+if [ "$rc" -ne 0 ]; then
+  for m in mmna1 mmeu1; do echo "--- $m matchmaking standby"; tail -20 "/tmp/svc-$m-mmstandby.log" 2>/dev/null; done
+  echo "--- take-over"; cat /tmp/mm-take-over.log
+fi
+systemctl stop mmna1-mmstandby; systemctl stop mmeu1-mmstandby; systemctl stop mmna1-game; systemctl stop mmeu1-game
+
 # --- The coordinator behind Cloudflare ---------------------------------------------
 
 echo "--- the coordinator behind Cloudflare"
