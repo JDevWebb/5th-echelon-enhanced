@@ -529,6 +529,9 @@ if [ -n "$mm_standby" ]; then
     [[ "$mm_names" != *" ${entry%%=*} "* ]] || die "--mm-standby: ${entry%%=*} is in the list twice"
     mm_names="$mm_names${entry%%=*} "
     if [ "${entry#*=}" = "$domain" ]; then mm_me="${entry%%=*}"; fi
+    # The record moves between them; each one's own name mustn't, or the standbys can't
+    # tell which of them it points at.
+    [ "${entry#*=}" != "$mm_record" ] || die "--mm-standby: ${entry%%=*}'s name is --mm-record ($mm_record), the name that moves: give each server its own name (another A record, DNS only) as its --domain"
   done
   [ -n "$mm_me" ] || die "--mm-standby doesn't list this server ($domain): each server is NAME=its --domain"
 fi
