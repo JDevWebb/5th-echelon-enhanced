@@ -1249,20 +1249,22 @@ mod tests {
 }
 
 /// The player's server moved its players to another (global matchmaking: it's a relay now, and
-/// its `/api/info` says `moved_to`): (from, to), when the new one is on the same network (shares
-/// its coordinator), so a server can't send its players anywhere else. None otherwise.
+/// its `/api/info` says `moved_to`): (from, to), only when both are servers of the player's own
+/// network: the old one's coordinator is the launcher's directory, and the new one is listed in
+/// that directory, read from the coordinator over HTTPS. What either server says of itself
+/// (plain HTTP, its own word) never decides where a player goes. None otherwise.
 pub fn moved(cfg: &Config) -> Option<(String, String)> {
     let profile = cfg.current_profile().filter(|p| !p.server.is_empty())?;
     let from = profile.server.clone();
+    let directory = crate::prefs::Prefs::directory().filter(|d| setup::directory::valid_coordinator(d))?;
     let info = setup::server_info::fetch(&from, std::time::Duration::from_secs(4))?;
     let to = info
         .moved_to
         .map(|t| t.trim().to_ascii_lowercase())
         .filter(|t| !t.is_empty() && *t != from.to_ascii_lowercase())?;
-    if !setup::directory::listable_host(&to) {
+    if !setup::directory::listable_host(&to) || !info.coordinator.as_deref().is_some_and(|c| setup::directory::same_directory(c, &directory)) {
         return None;
     }
-    let coordinator = info.coordinator.filter(|c| !c.is_empty())?;
-    let there = setup::server_info::fetch(&to, std::time::Duration::from_secs(4))?;
-    (there.coordinator.as_deref() == Some(coordinator.as_str())).then_some((from, to))
+    let listed = crate::services::rt().block_on(crate::network::server_directory(&directory)).ok()?;
+    listed.servers.iter().any(|(l, _)| l.host.eq_ignore_ascii_case(&to)).then_some((from, to))
 }
