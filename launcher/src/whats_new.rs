@@ -77,7 +77,7 @@ pub const RELEASES: &[Release] = &[
             },
             Item {
                 title: "Fair play",
-                text: "The game checks that its clocks run at real time and its code is as it shipped, and watches for players moving faster than the game allows: report only, for the admins to look at. Bans hold for the PC, not just the account. Settings › Feedback says what's checked and sent.",
+                text: "The game checks that its clocks run at real time and its code is as it shipped, signs in with one-way hashes of its own files (the first time, Play waits a few seconds on Checking game files), and watches for players moving faster than the game allows: report only, for the admins to look at. Bans hold for the PC, not just the account. Settings › Feedback says what's checked and sent.",
                 community: true,
             },
             Item {
@@ -87,7 +87,7 @@ pub const RELEASES: &[Release] = &[
             },
             Item {
                 title: "Linux",
-                text: "Brighten the picture works under Proton, through vkBasalt (its 32-bit layer needed), and Proton prefixes made outside Steam (Lutris, Heroic) start with umu-run in their own Proton instead of the system's Wine. Thanks to mpw.",
+                text: "Brighten the picture works under Proton, through vkBasalt (its 32-bit layer needed), and Proton prefixes made outside Steam (Lutris, Heroic) start with umu-run in their own Proton instead of the system's Wine. Thanks to mpw. The classic look gets a Friends window too (Manage friends).",
                 community: false,
             },
             Item {
@@ -97,6 +97,10 @@ pub const RELEASES: &[Release] = &[
             },
         ],
         fixed: &[
+            Fix {
+                lead: "Play waits until the game is ready",
+                rest: ", with a spinner, instead of starting it while the launcher is still checking.",
+            },
             Fix {
                 lead: "Rubberbanding, hits not landing and joins timing out in long sessions",
                 rest: ": a crash fix in 0.4.6 dropped the game's notes of which packets had arrived once it used more than 2 GB of memory, and wrote a log line for each. Both are fixed.",
