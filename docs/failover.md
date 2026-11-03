@@ -94,6 +94,40 @@ sudo systemctl stop 5th-echelon-standby 5th-echelon-coordinator
 
 After about 3 minutes, na1 takes over (`journalctl -u 5th-echelon-standby -f` there). Then start eu1's standby again (`sudo systemctl start 5th-echelon-standby`): it stands by. Move the coordinator back with `--take-over` on eu1.
 
+## The matchmaking server's failover
+
+With global matchmaking ([cutover.md](cutover.md)), every player signs in to one matchmaking
+server, so it gets a standby of its own on each relay (`5th-echelon-mm-standby`, the same
+program with `kind matchmaking`). Its differences from the coordinator's:
+
+- **Its record is DNS only** (grey cloud, TTL 60 s): game traffic can't go through Cloudflare's
+  proxy. A takeover reaches players within about a minute of the record moving.
+- **It's asked directly** (`https://<name>/api/info`, with its own server id). No answer at all
+  counts as down only while the standby still reaches the coordinator, so a relay's own network
+  failing never takes it over.
+- **The relays say whether they still hear from it** (`matchmaking_seen` in their `/api/info`:
+  it answers each relay's report), and one that does stops a takeover.
+- **Taking over** stops the relay, moves its state aside (`/var/lib/5th-echelon.own`), restores
+  the matchmaking server's database **and its key files and settings** (backup.sh sends a game
+  server's to R2 with each snapshot), and starts it there: the same server to the coordinator
+  and the relays, with this machine's address. Rooms and matches in progress end; players sign
+  in again by themselves.
+- **Standing down** (when its record points elsewhere) puts the relay's own state back and starts
+  the relay. The matchmaking server's original machine, coming back, stays stopped: move the
+  matchmaking server back with `--take-over` there, after `backup.sh snapshot` where it runs.
+
+Set it up with the installer on the matchmaking server and each relay:
+
+```sh
+sudo bash install-server.sh ... \
+  --mm-record match.example.net \
+  --mm-standby na1=na1.example.net,eu1=eu1.example.net,oceania=oceania.example.net
+```
+
+The matchmaking server first, then the relays in the order they take over. Each serves the
+name as an alias, so Caddy gets its certificate wherever it points. Check with
+`sudo /opt/5th-echelon/coordinator standby --config /etc/5th-echelon/mm-standby.conf --status`.
+
 ## Leaving a group
 
 On each server: `sudo systemctl disable --now 5th-echelon-standby`, and delete `/etc/5th-echelon/standby`, `standby.conf` and `standby.env`. On the server the coordinator runs on, run the installer again: the coordinator starts at boot as before. On the others, also delete `/etc/5th-echelon/coordinator-domain` and run the installer with `--coordinator https://play.example.net`, so they only join it; the installer refuses to start a new, empty coordinator on a server that already belongs to one.
