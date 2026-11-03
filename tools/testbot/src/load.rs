@@ -365,6 +365,20 @@ pub async fn run(server: IpAddr, o: Options) -> Result<()> {
         (links as f64) * f64::from(o.pps) * (o.bytes + nat_proto::DATA_OVERHEAD) as f64 / 1e6
     );
 
+    // The first few errors are shown, so a failure says what it was.
+    static SHOWN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    fn said<E: std::fmt::Display>(what: &str, result: std::result::Result<(), E>) -> bool {
+        match result {
+            Ok(()) => true,
+            Err(e) => {
+                if SHOWN.fetch_add(1, Ordering::Relaxed) < 8 {
+                    println!("{what}: {e}");
+                }
+                false
+            }
+        }
+    }
+
     // --- Everyone keeps doing things.
     for (i, mut bot) in bots.into_iter().enumerate() {
         let (stats, pids, o) = (Arc::clone(&stats), Arc::clone(&pids), o.clone());
@@ -381,16 +395,16 @@ pub async fn run(server: IpAddr, o: Options) -> Result<()> {
                 let t = Instant::now();
                 match rand::random::<u32>() % 3 {
                     0 => {
-                        let ok = bot.friends().await.is_ok();
+                        let ok = said("friends", bot.friends().await.map(|_| ()));
                         stats.friends.record(t, ok);
                     }
                     1 => {
                         let friends: Vec<u32> = (0..3).map(|_| pids[rand::random::<u32>() as usize % pids.len()]).collect();
-                        let ok = bot.search_with_participants(&friends).await.is_ok();
+                        let ok = said("friend search", bot.search_with_participants(&friends).await.map(|_| ()));
                         stats.friend_search.record(t, ok);
                     }
                     _ => {
-                        let ok = bot.search_sessions(LOBBY).await.is_ok();
+                        let ok = said("lobby search", bot.search_sessions(LOBBY).await.map(|_| ()));
                         stats.lobby_search.record(t, ok);
                     }
                 }

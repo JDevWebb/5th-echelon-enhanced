@@ -181,6 +181,26 @@ async fn directory_lists_live_listed_servers_busiest_first() {
     assert_eq!(v["servers"][0]["id"], "busy");
 }
 
+/// A server's other names are listed with it (global matchmaking: launchers of a server that
+/// moved follow to the matchmaking server's record, one of its names, not its host): only the
+/// names the coordinator recorded as its, not one another member holds first.
+#[tokio::test]
+async fn the_directory_lists_a_servers_other_names() {
+    let t = start("also").await;
+    let (mm, relay) = (t.join("mm").await, t.join("relay").await);
+    let beat = |host: &str, names: &[&str]| json!({ "name": host, "host": host, "names": names });
+    t.call("POST", "/v1/heartbeat", Some(&mm), Some(beat("mm.example.net", &["match.example.net"]))).await;
+    t.call("POST", "/v1/heartbeat", Some(&relay), Some(beat("eu1.example.net", &["match.example.net", "other.example.net"])))
+        .await;
+    let (_, v) = t.call("GET", "/v1/servers", None, None).await;
+    let of = |id: &str| v["servers"].as_array().unwrap().iter().find(|s| s["id"] == id).cloned().unwrap();
+    let also = |id: &str| of(id)["also"].as_array().cloned().unwrap_or_default();
+    assert!(also("mm").contains(&json!("match.example.net")), "{v}");
+    assert!(!also("mm").contains(&json!("mm.example.net")), "its host isn't repeated: {v}");
+    assert!(also("relay").contains(&json!("other.example.net")), "{v}");
+    assert!(!also("relay").contains(&json!("match.example.net")), "the record is mm's, first come: {v}");
+}
+
 /// The network's NAT helpers and relays (global matchmaking): every member running one is in
 /// `helpers`, a relay-only member too (listed or not); a relay is never a place to play, so it
 /// stays out of `servers`; a relay on a private address, or one that doesn't read, is left out.

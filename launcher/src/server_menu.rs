@@ -296,6 +296,7 @@ mod tests {
             name: name.into(),
             region: region.into(),
             host: host.into(),
+            also: Vec::new(),
             ports: None,
             version: String::new(),
             players_online: players,

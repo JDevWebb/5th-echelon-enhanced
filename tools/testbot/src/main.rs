@@ -4137,7 +4137,9 @@ fn community_get(server: IpAddr, path: &str) -> Result<String> {
     let port: u16 = std::env::var("CONFIG_PORT").ok().and_then(|p| p.parse().ok()).unwrap_or(80);
     let mut stream = std::net::TcpStream::connect_timeout(&std::net::SocketAddr::new(server, port), Duration::from_secs(3))?;
     stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    write!(stream, "GET {path} HTTP/1.1\r\nHost: {server}\r\nConnection: close\r\n\r\n")?;
+    // By the name it's reached by (--info): a proxy in front routes by it.
+    let host = testbot::bot::target(server).host;
+    write!(stream, "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")?;
     let mut response = String::new();
     stream.read_to_string(&mut response)?;
     let (head, body) = response.split_once("\r\n\r\n").ok_or_else(|| eyre!("no HTTP answer"))?;
@@ -4332,7 +4334,17 @@ async fn run() -> Result<()> {
         let both = [Some((server, host.clone())), other.zip(other_host.clone())];
         for (ip, name) in both.into_iter().flatten() {
             let info = setup::server_info::fetch(&name, Duration::from_secs(5)).ok_or_else(|| eyre!("no /api/info from {name}"))?;
-            let ports = info.ports.ok_or_else(|| eyre!("{name}'s /api/info has no ports"))?;
+            // A relay alone lists only its NAT helper's port, which the scenarios use there.
+            let ports = match info.ports {
+                Some(ports) => ports,
+                None if info.moved_to.is_some() || ip != server => setup::server_info::Ports {
+                    api: testbot::bot::API_PORT,
+                    login: testbot::bot::AUTH_PORT,
+                    nat: Some(nat_proto::DEFAULT_PORT),
+                    api_tls: None,
+                },
+                None => return Err(eyre!("{name}'s /api/info has no ports")),
+            };
             println!("{name}: API {}, login {}, NAT {:?}", ports.api, ports.login, ports.nat);
             testbot::bot::set_target(
                 ip,

@@ -1832,6 +1832,17 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
         Err(e) => return internal(e),
     };
     let network_maintenance = maintenance.network.clone();
+    // The other names each server holds here (recorded as it joined, first come, first
+    // served): a launcher follows a server that moved (global matchmaking) only to one listed
+    // here, and the matchmaking server's record is one of its names, not its host.
+    let held: Vec<(String, String)> = match sqlx::query_as("SELECT server_id, name FROM server_names").fetch_all(&c.pool).await {
+        Ok(rows) => rows,
+        Err(e) => return internal(e),
+    };
+    let mut names_of: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
+    for (server, name) in held {
+        names_of.entry(server).or_default().push(name);
+    }
     let mut list: Vec<Value> = rows
         .into_iter()
         .filter_map(|(id, listing, last_seen, checked)| {
@@ -1856,6 +1867,12 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
             let windows = maintenance.of(&id);
             if !windows.is_empty() {
                 v["maintenance"] = json!(windows);
+            }
+            let host = identity::host_key(v["host"].as_str().unwrap_or_default());
+            let mut also: Vec<&String> = names_of.get(&id).map(|n| n.iter().filter(|n| **n != host).collect()).unwrap_or_default();
+            also.sort();
+            if !also.is_empty() {
+                v["also"] = json!(also);
             }
             v["id"] = json!(id);
             v["seen_secs_ago"] = json!(now - last_seen.unwrap_or(now));

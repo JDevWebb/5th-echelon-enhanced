@@ -38,8 +38,10 @@ pub struct Ports {
 pub struct ServerInfo {
     #[serde(default)]
     pub version: String,
-    /// Missing on servers before this was added: they use the default ports.
-    #[serde(default)]
+    /// Missing on servers before this was added: they use the default ports. None too for a
+    /// relay alone (global matchmaking), which lists only its NAT helper's: nothing a player
+    /// signs in to.
+    #[serde(default, deserialize_with = "player_ports")]
     pub ports: Option<Ports>,
     /// The server's id, which players sign into identity links (servers
     /// with friend lists).
@@ -62,6 +64,13 @@ pub struct ServerInfo {
     /// players play now (the matchmaking server's host name).
     #[serde(default)]
     pub moved_to: Option<String>,
+}
+
+/// A server's ports, or None when they aren't a game server's: a relay's answer is read for
+/// the rest (its `moved_to` above all, which launchers follow), not refused whole.
+fn player_ports<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<Ports>, D::Error> {
+    let value = Option::<serde_json::Value>::deserialize(d)?;
+    Ok(value.and_then(|v| serde_json::from_value(v).ok()))
 }
 
 fn relays<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<crate::directory::Helper>, D::Error> {
@@ -210,6 +219,18 @@ mod tests {
         assert_eq!(parse_response(b"HTTP/1.1 404 Not Found\r\n\r\n"), None);
         // The game's online config (the API switched off answers it instead).
         assert_eq!(parse_response(b"HTTP/1.1 200 OK\r\n\r\n[{\"Name\":\"SandboxUrl\"}]"), None);
+    }
+
+    /// A relay that was a game server (global matchmaking) lists only its NAT helper's port:
+    /// its answer still reads, for where its players moved (found in the 2026-11-04 rehearsal:
+    /// no launcher would have followed).
+    #[test]
+    fn a_relays_answer_reads() {
+        let body = r#"{"coordinator":"https://coord.example.net","coordinator_seen":29,"features":[],"host":"eu1.example.net","id":"6jjuqf7i6cbxxcss","matchmaking_seen":0,"moved_to":"match.example.net","name":"5th Echelon Enhanced","ports":{"nat":21128},"revision":"v0.4.7-193","role":"relay","version":"0.4.8"}"#;
+        let info = parse_json(body).unwrap();
+        assert_eq!(info.moved_to.as_deref(), Some("match.example.net"));
+        assert_eq!(info.ports, None);
+        assert_eq!(info.version, "0.4.8");
     }
 
     #[test]

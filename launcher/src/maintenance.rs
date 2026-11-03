@@ -411,6 +411,7 @@ mod tests {
             name: format!("Example {id}"),
             region: region.into(),
             host: format!("{id}.example.net"),
+            also: Vec::new(),
             ports: None,
             version: "0.4.2".into(),
             players_online: 0,

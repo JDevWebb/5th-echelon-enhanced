@@ -32,6 +32,11 @@ pub struct Listing {
     pub region: String,
     /// What players type to join (a host name or address).
     pub host: String,
+    /// The other names the coordinator recorded as this server's (coordinators from 0.4.8):
+    /// the matchmaking server's record among them, which launchers of a server that moved
+    /// follow to.
+    #[serde(default, deserialize_with = "names", skip_serializing_if = "Vec::is_empty")]
+    pub also: Vec<String>,
     #[serde(default)]
     pub ports: Option<crate::server_info::Ports>,
     #[serde(default)]
@@ -51,6 +56,18 @@ pub struct Listing {
     /// players, private matches and lobbies counted.
     #[serde(default, deserialize_with = "playing", skip_serializing_if = "Option::is_none")]
     pub playing: Option<server_api::playing::Playing>,
+}
+
+/// A server's other names, bounded (a server holds at most a few); anything else is let go
+/// rather than losing the server.
+fn names<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+    let v = serde_json::Value::deserialize(d)?;
+    Ok(serde_json::from_value::<Vec<String>>(v)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|n| n.len() <= 253)
+        .take(32)
+        .collect())
 }
 
 /// A server's `playing`, bounded; anything that doesn't read as one is let go rather than
@@ -340,6 +357,7 @@ pub fn built_in(coordinator: &str) -> Vec<Listing> {
         name: name.into(),
         region: region.into(),
         host: host.into(),
+        also: Vec::new(),
         ports: Some(ports),
         version: String::new(),
         players_online: 0,
@@ -524,6 +542,7 @@ mod tests {
             name: name.into(),
             region: String::new(),
             host: format!("{name}.example.com"),
+            also: Vec::new(),
             ports: None,
             version: String::new(),
             players_online: players,
@@ -696,5 +715,17 @@ mod tests {
         let servers = vec![(listing("a", 1), None), (listing("b", 5), None)];
         assert_eq!(best(&servers), Some(1), "nobody answered: the busiest");
         assert_eq!(best(&[]), None);
+    }
+
+    /// A server's other names (coordinators from 0.4.8), and an answer without them.
+    #[test]
+    fn reads_a_servers_other_names() {
+        let entry = |also: &str| format!(r#"{{"id":"mm","name":"MM","host":"mm.example.net"{also}}}"#);
+        let with: Listing = serde_json::from_str(&entry(r#","also":["match.example.net"]"#)).unwrap();
+        assert_eq!(with.also, ["match.example.net"]);
+        let without: Listing = serde_json::from_str(&entry("")).unwrap();
+        assert!(without.also.is_empty());
+        let odd: Listing = serde_json::from_str(&entry(r#","also":"match.example.net""#)).unwrap();
+        assert!(odd.also.is_empty(), "anything else is let go, not the server");
     }
 }

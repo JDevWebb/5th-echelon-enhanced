@@ -1266,5 +1266,11 @@ pub fn moved(cfg: &Config) -> Option<(String, String)> {
         return None;
     }
     let listed = crate::services::rt().block_on(crate::network::server_directory(&directory)).ok()?;
-    listed.servers.iter().any(|(l, _)| l.host.eq_ignore_ascii_case(&to)).then_some((from, to))
+    // By its host, or another name the coordinator recorded as its: the matchmaking server's
+    // record, which moves in a failover, isn't its host.
+    listed
+        .servers
+        .iter()
+        .any(|(l, _)| l.host.eq_ignore_ascii_case(&to) || l.also.iter().any(|n| n.eq_ignore_ascii_case(&to)))
+        .then_some((from, to))
 }
