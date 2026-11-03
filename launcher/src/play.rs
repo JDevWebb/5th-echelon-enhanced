@@ -44,6 +44,8 @@ pub struct Play {
     friends: flow::Friends,
     /// An action on someone in "Online now" (asked to be friends, invited, blocked).
     acting: Slot<Result<String, String>>,
+    /// The Friends window (Manage friends): friends, requests, finding players, blocked.
+    people: PeopleWindow,
     checks: Vec<Check>,
     support: Option<Support>,
     refreshed: Option<Instant>,
@@ -224,10 +226,21 @@ impl Play {
         if let Some(Ok(friends)) = self.fetching_friends.poll() {
             self.friends = friends;
         }
+        if let Some(result) = self.people.lists.poll() {
+            self.people.shown = Some(result);
+        }
+        if let Some(result) = self.people.searching.poll() {
+            self.people.found = Some(result);
+        }
         if let Some(result) = self.acting.poll() {
             match result {
                 Ok(done) => notices.info(done),
                 Err(e) => notices.error(e),
+            }
+            // The Friends window shows what changed.
+            if self.people.open && !self.people.lists.running() {
+                let cfg = (*game.cfg).clone();
+                self.people.lists.start(ctx, move || flow::people(&cfg));
             }
             if !self.fetching_friends.running() && game.managed.is_none() {
                 let cfg = (*game.cfg).clone();
@@ -1815,6 +1828,7 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
     let friends = play.friends.clone();
     let mut switch_to = None;
     let mut join_click: Option<(String, String)> = None;
+    let mut open_people: Option<PeopleTab> = None;
     let note = (!friends.online.is_empty()).then(|| RichText::new(format!("{} online", friends.online.len())).color(theme::OK));
     home_card(
         ui,
@@ -1888,10 +1902,20 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
             } else {
                 String::new()
             };
-            ui.label(theme::muted(format!("{offline}Add and invite friends in game with {}", game.cfg.hook_config.overlay_key)).small());
+            ui.horizontal(|ui| {
+                ui.label(theme::muted(format!("{offline}In game: {}", game.cfg.hook_config.overlay_key)).small());
+                if game.managed.is_none() && ui.link("Manage friends").clicked() {
+                    open_people = Some(PeopleTab::Friends);
+                }
+            });
             if friends.requests > 0 {
                 let s = if friends.requests == 1 { "" } else { "s" };
-                ui.label(RichText::new(format!("{} friend request{s} waiting", friends.requests)).color(theme::ACCENT).size(13.0));
+                if ui
+                    .link(RichText::new(format!("{} friend request{s} waiting", friends.requests)).color(theme::ACCENT).size(13.0))
+                    .clicked()
+                {
+                    open_people = Some(PeopleTab::Requests);
+                }
             }
         },
     );
@@ -1903,6 +1927,251 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
     if let Some(friend) = join_click {
         // Acted on in `show`, where the game can be started if it isn't running.
         play.join_requested = Some(friend);
+    }
+    if let Some(tab) = open_people {
+        play.people.open = true;
+        play.people.tab = tab;
+        if !play.people.lists.running() {
+            let cfg = (*game.cfg).clone();
+            play.people.lists.start(ui.ctx(), move || flow::people(&cfg));
+        }
+    }
+    people_window(play, game, ui.ctx());
+}
+
+/// The Friends window's sections, as the Tauri launcher's Friends screen has them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum PeopleTab {
+    #[default]
+    Friends,
+    Requests,
+    Find,
+    Blocked,
+}
+
+/// The Friends window (the 0.4.8 plan's P1, for the egui launcher): friends, requests both ways,
+/// finding players and who's blocked, with the Tauri launcher's words.
+#[derive(Default)]
+struct PeopleWindow {
+    open: bool,
+    tab: PeopleTab,
+    lists: Slot<Result<flow::People, String>>,
+    shown: Option<Result<flow::People, String>>,
+    query: String,
+    searching: Slot<Result<Vec<flow::Person>, String>>,
+    found: Option<Result<Vec<flow::Person>, String>>,
+    /// Remove or Block, waiting for the player to say yes.
+    asking: Option<(crate::network::PlayerAction, flow::Person)>,
+}
+
+/// What a block does, said wherever one is offered.
+const BLOCK_MEANS: &str = "Neither of you can message, invite or friend the other, you don't see each other online, and quick match leaves out matches they're in.";
+
+fn people_window(play: &mut Play, game: &Game, ctx: &egui::Context) {
+    use crate::network::PlayerAction;
+    if !play.people.open {
+        return;
+    }
+    let busy = play.acting.running();
+    let mut act: Option<(PlayerAction, flow::Person)> = None;
+    let mut ask: Option<(PlayerAction, flow::Person)> = None;
+    let mut search = false;
+    let mut open = true;
+    egui::Window::new("Friends")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(true)
+        .default_width(460.0)
+        .default_height(480.0)
+        .show(ctx, |ui| {
+            let w = &mut play.people;
+            let count = |n: usize| if n > 0 { format!(" · {n}") } else { String::new() };
+            let lists = w.shown.as_ref().and_then(|r| r.as_ref().ok());
+            let (friends_n, requests_n, blocked_n) = lists.map_or((0, 0, 0), |p| (p.friends.len(), p.received.len() + p.sent.len(), p.blocked.len()));
+            ui.horizontal(|ui| {
+                for (tab, label) in [
+                    (PeopleTab::Friends, format!("Friends{}", count(friends_n))),
+                    (PeopleTab::Requests, format!("Requests{}", count(requests_n))),
+                    (PeopleTab::Find, "Find players".to_string()),
+                    (PeopleTab::Blocked, format!("Blocked{}", count(blocked_n))),
+                ] {
+                    ui.selectable_value(&mut w.tab, tab, label);
+                }
+            });
+            ui.separator();
+            if let Some((action, p)) = w.asking.clone() {
+                let (title, means, button) = match action {
+                    PlayerAction::Block => (format!("Block {}?", p.name), BLOCK_MEANS.to_string(), "Block"),
+                    _ => (
+                        format!("Remove {} from your friends?", p.name),
+                        "You can ask them to be friends again later.".to_string(),
+                        "Remove",
+                    ),
+                };
+                ui.label(RichText::new(title).family(theme::strong()));
+                ui.label(theme::muted(means));
+                ui.horizontal(|ui| {
+                    if ui.add_enabled(!busy, theme::secondary(button)).clicked() {
+                        act = Some((action, p.clone()));
+                        w.asking = None;
+                    }
+                    if ui.add(theme::secondary("Cancel")).clicked() {
+                        w.asking = None;
+                    }
+                });
+                ui.separator();
+            }
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                let row = |ui: &mut egui::Ui, p: &flow::Person, buttons: &mut dyn FnMut(&mut egui::Ui)| {
+                    ui.horizontal(|ui| {
+                        let line = if p.online {
+                            p.activity.clone().unwrap_or_else(|| "Online".into())
+                        } else {
+                            "Offline".into()
+                        };
+                        friend_row(ui, if p.online { theme::OK } else { theme::SOFT }, &p.name, &line);
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| buttons(ui));
+                    });
+                };
+                if w.tab == PeopleTab::Find {
+                    ui.horizontal(|ui| {
+                        let field = ui.add(egui::TextEdit::singleline(&mut w.query).hint_text("A player's name").desired_width(260.0));
+                        let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                        if (ui.add_enabled(!w.searching.running(), theme::secondary("Search")).clicked() || enter) && !w.searching.running() {
+                            search = true;
+                        }
+                    });
+                    ui.add_space(6.0);
+                    match &w.found {
+                        None if w.searching.running() => {
+                            ui.spinner();
+                        }
+                        None => {
+                            ui.label(theme::muted("Search by name, or leave it empty for who's online."));
+                        }
+                        Some(Err(e)) => {
+                            ui.label(RichText::new(e).color(theme::BAD));
+                        }
+                        Some(Ok(found)) if found.is_empty() => {
+                            ui.label(theme::muted("Nobody by that name."));
+                        }
+                        Some(Ok(found)) => {
+                            for p in found {
+                                row(ui, p, &mut |ui| {
+                                    if ui.add_enabled(!busy, theme::secondary("Block")).clicked() {
+                                        ask = Some((PlayerAction::Block, p.clone()));
+                                    }
+                                    let (label, action, enabled) = match p.relation {
+                                        "friend" => ("Friends", PlayerAction::Request, false),
+                                        "sent" => ("Asked", PlayerAction::Request, false),
+                                        "received" => ("Accept", PlayerAction::Accept, true),
+                                        "blocked" => ("Unblock", PlayerAction::Unblock, true),
+                                        _ => ("Add friend", PlayerAction::Request, true),
+                                    };
+                                    if ui.add_enabled(enabled && !busy, theme::secondary(label)).clicked() {
+                                        act = Some((action, p.clone()));
+                                    }
+                                });
+                            }
+                        }
+                    }
+                    return;
+                }
+                let people = match &w.shown {
+                    None => {
+                        ui.spinner();
+                        return;
+                    }
+                    Some(Err(e)) => {
+                        ui.label(RichText::new(e).color(theme::BAD));
+                        return;
+                    }
+                    Some(Ok(p)) => p.clone(),
+                };
+                match w.tab {
+                    PeopleTab::Friends => {
+                        if people.friends.is_empty() {
+                            ui.label(theme::muted("No friends yet: Find players to add some."));
+                        }
+                        for p in &people.friends {
+                            row(ui, p, &mut |ui| {
+                                if ui.add_enabled(!busy, theme::secondary("Block")).clicked() {
+                                    ask = Some((PlayerAction::Block, p.clone()));
+                                }
+                                if ui.add_enabled(!busy, theme::secondary("Remove")).clicked() {
+                                    ask = Some((PlayerAction::Remove, p.clone()));
+                                }
+                            });
+                        }
+                    }
+                    PeopleTab::Requests => {
+                        if people.received.is_empty() && people.sent.is_empty() {
+                            ui.label(theme::muted("No friend requests either way."));
+                        }
+                        if !people.received.is_empty() {
+                            ui.label(theme::caps("Asked you"));
+                        }
+                        for p in &people.received {
+                            row(ui, p, &mut |ui| {
+                                if ui.add_enabled(!busy, theme::secondary("Decline")).clicked() {
+                                    act = Some((PlayerAction::Decline, p.clone()));
+                                }
+                                if ui.add_enabled(!busy, theme::secondary("Accept")).clicked() {
+                                    act = Some((PlayerAction::Accept, p.clone()));
+                                }
+                            });
+                        }
+                        if !people.sent.is_empty() {
+                            ui.add_space(6.0);
+                            ui.label(theme::caps("You asked"));
+                        }
+                        for p in &people.sent {
+                            row(ui, p, &mut |ui| {
+                                if ui.add_enabled(!busy, theme::secondary("Cancel request")).clicked() {
+                                    act = Some((PlayerAction::Decline, p.clone()));
+                                }
+                            });
+                        }
+                    }
+                    PeopleTab::Blocked => {
+                        ui.label(
+                            theme::muted(format!(
+                                "{BLOCK_MEANS} A block of a player with a 5th Echelon identity holds on every server that shares friends, when you have one too."
+                            ))
+                            .small(),
+                        );
+                        ui.add_space(4.0);
+                        if people.blocked.is_empty() {
+                            ui.label(theme::muted("You haven't blocked anyone."));
+                        }
+                        for p in &people.blocked {
+                            row(ui, p, &mut |ui| {
+                                if ui.add_enabled(!busy, theme::secondary("Unblock")).clicked() {
+                                    act = Some((PlayerAction::Unblock, p.clone()));
+                                }
+                            });
+                        }
+                    }
+                    PeopleTab::Find => {}
+                }
+            });
+        });
+    let w = &mut play.people;
+    if !open {
+        w.open = false;
+        w.asking = None;
+    }
+    if let Some(asked) = ask {
+        w.asking = Some(asked);
+    }
+    if search {
+        let (cfg, query) = ((*game.cfg).clone(), w.query.clone());
+        w.found = None;
+        w.searching.start(ctx, move || flow::find_players(&cfg, &query));
+    }
+    if let Some((action, p)) = act {
+        let cfg = (*game.cfg).clone();
+        play.acting.start(ctx, move || flow::player_action(&cfg, action, &p.id, "", &p.name));
     }
 }
 
@@ -3060,6 +3329,12 @@ mod split_button_tests {
 
     fn shown(play: &mut Play, game: &mut Game) -> egui_kittest::Harness<'static> {
         let mut notices = Notices::default();
+        // The game's files hashed first (an empty folder: a moment), or Play waits on them and
+        // keeps repainting.
+        let waited = Instant::now();
+        while crate::game_files::preparing(&game.dir) && waited.elapsed() < Duration::from_secs(10) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
         // Owned copies: the harness keeps its closure.
         let mut play = std::mem::take(play);
         let mut game = std::mem::replace(game, crate::theme::ui_test::game("split-tmp").1);
@@ -3124,6 +3399,54 @@ mod split_button_tests {
         assert!(h.query_by_label("SvM Blacklist").is_some() && h.query_by_label("SvM Classic").is_some());
         assert_eq!(h.query_all_by_label("Join").count(), 2);
         assert!(h.query_by_label("1 private match").is_some());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    /// The Friends window: each section's people with its actions, and Remove asking first.
+    #[test]
+    fn the_friends_window_lists_each_section_with_its_actions() {
+        let (dir, game) = crate::theme::ui_test::game("people");
+        let person = |id: &str, name: &str, relation: &'static str| flow::Person {
+            id: id.into(),
+            name: name.into(),
+            online: true,
+            relation,
+            ..flow::Person::default()
+        };
+        let people = flow::People {
+            friends: vec![person("1", "Tank", "friend")],
+            received: vec![person("2", "Raven", "received")],
+            sent: vec![person("3", "Nova", "sent")],
+            blocked: vec![person("4", "Ghost", "blocked")],
+            ..flow::People::default()
+        };
+        let window = |tab: PeopleTab, asking: Option<(crate::network::PlayerAction, flow::Person)>| {
+            let mut play = Play {
+                people: PeopleWindow {
+                    open: true,
+                    tab,
+                    shown: Some(Ok(people.clone())),
+                    asking,
+                    ..PeopleWindow::default()
+                },
+                ..Play::default()
+            };
+            let game = std::sync::Arc::new(crate::theme::ui_test::game("people-shown").1);
+            crate::theme::ui_test::harness(egui::vec2(700.0, 600.0), move |ui| people_window(&mut play, &game, ui.ctx()))
+        };
+        let h = window(PeopleTab::Friends, None);
+        assert!(h.query_by_label("Tank").is_some() && h.query_by_label("Remove").is_some() && h.query_by_label("Block").is_some());
+        assert!(
+            h.query_by_label("Friends · 1").is_some() && h.query_by_label("Requests · 2").is_some(),
+            "counts on the tabs"
+        );
+        let h = window(PeopleTab::Requests, None);
+        assert!(h.query_by_label("Accept").is_some() && h.query_by_label("Decline").is_some() && h.query_by_label("Cancel request").is_some());
+        let h = window(PeopleTab::Blocked, None);
+        assert!(h.query_by_label("Ghost").is_some() && h.query_by_label("Unblock").is_some());
+        let h = window(PeopleTab::Friends, Some((crate::network::PlayerAction::Remove, person("1", "Tank", "friend"))));
+        assert!(h.query_by_label("Remove Tank from your friends?").is_some(), "Remove asks first");
+        drop(game);
         let _ = std::fs::remove_dir_all(dir);
     }
 
