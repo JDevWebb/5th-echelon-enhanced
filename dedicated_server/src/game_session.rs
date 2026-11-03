@@ -1180,6 +1180,10 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // Ensure the client is logged in.
         let user_id = login_required(&*ci)?;
         let session_id = request.game_session_key.session_id;
+        // How long its match had been under way, and who was in it (F4: hosts whose matches end
+        // soon after they start), before it goes.
+        let under_way_for = crate::match_started::under_way_for(session_id);
+        let members = self.storage.room_seats(session_id).ok().flatten().map(|(members, _)| members);
         if rmc_err!(
             self.storage.delete_game_session(user_id, request.game_session_key.type_id, session_id),
             logger,
@@ -1198,11 +1202,14 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // The host ended it (a match's end): Sessions has their stay end here, not when their
         // game next times out, and the match as ended for whoever was still in it.
         info!(logger, "User {user_id} ends session {session_id}");
-        crate::session_events::note(
-            crate::session_events::Who::Id(user_id),
-            "leave",
-            serde_json::json!({ "room": session_id, "how": "left", "ended": true }),
-        );
+        let mut detail = serde_json::json!({ "room": session_id, "how": "left", "ended": true });
+        if let Some(for_) = under_way_for {
+            detail["under_way_for"] = for_.as_secs().into();
+            if let Some(members) = members {
+                detail["members"] = members.into();
+            }
+        }
+        crate::session_events::note(crate::session_events::Who::Id(user_id), "leave", detail);
         crate::session_events::room_ended(session_id);
         Ok(DeleteSessionResponse)
     }

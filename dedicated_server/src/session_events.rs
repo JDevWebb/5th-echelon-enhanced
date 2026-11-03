@@ -47,7 +47,8 @@
 //!   as a round starts (0.4.8 plan M2), and settings changed mid-match (F4).
 //! - `leave`: `room`, `how` (`left`, `abandoned`, `removed` by the host: `by`; `dropped`: an
 //!   earlier game of theirs went without a word; `closed`: it went after saying it was
-//!   closing), `ended`.
+//!   closing), `ended`; the host ending its match room while the match was under way (0.4.8
+//!   games): `under_way_for` (seconds since its game first said so) and `members` then (F4).
 //! - `invite`: `to`, `room` (none: unbound, the receiver finds nothing to join).
 //! - `invite_delivered`: `from`, `room`, `requested` (a join request's, `join-request`).
 //! - `stats`: the game wrote stats (it does at the end of a mission or match).

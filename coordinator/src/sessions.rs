@@ -418,6 +418,46 @@ fn graphics_split(events: &[Event], from: i64) -> Value {
     json!({ "dx9": count(Some("dx9")), "dx11": count(Some("dx11")), "unknown": count(None) })
 }
 
+/// A match its host ends this soon after it started, with others in it, ended early (F4).
+const EARLY_END_SECS: i64 = 120;
+/// How many such matches before the host is flagged.
+const EARLY_ENDS_FLAGGED: usize = 3;
+
+/// Hosts whose matches end soon after they start (F4): the host's game ending its match room
+/// within [`EARLY_END_SECS`] of saying it was under way, with someone else in it (0.4.8 games'
+/// `leave`: `under_way_for`, `members`). A host quitting when losing, or breaking matches up,
+/// does it again and again: flagged on the [`EARLY_ENDS_FLAGGED`]th, once.
+fn early_ends(events: &[Event]) -> Vec<Value> {
+    let mut by_host: HashMap<(String, String), Vec<&Event>> = HashMap::new();
+    for e in events.iter().filter(|e| {
+        e.kind == "leave"
+            && e.detail["ended"] == true
+            && e.detail["under_way_for"].as_i64().is_some_and(|s| s < EARLY_END_SECS)
+            && e.detail["members"].as_i64().is_some_and(|m| m >= 2)
+    }) {
+        by_host.entry(e.who()).or_default().push(e);
+    }
+    let mut out = Vec::new();
+    for list in by_host.values_mut() {
+        if list.len() < EARLY_ENDS_FLAGGED {
+            continue;
+        }
+        list.sort_by_key(|e| e.at);
+        let e = list[EARLY_ENDS_FLAGGED - 1];
+        let times: Vec<String> = list.iter().map(|o| format!("{} s", o.detail["under_way_for"])).collect();
+        out.push(json!({
+            "at": e.at, "server": e.server, "level": "warn", "player": e.player, "name": e.name,
+            "title": format!("{}'s matches end soon after they start", e.name),
+            "text": format!(
+                "They ended {} matches they hosted, with players in them, within {EARLY_END_SECS} s of the round starting ({}). A host quitting when losing, or breaking matches up: check their matches and reports",
+                list.len(),
+                times.join(", ")
+            ),
+        }));
+    }
+    out
+}
+
 /// How many players must have said a file before anyone's copy of it is judged, and how many
 /// must share a hash (or a file the game doesn't ship) for it to be usual.
 const FILES_JUDGED_FROM: usize = 10;
@@ -1695,6 +1735,7 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
         }
     }
     out.extend(game_files(events).1);
+    out.extend(early_ends(events));
     out
 }
 
@@ -1724,6 +1765,36 @@ mod tests {
 
     fn titles(events: &[Event]) -> Vec<String> {
         problems(events).iter().map(|p| p["title"].as_str().unwrap_or_default().to_string()).collect()
+    }
+
+    /// A host ending three matches with others in them within two minutes of starting is
+    /// flagged once; longer matches, ones alone, and older games' leaves (no time) aren't.
+    #[test]
+    fn hosts_whose_matches_end_early_are_flagged_once() {
+        use super::early_ends;
+        let end = |at: i64, host: i64, secs: Option<i64>, members: i64| {
+            let mut d = json!({ "room": at, "how": "left", "ended": true, "members": members });
+            if let Some(s) = secs {
+                d["under_way_for"] = json!(s);
+            }
+            ev("eu", at, host, &format!("h{host}"), "leave", d)
+        };
+        let events = vec![
+            end(100, 1, Some(30), 4),
+            end(200, 1, Some(600), 4),
+            end(300, 1, Some(45), 1),
+            end(400, 1, Some(50), 3),
+            end(500, 1, None, 3),
+            end(600, 1, Some(10), 2),
+            end(700, 1, Some(20), 2),
+            end(100, 2, Some(30), 4),
+            end(200, 2, Some(30), 4),
+        ];
+        let found = early_ends(&events);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0]["title"], "h1's matches end soon after they start");
+        assert_eq!(found[0]["at"], 600, "on the third");
+        assert!(found[0]["text"].as_str().unwrap().contains("ended 4 matches") && found[0]["text"].as_str().unwrap().contains("(30 s, 50 s, 10 s, 20 s)"));
     }
 
     /// A player's file whose hash few others share is a file that differs, once enough players

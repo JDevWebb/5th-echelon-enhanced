@@ -46,6 +46,9 @@ struct State {
     hosts: HashMap<u32, (bool, Instant)>,
     /// Which rooms each player marked when, within [`MARKS_KEPT`].
     marks: HashMap<u32, Vec<(u32, Instant)>>,
+    /// Since when each room's host has said its match is under way (F4: a match its host ends
+    /// soon after it starts).
+    since: HashMap<u32, Instant>,
 }
 
 fn state() -> &'static Mutex<State> {
@@ -94,11 +97,30 @@ pub fn host_says(rooms: &[u32], under_way: bool) {
     if state.hosts.len() >= MAX_ROOMS {
         state.hosts.retain(|_, (_, at)| now.saturating_duration_since(*at) < HOST_SAYS_FOR);
     }
+    if state.since.len() >= MAX_ROOMS {
+        let hosts = std::mem::take(&mut state.hosts);
+        state.since.retain(|room, _| hosts.get(room).is_some_and(|(under_way, _)| *under_way));
+        state.hosts = hosts;
+    }
     for room in rooms {
         if state.hosts.len() < MAX_ROOMS || state.hosts.contains_key(room) {
             state.hosts.insert(*room, (under_way, now));
+            if under_way {
+                state.since.entry(*room).or_insert(now);
+            } else {
+                state.since.remove(room);
+            }
         }
     }
+}
+
+/// How long `room`'s match has been under way, as its host's game says it is now (F4).
+pub fn under_way_for(room: u32) -> Option<Duration> {
+    if !host_says_under_way(room) {
+        return None;
+    }
+    let state = state().lock().unwrap_or_else(PoisonError::into_inner);
+    state.since.get(&room).map(|at| at.elapsed())
 }
 
 /// Whether `room`'s host's game says its match is under way now (M2): what it does then is
@@ -193,5 +215,22 @@ mod tests {
         assert!(refused_at(3_000_100, reporter, now), "one already marked still counts");
         assert!(refused_at(3_000_200, reporter, now + FOR), "and once they've lapsed, more");
         assert!(refused_at(3_000_200, 4, now), "another player's count is their own");
+    }
+
+    /// A match's time under way runs from the host's first word that it is, not its latest;
+    /// a word that it isn't starts it again.
+    #[test]
+    fn a_match_is_under_way_from_the_hosts_first_word() {
+        let room = 3_000_101;
+        assert_eq!(under_way_for(room), None);
+        host_says(&[room], true);
+        let first = under_way_for(room).unwrap();
+        std::thread::sleep(Duration::from_millis(30));
+        host_says(&[room], true);
+        assert!(under_way_for(room).unwrap() >= first + Duration::from_millis(25), "from the first word");
+        host_says(&[room], false);
+        assert_eq!(under_way_for(room), None, "back to the lobby");
+        host_says(&[room], true);
+        assert!(under_way_for(room).unwrap() < Duration::from_millis(25), "started again");
     }
 }
