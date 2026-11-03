@@ -607,7 +607,7 @@ Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echel
 
 **Fair play**
 - Bans hold for the identity on every server of a network, and for the PC (hashed hardware ids).
-- Report-only checks for the admins: stats far from the network's normal, round settings changed mid-round, lag-switch rhythms at the relay, the game's clocks against Windows' own (speed hacks), the game's code against its executable, and other players' games seeing someone move faster than the game allows (counted only from independent witnesses).
+- Report-only checks for the admins: stats far from the network's normal, round settings changed mid-round, hosts who keep ending matches soon after they start, lag-switch rhythms at the relay, the game's own files against everyone else's (hashed at sign-in), the game's clocks against Windows' own (speed hacks), the game's code against its executable, and other players' games seeing someone move faster than the game allows (counted only from independent witnesses).
 - **Report a player** from the overlay, and match recordings the admins can replay (top down, in 3D among the map's walls, and whole matches from every player's recording).
 
 **Server stability and security**
