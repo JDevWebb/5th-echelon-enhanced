@@ -234,7 +234,7 @@ pub fn from_response(resp: &server_api::friends::LobbiesResponse) -> Lobbies {
     }
     let hidden = match resp.hidden_blocked {
         0 => String::new(),
-        n => format!("{n} more left out: with a player you blocked, or who blocked you."),
+        n => format!("{n} more left out: with a player you blocked."),
     };
     Lobbies {
         offered: true,
@@ -417,7 +417,7 @@ mod lobby_tests {
         };
         let view = from_response(&resp);
         assert_eq!(view.summary, "2 public · 5 players · 2 private matches · 6 in parties");
-        assert_eq!(view.hidden, "1 more left out: with a player you blocked, or who blocked you.");
+        assert_eq!(view.hidden, "1 more left out: with a player you blocked.");
         let (a, b) = (&view.lobbies[0], &view.lobbies[1]);
         assert_eq!((a.mode.as_str(), a.map.as_deref(), a.host.as_str()), ("SvM Blacklist", Some("Virus Vault"), "Liara"));
         assert_eq!(

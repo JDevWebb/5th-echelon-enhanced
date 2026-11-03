@@ -2,7 +2,10 @@
 //! in each (its host, who came as a party, the caller's friends, each one's side as the host's
 //! game says), its state and settings as the host's game last said them, and how far each
 //! player is from the caller. Unlike `/api/playing` (anyone, no names), only for signed-in
-//! players, and a match with someone the caller blocked, or who blocked them, is left out.
+//! players, and a match with someone the caller blocked, or who blocked them, is left out (only
+//! the caller's own blocks counted: nobody learns who blocked them, as JoinRoom's "gone").
+//! Distances are coarse and few: the caller's to a match's host in [`PING_STEP`]s, and to each
+//! player only for their friends, so the list can't be used to find where a stranger is.
 //!
 //! The host's game says its match's state, settings and sides with each MatchState ([`said`]);
 //! [`list`] puts the rest together from the live rooms.
@@ -27,6 +30,14 @@ use crate::storage::Relation;
 const HOLDS: Duration = Duration::from_secs(10 * 60);
 /// The most rooms remembered.
 const MOST_ROOMS: usize = 4096;
+/// Pings are told in steps of this (ms): about 2,500 km of distance a step.
+const PING_STEP: u32 = 25;
+
+/// A ping as told: rounded up to the next [`PING_STEP`] (0 stays unknown).
+fn coarse(ms: u32) -> u32 {
+    ms.div_ceil(PING_STEP) * PING_STEP
+}
+
 /// The most matches answered, and players a match.
 const MOST_LOBBIES: usize = 50;
 const MOST_PLAYERS: usize = 24;
@@ -117,8 +128,12 @@ pub fn list(me: u32, sessions: &[LiveSession], relations: &HashMap<u32, Relation
             out.private_players += u32::try_from(s.players.len()).unwrap_or(u32::MAX);
             continue;
         }
-        let blocked = s.player_ids.iter().any(|p| matches!(relations.get(p), Some(Relation::Blocked | Relation::BlockedBy)));
-        if blocked {
+        // Someone the caller blocked: left out and counted. Someone who blocked the caller: left
+        // out without a word, so the count can't tell them who.
+        if s.player_ids.iter().any(|p| matches!(relations.get(p), Some(Relation::BlockedBy))) {
+            continue;
+        }
+        if s.player_ids.iter().any(|p| matches!(relations.get(p), Some(Relation::Blocked))) {
             out.hidden_blocked += 1;
             continue;
         }
@@ -141,13 +156,17 @@ pub fn list(me: u32, sessions: &[LiveSession], relations: &HashMap<u32, Relation
             .iter()
             .zip(&s.players)
             .take(MOST_PLAYERS)
-            .map(|(id, name)| LobbyPlayer {
-                name: name.clone(),
-                host: *id == s.host_id,
-                party: party_of.get(id).copied().unwrap_or(0),
-                friend: matches!(relations.get(id), Some(Relation::Friend)),
-                team: said.sides.get(&name.to_lowercase()).cloned().unwrap_or_default(),
-                ping_ms: if *id == me { 0 } else { (live.ping)(*id).unwrap_or(0) },
+            .map(|(id, name)| {
+                let friend = matches!(relations.get(id), Some(Relation::Friend));
+                LobbyPlayer {
+                    name: name.clone(),
+                    host: *id == s.host_id,
+                    party: party_of.get(id).copied().unwrap_or(0),
+                    friend,
+                    team: said.sides.get(&name.to_lowercase()).cloned().unwrap_or_default(),
+                    // A friend's only, coarse: no one else's distance from the caller.
+                    ping_ms: if friend && *id != me { coarse((live.ping)(*id).unwrap_or(0)) } else { 0 },
+                }
             })
             .collect();
         // The host first, then by party, then by name.
@@ -169,7 +188,7 @@ pub fn list(me: u32, sessions: &[LiveSession], relations: &HashMap<u32, Relation
                 under_way_secs: under_way.map_or(0, |d| u32::try_from(d.as_secs()).unwrap_or(u32::MAX)),
                 round: said.round,
                 settings: said.settings.iter().map(|(k, v)| (k.clone(), *v)).collect(),
-                ping_ms: (live.ping)(s.host_id).unwrap_or(0),
+                ping_ms: coarse((live.ping)(s.host_id).unwrap_or(0)),
                 players,
             },
         ));
@@ -245,20 +264,25 @@ mod tests {
             },
             1240,
         );
-        assert_eq!((r.hidden_blocked, r.private_matches, r.private_players, r.party_players), (2, 1, 2, 1));
+        assert_eq!(
+            (r.hidden_blocked, r.private_matches, r.private_players, r.party_players),
+            (1, 1, 2, 1),
+            "only the caller's own block counted: one who blocked them is left out without a word"
+        );
         assert_eq!(r.lobbies.iter().map(|l| l.room).collect::<Vec<_>>(), vec![10, 11], "a friend's match first");
         let first = &r.lobbies[0];
         let who: Vec<(&str, bool, u32, bool, u32)> = first.players.iter().map(|p| (p.name.as_str(), p.host, p.party, p.friend, p.ping_ms)).collect();
         assert_eq!(
             who,
             vec![
-                ("Liara", true, 0, false, 31),
+                ("Liara", true, 0, false, 0),
                 ("Jgz24", false, 1, false, 0),
-                ("mpw", false, 1, false, 33),
-                ("Tank", false, 0, true, 32)
-            ]
+                ("mpw", false, 1, false, 0),
+                ("Tank", false, 0, true, 50)
+            ],
+            "a friend's ping only, in 25 ms steps"
         );
-        assert_eq!((first.seats, first.open_secs, first.ping_ms, first.under_way), (8, 240, 31, false));
+        assert_eq!((first.seats, first.open_secs, first.ping_ms, first.under_way), (8, 240, 50, false), "the host's, in steps");
         let second = &r.lobbies[1];
         assert_eq!(
             (second.state.as_str(), second.round, second.under_way, second.under_way_secs),

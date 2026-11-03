@@ -247,7 +247,7 @@ const preview = {
     const lobby = (o) => ({ made_for: null, friends: [], teams: false, settings: [], joinable: !o.under_way && !o.full, tone: o.under_way || o.full ? 'warn' : 'ok', full: false, under_way: false, ...o });
     return {
       offered: true, error: null, summary: '5 public · 26 players · 2 private matches · 6 in parties',
-      hidden: '1 more left out: with a player you blocked, or who blocked you.',
+      hidden: '1 more left out: with a player you blocked.',
       lobbies: [
         lobby({ room: 4391, mode: 'SvM Blacklist', kind: 'svm', map: 'Virus Vault', players: 5, seats: 8, host: 'Liara', status: 'In lobby · waiting for 3 more', open_for: '4 min', ping_ms: 38, friends: ['Tank'],
           settings: [['Time limit', '5 min'], ['Score limit', '3'], ['Spies\u2019 respawn', '7 s'], ['Mercs\u2019 respawn', '15 s']],

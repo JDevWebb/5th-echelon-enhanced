@@ -297,8 +297,9 @@ message LobbiesRequest {}
 message LobbiesResponse {
     // Public matches, the caller's friends' first, then the busiest.
     repeated Lobby lobbies = 1;
-    // Left out: with someone the caller blocked or who blocked them; private matches and their
-    // players; players in parties and in no match.
+    // Left out, counted: matches with someone the caller blocked (a match with someone who blocked
+    // the caller is left out uncounted); private matches and their players; players in parties
+    // and in no match.
     uint32 hidden_blocked = 2;
     uint32 private_matches = 3;
     uint32 private_players = 4;
@@ -326,7 +327,7 @@ message Lobby {
     uint32 round = 11;
     // The round's settings as the host's game has them (F4), by the script property's name.
     map<string, float> settings = 12;
-    // The caller's estimated round trip to its host, in ms (0: unknown).
+    // The caller's estimated round trip to its host, in ms, in 25 ms steps (0: unknown).
     uint32 ping_ms = 13;
     repeated LobbyPlayer players = 14;
 }
@@ -340,6 +341,7 @@ message LobbyPlayer {
     bool friend = 4;
     // "spy" or "merc" in Spies vs Mercs, as the host's game says (empty when it doesn't).
     string team = 5;
-    // The caller's estimated round trip to them, in ms (0: unknown).
+    // The caller's estimated round trip to them, in ms, in 25 ms steps: only for the caller's
+    // friends (0: unknown, or not a friend).
     uint32 ping_ms = 6;
 }
