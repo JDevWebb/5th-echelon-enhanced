@@ -76,6 +76,11 @@
 #                         drops them
 #   --coordinator-only    with --coordinator-domain: only the coordinator
 #                         (and Caddy), no game server on this machine
+#   --matchmaking-server ID
+#                         with --coordinator-domain: the member that is the
+#                         network's matchmaking server, by its server id (its
+#                         installer prints it). Kept for later runs;
+#                         --matchmaking-server - clears it
 #   --coordinator-binary FILE
 #                         install this coordinator-linux-x86_64 instead of
 #                         downloading one
@@ -239,7 +244,7 @@ https_api=1 allow_unsigned=0 coord_only=0 admin="" registration="" listed="" com
 metrics_cert="" metrics_key="" metrics_domain="" origin_pull=0 admin_name="" auto_update="" release_version=""
 coord_cert="" coord_key="" standby="" standby_me="" mm_standby="" mm_record="" mm_me=""
 role="" ticket_key="" matchmaking=""
-aliases=() coord_aliases=() coord_aliases_given=0
+aliases=() coord_aliases=() coord_aliases_given=0 mm_server=
 # Only HTTPS, and TLS 1.2 or newer, for every download, and none larger
 # than a release's binaries could be (SMALL: for listings, checksums and
 # signatures).
@@ -311,6 +316,7 @@ while [ $# -gt 0 ]; do
     --coordinator-domain) coord_domain="${2:?}"; shift ;;
     --coordinator-alias) coord_aliases_given=1; [ "${2:?}" = "-" ] || coord_aliases+=("${2,,}"); shift ;;
     --coordinator-binary) coord_binary="${2:?}"; shift ;;
+    --matchmaking-server) mm_server="${2:?}"; shift ;;
     --coordinator-only) coord_only=1 ;;
     --alias) aliases+=("${2:?}"); shift ;;
     --admin) admin=true ;;
@@ -470,6 +476,9 @@ if [ -z "$metrics_domain" ] && [ -s "$ETC_DIR/metrics-domain" ]; then metrics_do
 if [ -f "$ETC_DIR/metrics-origin-pull" ]; then origin_pull=1; fi
 [ -z "$metrics_domain" ] || [ -n "$coord_domain" ] || die "--metrics-domain is the coordinator's admin UI: it needs --coordinator-domain (a coordinator on this machine)"
 # Its other names stay, unless new ones (or -) are given.
+if [ -z "$mm_server" ] && [ -s "$ETC_DIR/matchmaking-server" ]; then mm_server="$(head -c 256 "$ETC_DIR/matchmaking-server" | tr -d '[:space:]')"; fi
+[ -z "$mm_server" ] || [ "$mm_server" = "-" ] || [[ "$mm_server" =~ ^[A-Za-z0-9]{1,64}$ ]] || die "--matchmaking-server takes a server id (letters and digits), or - to clear it"
+[ -z "$mm_server" ] || [ "$mm_server" = "-" ] || [ -n "$coord_domain" ] || [ -s "$ETC_DIR/coordinator-domain" ] || die "--matchmaking-server goes with --coordinator-domain"
 if [ "$coord_aliases_given" -eq 0 ] && [ -s "$ETC_DIR/coordinator-aliases" ]; then
   mapfile -t coord_aliases < <(head -c 4096 "$ETC_DIR/coordinator-aliases" | tr -d ' \r' | grep -v '^$')
 fi
@@ -1690,6 +1699,13 @@ if [ -n "$coord_domain" ]; then
   for a in "${coord_aliases[@]}"; do coord_args="$coord_args --name $a"; done
   if [ "${#coord_aliases[@]}" -gt 0 ]; then printf '%s\n' "${coord_aliases[@]}" > "$ETC_DIR/coordinator-aliases"; else rm -f "$ETC_DIR/coordinator-aliases"; fi
   # The admin UI on its own port, for Caddy to serve at the metrics name.
+  # The network's matchmaking server (docs/cutover.md): relays report to it.
+  if [ -n "$mm_server" ] && [ "$mm_server" != "-" ]; then
+    coord_args="$coord_args --matchmaking-server $mm_server"
+    echo "$mm_server" > "$ETC_DIR/matchmaking-server"
+  else
+    rm -f "$ETC_DIR/matchmaking-server"
+  fi
   if [ -n "$metrics_domain" ]; then coord_args="$coord_args --admin-listen $COORD_ADDR:8701 --admin-origin https://$metrics_domain"; fi
   # The roadmap and players' suggestions: every launcher reads the community network's, so
   # only its coordinator keeps one (by its current name or the old).
@@ -2382,14 +2398,20 @@ UNIT
   say "Installed the updater: the coordinator's signed releases are installed as they're rolled out$( [ "$auto_update" = false ] && echo " (off for this server: --no-auto-update)")"
 }
 # The version the installed server (or, alone, the coordinator) reports.
+# The version the running build reports, or nothing. It was usually just (re)started, so
+# it's given a few seconds to answer; no answer isn't an error (set -e and pipefail).
 running_version() {
-  local info
-  if [ "$coord_only" -eq 0 ]; then
-    info="$(curl -fsS --max-time 3 ${domain:+-H "Host: $domain"} "http://127.0.0.1:$( [ "$no_caddy" -eq 1 ] && echo 80 || echo 8080 )/api/info" 2>/dev/null || true)"
-  else
-    info="$(curl -fsS --max-time 3 "http://$COORD_ADDR:8700/v1/info" 2>/dev/null || true)"
-  fi
-  printf '%s' "$info" | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4
+  local info="" tries=0
+  while [ -z "$info" ] && [ "$tries" -lt 10 ]; do
+    [ "$tries" -eq 0 ] || sleep 1
+    tries=$((tries + 1))
+    if [ "$coord_only" -eq 0 ]; then
+      info="$(curl -fsS --max-time 3 ${domain:+-H "Host: $domain"} "http://127.0.0.1:$( [ "$no_caddy" -eq 1 ] && echo 80 || echo 8080 )/api/info" 2>/dev/null || true)"
+    else
+      info="$(curl -fsS --max-time 3 "http://$COORD_ADDR:8700/v1/info" 2>/dev/null || true)"
+    fi
+  done
+  printf '%s' "$info" | grep -o '"version":"[^"]*"' | head -1 | cut -d'"' -f4 || true
 }
 if [ "$use_systemd" -eq 1 ]; then install_updater; fi
 if [ "$use_systemd" -eq 1 ]; then install_backups; fi

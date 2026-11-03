@@ -28,7 +28,7 @@ names in your zone (`coord.test.example.net`, ...). The matchmaking server's tes
 only, TTL 60. Then:
 
 1. **Install them** as they'll be, with the release candidate:
-   - coord: `--coordinator-domain coord.test... --matchmaking-server <mm's id later>`;
+   - coord: `--coordinator-domain coord.test... --coordinator-only --matchmaking-server <mm's id, once mm is installed>`;
    - mm: `--domain mm.test... --matchmaking --mm-record match.test... --mm-standby mm=mm.test...,relay-a=relay-a.test...,relay-b=relay-b.test...`;
    - relays: `--domain relay-x.test... --role relay --ticket-key <mm's key> --mm-record match.test... --mm-standby` (the same list).
 2. **Copies of the production databases** (from their latest snapshots: `backup.sh restore game
