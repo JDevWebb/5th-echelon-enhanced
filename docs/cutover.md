@@ -31,14 +31,22 @@ only, TTL 60. Then:
    - coord: `--coordinator-domain coord.test... --coordinator-only --matchmaking-server <mm's id, once mm is installed>`;
    - mm: `--domain mm.test... --matchmaking --mm-record match.test... --mm-standby mm=mm.test...,relay-a=relay-a.test...,relay-b=relay-b.test...`;
    - relays: `--domain relay-x.test... --role relay --ticket-key <mm's key> --mm-record match.test... --mm-standby` (the same list).
-2. **Copies of the production databases** (from their latest snapshots: `backup.sh restore game
-   --from <name>` into a scratch folder, or the snapshot in R2): eu1's, na1's and oceania's. This is
-   player data on temporary machines: keep it to the rehearsal and wipe the VPSes after.
-3. **The merge**, as on the night: on mm, with its server stopped, put na1's copy in place as
-   its database, then
+2. **Copies of the production databases**, taken with SQLite's own backup while the servers run
+   (`sudo -u echelon sqlite3 /var/lib/5th-echelon/5th-echelon.db ".backup /tmp/x/copy.db"`), or
+   from their latest snapshots (`backup.sh restore game --from <name>` into a scratch folder):
+   eu1's, na1's and oceania's. This is player data on temporary machines: keep it to the
+   rehearsal and wipe the VPSes after.
+3. **The merge**, as on the night: on mm, with its server stopped, **delete its database's
+   `5th-echelon.db-wal` and `-shm`** (as root: `/var/lib/5th-echelon` is the server's only), put
+   na1's copy in place as its database, then
    `cd /var/lib/5th-echelon && sudo -u echelon /opt/5th-echelon/dedicated_server --merge-accounts /tmp/eu1.db --merge-accounts /tmp/oceania.db`.
    It prints what it moved; check: accounts = na1's + eu1's + oceania's − people on more than
-   one; names renamed (expected none); a few players' friends and bans by hand.
+   one, without each server's two sample accounts (ids 1 and 105, which aren't moved); names
+   renamed (expected none); friends, requests and blocks between the same people before and
+   after (none lost); uploads = distinct (person, kind) across the three (the newer kept).
+   **The old database's `-wal` and `-shm` matter:** left beside a database copied in under the
+   same name, SQLite replays the old journal over it on open, and the merge goes into the old
+   database (the 2026-11-04 rehearsal did this once: 357 accounts instead of 448).
 4. **Load:** test players at production volume against mm, relayed at both relays
    (`build/build.sh load` with `SERVER=mm...`), with the Sessions page watched.
 5. **Real games:** Windows PCs (from NZ and further), a Steam Deck: sign-in, quick match
@@ -65,8 +73,10 @@ Announce it in the launcher's news and Discord.
 2. **Stop new sign-ins on eu1 and oceania** (their game service stops), then let their
    outboxes empty (`SELECT COUNT(*) FROM stats_outbox`, `report_outbox`, `federation_outbox`
    all 0; the merge refuses otherwise) and take a fresh snapshot of each (`backup.sh snapshot`).
-3. **Merge:** copy eu1's and oceania's databases to na1; stop na1's game service; take a
-   snapshot of na1 first; run `--merge-accounts` with both; start it again.
+3. **Merge:** copy eu1's and oceania's databases to na1 (from their snapshots, or SQLite's
+   `.backup`: never a plain copy of a database in use); stop na1's game service; take a
+   snapshot of na1 first; run `--merge-accounts` with both, against na1's own database in place
+   (nothing copied over it); start it again. The rehearsal's merge took a second.
 4. **Turn eu1 and oceania into relays:** the installer with `--role relay --ticket-key <na1's key>
    --mm-record match.scbl.jdevwebb.net --mm-standby na1=...,eu1=...,oceania=...`. Their own
    databases stay as they are (the rollback's), and their `/api/info` now says `moved_to`.
