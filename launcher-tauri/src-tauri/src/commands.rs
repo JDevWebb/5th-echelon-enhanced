@@ -146,6 +146,9 @@ pub struct Info {
     new_match: bool,
     /// Friend requests waiting for the player's answer (the side menu's Friends dot).
     requests: usize,
+    /// What's still being prepared before the game can start (its files being hashed): the
+    /// Play button waits, with this on it.
+    preparing: Option<&'static str>,
 }
 
 #[tauri::command(async)]
@@ -177,6 +180,7 @@ pub fn info(state: tauri::State<Launcher>) -> Info {
         emulator_notice: game.is_some_and(|g| g.uplay_emulator && !g.uplay_emulator_told),
         new_match: inner.new_match_until.is_some_and(|until| Instant::now() < until),
         requests: inner.friends.requests,
+        preparing: game.filter(|g| launcher::game_files::preparing(&g.dir)).map(|_| launcher::game_files::PREPARING),
     }
 }
 

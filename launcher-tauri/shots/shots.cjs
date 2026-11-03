@@ -70,6 +70,7 @@ const SHOTS = [
   ['play-button-warn', '?answered&warn', []],
   ['play-button-new-match', '?answered&newmatch', []],
   ['play-button-running', '?answered&running', []],
+  ['play-button-preparing', '?answered&ready&preparing', []],
   ['first-diagnostics', '', []],
   ['first-game-options', '', [button('Keep sending')]],
   ['setup-server', '?first&answered', []],

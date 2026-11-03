@@ -95,6 +95,7 @@ const whatsNew = ref(null);
 const questionsUp = ref(true);
 const questions = ref(null);
 let timer = null;
+let fastTimer = null;
 
 /** To a screen; for Settings, at a section ("network", "identity"…). */
 function go(id, at = null) {
@@ -175,6 +176,8 @@ onMounted(async () => {
   if (kept && Math.abs(kept - 1) > 0.01) setSize(kept);
   // Whether the game is running, and settings changed elsewhere (the egui launcher, by hand).
   timer = setInterval(refresh, 3000);
+  // While the game is being got ready (Play waiting), sooner: Play turns on within half a second.
+  fastTimer = setInterval(() => info.preparing && refresh(), 500);
   stopSetup = await listen('setup', ({ payload }) => {
     // Outside the guided setup (a friend's server, the menu's): the account dialog.
     if (payload.kind === 'needs-name' && !setupShown.value) askedName.value = payload;
@@ -191,6 +194,7 @@ onBeforeUnmount(() => {
   clearInterval(closeTimer);
   document.removeEventListener('keydown', keys);
   clearInterval(timer);
+  clearInterval(fastTimer);
   stopSetup?.();
 });
 </script>

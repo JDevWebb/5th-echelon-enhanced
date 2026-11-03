@@ -13,6 +13,7 @@ use url::Url;
 pub mod clock;
 pub mod diagnostics;
 pub mod fusion_fix;
+pub mod game_files;
 pub mod join_request;
 pub mod last_run;
 pub mod redact;

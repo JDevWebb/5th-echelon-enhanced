@@ -16,6 +16,7 @@ pub mod dll_utils;
 pub mod feedback;
 pub mod flow;
 pub mod front_door;
+pub mod game_files;
 pub mod logging;
 pub mod maintenance;
 pub mod matches;

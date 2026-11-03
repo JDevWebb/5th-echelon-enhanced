@@ -27,6 +27,11 @@ pub fn start(game: &mut Game, notices: &mut Notices, mode: PlayMode, name_not_al
     if !crate::new_options::pending(Some(game)).is_empty() {
         return Err(Refused::First("First, choose the new game options.".into()));
     }
+    // The game's files are hashed for its sign-in first (game_files.rs): a few seconds the
+    // first time, the Play button waiting meanwhile.
+    if crate::game_files::preparing(&game.dir) {
+        return Err(Refused::First(format!("{}…", crate::game_files::PREPARING)));
+    }
     if setup::game::game_running() {
         return Err(Refused::Error("Splinter Cell: Blacklist is already running.".into()));
     }

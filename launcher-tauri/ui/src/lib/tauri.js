@@ -9,7 +9,7 @@ const sample = {
     server: 'eu1.scbl.jdevwebb.net', account: 'Kiwi', community: true, play_mode: 'play', managed: false, running: false,
     connecting: false, max_name: 24, identity: 'DNIC-JULS', beta: location.search.includes('beta') ? 1 : 0,
     name_not_allowed: location.search.includes('banners') ? 'Kiwi' : null, emulator_notice: location.search.includes('banners'),
-    new_match: false,
+    new_match: false, preparing: null,
   },
   questions: {
     diagnostics: {
@@ -141,6 +141,8 @@ if (location.search.includes('ready') || location.search.includes('warn') || loc
   sample.info.new_match = location.search.includes('newmatch');
 }
 if (location.search.includes('running')) sample.info.running = true;
+// ?preparing: the game's files still being hashed (Play waits, spinning).
+if (location.search.includes('preparing')) sample.info.preparing = 'Checking game files';
 // What the browser preview's commands do to its made-up state.
 const preview = {
   play: () => {

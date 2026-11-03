@@ -2517,12 +2517,18 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked:
     let managed = game.managed.is_some();
     let chosen = *play.play_mode.get_or_insert_with(crate::app::Prefs::play_mode);
     let mode = if managed { crate::app::PlayMode::Play } else { chosen };
-    let enabled = !play.busy() && blocked.is_none();
+    // The game's files hashed for its sign-in first (game_files.rs): Play waits, saying so.
+    let preparing = crate::game_files::preparing(&game.dir);
+    if preparing {
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
+    }
+    let enabled = !play.busy() && blocked.is_none() && !preparing;
     // A split button: the last choice is the button, the arrow beside it offers the others.
     let (button, arrow) = ui
         .allocate_ui_with_layout(egui::vec2(SPLIT_PLAY_WIDTH, 58.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            let button = ui.add_enabled(enabled, theme::play_button(mode.label()).corner_radius(egui::CornerRadius { nw: 4, sw: 4, ne: 0, se: 0 }));
+            let label = if preparing { "Checking files…" } else { mode.label() };
+            let button = ui.add_enabled(enabled, theme::play_button(label).corner_radius(egui::CornerRadius { nw: 4, sw: 4, ne: 0, se: 0 }));
             let arrow = ui.add_enabled(
                 enabled,
                 egui::Button::new("")

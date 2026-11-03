@@ -95,7 +95,7 @@
           </span>
           <span class="split" :class="button.tone">
             <button class="play" type="button" :disabled="button.disabled" :title="blocked || null" @click="button.act()">
-              <span class="label">{{ button.label }}</span>
+              <span class="label"><i v-if="button.busy" class="spin" aria-hidden="true"></i>{{ button.label }}</span>
               <small v-if="button.sub" class="sub">{{ button.sub }}</small>
             </button>
             <button
@@ -105,7 +105,7 @@
               aria-label="Play SvM or Co-op"
               aria-haspopup="menu"
               :aria-expanded="menuOpen"
-              :disabled="!!blocked || info.managed || !info.game_dir || !info.server"
+              :disabled="!!blocked || info.managed || !info.game_dir || !info.server || !!button.busy"
               :title="info.managed ? 'This game is set up by another tool, so the launcher starts it as it is.' : null"
               @click.stop="toggleModes"
               @keydown.up.prevent="menuOpen || toggleModes()"
@@ -566,11 +566,13 @@ const button = computed(() => {
   // A release going out or maintenance says what it means for playing now.
   if (notice.value?.blocks_play) return { label: 'Server updating', sub: notice.value.status, tone: 'muted', disabled: true, act: go };
   const newMatch = props.info.new_match ? 'New match · ' : '';
-  if (!list.value) return { label: mode, sub: `${newMatch}Checking…`, tone: 'checking', disabled: false, act: go };
+  // Getting ready (the checks, the game's files hashed for its sign-in): Play waits, spinning.
+  if (!list.value) return { label: mode, sub: `${newMatch}Checking…`, tone: 'checking', disabled: true, busy: true, act: go };
+  if (props.info.preparing) return { label: mode, sub: `${newMatch}${props.info.preparing}…`, tone: 'checking', disabled: true, busy: true, act: go };
   if (list.value.tone === 'fail') {
     const fixes = failing.filter((c) => c.fix);
     const sub = list.value.line;
-    if (list.value.busy) return { label: 'Fixing…', sub, tone: 'fail', disabled: true, act: go };
+    if (list.value.busy) return { label: 'Fixing…', sub, tone: 'fail', disabled: true, busy: true, act: go };
     if (fixes.length === 1) return { label: fixes[0].fix[1], sub, tone: 'fail', disabled: false, act: () => runFix(fixes[0].fix[0]) };
     if (fixes.length > 1 && list.value.fixable) return { label: `Fix ${fixes.length} things`, sub, tone: 'fail', disabled: false, act: fixEverything };
     return { label: 'See what to fix', sub, tone: 'fail', disabled: false, act: () => (tab.value = 'status') };
@@ -706,7 +708,8 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 .split.muted .play { font-size: 20px; letter-spacing: .08em; animation: none; }
 .split.muted .play::after, .split.fail .play::after, .split.warn .play::after { display: none; }
 .split.muted .play .sub { color: var(--soft); opacity: 1; }
-.split.checking .play { animation: breathe 1.6s ease-in-out infinite; }
+.split.checking .play { animation: breathe 1.6s ease-in-out infinite; padding: 0 clamp(18px, 2.4vw, 40px); }
+.play .label .spin { width: 16px; height: 16px; margin-right: 10px; vertical-align: -2px; border-color: rgba(0, 0, 0, .22); border-top-color: currentColor; }
 .play { clip-path: none; border-radius: 4px 0 0 4px; animation: pulse 2.8s ease-in-out infinite; }
 .play:disabled { animation: none; }
 .play-more { height: 58px; width: 42px; display: grid; place-items: center; background: var(--accent); color: var(--on-accent); border-left: 2px solid var(--bg); clip-path: polygon(0 0, 100% 0, 100% 75%, 75% 100%, 0 100%); }
