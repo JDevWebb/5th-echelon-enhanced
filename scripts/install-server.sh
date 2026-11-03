@@ -1261,6 +1261,8 @@ if [ "$no_caddy" -eq 0 ]; then
   [ "${#domain}" -le 27 ] || die "\"$domain\" is ${#domain} characters; the game takes at most 27 (e.g. eu1.example.com). Players can't start the game with a longer one"
   check_dns "$domain"
 fi
+# Every player's game uses the matchmaking server's record, so it's held to the same limit.
+[ -z "$mm_record" ] || [ "${#mm_record}" -le 27 ] || die "--mm-record \"$mm_record\" is ${#mm_record} characters; the game takes at most 27 (e.g. match.example.com). Players can't start the game with a longer one"
 fi
 
 # --- Sharing friends (asked on a first install) --------------------------
