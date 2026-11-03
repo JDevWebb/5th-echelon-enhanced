@@ -469,8 +469,9 @@ pub struct MatchmakingConfig {
     #[serde(default)]
     pub network_relays: bool,
     /// Quick match's far rooms (the 0.4.8 plan's G3): results come nearest first, and rooms
-    /// whose host is estimated farther than this round trip (ms, from the two players' places)
-    /// are left out while a nearer one matches. 0 (the default): off, results as before.
+    /// whose host is estimated farther than this round trip (ms: through the relays both
+    /// players' launchers pinged, else from the two players' places) are left out while a
+    /// nearer one matches. 0 (the default): off, results as before.
     #[serde(default)]
     pub far_ms: u16,
     /// With `far_ms`: far rooms are left out even when nothing nearer matches, so a far player

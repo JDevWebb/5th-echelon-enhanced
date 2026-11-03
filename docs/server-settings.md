@@ -167,6 +167,21 @@ The game's own sign-in carries no version, so the server lets it in only for an 
 
 Unset, the minimum is the server's own release: when a server updates, players need a client at least as new. Set an older version to let clients that are still compatible keep playing after a server-only update. `/api/info` reports the minimum as `minimum_client`.
 
+## `[matchmaking]`: one matchmaking server for a network
+
+```toml
+[matchmaking]
+# network_relays = false   # work with every relay the coordinator lists
+# far_ms = 0               # leave out rooms farther than this round trip (ms); 0: off
+# far_strict = false       # leave them out even when nothing nearer matches
+```
+
+For the network's one matchmaking server (global matchmaking), whose regions each keep a relay near their players (`[role] kind = "relay"`):
+
+- **`network_relays`:** the relays the coordinator lists are this server's too. `/api/info` offers them to launchers, which ping each and have the game use the nearest; addresses in their ranges are left as they are; relays report their players to this server and ask it which players it put together. As it puts players together (a search's first hosts, a probe, a join), it tells their relays at once, so the game's quick pings to a search's hosts aren't held up.
+- **`far_ms`:** quick match's results come nearest first, and rooms whose host is estimated farther than this round trip are left out while a nearer room matches. The estimate is measured where it can be: each 0.4.8 game signs in with its launcher's round trip to every relay, and two players are as far apart as the least sum over a relay both reached. Otherwise it's the distance between their places, which runs about 30% under the real routes, so keep `far_ms` low (150 is about Sydney to the US west coast). A player it can't place is never left out. Sessions shows what each search left out and why.
+- **`far_strict`:** with `far_ms`, far rooms are left out even when nothing nearer matches: a far player hosts their own match instead of joining one across the world. Off, they still get the far rooms when there's nothing else.
+
 ## `[federation]`: sharing friends with other servers
 
 ```toml
