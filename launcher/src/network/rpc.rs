@@ -351,6 +351,16 @@ pub async fn join_room(api_url: String, token: &str, room: u32) -> Result<server
         .map_err(refusal)
 }
 
+/// The public matches in full, for the Matches tab (`Lobbies`).
+pub async fn lobbies(api_url: String, token: &str) -> Result<server_api::friends::LobbiesResponse, Error> {
+    let (mut client, token) = friends_client(&api_url, token).await?;
+    client
+        .lobbies(authed(server_api::friends::LobbiesRequest {}, &token))
+        .await
+        .map(tonic::Response::into_inner)
+        .map_err(refusal)
+}
+
 /// Asks for a new match (`NewMatch`): the player's searches find nothing until they host one,
 /// so the game starts a fresh public match. `on` false takes it back. How long it holds.
 pub async fn new_match(api_url: String, token: &str, on: bool) -> Result<std::time::Duration, Error> {

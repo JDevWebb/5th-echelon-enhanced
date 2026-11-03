@@ -674,6 +674,25 @@ impl Friends for MyFriends {
         }))
     }
 
+    /// The public matches in full, for the launcher's Matches tab (lobbies.rs).
+    async fn lobbies(&self, request: Request<friends::LobbiesRequest>) -> Result<Response<friends::LobbiesResponse>, Status> {
+        let me = caller(&request)?;
+        if !crate::rate_limit::polls().check(me) {
+            return Err(Status::resource_exhausted("Too many requests; slow down"));
+        }
+        // Where the caller is: their game's address, else this call's (the launcher's).
+        let mine = crate::metrics::address_of(me).or_else(|| client_addr(&request));
+        let sessions = self.storage.live_sessions_async().await.map_err(internal)?;
+        let relations = self.storage.relations_of(me).await.map_err(internal)?;
+        let under_way = |room: u32| crate::match_started::under_way_for(room).or_else(|| crate::match_started::started(room).then_some(std::time::Duration::ZERO));
+        let ping = |other: u32| crate::far_rooms::estimate_by_relays(me, other).or_else(|| crate::far_rooms::estimate_ms(mine?, crate::metrics::address_of(other)?));
+        let live = crate::lobbies::Live {
+            under_way: &under_way,
+            ping: &ping,
+        };
+        Ok(Response::new(crate::lobbies::list(me, &sessions, &relations, &live, identity::now())))
+    }
+
     /// The caller's quick match searches find nothing until they host a match (search_steer.rs),
     /// or find matches again when they take it back.
     async fn new_match(&self, request: Request<friends::NewMatchRequest>) -> Result<Response<friends::NewMatchResponse>, Status> {
@@ -1752,6 +1771,8 @@ impl Misc for MyMisc {
             .map(|s| s.session_id)
             .collect();
         crate::match_started::host_says(&rooms, r.under_way);
+        // Its state, settings and sides, for the launcher's Matches tab.
+        crate::lobbies::said(&rooms, &r.state, &r.settings, &r.team);
         // Each change, for the Sessions page (and to check the game's state against joins).
         static LAST: std::sync::LazyLock<std::sync::Mutex<HashMap<u32, String>>> = std::sync::LazyLock::new(Default::default);
         let state = printable(&r.state, 40);

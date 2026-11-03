@@ -138,7 +138,7 @@
                   >
                     <b>New {{ mode === 'svm' ? 'SvM' : 'Co-op' }} match</b><small>Skip the open ones and host</small>
                   </button>
-                  <button type="button" :ref="(el) => (modeItems[MODES.length + 2] = el)" role="menuitem" @click="menuOpen = false; picking = true">
+                  <button type="button" :ref="(el) => (modeItems[MODES.length + 2] = el)" role="menuitem" @click="menuOpen = false; emit('go', 'matches')">
                     <b>Choose a match…</b><small>See the open ones and pick</small>
                   </button>
                   <button v-if="info.new_match" type="button" :ref="(el) => (modeItems[MODES.length + 3] = el)" role="menuitem" @click="cancelNewMatch">
@@ -309,7 +309,6 @@
       </Transition>
     </aside>
 
-    <MatchPicker :open="picking" @close="picking = false" />
 
     <Transition name="modal">
       <div v-if="confirmSwitch" class="backdrop" @click.self="confirmSwitch = null">
@@ -333,7 +332,6 @@
 // library. The server menu, friends and the news come next.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';
 import { call, inTauri, listen } from '../lib/tauri.js';
-import MatchPicker from '../components/MatchPicker.vue';
 
 // `latest`: the latest in Global (who, what), for the Squad tab on the community network.
 const props = defineProps({ info: { type: Object, required: true }, latest: { type: Array, default: null } });
@@ -436,9 +434,8 @@ const menuKeys = (e) => keysIn(e, menuItems.value, () => (serverMenu.value = fal
 const modeItems = ref([]);
 
 // Choosing your match (the server's "choose-match"): a new public match, or one picked from the
-// open ones (MatchPicker).
+// open ones (the Matches tab).
 const chooseOffered = ref(false);
-const picking = ref(false);
 onMounted(async () => (chooseOffered.value = await call('choose_match_offered')));
 function newMatch(mode) {
   menuOpen.value = false;

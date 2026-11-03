@@ -87,6 +87,7 @@ mod join_targets;
 mod keys;
 mod ladder;
 mod link;
+mod lobbies;
 mod locale;
 mod match_started;
 mod metrics;

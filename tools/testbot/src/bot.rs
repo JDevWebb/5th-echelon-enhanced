@@ -1069,6 +1069,35 @@ impl Bot {
             .into_inner())
     }
 
+    /// The public matches in full, as the launcher's Matches tab asks (`Lobbies`).
+    pub async fn lobbies(&self) -> std::result::Result<server_api::friends::LobbiesResponse, tonic::Status> {
+        Ok(FriendsClient::new(self.api.clone())
+            .lobbies(self.authed(server_api::friends::LobbiesRequest {}))
+            .await?
+            .into_inner())
+    }
+
+    /// The host's game's match state with its players' sides (`MatchState`).
+    pub async fn match_state_with_team(&self, under_way: bool, state: &str, team: &[(&str, &str)]) -> std::result::Result<(), tonic::Status> {
+        MiscClient::new(self.api.clone())
+            .match_state(
+                self.authed(server_api::misc::MatchStateRequest {
+                    under_way,
+                    state: state.into(),
+                    settings: [("m_fSpyRespawnTime".to_string(), 7.0)].into_iter().collect(),
+                    team: team
+                        .iter()
+                        .map(|(name, side)| server_api::misc::TeamPlayer {
+                            name: (*name).into(),
+                            side: (*side).into(),
+                        })
+                        .collect(),
+                }),
+            )
+            .await?;
+        Ok(())
+    }
+
     /// Asks for (or takes back) a new match: searches find nothing until this player hosts
     /// (`NewMatch`). The seconds it holds.
     pub async fn new_match(&self, on: bool) -> std::result::Result<u32, tonic::Status> {
@@ -1285,6 +1314,7 @@ impl Bot {
                 under_way,
                 state: state.into(),
                 settings: Default::default(),
+                team: Vec::new(),
             }))
             .await?;
         Ok(())

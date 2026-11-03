@@ -9,6 +9,7 @@
           <Transition name="view" mode="out-in">
             <Setup v-if="screen === 'play' && setupShown" key="setup" :info="info" :fresh="fresh" @changed="refresh" @cancel="editing = false" @finished="finishSetup" />
           <Play v-else-if="screen === 'play'" key="play" :info="info" :latest="glance.latest" @go="go" @played="played" @change-server="editing = true" />
+            <Matches v-else-if="screen === 'matches'" key="matches" :info="info" :watching="watching" @go="go" @watch="setWatch" @played="played" />
             <Servers v-else-if="screen === 'servers'" key="servers" :info="info" @go="go" @account="(a) => (askedName = a)" @changed="refresh" />
           <Intel v-else-if="screen === 'intel'" key="intel" :info="info" />
           <Support v-else-if="screen === 'support'" key="support" @go="go" />
@@ -18,6 +19,13 @@
           <Host v-else-if="screen === 'host'" key="host" />
           </Transition>
         </main>
+        <Transition name="modal">
+          <div v-if="seatOpen" class="seat" role="status">
+            <p><b>A seat opened</b> in {{ seatOpen.label }}.</p>
+            <button type="button" class="btn primary" @click="joinWatched">Join</button>
+            <button type="button" class="btn" @click="seatOpen = null">Not now</button>
+          </div>
+        </Transition>
         <ActivityBar ref="bar" />
       </div>
     </div>
@@ -54,6 +62,7 @@ import Intel from './views/Intel.vue';
 import Support from './views/Support.vue';
 import Chat from './views/Chat.vue';
 import Friends from './views/Friends.vue';
+import Matches from './views/Matches.vue';
 import Settings from './views/Settings.vue';
 import Host from './views/Host.vue';
 import ActivityBar from './components/ActivityBar.vue';
@@ -97,6 +106,66 @@ const questions = ref(null);
 let timer = null;
 let fastTimer = null;
 
+// "Tell me when a seat opens" (the Matches tab): the match watched, asked about every 10 s
+// wherever the player is in the launcher; once it's joinable, a line with Join, and the window
+// asks for attention. A match that's gone ends the watch.
+const watching = ref(null);
+const seatOpen = ref(null);
+let watchTimer = null;
+function setWatch(w) {
+  watching.value = w;
+  seatOpen.value = null;
+  clearInterval(watchTimer);
+  if (w) watchTimer = setInterval(checkWatched, 10000);
+}
+async function checkWatched() {
+  const w = watching.value;
+  if (!w) return;
+  const got = await call('lobbies');
+  const l = got?.lobbies?.find((x) => x.room === w.room);
+  if (!l) return setWatch(null);
+  if (l.joinable) {
+    setWatch(null);
+    seatOpen.value = w;
+    if (inTauri) window.__TAURI__.window.getCurrentWindow().requestUserAttention(2);
+  }
+}
+async function joinWatched() {
+  const w = seatOpen.value;
+  seatOpen.value = null;
+  if (w) {
+    await call('join_match', { room: w.room });
+    played();
+  }
+}
+
+// The window always has room for the full layout (the Matches tab's list beside its details):
+// at least FULL at the player's size; a screen too small for that at their size gets a smaller
+// size instead (never below 0.7), so the pages are never squeezed into a narrow form.
+const FULL = { width: 1280, height: 800 };
+async function fitWindow(want) {
+  if (!inTauri) return want;
+  const w = window.__TAURI__.window.getCurrentWindow();
+  const { LogicalSize } = window.__TAURI__.dpi;
+  const monitor = await window.__TAURI__.window.currentMonitor();
+  let fits = want;
+  if (monitor) {
+    const scale = monitor.scaleFactor || 1;
+    const area = monitor.workArea?.size || monitor.size;
+    const room = { width: area.width / scale, height: area.height / scale };
+    fits = Math.min(want, room.width / FULL.width, room.height / FULL.height);
+    fits = Math.max(0.7, Math.floor(fits * 10) / 10);
+  }
+  const min = new LogicalSize(Math.round(FULL.width * fits), Math.round(FULL.height * fits));
+  await w.setMinSize(min);
+  const now = await w.innerSize();
+  const scale = await w.scaleFactor();
+  if (now.width / scale < min.width || now.height / scale < min.height) {
+    await w.setSize(new LogicalSize(Math.max(now.width / scale, min.width), Math.max(now.height / scale, min.height)));
+  }
+  return fits;
+}
+
 /** To a screen; for Settings, at a section ("network", "identity"…). */
 function go(id, at = null) {
   screen.value = id;
@@ -108,7 +177,9 @@ const settingsAt = ref(null);
 // full screen (F11).
 const size = ref(1);
 async function setSize(to) {
-  size.value = Math.min(1.6, Math.max(0.7, Math.round(to * 10) / 10));
+  const want = Math.min(1.6, Math.max(0.7, Math.round(to * 10) / 10));
+  // As large as asked while the full layout still fits the screen.
+  size.value = await fitWindow(want);
   await call('set', { key: 'size', value: size.value });
   if (inTauri) window.__TAURI__.webview.getCurrentWebview().setZoom(size.value);
 }
@@ -173,7 +244,8 @@ onMounted(async () => {
   document.addEventListener('keydown', keys);
   // The size kept from before.
   const kept = (await call('settings')).size;
-  if (kept && Math.abs(kept - 1) > 0.01) setSize(kept);
+  // The window sized for the full layout at the player's size (or what the screen allows).
+  setSize(kept || 1);
   // Whether the game is running, and settings changed elsewhere (the egui launcher, by hand).
   timer = setInterval(refresh, 3000);
   // While the game is being got ready (Play waiting), sooner: Play turns on within half a second.
@@ -195,6 +267,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', keys);
   clearInterval(timer);
   clearInterval(fastTimer);
+  clearInterval(watchTimer);
   stopSetup?.();
 });
 </script>
@@ -216,6 +289,9 @@ onBeforeUnmount(() => {
 .working { display: flex; align-items: center; gap: 10px; }
 .spin { display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--control-line); border-top-color: var(--accent); animation: spin .8s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
+.seat { position: absolute; right: 24px; bottom: 76px; z-index: 40; display: flex; align-items: center; gap: 12px; padding: 12px 14px 12px 18px; border-radius: 6px; background: var(--surface); border: 1px solid rgba(155, 224, 90, .45); box-shadow: 0 18px 50px rgba(0, 0, 0, .55); }
+.seat p { margin: 0; }
+.column { position: relative; }
 .modal-enter-active, .modal-leave-active { transition: opacity .2s; }
 .modal-enter-from, .modal-leave-to { opacity: 0; }
 </style>

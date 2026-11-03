@@ -267,6 +267,8 @@ pub fn closed_lately(who: &Who) -> bool {
 /// Forgets the joins of a room that ended (its id may come again after a restart).
 pub fn room_ended(room: u32) {
     queue().lock().unwrap_or_else(std::sync::PoisonError::into_inner).joins.retain(|(_, r), _| *r != room);
+    // What its host's game said of it goes too (the Matches tab).
+    crate::lobbies::ended(room);
 }
 
 /// Notes that `user`'s game kept sending but never acknowledged `packets` of the server's

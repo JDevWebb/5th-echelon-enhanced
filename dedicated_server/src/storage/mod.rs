@@ -2307,6 +2307,9 @@ pub struct LiveSession {
     /// Its host's name, and when it was made (Unix seconds).
     pub host: String,
     pub created: i64,
+    /// Its host's account, and each player's (in `players`' order).
+    pub host_id: u32,
+    pub player_ids: Vec<u32>,
     /// Invite only, or with private seats only: not for anyone to join.
     pub private: bool,
 }
@@ -2327,29 +2330,35 @@ impl Storage {
 
     /// Live sessions with their players (newest first), for presence and what's being played.
     pub async fn live_sessions_async(&self) -> Result<Vec<LiveSession>> {
-        let sessions: Vec<(u32, String, String, i64, bool)> = sqlx::query_as(&format!(
+        let sessions: Vec<(u32, String, String, i64, bool, u32)> = sqlx::query_as(&format!(
             "SELECT g.id, COALESCE(g.attributes, ''), COALESCE(u.username, ''), COALESCE(unixepoch(g.created_at), 0),
                     EXISTS (SELECT 1 FROM advertised_sessions a WHERE a.session_id = g.id AND a.user_id = g.creator_id AND a.invite_only = 1) OR {PRIVATE_SEATS_ONLY}
+                    , g.creator_id
              FROM game_sessions g LEFT JOIN users u ON u.id = g.creator_id WHERE g.destroyed_at IS NULL ORDER BY g.id DESC"
         ))
         .fetch_all(&self.pool)
         .await?;
         // Participants and guests (who joined a public match: its host never adds them).
-        let members: Vec<(u32, String)> = sqlx::query_as(
-            "SELECT p.game_id, u.username FROM participants p JOIN users u ON u.id = p.user_id
-             UNION SELECT gu.game_id, u.username FROM guests gu JOIN users u ON u.id = gu.user_id",
+        let members: Vec<(u32, u32, String)> = sqlx::query_as(
+            "SELECT p.game_id, u.id, u.username FROM participants p JOIN users u ON u.id = p.user_id
+             UNION SELECT gu.game_id, u.id, u.username FROM guests gu JOIN users u ON u.id = gu.user_id",
         )
         .fetch_all(&self.pool)
         .await?;
         let live = sessions
             .into_iter()
-            .map(|(id, attributes, host, created, private)| LiveSession {
-                id,
-                attributes,
-                host,
-                created,
-                private,
-                players: members.iter().filter(|(g, _)| *g == id).map(|(_, name)| name.clone()).collect(),
+            .map(|(id, attributes, host, created, private, host_id)| {
+                let mine: Vec<&(u32, u32, String)> = members.iter().filter(|(g, ..)| *g == id).collect();
+                LiveSession {
+                    id,
+                    attributes,
+                    host,
+                    created,
+                    private,
+                    host_id,
+                    player_ids: mine.iter().map(|(_, user, _)| *user).collect(),
+                    players: mine.iter().map(|(.., name)| name.clone()).collect(),
+                }
             })
             .filter(|s| !s.players.is_empty())
             .collect();

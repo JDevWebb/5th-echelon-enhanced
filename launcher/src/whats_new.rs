@@ -56,8 +56,8 @@ pub const RELEASES: &[Release] = &[
                 community: false,
             },
             Item {
-                title: "Choose your match",
-                text: "Beside Play: Choose a match... lists the open public matches to join one, and New match starts one of your own whatever is open. Quick match leaves out matches with someone you've blocked. The overlay's Match tab does the same.",
+                title: "Matches",
+                text: "A tab of its own: every public match on your server, who's in it (the host, parties, your friends, the sides once a round runs), what it's doing and its settings. Join one, or have the launcher tell you when a seat opens; New match starts one of your own whatever is open. Quick match leaves out matches with someone you've blocked. The overlay's Match tab does the same.",
                 community: false,
             },
             Item {

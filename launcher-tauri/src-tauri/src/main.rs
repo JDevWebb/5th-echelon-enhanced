@@ -81,6 +81,7 @@ fn main() {
             commands::squad,
             commands::join_friend,
             commands::matches,
+            commands::lobbies,
             commands::choose_match_offered,
             commands::join_match,
             commands::new_match,

@@ -109,6 +109,15 @@ message MatchStateRequest {
     // The round's settings as the game's match manager has them (F4: respawn times, the time
     // limit, score and respawn limits, by the script property's name), 0.4.8 on.
     map<string, float> settings = 3;
+    // Who's on which side, as the host's game has its players' characters (0.4.8 on): for the
+    // launcher's Matches tab.
+    repeated TeamPlayer team = 4;
+}
+
+message TeamPlayer {
+    string name = 1;
+    // "spy" or "merc".
+    string side = 2;
 }
 message MatchStateResponse {}
 

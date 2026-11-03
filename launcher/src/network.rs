@@ -68,6 +68,7 @@ pub async fn probe_helper(ip: &str, port: u16) -> Result<std::net::SocketAddr, E
 }
 pub use rpc::join_room;
 pub use rpc::link_identity;
+pub use rpc::lobbies;
 pub use rpc::name_available;
 pub use rpc::new_match;
 pub use rpc::online_players;

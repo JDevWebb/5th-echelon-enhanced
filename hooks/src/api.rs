@@ -324,6 +324,11 @@ pub fn match_state(under_way: bool, state: &str, settings: &std::collections::BT
                 under_way,
                 state: state.to_string(),
                 settings: settings.iter().map(|(k, v)| (k.clone(), *v)).collect(),
+                // Who's on which side (the launcher's Matches tab).
+                team: crate::roster::current()
+                    .into_iter()
+                    .map(|(name, side)| server_api::misc::TeamPlayer { name, side: side.into() })
+                    .collect(),
             }))
             .await?;
         Ok(())

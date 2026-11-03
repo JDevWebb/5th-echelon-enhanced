@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "The launcher's window: its own title bar moves, minimises, maximises and closes it.",
+  "description": "The launcher's window: its own title bar moves, minimises, maximises and closes it; it keeps room for the full layout, and asks for attention when a watched match opens.",
   "windows": ["main"],
   "permissions": [
     "core:default",
@@ -13,6 +13,9 @@
     "core:window:allow-is-maximized",
     "core:window:allow-set-fullscreen",
     "core:window:allow-is-fullscreen",
+    "core:window:allow-set-min-size",
+    "core:window:allow-set-size",
+    "core:window:allow-request-user-attention",
     "core:webview:allow-set-webview-zoom"
   ]
 }

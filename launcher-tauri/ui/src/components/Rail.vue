@@ -42,12 +42,14 @@ const ICONS = {
   servers: '<rect x="4" y="4" width="16" height="6" rx="2"/><rect x="4" y="14" width="16" height="6" rx="2"/>',
   chat: '<path d="M4 5h16v11H9l-5 4z"/>',
   friends: '<circle cx="9" cy="8" r="3.2"/><path d="M3 19c.6-3.2 3-5 6-5s5.4 1.8 6 5"/><circle cx="17" cy="9" r="2.4"/><path d="M16.5 13.6c2.4.2 4 1.8 4.5 4.4"/>',
+  matches: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 9h18M8 13h8M8 16h5"/>',
   intel: '<rect x="4" y="4" width="16" height="16" rx="2"/><path d="M8 9h8M8 13h8M8 17h5"/>',
   support: '<circle cx="12" cy="12" r="8"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6M12 17h.01"/>',
   settings: '<circle cx="12" cy="12" r="3"/><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/>',
 };
 const top = computed(() => [
   { id: 'play', label: 'Play', icon: ICONS.play },
+  { id: 'matches', label: 'Matches', icon: ICONS.matches },
   { id: 'friends', label: props.requests ? `Friends: ${props.requests} waiting for your answer` : 'Friends', icon: ICONS.friends, dot: props.requests > 0 },
   { id: 'servers', label: 'Servers', icon: ICONS.servers },
   ...(props.community ? [{ id: 'chat', label: 'Chat', icon: ICONS.chat, dot: props.unread > 0 }] : []),

@@ -62,6 +62,7 @@ mod party_follow;
 mod pawns;
 mod quickstart;
 mod recording;
+mod roster;
 mod round_state;
 mod scheme_pool_fix;
 mod speed_check;
@@ -443,6 +444,9 @@ fn init(hmodule: Option<HMODULE>) {
         if config.replay_recording {
             watchers.push(Box::new(recording::Recorder::new(&game_dir, config.user.username.clone(), config.replay_upload)));
         }
+        // Who's on which side, for the match state the host's game sends (the launcher's
+        // Matches tab).
+        watchers.push(Box::new(roster::Roster::default()));
         pawns::start(watchers);
     }
 

@@ -23,6 +23,12 @@ service Friends {
     // The caller's quick match searches find nothing until they host a match (five minutes at
     // most), so their game starts a brand-new public match rather than join an open one.
     rpc NewMatch (NewMatchRequest) returns (NewMatchResponse);
+    // The public matches on this server in full, for the launcher's Matches tab: who's in each
+    // (host, parties, friends, teams), its state and settings, and how far each player is from
+    // the caller. Signed-in players only; a match with someone the caller blocked, or who
+    // blocked them, is left out (counted); private matches only counted. Servers that offer it
+    // list "lobbies" in /api/info's features.
+    rpc Lobbies (LobbiesRequest) returns (LobbiesResponse);
     // Publishes the game session the caller is currently in, so that it shows up in the
     // friend lists of everybody else. The game announces its session through
     // UPLAY_USER_SetGameSession and expects to find a friend's session in the friend list -
@@ -285,4 +291,55 @@ message JoinNowResponse {
     // JoinRoom's OK: the account id of the match's host, whose invitation the game is to take
     // as the requested join (the launcher's join request names it).
     string host_id = 3;
+}
+message LobbiesRequest {}
+
+message LobbiesResponse {
+    // Public matches, the caller's friends' first, then the busiest.
+    repeated Lobby lobbies = 1;
+    // Left out: with someone the caller blocked or who blocked them; private matches and their
+    // players; players in parties and in no match.
+    uint32 hidden_blocked = 2;
+    uint32 private_matches = 3;
+    uint32 private_players = 4;
+    uint32 party_players = 5;
+}
+
+message Lobby {
+    // Its room (session id), to join it by (JoinRoom).
+    uint32 room = 1;
+    // "svm" or "coop", the game mode (attribute 102, 0 when not said) and the map (101).
+    string kind = 2;
+    uint32 game_mode = 3;
+    uint32 map = 4;
+    // Its seats (public and private; 0 when not said) and the players its mode is made for.
+    uint32 seats = 5;
+    uint32 mode_size = 6;
+    // How long it has been open, in seconds.
+    uint32 open_secs = 7;
+    // Its host's game's word for its state ("RoundState_Started", "CoopMissionState_InGame";
+    // empty from a host before 0.4.8 or before its first round), whether it's under way (joiners
+    // turned away), for how long (seconds), and how many rounds have started.
+    string state = 8;
+    bool under_way = 9;
+    uint32 under_way_secs = 10;
+    uint32 round = 11;
+    // The round's settings as the host's game has them (F4), by the script property's name.
+    map<string, float> settings = 12;
+    // The caller's estimated round trip to its host, in ms (0: unknown).
+    uint32 ping_ms = 13;
+    repeated LobbyPlayer players = 14;
+}
+
+message LobbyPlayer {
+    string name = 1;
+    bool host = 2;
+    // Players who came as a party share a number (0: on their own).
+    uint32 party = 3;
+    // The caller's friend.
+    bool friend = 4;
+    // "spy" or "merc" in Spies vs Mercs, as the host's game says (empty when it doesn't).
+    string team = 5;
+    // The caller's estimated round trip to them, in ms (0: unknown).
+    uint32 ping_ms = 6;
 }

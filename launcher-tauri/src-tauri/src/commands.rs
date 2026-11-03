@@ -1070,6 +1070,18 @@ pub fn matches(state: tauri::State<Launcher>) -> launcher::matches::Matches {
     launcher::task::guarded(|| Ok::<_, String>(launcher::matches::list(&server))).unwrap_or_default()
 }
 
+/// The Matches tab: every public match on the player's server in full (launcher::matches's
+/// `lobbies`; servers listing "lobbies").
+#[tauri::command(async)]
+pub fn lobbies(state: tauri::State<Launcher>) -> launcher::matches::Lobbies {
+    let inner = state.lock();
+    let Some(cfg) = inner.game.as_ref().map(|g| (*g.cfg).clone()) else {
+        return launcher::matches::Lobbies::default();
+    };
+    drop(inner);
+    launcher::task::guarded(|| Ok::<_, String>(launcher::matches::lobbies(&cfg))).unwrap_or_default()
+}
+
 /// Whether the player's server lets them pick a match or start a new one ("choose-match"; asked
 /// of it at most every 10 minutes).
 #[tauri::command(async)]

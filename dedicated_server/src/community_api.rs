@@ -55,6 +55,8 @@ const FEATURES: &[&str] = &[
     "name-check",
     "join-now",
     "choose-match",
+    // The public matches in full, for the launcher's Matches tab (Lobbies).
+    "lobbies",
     // Reporting a player from the overlay's Match tab (MatchPlayers, ReportPlayer; F5).
     "report-player",
 ];

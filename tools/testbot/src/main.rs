@@ -1419,6 +1419,77 @@ async fn join_now_match(ctx: &mut Ctx) -> Result<()> {
 /// host); a private match, a party, or a host who blocked the caller answer NOT_FOUND alike,
 /// and the caller's own block of the host is named. A match with someone the searcher blocked
 /// in it is left out of their searches.
+/// The launcher's Matches tab (Lobbies): a public match in full (its host, a party, a friend,
+/// its state, round and sides from the host's game), one hosted by someone the viewer blocked
+/// left out and counted, a private one only counted.
+async fn lobbies(ctx: &mut Ctx) -> Result<()> {
+    let map = 920_000 + ctx.run;
+    let open = format!("113 => 0;103 => 1;3 => 8;4 => 0;102 => 7;101 => {map}");
+    let mut host = ctx.player("Host").await?;
+    host.register_urls(&["prudp:/address=127.0.0.1;port=3191;sid=15;type=3"]).await?;
+    let room = host.create_session(&open).await?;
+    host.add_participants(room, &[host.pid], &[]).await?;
+    // Two who came as a party: one's party, both in it, then both into the match.
+    let mut leader = ctx.player("Guest").await?;
+    leader.register_urls(&["prudp:/address=127.0.0.1;port=3192;sid=15;type=3"]).await?;
+    let mut member = ctx.player("Guest").await?;
+    member.register_urls(&["prudp:/address=127.0.0.1;port=3193;sid=15;type=3"]).await?;
+    let party = leader.create_session("113 => 1;3 => 4;4 => 0").await?;
+    leader.add_participants(party, &[leader.pid], &[]).await?;
+    member.join_session(party).await?;
+    leader.join_session(room).await?;
+    member.join_session(room).await?;
+    // The viewer, a friend of the host's.
+    let mut viewer = ctx.player("Guest").await?;
+    viewer.register_urls(&["prudp:/address=127.0.0.1;port=3194;sid=15;type=3"]).await?;
+    viewer.friend_change("request", &host.name).await?;
+    host.friend_change("accept", &viewer.name).await?;
+    // A match whose host the viewer blocked, and a private one.
+    let mut blocked = ctx.player("Host").await?;
+    blocked.register_urls(&["prudp:/address=127.0.0.1;port=3195;sid=15;type=3"]).await?;
+    let hidden = blocked.create_session(&open).await?;
+    blocked.add_participants(hidden, &[blocked.pid], &[]).await?;
+    viewer.friend_change("block", &blocked.name).await?;
+    let mut private = ctx.player("Host").await?;
+    private.register_urls(&["prudp:/address=127.0.0.1;port=3196;sid=15;type=3"]).await?;
+    let secret = private.create_session(&format!("113 => 0;103 => 1;3 => 0;4 => 4;102 => 7;101 => {map}")).await?;
+    private.add_participants(secret, &[private.pid], &[]).await?;
+    // The host's game: a round started, and who's on which side.
+    host.match_state_with_team(false, "RoundState_PreRound", &[]).await?;
+    host.match_state_with_team(true, "RoundState_Started", &[(&host.name, "spy"), (&leader.name, "merc"), (&member.name, "merc")])
+        .await?;
+
+    let seen = viewer.lobbies().await?;
+    let mine = seen
+        .lobbies
+        .iter()
+        .find(|l| l.room == room)
+        .ok_or_else(|| eyre!("the host's match isn't listed: {seen:?}"))?;
+    ensure!(!seen.lobbies.iter().any(|l| l.room == hidden), "a match hosted by someone the viewer blocked is listed");
+    ensure!(!seen.lobbies.iter().any(|l| l.room == secret), "a private match is listed");
+    ensure!(seen.hidden_blocked >= 1 && seen.private_matches >= 1, "left-out matches aren't counted: {seen:?}");
+    ensure!(seen.lobbies.first().map(|l| l.room) == Some(room), "a friend's match isn't first");
+    let names: Vec<&str> = mine.players.iter().map(|p| p.name.as_str()).collect();
+    ensure!(names.len() == 3 && names[0] == host.name, "players (the host first): {names:?}");
+    let p = |name: &str| mine.players.iter().find(|p| p.name == name);
+    ensure!(p(&host.name).is_some_and(|p| p.host && p.friend && p.team == "spy"), "the host: {:?}", p(&host.name));
+    let (l, m) = (p(&leader.name), p(&member.name));
+    ensure!(
+        l.zip(m).is_some_and(|(l, m)| l.party != 0 && l.party == m.party && l.team == "merc" && !l.friend),
+        "the party: {l:?} {m:?}"
+    );
+    ensure!(
+        mine.under_way && mine.state == "RoundState_Started" && mine.round == 1 && mine.seats == 8 && mine.settings.contains_key("m_fSpyRespawnTime"),
+        "the match's state: {mine:?}"
+    );
+    // A guest of the match sees it too.
+    ensure!(leader.lobbies().await?.lobbies.iter().any(|l| l.room == room), "a player in it doesn't see their match");
+    for bot in [host, leader, member, viewer, blocked, private] {
+        bot.disconnect().await?;
+    }
+    Ok(())
+}
+
 async fn choose_match(ctx: &mut Ctx) -> Result<()> {
     // A map no other scenario's matches have, so only these are found.
     let map = 910_000 + ctx.run;
@@ -4164,6 +4235,7 @@ const SCENARIOS: &[&str] = &[
     "join-now",
     "join-now-match",
     "choose-match",
+    "lobbies",
     "relay-pass",
     "nat-key",
     "match-state",
@@ -4330,6 +4402,7 @@ async fn run() -> Result<()> {
                 "join-now" => join_now(&mut ctx).await,
                 "join-now-match" => join_now_match(&mut ctx).await,
                 "choose-match" => choose_match(&mut ctx).await,
+                "lobbies" => lobbies(&mut ctx).await,
                 "relay-pass" => relay_pass(&mut ctx).await,
                 "nat-key" => nat_key(&mut ctx).await,
                 "match-state" => match_state(&mut ctx).await,

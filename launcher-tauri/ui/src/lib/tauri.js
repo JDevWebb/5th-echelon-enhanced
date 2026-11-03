@@ -241,6 +241,28 @@ const preview = {
         { room: 4410, mode: 'Grim (Ghost)', map: null, players: '1/4', started: false, full: false },
       ],
     }),
+  lobbies: () => {
+    if (location.search.includes('nomatches')) return { offered: true, error: null, lobbies: [], summary: '0 public · 0 players · 1 private match · 3 in parties', hidden: '' };
+    const person = (name, extra = {}) => ({ name, host: false, party: 0, friend: false, team: '', ping_ms: 40, ...extra });
+    const lobby = (o) => ({ made_for: null, friends: [], teams: false, settings: [], joinable: !o.under_way && !o.full, tone: o.under_way || o.full ? 'warn' : 'ok', full: false, under_way: false, ...o });
+    return {
+      offered: true, error: null, summary: '5 public · 26 players · 2 private matches · 6 in parties',
+      hidden: '1 more left out: with a player you blocked, or who blocked you.',
+      lobbies: [
+        lobby({ room: 4391, mode: 'SvM Blacklist', kind: 'svm', map: 'Virus Vault', players: 5, seats: 8, host: 'Liara', status: 'In lobby · waiting for 3 more', open_for: '4 min', ping_ms: 38, friends: ['Tank'],
+          settings: [['Time limit', '5 min'], ['Score limit', '3'], ['Spies\u2019 respawn', '7 s'], ['Mercs\u2019 respawn', '15 s']],
+          people: [person('Liara', { host: true, ping_ms: 31 }), person('Jgz24', { party: 1, ping_ms: 139 }), person('mpw', { party: 1, ping_ms: 52 }), person('Tank', { friend: true, ping_ms: 44 }), person('coolhead-', { ping_ms: 47 })] }),
+        lobby({ room: 4375, mode: 'SvM Classic', kind: 'svm', map: 'Cartel (Classic)', players: 4, seats: 4, host: 'Ma1orenko', status: 'Round 2 under way · 6 min', open_for: '19 min', ping_ms: 45, under_way: true, full: true, teams: true,
+          settings: [['Time limit', '10 min'], ['Score limit', '2']],
+          people: [person('Ma1orenko', { host: true, team: 'spy' }), person('Tea_bag', { team: 'spy' }), person('Granite', { team: 'merc' }), person('o-CD', { team: 'merc' })] }),
+        lobby({ room: 4402, mode: 'Co-op', kind: 'coop', map: 'Opium Farm', players: 1, seats: 2, host: 'Lucky3ds', status: 'In lobby · waiting for 1 more', open_for: '2 min', ping_ms: 212, people: [person('Lucky3ds', { host: true, ping_ms: 212 })] }),
+        lobby({ room: 4410, mode: 'Team Deathmatch', kind: 'svm', map: 'Silo', players: 6, seats: 8, host: 'passiverat', status: 'Between rounds', open_for: '11 min', ping_ms: 61,
+          people: ['passiverat', 'RedHulk', 'Granite2', 'Sokolev', 'AlexB', 'rico231et'].map((n, i) => person(n, { host: i === 0 })) }),
+        lobby({ room: 4420, mode: 'Uplink Control', kind: 'svm', map: 'Lebanese Hospital', players: 9, seats: 10, made_for: 8, host: 'RedHulk', status: 'Round 1 under way · 2 min', open_for: '6 min', ping_ms: 176, under_way: true,
+          people: ['RedHulk', 'a1', 'b2', 'c3', 'd4', 'e5', 'f6', 'g7', 'h8'].map((n, i) => person(n, { host: i === 0, ping_ms: 150 + i })) }),
+      ],
+    };
+  },
   join_match: () => null,
   new_match: () => null,
   cancel_new_match: () => null,

@@ -12,7 +12,7 @@
         "title": "5th Echelon Enhanced",
         "width": 1280,
         "height": 800,
-        "minWidth": 800,
+        "minWidth": 896,
         "minHeight": 560,
         "decorations": false,
         "resizable": true,

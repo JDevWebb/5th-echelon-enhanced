@@ -135,3 +135,302 @@ pub fn new_match(cfg: &Config) -> Result<Duration, String> {
 pub fn cancel_new_match(cfg: &Config) -> Result<(), String> {
     crate::flow::with_api_token(cfg, |url, token| crate::services::rt().block_on(crate::network::new_match(url, &token, false))).map(|_| ())
 }
+
+/// The Matches tab (the 0.4.8 lobby browser): every public match on the player's server in
+/// full, from the server's `Lobbies` (signed in; servers listing "lobbies").
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct Lobbies {
+    /// The server offers it (a server before 0.4.8 doesn't: the tab says so).
+    pub offered: bool,
+    /// Whether the list could be read at all, and why not.
+    pub error: Option<String>,
+    pub lobbies: Vec<Lobby>,
+    /// "7 public · 31 players · 2 private matches · 6 in parties".
+    pub summary: String,
+    /// What's left out and why: "1 with a player you blocked".
+    pub hidden: String,
+}
+
+/// One public match.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct Lobby {
+    pub room: u32,
+    /// "SvM Classic", "Co-op".
+    pub mode: String,
+    /// "svm" or "coop".
+    pub kind: String,
+    pub map: Option<String>,
+    pub players: usize,
+    pub seats: u32,
+    /// The players its mode is made for, when the host raised the seats past it.
+    pub made_for: Option<u32>,
+    pub host: String,
+    /// "In lobby · waiting for 1 more", "Round 2 under way · 6 min", "Between rounds".
+    pub status: String,
+    /// "ok" (joinable), "warn" (under way, or full).
+    pub tone: &'static str,
+    pub under_way: bool,
+    pub full: bool,
+    pub joinable: bool,
+    /// "4 min".
+    pub open_for: String,
+    /// The player's estimated round trip to its host (None: unknown).
+    pub ping_ms: Option<u32>,
+    pub friends: Vec<String>,
+    /// Sides known: the players split into spies and mercs.
+    pub teams: bool,
+    pub people: Vec<Person>,
+    /// The round's settings as the host's game has them: (label, value), in a set order.
+    pub settings: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
+pub struct Person {
+    pub name: String,
+    pub host: bool,
+    /// Who came together share a number (0: on their own).
+    pub party: u32,
+    pub friend: bool,
+    /// "spy", "merc" or "".
+    pub team: String,
+    pub ping_ms: Option<u32>,
+}
+
+/// The public matches on the player's server in full.
+pub fn lobbies(cfg: &Config) -> Lobbies {
+    let Some(profile) = cfg.current_profile().filter(|p| !p.server.is_empty() && p.has_account()) else {
+        return Lobbies {
+            error: Some("Set up an account on a server first.".into()),
+            ..Lobbies::default()
+        };
+    };
+    if !crate::flow::offers(&profile.server, "lobbies") {
+        return Lobbies::default();
+    }
+    match crate::flow::with_api_token(cfg, |url, token| crate::services::rt().block_on(crate::network::lobbies(url, &token))) {
+        Ok(resp) => from_response(&resp),
+        Err(e) => Lobbies {
+            offered: true,
+            error: Some(e),
+            ..Lobbies::default()
+        },
+    }
+}
+
+/// The server's answer, worded for the tab.
+pub fn from_response(resp: &server_api::friends::LobbiesResponse) -> Lobbies {
+    let clip = |s: &str| hooks_config::text::clip(s, 32);
+    let lobbies: Vec<Lobby> = resp.lobbies.iter().map(|l| lobby(l, clip)).collect();
+    let players: usize = lobbies.iter().map(|l| l.players).sum();
+    let mut summary = vec![
+        format!("{} public", lobbies.len()),
+        format!("{players} {}", if players == 1 { "player" } else { "players" }),
+    ];
+    if resp.private_matches > 0 {
+        summary.push(format!("{} private {}", resp.private_matches, plural(resp.private_matches, "match", "matches")));
+    }
+    if resp.party_players > 0 {
+        summary.push(format!("{} in parties", resp.party_players));
+    }
+    let hidden = match resp.hidden_blocked {
+        0 => String::new(),
+        n => format!("{n} more left out: with a player you blocked, or who blocked you."),
+    };
+    Lobbies {
+        offered: true,
+        error: None,
+        lobbies,
+        summary: summary.join(" · "),
+        hidden,
+    }
+}
+
+fn lobby(l: &server_api::friends::Lobby, clip: impl Fn(&str) -> String) -> Lobby {
+    let mode = server_api::game_names::match_mode(Some(l.game_mode).filter(|m| *m != 0), &l.kind)
+        .unwrap_or("A match")
+        .to_string();
+    let players = l.players.len();
+    let full = l.seats > 0 && players as u32 >= l.seats;
+    let people: Vec<Person> = l
+        .players
+        .iter()
+        .map(|p| Person {
+            name: clip(&p.name),
+            host: p.host,
+            party: p.party,
+            friend: p.friend,
+            team: if matches!(p.team.as_str(), "spy" | "merc") { p.team.clone() } else { String::new() },
+            ping_ms: (p.ping_ms > 0).then_some(p.ping_ms),
+        })
+        .collect();
+    Lobby {
+        room: l.room,
+        mode,
+        kind: l.kind.clone(),
+        map: (l.map != 0).then(|| server_api::game_names::map(l.map)).flatten().map(String::from),
+        players,
+        seats: l.seats,
+        made_for: (l.mode_size > 0 && l.seats > l.mode_size).then_some(l.mode_size),
+        host: people.iter().find(|p| p.host).map(|p| p.name.clone()).unwrap_or_default(),
+        status: status(l, players),
+        tone: if l.under_way || full { "warn" } else { "ok" },
+        under_way: l.under_way,
+        full,
+        joinable: !l.under_way && !full,
+        open_for: minutes(l.open_secs),
+        ping_ms: (l.ping_ms > 0).then_some(l.ping_ms),
+        friends: people.iter().filter(|p| p.friend).map(|p| p.name.clone()).collect(),
+        teams: !people.is_empty() && people.iter().all(|p| !p.team.is_empty()),
+        settings: settings(&l.settings),
+        people,
+    }
+}
+
+/// "45 s", "4 min", "1 h 10 min".
+fn minutes(secs: u32) -> String {
+    match secs {
+        0..60 => format!("{secs} s"),
+        60..3600 => format!("{} min", secs / 60),
+        _ => format!("{} h {} min", secs / 3600, secs % 3600 / 60),
+    }
+}
+
+/// What the match is doing, as its host's game said it.
+fn status(l: &server_api::friends::Lobby, players: usize) -> String {
+    let lasted = |what: String| {
+        if l.under_way_secs > 0 {
+            format!("{what} · {}", minutes(l.under_way_secs))
+        } else {
+            what
+        }
+    };
+    let round = |what: &str| if l.round > 0 { format!("Round {} {what}", l.round) } else { format!("Round {what}") };
+    match l.state.as_str() {
+        "RoundState_Started" => lasted(round("under way")),
+        "RoundState_PreRound" => round("starting"),
+        "RoundState_PreEnded" => round("ending"),
+        "RoundState_Ended" => "Between rounds".into(),
+        "RoundState_SuddenDeath" => lasted("Sudden death".into()),
+        "RoundState_PostMatch" | "CoopMissionState_Results" => "Results".into(),
+        "CoopMissionState_InGame" => lasted("Mission under way".into()),
+        _ if l.under_way => lasted("Under way".into()),
+        _ => {
+            let size = if l.mode_size > 0 { l.mode_size } else { l.seats } as usize;
+            if size > players {
+                let more = size - players;
+                format!("In lobby · waiting for {more} more")
+            } else {
+                "In lobby".into()
+            }
+        }
+    }
+}
+
+/// The round's settings in words, in a set order; the ones the host's game didn't say left out.
+fn settings(said: &std::collections::HashMap<String, f32>) -> Vec<(String, String)> {
+    const NAMES: [(&str, &str, bool); 9] = [
+        ("m_fCurrentRoundTimeLimit", "Time limit", true),
+        ("m_iScoreLimit", "Score limit", false),
+        ("m_iSuddenDeathScoreLimit", "Sudden death limit", false),
+        ("m_fRespawnTimeSpyTeam", "Spies' respawn", true),
+        ("m_fRespawnTimeMercTeam", "Mercs' respawn", true),
+        ("m_fRespawnTimeDefendingTeam", "Defenders' respawn", true),
+        ("m_fRespawnTimeCourierTeam", "Couriers' respawn", true),
+        ("m_fGenericRespawnTime", "Respawn", true),
+        ("m_fAutoRespawnTime", "Auto respawn", true),
+    ];
+    NAMES
+        .iter()
+        .filter_map(|(key, label, time)| {
+            let v = *said.get(*key)?;
+            if !v.is_finite() || v < 0.0 {
+                return None;
+            }
+            let text = if *time {
+                let s = v.round() as u32;
+                if s >= 60 && s % 60 == 0 {
+                    format!("{} min", s / 60)
+                } else {
+                    format!("{s} s")
+                }
+            } else {
+                format!("{}", v.round() as i64)
+            };
+            Some(((*label).to_string(), text))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod lobby_tests {
+    use server_api::friends::LobbyPlayer;
+
+    use super::*;
+
+    fn player(name: &str, host: bool, party: u32, friend: bool, team: &str) -> LobbyPlayer {
+        LobbyPlayer {
+            name: name.into(),
+            host,
+            party,
+            friend,
+            team: team.into(),
+            ping_ms: 40,
+        }
+    }
+
+    /// A lobby waiting for players and a round under way read as the mock-up has them.
+    #[test]
+    fn lobbies_are_worded_for_the_tab() {
+        let resp = server_api::friends::LobbiesResponse {
+            lobbies: vec![
+                server_api::friends::Lobby {
+                    room: 10,
+                    kind: "svm".into(),
+                    game_mode: 7,
+                    map: 0x05F6_9010,
+                    seats: 8,
+                    mode_size: 8,
+                    open_secs: 245,
+                    ping_ms: 38,
+                    players: vec![player("Liara", true, 0, false, ""), player("Tank", false, 0, true, ""), player("mpw", false, 1, false, "")],
+                    ..Default::default()
+                },
+                server_api::friends::Lobby {
+                    room: 11,
+                    kind: "svm".into(),
+                    game_mode: 8,
+                    seats: 4,
+                    mode_size: 4,
+                    state: "RoundState_Started".into(),
+                    under_way: true,
+                    under_way_secs: 360,
+                    round: 2,
+                    settings: [("m_fCurrentRoundTimeLimit".to_string(), 600.0), ("m_iScoreLimit".to_string(), 3.0)].into_iter().collect(),
+                    players: vec![player("Ma1orenko", true, 0, false, "spy"), player("Tea_bag", false, 0, false, "merc")],
+                    ..Default::default()
+                },
+            ],
+            hidden_blocked: 1,
+            private_matches: 2,
+            party_players: 6,
+            ..Default::default()
+        };
+        let view = from_response(&resp);
+        assert_eq!(view.summary, "2 public · 5 players · 2 private matches · 6 in parties");
+        assert_eq!(view.hidden, "1 more left out: with a player you blocked, or who blocked you.");
+        let (a, b) = (&view.lobbies[0], &view.lobbies[1]);
+        assert_eq!((a.mode.as_str(), a.map.as_deref(), a.host.as_str()), ("SvM Blacklist", Some("Virus Vault"), "Liara"));
+        assert_eq!(
+            (a.status.as_str(), a.tone, a.joinable, a.open_for.as_str()),
+            ("In lobby · waiting for 5 more", "ok", true, "4 min")
+        );
+        assert_eq!(a.friends, vec!["Tank"]);
+        assert!(!a.teams);
+        assert_eq!((b.status.as_str(), b.tone, b.joinable), ("Round 2 under way · 6 min", "warn", false));
+        assert!(b.teams);
+        assert_eq!(
+            b.settings,
+            vec![("Time limit".to_string(), "10 min".to_string()), ("Score limit".to_string(), "3".to_string())]
+        );
+    }
+}

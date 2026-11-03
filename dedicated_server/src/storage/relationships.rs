@@ -2,6 +2,8 @@
 //! tell players about them (`friend_events`), and the identity links and
 //! outbox that carry them to other servers (see `federation.rs`).
 
+use std::collections::HashMap;
+
 use eyre::eyre;
 
 use super::name_key;
@@ -103,6 +105,42 @@ impl Storage {
             (_, Some("request")) => Relation::RequestReceived,
             _ => Relation::None,
         })
+    }
+
+    /// Everyone `me` has a relation with, and what it is (as [`Self::relation`] says each), in
+    /// one look: the lobby browser's friends and blocks.
+    pub async fn relations_of(&self, me: u32) -> Result<HashMap<u32, Relation>> {
+        let rows: Vec<(u32, u32, String)> = sqlx::query_as("SELECT user_id, other_id, kind FROM relationships WHERE user_id = ? OR other_id = ?")
+            .bind(me)
+            .bind(me)
+            .fetch_all(&self.pool)
+            .await?;
+        let mut out: HashMap<u32, Relation> = HashMap::new();
+        // Blocks first, either way, then friends, then requests: as `relation` ranks them.
+        for (user, other, kind) in &rows {
+            let (them, mine) = if *user == me { (*other, true) } else { (*user, false) };
+            let this = match (kind.as_str(), mine) {
+                ("block", true) => Relation::Blocked,
+                ("block", false) => Relation::BlockedBy,
+                ("friend", true) => Relation::Friend,
+                ("request", true) => Relation::RequestSent,
+                ("request", false) => Relation::RequestReceived,
+                _ => continue,
+            };
+            let rank = |r: &Relation| match r {
+                Relation::Blocked => 0,
+                Relation::BlockedBy => 1,
+                Relation::Friend => 2,
+                Relation::RequestSent => 3,
+                Relation::RequestReceived => 4,
+                Relation::None => 5,
+            };
+            let slot = out.entry(them).or_insert(Relation::None);
+            if rank(&this) < rank(slot) {
+                *slot = this;
+            }
+        }
+        Ok(out)
     }
 
     /// Accounts of players: not the server's own ones, nor the sample
