@@ -33,6 +33,16 @@ use stat_boards::Leaderboard;
 
 use crate::Coordinator;
 
+/// A stat's board, stat and context in the game's words (stat_boards::stat_names), for the
+/// admin UI; a number the game doesn't name is left out.
+fn labels(board: u32, stat: u32, context: u32) -> Value {
+    json!({
+        "board": stat_boards::stat_names::board(board),
+        "stat": stat_boards::stat_names::stat(stat),
+        "context": (context != 0).then(|| stat_boards::stat_names::context(context)).flatten(),
+    })
+}
+
 /// The most writes one request may carry, and people one lookup may ask about.
 pub const MAX_WRITES: usize = 1000;
 pub const MAX_IDS: usize = 200;
@@ -361,6 +371,7 @@ impl Coordinator {
                     "id": r.0, "at": r.1, "server": r.2, "global_id": r.3, "name": names.get(&r.3).cloned().flatten(),
                     "board": r.4, "context": r.5, "stat": r.6, "gain": r.7, "played": r.8,
                     "per_minute": per_minute(r.7, r.8), "times_normal": times,
+                    "labels": labels(r.4, r.6, r.5),
                 })
             })
             .collect();
@@ -409,7 +420,8 @@ impl Coordinator {
                             found.push((
                                 times,
                                 json!({ "global_id": who, "board": board_id, "stat": stat, "context": context, "value": value,
-                                        "normal": normal, "times_normal": times, "kind": if highest { "high" } else { "fast" } }),
+                                        "normal": normal, "times_normal": times, "kind": if highest { "high" } else { "fast" },
+                                        "labels": labels(board_id, stat, context) }),
                             ));
                         }
                     }
@@ -620,7 +632,13 @@ impl Coordinator {
             .iter()
             .map(|l| {
                 let contexts = stat_boards::board(l.board).map(stat_boards::Board::context_ids).unwrap_or_default();
-                json!({ "id": l.id, "board": l.board, "stat": l.stat, "descending": l.descending, "contexts": contexts })
+                // The game's names for the contexts (modes, missions, ladders).
+                let context_names: serde_json::Map<String, Value> = contexts
+                    .iter()
+                    .filter_map(|c| Some((c.to_string(), stat_boards::stat_names::context(*c)?.into())))
+                    .collect();
+                json!({ "id": l.id, "board": l.board, "stat": l.stat, "descending": l.descending, "contexts": contexts,
+                        "context_names": context_names, "labels": labels(l.board, l.stat, 0) })
             })
             .collect();
         Ok(json!({ "leaderboards": leaderboards, "lists": lists, "list": chosen }))
@@ -649,5 +667,19 @@ fn ranked(row: &sqlx::sqlite::SqliteRow) -> Ranked {
         name: row.get("name"),
         rank: row.get("rank"),
         value: row.get("value"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// Flags and records carry the game's words for what they're about.
+    #[test]
+    fn a_flag_says_its_stat_in_words() {
+        assert_eq!(
+            super::labels(10, 100, 231),
+            serde_json::json!({ "board": "Spies vs Mercs, per game mode", "stat": "Kills", "context": "SvM Classic" })
+        );
+        assert_eq!(super::labels(1, 136, 0)["context"], serde_json::Value::Null);
+        assert_eq!(super::labels(99, 999, 9999), serde_json::json!({ "board": null, "stat": null, "context": null }));
     }
 }

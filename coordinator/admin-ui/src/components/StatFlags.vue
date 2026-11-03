@@ -13,7 +13,7 @@
           <tr v-for="f in data.flags" :key="f.id">
             <td class="small">{{ fmt.when(f.at) }}</td>
             <td><b>{{ f.name || '–' }}</b> <span class="muted small mono" :title="f.global_id">{{ f.global_id.slice(0, 10) }}…</span></td>
-            <td class="small">board {{ f.board }} · stat {{ f.stat }}{{ f.context ? ` · ${f.context}` : '' }}</td>
+            <td class="small" :title="`board ${f.board} · stat ${f.stat}${f.context ? ` · context ${f.context}` : ''}`">{{ statLine(f) }}</td>
             <td class="r">{{ fmt.n(Math.round(f.gain)) }}</td>
             <td class="r">{{ fmt.dur(f.played) }}</td>
             <td class="r"><span class="pill bad">{{ fmt.n(Math.round(f.times_normal)) }}×</span></td>
@@ -31,7 +31,7 @@
         <tbody>
           <tr v-for="r in data.records" :key="`${r.global_id}${r.board}${r.stat}${r.context}`">
             <td><b>{{ r.name || '–' }}</b> <span class="muted small mono" :title="r.global_id">{{ r.global_id.slice(0, 10) }}…</span></td>
-            <td class="small">{{ r.kind === 'fast' ? 'best time' : 'high score' }} · board {{ r.board }} · stat {{ r.stat }} · {{ r.context }}</td>
+            <td class="small" :title="`board ${r.board} · stat ${r.stat} · context ${r.context}`">{{ r.kind === 'fast' ? 'Best time' : 'High score' }} · {{ statLine(r) }}</td>
             <td class="r">{{ fmt.n(Math.round(r.value)) }}</td>
             <td class="r">{{ fmt.n(Math.round(r.normal)) }}</td>
             <td class="r"><span class="pill bad">{{ r.times_normal.toFixed(1) }}×</span></td>
@@ -46,10 +46,18 @@
 <script setup>
 // Stat gains far above normal (GET /stats/flags, fair play F1), and removing a person's stats.
 import { ref } from 'vue';
+
 import { api } from '../lib/api.js';
 import { useLoad } from '../lib/data.js';
 import { confirmBox } from '../lib/dialogs.js';
 import { fmt } from '../lib/fmt.js';
+
+// The stat in the game's words (its board, the stat, the mode, mission, weapon or gadget), the
+// numbers on hover; numbers where the game names none.
+function statLine(x) {
+  const l = x.labels || {};
+  return [l.stat || `stat ${x.stat}`, l.context || (x.context ? `context ${x.context}` : null), l.board || `board ${x.board}`].filter(Boolean).join(' · ');
+}
 
 const { data, error, reload } = useLoad(() => api('GET', '/stats/flags'), () => '', { refresh: false });
 const removing = ref('');

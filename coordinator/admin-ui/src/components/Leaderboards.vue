@@ -46,12 +46,12 @@ const LABELS = {
   11: 'Ladder total score', 12: 'Ladder objectives',
 };
 const VALUE_NAMES = { 1: 'Score', 2: 'Time', 3: 'Score', 4: 'Time', 5: 'Score', 6: 'Played', 7: 'Wins', 8: 'Deaths from above', 9: 'Takedowns', 10: 'Kills', 11: 'Score', 12: 'Objectives' };
-// Spies vs Mercs game modes, as far as they're known.
-const MODES = { 227: 'TDM?', 228: 'Spies vs Mercs?', 229: 'Extraction?' };
-
+// The mode, mission or ladder in the game's words (the coordinator's `context_names`).
 function contextName(l, c) {
+  const named = data.value?.leaderboards.find(x => x.id === l)?.context_names?.[c];
+  if (named) return named;
   if (l <= 4) return `Mission ${c}`;
-  if (l === 5) return MODES[c] ? `Mode ${c} (${MODES[c]})` : `Mode ${c}`;
+  if (l === 5) return `Mode ${c}`;
   return `Ladder ${c}`;
 }
 

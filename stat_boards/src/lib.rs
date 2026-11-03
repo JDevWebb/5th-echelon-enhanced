@@ -6,6 +6,7 @@
 //! Only the numbers are here.
 
 pub mod game_names;
+pub mod stat_names;
 
 use std::ops::RangeInclusive;
 
