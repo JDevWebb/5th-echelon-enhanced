@@ -9,7 +9,9 @@
 #   another machine with the coordinator's files (docs/backups.md);
 # * failover: a standby takes over a coordinator that stays down, from its snapshot;
 #   the one replaced stands down when it's back; --take-over moves it back
-#   (docs/failover.md).
+#   (docs/failover.md);
+# * a coordinator behind Cloudflare: the installer's Caddy site takes CF-Connecting-IP only
+#   from Cloudflare's ranges and refuses anyone else outside them (Caddy at its pinned version).
 #
 # GitHub, Cloudflare's API and R2/B2 are stand-ins in the container (a test CA, a mock
 # API, rclone's S3 server). rclone is downloaded at the installer's pinned version and
@@ -74,6 +76,14 @@ install -m 755 "$bin/coordinator" /usr/local/bin/fes-coordinator
 # The installer's settings, as it has them.
 eval "$(sed -n '/^REPO=/,/^CADDY_SHA512_arm64=/p' "$S")"
 mkdir -p /etc/systemd/system "$ETC_DIR" "$STATE_DIR" "$PROGRAM_DIR" "$UPDATE_DIR"
+# Caddy at the installer's pinned version, for the Cloudflare checks at the end (fetched now,
+# before GitHub is replaced by the test's stand-in).
+cf_dir=/tmp/cf
+mkdir -p "$cf_dir"
+caddy_arch=amd64; [ "$(uname -m)" = aarch64 ] && caddy_arch=arm64
+caddy_tar="caddy_${CADDY_VERSION}_linux_${caddy_arch}.tar.gz"
+curl -fsSL --retry 3 -o "$cf_dir/$caddy_tar" "https://github.com/caddyserver/caddy/releases/download/v$CADDY_VERSION/$caddy_tar"
+
 
 # systemctl, for the services the tests run: a service is a program started in the
 # background (its pid in /tmp/svc-NAME.pid). Every call is logged.
@@ -398,6 +408,54 @@ if [ "$rc" -ne 0 ]; then
   for m in na1 eu1; do echo "--- $m standby"; tail -20 "/tmp/svc-$m-standby.log" 2>/dev/null; done
   echo "--- take-over"; cat /tmp/take-over.log
 fi
+# --- The coordinator behind Cloudflare ---------------------------------------------
+
+echo "--- the coordinator behind Cloudflare"
+# The installer's own site for a proxied coordinator (site_block, with --coordinator-cert), in
+# Caddy at the installer's pinned version (checked against its checksum): Cloudflare's
+# CF-Connecting-IP is the client's address only from Cloudflare's ranges, anyone else outside
+# them is refused, and this machine's own calls keep their address. "Cloudflare" here is this
+# container's address; another range stands for Cloudflare being elsewhere.
+eval "$(fn site_block)"
+eval "$(fn cloudflare_ranges)"
+caddy_sum="CADDY_SHA512_$caddy_arch"
+check "Caddy $CADDY_VERSION matches the installer's checksum" bash -c "printf '%s  %s\n' '${!caddy_sum}' '$cf_dir/$caddy_tar' | sha512sum -c --quiet -"
+tar -xzf "$cf_dir/$caddy_tar" -C "$cf_dir" caddy
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj /CN=coord.test \
+  -addext subjectAltName=DNS:coord.test -keyout "$cf_dir/coord.key" -out "$cf_dir/coord.crt" 2>/dev/null
+# The coordinator: a stand-in that answers with the client address it was given.
+cat > "$cf_dir/echo.py" <<'PY'
+import http.server
+class H(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = (self.headers.get("X-Forwarded-For") or "none").encode()
+        self.send_response(200); self.send_header("Content-Length", str(len(body))); self.end_headers(); self.wfile.write(body)
+    def log_message(self, *a): pass
+http.server.ThreadingHTTPServer(("127.0.0.9", 8700), H).serve_forever()
+PY
+python3 "$cf_dir/echo.py" & echo_pid=$!
+me=$(hostname -i | awk '{print $1}')
+cf_caddy() { # cf_caddy <Cloudflare's ranges>: Caddy with the installer's site for them
+  [ -z "${caddy_pid:-}" ] || { kill "$caddy_pid" 2>/dev/null; wait "$caddy_pid" 2>/dev/null || true; }
+  local domain="" coord_domain=coord.test coord_aliases=() COORD_CERT="$cf_dir/coord.crt" COORD_KEY="$cf_dir/coord.key" COORD_ADDR=127.0.0.9 CF_RANGES="$1"
+  # Only the coordinator's site: no game domain, no admin UI (site_block's other settings unset).
+  { printf '{\n\tadmin off\n\thttps_port 9443\n\thttp_port 9080\n\tskip_install_trust\n}\n'; (set +u; site_block); } > "$cf_dir/Caddyfile"
+  "$cf_dir/caddy" run --config "$cf_dir/Caddyfile" --adapter caddyfile >"$cf_dir/caddy.log" 2>&1 & caddy_pid=$!
+  wait_for 20 "curl -sk -o /dev/null --resolve coord.test:9443:127.0.0.1 https://coord.test:9443/"
+}
+seen() { # seen <connect to> [header]: what the coordinator was told the client's address is
+  curl -sk --max-time 5 --resolve "coord.test:9443:$1" ${2:+-H "$2"} https://coord.test:9443/ 2>/dev/null || echo refused
+}
+cf_caddy "$me/32"
+check "from Cloudflare, the client's address is CF-Connecting-IP" test "$(seen "$me" 'CF-Connecting-IP: 198.51.100.7')" = 198.51.100.7
+check "from this machine, a CF-Connecting-IP is ignored" test "$(seen 127.0.0.1 'CF-Connecting-IP: 198.51.100.7')" = 127.0.0.1
+cf_caddy "203.0.113.0/24"
+outside=$(seen "$me" "CF-Connecting-IP: 198.51.100.7")
+check "from outside Cloudflare's ranges, refused (got $outside)" test "$outside" = refused
+check "  and this machine still reaches it" test "$(seen 127.0.0.1)" = 127.0.0.1
+kill "$caddy_pid" "$echo_pid" 2>/dev/null || true
+if [ "$rc" -ne 0 ]; then echo "--- caddy"; tail -20 "$cf_dir/caddy.log"; echo "--- its site"; cat "$cf_dir/Caddyfile"; fi
+
 # The scripts the installer writes, checked like the rest (when ShellCheck is here).
 if command -v shellcheck >/dev/null; then
   check "the generated updater and backup.sh pass ShellCheck" shellcheck -S warning "$UPDATER" /tmp/eu1-backup.sh

@@ -2544,8 +2544,12 @@ site_block() {
 # Cloudflare's CF-Connecting-IP.
 $coord_domain {
 	tls $COORD_CERT $COORD_KEY
+	# A handle of its own, first: Caddy runs handle blocks before a bare abort, so one beside
+	# them never ran and anyone reached the coordinator straight (ops-test caught it).
 	@direct not remote_ip $(cloudflare_ranges) 127.0.0.0/8 ::1
-	abort @direct
+	handle @direct {
+		abort
+	}
 	# Cloudflare's CF-Connecting-IP only from Cloudflare: from this machine (the installer's
 	# own check), the address is the connection's, so a local program can't name another.
 	@cloudflare remote_ip $(cloudflare_ranges)
