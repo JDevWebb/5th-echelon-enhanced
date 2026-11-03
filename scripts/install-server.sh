@@ -1609,12 +1609,17 @@ else
     if [[ "$a" =~ $DOMAIN_RE ]] || [[ "$a" =~ $IPV4_RE ]]; then kept+=("$a"); elif [ -n "$a" ]; then warn "dropped the alias \"$a\" from $CONFIG: it isn't a domain name or IPv4 address"; fi
   done < <(printf '%s' "$aliases_line" | grep -o '"[^"]*"' | tr -d '"')
   aliases=("${kept[@]}")
-  # The matchmaking server's own name, served on every server of its failover group, so
-  # whichever runs it answers for it (Caddy gets its certificate where it points).
-  if [ -n "$mm_record" ] && [[ " ${aliases[*]} " != *" $mm_record "* ]] && [ "$mm_record" != "$domain" ]; then aliases+=("$mm_record"); fi
   aliases_line=""
   if [ "${#aliases[@]}" -gt 0 ]; then aliases_line="[$(printf '"%s", ' "${aliases[@]}" | sed 's/, $//')]"; fi
 fi
+# The matchmaking server's own name, served on every server of its failover group, so
+# whichever runs it answers for it (its certificate got on demand, where it points), with
+# --alias given or not; kept for later runs.
+if [ -n "$mm_record" ] && [ "$mm_record" != "$domain" ] && [[ " ${aliases[*]} " != *" $mm_record "* ]]; then
+  aliases+=("$mm_record")
+  aliases_line="[$(printf '"%s", ' "${aliases[@]}" | sed 's/, $//')]"
+fi
+if [ -n "$mm_record" ] && [ "$use_systemd" -eq 1 ]; then install -d -m 755 "$ETC_DIR"; printf '%s\n' "$mm_record" > "$MM_RECORD_FILE"; fi
 # The API over HTTPS stays on while Caddy has its certificate for the same
 # name (checked again once Caddy runs).
 tls_kept=0
@@ -1921,8 +1926,11 @@ UNIT
   systemctl enable "$SERVICE" >/dev/null 2>&1
   systemctl restart "$SERVICE"
   up=0
+  # A game server opens its API (gRPC, 50051); a relay alone has none, only the launcher's
+  # API (behind Caddy, or on 80 itself).
+  api_port=$( [ "$no_caddy" -eq 1 ] && echo 80 || echo 8080 )
   for _ in $(seq 40); do
-    if systemctl is-active --quiet "$SERVICE" && (exec 3<>/dev/tcp/127.0.0.1/50051) 2>/dev/null; then
+    if systemctl is-active --quiet "$SERVICE" && { (exec 3<>/dev/tcp/127.0.0.1/50051) 2>/dev/null || (exec 3<>"/dev/tcp/127.0.0.1/$api_port") 2>/dev/null; }; then
       # Still up a moment later (not crashing and restarting).
       sleep 2
       if systemctl is-active --quiet "$SERVICE"; then up=1; break; fi
@@ -2710,13 +2718,24 @@ site_routes() {
 SITE
 }
 
+# The matchmaking server's record is served over HTTPS here, its certificate got on demand.
+ON_DEMAND_ASK_PORT=5481
+mm_on_demand() {
+  [ -n "$domain" ] && [ "$https_api" -eq 1 ] && [ -n "$mm_record" ] && [ "$mm_record" != "$domain" ] \
+    && [[ " ${aliases[*]} " == *" $mm_record "* ]]
+}
+
 site_block() {
   if [ -n "$domain" ]; then
     # The domain, and any aliases that are names (an IP can't have a certificate).
-    local names=("$domain") a http_sites https_sites
-    for a in "${aliases[@]}"; do [[ "$a" =~ $IPV4_RE ]] || names+=("$a"); done
+    local names=("$domain") tls_names=("$domain") a http_sites https_sites
+    for a in "${aliases[@]}"; do
+      [[ "$a" =~ $IPV4_RE ]] && continue
+      names+=("$a")
+      [ "$a" = "$mm_record" ] || tls_names+=("$a")
+    done
     http_sites="$(printf 'http://%s, ' "${names[@]}" | sed 's/, $//')"
-    https_sites="$(printf 'https://%s, ' "${names[@]}" | sed 's/, $//')"
+    https_sites="$(printf 'https://%s, ' "${tls_names[@]}" | sed 's/, $//')"
     echo "# 5th Echelon: the game's online config and community API, its content,"
     echo "# and the launcher's API (gRPC). http:// on purpose: the game can only"
     echo "# speak plain HTTP on port 80, so this name must never redirect to HTTPS."
@@ -2730,6 +2749,28 @@ site_block() {
       echo "$https_sites {"
       site_routes
       echo "}"
+      if [ -n "$mm_record" ] && [ "$mm_record" != "$domain" ] && [[ " ${names[*]} " == *" $mm_record "* ]]; then
+        echo
+        echo "# The matchmaking server's name (docs/failover.md), which moves between the"
+        echo "# servers of its group: its certificate is got when a launcher first reaches it"
+        echo "# here, i.e. once the record points here. Got ahead, it fails wherever the record"
+        echo "# doesn't point, and Caddy's retries back off for hours: a relay that took over"
+        echo "# would be without it."
+        echo "https://$mm_record {"
+        echo "	tls {"
+        echo "		on_demand"
+        echo "	}"
+        site_routes
+        echo "}"
+        echo
+        echo "# Caddy asks this before getting a certificate on demand: only for that name."
+        echo "http://127.0.0.1:$ON_DEMAND_ASK_PORT {"
+        echo "	bind 127.0.0.1"
+        echo "	@mm query domain=$mm_record"
+        echo "	respond @mm 200"
+        echo "	respond 403"
+        echo "}"
+      fi
     fi
   fi
   if [ -n "$coord_domain" ] && [ -f "$COORD_CERT" ]; then
@@ -2977,6 +3018,12 @@ if [ "$no_caddy" -eq 0 ]; then
       caddy_timeouts
       echo "	}"
     fi
+    if mm_on_demand; then
+      echo "	# The matchmaking server's name gets its certificate on demand (below)."
+      echo "	on_demand_tls {"
+      echo "		ask http://127.0.0.1:$ON_DEMAND_ASK_PORT/"
+      echo "	}"
+    fi
     echo "}"
     echo
     site_block
@@ -2993,6 +3040,9 @@ if [ "$no_caddy" -eq 0 ]; then
   else
     # Someone else's Caddyfile: the site goes in its own file, imported.
     site_block > "$CADDY_SITE"
+    if mm_on_demand && ! grep -qE '^[[:space:]]*on_demand_tls' "$CADDYFILE"; then
+      notes+=("Your $CADDYFILE needs, in its global options: on_demand_tls { ask http://127.0.0.1:$ON_DEMAND_ASK_PORT/ } (the matchmaking server's name, $mm_record, gets its certificate on demand)")
+    fi
     grep -qxF "import $CADDY_SITE" "$CADDYFILE" || printf '\nimport %s\n' "$CADDY_SITE" >> "$CADDYFILE"
     say "Added the site as $CADDY_SITE, imported by your $CADDYFILE"
     # Caddy's admin API on localhost:2019 lets any local process (a game server among
@@ -3060,7 +3110,7 @@ if [ "$no_caddy" -eq 0 ]; then
   if [ "$use_systemd" -eq 1 ] && [ -n "$domain" ]; then
     ok=0
     for _ in $(seq 30); do
-      if curl -fsS --max-time 2 -H "Host: $domain" http://127.0.0.1/api/info 2>/dev/null | grep -q '"api":80'; then ok=1; break; fi
+      if curl -fsS --max-time 2 -H "Host: $domain" http://127.0.0.1/api/info 2>/dev/null | grep -q "\"host\":\"$domain\""; then ok=1; break; fi
       sleep 0.5
     done
     if [ "$ok" -eq 0 ]; then
