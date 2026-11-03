@@ -17,6 +17,7 @@ eu1 and oceania become relays (eu1 keeps the coordinator).
   its launcher can't follow by itself.
 - **The matchmaking server's name:** an A record, **DNS only** (grey cloud), **TTL 60 s**,
   pointing at the matchmaking server. Players and servers use this name; its standby moves it.
+- **The matchmaking server listed in the network's directory** (it is, as a member of the coordinator): a launcher follows a move only to a server its network's directory lists, read from the coordinator over HTTPS.
 - Cloudflare's API token and zone in `/etc/5th-echelon/standby.env` on each server (as for the
   coordinator's failover: [failover.md](failover.md)).
 
