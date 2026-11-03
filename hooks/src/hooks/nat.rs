@@ -393,6 +393,20 @@ fn is_relay_address(r: &Reply, addr: SocketAddrV4) -> bool {
 /// through this game's own relay, which forwards to theirs (global matchmaking).
 static NETWORK_RELAYS: OnceLock<Vec<(Ipv4Addr, u16, u16)>> = OnceLock::new();
 
+/// The launcher's round trip to each relay at this start (`networking.relay_pings`).
+static RELAY_PINGS: OnceLock<Vec<(String, u32)>> = OnceLock::new();
+
+/// The launcher's pings to the network's relays, as (id, ms), for the sign-in.
+pub fn relay_pings() -> &'static [(String, u32)] {
+    RELAY_PINGS.get().map_or(&[], Vec::as_slice)
+}
+
+/// "id:ms" as the launcher writes it.
+fn relay_ping(text: &str) -> Option<(String, u32)> {
+    let (id, ms) = text.rsplit_once(':')?;
+    Some((id.to_string(), ms.parse().ok()?)).filter(|(id, _)| !id.is_empty())
+}
+
 /// "IP:first-last" as a relay's range.
 fn relay_range(text: &str) -> Option<(Ipv4Addr, u16, u16)> {
     let (ip, ports) = text.split_once(':')?;
@@ -1017,6 +1031,9 @@ pub unsafe fn init_hooks(config: &Config, addr: &Addresses) {
         // Its ticket comes from showing it the relay pass (set_pass), not from signing in.
         state().use_pass = true;
     }
+    // The launcher's pings to the relays, for the sign-in (G3: how far apart two players are).
+    let pings: Vec<(String, u32)> = config.networking.relay_pings.iter().filter_map(|p| relay_ping(p)).take(64).collect();
+    let _ = RELAY_PINGS.set(pings);
     let relays: Vec<_> = config.networking.relays.iter().filter_map(|r| relay_range(r)).take(64).collect();
     if !relays.is_empty() {
         info!("NAT: {} relays on the network; players at them are reached through ours", relays.len());

@@ -143,6 +143,12 @@ fn links_from_heartbeat(answer: &serde_json::Value) {
 /// report is kept, and a relay's question about a pair answered.
 /// Returns a game packet another relay forwarded, for the helper to deliver ([`Forwarded`]).
 pub fn on_link(data: &[u8], src: std::net::SocketAddrV4, socket: &std::net::UdpSocket) -> Option<Forwarded> {
+    // The matchmaking server tells relays of pairs from the helper's socket, as it answers them.
+    if NETWORK_RELAYS.load(Ordering::Relaxed) && MM_SOCKET.get().is_none() {
+        if let Ok(s) = socket.try_clone() {
+            let _ = MM_SOCKET.set(s);
+        }
+    }
     let sender = crate::link::sender(data)?;
     let link = links().iter().find(|l| l.id == sender && l.ip == *src.ip()).cloned()?;
     let (_, body) = crate::link::open(data, &link.key, identity::now())?;
@@ -163,6 +169,9 @@ pub fn on_link(data: &[u8], src: std::net::SocketAddrV4, socket: &std::net::UdpS
             }
         }
         crate::link::Body::Answer { nonce, yes } => answered(nonce, yes, &link.id),
+        // Only from the matchmaking server: it put two players together.
+        crate::link::Body::Introduce { a, b } if link.matchmaking => crate::nat_helper::introduced(&a, &b),
+        crate::link::Body::Introduce { .. } => {}
         // A relay's event about its player, kept here with the player's sessions; only the
         // relay's own kinds, so a relay can't write anything else into them.
         // Only about a player that relay reports (its events follow its reports), and only
@@ -184,6 +193,34 @@ pub fn on_link(data: &[u8], src: std::net::SocketAddrV4, socket: &std::net::UdpS
         crate::link::Body::Event { .. } => {}
     }
     None
+}
+
+/// The helper's socket, on the network's matchmaking server (taken with the first link message).
+static MM_SOCKET: std::sync::OnceLock<std::net::UdpSocket> = std::sync::OnceLock::new();
+
+/// Whether this server works with the network's relays (it's the matchmaking server).
+pub fn network_relays() -> bool {
+    NETWORK_RELAYS.load(Ordering::Relaxed)
+}
+
+/// On the network's matchmaking server: `a` and `b` were put together (a search's results, a
+/// probe, a join), so the relays they're registered at are told ([`crate::link::Body::Introduce`]),
+/// each once; a player at none (this server's own helper) needs nothing.
+pub fn introduce_remote(a: &str, b: &str) {
+    if !NETWORK_RELAYS.load(Ordering::Relaxed) {
+        return;
+    }
+    let (Some(socket), Some(own)) = (MM_SOCKET.get(), OWN_ID.get()) else { return };
+    let mut relays: Vec<String> = [a, b].iter().filter_map(|name| remote_relay_of(name).map(|(relay, ..)| relay)).collect();
+    relays.dedup();
+    if relays.is_empty() {
+        return;
+    }
+    let body = crate::link::Body::Introduce { a: a.into(), b: b.into() };
+    for link in links().iter().filter(|l| relays.contains(&l.id)) {
+        let message = crate::link::seal(&link.key, own, identity::now(), &body);
+        let _ = socket.send_to(&message, std::net::SocketAddrV4::new(link.ip, link.port));
+    }
 }
 
 /// A game packet another relay forwarded: from its player `from_name`, whose game is seen at

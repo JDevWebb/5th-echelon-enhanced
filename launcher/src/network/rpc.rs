@@ -28,6 +28,7 @@ pub(super) async fn login(api_url: &str, username: &str, password: &str) -> Resu
                 graphics: String::new(),
                 files: Vec::new(),
                 other_files: Vec::new(),
+                relay_pings: Vec::new(),
             })
             .await
             .map_err(|status| match status.code() {

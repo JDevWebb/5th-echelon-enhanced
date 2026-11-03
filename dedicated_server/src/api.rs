@@ -1119,6 +1119,7 @@ impl Users for MyUsers {
         let nat_key: Option<nat_proto::SessionKey> = request.nat_key.as_slice().try_into().ok();
         let graphics = request.graphics;
         let (files, other_files) = (request.files, request.other_files);
+        let relay_pings = request.relay_pings;
         // Nothing costly for what can't be an account.
         if username.chars().count() > 32 || password.len() > 128 {
             return Err(Status::unauthenticated("Invalid login"));
@@ -1187,6 +1188,7 @@ impl Users for MyUsers {
         if client.starts_with("game/") {
             crate::clients::note_graphics(user_id, &graphics);
             crate::clients::note_files(user_id, &files, &other_files);
+            crate::far_rooms::note_pings(user_id, relay_pings.iter().map(|p| (p.relay.as_str(), p.ms)));
         }
         // Over TLS with the password: the game's ticket is good from this address too.
         if let Some(ip) = peer {

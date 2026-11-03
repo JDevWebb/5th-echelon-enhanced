@@ -27,6 +27,10 @@ use crate::protocols::game_session_service::types::GameSessionSearchResult;
 use crate::storage::Storage;
 use crate::storage::UrlsFor;
 
+/// How many of a search's first hosts have their relays told of the searcher (G3): the game
+/// pings five that answer.
+const INTRODUCED_HOSTS: usize = 10;
+
 /// The most open sessions one matchmaking search compares (newest first).
 const MAX_SCANNED: u32 = 1000;
 
@@ -192,13 +196,27 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
                 sessions
                     .into_iter()
                     .map(|s| {
-                        let ms = crate::metrics::address_of(s.creator_id).and_then(|host| crate::far_rooms::estimate_ms(me, host));
+                        // Through the relays both reached, when both games said (G3); else from
+                        // where they are.
+                        let ms = crate::far_rooms::estimate_by_relays(user_id, s.creator_id)
+                            .or_else(|| crate::metrics::address_of(s.creator_id).and_then(|host| crate::far_rooms::estimate_ms(me, host)));
                         (s, ms)
                     })
                     .collect(),
             )
         };
         let sessions: Vec<_> = sessions.into_iter().take(crate::game_session::MAX_SEARCH_RESULTS as usize).collect();
+        // The game QoS-pings the first hosts it got within 2 s (E3): their relays are told of the
+        // pair now, so no ping waits on a relay asking the matchmaking server (G3).
+        if !invitation_search && crate::relays::network_relays() {
+            if let Ok(Some(me)) = self.storage.find_username_by_user_id(user_id) {
+                for s in sessions.iter().take(INTRODUCED_HOSTS) {
+                    if let Ok(Some(host)) = self.storage.find_username_by_user_id(s.creator_id) {
+                        crate::relays::introduce_remote(&me, &host);
+                    }
+                }
+            }
+        }
         // The invited room comes with its participants already.
         let sessions = if invitation_search {
             sessions

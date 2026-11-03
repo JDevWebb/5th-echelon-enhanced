@@ -52,6 +52,7 @@ pub fn start(game: &mut Game, notices: &mut Notices, mode: PlayMode, name_not_al
                     c.hook_config.networking.nat_host = Some(relay.host.clone());
                     c.hook_config.networking.nat_port = Some(relay.port).filter(|p| *p != nat_proto::DEFAULT_PORT);
                     c.hook_config.networking.relays = relay.ranges.clone();
+                    c.hook_config.networking.relay_pings = relay.pings.clone();
                 }
             });
         }

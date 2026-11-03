@@ -8,6 +8,9 @@
 //!   every 2 s, in as many messages as it takes; an entry not heard of again lapses).
 //! - [`Body::Ask`] and [`Body::Answer`]: whether the matchmaking server put two players
 //!   together, so the relay may carry their traffic.
+//! - [`Body::Introduce`]: the matchmaking server put two players together (a search's results,
+//!   a probe, a join), told to their relays as it does, so their first packets aren't held up
+//!   asking (the game QoS-pings a search's hosts within 2 s, E3).
 //!
 //! `MAGIC` and the version differ from the games' protocol (nat_proto), so neither side takes
 //! the other's messages.
@@ -30,6 +33,7 @@ const OP_ASK: u8 = 2;
 const OP_ANSWER: u8 = 3;
 const OP_EVENT: u8 = 4;
 const OP_FORWARD: u8 = 5;
+const OP_INTRODUCE: u8 = 6;
 
 /// A player registered with a relay.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,6 +76,11 @@ pub enum Body {
         to: SocketAddrV4,
         payload: Vec<u8>,
     },
+    /// From the matchmaking server: it put `a` and `b` together (either may reach the other).
+    Introduce {
+        a: String,
+        b: String,
+    },
 }
 
 /// The longest event detail carried (JSON).
@@ -113,6 +122,7 @@ pub fn seal(key: &[u8; 32], from: &str, time: i64, body: &Body) -> Vec<u8> {
         Body::Answer { .. } => OP_ANSWER,
         Body::Event { .. } => OP_EVENT,
         Body::Forward { .. } => OP_FORWARD,
+        Body::Introduce { .. } => OP_INTRODUCE,
     });
     out.extend_from_slice(&time.to_be_bytes());
     put_text(&mut out, from);
@@ -154,6 +164,10 @@ pub fn seal(key: &[u8; 32], from: &str, time: i64, body: &Body) -> Vec<u8> {
             let payload = &payload[..payload.len().min(nat_proto::MAX_PAYLOAD)];
             out.extend_from_slice(&(payload.len() as u16).to_be_bytes());
             out.extend_from_slice(payload);
+        }
+        Body::Introduce { a, b } => {
+            put_text(&mut out, a);
+            put_text(&mut out, b);
         }
     }
     let m = mac(key, &out);
@@ -268,6 +282,7 @@ pub fn open(data: &[u8], key: &[u8; 32], now: i64) -> Option<(String, Body)> {
                 payload: r.take(len)?.to_vec(),
             }
         }
+        OP_INTRODUCE => Body::Introduce { a: r.text()?, b: r.text()? },
         _ => return None,
     };
     Some((from, body))
@@ -313,6 +328,10 @@ mod tests {
                 from: "5.6.7.8:40012".parse().unwrap(),
                 to: "9.9.9.9:40003".parse().unwrap(),
                 payload: vec![1; nat_proto::MAX_PAYLOAD],
+            },
+            Body::Introduce {
+                a: "Kiwi".into(),
+                b: "Tank".into(),
             },
         ] {
             assert_eq!(open(&seal(&key, "mm", 5, &body), &key, 5), Some(("mm".to_string(), body)));

@@ -5,7 +5,10 @@
 # relay with their passes, and the matchmaking server gives the relay's addresses for them; the
 # relay carries traffic only between players the matchmaking server put together
 # (tools/testbot's cross-relay). A second relay: players at the two reach each other, each
-# relay forwarding to the other (cross-relay-forward).
+# relay forwarding to the other (cross-relay-forward). Then the rest of the network around them:
+# a game without a session key (0.4.7) relayed by the matchmaking server's own helper (nat-relay),
+# a keyed one (nat-key), and an ordinary regional server in the same network, with friends across
+# it and the matchmaking server (federation).
 #
 #   scripts/relay-test.sh <folder with dedicated_server, testbot and coordinator, in the build image>
 #
@@ -15,7 +18,7 @@ bin=${1:?folder with dedicated_server, testbot and coordinator}
 image=${IMAGE:-fes-build:local}
 mount=${BIN_MOUNT:--v fes-target:/target:ro}
 net=fes-relay-test
-cleanup() { docker rm -f fes-relay-coord fes-relay-mm fes-relay-syd fes-relay-eu >/dev/null 2>&1 || true; docker network rm "$net" >/dev/null 2>&1 || true; }
+cleanup() { docker rm -f fes-relay-coord fes-relay-mm fes-relay-syd fes-relay-eu fes-relay-region >/dev/null 2>&1 || true; docker network rm "$net" >/dev/null 2>&1 || true; }
 trap cleanup EXIT
 cleanup
 docker network create "$net" >/dev/null
@@ -48,8 +51,11 @@ done
 [ -n "$key" ] || { echo "FAIL the matchmaking server logged no relay-pass key"; docker exec fes-relay-mm tail -20 /srv/fe/server.log; exit 1; }
 server fes-relay-syd relay-test "\n[role]\nkind = \"relay\"\nticket_key = \"$key\"\n"
 server fes-relay-eu relay-eu "\n[role]\nkind = \"relay\"\nticket_key = \"$key\"\n"
-mm=$(ip fes-relay-mm) syd=$(ip fes-relay-syd) eu=$(ip fes-relay-eu)
-for _ in $(seq 100); do docker exec fes-relay-mm bash -c 'exec 3<>/dev/tcp/127.0.0.1/50051' 2>/dev/null && break; sleep 0.2; done
+server fes-relay-region region-test ''
+mm=$(ip fes-relay-mm) syd=$(ip fes-relay-syd) eu=$(ip fes-relay-eu) region=$(ip fes-relay-region)
+for s in fes-relay-mm fes-relay-region; do
+  for _ in $(seq 100); do docker exec "$s" bash -c 'exec 3<>/dev/tcp/127.0.0.1/50051' 2>/dev/null && break; sleep 0.2; done
+done
 
 client() { docker run --rm --network "$net" $mount "$image" "$@"; }
 rc=0
@@ -66,6 +72,13 @@ echo "--- test players across the relay"
 client "$bin/testbot" --server "$mm" --other "$syd" cross-relay || rc=1
 echo "--- test players at two relays, forwarded between them"
 client "$bin/testbot" --server "$mm" --other "$syd" --third "$eu" cross-relay-forward || rc=1
+echo "--- a game without a session key (0.4.7), relayed by the matchmaking server's own helper"
+client "$bin/testbot" --server "$mm" nat-relay || rc=1
+echo "--- a keyed game (0.4.8) at the matchmaking server's own helper, with its relay pass"
+client "$bin/testbot" --server "$mm" nat-key || rc=1
+echo "--- an ordinary regional server beside them: its own helper relays, and friends span it and the matchmaking server"
+client "$bin/testbot" --server "$region" nat-relay || rc=1
+client "$bin/testbot" --server "$mm" --other "$region" federation || rc=1
 echo "--- the relay's session events reach the matchmaking server"
 events=0
 for _ in $(seq 20); do
@@ -74,6 +87,6 @@ for _ in $(seq 20); do
 done
 [ "$events" -ge 3 ] && echo "PASS the relay's registrations are in the matchmaking server's session events" || { echo "FAIL relay events: $events"; rc=1; }
 if [ $rc -ne 0 ]; then
-  for s in fes-relay-mm fes-relay-syd fes-relay-eu; do echo "--- $s (last 40 lines)"; docker exec "$s" tail -40 /srv/fe/server.log; done
+  for s in fes-relay-mm fes-relay-syd fes-relay-eu fes-relay-region; do echo "--- $s (last 40 lines)"; docker exec "$s" tail -40 /srv/fe/server.log; done
 fi
 exit $rc

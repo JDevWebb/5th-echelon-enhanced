@@ -90,6 +90,17 @@ message LoginRequest {
   // The names of other files next to the game's that can change it (loose .ini overrides,
   // other DLLs and packages): names only.
   repeated string other_files = 10;
+  // The launcher's round trip to each of the network's relays at the game's start (0.4.8 on):
+  // the matchmaking server estimates how far apart two players are from the relays they both
+  // reached, nearer the truth than their places. Empty from the launcher and a game started
+  // without it.
+  repeated RelayPing relay_pings = 11;
+}
+
+// A round trip to one relay: its id, as the matchmaking server lists it, and milliseconds.
+message RelayPing {
+  string relay = 1;
+  uint32 ms = 2;
 }
 
 // One of the game's files: its path under the game's SYSTEM folder ("Blacklist_game.exe",

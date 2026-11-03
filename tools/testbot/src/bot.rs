@@ -188,6 +188,7 @@ pub async fn login_as_client(server: IpAddr, name: &str, password: &str, client:
         graphics: String::new(),
         files: Vec::new(),
         other_files: Vec::new(),
+        relay_pings: Vec::new(),
     });
     request
         .metadata_mut()
@@ -220,6 +221,7 @@ pub async fn api_sign_in_on_pc(
             graphics: String::new(),
             files: Vec::new(),
             other_files: Vec::new(),
+            relay_pings: Vec::new(),
         })
         .await?
         .into_inner())
@@ -396,6 +398,7 @@ pub async fn api_sign_in_with_key(
             graphics: if client.starts_with("game/") { "dx11".into() } else { String::new() },
             files: Vec::new(),
             other_files: Vec::new(),
+            relay_pings: Vec::new(),
         })
         .await?
         .into_inner();

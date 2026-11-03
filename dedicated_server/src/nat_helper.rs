@@ -835,6 +835,19 @@ impl Table {
         }
     }
 
+    /// The matchmaking server put `a` and `b` together (a relay's link, [`crate::link::Body::Introduce`]):
+    /// both here, they're paired; one here, the other's packets for them are let through as
+    /// if the matchmaking server had been asked (either way round).
+    pub fn introduced(&mut self, a: &str, b: &str, now: Instant) {
+        let id = |name: &str| self.by_name.get(&name.to_lowercase()).copied();
+        match (id(a), id(b)) {
+            (Some(_), Some(_)) => self.introduce(a, b, now),
+            (Some(here), None) => self.remote_decided(b, here, true, now),
+            (None, Some(here)) => self.remote_decided(a, here, true, now),
+            (None, None) => {}
+        }
+    }
+
     /// Notes `name`'s round trip to this server, as its game measured it.
     pub fn note_rtt(&mut self, name: &str, rtt_ms: Option<u16>) {
         let Some(ms) = rtt_ms else { return };
@@ -1152,6 +1165,15 @@ static TABLE: OnceLock<Arc<Mutex<Table>>> = OnceLock::new();
 pub fn introduce(a: &str, b: &str) {
     if let Some(mut t) = TABLE.get().and_then(|t| t.lock().ok()) {
         t.introduce(a, b, Instant::now());
+    }
+    // On the network's matchmaking server, the relays the two are at are told too.
+    crate::relays::introduce_remote(a, b);
+}
+
+/// The matchmaking server put `a` and `b` together, as a relay's link said ([`Table::introduced`]).
+pub fn introduced(a: &str, b: &str) {
+    if let Some(mut t) = TABLE.get().and_then(|t| t.lock().ok()) {
+        t.introduced(a, b, Instant::now());
     }
 }
 
@@ -2380,6 +2402,31 @@ mod tests {
         // A pair goes quiet and is forgotten.
         let quiet = now + PAIR_FRESH;
         assert_eq!(t.route_tagged(a("198.51.100.7:1"), tag(&a_reply), b_adv, 10, quiet), None);
+    }
+
+    /// Another relay's player's packet for ours waits on asking the matchmaking server, unless
+    /// it introduced the two already (as it answers a search, G3): then it goes straight on.
+    #[test]
+    fn an_introduced_pair_from_another_relay_goes_straight_through() {
+        let now = Instant::now();
+        let mut t = Table::new(
+            NatConfig {
+                relay: RelayMode::All,
+                ..NatConfig::default()
+            },
+            Ipv4Addr::new(192, 0, 2, 1),
+        );
+        let bob = t.probe(a("198.51.100.8:1"), 0, 1, None, "bob", now);
+        let bob_adv = advertise(&bob).0;
+        let from = a("203.0.113.50:40001");
+        assert!(matches!(t.deliver("Kiwi", from, bob_adv, now), Delivery::Ask(..)), "not known yet: asked");
+        assert!(matches!(t.deliver("Zed", from, bob_adv, now), Delivery::Ask(..)));
+        t.introduced("kiwi", "BOB", now);
+        assert!(matches!(t.deliver("Kiwi", from, bob_adv, now), Delivery::Send(..)), "introduced: through");
+        // Only the pair it named.
+        assert!(matches!(t.deliver("Zed", from, bob_adv, now), Delivery::Drop), "still being asked about");
+        // Neither here: nothing to note.
+        t.introduced("Kiwi", "Zed", now);
     }
 
     #[test]

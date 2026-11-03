@@ -498,6 +498,12 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
             })
             .unwrap_or_default(),
         other_files: crate::file_check::files().map(|f| f.others.clone()).unwrap_or_default(),
+        // The launcher's pings to the relays (G3: the matchmaking server's estimate of how far
+        // apart two players are).
+        relay_pings: crate::hooks::nat::relay_pings()
+            .iter()
+            .map(|(relay, ms)| server_api::users::RelayPing { relay: relay.clone(), ms: *ms })
+            .collect(),
     });
 
     debug!("logging in");

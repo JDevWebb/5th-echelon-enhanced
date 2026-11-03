@@ -33,6 +33,8 @@ pub struct Picked {
     pub ms: u32,
     /// Every relay's address range ("IP:first-last"), for the game to reach players at them.
     pub ranges: Vec<String>,
+    /// Each relay that answered, by id, and its round trip ("id:ms"), for the game's sign-in.
+    pub pings: Vec<String>,
 }
 
 type Kept = HashMap<String, (Instant, Option<Picked>)>;
@@ -64,6 +66,7 @@ pub fn pick_for(server: &str) -> Option<Picked> {
             name: if relays[i].name.is_empty() { relays[i].id.clone() } else { relays[i].name.clone() },
             ms: pings[i].unwrap_or(0),
             ranges: relays.iter().map(|r| format!("{}:{}-{}", r.ip, r.ports.0, r.ports.1)).collect(),
+            pings: relays.iter().zip(&pings).filter_map(|(r, ms)| Some(format!("{}:{}", r.id, (*ms)?))).collect(),
         })
     };
     match &picked {

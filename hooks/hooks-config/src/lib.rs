@@ -756,6 +756,11 @@ pub struct Networking {
     /// game packet for an address in one goes through this game's own relay, which forwards it.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relays: Vec<String>,
+    /// The launcher's round trip to each of the network's relays at the last start ("id:ms"):
+    /// the game's sign-in carries them, so the matchmaking server can tell how far apart two
+    /// players are through the relays they share (G3), not only from where they are.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relay_pings: Vec<String>,
     /// `ip_address` was worked out at start (nothing pinned), not set by the player.
     #[serde(skip)]
     pub ip_address_automatic: bool,
@@ -781,6 +786,7 @@ impl Default for Networking {
             nat_port: None,
             nat_host: None,
             relays: Vec::new(),
+            relay_pings: Vec::new(),
             ip_address_automatic: false,
         }
     }

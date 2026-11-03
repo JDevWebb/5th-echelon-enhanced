@@ -199,6 +199,7 @@ impl Config {
         // The server's own helper until the launcher picks one of its network's relays.
         hook.networking.nat_host = None;
         hook.networking.relays = Vec::new();
+        hook.networking.relay_pings = Vec::new();
         self.default_profile = profile.name.clone();
     }
 
