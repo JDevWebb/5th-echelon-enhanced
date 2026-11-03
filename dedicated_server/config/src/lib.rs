@@ -435,6 +435,11 @@ pub struct RoleConfig {
     /// so the players of that server can use this relay. None: only its own players.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ticket_key: Option<String>,
+    /// A relay that was a game server before global matchmaking: where its players play now
+    /// (the matchmaking server's host name). `/api/info` says so, and launchers whose profile
+    /// is on this server move there by themselves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub moved_to: Option<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize, Clone, Copy, PartialEq, Eq)]

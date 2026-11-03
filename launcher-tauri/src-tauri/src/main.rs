@@ -78,6 +78,7 @@ fn main() {
             commands::identify,
             commands::fix_everything,
             commands::switch_server,
+            commands::follow_move,
             commands::squad,
             commands::join_friend,
             commands::matches,

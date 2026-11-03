@@ -58,6 +58,10 @@ pub struct ServerInfo {
     /// don't read, or aren't on a public address, are left out.
     #[serde(default, deserialize_with = "relays")]
     pub relays: Vec<crate::directory::Helper>,
+    /// A server that became a relay when its network moved to global matchmaking: where its
+    /// players play now (the matchmaking server's host name).
+    #[serde(default)]
+    pub moved_to: Option<String>,
 }
 
 fn relays<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Vec<crate::directory::Helper>, D::Error> {

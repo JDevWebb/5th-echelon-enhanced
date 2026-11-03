@@ -84,6 +84,16 @@ pub fn publish_relay_only() {
     RELAY_ONLY.store(true, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// Where this relay's players play now (`[role] moved_to`): `/api/info` says so.
+static MOVED_TO: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+pub fn publish_moved_to(host: &str) {
+    let host = host.trim().to_ascii_lowercase();
+    if !host.is_empty() && host.len() <= 253 && host.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'.' || b == b'-') {
+        let _ = MOVED_TO.set(host);
+    }
+}
+
 /// What `/api/info` says about friends: this server's id (players sign it
 /// into identity links and key logins), the friend list mode, and the
 /// coordinator it shares friends with, if any.
@@ -247,6 +257,9 @@ fn info(cfg: CommunityApiConfig) -> Value {
     if let Some(ago) = crate::relays::matchmaking_seen_ago() {
         info["matchmaking_seen"] = json!(ago);
     }
+    if let Some(host) = MOVED_TO.get() {
+        info["moved_to"] = json!(host);
+    }
     if RELAY_ONLY.load(std::sync::atomic::Ordering::Relaxed) {
         return relay_only_info(info);
     }
@@ -257,7 +270,7 @@ fn info(cfg: CommunityApiConfig) -> Value {
 /// port; no features, nothing a launcher could take for a place to sign in.
 fn relay_only_info(full: Value) -> Value {
     let mut info = json!({ "name": full["name"], "version": full["version"], "revision": full["revision"], "role": "relay", "features": [] });
-    for key in ["id", "coordinator", "coordinator_seen", "matchmaking_seen", "maintenance", "host"] {
+    for key in ["id", "coordinator", "coordinator_seen", "matchmaking_seen", "moved_to", "maintenance", "host"] {
         if !full[key].is_null() {
             info[key] = full[key].clone();
         }

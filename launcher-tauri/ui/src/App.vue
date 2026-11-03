@@ -234,6 +234,8 @@ function waitThenClose() {
 
 onMounted(async () => {
   await refresh();
+  // A server that moved its players (global matchmaking): the launcher follows, once.
+  call('follow_move').then((moved) => moved && refresh());
   if (inTauri) {
     window.__TAURI__.window.getCurrentWindow().onCloseRequested(async (event) => {
       if (closing.value || !(await call('report_sending'))) return;

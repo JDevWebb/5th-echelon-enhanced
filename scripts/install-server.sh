@@ -1565,6 +1565,11 @@ if [ -n "$role" ]; then
   toml_put role kind "\"$role\""
   say "Role: $([ "$role" = relay ] && echo "a NAT helper and relay alone" || echo "a game server")"
 fi
+# A relay of a matchmaking failover group was a game server: its players play at the
+# matchmaking server's name now, and launchers follow (/api/info's moved_to).
+if [ "$(checked_value role kind '^(game|relay)$')" = relay ] && [ -n "$mm_record" ]; then
+  toml_put role moved_to "\"$mm_record\""
+fi
 if [ -n "$ticket_key" ]; then
   toml_put role ticket_key "\"$ticket_key\""
   say "Takes the players of the matchmaking server with relay-pass key $ticket_key"

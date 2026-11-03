@@ -265,6 +265,7 @@ const preview = {
     };
   },
   join_match: () => null,
+  follow_move: () => null,
   new_match: () => null,
   cancel_new_match: () => null,
   update_banner: () => (location.search.includes('update') ? { version: '0.4.9', page: 'https://github.com/JDevWebb/5th-echelon-enhanced/releases', updating: false } : null),

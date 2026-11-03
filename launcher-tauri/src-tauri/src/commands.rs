@@ -843,6 +843,30 @@ pub fn fix_everything(app: tauri::AppHandle, state: tauri::State<Launcher>) -> b
     true
 }
 
+/// The player's server moved its players (global matchmaking: launcher::flow::moved): sets them
+/// up on the new one with their name and identity, as Switch server does, and says so. Asked
+/// once at start; nothing while the game runs, a task runs, or another tool manages the game.
+#[tauri::command(async)]
+pub fn follow_move(app: tauri::AppHandle, state: tauri::State<Launcher>) -> Option<String> {
+    let mut inner = state.lock();
+    if game_running(&mut inner) || inner.setup_running || inner.fixing {
+        return None;
+    }
+    let game = inner.game.as_ref().filter(|g| g.managed.is_none())?;
+    let cfg = (*game.cfg).clone();
+    drop(inner);
+    let (from, to) = launcher::task::guarded(|| Ok::<_, String>(launcher::flow::moved(&cfg))).ok().flatten()?;
+    let mut inner = state.lock();
+    let game = inner.game.as_ref()?;
+    let name = game.cfg.current_profile().map(|p| p.user.username.clone()).filter(|n| !n.is_empty());
+    let asked = connect::ask(game, &to, name, true, inner.directory.as_deref());
+    let line = format!("{from} moved its players to {to}: setting you up there with your name and identity.");
+    inner.notices.info(line.clone());
+    drop(inner);
+    start_setup(&app, asked);
+    Some(line)
+}
+
 /// Switches to a server from the menu (the network's): set up at once with the player's name,
 /// in the activity bar. Why not, when it can't now.
 #[tauri::command(async)]

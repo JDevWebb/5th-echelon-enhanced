@@ -46,6 +46,10 @@ pub struct Play {
     acting: Slot<Result<String, String>>,
     /// The Friends window (Manage friends): friends, requests, finding players, blocked.
     people: PeopleWindow,
+    /// Whether the player's server was asked if it moved its players (global matchmaking), and
+    /// the answer on its way.
+    move_asked: bool,
+    moving: Slot<Result<Option<(String, String)>, String>>,
     checks: Vec<Check>,
     support: Option<Support>,
     refreshed: Option<Instant>,
@@ -500,6 +504,20 @@ pub fn show(app: &mut App, ui: &mut egui::Ui) {
         let (play, game, notices) = app.play_mut();
         let game = game.as_mut().expect("checked above");
         play.poll(&ctx, game, notices);
+        // A server that moved its players (global matchmaking): asked once; the launcher follows.
+        if !play.move_asked && game.managed.is_none() && play.running.is_none() {
+            play.move_asked = true;
+            let cfg = (*game.cfg).clone();
+            play.moving.start(&ctx, move || Ok(crate::flow::moved(&cfg)));
+        }
+        if let Some(Ok(Some((from, to)))) = play.moving.poll() {
+            if !play.setup.running() && play.running.is_none() {
+                notices.info(format!("{from} moved its players to {to}: setting you up there with your name and identity."));
+                play.server = to;
+                let name = game.cfg.current_profile().map(|p| p.user.username.clone()).filter(|n| !n.is_empty());
+                start_setup(play, game, &ctx, notices, name, true);
+            }
+        }
         let has_server = game.cfg.current_profile().is_some_and(|p| !p.server.is_empty());
         if game.managed.is_none() && (!has_server || play.editing) {
             play.fresh_setup |= !has_server;

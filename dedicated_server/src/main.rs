@@ -510,6 +510,13 @@ struct Args {
     /// FE_LISTEN.
     #[argh(option)]
     listen: Option<std::net::IpAddr>,
+
+    /// merge another server's player accounts (its 5th-echelon.db) into this
+    /// one's database, by identity, then exit: global matchmaking's move
+    /// (docs/cutover.md). Run with the server stopped; give it once per
+    /// other server.
+    #[argh(option)]
+    merge_accounts: Vec<PathBuf>,
 }
 
 /// An address from a command-line option or else an environment variable.
@@ -570,6 +577,26 @@ fn main() -> color_eyre::Result<()> {
     quazal::prudp::set_ticket_address_proven(clients::address_proven);
 
     let storage = Arc::new(Storage::init(logger.clone())?);
+    // Global matchmaking's move: other servers' accounts into this one's database, then done.
+    if !args.merge_accounts.is_empty() {
+        for from in &args.merge_accounts {
+            let done = storage::run(storage.merge_accounts(from))??;
+            println!(
+                "{}: {} accounts added, {} joined with the same person's here; {} relationships, {} bans, {} uploads, {} stats",
+                from.display(),
+                done.added,
+                done.joined,
+                done.relationships,
+                done.bans,
+                done.content,
+                done.stats
+            );
+            for (was, now) in &done.renamed {
+                println!("  {was} is {now} here (another person has {was})");
+            }
+        }
+        return Ok(());
+    }
     // Names from before the rules that break them: the player is asked to choose another (the
     // game is kept out until they do), as an admin's "Ask to rename" does. Nobody is renamed:
     // their launcher signs in by name.
@@ -706,6 +733,9 @@ fn main() -> color_eyre::Result<()> {
     if relay_only {
         community_api::publish_relay_only();
         relays::set_relay_only();
+        if let Some(host) = &config.role.moved_to {
+            community_api::publish_moved_to(host);
+        }
         info!(logger, "Role: a NAT helper and relay only (no game services, no API)");
         if !nat.enabled {
             crit!(logger, "A relay-only server with its NAT helper off does nothing: turn [nat] on");

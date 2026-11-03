@@ -49,7 +49,7 @@ for _ in $(seq 100); do
   [ -n "$key" ] && break; sleep 0.2
 done
 [ -n "$key" ] || { echo "FAIL the matchmaking server logged no relay-pass key"; docker exec fes-relay-mm tail -20 /srv/fe/server.log; exit 1; }
-server fes-relay-syd relay-test "\n[role]\nkind = \"relay\"\nticket_key = \"$key\"\n"
+server fes-relay-syd relay-test "\n[role]\nkind = \"relay\"\nticket_key = \"$key\"\nmoved_to = \"mm.example.test\"\n"
 server fes-relay-eu relay-eu "\n[role]\nkind = \"relay\"\nticket_key = \"$key\"\n"
 server fes-relay-region region-test ''
 mm=$(ip fes-relay-mm) syd=$(ip fes-relay-syd) eu=$(ip fes-relay-eu) region=$(ip fes-relay-region)
@@ -86,6 +86,8 @@ for _ in $(seq 20); do
   [ -n "$seen" ] && [ "$seen" -le 30 ] && break; sleep 1
 done
 [ -n "$seen" ] && [ "$seen" -le 30 ] && echo "PASS a relay's /api/info has matchmaking_seen ($seen s)" || { echo "FAIL matchmaking_seen: '$seen'"; rc=1; }
+moved=$(client curl -sf "http://$syd/api/info" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("moved_to",""))' 2>/dev/null || true)
+[ "$moved" = mm.example.test ] && echo "PASS a relay that was a game server says where its players moved (moved_to)" || { echo "FAIL moved_to: '$moved'"; rc=1; }
 echo "--- the relay's session events reach the matchmaking server"
 events=0
 for _ in $(seq 20); do

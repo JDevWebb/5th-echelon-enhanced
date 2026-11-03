@@ -16,6 +16,7 @@ use sqlx::Executor;
 use sqlx::Statement;
 
 mod global_stats;
+mod merge;
 mod players;
 mod relationships;
 mod session_events;
@@ -25,6 +26,7 @@ pub use global_stats::GlobalList;
 pub use global_stats::GlobalPlace;
 pub use global_stats::GlobalRank;
 pub use global_stats::GlobalStat;
+pub use merge::Merged;
 pub use players::Ban;
 pub use players::FinishedMatch;
 pub use relationships::FriendError;
