@@ -43,6 +43,7 @@ mod dataversion;
 mod diagnostics;
 mod disruption_fix;
 mod dll_utils;
+mod file_check;
 mod follow_unblock;
 mod game_state;
 mod hooks;
@@ -351,6 +352,8 @@ fn init(hmodule: Option<HMODULE>) {
         crash::watch_for_freezes();
     }
     check_orig_library(hmodule);
+    // The game's files that change play, hashed in the background for the sign-in (D0).
+    file_check::start(dir.clone());
     if let Some(cmdline) = get_arguments() {
         info!("Cmdline: {}", cmdline);
         if let Some(switch) = offline_switch(&cmdline) {

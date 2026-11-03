@@ -187,6 +187,58 @@ pub fn graphics(user_id: u32) -> Option<&'static str> {
     GRAPHICS.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref()?.get(&user_id).copied()
 }
 
+/// The game's files each account's add-on said at its last sign-in (D0, report only): its
+/// hashed files as (name, the hash's first 16 hex characters), and the other files' names.
+type GameFiles = (Vec<(String, String)>, Vec<String>);
+static FILES: Mutex<Option<HashMap<u32, GameFiles>>> = Mutex::new(None);
+
+/// The most hashed files, and other files' names, kept for one account.
+const MOST_FILES: usize = 20;
+const MOST_OTHER_FILES: usize = 16;
+
+/// Notes the game's files its add-on hashed (`files`) and named (`others`): only well-formed
+/// entries, a few dozen at most. An add-on saying none (an older one, or one still hashing)
+/// forgets the last.
+pub fn note_files(user_id: u32, files: &[server_api::users::GameFile], others: &[String]) {
+    let name_ok = |n: &str| !n.is_empty() && n.len() <= 32 && n.chars().all(|c| c.is_ascii_alphanumeric() || "._-/ ".contains(c)) && !n.contains("..");
+    let sha_ok = |s: &str| s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit());
+    let hashed: Vec<(String, String)> = files
+        .iter()
+        .filter(|f| name_ok(&f.name) && sha_ok(&f.sha256))
+        .take(MOST_FILES)
+        .map(|f| (f.name.clone(), f.sha256[..16].to_ascii_lowercase()))
+        .collect();
+    let others: Vec<String> = others.iter().filter(|n| name_ok(n)).take(MOST_OTHER_FILES).cloned().collect();
+    let mut kept = FILES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let map = kept.get_or_insert_with(HashMap::new);
+    if hashed.is_empty() && others.is_empty() {
+        map.remove(&user_id);
+    } else {
+        map.insert(user_id, (hashed, others));
+    }
+}
+
+/// The game's files as a `game_files` event's detail: each hashed file by name (its hash's
+/// first 16 hex characters), and `others`, the other files' names joined. `None` when its
+/// add-on said none.
+pub fn files_detail(user_id: u32) -> Option<serde_json::Value> {
+    let kept = FILES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (hashed, others) = kept.as_ref()?.get(&user_id)?;
+    let mut detail = serde_json::Map::new();
+    for (name, sha) in hashed {
+        detail.insert(name.clone(), sha.clone().into());
+    }
+    if !others.is_empty() {
+        let mut joined = others.join(", ");
+        if joined.len() > 200 {
+            joined.truncate(joined[..200].rfind(", ").unwrap_or(0));
+            joined.push_str(", …");
+        }
+        detail.insert("others".into(), joined.into());
+    }
+    Some(detail.into())
+}
+
 /// Whether a refusal of `who` is worth a line in the log: once an hour each. A game or
 /// launcher not yet updated retries every few seconds (Renegade's 0.4.1 game: 494 times in
 /// half an hour, eu1, 2026-10-06), and each was a warning; the Sessions page still counts them.
@@ -435,6 +487,40 @@ mod tests {
         // A current client signing in to the account clears it.
         admitted(7);
         assert_eq!(refused_lately("ana", "launcher/0.4.0", "secret1"), None);
+    }
+
+    /// The game's files are kept as the add-on said them, short: bad names and hashes are
+    /// left out, and an add-on saying none forgets the last.
+    #[test]
+    fn the_games_files_are_kept_short() {
+        use super::files_detail;
+        use super::note_files;
+        let file = |name: &str, sha: &str| server_api::users::GameFile {
+            name: name.into(),
+            size: 1,
+            sha256: sha.into(),
+        };
+        let a = "A".repeat(64);
+        note_files(
+            900_101,
+            &[
+                file("Blacklist_game.exe", &a),
+                file("../evil.dll", &a),
+                file("UMDs/lobby.umd", "short"),
+                file("UMDs/menu.umd", &"b".repeat(64)),
+            ],
+            &["PEC.ini".into(), "bad\\name".into()],
+        );
+        assert_eq!(
+            files_detail(900_101),
+            Some(serde_json::json!({ "Blacklist_game.exe": "aaaaaaaaaaaaaaaa", "UMDs/menu.umd": "bbbbbbbbbbbbbbbb", "others": "PEC.ini" }))
+        );
+        note_files(900_101, &[], &[]);
+        assert_eq!(files_detail(900_101), None, "an older add-on says nothing");
+        let many: Vec<String> = (0..16).map(|i| format!("some-long-mod-name-{i:02}.dll")).collect();
+        note_files(900_102, &[], &many);
+        let others = files_detail(900_102).unwrap()["others"].as_str().unwrap().to_string();
+        assert!(others.len() <= 205 && others.ends_with(", …"), "{others}");
     }
 
     /// The renderer the game said is kept for its sign-in event, only as "dx9" or "dx11"; an

@@ -186,6 +186,8 @@ pub async fn login_as_client(server: IpAddr, name: &str, password: &str, client:
         vm: String::new(),
         nat_key: vec![],
         graphics: String::new(),
+        files: Vec::new(),
+        other_files: Vec::new(),
     });
     request
         .metadata_mut()
@@ -216,6 +218,8 @@ pub async fn api_sign_in_on_pc(
             vm: String::new(),
             nat_key: vec![],
             graphics: String::new(),
+            files: Vec::new(),
+            other_files: Vec::new(),
         })
         .await?
         .into_inner())
@@ -390,6 +394,8 @@ pub async fn api_sign_in_with_key(
             nat_key: key.map(|k| k.public_key().to_vec()).unwrap_or_default(),
             // As the game's add-on says it (a bot plays as a DirectX 11 game).
             graphics: if client.starts_with("game/") { "dx11".into() } else { String::new() },
+            files: Vec::new(),
+            other_files: Vec::new(),
         })
         .await?
         .into_inner();

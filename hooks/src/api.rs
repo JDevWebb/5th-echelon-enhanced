@@ -484,6 +484,20 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
         // The session key the NAT ticket and relay pass then name (G6).
         nat_key: crate::hooks::nat::session_key().public_key().to_vec(),
         graphics: crate::overlay::Engine::detect().map(crate::overlay::Engine::name).unwrap_or_default().into(),
+        // The game's files, once hashed (D0, report only); a sign-in before then goes without.
+        files: crate::file_check::files()
+            .map(|f| {
+                f.hashed
+                    .iter()
+                    .map(|h| server_api::users::GameFile {
+                        name: h.name.clone(),
+                        size: h.size,
+                        sha256: h.sha256.clone(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        other_files: crate::file_check::files().map(|f| f.others.clone()).unwrap_or_default(),
     });
 
     debug!("logging in");

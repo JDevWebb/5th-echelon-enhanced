@@ -67,6 +67,7 @@ const KINDS: &[&str] = &[
     "match_state",
     "player_report",
     "relay_address_mismatch",
+    "game_files",
 ];
 
 /// How long after a relay drop a player leaving their match counts as dropping out, and
@@ -335,7 +336,7 @@ impl Coordinator {
         // seconds of work on a busy week: off the runtime's threads, which servers' calls need
         // (R14: one Sessions page held them 2-4 s).
         let names: HashMap<(String, i64), String> = names.into_iter().map(|(s, id, name)| ((s, id), name)).collect();
-        let (events, timelines, graphics) = tokio::task::spawn_blocking(move || {
+        let (events, timelines, graphics, files) = tokio::task::spawn_blocking(move || {
             let events: Vec<Event> = rows
                 .into_iter()
                 .take(MOST_SHOWN as usize)
@@ -352,7 +353,8 @@ impl Coordinator {
                 .collect();
             let timelines = timelines(&events, &sessions, &names, from, to);
             let graphics = graphics_split(&events, from);
-            (events, timelines, graphics)
+            let files = game_files(&events).0;
+            (events, timelines, graphics, files)
         })
         .await
         .map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
@@ -383,6 +385,7 @@ impl Coordinator {
             "problems": problems,
             "outages": outages,
             "graphics": graphics,
+            "files": files,
             "cut": cut,
         }))
     }
@@ -413,6 +416,95 @@ fn graphics_split(events: &[Event], from: i64) -> Value {
     }
     let count = |g: Option<&str>| players.values().filter(|(_, said)| *said == g).count();
     json!({ "dx9": count(Some("dx9")), "dx11": count(Some("dx11")), "unknown": count(None) })
+}
+
+/// How many players must have said a file before anyone's copy of it is judged, and how many
+/// must share a hash (or a file the game doesn't ship) for it to be usual.
+const FILES_JUDGED_FROM: usize = 10;
+const FILES_USUAL_FROM: usize = 3;
+
+/// The game's files (`game_files`, 0.4.8 on; report only): each player's latest, compared with
+/// everyone's. A hash of a file few players share, when enough players said that file, is a
+/// file that differs: an edited executable or package, a crack's DLL. Another file next to the
+/// game's (a loose `.ini` override, a DLL) is noted when few players have it. Steam and Ubisoft
+/// Connect copies, and language builds, each have hashes many players share, so they're usual.
+/// Gives `{reporting, differ}` for the page, and the problems.
+fn game_files(events: &[Event]) -> (Value, Vec<Value>) {
+    let mut latest: HashMap<(String, String), &Event> = HashMap::new();
+    for e in events.iter().filter(|e| e.kind == "game_files") {
+        let seen = latest.entry(e.who()).or_insert(e);
+        if e.last_at >= seen.last_at {
+            *seen = e;
+        }
+    }
+    let hashes = |e: &Event| -> Vec<(String, String)> {
+        e.detail
+            .as_object()
+            .into_iter()
+            .flatten()
+            .filter(|(k, _)| k.as_str() != "others")
+            .filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_string())))
+            .collect()
+    };
+    let others = |e: &Event| -> Vec<String> {
+        e.detail["others"]
+            .as_str()
+            .unwrap_or_default()
+            .split(", ")
+            .filter(|n| !n.is_empty() && *n != "…")
+            .map(str::to_string)
+            .collect()
+    };
+    // How many players said each file, each hash of it, and each other file.
+    let mut said: HashMap<String, usize> = HashMap::new();
+    let mut shared: HashMap<(String, String), usize> = HashMap::new();
+    let mut other_count: HashMap<String, usize> = HashMap::new();
+    for e in latest.values() {
+        for (name, hash) in hashes(e) {
+            *said.entry(name.clone()).or_default() += 1;
+            *shared.entry((name, hash)).or_default() += 1;
+        }
+        for name in others(e) {
+            *other_count.entry(name.to_ascii_lowercase()).or_default() += 1;
+        }
+    }
+    let reporting = latest.len();
+    let mut differ = 0;
+    let mut out = Vec::new();
+    let mut players: Vec<&&Event> = latest.values().collect();
+    players.sort_by_key(|e| (e.at, e.server.clone(), e.player));
+    for e in players {
+        let mut odd: Vec<String> = hashes(e)
+            .into_iter()
+            .filter(|(name, hash)| said[name] >= FILES_JUDGED_FROM && shared[&(name.clone(), hash.clone())] < FILES_USUAL_FROM)
+            .map(|(name, _)| name)
+            .collect();
+        odd.sort();
+        let rare: Vec<String> = if reporting >= FILES_JUDGED_FROM {
+            others(e).into_iter().filter(|n| other_count[&n.to_ascii_lowercase()] < FILES_USUAL_FROM).collect()
+        } else {
+            Vec::new()
+        };
+        if !odd.is_empty() {
+            differ += 1;
+            out.push(json!({
+                "at": e.at, "server": e.server, "level": "warn", "player": e.player, "name": e.name,
+                "title": format!("{}'s game files differ from other players'", e.name),
+                "text": format!(
+                    "{}: a copy fewer than {FILES_USUAL_FROM} of the {reporting} players have (an edited file, or a crack's). Report only: the add-on says it, and a modified one can say anything{}",
+                    odd.join(", "),
+                    if rare.is_empty() { String::new() } else { format!(". Also next to the game: {}", rare.join(", ")) }
+                ),
+            }));
+        } else if !rare.is_empty() {
+            out.push(json!({
+                "at": e.at, "server": e.server, "level": "info", "player": e.player, "name": e.name,
+                "title": format!("{}'s game has files few others have", e.name),
+                "text": format!("Next to the game's: {} (a loose .ini overrides the game's own; a DLL can be a mod or a tool)", rare.join(", ")),
+            }));
+        }
+    }
+    (json!({ "reporting": reporting, "differ": differ }), out)
 }
 
 /// Times a server's API didn't answer two pings or more in a row (pings come every minute).
@@ -1602,6 +1694,7 @@ pub(crate) fn problems(events: &[Event]) -> Vec<Value> {
             }
         }
     }
+    out.extend(game_files(events).1);
     out
 }
 
@@ -1631,6 +1724,46 @@ mod tests {
 
     fn titles(events: &[Event]) -> Vec<String> {
         problems(events).iter().map(|p| p["title"].as_str().unwrap_or_default().to_string()).collect()
+    }
+
+    /// A player's file whose hash few others share is a file that differs, once enough players
+    /// said that file; Steam and Ubisoft copies each shared by several are usual; a rare file
+    /// next to the game is a note; too few players to compare judges nothing.
+    #[test]
+    fn game_files_that_differ_from_everyones() {
+        use super::game_files;
+        let files = |at: i64, player: i64, exe: &str, others: &str| {
+            let mut d = json!({ "Blacklist_DX11_game.exe": exe, "UMDs/lobby.umd": "1111" });
+            if !others.is_empty() {
+                d["others"] = json!(others);
+            }
+            ev("eu", at, player, &format!("p{player}"), "game_files", d)
+        };
+        let mut events: Vec<Event> = (1..=8).map(|p| files(100, p, "steam", "")).collect();
+        events.extend((9..=11).map(|p| files(100, p, "ubisoft", "dinput8.dll")));
+        // Player 12: its executable shared with no one; its first sign-in's was stock.
+        events.push(files(90, 12, "steam", ""));
+        events.push(files(110, 12, "edited", "PEC.ini"));
+        // Player 13: a stock copy, and a loose override few have.
+        events.push(files(120, 13, "steam", "PEC.ini, dinput8.dll"));
+        events.push(ev("eu", 130, 14, "p14", "signin", json!({ "graphics": "dx11" })));
+        let (summary, problems) = game_files(&events);
+        assert_eq!(summary, json!({ "reporting": 13, "differ": 1 }));
+        let titles: Vec<(&str, &str)> = problems.iter().map(|p| (p["level"].as_str().unwrap(), p["title"].as_str().unwrap())).collect();
+        assert_eq!(
+            titles,
+            vec![("warn", "p12's game files differ from other players'"), ("info", "p13's game has files few others have")]
+        );
+        assert!(problems[0]["text"].as_str().unwrap().starts_with("Blacklist_DX11_game.exe: "));
+        assert!(problems[0]["text"].as_str().unwrap().ends_with("Also next to the game: PEC.ini"));
+        assert_eq!(
+            problems[1]["text"],
+            "Next to the game's: PEC.ini (a loose .ini overrides the game's own; a DLL can be a mod or a tool)"
+        );
+        // Four players: too few to tell what's usual.
+        let (summary, problems) = game_files(&events[8..13]);
+        assert_eq!(summary["differ"], 0);
+        assert!(problems.is_empty());
     }
 
     /// Each player counts once, by the renderer their game said last; a sign-in that said

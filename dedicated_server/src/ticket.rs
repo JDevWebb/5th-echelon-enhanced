@@ -289,6 +289,11 @@ impl<T> TicketGrantingProtocolServerTrait<T> for TicketGrantingProtocolServerImp
             None => serde_json::json!({}),
         };
         crate::session_events::note(crate::session_events::Who::Id(user_id), "signin", detail);
+        // The game's files, as its add-on hashed them (D0, report only: the Sessions page shows
+        // a player whose files differ from everyone else's).
+        if let Some(files) = crate::clients::files_detail(user_id) {
+            crate::session_events::note(crate::session_events::Who::Id(user_id), "game_files", files);
+        }
 
         ci.user_id = Some(user_id);
         let session_key = self.get_session_key(logger, user_id);

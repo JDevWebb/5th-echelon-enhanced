@@ -82,6 +82,22 @@ message LoginRequest {
   // it on with the game's sign-in, for the Sessions page's count of each. Empty from the
   // launcher and older clients.
   string graphics = 8;
+  // The game's own files that change play (both executables, its DLLs, the script and data
+  // packages), as the add-on hashed them (0.4.8 on, report only): servers pass them on with
+  // the game's sign-in, and the Sessions page shows a player whose files differ from
+  // everyone else's. Empty from the launcher, older clients, and a game still hashing.
+  repeated GameFile files = 9;
+  // The names of other files next to the game's that can change it (loose .ini overrides,
+  // other DLLs and packages): names only.
+  repeated string other_files = 10;
+}
+
+// One of the game's files: its path under the game's SYSTEM folder ("Blacklist_game.exe",
+// "UMDs/lobby.umd"), its size and its SHA-256 (64 hex characters).
+message GameFile {
+  string name = 1;
+  uint64 size = 2;
+  string sha256 = 3;
 }
 
 // One hardware id: its kind ("machine-guid", "smbios-uuid", "board-serial", "disk-serial",
