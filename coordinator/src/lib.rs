@@ -1806,6 +1806,20 @@ async fn pings(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net:
     }
 }
 
+/// A name fit to publish as a server's: a domain name on the internet, not an address or a
+/// local network's name.
+fn public_name(name: &str) -> bool {
+    let name = name.trim_end_matches('.').to_ascii_lowercase();
+    name.parse::<std::net::IpAddr>().is_err()
+        && name.contains('.')
+        && name.len() <= 253
+        && name.split('.').all(|l| !l.is_empty() && l.len() <= 63 && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+        && !name.rsplit('.').next().is_some_and(|tld| tld.bytes().all(|b| b.is_ascii_digit()))
+        && ![".local", ".lan", ".home", ".internal", ".localhost", ".localdomain", ".home.arpa", ".test", ".invalid"]
+            .iter()
+            .any(|s| name.ends_with(s))
+}
+
 /// The directory: servers that are listed and have sent a heartbeat lately,
 /// most players online first.
 async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::net::SocketAddr>, headers: HeaderMap) -> Answer {
@@ -1832,17 +1846,19 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
         Err(e) => return internal(e),
     };
     let network_maintenance = maintenance.network.clone();
-    // The other names each server holds here (recorded as it joined, first come, first
-    // served): a launcher follows a server that moved (global matchmaking) only to one listed
-    // here, and the matchmaking server's record is one of its names, not its host.
-    let held: Vec<(String, String)> = match sqlx::query_as("SELECT server_id, name FROM server_names").fetch_all(&c.pool).await {
-        Ok(rows) => rows,
-        Err(e) => return internal(e),
+    // The matchmaking server's other names (global matchmaking): a launcher follows a server
+    // that moved only to one listed here, and the matchmaking server's record is one of its
+    // names, not its host. Only for the server this coordinator's operator named the
+    // matchmaking server: names are recorded first come, unchecked, so another member's
+    // aren't vouched for (a member could otherwise claim a name it controls and send its
+    // players there). Only public domain names: no addresses, no local names.
+    let mm_names: Vec<String> = match c.matchmaking_server.get() {
+        Some(mm) => match sqlx::query_scalar::<_, String>("SELECT name FROM server_names WHERE server_id = ?").bind(mm).fetch_all(&c.pool).await {
+            Ok(names) => names.into_iter().filter(|n| public_name(n)).collect(),
+            Err(e) => return internal(e),
+        },
+        None => Vec::new(),
     };
-    let mut names_of: std::collections::HashMap<String, Vec<String>> = std::collections::HashMap::new();
-    for (server, name) in held {
-        names_of.entry(server).or_default().push(name);
-    }
     let mut list: Vec<Value> = rows
         .into_iter()
         .filter_map(|(id, listing, last_seen, checked)| {
@@ -1868,11 +1884,13 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
             if !windows.is_empty() {
                 v["maintenance"] = json!(windows);
             }
-            let host = identity::host_key(v["host"].as_str().unwrap_or_default());
-            let mut also: Vec<&String> = names_of.get(&id).map(|n| n.iter().filter(|n| **n != host).collect()).unwrap_or_default();
-            also.sort();
-            if !also.is_empty() {
-                v["also"] = json!(also);
+            if c.matchmaking_server.get() == Some(&id) {
+                let host = identity::host_key(v["host"].as_str().unwrap_or_default());
+                let mut also: Vec<&String> = mm_names.iter().filter(|n| **n != host).collect();
+                also.sort();
+                if !also.is_empty() {
+                    v["also"] = json!(also);
+                }
             }
             v["id"] = json!(id);
             v["seen_secs_ago"] = json!(now - last_seen.unwrap_or(now));
