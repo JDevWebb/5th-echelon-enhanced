@@ -490,11 +490,12 @@ struct Closed {
 /// (searches, stats, refusals, a game that restarted...).
 fn timelines(events: &[Event], sessions: &[(String, i64, i64, Option<i64>)], names: &HashMap<(String, i64), String>, from: i64, to: i64) -> Vec<Value> {
     let mut players: BTreeMap<(String, String), Value> = BTreeMap::new();
+    // Only adds the player: no copy of what they have so far (it held every mark, and copying
+    // it for each event was minutes of work for a player with tens of thousands a week).
     let entry = |players: &mut BTreeMap<(String, String), Value>, who: (String, String), name: &str| {
         players
             .entry(who.clone())
-            .or_insert_with(|| json!({ "server": who.0, "player": who.1.parse::<i64>().ok(), "name": name, "online": [], "rooms": [], "marks": [] }))
-            .clone()
+            .or_insert_with(|| json!({ "server": who.0, "player": who.1.parse::<i64>().ok(), "name": name, "online": [], "rooms": [], "marks": [] }));
     };
     for (server, player, started, ended) in sessions {
         let who = (server.clone(), player.to_string());
