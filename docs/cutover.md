@@ -89,28 +89,21 @@ only, TTL 60. Then:
 
 Go ahead only when every step above passed; note what it took and how long.
 
-## 2. Days before the window: the coordinator's new name
-
-0.4.8 launchers use `scbl-coord.jdevwebb.net`, so it has to answer before the release goes out.
-
-1. In Cloudflare: `scbl-coord.jdevwebb.net`, an A record to eu1, **DNS only**, as
-   `scbl.jdevwebb.net` is now. (Proxied instead, if the coordinator's failover is set up by then:
-   with `--coordinator-cert`, an origin certificate covering it, and its standbys moving that
-   record; a name the certificate covers is then served behind Cloudflare beside it.)
-2. On eu1: the installer with `--coordinator-domain scbl-coord.jdevwebb.net --coordinator-alias
-   scbl.jdevwebb.net --coordinator-alias play.scbl.jdevwebb.net`. Caddy gets a certificate for
-   each; the coordinator answers to all three.
-3. Every member server: the installer with `--coordinator https://scbl-coord.jdevwebb.net` (its
-   join is kept).
-4. Check: `curl https://scbl-coord.jdevwebb.net/v1/info` and the old name both answer; the admin
-   UI's servers page shows every member's heartbeat.
-
-## 3. The update window
+## 2. The update window
 
 Book it ([update windows](operations.md)), long enough for the merge and checks (an hour).
 Announce it in the launcher's news and Discord.
 
-1. **The release first, as usual:** every server and launcher on the new release.
+1. **The release first, as usual:** every server and launcher on the new release. **eu1 first,
+   with the coordinator's new name**, right after publishing (0.4.8 launchers use
+   `scbl-coord.jdevwebb.net`; until it answers they fall back to their saved server list): the
+   release's installer with `--coordinator-domain scbl-coord.jdevwebb.net --coordinator-alias
+   scbl.jdevwebb.net --coordinator-alias play.scbl.jdevwebb.net` (its record, DNS only to eu1,
+   was made on 2026-11-04). Caddy gets a certificate for each name, and the coordinator answers to
+   all three. Check `curl https://scbl-coord.jdevwebb.net/v1/info`, and that its `--roadmap
+   --chat` are still on (`systemctl cat 5th-echelon-coordinator`: the 0.4.8 installer knows the
+   new name as the community's). Then every member server with `--coordinator
+   https://scbl-coord.jdevwebb.net` as it updates (its join is kept).
 2. **Stop new sign-ins on eu1 and oceania** (their game service stops), then let their
    outboxes empty (`SELECT COUNT(*) FROM stats_outbox`, `report_outbox`, `federation_outbox`
    all 0; the merge refuses otherwise) and take a fresh snapshot of each (`backup.sh snapshot`).
