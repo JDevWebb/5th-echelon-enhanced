@@ -44,7 +44,7 @@ pub struct Play {
     friends: flow::Friends,
     /// An action on someone in "Online now" (asked to be friends, invited, blocked).
     acting: Slot<Result<String, String>>,
-    /// The Friends window (Manage friends): friends, requests, finding players, blocked.
+    /// The Friends screen: friends, requests, finding players, blocked.
     people: PeopleWindow,
     /// Whether the player's server was asked if it moved its players (global matchmaking), and
     /// the answer on its way.
@@ -159,6 +159,8 @@ pub struct Play {
     /// A new match asked for (into this mode's lobby once the server said yes).
     asking_new: Slot<Result<Duration, String>>,
     new_mode: Option<crate::app::PlayMode>,
+    /// The Matches screen.
+    matches: MatchesPage,
 }
 
 /// A friend's server to switch to.
@@ -241,7 +243,7 @@ impl Play {
                 Ok(done) => notices.info(done),
                 Err(e) => notices.error(e),
             }
-            // The Friends window shows what changed.
+            // The Friends screen shows what changed.
             if self.people.open && !self.people.lists.running() {
                 let cfg = (*game.cfg).clone();
                 self.people.lists.start(ctx, move || flow::people(&cfg));
@@ -1360,6 +1362,38 @@ impl Play {
         self.needs_name = Some(server.to_string());
         self.editing = true;
     }
+
+    /// The Matches screen with example matches (not read again while the shot is taken).
+    pub(crate) fn shot_matches(&mut self) {
+        self.matches.data = Some(crate::matches::sample());
+        self.matches.loaded_at = Some(Instant::now());
+        self.matches.picked = None;
+    }
+
+    /// The Friends screen with example friends and requests.
+    pub(crate) fn shot_friends(&mut self, tab: PeopleTab) {
+        let person = |id: &str, name: &str, relation: &'static str, online: bool, activity: Option<&str>| flow::Person {
+            id: id.into(),
+            name: name.into(),
+            online,
+            relation,
+            activity: activity.map(String::from),
+            ..flow::Person::default()
+        };
+        self.people.shown = Some(Ok(flow::People {
+            friends: vec![
+                person("1", "Raven", "friend", true, Some("SvM Classic · Penthouse")),
+                person("2", "Tank", "friend", true, None),
+                person("3", "Nova", "friend", false, None),
+            ],
+            received: vec![person("4", "Kiwi", "received", true, None)],
+            sent: vec![person("5", "Ghost", "sent", false, None)],
+            blocked: vec![],
+            ..flow::People::default()
+        }));
+        self.people.open = true;
+        self.people.tab = tab;
+    }
 }
 
 /// What the drawer beside the stage shows.
@@ -1947,19 +1981,14 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
         play.join_requested = Some(friend);
     }
     if let Some(tab) = open_people {
-        play.people.open = true;
         play.people.tab = tab;
-        if !play.people.lists.running() {
-            let cfg = (*game.cfg).clone();
-            play.people.lists.start(ui.ctx(), move || flow::people(&cfg));
-        }
+        *to = Some(Go::View(View::Friends));
     }
-    people_window(play, game, ui.ctx());
 }
 
-/// The Friends window's sections, as the Tauri launcher's Friends screen has them.
+/// The Friends screen's sections, as the Tauri launcher's Friends screen has them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-enum PeopleTab {
+pub(crate) enum PeopleTab {
     #[default]
     Friends,
     Requests,
@@ -1967,8 +1996,8 @@ enum PeopleTab {
     Blocked,
 }
 
-/// The Friends window (the 0.4.8 plan's P1, for the egui launcher): friends, requests both ways,
-/// finding players and who's blocked, with the Tauri launcher's words.
+/// The Friends screen (the 0.4.8 plan's P1, a screen of the side menu as in the Tauri launcher):
+/// friends, requests both ways, finding players and who's blocked, with the Tauri launcher's words.
 #[derive(Default)]
 struct PeopleWindow {
     open: bool,
@@ -1980,35 +2009,116 @@ struct PeopleWindow {
     found: Option<Result<Vec<flow::Person>, String>>,
     /// Remove or Block, waiting for the player to say yes.
     asking: Option<(crate::network::PlayerAction, flow::Person)>,
+    /// A friend's server picked to switch to: the Servers screen confirms it.
+    go_servers: bool,
+}
+
+/// A player's card on the Friends screen: their initial (a dot when online), name and line, and
+/// `buttons` on the right.
+fn person_card(ui: &mut egui::Ui, name: &str, online: bool, line: &str, buttons: &mut dyn FnMut(&mut egui::Ui)) {
+    egui::Frame::new()
+        .fill(theme::SURFACE)
+        .stroke(egui::Stroke::new(1.0, theme::LINE))
+        .corner_radius(6)
+        .inner_margin(egui::Margin::symmetric(12, 9))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::hover());
+                let c = rect.center();
+                ui.painter().circle(c, 16.0, theme::SUNKEN, egui::Stroke::new(1.0, if online { theme::ACCENT } else { theme::CONTROL_LINE }));
+                let initial = name.chars().next().map_or_else(|| "?".to_string(), |c| c.to_uppercase().to_string());
+                ui.painter().text(c, egui::Align2::CENTER_CENTER, initial, egui::FontId::new(14.0, theme::strong()), if online { theme::ACCENT } else { theme::MUTED });
+                if online {
+                    let dot = c + egui::vec2(11.0, 11.0);
+                    ui.painter().circle_filled(dot, 5.0, theme::SURFACE);
+                    ui.painter().circle_filled(dot, 3.5, theme::OK);
+                }
+                ui.vertical(|ui| {
+                    ui.spacing_mut().item_spacing.y = 1.0;
+                    ui.label(RichText::new(name).family(theme::strong()).color(if online { theme::FG } else { theme::SOFT }));
+                    ui.add(egui::Label::new(theme::muted(line).small()).wrap());
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| buttons(ui));
+            });
+        });
+    ui.add_space(2.0);
+}
+
+/// The Friends screen of the side menu.
+pub fn show_friends(app: &mut App, ui: &mut egui::Ui) {
+    let ctx = ui.ctx().clone();
+    theme::page().show(ui, |ui| {
+        let (play, game, notices) = app.play_mut();
+        // As wide as the Tauri launcher's cards.
+        ui.set_max_width(760.0);
+        theme::title(ui, "Squad", "Friends");
+        let Some(game) = game.as_mut() else {
+            ui.label(theme::muted("Find the game first (Play)."));
+            return;
+        };
+        if game.managed.is_some() {
+            ui.label(theme::muted("This game is set up by another tool: its friends are in the game's overlay."));
+            return;
+        }
+        play.poll(&ctx, game, notices);
+        // The lists afresh each time the screen opens, and after every change (`poll`).
+        if !play.people.open && !play.people.lists.running() {
+            let cfg = (*game.cfg).clone();
+            play.people.lists.start(&ctx, move || flow::people(&cfg));
+        }
+        play.people.open = true;
+        ui.add_space(6.0);
+        people_page(play, game, ui);
+        // A friend's Join: the game started if it isn't running, then sent to their match.
+        if let Some((id, name)) = play.join_requested.take() {
+            let running = play.running.is_some() || play.game_seen || setup::game::game_running();
+            if running || launch(play, game, notices, crate::app::PlayMode::Play) {
+                let cfg = game.cfg.clone();
+                let game_dir = game.dir.clone();
+                play.joining.start(&ctx, move || flow::join_friend(&cfg, &game_dir, &id, &name));
+            }
+        }
+    });
+    if std::mem::take(&mut app.play_mut().0.people.go_servers) {
+        app.set_view(View::Servers);
+    }
+}
+
+impl Play {
+    /// Friend requests waiting for the player's answer (the side menu's dot).
+    pub fn friend_requests(&self) -> usize {
+        self.friends.requests
+    }
+
+    /// The Friends screen left: its lists are fetched afresh when it opens again.
+    pub fn left_friends(&mut self) {
+        self.people.open = false;
+        self.people.asking = None;
+    }
 }
 
 /// What a block does, said wherever one is offered.
 const BLOCK_MEANS: &str = "Neither of you can message, invite or friend the other, you don't see each other online, and quick match leaves out matches they're in.";
 
-fn people_window(play: &mut Play, game: &Game, ctx: &egui::Context) {
+fn people_page(play: &mut Play, game: &Game, ui: &mut egui::Ui) {
     use crate::network::PlayerAction;
-    if !play.people.open {
-        return;
-    }
+    let ctx = ui.ctx().clone();
     let busy = play.acting.running();
     let mut act: Option<(PlayerAction, flow::Person)> = None;
     let mut ask: Option<(PlayerAction, flow::Person)> = None;
     let mut search = false;
-    let mut open = true;
-    egui::Window::new("Friends")
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(true)
-        .default_width(460.0)
-        .default_height(480.0)
-        .show(ctx, |ui| {
+    let mut join: Option<(String, String)> = None;
+    let mut switch: Option<String> = None;
+    {
             let w = &mut play.people;
             let count = |n: usize| if n > 0 { format!(" · {n}") } else { String::new() };
             let lists = w.shown.as_ref().and_then(|r| r.as_ref().ok());
             let (friends_n, requests_n, blocked_n) = lists.map_or((0, 0, 0), |p| (p.friends.len(), p.received.len() + p.sent.len(), p.blocked.len()));
+            let online_n = lists.map_or(0, |p| p.friends.iter().filter(|f| f.online).count());
             ui.horizontal(|ui| {
                 for (tab, label) in [
-                    (PeopleTab::Friends, format!("Friends{}", count(friends_n))),
+                    (PeopleTab::Friends, if friends_n > 0 { format!("Friends · {online_n}/{friends_n}") } else { "Friends".to_string() }),
                     (PeopleTab::Requests, format!("Requests{}", count(requests_n))),
                     (PeopleTab::Find, "Find players".to_string()),
                     (PeopleTab::Blocked, format!("Blocked{}", count(blocked_n))),
@@ -2040,16 +2150,18 @@ fn people_window(play: &mut Play, game: &Game, ctx: &egui::Context) {
                 ui.separator();
             }
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                // A card per player, as the Tauri launcher's: their initial with a dot when online,
+                // what they're doing, and the actions on the right.
                 let row = |ui: &mut egui::Ui, p: &flow::Person, buttons: &mut dyn FnMut(&mut egui::Ui)| {
-                    ui.horizontal(|ui| {
-                        let line = if p.online {
-                            p.activity.clone().unwrap_or_else(|| "Online".into())
-                        } else {
-                            "Offline".into()
-                        };
-                        friend_row(ui, if p.online { theme::OK } else { theme::SOFT }, &p.name, &line);
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| buttons(ui));
-                    });
+                    let mut line = if p.online {
+                        p.activity.clone().unwrap_or_else(|| "Online".into())
+                    } else {
+                        "Offline".into()
+                    };
+                    if let Some(id) = p.identity.as_deref().filter(|_| p.online) {
+                        line = format!("{line} · {id}");
+                    }
+                    person_card(ui, &p.name, p.online, &line, buttons);
                 };
                 if w.tab == PeopleTab::Find {
                     ui.horizontal(|ui| {
@@ -2113,13 +2225,40 @@ fn people_window(play: &mut Play, game: &Game, ctx: &egui::Context) {
                         }
                         for p in &people.friends {
                             row(ui, p, &mut |ui| {
-                                if ui.add_enabled(!busy, theme::secondary("Block")).clicked() {
-                                    ask = Some((PlayerAction::Block, p.clone()));
-                                }
-                                if ui.add_enabled(!busy, theme::secondary("Remove")).clicked() {
-                                    ask = Some((PlayerAction::Remove, p.clone()));
+                                ui.menu_button(RichText::new("···").size(16.0).strong(), |ui| {
+                                    if ui.add_enabled(!busy, egui::Button::new("Remove friend")).clicked() {
+                                        ask = Some((PlayerAction::Remove, p.clone()));
+                                        ui.close();
+                                    }
+                                    if ui.add_enabled(!busy, egui::Button::new(format!("Block {}", p.name))).clicked() {
+                                        ask = Some((PlayerAction::Block, p.clone()));
+                                        ui.close();
+                                    }
+                                })
+                                .response
+                                .on_hover_text(format!("More for {}", p.name));
+                                if p.joinable && ui.add_enabled(!busy, theme::primary("Join")).clicked() {
+                                    join = Some((p.id.clone(), p.name.clone()));
                                 }
                             });
+                        }
+                        if !people.elsewhere.is_empty() {
+                            ui.add_space(8.0);
+                            ui.label(theme::caps("Playing on other servers"));
+                            for e in &people.elsewhere {
+                                let place = if e.region.is_empty() { e.server.clone() } else { format!("{} ({})", e.server, e.region) };
+                                person_card(
+                                    ui,
+                                    &e.name,
+                                    true,
+                                    &format!("On {place}: to play together, one of you joins the other's server"),
+                                    &mut |ui| {
+                                        if setup::directory::listable_host(&e.host) && ui.add_enabled(!busy, theme::secondary("Switch server")).clicked() {
+                                            switch = Some(e.host.clone());
+                                        }
+                                    },
+                                );
+                            }
                         }
                     }
                     PeopleTab::Requests => {
@@ -2173,23 +2312,27 @@ fn people_window(play: &mut Play, game: &Game, ctx: &egui::Context) {
                     PeopleTab::Find => {}
                 }
             });
-        });
-    let w = &mut play.people;
-    if !open {
-        w.open = false;
-        w.asking = None;
     }
+    if let Some(friend) = join {
+        play.join_requested = Some(friend);
+    }
+    if let Some(host) = switch {
+        // Confirmed on the Servers screen, which says where it goes and what happens there.
+        play.switching = Some(Switch { host, new_name: None });
+        play.people.go_servers = true;
+    }
+    let w = &mut play.people;
     if let Some(asked) = ask {
         w.asking = Some(asked);
     }
     if search {
         let (cfg, query) = ((*game.cfg).clone(), w.query.clone());
         w.found = None;
-        w.searching.start(ctx, move || flow::find_players(&cfg, &query));
+        w.searching.start(&ctx, move || flow::find_players(&cfg, &query));
     }
     if let Some((action, p)) = act {
         let cfg = (*game.cfg).clone();
-        play.acting.start(ctx, move || flow::player_action(&cfg, action, &p.id, "", &p.name));
+        play.acting.start(&ctx, move || flow::player_action(&cfg, action, &p.id, "", &p.name));
     }
 }
 
@@ -2931,26 +3074,7 @@ fn list_matches(play: &mut Play, game: &Game, ctx: &egui::Context) {
 /// lobby, if it isn't running), and the open matches' window (Join starts the game first if
 /// it isn't running, as a friend's Join does).
 fn choose_match(play: &mut Play, game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
-    let running = play.running.is_some() || play.game_seen;
-    if let Some(result) = play.asking_new.poll() {
-        let mode = play.new_mode.take().unwrap_or(crate::app::PlayMode::Svm);
-        match result {
-            Ok(holds) => {
-                let minutes = holds.as_secs().div_ceil(60);
-                if running {
-                    notices.info(format!(
-                        "Start matchmaking in the game: it hosts a new public match rather than join an open one (for the next {minutes} minutes)."
-                    ));
-                } else {
-                    notices.info(format!(
-                        "The game starts in the lobby: start matchmaking there and it hosts a new public match (for the next {minutes} minutes)."
-                    ));
-                    launch(play, game, notices, mode);
-                }
-            }
-            Err(line) => notices.error(line),
-        }
-    }
+    answer_new_match(play, game, notices);
     if !play.choosing {
         return;
     }
@@ -3011,11 +3135,8 @@ fn choose_match(play: &mut Play, game: &mut Game, notices: &mut Notices, ui: &mu
         list_matches(play, game, ui.ctx());
     }
     if let Some(room) = join {
-        if running || launch(play, game, notices, crate::app::PlayMode::Play) {
-            let (cfg, dir) = ((*game.cfg).clone(), game.dir.clone());
-            play.joining_match.start(ui.ctx(), move || crate::matches::join(&cfg, &dir, room));
-            play.choosing = false;
-        }
+        join_room(play, game, notices, room, ui.ctx());
+        play.choosing = false;
     }
     if !open {
         play.choosing = false;
@@ -3339,6 +3460,698 @@ fn account_dialog(ctx: &egui::Context, dialog: &mut AccountDialog, current: Opti
     choice
 }
 
+// --- The Matches screen ---------------------------------------------------------------------
+
+/// The Matches screen's mode filter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum MatchKind {
+    #[default]
+    All,
+    Svm,
+    Coop,
+}
+
+/// How the Matches screen sorts.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+enum MatchSort {
+    #[default]
+    Nearest,
+    Busiest,
+    Newest,
+}
+
+/// The Matches screen (the 0.4.8 lobby browser, a screen of the side menu as in the Tauri
+/// launcher): every public match on the player's server in full, the player's filters, the one
+/// picked, and the match watched for a seat (asked about every 10 s wherever the player is).
+struct MatchesPage {
+    loading: Slot<Result<crate::matches::Lobbies, String>>,
+    data: Option<crate::matches::Lobbies>,
+    loaded_at: Option<Instant>,
+    picked: Option<u32>,
+    kind: MatchKind,
+    show_under_way: bool,
+    show_full: bool,
+    friends_first: bool,
+    sort: MatchSort,
+    /// "Tell me when a seat opens": the room and its line ("SvM Classic · Penthouse").
+    watching: Option<(u32, String)>,
+    watch_check: Slot<Result<crate::matches::Lobbies, String>>,
+    watched_at: Option<Instant>,
+    /// The watched match has a seat: the banner's Join.
+    seat_open: Option<(u32, String)>,
+}
+
+impl Default for MatchesPage {
+    fn default() -> Self {
+        Self {
+            loading: Slot::default(),
+            data: None,
+            loaded_at: None,
+            picked: None,
+            kind: MatchKind::All,
+            show_under_way: true,
+            show_full: false,
+            friends_first: true,
+            sort: MatchSort::Nearest,
+            watching: None,
+            watch_check: Slot::default(),
+            watched_at: None,
+            seat_open: None,
+        }
+    }
+}
+
+/// How often the list is read again while the screen is open, and the watched match asked about.
+const MATCHES_EVERY: Duration = Duration::from_secs(5);
+const WATCH_EVERY: Duration = Duration::from_secs(10);
+
+/// The new match's answer (asked from the Play menu or the Matches screen): the game started
+/// into that mode's lobby, if it isn't running.
+fn answer_new_match(play: &mut Play, game: &mut Game, notices: &mut Notices) {
+    let running = play.running.is_some() || play.game_seen;
+    if let Some(result) = play.asking_new.poll() {
+        let mode = play.new_mode.take().unwrap_or(crate::app::PlayMode::Svm);
+        match result {
+            Ok(holds) => {
+                let minutes = holds.as_secs().div_ceil(60);
+                if running {
+                    notices.info(format!(
+                        "Start matchmaking in the game: it hosts a new public match rather than join an open one (for the next {minutes} minutes)."
+                    ));
+                } else {
+                    notices.info(format!(
+                        "The game starts in the lobby: start matchmaking there and it hosts a new public match (for the next {minutes} minutes)."
+                    ));
+                    launch(play, game, notices, mode);
+                }
+            }
+            Err(line) => notices.error(line),
+        }
+    }
+}
+
+/// Joins the public match in `room`, starting the game first if it isn't running.
+fn join_room(play: &mut Play, game: &mut Game, notices: &mut Notices, room: u32, ctx: &egui::Context) {
+    let running = play.running.is_some() || play.game_seen;
+    if running || launch(play, game, notices, crate::app::PlayMode::Play) {
+        let (cfg, dir) = ((*game.cfg).clone(), game.dir.clone());
+        play.joining_match.start(ctx, move || crate::matches::join(&cfg, &dir, room));
+    }
+}
+
+/// The watched match, asked about every 10 s wherever the player is in the launcher; once a seat
+/// opens, a bar with Join along the top, and the window asks for attention. A match that's gone
+/// ends the watch. Called every frame, before the screens.
+pub fn watch_seat(app: &mut App, ctx: &egui::Context) {
+    let (play, game, notices) = app.play_mut();
+    let Some(game) = game.as_mut() else { return };
+    let m = &mut play.matches;
+    if let Some(Ok(got)) = m.watch_check.poll() {
+        if let Some((room, label)) = m.watching.clone() {
+            match got.lobbies.iter().find(|l| l.room == room) {
+                None => m.watching = None,
+                Some(l) if l.joinable => {
+                    m.watching = None;
+                    m.seat_open = Some((room, label));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::RequestUserAttention(egui::UserAttentionType::Critical));
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    if m.watching.is_some() && !m.watch_check.running() && m.watched_at.is_none_or(|t| t.elapsed() >= WATCH_EVERY) {
+        m.watched_at = Some(Instant::now());
+        let cfg = (*game.cfg).clone();
+        m.watch_check.start(ctx, move || Ok(crate::matches::lobbies(&cfg)));
+    }
+    let Some((room, label)) = m.seat_open.clone() else { return };
+    let mut join = false;
+    egui::TopBottomPanel::top("seat-open")
+        .frame(egui::Frame::new().fill(theme::SELECTED).inner_margin(egui::Margin::symmetric(16, 8)))
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("A seat opened in {label}.")).color(theme::ACCENT).family(theme::strong()));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add(theme::secondary("Dismiss")).clicked() {
+                        play.matches.seat_open = None;
+                    }
+                    if ui.add(theme::primary("Join")).clicked() {
+                        join = true;
+                    }
+                });
+            });
+        });
+    if join {
+        play.matches.seat_open = None;
+        join_room(play, game, notices, room, ctx);
+    }
+}
+
+/// The Matches screen of the side menu.
+pub fn show_matches(app: &mut App, ui: &mut egui::Ui) {
+    let ctx = ui.ctx().clone();
+    let (play, game, notices) = app.play_mut();
+    let Some(game) = game.as_mut() else {
+        theme::page().show(ui, |ui| {
+            theme::title(ui, "No server yet", "Matches");
+            ui.label(theme::muted("Find the game first (Play)."));
+        });
+        return;
+    };
+    play.poll(&ctx, game, notices);
+    answer_new_match(play, game, notices);
+    // As the Tauri launcher's: listed once there's a server (joining asks for an account).
+    let profile = game.cfg.current_profile().filter(|p| !p.server.is_empty()).map(|p| p.server.clone());
+    let running = play.running.is_some() || play.game_seen;
+    let m = &mut play.matches;
+    if let Some(result) = m.loading.poll() {
+        m.data = Some(result.unwrap_or_else(|e| crate::matches::Lobbies {
+            error: Some(e),
+            ..crate::matches::Lobbies::default()
+        }));
+    }
+    if profile.is_some() && !m.loading.running() && m.loaded_at.is_none_or(|t| t.elapsed() >= MATCHES_EVERY) {
+        m.loaded_at = Some(Instant::now());
+        let cfg = (*game.cfg).clone();
+        m.loading.start(&ctx, move || Ok(crate::matches::lobbies_or_open(&cfg)));
+    }
+    ctx.request_repaint_after(Duration::from_secs(1));
+    let ready = profile.is_some() && !running && game.managed.is_none();
+    let mut act: Option<MatchAct> = None;
+    matches_page(&mut play.matches, profile.as_deref(), ready, &mut act, ui);
+    match act {
+        Some(MatchAct::Join(room)) => join_room(play, game, notices, room, &ctx),
+        Some(MatchAct::New(mode)) => {
+            let cfg = (*game.cfg).clone();
+            play.new_mode = Some(mode);
+            play.asking_new.start(&ctx, move || crate::matches::new_match(&cfg));
+        }
+        Some(MatchAct::Quick(mode)) => {
+            launch(play, game, notices, mode);
+        }
+        Some(MatchAct::Servers) | None => {}
+    }
+    if matches!(act, Some(MatchAct::Servers)) {
+        app.set_view(View::Servers);
+    }
+}
+
+/// What the Matches screen asked for.
+#[derive(Debug, Clone, Copy)]
+enum MatchAct {
+    Join(u32),
+    New(crate::app::PlayMode),
+    Quick(crate::app::PlayMode),
+    Servers,
+}
+
+/// A ping's colour: near, far, or not known.
+fn ping_color(ms: Option<u32>) -> egui::Color32 {
+    match ms {
+        None => theme::MUTED,
+        Some(ms) if ms <= 120 => theme::OK,
+        Some(_) => theme::WARN,
+    }
+}
+
+fn ping_ms(ms: Option<u32>) -> String {
+    ms.map_or_else(|| "–".to_string(), |ms| format!("{ms} ms"))
+}
+
+/// "Tank, your friend, is in it" / "Tank and 2 more of your friends are in it".
+fn friend_line(friends: &[String]) -> String {
+    match friends {
+        [] => String::new(),
+        [one] => format!("{one}, your friend, is in it"),
+        [first, rest @ ..] => format!("{first} and {} more of your friends are in it", rest.len()),
+    }
+}
+
+/// The matches the filters let through, sorted as asked.
+fn shown_matches<'a>(m: &MatchesPage, all: &'a [crate::matches::Lobby]) -> Vec<&'a crate::matches::Lobby> {
+    let mut list: Vec<&crate::matches::Lobby> = all
+        .iter()
+        .filter(|l| match m.kind {
+            MatchKind::All => true,
+            MatchKind::Svm => l.kind != "coop",
+            MatchKind::Coop => l.kind == "coop",
+        })
+        .filter(|l| m.show_under_way || !l.under_way)
+        // A full match under way is the Under way filter's.
+        .filter(|l| m.show_full || !l.full || l.under_way || Some(l.room) == m.picked)
+        .collect();
+    list.sort_by_key(|l| {
+        let friends = if m.friends_first { u8::from(l.friends.is_empty()) } else { 0 };
+        let key = match m.sort {
+            MatchSort::Nearest => i64::from(l.ping_ms.unwrap_or(9999)),
+            MatchSort::Busiest => -(l.players as i64),
+            MatchSort::Newest => i64::from(l.open_secs),
+        };
+        (friends, key)
+    });
+    list
+}
+
+fn matches_page(m: &mut MatchesPage, server: Option<&str>, ready: bool, act: &mut Option<MatchAct>, ui: &mut egui::Ui) {
+    let quick_mode = if m.kind == MatchKind::Coop { crate::app::PlayMode::Coop } else { crate::app::PlayMode::Svm };
+    // The header: the server, the title and the summary, with New match and Quick match.
+    egui::Frame::new().inner_margin(egui::Margin { left: 32, right: 32, top: 22, bottom: 12 }).show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                theme::title(ui, server.unwrap_or("No server yet"), "Matches");
+                let summary = match &m.data {
+                    None => "Reading the open matches…".to_string(),
+                    Some(d) if d.summary.is_empty() => String::new(),
+                    Some(d) => format!("{} · updated live", d.summary),
+                };
+                ui.label(RichText::new(summary).color(theme::SOFT).small());
+            });
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui.add_enabled(ready, theme::primary("Quick match").min_size(egui::vec2(0.0, 40.0))).clicked() {
+                    *act = Some(MatchAct::Quick(quick_mode));
+                }
+                if ui.add_enabled(ready, theme::secondary("New match").min_size(egui::vec2(0.0, 40.0))).clicked() {
+                    *act = Some(MatchAct::New(quick_mode));
+                }
+            });
+        });
+    });
+    let line = ui.available_rect_before_wrap();
+    ui.painter().hline(line.x_range(), line.top(), egui::Stroke::new(1.0, theme::LINE));
+    let pad = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
+        egui::Frame::new().inner_margin(egui::Margin::symmetric(32, 16)).show(ui, |ui| add(ui));
+    };
+    let Some(server_set) = server.map(|_| ()) else {
+        pad(ui, &mut |ui| {
+            ui.label(theme::muted("Set up the game and a server first (Play)."));
+        });
+        return;
+    };
+    let _ = server_set;
+    let Some(data) = m.data.clone() else {
+        pad(ui, &mut |ui| {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(theme::muted("Reading the open matches…"));
+            });
+        });
+        return;
+    };
+    if let Some(e) = &data.error {
+        let mut again = false;
+        pad(ui, &mut |ui| {
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("Couldn't read the matches: {e}")).color(theme::BAD));
+                if ui.link("Try again").clicked() {
+                    again = true;
+                }
+            });
+        });
+        if again {
+            m.loaded_at = None;
+        }
+        return;
+    }
+    let all = &data.lobbies;
+    // The filters.
+    if !all.is_empty() {
+        egui::Frame::new().inner_margin(egui::Margin::symmetric(32, 10)).show(ui, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                let svm = all.iter().filter(|l| l.kind != "coop").count();
+                let labels = [
+                    (MatchKind::All, format!("All · {}", all.len())),
+                    (MatchKind::Svm, format!("Spies vs Mercs · {svm}")),
+                    (MatchKind::Coop, format!("Co-op · {}", all.len() - svm)),
+                ];
+                let options: Vec<(MatchKind, &str)> = labels.iter().map(|(k, l)| (*k, l.as_str())).collect();
+                theme::segmented(ui, &mut m.kind, &options);
+                ui.add_space(8.0);
+                ui.checkbox(&mut m.show_under_way, "Under way");
+                ui.checkbox(&mut m.show_full, "Full");
+                ui.checkbox(&mut m.friends_first, "Friends first");
+                // At the row's right end when there's room for it, else on the next line.
+                let sort = |ui: &mut egui::Ui, m: &mut MatchesPage| {
+                    egui::ComboBox::from_id_salt("matches-sort")
+                        .selected_text(match m.sort {
+                            MatchSort::Nearest => "Nearest first",
+                            MatchSort::Busiest => "Most players",
+                            MatchSort::Newest => "Newest",
+                        })
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut m.sort, MatchSort::Nearest, "Nearest first");
+                            ui.selectable_value(&mut m.sort, MatchSort::Busiest, "Most players");
+                            ui.selectable_value(&mut m.sort, MatchSort::Newest, "Newest");
+                        });
+                };
+                let rest = ui.available_width();
+                if rest > 230.0 {
+                    // Only the rest of the row: right-aligned in it, never over the checkboxes.
+                    ui.allocate_ui_with_layout(egui::vec2(rest, 36.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        sort(ui, m);
+                        ui.label(theme::muted("Sort"));
+                    });
+                } else {
+                    ui.end_row();
+                    ui.label(theme::muted("Sort"));
+                    sort(ui, m);
+                }
+            });
+        });
+        let line = ui.available_rect_before_wrap();
+        ui.painter().hline(line.x_range(), line.top(), egui::Stroke::new(1.0, theme::LINE));
+    }
+    let shown = shown_matches(m, all);
+    // The first one picked once the list comes, and again when the picked one goes.
+    if !shown.iter().any(|l| Some(l.room) == m.picked) {
+        m.picked = shown.first().map(|l| l.room);
+    }
+    if shown.is_empty() {
+        ui.add_space(40.0);
+        ui.vertical_centered(|ui| {
+            ui.label(theme::display(if all.is_empty() { "No public matches open" } else { "Nothing matches the filters" }, 24.0));
+            ui.add_space(6.0);
+            ui.label(theme::muted(if all.is_empty() {
+                "Host one and it shows here for everyone; quick match finds you one as soon as anyone opens."
+            } else {
+                "Show the ones under way or full, or another mode."
+            }));
+            ui.add_space(10.0);
+            ui.horizontal(|ui| {
+                let wide = 300.0;
+                ui.add_space(((ui.available_width() - wide) / 2.0).max(0.0));
+                if ui.add_enabled(ready, theme::primary("Host a match")).clicked() {
+                    *act = Some(MatchAct::New(quick_mode));
+                }
+                if ui.add(theme::secondary("See other servers")).clicked() {
+                    *act = Some(MatchAct::Servers);
+                }
+            });
+            if !data.hidden.is_empty() {
+                ui.add_space(6.0);
+                ui.label(theme::muted(&data.hidden).small());
+            }
+        });
+        return;
+    }
+    let picked = shown.iter().find(|l| Some(l.room) == m.picked).map(|l| (*l).clone());
+    let narrow = ui.available_width() < 1000.0;
+    // The details on the right, the list beside them.
+    if let Some(sel) = &picked {
+        egui::SidePanel::right("match-detail")
+            .resizable(false)
+            .exact_width(if narrow { 320.0 } else { 380.0 })
+            .frame(egui::Frame::new().fill(theme::SURFACE).stroke(egui::Stroke::new(1.0, theme::LINE)))
+            .show_inside(ui, |ui| match_detail(m, sel, act, ui));
+    }
+    egui::CentralPanel::default().frame(egui::Frame::new()).show_inside(ui, |ui| {
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            // The Tauri launcher's columns: the match 1.6 parts, players fixed, the status 1.2
+            // parts, the ping fixed; each cell left-aligned at its width (the ping right-aligned).
+            let gap = 12.0;
+            let w = ui.available_width() - 44.0 - 3.0 * gap;
+            let (players_w, ping_w) = (if narrow { 76.0 } else { 110.0 }, if narrow { 60.0 } else { 70.0 });
+            let what_w = ((w - players_w - ping_w) * 1.6 / 2.8).max(120.0);
+            let status_w = ((w - players_w - ping_w) * 1.2 / 2.8).max(100.0);
+            let cell = |ui: &mut egui::Ui, width: f32, right: bool, add: &mut dyn FnMut(&mut egui::Ui)| {
+                let layout = if right { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) };
+                ui.allocate_ui_with_layout(egui::vec2(width, 38.0), layout, |ui| {
+                    ui.set_width(width);
+                    add(ui);
+                });
+            };
+            ui.add_space(6.0);
+            egui::Frame::new().inner_margin(egui::Margin::symmetric(22, 4)).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    for (label, width, right) in [("Match", what_w, false), ("Players", players_w, false), ("Status", status_w, false), ("Ping", ping_w, true)] {
+                        let layout = if right { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) };
+                        ui.allocate_ui_with_layout(egui::vec2(width, 16.0), layout, |ui| {
+                            ui.set_width(width);
+                            ui.label(theme::caps(label));
+                        });
+                    }
+                });
+            });
+            for l in &shown {
+                let on = Some(l.room) == m.picked;
+                let row = egui::Frame::new()
+                    .fill(if on { theme::SELECTED } else { egui::Color32::TRANSPARENT })
+                    .inner_margin(egui::Margin::symmetric(22, 10))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = gap;
+                            cell(ui, what_w, false, &mut |ui| {
+                                ui.vertical(|ui| {
+                                    let title = match &l.map {
+                                        Some(map) => format!("{} · {map}", l.mode),
+                                        None => l.mode.clone(),
+                                    };
+                                    ui.add(egui::Label::new(RichText::new(title).family(theme::strong())).truncate());
+                                    let mut under = Vec::new();
+                                    if !l.host.is_empty() {
+                                        under.push(format!("Hosted by {}", l.host));
+                                    }
+                                    if !l.friends.is_empty() {
+                                        under.push(friend_line(&l.friends));
+                                    }
+                                    if let Some(made) = l.made_for {
+                                        under.push(format!("{} seats (made for {made})", l.seats));
+                                    }
+                                    let color = if l.friends.is_empty() { theme::SOFT } else { theme::ACCENT };
+                                    ui.add(egui::Label::new(RichText::new(under.join(" · ")).color(color).small()).truncate());
+                                });
+                            });
+                            cell(ui, players_w, false, &mut |ui| {
+                                ui.vertical(|ui| {
+                                    let of = if l.seats > 0 { format!("/{}", l.seats) } else { String::new() };
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x = 0.0;
+                                        ui.label(RichText::new(l.players.to_string()).family(theme::strong()));
+                                        ui.label(theme::muted(of));
+                                    });
+                                    let (bar, _) = ui.allocate_exact_size(egui::vec2(players_w - 12.0, 4.0), egui::Sense::hover());
+                                    ui.painter().rect_filled(bar, 2, theme::LINE);
+                                    if l.seats > 0 {
+                                        let fill = (l.players as f32 / l.seats as f32).min(1.0);
+                                        let mut done = bar;
+                                        done.set_width(bar.width() * fill);
+                                        ui.painter().rect_filled(done, 2, if l.full { theme::WARN } else { theme::ACCENT });
+                                    }
+                                });
+                            });
+                            cell(ui, status_w, false, &mut |ui| {
+                                let (dot, _) = ui.allocate_exact_size(egui::vec2(8.0, 8.0), egui::Sense::hover());
+                                ui.painter().circle_filled(dot.center(), 4.0, if l.tone == "warn" { theme::WARN } else { theme::ACCENT });
+                                ui.add(egui::Label::new(&l.status).truncate());
+                            });
+                            cell(ui, ping_w, true, &mut |ui| {
+                                ui.label(RichText::new(ping_ms(l.ping_ms)).monospace().color(ping_color(l.ping_ms)));
+                            });
+                        });
+                    })
+                    .response;
+                let row = ui.interact(row.rect, ui.id().with(("match-row", l.room)), egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                if on {
+                    ui.painter().rect_filled(egui::Rect::from_min_size(row.rect.min, egui::vec2(3.0, row.rect.height())), 0, theme::ACCENT);
+                } else if row.hovered() {
+                    ui.painter().rect_filled(row.rect, 0, egui::Color32::from_white_alpha(6));
+                }
+                if row.clicked() {
+                    m.picked = Some(l.room);
+                }
+                let line = row.rect;
+                ui.painter().hline(line.x_range(), line.bottom(), egui::Stroke::new(1.0, theme::LINE));
+            }
+            if !data.hidden.is_empty() {
+                ui.add_space(10.0);
+                egui::Frame::new().inner_margin(egui::Margin::symmetric(22, 0)).show(ui, |ui| {
+                    ui.label(theme::muted(format!("{} Private matches aren't listed.", data.hidden)).small());
+                });
+            }
+        });
+    });
+}
+
+/// A player's round badge with their initial.
+fn avatar(ui: &mut egui::Ui, name: &str, friend: bool, empty: bool) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(26.0, 26.0), egui::Sense::hover());
+    let c = rect.center();
+    if empty {
+        ui.painter().circle_stroke(c, 12.0, egui::Stroke::new(1.0, theme::CONTROL_LINE));
+        return;
+    }
+    ui.painter().circle_filled(c, 13.0, if friend { egui::Color32::from_rgb(0x1f, 0x35, 0x24) } else { theme::LINE });
+    let initial = name.chars().next().map_or_else(|| "?".to_string(), |c| c.to_uppercase().to_string());
+    ui.painter().text(
+        c,
+        egui::Align2::CENTER_CENTER,
+        initial,
+        egui::FontId::new(12.0, theme::strong()),
+        if friend { theme::ACCENT } else { theme::FG },
+    );
+}
+
+fn person_row(ui: &mut egui::Ui, sel: &crate::matches::Lobby, p: &crate::matches::Person, ping: bool) {
+    egui::Frame::new()
+        .fill(if p.friend { theme::SELECTED } else { egui::Color32::TRANSPARENT })
+        .corner_radius(4)
+        .inner_margin(egui::Margin::symmetric(8, 4))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                avatar(ui, &p.name, p.friend, false);
+                ui.add(egui::Label::new(RichText::new(&p.name).family(theme::strong())).truncate());
+                if p.host {
+                    ui.label(RichText::new("HOST").monospace().size(10.5).color(theme::ACCENT));
+                }
+                if p.friend {
+                    ui.label(RichText::new("friend").color(theme::ACCENT).small());
+                } else if p.party != 0 {
+                    let others: Vec<&str> = sel.people.iter().filter(|q| q.party == p.party && q.name != p.name).map(|q| q.name.as_str()).collect();
+                    let line = if others.is_empty() { "in a party".to_string() } else { format!("party with {}", others.join(", ")) };
+                    ui.label(theme::muted(line).small());
+                }
+                if ping {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some(ms) = p.ping_ms {
+                            ui.label(RichText::new(format!("{ms} ms")).monospace().small().color(ping_color(Some(ms))));
+                        }
+                    });
+                }
+            });
+        });
+}
+
+fn match_detail(m: &mut MatchesPage, sel: &crate::matches::Lobby, act: &mut Option<MatchAct>, ui: &mut egui::Ui) {
+    // The band: the mode, and the map in big type.
+    let band = if sel.kind == "coop" { egui::Color32::from_rgb(0x12, 0x19, 0x2a) } else { egui::Color32::from_rgb(0x14, 0x20, 0x19) };
+    // A short window: the band takes less, so the players stay in view (as the Tauri launcher's).
+    let short = ui.available_height() < 560.0;
+    egui::Frame::new()
+        .fill(band)
+        .inner_margin(egui::Margin { left: 22, right: 22, top: if short { 10 } else { 34 }, bottom: if short { 8 } else { 12 } })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            let kicker = format!("{} · public{}", sel.mode, if sel.full { " · full" } else { "" });
+            ui.label(theme::kicker(&kicker).color(if sel.tone == "warn" { theme::WARN } else { theme::ACCENT }));
+            ui.add(egui::Label::new(theme::display(sel.map.as_deref().unwrap_or(&sel.mode), if short { 22.0 } else { 28.0 })).truncate());
+        });
+    // Join, or watch for a seat, along the bottom.
+    egui::TopBottomPanel::bottom("match-act")
+        .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(22, 14)).stroke(egui::Stroke::new(1.0, theme::LINE)))
+        .show_inside(ui, |ui| {
+            ui.vertical_centered_justified(|ui| {
+                if sel.joinable {
+                    if ui.add(theme::play_button("Join this match").min_size(egui::vec2(0.0, 46.0))).clicked() {
+                        *act = Some(MatchAct::Join(sel.room));
+                    }
+                    let what = if sel.under_way { "match" } else { "lobby" };
+                    let host = if sel.host.is_empty() { "its host".to_string() } else { sel.host.clone() };
+                    if !short {
+                        ui.label(theme::muted(format!("Starts the game if it isn't running, then joins {host}'s {what}.")).small());
+                    }
+                } else {
+                    let why = match (sel.under_way, sel.full) {
+                        (true, true) => "Under way · full",
+                        (true, false) => "Under way",
+                        _ => "Full",
+                    };
+                    ui.add_enabled(false, theme::play_button(why).min_size(egui::vec2(0.0, 46.0)));
+                    let watching = m.watching.as_ref().is_some_and(|(r, _)| *r == sel.room);
+                    let label = if watching { "Watching: we'll tell you when it opens" } else { "Tell me when a seat opens" };
+                    if ui.add(theme::secondary(label).selected(watching)).clicked() {
+                        m.watching = if watching {
+                            None
+                        } else {
+                            let label = match &sel.map {
+                                Some(map) => format!("{} · {map}", sel.mode),
+                                None => sel.mode.clone(),
+                            };
+                            m.watched_at = None;
+                            Some((sel.room, label))
+                        };
+                    }
+                }
+            });
+        });
+    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+        egui::Frame::new().inner_margin(egui::Margin::symmetric(22, 14)).show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 6.0;
+            // Its state.
+            egui::Frame::new()
+                .fill(theme::SUNKEN)
+                .stroke(egui::Stroke::new(1.0, if sel.tone == "warn" { egui::Color32::from_rgb(0x3a, 0x30, 0x20) } else { theme::CONTROL_LINE }))
+                .corner_radius(6)
+                .inner_margin(egui::Margin::symmetric(12, 10))
+                .show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        let (dot, _) = ui.allocate_exact_size(egui::vec2(10.0, 10.0), egui::Sense::hover());
+                        ui.painter().circle_filled(dot.center(), 5.0, if sel.tone == "warn" { theme::WARN } else { theme::ACCENT });
+                        // The ping on the right first, so the lines beside it stop short of it.
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if sel.ping_ms.is_some() {
+                                ui.label(RichText::new(ping_ms(sel.ping_ms)).monospace().color(ping_color(sel.ping_ms)));
+                            }
+                            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                                ui.add(egui::Label::new(RichText::new(&sel.status).family(theme::strong())).truncate());
+                                let mut open = Vec::new();
+                                if !sel.open_for.is_empty() {
+                                    open.push(format!("Open {}", sel.open_for));
+                                }
+                                if sel.joinable {
+                                    open.push("joinable now".to_string());
+                                }
+                                ui.add(egui::Label::new(RichText::new(open.join(" · ")).color(theme::SOFT).small()).truncate());
+                            });
+                        });
+                    });
+                });
+            ui.add_space(8.0);
+            if sel.teams {
+                ui.columns(2, |cols| {
+                    for (col, (side, label)) in cols.iter_mut().zip([("spy", "Spies"), ("merc", "Mercs")]) {
+                        let people: Vec<&crate::matches::Person> = sel.people.iter().filter(|p| p.team == side).collect();
+                        col.label(theme::caps(&format!("{label} · {}", people.len())));
+                        for p in people {
+                            person_row(col, sel, p, false);
+                        }
+                    }
+                });
+            } else {
+                let what = if sel.under_way { "match" } else { "lobby" };
+                let of = if sel.seats > 0 { format!(" of {}", sel.seats) } else { String::new() };
+                ui.label(theme::caps(&format!("In this {what} · {}{of}", sel.players)));
+                for p in &sel.people {
+                    person_row(ui, sel, p, true);
+                }
+                if sel.seats as usize > sel.players {
+                    let open = sel.seats as usize - sel.players;
+                    ui.horizontal(|ui| {
+                        ui.add_space(8.0);
+                        avatar(ui, "", false, true);
+                        ui.label(theme::muted(format!("{open} open {}", if open == 1 { "seat" } else { "seats" })));
+                    });
+                }
+            }
+            if !sel.settings.is_empty() {
+                ui.add_space(10.0);
+                ui.label(theme::caps("Match settings"));
+                egui::Grid::new("match-settings").num_columns(4).spacing([16.0, 4.0]).show(ui, |ui| {
+                    for (i, (k, v)) in sel.settings.iter().enumerate() {
+                        ui.label(RichText::new(k).color(theme::SOFT).small());
+                        ui.label(RichText::new(v).small());
+                        if i % 2 == 1 {
+                            ui.end_row();
+                        }
+                    }
+                });
+            }
+        });
+    });
+}
+
 #[cfg(all(test, feature = "ui-tests"))]
 mod split_button_tests {
     use egui_kittest::kittest::Queryable;
@@ -3422,7 +4235,7 @@ mod split_button_tests {
 
     /// The Friends window: each section's people with its actions, and Remove asking first.
     #[test]
-    fn the_friends_window_lists_each_section_with_its_actions() {
+    fn the_friends_screen_lists_each_section_with_its_actions() {
         let (dir, game) = crate::theme::ui_test::game("people");
         let person = |id: &str, name: &str, relation: &'static str| flow::Person {
             id: id.into(),
@@ -3450,12 +4263,12 @@ mod split_button_tests {
                 ..Play::default()
             };
             let game = std::sync::Arc::new(crate::theme::ui_test::game("people-shown").1);
-            crate::theme::ui_test::harness(egui::vec2(700.0, 600.0), move |ui| people_window(&mut play, &game, ui.ctx()))
+            crate::theme::ui_test::harness(egui::vec2(700.0, 600.0), move |ui| people_page(&mut play, &game, ui))
         };
         let h = window(PeopleTab::Friends, None);
-        assert!(h.query_by_label("Tank").is_some() && h.query_by_label("Remove").is_some() && h.query_by_label("Block").is_some());
+        assert!(h.query_by_label("Tank").is_some() && h.query_by_label("···").is_some(), "Remove and Block in the ··· menu");
         assert!(
-            h.query_by_label("Friends · 1").is_some() && h.query_by_label("Requests · 2").is_some(),
+            h.query_by_label("Friends · 1/1").is_some() && h.query_by_label("Requests · 2").is_some(),
             "counts on the tabs"
         );
         let h = window(PeopleTab::Requests, None);
@@ -3479,5 +4292,134 @@ mod split_button_tests {
         let width = h.get_by_label("PLAYING").rect().width();
         assert!((width - SPLIT_PLAY_WIDTH).abs() < 1.0, "{width} against {SPLIT_PLAY_WIDTH}");
         let _ = std::fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(all(test, feature = "ui-tests"))]
+mod matches_page_tests {
+    use super::*;
+    use egui_kittest::kittest::Queryable;
+    use crate::matches::{Lobbies, Lobby, Person};
+
+    fn person(name: &str, host: bool, friend: bool, team: &str) -> Person {
+        Person {
+            name: name.into(),
+            host,
+            friend,
+            team: team.into(),
+            ping_ms: Some(40),
+            ..Person::default()
+        }
+    }
+
+    fn sample() -> Lobbies {
+        Lobbies {
+            offered: true,
+            summary: "2 public · 5 players".into(),
+            lobbies: vec![
+                Lobby {
+                    room: 1,
+                    mode: "SvM Classic".into(),
+                    kind: "svm".into(),
+                    map: Some("Penthouse".into()),
+                    players: 3,
+                    seats: 8,
+                    host: "Tank".into(),
+                    status: "In lobby · waiting for 1 more".into(),
+                    tone: "ok",
+                    joinable: true,
+                    open_for: "4 min".into(),
+                    open_secs: 240,
+                    ping_ms: Some(60),
+                    friends: vec!["Raven".into()],
+                    people: vec![person("Tank", true, false, ""), person("Raven", false, true, ""), person("Nova", false, false, "")],
+                    ..Lobby::default()
+                },
+                Lobby {
+                    room: 2,
+                    mode: "Co-op".into(),
+                    kind: "coop".into(),
+                    map: Some("Mine".into()),
+                    players: 2,
+                    seats: 2,
+                    host: "Ghost".into(),
+                    status: "Under way · 6 min".into(),
+                    tone: "warn",
+                    under_way: true,
+                    full: true,
+                    open_for: "9 min".into(),
+                    open_secs: 540,
+                    people: vec![person("Ghost", true, false, ""), person("Kiwi", false, false, "")],
+                    ..Lobby::default()
+                },
+            ],
+            ..Lobbies::default()
+        }
+    }
+
+    fn page(m: MatchesPage) -> egui_kittest::Harness<'static> {
+        let mut m = m;
+        crate::theme::ui_test::harness(egui::vec2(1280.0, 800.0), move |ui| {
+            let mut act = None;
+            matches_page(&mut m, Some("scbl.example.net"), true, &mut act, ui);
+        })
+    }
+
+    #[test]
+    fn the_matches_screen_lists_matches_with_the_picked_ones_details() {
+        let h = page(MatchesPage {
+            data: Some(sample()),
+            ..MatchesPage::default()
+        });
+        assert!(h.query_by_label("SvM Classic · Penthouse").is_some() && h.query_by_label("Co-op · Mine").is_some(), "both listed");
+        assert!(h.query_by_label("Raven, your friend, is in it").is_some() || h.query_by_label("Hosted by Tank · Raven, your friend, is in it").is_some());
+        // Friends first: the SvM match is picked, so its details and Join show.
+        assert!(h.query_by_label("JOIN THIS MATCH").is_some(), "the joinable one picked first");
+        assert!(h.query_by_label("Quick match").is_some() && h.query_by_label("New match").is_some());
+    }
+
+    #[test]
+    fn filters_and_a_watched_match() {
+        // Co-op only: the full match under way is picked, so it offers the seat watch.
+        let h = page(MatchesPage {
+            data: Some(sample()),
+            kind: MatchKind::Coop,
+            ..MatchesPage::default()
+        });
+        assert!(h.query_by_label("SvM Classic · Penthouse").is_none(), "another mode filtered out");
+        assert!(h.query_by_label("Tell me when a seat opens").is_some());
+        // Under way hidden: nothing left in co-op.
+        let h = page(MatchesPage {
+            data: Some(sample()),
+            kind: MatchKind::Coop,
+            show_under_way: false,
+            ..MatchesPage::default()
+        });
+        assert!(h.query_by_label("NOTHING MATCHES THE FILTERS").is_some());
+        // Watching it: the button says so.
+        let h = page(MatchesPage {
+            data: Some(sample()),
+            kind: MatchKind::Coop,
+            watching: Some((2, "Co-op · Mine".into())),
+            ..MatchesPage::default()
+        });
+        assert!(h.query_by_label("Watching: we'll tell you when it opens").is_some());
+    }
+
+    #[test]
+    fn sorting_newest_and_busiest() {
+        let m = MatchesPage {
+            friends_first: false,
+            show_full: true,
+            sort: MatchSort::Newest,
+            ..MatchesPage::default()
+        };
+        let data = sample();
+        let rooms = |m: &MatchesPage| shown_matches(m, &data.lobbies).iter().map(|l| l.room).collect::<Vec<_>>();
+        assert_eq!(rooms(&m), [1, 2], "newest (open least long) first");
+        let m = MatchesPage { sort: MatchSort::Busiest, ..m };
+        assert_eq!(rooms(&m), [1, 2], "most players first");
+        let m = MatchesPage { sort: MatchSort::Nearest, ..m };
+        assert_eq!(rooms(&m), [1, 2], "a known ping before an unknown one");
     }
 }

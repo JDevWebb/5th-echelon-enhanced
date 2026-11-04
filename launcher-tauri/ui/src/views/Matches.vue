@@ -194,7 +194,7 @@ const shown = computed(() => {
   const key = {
     near: (l) => l.ping_ms ?? 9999,
     busy: (l) => -l.players,
-    new: (l) => l.open_for,
+    new: (l) => l.open_secs ?? 0,
   }[sort.value];
   return list.sort((a, b) => (friendsFirst.value ? (b.friends.length > 0) - (a.friends.length > 0) : 0) || (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0));
 });

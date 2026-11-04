@@ -25,6 +25,20 @@
     >
       <svg viewBox="0 0 24 24" v-html="item.icon"></svg>
     </button>
+    <!-- The project's GitHub and the developer's Discord, as the classic launcher has them. -->
+    <button type="button" class="mark" aria-label="5th Echelon Enhanced on GitHub" title="5th Echelon Enhanced on GitHub: releases, issues and the code" @click="call('open_url', { url: GITHUB })">
+      <img :src="githubMark" alt="" />
+    </button>
+    <button
+      type="button"
+      class="mark"
+      :aria-label="`Message ${DISCORD_NAME} on Discord`"
+      :title="`Message ${DISCORD_NAME} on Discord: bugs, questions, or a game.\nRight-click to copy the name.`"
+      @click="call('open_url', { url: DISCORD_PROFILE })"
+      @contextmenu.prevent="copyDiscord"
+    >
+      <img :src="discordMark" alt="" />
+    </button>
     <button type="button" class="version" title="What's new in this release" @click="$emit('version')">{{ release.split('-')[0] }}</button>
   </nav>
 </template>
@@ -33,6 +47,18 @@
 // The side menu: the screens as icons (named on hover), Support and Settings at the foot. Chat,
 // Support and the Roadmap are the community network's, shown to its players only.
 import { computed } from 'vue';
+import { call } from '../lib/tauri.js';
+import discordMark from '../assets/discord.png';
+import githubMark from '../assets/github.png';
+
+// As the classic launcher's (launcher/src/app.rs).
+const GITHUB = 'https://github.com/JDevWebb/5th-echelon-enhanced';
+const DISCORD_NAME = 'nexusx44';
+// Discord has no link that opens a direct message: the developer's profile.
+const DISCORD_PROFILE = 'https://discord.com/users/257386895418458132';
+function copyDiscord() {
+  navigator.clipboard?.writeText(DISCORD_NAME).catch(() => {});
+}
 
 const props = defineProps({ current: String, release: { type: String, default: '' }, community: Boolean, unread: { type: Number, default: 0 }, requests: { type: Number, default: 0 } });
 defineEmits(['go', 'version']);
@@ -70,6 +96,9 @@ button.on { background: var(--selected); color: var(--accent); }
 button.on::before { content: ""; position: absolute; left: 0; top: 8px; bottom: 8px; width: 2px; border-radius: 1px; background: var(--accent); animation: grow .35s var(--ease); }
 button.dot::after { content: ""; position: absolute; top: 7px; right: 7px; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--rail); animation: breathe 2.4s ease-in-out infinite; }
 .grow { flex: 1; }
+.mark { width: 34px; height: 34px; }
+.mark img { width: 18px; height: 18px; opacity: .7; transition: opacity .2s; }
+.mark:hover img { opacity: 1; }
 .version { width: auto; height: auto; padding: 2px 6px; font: 10px PlexMono, monospace; color: var(--muted); margin-top: 6px; }
 .version:hover { color: var(--accent); background: none; }
 @keyframes grow { from { transform: scaleY(0); } }

@@ -34,6 +34,10 @@ fn marks(ctx: &egui::Context) -> [egui::TextureHandle; 2] {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Play,
+    /// Every public match on the player's server (the 0.4.8 lobby browser).
+    Matches,
+    /// Friends, requests, finding players, blocked.
+    Friends,
     /// The servers to play on: the network's directory, an address, the LAN.
     Servers,
     /// The server's news.
@@ -269,7 +273,17 @@ impl App {
         // The roadmap, chat and support are the community network's: shown to its players only.
         let community = Prefs::directory().is_some_and(|d| Prefs::is_community(&d));
         let current = self.view;
-        let unread = [(View::Chat, self.chat.unread()), (View::Support, self.support.unread())];
+        let unread = [
+            (View::Chat, self.chat.unread()),
+            (View::Support, self.support.unread()),
+            (View::Friends, u32::try_from(self.play.friend_requests()).unwrap_or(u32::MAX)),
+        ];
+        let requests = self.play.friend_requests();
+        let friends_label = if requests > 0 {
+            format!("Friends: {requests} waiting for your answer")
+        } else {
+            "Friends".to_string()
+        };
         let mut go = None;
         let mut item = |ui: &mut egui::Ui, view: View, icon: theme::Icon, label: &str| {
             if matches!(view, View::Chat | View::Roadmap | View::Support) && !community {
@@ -305,7 +319,10 @@ impl App {
                         theme::lights(ui, 6.0);
                         ui.add_space(20.0);
                     }
+                    // The same screens, in the same order, as the Tauri launcher's side menu.
                     item(ui, View::Play, theme::Icon::Play, "Play");
+                    item(ui, View::Matches, theme::Icon::Matches, "Matches");
+                    item(ui, View::Friends, theme::Icon::Friends, &friends_label);
                     item(ui, View::Servers, theme::Icon::Servers, "Servers");
                     item(ui, View::Chat, theme::Icon::Chat, "Chat");
                     item(ui, View::News, theme::Icon::News, "Intel: news and the roadmap");
@@ -400,6 +417,9 @@ impl App {
             "drawer-squad" => self.play.shot_drawer(Drawer::Squad),
             "drawer-intel" => self.play.shot_drawer(Drawer::News),
             "setup-name" => self.play.shot_name_step("eu1.scbl.jdevwebb.net"),
+            "matches-sample" => self.play.shot_matches(),
+            "friends-sample" => self.play.shot_friends(crate::play::PeopleTab::Friends),
+            "friends-requests" => self.play.shot_friends(crate::play::PeopleTab::Requests),
             "whats-new" => {
                 self.whats_new.reopen();
             }
@@ -522,10 +542,19 @@ impl eframe::App for App {
         crate::window_frame::edges(ctx);
         self.rail(ctx);
         self.update_banner(ctx);
+        // A seat opened in the match the player watches: a bar along the top, wherever they are.
+        crate::play::watch_seat(self, ctx);
+        if self.view != View::Friends {
+            self.play.left_friends();
+        }
         self.notices.show(ctx);
         egui::CentralPanel::default().frame(egui::Frame::new().fill(theme::BG)).show(ctx, |ui| match self.view {
             // Each screen scrolls on its own: Settings keeps its section list in place.
             View::Play => crate::play::show(self, ui),
+            View::Matches => crate::play::show_matches(self, ui),
+            View::Friends => {
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| crate::play::show_friends(self, ui));
+            }
             View::Servers => crate::play::show_servers(self, ui),
             View::News => crate::play::show_news(self, ui),
             View::Roadmap if Prefs::directory().is_some_and(|d| Prefs::is_community(&d)) => crate::roadmap::show(self, ui),

@@ -430,6 +430,8 @@ pub fn switch(ui: &mut egui::Ui, on: &mut bool, label: impl Into<egui::WidgetTex
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Icon {
     Play,
+    Matches,
+    Friends,
     Servers,
     News,
     Roadmap,
@@ -447,6 +449,28 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: Colo
     match icon {
         Icon::Play => {
             painter.add(egui::Shape::convex_polygon(vec![p(7.0, 4.0), p(19.0, 12.0), p(7.0, 20.0)], Color32::TRANSPARENT, s));
+        }
+        Icon::Matches => {
+            // A board with a header row and two lines of entries (the Tauri launcher's).
+            painter.rect_stroke(egui::Rect::from_min_max(p(3.0, 4.0), p(21.0, 20.0)), 2, s, egui::StrokeKind::Middle);
+            painter.line_segment([p(3.0, 9.0), p(21.0, 9.0)], s);
+            painter.line_segment([p(8.0, 13.0), p(16.0, 13.0)], s);
+            painter.line_segment([p(8.0, 16.0), p(13.0, 16.0)], s);
+        }
+        Icon::Friends => {
+            // Two people, one behind the other (the Tauri launcher's).
+            painter.circle_stroke(p(9.0, 8.0), 3.2 * u, s);
+            let arc = |cx: f32, cy: f32, rx: f32, ry: f32| -> Vec<egui::Pos2> {
+                (0..=10)
+                    .map(|i| {
+                        let t = std::f32::consts::PI * (1.0 + i as f32 / 10.0);
+                        p(cx + rx * t.cos(), cy + ry * t.sin())
+                    })
+                    .collect()
+            };
+            painter.add(egui::Shape::line(arc(9.0, 19.0, 6.0, 5.0), s));
+            painter.circle_stroke(p(17.0, 9.0), 2.4 * u, s);
+            painter.add(egui::Shape::line(arc(17.5, 18.5, 3.5, 4.8).into_iter().skip(5).collect(), s));
         }
         Icon::Servers => {
             for top in [4.0, 14.0] {
@@ -483,11 +507,17 @@ fn paint_icon(painter: &egui::Painter, rect: egui::Rect, icon: Icon, color: Colo
             painter.add(egui::Shape::line(vec![p(15.0, 18.0), p(18.5, 21.5), p(18.0, 18.0)], s));
         }
         Icon::Support => {
-            // A speech bubble: a rounded box with a tail, and two lines of words in it.
-            painter.rect_stroke(egui::Rect::from_min_max(p(3.0, 4.0), p(21.0, 16.0)), 3, s, egui::StrokeKind::Middle);
-            painter.add(egui::Shape::line(vec![p(8.0, 16.0), p(7.0, 21.0), p(13.0, 16.0)], s));
-            painter.line_segment([p(7.0, 8.5), p(17.0, 8.5)], s);
-            painter.line_segment([p(7.0, 12.0), p(14.0, 12.0)], s);
+            // A question mark in a circle (the Tauri launcher's): not another speech bubble beside Chat.
+            painter.circle_stroke(c, 8.0 * u, s);
+            let hook: Vec<egui::Pos2> = (0..=10)
+                .map(|i| {
+                    let t = std::f32::consts::PI * (1.0 + 1.25 * i as f32 / 10.0);
+                    p(12.0 + 2.5 * t.cos(), 10.0 + 2.5 * t.sin())
+                })
+                .collect();
+            painter.add(egui::Shape::line(hook, s));
+            painter.line_segment([p(12.4, 12.4), p(12.0, 14.2)], s);
+            painter.circle_filled(p(12.0, 17.0), 1.1 * u, color);
         }
         Icon::Host => {
             // A broadcast: a mast with waves either side.

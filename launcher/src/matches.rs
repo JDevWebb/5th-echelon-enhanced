@@ -174,6 +174,8 @@ pub struct Lobby {
     pub joinable: bool,
     /// "4 min".
     pub open_for: String,
+    /// How long it's been open, in seconds (newest first sorts by it).
+    pub open_secs: u32,
     /// The player's estimated round trip to its host (None: unknown).
     pub ping_ms: Option<u32>,
     pub friends: Vec<String>,
@@ -214,6 +216,56 @@ pub fn lobbies(cfg: &Config) -> Lobbies {
             error: Some(e),
             ..Lobbies::default()
         },
+    }
+}
+
+/// The Matches tab's list on any server: in full where the server offers it, else (a server
+/// before 0.4.8) the open matches as it lists them, with no one named.
+pub fn lobbies_or_open(cfg: &Config) -> Lobbies {
+    let got = lobbies(cfg);
+    if got.offered || got.error.is_some() {
+        return got;
+    }
+    let Some(server) = cfg.current_profile().map(|p| p.server.clone()).filter(|s| !s.is_empty()) else {
+        return got;
+    };
+    let open = list(&server);
+    if !open.answered {
+        return Lobbies {
+            error: Some("Your server didn't answer.".into()),
+            ..Lobbies::default()
+        };
+    }
+    let lobbies = open
+        .rows
+        .iter()
+        .map(|r| {
+            let (players, seats) = match r.players.split_once('/') {
+                Some((n, of)) => (n.parse().unwrap_or(0), of.parse().unwrap_or(0)),
+                None => (r.players.split(' ').next().and_then(|n| n.parse().ok()).unwrap_or(0), 0),
+            };
+            Lobby {
+                room: r.room,
+                kind: if r.mode.to_ascii_lowercase().contains("co-op") || r.mode.to_ascii_lowercase().contains("coop") { "coop" } else { "svm" }.into(),
+                mode: r.mode.clone(),
+                map: r.map.clone(),
+                players,
+                seats,
+                status: if r.started { "Under way" } else { "In lobby" }.into(),
+                tone: if r.started || r.full { "warn" } else { "ok" },
+                under_way: r.started,
+                full: r.full,
+                joinable: !r.started && !r.full,
+                ..Lobby::default()
+            }
+        })
+        .collect();
+    Lobbies {
+        offered: false,
+        error: None,
+        lobbies,
+        summary: open.others,
+        hidden: String::new(),
     }
 }
 
@@ -278,11 +330,87 @@ fn lobby(l: &server_api::friends::Lobby, clip: impl Fn(&str) -> String) -> Lobby
         full,
         joinable: !l.under_way && !full,
         open_for: minutes(l.open_secs),
+        open_secs: l.open_secs,
         ping_ms: (l.ping_ms > 0).then_some(l.ping_ms),
         friends: people.iter().filter(|p| p.friend).map(|p| p.name.clone()).collect(),
         teams: !people.is_empty() && people.iter().all(|p| !p.team.is_empty()),
         settings: settings(&l.settings),
         people,
+    }
+}
+
+/// Example matches, for the screens' tests and screenshots.
+#[cfg(test)]
+pub fn sample() -> Lobbies {
+    let person = |name: &str, host: bool, friend: bool, party: u32, ping: u32| Person {
+        name: name.into(),
+        host,
+        party,
+        friend,
+        team: String::new(),
+        ping_ms: Some(ping),
+    };
+    Lobbies {
+        offered: true,
+        summary: "3 public · 9 players · 1 private match".into(),
+        lobbies: vec![
+            Lobby {
+                room: 1,
+                mode: "SvM Classic".into(),
+                kind: "svm".into(),
+                map: Some("Penthouse".into()),
+                players: 3,
+                seats: 4,
+                host: "Tank".into(),
+                status: "In lobby · waiting for 1 more".into(),
+                tone: "ok",
+                joinable: true,
+                open_for: "4 min".into(),
+                open_secs: 240,
+                ping_ms: Some(48),
+                friends: vec!["Raven".into()],
+                people: vec![person("Tank", true, false, 0, 48), person("Raven", false, true, 0, 32), person("Nova", false, false, 0, 120)],
+                settings: vec![("Rounds".into(), "3".into()), ("Time".into(), "10 min".into())],
+                ..Lobby::default()
+            },
+            Lobby {
+                room: 2,
+                mode: "Co-op".into(),
+                kind: "coop".into(),
+                map: Some("Mine".into()),
+                players: 2,
+                seats: 2,
+                host: "Ghost".into(),
+                status: "Under way · 6 min".into(),
+                tone: "warn",
+                under_way: true,
+                full: true,
+                open_for: "9 min".into(),
+                open_secs: 540,
+                ping_ms: Some(180),
+                people: vec![person("Ghost", true, false, 1, 180), person("Kiwi", false, false, 1, 190)],
+                ..Lobby::default()
+            },
+            Lobby {
+                room: 3,
+                mode: "SvM Blacklist".into(),
+                kind: "svm".into(),
+                map: Some("Estate".into()),
+                players: 4,
+                seats: 8,
+                made_for: Some(4),
+                host: "Echo".into(),
+                status: "In lobby".into(),
+                tone: "ok",
+                joinable: true,
+                open_for: "1 min".into(),
+                open_secs: 60,
+                ping_ms: Some(95),
+                people: vec![person("Echo", true, false, 0, 95), person("Vex", false, false, 0, 90), person("Rook", false, false, 0, 99), person("Moss", false, false, 0, 101)],
+                ..Lobby::default()
+            },
+        ],
+        ..Lobbies::default()
     }
 }
 

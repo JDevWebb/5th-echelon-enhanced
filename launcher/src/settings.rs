@@ -393,10 +393,10 @@ fn display(app: &mut App, ui: &mut egui::Ui) {
     if tauri && !crate::scale::gamescope() {
         section(ui, "Interface", |ui| {
             ui.label(theme::muted(
-                "This is the classic interface. The new one (from 0.4.8) opens instead when this PC can run it; never in the Steam Deck's gaming mode.",
+                "This is the classic interface. The new one (from 0.4.8) opens instead wherever this PC can run it (never in the Steam Deck's gaming mode). Settings › Display there switches back.",
             ));
             let mut new = !Prefs::classic_interface();
-            if theme::switch(ui, &mut new, "Use the new interface (from the next start)").changed() {
+            if theme::switch(ui, &mut new, "Switch to the new interface (from the next start)").changed() {
                 Prefs::set_classic_interface(!new);
             }
         });

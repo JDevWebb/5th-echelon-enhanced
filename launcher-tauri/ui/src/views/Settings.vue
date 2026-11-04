@@ -325,8 +325,8 @@
             </section>
             <section v-if="view.classic !== null" class="card">
               <h3>Interface</h3>
-              <p class="muted">The classic interface is the launcher as it was before 0.4.8: plainer, and it runs where this one can't (it's always used in the Steam Deck's gaming mode). Settings › Display there switches back.</p>
-              <button type="button" class="btn" @click="call('use_classic')">Use the classic interface</button>
+              <p class="muted">This is the new interface (from 0.4.8). The classic one is plainer, and opens wherever this one can't run (always in the Steam Deck's gaming mode). Settings › Display there switches back.</p>
+              <button type="button" class="btn" @click="call('use_classic')">Switch to the classic interface</button>
             </section>
           </div>
 
