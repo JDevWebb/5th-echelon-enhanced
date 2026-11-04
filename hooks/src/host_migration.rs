@@ -20,7 +20,8 @@ pub unsafe fn install() {
         warn!("host-migration (beta): the game's sections weren't found -> off");
         return;
     };
-    let sites = match hooks_addresses::host_migration::locate(&image) {
+    // The tick as migration-fix hooked it, when it did: its signature is gone from memory.
+    let sites = match hooks_addresses::host_migration::locate_with(&image, crate::migration_fix::hooked_tick()) {
         Ok(sites) => sites,
         Err(why) => {
             warn!("host-migration (beta): {why} -> off (this game build isn't one it knows)");

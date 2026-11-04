@@ -161,6 +161,15 @@ fn word(img: &Image, at: usize, what: &str) -> Result<usize, String> {
 
 /// Everything in `img`, if all of it is there once and agrees.
 pub fn locate(img: &Image) -> Result<Sites, String> {
+    locate_with(img, None)
+}
+
+/// As [`locate`], with the disconnect state machine's tick given when it's already hooked:
+/// migration-fix's detour overwrites its first bytes, so in the running game its signature no
+/// longer matches (2026-11-05: host migration was off in every game with the crash fixes on,
+/// logging "this game build isn't one it knows"; the file on disk, which `check_crash_fixes`
+/// reads, still matched).
+pub fn locate_with(img: &Image, tick: Option<usize>) -> Result<Sites, String> {
     let setter = find_bytes(img, "the migration flag's setter", &SETTER)?;
     let check = find_bytes(img, "the engine's host-loss check", &CHECK)?;
     let leader_action = find(img, "the party's leader action", LEADER_ACTION)?;
@@ -195,7 +204,10 @@ pub fn locate(img: &Image) -> Result<Sites, String> {
             return Err(format!("{what} reads another NetOnline than the party sync"));
         }
     }
-    let facade_tick = crate::crash_fixes::migration::tick(img).map_err(String::from)?;
+    let facade_tick = match tick {
+        Some(at) => at,
+        None => crate::crash_fixes::migration::tick(img).map_err(String::from)?,
+    };
     let globals = [net_core, net_online, state_none, state_in_session];
     let facade = word(img, facade_user + user.facade, "the facade")?;
     let facade_gate = word(img, facade_user + user.gate, "the facade's task runner")?;
@@ -330,6 +342,21 @@ mod tests {
             [s.net_core, s.net_online, s.state_none, s.state_in_session, s.facade, s.facade_gate],
             [NET_CORE, NET_ONLINE, STATE_NONE, IN_SESSION, FACADE, GATE].map(|g| g as usize)
         );
+    }
+
+    /// In the running game the tick is migration-fix's detour by then: its first bytes a jump.
+    /// The signature no longer finds it, and the address migration-fix hooked stands in.
+    #[test]
+    fn a_tick_already_hooked_is_taken_from_the_hook() {
+        let b = build();
+        let mut text = b.text.clone();
+        let tick = b.at["facade_tick"] - BASE;
+        text[tick..tick + 5].copy_from_slice(&[0xE9, 0x10, 0x20, 0x30, 0x00]);
+        let img = crate::crash_fixes::tests::image(&text, BASE, &[], 0x60_0000);
+        let why = locate(&img).err().expect("the hooked tick's signature doesn't match");
+        assert!(why.contains("disconnect state machine's tick"), "{why}");
+        let s = locate_with(&img, Some(b.at["facade_tick"])).unwrap();
+        assert_eq!((s.facade_tick, s.setter, s.follow_task), (b.at["facade_tick"], b.at["setter"], b.at["follow_task"]));
     }
 
     /// The DX9 build's forms of `FollowDelegate` and the facade check are found as the DX11

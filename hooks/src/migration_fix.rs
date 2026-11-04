@@ -76,6 +76,15 @@ pub fn tick_hooked() -> bool {
     HOOKED.load(Ordering::Relaxed)
 }
 
+/// Where the tick is, once hooked: host migration finds the same function, whose signature the
+/// detour has overwritten by then.
+static TICK_AT: OnceLock<usize> = OnceLock::new();
+
+/// See [`TICK_AT`].
+pub fn hooked_tick() -> Option<usize> {
+    TICK_AT.get().copied()
+}
+
 /// The migration being watched: the state machine, its reason, and since when.
 static WAITING: Mutex<Option<(usize, u32, Instant)>> = Mutex::new(None);
 
@@ -255,6 +264,7 @@ pub unsafe fn end_stuck_migrations() {
         .and_then(|h| h.enable())
     {
         Ok(()) => {
+            let _ = TICK_AT.set(at);
             HOOKED.store(true, Ordering::Relaxed);
             info!(
                 "migration-fix: a host migration still running after {} s leaves the match (tick @ {at:#010x})",
