@@ -6,8 +6,33 @@ their players. Players keep their accounts: each server's are merged into the ma
 server's by identity, and launchers move their players by themselves. Done in one update
 window, after a full rehearsal on temporary servers.
 
-The community network's example: na1 becomes the matchmaking server at `match.scbl.jdevwebb.net`;
-eu1 and oceania become relays (eu1 keeps the coordinator).
+The community network's example: na1 becomes the matchmaking server at `scbl.jdevwebb.net`, the
+one server every player signs in to (the launcher offers no choice of server on the community
+network; it pings the relays and uses the nearest); eu1 and oceania become relays (eu1 keeps
+the coordinator, now at `scbl-coord.jdevwebb.net`). Players can still type any other server's
+address, as now.
+
+## The names
+
+| Name | Points at | Cloudflare |
+|---|---|---|
+| `scbl.jdevwebb.net` | the matchmaking server (na1); its standby moves it | DNS only, TTL 60 s |
+| `scbl-coord.jdevwebb.net` | the coordinator (eu1; its own standby moves it) | proxied |
+| `na1`, `eu1`, `oceania.scbl.jdevwebb.net` | each machine, never moved | DNS only |
+
+`scbl.jdevwebb.net` was the coordinator's name until 0.4.7 (proxied). The game's UDP and plain
+port-80 traffic can't pass Cloudflare's proxy, so it becomes the matchmaking server's (DNS only),
+and the coordinator takes a one-level name of its own (one level, so Cloudflare's free
+certificate and the coordinator's origin certificate cover it). 0.4.8 launchers use the new
+name, and take a saved old one for it. Older launchers find their update on GitHub, not through
+the coordinator, and can't play on 0.4.8 servers before updating, so nothing is passed on to the
+coordinator from the old name once it moves.
+
+The directory lists the matchmaking server by its record (`[federation] listed_as`, which the
+installer sets from `--mm-record` on the matchmaking server), so a player set up from the
+directory is set up on `scbl.jdevwebb.net`, which follows it in a failover. A launcher set up on
+na1's own name moves to the record by itself (the directory lists na1's name among the
+matchmaking server's other names, only for the server the coordinator's operator named).
 
 ## What it needs
 
@@ -64,7 +89,25 @@ only, TTL 60. Then:
 
 Go ahead only when every step above passed; note what it took and how long.
 
-## 2. The update window
+## 2. Days before the window: the coordinator's new name
+
+0.4.8 launchers use `scbl-coord.jdevwebb.net`, so it has to answer before the release goes out.
+
+1. In Cloudflare: `scbl-coord.jdevwebb.net`, an A record to eu1, **proxied**, as
+   `scbl.jdevwebb.net` is now. The coordinator's origin certificate must cover it (one for
+   `*.jdevwebb.net` does; `openssl x509 -noout -checkhost scbl-coord.jdevwebb.net -in <cert>`).
+2. On eu1 and each coordinator standby: the installer with
+   `--coordinator-domain scbl-coord.jdevwebb.net --coordinator-alias scbl.jdevwebb.net
+   --coordinator-alias play.scbl.jdevwebb.net` (and the `--standby` list as before). A name the
+   certificate covers is served behind Cloudflare beside the main one; `play.scbl` stays DNS only
+   with its own. The coordinator answers to all three, and its standbys now move the
+   `scbl-coord` record.
+3. Every member server: the installer with `--coordinator https://scbl-coord.jdevwebb.net` (its
+   join is kept).
+4. Check: `curl https://scbl-coord.jdevwebb.net/v1/info` and the old name both answer; the admin
+   UI's servers page shows every member's heartbeat.
+
+## 3. The update window
 
 Book it ([update windows](operations.md)), long enough for the merge and checks (an hour).
 Announce it in the launcher's news and Discord.
@@ -77,13 +120,21 @@ Announce it in the launcher's news and Discord.
    `.backup`: never a plain copy of a database in use); stop na1's game service; take a
    snapshot of na1 first; run `--merge-accounts` with both, against na1's own database in place
    (nothing copied over it); start it again. The rehearsal's merge took a second.
-4. **Turn eu1 and oceania into relays:** the installer with `--role relay --ticket-key <na1's key>
-   --mm-record match.scbl.jdevwebb.net --mm-standby na1=...,eu1=...,oceania=...`. Their own
+4. **Move the name:** in Cloudflare, `scbl.jdevwebb.net` to **DNS only** (grey cloud), its A
+   record to na1, TTL 60 s. On eu1 (and the coordinator standbys), drop the old name from the
+   coordinator: the installer with `--coordinator-alias play.scbl.jdevwebb.net` alone.
+5. **Turn eu1 and oceania into relays:** the installer with `--role relay --ticket-key <na1's key>
+   --mm-record scbl.jdevwebb.net --mm-standby na1=...,eu1=...,oceania=...`. Their own
    databases stay as they are (the rollback's), and their `/api/info` now says `moved_to`.
-5. **na1:** the installer with `--mm-record` and `--mm-standby` (the same list); the coordinator
-   names it the matchmaking server (`--matchmaking-server <na1's id>` on eu1's coordinator).
-6. **Check:** test players at match.scbl...; a launcher on each old server moves by itself; the
-   Sessions page shows sign-ins from every region; relays' `/api/info` say `matchmaking_seen`.
+6. **na1:** the installer with `--matchmaking --mm-record scbl.jdevwebb.net --mm-standby` (the
+   same list) `--server-name "5th Echelon Community"`: it's listed by `scbl.jdevwebb.net` from
+   then on. The coordinator names it the matchmaking server: the installer on eu1 with
+   `--matchmaking-server <na1's id>`.
+7. **Check:** test players at `scbl.jdevwebb.net` (`testbot --server scbl.jdevwebb.net --info`,
+   and `cross-relay` through each relay); the directory lists one server, `scbl.jdevwebb.net`,
+   with `na1.scbl.jdevwebb.net` in its `also`; a launcher on each old server (eu1, oceania and
+   na1's own name) moves by itself; the Sessions page shows sign-ins from every region; relays'
+   `/api/info` say `matchmaking_seen`.
 
 ### Rollback (decide its triggers before the night)
 
@@ -92,7 +143,8 @@ well above the usual rate for 30 minutes; the matchmaking server's CPU or memory
 
 1. Stop the matchmaking standbys (`systemctl disable --now 5th-echelon-mm-standby`) everywhere.
 2. eu1 and oceania: the installer with `--role game` (and without `--mm-record`): their own
-   databases, untouched since step 2, come back; `moved_to` goes.
+   databases, untouched since step 2, come back; `moved_to` goes. `scbl.jdevwebb.net` stays on
+   na1: launchers that moved keep signing in there.
 3. na1: restore its snapshot from before the merge (`backup.sh restore game --time <then>`).
 4. Launchers that moved stay on na1 until their players switch back (Servers): say so in the news.
    Accounts made on na1 meanwhile stay there.
