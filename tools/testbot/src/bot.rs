@@ -1586,3 +1586,56 @@ fn key(session_id: u32) -> GameSessionKey {
         session_id,
     }
 }
+
+/// A player signed in to the API only, as the launcher is: no game connection, so it can act
+/// for an account whose real game is running (gamebox: friends and invitations for copies of
+/// the game).
+pub struct ApiPlayer {
+    pub name: String,
+    api: Channel,
+    token: String,
+}
+
+impl ApiPlayer {
+    /// Signs in as the launcher does.
+    pub async fn sign_in(server: IpAddr, name: &str, password: &str) -> Result<Self> {
+        let (api, login) = api_sign_in(server, name, password, LAUNCHER_CLIENT).await?;
+        Ok(Self { name: name.into(), api, token: login.token })
+    }
+
+    fn authed<T>(&self, msg: T) -> tonic::Request<T> {
+        let mut req = tonic::Request::new(msg);
+        req.metadata_mut().insert("authorization", MetadataValue::try_from(self.token.as_str()).expect("token"));
+        req
+    }
+
+    /// A friend change towards `name` ("request", "accept", ...), as the overlay makes it.
+    pub async fn friend_change(&self, change: &str, name: &str) -> std::result::Result<server_api::friends::Relation, tonic::Status> {
+        let mut c = FriendsClient::new(self.api.clone());
+        let req = self.authed(server_api::friends::TargetRequest {
+            id: String::new(),
+            username: name.into(),
+            identity: String::new(),
+        });
+        let resp = match change {
+            "request" => c.request(req).await?,
+            "accept" => c.accept(req).await?,
+            other => return Err(tonic::Status::invalid_argument(format!("no change {other}"))),
+        };
+        Ok(resp.into_inner().relation())
+    }
+
+    /// Friends as the friend list shows them: (name, online).
+    pub async fn friends(&self) -> Result<Vec<(String, bool)>> {
+        let resp = FriendsClient::new(self.api.clone()).list(self.authed(server_api::friends::ListRequest {})).await?.into_inner();
+        Ok(resp.friends.into_iter().map(|f| (f.username, f.is_online)).collect())
+    }
+
+    /// Invites a friend (by account name) to this player's game, as the overlay's Invite does.
+    pub async fn invite(&self, friend: &str) -> std::result::Result<(), tonic::Status> {
+        FriendsClient::new(self.api.clone())
+            .invite(self.authed(server_api::friends::InviteRequest { id: friend.into() }))
+            .await?;
+        Ok(())
+    }
+}

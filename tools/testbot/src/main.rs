@@ -4367,6 +4367,12 @@ async fn run() -> Result<()> {
     if args.first().map(String::as_str) == Some("accounts") {
         return accounts(server, &args[1..]).await;
     }
+    if args.first().map(String::as_str) == Some("friends") {
+        return make_friends(server, &args[1..]).await;
+    }
+    if args.first().map(String::as_str) == Some("invite") {
+        return invite_to(server, &args[1..]).await;
+    }
     let names: Vec<&str> = if args.is_empty() {
         SCENARIOS.to_vec()
     } else {
@@ -4524,7 +4530,7 @@ async fn run() -> Result<()> {
 /// copies of the game). The password comes from TESTBOT_ACCOUNT_PASSWORD, never the command
 /// line. A name already there is checked by signing in with that password.
 async fn accounts(server: IpAddr, names: &[String]) -> Result<()> {
-    let password = std::env::var("TESTBOT_ACCOUNT_PASSWORD").map_err(|_| eyre!("set TESTBOT_ACCOUNT_PASSWORD"))?;
+    let password = account_password()?;
     if !(8..=63).contains(&password.len()) {
         return Err(eyre!("the password must be 8-63 characters (the game's limit)"));
     }
@@ -4551,5 +4557,61 @@ async fn accounts(server: IpAddr, names: &[String]) -> Result<()> {
     if failed > 0 {
         return Err(eyre!("{failed} of {} accounts not ready", names.len()));
     }
+    Ok(())
+}
+
+/// The password for `accounts`, `friends` and `invite`, from TESTBOT_ACCOUNT_PASSWORD.
+fn account_password() -> Result<String> {
+    std::env::var("TESTBOT_ACCOUNT_PASSWORD").map_err(|_| eyre!("set TESTBOT_ACCOUNT_PASSWORD"))
+}
+
+/// `friends NAME...`: each of the named accounts friends with every other (a request and its
+/// acceptance), signed in to the API only, as the launcher is: their games may be running.
+async fn make_friends(server: IpAddr, names: &[String]) -> Result<()> {
+    if names.len() < 2 {
+        return Err(eyre!("friends NAME NAME..."));
+    }
+    let password = account_password()?;
+    let mut players = Vec::new();
+    for name in names {
+        players.push(testbot::bot::ApiPlayer::sign_in(server, name, &password).await.wrap_err_with(|| format!("signing in as {name}"))?);
+    }
+    for (i, a) in players.iter().enumerate() {
+        let theirs = a.friends().await?;
+        for b in &players[i + 1..] {
+            if theirs.iter().any(|(n, _)| n.eq_ignore_ascii_case(&b.name)) {
+                println!("{} and {}: friends already", a.name, b.name);
+                continue;
+            }
+            let sent = a.friend_change("request", &b.name).await.map_err(|e| eyre!("{} asking {}: {e}", a.name, b.name))?;
+            let now = if sent == Relation::Friend { sent } else { b.friend_change("accept", &a.name).await.map_err(|e| eyre!("{} accepting {}: {e}", b.name, a.name))? };
+            ensure!(now == Relation::Friend, "{} and {}: {now:?}, not friends", a.name, b.name);
+            println!("{} and {}: friends", a.name, b.name);
+        }
+    }
+    Ok(())
+}
+
+/// `invite HOST NAME...`: HOST invites each of the others to its game (signed in to the API
+/// only, as the launcher is: its real game, running, is what they join).
+async fn invite_to(server: IpAddr, names: &[String]) -> Result<()> {
+    let [host, guests @ ..] = names else {
+        return Err(eyre!("invite HOST NAME..."));
+    };
+    if guests.is_empty() {
+        return Err(eyre!("invite HOST NAME..."));
+    }
+    let host = testbot::bot::ApiPlayer::sign_in(server, host, &account_password()?).await?;
+    let mut failed = 0;
+    for guest in guests {
+        match host.invite(guest).await {
+            Ok(()) => println!("{} invited {guest}", host.name),
+            Err(e) => {
+                failed += 1;
+                println!("{} inviting {guest}: {}", host.name, e.message());
+            }
+        }
+    }
+    ensure!(failed == 0, "{failed} of {} invitations refused", guests.len());
     Ok(())
 }
