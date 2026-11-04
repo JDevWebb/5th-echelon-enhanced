@@ -4364,6 +4364,9 @@ async fn run() -> Result<()> {
         let options = testbot::load::Options::parse(&args[1..])?;
         return testbot::load::run(server, options).await;
     }
+    if args.first().map(String::as_str) == Some("accounts") {
+        return accounts(server, &args[1..]).await;
+    }
     let names: Vec<&str> = if args.is_empty() {
         SCENARIOS.to_vec()
     } else {
@@ -4512,6 +4515,41 @@ async fn run() -> Result<()> {
     }
     if failed > 0 {
         std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// `accounts NAME...`: named accounts on the server, as the launcher makes them (with an
+/// identity where the server wants one), for test clients that sign in on their own (real
+/// copies of the game). The password comes from TESTBOT_ACCOUNT_PASSWORD, never the command
+/// line. A name already there is checked by signing in with that password.
+async fn accounts(server: IpAddr, names: &[String]) -> Result<()> {
+    let password = std::env::var("TESTBOT_ACCOUNT_PASSWORD").map_err(|_| eyre!("set TESTBOT_ACCOUNT_PASSWORD"))?;
+    if !(8..=63).contains(&password.len()) {
+        return Err(eyre!("the password must be 8-63 characters (the game's limit)"));
+    }
+    if names.is_empty() {
+        return Err(eyre!("accounts NAME..."));
+    }
+    let mut failed = 0;
+    for name in names {
+        match Bot::register(server, name, &password).await {
+            Ok(()) => println!("{name}: made"),
+            Err(e) if e.to_string().contains("taken") || e.to_string().contains("already") => match Bot::login(server, name, &password).await {
+                Ok(_) => println!("{name}: already there, and the password signs in"),
+                Err(e) => {
+                    failed += 1;
+                    println!("{name}: already there, but signing in failed: {e}");
+                }
+            },
+            Err(e) => {
+                failed += 1;
+                println!("{name}: {e}");
+            }
+        }
+    }
+    if failed > 0 {
+        return Err(eyre!("{failed} of {} accounts not ready", names.len()));
     }
     Ok(())
 }
