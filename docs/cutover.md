@@ -17,13 +17,13 @@ address, as now.
 | Name | Points at | Cloudflare |
 |---|---|---|
 | `scbl.jdevwebb.net` | the matchmaking server (na1); its standby moves it | DNS only, TTL 60 s |
-| `scbl-coord.jdevwebb.net` | the coordinator (eu1; its own standby moves it) | proxied |
+| `scbl-coord.jdevwebb.net` | the coordinator (eu1) | as `scbl.jdevwebb.net` is now: DNS only (proxied once its failover is set up) |
 | `na1`, `eu1`, `oceania.scbl.jdevwebb.net` | each machine, never moved | DNS only |
 
-`scbl.jdevwebb.net` was the coordinator's name until 0.4.7 (proxied). The game's UDP and plain
-port-80 traffic can't pass Cloudflare's proxy, so it becomes the matchmaking server's (DNS only),
-and the coordinator takes a one-level name of its own (one level, so Cloudflare's free
-certificate and the coordinator's origin certificate cover it). 0.4.8 launchers use the new
+`scbl.jdevwebb.net` was the coordinator's name until 0.4.7 (DNS only to eu1, a Let's Encrypt
+certificate). It becomes the matchmaking server's, which has to be DNS only (the game's UDP and
+plain port-80 traffic can't pass Cloudflare's proxy), and the coordinator takes a one-level name
+of its own (one level, so it can be proxied later with Cloudflare's free certificate). 0.4.8 launchers use the new
 name, and take a saved old one for it. Older launchers find their update on GitHub, not through
 the coordinator, and can't play on 0.4.8 servers before updating, so nothing is passed on to the
 coordinator from the old name once it moves.
@@ -93,15 +93,13 @@ Go ahead only when every step above passed; note what it took and how long.
 
 0.4.8 launchers use `scbl-coord.jdevwebb.net`, so it has to answer before the release goes out.
 
-1. In Cloudflare: `scbl-coord.jdevwebb.net`, an A record to eu1, **proxied**, as
-   `scbl.jdevwebb.net` is now. The coordinator's origin certificate must cover it (one for
-   `*.jdevwebb.net` does; `openssl x509 -noout -checkhost scbl-coord.jdevwebb.net -in <cert>`).
-2. On eu1 and each coordinator standby: the installer with
-   `--coordinator-domain scbl-coord.jdevwebb.net --coordinator-alias scbl.jdevwebb.net
-   --coordinator-alias play.scbl.jdevwebb.net` (and the `--standby` list as before). A name the
-   certificate covers is served behind Cloudflare beside the main one; `play.scbl` stays DNS only
-   with its own. The coordinator answers to all three, and its standbys now move the
-   `scbl-coord` record.
+1. In Cloudflare: `scbl-coord.jdevwebb.net`, an A record to eu1, **DNS only**, as
+   `scbl.jdevwebb.net` is now. (Proxied instead, if the coordinator's failover is set up by then:
+   with `--coordinator-cert`, an origin certificate covering it, and its standbys moving that
+   record; a name the certificate covers is then served behind Cloudflare beside it.)
+2. On eu1: the installer with `--coordinator-domain scbl-coord.jdevwebb.net --coordinator-alias
+   scbl.jdevwebb.net --coordinator-alias play.scbl.jdevwebb.net`. Caddy gets a certificate for
+   each; the coordinator answers to all three.
 3. Every member server: the installer with `--coordinator https://scbl-coord.jdevwebb.net` (its
    join is kept).
 4. Check: `curl https://scbl-coord.jdevwebb.net/v1/info` and the old name both answer; the admin
@@ -120,9 +118,9 @@ Announce it in the launcher's news and Discord.
    `.backup`: never a plain copy of a database in use); stop na1's game service; take a
    snapshot of na1 first; run `--merge-accounts` with both, against na1's own database in place
    (nothing copied over it); start it again. The rehearsal's merge took a second.
-4. **Move the name:** in Cloudflare, `scbl.jdevwebb.net` to **DNS only** (grey cloud), its A
-   record to na1, TTL 60 s. On eu1 (and the coordinator standbys), drop the old name from the
-   coordinator: the installer with `--coordinator-alias play.scbl.jdevwebb.net` alone.
+4. **Move the name:** first, on eu1, drop it from the coordinator (the installer with
+   `--coordinator-alias play.scbl.jdevwebb.net` alone); then in Cloudflare, `scbl.jdevwebb.net`'s
+   A record to na1, **DNS only**, TTL 60 s.
 5. **Turn eu1 and oceania into relays:** the installer with `--role relay --ticket-key <na1's key>
    --mm-record scbl.jdevwebb.net --mm-standby na1=...,eu1=...,oceania=...`. Their own
    databases stay as they are (the rollback's), and their `/api/info` now says `moved_to`.
