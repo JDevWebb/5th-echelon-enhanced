@@ -57,7 +57,6 @@ const SHOTS = [
   ['matches-from-play', '?answered', [async (page) => page.locator('button.play-more').click(), menuItem(/Choose a match/)]],
   ['matches-empty', '?answered&nomatches', [rail('Matches')]],
   ['play-squad', '?answered', [tab(/^Squad/)]],
-  ['play-intel', '?answered', [tab('Intel')]],
   ['play-notice', '?answered&notice', []],
   ['play-banners', '?answered&banners&update', []],
   ['play-reduced-motion', '?answered', [], { reducedMotion: 'reduce' }],

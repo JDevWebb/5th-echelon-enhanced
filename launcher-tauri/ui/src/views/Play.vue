@@ -228,7 +228,7 @@
             <button v-if="list.fixable" type="button" class="btn primary" @click="fixEverything">Fix everything</button>
           </div>
         </section>
-        <section v-else-if="tab === 'squad'" key="squad" class="pane squad">
+        <section v-else key="squad" class="pane squad">
           <p v-if="!squad" class="muted working"><i class="spin"></i>Looking for your friends…</p>
           <template v-else>
             <p v-if="squad.managed || (!squad.online.length && !squad.elsewhere.length)" class="soft">
@@ -284,25 +284,6 @@
             <div class="foot">
               <p v-if="squad.requests" class="accent small">{{ squad.requests }} friend request{{ squad.requests === 1 ? '' : 's' }} waiting</p>
               <p class="muted small">{{ squad.offline ? `${squad.offline} offline · ` : '' }}<a href="#" class="to-friends" @click.prevent="$emit('go', 'friends')">Friends, requests and blocked players ›</a></p>
-            </div>
-          </template>
-        </section>
-        <section v-else key="intel" class="pane intel">
-          <p v-if="!news.length" class="soft">No news from this server.</p>
-          <template v-else>
-            <p class="muted small">{{ newsAt + 1 }} of {{ news.length }}</p>
-            <Transition name="view" mode="out-in">
-              <article :key="newsAt">
-                <h3>{{ news[newsAt].title }}</h3>
-                <p class="soft">{{ news[newsAt].text }}</p>
-              </article>
-            </Transition>
-            <div class="foot dots">
-              <button type="button" aria-label="Newer" @click="turn(-1)"><svg viewBox="0 0 24 24"><path d="M15 6l-6 6 6 6" /></svg></button>
-              <button v-for="(_, i) in news.slice(0, 8)" :key="i" type="button" class="dot" :class="{ on: i === newsAt }" :aria-label="`News ${i + 1}`" @click="newsAt = i; turned = Date.now()"></button>
-              <button type="button" aria-label="Older" @click="turn(1)"><svg viewBox="0 0 24 24"><path d="M9 6l6 6-6 6" /></svg></button>
-              <span class="grow"></span>
-              <a href="#" @click.prevent="$emit('go', 'intel')">View all</a>
             </div>
           </template>
         </section>
@@ -374,7 +355,6 @@ const trouble = computed(() => list.value?.tone === 'fail');
 const tabs = computed(() => [
   { id: 'status', label: trouble.value ? 'Status · fix' : 'Status' },
   { id: 'squad', label: squad.value?.online.length ? `Squad · ${squad.value.online.length}` : 'Squad' },
-  { id: 'intel', label: 'Intel' },
 ]);
 const picked = ref(null);
 const tab = computed({ get: () => picked.value ?? (trouble.value ? 'status' : 'squad'), set: (t) => (picked.value = t) });
@@ -506,7 +486,8 @@ async function askReview() {
 const art = ref(null);
 const online = computed(() => list.value?.checks.some((c) => c.id === 'account' && c.status === 'ok') ?? false);
 
-// The Intel tab: the server's news, turning every 8 seconds.
+// The news line along the stage's foot: the server's news, turning every 8 seconds (all of it
+// on the Intel screen).
 const news = ref([]);
 const newsAt = ref(0);
 let turned = Date.now();
@@ -751,7 +732,7 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 .links { margin: 0; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13.5px; }
 .working { display: flex; align-items: center; gap: 10px; }
 .spin { display: inline-block; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--control-line); border-top-color: var(--accent); animation: spin .8s linear infinite; }
-.squad, .intel { display: flex; flex-direction: column; }
+.squad { display: flex; flex-direction: column; }
 .squad li > button { flex: none; }
 .pane.squad li > span:nth-child(2) small { font: 12px/1.4 Plex, sans-serif; letter-spacing: 0; text-transform: none; }
 .sub { margin: 14px 0 4px; font-size: 13px; }
@@ -768,14 +749,6 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 .row.end { justify-content: flex-end; margin-top: 16px; }
 .btn.small { height: 30px; padding: 0 12px; font-size: 13px; }
 .btn.danger { border-color: var(--bad); color: var(--bad); }
-.intel h3 { margin: 6px 0 4px; font-size: 16.5px; font-weight: 600; }
-.intel article p { margin: 0; font-size: 14px; }
-.dots { flex-direction: row !important; align-items: center; gap: 4px !important; }
-.dots button { width: 22px; height: 22px; display: grid; place-items: center; color: var(--muted); }
-.dots button svg { width: 14px; height: 14px; }
-.dots button:hover { color: var(--fg); }
-.dot::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--control-line); transition: background .2s, transform .2s; }
-.dot.on::before { background: var(--accent); transform: scale(1.35); }
 .grow { flex: 1; }
 .backdrop { position: fixed; inset: 0; z-index: 40; display: grid; place-items: center; padding: 24px; background: rgba(3, 5, 6, .62); backdrop-filter: blur(6px); }
 .dialog { width: min(540px, 100%); padding: 24px 26px 20px; border-radius: 6px; background: var(--surface); border: 1px solid var(--control-line); box-shadow: 0 24px 70px rgba(0, 0, 0, .6); }

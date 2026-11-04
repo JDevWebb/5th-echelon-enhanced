@@ -47,7 +47,6 @@ fn shots() -> Vec<Shot> {
     let mut all = vec![
         shot("play", View::Play, ""),
         shot("play-drawer-squad", View::Play, "drawer-squad"),
-        shot("play-drawer-intel", View::Play, "drawer-intel"),
         shot("play-server-menu", View::Play, "server-menu"),
         shot("matches", View::Matches, "matches-sample"),
         shot("friends", View::Friends, "friends-sample"),

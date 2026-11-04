@@ -415,7 +415,6 @@ impl App {
         match what {
             "drawer-status" => self.play.shot_drawer(Drawer::Status),
             "drawer-squad" => self.play.shot_drawer(Drawer::Squad),
-            "drawer-intel" => self.play.shot_drawer(Drawer::News),
             "setup-name" => self.play.shot_name_step("eu1.scbl.jdevwebb.net"),
             "matches-sample" => self.play.shot_matches(),
             "friends-sample" => self.play.shot_friends(crate::play::PeopleTab::Friends),

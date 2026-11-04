@@ -1187,8 +1187,6 @@ fn load_art(play: &mut Play, game: &Game, ctx: &egui::Context) {
 
 /// How long the server's news is kept before it's asked again.
 const NEWS_EVERY: Duration = Duration::from_secs(15 * 60);
-/// How long each news item shows before the card moves to the next.
-const NEWS_TURN: Duration = Duration::from_secs(8);
 
 /// Fetches the server's news when the server changes, and now and then.
 fn load_news(play: &mut Play, game: &Game, ctx: &egui::Context) {
@@ -1401,10 +1399,10 @@ impl Play {
 pub(crate) enum Drawer {
     Status,
     Squad,
-    News,
 }
 
-/// The drawer: the checks, friends and news, one at a time under tabs. Until the player picks one
+/// The drawer: the checks and friends, one at a time under tabs (the news is along the stage's foot
+/// and on the Intel screen). Until the player picks one
 /// it shows the checks when something needs fixing, and friends otherwise.
 fn drawer_panel(play: &mut Play, game: &mut Game, notices: &mut Notices, comms: &Comms, ctx: &egui::Context, to: &mut Option<Go>, ui: &mut egui::Ui) {
     let rect = ui.max_rect();
@@ -1424,7 +1422,6 @@ fn drawer_panel(play: &mut Play, game: &mut Game, notices: &mut Notices, comms: 
                 "Squad".to_string()
             },
         ),
-        (Drawer::News, "Intel".to_string()),
     ];
     let mut inner = ui.new_child(
         egui::UiBuilder::new()
@@ -1479,7 +1476,6 @@ fn drawer_panel(play: &mut Play, game: &mut Game, notices: &mut Notices, comms: 
                 friends_card(play, game, to, width, ui);
             }
         }
-        Drawer::News => news_card(play, ctx, to, width, ui),
     });
 }
 
@@ -2423,77 +2419,6 @@ fn friend_row(ui: &mut egui::Ui, dot: egui::Color32, name: &str, line: &str) {
         });
     });
     ui.add_space(4.0);
-}
-
-/// The server's news, one item at a time (the newest first), turning on its
-/// own; View all opens the News screen.
-fn news_card(play: &mut Play, ctx: &egui::Context, to: &mut Option<Go>, width: f32, ui: &mut egui::Ui) {
-    let count = play.news.len();
-    if count > 1 && play.news_turned.is_none_or(|t| t.elapsed() >= NEWS_TURN) {
-        if play.news_turned.is_some() {
-            play.news_index = (play.news_index + 1) % count;
-        }
-        play.news_turned = Some(Instant::now());
-    }
-    if count > 1 {
-        ctx.request_repaint_after(NEWS_TURN);
-    }
-    let index = if count == 0 { 0 } else { play.news_index % count };
-    let item = play.news.get(index).cloned();
-    let mut step: Option<isize> = None;
-    let mut pick = None;
-    home_card(
-        ui,
-        width,
-        "Server news",
-        (count > 1).then(|| theme::muted(format!("{} of {count}", index + 1))),
-        |ui| match &item {
-            None => {
-                ui.label(RichText::new("No news from this server.").color(theme::SOFT));
-            }
-            // The server's words, shown as text only.
-            Some(item) => {
-                ui.label(RichText::new(hooks_config::text::clip(&item.title, 80)).family(theme::strong()).size(16.5));
-                ui.add_space(2.0);
-                ui.label(RichText::new(hooks_config::text::clip(&item.text, 260)).color(theme::SOFT).size(14.0));
-            }
-        },
-        |ui| {
-            ui.horizontal(|ui| {
-                if count > 1 {
-                    if theme::chevron(ui, true).clicked() {
-                        step = Some(-1);
-                    }
-                    for i in 0..count.min(8) {
-                        let (rect, response) = ui.allocate_exact_size(egui::vec2(12.0, 20.0), egui::Sense::click());
-                        let color = if i == index { theme::ACCENT } else { theme::CONTROL_LINE };
-                        ui.painter().circle_filled(rect.center(), if i == index { 4.0 } else { 3.0 }, color);
-                        if response.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
-                            pick = Some(i);
-                        }
-                    }
-                    if theme::chevron(ui, false).clicked() {
-                        step = Some(1);
-                    }
-                }
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if count > 0 && ui.link("View all").clicked() {
-                        *to = Some(Go::View(View::News));
-                    }
-                });
-            });
-        },
-    );
-    if count > 0 {
-        if let Some(step) = step {
-            play.news_index = (index as isize + step).rem_euclid(count as isize) as usize;
-            play.news_turned = Some(Instant::now());
-        }
-        if let Some(i) = pick {
-            play.news_index = i;
-            play.news_turned = Some(Instant::now());
-        }
-    }
 }
 
 /// The News screen: everything the server's news says, newest first.
