@@ -209,6 +209,11 @@ pub struct FederationConfig {
     /// Where the server is, e.g. "Sydney" or "EU West", for the directory.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub region: String,
+    /// The name the directory lists this server by, when not its host: a network's
+    /// matchmaking server, by its record (which moves in a failover), so players are set up
+    /// on that rather than on its machine's own name. One of its names (`[public] aliases`).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub listed_as: String,
     /// Whether to appear in the server directory (friends sync either way).
     #[serde(default = "enabled")]
     pub listed: bool,
@@ -230,6 +235,7 @@ impl Default for FederationConfig {
             join_token: String::new(),
             name: String::new(),
             region: String::new(),
+            listed_as: String::new(),
             listed: true,
             allow_http: false,
             auto_update: true,

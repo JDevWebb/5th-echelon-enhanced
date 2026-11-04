@@ -516,11 +516,12 @@ echo "--- the coordinator behind Cloudflare"
 # container's address; another range stands for Cloudflare being elsewhere.
 eval "$(fn site_block)"
 eval "$(fn cloudflare_ranges)"
+eval "$(fn coord_cert_covers)"
 caddy_sum="CADDY_SHA512_$caddy_arch"
 check "Caddy $CADDY_VERSION matches the installer's checksum" bash -c "printf '%s  %s\n' '${!caddy_sum}' '$cf_dir/$caddy_tar' | sha512sum -c --quiet -"
 tar -xzf "$cf_dir/$caddy_tar" -C "$cf_dir" caddy
 openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 2 -subj /CN=coord.test \
-  -addext subjectAltName=DNS:coord.test -keyout "$cf_dir/coord.key" -out "$cf_dir/coord.crt" 2>/dev/null
+  -addext subjectAltName=DNS:coord.test,DNS:old.test -keyout "$cf_dir/coord.key" -out "$cf_dir/coord.crt" 2>/dev/null
 # The coordinator: a stand-in that answers with the client address it was given.
 cat > "$cf_dir/echo.py" <<'PY'
 import http.server
@@ -535,22 +536,26 @@ python3 "$cf_dir/echo.py" & echo_pid=$!
 me=$(hostname -i | awk '{print $1}')
 cf_caddy() { # cf_caddy <Cloudflare's ranges>: Caddy with the installer's site for them
   [ -z "${caddy_pid:-}" ] || { kill "$caddy_pid" 2>/dev/null; wait "$caddy_pid" 2>/dev/null || true; }
-  local domain="" coord_domain=coord.test coord_aliases=() COORD_CERT="$cf_dir/coord.crt" COORD_KEY="$cf_dir/coord.key" COORD_ADDR=127.0.0.9 CF_RANGES="$1"
+  local domain="" coord_domain=coord.test coord_aliases=(old.test) COORD_CERT="$cf_dir/coord.crt" COORD_KEY="$cf_dir/coord.key" COORD_ADDR=127.0.0.9 CF_RANGES="$1"
   # Only the coordinator's site: no game domain, no admin UI (site_block's other settings unset).
   { printf '{\n\tadmin off\n\thttps_port 9443\n\thttp_port 9080\n\tskip_install_trust\n}\n'; (set +u; site_block); } > "$cf_dir/Caddyfile"
   "$cf_dir/caddy" run --config "$cf_dir/Caddyfile" --adapter caddyfile >"$cf_dir/caddy.log" 2>&1 & caddy_pid=$!
   wait_for 20 "curl -sk -o /dev/null --resolve coord.test:9443:127.0.0.1 https://coord.test:9443/"
 }
-seen() { # seen <connect to> [header]: what the coordinator was told the client's address is
-  curl -sk --max-time 5 --resolve "coord.test:9443:$1" ${2:+-H "$2"} https://coord.test:9443/ 2>/dev/null || echo refused
+seen() { # seen <connect to> [header] [name]: what the coordinator was told the client's address is
+  local name="${3:-coord.test}"
+  curl -sk --max-time 5 --resolve "$name:9443:$1" ${2:+-H "$2"} "https://$name:9443/" 2>/dev/null || echo refused
 }
 cf_caddy "$me/32"
 check "from Cloudflare, the client's address is CF-Connecting-IP" test "$(seen "$me" 'CF-Connecting-IP: 198.51.100.7')" = 198.51.100.7
 check "from this machine, a CF-Connecting-IP is ignored" test "$(seen 127.0.0.1 'CF-Connecting-IP: 198.51.100.7')" = 127.0.0.1
+# Another name the certificate covers (its old one, while launchers move): served the same way.
+check "its other name the certificate covers, behind Cloudflare too" test "$(seen "$me" 'CF-Connecting-IP: 198.51.100.8' old.test)" = 198.51.100.8
 cf_caddy "203.0.113.0/24"
 outside=$(seen "$me" "CF-Connecting-IP: 198.51.100.7")
 check "from outside Cloudflare's ranges, refused (got $outside)" test "$outside" = refused
 check "  and this machine still reaches it" test "$(seen 127.0.0.1)" = 127.0.0.1
+check "  its other name refused from outside too" test "$(seen "$me" "CF-Connecting-IP: 198.51.100.7" old.test)" = refused
 kill "$caddy_pid" "$echo_pid" 2>/dev/null || true
 if [ "$rc" -ne 0 ]; then echo "--- caddy"; tail -20 "$cf_dir/caddy.log"; echo "--- its site"; cat "$cf_dir/Caddyfile"; fi
 

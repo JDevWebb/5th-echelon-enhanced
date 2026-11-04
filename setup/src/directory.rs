@@ -12,8 +12,12 @@ use serde::Deserialize;
 use serde::Serialize;
 
 /// The community network's coordinator, the launcher's directory unless the
-/// player chose another.
-pub const COMMUNITY: &str = "https://scbl.jdevwebb.net";
+/// player chose another. Its own name from 0.4.8: `scbl.jdevwebb.net` is the network's
+/// matchmaking server now, the one server every player signs in to.
+pub const COMMUNITY: &str = "https://scbl-coord.jdevwebb.net";
+/// Its name from 0.4.5 to 0.4.7, behind Cloudflare: the matchmaking server's from 0.4.8 (DNS only,
+/// for the game's traffic). Launchers that saved it move to [`COMMUNITY`].
+pub const COMMUNITY_PREVIOUS: &str = "https://scbl.jdevwebb.net";
 /// Its name until 0.4.5, two levels deep, so Cloudflare couldn't stand in front of it (and fail
 /// it over). Still the same network: launchers that saved it move to [`COMMUNITY`], and the
 /// coordinator answers to both while older launchers update.
@@ -346,11 +350,9 @@ pub fn built_in(coordinator: &str) -> Vec<Listing> {
         nat: Some(21128),
         api_tls: Some(443),
     };
-    [
-        ("tqzfwr7a4dhc67lp", "5th Echelon Community EU", "Falkenstein, Germany", "eu1.scbl.jdevwebb.net"),
-        ("gbkmhlwthml6pggn", "5th Echelon Community North America", "Beauharnois, Canada", "na1.scbl.jdevwebb.net"),
-        ("qzydgaemomioqsyb", "5th Echelon Community Oceania", "Sydney, Australia", "oceania.scbl.jdevwebb.net"),
-    ]
+    // One server since 0.4.8 (global matchmaking): every player signs in to the matchmaking
+    // server, by its record, and plays through the relay nearest them.
+    [("gbkmhlwthml6pggn", "5th Echelon Community", "Beauharnois, Canada", "scbl.jdevwebb.net")]
     .into_iter()
     .map(|(id, name, region, host)| Listing {
         id: id.into(),
@@ -374,7 +376,7 @@ pub fn built_in(coordinator: &str) -> Vec<Listing> {
 fn directory_key(url: &str) -> String {
     let key = |u: &str| u.trim().trim_end_matches('/').to_ascii_lowercase();
     let k = key(url);
-    if k == key(COMMUNITY_OLD) {
+    if k == key(COMMUNITY_OLD) || k == key(COMMUNITY_PREVIOUS) {
         key(COMMUNITY)
     } else {
         k
@@ -611,7 +613,8 @@ mod tests {
 
     #[test]
     fn the_community_networks_old_name_is_the_same_directory() {
-        assert!(is_community(COMMUNITY) && is_community(COMMUNITY_OLD));
+        assert!(is_community(COMMUNITY) && is_community(COMMUNITY_OLD) && is_community(COMMUNITY_PREVIOUS));
+        assert!(same_directory("https://scbl.jdevwebb.net/", COMMUNITY), "its name until 0.4.8");
         assert!(is_community("HTTPS://play.scbl.jdevwebb.net/ "));
         assert!(same_directory(COMMUNITY_OLD, COMMUNITY));
         assert!(!is_community("https://scbl.example.net") && !same_directory("https://a.example", COMMUNITY));
@@ -635,7 +638,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         // The community's servers are built in; another directory's aren't.
         let (servers, note) = fallback(Some(&dir), "https://play.scbl.jdevwebb.net/", 1000).unwrap();
-        assert_eq!(servers.len(), 3);
+        assert_eq!(servers.iter().map(|l| l.host.as_str()).collect::<Vec<_>>(), ["scbl.jdevwebb.net"], "the matchmaking server alone");
         assert!(servers.iter().all(|l| listable_host(&l.host) && l.ports.is_some()));
         assert!(note.contains("launcher knows"), "{note}");
         assert!(fallback(Some(&dir), "https://other.example.com", 1000).is_none());

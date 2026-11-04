@@ -833,7 +833,18 @@ fn main() -> color_eyre::Result<()> {
     );
     // What the coordinator's server directory shows about this server.
     let listing = {
-        let host = config.public.host.clone().unwrap_or_else(|| relay_ip.to_string());
+        // Listed by its record, when it's a network's matchmaking server (and the record is
+        // one of its names, so the directory's check of it finds this server).
+        let own = config.public.host.clone().unwrap_or_else(|| relay_ip.to_string());
+        let listed_as = federation_config.listed_as.trim().to_ascii_lowercase();
+        let host = if !listed_as.is_empty() && federation::own_names().iter().any(|n| n.eq_ignore_ascii_case(&listed_as)) {
+            listed_as
+        } else {
+            if !listed_as.is_empty() {
+                warn!(logger, "[federation] listed_as = {listed_as:?} isn't one of this server's names ([public] host or aliases): listed by {own}");
+            }
+            own
+        };
         let federation_config = federation_config.clone();
         move || federation::Listing {
             names: federation::own_names().into_iter().filter(|n| n != "127.0.0.1" && n != "localhost").collect(),

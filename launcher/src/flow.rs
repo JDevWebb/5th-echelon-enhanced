@@ -1170,6 +1170,23 @@ fn sentence(text: String) -> String {
 mod tests {
     use super::explorer_path;
 
+    /// A player set up on the matchmaking server's machine name moves to its record, the host
+    /// it's listed by; one set up on the record, or on a server the directory doesn't name
+    /// otherwise, stays.
+    #[test]
+    fn the_matchmaking_servers_other_name_moves_to_its_listed_host() {
+        let listing = |host: &str, also: &[&str]| {
+            let mut l: setup::directory::Listing = serde_json::from_str(&format!(r#"{{"id":"x","name":"x","host":"{host}"}}"#)).unwrap();
+            l.also = also.iter().map(|s| s.to_string()).collect();
+            (l, None)
+        };
+        let servers = [listing("scbl.example.net", &["na1.example.net"]), listing("other.example.net", &[])];
+        assert_eq!(super::listed_elsewhere(&servers, "NA1.example.net").as_deref(), Some("scbl.example.net"));
+        assert_eq!(super::listed_elsewhere(&servers, "scbl.example.net"), None);
+        assert_eq!(super::listed_elsewhere(&servers, "other.example.net"), None);
+        assert_eq!(super::listed_elsewhere(&servers, "my-own.example.org"), None);
+    }
+
     #[test]
     fn friends_read_with_their_mode_and_map() {
         let a = |mode: &str, room: &str, game_mode: u32, map: u32| server_api::friends::Activity {
@@ -1257,6 +1274,15 @@ pub fn moved(cfg: &Config) -> Option<(String, String)> {
     let profile = cfg.current_profile().filter(|p| !p.server.is_empty())?;
     let from = profile.server.clone();
     let directory = crate::prefs::Prefs::directory().filter(|d| setup::directory::valid_coordinator(d))?;
+    // Set up on another of a listed server's names (the network's matchmaking server by its
+    // machine's own name, e.g. na1's): it's listed by its record, which follows it in a
+    // failover, so the player moves to that. The coordinator lists other names only for the
+    // matchmaking server its operator named.
+    if let Ok(listed) = crate::services::rt().block_on(crate::network::server_directory(&directory)) {
+        if let Some(to) = listed_elsewhere(&listed.servers, &from) {
+            return Some((from, to));
+        }
+    }
     let info = setup::server_info::fetch(&from, std::time::Duration::from_secs(4))?;
     let to = info
         .moved_to
@@ -1273,4 +1299,13 @@ pub fn moved(cfg: &Config) -> Option<(String, String)> {
         .iter()
         .any(|(l, _)| l.host.eq_ignore_ascii_case(&to) || l.also.iter().any(|n| n.eq_ignore_ascii_case(&to)))
         .then_some((from, to))
+}
+
+/// The host a server set up as `from` is listed by, when `from` is another of its names.
+fn listed_elsewhere(servers: &[(setup::directory::Listing, Option<u32>)], from: &str) -> Option<String> {
+    servers
+        .iter()
+        .find(|(l, _)| !l.host.eq_ignore_ascii_case(from) && l.also.iter().any(|n| n.eq_ignore_ascii_case(from)))
+        .map(|(l, _)| l.host.trim().to_ascii_lowercase())
+        .filter(|h| setup::directory::listable_host(h))
 }

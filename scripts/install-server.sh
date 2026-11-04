@@ -238,7 +238,7 @@ domain="" no_caddy=0 public_address="" version="latest" binary="" relay=""
 notes=()
 firewall=1 yes=0 force=0 uninstall=0 purge=0 use_systemd=1
 # The community network's coordinator, by the names it has had (setup/src/directory.rs).
-COMMUNITY_COORDINATORS="scbl.jdevwebb.net play.scbl.jdevwebb.net"
+COMMUNITY_COORDINATORS="scbl-coord.jdevwebb.net scbl.jdevwebb.net play.scbl.jdevwebb.net"
 friends="" server_name="" region="" coordinator="" join_token="" coord_domain="" coord_binary=""
 https_api=1 allow_unsigned=0 coord_only=0 admin="" registration="" listed="" command=""
 metrics_cert="" metrics_key="" metrics_domain="" origin_pull=0 admin_name="" auto_update="" release_version=""
@@ -1301,6 +1301,10 @@ if [ "$coord_only" -eq 0 ] && [ "$no_caddy" -eq 0 ] && [ -z "$coordinator" ] && 
 fi
 # A coordinator behind Cloudflare (an Origin certificate): its record must be proxied before
 # Caddy refuses everyone but Cloudflare, or nobody reaches it.
+# Whether the coordinator's Cloudflare certificate (FILE) covers NAME.
+coord_cert_covers() {
+  [ -n "${2:-}" ] && [ -f "$2" ] && openssl x509 -noout -checkhost "$1" -in "$2" 2>/dev/null | grep -q 'does match'
+}
 check_proxied() {
   local name="$1"
   local head
@@ -1321,8 +1325,12 @@ check_proxied() {
 if [ -n "$coord_domain" ] && [ "${coord_dns_checked:-0}" -eq 0 ]; then
   if [ -n "$coord_cert" ] || [ -f "$COORD_CERT" ]; then check_proxied "$coord_domain"; else check_dns "$coord_domain"; fi
 fi
-# Its other names are DNS only, pointing here (Caddy gets their certificates).
-for a in "${coord_aliases[@]}"; do check_dns "$a"; done
+# Its other names: one its Cloudflare certificate covers is proxied too, served beside it (its
+# name while launchers move to another, e.g. 0.4.8's); any other is DNS only, pointing here
+# (Caddy gets its certificate).
+for a in "${coord_aliases[@]}"; do
+  if coord_cert_covers "$a" "${coord_cert:-$COORD_CERT}"; then check_proxied "$a"; else check_dns "$a"; fi
+done
 # This server in its failover group: the one listed by its domain.
 if [ -n "$standby" ]; then
   for entry in "${standby_entries[@]}"; do
@@ -1835,6 +1843,16 @@ elif [ "$listed" = false ] || [ "$listed" = true ]; then
   warn "--listed and --unlisted only matter with a coordinator; ignored"
 fi
 if [ -z "$coordinator" ] && [ -n "$auto_update" ] && grep -q '^\[federation\]$' "$CONFIG"; then toml_put federation auto_update "$auto_update"; fi
+# The network's matchmaking server is listed by its record, which players then use (and which
+# follows it in a failover), not by this machine's own name; any other server by its own.
+if grep -q '^\[federation\]$' "$CONFIG"; then
+  if [ "$(checked_value matchmaking network_relays "$BOOL_RE")" = true ] && [ -n "$mm_record" ]; then
+    toml_put federation listed_as "\"$mm_record\""
+    say "Listed in the directory as $mm_record"
+  elif grep -q '^listed_as = ' "$CONFIG"; then
+    sed -i '/^\[federation\]$/,/^\[/{/^listed_as = /d}' "$CONFIG"
+  fi
+fi
 plain_config
 chown -h "$USER_NAME:$USER_NAME" "$CONFIG"
 # It can hold the join token.
@@ -2773,6 +2791,11 @@ site_block() {
       fi
     fi
   fi
+  # The coordinator's names its Cloudflare certificate covers are served together, behind it.
+  local coord_sites="$coord_domain" a
+  if [ -n "$coord_domain" ] && [ -f "$COORD_CERT" ]; then
+    for a in "${coord_aliases[@]}"; do if coord_cert_covers "$a" "$COORD_CERT"; then coord_sites="$coord_sites, $a"; fi; done
+  fi
   if [ -n "$coord_domain" ] && [ -f "$COORD_CERT" ]; then
     # Fetched once here: each cloudflare_ranges call below runs in a subshell of its own.
     [ -n "${CF_RANGES:-}" ] || CF_RANGES="$(cloudflare_ranges)"
@@ -2783,7 +2806,7 @@ site_block() {
 # between the servers of a failover group at once; docs/failover.md). Any
 # other address is refused but this machine's, and the client's address is
 # Cloudflare's CF-Connecting-IP.
-$coord_domain {
+$coord_sites {
 	tls $COORD_CERT $COORD_KEY
 	# A handle of its own, first: Caddy runs handle blocks before a bare abort, so one beside
 	# them never ran and anyone reached the coordinator straight (ops-test caught it).
@@ -2814,8 +2837,8 @@ $coord_domain {
 }
 SITE
   fi
-  local a
   for a in "${coord_aliases[@]}"; do
+    if coord_cert_covers "$a" "$COORD_CERT"; then continue; fi
     cat <<SITE
 
 # The coordinator by another name ($a), DNS only, over HTTPS (Caddy gets
