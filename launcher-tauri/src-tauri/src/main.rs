@@ -11,6 +11,8 @@ mod intel;
 mod settings;
 mod support;
 mod update;
+#[cfg(target_os = "windows")]
+mod webview2;
 mod whats_new;
 
 /// Where Microsoft offers the WebView2 runtime, for a PC without it.
@@ -25,17 +27,24 @@ fn main() {
     }
     launcher::logging::init();
     // The window is a web view: on Windows it needs Microsoft's WebView2 runtime (part of
-    // Windows 11 and of Edge; an older Windows 10 may lack it). Without it, say so and open its
-    // download page, rather than fail to open.
+    // Windows 11 and of Edge; an older Windows 10 may lack it). Without it, Microsoft's installer
+    // (carried in the launcher) puts it in; if that doesn't work (offline, or blocked by the
+    // PC's policy), say so and open its download page, rather than fail to open.
     #[cfg(target_os = "windows")]
     if let Err(e) = tauri::webview_version() {
-        tracing::error!("No WebView2 runtime: {e}");
+        tracing::warn!("No WebView2 runtime: {e}");
         launcher::logging::show_msgbox(
-            "The launcher needs Microsoft's WebView2 runtime, which this PC doesn't have yet.\n\nPress OK to open Microsoft's download page: get the Evergreen Bootstrapper, run it, then start the launcher again.",
+            "The launcher needs Microsoft's WebView2 runtime (part of Windows 11 and Edge), which this PC doesn't have yet.\n\nPress OK to install it now with Microsoft's installer. It takes a minute and is only needed once.",
             "5th Echelon",
         );
-        let _ = std::process::Command::new("explorer").arg(WEBVIEW2_PAGE).spawn();
-        return;
+        if !webview2::install() {
+            launcher::logging::show_msgbox(
+                "Microsoft's WebView2 runtime couldn't be installed (no internet connection, or this PC doesn't allow it).\n\nPress OK to open Microsoft's download page: get the Evergreen Bootstrapper, run it, then start the launcher again.",
+                "5th Echelon",
+            );
+            let _ = std::process::Command::new("explorer").arg(WEBVIEW2_PAGE).spawn();
+            return;
+        }
     }
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
