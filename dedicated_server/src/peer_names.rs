@@ -10,8 +10,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 use std::time::Instant;
 
-/// A number said longer ago than this is forgotten (a match long over).
-const KEPT_FOR: Duration = Duration::from_secs(20 * 60);
+/// A number said longer ago than this is forgotten: games say theirs every 30 s while a round
+/// runs, and an older one (a match before) would only clash with this one's.
+const KEPT_FOR: Duration = Duration::from_secs(3 * 60);
 /// Players remembered at most (the oldest go).
 const MOST: usize = 50_000;
 /// The numbers a game session has (Blacklist's sessions are 16 players at most; room to spare).
@@ -35,18 +36,19 @@ pub fn said(user: u32, peer: u32) {
     all.insert(user, (peer, Instant::now()));
 }
 
-/// The numbers of `players` (id, name) who said one lately: one name a number, the latest said.
+/// The numbers of `players` (id, name) who said one lately. A number is the game's own claim
+/// (the server can't see the players' session), so a number two of them claim names neither:
+/// a player can't take another's, putting their name on someone else's character in the
+/// others' recordings and witness reports, or leave their own unnamed.
 pub fn of(players: &[(u32, String)]) -> Vec<(u32, String)> {
     let all = SAID.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     let now = Instant::now();
-    let mut by_peer: HashMap<u32, (Instant, String)> = HashMap::new();
+    let mut by_peer: HashMap<u32, Option<String>> = HashMap::new();
     for (id, name) in players {
-        let Some((peer, at)) = all.get(id).filter(|(_, at)| now.duration_since(*at) < KEPT_FOR) else { continue };
-        if by_peer.get(peer).is_none_or(|(other, _)| at > other) {
-            by_peer.insert(*peer, (*at, name.clone()));
-        }
+        let Some((peer, _)) = all.get(id).filter(|(_, at)| now.duration_since(*at) < KEPT_FOR) else { continue };
+        by_peer.entry(*peer).and_modify(|n| *n = None).or_insert_with(|| Some(name.clone()));
     }
-    let mut out: Vec<(u32, String)> = by_peer.into_iter().map(|(peer, (_, name))| (peer, name)).collect();
+    let mut out: Vec<(u32, String)> = by_peer.into_iter().filter_map(|(peer, name)| Some((peer, name?))).collect();
     out.sort();
     out
 }
@@ -63,8 +65,12 @@ mod tests {
         said(900_004, 99);
         let room = |ids: &[u32]| ids.iter().map(|id| (*id, format!("p{id}"))).collect::<Vec<_>>();
         assert_eq!(of(&room(&[900_001, 900_002, 900_003, 900_004, 900_005])), vec![(1, "p900001".into()), (3, "p900002".into())]);
-        // A number said again by someone else (a new session): the latest wins.
+        // A number two players in the room claim names neither (one of them isn't telling the
+        // truth); the others are still named.
         said(900_006, 3);
-        assert_eq!(of(&room(&[900_002, 900_006])), vec![(3, "p900006".into())]);
+        assert_eq!(of(&room(&[900_001, 900_002, 900_006])), vec![(1, "p900001".into())]);
+        // Saying another number later (a new match) is theirs alone again.
+        said(900_006, 4);
+        assert_eq!(of(&room(&[900_002, 900_006])), vec![(3, "p900002".into()), (4, "p900006".into())]);
     }
 }
