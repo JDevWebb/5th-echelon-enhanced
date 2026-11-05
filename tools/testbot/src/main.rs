@@ -4373,6 +4373,9 @@ async fn run() -> Result<()> {
     if args.first().map(String::as_str) == Some("invite") {
         return invite_to(server, &args[1..]).await;
     }
+    if args.first().map(String::as_str) == Some("join") {
+        return join_room_as(server, &args[1..]).await;
+    }
     if args.first().map(String::as_str) == Some("lobbies") {
         return show_lobbies(server, &args[1..]).await;
     }
@@ -4638,5 +4641,29 @@ async fn show_lobbies(server: IpAddr, names: &[String]) -> Result<()> {
         );
     }
     println!("left out: {} blocked, {} private matches ({} players), {} in parties", resp.hidden_blocked, resp.private_matches, resp.private_players, resp.party_players);
+    Ok(())
+}
+
+/// `join ROOM NAME...`: each named player joins the public match ROOM, as the launcher's
+/// Matches tab's Join does (signed in to the API only; their games, running, take the host's
+/// invitation).
+async fn join_room_as(server: IpAddr, args: &[String]) -> Result<()> {
+    let [room, names @ ..] = args else {
+        return Err(eyre!("join ROOM NAME..."));
+    };
+    let room: u32 = room.parse().map_err(|_| eyre!("join ROOM NAME...: ROOM is a number"))?;
+    let password = account_password()?;
+    let mut failed = 0;
+    for name in names {
+        let p = testbot::bot::ApiPlayer::sign_in(server, name, &password).await?;
+        match p.join_room(room).await {
+            Ok(r) => println!("{name} joining room {room}: status {} {}", r.status, r.detail),
+            Err(e) => {
+                failed += 1;
+                println!("{name} joining room {room}: {}", e.message());
+            }
+        }
+    }
+    ensure!(failed == 0, "{failed} of {} joins refused", names.len());
     Ok(())
 }

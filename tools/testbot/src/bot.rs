@@ -1631,6 +1631,12 @@ impl ApiPlayer {
         Ok(resp.friends.into_iter().map(|f| (f.username, f.is_online)).collect())
     }
 
+    /// Joins a public match by its room, as the launcher's Matches tab does: the server has its
+    /// host invite this player's game (which takes it by itself with AutoJoinInvite).
+    pub async fn join_room(&self, room: u32) -> std::result::Result<server_api::friends::JoinNowResponse, tonic::Status> {
+        Ok(FriendsClient::new(self.api.clone()).join_room(self.authed(server_api::friends::JoinRoomRequest { room })).await?.into_inner())
+    }
+
     /// The public matches as the launcher's Matches tab gets them.
     pub async fn lobbies(&self) -> Result<server_api::friends::LobbiesResponse> {
         Ok(FriendsClient::new(self.api.clone()).lobbies(self.authed(server_api::friends::LobbiesRequest {})).await?.into_inner())
