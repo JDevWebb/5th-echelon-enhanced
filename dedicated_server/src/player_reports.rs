@@ -1,4 +1,4 @@
-//! Reporting a player (the 0.4.8 plan's F5): from the overlay's Match tab, a player reports
+//! Reporting a player (the 0.5.0 plan's F5): from the overlay's Match tab, a player reports
 //! someone in their match, or in one they left lately, for cheating, griefing, their name or
 //! something else. The report goes the way feedback goes (`reports.rs`): to the network's
 //! admins with the server's log of the reporter's session, and the match's room, and it's a

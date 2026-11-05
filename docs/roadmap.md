@@ -2,7 +2,7 @@
 
 What's being worked on next, roughly in order. Plans change as testing and the game's own code turn things up; the [issues](https://github.com/JDevWebb/5th-echelon-enhanced/issues) have the details, and ideas are welcome there.
 
-## In 0.4.8
+## In 0.5.0
 
 ### Global matchmaking
 

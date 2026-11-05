@@ -1,4 +1,4 @@
-//! Bans that hold for the PC (the 0.4.8 plan's F10). Servers send each player's hardware ids,
+//! Bans that hold for the PC (the 0.5.0 plan's F10). Servers send each player's hardware ids,
 //! hashed by their game or launcher (the hwid crate), with the players report; they're keyed
 //! again here with the coordinator's own secret ([`Coordinator::hardware_secret`]) and kept
 //! (`player_hardware`). A player whose PC shares [`TO_BAN`] ids or more with a banned player's

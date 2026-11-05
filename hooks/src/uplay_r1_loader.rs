@@ -275,7 +275,7 @@ unsafe extern "cdecl" fn UPLAY_Release(ptr: *mut List) -> bool {
 static UBISOFT_STARTUP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The game signed in to our server: after a start through Ubisoft Connect, this copy has shown
-/// it starts that way, and the launcher may offer starting without it (the 0.4.8 plan's P4).
+/// it starts that way, and the launcher may offer starting without it (the 0.5.0 plan's P4).
 pub fn signed_in() {
     if UBISOFT_STARTUP.load(std::sync::atomic::Ordering::Relaxed) {
         if let Some(dir) = crate::community::folder() {

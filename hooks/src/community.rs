@@ -268,7 +268,7 @@ impl Snapshot {
     }
 
     /// Whether this server lets players pick a match or start a new one (`JoinRoom`,
-    /// `NewMatch`; the 0.4.8 plan's L2).
+    /// `NewMatch`; the 0.5.0 plan's L2).
     pub fn choose_offered(&self) -> bool {
         self.server.as_ref().is_some_and(|s| s.features.iter().any(|f| f == "choose-match"))
     }

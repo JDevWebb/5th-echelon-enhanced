@@ -1,4 +1,4 @@
-//! Each player's number in their match's game session (the 0.4.8 recordings and witness
+//! Each player's number in their match's game session (the 0.5.0 recordings and witness
 //! reports): a game only has its own player's name in memory, not the others', but every
 //! character carries its owner's number (Actor.NetInstanceId's top byte: the session peer index
 //! + 1, the same in every game). Each game says its own with its match state; the server answers

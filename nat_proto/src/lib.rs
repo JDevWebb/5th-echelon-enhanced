@@ -67,7 +67,7 @@ pub type Cookie = [u8; 16];
 pub type Tag = [u8; 8];
 /// The game's session key (Ed25519, made for each run): the ticket and the relay pass name it,
 /// and the probe that registers signs the server's cookie with it, so a ticket or pass someone
-/// copied off the wire is no use without the key (the 0.4.8 plan's G6).
+/// copied off the wire is no use without the key (the 0.5.0 plan's G6).
 pub type SessionKey = [u8; 32];
 pub type SessionSignature = [u8; 64];
 

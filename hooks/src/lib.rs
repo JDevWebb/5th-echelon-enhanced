@@ -589,7 +589,7 @@ fn offline_switch(cmdline: &str) -> Option<&str> {
 
 /// Which executable this start runs (so which DirectX) and whether Steam started it (it sets
 /// `SteamAppId` for the games it starts) or the launcher did, for the launcher to show beside its Renderer setting
-/// (the 0.4.8 plan's P3): `bl-last-run.txt` in the game folder.
+/// (the 0.5.0 plan's P3): `bl-last-run.txt` in the game folder.
 fn note_last_run(game_dir: &Path) {
     let Some(exe) = std::env::current_exe().ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned())) else {
         return;

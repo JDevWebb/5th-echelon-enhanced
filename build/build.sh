@@ -136,7 +136,7 @@ case "${1:-test}" in
         MATCHMAKING=1 scripts/bots.sh /target/native/debug relay-pass; fi' bots "$@"
     ;;
   tauri)
-    # The Tauri launcher (launcher-tauri, 0.4.8) for Windows and for Linux x86_64 -> dist: its
+    # The Tauri launcher (launcher-tauri, 0.5.0) for Windows and for Linux x86_64 -> dist: its
     # page (launcher-tauri/ui) built first, then embedded. Linux links against the WebKitGTK in
     # fes-tauri, as tauri-trial does.
     # It carries the client DLL, as the egui launcher does.

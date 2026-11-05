@@ -1,4 +1,4 @@
-# The launcher in Tauri 2 (0.4.8): the Field ops screens as a web page in a native window, Rust
+# The launcher in Tauri 2 (0.5.0): the Field ops screens as a web page in a native window, Rust
 # behind it. Its own workspace for now, so the main workspace's tests and CI don't need
 # WebKitGTK; it uses the workspace's crates by path. On Linux the egui launcher stays the program
 # started, and opens this one when WebKitGTK 4.1 is there and it isn't gamescope (docs: plan L).

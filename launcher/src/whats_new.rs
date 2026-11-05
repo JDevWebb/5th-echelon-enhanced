@@ -42,7 +42,7 @@ pub struct Release {
 /// Newest first. A release with nothing a player would notice has no entry.
 pub const RELEASES: &[Release] = &[
     Release {
-        version: "0.4.8",
+        version: "0.5.0",
         thanks: &["Tea_bag", "Cloud", "Ghost_Leader", "curryman", "omar", "Agent1", "EitherBat2025", "Gex", "Ronis", "Sem", "Sokolev", "mpw"],
         new: &[
             Item {

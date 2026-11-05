@@ -366,12 +366,12 @@ pub struct Config {
     /// a start through Ubisoft Connect worked on this copy (`last_run::ubisoft_connect_worked`).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub without_ubisoft_connect: bool,
-    /// Witness reports (the 0.4.8 plan's F9): the add-on watches the other players' characters
+    /// Witness reports (the 0.5.0 plan's F9): the add-on watches the other players' characters
     /// move and tells the server of speeds past what the game allows. On for every player
     /// (all are its testers, the user decided 2026-10-31); `WitnessReports = false` turns it off.
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub witness_reports: bool,
-    /// Match recordings (the 0.4.8 plan's replay research): the add-on records where every
+    /// Match recordings (the 0.5.0 plan's replay research): the add-on records where every
     /// character is, faces and shoots in each match to the game folder's `replays` (the newest
     /// 20 kept; sent to the player's server too, `replay_upload`). On for every player, as witness reports;
     /// `ReplayRecording = false` turns it off.
@@ -401,7 +401,7 @@ pub struct Config {
     /// Turns host migration off (on otherwise; Settings › Game › Host migration): a match lobby
     /// carries on under a new host when its host leaves, and a party's leader invited into a
     /// private match takes its party along and gets it back afterwards (`hooks::migrate_lobby`,
-    /// `party_follow`, `follow_unblock`; DX9 and DX11, all or none). A beta in 0.4.8's development,
+    /// `party_follow`, `follow_unblock`; DX9 and DX11, all or none). A beta in 0.5.0's development,
     /// on for everyone since (the user, 2026-11-02); an old `[Beta] HostMigration` key is ignored.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disable_host_migration: bool,
@@ -1406,7 +1406,7 @@ mod tests {
         let written = toml::to_string(&cfg).unwrap();
         assert!(written.contains("DisableHostMigration = true"), "{written}");
         assert!(toml::from_str::<Config>(&written).unwrap().disable_host_migration);
-        // A 0.4.8 test build's beta key, on or off, still reads, and changes nothing.
+        // A 0.5.0 test build's beta key, on or off, still reads, and changes nothing.
         for on in [true, false] {
             let old = format!("{}\n[Beta]\nHostMigration = {on}\n", toml::to_string(&super::default()).unwrap());
             let back: Config = toml::from_str(&old).unwrap();

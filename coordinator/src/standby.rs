@@ -26,7 +26,7 @@
 //! (`coordinator standby --take-over` there).
 //!
 //! The same program stands by for a network's **matchmaking server** (`kind matchmaking`, the
-//! 0.4.8 plan's phase 4), on its relays. Game traffic can't go through Cloudflare's proxy, so
+//! 0.5.0 plan's phase 4), on its relays. Game traffic can't go through Cloudflare's proxy, so
 //! its record is DNS only (a short TTL) and the matchmaking server is asked directly
 //! (`/api/info`, its server id): no answer counts as down only when this machine reaches the
 //! internet (`control`). The relays say whether they still hear from it (`matchmaking_seen`).

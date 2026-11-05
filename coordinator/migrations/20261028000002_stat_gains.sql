@@ -1,4 +1,4 @@
--- What each stat write added (0.4.8, fair play F1), kept 30 days: the stats that add up, with
+-- What each stat write added (0.5.0, fair play F1), kept 30 days: the stats that add up, with
 -- how far into the player's session it came (NULL: no session known), so the admins see gains
 -- far above what the network's players normally make in a minute of play.
 CREATE TABLE stat_gains (

@@ -34,7 +34,7 @@ fn marks(ctx: &egui::Context) -> [egui::TextureHandle; 2] {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum View {
     Play,
-    /// Every public match on the player's server (the 0.4.8 lobby browser).
+    /// Every public match on the player's server (the 0.5.0 lobby browser).
     Matches,
     /// Friends, requests, finding players, blocked.
     Friends,

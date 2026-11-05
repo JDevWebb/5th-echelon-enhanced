@@ -1,4 +1,4 @@
-//! This PC's hardware ids, for bans that hold for the PC as well as the identity (the 0.4.8
+//! This PC's hardware ids, for bans that hold for the PC as well as the identity (the 0.5.0
 //! plan's F10). Only hashes leave the PC: each id is hashed here ([`hash`]), and the
 //! coordinator keys the hashes again with a secret of its own before it keeps them.
 //!

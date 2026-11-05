@@ -17,7 +17,7 @@ text below still uses those names for the two parts.
 > **How it ships.** `migrate_lobby` and the two party hooks (`party_follow`, `follow_unblock`) are one **beta
 > feature**, off by default: the launcher's **Settings › Beta features › Host migration**, stored as
 > `HostMigration = true` under `[Beta]` in `uplay.toml`. Like every beta feature it uploads the full log when the game
-> closes. Since 0.4.8 it is on DX9 too, and all or nothing: on any build where one piece isn't found, none of the
+> closes. Since 0.5.0 it is on DX9 too, and all or nothing: on any build where one piece isn't found, none of the
 > three is installed. The old keys `MigrateMatchLobby`, `MigrateRunningMatch` and `PartyFollowsInvite` are gone (a
 > file that still has them is read as before, the keys are ignored). What this means for players without the beta:
 > `docs/architecture/host-and-party-migration.md` §11, "Mixed clients".

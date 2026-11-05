@@ -1,4 +1,4 @@
-//! Speed-hack check (the 0.4.8 plan's F7, report only): a speed hack makes the game's clocks
+//! Speed-hack check (the 0.5.0 plan's F7, report only): a speed hack makes the game's clocks
 //! run fast by hooking its timing calls (QueryPerformanceCounter, GetTickCount), and the
 //! add-on's own clock goes through the same calls. Windows also writes the time since boot
 //! into a page every process shares (KUSER_SHARED_DATA's InterruptTime), read here straight

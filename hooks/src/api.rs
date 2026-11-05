@@ -154,7 +154,7 @@ pub struct Friend {
     pub session_data: Vec<u8>,
     /// Principal id as Quazal uses it - needed to search for the session this friend is in.
     pub pid: u32,
-    /// That session is a private match, not an invite-only party (a server before 0.4.8 never
+    /// That session is a private match, not an invite-only party (a server before 0.5.0 never
     /// says so).
     pub private_match: bool,
 }

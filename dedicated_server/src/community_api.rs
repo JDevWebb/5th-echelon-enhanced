@@ -519,15 +519,15 @@ mod tests {
     #[test]
     fn a_relay_alone_says_so() {
         let full = json!({
-            "name": "5th Echelon Enhanced", "version": "0.4.8", "revision": "r", "id": "abc",
-            "features": ["invites", "join-now"], "friends_mode": "everyone", "minimum_client": "0.4.8",
+            "name": "5th Echelon Enhanced", "version": "0.5.0", "revision": "r", "id": "abc",
+            "features": ["invites", "join-now"], "friends_mode": "everyone", "minimum_client": "0.5.0",
             "ports": { "api": 50051, "login": 21126, "secure": 21127, "content": 8000, "nat": 21128 },
             "host": "syd.example.net",
         });
         assert_eq!(
             relay_only_info(full),
             json!({
-                "name": "5th Echelon Enhanced", "version": "0.4.8", "revision": "r", "role": "relay", "features": [],
+                "name": "5th Echelon Enhanced", "version": "0.5.0", "revision": "r", "role": "relay", "features": [],
                 "id": "abc", "host": "syd.example.net", "ports": { "nat": 21128 },
             })
         );

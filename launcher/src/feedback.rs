@@ -932,7 +932,7 @@ mod tests {
         assert_eq!(
             betas_in_log(&line("mouse_turn_per_second, host_migration")),
             ["mouse_turn_per_second"],
-            "a 0.4.8 test build's host_migration beta isn't a beta any more"
+            "a 0.5.0 test build's host_migration beta isn't a beta any more"
         );
         assert!(betas_in_log("no betas here").is_empty());
         // Text from elsewhere in the log (a chat line, say) doesn't count.

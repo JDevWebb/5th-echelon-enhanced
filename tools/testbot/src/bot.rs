@@ -247,7 +247,7 @@ pub async fn present_pass(socket: &tokio::net::UdpSocket, nat: std::net::SocketA
     present_pass_with_key(socket, nat, name, pass, Some(&session_key(name))).await
 }
 
-/// [`present_pass`] signed with the game's session key, as a 0.4.8 game shows it.
+/// [`present_pass`] signed with the game's session key, as a 0.5.0 game shows it.
 pub async fn present_pass_with_key(
     socket: &tokio::net::UdpSocket,
     nat: std::net::SocketAddrV4,
@@ -285,7 +285,7 @@ pub async fn nat_register(socket: &tokio::net::UdpSocket, nat: std::net::SocketA
     nat_register_with_key(socket, nat, flags, name, ticket, Some(&session_key(name))).await
 }
 
-/// [`nat_register`] with the probes signed with the game's session key, as a 0.4.8 game does.
+/// [`nat_register`] with the probes signed with the game's session key, as a 0.5.0 game does.
 pub async fn nat_register_with_key(
     socket: &tokio::net::UdpSocket,
     nat: std::net::SocketAddrV4,
@@ -363,8 +363,8 @@ pub fn properties(attrs: &str) -> QList<Property> {
 /// server. Returns the player's pid, the secure server's address and the ticket.
 /// Signs in to the gRPC API as `client` ("game/…" for the DLL, "launcher/…").
 pub async fn api_sign_in(server: IpAddr, name: &str, password: &str, client: &str) -> Result<(Channel, server_api::users::LoginResponse)> {
-    // A game's sign-in carries its session key, as a 0.4.8 game's does (servers whose oldest
-    // client is 0.4.8 take only probes signed with it).
+    // A game's sign-in carries its session key, as a 0.5.0 game's does (servers whose oldest
+    // client is 0.5.0 take only probes signed with it).
     let key = client.starts_with("game/").then(|| session_key(name));
     api_sign_in_with_key(server, name, password, client, key.as_ref()).await
 }
@@ -377,7 +377,7 @@ pub fn session_key(name: &str) -> identity::Identity {
     identity::Identity::from_secret(&seed)
 }
 
-/// [`api_sign_in`] with the game's session key (0.4.8 on): its NAT ticket and relay pass then
+/// [`api_sign_in`] with the game's session key (0.5.0 on): its NAT ticket and relay pass then
 /// name it.
 pub async fn api_sign_in_with_key(
     server: IpAddr,
@@ -1256,7 +1256,7 @@ impl Bot {
             .into_inner())
     }
 
-    /// Says whether this player's match is under way, as a 0.4.8 game does (`MatchState`).
+    /// Says whether this player's match is under way, as a 0.5.0 game does (`MatchState`).
     /// What this player's game saw of the others moving (F9).
     pub async fn witness(&self, seen: Vec<server_api::misc::Witnessed>) -> std::result::Result<(), tonic::Status> {
         MiscClient::new(self.api.clone())

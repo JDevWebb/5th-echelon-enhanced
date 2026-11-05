@@ -30,7 +30,7 @@ const MAX_ADDRESSES: usize = 10_000;
 static ISSUER: OnceLock<identity::Identity> = OnceLock::new();
 static ACCEPTED: OnceLock<Vec<String>> = OnceLock::new();
 
-/// What a pass signs: the name and day, and from 0.4.8 the game's session key (a pass for a
+/// What a pass signs: the name and day, and from 0.5.0 the game's session key (a pass for a
 /// key is only good with it: nat_proto's SessionKey).
 fn message(name: &str, day: u32, key: Option<&nat_proto::SessionKey>) -> String {
     match key {

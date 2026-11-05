@@ -23,9 +23,9 @@ address, as now.
 `scbl.jdevwebb.net` was the coordinator's name until 0.4.7 (DNS only to eu1, a Let's Encrypt
 certificate). It becomes the matchmaking server's, which has to be DNS only (the game's UDP and
 plain port-80 traffic can't pass Cloudflare's proxy), and the coordinator takes a one-level name
-of its own (one level, so it can be proxied later with Cloudflare's free certificate). 0.4.8 launchers use the new
+of its own (one level, so it can be proxied later with Cloudflare's free certificate). 0.5.0 launchers use the new
 name, and take a saved old one for it. Older launchers find their update on GitHub, not through
-the coordinator, and can't play on 0.4.8 servers before updating, so nothing is passed on to the
+the coordinator, and can't play on 0.5.0 servers before updating, so nothing is passed on to the
 coordinator from the old name once it moves.
 
 The directory lists the matchmaking server by its record (`[federation] listed_as`, which the
@@ -36,7 +36,7 @@ matchmaking server's other names, only for the server the coordinator's operator
 
 ## What it needs
 
-- Every server on the same release (0.4.8 or later) and **backups on** on each ([backups.md](backups.md)).
+- Every server on the same release (0.5.0 or later) and **backups on** on each ([backups.md](backups.md)).
 - Every account linked to an identity (`SELECT COUNT(*) FROM users WHERE ubi_id IS NOT NULL AND
   global_id IS NULL` is 0 on each server); an account without one is moved under its name, but
   its launcher can't follow by itself.
@@ -95,13 +95,13 @@ Book it ([update windows](operations.md)), long enough for the merge and checks 
 Announce it in the launcher's news and Discord.
 
 1. **The release first, as usual:** every server and launcher on the new release. **eu1 first,
-   with the coordinator's new name**, right after publishing (0.4.8 launchers use
+   with the coordinator's new name**, right after publishing (0.5.0 launchers use
    `scbl-coord.jdevwebb.net`; until it answers they fall back to their saved server list): the
    release's installer with `--coordinator-domain scbl-coord.jdevwebb.net --coordinator-alias
    scbl.jdevwebb.net --coordinator-alias play.scbl.jdevwebb.net` (its record, DNS only to eu1,
    was made on 2026-11-04). Caddy gets a certificate for each name, and the coordinator answers to
    all three. Check `curl https://scbl-coord.jdevwebb.net/v1/info`, and that its `--roadmap
-   --chat` are still on (`systemctl cat 5th-echelon-coordinator`: the 0.4.8 installer knows the
+   --chat` are still on (`systemctl cat 5th-echelon-coordinator`: the 0.5.0 installer knows the
    new name as the community's). Then every member server with `--coordinator
    https://scbl-coord.jdevwebb.net` as it updates (its join is kept).
 2. **Stop new sign-ins on eu1 and oceania** (their game service stops), then let their

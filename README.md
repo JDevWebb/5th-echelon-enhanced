@@ -529,7 +529,7 @@ Command-line options: `--public-address <ip>`, `--listen <ip>`, and `-c <file>` 
 Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echelon/releases/tag/v0.2.5):
 
 **Launcher**
-- Rewritten around a new `setup` library, for Windows and Linux (Steam, Flatpak, Steam Deck, Lutris, Heroic): in Tauri since 0.4.8 (the Field ops look), with the classic egui interface where the new one can't run (Game Mode on a Steam Deck).
+- Rewritten around a new `setup` library, for Windows and Linux (Steam, Flatpak, Steam Deck, Lutris, Heroic): in Tauri since 0.5.0 (the Field ops look), with the classic egui interface where the new one can't run (Game Mode on a Steam Deck).
 - A Play button that says whether you're ready and why not, a Friends page (requests, finding players, blocks), and **Choose a match...** to pick an open public match or start a new one.
 - A guided first-run setup, and a Status card with fixes. **Connect** finds your account with your identity, and asks for a name only when you have none on that server.
 - Typing a network's address (a coordinator) sets you up on its best server by ping; the server menu moves you to another.

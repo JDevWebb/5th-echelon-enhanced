@@ -1,6 +1,6 @@
 //! The game's last start, as the add-on saw it (`bl-last-run.txt` in the game folder): which
 //! executable ran, so which DirectX, and whether Steam started it. The launcher shows it beside
-//! its Renderer setting, and says why when it isn't what was chosen (the 0.4.8 plan's P3).
+//! its Renderer setting, and says why when it isn't what was chosen (the 0.5.0 plan's P3).
 
 use std::path::Path;
 use std::time::SystemTime;

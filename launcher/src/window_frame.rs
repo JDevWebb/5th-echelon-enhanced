@@ -1,4 +1,4 @@
-//! The window's own frame, in place of the system's (0.4.8): a slim Field ops title bar with the
+//! The window's own frame, in place of the system's (0.5.0): a slim Field ops title bar with the
 //! launcher's lights and name, dragged to move the window and double-clicked to maximise it,
 //! minimise, maximise and close as square buttons on its right, and the window resized from its
 //! edges and corners. In gamescope (the Steam Deck's gaming mode) the launcher is full screen and

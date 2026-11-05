@@ -1762,7 +1762,7 @@ impl Misc for MyMisc {
     /// The player's game is closing normally (0.4.5 games, as they quit; they send no goodbye
     /// on the game connection): its connection going in the next couple of minutes is the
     /// quit, not a drop or a restart, and asks for no log (session_events::closing).
-    /// The host's game says whether its match is under way (0.4.8 plan M2): the match rooms it
+    /// The host's game says whether its match is under way (0.5.0 plan M2): the match rooms it
     /// hosts are left out of searches, the friend list's Join and JoinNow while it is.
     async fn join_never_got_in(&self, request: Request<misc::JoinNeverGotInRequest>) -> Result<Response<misc::JoinNeverGotInResponse>, Status> {
         let user_id = caller(&request)?;

@@ -156,7 +156,7 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
         // hosts one, and none of what's open is theirs to hear about.
         let steered = !invitation_search && crate::search_steer::wants_new(user_id);
         let scanned = if steered { Vec::new() } else { scanned };
-        // Nor a match with someone they've blocked in it (the 0.4.8 plan's L2): they avoid them
+        // Nor a match with someone they've blocked in it (the 0.5.0 plan's L2): they avoid them
         // without a word to anyone. An invitation goes where it was asked to.
         let blocked = if invitation_search {
             Vec::new()

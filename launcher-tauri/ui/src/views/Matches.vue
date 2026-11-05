@@ -136,9 +136,9 @@
 </template>
 
 <script setup>
-// The Matches tab (the 0.4.8 lobby browser, its own tab): every public match on the player's
+// The Matches tab (the 0.5.0 lobby browser, its own tab): every public match on the player's
 // server in full (who's in it, its state and settings), from the server's Lobbies; picked to
-// join, or watched for a seat. A server before 0.4.8 says no more than the open matches.
+// join, or watched for a seat. A server before 0.5.0 says no more than the open matches.
 import { computed, onBeforeUnmount, onMounted, ref, watch as watchRef } from 'vue';
 import { call } from '../lib/tauri.js';
 
@@ -158,7 +158,7 @@ const ready = computed(() => Boolean(props.info.game_dir && props.info.server &&
 
 async function load() {
   let got = await call('lobbies');
-  // A server before 0.4.8: the open matches as it lists them, with no one named.
+  // A server before 0.5.0: the open matches as it lists them, with no one named.
   if (got && !got.offered && !got.error) {
     const old = await call('matches');
     got = {

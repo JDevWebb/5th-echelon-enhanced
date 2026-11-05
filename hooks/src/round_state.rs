@@ -1,4 +1,4 @@
-//! Whether this game's match is under way (0.4.8 plan M2), read from the game's own match
+//! Whether this game's match is under way (0.5.0 plan M2), read from the game's own match
 //! state, and said to the server (`api::match_state`), which leaves a match its host says is
 //! under way out of searches, the friend list's Join and JoinNow.
 //!

@@ -175,7 +175,7 @@
 </template>
 
 <script setup>
-// Friends (the 0.4.8 plan's P1): one place for friends, requests both ways, finding players
+// Friends (the 0.5.0 plan's P1): one place for friends, requests both ways, finding players
 // and who's blocked, with the same words as the overlay. Remove and Block ask first; Block can
 // be undone at once.
 import { computed, defineComponent, h, nextTick, onBeforeUnmount, onMounted, ref } from 'vue';

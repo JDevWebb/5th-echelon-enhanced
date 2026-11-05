@@ -41,7 +41,7 @@ const HOST_SAYS_FOR: Duration = Duration::from_secs(90);
 #[derive(Default)]
 struct State {
     rooms: HashMap<u32, Instant>,
-    /// What the hosts' games said of their matches (0.4.8 plan M2: the round under way, read
+    /// What the hosts' games said of their matches (0.5.0 plan M2: the round under way, read
     /// from the game's own match state), and when.
     hosts: HashMap<u32, (bool, Instant)>,
     /// Which rooms each player marked when, within [`MARKS_KEPT`].

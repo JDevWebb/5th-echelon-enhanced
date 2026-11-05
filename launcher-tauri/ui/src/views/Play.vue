@@ -527,7 +527,7 @@ async function fixEverything() {
   await call('fix_everything');
 }
 
-// The Play button says whether the player can play and what pressing it does (the 0.4.8
+// The Play button says whether the player can play and what pressing it does (the 0.5.0
 // plan's P2): its label, a second line with the status, and a tone (ok, warn, fail, checking,
 // muted) that the text says too, never the colour alone. With something to fix, the button is
 // the fix; playing anyway stays in the mode menu.

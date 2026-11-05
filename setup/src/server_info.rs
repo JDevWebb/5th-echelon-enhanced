@@ -55,7 +55,7 @@ pub struct ServerInfo {
     pub coordinator: Option<String>,
     #[serde(default)]
     pub features: Vec<String>,
-    /// The network's relays, when this is its matchmaking server (servers from 0.4.8 with
+    /// The network's relays, when this is its matchmaking server (servers from 0.5.0 with
     /// `[matchmaking] network_relays`): the launcher has the game use the nearest. Entries that
     /// don't read, or aren't on a public address, are left out.
     #[serde(default, deserialize_with = "relays")]
@@ -226,11 +226,11 @@ mod tests {
     /// no launcher would have followed).
     #[test]
     fn a_relays_answer_reads() {
-        let body = r#"{"coordinator":"https://coord.example.net","coordinator_seen":29,"features":[],"host":"eu1.example.net","id":"6jjuqf7i6cbxxcss","matchmaking_seen":0,"moved_to":"match.example.net","name":"5th Echelon Enhanced","ports":{"nat":21128},"revision":"v0.4.7-193","role":"relay","version":"0.4.8"}"#;
+        let body = r#"{"coordinator":"https://coord.example.net","coordinator_seen":29,"features":[],"host":"eu1.example.net","id":"6jjuqf7i6cbxxcss","matchmaking_seen":0,"moved_to":"match.example.net","name":"5th Echelon Enhanced","ports":{"nat":21128},"revision":"v0.4.7-193","role":"relay","version":"0.5.0"}"#;
         let info = parse_json(body).unwrap();
         assert_eq!(info.moved_to.as_deref(), Some("match.example.net"));
         assert_eq!(info.ports, None);
-        assert_eq!(info.version, "0.4.8");
+        assert_eq!(info.version, "0.5.0");
     }
 
     #[test]

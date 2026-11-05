@@ -405,7 +405,7 @@ pub fn player_action(cfg: &Config, action: crate::network::PlayerAction, id: &st
     })
 }
 
-/// A player in the launcher's Friends screen (the 0.4.8 plan's P1).
+/// A player in the launcher's Friends screen (the 0.5.0 plan's P1).
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct Person {
     /// Their account id, what the friend calls take.

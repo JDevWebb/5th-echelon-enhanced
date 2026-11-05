@@ -1,4 +1,4 @@
-//! Match recordings (the 0.4.8 plan's replay research, step 1: on this PC only). While a match
+//! Match recordings (the 0.5.0 plan's replay research, step 1: on this PC only). While a match
 //! has player characters in it, every sample of them (pawns.rs, ten a second) goes to a file in
 //! the game folder's `replays`: where each is and faces, its health, whether its player holds
 //! fire, each shot its weapon's bullet history adds (from where to where), each death, each

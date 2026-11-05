@@ -1,4 +1,4 @@
-//! Witness reports (the 0.4.8 plan's F9: research, then a prototype; on for every player,
+//! Witness reports (the 0.5.0 plan's F9: research, then a prototype; on for every player,
 //! `WitnessReports = false` turns it off). Every player's game simulates every character, so
 //! each can see another player moving faster than the game allows. The characters come from
 //! pawns.rs (sampled every [`pawns::SAMPLE`]); over each second, how far each went. A jump of

@@ -1,4 +1,4 @@
-//! The round's settings as the host's game has them (the 0.4.8 plan's F4): respawn times, the
+//! The round's settings as the host's game has them (the 0.5.0 plan's F4): respawn times, the
 //! time limit, score and respawn limits, sent with its match state (`Misc.MatchState`). Each
 //! round's are noted as it starts; a change while it runs is noted with what changed, for the
 //! admins: players reported the 2013 trick of a host pushing the other team's respawn out to

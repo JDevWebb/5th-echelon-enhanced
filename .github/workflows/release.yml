@@ -75,7 +75,7 @@ jobs:
           cargo build --locked --release -p hooks --target i686-pc-windows-msvc
           dll="$PWD/target/i686-pc-windows-msvc/release/hooks.dll"
           cargo build --locked --release -p dedicated_server -p testbot -p map_geometry
-          # launcher.exe is the Tauri launcher (0.4.8), carrying the client DLL: its page,
+          # launcher.exe is the Tauri launcher (0.5.0), carrying the client DLL: its page,
           # then the program, in its own workspace.
           (cd launcher-tauri/ui && npm ci --ignore-scripts --no-audit --no-fund && npm run build)
           (cd launcher-tauri/src-tauri && HOOKS_DLL="$dll" cargo build --locked --release --features embed-dll)

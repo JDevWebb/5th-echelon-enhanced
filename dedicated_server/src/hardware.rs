@@ -1,4 +1,4 @@
-//! Players' hardware ids, hashed, as their game or launcher sent them at sign-in (the 0.4.8
+//! Players' hardware ids, hashed, as their game or launcher sent them at sign-in (the 0.5.0
 //! plan's F10): kept in memory only, never in the database, and sent with the player's roster
 //! entry to the coordinator, which keys them again with a secret of its own and refuses a PC
 //! that two of them tie to a banned player's. With them goes a hash of the network the player

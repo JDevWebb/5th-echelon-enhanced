@@ -1,4 +1,4 @@
-//! Choosing your match (the 0.4.8 plan's L2): the open public matches on the player's server,
+//! Choosing your match (the 0.5.0 plan's L2): the open public matches on the player's server,
 //! to join one they pick (the server's JoinRoom), or a brand-new public match of their own
 //! (NewMatch: their searches find nothing until they host one, so the game hosts). For players
 //! avoiding someone who sits in a public lobby. Servers that can list "choose-match" in
@@ -31,7 +31,7 @@ pub struct Row {
 /// What's open on a server.
 #[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize)]
 pub struct Matches {
-    /// The server lets players pick a match or start a new one (a server before 0.4.8 doesn't).
+    /// The server lets players pick a match or start a new one (a server before 0.5.0 doesn't).
     pub offered: bool,
     /// Whether the list could be read at all.
     pub answered: bool,
@@ -136,11 +136,11 @@ pub fn cancel_new_match(cfg: &Config) -> Result<(), String> {
     crate::flow::with_api_token(cfg, |url, token| crate::services::rt().block_on(crate::network::new_match(url, &token, false))).map(|_| ())
 }
 
-/// The Matches tab (the 0.4.8 lobby browser): every public match on the player's server in
+/// The Matches tab (the 0.5.0 lobby browser): every public match on the player's server in
 /// full, from the server's `Lobbies` (signed in; servers listing "lobbies").
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
 pub struct Lobbies {
-    /// The server offers it (a server before 0.4.8 doesn't: the tab says so).
+    /// The server offers it (a server before 0.5.0 doesn't: the tab says so).
     pub offered: bool,
     /// Whether the list could be read at all, and why not.
     pub error: Option<String>,
@@ -220,7 +220,7 @@ pub fn lobbies(cfg: &Config) -> Lobbies {
 }
 
 /// The Matches tab's list on any server: in full where the server offers it, else (a server
-/// before 0.4.8) the open matches as it lists them, with no one named.
+/// before 0.5.0) the open matches as it lists them, with no one named.
 pub fn lobbies_or_open(cfg: &Config) -> Lobbies {
     let got = lobbies(cfg);
     if got.offered || got.error.is_some() {

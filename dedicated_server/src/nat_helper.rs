@@ -99,7 +99,7 @@ fn mac(key: &[u8; 32], parts: &[&[u8]]) -> [u8; 32] {
 /// The ticket that lets `name`'s game register with the helper: handed out at
 /// sign-in (`Users.Login`), good for [`TICKET_DAYS`] days. None when the
 /// helper isn't running.
-/// With the game's session key (`key`, 0.4.8 on), the ticket names it, and only a probe signed
+/// With the game's session key (`key`, 0.5.0 on), the ticket names it, and only a probe signed
 /// with that key may use it.
 pub fn ticket_for(name: &str, key: Option<&nat_proto::SessionKey>) -> Option<nat_proto::Ticket> {
     Some(ticket_on(KEYS.get()?, name, today(), key))
@@ -139,7 +139,7 @@ fn ticket_valid(keys: &Keys, name: &str, ticket: &nat_proto::Ticket, today: u64,
 }
 
 /// Whether probes and relay passes must carry the game's session key: once every client the
-/// server lets in sends one (0.4.8 on). Until then a ticket without one works as before.
+/// server lets in sends one (0.5.0 on). Until then a ticket without one works as before.
 fn keyed_only() -> bool {
     crate::clients::minimum_at_least([0, 4, 8])
 }
@@ -236,7 +236,7 @@ const BURST_LEAST: u32 = 8;
 /// Steady sending: at least this many packets a second before the gap (the game sends 30).
 const STEADY: f64 = 10.0;
 
-/// A player's relayed sending rhythm (the 0.4.8 plan's F6): gaps after steady sending, the
+/// A player's relayed sending rhythm (the 0.5.0 plan's F6): gaps after steady sending, the
 /// bursts after them, and the longest gap, since [`Cadence::take`] last looked.
 #[derive(Debug, Clone, Default)]
 struct Cadence {
@@ -2004,7 +2004,7 @@ fn main_loop(logger: &Logger, socket: &UdpSocket, table: &Mutex<Table>, asks: &s
                 continue;
             }
             let Some(keys) = KEYS.get() else { continue };
-            // The game's session key (0.4.8 on): its ticket names it. Without one, a ticket
+            // The game's session key (0.5.0 on): its ticket names it. Without one, a ticket
             // works as before until the server takes only clients that send one.
             let session = nat_proto::key_of(data);
             let key = session.as_ref().map(|(k, _)| k);

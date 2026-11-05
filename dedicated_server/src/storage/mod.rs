@@ -1021,7 +1021,7 @@ impl Storage {
     }
 
     /// Which of `session_ids` have someone `me` blocked in them (a participant, the host among
-    /// them, or a guest): quick match leaves them out (the 0.4.8 plan's L2).
+    /// them, or a guest): quick match leaves them out (the 0.5.0 plan's L2).
     pub fn with_blocked_among(&self, me: u32, session_ids: &[u32]) -> Result<Vec<u32>> {
         if session_ids.is_empty() {
             return Ok(vec![]);

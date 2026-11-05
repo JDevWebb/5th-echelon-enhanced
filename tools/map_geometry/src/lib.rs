@@ -1,5 +1,5 @@
 //! A Spies vs Mercs map's geometry, read from the player's own copy of the game, for the 3D
-//! replay viewer (the 0.4.8 plan's replays, way 1). Nothing from the game is in this crate or
+//! replay viewer (the 0.5.0 plan's replays, way 1). Nothing from the game is in this crate or
 //! shipped with it: it reads the map files where the game is installed and writes a file of
 //! the geometry beside the person running it, who loads it into the Replay page (it stays in
 //! their browser).

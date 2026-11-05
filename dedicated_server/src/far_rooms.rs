@@ -1,4 +1,4 @@
-//! Far rooms in quick match (the 0.4.8 plan's G3): with one matchmaking server for the world, a
+//! Far rooms in quick match (the 0.5.0 plan's G3): with one matchmaking server for the world, a
 //! search finds hosts on every continent. The game QoS-pings the results and prefers the near
 //! ones (E3), but it joins a far one when nothing nearer answers, and only the first
 //! [`crate::game_session::MAX_SEARCH_RESULTS`] reach it at all. So with `[matchmaking] far_ms`
@@ -7,7 +7,7 @@
 //! a far player hosts their own match instead.
 //!
 //! The estimate, best first:
-//! - **Through the relays** (0.4.8 games): each game's sign-in carries the launcher's round trip
+//! - **Through the relays** (0.5.0 games): each game's sign-in carries the launcher's round trip
 //!   to every relay of the network ([`note_pings`]); two players who both reached a relay are at
 //!   most their two round trips to it apart, so the least over the relays both reached is how
 //!   far apart they'd play (relayed, as most do; a direct path is no longer). Measured, so it

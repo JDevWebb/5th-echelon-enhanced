@@ -1,4 +1,4 @@
-//! Match traffic captures (the 0.4.8 plan's replays, way 3: research towards replaying a
+//! Match traffic captures (the 0.5.0 plan's replays, way 3: research towards replaying a
 //! whole match in the game itself). While a match is recorded (recording.rs), every game
 //! packet on Storm's socket goes to `<recording>.fen` beside it: what this game sent to each
 //! other player and what it got from them, as the game itself sent and read them (the

@@ -5,7 +5,7 @@ export const inTauri = Boolean(tauri);
 
 const sample = {
   info: {
-    product: '5th Echelon Enhanced', release: '0.4.8-dev', game_dir: 'C:\\Games\\Splinter Cell Blacklist\\src\\SYSTEM',
+    product: '5th Echelon Enhanced', release: '0.5.0-dev', game_dir: 'C:\\Games\\Splinter Cell Blacklist\\src\\SYSTEM',
     server: 'eu1.scbl.jdevwebb.net', account: 'Kiwi', community: true, play_mode: 'play', managed: false, running: false,
     connecting: false, max_name: 24, identity: 'DNIC-JULS', beta: location.search.includes('beta') ? 1 : 0,
     name_not_allowed: location.search.includes('banners') ? 'Kiwi' : null, emulator_notice: location.search.includes('banners'),
@@ -44,9 +44,9 @@ const sample = {
   // ?whatsnew: What's new after an update in the preview.
   whats_new: location.search.includes('whatsnew')
     ? {
-      from: '0.4.6', to: '0.4.8', headlines: 3, notes: ['All release notes', 'https://github.com/JDevWebb/5th-echelon-enhanced/releases'],
+      from: '0.4.6', to: '0.5.0', headlines: 3, notes: ['All release notes', 'https://github.com/JDevWebb/5th-echelon-enhanced/releases'],
       releases: [
-        { version: '0.4.8', thanks: 'Tank, Nova and Raven', new: [{ title: 'A new launcher', text: 'Field ops: a new look, smoother and quicker.', community: false }, { title: 'Global matchmaking', text: 'Find a match across every community server.', community: true }], fixed: [['Joins no longer time out', ' on a far server.']] },
+        { version: '0.5.0', thanks: 'Tank, Nova and Raven', new: [{ title: 'A new launcher', text: 'Field ops: a new look, smoother and quicker.', community: false }, { title: 'Global matchmaking', text: 'Find a match across every community server.', community: true }], fixed: [['Joins no longer time out', ' on a far server.']] },
         { version: '0.4.7', thanks: null, new: [{ title: 'Chat answers straight away again', text: '', community: true }], fixed: [] },
       ],
     }
@@ -63,12 +63,12 @@ const sample = {
   // ?notice: a release going out in the preview.
   notice: location.search.includes('notice')
     ? {
-      heading: 'Update 0.4.8 going out', eta: '8:40 pm', text: 'Your server updates at about 8:40 pm and is back a couple of minutes later. Sydney already runs it: play there meanwhile.',
+      heading: 'Update 0.5.0 going out', eta: '8:40 pm', text: 'Your server updates at about 8:40 pm and is back a couple of minutes later. Sydney already runs it: play there meanwhile.',
       note: null, play_on: ['oceania.scbl.jdevwebb.net', 'Play on Sydney'],
       servers: [
         { place: 'Falkenstein, Germany', mine: true, version: '0.4.7', doing: 'Updates at about 8:40 pm', meter: null, tone: 'waiting' },
-        { place: 'Beauharnois, Canada', mine: false, version: '0.4.7 → 0.4.8', doing: 'Installing and restarting', meter: 0.6, tone: 'now' },
-        { place: 'Sydney, Australia', mine: false, version: '0.4.8', doing: 'Updated', meter: null, tone: 'done' },
+        { place: 'Beauharnois, Canada', mine: false, version: '0.4.7 → 0.5.0', doing: 'Installing and restarting', meter: 0.6, tone: 'now' },
+        { place: 'Sydney, Australia', mine: false, version: '0.5.0', doing: 'Updated', meter: null, tone: 'done' },
       ],
       status: 'Your server updates at 8:40 pm', blocks_play: null, every: 60,
     }
@@ -190,7 +190,7 @@ const preview = {
   roadmap: () => ({
     as_of: null, error: null,
     lanes: [
-      { id: 'shipping', title: 'Shipping', release: '0.4.8', items: [{ id: 1, title: 'The launcher in Tauri', body: 'Field ops, smoother and quicker.', tags: ['launcher'], status: 'In testing' }, { id: 2, title: 'Global matchmaking', body: 'One search across every community server.', tags: [], status: 'Building' }] },
+      { id: 'shipping', title: 'Shipping', release: '0.5.0', items: [{ id: 1, title: 'The launcher in Tauri', body: 'Field ops, smoother and quicker.', tags: ['launcher'], status: 'In testing' }, { id: 2, title: 'Global matchmaking', body: 'One search across every community server.', tags: [], status: 'Building' }] },
       { id: 'next', title: 'Next', release: '0.4.9', items: [{ id: 3, title: 'Lobby browser', body: '', tags: ['matches'], status: '' }] },
       { id: 'later', title: 'Later', release: '', items: [] },
       { id: 'requested', title: 'Requested', release: '', items: [{ id: 4, title: 'Custom maps', body: 'Brand-new Spies vs Mercs maps.', tags: [], status: '' }] },
@@ -215,9 +215,9 @@ const preview = {
     toasts: [['never', 'Never'], ['only-mentions', 'Only when they name me'], ['outside-matches', 'Outside matches'], ['always', 'Always']],
     profiles: [{ name: 'eu1', server: 'eu1.scbl.jdevwebb.net', username: 'Kiwi', current: true }, { name: 'lan', server: '192.168.1.20', username: 'Kiwi', current: false }],
     save: { path: 'C:\\Users\\Kiwi\\Documents\\5th Echelon\\1.save', no_folder: null, state: '412 300 XP', missing: false, ubisoft: null },
-    client: { state: 'Installed.', version: '0.4.8-dev', can_install: false, can_uninstall: true },
+    client: { state: 'Installed.', version: '0.5.0-dev', can_install: false, can_uninstall: true },
     hooks_all: true, hooks: [['Printer', 'Printer', false], ['Overlay', 'Overlay', true], ['Networking', 'Networking', true]], log_data_version: false,
-    send_diagnostics: true, ask_feedback: true, directory: 'https://scbl.jdevwebb.net', size: 1, size_range: [0.7, 1.6], product: '5th Echelon Enhanced', release: '0.4.8-dev',
+    send_diagnostics: true, ask_feedback: true, directory: 'https://scbl.jdevwebb.net', size: 1, size_range: [0.7, 1.6], product: '5th Echelon Enhanced', release: '0.5.0-dev',
   }),
   set: () => null,
   act: () => null,
@@ -305,7 +305,7 @@ const preview = {
   support_check: ({ text }) => (text.trim() ? null : 'Write your message first.'),
   support_send: () => null,
   ask_feedback: () => null,
-  my_suggestions: () => [{ title: 'Voice chat', line: 'In the game · 3 Oct', status: 'Planned', reply: 'On the list for after 0.4.8.' }],
+  my_suggestions: () => [{ title: 'Voice chat', line: 'In the game · 3 Oct', status: 'Planned', reply: 'On the list for after 0.5.0.' }],
   feedback_send: () => { sample.feedback = null; },
   feedback_close: () => { sample.feedback = null; },
   player_action: () => null,

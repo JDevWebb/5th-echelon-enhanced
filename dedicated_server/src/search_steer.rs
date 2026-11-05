@@ -3,7 +3,7 @@
 //! instead of joining an open one, which other players' searches then find as usual. For
 //! players avoiding someone who sits in a public lobby all day (2026-10-31).
 //!
-//! The game hosts after two empty searches (E3, the 0.4.8 plan), so the ask holds until the
+//! The game hosts after two empty searches (E3, the 0.5.0 plan), so the ask holds until the
 //! player hosts a match, or for [`FOR`] at most: an ask they never followed up never keeps
 //! them from finding matches later. Kept for at most [`MAX_PLAYERS`] players.
 

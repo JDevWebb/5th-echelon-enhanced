@@ -1,5 +1,5 @@
 //! Another server's accounts merged into this one's database (global matchmaking's move, the
-//! 0.4.8 plan's G7): every player account of the other server, by its identity. One already
+//! 0.5.0 plan's G7): every player account of the other server, by its identity. One already
 //! here (the same person on both servers) keeps its account here and gains the other's
 //! friends, blocks, bans, content and stats; one that isn't is added, with its name, password
 //! hash and identity, under a new id (and a new account id where this server has its old one).

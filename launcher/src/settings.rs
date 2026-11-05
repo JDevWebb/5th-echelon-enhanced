@@ -393,7 +393,7 @@ fn display(app: &mut App, ui: &mut egui::Ui) {
     if tauri && !crate::scale::gamescope() {
         section(ui, "Interface", |ui| {
             ui.label(theme::muted(
-                "This is the classic interface. The new one (from 0.4.8) opens instead wherever this PC can run it (never in the Steam Deck's gaming mode). Settings › Display there switches back.",
+                "This is the classic interface. The new one (from 0.5.0) opens instead wherever this PC can run it (never in the Steam Deck's gaming mode). Settings › Display there switches back.",
             ));
             let mut new = !Prefs::classic_interface();
             if theme::switch(ui, &mut new, "Switch to the new interface (from the next start)").changed() {
@@ -566,7 +566,7 @@ fn internet_play(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     }
 }
 
-/// What the game last ran with, beside the Renderer setting (the 0.4.8 plan's P3), and whether
+/// What the game last ran with, beside the Renderer setting (the 0.5.0 plan's P3), and whether
 /// it isn't what was chosen: from the add-on's note of its last start (`bl-last-run.txt`).
 pub fn renderer_note(game_dir: &std::path::Path, chosen: setup::game::GameVersion) -> Option<(String, bool)> {
     let last = hooks_config::last_run::read(game_dir)?;
@@ -585,7 +585,7 @@ pub fn renderer_note(game_dir: &std::path::Path, chosen: setup::game::GameVersio
     Some((format!("The game last ran with {ran}: {why}"), !last.launcher))
 }
 
-/// The "Start without Ubisoft Connect" switch (the 0.4.8 plan's P4): Some(true) where it's
+/// The "Start without Ubisoft Connect" switch (the 0.5.0 plan's P4): Some(true) where it's
 /// offered, Some(false) where it will be once a start through Ubisoft Connect worked on this copy
 /// (so it's for the copy the player owns), None where it means nothing (Wine and Proton start
 /// without it already).

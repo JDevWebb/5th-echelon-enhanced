@@ -67,30 +67,30 @@ message LoginRequest {
   // add-on's DLL. Servers tell the project's signed releases from other builds by it.
   // Empty from clients before 0.4.5.
   string build = 4;
-  // This PC's hardware ids, hashed (the hwid crate; 0.4.8 on): servers keep them in memory
+  // This PC's hardware ids, hashed (the hwid crate; 0.5.0 on): servers keep them in memory
   // only and pass them to the coordinator, which keys them again and refuses a PC that two of
   // them tie to a banned player's (F10).
   repeated HardwareId hardware = 5;
   // The PC is a virtual machine: its maker as its firmware names it ("VMware"), else empty.
   string vm = 6;
-  // The game's session key (Ed25519 public key, 32 bytes, made for each run; 0.4.8 on): the
+  // The game's session key (Ed25519 public key, 32 bytes, made for each run; 0.5.0 on): the
   // NAT ticket and relay pass in the answer name it, and the game signs its NAT probes with
   // it, so a copied ticket is no use without the key (nat_proto's SessionKey). Empty from
   // older clients and the launcher.
   bytes nat_key = 7;
-  // The game's renderer, as its executable shows it: "dx9" or "dx11" (0.4.8 on). Servers pass
+  // The game's renderer, as its executable shows it: "dx9" or "dx11" (0.5.0 on). Servers pass
   // it on with the game's sign-in, for the Sessions page's count of each. Empty from the
   // launcher and older clients.
   string graphics = 8;
   // The game's own files that change play (both executables, its DLLs, the script and data
-  // packages), as the add-on hashed them (0.4.8 on, report only): servers pass them on with
+  // packages), as the add-on hashed them (0.5.0 on, report only): servers pass them on with
   // the game's sign-in, and the Sessions page shows a player whose files differ from
   // everyone else's. Empty from the launcher, older clients, and a game still hashing.
   repeated GameFile files = 9;
   // The names of other files next to the game's that can change it (loose .ini overrides,
   // other DLLs and packages): names only.
   repeated string other_files = 10;
-  // The launcher's round trip to each of the network's relays at the game's start (0.4.8 on):
+  // The launcher's round trip to each of the network's relays at the game's start (0.5.0 on):
   // the matchmaking server estimates how far apart two players are from the relays they both
   // reached, nearer the truth than their places. Empty from the launcher and a game started
   // without it.

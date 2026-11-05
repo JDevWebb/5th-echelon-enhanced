@@ -12,10 +12,10 @@ use serde::Deserialize;
 use serde::Serialize;
 
 /// The community network's coordinator, the launcher's directory unless the
-/// player chose another. Its own name from 0.4.8: `scbl.jdevwebb.net` is the network's
+/// player chose another. Its own name from 0.5.0: `scbl.jdevwebb.net` is the network's
 /// matchmaking server now, the one server every player signs in to.
 pub const COMMUNITY: &str = "https://scbl-coord.jdevwebb.net";
-/// Its name from 0.4.5 to 0.4.7, behind Cloudflare: the matchmaking server's from 0.4.8 (DNS only,
+/// Its name from 0.4.5 to 0.4.7, behind Cloudflare: the matchmaking server's from 0.5.0 (DNS only,
 /// for the game's traffic). Launchers that saved it move to [`COMMUNITY`].
 pub const COMMUNITY_PREVIOUS: &str = "https://scbl.jdevwebb.net";
 /// Its name until 0.4.5, two levels deep, so Cloudflare couldn't stand in front of it (and fail
@@ -36,7 +36,7 @@ pub struct Listing {
     pub region: String,
     /// What players type to join (a host name or address).
     pub host: String,
-    /// The other names the coordinator recorded as this server's (coordinators from 0.4.8):
+    /// The other names the coordinator recorded as this server's (coordinators from 0.5.0):
     /// the matchmaking server's record among them, which launchers of a server that moved
     /// follow to.
     #[serde(default, deserialize_with = "names", skip_serializing_if = "Vec::is_empty")]
@@ -209,7 +209,7 @@ struct Helpers {
     helpers: Vec<serde_json::Value>,
 }
 
-/// The network's helpers from the coordinator's answer (coordinators from 0.4.8 list them): at
+/// The network's helpers from the coordinator's answer (coordinators from 0.5.0 list them): at
 /// most [`MAX_HELPERS`], skipping any that don't parse or aren't on a public address.
 pub fn parse_helpers(json: &str) -> Vec<Helper> {
     let helpers = match serde_json::from_str::<Helpers>(json) {
@@ -350,7 +350,7 @@ pub fn built_in(coordinator: &str) -> Vec<Listing> {
         nat: Some(21128),
         api_tls: Some(443),
     };
-    // One server since 0.4.8 (global matchmaking): every player signs in to the matchmaking
+    // One server since 0.5.0 (global matchmaking): every player signs in to the matchmaking
     // server, by its record, and plays through the relay nearest them.
     [("gbkmhlwthml6pggn", "5th Echelon Community", "Beauharnois, Canada", "scbl.jdevwebb.net")]
         .into_iter()
@@ -507,7 +507,7 @@ mod tests {
         assert_eq!(ids, ["na1", "syd"]);
         assert_eq!(helper_host(&helpers[0]), "na1.example.net");
         assert_eq!(helper_host(&helpers[1]), "5.6.7.8");
-        assert!(parse_helpers(r#"{"servers": []}"#).is_empty(), "a coordinator before 0.4.8 lists none");
+        assert!(parse_helpers(r#"{"servers": []}"#).is_empty(), "a coordinator before 0.5.0 lists none");
     }
 
     use super::*;
@@ -614,7 +614,7 @@ mod tests {
     #[test]
     fn the_community_networks_old_name_is_the_same_directory() {
         assert!(is_community(COMMUNITY) && is_community(COMMUNITY_OLD) && is_community(COMMUNITY_PREVIOUS));
-        assert!(same_directory("https://scbl.jdevwebb.net/", COMMUNITY), "its name until 0.4.8");
+        assert!(same_directory("https://scbl.jdevwebb.net/", COMMUNITY), "its name until 0.5.0");
         assert!(is_community("HTTPS://play.scbl.jdevwebb.net/ "));
         assert!(same_directory(COMMUNITY_OLD, COMMUNITY));
         assert!(!is_community("https://scbl.example.net") && !same_directory("https://a.example", COMMUNITY));
@@ -724,7 +724,7 @@ mod tests {
         assert_eq!(best(&[]), None);
     }
 
-    /// A server's other names (coordinators from 0.4.8), and an answer without them.
+    /// A server's other names (coordinators from 0.5.0), and an answer without them.
     #[test]
     fn reads_a_servers_other_names() {
         let entry = |also: &str| format!(r#"{{"id":"mm","name":"MM","host":"mm.example.net"{also}}}"#);

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Global matchmaking (the 0.4.8 plan's G1, items 5 and 7), in containers: a coordinator that
+# Global matchmaking (the 0.5.0 plan's G1, items 5 and 7), in containers: a coordinator that
 # names the network's matchmaking server, that server (signing relay passes), and a relay-only
 # server trusting its passes. Test players sign in to the matchmaking server, register at the
 # relay with their passes, and the matchmaking server gives the relay's addresses for them; the
@@ -74,7 +74,7 @@ echo "--- test players at two relays, forwarded between them"
 client "$bin/testbot" --server "$mm" --other "$syd" --third "$eu" cross-relay-forward || rc=1
 echo "--- a game without a session key (0.4.7), relayed by the matchmaking server's own helper"
 client "$bin/testbot" --server "$mm" nat-relay || rc=1
-echo "--- a keyed game (0.4.8) at the matchmaking server's own helper, with its relay pass"
+echo "--- a keyed game (0.5.0) at the matchmaking server's own helper, with its relay pass"
 client "$bin/testbot" --server "$mm" nat-key || rc=1
 echo "--- an ordinary regional server beside them: its own helper relays, and friends span it and the matchmaking server"
 client "$bin/testbot" --server "$region" nat-relay || rc=1

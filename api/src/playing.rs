@@ -37,7 +37,7 @@ pub struct Match {
     #[serde(default, skip_serializing_if = "is_zero")]
     pub mode_size: u32,
     /// Its room (session id), for joining it from the lobby browser (the API's JoinRoom); 0
-    /// from a server before 0.4.8. A search in the game hands anyone the same id.
+    /// from a server before 0.5.0. A search in the game hands anyone the same id.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub room: u32,
     /// Under way: its host's game turns joiners away until it's over.

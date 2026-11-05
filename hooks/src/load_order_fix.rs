@@ -8,7 +8,7 @@
 //! last entry, the code that moves it along (`0x450730`) sets the current entry and table to 0,
 //! and the next read's check uses them unchecked: the game reads address 0 and crashes.
 //!
-//! Since 0.4.8 umd_read_fix (PR #12, mpw) is the fix for the cause: a read the sequence can't
+//! Since 0.5.0 umd_read_fix (PR #12, mpw) is the fix for the cause: a read the sequence can't
 //! place (Play SvM skips the hub, so `PEC-Main.umd`'s reads were never recorded) gets its bytes
 //! from the UMD files, and the sync never runs off the table. This fix stays as the backstop for
 //! what umd_read_fix leaves to the game (a cursor it can't follow, a read no UMD has, or that fix

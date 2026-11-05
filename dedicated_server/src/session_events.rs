@@ -13,8 +13,8 @@
 //! Kinds, and what their detail holds:
 //! - `server_start`: `version`.
 //! - `signin`: the game signed in; `graphics` (`dx9`, `dx11`): its renderer, as its add-on said
-//!   at its sign-in to the API (0.4.8 on; left out by older ones).
-//! - `game_files`: with a game's sign-in, the game's files as its add-on hashed them (0.4.8
+//!   at its sign-in to the API (0.5.0 on; left out by older ones).
+//! - `game_files`: with a game's sign-in, the game's files as its add-on hashed them (0.5.0
 //!   on, report only): each by its name under SYSTEM ("UMDs/lobby.umd"), the first 16 hex
 //!   characters of its SHA-256; `others`: the names of other files there that can change the
 //!   game, joined.
@@ -40,14 +40,14 @@
 //!   `data_mismatch`: `data` (`mine`, `theirs`: each side's attribute 107, hex, either may be
 //!   absent) and `mine_name`, `theirs_name` (`server_api::data_versions`, null if unknown).
 //! - `match_state`: `state` (the host's game's match state: "RoundState_Started" and so on, or
-//!   "CoopMissionState_InGame"), `under_way`, `rooms` (the match rooms it hosts): from 0.4.8
+//!   "CoopMissionState_InGame"), `under_way`, `rooms` (the match rooms it hosts): from 0.5.0
 //!   games (plan M2).
 //! - `room_update`: `room`, `changes` (each attribute the host's game changed: its id, and its
 //!   old and new values, null when absent), `members` and `seats` then: which attribute moves
-//!   as a round starts (0.4.8 plan M2), and settings changed mid-match (F4).
+//!   as a round starts (0.5.0 plan M2), and settings changed mid-match (F4).
 //! - `leave`: `room`, `how` (`left`, `abandoned`, `removed` by the host: `by`; `dropped`: an
 //!   earlier game of theirs went without a word; `closed`: it went after saying it was
-//!   closing), `ended`; the host ending its match room while the match was under way (0.4.8
+//!   closing), `ended`; the host ending its match room while the match was under way (0.5.0
 //!   games): `under_way_for` (seconds since its game first said so) and `members` then (F4).
 //! - `invite`: `to`, `room` (none: unbound, the receiver finds nothing to join).
 //! - `invite_delivered`: `from`, `room`, `requested` (a join request's, `join-request`).

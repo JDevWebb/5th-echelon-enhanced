@@ -406,7 +406,7 @@ impl Coordinator {
     }
 }
 
-/// The players whose game signed in from `from` on, by the renderer it said (0.4.8 games
+/// The players whose game signed in from `from` on, by the renderer it said (0.5.0 games
 /// on): each player once, by the last one their game said, since a player can switch.
 /// `unknown` are those whose game never said (an older add-on).
 fn graphics_split(events: &[Event], from: i64) -> Value {
@@ -430,7 +430,7 @@ const EARLY_END_SECS: i64 = 120;
 const EARLY_ENDS_FLAGGED: usize = 3;
 
 /// Hosts whose matches end soon after they start (F4): the host's game ending its match room
-/// within [`EARLY_END_SECS`] of saying it was under way, with someone else in it (0.4.8 games'
+/// within [`EARLY_END_SECS`] of saying it was under way, with someone else in it (0.5.0 games'
 /// `leave`: `under_way_for`, `members`). A host quitting when losing, or breaking matches up,
 /// does it again and again: flagged on the [`EARLY_ENDS_FLAGGED`]th, once.
 fn early_ends(events: &[Event]) -> Vec<Value> {
@@ -469,7 +469,7 @@ fn early_ends(events: &[Event]) -> Vec<Value> {
 const FILES_JUDGED_FROM: usize = 10;
 const FILES_USUAL_FROM: usize = 3;
 
-/// The game's files (`game_files`, 0.4.8 on; report only): each player's latest, compared with
+/// The game's files (`game_files`, 0.5.0 on; report only): each player's latest, compared with
 /// everyone's. A hash of a file few players share, when enough players said that file, is a
 /// file that differs: an edited executable or package, a crack's DLL. Another file next to the
 /// game's (a loose `.ini` override, a DLL) is noted when few players have it. Steam and Ubisoft
@@ -853,7 +853,7 @@ fn describe(e: &Event) -> String {
         "search" => {
             let found = e.detail["found"].as_i64().unwrap_or(0);
             let hidden = other_data(e).map_or_else(String::new, |hidden| format!(" ({hidden})"));
-            // What the server left out, and why (0.4.8 servers).
+            // What the server left out, and why (0.5.0 servers).
             let left_out: Vec<String> = [("started", "under way"), ("avoided", "with someone they blocked"), ("far", "with far hosts")]
                 .iter()
                 .filter_map(|(key, why)| e.detail[*key].as_i64().filter(|n| *n > 0).map(|n| format!("{n} {why}")))
@@ -2394,7 +2394,7 @@ mod tests {
         assert!(describe(&spread[0]).starts_with("Their traffic through the relay went silent 2 times (longest 2.4 s)"));
     }
 
-    /// What a 0.4.8 server left out of a search, and why.
+    /// What a 0.5.0 server left out of a search, and why.
     #[test]
     fn searches_say_what_was_left_out() {
         let e = ev("na", 1000, 7, "Gyro", "search", json!({ "query": 8, "found": 3, "started": 1, "far": 4 }));

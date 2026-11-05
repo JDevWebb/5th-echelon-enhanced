@@ -1,4 +1,4 @@
-//! Code integrity (the 0.4.8 plan's F8, report only): whether the game's code (its executable's
+//! Code integrity (the 0.5.0 plan's F8, report only): whether the game's code (its executable's
 //! `.text`) is as the game shipped it, but for 5th Echelon's own changes. Once the game has
 //! settled ([`SETTLE`]), the code in memory is compared with the executable on disk, then every
 //! [`EVERY`] with how it was the time before. Each run of changed bytes is put down to

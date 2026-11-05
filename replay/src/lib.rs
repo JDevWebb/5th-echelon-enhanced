@@ -1,6 +1,6 @@
 //! Match recordings: what one player's game saw of a match, as the add-on reads it from the
 //! game's own objects (hooks' `pawns.rs` and `recording.rs`), for replays and cheat analysis (the
-//! 0.4.8 plan's replay research). Positions only, never anything from the game's files: a
+//! 0.5.0 plan's replay research). Positions only, never anything from the game's files: a
 //! viewer draws the map from its own copy of the game.
 //!
 //! A file is gzip around: [`MAGIC`], a version (u16), the [`Header`], then [`Record`]s, each a
@@ -428,7 +428,7 @@ mod tests {
             recorder: "Kiwi".into(),
             map: "ADV_01".into(),
             mode: "ESpyVSMercMatchManager".into(),
-            build: "0.4.8".into(),
+            build: "0.5.0".into(),
         };
         let mut records = vec![
             Record::Round {

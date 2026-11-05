@@ -1,4 +1,4 @@
--- Players' PCs (0.4.8, F10): each hardware id a player's game or launcher sent, as its hash
+-- Players' PCs (0.5.0, F10): each hardware id a player's game or launcher sent, as its hash
 -- keyed again here with the coordinator's own secret (never the value, nor the client's hash).
 -- Kept while seen in the last 180 days, for as long as a ban of the player runs, and deleted
 -- with the account.

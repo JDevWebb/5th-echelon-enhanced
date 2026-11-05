@@ -1607,7 +1607,7 @@ impl MyRenderLoop {
         self.report_players(ui);
     }
 
-    /// Report a player (the 0.4.8 plan's F5): who's in our match, or was in the last 30
+    /// Report a player (the 0.5.0 plan's F5): who's in our match, or was in the last 30
     /// minutes, each with Report; the report asks why and what happened, then goes to the
     /// network's admins with the match.
     fn report_players(&self, ui: &Ui) {
@@ -1674,7 +1674,7 @@ impl MyRenderLoop {
         }
     }
 
-    /// Choosing your match (the 0.4.8 plan's L2), on servers that offer it: a new public match
+    /// Choosing your match (the 0.5.0 plan's L2), on servers that offer it: a new public match
     /// of your own (quick match then skips every open one and you host), or one of the open
     /// public matches to join. For players avoiding someone who sits in a public lobby.
     fn choose_match(&self, ui: &Ui) {

@@ -41,7 +41,7 @@ fn network() -> std::sync::MutexGuard<'static, Vec<Relay>> {
     NETWORK.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// The network's relays from the coordinator's heartbeat answer (coordinators from 0.4.8 send
+/// The network's relays from the coordinator's heartbeat answer (coordinators from 0.5.0 send
 /// them); an answer without them leaves the last list. Only public addresses with a sane range.
 pub fn from_heartbeat(answer: &serde_json::Value) {
     links_from_heartbeat(answer);

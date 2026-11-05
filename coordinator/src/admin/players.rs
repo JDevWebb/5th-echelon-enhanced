@@ -135,7 +135,7 @@ async fn act(
     let Ok(Some(player_name)) = c.player_name(&server, id).await else {
         return fail(StatusCode::NOT_FOUND, "no such player");
     };
-    // Bans are across the network (0.4.8): every account of the identity, on every server, and
+    // Bans are across the network (0.5.0): every account of the identity, on every server, and
     // the accounts it has later (`enforce_identity_bans`). An account without an identity is
     // banned on its own.
     let network = matches!(kind, "ban" | "unban");

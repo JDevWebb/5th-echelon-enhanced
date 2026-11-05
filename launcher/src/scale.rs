@@ -5,7 +5,7 @@
 
 use eframe::egui;
 
-/// The window's first size, in points (1120x760 until 0.4.8).
+/// The window's first size, in points (1120x760 until 0.5.0).
 pub const DESIGN: egui::Vec2 = egui::vec2(1280.0, 800.0);
 pub use crate::prefs::clamp;
 pub use crate::prefs::MAX_SIZE;
@@ -24,7 +24,7 @@ pub fn gamescope() -> bool {
 
 /// The zoom for the player's `size`: the screens lay themselves out at real size for whatever
 /// window they get, with text as big as the system's scaling says (egui's points), times the
-/// player's own size. Until 0.4.8 the design was zoomed to fit the window, so a small window
+/// player's own size. Until 0.5.0 the design was zoomed to fit the window, so a small window
 /// shrank the text and a big one blew it up.
 pub fn zoom_for(size: f32) -> f32 {
     if size.is_finite() && size > 0.0 {

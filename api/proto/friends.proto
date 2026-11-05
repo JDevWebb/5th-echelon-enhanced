@@ -319,7 +319,7 @@ message Lobby {
     // How long it has been open, in seconds.
     uint32 open_secs = 7;
     // Its host's game's word for its state ("RoundState_Started", "CoopMissionState_InGame";
-    // empty from a host before 0.4.8 or before its first round), whether it's under way (joiners
+    // empty from a host before 0.5.0 or before its first round), whether it's under way (joiners
     // turned away), for how long (seconds), and how many rounds have started.
     string state = 8;
     bool under_way = 9;

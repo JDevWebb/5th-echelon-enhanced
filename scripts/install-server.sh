@@ -1326,7 +1326,7 @@ if [ -n "$coord_domain" ] && [ "${coord_dns_checked:-0}" -eq 0 ]; then
   if [ -n "$coord_cert" ] || [ -f "$COORD_CERT" ]; then check_proxied "$coord_domain"; else check_dns "$coord_domain"; fi
 fi
 # Its other names: one its Cloudflare certificate covers is proxied too, served beside it (its
-# name while launchers move to another, e.g. 0.4.8's); any other is DNS only, pointing here
+# name while launchers move to another, e.g. 0.5.0's); any other is DNS only, pointing here
 # (Caddy gets its certificate).
 for a in "${coord_aliases[@]}"; do
   if coord_cert_covers "$a" "${coord_cert:-$COORD_CERT}"; then check_proxied "$a"; else check_dns "$a"; fi
