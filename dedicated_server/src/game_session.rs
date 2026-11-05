@@ -850,11 +850,20 @@ impl GameSessionProtocolServerImpl {
     /// `user` mayn't join by JoinSession: not its host, not in it already, not in the party of
     /// a leader invited into it ([`crate::escorts::followed`]).
     fn private_match_refuses(&self, room: u32, user: u32) -> bool {
-        let Some((creator, ended, attributes)) = self.storage.room_of_failed_join(room).ok().flatten() else {
-            return false;
+        // Fails closed: a lookup that errs refuses (a room that doesn't exist has nothing to
+        // keep anyone out of). A room without attribute 113 isn't a match (a party has 1).
+        let (creator, ended, attributes) = match self.storage.room_of_failed_join(room) {
+            Ok(Some(room)) => room,
+            Ok(None) => return false,
+            Err(_) => return true,
         };
-        if ended || creator == user || attribute_value(&attributes, PROPERTY_ROOM_KIND) != Some(0) || !self.is_private_room(1, room) {
+        if ended || creator == user || attribute_value(&attributes, PROPERTY_ROOM_KIND) != Some(0) {
             return false;
+        }
+        match self.storage.is_invite_only_session(room) {
+            Ok(false) => return false,
+            Ok(true) => {}
+            Err(_) => return true,
         }
         let in_it = crate::storage::run(self.storage.is_in_session(user, room)).is_ok_and(|r| r.unwrap_or(false));
         !in_it && self.escort_admitted(room, user).is_none() && !crate::escorts::followed(room, user)
