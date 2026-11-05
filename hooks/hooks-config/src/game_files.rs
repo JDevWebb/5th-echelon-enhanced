@@ -1,4 +1,4 @@
-//! The game's files that change play, hashed (the 0.4.9 plan's D0, brought into 0.5.0; report
+//! The game's files that change play, hashed (the 0.5.1 plan's D0, brought into 0.5.0; report
 //! only), for the game's sign-in to carry to its server, so the Sessions page can show a player
 //! whose files differ from everyone else's. Shared by the launcher, which hashes them before
 //! Play is ready, and the add-on, which reads them again as the game starts (through the cache,

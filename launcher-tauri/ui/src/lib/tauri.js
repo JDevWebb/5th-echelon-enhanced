@@ -191,7 +191,7 @@ const preview = {
     as_of: null, error: null,
     lanes: [
       { id: 'shipping', title: 'Shipping', release: '0.5.0', items: [{ id: 1, title: 'The launcher in Tauri', body: 'Field ops, smoother and quicker.', tags: ['launcher'], status: 'In testing' }, { id: 2, title: 'Global matchmaking', body: 'One search across every community server.', tags: [], status: 'Building' }] },
-      { id: 'next', title: 'Next', release: '0.4.9', items: [{ id: 3, title: 'Lobby browser', body: '', tags: ['matches'], status: '' }] },
+      { id: 'next', title: 'Next', release: '0.5.1', items: [{ id: 3, title: 'Lobby browser', body: '', tags: ['matches'], status: '' }] },
       { id: 'later', title: 'Later', release: '', items: [] },
       { id: 'requested', title: 'Requested', release: '', items: [{ id: 4, title: 'Custom maps', body: 'Brand-new Spies vs Mercs maps.', tags: [], status: '' }] },
     ],
@@ -268,7 +268,7 @@ const preview = {
   follow_move: () => null,
   new_match: () => null,
   cancel_new_match: () => null,
-  update_banner: () => (location.search.includes('update') ? { version: '0.4.9', page: 'https://github.com/JDevWebb/5th-echelon-enhanced/releases', updating: false } : null),
+  update_banner: () => (location.search.includes('update') ? { version: '0.5.1', page: 'https://github.com/JDevWebb/5th-echelon-enhanced/releases', updating: false } : null),
   update_later: () => null,
   update_now: () => null,
   update_asked: () => null,

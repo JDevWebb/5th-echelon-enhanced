@@ -1,4 +1,4 @@
-//! The game's files, hashed before Play is ready (hooks_config::game_files; the 0.4.9 plan's
+//! The game's files, hashed before Play is ready (hooks_config::game_files; the 0.5.1 plan's
 //! D0 in 0.5.0, report only): the game's sign-in carries them, and the add-on reads them back
 //! through the cache in a few ms, so they're always there for its first sign-in. The first
 //! time takes a few seconds (a few hundred MB); after that only a changed file is read.

@@ -1,5 +1,5 @@
 //! The game's files that change play, hashed for the sign-in (hooks_config::game_files; the
-//! 0.4.9 plan's D0 in 0.5.0, report only). The launcher hashed them before Play was ready, so
+//! 0.5.1 plan's D0 in 0.5.0, report only). The launcher hashed them before Play was ready, so
 //! this reads its cache in a few ms; a game started without the launcher hashes them here, in
 //! the background, and a sign-in before that's done goes without (the next one carries them).
 
