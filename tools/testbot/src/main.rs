@@ -1412,7 +1412,7 @@ async fn join_now_match(ctx: &mut Ctx) -> Result<()> {
     stranger_host.disconnect().await
 }
 
-/// Choosing your match (the 0.4.8 plan's L2): "New match" makes the player's searches find
+/// Choosing your match (the 0.5.0 plan's L2): "New match" makes the player's searches find
 /// nothing until they host one, so their game starts a fresh match rather than join an open
 /// one; taken back, or once they host, searches find matches again. A public match picked from
 /// the lobby browser is joined by its room (`JoinRoom`, the requested invitation from its
@@ -3107,7 +3107,7 @@ async fn nat_key(ctx: &mut Ctx) -> Result<()> {
 /// Two players, one relayed: packets reach each other through the relay,
 /// each seeing the other at its advertised address; strangers, and packets
 /// without the right tag, get nowhere.
-/// The host's game says its match is under way (0.4.8 plan M2, from the game's own round
+/// The host's game says its match is under way (0.5.0 plan M2, from the game's own round
 /// state): searches leave the match out, and find it again once the host says it's joinable;
 /// another player saying so of a match they don't host changes nothing.
 async fn match_state(ctx: &mut Ctx) -> Result<()> {
@@ -4370,6 +4370,9 @@ async fn run() -> Result<()> {
     if args.first().map(String::as_str) == Some("friends") {
         return make_friends(server, &args[1..]).await;
     }
+    if args.first().map(String::as_str) == Some("request") {
+        return friend_request(server, &args[1..]).await;
+    }
     if args.first().map(String::as_str) == Some("unfriend") {
         return unfriend(server, &args[1..]).await;
     }
@@ -4606,6 +4609,18 @@ async fn make_friends(server: IpAddr, names: &[String]) -> Result<()> {
             println!("{} and {}: friends", a.name, b.name);
         }
     }
+    Ok(())
+}
+
+/// `request A B`: A asks B to be friends (or accepts B's request): only A signs in, so B may be
+/// an account without the test password (one a launcher made).
+async fn friend_request(server: IpAddr, names: &[String]) -> Result<()> {
+    let [a, b] = names else {
+        return Err(eyre!("request NAME NAME"));
+    };
+    let a = testbot::bot::ApiPlayer::sign_in(server, a, &account_password()?).await?;
+    let now = a.friend_change("request", b).await.map_err(|e| eyre!("{} asking {b}: {e}", a.name))?;
+    println!("{} and {b}: {now:?}", a.name);
     Ok(())
 }
 

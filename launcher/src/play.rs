@@ -2005,13 +2005,18 @@ pub(crate) enum PeopleTab {
     Blocked,
 }
 
-/// The Friends screen (the 0.4.8 plan's P1, a screen of the side menu as in the Tauri launcher):
+/// How often the Friends screen asks for the lists again while it's open.
+const PEOPLE_EVERY: Duration = Duration::from_secs(15);
+
+/// The Friends screen (the 0.5.0 plan's P1, a screen of the side menu as in the Tauri launcher):
 /// friends, requests both ways, finding players and who's blocked, with the Tauri launcher's words.
 #[derive(Default)]
 struct PeopleWindow {
     open: bool,
     tab: PeopleTab,
     lists: Slot<Result<flow::People, String>>,
+    /// When the lists were last asked for: again every [`PEOPLE_EVERY`] while the screen is open.
+    lists_at: Option<Instant>,
     shown: Option<Result<flow::People, String>>,
     query: String,
     searching: Slot<Result<Vec<flow::Person>, String>>,
@@ -2078,11 +2083,16 @@ pub fn show_friends(app: &mut App, ui: &mut egui::Ui) {
             return;
         }
         play.poll(&ctx, game, notices);
-        // The lists afresh each time the screen opens, and after every change (`poll`).
-        if !play.people.open && !play.people.lists.running() {
+        // The lists afresh each time the screen opens, after every change (`poll`), and every
+        // PEOPLE_EVERY while it's open: a request accepted on the other side showed only after
+        // leaving the screen and coming back (the gamebox, 2026-11-06).
+        let due = play.people.lists_at.is_none_or(|t| t.elapsed() >= PEOPLE_EVERY);
+        if (!play.people.open || due) && !play.people.lists.running() {
             let cfg = (*game.cfg).clone();
             play.people.lists.start(&ctx, move || flow::people(&cfg));
+            play.people.lists_at = Some(Instant::now());
         }
+        ctx.request_repaint_after(PEOPLE_EVERY);
         play.people.open = true;
         ui.add_space(6.0);
         people_page(play, game, ui);
@@ -2192,7 +2202,9 @@ fn people_page(play: &mut Play, game: &Game, ui: &mut egui::Ui) {
                         egui::TextEdit::singleline(&mut w.query)
                             .margin(egui::Margin::symmetric(8, 5))
                             .hint_text(theme::hint("A player's name"))
-                            .desired_width(260.0),
+                            .desired_width(260.0)
+                            // As tall as the Search button beside it.
+                            .min_size(egui::vec2(0.0, 38.0)),
                     );
                     let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                     if (ui.add_enabled(!w.searching.running(), theme::secondary("Search")).clicked() || enter) && !w.searching.running() {
@@ -2598,7 +2610,7 @@ pub fn show_servers(app: &mut App, ui: &mut egui::Ui) {
             poll_lookups(play, notices);
             auto_browse(play, &ctx);
             servers_page(play, game, notices, &ctx, ui);
-            // Hosting a server of your own (until 0.4.8 a screen of the side menu's).
+            // Hosting a server of your own (until 0.5.0 a screen of the side menu's).
             ui.add_space(16.0);
             theme::card().show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -3449,7 +3461,7 @@ enum MatchSort {
     Newest,
 }
 
-/// The Matches screen (the 0.4.8 lobby browser, a screen of the side menu as in the Tauri
+/// The Matches screen (the 0.5.0 lobby browser, a screen of the side menu as in the Tauri
 /// launcher): every public match on the player's server in full, the player's filters, the one
 /// picked, and the match watched for a seat (asked about every 10 s wherever the player is).
 struct MatchesPage {
