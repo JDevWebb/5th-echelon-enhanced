@@ -571,7 +571,7 @@ unsafe fn test_command(mm: usize) {
     }
     let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else { return };
     let Ok(text) = std::fs::read_to_string(&file) else { return };
-    if text.trim().starts_with("players ") || text.trim().starts_with("setting ") || text.trim() == "pawns" || text.trim() == "offsets" || text.trim() == "poke" {
+    if text.trim().starts_with("players ") || text.trim().starts_with("setting ") || text.trim() == "pawns" || text.trim() == "offsets" || text.trim() == "poke" || text.trim() == "end-round" {
         return;
     }
     let Some(id) = text.trim().strip_prefix("select ").and_then(|v| v.trim().parse::<u32>().ok()) else {

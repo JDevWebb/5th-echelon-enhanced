@@ -453,10 +453,16 @@ fn settings_of(found: &Found, object: usize) -> std::collections::BTreeMap<Strin
     out
 }
 
+/// `m_bForceEndRound`'s bitfield and bit in an adversarial match manager (test command `end-round`).
+#[cfg(feature = "test-commands")]
+const FORCE_END_ROUND_AT: usize = 852;
+#[cfg(feature = "test-commands")]
+const FORCE_END_ROUND_BIT: u32 = 1 << 27;
+
 /// The gamebox's stand-in for Cheat Engine (svm-settings; a test build only): the command file's
 /// `setting <name> <value>` written into the live match manager, as a cheat would.
 #[cfg(feature = "test-commands")]
-fn test_setting(found: &Found, object: usize) {
+fn test_setting(found: &Found, object: usize, adversarial: bool) {
     let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else {
         return;
     };
@@ -475,6 +481,19 @@ fn test_setting(found: &Found, object: usize) {
             info!("Match settings: test: offsets: {name} {at:?}");
         }
         crate::pawns::test_offsets();
+        return;
+    }
+    if text.trim() == "end-round" && adversarial {
+        let _ = std::fs::remove_file(&file);
+        // m_bForceEndRound: bit 27 of the bitfield at 852 (EAdversarialMatchManager, the offline
+        // layout), which the host's manager ends the round on: the gamebox can't play one out.
+        let at = (object + FORCE_END_ROUND_AT) as *mut u32;
+        // SAFETY: the live adversarial manager's own bitfield, read before it's written.
+        let before = read_u32(at as usize);
+        if let Some(bits) = before {
+            unsafe { at.write_unaligned(bits | FORCE_END_ROUND_BIT) };
+        }
+        info!("Match settings: test: m_bForceEndRound set (bits {before:#x?})");
         return;
     }
     let mut words = text.split_whitespace();
@@ -617,8 +636,8 @@ pub fn start() {
                 Some(meaning(adversarial, read::<u8>(object + usize::from(offset))?))
             });
             #[cfg(feature = "test-commands")]
-            if let Some((object, _)) = live {
-                test_setting(f, object);
+            if let Some((object, adversarial)) = live {
+                test_setting(f, object, adversarial);
             }
             let settings = live.map(|(object, _)| settings_of(f, object)).unwrap_or_default();
             let (state, under_way) = now.unwrap_or_else(|| ("none".to_string(), false));
