@@ -3909,11 +3909,19 @@ fn matches_page(m: &mut MatchesPage, server: Option<&str>, ready: bool, act: &mu
                                     };
                                     ui.add(egui::Label::new(RichText::new(title).family(theme::strong())).truncate());
                                     let mut under = Vec::new();
+                                    // A friend hosting is said once: "Hosted by Tank, your friend",
+                                    // not "Hosted by Tank · Tank, your friend, is in it".
+                                    let host_friend = !l.host.is_empty() && l.friends.contains(&l.host);
                                     if !l.host.is_empty() {
-                                        under.push(format!("Hosted by {}", l.host));
+                                        under.push(if host_friend {
+                                            format!("Hosted by {}, your friend", l.host)
+                                        } else {
+                                            format!("Hosted by {}", l.host)
+                                        });
                                     }
-                                    if !l.friends.is_empty() {
-                                        under.push(friend_line(&l.friends));
+                                    let others: Vec<String> = l.friends.iter().filter(|f| **f != l.host).cloned().collect();
+                                    if !others.is_empty() {
+                                        under.push(friend_line(&others));
                                     }
                                     if let Some(made) = l.made_for {
                                         under.push(format!("{} seats (made for {made})", l.seats));

@@ -51,8 +51,8 @@
                 <span class="what">
                   <b>{{ l.mode }}<template v-if="l.map"> · {{ l.map }}</template></b>
                   <small class="soft">
-                    <template v-if="l.host">Hosted by {{ l.host }}</template>
-                    <span v-if="l.friends.length" class="friend"> · {{ friendLine(l) }}</span>
+                    <template v-if="l.host">Hosted by {{ l.host }}<span v-if="l.friends.includes(l.host)" class="friend">, your friend</span></template>
+                    <span v-if="otherFriends(l).length" class="friend"> · {{ friendLine(l) }}</span>
                     <span v-if="l.made_for" class="warn"> · {{ l.seats }} seats (made for {{ l.made_for }})</span>
                   </small>
                 </span>
@@ -213,8 +213,12 @@ function pingTone(ms) {
 function initial(name) {
   return (name || '?').charAt(0).toUpperCase();
 }
+// A friend hosting is said once, in "Hosted by"; the line names the others.
+function otherFriends(l) {
+  return l.friends.filter((f) => f !== l.host);
+}
 function friendLine(l) {
-  const [first, ...rest] = l.friends;
+  const [first, ...rest] = otherFriends(l);
   return rest.length ? `${first} and ${rest.length} more of your friends are in it` : `${first}, your friend, is in it`;
 }
 function partyLine(l, p) {
