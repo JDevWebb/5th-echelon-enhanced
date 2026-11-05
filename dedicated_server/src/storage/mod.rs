@@ -2007,6 +2007,7 @@ impl Storage {
         if crate::pending_joins::together(a, b) || self.share_session(a, b)? || self.hosts_public_session(b)? {
             return Ok(true);
         }
+
         let n: i64 = run(sqlx::query_scalar(
             "SELECT (SELECT COUNT(*) FROM invites WHERE ((sender = ?1 AND receiver = ?2) OR (sender = ?2 AND receiver = ?1))
                        AND consumed_at IS NULL AND expires_at > CURRENT_TIMESTAMP)
@@ -2016,6 +2017,27 @@ impl Storage {
         .bind(b)
         .fetch_one(&self.pool))??;
         Ok(n > 0)
+    }
+
+    /// Whether one of the two is a party member following its leader into the other's private
+    /// match (escorts): its game reaches the host before it's in the room, which
+    /// [`Self::may_relay`] doesn't count (the gamebox, 2026-11-06: refused once). Apart from it,
+    /// as escorts are kept for the whole server.
+    pub fn follows_into_private(&self, sender: &str, receiver: &str) -> Result<bool> {
+        let ids: Vec<(u32, String)> = run(sqlx::query_as("SELECT id, name_key FROM users WHERE name_key IN (?, ?)")
+            .bind(sender.to_lowercase())
+            .bind(receiver.to_lowercase())
+            .fetch_all(&self.pool))??;
+        let id = |name: &str| ids.iter().find(|(_, k)| *k == name.to_lowercase()).map(|(id, _)| *id);
+        let (Some(a), Some(b)) = (id(sender), id(receiver)) else {
+            return Ok(false);
+        };
+        let follows_into = |member: u32, host: u32| {
+            crate::escorts::rooms_followed(member)
+                .into_iter()
+                .any(|room| self.session_creator(room).ok().flatten() == Some(host))
+        };
+        Ok(follows_into(a, b) || follows_into(b, a))
     }
 
     /// Whether `host` hosts a session anyone may join: one public matchmaking finds

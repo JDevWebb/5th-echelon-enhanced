@@ -846,6 +846,20 @@ impl GameSessionProtocolServerImpl {
     /// the leader is in the match, `member` is still in the party the leader hosts, and the
     /// match's host takes `member` ([`Self::host_takes`]). Anyone else in the party needs the
     /// host's own invitation.
+    /// Whether `room` is a live private match (a match room, private seats or invite-only) that
+    /// `user` mayn't join by JoinSession: not its host, not in it already, not in the party of
+    /// a leader invited into it ([`crate::escorts::followed`]).
+    fn private_match_refuses(&self, room: u32, user: u32) -> bool {
+        let Some((creator, ended, attributes)) = self.storage.room_of_failed_join(room).ok().flatten() else {
+            return false;
+        };
+        if ended || creator == user || attribute_value(&attributes, PROPERTY_ROOM_KIND) != Some(0) || !self.is_private_room(1, room) {
+            return false;
+        }
+        let in_it = crate::storage::run(self.storage.is_in_session(user, room)).is_ok_and(|r| r.unwrap_or(false));
+        !in_it && self.escort_admitted(room, user).is_none() && !crate::escorts::followed(room, user)
+    }
+
     fn escort_admitted(&self, room: u32, member: u32) -> Option<u32> {
         let leader = crate::escorts::boarded_by(room, member)?;
         let (host, participants) = self.storage.session_members(room).ok().flatten()?;
@@ -2329,6 +2343,19 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         )?;
         if invited {
             info!(logger, "User {user_id} joined session {} through an invitation", key.session_id);
+        }
+        // A private match lets in whom its host invited, who is in it already (a host
+        // migration's rejoin), and the members of an invited leader's party (escorts; the host's
+        // friends or not: a party following its leader is the party's own business). Nobody
+        // else: a game following a leader joins as a public session, with JoinSession, which
+        // used to be answered whatever, so after a lobby migration a match lobby's new host
+        // could pull its players into a private match. Refused, the game's join fails.
+        // Parties untouched.
+        if !invited && self.private_match_refuses(key.session_id, user_id) {
+            warn!(logger, "User {user_id}'s JoinSession into private match {} refused: not invited, not in it, not a party member its host takes", key.session_id);
+            // The game reports the failed join itself (ReportUnsuccessfulJoinSessions), or its
+            // add-on does: noted then.
+            return Err(Error::AccessDenied);
         }
         // Who's in it: the host never adds a guest who joins this way, so note them here, or
         // they show as in no game at all. Only a room matchmaking lists, or one they were

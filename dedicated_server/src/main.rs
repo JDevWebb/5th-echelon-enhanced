@@ -763,7 +763,7 @@ fn main() -> color_eyre::Result<()> {
             // It asks the matchmaking server (relays.rs), on the helper's pair thread.
             Box::new(|a, b| relays::ask_matchmaking(a, b))
         } else {
-            Box::new(move |a, b| match pairs.may_relay(a, b) {
+            Box::new(move |a, b| match pairs.may_relay(a, b).and_then(|ok| if ok { Ok(true) } else { pairs.follows_into_private(a, b) }) {
                 Ok(true) => Ok(()),
                 Ok(false) => Err("the server didn't put them together (no room together, no public room the receiver hosts, no invitation, not joining one)".into()),
                 Err(e) => Err(format!("the lookup failed ({e})")),

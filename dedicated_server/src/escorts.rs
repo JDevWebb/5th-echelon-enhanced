@@ -92,7 +92,9 @@ impl Escorts {
             ids
         };
         let (companions, party) = (tidy(companions), tidy(party));
-        if companions.is_empty() {
+        // Kept while the party had anyone, the host's friends or not: a member who isn't may
+        // still follow its leader in, by its game's own join ([`Escorts::followed`]).
+        if party.is_empty() {
             if self.by_leader.get(&leader).is_some_and(|b| b.room == room && now.duration_since(b.at) < BOARDING_FOR) {
                 return;
             }
@@ -127,6 +129,25 @@ impl Escorts {
 
     /// `member` came into `room`: if it is a companion of a boarding for it, it is to be asked
     /// back with its leader.
+    /// Whether `member` was in the party of a leader who boarded `room` lately: its game may
+    /// join the private match by following its leader (JoinSession), the host's friend or not.
+    /// Anyone else's JoinSession into a private match is refused: a match lobby's players
+    /// aren't pulled into one (after a lobby migration its new host leads them as a party).
+    pub fn followed(&self, room: u32, member: u32, now: Instant) -> bool {
+        self.by_leader
+            .values()
+            .any(|b| b.room == room && now.duration_since(b.at) < BOARDING_FOR && b.party.contains(&member))
+    }
+
+    /// The private matches `member` may follow its leader into now ([`Self::followed`]).
+    pub fn rooms_followed(&self, member: u32, now: Instant) -> Vec<u32> {
+        self.by_leader
+            .values()
+            .filter(|b| now.duration_since(b.at) < BOARDING_FOR && b.party.contains(&member))
+            .map(|b| b.room)
+            .collect()
+    }
+
     pub fn came(&mut self, room: u32, member: u32, now: Instant) {
         for b in self.by_leader.values_mut() {
             if b.room == room && now.duration_since(b.at) < AWAY_FOR && b.companions.contains(&member) && !b.came.contains(&member) {
@@ -181,6 +202,16 @@ pub fn board(leader: u32, room: u32, companions: &[u32], party: &[u32]) {
 /// [`Escorts::boarded_by`], now.
 pub fn boarded_by(room: u32, member: u32) -> Option<u32> {
     escorts().boarded_by(room, member, Instant::now())
+}
+
+/// [`Escorts::followed`], now.
+pub fn followed(room: u32, member: u32) -> bool {
+    escorts().followed(room, member, Instant::now())
+}
+
+/// [`Escorts::rooms_followed`], now.
+pub fn rooms_followed(member: u32) -> Vec<u32> {
+    escorts().rooms_followed(member, Instant::now())
 }
 
 /// [`Escorts::came`], now.
@@ -244,6 +275,20 @@ mod tests {
         assert!(!e.allowed(ROOM + 1, MEMBER, now), "another match isn't the one boarded");
         assert_eq!(e.boarded_by(ROOM, MEMBER, now), Some(LEADER));
         assert_eq!(e.boarded_by(ROOM, STRANGER, now), None);
+    }
+
+    #[test]
+    fn a_party_member_who_isnt_the_hosts_friend_may_follow_but_nobody_else() {
+        let now = Instant::now();
+        let mut e = Escorts::default();
+        e.board(LEADER, ROOM, &[], &[OTHER], now);
+        assert_eq!(e.boarded_by(ROOM, OTHER, now), None, "no companion: the host doesn't add them");
+        assert!(e.followed(ROOM, OTHER, now), "but they were in the leader's party");
+        assert!(!e.followed(ROOM, MEMBER, now), "someone who wasn't");
+        assert!(!e.followed(ROOM + 1, OTHER, now), "another match");
+        assert!(!e.followed(ROOM, OTHER, now + BOARDING_FOR), "stale");
+        assert_eq!(e.rooms_followed(OTHER, now), vec![ROOM]);
+        assert!(e.rooms_followed(MEMBER, now).is_empty());
     }
 
     #[test]
