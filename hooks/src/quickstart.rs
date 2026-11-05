@@ -129,6 +129,11 @@ static SUPPRESSED_AT: OnceLock<Instant> = OnceLock::new();
 /// free (the startup finished without leading anywhere, or never started), the quick start
 /// gives up and the hub travel is done after all.
 const TITLE_GIVE_UP: Duration = Duration::from_secs(30);
+/// How long the menu has to leave the title after the online startup succeeded before the quick
+/// start may give up.
+const AFTER_ONLINE_DONE: Duration = Duration::from_secs(10);
+/// When this module's online startup succeeded.
+static ONLINE_DONE_AT: OnceLock<Instant> = OnceLock::new();
 /// Ticks the wanted entry has stood in the list.
 static TARGET_SEEN: AtomicU32 = AtomicU32::new(0);
 /// The online list's ids last seen (for the log).
@@ -311,6 +316,11 @@ fn scene_start_tick(this: *mut c_void, a1: u32) {
 /// UI task runner is free: nothing more is coming.
 fn title_given_up() -> bool {
     SUPPRESSED_AT.get().is_some_and(|at| at.elapsed() >= TITLE_GIVE_UP)
+        // Not just after the startup succeeded: the task runner is free a few frames before the
+        // menu leaves the title, so a startup that took about TITLE_GIVE_UP was sent to the
+        // hub as it finished (the gamebox, 2026-11-05: "online startup done -> online menu",
+        // then 3 ms later "still on the title 30 s after ...").
+        && ONLINE_DONE_AT.get().is_none_or(|at| at.elapsed() >= AFTER_ONLINE_DONE)
         && smi_state() == Some(SMI_STATE_TITLE)
         && read_u32(exe().task_runner).filter(|&r| r != 0).and_then(|r| read_u32(r as usize + TASK_RUNNER_CURRENT)) == Some(0)
 }
@@ -426,6 +436,7 @@ fn online_result(this: *mut c_void, result: i32) {
         return;
     }
     if result == 0 {
+        let _ = ONLINE_DONE_AT.set(Instant::now());
         info!("quickstart: +{} ms online startup done -> online menu", ms());
         return;
     }
