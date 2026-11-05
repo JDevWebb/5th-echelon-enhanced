@@ -215,8 +215,12 @@ pub enum Unreachable {
     NoServer,
     /// Windows won't send the probes.
     CantSend,
-    /// The helper doesn't answer (or stopped answering): something blocks UDP to it.
+    /// The helper never answered: something blocks UDP to it (a firewall).
     NoAnswer,
+    /// The helper answered earlier and stopped: the relay (or this PC's connection) went away,
+    /// not a firewall; the game registers again by itself when it's back (the gamebox stopped
+    /// a relay mid-match, 2026-11-05: the warning blamed a firewall).
+    StoppedAnswering,
     /// The helper answers but hasn't taken this game.
     NotRegistered,
 }
@@ -235,7 +239,7 @@ fn unreachable_at(st: &State, socket_open: bool, now: Instant) -> Option<Unreach
     let quiet = since(st.last_answer);
     if st.tag != [0; 8] {
         // Registered: until the helper stops answering (it forgets the game 30 s later).
-        return quiet.is_some_and(|q| q >= SILENCE).then_some(Unreachable::NoAnswer);
+        return quiet.is_some_and(|q| q >= SILENCE).then_some(Unreachable::StoppedAnswering);
     }
     let unregistered = since(st.signed_in_at.max(st.lost_at)).unwrap_or_default();
     if unregistered < GRACE {
@@ -245,8 +249,10 @@ fn unreachable_at(st: &State, socket_open: bool, now: Instant) -> Option<Unreach
         Unreachable::NoServer
     } else if st.send_failing {
         Unreachable::CantSend
-    } else if quiet.is_none_or(|q| q >= GRACE) {
+    } else if quiet.is_none() {
         Unreachable::NoAnswer
+    } else if quiet.is_some_and(|q| q >= GRACE) {
+        Unreachable::StoppedAnswering
     } else {
         Unreachable::NotRegistered
     })
@@ -324,6 +330,7 @@ pub fn status() -> Option<String> {
                 Unreachable::NoServer => "Nobody: the NAT helper (relay) can't be found",
                 Unreachable::CantSend => "Nobody: this PC can't send to the NAT helper (relay)",
                 Unreachable::NoAnswer => "Nobody: the NAT helper (relay) doesn't hear from this PC",
+                Unreachable::StoppedAnswering => "Nobody: the NAT helper (relay) stopped answering",
                 Unreachable::NotRegistered => "Nobody yet: the relay hasn't registered this game",
             }
             .into(),
@@ -1173,6 +1180,7 @@ mod tests {
         let back = t0 + Duration::from_secs(100);
         st.lost_at = Some(back);
         assert_eq!(unreachable_at(&st, true, back + Duration::from_secs(5)), None);
+        // Its new socket was never answered (forgetting the registration forgets the answers).
         assert_eq!(unreachable_at(&st, true, back + GRACE + Duration::from_secs(1)), Some(Unreachable::NoAnswer));
     }
 
@@ -1182,8 +1190,8 @@ mod tests {
         let mut st = online(t0);
         st.tag = [7; 8];
         st.last_answer = Some(t0);
-        // The helper stops answering: three keepalives missed.
-        assert_eq!(unreachable_at(&st, true, t0 + SILENCE), Some(Unreachable::NoAnswer));
+        // The helper stops answering: three keepalives missed (the relay, not a firewall).
+        assert_eq!(unreachable_at(&st, true, t0 + SILENCE), Some(Unreachable::StoppedAnswering));
         // It answers but forgot the game: registering again takes a moment.
         let lost = t0 + Duration::from_secs(100);
         st.tag = [0; 8];

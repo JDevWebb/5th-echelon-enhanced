@@ -403,6 +403,12 @@ fn describe_unreachable(why: crate::hooks::nat::Unreachable) -> String {
                 "The server hasn't heard from the game{quiet}, so matches with other players won't connect. A firewall or antivirus may be blocking the game's UDP traffic to the server (port {port}). If it lasts, restart the game."
             )
         }
+        Unreachable::StoppedAnswering => {
+            let quiet = crate::hooks::nat::quiet_for().map(|d| format!(" {} s ago", d.as_secs())).unwrap_or_default();
+            format!(
+                "The relay stopped answering{quiet}, so other players can't join you and a match through it may have dropped. It's the relay or this PC's internet connection, not a setting: the game registers again by itself when it's back."
+            )
+        }
         Unreachable::NotRegistered => String::from("The server hasn't registered this game yet, so matches with other players won't connect. If it lasts, restart the game."),
     }
 }

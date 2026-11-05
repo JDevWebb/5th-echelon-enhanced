@@ -178,6 +178,8 @@ pub fn start() {
         info!("Code check: watching {} KB of the game's code", size / 1024);
         loop {
             std::thread::sleep(EVERY);
+            #[cfg(feature = "test-commands")]
+            test_poke(text, &before);
             let now = snapshot();
             tell(&foreign(text, &before, &now, original.as_deref(), mine), "while it ran", wine);
             before = now;
@@ -185,6 +187,30 @@ pub fn start() {
     });
     if let Err(e) = spawned {
         warn!("Code check: couldn't start ({e})");
+    }
+}
+
+/// The gamebox's `poke` command (a test build only), in place of Cheat Engine changing a byte of
+/// the game's code: one byte of padding between functions (a run of int3, never run) made a
+/// nop, written as a tool would (not through this add-on's own writes, which the check knows).
+#[cfg(feature = "test-commands")]
+fn test_poke(text: usize, code: &[u8]) {
+    let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else { return };
+    if !std::fs::read_to_string(&file).is_ok_and(|t| t.trim() == "poke") {
+        return;
+    }
+    let _ = std::fs::remove_file(&file);
+    let Some(off) = code.windows(16).position(|w| w.iter().all(|b| *b == 0xcc)).map(|o| o + 8) else {
+        warn!("Code check: test: no padding found to poke");
+        return;
+    };
+    let at = (text + off) as *mut u8;
+    // SAFETY: a padding byte of the game's code (an int3 between functions, never run), its
+    // page made writable for the write and put back.
+    let done = unsafe { region::protect_with_handle(at, 1, region::Protection::READ_WRITE_EXECUTE) }.map(|_guard| unsafe { at.write_volatile(0x90) });
+    match done {
+        Ok(()) => info!("Code check: test: poked the game's code at +{off:#x} (int3 -> nop)"),
+        Err(e) => warn!("Code check: test: couldn't poke +{off:#x} ({e})"),
     }
 }
 
