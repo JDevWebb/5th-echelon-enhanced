@@ -5,6 +5,7 @@
 #   build/build.sh server    Linux x86_64 dedicated_server and coordinator -> dist/
 #   build/build.sh linux     launcher-linux-x86_64 (DLL embedded) + dedicated_server-linux-x86_64 -> dist/
 #   build/build.sh sums      dist/SHA256SUMS for a release
+#   build/build.sh test-dll  dist/uplay_r1_loader-test.dll: the client DLL with test commands (test clients only)
 #   build/build.sh windows   launcher.exe (DLL embedded), uplay_r1_loader.dll, dedicated_server.exe, testbot.exe,
 #                            map-geometry.exe -> dist/
 #   build/build.sh bots [scenario ...]
@@ -95,6 +96,13 @@ case "${1:-test}" in
       sh -c 'cargo build -p dedicated_server -p coordinator --release --target x86_64-unknown-linux-gnu &&
         cp /target/amd64/x86_64-unknown-linux-gnu/release/dedicated_server dist/dedicated_server-linux-x86_64 &&
         cp /target/amd64/x86_64-unknown-linux-gnu/release/coordinator dist/coordinator-linux-x86_64'
+    ;;
+  test-dll)
+    # The client DLL with the test commands (hooks' test-commands feature) for test clients
+    # (the gamebox): dist/uplay_r1_loader-test.dll. Never shipped: releases build without it.
+    run -e CARGO_TARGET_DIR=/target/win-test "$IMAGE" sh -c '
+      cargo xwin build -q -p hooks --release --features test-commands --target i686-pc-windows-msvc &&
+      cp /target/win-test/i686-pc-windows-msvc/release/hooks.dll dist/uplay_r1_loader-test.dll'
     ;;
   windows)
     run -e CARGO_TARGET_DIR=/target/win "$IMAGE" sh -c '

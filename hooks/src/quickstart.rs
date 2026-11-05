@@ -133,10 +133,13 @@ const TITLE_GIVE_UP: Duration = Duration::from_secs(30);
 static TARGET_SEEN: AtomicU32 = AtomicU32::new(0);
 /// The online list's ids last seen (for the log).
 static LAST_IDS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+#[cfg(feature = "test-commands")]
 /// `test_commands` (the gamebox's copies): see [`test_command`].
 static TEST_COMMANDS: AtomicBool = AtomicBool::new(false);
+#[cfg(feature = "test-commands")]
 /// What the menus showed last with `test_commands`: (active, page, ids), for the log.
 static TEST_LAST: Mutex<Option<(u32, u32, Vec<u32>)>> = Mutex::new(None);
+#[cfg(feature = "test-commands")]
 /// When the command file was last looked for.
 static TEST_LOOKED: Mutex<Option<Instant>> = Mutex::new(None);
 
@@ -188,6 +191,7 @@ fn smi_state() -> Option<u32> {
 pub unsafe fn install(lobby: QuickStartLobby) {
     let _ = START.set(Instant::now());
     let _ = LOBBY.set(lobby);
+    #[cfg(feature = "test-commands")]
     if hooks_config::get().is_some_and(|c| c.test_commands) {
         TEST_COMMANDS.store(true, Ordering::Relaxed);
         info!("quickstart: test commands on (gamebox-command beside the log)");
@@ -446,6 +450,7 @@ fn online_result(this: *mut c_void, result: i32) {
 /// The online menu's tick (main thread): once the wanted entry stands in the list, focus it and
 /// call the menu's own "select".
 fn matchmaking_tick(this: *mut c_void, dt: f32) {
+    #[cfg(feature = "test-commands")]
     if done() && TEST_COMMANDS.load(Ordering::Relaxed) {
         // SAFETY: main thread, live SMIMatchmaking; every pointer is checked readable.
         unsafe { test_command(this as usize) };
@@ -513,6 +518,7 @@ unsafe fn choose_lobby(mm: usize, target: u32) {
     );
 }
 
+#[cfg(feature = "test-commands")]
 /// The menu's list on its current page: its column, the entries' ids, and the menu's active
 /// flag and the page (for the log).
 unsafe fn read_list(mm: usize) -> Option<(usize, Vec<u32>, u32, u32)> {
@@ -531,6 +537,7 @@ unsafe fn read_list(mm: usize) -> Option<(usize, Vec<u32>, u32, u32)> {
     Some((col, ids, active, page))
 }
 
+#[cfg(feature = "test-commands")]
 /// Test clients only (`test_commands`): logs each new state of the online menus' list, and
 /// once a second looks for `gamebox-command` beside the game's log. `select <id>` focuses the
 /// entry with that id and calls the menu's own "select", as the quick start does, then the
@@ -578,6 +585,7 @@ unsafe fn test_command(mm: usize) {
     info!("quickstart: +{} ms test: selected id {id} (entry {pos} of {ids:?})", ms());
 }
 
+#[cfg(feature = "test-commands")]
 /// Test clients only (`test_commands`): the commands for the lobby the player is in, which the
 /// menus' tick doesn't see (it runs only in the online menus). `players <n>` sets the lobby's
 /// players needed to start, as the overlay's stepper does (the same field, in the lobby's game

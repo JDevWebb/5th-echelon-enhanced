@@ -17,6 +17,9 @@ name = "hook-loader"
 forward_calls = []
 modding = ["hooks-config/modding", "hooks-addresses/modding"]
 patch-free = []
+# The gamebox's copies only (test clients, never a release): the quick start's test commands
+# (gamebox-command: select a menu entry, set the players needed to start). build.sh test-dll.
+test-commands = []
 
 [dependencies]
 anyhow = { workspace = true }

@@ -419,7 +419,8 @@ pub struct Config {
     /// Coop). See `hooks::quickstart`.
     #[serde(default, deserialize_with = "quick_start_lobby", skip_serializing_if = "Option::is_none")]
     pub quick_start_lobby: Option<QuickStartLobby>,
-    /// Test clients only (the gamebox's copies of the game): after the quick start, the online
+    /// Test clients only (the gamebox's copies of the game; a DLL built with the hooks'
+    /// `test-commands` feature, never a release's): after the quick start, the online
     /// menus' entries are logged, and a `gamebox-command` file beside the game's log
     /// (`select <id>`) selects that entry through the menu's own handler. Off for players.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
