@@ -95,6 +95,10 @@ message LoginRequest {
   // reached, nearer the truth than their places. Empty from the launcher and a game started
   // without it.
   repeated RelayPing relay_pings = 11;
+  // The game's NAT traversal is off (Nat = "Off": LAN or VPN play): it never registers with
+  // the NAT helper, so it isn't waited on, nor warned that it can't reach the relay. False
+  // from the launcher and older clients.
+  bool nat_off = 12;
 }
 
 // A round trip to one relay: its id, as the matchmaking server lists it, and milliseconds.

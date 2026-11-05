@@ -65,13 +65,15 @@ const PROBE_INTERVAL: Duration = Duration::from_millis(500);
 const KEEPALIVE: Duration = Duration::from_secs(20);
 /// How long to wait for the second port's answer before trusting the first.
 const DETECT_WAIT: Duration = Duration::from_millis(1500);
-/// How long the game's question for its public address is held for the helper's answer (it
-/// asks every 250 ms). Passed to the game's own echo sooner, the game took that answer (its
-/// unrelayed public address), stopped asking, and never heard the relay's: it advertised an
-/// address nobody could reach and every join failed (the gamebox, 2026-11-05: a relay pass and
-/// registration at a relay 0.8-1.3 s away, plus DETECT_WAIT). Past it, the game's own echo as
-/// before, said in the log.
-const ECHO_HOLD: Duration = Duration::from_secs(6);
+/// How many of the game's questions for its public address are held for the helper's answer.
+/// The game asks ten times, 250 ms apart, then gives up (the gamebox, 2026-11-06: a helper that
+/// never answered was asked 10 times in 2.3 s, and nothing after). Passed to the game's own
+/// echo at once, the game took that answer (its unrelayed public address), stopped asking, and
+/// never heard the relay's: it advertised an address nobody could reach and every join failed
+/// (2026-11-05). Held past its last ask (a 6 s hold), the game had no address at all. So the
+/// first eight are held (2 s: a helper answers in 0.1-1.3 s) and the last two go to the game's
+/// own echo, said in the log.
+const ECHO_ASKS_HELD: u32 = 8;
 
 /// This game's session key (made for each run): its public half goes with the sign-in, so the
 /// NAT ticket and relay pass name it, and the probes and pass presents are signed with it
@@ -131,9 +133,6 @@ struct State {
     nonce: u32,
     told_game: Option<SocketAddrV4>,
     echo_requests: u32,
-    /// When the game first asked for its public address (this registration): its question is
-    /// held until the helper's answer, up to [`ECHO_HOLD`].
-    first_echo: Option<Instant>,
     /// The fall back to the game's own echo was said (once per registration).
     echo_fallback_said: bool,
     /// The ticket for our name, from signing in (zeros: none yet).
@@ -181,7 +180,6 @@ static STATE: Mutex<State> = Mutex::new(State {
     nonce: 0,
     told_game: None,
     echo_requests: 0,
-    first_echo: None,
     echo_fallback_said: false,
     ticket: [0; 16],
     cookie: [0; 16],
@@ -542,7 +540,6 @@ fn forget_registration(st: &mut State) {
     st.send_failing = false;
     st.told_game = None;
     st.echo_requests = 0;
-    st.first_echo = None;
     st.echo_fallback_said = false;
     st.lost_at = Some(Instant::now());
 }
@@ -794,10 +791,9 @@ fn echo_send(engine: *mut c_void) {
     let (address, first, hold) = {
         let mut st = state();
         st.echo_requests += 1;
-        let first_echo = *st.first_echo.get_or_insert_with(Instant::now);
         // Held while the helper may still answer: NAT set up and on (Auto or Relay; not Off, nor
-        // a game whose server has no helper), and not past ECHO_HOLD.
-        let hold = matches!(st.mode, Some(NatMode::Auto | NatMode::Relay)) && first_echo.elapsed() < ECHO_HOLD;
+        // a game whose server has no helper), and not the game's last asks.
+        let hold = matches!(st.mode, Some(NatMode::Auto | NatMode::Relay)) && st.echo_requests <= ECHO_ASKS_HELD;
         (ready_address(&st), st.echo_requests == 1, hold)
     };
     if first {
@@ -806,14 +802,16 @@ fn echo_send(engine: *mut c_void) {
     let (Some(address), Some(&parse)) = (address, PARSE.get()) else {
         if hold {
             // Not known yet: the game asks again in 250 ms, and gets it then.
+            #[cfg(feature = "test-commands")]
+            info!("NAT: test: the game's ask held ({} so far)", state().echo_requests);
             return;
         }
-        // The helper hasn't answered in ECHO_HOLD: the game's own echo, as before.
+        // The helper hasn't answered in the game's first ECHO_ASKS_HELD asks: the game's own echo.
         let mut st = state();
         if !st.echo_fallback_said {
             st.echo_fallback_said = true;
             drop(st);
-            warn!("NAT: no address from the helper in {} s; the game asks the server itself", ECHO_HOLD.as_secs());
+            warn!("NAT: no address from the helper in the game's first {ECHO_ASKS_HELD} asks (2 s); the game asks the server itself");
         } else {
             drop(st);
         }

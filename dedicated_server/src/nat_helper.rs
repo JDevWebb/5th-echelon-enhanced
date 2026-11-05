@@ -1198,7 +1198,10 @@ pub fn registration(name: &str) -> Option<Option<bool>> {
     };
     match local.or_else(|| crate::relays::remote_entry(name).map(|(_, _, relayed, _)| relayed)) {
         Some(relayed) => Some(Some(relayed)),
-        None => missed().contains(&key).then_some(None),
+        // Missed, or online for a while and still not registered (a game registers in a second
+        // or two): a join failing before the 90 s warning is the relay's doing too (the gamebox,
+        // 2026-11-06: told "the host's game didn't let you in" 0.5 s before the warning).
+        None => (missed().contains(&key) || awaiting().get(&key).is_some_and(|at| at.elapsed() >= UNREGISTERED_AFTER)).then_some(None),
     }
 }
 
@@ -1512,6 +1515,9 @@ fn address_only(nonce: u32, src: SocketAddrV4, cookie: nat_proto::Cookie) -> Mes
 /// does in a second or two): one that hasn't can't be reached by anyone, relayed or direct.
 /// Not from signing in: a game in the menus has no Storm socket, so nothing to register.
 const PROBE_WITHIN: Duration = Duration::from_secs(90);
+/// Online this long and not registered, a game counts as unregistered for its failed joins'
+/// reason ([`registration`]), before the warning ([`PROBE_WITHIN`]).
+const UNREGISTERED_AFTER: Duration = Duration::from_secs(15);
 
 /// Games online and not yet probed since: when they went online, by name.
 fn awaiting() -> std::sync::MutexGuard<'static, HashMap<String, Instant>> {
@@ -1548,11 +1554,32 @@ pub fn game_signed_in(name: &str, user_id: u32) {
     }
 }
 
+/// Games whose NAT traversal is off (they said so signing in), by name: they never register,
+/// so they aren't waited on (a false 'can't reach the relay' and nat_missing, the gamebox
+/// 2026-11-06).
+fn nat_off() -> std::sync::MutexGuard<'static, std::collections::HashSet<String>> {
+    static NAT_OFF: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    NAT_OFF.get_or_init(Mutex::default).lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+/// `name`'s game signed in to the API with its NAT traversal off, or not.
+pub fn game_nat_off(name: &str, off: bool) {
+    let key = name.to_lowercase();
+    let mut all = nat_off();
+    if off {
+        if all.len() < 100_000 {
+            all.insert(key);
+        }
+    } else {
+        all.remove(&key);
+    }
+}
+
 /// `name`'s game went online (opened or joined a room): it should be registered with the
-/// helper soon (see [`PROBE_WITHIN`]).
+/// helper soon (see [`PROBE_WITHIN`]), unless its NAT traversal is off.
 pub fn game_went_online(name: &str) {
     let key = name.to_lowercase();
-    if TABLE.get().is_some() && signed_in().contains_key(&key) {
+    if TABLE.get().is_some() && signed_in().contains_key(&key) && !nat_off().contains(&key) {
         awaiting().entry(key).or_insert_with(Instant::now);
     }
 }

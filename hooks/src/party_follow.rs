@@ -390,7 +390,19 @@ fn inviter_is_private() -> bool {
         return false;
     };
     match crate::api::list_friends_within(FRIENDS_WITHIN) {
-        Ok(friends) => in_private_session(&friends, &from),
+        Ok(friends) => {
+            let private = in_private_session(&friends, &from);
+            if !private {
+                let seen = friends.iter().find(|f| f.id == from || f.username.eq_ignore_ascii_case(&from));
+                info!(
+                    "party-follow: the inviter {from} isn't in a private match by the friend list (session {:?}, invite only {:?}, private match {:?}) -> the party is left as usual",
+                    seen.map(|f| f.session_id),
+                    seen.map(|f| f.invite_only),
+                    seen.map(|f| f.private_match)
+                );
+            }
+            private
+        }
         Err(e) => {
             warn!("party-follow: couldn't look up the inviter {from} ({e}) -> the party is left as usual");
             false
@@ -401,6 +413,11 @@ fn inviter_is_private() -> bool {
 /// `FUN_00879b20`: the leader's action on its party. The UI's accept task calls it with 5, which
 /// ends the party; with members, and a private match to go to, it tells them 2 instead.
 fn leader_action(this: *mut c_void, action: i32) {
+    // Each leader action, with what the follow looks at (rare: a party's changes).
+    info!(
+        "party-follow: leader action {action}; members besides the leader: {:?}",
+        Game::get().and_then(|g| other_members(&g).map(|o| o.len()))
+    );
     if action == ACTION_SECEDE && Game::get().is_some_and(|g| leads_members(&g)) && inviter_is_private() {
         info!("party-follow: invitation into a private match accepted as the leader of a party with members -> keeping the party (leader action {ACTION_JOINING} instead of the secede)");
         unsafe { LeaderActionHook.call(this, ACTION_JOINING) };

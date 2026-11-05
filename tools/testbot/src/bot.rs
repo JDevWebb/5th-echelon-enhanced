@@ -189,6 +189,7 @@ pub async fn login_as_client(server: IpAddr, name: &str, password: &str, client:
         files: Vec::new(),
         other_files: Vec::new(),
         relay_pings: Vec::new(),
+        nat_off: false,
     });
     request
         .metadata_mut()
@@ -222,6 +223,7 @@ pub async fn api_sign_in_on_pc(
             files: Vec::new(),
             other_files: Vec::new(),
             relay_pings: Vec::new(),
+            nat_off: false,
         })
         .await?
         .into_inner())
@@ -399,6 +401,7 @@ pub async fn api_sign_in_with_key(
             files: Vec::new(),
             other_files: Vec::new(),
             relay_pings: Vec::new(),
+            nat_off: false,
         })
         .await?
         .into_inner();

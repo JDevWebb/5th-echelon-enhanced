@@ -738,6 +738,10 @@ impl Friends for MyFriends {
         let inviters: std::collections::HashSet<u32> = self.storage.pending_inviters(me).await.map_err(internal)?.into_iter().collect();
         let advertised: Vec<u32> = sessions.values().filter(|(_, invite_only, _)| *invite_only).map(|(id, _, _)| *id).collect();
         let matches: std::collections::HashSet<u32> = self.storage.matches_among_async(&advertised).await.map_err(internal)?.into_iter().collect();
+        // Hosting a private match while advertising its party (the game does): in one all the same.
+        // Only friends and inviters see a private session (`shared` below): only they are asked about.
+        let ids: Vec<u32> = friend_ids.iter().chain(inviters.iter()).copied().collect();
+        let private_hosts: std::collections::HashSet<u32> = self.storage.private_match_hosts_among_async(&ids).await.map_err(internal)?.into_iter().collect();
         let friends = people
             .into_iter()
             .map(|u| {
@@ -754,7 +758,7 @@ impl Friends for MyFriends {
                     session_id,
                     invite_only,
                     session_data,
-                    private_match: invite_only && session_id != 0 && matches.contains(&session_id),
+                    private_match: invite_only && session_id != 0 && (matches.contains(&session_id) || (shared && private_hosts.contains(&u.id))),
                 }
             })
             .collect();
@@ -1142,6 +1146,7 @@ impl Users for MyUsers {
         let graphics = request.graphics;
         let (files, other_files) = (request.files, request.other_files);
         let relay_pings = request.relay_pings;
+        let nat_off = request.nat_off;
         // Nothing costly for what can't be an account.
         if username.chars().count() > 32 || password.len() > 128 {
             return Err(Status::unauthenticated("Invalid login"));
@@ -1211,6 +1216,7 @@ impl Users for MyUsers {
             crate::clients::note_graphics(user_id, &graphics);
             crate::clients::note_files(user_id, &files, &other_files);
             crate::far_rooms::note_pings(user_id, relay_pings.iter().map(|p| (p.relay.as_str(), p.ms)));
+            crate::nat_helper::game_nat_off(&username, nat_off);
         }
         // Over TLS with the password: the game's ticket is good from this address too.
         if let Some(ip) = peer {
@@ -1758,6 +1764,19 @@ impl Misc for MyMisc {
     /// quit, not a drop or a restart, and asks for no log (session_events::closing).
     /// The host's game says whether its match is under way (0.4.8 plan M2): the match rooms it
     /// hosts are left out of searches, the friend list's Join and JoinNow while it is.
+    async fn join_never_got_in(&self, request: Request<misc::JoinNeverGotInRequest>) -> Result<Response<misc::JoinNeverGotInResponse>, Status> {
+        let user_id = caller(&request)?;
+        if !crate::rate_limit::game_requests().check(user_id) {
+            return Err(Status::resource_exhausted("Too many requests; slow down"));
+        }
+        let storage = Arc::clone(&self.storage);
+        let logger = self.logger.clone();
+        tokio::task::spawn_blocking(move || crate::game_session::join_never_got_in(&storage, &logger, user_id))
+            .await
+            .map_err(internal)?;
+        Ok(Response::new(misc::JoinNeverGotInResponse {}))
+    }
+
     async fn match_state(&self, request: Request<misc::MatchStateRequest>) -> Result<Response<misc::MatchStateResponse>, Status> {
         let user_id = caller(&request)?;
         if !crate::rate_limit::polls().check(user_id) {

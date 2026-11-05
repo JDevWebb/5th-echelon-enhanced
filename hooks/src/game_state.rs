@@ -22,6 +22,8 @@ struct State {
     saved: Option<Instant>,
     achievements: BTreeSet<usize>,
     online: Option<Online>,
+    /// The game is getting into a match: its lobby session locked, not in a match yet.
+    joining: bool,
 }
 
 static STATE: Mutex<State> = Mutex::new(State {
@@ -29,6 +31,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     saved: None,
     achievements: BTreeSet::new(),
     online: None,
+    joining: false,
 });
 
 /// The game's own view of its online sessions (read by `migration_fix`'s tick): whether its
@@ -86,7 +89,23 @@ pub fn online(now: Online) {
     }
     let first = st.online.is_none();
     st.online = Some(now);
+    // A join the game gave up on: its lobby session locked to get into a match, then unlocked
+    // (back to its own lobby) without its ever being in it. The game doesn't always report
+    // that (a connection that never came up), and the server kept the player in the room.
+    let gave_up = if now.in_match {
+        st.joining = false;
+        false
+    } else if now.lobby_session == Some(true) {
+        st.joining = true;
+        false
+    } else {
+        std::mem::take(&mut st.joining)
+    };
     drop(st);
+    if gave_up {
+        info!("Online sessions: its lobby unlocked without its getting into a match (a join given up, or a party joined); telling the server, which checks for a match it was sent to");
+        std::thread::spawn(crate::api::join_never_got_in);
+    }
     if first
         && now
             == (Online {

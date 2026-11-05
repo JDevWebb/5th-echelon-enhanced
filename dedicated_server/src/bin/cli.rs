@@ -110,6 +110,7 @@ pub fn main() -> color_eyre::Result<()> {
                     files: Vec::new(),
                     other_files: Vec::new(),
                     relay_pings: Vec::new(),
+                    nat_off: false,
                 });
                 let response = client.login(request).await?.into_inner();
                 let token = response.token;
@@ -139,6 +140,7 @@ pub fn main() -> color_eyre::Result<()> {
                     files: Vec::new(),
                     other_files: Vec::new(),
                     relay_pings: Vec::new(),
+                    nat_off: false,
                 });
                 let response = client.login(request).await?.into_inner();
                 let token = response.token;

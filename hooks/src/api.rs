@@ -314,6 +314,19 @@ pub fn report_player(id: &str, reason: &str, text: &str) -> Result<(), Error> {
     }))
 }
 
+/// Tells the server the game gave up on a join without getting into the match (game_state.rs):
+/// it takes the player out of that room and tells them why. Failures are only logged.
+pub fn join_never_got_in() {
+    let result = run(signed_in(|| async {
+        let mut client = connect!(MiscClient);
+        client.join_never_got_in(tonic::Request::new(server_api::misc::JoinNeverGotInRequest {})).await?;
+        Ok(())
+    }));
+    if let Err(e) = result {
+        tracing::warn!("Telling the server the join didn't get in failed: {e}");
+    }
+}
+
 /// Tells the server whether this game's match is under way (round_state.rs): it leaves a match
 /// its host says is under way out of searches. Failures are only logged.
 pub fn match_state(under_way: bool, state: &str, settings: &std::collections::BTreeMap<String, f32>) {
@@ -497,6 +510,7 @@ async fn login_async(username: &str, password: &str) -> Result<(), Error> {
         // The session key the NAT ticket and relay pass then name (G6).
         nat_key: crate::hooks::nat::session_key().public_key().to_vec(),
         graphics: crate::overlay::Engine::detect().map(crate::overlay::Engine::name).unwrap_or_default().into(),
+        nat_off: crate::hooks::nat::is_off(),
         // The game's files, once hashed (D0, report only); a sign-in before then goes without.
         files: crate::file_check::files()
             .map(|f| {

@@ -1985,66 +1985,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         for failed in request.unsuccessful_join_sessions.0.iter().take(taken) {
             #[allow(clippy::cast_sign_loss)]
             let code = failed.error_code as u32;
-            let reported = failed.session_key.session_id;
-            let join = match explained_just_before(user_id, code) {
-                Some(earlier) => FailedJoin::follow_up(&earlier, reported),
-                None => failed_join(&self.storage, user_id, reported, code),
-            };
-            if join.told() {
-                crate::metrics::failed_join();
-                // Its host's game turned the joiner away as under way: Join stops leading
-                // there for a while (match_started.rs). Only for the room the server just gave
-                // this player (an invitation, a search, a probe), someone else's and live: the
-                // game names any session id it likes, and a made-up report mustn't close a
-                // match to everyone's Join.
-                if code == crate::reports::LOCKED_SESSION
-                    && crate::join_targets::target(user_id, |host| self.storage.public_room_for(host, user_id).ok().flatten()) == Some(join.room)
-                {
-                    // Named, so a player making reports up can be found.
-                    if crate::match_started::refused(join.room, user_id) {
-                        info!(logger, "Match {} counts as started: {user_id} was turned away as locked", join.room);
-                    } else {
-                        warn!(logger, "{user_id} reports too many matches locked; match {} not marked started", join.room);
-                    }
-                }
-            }
-            let noted = join
-                .counts()
-                .then(|| crate::reports::join_failed(user_id, join.room, code, join.outcome, join.mismatch.clone()));
-            // The player hears why at once, in the game's overlay (not their game's own churn,
-            // nor what they were just told); one that says all there is needn't be asked about
-            // after the game.
-            if join.told() {
-                let problem = join.outcome.problem();
-                if problem.explained() {
-                    note_explained(user_id, &join);
-                }
-                let m = join.mismatch.clone().unwrap_or_default();
-                let (title, text) = server_api::notices::join_notice(
-                    problem,
-                    m.host.as_deref().unwrap_or_default(),
-                    &crate::reports::data_shown(m.mine),
-                    &crate::reports::data_shown(m.theirs),
-                );
-                crate::reports::tell(user_id, title, text, noted.filter(|_| problem.explained()));
-            }
-            crate::session_events::note(crate::session_events::Who::Id(user_id), "join_failed", join.detail(code));
-            warn!(
-                logger,
-                "Join failed: {user_id} did not get into session {} (type {}) - category {}, code {code:#010x}: {}{}{}",
-                join.room,
-                failed.session_key.type_id,
-                failed.error_category,
-                join.outcome.as_str(),
-                if join.own {
-                    ", the game's own room or one that had ended"
-                } else if join.follows {
-                    ", part of the failure just before"
-                } else {
-                    ""
-                },
-                join.reported_room.map(|r| format!(" (the game said session {r})")).unwrap_or_default()
-            );
+            note_failed_join(&self.storage, logger, user_id, failed.session_key.session_id, code, &failed.error_category, failed.session_key.type_id);
         }
         Ok(ReportUnsuccessfulJoinSessionsResponse)
     }
@@ -2608,6 +2549,117 @@ impl FailedJoin {
 
 /// Works out which room `user`'s failed join (reported against `reported`, with `code`) was
 /// for, and how it went.
+
+/// When each player's last failed join was noted (for [`join_never_got_in`]: a join the game
+/// reported itself is told once).
+fn recent_failures() -> std::sync::MutexGuard<'static, std::collections::HashMap<u32, std::time::Instant>> {
+    static RECENT: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u32, std::time::Instant>>> = std::sync::LazyLock::new(Default::default);
+    let mut recent = RECENT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if recent.len() >= 10_000 {
+        recent.retain(|_, at| at.elapsed() < JOIN_REPORTED_WITHIN);
+    }
+    recent
+}
+
+/// A failure the game reported itself within this is the one its add-on saw.
+const JOIN_REPORTED_WITHIN: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The add-on saw `user_id`'s game give up on a join without reporting it (it went back to its
+/// own lobby without getting into the match: a connection that never came up, as with a game
+/// the relay can't carry). The server kept them in the room they were sent to: listed in it,
+/// and their next Join to it refused as "isn't open any more" (the gamebox, 2026-11-06). They
+/// leave that room, only that one (the room the server last gave them, never anyone's
+/// account but their own), and hear why, as if the game had reported it. Returns the room.
+pub(crate) fn join_never_got_in(storage: &Storage, logger: &Logger, user_id: u32) -> Option<u32> {
+    let room = crate::join_targets::target(user_id, |host| storage.public_room_for(host, user_id).ok().flatten())
+        .or_else(|| crate::join_targets::searched_target(user_id, |host| storage.public_room_for(host, user_id).ok().flatten()))?;
+    // Someone else's live match only (attribute 113 is 0): a host's own match isn't left this
+    // way, and a party never is - joining one unlocks the game's lobby too, before the game is
+    // in it (the gamebox, 2026-11-06: gbox3 taken out of the party it was joining, 1.5 s early).
+    let (creator, ended, attributes) = storage.room_of_failed_join(room).ok().flatten()?;
+    if creator == user_id || ended || attribute_value(&attributes, 113) != Some(0) {
+        return None;
+    }
+    let ended = storage.leave_game_session(user_id, room).ok().flatten()?;
+    crate::escorts::left(user_id, room);
+    info!(logger, "User {user_id}'s game didn't get into session {room} (its add-on saw the join give up); out of it{}", if ended { ", which ends" } else { "" });
+    crate::session_events::note(crate::session_events::Who::Id(user_id), "leave", serde_json::json!({ "room": room, "how": "never_got_in", "ended": ended }));
+    if ended {
+        crate::session_events::room_ended(room);
+    }
+    let reported_lately = recent_failures().get(&user_id).is_some_and(|at| at.elapsed() < JOIN_REPORTED_WITHIN);
+    if !reported_lately {
+        note_failed_join(storage, logger, user_id, room, crate::reports::NEVER_GOT_IN, &"add-on", 1);
+    }
+    Some(room)
+}
+
+/// One failed join, as the game reported it (ReportUnsuccessfulJoinSessions) or as its add-on
+/// saw it (a join the game gave up on without a report, [`join_never_got_in`]): counted, marked
+/// against a match that refused it as under way, told to the player, and noted.
+pub(crate) fn note_failed_join(storage: &Storage, logger: &Logger, user_id: u32, reported: u32, code: u32, category: &dyn std::fmt::Display, type_id: u32) {
+    recent_failures().insert(user_id, std::time::Instant::now());
+    let join = match explained_just_before(user_id, code) {
+        Some(earlier) => FailedJoin::follow_up(&earlier, reported),
+        None => failed_join(storage, user_id, reported, code),
+    };
+    if join.told() {
+        crate::metrics::failed_join();
+        // Its host's game turned the joiner away as under way: Join stops leading
+        // there for a while (match_started.rs). Only for the room the server just gave
+        // this player (an invitation, a search, a probe), someone else's and live: the
+        // game names any session id it likes, and a made-up report mustn't close a
+        // match to everyone's Join.
+        if code == crate::reports::LOCKED_SESSION
+            && crate::join_targets::target(user_id, |host| storage.public_room_for(host, user_id).ok().flatten()) == Some(join.room)
+        {
+            // Named, so a player making reports up can be found.
+            if crate::match_started::refused(join.room, user_id) {
+                info!(logger, "Match {} counts as started: {user_id} was turned away as locked", join.room);
+            } else {
+                warn!(logger, "{user_id} reports too many matches locked; match {} not marked started", join.room);
+            }
+        }
+    }
+    let noted = join
+        .counts()
+        .then(|| crate::reports::join_failed(user_id, join.room, code, join.outcome, join.mismatch.clone()));
+    // The player hears why at once, in the game's overlay (not their game's own churn,
+    // nor what they were just told); one that says all there is needn't be asked about
+    // after the game.
+    if join.told() {
+        let problem = join.outcome.problem();
+        if problem.explained() {
+            note_explained(user_id, &join);
+        }
+        let m = join.mismatch.clone().unwrap_or_default();
+        let (title, text) = server_api::notices::join_notice(
+            problem,
+            m.host.as_deref().unwrap_or_default(),
+            &crate::reports::data_shown(m.mine),
+            &crate::reports::data_shown(m.theirs),
+        );
+        crate::reports::tell(user_id, title, text, noted.filter(|_| problem.explained()));
+    }
+    crate::session_events::note(crate::session_events::Who::Id(user_id), "join_failed", join.detail(code));
+    warn!(
+        logger,
+        "Join failed: {user_id} did not get into session {} (type {}) - category {}, code {code:#010x}: {}{}{}",
+        join.room,
+        type_id,
+        category,
+        join.outcome.as_str(),
+        if join.own {
+            ", the game's own room or one that had ended"
+        } else if join.follows {
+            ", part of the failure just before"
+        } else {
+            ""
+        },
+        join.reported_room.map(|r| format!(" (the game said session {r})")).unwrap_or_default()
+    );
+}
+
 fn failed_join(storage: &Storage, user: u32, reported: u32, code: u32) -> FailedJoin {
     use crate::reports::JoinOutcome;
     let outcome = JoinOutcome::of(code);

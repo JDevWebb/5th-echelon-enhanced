@@ -24,6 +24,9 @@ service Misc {
     // JoinNow leave the match it hosts out while it is. Said on each change and every 30 s
     // while under way; forgotten 90 s after the last.
     rpc MatchState(MatchStateRequest) returns (MatchStateResponse);
+    // The game gave up on a join without reporting it (back to its own lobby, never in the
+    // match): the server takes the player out of the room it sent them to, and tells them why.
+    rpc JoinNeverGotIn(JoinNeverGotInRequest) returns (JoinNeverGotInResponse);
     // Who's in the player's match now, and who they played with in the last 30 minutes: who
     // they can report (F5).
     rpc MatchPlayers(MatchPlayersRequest) returns (MatchPlayersResponse);
@@ -80,6 +83,9 @@ message FairPlayCheckRequest {
     bool wine = 4;
 }
 message FairPlayCheckResponse {}
+
+message JoinNeverGotInRequest {}
+message JoinNeverGotInResponse {}
 
 message MatchPlayersRequest {}
 message MatchPlayersResponse {

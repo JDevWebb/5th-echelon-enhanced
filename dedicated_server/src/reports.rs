@@ -33,6 +33,9 @@ const ROOM_GOING: [u32; 3] = [0x33ae_7adc, 0x546d_52c6, 0x59d6_f9cc];
 /// `TICKET_PENDING`: the join was still waiting for the host. A failure of its own, but the game
 /// also sends it straight after another for the same join (the room closing as they joined).
 pub const TICKET_PENDING: u32 = 0xca47_3b80;
+/// No code from the game: its add-on saw the join give up without a report
+/// (`game_session::join_never_got_in`); a failed join like any other ([`JoinOutcome::Failed`]).
+pub const NEVER_GOT_IN: u32 = 0;
 /// `PRIVATE_SESSION`: invite only.
 const PRIVATE_SESSION: u32 = 0xbb26_3fc5;
 /// The game's own `VERSION_MISMATCH`: the host's answer couldn't be read with this game's data.

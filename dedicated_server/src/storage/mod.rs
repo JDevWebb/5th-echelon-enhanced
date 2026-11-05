@@ -981,6 +981,27 @@ impl Storage {
         Ok(query.build_query_scalar().fetch_all(&self.pool).await?)
     }
 
+    /// Which of these players host a live private match (a match room, `113 => 0`, with private
+    /// seats only). A host's game goes on advertising its party while it hosts one (the gamebox,
+    /// 2026-11-06: gbox1 advertised party 11 while hosting private match 14), so the friend
+    /// list's private-match mark, which a party's leader goes by to take the party along, can't
+    /// come from the advertised session alone.
+    pub async fn private_match_hosts_among_async(&self, user_ids: &[u32]) -> Result<Vec<u32>> {
+        if user_ids.is_empty() {
+            return Ok(vec![]);
+        }
+        let mut query = sqlx::QueryBuilder::new(format!(
+            "SELECT DISTINCT g.creator_id FROM game_sessions g WHERE g.destroyed_at IS NULL AND {} = 0 AND {PRIVATE_SEATS_ONLY} AND g.creator_id IN (",
+            attribute_sql(113)
+        ));
+        let mut ids = query.separated(",");
+        for id in user_ids {
+            ids.push_bind(*id);
+        }
+        query.push(")");
+        Ok(query.build_query_scalar().fetch_all(&self.pool).await?)
+    }
+
     /// Which of these sessions are matches (room kind 0, `113 => 0`), not parties: the friend
     /// list tells a private match from an invite-only party by it.
     pub async fn matches_among_async(&self, session_ids: &[u32]) -> Result<Vec<u32>> {
