@@ -347,7 +347,12 @@ pub fn set_peer_names(peers: Vec<(u32, String)>) {
 }
 
 fn peer_name(peer: u8) -> Option<String> {
-    PEER_NAMES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find(|(p, _)| *p == peer).map(|(_, n)| n.clone())
+    PEER_NAMES
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(p, _)| *p == peer)
+        .map(|(_, n)| n.clone())
 }
 
 fn sample(t: &Tables, object: usize, class: &'static str) -> Option<Sample> {

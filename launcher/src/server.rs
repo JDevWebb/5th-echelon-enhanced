@@ -336,13 +336,17 @@ fn local_server(server: &mut Server, notices: &mut Notices, ctx: &egui::Context,
                 });
                 ui.end_row();
                 ui.label("Public address");
-                ui.add(egui::TextEdit::singleline(&mut server.public_ip)
-                .margin(egui::Margin::symmetric(8, 5)).hint_text(theme::hint("only behind NAT")).desired_width(260.0));
+                ui.add(
+                    egui::TextEdit::singleline(&mut server.public_ip)
+                        .margin(egui::Margin::symmetric(8, 5))
+                        .hint_text(theme::hint("only behind NAT"))
+                        .desired_width(260.0),
+                );
                 ui.end_row();
                 ui.label("Trusted subnet");
                 ui.add(
                     egui::TextEdit::singleline(&mut server.trusted_subnet)
-                .margin(egui::Margin::symmetric(8, 5))
+                        .margin(egui::Margin::symmetric(8, 5))
                         .hint_text(theme::hint("e.g. 10.8.0.0/16, the VPN players use"))
                         .desired_width(260.0),
                 )
@@ -419,11 +423,15 @@ fn manage(server: &mut Server, ctx: &egui::Context, ui: &mut egui::Ui) {
                 "Start the server above, or connect to one with the admin API on, using its key (admin-key.txt next to the server).",
             ));
             ui.horizontal(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut server.remote_api)
-                .margin(egui::Margin::symmetric(8, 5)).hint_text(theme::hint("server address")).desired_width(180.0));
+                ui.add(
+                    egui::TextEdit::singleline(&mut server.remote_api)
+                        .margin(egui::Margin::symmetric(8, 5))
+                        .hint_text(theme::hint("server address"))
+                        .desired_width(180.0),
+                );
                 ui.add(
                     egui::TextEdit::singleline(&mut server.remote_key)
-                .margin(egui::Margin::symmetric(8, 5))
+                        .margin(egui::Margin::symmetric(8, 5))
                         .hint_text(theme::hint("admin key"))
                         .password(true)
                         .desired_width(220.0),

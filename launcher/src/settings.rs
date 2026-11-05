@@ -988,8 +988,12 @@ fn servers(settings: &mut Settings, game: &mut Game, notices: &mut Notices, lock
                 let renaming_this = settings.renaming.as_ref().is_some_and(|(name, _)| *name == p.name);
                 if renaming_this {
                     if let Some((_, new_name)) = settings.renaming.as_mut() {
-                        ui.add(egui::TextEdit::singleline(new_name)
-                .margin(egui::Margin::symmetric(8, 5)).hint_text(theme::hint("new name")).desired_width(140.0));
+                        ui.add(
+                            egui::TextEdit::singleline(new_name)
+                                .margin(egui::Margin::symmetric(8, 5))
+                                .hint_text(theme::hint("new name"))
+                                .desired_width(140.0),
+                        );
                     }
                 } else {
                     ui.label(&p.user.username);
@@ -1108,7 +1112,7 @@ fn identity_section(settings: &mut Settings, accounts: usize, notices: &mut Noti
         let edited = ui
             .add(
                 egui::TextEdit::singleline(&mut settings.identity_import)
-                .margin(egui::Margin::symmetric(8, 5))
+                    .margin(egui::Margin::symmetric(8, 5))
                     .hint_text(theme::hint("5th-echelon-identity:v1:…"))
                     .password(true)
                     .desired_width(260.0),
@@ -1174,8 +1178,12 @@ fn identity_section(settings: &mut Settings, accounts: usize, notices: &mut Noti
     let editing = settings.directory.get_or_insert(saved.clone());
     ui.horizontal(|ui| {
         ui.label("Server directory");
-        ui.add(egui::TextEdit::singleline(editing)
-                .margin(egui::Margin::symmetric(8, 5)).hint_text(theme::hint("https://coordinator.example.com")).desired_width(260.0));
+        ui.add(
+            egui::TextEdit::singleline(editing)
+                .margin(egui::Margin::symmetric(8, 5))
+                .hint_text(theme::hint("https://coordinator.example.com"))
+                .desired_width(260.0),
+        );
         if *editing != saved && ui.button("Save").clicked() {
             if editing.trim().is_empty() || setup::directory::valid_coordinator(editing) {
                 crate::app::Prefs::set_directory(Some(editing.clone()));

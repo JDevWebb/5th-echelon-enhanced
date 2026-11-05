@@ -2008,7 +2008,15 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         for failed in request.unsuccessful_join_sessions.0.iter().take(taken) {
             #[allow(clippy::cast_sign_loss)]
             let code = failed.error_code as u32;
-            note_failed_join(&self.storage, logger, user_id, failed.session_key.session_id, code, &failed.error_category, failed.session_key.type_id);
+            note_failed_join(
+                &self.storage,
+                logger,
+                user_id,
+                failed.session_key.session_id,
+                code,
+                &failed.error_category,
+                failed.session_key.type_id,
+            );
         }
         Ok(ReportUnsuccessfulJoinSessionsResponse)
     }
@@ -2361,7 +2369,10 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
         // could pull its players into a private match. Refused, the game's join fails.
         // Parties untouched.
         if !invited && self.private_match_refuses(key.session_id, user_id) {
-            warn!(logger, "User {user_id}'s JoinSession into private match {} refused: not invited, not in it, not a party member its host takes", key.session_id);
+            warn!(
+                logger,
+                "User {user_id}'s JoinSession into private match {} refused: not invited, not in it, not a party member its host takes", key.session_id
+            );
             // The game reports the failed join itself (ReportUnsuccessfulJoinSessions), or its
             // add-on does: noted then.
             return Err(Error::AccessDenied);
@@ -2618,8 +2629,16 @@ pub(crate) fn join_never_got_in(storage: &Storage, logger: &Logger, user_id: u32
     }
     let ended = storage.leave_game_session(user_id, room).ok().flatten()?;
     crate::escorts::left(user_id, room);
-    info!(logger, "User {user_id}'s game didn't get into session {room} (its add-on saw the join give up); out of it{}", if ended { ", which ends" } else { "" });
-    crate::session_events::note(crate::session_events::Who::Id(user_id), "leave", serde_json::json!({ "room": room, "how": "never_got_in", "ended": ended }));
+    info!(
+        logger,
+        "User {user_id}'s game didn't get into session {room} (its add-on saw the join give up); out of it{}",
+        if ended { ", which ends" } else { "" }
+    );
+    crate::session_events::note(
+        crate::session_events::Who::Id(user_id),
+        "leave",
+        serde_json::json!({ "room": room, "how": "never_got_in", "ended": ended }),
+    );
     if ended {
         crate::session_events::room_ended(room);
     }
@@ -2646,9 +2665,7 @@ pub(crate) fn note_failed_join(storage: &Storage, logger: &Logger, user_id: u32,
         // this player (an invitation, a search, a probe), someone else's and live: the
         // game names any session id it likes, and a made-up report mustn't close a
         // match to everyone's Join.
-        if code == crate::reports::LOCKED_SESSION
-            && crate::join_targets::target(user_id, |host| storage.public_room_for(host, user_id).ok().flatten()) == Some(join.room)
-        {
+        if code == crate::reports::LOCKED_SESSION && crate::join_targets::target(user_id, |host| storage.public_room_for(host, user_id).ok().flatten()) == Some(join.room) {
             // Named, so a player making reports up can be found.
             if crate::match_started::refused(join.room, user_id) {
                 info!(logger, "Match {} counts as started: {user_id} was turned away as locked", join.room);

@@ -45,7 +45,9 @@ pub fn of(players: &[(u32, String)]) -> Vec<(u32, String)> {
     let now = Instant::now();
     let mut by_peer: HashMap<u32, Option<String>> = HashMap::new();
     for (id, name) in players {
-        let Some((peer, _)) = all.get(id).filter(|(_, at)| now.duration_since(*at) < KEPT_FOR) else { continue };
+        let Some((peer, _)) = all.get(id).filter(|(_, at)| now.duration_since(*at) < KEPT_FOR) else {
+            continue;
+        };
         by_peer.entry(*peer).and_modify(|n| *n = None).or_insert_with(|| Some(name.clone()));
     }
     let mut out: Vec<(u32, String)> = by_peer.into_iter().filter_map(|(peer, name)| Some((peer, name?))).collect();
@@ -64,7 +66,10 @@ mod tests {
         said(900_003, 0);
         said(900_004, 99);
         let room = |ids: &[u32]| ids.iter().map(|id| (*id, format!("p{id}"))).collect::<Vec<_>>();
-        assert_eq!(of(&room(&[900_001, 900_002, 900_003, 900_004, 900_005])), vec![(1, "p900001".into()), (3, "p900002".into())]);
+        assert_eq!(
+            of(&room(&[900_001, 900_002, 900_003, 900_004, 900_005])),
+            vec![(1, "p900001".into()), (3, "p900002".into())]
+        );
         // A number two players in the room claim names neither (one of them isn't telling the
         // truth); the others are still named.
         said(900_006, 3);

@@ -1840,7 +1840,11 @@ impl Misc for MyMisc {
         let peers = if r.peer == 0 || rooms.is_empty() {
             Vec::new()
         } else {
-            let rooms = self.storage.with_participants_async(rooms, crate::storage::UrlsFor::AllBut(user_id)).await.map_err(internal)?;
+            let rooms = self
+                .storage
+                .with_participants_async(rooms, crate::storage::UrlsFor::AllBut(user_id))
+                .await
+                .map_err(internal)?;
             let mut players: Vec<(u32, String)> = rooms.iter().flat_map(|s| s.participants.iter().map(|p| (p.user_id, p.name.clone()))).collect();
             players.sort();
             players.dedup();

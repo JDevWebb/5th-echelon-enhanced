@@ -353,22 +353,22 @@ pub fn built_in(coordinator: &str) -> Vec<Listing> {
     // One server since 0.4.8 (global matchmaking): every player signs in to the matchmaking
     // server, by its record, and plays through the relay nearest them.
     [("gbkmhlwthml6pggn", "5th Echelon Community", "Beauharnois, Canada", "scbl.jdevwebb.net")]
-    .into_iter()
-    .map(|(id, name, region, host)| Listing {
-        id: id.into(),
-        name: name.into(),
-        region: region.into(),
-        host: host.into(),
-        also: Vec::new(),
-        ports: Some(ports),
-        version: String::new(),
-        players_online: 0,
-        players_total: 0,
-        friends_mode: "mutual".into(),
-        maintenance: Vec::new(),
-        playing: None,
-    })
-    .collect()
+        .into_iter()
+        .map(|(id, name, region, host)| Listing {
+            id: id.into(),
+            name: name.into(),
+            region: region.into(),
+            host: host.into(),
+            also: Vec::new(),
+            ports: Some(ports),
+            version: String::new(),
+            players_online: 0,
+            players_total: 0,
+            friends_mode: "mutual".into(),
+            maintenance: Vec::new(),
+            playing: None,
+        })
+        .collect()
 }
 
 /// A directory's address as compared: trimmed, without a trailing `/`, lower case, and the
@@ -638,7 +638,11 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         // The community's servers are built in; another directory's aren't.
         let (servers, note) = fallback(Some(&dir), "https://play.scbl.jdevwebb.net/", 1000).unwrap();
-        assert_eq!(servers.iter().map(|l| l.host.as_str()).collect::<Vec<_>>(), ["scbl.jdevwebb.net"], "the matchmaking server alone");
+        assert_eq!(
+            servers.iter().map(|l| l.host.as_str()).collect::<Vec<_>>(),
+            ["scbl.jdevwebb.net"],
+            "the matchmaking server alone"
+        );
         assert!(servers.iter().all(|l| listable_host(&l.host) && l.ports.is_some()));
         assert!(note.contains("launcher knows"), "{note}");
         assert!(fallback(Some(&dir), "https://other.example.com", 1000).is_none());

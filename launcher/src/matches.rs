@@ -246,7 +246,12 @@ pub fn lobbies_or_open(cfg: &Config) -> Lobbies {
             };
             Lobby {
                 room: r.room,
-                kind: if r.mode.to_ascii_lowercase().contains("co-op") || r.mode.to_ascii_lowercase().contains("coop") { "coop" } else { "svm" }.into(),
+                kind: if r.mode.to_ascii_lowercase().contains("co-op") || r.mode.to_ascii_lowercase().contains("coop") {
+                    "coop"
+                } else {
+                    "svm"
+                }
+                .into(),
                 mode: r.mode.clone(),
                 map: r.map.clone(),
                 players,
@@ -369,7 +374,11 @@ pub fn sample() -> Lobbies {
                 open_secs: 240,
                 ping_ms: Some(48),
                 friends: vec!["Raven".into()],
-                people: vec![person("Tank", true, false, 0, 48), person("Raven", false, true, 0, 32), person("Nova", false, false, 0, 120)],
+                people: vec![
+                    person("Tank", true, false, 0, 48),
+                    person("Raven", false, true, 0, 32),
+                    person("Nova", false, false, 0, 120),
+                ],
                 settings: vec![("Rounds".into(), "3".into()), ("Time".into(), "10 min".into())],
                 ..Lobby::default()
             },
@@ -406,7 +415,12 @@ pub fn sample() -> Lobbies {
                 open_for: "1 min".into(),
                 open_secs: 60,
                 ping_ms: Some(95),
-                people: vec![person("Echo", true, false, 0, 95), person("Vex", false, false, 0, 90), person("Rook", false, false, 0, 99), person("Moss", false, false, 0, 101)],
+                people: vec![
+                    person("Echo", true, false, 0, 95),
+                    person("Vex", false, false, 0, 90),
+                    person("Rook", false, false, 0, 99),
+                    person("Moss", false, false, 0, 101),
+                ],
                 ..Lobby::default()
             },
         ],

@@ -195,7 +195,9 @@ pub fn start() {
 /// nop, written as a tool would (not through this add-on's own writes, which the check knows).
 #[cfg(feature = "test-commands")]
 fn test_poke(text: usize, code: &[u8]) {
-    let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else { return };
+    let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else {
+        return;
+    };
     if !std::fs::read_to_string(&file).is_ok_and(|t| t.trim() == "poke") {
         return;
     }

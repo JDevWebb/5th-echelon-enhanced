@@ -1605,7 +1605,11 @@ impl ApiPlayer {
     /// Signs in as the launcher does.
     pub async fn sign_in(server: IpAddr, name: &str, password: &str) -> Result<Self> {
         let (api, login) = api_sign_in(server, name, password, LAUNCHER_CLIENT).await?;
-        Ok(Self { name: name.into(), api, token: login.token })
+        Ok(Self {
+            name: name.into(),
+            api,
+            token: login.token,
+        })
     }
 
     fn authed<T>(&self, msg: T) -> tonic::Request<T> {
@@ -1633,19 +1637,28 @@ impl ApiPlayer {
 
     /// Friends as the friend list shows them: (name, online).
     pub async fn friends(&self) -> Result<Vec<(String, bool)>> {
-        let resp = FriendsClient::new(self.api.clone()).list(self.authed(server_api::friends::ListRequest {})).await?.into_inner();
+        let resp = FriendsClient::new(self.api.clone())
+            .list(self.authed(server_api::friends::ListRequest {}))
+            .await?
+            .into_inner();
         Ok(resp.friends.into_iter().map(|f| (f.username, f.is_online)).collect())
     }
 
     /// Joins a public match by its room, as the launcher's Matches tab does: the server has its
     /// host invite this player's game (which takes it by itself with AutoJoinInvite).
     pub async fn join_room(&self, room: u32) -> std::result::Result<server_api::friends::JoinNowResponse, tonic::Status> {
-        Ok(FriendsClient::new(self.api.clone()).join_room(self.authed(server_api::friends::JoinRoomRequest { room })).await?.into_inner())
+        Ok(FriendsClient::new(self.api.clone())
+            .join_room(self.authed(server_api::friends::JoinRoomRequest { room }))
+            .await?
+            .into_inner())
     }
 
     /// The public matches as the launcher's Matches tab gets them.
     pub async fn lobbies(&self) -> Result<server_api::friends::LobbiesResponse> {
-        Ok(FriendsClient::new(self.api.clone()).lobbies(self.authed(server_api::friends::LobbiesRequest {})).await?.into_inner())
+        Ok(FriendsClient::new(self.api.clone())
+            .lobbies(self.authed(server_api::friends::LobbiesRequest {}))
+            .await?
+            .into_inner())
     }
 
     /// Invites a friend (by account name) to this player's game, as the overlay's Invite does.

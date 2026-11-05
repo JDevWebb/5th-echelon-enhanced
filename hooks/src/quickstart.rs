@@ -537,7 +537,9 @@ unsafe fn read_list(mm: usize) -> Option<(usize, Vec<u32>, u32, u32)> {
     let list = read_u32(mm + MM_LIST).filter(|&l| l != 0)? as usize;
     let page = read_u32(list + LIST_PAGE)?;
     // One column per page (the online menu is page 0; Spies vs Mercs' own menu page 1).
-    let col = read_u32(list + LIST_COLUMNS).and_then(|c| read_u32(c as usize + page.min(15) as usize * 4)).filter(|&c| c != 0)? as usize;
+    let col = read_u32(list + LIST_COLUMNS)
+        .and_then(|c| read_u32(c as usize + page.min(15) as usize * 4))
+        .filter(|&c| c != 0)? as usize;
     let count = read_u32(col + COL_COUNT).unwrap_or(0).min(32) as usize;
     let items = read_u32(col + COL_ITEMS).filter(|&i| i != 0)? as usize;
     if !readable(items, count * 4) {
@@ -569,9 +571,17 @@ unsafe fn test_command(mm: usize) {
         }
         *looked = Some(Instant::now());
     }
-    let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else { return };
+    let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else {
+        return;
+    };
     let Ok(text) = std::fs::read_to_string(&file) else { return };
-    if text.trim().starts_with("players ") || text.trim().starts_with("setting ") || text.trim() == "pawns" || text.trim() == "offsets" || text.trim() == "poke" || text.trim() == "end-round" {
+    if text.trim().starts_with("players ")
+        || text.trim().starts_with("setting ")
+        || text.trim() == "pawns"
+        || text.trim() == "offsets"
+        || text.trim() == "poke"
+        || text.trim() == "end-round"
+    {
         return;
     }
     let Some(id) = text.trim().strip_prefix("select ").and_then(|v| v.trim().parse::<u32>().ok()) else {
@@ -605,11 +615,22 @@ unsafe fn test_command(mm: usize) {
 fn lobby_commands() {
     loop {
         std::thread::sleep(Duration::from_secs(1));
-        let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else { continue };
+        let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else {
+            continue;
+        };
         let Ok(text) = std::fs::read_to_string(&file) else { continue };
-        let Some(n) = text.trim().strip_prefix("players ").and_then(|v| v.trim().parse::<i32>().ok()).filter(|n| (1..=16).contains(n)) else { continue };
+        let Some(n) = text
+            .trim()
+            .strip_prefix("players ")
+            .and_then(|v| v.trim().parse::<i32>().ok())
+            .filter(|n| (1..=16).contains(n))
+        else {
+            continue;
+        };
         // SAFETY: the overlay's own accessor; null outside a lobby.
-        let Some(min) = (unsafe { crate::overlay::get_min_players_var().as_mut() }) else { continue };
+        let Some(min) = (unsafe { crate::overlay::get_min_players_var().as_mut() }) else {
+            continue;
+        };
         let before = *min;
         *min = n;
         let _ = std::fs::remove_file(&file);

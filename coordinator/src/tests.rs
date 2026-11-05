@@ -198,11 +198,14 @@ async fn the_directory_lists_the_matchmaking_servers_other_names() {
         Some(beat("mm.example.net", &["match.example.net", "203.0.113.7", "box.lan", "router.local"])),
     )
     .await;
-    t.call("POST", "/v1/heartbeat", Some(&relay), Some(beat("eu1.example.net", &["match.example.net", "evil.example.org"])))
-        .await;
-    let also = |v: &Value, id: &str| {
-        v["servers"].as_array().unwrap().iter().find(|s| s["id"] == id).map(|s| s["also"].clone()).unwrap()
-    };
+    t.call(
+        "POST",
+        "/v1/heartbeat",
+        Some(&relay),
+        Some(beat("eu1.example.net", &["match.example.net", "evil.example.org"])),
+    )
+    .await;
+    let also = |v: &Value, id: &str| v["servers"].as_array().unwrap().iter().find(|s| s["id"] == id).map(|s| s["also"].clone()).unwrap();
     let (_, v) = t.call("GET", "/v1/servers", None, None).await;
     assert_eq!(also(&v, "mm"), Value::Null, "no matchmaking server named yet: {v}");
     t.c.set_matchmaking_server("mm");

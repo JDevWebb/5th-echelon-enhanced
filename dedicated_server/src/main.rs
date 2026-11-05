@@ -96,6 +96,7 @@ mod nat_traversal;
 mod overlord_challenge;
 mod overlord_core;
 mod overlord_news;
+mod peer_names;
 mod pending_joins;
 mod player_reports;
 mod player_stats;
@@ -109,7 +110,6 @@ mod recordings;
 mod relay_pass;
 mod relays;
 mod reports;
-mod peer_names;
 mod round_settings;
 mod search_steer;
 mod secure;
@@ -763,11 +763,13 @@ fn main() -> color_eyre::Result<()> {
             // It asks the matchmaking server (relays.rs), on the helper's pair thread.
             Box::new(|a, b| relays::ask_matchmaking(a, b))
         } else {
-            Box::new(move |a, b| match pairs.may_relay(a, b).and_then(|ok| if ok { Ok(true) } else { pairs.follows_into_private(a, b) }) {
-                Ok(true) => Ok(()),
-                Ok(false) => Err("the server didn't put them together (no room together, no public room the receiver hosts, no invitation, not joining one)".into()),
-                Err(e) => Err(format!("the lookup failed ({e})")),
-            })
+            Box::new(
+                move |a, b| match pairs.may_relay(a, b).and_then(|ok| if ok { Ok(true) } else { pairs.follows_into_private(a, b) }) {
+                    Ok(true) => Ok(()),
+                    Ok(false) => Err("the server didn't put them together (no room together, no public room the receiver hosts, no invitation, not joining one)".into()),
+                    Err(e) => Err(format!("the lookup failed ({e})")),
+                },
+            )
         };
         match nat_helper::start(&logger.new(o!("service" => "nat")), nat, relay_ip, may_relay) {
             Ok(t) => threads.extend(t),
@@ -842,7 +844,10 @@ fn main() -> color_eyre::Result<()> {
             listed_as
         } else {
             if !listed_as.is_empty() {
-                warn!(logger, "[federation] listed_as = {listed_as:?} isn't one of this server's names ([public] host or aliases): listed by {own}");
+                warn!(
+                    logger,
+                    "[federation] listed_as = {listed_as:?} isn't one of this server's names ([public] host or aliases): listed by {own}"
+                );
             }
             own
         };

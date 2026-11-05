@@ -2753,9 +2753,17 @@ mod tests {
         ];
         let relay: SocketAddrV4 = "139.99.73.120:40000".parse().unwrap();
         let home: std::net::IpAddr = "114.23.110.139".parse().unwrap();
-        assert_eq!(without_local_when_relayed(urls.clone(), relay, home), urls[..1].to_vec(), "relayed: the relay's address alone");
+        assert_eq!(
+            without_local_when_relayed(urls.clone(), relay, home),
+            urls[..1].to_vec(),
+            "relayed: the relay's address alone"
+        );
         let direct: SocketAddrV4 = "114.23.110.139:13000".parse().unwrap();
-        assert_eq!(without_local_when_relayed(urls.clone(), direct, home), urls, "reached directly: the local one kept, for LAN play");
+        assert_eq!(
+            without_local_when_relayed(urls.clone(), direct, home),
+            urls,
+            "reached directly: the local one kept, for LAN play"
+        );
     }
 
     #[test]

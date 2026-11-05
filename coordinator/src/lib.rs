@@ -1813,7 +1813,9 @@ fn public_name(name: &str) -> bool {
     name.parse::<std::net::IpAddr>().is_err()
         && name.contains('.')
         && name.len() <= 253
-        && name.split('.').all(|l| !l.is_empty() && l.len() <= 63 && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
+        && name
+            .split('.')
+            .all(|l| !l.is_empty() && l.len() <= 63 && l.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-'))
         && !name.rsplit('.').next().is_some_and(|tld| tld.bytes().all(|b| b.is_ascii_digit()))
         && ![".local", ".lan", ".home", ".internal", ".localhost", ".localdomain", ".home.arpa", ".test", ".invalid"]
             .iter()
@@ -1853,7 +1855,11 @@ async fn servers(State(c): State<Shared>, ConnectInfo(peer): ConnectInfo<std::ne
     // aren't vouched for (a member could otherwise claim a name it controls and send its
     // players there). Only public domain names: no addresses, no local names.
     let mm_names: Vec<String> = match c.matchmaking_server.get() {
-        Some(mm) => match sqlx::query_scalar::<_, String>("SELECT name FROM server_names WHERE server_id = ?").bind(mm).fetch_all(&c.pool).await {
+        Some(mm) => match sqlx::query_scalar::<_, String>("SELECT name FROM server_names WHERE server_id = ?")
+            .bind(mm)
+            .fetch_all(&c.pool)
+            .await
+        {
             Ok(names) => names.into_iter().filter(|n| public_name(n)).collect(),
             Err(e) => return internal(e),
         },

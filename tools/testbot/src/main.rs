@@ -4583,7 +4583,11 @@ async fn make_friends(server: IpAddr, names: &[String]) -> Result<()> {
     let password = account_password()?;
     let mut players = Vec::new();
     for name in names {
-        players.push(testbot::bot::ApiPlayer::sign_in(server, name, &password).await.wrap_err_with(|| format!("signing in as {name}"))?);
+        players.push(
+            testbot::bot::ApiPlayer::sign_in(server, name, &password)
+                .await
+                .wrap_err_with(|| format!("signing in as {name}"))?,
+        );
     }
     for (i, a) in players.iter().enumerate() {
         let theirs = a.friends().await?;
@@ -4593,7 +4597,11 @@ async fn make_friends(server: IpAddr, names: &[String]) -> Result<()> {
                 continue;
             }
             let sent = a.friend_change("request", &b.name).await.map_err(|e| eyre!("{} asking {}: {e}", a.name, b.name))?;
-            let now = if sent == Relation::Friend { sent } else { b.friend_change("accept", &a.name).await.map_err(|e| eyre!("{} accepting {}: {e}", b.name, a.name))? };
+            let now = if sent == Relation::Friend {
+                sent
+            } else {
+                b.friend_change("accept", &a.name).await.map_err(|e| eyre!("{} accepting {}: {e}", b.name, a.name))?
+            };
             ensure!(now == Relation::Friend, "{} and {}: {now:?}, not friends", a.name, b.name);
             println!("{} and {}: friends", a.name, b.name);
         }
@@ -4648,14 +4656,35 @@ async fn show_lobbies(server: IpAddr, names: &[String]) -> Result<()> {
         let players: Vec<String> = l
             .players
             .iter()
-            .map(|p| format!("{}{}{}{}", if p.host { "H:" } else { "" }, p.name, if p.team.is_empty() { String::new() } else { format!("/{}", p.team) }, if p.party > 0 { format!(" (party {})", p.party) } else { String::new() }))
+            .map(|p| {
+                format!(
+                    "{}{}{}{}",
+                    if p.host { "H:" } else { "" },
+                    p.name,
+                    if p.team.is_empty() { String::new() } else { format!("/{}", p.team) },
+                    if p.party > 0 { format!(" (party {})", p.party) } else { String::new() }
+                )
+            })
             .collect();
         println!(
             "room {} {} mode {} map {} seats {}/{} open {}s state {:?}{} round {}: {}",
-            l.room, l.kind, l.game_mode, l.map, l.players.len(), l.seats, l.open_secs, l.state, if l.under_way { format!(" under way {}s", l.under_way_secs) } else { String::new() }, l.round, players.join(", ")
+            l.room,
+            l.kind,
+            l.game_mode,
+            l.map,
+            l.players.len(),
+            l.seats,
+            l.open_secs,
+            l.state,
+            if l.under_way { format!(" under way {}s", l.under_way_secs) } else { String::new() },
+            l.round,
+            players.join(", ")
         );
     }
-    println!("left out: {} blocked, {} private matches ({} players), {} in parties", resp.hidden_blocked, resp.private_matches, resp.private_players, resp.party_players);
+    println!(
+        "left out: {} blocked, {} private matches ({} players), {} in parties",
+        resp.hidden_blocked, resp.private_matches, resp.private_players, resp.party_players
+    );
     Ok(())
 }
 

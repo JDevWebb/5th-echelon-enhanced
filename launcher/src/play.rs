@@ -808,7 +808,7 @@ fn setup_screen(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &e
                 ui.label(theme::caps("Your name"));
                 ui.add(
                     egui::TextEdit::singleline(&mut play.nick)
-                .margin(egui::Margin::symmetric(8, 5))
+                        .margin(egui::Margin::symmetric(8, 5))
                         .hint_text(theme::hint("what other players see"))
                         .char_limit(setup::account::MAX_NAME)
                         .desired_width(320.0)
@@ -822,7 +822,7 @@ fn setup_screen(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &e
                     if ui
                         .add(
                             egui::TextEdit::singleline(&mut play.server)
-                .margin(egui::Margin::symmetric(8, 5))
+                                .margin(egui::Margin::symmetric(8, 5))
                                 .hint_text(theme::hint("play.example.org or 192.168.1.20"))
                                 .desired_width(300.0)
                                 .min_size(egui::vec2(0.0, 38.0)),
@@ -2024,9 +2024,16 @@ fn person_card(ui: &mut egui::Ui, name: &str, online: bool, line: &str, buttons:
             ui.horizontal(|ui| {
                 let (rect, _) = ui.allocate_exact_size(egui::vec2(34.0, 34.0), egui::Sense::hover());
                 let c = rect.center();
-                ui.painter().circle(c, 16.0, theme::SUNKEN, egui::Stroke::new(1.0, if online { theme::ACCENT } else { theme::CONTROL_LINE }));
+                ui.painter()
+                    .circle(c, 16.0, theme::SUNKEN, egui::Stroke::new(1.0, if online { theme::ACCENT } else { theme::CONTROL_LINE }));
                 let initial = name.chars().next().map_or_else(|| "?".to_string(), |c| c.to_uppercase().to_string());
-                ui.painter().text(c, egui::Align2::CENTER_CENTER, initial, egui::FontId::new(14.0, theme::strong()), if online { theme::ACCENT } else { theme::MUTED });
+                ui.painter().text(
+                    c,
+                    egui::Align2::CENTER_CENTER,
+                    initial,
+                    egui::FontId::new(14.0, theme::strong()),
+                    if online { theme::ACCENT } else { theme::MUTED },
+                );
                 if online {
                     let dot = c + egui::vec2(11.0, 11.0);
                     ui.painter().circle_filled(dot, 5.0, theme::SURFACE);
@@ -2109,208 +2116,223 @@ fn people_page(play: &mut Play, game: &Game, ui: &mut egui::Ui) {
     let mut join: Option<(String, String)> = None;
     let mut switch: Option<String> = None;
     {
-            let w = &mut play.people;
-            let count = |n: usize| if n > 0 { format!(" · {n}") } else { String::new() };
-            let lists = w.shown.as_ref().and_then(|r| r.as_ref().ok());
-            let (friends_n, requests_n, blocked_n) = lists.map_or((0, 0, 0), |p| (p.friends.len(), p.received.len() + p.sent.len(), p.blocked.len()));
-            let online_n = lists.map_or(0, |p| p.friends.iter().filter(|f| f.online).count());
+        let w = &mut play.people;
+        let count = |n: usize| if n > 0 { format!(" · {n}") } else { String::new() };
+        let lists = w.shown.as_ref().and_then(|r| r.as_ref().ok());
+        let (friends_n, requests_n, blocked_n) = lists.map_or((0, 0, 0), |p| (p.friends.len(), p.received.len() + p.sent.len(), p.blocked.len()));
+        let online_n = lists.map_or(0, |p| p.friends.iter().filter(|f| f.online).count());
+        ui.horizontal(|ui| {
+            for (tab, label) in [
+                (
+                    PeopleTab::Friends,
+                    if friends_n > 0 {
+                        format!("Friends · {online_n}/{friends_n}")
+                    } else {
+                        "Friends".to_string()
+                    },
+                ),
+                (PeopleTab::Requests, format!("Requests{}", count(requests_n))),
+                (PeopleTab::Find, "Find players".to_string()),
+                (PeopleTab::Blocked, format!("Blocked{}", count(blocked_n))),
+            ] {
+                ui.selectable_value(&mut w.tab, tab, label);
+            }
+        });
+        ui.separator();
+        if let Some((action, p)) = w.asking.clone() {
+            let (title, means, button) = match action {
+                PlayerAction::Block => (format!("Block {}?", p.name), BLOCK_MEANS.to_string(), "Block"),
+                _ => (
+                    format!("Remove {} from your friends?", p.name),
+                    "You can ask them to be friends again later.".to_string(),
+                    "Remove",
+                ),
+            };
+            ui.label(RichText::new(title).family(theme::strong()));
+            ui.label(theme::muted(means));
             ui.horizontal(|ui| {
-                for (tab, label) in [
-                    (PeopleTab::Friends, if friends_n > 0 { format!("Friends · {online_n}/{friends_n}") } else { "Friends".to_string() }),
-                    (PeopleTab::Requests, format!("Requests{}", count(requests_n))),
-                    (PeopleTab::Find, "Find players".to_string()),
-                    (PeopleTab::Blocked, format!("Blocked{}", count(blocked_n))),
-                ] {
-                    ui.selectable_value(&mut w.tab, tab, label);
+                if ui.add_enabled(!busy, theme::secondary(button)).clicked() {
+                    act = Some((action, p.clone()));
+                    w.asking = None;
+                }
+                if ui.add(theme::secondary("Cancel")).clicked() {
+                    w.asking = None;
                 }
             });
             ui.separator();
-            if let Some((action, p)) = w.asking.clone() {
-                let (title, means, button) = match action {
-                    PlayerAction::Block => (format!("Block {}?", p.name), BLOCK_MEANS.to_string(), "Block"),
-                    _ => (
-                        format!("Remove {} from your friends?", p.name),
-                        "You can ask them to be friends again later.".to_string(),
-                        "Remove",
-                    ),
+        }
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            // A card per player, as the Tauri launcher's: their initial with a dot when online,
+            // what they're doing, and the actions on the right.
+            let row = |ui: &mut egui::Ui, p: &flow::Person, buttons: &mut dyn FnMut(&mut egui::Ui)| {
+                let mut line = if p.online {
+                    p.activity.clone().unwrap_or_else(|| "Online".into())
+                } else {
+                    "Offline".into()
                 };
-                ui.label(RichText::new(title).family(theme::strong()));
-                ui.label(theme::muted(means));
+                if let Some(id) = p.identity.as_deref().filter(|_| p.online) {
+                    line = format!("{line} · {id}");
+                }
+                person_card(ui, &p.name, p.online, &line, buttons);
+            };
+            if w.tab == PeopleTab::Find {
                 ui.horizontal(|ui| {
-                    if ui.add_enabled(!busy, theme::secondary(button)).clicked() {
-                        act = Some((action, p.clone()));
-                        w.asking = None;
-                    }
-                    if ui.add(theme::secondary("Cancel")).clicked() {
-                        w.asking = None;
+                    let field = ui.add(
+                        egui::TextEdit::singleline(&mut w.query)
+                            .margin(egui::Margin::symmetric(8, 5))
+                            .hint_text(theme::hint("A player's name"))
+                            .desired_width(260.0),
+                    );
+                    let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if (ui.add_enabled(!w.searching.running(), theme::secondary("Search")).clicked() || enter) && !w.searching.running() {
+                        search = true;
                     }
                 });
-                ui.separator();
-            }
-            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-                // A card per player, as the Tauri launcher's: their initial with a dot when online,
-                // what they're doing, and the actions on the right.
-                let row = |ui: &mut egui::Ui, p: &flow::Person, buttons: &mut dyn FnMut(&mut egui::Ui)| {
-                    let mut line = if p.online {
-                        p.activity.clone().unwrap_or_else(|| "Online".into())
-                    } else {
-                        "Offline".into()
-                    };
-                    if let Some(id) = p.identity.as_deref().filter(|_| p.online) {
-                        line = format!("{line} · {id}");
-                    }
-                    person_card(ui, &p.name, p.online, &line, buttons);
-                };
-                if w.tab == PeopleTab::Find {
-                    ui.horizontal(|ui| {
-                        let field = ui.add(egui::TextEdit::singleline(&mut w.query)
-                .margin(egui::Margin::symmetric(8, 5)).hint_text(theme::hint("A player's name")).desired_width(260.0));
-                        let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                        if (ui.add_enabled(!w.searching.running(), theme::secondary("Search")).clicked() || enter) && !w.searching.running() {
-                            search = true;
-                        }
-                    });
-                    ui.add_space(6.0);
-                    match &w.found {
-                        None if w.searching.running() => {
-                            ui.spinner();
-                        }
-                        None => {
-                            ui.label(theme::muted("Search by name, or leave it empty for who's online."));
-                        }
-                        Some(Err(e)) => {
-                            ui.label(RichText::new(e).color(theme::BAD));
-                        }
-                        Some(Ok(found)) if found.is_empty() => {
-                            ui.label(theme::muted("Nobody by that name."));
-                        }
-                        Some(Ok(found)) => {
-                            for p in found {
-                                row(ui, p, &mut |ui| {
-                                    if ui.add_enabled(!busy, theme::secondary("Block")).clicked() {
-                                        ask = Some((PlayerAction::Block, p.clone()));
-                                    }
-                                    let (label, action, enabled) = match p.relation {
-                                        "friend" => ("Friends", PlayerAction::Request, false),
-                                        "sent" => ("Asked", PlayerAction::Request, false),
-                                        "received" => ("Accept", PlayerAction::Accept, true),
-                                        "blocked" => ("Unblock", PlayerAction::Unblock, true),
-                                        _ => ("Add friend", PlayerAction::Request, true),
-                                    };
-                                    if ui.add_enabled(enabled && !busy, theme::secondary(label)).clicked() {
-                                        act = Some((action, p.clone()));
-                                    }
-                                });
-                            }
-                        }
-                    }
-                    return;
-                }
-                let people = match &w.shown {
-                    None => {
+                ui.add_space(6.0);
+                match &w.found {
+                    None if w.searching.running() => {
                         ui.spinner();
-                        return;
+                    }
+                    None => {
+                        ui.label(theme::muted("Search by name, or leave it empty for who's online."));
                     }
                     Some(Err(e)) => {
                         ui.label(RichText::new(e).color(theme::BAD));
-                        return;
                     }
-                    Some(Ok(p)) => p.clone(),
-                };
-                match w.tab {
-                    PeopleTab::Friends => {
-                        if people.friends.is_empty() {
-                            ui.label(theme::muted("No friends yet: Find players to add some."));
-                        }
-                        for p in &people.friends {
-                            row(ui, p, &mut |ui| {
-                                ui.menu_button(RichText::new("···").size(16.0).strong(), |ui| {
-                                    if ui.add_enabled(!busy, egui::Button::new("Remove friend")).clicked() {
-                                        ask = Some((PlayerAction::Remove, p.clone()));
-                                        ui.close();
-                                    }
-                                    if ui.add_enabled(!busy, egui::Button::new(format!("Block {}", p.name))).clicked() {
-                                        ask = Some((PlayerAction::Block, p.clone()));
-                                        ui.close();
-                                    }
-                                })
-                                .response
-                                .on_hover_text(format!("More for {}", p.name));
-                                if p.joinable && ui.add_enabled(!busy, theme::primary("Join")).clicked() {
-                                    join = Some((p.id.clone(), p.name.clone()));
-                                }
-                            });
-                        }
-                        if !people.elsewhere.is_empty() {
-                            ui.add_space(8.0);
-                            ui.label(theme::caps("Playing on other servers"));
-                            for e in &people.elsewhere {
-                                let place = if e.region.is_empty() { e.server.clone() } else { format!("{} ({})", e.server, e.region) };
-                                person_card(
-                                    ui,
-                                    &e.name,
-                                    true,
-                                    &format!("On {place}: to play together, one of you joins the other's server"),
-                                    &mut |ui| {
-                                        if setup::directory::listable_host(&e.host) && ui.add_enabled(!busy, theme::secondary("Switch server")).clicked() {
-                                            switch = Some(e.host.clone());
-                                        }
-                                    },
-                                );
-                            }
-                        }
+                    Some(Ok(found)) if found.is_empty() => {
+                        ui.label(theme::muted("Nobody by that name."));
                     }
-                    PeopleTab::Requests => {
-                        if people.received.is_empty() && people.sent.is_empty() {
-                            ui.label(theme::muted("No friend requests either way."));
-                        }
-                        if !people.received.is_empty() {
-                            ui.label(theme::caps("Asked you"));
-                        }
-                        for p in &people.received {
+                    Some(Ok(found)) => {
+                        for p in found {
                             row(ui, p, &mut |ui| {
-                                if ui.add_enabled(!busy, theme::secondary("Decline")).clicked() {
-                                    act = Some((PlayerAction::Decline, p.clone()));
+                                if ui.add_enabled(!busy, theme::secondary("Block")).clicked() {
+                                    ask = Some((PlayerAction::Block, p.clone()));
                                 }
-                                if ui.add_enabled(!busy, theme::secondary("Accept")).clicked() {
-                                    act = Some((PlayerAction::Accept, p.clone()));
-                                }
-                            });
-                        }
-                        if !people.sent.is_empty() {
-                            ui.add_space(6.0);
-                            ui.label(theme::caps("You asked"));
-                        }
-                        for p in &people.sent {
-                            row(ui, p, &mut |ui| {
-                                if ui.add_enabled(!busy, theme::secondary("Cancel request")).clicked() {
-                                    act = Some((PlayerAction::Decline, p.clone()));
+                                let (label, action, enabled) = match p.relation {
+                                    "friend" => ("Friends", PlayerAction::Request, false),
+                                    "sent" => ("Asked", PlayerAction::Request, false),
+                                    "received" => ("Accept", PlayerAction::Accept, true),
+                                    "blocked" => ("Unblock", PlayerAction::Unblock, true),
+                                    _ => ("Add friend", PlayerAction::Request, true),
+                                };
+                                if ui.add_enabled(enabled && !busy, theme::secondary(label)).clicked() {
+                                    act = Some((action, p.clone()));
                                 }
                             });
                         }
                     }
-                    PeopleTab::Blocked => {
-                        ui.label(
-                            theme::muted(format!(
-                                "{BLOCK_MEANS} A block of a player with a 5th Echelon identity holds on every server that shares friends, when you have one too."
-                            ))
-                            .small(),
-                        );
-                        ui.add_space(4.0);
-                        if people.blocked.is_empty() {
-                            ui.label(theme::muted("You haven't blocked anyone."));
-                        }
-                        for p in &people.blocked {
-                            row(ui, p, &mut |ui| {
-                                if ui.add_enabled(!busy, theme::secondary("Unblock")).clicked() {
-                                    act = Some((PlayerAction::Unblock, p.clone()));
-                                }
-                            });
-                        }
-                    }
-                    PeopleTab::Find => {}
                 }
-            });
+                return;
+            }
+            let people = match &w.shown {
+                None => {
+                    ui.spinner();
+                    return;
+                }
+                Some(Err(e)) => {
+                    ui.label(RichText::new(e).color(theme::BAD));
+                    return;
+                }
+                Some(Ok(p)) => p.clone(),
+            };
+            match w.tab {
+                PeopleTab::Friends => {
+                    if people.friends.is_empty() {
+                        ui.label(theme::muted("No friends yet: Find players to add some."));
+                    }
+                    for p in &people.friends {
+                        row(ui, p, &mut |ui| {
+                            ui.menu_button(RichText::new("···").size(16.0).strong(), |ui| {
+                                if ui.add_enabled(!busy, egui::Button::new("Remove friend")).clicked() {
+                                    ask = Some((PlayerAction::Remove, p.clone()));
+                                    ui.close();
+                                }
+                                if ui.add_enabled(!busy, egui::Button::new(format!("Block {}", p.name))).clicked() {
+                                    ask = Some((PlayerAction::Block, p.clone()));
+                                    ui.close();
+                                }
+                            })
+                            .response
+                            .on_hover_text(format!("More for {}", p.name));
+                            if p.joinable && ui.add_enabled(!busy, theme::primary("Join")).clicked() {
+                                join = Some((p.id.clone(), p.name.clone()));
+                            }
+                        });
+                    }
+                    if !people.elsewhere.is_empty() {
+                        ui.add_space(8.0);
+                        ui.label(theme::caps("Playing on other servers"));
+                        for e in &people.elsewhere {
+                            let place = if e.region.is_empty() {
+                                e.server.clone()
+                            } else {
+                                format!("{} ({})", e.server, e.region)
+                            };
+                            person_card(
+                                ui,
+                                &e.name,
+                                true,
+                                &format!("On {place}: to play together, one of you joins the other's server"),
+                                &mut |ui| {
+                                    if setup::directory::listable_host(&e.host) && ui.add_enabled(!busy, theme::secondary("Switch server")).clicked() {
+                                        switch = Some(e.host.clone());
+                                    }
+                                },
+                            );
+                        }
+                    }
+                }
+                PeopleTab::Requests => {
+                    if people.received.is_empty() && people.sent.is_empty() {
+                        ui.label(theme::muted("No friend requests either way."));
+                    }
+                    if !people.received.is_empty() {
+                        ui.label(theme::caps("Asked you"));
+                    }
+                    for p in &people.received {
+                        row(ui, p, &mut |ui| {
+                            if ui.add_enabled(!busy, theme::secondary("Decline")).clicked() {
+                                act = Some((PlayerAction::Decline, p.clone()));
+                            }
+                            if ui.add_enabled(!busy, theme::secondary("Accept")).clicked() {
+                                act = Some((PlayerAction::Accept, p.clone()));
+                            }
+                        });
+                    }
+                    if !people.sent.is_empty() {
+                        ui.add_space(6.0);
+                        ui.label(theme::caps("You asked"));
+                    }
+                    for p in &people.sent {
+                        row(ui, p, &mut |ui| {
+                            if ui.add_enabled(!busy, theme::secondary("Cancel request")).clicked() {
+                                act = Some((PlayerAction::Decline, p.clone()));
+                            }
+                        });
+                    }
+                }
+                PeopleTab::Blocked => {
+                    ui.label(
+                        theme::muted(format!(
+                            "{BLOCK_MEANS} A block of a player with a 5th Echelon identity holds on every server that shares friends, when you have one too."
+                        ))
+                        .small(),
+                    );
+                    ui.add_space(4.0);
+                    if people.blocked.is_empty() {
+                        ui.label(theme::muted("You haven't blocked anyone."));
+                    }
+                    for p in &people.blocked {
+                        row(ui, p, &mut |ui| {
+                            if ui.add_enabled(!busy, theme::secondary("Unblock")).clicked() {
+                                act = Some((PlayerAction::Unblock, p.clone()));
+                            }
+                        });
+                    }
+                }
+                PeopleTab::Find => {}
+            }
+        });
     }
     if let Some(friend) = join {
         play.join_requested = Some(friend);
@@ -2489,20 +2511,25 @@ pub fn show_news(app: &mut App, ui: &mut egui::Ui) {
                     });
                     ui.add_space(16.0);
                     let item = &play.news[open];
-                    theme::card().inner_margin(egui::Margin::symmetric(28, 24)).show(ui, |ui| {
-                        ui.set_width(ui.available_width());
-                        ui.label(theme::kicker(&format!("Briefing {} of {}", open + 1, play.news.len())));
-                        ui.add_space(4.0);
-                        ui.label(theme::display(&hooks_config::text::clip(&item.title, 80), 30.0));
-                        if !item.text.is_empty() {
-                            ui.add_space(6.0);
-                            ui.label(RichText::new(hooks_config::text::clip(&item.text, 500)).color(theme::SOFT).size(16.0));
-                        }
-                        // Only a web address opens, and the player sees where it goes.
-                        if item.link.starts_with("https://") {
-                            ui.add_space(10.0);
-                            ui.hyperlink_to("Read more", &item.link).on_hover_text(hooks_config::text::clip(&item.link, 120));
-                        }
+                    // Top-down in the room left: inside the row, the card's kicker, title and text
+                    // went side by side and ran past the window (the gamebox, 1150 wide).
+                    let rest = ui.available_width();
+                    ui.allocate_ui_with_layout(egui::vec2(rest, 0.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                        theme::card().inner_margin(egui::Margin::symmetric(28, 24)).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.label(theme::kicker(&format!("Briefing {} of {}", open + 1, play.news.len())));
+                            ui.add_space(4.0);
+                            ui.label(theme::display(&hooks_config::text::clip(&item.title, 80), 30.0));
+                            if !item.text.is_empty() {
+                                ui.add_space(6.0);
+                                ui.label(RichText::new(hooks_config::text::clip(&item.text, 500)).color(theme::SOFT).size(16.0));
+                            }
+                            // Only a web address opens, and the player sees where it goes.
+                            if item.link.starts_with("https://") {
+                                ui.add_space(10.0);
+                                ui.hyperlink_to("Read more", &item.link).on_hover_text(hooks_config::text::clip(&item.link, 120));
+                            }
+                        });
                     });
                 });
             }
@@ -2625,7 +2652,7 @@ fn servers_page(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &e
             ui.horizontal(|ui| {
                 let typed = ui.add(
                     egui::TextEdit::singleline(&mut play.address)
-                .margin(egui::Margin::symmetric(8, 5))
+                        .margin(egui::Margin::symmetric(8, 5))
                         .hint_text(theme::hint("play.example.org or 192.168.1.20"))
                         .desired_width(ui.available_width() - 126.0)
                         .min_size(egui::vec2(0.0, 38.0)),
@@ -2730,7 +2757,7 @@ fn network_card(play: &mut Play, notices: &mut Notices, ctx: &egui::Context, ui:
         ui.horizontal(|ui| {
             let typed = ui.add(
                 egui::TextEdit::singleline(&mut play.network_typed)
-                .margin(egui::Margin::symmetric(8, 5))
+                    .margin(egui::Margin::symmetric(8, 5))
                     .hint_text(theme::hint("its address, e.g. play.mygroup.org"))
                     .desired_width((ui.available_width() - 146.0).min(420.0))
                     .min_size(egui::vec2(0.0, 36.0)),
@@ -3644,29 +3671,40 @@ fn shown_matches<'a>(m: &MatchesPage, all: &'a [crate::matches::Lobby]) -> Vec<&
 }
 
 fn matches_page(m: &mut MatchesPage, server: Option<&str>, ready: bool, act: &mut Option<MatchAct>, ui: &mut egui::Ui) {
-    let quick_mode = if m.kind == MatchKind::Coop { crate::app::PlayMode::Coop } else { crate::app::PlayMode::Svm };
+    let quick_mode = if m.kind == MatchKind::Coop {
+        crate::app::PlayMode::Coop
+    } else {
+        crate::app::PlayMode::Svm
+    };
     // The header: the server, the title and the summary, with New match and Quick match.
-    egui::Frame::new().inner_margin(egui::Margin { left: 32, right: 32, top: 22, bottom: 12 }).show(ui, |ui| {
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                theme::title(ui, server.unwrap_or("No server yet"), "Matches");
-                let summary = match &m.data {
-                    None => "Reading the open matches…".to_string(),
-                    Some(d) if d.summary.is_empty() => String::new(),
-                    Some(d) => format!("{} · updated live", d.summary),
-                };
-                ui.label(RichText::new(summary).color(theme::SOFT).small());
-            });
-            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add_enabled(ready, theme::primary("Quick match").min_size(egui::vec2(0.0, 40.0))).clicked() {
-                    *act = Some(MatchAct::Quick(quick_mode));
-                }
-                if ui.add_enabled(ready, theme::secondary("New match").min_size(egui::vec2(0.0, 40.0))).clicked() {
-                    *act = Some(MatchAct::New(quick_mode));
-                }
+    egui::Frame::new()
+        .inner_margin(egui::Margin {
+            left: 32,
+            right: 32,
+            top: 22,
+            bottom: 12,
+        })
+        .show(ui, |ui| {
+            ui.horizontal(|ui| {
+                ui.vertical(|ui| {
+                    theme::title(ui, server.unwrap_or("No server yet"), "Matches");
+                    let summary = match &m.data {
+                        None => "Reading the open matches…".to_string(),
+                        Some(d) if d.summary.is_empty() => String::new(),
+                        Some(d) => format!("{} · updated live", d.summary),
+                    };
+                    ui.label(RichText::new(summary).color(theme::SOFT).small());
+                });
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.add_enabled(ready, theme::primary("Quick match").min_size(egui::vec2(0.0, 40.0))).clicked() {
+                        *act = Some(MatchAct::Quick(quick_mode));
+                    }
+                    if ui.add_enabled(ready, theme::secondary("New match").min_size(egui::vec2(0.0, 40.0))).clicked() {
+                        *act = Some(MatchAct::New(quick_mode));
+                    }
+                });
             });
         });
-    });
     let line = ui.available_rect_before_wrap();
     ui.painter().hline(line.x_range(), line.top(), egui::Stroke::new(1.0, theme::LINE));
     let pad = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui)| {
@@ -3804,7 +3842,11 @@ fn matches_page(m: &mut MatchesPage, server: Option<&str>, ready: bool, act: &mu
             let what_w = ((w - players_w - ping_w) * 1.6 / 2.8).max(120.0);
             let status_w = ((w - players_w - ping_w) * 1.2 / 2.8).max(100.0);
             let cell = |ui: &mut egui::Ui, width: f32, right: bool, add: &mut dyn FnMut(&mut egui::Ui)| {
-                let layout = if right { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) };
+                let layout = if right {
+                    egui::Layout::right_to_left(egui::Align::Center)
+                } else {
+                    egui::Layout::left_to_right(egui::Align::Center)
+                };
                 ui.allocate_ui_with_layout(egui::vec2(width, 38.0), layout, |ui| {
                     ui.set_width(width);
                     add(ui);
@@ -3815,7 +3857,11 @@ fn matches_page(m: &mut MatchesPage, server: Option<&str>, ready: bool, act: &mu
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = gap;
                     for (label, width, right) in [("Match", what_w, false), ("Players", players_w, false), ("Status", status_w, false), ("Ping", ping_w, true)] {
-                        let layout = if right { egui::Layout::right_to_left(egui::Align::Center) } else { egui::Layout::left_to_right(egui::Align::Center) };
+                        let layout = if right {
+                            egui::Layout::right_to_left(egui::Align::Center)
+                        } else {
+                            egui::Layout::left_to_right(egui::Align::Center)
+                        };
                         ui.allocate_ui_with_layout(egui::vec2(width, 16.0), layout, |ui| {
                             ui.set_width(width);
                             ui.label(theme::caps(label));
@@ -3882,9 +3928,12 @@ fn matches_page(m: &mut MatchesPage, server: Option<&str>, ready: bool, act: &mu
                         });
                     })
                     .response;
-                let row = ui.interact(row.rect, ui.id().with(("match-row", l.room)), egui::Sense::click()).on_hover_cursor(egui::CursorIcon::PointingHand);
+                let row = ui
+                    .interact(row.rect, ui.id().with(("match-row", l.room)), egui::Sense::click())
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
                 if on {
-                    ui.painter().rect_filled(egui::Rect::from_min_size(row.rect.min, egui::vec2(3.0, row.rect.height())), 0, theme::ACCENT);
+                    ui.painter()
+                        .rect_filled(egui::Rect::from_min_size(row.rect.min, egui::vec2(3.0, row.rect.height())), 0, theme::ACCENT);
                 } else if row.hovered() {
                     ui.painter().rect_filled(row.rect, 0, egui::Color32::from_white_alpha(6));
                 }
@@ -3912,7 +3961,8 @@ fn avatar(ui: &mut egui::Ui, name: &str, friend: bool, empty: bool) {
         ui.painter().circle_stroke(c, 12.0, egui::Stroke::new(1.0, theme::CONTROL_LINE));
         return;
     }
-    ui.painter().circle_filled(c, 13.0, if friend { egui::Color32::from_rgb(0x1f, 0x35, 0x24) } else { theme::LINE });
+    ui.painter()
+        .circle_filled(c, 13.0, if friend { egui::Color32::from_rgb(0x1f, 0x35, 0x24) } else { theme::LINE });
     let initial = name.chars().next().map_or_else(|| "?".to_string(), |c| c.to_uppercase().to_string());
     ui.painter().text(
         c,
@@ -3940,7 +3990,11 @@ fn person_row(ui: &mut egui::Ui, sel: &crate::matches::Lobby, p: &crate::matches
                     ui.label(RichText::new("friend").color(theme::ACCENT).small());
                 } else if p.party != 0 {
                     let others: Vec<&str> = sel.people.iter().filter(|q| q.party == p.party && q.name != p.name).map(|q| q.name.as_str()).collect();
-                    let line = if others.is_empty() { "in a party".to_string() } else { format!("party with {}", others.join(", ")) };
+                    let line = if others.is_empty() {
+                        "in a party".to_string()
+                    } else {
+                        format!("party with {}", others.join(", "))
+                    };
                     ui.label(theme::muted(line).small());
                 }
                 if ping {
@@ -3956,12 +4010,21 @@ fn person_row(ui: &mut egui::Ui, sel: &crate::matches::Lobby, p: &crate::matches
 
 fn match_detail(m: &mut MatchesPage, sel: &crate::matches::Lobby, act: &mut Option<MatchAct>, ui: &mut egui::Ui) {
     // The band: the mode, and the map in big type.
-    let band = if sel.kind == "coop" { egui::Color32::from_rgb(0x12, 0x19, 0x2a) } else { egui::Color32::from_rgb(0x14, 0x20, 0x19) };
+    let band = if sel.kind == "coop" {
+        egui::Color32::from_rgb(0x12, 0x19, 0x2a)
+    } else {
+        egui::Color32::from_rgb(0x14, 0x20, 0x19)
+    };
     // A short window: the band takes less, so the players stay in view (as the Tauri launcher's).
     let short = ui.available_height() < 560.0;
     egui::Frame::new()
         .fill(band)
-        .inner_margin(egui::Margin { left: 22, right: 22, top: if short { 10 } else { 34 }, bottom: if short { 8 } else { 12 } })
+        .inner_margin(egui::Margin {
+            left: 22,
+            right: 22,
+            top: if short { 10 } else { 34 },
+            bottom: if short { 8 } else { 12 },
+        })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             let kicker = format!("{} · public{}", sel.mode, if sel.full { " · full" } else { "" });
@@ -3990,7 +4053,11 @@ fn match_detail(m: &mut MatchesPage, sel: &crate::matches::Lobby, act: &mut Opti
                     };
                     ui.add_enabled(false, theme::play_button(why).min_size(egui::vec2(0.0, 46.0)));
                     let watching = m.watching.as_ref().is_some_and(|(r, _)| *r == sel.room);
-                    let label = if watching { "Watching: we'll tell you when it opens" } else { "Tell me when a seat opens" };
+                    let label = if watching {
+                        "Watching: we'll tell you when it opens"
+                    } else {
+                        "Tell me when a seat opens"
+                    };
                     if ui.add(theme::secondary(label).selected(watching)).clicked() {
                         m.watching = if watching {
                             None
@@ -4012,7 +4079,14 @@ fn match_detail(m: &mut MatchesPage, sel: &crate::matches::Lobby, act: &mut Opti
             // Its state.
             egui::Frame::new()
                 .fill(theme::SUNKEN)
-                .stroke(egui::Stroke::new(1.0, if sel.tone == "warn" { egui::Color32::from_rgb(0x3a, 0x30, 0x20) } else { theme::CONTROL_LINE }))
+                .stroke(egui::Stroke::new(
+                    1.0,
+                    if sel.tone == "warn" {
+                        egui::Color32::from_rgb(0x3a, 0x30, 0x20)
+                    } else {
+                        theme::CONTROL_LINE
+                    },
+                ))
                 .corner_radius(6)
                 .inner_margin(egui::Margin::symmetric(12, 10))
                 .show(ui, |ui| {
@@ -4228,9 +4302,12 @@ mod split_button_tests {
 
 #[cfg(all(test, feature = "ui-tests"))]
 mod matches_page_tests {
-    use super::*;
     use egui_kittest::kittest::Queryable;
-    use crate::matches::{Lobbies, Lobby, Person};
+
+    use super::*;
+    use crate::matches::Lobbies;
+    use crate::matches::Lobby;
+    use crate::matches::Person;
 
     fn person(name: &str, host: bool, friend: bool, team: &str) -> Person {
         Person {
@@ -4302,7 +4379,10 @@ mod matches_page_tests {
             data: Some(sample()),
             ..MatchesPage::default()
         });
-        assert!(h.query_by_label("SvM Classic · Penthouse").is_some() && h.query_by_label("Co-op · Mine").is_some(), "both listed");
+        assert!(
+            h.query_by_label("SvM Classic · Penthouse").is_some() && h.query_by_label("Co-op · Mine").is_some(),
+            "both listed"
+        );
         assert!(h.query_by_label("Raven, your friend, is in it").is_some() || h.query_by_label("Hosted by Tank · Raven, your friend, is in it").is_some());
         // Friends first: the SvM match is picked, so its details and Join show.
         assert!(h.query_by_label("JOIN THIS MATCH").is_some(), "the joinable one picked first");
