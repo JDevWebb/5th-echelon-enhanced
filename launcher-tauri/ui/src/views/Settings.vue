@@ -63,13 +63,13 @@
                 </template>
                 <p v-else-if="g.ubisoft_connect_later" class="muted">Starting without Ubisoft Connect is offered here once the game has started through it and signed in on this PC.</p>
                 <template v-if="g.mouse_accel_blocked">
-                  <Switch :on="false" disabled label="Remove negative mouse acceleration" />
+                  <Switch :on="false" disabled label="Mouse moves 1:1" />
                   <p class="muted">{{ g.mouse_accel_blocked }}</p>
                 </template>
                 <div v-else class="row">
                   <Switch
                     :on="g.disable_mouse_accel"
-                    label="Remove negative mouse acceleration"
+                    label="Mouse moves 1:1"
                     title="The game caps how far the view can turn in one frame, so fast flicks feel like the mouse slows down. This widens that cap for a linear, 1:1 feel (a wide limit stays, so a bad input spike can't flip the camera)."
                     @set="set('disable_mouse_accel', $event)"
                   />
@@ -93,7 +93,7 @@
                 <Switch
                   :on="g.disable_autoclimb"
                   :disabled="g.running"
-                  label="Disable automatic climbing (Active Sprint)"
+                  label="No automatic climbing (Active Sprint)"
                   title="The game climbs and vaults over edges by itself when you sprint into them. This turns that off, so climbing is only ever manual. Takes effect the next time the game starts."
                   @set="set('disable_autoclimb', $event)"
                 />

@@ -19,6 +19,8 @@ pub const CONTROL_LINE: Color32 = Color32::from_rgb(0x26, 0x34, 0x34);
 pub const LINE: Color32 = Color32::from_rgb(0x17, 0x20, 0x22);
 pub const FG: Color32 = Color32::from_rgb(0xe3, 0xec, 0xe6);
 pub const MUTED: Color32 = Color32::from_rgb(0x84, 0x96, 0x8f);
+/// Placeholders in empty fields: clearly not text anyone typed ([`hint`]).
+pub const HINT: Color32 = Color32::from_rgb(0x5c, 0x6a, 0x65);
 pub const ACCENT: Color32 = Color32::from_rgb(0x9b, 0xe0, 0x5a);
 pub const ON_ACCENT: Color32 = Color32::from_rgb(0x07, 0x10, 0x03);
 pub const OK: Color32 = Color32::from_rgb(0x9b, 0xe0, 0x5a);
@@ -91,6 +93,10 @@ pub fn apply(ctx: &egui::Context) {
         v.extreme_bg_color = SUNKEN;
         v.faint_bg_color = SURFACE;
         v.override_text_color = Some(FG);
+        // Placeholders and other weak text: dimmer than the muted body text. With the override
+        // above they were as bright as typed text, so an empty field looked filled in ("its
+        // address, e.g. play.mygroup.org", the gamebox's click-through, 2026-11-06).
+        v.weak_text_color = Some(HINT);
         v.hyperlink_color = ACCENT;
         v.selection.bg_fill = ACCENT.linear_multiply(0.35);
         v.selection.stroke = Stroke::new(1.0, ACCENT);
@@ -633,4 +639,10 @@ pub(crate) mod ui_test {
         h.run();
         h
     }
+}
+
+/// A field's placeholder, in [`HINT`]: the theme's text colour override would draw it as
+/// bright as typed text otherwise (an empty field looked filled in).
+pub fn hint(text: impl Into<String>) -> egui::RichText {
+    egui::RichText::new(text).color(HINT)
 }

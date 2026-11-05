@@ -423,7 +423,8 @@ fn form(page: &mut Roadmap, profile: Option<&setup::config::Profile>, identity: 
         ui.label(theme::caps("Title"));
         ui.add(
             egui::TextEdit::singleline(&mut page.title)
-                .hint_text("In a few words")
+                .margin(egui::Margin::symmetric(8, 5))
+                .hint_text(theme::hint("In a few words"))
                 .char_limit(setup::roadmap::TITLE_MAX)
                 .desired_width(f32::INFINITY),
         );
@@ -436,7 +437,8 @@ fn form(page: &mut Roadmap, profile: Option<&setup::config::Profile>, identity: 
         });
         ui.add(
             egui::TextEdit::multiline(&mut page.text)
-                .hint_text("What would you like, and what would it help with?")
+                .margin(egui::Margin::symmetric(8, 5))
+                .hint_text(theme::hint("What would you like, and what would it help with?"))
                 .char_limit(setup::roadmap::TEXT_MAX)
                 .desired_rows(5)
                 .desired_width(f32::INFINITY),

@@ -704,11 +704,11 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     // Fusion Fix's own fix, when it's on, NOPs the clamp ours widens: nothing to do here then.
     if hooks_config::fusion_fix::removes_mouse_accel(&game.dir) {
         let mut off = false;
-        ui.add_enabled(false, egui::Checkbox::new(&mut off, "Remove negative mouse acceleration"));
+        ui.add_enabled(false, egui::Checkbox::new(&mut off, "Mouse moves 1:1"));
         ui.label(theme::muted(crate::new_options::FUSION_FIX_MOUSE));
     } else {
         ui.horizontal(|ui| {
-            theme::switch(ui, &mut hook.disable_mouse_accel, "Remove negative mouse acceleration").on_hover_text(
+            theme::switch(ui, &mut hook.disable_mouse_accel, "Mouse moves 1:1").on_hover_text(
                 "The game caps how far the view can turn in one frame, so fast flicks feel like the mouse slows down. \
                  This widens that cap for a linear, 1:1 feel (a wide limit stays, so a bad input spike can't flip the camera).",
             );
@@ -781,7 +781,7 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     // Auto-climb (opt-in): takes effect at the next game start, so the toggle is locked while the
     // game is running, like the other start-time options.
     ui.add_enabled_ui(!running, |ui| {
-        theme::switch(ui, &mut hook.disable_autoclimb, "Disable automatic climbing (Active Sprint)").on_hover_text(
+        theme::switch(ui, &mut hook.disable_autoclimb, "No automatic climbing (Active Sprint)").on_hover_text(
             "The game climbs and vaults over edges by itself when you sprint into them. This turns that \
              off, so climbing is only ever manual. Takes effect the next time the game starts.",
         );
@@ -809,7 +809,8 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
         ui.label("Extra command line");
         ui.add(
             egui::TextEdit::singleline(&mut hook.internal_command_line)
-                .hint_text("Unreal Engine options")
+                .margin(egui::Margin::symmetric(8, 5))
+                .hint_text(theme::hint("Unreal Engine options"))
                 .desired_width(300.0),
         );
     });
@@ -987,7 +988,8 @@ fn servers(settings: &mut Settings, game: &mut Game, notices: &mut Notices, lock
                 let renaming_this = settings.renaming.as_ref().is_some_and(|(name, _)| *name == p.name);
                 if renaming_this {
                     if let Some((_, new_name)) = settings.renaming.as_mut() {
-                        ui.add(egui::TextEdit::singleline(new_name).hint_text("new name").desired_width(140.0));
+                        ui.add(egui::TextEdit::singleline(new_name)
+                .margin(egui::Margin::symmetric(8, 5)).hint_text(theme::hint("new name")).desired_width(140.0));
                     }
                 } else {
                     ui.label(&p.user.username);
@@ -1106,7 +1108,8 @@ fn identity_section(settings: &mut Settings, accounts: usize, notices: &mut Noti
         let edited = ui
             .add(
                 egui::TextEdit::singleline(&mut settings.identity_import)
-                    .hint_text("5th-echelon-identity:v1:…")
+                .margin(egui::Margin::symmetric(8, 5))
+                    .hint_text(theme::hint("5th-echelon-identity:v1:…"))
                     .password(true)
                     .desired_width(260.0),
             )
@@ -1171,7 +1174,8 @@ fn identity_section(settings: &mut Settings, accounts: usize, notices: &mut Noti
     let editing = settings.directory.get_or_insert(saved.clone());
     ui.horizontal(|ui| {
         ui.label("Server directory");
-        ui.add(egui::TextEdit::singleline(editing).hint_text("https://coordinator.example.com").desired_width(260.0));
+        ui.add(egui::TextEdit::singleline(editing)
+                .margin(egui::Margin::symmetric(8, 5)).hint_text(theme::hint("https://coordinator.example.com")).desired_width(260.0));
         if *editing != saved && ui.button("Save").clicked() {
             if editing.trim().is_empty() || setup::directory::valid_coordinator(editing) {
                 crate::app::Prefs::set_directory(Some(editing.clone()));
@@ -1399,8 +1403,15 @@ fn hooks(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     let mut hook = game.cfg.hook_config.clone();
     ui.checkbox(&mut hook.enable_all_hooks, "All hooks");
     ui.add_enabled_ui(!hook.enable_all_hooks, |ui| {
-        // As many columns as fit (three at the launcher's first size, fewer in a small window).
-        let columns = ((ui.available_width() / 220.0).floor() as usize).clamp(1, 3);
+        // As many columns as the widest label lets fit, three at most: a guessed 220 px a column
+        // put three in where two fit, and the card ran past the window (the gamebox, 1150 wide).
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let widest = Hook::LABELS
+            .iter()
+            .map(|l| ui.painter().layout_no_wrap((*l).to_string(), font.clone(), egui::Color32::WHITE).size().x)
+            .fold(0.0, f32::max);
+        let column = widest + ui.spacing().icon_width + ui.spacing().icon_spacing + ui.spacing().item_spacing.x * 2.0;
+        let columns = ((ui.available_width() / column).floor() as usize).clamp(1, 3);
         egui::Grid::new("hooks").num_columns(columns).show(ui, |ui| {
             for (i, (h, label)) in Hook::VARIANTS.iter().zip(Hook::LABELS).enumerate() {
                 let mut on = hook.enable_hooks.contains(h);

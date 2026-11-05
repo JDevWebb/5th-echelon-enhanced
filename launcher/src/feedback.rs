@@ -816,7 +816,8 @@ impl Feedback {
                     }
                     ui.add_space(6.0);
                     ui.label("Anything else? (who you played with, what you were doing)");
-                    ui.add(egui::TextEdit::multiline(&mut ask.comment).desired_rows(3).desired_width(f32::INFINITY).char_limit(2000));
+                    ui.add(egui::TextEdit::multiline(&mut ask.comment)
+                .margin(egui::Margin::symmetric(8, 5)).desired_rows(3).desired_width(f32::INFINITY).char_limit(2000));
                     ui.add_space(6.0);
                     ui.checkbox(&mut ask.attach, "Send my logs too");
                     ui.label(theme::muted("Your PC's name, your user folder and your internet address are hidden before they're sent."));

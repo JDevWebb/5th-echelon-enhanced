@@ -1017,7 +1017,8 @@ fn report_form(chat: &mut Chat, cfg: &Config, ui: &mut egui::Ui) {
         ui.label(RichText::new(format!("Report {}'s message to the admins", r.name)).family(theme::strong()));
         ui.add(
             egui::TextEdit::singleline(&mut r.why)
-                .hint_text("Why (optional)")
+                .margin(egui::Margin::symmetric(8, 5))
+                .hint_text(theme::hint("Why (optional)"))
                 .char_limit(300)
                 .desired_width(f32::INFINITY),
         );
@@ -1091,9 +1092,10 @@ fn composer(chat: &mut Chat, cfg: &Config, room: Room, to: &str, allowed: bool, 
         let edit = ui.add_enabled(
             allowed,
             egui::TextEdit::singleline(&mut chat.text)
-                .hint_text(hint)
+                .margin(egui::Margin::symmetric(8, 5))
+                .hint_text(theme::hint(hint))
                 .char_limit(moderation::MAX_MESSAGE)
-                .desired_width((ui.available_width() - 90.0).max(200.0)),
+                .desired_width((ui.available_width() - 106.0).max(200.0)),
         );
         if edit.changed() {
             chat.refused = None;

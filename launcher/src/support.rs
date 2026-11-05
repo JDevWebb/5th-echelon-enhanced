@@ -413,7 +413,8 @@ fn form(page: &mut Support, profile: Option<&setup::config::Profile>, game_dir: 
         });
         ui.add(
             egui::TextEdit::multiline(&mut page.text)
-                .hint_text("What went wrong, when, and on which server?")
+                .margin(egui::Margin::symmetric(8, 5))
+                .hint_text(theme::hint("What went wrong, when, and on which server?"))
                 .char_limit(setup::support::MAX_TEXT)
                 .desired_rows(4)
                 .desired_width(f32::INFINITY),

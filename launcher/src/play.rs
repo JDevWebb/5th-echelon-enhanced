@@ -808,7 +808,8 @@ fn setup_screen(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &e
                 ui.label(theme::caps("Your name"));
                 ui.add(
                     egui::TextEdit::singleline(&mut play.nick)
-                        .hint_text("what other players see")
+                .margin(egui::Margin::symmetric(8, 5))
+                        .hint_text(theme::hint("what other players see"))
                         .char_limit(setup::account::MAX_NAME)
                         .desired_width(320.0)
                         .min_size(egui::vec2(0.0, 40.0)),
@@ -821,7 +822,8 @@ fn setup_screen(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &e
                     if ui
                         .add(
                             egui::TextEdit::singleline(&mut play.server)
-                                .hint_text("play.example.org or 192.168.1.20")
+                .margin(egui::Margin::symmetric(8, 5))
+                                .hint_text(theme::hint("play.example.org or 192.168.1.20"))
                                 .desired_width(300.0)
                                 .min_size(egui::vec2(0.0, 38.0)),
                         )
@@ -2161,7 +2163,8 @@ fn people_page(play: &mut Play, game: &Game, ui: &mut egui::Ui) {
                 };
                 if w.tab == PeopleTab::Find {
                     ui.horizontal(|ui| {
-                        let field = ui.add(egui::TextEdit::singleline(&mut w.query).hint_text("A player's name").desired_width(260.0));
+                        let field = ui.add(egui::TextEdit::singleline(&mut w.query)
+                .margin(egui::Margin::symmetric(8, 5)).hint_text(theme::hint("A player's name")).desired_width(260.0));
                         let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                         if (ui.add_enabled(!w.searching.running(), theme::secondary("Search")).clicked() || enter) && !w.searching.running() {
                             search = true;
@@ -2622,8 +2625,9 @@ fn servers_page(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &e
             ui.horizontal(|ui| {
                 let typed = ui.add(
                     egui::TextEdit::singleline(&mut play.address)
-                        .hint_text("play.example.org or 192.168.1.20")
-                        .desired_width(ui.available_width() - 110.0)
+                .margin(egui::Margin::symmetric(8, 5))
+                        .hint_text(theme::hint("play.example.org or 192.168.1.20"))
+                        .desired_width(ui.available_width() - 126.0)
                         .min_size(egui::vec2(0.0, 38.0)),
                 );
                 let ready = !play.address.trim().is_empty() && !play.busy() && !playing;
@@ -2726,8 +2730,9 @@ fn network_card(play: &mut Play, notices: &mut Notices, ctx: &egui::Context, ui:
         ui.horizontal(|ui| {
             let typed = ui.add(
                 egui::TextEdit::singleline(&mut play.network_typed)
-                    .hint_text("its address, e.g. play.mygroup.org")
-                    .desired_width((ui.available_width() - 130.0).min(420.0))
+                .margin(egui::Margin::symmetric(8, 5))
+                    .hint_text(theme::hint("its address, e.g. play.mygroup.org"))
+                    .desired_width((ui.available_width() - 146.0).min(420.0))
                     .min_size(egui::vec2(0.0, 36.0)),
             );
             let ready = !play.network_typed.trim().is_empty();
@@ -3309,6 +3314,7 @@ fn account_dialog(ctx: &egui::Context, dialog: &mut AccountDialog, current: Opti
             ui.label(RichText::new("Your name").family(theme::strong()).size(14.0));
             let field = ui.add(
                 egui::TextEdit::singleline(&mut dialog.name)
+                .margin(egui::Margin::symmetric(8, 5))
                     .font(egui::FontId::new(16.0, theme::strong()))
                     .char_limit(setup::account::MAX_NAME)
                     .desired_width(f32::INFINITY)
