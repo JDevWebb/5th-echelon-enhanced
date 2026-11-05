@@ -254,7 +254,7 @@ pub(crate) fn name_indices(wanted: &[&'static str]) -> HashMap<&'static str, u32
 
 fn look_up() -> Option<Found> {
     let mut wanted: Vec<&'static str> = ADVERSARIAL.iter().chain(COOPERATIVE.iter()).copied().collect();
-    wanted.extend(["Class", "m_eRoundState", "m_missionState"]);
+    wanted.extend(["Class", "ByteProperty", "m_eRoundState", "m_missionState"]);
     wanted.extend(SETTINGS);
     let names = name_indices(&wanted);
     let class_name = *names.get("Class")?;
@@ -280,13 +280,53 @@ fn look_up() -> Option<Found> {
         .filter_map(|s| Some((*s, named(pack(*names.get(s)?, 0)))))
         .filter(|(_, props)| !props.is_empty())
         .collect();
+    // The round state by name, else by its place: in the Ubisoft Connect build (and likely
+    // every build: the script packages are shared) the name doesn't resolve, but
+    // EAdversarialMatchManager has an unnamed byte property at 970 that runs through the
+    // RoundState values (0 PreMatch, 1 PreRound, 2 Started at the round's start; the gamebox,
+    // 2026-11-05). Taken only when that property is there, so another layout reads nothing.
+    let round_offset = offset("m_eRoundState", "EAdversarialMatchManager").or_else(|| {
+        let owner = *classes.get("EAdversarialMatchManager")? as u32;
+        let byte_property = names.get("ByteProperty").copied();
+        let found = owned_byte_property_at(owner, byte_property, ROUND_STATE_AT);
+        if found {
+            info!("Match state: the round state found by its place ({ROUND_STATE_AT}), its name unresolved");
+        }
+        found.then_some(ROUND_STATE_AT)
+    });
     Some(Found {
-        round_offset: offset("m_eRoundState", "EAdversarialMatchManager"),
+        round_offset,
         mission_offset: offset("m_missionState", "ECooperativeMatchManager"),
         settings,
         names,
         classes,
     })
+}
+
+/// Where EAdversarialMatchManager keeps its round state when its property's name doesn't
+/// resolve (see `look_up`).
+const ROUND_STATE_AT: u16 = 970;
+
+/// Whether class `owner` has a byte property (class named "ByteProperty") at byte `at`: the
+/// whole object hash, once per look-up while the state's name doesn't resolve.
+fn owned_byte_property_at(owner: u32, byte_property: Option<u32>, at: u16) -> bool {
+    let (Some(tables), Some(byte_property)) = (tables(), byte_property) else { return false };
+    for b in 0..0x10000usize {
+        let mut object = read_u32(tables.object_hash + b * 4).unwrap_or(0) as usize;
+        for _ in 0..4096 {
+            if object == 0 {
+                break;
+            }
+            if read_u32(object + 0x18) == Some(owner)
+                && read::<u16>(object + 0x3a) == Some(at)
+                && read_u32(object + 0x24).and_then(|c| read_u32(c as usize + 0x20)) == Some(pack(byte_property, 0))
+            {
+                return true;
+            }
+            object = read_u32(object + 8).unwrap_or(0) as usize;
+        }
+    }
+    false
 }
 
 /// A class and those it's made from (its supers), nearest first.
