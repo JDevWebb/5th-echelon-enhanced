@@ -47,7 +47,7 @@ const BULLETS: usize = 32;
 pub struct Tables {
     pub names: HashMap<&'static str, u32>,
     pawn_classes: Vec<(&'static str, usize)>,
-    character_control: Option<usize>,
+    character_control: Vec<usize>,
     location: u16,
     rotation: Option<u16>,
     ground_speed: Option<u16>,
@@ -64,7 +64,6 @@ pub struct Tables {
 
 /// Where a weapon keeps its shots.
 struct Bullets {
-    class: usize,
     history: u16,
     /// Within a stamp: start, end, time; and a stamp's size.
     start: u16,
@@ -118,16 +117,16 @@ pub fn look_up() -> Option<Tables> {
     let actor = rs::class_named(&names, "Actor")?;
     let pawn = rs::class_named(&names, "Pawn")?;
     let e_pawn = rs::class_named(&names, "EPawn");
-    let character_control = rs::class_named(&names, "CharacterControl");
-    let in_control = |p: &str| character_control.and_then(|c| rs::offset_in(&names, p, c));
-    let bullets = rs::class_named(&names, "BasicWeapon").and_then(|class| {
+    // A name can stand for more than one class object (see is_of): each is tried.
+    let controls = rs::classes_named(&names, "CharacterControl");
+    let in_control = |p: &str| controls.iter().find_map(|c| rs::offset_in(&names, p, *c));
+    let bullets = rs::classes_named(&names, "BasicWeapon").into_iter().find_map(|class| {
         let (start, end, time) = (
             struct_field(&names, "BulletStamp", class, "m_vStart")?,
             struct_field(&names, "BulletStamp", class, "m_vEnd")?,
             struct_field(&names, "BulletStamp", class, "m_fTimeStamp")?,
         );
         Some(Bullets {
-            class,
             history: rs::offset_in(&names, "m_BulletHistory", class)?,
             stride: usize::from(start.max(end).max(time)) + if time > start.max(end) { 4 } else { 12 },
             start,
@@ -147,23 +146,27 @@ pub fn look_up() -> Option<Tables> {
         fire_hold: in_control("m_Input_bFireWeaponHold"),
         last_victim: in_control("m_LastKillVictim"),
         last_kill_time: in_control("m_fLastKillTime"),
-        character_control,
+        character_control: controls.clone(),
         pawn_classes,
         bullets,
         names,
     })
 }
 
-/// Living player characters: their object and class.
+/// Living player characters: their object and class. Each of [`PAWNS`] by its name, whether or
+/// not its class was loaded when the tables were looked up: a match's characters (EMPSpy,
+/// EMPMerc, EMPFirstPersonMerc) are loaded with the match, after the single player ones the
+/// look-up found, so they were never looked for (every game saw none: no recording began and
+/// witness reports saw nobody; the gamebox, 2026-11-05).
 fn characters(t: &Tables, from: &mut HashMap<&'static str, u32>) -> Vec<(usize, &'static str)> {
     let mut out = Vec::new();
-    for (name, class) in &t.pawn_classes {
+    for name in &PAWNS {
         let Some(index) = t.names.get(name) else { continue };
         let start = from.get(name).copied().unwrap_or(1).saturating_sub(NUMBERS / 2).max(1);
         let mut highest = None;
         for number in start..start + NUMBERS * 2 {
             for o in rs::named(rs::pack(*index, number)) {
-                if read_u32(o + 0x24) == Some(*class as u32) && rs::alive(o) {
+                if rs::of_class(o, rs::pack(*index, 0)) && rs::alive(o) {
                     out.push((o, *name));
                     highest = Some(number);
                 }
@@ -198,7 +201,7 @@ pub struct Control {
 
 fn control_of(t: &Tables, character: usize) -> Option<Control> {
     let controller = read_u32(character + usize::from(t.controller?))? as usize;
-    if controller == 0 || !rs::chain(read_u32(controller + 0x24)? as usize).contains(&(t.character_control? as u32)) {
+    if controller == 0 || t.character_control.is_empty() || !rs::made_from(read_u32(controller + 0x24)? as usize, rs::pack(*t.names.get("CharacterControl")?, 0)) {
         return None;
     }
     let at = |o: Option<u16>| o.map(|o| controller + usize::from(o));
@@ -239,7 +242,9 @@ fn sample(t: &Tables, object: usize, class: &'static str) -> Option<Sample> {
         .filter(|w| {
             t.bullets
                 .as_ref()
-                .is_some_and(|b| read_u32(w + 0x24).is_some_and(|c| rs::chain(c as usize).contains(&(b.class as u32))))
+                .is_some_and(|_| {
+                    t.names.get("BasicWeapon").is_some_and(|i| read_u32(w + 0x24).is_some_and(|c| rs::made_from(c as usize, rs::pack(*i, 0))))
+                })
         });
     Some(Sample {
         object,
@@ -277,6 +282,50 @@ pub trait Watcher: Send {
     fn sample(&mut self, tables: &Tables, now: Instant, characters: &[Sample]);
 }
 
+/// The gamebox's `pawns` command (a test build only): every living character (an object whose
+/// class is made from Pawn) in the whole object hash, against those the sampler found.
+#[cfg(feature = "test-commands")]
+fn test_pawns(t: &Tables, list: &[(usize, &'static str)]) {
+    let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else { return };
+    if !std::fs::read_to_string(&file).is_ok_and(|t| t.trim() == "pawns") {
+        return;
+    }
+    let _ = std::fs::remove_file(&file);
+    let Some(pawn) = t.names.get("Pawn").map(|i| rs::pack(*i, 0)) else {
+        info!("Characters: test: no Pawn name");
+        return;
+    };
+    info!("Characters: test: the sampler has {} ({:?})", list.len(), list.iter().map(|(o, c)| format!("{o:#x} {c}")).collect::<Vec<_>>());
+    info!(
+        "Characters: test: names {:?}, classes {:?}",
+        PAWNS.iter().map(|p| (*p, t.names.get(p).map(|i| format!("{:#x}", rs::pack(*i, 0))))).collect::<Vec<_>>(),
+        t.pawn_classes.iter().map(|(n, c)| format!("{n} {c:#x} named {:#x}", read_u32(c + 0x20).unwrap_or(0))).collect::<Vec<_>>()
+    );
+    let mut seen = 0;
+    rs::each_object(|o| {
+        let Some(class) = read_u32(o + 0x24) else { return };
+        if class == 0 || !rs::made_from(class as usize, pawn) {
+            return;
+        }
+        seen += 1;
+        if seen > 64 {
+            return;
+        }
+        let loc = o + usize::from(t.location);
+        info!(
+            "Characters: test: {o:#x} {} ({:#x}) class {class:#x} {} ({:#x}) (exact {}) alive {} at {:?}",
+            read_u32(o + 0x20).and_then(rs::name_text).unwrap_or_default(),
+            read_u32(o + 0x20).unwrap_or(0),
+            read_u32(class as usize + 0x20).and_then(rs::name_text).unwrap_or_default(),
+            read_u32(class as usize + 0x20).unwrap_or(0),
+            t.pawn_classes.iter().any(|(n, _)| t.names.get(n).is_some_and(|i| rs::of_class(o, rs::pack(*i, 0)))),
+            rs::alive(o),
+            (read::<f32>(loc), read::<f32>(loc + 4), read::<f32>(loc + 8)),
+        );
+    });
+    info!("Characters: test: {seen} objects made from Pawn");
+}
+
 /// Samples the characters every [`SAMPLE`] for each of `watchers` (none: nothing starts), in
 /// either build once the engine's tables are found.
 pub fn start(mut watchers: Vec<Box<dyn Watcher>>) {
@@ -295,10 +344,14 @@ pub fn start(mut watchers: Vec<Box<dyn Watcher>>) {
         let mut list: Vec<(usize, &'static str)> = Vec::new();
         loop {
             std::thread::sleep(SAMPLE);
-            if tables.as_ref().is_none_or(|t| !t.has_classes()) && looked.is_none_or(|t| t.elapsed() >= Duration::from_secs(30)) {
+            // Looked up again while a match's parts are missing: its classes (names, shots) are
+            // loaded with the first match, after the game starts.
+            let missing = |t: &Tables| !t.has_classes() || t.nickname.is_none() || t.bullets.is_none();
+            if tables.as_ref().is_none_or(missing) && looked.is_none_or(|t| t.elapsed() >= Duration::from_secs(30)) {
                 looked = Some(Instant::now());
-                tables = look_up();
-                if let Some(t) = tables.as_ref().filter(|t| t.has_classes()) {
+                let was = tables.as_ref().map(|t| (t.has_classes(), t.nickname.is_some(), t.bullets.is_some()));
+                tables = look_up().or(tables);
+                if let Some(t) = tables.as_ref().filter(|t| t.has_classes() && was != Some((true, t.nickname.is_some(), t.bullets.is_some()))) {
                     info!(
                         "Characters: {} player character classes, names {}, facing {}, health {}, weapons' shots {}",
                         t.pawn_classes.len(),
@@ -318,6 +371,8 @@ pub fn start(mut watchers: Vec<Box<dyn Watcher>>) {
                 found_list = Instant::now();
                 list = characters(t, &mut numbers);
             }
+            #[cfg(feature = "test-commands")]
+            test_pawns(t, &list);
             let now = Instant::now();
             let samples: Vec<Sample> = list.iter().filter_map(|(o, class)| sample(t, *o, class)).collect();
             for w in &mut watchers {

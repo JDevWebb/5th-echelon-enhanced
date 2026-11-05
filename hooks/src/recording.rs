@@ -28,7 +28,9 @@ use crate::round_state as rs;
 
 /// Recordings kept in the folder (the oldest go).
 const KEPT: usize = 20;
-/// A recording ends once no character has been seen for this long.
+/// A recording ends once fewer than two characters (what a match needs to begin one) have been
+/// seen for this long: the lobby shows a character of its own (ESam), so "none" never came
+/// after a match and the recording ran on (the gamebox, 2026-11-05).
 const ENDS_AFTER: Duration = Duration::from_secs(30);
 /// And at the latest after this, another beginning straight after.
 const LONGEST: Duration = Duration::from_secs(2 * 3600);
@@ -224,7 +226,7 @@ impl pawns::Watcher for Recorder {
         if self.failed {
             return;
         }
-        if !characters.is_empty() {
+        if characters.len() >= 2 {
             self.last_seen = Some(now);
         }
         let quiet = self.last_seen.is_none_or(|at| now.duration_since(at) >= ENDS_AFTER);

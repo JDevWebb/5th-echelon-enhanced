@@ -193,10 +193,10 @@ pub(crate) fn name_text(packed: u32) -> Option<String> {
 /// and "LevelInfo".
 pub(crate) fn map_name(names: &HashMap<&'static str, u32>) -> Option<String> {
     let index = *names.get("LevelInfo")?;
-    let class = class_named(names, "LevelInfo")? as u32;
+    class_named(names, "LevelInfo")?;
     for number in 1..8 {
         for o in named(pack(index, number)) {
-            if !alive(o) || !read_u32(o + 0x24).is_some_and(|c| chain(c as usize).contains(&class)) {
+            if !alive(o) || !read_u32(o + 0x24).is_some_and(|c| made_from(c as usize, pack(index, 0))) {
                 continue;
             }
             let mut outermost = o;
@@ -329,6 +329,35 @@ fn owned_byte_property_at(owner: u32, byte_property: Option<u32>, at: u16) -> bo
     false
 }
 
+/// Every object in the engine's object hash (a test build's diagnostics: slow, a whole scan).
+#[cfg(feature = "test-commands")]
+pub(crate) fn each_object(mut f: impl FnMut(usize)) {
+    let Some(tables) = tables() else { return };
+    for b in 0..0x10000usize {
+        let mut object = read_u32(tables.object_hash + b * 4).unwrap_or(0) as usize;
+        for _ in 0..4096 {
+            if object == 0 {
+                break;
+            }
+            f(object);
+            object = read_u32(object + 8).unwrap_or(0) as usize;
+        }
+    }
+}
+
+/// Whether `object`'s class is named `packed`. Classes are told by name, not by the class
+/// object: a class can be loaded again (each match's characters and match manager can come
+/// from another class object of the same name than the one looked up first; the gamebox,
+/// 2026-11-05: no character was ever found, so nothing was recorded).
+pub(crate) fn of_class(object: usize, packed: u32) -> bool {
+    read_u32(object + 0x24).is_some_and(|c| c != 0 && read_u32(c as usize + 0x20) == Some(packed))
+}
+
+/// Whether `class` is, or is made from, a class named `packed`.
+pub(crate) fn made_from(class: usize, packed: u32) -> bool {
+    chain(class).iter().any(|c| read_u32(*c as usize + 0x20) == Some(packed))
+}
+
 /// A class and those it's made from (its supers), nearest first.
 pub(crate) fn chain(class: usize) -> Vec<u32> {
     let mut out = Vec::new();
@@ -360,17 +389,52 @@ fn settings_of(found: &Found, object: usize) -> std::collections::BTreeMap<Strin
     out
 }
 
+/// The gamebox's stand-in for Cheat Engine (svm-settings; a test build only): the command file's
+/// `setting <name> <value>` written into the live match manager, as a cheat would.
+#[cfg(feature = "test-commands")]
+fn test_setting(found: &Found, object: usize) {
+    let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else { return };
+    let Ok(text) = std::fs::read_to_string(&file) else { return };
+    let mut words = text.split_whitespace();
+    let (Some("setting"), Some(name), Some(value)) = (words.next(), words.next(), words.next()) else { return };
+    let _ = std::fs::remove_file(&file);
+    let Ok(value) = value.parse::<f32>() else {
+        tracing::warn!("Match settings: test: {value:?} isn't a number");
+        return;
+    };
+    let classes = read_u32(object + 0x24).map(|c| chain(c as usize)).unwrap_or_default();
+    let Some(offset) = found
+        .settings
+        .iter()
+        .find(|(n, _)| *n == name)
+        .and_then(|(_, props)| props.iter().find(|p| read_u32(*p + 0x18).is_some_and(|outer| classes.contains(&outer))))
+        .and_then(|prop| read::<u16>(prop + 0x3a))
+    else {
+        tracing::warn!("Match settings: test: no {name} on this match manager");
+        return;
+    };
+    let at = (object + usize::from(offset)) as *mut u8;
+    // SAFETY: the live manager's own property (its offset from the class), read just before.
+    #[allow(clippy::cast_possible_truncation)]
+    unsafe {
+        if name.starts_with("m_f") {
+            at.cast::<f32>().write_unaligned(value);
+        } else {
+            at.cast::<i32>().write_unaligned(value as i32);
+        }
+    }
+    info!("Match settings: test: {name} set to {value}");
+}
+
 /// The live match manager: a living instance of one of the concrete classes, searched from the
 /// number found last (each match spawns one with the next). Whether it's adversarial.
 fn manager(found: &Found, from: &mut HashMap<&'static str, u32>) -> Option<(usize, bool)> {
     for (name, adversarial) in ADVERSARIAL.iter().map(|n| (n, true)).chain(COOPERATIVE.iter().map(|n| (n, false))) {
-        let (Some(index), Some(class)) = (found.names.get(name), found.classes.get(name)) else {
-            continue;
-        };
+        let Some(index) = found.names.get(name) else { continue };
         let start = from.get(name).copied().unwrap_or(1);
         let mut last = None;
         for number in start..start + NUMBERS {
-            if let Some(o) = named(pack(*index, number)).into_iter().find(|o| read_u32(o + 0x24) == Some(*class as u32) && alive(*o)) {
+            if let Some(o) = named(pack(*index, number)).into_iter().find(|o| of_class(*o, pack(*index, 0)) && alive(*o)) {
                 last = Some((o, number));
             } else if last.is_some() {
                 break;
@@ -398,6 +462,16 @@ pub(crate) fn class_named(names: &HashMap<&'static str, u32>, name: &str) -> Opt
     named(pack(*names.get(name)?, 0))
         .into_iter()
         .find(|o| read_u32(o + 0x24).is_some_and(|c| read_u32(c as usize + 0x20) == Some(pack(class_name, 0))))
+}
+
+/// Every class named `name` (a name can stand for more than one class object: a match's
+/// characters are made from a second EMPSpy class).
+pub(crate) fn classes_named(names: &HashMap<&'static str, u32>, name: &str) -> Vec<usize> {
+    let (Some(class_name), Some(index)) = (names.get("Class"), names.get(name)) else { return Vec::new() };
+    named(pack(*index, 0))
+        .into_iter()
+        .filter(|o| read_u32(o + 0x24).is_some_and(|c| read_u32(c as usize + 0x20) == Some(pack(*class_name, 0))))
+        .collect()
 }
 
 /// The byte offset of property `property` in objects of class `class` (or one it's made from).
@@ -443,6 +517,10 @@ pub fn start() {
                 let offset = if adversarial { f.round_offset } else { f.mission_offset }?;
                 Some(meaning(adversarial, read::<u8>(object + usize::from(offset))?))
             });
+            #[cfg(feature = "test-commands")]
+            if let Some((object, _)) = live {
+                test_setting(f, object);
+            }
             let settings = live.map(|(object, _)| settings_of(f, object)).unwrap_or_default();
             let (state, under_way) = now.unwrap_or_else(|| ("none".to_string(), false));
             let mode = live
