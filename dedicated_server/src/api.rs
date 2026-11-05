@@ -320,7 +320,9 @@ impl MyFriends {
             .ok_or_else(|| friend_error(FriendError::NotFound))
     }
 
-    fn player(&self, person: Person, relation: Relation, sessions: Option<&[crate::storage::LiveSession]>) -> friends::Player {
+    /// `viewer`: who asks, by name: a friend's game they're in already isn't joinable for them
+    /// (the launcher offered Join on a friend in the very match it was in, the gamebox 2026-11-06).
+    fn player(&self, person: Person, relation: Relation, sessions: Option<&[crate::storage::LiveSession]>, viewer: Option<&str>) -> friends::Player {
         // What someone is doing (and with whom) is for their friends; in the "mutual" mode,
         // so is whether they're online.
         let friend = relation == Relation::Friend;
@@ -332,13 +334,16 @@ impl MyFriends {
         let activity = sessions
             .filter(|_| person.is_online && friend)
             .and_then(|s| crate::community_api::activity_of(&person.username, s))
-            .map(|a| friends::Activity {
-                mode: a.mode.into(),
-                room: a.room.into(),
-                with: a.with,
-                map: a.map.unwrap_or_default(),
-                game_mode: a.game_mode.unwrap_or_default(),
-                joinable: a.joinable,
+            .map(|a| {
+                let joinable = a.joinable && !viewer.is_some_and(|v| a.with.iter().any(|w| w.eq_ignore_ascii_case(v)));
+                friends::Activity {
+                    mode: a.mode.into(),
+                    room: a.room.into(),
+                    with: a.with,
+                    map: a.map.unwrap_or_default(),
+                    game_mode: a.game_mode.unwrap_or_default(),
+                    joinable,
+                }
             });
         let status = name_status(&person);
         let mut p = friends::Player {
@@ -800,13 +805,15 @@ impl Friends for MyFriends {
         }
         federation::pull_now_and_then(me);
         let sessions = self.storage.presence_async().await.map_err(internal)?.1;
-        let list = |people: Vec<Person>, relation: Relation| -> Vec<friends::Player> { people.into_iter().map(|p| self.player(p, relation, Some(&sessions))).collect() };
         let me_person = self
             .storage
             .find_person(me)
             .await
             .map_err(internal)?
             .ok_or_else(|| Status::unauthenticated("Unknown user"))?;
+        let me_name = me_person.username.clone();
+        let list =
+            |people: Vec<Person>, relation: Relation| -> Vec<friends::Player> { people.into_iter().map(|p| self.player(p, relation, Some(&sessions), Some(&me_name))).collect() };
         let mut resp = friends::RelationshipsResponse {
             my_name: 0,
             my_identity: me_person.global_id.as_deref().map(identity::short).unwrap_or_default(),
@@ -854,7 +861,7 @@ impl Friends for MyFriends {
             .map_err(internal)?;
         let sessions = self.storage.presence_async().await.map_err(internal)?.1;
         Ok(Response::new(friends::SearchResponse {
-            players: found.into_iter().map(|(p, r)| self.player(p, r, Some(&sessions))).collect(),
+            players: found.into_iter().map(|(p, r)| self.player(p, r, Some(&sessions), None)).collect(),
         }))
     }
 

@@ -240,6 +240,14 @@ pub fn play_button(text: &str) -> egui::Button<'static> {
 }
 
 /// A quieter button, for actions beside the main one.
+/// A button that removes or blocks: the player's yes to something they can't simply undo.
+pub fn danger(text: &str) -> egui::Button<'static> {
+    egui::Button::new(egui::RichText::new(text).color(Color32::from_rgb(0x1a, 0x0d, 0x0b)).family(strong()))
+        .fill(BAD)
+        .corner_radius(4)
+        .min_size(egui::vec2(0.0, 38.0))
+}
+
 pub fn secondary(text: &str) -> egui::Button<'static> {
     egui::Button::new(text.to_string()).corner_radius(4).min_size(egui::vec2(0.0, 38.0))
 }

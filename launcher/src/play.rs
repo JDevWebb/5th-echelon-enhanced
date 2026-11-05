@@ -1907,7 +1907,13 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
             }
             for friend in &friends.online {
                 ui.horizontal(|ui| {
-                    friend_row(ui, theme::OK, &friend.name, friend.activity.as_deref().unwrap_or("Online"), if friends.join_offered { 70.0 } else { 0.0 });
+                    friend_row(
+                        ui,
+                        theme::OK,
+                        &friend.name,
+                        friend.activity.as_deref().unwrap_or("Online"),
+                        if friends.join_offered { 70.0 } else { 0.0 },
+                    );
                     // Join their game, on a server that offers it: the server sends our game into
                     // the party or public match they're in, hosting it or not (the game is started
                     // first if it isn't running). A private match still needs an invite.
@@ -2172,7 +2178,8 @@ fn people_page(play: &mut Play, game: &Game, ui: &mut egui::Ui) {
             ui.label(RichText::new(title).family(theme::strong()));
             ui.label(theme::muted(means));
             ui.horizontal(|ui| {
-                if ui.add_enabled(!busy, theme::secondary(button)).clicked() {
+                // In red, as the overlay's: the yes to a removal or a block.
+                if ui.add_enabled(!busy, theme::danger(button)).clicked() {
                     act = Some((action, p.clone()));
                     w.asking = None;
                 }
