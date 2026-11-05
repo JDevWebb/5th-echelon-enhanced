@@ -139,13 +139,19 @@ fn clean(text: &str, max: usize) -> String {
 }
 
 /// A detail object as sent, its strings cleaned and kept short. An object in it is kept one
-/// level deep (a failed join's `data`), with up to 8 plain values.
+/// level deep (a failed join's `data`), with up to 8 values; a list (here or in that object) of
+/// up to 16 plain values: a match's `rooms`, a witness's `over`, a round's setting changes
+/// (`changes: {name: [before, after]}`, which came empty before, the gamebox, 2026-11-05).
 fn clean_detail(v: &Value) -> Option<Value> {
     let Value::Object(map) = v else { return None };
     let plain = |v: &Value| match v {
         Value::String(s) => Some(Value::String(clean(s, 200))),
         Value::Number(_) | Value::Bool(_) | Value::Null => Some(v.clone()),
         _ => None,
+    };
+    let plain_or_list = |v: &Value| match v {
+        Value::Array(items) => Some(Value::Array(items.iter().take(16).filter_map(plain).collect())),
+        _ => plain(v),
     };
     let mut out = serde_json::Map::new();
     for (k, v) in map.iter().take(24) {
@@ -154,10 +160,10 @@ fn clean_detail(v: &Value) -> Option<Value> {
             Value::Object(inner) => inner
                 .iter()
                 .take(8)
-                .filter_map(|(k, v)| Some((clean(k, 32), plain(v)?)))
+                .filter_map(|(k, v)| Some((clean(k, 32), plain_or_list(v)?)))
                 .collect::<serde_json::Map<_, _>>()
                 .into(),
-            _ => match plain(v) {
+            _ => match plain_or_list(v) {
                 Some(v) => v,
                 None => continue,
             },
@@ -2450,9 +2456,12 @@ mod tests {
             problems(&[old])[0]["text"],
             "Couldn't join Theusma01's room (DATA_VERSION_MISMATCH: different game data (a mod), 0xeea440ee)"
         );
-        // The data object is kept as sent (one level deep).
-        let kept = super::clean_detail(&json!({ "data": { "mine": "0xdd55acd3", "deep": { "no": 1 } }, "list": [1] })).unwrap();
-        assert_eq!(kept, json!({ "data": { "mine": "0xdd55acd3" } }));
+        // The data object is kept as sent (one level deep); lists of plain values too.
+        let kept = super::clean_detail(&json!({ "data": { "mine": "0xdd55acd3", "deep": { "no": 1 } }, "list": [1, [2], { "x": 3 }] })).unwrap();
+        assert_eq!(kept, json!({ "data": { "mine": "0xdd55acd3" }, "list": [1] }));
+        // A round's settings changed while it ran, as the matchmaking server sends it.
+        let during = json!({ "during": true, "changes": { "m_fRespawnTimeSpyTeam": [20.0, 500.0] }, "rooms": [206] });
+        assert_eq!(super::clean_detail(&during).unwrap(), during);
     }
 
     /// Theusma01 on eu1, 10-09 06:33: their relayed traffic stopped and so did their launcher
