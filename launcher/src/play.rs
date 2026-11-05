@@ -1830,13 +1830,16 @@ fn status_card(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &eg
         },
         |ui| {
             ui.horizontal_wrapped(|ui| {
+                // Each link whole: the row wraps between them, not inside one ("Connection" /
+                // "test" across two lines, the second at the window's edge, 1150 wide).
+                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                 if ui.link(if show_all { "Show less" } else { "All checks" }).clicked() {
                     toggle = true;
                 }
                 ui.label(theme::muted("·"));
                 if checking {
                     ui.spinner();
-                } else if ui.link("Check again").clicked() {
+                } else if ui.link("Recheck").on_hover_text("Run every check again").clicked() {
                     again = true;
                 }
                 ui.label(theme::muted("·"));
