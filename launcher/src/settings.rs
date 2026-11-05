@@ -550,6 +550,10 @@ fn internet_play(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
         NatMode::Relay => "All match traffic goes through the server. Use it when direct connections fail; it adds a little delay.",
         NatMode::Off => "The game advertises this PC's local address, as it always did: other players must be on your network or VPN.",
     }));
+    if mode == NatMode::Off {
+        // Off on the public network: nobody outside joins, and relayed hosts can't be joined.
+        ui.label(egui::RichText::new("On a server with a relay, like the community network, players on the internet can't join you, and you can't join players whose games play through the relay. Use it for LAN or VPN servers.").color(theme::WARN));
+    }
     ui.add_enabled_ui(mode != NatMode::Off, |ui| {
         theme::switch(ui, &mut port_mapping, "Open the game's port on the router (UPnP / NAT-PMP)")
             .on_hover_text("Asks the router to forward UDP 13000 to this PC while the game runs, so other players can always reach you directly.");

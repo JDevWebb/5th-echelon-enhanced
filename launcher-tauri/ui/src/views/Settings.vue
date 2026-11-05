@@ -135,6 +135,7 @@
                 <button v-for="[id, l] in NAT" :key="id" type="button" :class="{ on: n.nat === id }" :disabled="!!view.managed" @click="set('nat', id)">{{ l }}</button>
               </div>
               <p class="muted">{{ NAT_SAYS[n.nat] }}</p>
+              <p v-if="n.nat === 'off'" class="warn">{{ NAT_OFF_WARNING }}</p>
               <Switch
                 :on="n.port_mapping"
                 :disabled="n.nat === 'off' || !!view.managed"
@@ -412,6 +413,8 @@ const NAT_SAYS = {
   relay: 'All match traffic goes through the server. Use it when direct connections fail; it adds a little delay.',
   off: 'The game advertises this PC’s local address, as it always did: other players must be on your network or VPN.',
 };
+// Off on the public network: nobody outside joins, and relayed hosts can't be joined (the gamebox, 2026-11-06).
+const NAT_OFF_WARNING = 'On a server with a relay, like the community network, players on the internet can’t join you, and you can’t join players whose games play through the relay. Use it for LAN or VPN servers.';
 
 const view = ref(null);
 const section = ref(props.open ?? 'game');
