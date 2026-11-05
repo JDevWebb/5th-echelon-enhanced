@@ -37,6 +37,8 @@ const PAWNS: [&str; 9] = [
     "ESPFirstPerson",
     "EPlayerSPFPPawn",
 ];
+/// Look-ups again once the classes are found, while names or shots are missing.
+const LOOKS_AGAIN: u32 = 40;
 pub const SAMPLE: Duration = Duration::from_millis(100);
 /// Instance numbers looked through, past the highest found.
 const NUMBERS: u32 = 48;
@@ -78,6 +80,27 @@ impl Tables {
     }
 }
 
+/// Where the properties are when their names don't resolve (the shipped game: GroundSpeed,
+/// CurrentWeapon and CharacterControl's m_MP* among them), in the order `look_up` wants them:
+/// the owner class, the property's kind and its offset. Worked out offline from the script
+/// packages (each class's properties in declared order and size from its super's end: the
+/// RE folder's lead_layout.py), checked against ten offsets the engine resolves by name
+/// (m_eRoundState 970, the round settings on three match managers, Pawn.Health 1120,
+/// Pawn.Controller 856, Actor.Location 156); each taken only when this game has a property of
+/// that kind in that place (rs::Places).
+const PLACES: [(&str, &str, u16); 7] = [
+    ("Pawn", "FloatProperty", 892),               // GroundSpeed
+    ("EPawn", "ObjectProperty", 1208),            // CurrentWeapon
+    ("CharacterControl", "StrProperty", 1760),    // m_MPNickname
+    ("CharacterControl", "IntProperty", 1756),    // m_MPTeamId
+    ("CharacterControl", "ByteProperty", 1371),   // m_Input_bFireWeaponHold
+    ("CharacterControl", "ObjectProperty", 1348), // m_LastKillVictim
+    ("CharacterControl", "FloatProperty", 1344),  // m_fLastKillTime
+];
+/// BasicWeapon.m_BulletHistory[32] (BulletStamp: m_vStart 0, m_vEnd 12, m_fTimeStamp 24; 28
+/// bytes), as PLACES.
+const BULLET_HISTORY_AT: u16 = 1952;
+
 /// A field `field` of the struct `name` declared in `class`: its offset in the struct.
 fn struct_field(names: &HashMap<&'static str, u32>, name: &str, class: usize, field: &str) -> Option<u16> {
     let strukt = rs::named(rs::pack(*names.get(name)?, 0)).into_iter().find(|o| read_u32(o + 0x18) == Some(class as u32))?;
@@ -111,6 +134,12 @@ pub fn look_up() -> Option<Tables> {
         "m_vStart",
         "m_vEnd",
         "m_fTimeStamp",
+        "StrProperty",
+        "IntProperty",
+        "ByteProperty",
+        "ObjectProperty",
+        "FloatProperty",
+        "StructProperty",
     ]);
     let names = rs::name_indices(&wanted);
     let pawn_classes: Vec<(&'static str, usize)> = PAWNS.iter().filter_map(|p| Some((*p, rs::class_named(&names, p)?))).collect();
@@ -120,7 +149,8 @@ pub fn look_up() -> Option<Tables> {
     // A name can stand for more than one class object (see is_of): each is tried.
     let controls = rs::classes_named(&names, "CharacterControl");
     let in_control = |p: &str| controls.iter().find_map(|c| rs::offset_in(&names, p, *c));
-    let bullets = rs::classes_named(&names, "BasicWeapon").into_iter().find_map(|class| {
+    let weapons = rs::classes_named(&names, "BasicWeapon");
+    let bullets = weapons.iter().copied().find_map(|class| {
         let (start, end, time) = (
             struct_field(&names, "BulletStamp", class, "m_vStart")?,
             struct_field(&names, "BulletStamp", class, "m_vEnd")?,
@@ -134,18 +164,52 @@ pub fn look_up() -> Option<Tables> {
             time,
         })
     });
+    // By name, else by place (PLACES): most of these names don't resolve in the shipped game.
+    let named = [
+        rs::offset_in(&names, "GroundSpeed", pawn),
+        e_pawn.and_then(|c| rs::offset_in(&names, "CurrentWeapon", c)),
+        in_control("m_MPNickname"),
+        in_control("m_MPTeamId"),
+        in_control("m_Input_bFireWeaponHold"),
+        in_control("m_LastKillVictim"),
+        in_control("m_fLastKillTime"),
+    ];
+    let places = if named.iter().any(Option::is_none) || bullets.is_none() {
+        let mut all = controls.clone();
+        all.extend(rs::classes_named(&names, "Pawn"));
+        all.extend(rs::classes_named(&names, "EPawn"));
+        all.extend(&weapons);
+        rs::Places::of(&all)
+    } else {
+        rs::Places::none()
+    };
+    let owners = |class: &str| rs::classes_named(&names, class);
+    let placed: Vec<Option<u16>> = PLACES
+        .iter()
+        .zip(named)
+        .map(|((class, kind, at), named)| named.or_else(|| places.at(&names, &owners(class), kind, *at)))
+        .collect();
+    let bullets = bullets.or_else(|| {
+        Some(Bullets {
+            history: places.at(&names, &weapons, "StructProperty", BULLET_HISTORY_AT)?,
+            stride: 28,
+            start: 0,
+            end: 12,
+            time: 24,
+        })
+    });
     Some(Tables {
         location: rs::offset_in(&names, "Location", actor)?,
         rotation: rs::offset_in(&names, "Rotation", actor),
-        ground_speed: rs::offset_in(&names, "GroundSpeed", pawn),
+        ground_speed: placed[0],
         health: rs::offset_in(&names, "Health", pawn),
         controller: rs::offset_in(&names, "Controller", pawn),
-        weapon: e_pawn.and_then(|c| rs::offset_in(&names, "CurrentWeapon", c)),
-        nickname: in_control("m_MPNickname"),
-        team: in_control("m_MPTeamId"),
-        fire_hold: in_control("m_Input_bFireWeaponHold"),
-        last_victim: in_control("m_LastKillVictim"),
-        last_kill_time: in_control("m_fLastKillTime"),
+        weapon: placed[1],
+        nickname: placed[2],
+        team: placed[3],
+        fire_hold: placed[4],
+        last_victim: placed[5],
+        last_kill_time: placed[6],
         character_control: controls.clone(),
         pawn_classes,
         bullets,
@@ -240,11 +304,11 @@ fn sample(t: &Tables, object: usize, class: &'static str) -> Option<Sample> {
         .filter(|w| *w != 0)
         .map(|w| w as usize)
         .filter(|w| {
-            t.bullets
-                .as_ref()
-                .is_some_and(|_| {
-                    t.names.get("BasicWeapon").is_some_and(|i| read_u32(w + 0x24).is_some_and(|c| rs::made_from(c as usize, rs::pack(*i, 0))))
-                })
+            t.bullets.as_ref().is_some_and(|_| {
+                t.names
+                    .get("BasicWeapon")
+                    .is_some_and(|i| read_u32(w + 0x24).is_some_and(|c| rs::made_from(c as usize, rs::pack(*i, 0))))
+            })
         });
     Some(Sample {
         object,
@@ -286,7 +350,9 @@ pub trait Watcher: Send {
 /// class is made from Pawn) in the whole object hash, against those the sampler found.
 #[cfg(feature = "test-commands")]
 fn test_pawns(t: &Tables, list: &[(usize, &'static str)]) {
-    let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else { return };
+    let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else {
+        return;
+    };
     if !std::fs::read_to_string(&file).is_ok_and(|t| t.trim() == "pawns") {
         return;
     }
@@ -295,11 +361,18 @@ fn test_pawns(t: &Tables, list: &[(usize, &'static str)]) {
         info!("Characters: test: no Pawn name");
         return;
     };
-    info!("Characters: test: the sampler has {} ({:?})", list.len(), list.iter().map(|(o, c)| format!("{o:#x} {c}")).collect::<Vec<_>>());
+    info!(
+        "Characters: test: the sampler has {} ({:?})",
+        list.len(),
+        list.iter().map(|(o, c)| format!("{o:#x} {c}")).collect::<Vec<_>>()
+    );
     info!(
         "Characters: test: names {:?}, classes {:?}",
         PAWNS.iter().map(|p| (*p, t.names.get(p).map(|i| format!("{:#x}", rs::pack(*i, 0))))).collect::<Vec<_>>(),
-        t.pawn_classes.iter().map(|(n, c)| format!("{n} {c:#x} named {:#x}", read_u32(c + 0x20).unwrap_or(0))).collect::<Vec<_>>()
+        t.pawn_classes
+            .iter()
+            .map(|(n, c)| format!("{n} {c:#x} named {:#x}", read_u32(c + 0x20).unwrap_or(0)))
+            .collect::<Vec<_>>()
     );
     let mut seen = 0;
     rs::each_object(|o| {
@@ -326,6 +399,34 @@ fn test_pawns(t: &Tables, list: &[(usize, &'static str)]) {
     info!("Characters: test: {seen} objects made from Pawn");
 }
 
+/// The offsets the look-up resolved by name (a test build's `offsets` command: route 2's check).
+#[cfg(feature = "test-commands")]
+pub(crate) fn test_offsets() {
+    let names = rs::name_indices(&[
+        "Class",
+        "Actor",
+        "Pawn",
+        "EPawn",
+        "Location",
+        "Rotation",
+        "GroundSpeed",
+        "Health",
+        "Controller",
+        "CurrentWeapon",
+    ]);
+    for (class, props) in [
+        ("Actor", &["Location", "Rotation"][..]),
+        ("Pawn", &["GroundSpeed", "Health", "Controller"][..]),
+        ("EPawn", &["CurrentWeapon"][..]),
+    ] {
+        for c in rs::classes_named(&names, class) {
+            for p in props {
+                info!("Characters: test: offsets: {class}.{p} {:?}", rs::offset_in(&names, p, c));
+            }
+        }
+    }
+}
+
 /// Samples the characters every [`SAMPLE`] for each of `watchers` (none: nothing starts), in
 /// either build once the engine's tables are found.
 pub fn start(mut watchers: Vec<Box<dyn Watcher>>) {
@@ -339,6 +440,7 @@ pub fn start(mut watchers: Vec<Box<dyn Watcher>>) {
     let spawned = std::thread::Builder::new().name("fe-pawns".into()).spawn(move || {
         let mut tables: Option<Tables> = None;
         let mut looked: Option<Instant> = None;
+        let mut again = 0;
         let mut numbers = HashMap::new();
         let mut found_list = Instant::now() - Duration::from_secs(10);
         let mut list: Vec<(usize, &'static str)> = Vec::new();
@@ -346,12 +448,19 @@ pub fn start(mut watchers: Vec<Box<dyn Watcher>>) {
             std::thread::sleep(SAMPLE);
             // Looked up again while a match's parts are missing: its classes (names, shots) are
             // loaded with the first match, after the game starts.
-            let missing = |t: &Tables| !t.has_classes() || t.nickname.is_none() || t.bullets.is_none();
+            // At most LOOKS_AGAIN times once the classes are found: each is a whole scan.
+            let missing = |t: &Tables| !t.has_classes() || ((t.nickname.is_none() || t.bullets.is_none()) && again < LOOKS_AGAIN);
             if tables.as_ref().is_none_or(missing) && looked.is_none_or(|t| t.elapsed() >= Duration::from_secs(30)) {
                 looked = Some(Instant::now());
+                if tables.as_ref().is_some_and(Tables::has_classes) {
+                    again += 1;
+                }
                 let was = tables.as_ref().map(|t| (t.has_classes(), t.nickname.is_some(), t.bullets.is_some()));
                 tables = look_up().or(tables);
-                if let Some(t) = tables.as_ref().filter(|t| t.has_classes() && was != Some((true, t.nickname.is_some(), t.bullets.is_some()))) {
+                if let Some(t) = tables
+                    .as_ref()
+                    .filter(|t| t.has_classes() && was != Some((true, t.nickname.is_some(), t.bullets.is_some())))
+                {
                     info!(
                         "Characters: {} player character classes, names {}, facing {}, health {}, weapons' shots {}",
                         t.pawn_classes.len(),

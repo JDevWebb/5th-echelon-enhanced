@@ -83,6 +83,8 @@ const NUMBERS: u32 = 64;
 /// How long before the classes are looked up again, while they aren't loaded yet (a look-up
 /// reads the whole name table).
 const LOOK_AGAIN: Duration = Duration::from_secs(30);
+/// Look-ups again once the classes are found, while a state's place is still missing.
+const LOOKS_AGAIN: u32 = 40;
 
 /// The concrete match managers: Spies vs Mercs modes, then co-op ones.
 const ADVERSARIAL: [&str; 7] = [
@@ -285,18 +287,33 @@ fn look_up() -> Option<Found> {
     // EAdversarialMatchManager has an unnamed byte property at 970 that runs through the
     // RoundState values (0 PreMatch, 1 PreRound, 2 Started at the round's start; the gamebox,
     // 2026-11-05). Taken only when that property is there, so another layout reads nothing.
-    let round_offset = offset("m_eRoundState", "EAdversarialMatchManager").or_else(|| {
-        let owner = *classes.get("EAdversarialMatchManager")? as u32;
-        let byte_property = names.get("ByteProperty").copied();
-        let found = owned_byte_property_at(owner, byte_property, ROUND_STATE_AT);
-        if found {
+    let named_round = offset("m_eRoundState", "EAdversarialMatchManager");
+    let named_mission = offset("m_missionState", "ECooperativeMatchManager");
+    let owners = |name: &str| classes_named(&names, name);
+    let places = if named_round.is_none() || named_mission.is_none() {
+        let mut all = owners("EAdversarialMatchManager");
+        all.extend(owners("ECooperativeMatchManager"));
+        Places::of(&all)
+    } else {
+        Places::none()
+    };
+    let round_offset = named_round.or_else(|| {
+        let at = places.at(&names, &owners("EAdversarialMatchManager"), "ByteProperty", ROUND_STATE_AT);
+        if at.is_some() && !SAID_ROUND.swap(true, std::sync::atomic::Ordering::Relaxed) {
             info!("Match state: the round state found by its place ({ROUND_STATE_AT}), its name unresolved");
         }
-        found.then_some(ROUND_STATE_AT)
+        at
+    });
+    let mission_offset = named_mission.or_else(|| {
+        let at = places.at(&names, &owners("ECooperativeMatchManager"), "ByteProperty", MISSION_STATE_AT);
+        if at.is_some() && !SAID_MISSION.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            info!("Match state: the mission state found by its place ({MISSION_STATE_AT}), its name unresolved");
+        }
+        at
     });
     Some(Found {
         round_offset,
-        mission_offset: offset("m_missionState", "ECooperativeMatchManager"),
+        mission_offset,
         settings,
         names,
         classes,
@@ -306,27 +323,56 @@ fn look_up() -> Option<Found> {
 /// Where EAdversarialMatchManager keeps its round state when its property's name doesn't
 /// resolve (see `look_up`).
 const ROUND_STATE_AT: u16 = 970;
+/// Where ECooperativeMatchManager keeps its mission state (m_missionState, unresolved the same
+/// way): from the script packages' layout (see [`Places`]).
+const MISSION_STATE_AT: u16 = 940;
+static SAID_ROUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static SAID_MISSION: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Whether class `owner` has a byte property (class named "ByteProperty") at byte `at`: the
-/// whole object hash, once per look-up while the state's name doesn't resolve.
-fn owned_byte_property_at(owner: u32, byte_property: Option<u32>, at: u16) -> bool {
-    let (Some(tables), Some(byte_property)) = (tables(), byte_property) else { return false };
-    for b in 0..0x10000usize {
-        let mut object = read_u32(tables.object_hash + b * 4).unwrap_or(0) as usize;
-        for _ in 0..4096 {
-            if object == 0 {
-                break;
-            }
-            if read_u32(object + 0x18) == Some(owner)
-                && read::<u16>(object + 0x3a) == Some(at)
-                && read_u32(object + 0x24).and_then(|c| read_u32(c as usize + 0x20)) == Some(pack(byte_property, 0))
-            {
-                return true;
-            }
-            object = read_u32(object + 8).unwrap_or(0) as usize;
-        }
+/// The properties of some classes as the engine has them, named or not: (owner class, offset,
+/// the property's class's packed name). Many property names don't resolve in the shipped game
+/// (m_eRoundState, m_missionState, m_MPNickname, GroundSpeed, CurrentWeapon...), but their
+/// objects are there, with their owner and offset. One whole scan of the object hash.
+pub(crate) struct Places(Vec<(u32, u16, u32)>);
+
+impl Places {
+    pub(crate) fn none() -> Self {
+        Self(Vec::new())
     }
-    false
+
+    pub(crate) fn of(owners: &[usize]) -> Self {
+        let mut out = Vec::new();
+        let Some(tables) = tables() else { return Self(out) };
+        let owners: Vec<u32> = owners.iter().map(|o| *o as u32).collect();
+        if owners.is_empty() {
+            return Self(out);
+        }
+        for b in 0..0x10000usize {
+            let mut object = read_u32(tables.object_hash + b * 4).unwrap_or(0) as usize;
+            for _ in 0..4096 {
+                if object == 0 {
+                    break;
+                }
+                if let Some(owner) = read_u32(object + 0x18).filter(|o| owners.contains(o)) {
+                    if let (Some(at), Some(kind)) = (read::<u16>(object + 0x3a), read_u32(object + 0x24).and_then(|c| read_u32(c as usize + 0x20))) {
+                        out.push((owner, at, kind));
+                    }
+                }
+                object = read_u32(object + 8).unwrap_or(0) as usize;
+            }
+        }
+        Self(out)
+    }
+
+    /// `at`, when one of `owners` has a property of the kind named `kind` (e.g. "ByteProperty")
+    /// there: the offsets worked out offline (the script packages' declared order and sizes,
+    /// checked against ten the engine resolves by name: the round state's 970, the round
+    /// settings on three match managers, Pawn.Health and Controller, Actor.Location), taken
+    /// only when this game has such a property in that place.
+    pub(crate) fn at(&self, names: &HashMap<&'static str, u32>, owners: &[usize], kind: &str, at: u16) -> Option<u16> {
+        let kind = pack(*names.get(kind)?, 0);
+        self.0.iter().any(|(o, a, k)| owners.contains(&(*o as usize)) && *a == at && *k == kind).then_some(at)
+    }
 }
 
 /// Every object in the engine's object hash (a test build's diagnostics: slow, a whole scan).
@@ -393,10 +439,30 @@ fn settings_of(found: &Found, object: usize) -> std::collections::BTreeMap<Strin
 /// `setting <name> <value>` written into the live match manager, as a cheat would.
 #[cfg(feature = "test-commands")]
 fn test_setting(found: &Found, object: usize) {
-    let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else { return };
+    let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else {
+        return;
+    };
     let Ok(text) = std::fs::read_to_string(&file) else { return };
+    if text.trim() == "offsets" {
+        let _ = std::fs::remove_file(&file);
+        // The settings' offsets as the engine has them, by their owner class (route 2's check).
+        for (name, props) in &found.settings {
+            let at: Vec<String> = props
+                .iter()
+                .map(|p| {
+                    let owner = read_u32(*p + 0x18).and_then(|o| read_u32(o as usize + 0x20)).and_then(name_text).unwrap_or_default();
+                    format!("{owner} {}", read::<u16>(*p + 0x3a).unwrap_or(0))
+                })
+                .collect();
+            info!("Match settings: test: offsets: {name} {at:?}");
+        }
+        crate::pawns::test_offsets();
+        return;
+    }
     let mut words = text.split_whitespace();
-    let (Some("setting"), Some(name), Some(value)) = (words.next(), words.next(), words.next()) else { return };
+    let (Some("setting"), Some(name), Some(value)) = (words.next(), words.next(), words.next()) else {
+        return;
+    };
     let _ = std::fs::remove_file(&file);
     let Ok(value) = value.parse::<f32>() else {
         tracing::warn!("Match settings: test: {value:?} isn't a number");
@@ -467,7 +533,9 @@ pub(crate) fn class_named(names: &HashMap<&'static str, u32>, name: &str) -> Opt
 /// Every class named `name` (a name can stand for more than one class object: a match's
 /// characters are made from a second EMPSpy class).
 pub(crate) fn classes_named(names: &HashMap<&'static str, u32>, name: &str) -> Vec<usize> {
-    let (Some(class_name), Some(index)) = (names.get("Class"), names.get(name)) else { return Vec::new() };
+    let (Some(class_name), Some(index)) = (names.get("Class"), names.get(name)) else {
+        return Vec::new();
+    };
     named(pack(*index, 0))
         .into_iter()
         .filter(|o| read_u32(o + 0x24).is_some_and(|c| read_u32(c as usize + 0x20) == Some(pack(*class_name, 0))))
@@ -491,15 +559,26 @@ pub fn start() {
     let spawned = std::thread::Builder::new().name("fe-round-state".into()).spawn(|| {
         let mut found: Option<Found> = None;
         let mut looked: Option<Instant> = None;
+        // Looked up again while a state's place is missing (co-op's classes load with a co-op
+        // lobby, not at the start), a limited number of times: each is a whole scan.
+        let mut again = 0;
         let mut numbers = HashMap::new();
         let mut said: Option<(String, bool, Instant)> = None;
         let mut said_settings: Option<std::collections::BTreeMap<String, f32>> = None;
         loop {
             std::thread::sleep(READ_EVERY);
             // Looked up once the script classes are loaded (the first match manager).
-            if found.as_ref().is_none_or(|f| f.classes.is_empty()) && looked.is_none_or(|t| t.elapsed() >= LOOK_AGAIN) {
+            let missing = |f: &Found| f.classes.is_empty() || ((f.round_offset.is_none() || f.mission_offset.is_none()) && again < LOOKS_AGAIN);
+            if found.as_ref().is_none_or(missing) && looked.is_none_or(|t| t.elapsed() >= LOOK_AGAIN) {
                 looked = Some(Instant::now());
-                found = look_up();
+                if found.as_ref().is_some_and(|f| !f.classes.is_empty()) {
+                    again += 1;
+                }
+                let before = found.as_ref().map(|f| (f.round_offset, f.mission_offset));
+                found = look_up().or(found);
+                if before.is_some() && before == found.as_ref().map(|f| (f.round_offset, f.mission_offset)) {
+                    continue;
+                }
                 if let Some(f) = &found {
                     if !f.classes.is_empty() {
                         info!(
