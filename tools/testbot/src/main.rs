@@ -4370,6 +4370,9 @@ async fn run() -> Result<()> {
     if args.first().map(String::as_str) == Some("friends") {
         return make_friends(server, &args[1..]).await;
     }
+    if args.first().map(String::as_str) == Some("unfriend") {
+        return unfriend(server, &args[1..]).await;
+    }
     if args.first().map(String::as_str) == Some("invite") {
         return invite_to(server, &args[1..]).await;
     }
@@ -4595,6 +4598,18 @@ async fn make_friends(server: IpAddr, names: &[String]) -> Result<()> {
             println!("{} and {}: friends", a.name, b.name);
         }
     }
+    Ok(())
+}
+
+/// `unfriend A B`: A removes B from its friends (the gamebox's party tests: a member who isn't
+/// the host's friend).
+async fn unfriend(server: IpAddr, names: &[String]) -> Result<()> {
+    let [a, b] = names else {
+        return Err(eyre!("unfriend NAME NAME"));
+    };
+    let a = testbot::bot::ApiPlayer::sign_in(server, a, &account_password()?).await?;
+    let now = a.friend_change("remove", b).await.map_err(|e| eyre!("{} removing {b}: {e}", a.name))?;
+    println!("{} and {b}: {now:?}", a.name);
     Ok(())
 }
 

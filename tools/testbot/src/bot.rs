@@ -1625,6 +1625,7 @@ impl ApiPlayer {
         let resp = match change {
             "request" => c.request(req).await?,
             "accept" => c.accept(req).await?,
+            "remove" => c.remove(req).await?,
             other => return Err(tonic::Status::invalid_argument(format!("no change {other}"))),
         };
         Ok(resp.into_inner().relation())
