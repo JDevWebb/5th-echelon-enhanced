@@ -1907,7 +1907,7 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
             }
             for friend in &friends.online {
                 ui.horizontal(|ui| {
-                    friend_row(ui, theme::OK, &friend.name, friend.activity.as_deref().unwrap_or("Online"));
+                    friend_row(ui, theme::OK, &friend.name, friend.activity.as_deref().unwrap_or("Online"), if friends.join_offered { 70.0 } else { 0.0 });
                     // Join their game, on a server that offers it: the server sends our game into
                     // the party or public match they're in, hosting it or not (the game is started
                     // first if it isn't running). A private match still needs an invite.
@@ -1935,7 +1935,7 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
             for friend in &friends.elsewhere {
                 let server = if friend.region.is_empty() { friend.server.clone() } else { friend.region.clone() };
                 ui.horizontal(|ui| {
-                    friend_row(ui, theme::WARN, &friend.username, &format!("On {server}"));
+                    friend_row(ui, theme::WARN, &friend.username, &format!("On {server}"), 70.0);
                     // Only a server on the internet: one server can't send players into their own network.
                     let public = setup::directory::listable_host(&friend.host);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -2400,7 +2400,7 @@ fn online_now(play: &mut Play, game: &Game, others: &[flow::OnlinePlayer], playi
     let mut act: Option<(PlayerAction, flow::OnlinePlayer)> = None;
     for p in others.iter().take(ONLINE_SHOWN) {
         let row = ui.horizontal(|ui| {
-            friend_row(ui, theme::OK, &p.name, p.activity.as_deref().unwrap_or("Online"));
+            friend_row(ui, theme::OK, &p.name, p.activity.as_deref().unwrap_or("Online"), if playing { 190.0 } else { 110.0 });
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if playing && ui.add_enabled(!busy, theme::secondary("Invite")).on_hover_text("To the game you're in").clicked() {
                     act = Some((PlayerAction::Invite, p.clone()));
@@ -2456,14 +2456,19 @@ fn playing_now(ui: &mut egui::Ui, now: &server_api::playing::Playing) {
 }
 
 /// One friend: a presence dot, the name, and a line under it.
-fn friend_row(ui: &mut egui::Ui, dot: egui::Color32, name: &str, line: &str) {
+/// `reserve`: room kept free on the right (a Join button after it): the name and line are cut
+/// short with an ellipsis rather than run under the button (the Squad tab, 1150 wide).
+fn friend_row(ui: &mut egui::Ui, dot: egui::Color32, name: &str, line: &str, reserve: f32) {
+    let width = (ui.available_width() - reserve).max(80.0);
     ui.horizontal(|ui| {
+        ui.set_max_width(width);
         let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 30.0), egui::Sense::hover());
         ui.painter().circle_filled(egui::pos2(rect.center().x, rect.top() + 9.0), 4.0, dot);
         ui.vertical(|ui| {
+            ui.set_max_width(width - 18.0);
             ui.spacing_mut().item_spacing.y = 1.0;
-            ui.label(RichText::new(name).family(theme::strong()));
-            ui.label(theme::muted(line).small());
+            ui.add(egui::Label::new(RichText::new(name).family(theme::strong())).truncate()).on_hover_text(name);
+            ui.add(egui::Label::new(theme::muted(line).small()).truncate()).on_hover_text(line);
         });
     });
     ui.add_space(4.0);
