@@ -3738,10 +3738,21 @@ fn matches_page(m: &mut MatchesPage, server: Option<&str>, ready: bool, act: &mu
                     ui.label(RichText::new(summary).color(theme::SOFT).small());
                 });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_enabled(ready, theme::primary("Quick match").min_size(egui::vec2(0.0, 40.0))).clicked() {
+                    // Off while the game runs (the launcher can't take it through its menus then):
+                    // said on hover, not just greyed out.
+                    const RUNNING: &str = "The game is running: use Quick match in its online menu, or close it first";
+                    if ui
+                        .add_enabled(ready, theme::primary("Quick match").min_size(egui::vec2(0.0, 40.0)))
+                        .on_disabled_hover_text(RUNNING)
+                        .clicked()
+                    {
                         *act = Some(MatchAct::Quick(quick_mode));
                     }
-                    if ui.add_enabled(ready, theme::secondary("New match").min_size(egui::vec2(0.0, 40.0))).clicked() {
+                    if ui
+                        .add_enabled(ready, theme::secondary("New match").min_size(egui::vec2(0.0, 40.0)))
+                        .on_disabled_hover_text(RUNNING)
+                        .clicked()
+                    {
                         *act = Some(MatchAct::New(quick_mode));
                     }
                 });
@@ -4036,6 +4047,9 @@ fn person_row(ui: &mut egui::Ui, sel: &crate::matches::Lobby, p: &crate::matches
                 if p.host {
                     ui.label(RichText::new("HOST").monospace().size(10.5).color(theme::ACCENT));
                 }
+                if p.me {
+                    ui.label(RichText::new("you").color(theme::SOFT).small());
+                }
                 if p.friend {
                     ui.label(RichText::new("friend").color(theme::ACCENT).small());
                 } else if p.party != 0 {
@@ -4086,7 +4100,12 @@ fn match_detail(m: &mut MatchesPage, sel: &crate::matches::Lobby, act: &mut Opti
         .frame(egui::Frame::new().inner_margin(egui::Margin::symmetric(22, 14)).stroke(egui::Stroke::new(1.0, theme::LINE)))
         .show_inside(ui, |ui| {
             ui.vertical_centered_justified(|ui| {
-                if sel.joinable {
+                if sel.with_me {
+                    // In it already: nothing to join.
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("You're in this match").family(theme::strong()).color(theme::OK));
+                    ui.add_space(6.0);
+                } else if sel.joinable {
                     if ui.add(theme::play_button("Join this match").min_size(egui::vec2(0.0, 46.0))).clicked() {
                         *act = Some(MatchAct::Join(sel.room));
                     }

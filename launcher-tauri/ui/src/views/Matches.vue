@@ -89,7 +89,7 @@
                 <ul class="people">
                   <li v-for="p in sel.people.filter((q) => q.team === side)" :key="p.name" :class="{ friend: p.friend }">
                     <span class="avatar" aria-hidden="true">{{ initial(p.name) }}</span>
-                    <span class="who"><b :title="p.name">{{ p.name }}</b><span v-if="p.host" class="tag">HOST</span><small v-if="p.friend" class="ok">friend</small></span>
+                    <span class="who"><b :title="p.name">{{ p.name }}</b><span v-if="p.host" class="tag">HOST</span><small v-if="p.me" class="soft">you</small><small v-if="p.friend" class="ok">friend</small></span>
                   </li>
                 </ul>
               </section>
@@ -102,6 +102,7 @@
                   <span class="who">
                     <b :title="p.name">{{ p.name }}</b>
                     <span v-if="p.host" class="tag">HOST</span>
+                    <small v-if="p.me" class="soft">you</small>
                     <small v-if="p.friend" class="ok">friend</small>
                     <small v-else-if="p.party" class="muted">{{ partyLine(sel, p) }}</small>
                   </span>
@@ -121,9 +122,10 @@
             </section>
           </div>
           <div class="detail-act">
-            <button v-if="sel.joinable" type="button" class="join" :disabled="joining" @click="join(sel)">Join this match</button>
+            <p v-if="sel.with_me" class="in-it">You’re in this match</p>
+            <button v-else-if="sel.joinable" type="button" class="join" :disabled="joining" @click="join(sel)">Join this match</button>
             <button v-else type="button" class="join off" disabled>{{ sel.under_way ? 'Under way' : 'Full' }}<template v-if="sel.under_way && sel.full"> · full</template></button>
-            <button v-if="!sel.joinable" type="button" class="btn ghost" :aria-pressed="watching?.room === sel.room" @click="watch(sel)">
+            <button v-if="!sel.joinable && !sel.with_me" type="button" class="btn ghost" :aria-pressed="watching?.room === sel.room" @click="watch(sel)">
               {{ watching?.room === sel.room ? 'Watching: we\'ll tell you when it opens' : 'Tell me when a seat opens' }}
             </button>
             <p v-else class="muted small center">Starts the game if it isn't running, then joins {{ sel.host || 'its host' }}'s {{ sel.under_way ? 'match' : 'lobby' }}.</p>
@@ -367,4 +369,5 @@ onBeforeUnmount(() => clearInterval(timer));
   .band h2 { font-size: 24px; }
   .teams { grid-template-columns: minmax(0, 1fr); }
 }
+.in-it { margin: 0; padding: 12px 0; text-align: center; font-weight: 600; color: var(--accent); }
 </style>

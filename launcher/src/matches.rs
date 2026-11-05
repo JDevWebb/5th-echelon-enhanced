@@ -119,7 +119,8 @@ pub fn join(cfg: &Config, game_dir: &Path, room: u32) -> Result<String, String> 
         tracing::warn!("couldn't write the join request for room {room} ({})", request.display());
         return Ok("Joining the match - accept the invitation in the game.".into());
     }
-    Ok("Joining the match - the game joins it.".into())
+    // What happens next, in plain words.
+    Ok("Joining the match: the game goes straight in once it's online.".into())
 }
 
 /// Asks for a new match: the player's quick match searches find nothing until they host one,
@@ -182,6 +183,8 @@ pub struct Lobby {
     /// Sides known: the players split into spies and mercs.
     pub teams: bool,
     pub people: Vec<Person>,
+    /// This player is in it already: nothing to join ("You're in this match").
+    pub with_me: bool,
     /// The round's settings as the host's game has them: (label, value), in a set order.
     pub settings: Vec<(String, String)>,
 }
@@ -196,6 +199,9 @@ pub struct Person {
     /// "spy", "merc" or "".
     pub team: String,
     pub ping_ms: Option<u32>,
+    /// This player.
+    #[serde(default)]
+    pub me: bool,
 }
 
 /// The public matches on the player's server in full.
@@ -210,7 +216,19 @@ pub fn lobbies(cfg: &Config) -> Lobbies {
         return Lobbies::default();
     }
     match crate::flow::with_api_token(cfg, |url, token| crate::services::rt().block_on(crate::network::lobbies(url, &token))) {
-        Ok(resp) => from_response(&resp),
+        Ok(resp) => {
+            // This player among each match's players: no Join on the match they're in (the
+            // gamebox offered gbox5 'Join this match' on gbox1's, with gbox5 in it).
+            let mut all = from_response(&resp);
+            let me = profile.user.username.to_lowercase();
+            for l in &mut all.lobbies {
+                for p in &mut l.people {
+                    p.me = p.name.to_lowercase() == me;
+                }
+                l.with_me = l.people.iter().any(|p| p.me);
+            }
+            all
+        }
         Err(e) => Lobbies {
             offered: true,
             error: Some(e),
@@ -318,9 +336,11 @@ fn lobby(l: &server_api::friends::Lobby, clip: impl Fn(&str) -> String) -> Lobby
             friend: p.friend,
             team: if matches!(p.team.as_str(), "spy" | "merc") { p.team.clone() } else { String::new() },
             ping_ms: (p.ping_ms > 0).then_some(p.ping_ms),
+            me: false,
         })
         .collect();
     Lobby {
+        with_me: false,
         room: l.room,
         mode,
         kind: l.kind.clone(),
@@ -354,6 +374,7 @@ pub fn sample() -> Lobbies {
         friend,
         team: String::new(),
         ping_ms: Some(ping),
+        me: false,
     };
     Lobbies {
         offered: true,
