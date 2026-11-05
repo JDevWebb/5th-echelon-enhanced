@@ -267,6 +267,13 @@ const preview = {
   join_match: () => null,
   follow_move: () => null,
   new_match: () => null,
+  svm_modes: () => [
+    { playlist: 4008726265, name: 'SvM Blacklist' },
+    { playlist: 2165463540, name: 'SvM Classic' },
+    { playlist: 709003443, name: 'Team Deathmatch' },
+    { playlist: 655282787, name: 'Extraction' },
+    { playlist: 4078930099, name: 'Uplink Control' },
+  ],
   cancel_new_match: () => null,
   update_banner: () => (location.search.includes('update') ? { version: '0.5.1', page: 'https://github.com/JDevWebb/5th-echelon-enhanced/releases', updating: false } : null),
   update_later: () => null,

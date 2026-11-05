@@ -129,19 +129,35 @@
                 <template v-if="chooseOffered">
                   <span class="sep" role="separator"></span>
                   <button
-                    v-for="(mode, j) in ['svm', 'coop']"
-                    :key="`new-${mode}`"
                     type="button"
-                    :ref="(el) => (modeItems[MODES.length + j] = el)"
+                    :ref="(el) => (modeItems[MODES.length] = el)"
                     role="menuitem"
-                    @click="newMatch(mode)"
+                    aria-haspopup="true"
+                    :aria-expanded="svmPick"
+                    @click.stop="svmPick = !svmPick"
                   >
-                    <b>New {{ mode === 'svm' ? 'SvM' : 'Co-op' }} match</b><small>Skip the open ones and host</small>
+                    <b>New SvM match <span class="caret" aria-hidden="true">{{ svmPick ? '▴' : '▾' }}</span></b><small>Skip the open ones and host, in the mode you pick</small>
                   </button>
-                  <button type="button" :ref="(el) => (modeItems[MODES.length + 2] = el)" role="menuitem" @click="menuOpen = false; emit('go', 'matches')">
+                  <template v-if="svmPick">
+                    <button
+                      v-for="(m, k) in svmModes"
+                      :key="m.playlist"
+                      type="button"
+                      class="mode-sub"
+                      :ref="(el) => (modeItems[MODES.length + 1 + k] = el)"
+                      role="menuitem"
+                      @click="newMatch('svm', m.playlist)"
+                    >
+                      <b>{{ m.name }}</b>
+                    </button>
+                  </template>
+                  <button type="button" :ref="(el) => (modeItems[MODES.length + 10] = el)" role="menuitem" @click="newMatch('coop', null)">
+                    <b>New Co-op match</b><small>Skip the open ones and host</small>
+                  </button>
+                  <button type="button" :ref="(el) => (modeItems[MODES.length + 11] = el)" role="menuitem" @click="menuOpen = false; emit('go', 'matches')">
                     <b>Choose a match…</b><small>See the open ones and pick</small>
                   </button>
-                  <button v-if="info.new_match" type="button" :ref="(el) => (modeItems[MODES.length + 3] = el)" role="menuitem" @click="cancelNewMatch">
+                  <button v-if="info.new_match" type="button" :ref="(el) => (modeItems[MODES.length + 12] = el)" role="menuitem" @click="cancelNewMatch">
                     <b>Join open matches again</b><small>Take back the new match</small>
                   </button>
                 </template>
@@ -321,7 +337,7 @@ const emit = defineEmits(['go', 'played', 'change-server']);
 
 // What the Play button starts (the shared library's PlayMode).
 const MODES = ['play', 'svm', 'coop'];
-const LABELS = { play: 'Play', svm: 'Play SvM', coop: 'Play Coop' };
+const LABELS = { play: 'Play', svm: 'Play SvM', coop: 'Play Co-op' };
 const HINTS = { play: 'The game as it is', svm: 'Straight into a Spies vs Mercs lobby', coop: 'Straight into a co-op lobby' };
 
 const menuOpen = ref(false);
@@ -418,9 +434,14 @@ const modeItems = ref([]);
 // open ones (the Matches tab).
 const chooseOffered = ref(false);
 onMounted(async () => (chooseOffered.value = await call('choose_match_offered')));
-function newMatch(mode) {
+// New SvM match asks the mode first (its entries open under it).
+const svmPick = ref(false);
+const svmModes = ref([]);
+onMounted(async () => (svmModes.value = (await call('svm_modes')) || []));
+function newMatch(mode, playlist) {
   menuOpen.value = false;
-  call('new_match', { mode });
+  svmPick.value = false;
+  call('new_match', { mode, playlist });
 }
 function cancelNewMatch() {
   menuOpen.value = false;
@@ -697,6 +718,8 @@ h1 span { color: var(--accent); text-shadow: 0 0 40px rgba(155, 224, 90, .25); }
 .modes button { display: flex; flex-direction: column; align-items: flex-start; padding: 10px 12px; border-radius: 4px; text-align: left; transition: background .15s; }
 .modes button:hover { background: var(--control); }
 .modes .sep { height: 1px; margin: 4px 6px; background: var(--line); }
+.modes button.mode-sub { padding: 7px 12px 7px 26px; }
+.modes .caret { color: var(--muted); font-size: 11px; margin-left: 4px; }
 .modes button.on { background: var(--selected); box-shadow: inset 3px 0 0 var(--accent); }
 .modes b { font-weight: 600; }
 .modes small { color: var(--muted); font-size: 12.5px; }

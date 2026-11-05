@@ -7,6 +7,9 @@
 //! - its `ClipCursor` and `SetCursorPos` calls are held back, and the cursor is free within
 //!   the game's window (the overlay draws its own cursor, as the game hides the system's);
 //! - when the panel closes, the clip the game last asked for is put back.
+//!
+//! The DirectInput reads also come back empty while the quick start takes the game through its
+//! menus for the player ([`crate::quickstart::navigating`]): a click or key then would fight it.
 
 use std::ffi::c_void;
 use std::sync::atomic::AtomicBool;
@@ -235,10 +238,16 @@ fn set_cursor_pos(x: i32, y: i32) -> BOOL {
     unsafe { SetCursorPosHook.call(x, y) }
 }
 
+/// The game doesn't get the player's mouse and keys: the panel is open, or the quick start is
+/// taking the game through its menus.
+fn held_back() -> bool {
+    OPEN.load(Ordering::SeqCst) || crate::quickstart::navigating()
+}
+
 /// The device's state, as if nothing moved or was pressed while the panel is open.
 fn device_state(detour: &retour::StaticDetour<GetDeviceState>, device: *mut c_void, size: u32, buffer: *mut c_void) -> HRESULT {
     let result = unsafe { detour.call(device, size, buffer) };
-    if OPEN.load(Ordering::SeqCst) && result.is_ok() && !buffer.is_null() {
+    if held_back() && result.is_ok() && !buffer.is_null() {
         // SAFETY: the caller gave a buffer of `size` bytes for the state.
         unsafe { std::ptr::write_bytes(buffer.cast::<u8>(), 0, size as usize) };
     }
@@ -249,7 +258,7 @@ fn device_state(detour: &retour::StaticDetour<GetDeviceState>, device: *mut c_vo
 /// for when it closes).
 fn device_data(detour: &retour::StaticDetour<GetDeviceData>, device: *mut c_void, size: u32, data: *mut c_void, count: *mut u32, flags: u32) -> HRESULT {
     let result = unsafe { detour.call(device, size, data, count, flags) };
-    if OPEN.load(Ordering::SeqCst) && result.is_ok() && !count.is_null() {
+    if held_back() && result.is_ok() && !count.is_null() {
         // SAFETY: `count` is the caller's in/out item count.
         unsafe { *count = 0 };
     }

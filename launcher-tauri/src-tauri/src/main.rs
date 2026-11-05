@@ -95,6 +95,7 @@ fn main() {
             commands::choose_match_offered,
             commands::join_match,
             commands::new_match,
+            commands::svm_modes,
             commands::cancel_new_match,
             commands::player_action,
             commands::people,

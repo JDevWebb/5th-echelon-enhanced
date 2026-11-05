@@ -793,6 +793,27 @@ impl MyRenderLoop {
             });
     }
 
+    /// While the quick start takes the game through its menus (input held back): why the
+    /// mouse and keys don't answer.
+    fn show_navigating(&self, ui: &Ui) {
+        if !crate::quickstart::navigating() || self.ui_state == UiState::Show {
+            return;
+        }
+        let win = ui.io().display_size;
+        ui.window("##fe-navigating")
+            .no_decoration()
+            .no_inputs()
+            .no_nav()
+            .movable(false)
+            .focus_on_appearing(false)
+            .always_auto_resize(true)
+            .position([win[0] / 2.0, self.s(28.0)], Condition::Always)
+            .position_pivot([0.5, 0.0])
+            .build(|| {
+                ui.text_colored(FG, "5th Echelon is taking you online: the mouse and keys are back in a moment.");
+            });
+    }
+
     // ---------- The panel ----------
 
     fn show_panel(&mut self, ui: &Ui) {
@@ -1965,10 +1986,13 @@ impl ImguiRenderLoop for MyRenderLoop {
         self.show_initial_info(ui);
         self.show_problem(ui);
         self.show_notice(ui);
+        self.show_navigating(ui);
     }
 
     fn message_filter(&self, _io: &imgui::Io) -> hudhook::MessageFilter {
-        if matches!(self.ui_state, UiState::Show) {
+        // The panel takes the input; while the quick start takes the game through its menus, a
+        // click or key would fight it, so the game doesn't get them either (Alt+F4 still quits).
+        if matches!(self.ui_state, UiState::Show) || crate::quickstart::navigating() {
             hudhook::MessageFilter::InputAll
         } else {
             hudhook::MessageFilter::empty()
@@ -1989,7 +2013,7 @@ impl ImguiRenderLoop for MyRenderLoop {
         // own thread as a close would.
         let alt = lparam.0 & (1 << 29) != 0;
         let repeat = lparam.0 & (1 << 30) != 0;
-        if matches!(self.ui_state, UiState::Show) && umsg == WM_SYSKEYDOWN && wparam.0 == usize::from(VK_F4.0) && alt && !repeat {
+        if (matches!(self.ui_state, UiState::Show) || crate::quickstart::navigating()) && umsg == WM_SYSKEYDOWN && wparam.0 == usize::from(VK_F4.0) && alt && !repeat {
             unsafe {
                 let _ = PostMessageW(
                     hwnd,

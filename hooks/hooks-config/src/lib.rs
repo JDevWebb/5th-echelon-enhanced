@@ -16,6 +16,7 @@ pub mod fusion_fix;
 pub mod game_files;
 pub mod join_request;
 pub mod last_run;
+pub mod new_match_request;
 pub mod redact;
 
 #[cfg(target_os = "windows")]

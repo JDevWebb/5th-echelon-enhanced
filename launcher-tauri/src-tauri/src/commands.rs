@@ -1147,10 +1147,10 @@ pub fn join_match(app: tauri::AppHandle, state: tauri::State<Launcher>, room: u3
 /// until they host one, and the game is started into that mode's lobby if it isn't running.
 /// The activity bar says what to do next.
 #[tauri::command(async)]
-pub fn new_match(app: tauri::AppHandle, state: tauri::State<Launcher>, mode: PlayMode) {
+pub fn new_match(app: tauri::AppHandle, state: tauri::State<Launcher>, mode: PlayMode, playlist: Option<u32>) {
     let inner = state.lock();
     let Some(game) = inner.game.as_ref() else { return };
-    let cfg = (*game.cfg).clone();
+    let (cfg, game_dir) = ((*game.cfg).clone(), game.dir.clone());
     drop(inner);
     let result = launcher::task::guarded(|| launcher::matches::new_match(&cfg));
     let mut inner = state.lock();
@@ -1165,16 +1165,27 @@ pub fn new_match(app: tauri::AppHandle, state: tauri::State<Launcher>, mode: Pla
     inner.new_match_until = Some(Instant::now() + holds);
     let running = game_running(&mut inner);
     let minutes = holds.as_secs().div_ceil(60);
-    inner.notices.info(if running {
-        format!("Start matchmaking in the game: it hosts a new public match rather than join an open one (for the next {minutes} minutes).")
-    } else {
-        format!("The game starts in the lobby: start matchmaking there and it hosts a new public match (for the next {minutes} minutes).")
-    });
+    let playlist = playlist.filter(|_| mode == PlayMode::Svm);
+    let hosts_itself = !running && launcher::matches::ask_game_to_host(&game_dir, playlist);
+    inner.notices.info(launcher::matches::new_match_notice(running, hosts_itself, minutes));
     drop(inner);
     if !running {
         play(app.clone(), state.clone(), mode);
     }
     changed(&app);
+}
+
+/// A Spies vs Mercs mode a new match can be hosted in.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct SvmMode {
+    pub playlist: u32,
+    pub name: &'static str,
+}
+
+/// The Spies vs Mercs modes a new match can be hosted in, for the New match menus.
+#[tauri::command]
+pub fn svm_modes() -> Vec<SvmMode> {
+    launcher::matches::svm_modes().into_iter().map(|(playlist, name)| SvmMode { playlist, name }).collect()
 }
 
 /// Takes a new match back: searches find open matches again.
@@ -1183,6 +1194,7 @@ pub fn cancel_new_match(app: tauri::AppHandle, state: tauri::State<Launcher>) {
     let inner = state.lock();
     let Some(game) = inner.game.as_ref() else { return };
     let cfg = (*game.cfg).clone();
+    launcher::matches::forget_game_hosting(&game.dir);
     drop(inner);
     let result = launcher::task::guarded(|| launcher::matches::cancel_new_match(&cfg));
     let mut inner = state.lock();

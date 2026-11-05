@@ -71,6 +71,12 @@ pub const PLAYLISTS: &[(u32, u32)] = &[
     (1_365_420_058, 6), // Training Grounds (Team Deathmatch)
 ];
 
+/// The Spies vs Mercs modes a new match can be hosted in, as the game's mode list has them
+/// (its entries' ids are the playlists): (playlist, name).
+pub fn svm_new_match_modes() -> Vec<(u32, &'static str)> {
+    PLAYLISTS[..5].iter().filter_map(|&(playlist, game_mode)| Some((playlist, mode(game_mode)?))).collect()
+}
+
 /// The game mode of a playlist's matches, if it's one the game has.
 pub fn playlist_mode(playlist: u32) -> Option<u32> {
     PLAYLISTS.iter().find(|(p, _)| *p == playlist).map(|(_, mode)| *mode)
@@ -106,6 +112,8 @@ mod tests {
         assert_eq!(map(3_578_398_534), Some("Hawkins Seafort"));
         assert_eq!(map(1), None);
         assert_eq!(mode(8), Some("SvM Classic"));
+        let names: Vec<_> = svm_new_match_modes().into_iter().map(|(_, n)| n).collect();
+        assert_eq!(names, ["SvM Blacklist", "SvM Classic", "Team Deathmatch", "Extraction", "Uplink Control"]);
         assert_eq!(playlist_mode(2_165_463_540).and_then(mode), Some("SvM Classic"));
         assert_eq!(playlist_mode(1), None);
         assert_eq!(match_mode(Some(7), "svm"), Some("SvM Blacklist"));

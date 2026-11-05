@@ -7,8 +7,13 @@
         <p class="soft small">{{ data?.summary || (data ? '' : 'Reading the open matches…') }}<span v-if="data?.summary"> · updated live</span></p>
       </div>
       <div class="head-act">
-        <button type="button" class="btn ghost" :disabled="!ready" @click="newMatch">New match</button>
+        <button type="button" class="btn ghost" :disabled="!ready" :aria-expanded="picking === 'head'" @click="newMatch('head')">New match</button>
         <button type="button" class="btn primary" :disabled="!ready" @click="quick">Quick match</button>
+      </div>
+      <div v-if="picking === 'head'" class="mode-pick" role="group" aria-label="Host a new match in which mode?">
+        <span class="muted small">Host in</span>
+        <button v-for="m in svmModes" :key="m.playlist" type="button" class="btn ghost small-btn" @click="host(m.playlist)">{{ m.name }}</button>
+        <button type="button" class="link small" @click="picking = null">Cancel</button>
       </div>
     </header>
 
@@ -36,8 +41,13 @@
         <h2>{{ rows.length ? 'Nothing matches the filters' : 'No public matches open' }}</h2>
         <p class="soft">{{ rows.length ? 'Show the ones under way or full, or another mode.' : 'Host one and it shows here for everyone; quick match finds you one as soon as anyone opens.' }}</p>
         <div class="row">
-          <button type="button" class="btn primary" :disabled="!ready" @click="newMatch">Host a match</button>
+          <button type="button" class="btn primary" :disabled="!ready" :aria-expanded="picking === 'empty'" @click="newMatch('empty')">Host a match</button>
           <button type="button" class="btn ghost" @click="$emit('go', 'servers')">See other servers</button>
+        </div>
+        <div v-if="picking === 'empty'" class="mode-pick center" role="group" aria-label="Host a new match in which mode?">
+          <span class="muted small">Host in</span>
+          <button v-for="m in svmModes" :key="m.playlist" type="button" class="btn ghost small-btn" @click="host(m.playlist)">{{ m.name }}</button>
+          <button type="button" class="link small" @click="picking = null">Cancel</button>
         </div>
         <p v-if="data.hidden" class="muted small">{{ data.hidden }}</p>
       </div>
@@ -234,8 +244,18 @@ async function join(l) {
   joining.value = false;
   emit('played');
 }
-function newMatch() {
-  call('new_match', { mode: mode.value === 'coop' ? 'coop' : 'svm' });
+// New match: Co-op hosts at once; Spies vs Mercs first asks which mode (a row of them under the
+// button pressed).
+const picking = ref(null);
+const svmModes = ref([]);
+onMounted(async () => (svmModes.value = (await call('svm_modes')) || []));
+function newMatch(where) {
+  if (mode.value === 'coop') return host(null);
+  picking.value = picking.value === where ? null : where;
+}
+function host(playlist) {
+  picking.value = null;
+  call('new_match', { mode: mode.value === 'coop' ? 'coop' : 'svm', playlist });
   emit('played');
 }
 async function quick() {
@@ -255,6 +275,10 @@ onBeforeUnmount(() => clearInterval(timer));
 </script>
 
 <style scoped>
+.mode-pick { flex-basis: 100%; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.mode-pick.center { justify-content: center; }
+.small-btn { padding: 6px 12px; font-size: 13px; }
+.link { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 6px 4px; }
 .matches { height: 100%; display: flex; flex-direction: column; min-width: 0; }
 .head { display: flex; align-items: flex-end; gap: 24px; padding: 26px 32px 14px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .head-text { flex: 1 1 320px; min-width: 0; }

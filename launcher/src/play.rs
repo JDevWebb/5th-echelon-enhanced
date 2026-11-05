@@ -67,6 +67,8 @@ pub struct Play {
     /// The server the player has no account on yet (their identity found
     /// none): the form asks for a name to make one.
     needs_name: Option<String>,
+    /// The name tried there that someone already has (the name step says so while it's typed).
+    name_taken: Option<String>,
     looking: Slot<Result<Vec<IpAddr>, String>>,
     /// The servers that answered on this network, when more than one did.
     found: Vec<IpAddr>,
@@ -159,6 +161,8 @@ pub struct Play {
     /// A new match asked for (into this mode's lobby once the server said yes).
     asking_new: Slot<Result<Duration, String>>,
     new_mode: Option<crate::app::PlayMode>,
+    /// The Spies vs Mercs mode chosen for that new match (its playlist), if one was.
+    new_playlist: Option<u32>,
     /// The Matches screen.
     matches: MatchesPage,
 }
@@ -310,6 +314,7 @@ impl Play {
                         // The guided setup asks for the name in its own step.
                         self.server = server.clone();
                         self.server_picked = false;
+                        self.name_taken = taken.then(|| suggested.clone());
                         self.nick = suggested;
                         self.needs_name = Some(server);
                         self.editing = true;
@@ -750,11 +755,15 @@ fn options_step(play: &mut Play, game: &mut Game, notices: &mut Notices, ui: &mu
     let mut done = false;
     if let Some((options, choices)) = play.setup_options.as_mut() {
         wizard(ui, 3, |ui| {
-            ui.label(RichText::new("Game options").family(theme::strong()).size(24.0));
+            // As the steps before it: the display heading, and the button in a row (which
+            // centres its label, as Connect's).
+            ui.label(theme::display("Game options", 36.0));
             ui.add_space(4.0);
             crate::new_options::setup_step(ui, options, choices, &game.dir);
             ui.add_space(20.0);
-            done = ui.add(theme::primary("Continue").min_size(egui::vec2(170.0, 48.0)).corner_radius(4)).clicked();
+            ui.horizontal(|ui| {
+                done = ui.add(theme::primary("Continue").min_size(egui::vec2(170.0, 48.0)).corner_radius(6)).clicked();
+            });
         });
     }
     if done {
@@ -783,6 +792,10 @@ fn setup_screen(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &e
                 ))
                 .color(theme::SOFT),
             );
+            if let Some(name) = play.name_taken.as_ref().filter(|n| n.eq_ignore_ascii_case(play.nick.trim())) {
+                ui.add_space(6.0);
+                ui.label(RichText::new(format!("Someone on {server} already has the name {name}: choose another one.")).color(theme::WARN));
+            }
         } else {
             ui.label(RichText::new("Pick the closest server, or type a server's or a network's address. Connecting also installs the 5th Echelon client, keeping the game's original file so you can undo it.").color(theme::SOFT));
         }
@@ -3009,11 +3022,15 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked:
         // Choosing your match, where the server offers it (matches.rs).
         if offered {
             ui.separator();
-            if ui.button("New SvM match").on_hover_text("Host a new public match, whatever is open").clicked() {
-                picked_match = Some(MatchAction::New(crate::app::PlayMode::Svm));
-            }
+            ui.menu_button("New SvM match", |ui| {
+                if let Some(playlist) = svm_mode_choices(ui) {
+                    picked_match = Some(MatchAction::New(crate::app::PlayMode::Svm, Some(playlist)));
+                }
+            })
+            .response
+            .on_hover_text("Host a new public match in the mode you choose, whatever is open");
             if ui.button("New Co-op match").on_hover_text("Host a new public match, whatever is open").clicked() {
-                picked_match = Some(MatchAction::New(crate::app::PlayMode::Coop));
+                picked_match = Some(MatchAction::New(crate::app::PlayMode::Coop, None));
             }
             if ui
                 .button("Choose a match...")
@@ -3031,9 +3048,10 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked:
     }
     if let Some(action) = picked_match {
         match action {
-            MatchAction::New(mode) => {
+            MatchAction::New(mode, playlist) => {
                 let cfg = (*game.cfg).clone();
                 play.new_mode = Some(mode);
+                play.new_playlist = playlist;
                 play.asking_new.start(ui.ctx(), move || crate::matches::new_match(&cfg));
             }
             MatchAction::Choose => {
@@ -3057,8 +3075,21 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked:
 /// What the Play menu's match items asked for.
 #[derive(Debug, Clone, Copy)]
 enum MatchAction {
-    New(crate::app::PlayMode),
+    New(crate::app::PlayMode, Option<u32>),
     Choose,
+}
+
+/// The Spies vs Mercs modes to host a new match in, as menu entries: the one clicked.
+fn svm_mode_choices(ui: &mut egui::Ui) -> Option<u32> {
+    ui.set_min_width(170.0);
+    let mut picked = None;
+    for (playlist, name) in crate::matches::svm_modes() {
+        if ui.button(name).clicked() {
+            picked = Some(playlist);
+            ui.close();
+        }
+    }
+    picked
 }
 
 /// Asks the player's server for its open matches (the window shows them).
@@ -3534,15 +3565,11 @@ fn answer_new_match(play: &mut Play, game: &mut Game, notices: &mut Notices) {
         match result {
             Ok(holds) => {
                 let minutes = holds.as_secs().div_ceil(60);
-                if running {
-                    notices.info(format!(
-                        "Start matchmaking in the game: it hosts a new public match rather than join an open one (for the next {minutes} minutes)."
-                    ));
-                } else {
-                    notices.info(format!(
-                        "The game starts in the lobby: start matchmaking there and it hosts a new public match (for the next {minutes} minutes)."
-                    ));
-                    launch(play, game, notices, mode);
+                let playlist = play.new_playlist.take().filter(|_| mode == crate::app::PlayMode::Svm);
+                let hosts_itself = !running && crate::matches::ask_game_to_host(&game.dir, playlist);
+                notices.info(crate::matches::new_match_notice(running, hosts_itself, minutes));
+                if !running && !launch(play, game, notices, mode) {
+                    crate::matches::forget_game_hosting(&game.dir);
                 }
             }
             Err(line) => notices.error(line),
@@ -3641,9 +3668,10 @@ pub fn show_matches(app: &mut App, ui: &mut egui::Ui) {
     matches_page(&mut play.matches, profile.as_deref(), ready, &mut act, ui);
     match act {
         Some(MatchAct::Join(room)) => join_room(play, game, notices, room, &ctx),
-        Some(MatchAct::New(mode)) => {
+        Some(MatchAct::New(mode, playlist)) => {
             let cfg = (*game.cfg).clone();
             play.new_mode = Some(mode);
+            play.new_playlist = playlist;
             play.asking_new.start(&ctx, move || crate::matches::new_match(&cfg));
         }
         Some(MatchAct::Quick(mode)) => {
@@ -3660,9 +3688,26 @@ pub fn show_matches(app: &mut App, ui: &mut egui::Ui) {
 #[derive(Debug, Clone, Copy)]
 enum MatchAct {
     Join(u32),
-    New(crate::app::PlayMode),
+    New(crate::app::PlayMode, Option<u32>),
     Quick(crate::app::PlayMode),
     Servers,
+}
+
+/// A New match button on the Matches screen: Co-op hosts at once; Spies vs Mercs first asks
+/// which mode, in a menu under the button.
+fn new_match_button(button: &egui::Response, mode: crate::app::PlayMode, act: &mut Option<MatchAct>) {
+    if mode == crate::app::PlayMode::Coop {
+        if button.clicked() {
+            *act = Some(MatchAct::New(mode, None));
+        }
+        return;
+    }
+    egui::Popup::menu(button).show(|ui| {
+        ui.label(theme::muted("Host in which mode?").small());
+        if let Some(playlist) = svm_mode_choices(ui) {
+            *act = Some(MatchAct::New(crate::app::PlayMode::Svm, Some(playlist)));
+        }
+    });
 }
 
 /// A ping's colour: near, far, or not known.
@@ -3748,13 +3793,10 @@ fn matches_page(m: &mut MatchesPage, server: Option<&str>, ready: bool, act: &mu
                     {
                         *act = Some(MatchAct::Quick(quick_mode));
                     }
-                    if ui
+                    let new = ui
                         .add_enabled(ready, theme::secondary("New match").min_size(egui::vec2(0.0, 40.0)))
-                        .on_disabled_hover_text(RUNNING)
-                        .clicked()
-                    {
-                        *act = Some(MatchAct::New(quick_mode));
-                    }
+                        .on_disabled_hover_text(RUNNING);
+                    new_match_button(&new, quick_mode, act);
                 });
             });
         });
@@ -3861,9 +3903,8 @@ fn matches_page(m: &mut MatchesPage, server: Option<&str>, ready: bool, act: &mu
             ui.horizontal(|ui| {
                 let wide = 300.0;
                 ui.add_space(((ui.available_width() - wide) / 2.0).max(0.0));
-                if ui.add_enabled(ready, theme::primary("Host a match")).clicked() {
-                    *act = Some(MatchAct::New(quick_mode));
-                }
+                let host = ui.add_enabled(ready, theme::primary("Host a match"));
+                new_match_button(&host, quick_mode, act);
                 if ui.add(theme::secondary("See other servers")).clicked() {
                     *act = Some(MatchAct::Servers);
                 }

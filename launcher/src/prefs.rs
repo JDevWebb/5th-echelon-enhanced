@@ -223,7 +223,7 @@ impl PlayMode {
         match self {
             Self::Play => "Play",
             Self::Svm => "Play SvM",
-            Self::Coop => "Play Coop",
+            Self::Coop => "Play Co-op",
         }
     }
 

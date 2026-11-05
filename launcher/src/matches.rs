@@ -132,6 +132,42 @@ pub fn new_match(cfg: &Config) -> Result<Duration, String> {
     crate::flow::with_api_token(cfg, |url, token| crate::services::rt().block_on(crate::network::new_match(url, &token, true)))
 }
 
+/// Asks the game about to start to host the new match by itself (`hooks_config::new_match_request`):
+/// once in the lobby its quick start starts matchmaking, so it hosts without a click. False when
+/// the request couldn't be written (the player starts matchmaking themselves).
+/// `playlist`: the Spies vs Mercs mode chosen ([`svm_modes`]); none for Co-op.
+pub fn ask_game_to_host(game_dir: &std::path::Path, playlist: Option<u32>) -> bool {
+    let request = game_dir.join(hooks_config::new_match_request::FILE);
+    let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    let written = std::fs::write(&request, hooks_config::new_match_request::contents(at, playlist)).is_ok();
+    if !written {
+        tracing::warn!("couldn't write the new match request ({})", request.display());
+    }
+    written
+}
+
+/// The Spies vs Mercs modes a new match can be hosted in: (playlist, name).
+pub fn svm_modes() -> Vec<(u32, &'static str)> {
+    server_api::game_names::svm_new_match_modes()
+}
+
+/// Takes back the game's request to host ([`ask_game_to_host`]), when it hasn't read it yet.
+pub fn forget_game_hosting(game_dir: &std::path::Path) {
+    let _ = std::fs::remove_file(game_dir.join(hooks_config::new_match_request::FILE));
+}
+
+/// What the player is told once a new match is asked for, the game started (`hosts_itself`:
+/// the game was asked to host by itself) or already running.
+pub fn new_match_notice(running: bool, hosts_itself: bool, minutes: u64) -> String {
+    if running {
+        format!("Start matchmaking in the game: it hosts a new public match rather than join an open one (for the next {minutes} minutes).")
+    } else if hosts_itself {
+        "The game starts and hosts a new public match by itself once it's online.".into()
+    } else {
+        format!("The game starts in the lobby: start matchmaking there and it hosts a new public match (for the next {minutes} minutes).")
+    }
+}
+
 /// Takes a new match back: searches find matches again.
 pub fn cancel_new_match(cfg: &Config) -> Result<(), String> {
     crate::flow::with_api_token(cfg, |url, token| crate::services::rt().block_on(crate::network::new_match(url, &token, false))).map(|_| ())
