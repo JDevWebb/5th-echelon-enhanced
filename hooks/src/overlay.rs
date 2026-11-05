@@ -1119,7 +1119,10 @@ impl MyRenderLoop {
             let RowAction::Change(change, text) = action else { continue };
             let label = if *change == C::Remove { "Remove friend" } else { *text };
             let _c = (*change == C::Block).then(|| ui.push_style_color(StyleColor::Text, BAD));
-            if ui.selectable(label) {
+            // The menu stays open: the question is asked in it. A plain selectable closed it
+            // with the click, so Block and Remove asked nothing and did nothing (the gamebox,
+            // 2026-11-06, at 720p).
+            if ui.selectable_config(label).close_popups(false).build() {
                 *self.confirming.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some((*change, p.id.clone()));
             }
         }
