@@ -4373,6 +4373,9 @@ async fn run() -> Result<()> {
     if args.first().map(String::as_str) == Some("invite") {
         return invite_to(server, &args[1..]).await;
     }
+    if args.first().map(String::as_str) == Some("lobbies") {
+        return show_lobbies(server, &args[1..]).await;
+    }
     let names: Vec<&str> = if args.is_empty() {
         SCENARIOS.to_vec()
     } else {
@@ -4613,5 +4616,27 @@ async fn invite_to(server: IpAddr, names: &[String]) -> Result<()> {
         }
     }
     ensure!(failed == 0, "{failed} of {} invitations refused", guests.len());
+    Ok(())
+}
+
+/// `lobbies NAME`: the public matches as NAME's Matches tab gets them, one line per match (room,
+/// kind, mode, map, state, round) and its players (H: host, the team, the party).
+async fn show_lobbies(server: IpAddr, names: &[String]) -> Result<()> {
+    let [name] = names else {
+        return Err(eyre!("lobbies NAME"));
+    };
+    let resp = testbot::bot::ApiPlayer::sign_in(server, name, &account_password()?).await?.lobbies().await?;
+    for l in &resp.lobbies {
+        let players: Vec<String> = l
+            .players
+            .iter()
+            .map(|p| format!("{}{}{}{}", if p.host { "H:" } else { "" }, p.name, if p.team.is_empty() { String::new() } else { format!("/{}", p.team) }, if p.party > 0 { format!(" (party {})", p.party) } else { String::new() }))
+            .collect();
+        println!(
+            "room {} {} mode {} map {} seats {}/{} open {}s state {:?}{} round {}: {}",
+            l.room, l.kind, l.game_mode, l.map, l.players.len(), l.seats, l.open_secs, l.state, if l.under_way { format!(" under way {}s", l.under_way_secs) } else { String::new() }, l.round, players.join(", ")
+        );
+    }
+    println!("left out: {} blocked, {} private matches ({} players), {} in parties", resp.hidden_blocked, resp.private_matches, resp.private_players, resp.party_players);
     Ok(())
 }

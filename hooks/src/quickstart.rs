@@ -191,6 +191,7 @@ pub unsafe fn install(lobby: QuickStartLobby) {
     if hooks_config::get().is_some_and(|c| c.test_commands) {
         TEST_COMMANDS.store(true, Ordering::Relaxed);
         info!("quickstart: test commands on (gamebox-command beside the log)");
+        let _ = std::thread::Builder::new().name("fe-test-commands".into()).spawn(lobby_commands);
     }
     // Started for a friend's Join (the launcher's join request waiting beside uplay.toml): the
     // join is what the player asked for, not a lobby. Left for `community` to take.
@@ -552,6 +553,9 @@ unsafe fn test_command(mm: usize) {
     }
     let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else { return };
     let Ok(text) = std::fs::read_to_string(&file) else { return };
+    if text.trim().starts_with("players ") {
+        return;
+    }
     let Some(id) = text.trim().strip_prefix("select ").and_then(|v| v.trim().parse::<u32>().ok()) else {
         warn!("quickstart: test: {:?} isn't a command (select <id>); deleted", text.trim());
         let _ = std::fs::remove_file(&file);
@@ -572,6 +576,26 @@ unsafe fn test_command(mm: usize) {
         accept(mm, 0);
     }
     info!("quickstart: +{} ms test: selected id {id} (entry {pos} of {ids:?})", ms());
+}
+
+/// Test clients only (`test_commands`): the commands for the lobby the player is in, which the
+/// menus' tick doesn't see (it runs only in the online menus). `players <n>` sets the lobby's
+/// players needed to start, as the overlay's stepper does (the same field, in the lobby's game
+/// session), so a public match starts with the copies there are; the file is then deleted.
+/// Outside a lobby it waits. Other commands are left to [`test_command`].
+fn lobby_commands() {
+    loop {
+        std::thread::sleep(Duration::from_secs(1));
+        let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else { continue };
+        let Ok(text) = std::fs::read_to_string(&file) else { continue };
+        let Some(n) = text.trim().strip_prefix("players ").and_then(|v| v.trim().parse::<i32>().ok()).filter(|n| (1..=16).contains(n)) else { continue };
+        // SAFETY: the overlay's own accessor; null outside a lobby.
+        let Some(min) = (unsafe { crate::overlay::get_min_players_var().as_mut() }) else { continue };
+        let before = *min;
+        *min = n;
+        let _ = std::fs::remove_file(&file);
+        info!("quickstart: +{} ms test: players needed to start {before} -> {n}", ms());
+    }
 }
 
 /// A list entry's id, through the game's own lookup.

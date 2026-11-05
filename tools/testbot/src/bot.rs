@@ -1631,6 +1631,11 @@ impl ApiPlayer {
         Ok(resp.friends.into_iter().map(|f| (f.username, f.is_online)).collect())
     }
 
+    /// The public matches as the launcher's Matches tab gets them.
+    pub async fn lobbies(&self) -> Result<server_api::friends::LobbiesResponse> {
+        Ok(FriendsClient::new(self.api.clone()).lobbies(self.authed(server_api::friends::LobbiesRequest {})).await?.into_inner())
+    }
+
     /// Invites a friend (by account name) to this player's game, as the overlay's Invite does.
     pub async fn invite(&self, friend: &str) -> std::result::Result<(), tonic::Status> {
         FriendsClient::new(self.api.clone())

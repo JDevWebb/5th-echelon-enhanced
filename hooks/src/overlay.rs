@@ -1833,7 +1833,9 @@ fn get_max_players_var() -> *mut i32 {
     }
 }
 
-fn get_min_players_var() -> *mut i32 {
+/// The lobby's "players needed to start" (null outside a lobby); `quickstart`'s test commands
+/// set it too.
+pub(crate) fn get_min_players_var() -> *mut i32 {
     unsafe {
         let game_settings = get_game_settings();
         if game_settings.is_null() {
