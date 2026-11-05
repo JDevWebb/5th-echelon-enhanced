@@ -1086,12 +1086,20 @@ fn home(play: &mut Play, game: &mut Game, notices: &mut Notices, comms: &Comms, 
         let spacing = ui.ctx().style().spacing.item_spacing;
         // A little short of the window, so the drawer's tabs show under it.
         let height = (ui.available_height() - 56.0).max(480.0);
-        ui.allocate_ui_with_layout(egui::vec2(width, height), egui::Layout::top_down(egui::Align::LEFT), |ui| {
-            ui.spacing_mut().item_spacing = spacing;
-            stage(play, game, notices, notice.as_ref(), &mut to, ui);
-        });
-        ui.allocate_ui_with_layout(egui::vec2(width, 440.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
-            drawer_panel(play, game, notices, comms, ctx, &mut to, ui);
+        // In a scroll area, or the drawer under the stage can't be reached: at the smallest
+        // window (800x560) only its tabs showed, the checks and Fix everything below the edge.
+        // Each takes its whole height (the drawer paints to its rectangle without using it up),
+        // so the scroll area knows there's more below.
+        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+            ui.allocate_ui_with_layout(egui::vec2(width, height), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                ui.set_min_height(height);
+                ui.spacing_mut().item_spacing = spacing;
+                stage(play, game, notices, notice.as_ref(), &mut to, ui);
+            });
+            ui.allocate_ui_with_layout(egui::vec2(width, 440.0), egui::Layout::top_down(egui::Align::LEFT), |ui| {
+                ui.set_min_height(440.0);
+                drawer_panel(play, game, notices, comms, ctx, &mut to, ui);
+            });
         });
         return finish(play, game, notices, notice, ctx, ui, to);
     }
