@@ -238,8 +238,9 @@
               <li v-for="f in squad.online" :key="f.id">
                 <span class="edge"></span>
                 <span><b>{{ f.name }}</b><small>{{ f.activity || 'Online' }}</small></span>
+                <small v-if="squad.join_offered && f.with_me" class="soft">You’re in it</small>
                 <button
-                  v-if="squad.join_offered"
+                  v-else-if="squad.join_offered"
                   type="button"
                   class="fixbtn"
                   :disabled="!f.joinable || info.connecting"

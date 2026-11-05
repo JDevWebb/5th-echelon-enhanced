@@ -906,6 +906,8 @@ pub struct FriendView {
     name: String,
     activity: Option<String>,
     joinable: bool,
+    /// The player is in that game with them already ("You're in it", no Join).
+    with_me: bool,
 }
 
 #[derive(Serialize)]
@@ -1007,6 +1009,7 @@ pub fn squad(state: tauri::State<Launcher>, fresh: bool) -> Squad {
                 name: o.name.clone(),
                 activity: o.activity.clone(),
                 joinable: o.joinable,
+                with_me: o.with_me,
             })
             .collect(),
         others: f

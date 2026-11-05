@@ -1917,7 +1917,12 @@ fn friends_card(play: &mut Play, game: &Game, to: &mut Option<Go>, width: f32, u
                     // Join their game, on a server that offers it: the server sends our game into
                     // the party or public match they're in, hosting it or not (the game is started
                     // first if it isn't running). A private match still needs an invite.
-                    if friends.join_offered {
+                    if friends.join_offered && friend.with_me {
+                        // In their game already: nothing to join.
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(theme::muted("You're in it").small());
+                        });
+                    } else if friends.join_offered {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             let can = friend.joinable && !play.setup.running() && !play.joining.running();
                             let button = ui.add_enabled(can, theme::secondary("Join"));
@@ -2284,7 +2289,9 @@ fn people_page(play: &mut Play, game: &Game, ui: &mut egui::Ui) {
                             })
                             .response
                             .on_hover_text(format!("More for {}", p.name));
-                            if p.joinable && ui.add_enabled(!busy, theme::primary("Join")).clicked() {
+                            if p.with_me {
+                                ui.label(theme::muted("You're in it").small());
+                            } else if p.joinable && ui.add_enabled(!busy, theme::primary("Join")).clicked() {
                                 join = Some((p.id.clone(), p.name.clone()));
                             }
                         });

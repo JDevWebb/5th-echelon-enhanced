@@ -199,6 +199,8 @@ pub struct OnlineFriend {
     /// They're in a party (its host or a member) or a public match: the room to join them in
     /// (`JoinNow`). Not in a private match, which needs an invitation.
     pub joinable: bool,
+    /// This player is in it with them already: nothing to join ("You're in it").
+    pub with_me: bool,
 }
 
 /// Someone else online on this server (not a friend), for "Online now".
@@ -356,6 +358,7 @@ pub fn friends(cfg: &Config) -> Result<Friends, String> {
             name: clip(&f.username, 32),
             activity: f.activity.as_ref().map(describe),
             joinable: f.activity.as_ref().is_some_and(|a| a.joinable),
+            with_me: f.activity.as_ref().is_some_and(|a| a.with.iter().any(|w| w.eq_ignore_ascii_case(&username))),
         })
         .collect();
     online.sort_by_key(|f| f.name.to_lowercase());
@@ -418,6 +421,8 @@ pub struct Person {
     pub activity: Option<String>,
     /// A friend in a party or public match: Join takes the player there.
     pub joinable: bool,
+    /// This player is in that game with them already: nothing to join ("You're in it").
+    pub with_me: bool,
     /// "friend", "sent", "received", "blocked" or "" (none).
     pub relation: &'static str,
 }
@@ -444,7 +449,8 @@ pub struct People {
     pub everyone: bool,
 }
 
-fn person(p: &server_api::friends::Player) -> Person {
+/// `me`: this player's name, to tell a game they're in already ([`Person::with_me`]).
+fn person(p: &server_api::friends::Player, me: &str) -> Person {
     use server_api::friends::Relation;
     let clip = hooks_config::text::clip;
     Person {
@@ -454,6 +460,7 @@ fn person(p: &server_api::friends::Player) -> Person {
         online: p.is_online,
         activity: p.activity.as_ref().filter(|_| p.is_online).map(describe),
         joinable: p.is_online && p.activity.as_ref().is_some_and(|a| a.joinable),
+        with_me: !me.is_empty() && p.is_online && p.activity.as_ref().is_some_and(|a| a.with.iter().any(|w| w.eq_ignore_ascii_case(me))),
         relation: match p.relation() {
             Relation::Friend => "friend",
             Relation::RequestSent => "sent",
@@ -472,9 +479,10 @@ pub fn people(cfg: &Config) -> Result<People, String> {
     if !cfg.current_profile().is_some_and(|p| !p.server.is_empty() && p.has_account()) {
         return Ok(People::default());
     }
+    let me = cfg.current_profile().map(|p| p.user.username.clone()).unwrap_or_default();
     let lists = with_api_token(cfg, |url, token| crate::services::rt().block_on(crate::network::relationships(url, &token)))?;
     let list = |players: &[server_api::friends::Player]| {
-        let mut people: Vec<Person> = players.iter().take(MOST_PEOPLE).map(person).collect();
+        let mut people: Vec<Person> = players.iter().take(MOST_PEOPLE).map(|p| person(p, &me)).collect();
         people.sort_by_key(|p| (!p.online, p.name.to_lowercase()));
         people
     };
@@ -502,7 +510,7 @@ pub fn people(cfg: &Config) -> Result<People, String> {
 pub fn find_players(cfg: &Config, query: &str) -> Result<Vec<Person>, String> {
     let query: String = query.trim().chars().take(32).collect();
     let found = with_api_token(cfg, |url, token| crate::services::rt().block_on(crate::network::search_players(url, &token, &query)))?;
-    let mut people: Vec<Person> = found.iter().filter(|p| !p.id.is_empty()).take(50).map(person).collect();
+    let mut people: Vec<Person> = found.iter().filter(|p| !p.id.is_empty()).take(50).map(|p| person(p, "")).collect();
     people.sort_by_key(|p| (!p.online, p.name.to_lowercase()));
     Ok(people)
 }

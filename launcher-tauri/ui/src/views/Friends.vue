@@ -43,7 +43,8 @@
                 </span>
               </span>
               <span class="acts">
-                <button v-if="p.joinable" type="button" class="btn small primary" :disabled="busy" @click="act('join', p)">Join</button>
+                <small v-if="p.with_me" class="soft">You’re in it</small>
+                <button v-else-if="p.joinable" type="button" class="btn small primary" :disabled="busy" @click="act('join', p)">Join</button>
                 <button v-else-if="p.online && info.running" type="button" class="btn small" :disabled="busy" @click="act('invite', p)">Invite</button>
                 <More :p="p" :menu="menu" :items="[['remove', 'Remove friend'], ['block', 'Block']]" @open="(m) => (menu = m)" @pick="(a) => ask(a, p)" />
               </span>
