@@ -1307,6 +1307,21 @@ pub fn urls_with_public_address(urls: Vec<String>, advertise: SocketAddrV4) -> V
     out
 }
 
+/// A relayed player's URLs without their local one (no `type`): when `advertise` (the address
+/// the helper checked) is a relay's, not the address the player connects from (`observed`).
+/// Every player at a relay advertises the relay's IP, and the game takes another player with
+/// its own public IP for one behind the same router and uses their local address: two strangers
+/// at one relay then sent each other's games to private addresses at home, and the join failed
+/// with "the host is using a different game version" (the gamebox, 2026-11-05; the relay logged
+/// "nobody's address"). With the relay's address alone they reach each other through it (two
+/// players of one house too). A player reached directly keeps theirs, for LAN play.
+pub fn without_local_when_relayed(urls: Vec<String>, advertise: SocketAddrV4, observed: std::net::IpAddr) -> Vec<String> {
+    if std::net::IpAddr::V4(*advertise.ip()) == observed {
+        return urls;
+    }
+    urls.into_iter().filter(|u| u.split(';').any(|p| p.starts_with("type="))).collect()
+}
+
 fn v4(addr: SocketAddr) -> Option<SocketAddrV4> {
     match addr {
         SocketAddr::V4(a) => Some(a),
@@ -2698,6 +2713,19 @@ mod tests {
         assert_eq!(t.echo_heard(a("198.51.100.1:1"), later), Some(later), "room after a sweep");
         t.expire(later);
         assert_eq!(t.echoes.len(), 1);
+    }
+
+    #[test]
+    fn a_relayed_players_local_address_is_left_out() {
+        let urls = vec![
+            "prudp:/address=139.99.73.120;port=40000;RVCID=1;hdrType=0;type=2".to_string(),
+            "prudp:/address=192.168.160.5;port=13000;hdrType=0;RVCID=1".to_string(),
+        ];
+        let relay: SocketAddrV4 = "139.99.73.120:40000".parse().unwrap();
+        let home: std::net::IpAddr = "114.23.110.139".parse().unwrap();
+        assert_eq!(without_local_when_relayed(urls.clone(), relay, home), urls[..1].to_vec(), "relayed: the relay's address alone");
+        let direct: SocketAddrV4 = "114.23.110.139:13000".parse().unwrap();
+        assert_eq!(without_local_when_relayed(urls.clone(), direct, home), urls, "reached directly: the local one kept, for LAN play");
     }
 
     #[test]
