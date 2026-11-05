@@ -243,14 +243,18 @@ fn characters(t: &Tables, from: &mut HashMap<&'static str, u32>) -> Vec<(usize, 
     out
 }
 
-/// An FString's text: (pointer to UTF-16, count with the NUL).
+/// An FString's text: (pointer to its 8-bit characters, count with the NUL).
 fn fstring(at: usize) -> Option<String> {
     let (data, count) = (read_u32(at)? as usize, read::<i32>(at + 4)?);
     if data == 0 || !(1..=64).contains(&count) {
         return None;
     }
-    let units: Option<Vec<u16>> = (0..count as usize - 1).map(|i| read::<u16>(data + i * 2)).collect();
-    Some(String::from_utf16_lossy(&units?)).filter(|s| !s.is_empty())
+    // The game's strings are 8-bit (its name getter copies `count` bytes); read as 16-bit,
+    // "gbox1" came out as "执硯1ല" (the gamebox, 2026-11-05).
+    let bytes: Option<Vec<u8>> = (0..count as usize).map(|i| read::<u8>(data + i)).collect();
+    let bytes = bytes?;
+    let text = bytes.split(|b| *b == 0).next().unwrap_or_default();
+    Some(String::from_utf8_lossy(text).into_owned()).filter(|s| !s.is_empty())
 }
 
 /// What a character's controller says, when it's a CharacterControl.
@@ -394,6 +398,20 @@ fn test_pawns(t: &Tables, list: &[(usize, &'static str)]) {
             t.pawn_classes.iter().any(|(n, _)| t.names.get(n).is_some_and(|i| rs::of_class(o, rs::pack(*i, 0)))),
             rs::alive(o),
             (read::<f32>(loc), read::<f32>(loc + 4), read::<f32>(loc + 8)),
+        );
+        // Who it is: its network id (Actor.NetInstanceId, a QWord at 708; UID at 204), its
+        // controller's class, flag +0x4d (the name getter's local/remote test), team and name.
+        let controller = t.controller.and_then(|c| read_u32(o + usize::from(c))).unwrap_or(0) as usize;
+        let control = control_of(t, o);
+        info!(
+            "Characters: test: {o:#x} net id {:#x}:{:#x} uid {:#x} controller {controller:#x} flag {:?} role {:?} team {:?} name {:?}",
+            read_u32(o + 712).unwrap_or(0),
+            read_u32(o + 708).unwrap_or(0),
+            read_u32(o + 204).unwrap_or(0),
+            (controller != 0).then(|| read::<u8>(controller + 0x4d)).flatten(),
+            read::<u8>(o + 0x4d),
+            control.as_ref().and_then(|c| c.team),
+            control.and_then(|c| c.name),
         );
     });
     info!("Characters: test: {seen} objects made from Pawn");
