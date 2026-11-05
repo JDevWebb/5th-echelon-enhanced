@@ -133,6 +133,12 @@ const TITLE_GIVE_UP: Duration = Duration::from_secs(30);
 static TARGET_SEEN: AtomicU32 = AtomicU32::new(0);
 /// The online list's ids last seen (for the log).
 static LAST_IDS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
+/// `test_commands` (the gamebox's copies): see [`test_command`].
+static TEST_COMMANDS: AtomicBool = AtomicBool::new(false);
+/// What the menus showed last with `test_commands`: (active, page, ids), for the log.
+static TEST_LAST: Mutex<Option<(u32, u32, Vec<u32>)>> = Mutex::new(None);
+/// When the command file was last looked for.
+static TEST_LOOKED: Mutex<Option<Instant>> = Mutex::new(None);
 
 /// Nothing more to do: the lobby was chosen, or the quick start gave up. Every hook then only
 /// calls the game's own function, so a later return to the title (a quit, a lost connection)
@@ -182,6 +188,10 @@ fn smi_state() -> Option<u32> {
 pub unsafe fn install(lobby: QuickStartLobby) {
     let _ = START.set(Instant::now());
     let _ = LOBBY.set(lobby);
+    if hooks_config::get().is_some_and(|c| c.test_commands) {
+        TEST_COMMANDS.store(true, Ordering::Relaxed);
+        info!("quickstart: test commands on (gamebox-command beside the log)");
+    }
     // Started for a friend's Join (the launcher's join request waiting beside uplay.toml): the
     // join is what the player asked for, not a lobby. Left for `community` to take.
     if join_request_waiting() {
@@ -435,6 +445,10 @@ fn online_result(this: *mut c_void, result: i32) {
 /// The online menu's tick (main thread): once the wanted entry stands in the list, focus it and
 /// call the menu's own "select".
 fn matchmaking_tick(this: *mut c_void, dt: f32) {
+    if done() && TEST_COMMANDS.load(Ordering::Relaxed) {
+        // SAFETY: main thread, live SMIMatchmaking; every pointer is checked readable.
+        unsafe { test_command(this as usize) };
+    }
     if PRESS_SENT.load(Ordering::Relaxed) && !done() && smi_state() == Some(SMI_STATE_ONLINE) {
         let target = match LOBBY.get() {
             Some(QuickStartLobby::Coop) => ITEM_COOP,
@@ -496,6 +510,68 @@ unsafe fn choose_lobby(mm: usize, target: u32) {
         ms(),
         if target == ITEM_COOP { "Co-op" } else { "Spies vs Mercs" }
     );
+}
+
+/// The menu's list on its current page: its column, the entries' ids, and the menu's active
+/// flag and the page (for the log).
+unsafe fn read_list(mm: usize) -> Option<(usize, Vec<u32>, u32, u32)> {
+    let active = read_u32(mm + MM_ACTIVE)? & 0xff;
+    let list = read_u32(mm + MM_LIST).filter(|&l| l != 0)? as usize;
+    let page = read_u32(list + LIST_PAGE)?;
+    // One column per page (the online menu is page 0; Spies vs Mercs' own menu page 1).
+    let col = read_u32(list + LIST_COLUMNS).and_then(|c| read_u32(c as usize + page.min(15) as usize * 4)).filter(|&c| c != 0)? as usize;
+    let count = read_u32(col + COL_COUNT).unwrap_or(0).min(32) as usize;
+    let items = read_u32(col + COL_ITEMS).filter(|&i| i != 0)? as usize;
+    if !readable(items, count * 4) {
+        return None;
+    }
+    let e = exe();
+    let ids = (0..count).map(|i| item_id(e, col, *((items + i * 4) as *const u32))).collect();
+    Some((col, ids, active, page))
+}
+
+/// Test clients only (`test_commands`): logs each new state of the online menus' list, and
+/// once a second looks for `gamebox-command` beside the game's log. `select <id>` focuses the
+/// entry with that id and calls the menu's own "select", as the quick start does, then the
+/// file is deleted; an id not in the list leaves it for a later tick (the menu still loading).
+unsafe fn test_command(mm: usize) {
+    let Some((col, ids, active, page)) = read_list(mm) else { return };
+    if let Ok(mut last) = TEST_LAST.lock() {
+        let now = (active, page, ids.clone());
+        if last.as_ref() != Some(&now) {
+            info!("quickstart: +{} ms test: menu active {active}, page {page}, ids {ids:?}", ms());
+            *last = Some(now);
+        }
+    }
+    {
+        let Ok(mut looked) = TEST_LOOKED.lock() else { return };
+        if looked.is_some_and(|at| at.elapsed() < Duration::from_secs(1)) {
+            return;
+        }
+        *looked = Some(Instant::now());
+    }
+    let Some(file) = crate::LOG_PATH.get().and_then(|p| p.parent()).map(|d| d.join("gamebox-command")) else { return };
+    let Ok(text) = std::fs::read_to_string(&file) else { return };
+    let Some(id) = text.trim().strip_prefix("select ").and_then(|v| v.trim().parse::<u32>().ok()) else {
+        warn!("quickstart: test: {:?} isn't a command (select <id>); deleted", text.trim());
+        let _ = std::fs::remove_file(&file);
+        return;
+    };
+    if active != 1 {
+        return;
+    }
+    let Some(pos) = ids.iter().position(|&i| i == id) else { return };
+    let _ = std::fs::remove_file(&file);
+    *((col + COL_FOCUS) as *mut u32) = pos as u32;
+    let e = exe();
+    if e.dx9 {
+        let accept: unsafe extern "thiscall" fn(usize) = std::mem::transmute(e.mm_select);
+        accept(mm);
+    } else {
+        let accept: unsafe extern "thiscall" fn(usize, u32) = std::mem::transmute(e.mm_select);
+        accept(mm, 0);
+    }
+    info!("quickstart: +{} ms test: selected id {id} (entry {pos} of {ids:?})", ms());
 }
 
 /// A list entry's id, through the game's own lookup.
