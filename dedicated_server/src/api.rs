@@ -280,6 +280,9 @@ fn friend_error(e: FriendError) -> Status {
     }
 }
 
+/// A room's map (its attribute 101; stat_boards' game_names::map names it).
+const ATTR_MAP: u32 = 101;
+
 /// Property 113 tells a match room (0), private or public, from an ordinary lobby session (1).
 ///
 /// Both live in the same session type, so the attribute is the only thing distinguishing
@@ -1805,23 +1808,28 @@ impl Misc for MyMisc {
         }
         // Its player's number in the session, and everyone's in its room back (peer_names.rs).
         crate::peer_names::said(user_id, r.peer);
-        let peers = if r.peer == 0 {
+        let mut rooms = self.storage.find_host_sessions_async(user_id).await.map_err(internal)?;
+        rooms.extend(self.storage.member_sessions_async(user_id).await.map_err(internal)?);
+        rooms.retain(is_match_room);
+        // Its map's name, for its recordings (the game's own level name isn't readable).
+        let map = rooms
+            .iter()
+            .find_map(|s| crate::game_session::attribute_value(&s.attributes, ATTR_MAP))
+            .and_then(stat_boards::game_names::map)
+            .unwrap_or_default()
+            .to_string();
+        let peers = if r.peer == 0 || rooms.is_empty() {
             Vec::new()
         } else {
-            let mut rooms = self.storage.find_host_sessions_async(user_id).await.map_err(internal)?;
-            rooms.extend(self.storage.member_sessions_async(user_id).await.map_err(internal)?);
             let rooms = self.storage.with_participants_async(rooms, crate::storage::UrlsFor::AllBut(user_id)).await.map_err(internal)?;
-            let mut players: Vec<(u32, String)> = rooms
-                .iter()
-                .filter(|s| is_match_room(s))
-                .flat_map(|s| s.participants.iter().map(|p| (p.user_id, p.name.clone())))
-                .collect();
+            let mut players: Vec<(u32, String)> = rooms.iter().flat_map(|s| s.participants.iter().map(|p| (p.user_id, p.name.clone()))).collect();
             players.sort();
             players.dedup();
             crate::peer_names::of(&players)
         };
         Ok(Response::new(misc::MatchStateResponse {
             peers: peers.into_iter().map(|(peer, name)| misc::PeerName { peer, name }).collect(),
+            map,
         }))
     }
 

@@ -333,6 +333,8 @@ pub fn match_state(under_way: bool, state: &str, settings: &std::collections::BT
             }))
             .await?
             .into_inner();
+        // The room's map, by the server's name for it (the level's isn't readable).
+        crate::round_state::set_server_map(&response.map);
         // The other players' names by their numbers: theirs aren't in this game's memory.
         if !response.peers.is_empty() {
             crate::pawns::set_peer_names(response.peers.into_iter().map(|p| (p.peer, p.name)).collect());

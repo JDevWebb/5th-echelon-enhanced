@@ -78,6 +78,10 @@ pub(crate) fn tables() -> Option<&'static Tables> {
 /// How often the state is read, and said again while under way.
 const READ_EVERY: Duration = Duration::from_secs(2);
 const SAY_AGAIN: Duration = Duration::from_secs(30);
+/// How soon it's said again while this game's number is new or a character has no name.
+const NAME_AGAIN: Duration = Duration::from_secs(5);
+/// At most this many sooner a round (a name that never comes, e.g. a number two players claim).
+const NAMING_TRIES: u32 = 12;
 /// Instance numbers searched past the last found.
 const NUMBERS: u32 = 64;
 /// How long before the classes are looked up again, while they aren't loaded yet (a look-up
@@ -214,6 +218,20 @@ pub(crate) fn map_name(names: &HashMap<&'static str, u32>) -> Option<String> {
         }
     }
     None
+}
+
+/// The map's name as the server has the room's (the match state's answer): the level's own
+/// name isn't readable in the shipped game, so recordings had none.
+static SERVER_MAP: std::sync::Mutex<String> = std::sync::Mutex::new(String::new());
+
+pub(crate) fn set_server_map(map: &str) {
+    let map: String = map.chars().filter(|c| !c.is_control()).take(64).collect();
+    *SERVER_MAP.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = map;
+}
+
+/// The map: the level's own name, else the server's name for the room's.
+pub(crate) fn map_or_server(names: &HashMap<&'static str, u32>) -> Option<String> {
+    map_name(names).or_else(|| Some(SERVER_MAP.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()).filter(|m| !m.is_empty()))
 }
 
 /// The match state as last read: its name, whether it's under way, and the match manager's
@@ -565,6 +583,8 @@ pub fn start() {
         let mut numbers = HashMap::new();
         let mut said: Option<(String, bool, Instant)> = None;
         let mut said_settings: Option<std::collections::BTreeMap<String, f32>> = None;
+        let mut said_peer = 0;
+        let mut naming_tries = 0;
         loop {
             std::thread::sleep(READ_EVERY);
             // Looked up once the script classes are loaded (the first match manager).
@@ -612,7 +632,21 @@ pub fn start() {
                 info!("Match settings: {settings:?}");
             }
             let changed = said.as_ref().is_none_or(|(s, _, _)| *s != state) || settings_changed;
-            let again = under_way && said.as_ref().is_some_and(|(_, _, at)| at.elapsed() >= SAY_AGAIN);
+            // Sooner while players aren't all named (the server names them by the numbers each
+            // game says): at once when this game learns its own number, then every NAME_AGAIN
+            // while a character it sees has no name, rather than every SAY_AGAIN.
+            let own = crate::pawns::own_peer();
+            if !under_way {
+                naming_tries = 0;
+            }
+            let naming = under_way
+                && naming_tries < NAMING_TRIES
+                && (own != said_peer || crate::pawns::unnamed_seen())
+                && said.as_ref().is_some_and(|(_, _, at)| at.elapsed() >= NAME_AGAIN);
+            if naming {
+                naming_tries += 1;
+            }
+            let again = naming || (under_way && said.as_ref().is_some_and(|(_, _, at)| at.elapsed() >= SAY_AGAIN));
             if changed || again {
                 if changed {
                     info!("Match state: {state}{}", if under_way { " (under way)" } else { "" });
@@ -622,6 +656,7 @@ pub fn start() {
                     crate::api::match_state(under_way, &state, &settings);
                 }
                 said = Some((state, under_way, Instant::now()));
+                said_peer = own;
             }
             said_settings = Some(settings);
         }

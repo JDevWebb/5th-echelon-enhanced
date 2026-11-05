@@ -102,7 +102,7 @@ impl Recorder {
         }
         prune(&self.dir);
         let started = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
-        let map = rs::map_name(&tables.names).unwrap_or_default();
+        let map = rs::map_or_server(&tables.names).unwrap_or_default();
         let (round, _, mode) = rs::current();
         let safe: String = map.chars().filter(char::is_ascii_alphanumeric).take(32).collect();
         let path = self

@@ -128,6 +128,9 @@ message MatchStateResponse {
     // The players in the caller's match room who said their number (MatchStateRequest.peer),
     // the caller too.
     repeated PeerName peers = 1;
+    // The map of the caller's match room as players call it ("Silo"; the room's attribute 101),
+    // empty when not known: the game's own level name isn't readable (recordings had none).
+    string map = 2;
 }
 
 message PeerName {

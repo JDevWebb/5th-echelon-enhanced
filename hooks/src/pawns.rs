@@ -323,6 +323,14 @@ static OWN_PEER: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(
 /// The other players' names by their numbers, as the server answered (api::match_state).
 static PEER_NAMES: std::sync::Mutex<Vec<(u8, String)>> = std::sync::Mutex::new(Vec::new());
 
+/// Whether the last characters sampled had one with a number but no name (round_state then
+/// asks the server again sooner).
+static UNNAMED_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn unnamed_seen() -> bool {
+    UNNAMED_SEEN.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// This game's own player's number in the session, 0 while not known.
 pub fn own_peer() -> u32 {
     u32::from(OWN_PEER.load(std::sync::atomic::Ordering::Relaxed))
@@ -330,8 +338,12 @@ pub fn own_peer() -> u32 {
 
 /// The room's players' numbers and names, as the server has them.
 pub fn set_peer_names(peers: Vec<(u32, String)>) {
-    let peers = peers.into_iter().filter_map(|(p, n)| Some((u8::try_from(p).ok()?, n))).take(32).collect();
-    *PEER_NAMES.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = peers;
+    let peers: Vec<(u8, String)> = peers.into_iter().filter_map(|(p, n)| Some((u8::try_from(p).ok()?, n))).take(32).collect();
+    let mut known = PEER_NAMES.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if *known != peers {
+        info!("Characters: the server names the players by number: {peers:?}");
+        *known = peers;
+    }
 }
 
 fn peer_name(peer: u8) -> Option<String> {
@@ -359,7 +371,9 @@ fn sample(t: &Tables, object: usize, class: &'static str) -> Option<Sample> {
     let mut control = control_of(t, object);
     if let Some(p) = peer {
         if control.as_ref().is_some_and(|c| c.name.is_some()) {
-            OWN_PEER.store(p, std::sync::atomic::Ordering::Relaxed);
+            if OWN_PEER.swap(p, std::sync::atomic::Ordering::Relaxed) != p {
+                info!("Characters: this player's number in the session is {p}");
+            }
         } else if let Some(name) = peer_name(p) {
             control.get_or_insert_with(Control::default).name = Some(name);
         }
@@ -553,6 +567,10 @@ pub fn start(mut watchers: Vec<Box<dyn Watcher>>) {
             test_pawns(t, &list);
             let now = Instant::now();
             let samples: Vec<Sample> = list.iter().filter_map(|(o, class)| sample(t, *o, class)).collect();
+            UNNAMED_SEEN.store(
+                samples.iter().any(|s| s.peer.is_some() && s.control.as_ref().is_none_or(|c| c.name.is_none())),
+                std::sync::atomic::Ordering::Relaxed,
+            );
             for w in &mut watchers {
                 w.sample(t, now, &samples);
             }
