@@ -112,6 +112,11 @@ message MatchStateRequest {
     // Who's on which side, as the host's game has its players' characters (0.4.8 on): for the
     // launcher's Matches tab.
     repeated TeamPlayer team = 4;
+    // This game's player's number in the match's game session (0.4.8 on): the top byte of their
+    // character's network id (Actor.NetInstanceId), the session peer index + 1 (host 1); 0 not
+    // known yet. The server answers with every number it has for the room (`peers`), so each
+    // game can name the others' characters (theirs carry no name in its memory).
+    uint32 peer = 5;
 }
 
 message TeamPlayer {
@@ -119,7 +124,16 @@ message TeamPlayer {
     // "spy" or "merc".
     string side = 2;
 }
-message MatchStateResponse {}
+message MatchStateResponse {
+    // The players in the caller's match room who said their number (MatchStateRequest.peer),
+    // the caller too.
+    repeated PeerName peers = 1;
+}
+
+message PeerName {
+    uint32 peer = 1;
+    string name = 2;
+}
 
 message ClosingRequest {}
 message ClosingResponse {}

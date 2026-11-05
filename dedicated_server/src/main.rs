@@ -109,6 +109,7 @@ mod recordings;
 mod relay_pass;
 mod relays;
 mod reports;
+mod peer_names;
 mod round_settings;
 mod search_steer;
 mod secure;

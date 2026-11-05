@@ -1092,6 +1092,7 @@ impl Bot {
                             side: (*side).into(),
                         })
                         .collect(),
+                    peer: 0,
                 }),
             )
             .await?;
@@ -1315,6 +1316,7 @@ impl Bot {
                 state: state.into(),
                 settings: Default::default(),
                 team: Vec::new(),
+                peer: 0,
             }))
             .await?;
         Ok(())

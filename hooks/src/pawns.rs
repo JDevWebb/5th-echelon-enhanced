@@ -62,6 +62,8 @@ pub struct Tables {
     last_kill_time: Option<u16>,
     weapon: Option<u16>,
     bullets: Option<Bullets>,
+    /// Actor.NetInstanceId (a QWord), by name or place.
+    net_id: Option<u16>,
 }
 
 /// Where a weapon keeps its shots.
@@ -97,6 +99,8 @@ const PLACES: [(&str, &str, u16); 7] = [
     ("CharacterControl", "ObjectProperty", 1348), // m_LastKillVictim
     ("CharacterControl", "FloatProperty", 1344),  // m_fLastKillTime
 ];
+/// Actor.NetInstanceId (a QWord struct), as PLACES.
+const NET_ID_AT: u16 = 708;
 /// BasicWeapon.m_BulletHistory[32] (BulletStamp: m_vStart 0, m_vEnd 12, m_fTimeStamp 24; 28
 /// bytes), as PLACES.
 const BULLET_HISTORY_AT: u16 = 1952;
@@ -119,6 +123,7 @@ pub fn look_up() -> Option<Tables> {
         "BasicWeapon",
         "BulletStamp",
         "LevelInfo",
+        "NetInstanceId",
         "Location",
         "Rotation",
         "GroundSpeed",
@@ -174,11 +179,13 @@ pub fn look_up() -> Option<Tables> {
         in_control("m_LastKillVictim"),
         in_control("m_fLastKillTime"),
     ];
-    let places = if named.iter().any(Option::is_none) || bullets.is_none() {
+    let named_net_id = rs::offset_in(&names, "NetInstanceId", actor);
+    let places = if named.iter().any(Option::is_none) || bullets.is_none() || named_net_id.is_none() {
         let mut all = controls.clone();
         all.extend(rs::classes_named(&names, "Pawn"));
         all.extend(rs::classes_named(&names, "EPawn"));
         all.extend(&weapons);
+        all.extend(rs::classes_named(&names, "Actor"));
         rs::Places::of(&all)
     } else {
         rs::Places::none()
@@ -210,6 +217,7 @@ pub fn look_up() -> Option<Tables> {
         fire_hold: placed[4],
         last_victim: placed[5],
         last_kill_time: placed[6],
+        net_id: named_net_id.or_else(|| places.at(&names, &owners("Actor"), "StructProperty", NET_ID_AT)),
         character_control: controls.clone(),
         pawn_classes,
         bullets,
@@ -297,6 +305,37 @@ pub struct Sample {
     pub control: Option<Control>,
     /// Its weapon, when it's one that keeps a bullet history.
     pub weapon: Option<usize>,
+    /// Its player's number in the game session (see [`peer_of`]).
+    pub peer: Option<u8>,
+}
+
+/// A character's player's number in the game session: the top byte of the low word of its
+/// network id (Actor.NetInstanceId, `0x0N000001`), the session peer index + 1 (host 1), the
+/// same in every game (the gamebox: gb1 1, gb3 2, gb2 3, gb4 4 in all four games).
+fn peer_of(t: &Tables, object: usize) -> Option<u8> {
+    let low = read_u32(object + usize::from(t.net_id?))?;
+    let peer = (low >> 24) as u8;
+    (low & 0x00ff_ffff == 1 && (1..=32).contains(&peer)).then_some(peer)
+}
+
+/// This game's own player's number (0: not seen yet), for the match state it sends.
+static OWN_PEER: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// The other players' names by their numbers, as the server answered (api::match_state).
+static PEER_NAMES: std::sync::Mutex<Vec<(u8, String)>> = std::sync::Mutex::new(Vec::new());
+
+/// This game's own player's number in the session, 0 while not known.
+pub fn own_peer() -> u32 {
+    u32::from(OWN_PEER.load(std::sync::atomic::Ordering::Relaxed))
+}
+
+/// The room's players' numbers and names, as the server has them.
+pub fn set_peer_names(peers: Vec<(u32, String)>) {
+    let peers = peers.into_iter().filter_map(|(p, n)| Some((u8::try_from(p).ok()?, n))).take(32).collect();
+    *PEER_NAMES.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = peers;
+}
+
+fn peer_name(peer: u8) -> Option<String> {
+    PEER_NAMES.lock().unwrap_or_else(std::sync::PoisonError::into_inner).iter().find(|(p, _)| *p == peer).map(|(_, n)| n.clone())
 }
 
 fn sample(t: &Tables, object: usize, class: &'static str) -> Option<Sample> {
@@ -314,6 +353,17 @@ fn sample(t: &Tables, object: usize, class: &'static str) -> Option<Sample> {
                     .is_some_and(|i| read_u32(w + 0x24).is_some_and(|c| rs::made_from(c as usize, rs::pack(*i, 0))))
             })
         });
+    // A game has only its own player's name: that character's number is its own; the others'
+    // names come from the server by their numbers (peer_names on the server).
+    let peer = peer_of(t, object);
+    let mut control = control_of(t, object);
+    if let Some(p) = peer {
+        if control.as_ref().is_some_and(|c| c.name.is_some()) {
+            OWN_PEER.store(p, std::sync::atomic::Ordering::Relaxed);
+        } else if let Some(name) = peer_name(p) {
+            control.get_or_insert_with(Control::default).name = Some(name);
+        }
+    }
     Some(Sample {
         object,
         class,
@@ -323,8 +373,9 @@ fn sample(t: &Tables, object: usize, class: &'static str) -> Option<Sample> {
             .and_then(|r| Some((read::<i32>(object + usize::from(r))?, read::<i32>(object + usize::from(r) + 4)?))),
         ground_speed: t.ground_speed.and_then(|g| read::<f32>(object + usize::from(g))).unwrap_or(0.0),
         health: t.health.and_then(|h| read::<i32>(object + usize::from(h))),
-        control: control_of(t, object),
+        control,
         weapon,
+        peer,
     })
 }
 

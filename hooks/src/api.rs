@@ -319,7 +319,7 @@ pub fn report_player(id: &str, reason: &str, text: &str) -> Result<(), Error> {
 pub fn match_state(under_way: bool, state: &str, settings: &std::collections::BTreeMap<String, f32>) {
     let result = run(signed_in(|| async {
         let mut client = connect!(MiscClient);
-        client
+        let response = client
             .match_state(tonic::Request::new(server_api::misc::MatchStateRequest {
                 under_way,
                 state: state.to_string(),
@@ -329,8 +329,14 @@ pub fn match_state(under_way: bool, state: &str, settings: &std::collections::BT
                     .into_iter()
                     .map(|(name, side)| server_api::misc::TeamPlayer { name, side: side.into() })
                     .collect(),
+                peer: crate::pawns::own_peer(),
             }))
-            .await?;
+            .await?
+            .into_inner();
+        // The other players' names by their numbers: theirs aren't in this game's memory.
+        if !response.peers.is_empty() {
+            crate::pawns::set_peer_names(response.peers.into_iter().map(|p| (p.peer, p.name)).collect());
+        }
         Ok(())
     }));
     if let Err(e) = result {

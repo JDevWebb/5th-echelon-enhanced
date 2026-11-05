@@ -1803,7 +1803,26 @@ impl Misc for MyMisc {
                 crate::session_events::note(crate::session_events::Who::Id(user_id), "round_settings", detail);
             }
         }
-        Ok(Response::new(misc::MatchStateResponse {}))
+        // Its player's number in the session, and everyone's in its room back (peer_names.rs).
+        crate::peer_names::said(user_id, r.peer);
+        let peers = if r.peer == 0 {
+            Vec::new()
+        } else {
+            let mut rooms = self.storage.find_host_sessions_async(user_id).await.map_err(internal)?;
+            rooms.extend(self.storage.member_sessions_async(user_id).await.map_err(internal)?);
+            let rooms = self.storage.with_participants_async(rooms, crate::storage::UrlsFor::AllBut(user_id)).await.map_err(internal)?;
+            let mut players: Vec<(u32, String)> = rooms
+                .iter()
+                .filter(|s| is_match_room(s))
+                .flat_map(|s| s.participants.iter().map(|p| (p.user_id, p.name.clone())))
+                .collect();
+            players.sort();
+            players.dedup();
+            crate::peer_names::of(&players)
+        };
+        Ok(Response::new(misc::MatchStateResponse {
+            peers: peers.into_iter().map(|(peer, name)| misc::PeerName { peer, name }).collect(),
+        }))
     }
 
     async fn closing(&self, request: Request<misc::ClosingRequest>) -> Result<Response<misc::ClosingResponse>, Status> {
