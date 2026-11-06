@@ -3,27 +3,23 @@
 #
 #   build/build.sh test      workspace tests (all but the Windows-only hooks DLL and launcher)
 #   build/build.sh server    Linux x86_64 dedicated_server and coordinator -> dist/
-#   build/build.sh linux     launcher-linux-x86_64 (DLL embedded) + dedicated_server-linux-x86_64 -> dist/
+#   build/build.sh linux     launcher-linux-x86_64 (the Slint launcher, DLL embedded) + dedicated_server-linux-x86_64
+#                            -> dist/
 #   build/build.sh sums      dist/SHA256SUMS for a release
 #   build/build.sh test-dll  dist/uplay_r1_loader-test.dll: the client DLL with test commands (test clients only)
-#   build/build.sh windows   launcher.exe (DLL embedded), uplay_r1_loader.dll, dedicated_server.exe, testbot.exe,
-#                            map-geometry.exe -> dist/
+#   build/build.sh windows   launcher.exe (the Slint launcher, DLL embedded), uplay_r1_loader.dll,
+#                            dedicated_server.exe, testbot.exe, map-geometry.exe -> dist/
 #   build/build.sh bots [scenario ...]
 #                            test players against a fresh local server (tools/testbot)
-#   build/build.sh slint     the Slint launcher (0.5.0) for Windows and Linux x86_64, the DLL embedded
-#                            -> dist/launcher-slint.exe, dist/launcher-slint-linux-x86_64
 #   build/build.sh slint-shots
-#                            every Slint screen in both looks at several window sizes, on made-up
-#                            data, on a virtual screen -> dist/slint-shots/*.png
-#   (not released from 0.5.0, kept for reference: one launcher, the egui one, until a Slint
-#    one replaces it)
-#   build/build.sh tauri      the Tauri launcher for Windows and Linux x86_64 -> dist
-#   build/build.sh tauri-shots
-#                            every screen of the Tauri launcher at several window sizes, checked
-#                            -> dist/tauri-shots/*.png
+#                            every screen of the launcher in both looks at several window sizes, on
+#                            made-up data, on a virtual screen -> dist/slint-shots/*.png
+#   (not released from 0.5.0, kept a release as the fallback: the egui launcher)
+#   build/build.sh egui      the egui launcher for Windows and Linux x86_64, the DLL embedded
+#                            -> dist/launcher-egui.exe, dist/launcher-egui-linux-x86_64
+#   build/build.sh shots     every egui launcher screen at several window sizes -> dist/shots/*.png
 #   build/build.sh tauri-trial
 #                            the Tauri trial for Windows and Linux x86_64 -> dist/trials
-#   build/build.sh shots     every launcher screen at several window sizes -> dist/shots/*.png
 #   build/build.sh latency [scenario ...]
 #                            the test players with delay and loss added (PROFILES)
 #   build/build.sh load [options]
@@ -75,16 +71,6 @@ ui() {
     if [ ! -f dist/index.html ] || [ -n "$(find src index.html public vite.config.js package-lock.json -newer dist/index.html | head -1)" ]; then npm run build; fi'
 }
 
-# The Tauri launcher's page (launcher-tauri/ui/dist, embedded in launcher-tauri), built the same
-# way.
-tauri_ui() {
-  run -v fes-npm-cache:/root/.npm "$IMAGE" sh -c '
-    set -e
-    cd launcher-tauri/ui
-    if [ ! -d node_modules ] || [ package-lock.json -nt node_modules ]; then npm ci --ignore-scripts --no-audit --no-fund; touch node_modules; fi
-    npm run build'
-}
-
 mkdir -p dist
 case "${1:-test}" in
   test|server|linux|federation-test|relay-test) ui ;;
@@ -121,8 +107,11 @@ case "${1:-test}" in
       cargo fetch -q
       mkdir -p /tmp/sodium
       cp "$(ls -d /usr/local/cargo/registry/src/*/libsodium-sys-0.2.7 | head -1)/msvc/x64/Release/v142/libsodium.lib" /tmp/sodium/sodium.lib
-      SODIUM_LIB_DIR=/tmp/sodium HOOKS_DLL=/target/win/i686-pc-windows-msvc/release/hooks.dll cargo xwin build -p launcher --release --features embed-dll --target x86_64-pc-windows-msvc
-      cp /target/win/x86_64-pc-windows-msvc/release/launcher.exe dist/launcher.exe
+      # The launcher (launcher-slint, its own workspace), carrying the client DLL, as launcher.exe:
+      # the name the updater fetches.
+      (cd launcher-slint && SODIUM_LIB_DIR=/tmp/sodium HOOKS_DLL=/target/win/i686-pc-windows-msvc/release/hooks.dll CARGO_TARGET_DIR=/target/launcher-slint \
+        cargo xwin build --release --features embed-dll --target x86_64-pc-windows-msvc)
+      cp /target/launcher-slint/x86_64-pc-windows-msvc/release/launcher-slint.exe dist/launcher.exe
       # The server for Windows, which the launcher can run.
       SODIUM_LIB_DIR=/tmp/sodium cargo xwin build -p dedicated_server --release --target x86_64-pc-windows-msvc
       cp /target/win/x86_64-pc-windows-msvc/release/dedicated_server.exe dist/dedicated_server.exe
@@ -142,22 +131,20 @@ case "${1:-test}" in
         REQUIRE_IDENTITY=1 scripts/bots.sh /target/native/debug identity-required &&
         MATCHMAKING=1 scripts/bots.sh /target/native/debug relay-pass; fi' bots "$@"
     ;;
-  slint)
-    # The Slint launcher (launcher-slint, 0.5.0) for Windows and for Linux x86_64 -> dist. It
-    # carries the client DLL, as the egui launcher does. Nothing to install beside it: no web
-    # view; on Linux it opens X11 (or Wayland) and OpenGL itself, as winit does for egui.
+  egui)
+    # The egui launcher (launcher/), not released from 0.5.0: the fallback, kept a release, for
+    # Windows and Linux x86_64, the DLL embedded -> dist/launcher-egui.exe, launcher-egui-linux-x86_64.
     [ -f dist/uplay_r1_loader.dll ] || { echo "build.sh windows first (the launcher carries its DLL)"; exit 1; }
-    run -e CARGO_TARGET_DIR=/target/launcher-slint -w /src/launcher-slint "$IMAGE" \
-      sh -c 'set -e
-        # libsodium as the windows target sets it up (the launcher library links it).
-        cargo fetch -q
-        mkdir -p /tmp/sodium
-        cp "$(ls -d /usr/local/cargo/registry/src/*/libsodium-sys-0.2.7 | head -1)/msvc/x64/Release/v142/libsodium.lib" /tmp/sodium/sodium.lib
-        SODIUM_LIB_DIR=/tmp/sodium HOOKS_DLL=/src/dist/uplay_r1_loader.dll cargo xwin build --release --features embed-dll --target x86_64-pc-windows-msvc
-        cp /target/launcher-slint/x86_64-pc-windows-msvc/release/launcher-slint.exe /src/dist/
-        # Fontconfig is opened when it runs (launcher-slint/Cargo.toml), not linked.
-        HOOKS_DLL=/src/dist/uplay_r1_loader.dll cargo build --release --features embed-dll --target x86_64-unknown-linux-gnu
-        cp /target/launcher-slint/x86_64-unknown-linux-gnu/release/launcher-slint /src/dist/launcher-slint-linux-x86_64'
+    run -e CARGO_TARGET_DIR=/target/win "$IMAGE" sh -c '
+      set -e
+      cargo fetch -q
+      mkdir -p /tmp/sodium
+      cp "$(ls -d /usr/local/cargo/registry/src/*/libsodium-sys-0.2.7 | head -1)/msvc/x64/Release/v142/libsodium.lib" /tmp/sodium/sodium.lib
+      SODIUM_LIB_DIR=/tmp/sodium HOOKS_DLL=/src/dist/uplay_r1_loader.dll cargo xwin build -p launcher --release --features embed-dll --target x86_64-pc-windows-msvc
+      cp /target/win/x86_64-pc-windows-msvc/release/launcher.exe dist/launcher-egui.exe'
+    run -e CARGO_TARGET_DIR=/target/amd64 -e HOOKS_DLL=/src/dist/uplay_r1_loader.dll "$IMAGE" sh -c '
+      cargo build -p launcher --release --features embed-dll --target x86_64-unknown-linux-gnu &&
+      cp /target/amd64/x86_64-unknown-linux-gnu/release/launcher dist/launcher-egui-linux-x86_64'
     ;;
   slint-shots)
     # Every screen of the Slint launcher in both looks at several window sizes -> dist/slint-shots
@@ -168,38 +155,6 @@ case "${1:-test}" in
     run -e CARGO_TARGET_DIR=/target/launcher-slint -w /src/launcher-slint fes-slint:local cargo build -q
     run --network none -e CARGO_TARGET_DIR=/target/launcher-slint -e SLINT_BACKEND=winit-software fes-slint:local \
       xvfb-run -a -s "-screen 0 2000x1200x24" /target/launcher-slint/debug/launcher-slint --shots /src/dist/slint-shots
-    ;;
-  tauri)
-    # The Tauri launcher (launcher-tauri, 0.5.0) for Windows and for Linux x86_64 -> dist: its
-    # page (launcher-tauri/ui) built first, then embedded. Linux links against the WebKitGTK in
-    # fes-tauri, as tauri-trial does.
-    # It carries the client DLL, as the egui launcher does.
-    [ -f dist/uplay_r1_loader.dll ] || { echo "build.sh windows first (the launcher carries its DLL)"; exit 1; }
-    docker build -q -t fes-tauri:local -f build/Dockerfile.tauri build >/dev/null
-    tauri_ui
-    run -e CARGO_TARGET_DIR=/target/launcher-tauri -w /src/launcher-tauri/src-tauri "$IMAGE" \
-      sh -c 'set -e
-        # libsodium as the windows target sets it up (the launcher library links it).
-        cargo fetch -q
-        mkdir -p /tmp/sodium
-        cp "$(ls -d /usr/local/cargo/registry/src/*/libsodium-sys-0.2.7 | head -1)/msvc/x64/Release/v142/libsodium.lib" /tmp/sodium/sodium.lib
-        SODIUM_LIB_DIR=/tmp/sodium HOOKS_DLL=/src/dist/uplay_r1_loader.dll cargo xwin build --release --features embed-dll --target x86_64-pc-windows-msvc
-        cp /target/launcher-tauri/x86_64-pc-windows-msvc/release/launcher-tauri.exe /src/dist/'
-    sysroot="-C link-arg=-L/sysroot/usr/lib/x86_64-linux-gnu -C link-arg=-L/sysroot/lib/x86_64-linux-gnu"
-    sysroot="$sysroot -C link-arg=-Wl,-rpath-link=/sysroot/usr/lib/x86_64-linux-gnu -C link-arg=-Wl,-rpath-link=/sysroot/lib/x86_64-linux-gnu"
-    run -e CARGO_TARGET_DIR=/target/launcher-tauri -e CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUSTFLAGS="$sysroot" \
-      -w /src/launcher-tauri/src-tauri fes-tauri:local \
-      sh -c 'HOOKS_DLL=/src/dist/uplay_r1_loader.dll cargo build --release --features embed-dll --target x86_64-unknown-linux-gnu && cp /target/launcher-tauri/x86_64-unknown-linux-gnu/release/launcher-tauri /src/dist/launcher-tauri-linux-x86_64'
-    ;;
-  tauri-shots)
-    # Every screen of the Tauri launcher at several window sizes -> dist/tauri-shots/*.png, its
-    # page in the browser preview in a headless Chromium (launcher-tauri/shots); it fails on an
-    # error on the page, a page wider than its window or a button without a name. Run without a
-    # network: the preview's answers are made up.
-    docker build -q -t fes-tauri-shots:local -f build/Dockerfile.tauri-shots build >/dev/null
-    tauri_ui
-    rm -rf dist/tauri-shots
-    run --network none fes-tauri-shots:local node launcher-tauri/shots/shots.cjs launcher-tauri/ui/dist dist/tauri-shots
     ;;
   tauri-trial)
     # The Tauri trial (trials/tauri-play) for Windows and for Linux x86_64 (the Steam Deck) ->
@@ -263,13 +218,14 @@ case "${1:-test}" in
     IMAGE="$IMAGE" scripts/proxy-test.sh /target/native/debug
     ;;
   linux)
-    # The launcher for Linux and Steam Deck (x86_64), with the client DLL
-    # from `build.sh windows` inside, and the Linux server.
+    # The launcher for Linux and Steam Deck (x86_64; launcher-slint: fontconfig, X11 or Wayland
+    # and OpenGL opened when it runs, so it needs only libc), with the client DLL from
+    # `build.sh windows` inside, and the Linux server.
     [ -f dist/uplay_r1_loader.dll ] || { echo "build.sh windows first (the launcher carries its DLL)"; exit 1; }
     run -e CARGO_TARGET_DIR=/target/amd64 -e HOOKS_DLL=/src/dist/uplay_r1_loader.dll "$IMAGE" sh -c '
       set -e
-      cargo build -p launcher --release --features embed-dll --target x86_64-unknown-linux-gnu
-      cp /target/amd64/x86_64-unknown-linux-gnu/release/launcher dist/launcher-linux-x86_64
+      (cd launcher-slint && CARGO_TARGET_DIR=/target/launcher-slint cargo build --release --features embed-dll --target x86_64-unknown-linux-gnu)
+      cp /target/launcher-slint/x86_64-unknown-linux-gnu/release/launcher-slint dist/launcher-linux-x86_64
       cargo build -p dedicated_server -p coordinator --release --target x86_64-unknown-linux-gnu
       cp /target/amd64/x86_64-unknown-linux-gnu/release/dedicated_server dist/dedicated_server-linux-x86_64
       cp /target/amd64/x86_64-unknown-linux-gnu/release/coordinator dist/coordinator-linux-x86_64'

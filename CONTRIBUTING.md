@@ -49,7 +49,8 @@ The top of `build/build.sh` lists the rest (the admin UI, the proxy test, the lo
 
 | Folder | What |
 |---|---|
-| `launcher/`, `setup/` | The launcher (egui) and its logic: finding the game, installing, accounts, saves, checks |
+| `launcher-slint/` | The launcher (Slint; its own workspace: `cargo build --manifest-path launcher-slint/Cargo.toml`) |
+| `launcher/`, `setup/` | The launcher's logic: finding the game, installing, accounts, saves, checks (and the egui interface it had before 0.5.0) |
 | `hooks/` | The client DLL that runs inside the game (`uplay_r1_loader.dll`): Uplay's API, the overlay, internet play |
 | `dedicated_server/`, `quazal/` | The game server, and the Quazal protocols (PRUDP and RMC) it speaks |
 | `coordinator/` | Friends across servers, the server directory, updates, metrics and the admin UI (`admin-ui/`, Vue) |

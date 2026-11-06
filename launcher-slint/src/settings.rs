@@ -144,8 +144,6 @@ pub struct View {
     directory: String,
     size: f32,
     size_range: (f32, f32),
-    /// Linux: the classic (egui) interface can be chosen instead.
-    classic: Option<bool>,
     product: &'static str,
     release: &'static str,
 }
@@ -316,7 +314,6 @@ pub fn settings(state: tauri::State<Launcher>) -> View {
         ask_feedback: !Prefs::feedback().1,
         directory: Prefs::directory().unwrap_or_default(),
         size: Prefs::ui_scale(),
-        classic: cfg!(target_os = "linux").then(Prefs::classic_interface),
         size_range: (launcher::prefs::MIN_SIZE, launcher::prefs::MAX_SIZE),
         product: "5th Echelon Enhanced",
         release: env!("FE_RELEASE"),

@@ -1,5 +1,5 @@
 //! What the screens ask for and do, without the window: the Tauri launcher's command layer
-//! (launcher-tauri/src-tauri/src/commands.rs) for Play and Matches, carried over with Tauri taken
+//! (its commands.rs, before launcher-tauri was removed) for Play and Matches, carried over with Tauri taken
 //! out. The work itself is the egui launcher's library (`launcher`), so all the launchers set up
 //! and start the game the same way and keep the same files.
 //!

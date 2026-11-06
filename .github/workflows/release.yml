@@ -75,12 +75,12 @@ jobs:
           cargo build --locked --release -p hooks --target i686-pc-windows-msvc
           dll="$PWD/target/i686-pc-windows-msvc/release/hooks.dll"
           cargo build --locked --release -p dedicated_server -p testbot -p map_geometry
-          # launcher.exe: the launcher (egui), carrying the client DLL. The Tauri one
-          # (launcher-tauri/) isn't released from 0.5.0: one launcher until a Slint one.
-          HOOKS_DLL="$dll" cargo build --locked --release -p launcher --features embed-dll
+          # launcher.exe: the launcher (launcher-slint, its own workspace), carrying the client
+          # DLL, under the name the updater fetches.
+          HOOKS_DLL="$dll" cargo build --locked --release --manifest-path launcher-slint/Cargo.toml --features embed-dll
           mkdir dist
           cp "$dll" dist/uplay_r1_loader.dll
-          cp target/release/launcher.exe dist/launcher.exe
+          cp launcher-slint/target/release/launcher-slint.exe dist/launcher.exe
           cp target/release/dedicated_server.exe target/release/testbot.exe target/release/map-geometry.exe dist/
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -107,10 +107,12 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
       - name: Build
         run: |
-          HOOKS_DLL="$PWD/windows/uplay_r1_loader.dll" cargo build --locked --release -p launcher --features embed-dll
+          # The launcher (launcher-slint): fontconfig, X11 or Wayland and OpenGL are opened when it
+          # runs, so it builds with nothing installed and needs only libc where it runs.
+          HOOKS_DLL="$PWD/windows/uplay_r1_loader.dll" cargo build --locked --release --manifest-path launcher-slint/Cargo.toml --features embed-dll
           cargo build --locked --release -p dedicated_server -p coordinator
           mkdir dist
-          cp target/release/launcher dist/launcher-linux-x86_64
+          cp launcher-slint/target/release/launcher-slint dist/launcher-linux-x86_64
           cp target/release/dedicated_server dist/dedicated_server-linux-x86_64
           cp target/release/coordinator dist/coordinator-linux-x86_64
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

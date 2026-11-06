@@ -47,7 +47,7 @@ pub const RELEASES: &[Release] = &[
         new: &[
             Item {
                 title: "A new look",
-                text: "The launcher is redrawn: the Play button says whether you're ready and why not (and is the fix when something needs one), and every page is easier to read and to use with a keyboard.",
+                text: "A new launcher, the same on Windows, Linux and the Steam Deck, in a dark or a light look (Settings › Display, or the title bar's button): the Play button says whether you're ready and why not (and is the fix when something needs one), and every page is easier to read and to use with a keyboard. The overlay in the game takes the same look.",
                 community: false,
             },
             Item {

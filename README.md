@@ -84,7 +84,7 @@ Tell us how it goes: bugs, ideas and questions are all welcome as [issues](https
 
 Every upstream commit keeps its original author in this repository's history, and merged pull requests keep their authors' commits. The [changelog](#whats-new-since-5th-echelon) lists what 5th Echelon Enhanced changed and where each change came from.
 
-Also used: [IBM Plex](https://github.com/IBM/plex) Sans, Sans Condensed and Mono (SIL Open Font License) for the overlay and launcher, [egui](https://github.com/emilk/egui) for the launcher, and [hudhook](https://github.com/veeenu/hudhook) with [Dear ImGui](https://github.com/ocornut/imgui) for the overlay.
+Also used: [IBM Plex](https://github.com/IBM/plex) Sans, Sans Condensed and Mono (SIL Open Font License) for the overlay and launcher, [Slint](https://slint.dev) for the launcher (under its royalty-free licence), and [hudhook](https://github.com/veeenu/hudhook) with [Dear ImGui](https://github.com/ocornut/imgui) for the overlay.
 
 **Want your name here?** See [Contributing](#contributing). Fixes, testing reports, research and documentation all count.
 
@@ -228,7 +228,7 @@ The game runs under Proton (Steam) or Wine (Lutris, Heroic, …), and 5th Echelo
    ```sh
    chmod +x launcher-linux-x86_64 && ./launcher-linux-x86_64
    ```
-   On a Steam Deck, do this in **Desktop Mode**. On its first start it fetches the launcher's new interface (`launcher-tauri-linux-x86_64` from the same release, saved beside it as `launcher-tauri`) and opens it from the next start where WebKitGTK 4.1 is installed; otherwise, and in Game Mode, the classic interface opens. Download both files to skip the wait.
+   On a Steam Deck, do this in **Desktop Mode** the first time. It's one file with nothing to install beside it; added to Steam as a non-Steam game, it also runs in Game Mode, full screen.
 2. **If you've never started the game on this PC, start it once from Steam and quit.** Proton only creates the game's Wine files on its first run, and your save goes in there; the launcher's Status card reminds you.
 3. **Join a server and press Connect**, as on Windows. The launcher finds the game in any Steam library (native, Flatpak or Snap, SD card included), or in Lutris, Heroic and `~/.wine` prefixes. You can also choose the folder yourself.
 4. **Press Play.**
@@ -529,7 +529,7 @@ Command-line options: `--public-address <ip>`, `--listen <ip>`, and `-c <file>` 
 Compared with upstream [5th Echelon 0.2.5](https://github.com/unixoide/5th-echelon/releases/tag/v0.2.5):
 
 **Launcher**
-- Rewritten around a new `setup` library, for Windows and Linux (Steam, Flatpak, Steam Deck, Lutris, Heroic): in Tauri since 0.5.0 (the Field ops look), with the classic egui interface where the new one can't run (Game Mode on a Steam Deck).
+- Rewritten around a new `setup` library, for Windows and Linux (Steam, Flatpak, Steam Deck, Lutris, Heroic). Since 0.5.0 one native window in [Slint](https://slint.dev), the same on Windows, Linux and the Steam Deck (Game Mode too), in a dark and a light look, with 5th Echelon Enhanced's own mark; the in-game overlay follows its look.
 - A Play button that says whether you're ready and why not, a Friends page (requests, finding players, blocks), and **Choose a match...** to pick an open public match or start a new one.
 - A guided first-run setup, and a Status card with fixes. **Connect** finds your account with your identity, and asks for a name only when you have none on that server.
 - Typing a network's address (a coordinator) sets you up on its best server by ping; the server menu moves you to another.
@@ -734,7 +734,8 @@ A tag with a suffix (`v0.3.1-rc.1`) makes a pre-release, which the updater doesn
 | `coordinator/` | Shares friends between servers, keeps the server directory, rolls out updates, and serves the admin UI |
 | `hooks/` | The game client (`uplay_r1_loader.dll`): Uplay emulation, network fixes and the overlay |
 | `setup/` | The launcher's logic: finding the game, installing, accounts, saves and checks |
-| `launcher/` | The launcher's egui interface (Windows and Linux) |
+| `launcher-slint/` | The launcher (Windows, Linux and the Steam Deck), in Slint: its own workspace |
+| `launcher/` | The launcher's library (its logic, shared), and the egui interface it had before 0.5.0 |
 | `api/` | The gRPC API definitions |
 | `tools/` | Test players, the DDL parser, Wireshark dissectors, and research tools |
 | `docker/` | The server's Docker image and compose file |

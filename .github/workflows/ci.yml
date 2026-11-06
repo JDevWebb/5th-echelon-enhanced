@@ -37,8 +37,15 @@ jobs:
         working-directory: coordinator/admin-ui
         run: npm ci --ignore-scripts --no-audit --no-fund && npm run build
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # The launcher (launcher-slint) is a workspace of its own.
+          workspaces: |
+            . -> target
+            launcher-slint -> target
       - name: Formatting
-        run: cargo fmt --all --check
+        run: |
+          cargo fmt --all --check
+          cargo fmt --manifest-path launcher-slint/Cargo.toml --all --check
       - name: Tests
         run: cargo test --locked --workspace --exclude hooks --exclude umd_browser
       - name: The launcher's screens, headless
@@ -70,7 +77,9 @@ jobs:
           scripts/relay-test.sh /ci-bin
           scripts/proxy-test.sh /ci-bin
           scripts/ops-test.sh /ci-bin
-      - name: The Linux launcher builds
+      - name: The Linux launcher builds (launcher-slint)
+        run: cargo build --locked --manifest-path launcher-slint/Cargo.toml
+      - name: The egui launcher (the fallback, not released) still builds
         run: cargo build --locked -p launcher
 
   windows:
@@ -92,6 +101,11 @@ jobs:
       - name: Install the toolchain (rust-toolchain.toml)
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # The launcher (launcher-slint) is a workspace of its own.
+          workspaces: |
+            . -> target
+            launcher-slint -> target
       - name: Client DLL
         run: cargo build --locked -p hooks --target i686-pc-windows-msvc
       - name: Client DLL tests
@@ -99,7 +113,7 @@ jobs:
       - name: Launcher with the client inside, server and test players
         shell: bash
         run: |
-          HOOKS_DLL="$PWD/target/i686-pc-windows-msvc/debug/hooks.dll" cargo build --locked -p launcher --features embed-dll
+          HOOKS_DLL="$PWD/target/i686-pc-windows-msvc/debug/hooks.dll" cargo build --locked --manifest-path launcher-slint/Cargo.toml --features embed-dll
           cargo build --locked -p dedicated_server -p testbot
       # The server's Windows build is released too: the test players against it, as on Linux.
       - name: Test players against a fresh Windows server
