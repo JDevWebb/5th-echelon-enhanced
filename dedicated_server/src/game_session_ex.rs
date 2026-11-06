@@ -188,6 +188,9 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
             .collect();
         // Nearest first, and the far ones left out as `[matchmaking] far_ms` says (far_rooms.rs):
         // before the cut, so the near ones are what the game gets.
+        // Each room's estimate and what it's from, for the search event (Sessions shows why a
+        // room was picked or left out).
+        let mut estimates: Vec<(u32, u32, &str)> = Vec::new();
         let (sessions, far) = if invitation_search || !crate::far_rooms::enabled() {
             (sessions, 0)
         } else {
@@ -198,8 +201,11 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
                     .map(|s| {
                         // Through the relays both reached, when both games said (G3); else from
                         // where they are.
-                        let ms = crate::far_rooms::estimate_by_relays(user_id, s.creator_id)
-                            .or_else(|| crate::metrics::address_of(s.creator_id).and_then(|host| crate::far_rooms::estimate_ms(me, host)));
+                        let by_relays = crate::far_rooms::estimate_by_relays(user_id, s.creator_id);
+                        let ms = by_relays.or_else(|| crate::metrics::address_of(s.creator_id).and_then(|host| crate::far_rooms::estimate_ms(me, host)));
+                        if let Some(ms) = ms {
+                            estimates.push((s.session_id, ms, if by_relays.is_some() { "relays" } else { "places" }));
+                        }
                         (s, ms)
                     })
                     .collect(),
@@ -284,6 +290,17 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
         }
         // The rooms it answered with, to follow a search to the join or refusal after it.
         detail["rooms"] = sessions.iter().take(10).map(|s| s.session_id).collect::<Vec<_>>().into();
+        // And each one's estimated round trip to the searcher (with far rooms on): through the
+        // relays both games reached, or from where the players are.
+        let answered: Vec<serde_json::Value> = sessions
+            .iter()
+            .take(10)
+            .filter_map(|s| estimates.iter().find(|(id, ..)| *id == s.session_id))
+            .map(|(room, ms, by)| serde_json::json!({ "room": room, "ms": ms, "by": by }))
+            .collect();
+        if !answered.is_empty() {
+            detail["estimates"] = answered.into();
+        }
         crate::session_events::note(crate::session_events::Who::Id(user_id), "search", detail);
         if !invitation_search {
             crate::join_targets::searched(user_id, sessions.iter().map(|s| (s.session_id, s.creator_id)));
