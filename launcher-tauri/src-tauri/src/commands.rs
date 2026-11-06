@@ -314,7 +314,7 @@ pub fn questions(state: tauri::State<Launcher>) -> Questions {
     Questions {
         diagnostics,
         options,
-        options_intro: o::INTRO_UPDATE,
+        options_intro: o::intro(&pending),
         options_later: o::LATER,
     }
 }

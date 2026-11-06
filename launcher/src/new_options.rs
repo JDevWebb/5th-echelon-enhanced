@@ -5,6 +5,10 @@
 //! after an update brings one, this asks in a window of its own before the game starts (after
 //! the question about diagnostics, before What's new). Settings › Game changes them later. An
 //! install another tool manages isn't asked: they stay off there.
+//!
+//! What was asked is noted in the game folder ([`ASKED_FILE`], beside `uplay.toml`, where the
+//! choices go too): a reinstalled game or another copy starts without both, so it's asked
+//! again, rather than quietly playing with every option off.
 
 use std::path::Path;
 
@@ -19,8 +23,55 @@ use crate::prefs::Prefs;
 #[cfg(feature = "gui")]
 use crate::theme;
 
+/// The game folder's note of the options asked about there.
+pub const ASKED_FILE: &str = "5th-echelon-options.json";
+
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct AskedHere {
+    asked: Vec<String>,
+}
+
+/// The options asked about in this game folder; None when it has no note.
+fn read_asked_here(dir: &Path) -> Option<Vec<String>> {
+    let text = std::fs::read_to_string(dir.join(ASKED_FILE)).ok()?;
+    Some(serde_json::from_str::<AskedHere>(&text).map(|a| a.asked).unwrap_or_default())
+}
+
+fn write_asked_here(dir: &Path, asked: &[String]) {
+    let note = AskedHere { asked: asked.to_vec() };
+    if let Ok(text) = serde_json::to_string_pretty(&note) {
+        if let Err(e) = std::fs::write(dir.join(ASKED_FILE), text) {
+            tracing::warn!("new options: couldn't note them as asked in {} ({e})", dir.display());
+        }
+    }
+}
+
+/// What a folder counts as asked: its own note; else, the first time this version runs, the
+/// launcher-wide list from before 0.5.0 (the folder in use then is the one it was asked for),
+/// which is then written to the folder (`true`); else nothing.
+fn asked_for(here: Option<Vec<String>>, moved: bool, launcher_wide: &[String]) -> (Vec<String>, bool) {
+    match here {
+        Some(asked) => (asked, false),
+        None if !moved && !launcher_wide.is_empty() => (launcher_wide.to_vec(), true),
+        None => (Vec::new(), false),
+    }
+}
+
+/// The options asked about for `dir`, moving the launcher-wide list onto it the first time.
+fn asked_in(dir: &Path) -> Vec<String> {
+    let moved = Prefs::options_asked_moved();
+    let (asked, write) = asked_for(read_asked_here(dir), moved, &Prefs::options_asked());
+    if write {
+        write_asked_here(dir, &asked);
+    }
+    if !moved {
+        Prefs::set_options_asked_moved();
+    }
+    asked
+}
+
 pub struct NewOption {
-    /// Noted in the launcher's prefs once the player chose; never reused.
+    /// Noted in the game folder once the player chose; never reused.
     pub id: &'static str,
     pub title: &'static str,
     pub text: &'static str,
@@ -77,6 +128,10 @@ pub const OPTIONS: &[NewOption] = &[
 pub const FUSION_FIX_MOUSE: &str = "Fusion Fix already removes it (DisableNegativeMouseAcceleration = 1 in SplinterCellBlacklist.FusionFix.ini). Set that to 0 to use this one: it keeps the spike limit, which matters under Proton.";
 
 pub const INTRO_UPDATE: &str = "This update adds options that change how the game plays. Each is set as we recommend; tick or untick any you like.";
+/// The same, for options the player already chose about for another game folder (a reinstall,
+/// another copy): the update didn't bring them.
+pub const INTRO_FOLDER: &str =
+    "This copy of the game doesn't have your game options yet (a new install, or another copy). Each is set as we recommend; tick or untick any you like.";
 pub const INTRO_SETUP: &str = "These change how the game plays. Each is set as we recommend; tick or untick any you like.";
 pub const LATER: &str = "Change these any time in Settings › Game.";
 
@@ -89,7 +144,7 @@ fn not_asked<'a>(options: &'a [NewOption], asked: &[String]) -> Vec<&'a NewOptio
 /// server (the guided setup asks then), nor where another tool manages it.
 pub fn pending(game: Option<&Game>) -> Vec<&'static NewOption> {
     match game {
-        Some(g) if g.managed.is_none() && g.cfg.current_profile().is_some_and(|p| !p.server.is_empty()) => not_asked(OPTIONS, &Prefs::options_asked()),
+        Some(g) if g.managed.is_none() && g.cfg.current_profile().is_some_and(|p| !p.server.is_empty()) => not_asked(OPTIONS, &asked_in(&g.dir)),
         _ => Vec::new(),
     }
 }
@@ -145,7 +200,26 @@ pub fn save(game: &mut Game, notices: &mut Notices, options: &[&NewOption], choi
             set(game, notices, true);
         }
     }
+    let mut asked = read_asked_here(&game.dir).unwrap_or_default();
+    for option in options {
+        if !asked.iter().any(|a| a == option.id) {
+            asked.push(option.id.to_string());
+        }
+    }
+    write_asked_here(&game.dir, &asked);
+    // And as asked on this PC at all: only for how the question is worded (`intro`).
     Prefs::add_options_asked(options.iter().map(|o| o.id));
+}
+
+/// How the question after an update starts: the update brought these options, or (every one
+/// already chosen about on this PC, for another game folder) this game folder lacks them.
+pub fn intro(options: &[&NewOption]) -> &'static str {
+    let ever = Prefs::options_asked();
+    if !options.is_empty() && options.iter().all(|o| ever.iter().any(|a| a == o.id)) {
+        INTRO_FOLDER
+    } else {
+        INTRO_UPDATE
+    }
 }
 
 #[cfg(feature = "gui")]
@@ -196,7 +270,7 @@ impl Ask {
             ui.set_max_width(560.0);
             ui.label(theme::heading("New game options"));
             ui.add_space(6.0);
-            ui.label(RichText::new(INTRO_UPDATE).color(theme::SOFT));
+            ui.label(RichText::new(intro(options)).color(theme::SOFT));
             ui.add_space(12.0);
             egui::ScrollArea::vertical()
                 .id_salt("new-options-list")
@@ -319,6 +393,41 @@ mod tests {
         assert_eq!(all.len(), OPTIONS.len());
         assert!(not_asked(OPTIONS, &OPTIONS.iter().map(|o| o.id.to_string()).collect::<Vec<_>>()).is_empty());
         assert_eq!(not_asked(OPTIONS, &["something-else".into()]).len(), OPTIONS.len());
+    }
+
+    fn ids(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn a_folder_counts_what_was_asked_there() {
+        let here = ids(&["mouse-accel"]);
+        // Its own note wins, whatever the launcher kept from before.
+        assert_eq!(asked_for(Some(here.clone()), false, &ids(&["mouse-accel", "brighten", "autoclimb"])), (here.clone(), false));
+        assert_eq!(asked_for(Some(here.clone()), true, &[]), (here, false));
+    }
+
+    #[test]
+    fn the_folder_in_use_when_0_5_0_first_runs_takes_the_old_list_over() {
+        let old = ids(&["mouse-accel", "brighten", "autoclimb"]);
+        // Nobody who answered before is asked again: the list is written to that folder.
+        assert_eq!(asked_for(None, false, &old), (old.clone(), true));
+        // Any folder after that without a note (a reinstall, another copy) is asked.
+        assert_eq!(asked_for(None, true, &old), (Vec::new(), false));
+        // A launcher that never asked: nothing to move.
+        assert_eq!(asked_for(None, false, &[]), (Vec::new(), false));
+    }
+
+    #[test]
+    fn the_note_reads_back_and_a_damaged_one_counts_as_nothing_asked() {
+        let dir = std::env::temp_dir().join(format!("fe-options-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(read_asked_here(&dir), None);
+        write_asked_here(&dir, &ids(&["autoclimb"]));
+        assert_eq!(read_asked_here(&dir), Some(ids(&["autoclimb"])));
+        std::fs::write(dir.join(ASKED_FILE), "not json").unwrap();
+        assert_eq!(read_asked_here(&dir), Some(Vec::new()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -156,9 +156,13 @@ pub struct Prefs {
     /// problem (from 0.4.3): told once, or asked with that wording.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     log_excerpt_told: bool,
-    /// The new game options the player chose about (new_options.rs), by their ids.
+    /// The new game options the player chose about (new_options.rs), by their ids: before
+    /// 0.5.0, for every game folder at once. Now each game folder notes its own; this list was
+    /// moved onto the folder in use when 0.5.0 first ran (`options_asked_moved`).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     options_asked: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    options_asked_moved: bool,
     /// Servers of their own the player connected to (Servers › A server of your own), newest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     recent_servers: Vec<RecentServer>,
@@ -402,6 +406,8 @@ impl Prefs {
         Self::load().options_asked
     }
 
+    /// The options chosen about on this PC at all, whichever game folder (only for how the
+    /// question is worded: new_options::intro).
     pub fn add_options_asked<'a>(ids: impl IntoIterator<Item = &'a str>) {
         let mut prefs = Self::load();
         for id in ids {
@@ -409,6 +415,17 @@ impl Prefs {
                 prefs.options_asked.push(id.to_string());
             }
         }
+        prefs.save();
+    }
+
+    /// The launcher-wide list was moved onto a game folder (once, new_options.rs).
+    pub fn options_asked_moved() -> bool {
+        Self::load().options_asked_moved
+    }
+
+    pub fn set_options_asked_moved() {
+        let mut prefs = Self::load();
+        prefs.options_asked_moved = true;
         prefs.save();
     }
 
