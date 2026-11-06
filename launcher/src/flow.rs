@@ -575,7 +575,7 @@ pub enum Done {
 /// Where the setup reports: its steps in the activity bar.
 pub type Log = crate::activity::Handle;
 
-fn say(log: &Log, line: impl Into<String>) {
+pub(crate) fn say(log: &Log, line: impl Into<String>) {
     log.step(line);
 }
 
@@ -1035,6 +1035,9 @@ pub struct Probe {
     pub ping: Option<u32>,
     /// It answers name checks (`NameAvailable`).
     pub name_check: bool,
+    /// It moved its players to this server of the player's network (a relay now): the setup
+    /// goes there ([`moved_server`]).
+    pub moved_to: Option<String>,
 }
 
 /// Looks at `server` for the account dialog: its API (over HTTPS when it has it), its
@@ -1061,6 +1064,7 @@ pub fn probe(game_dir: &Path, server: &str) -> Result<Probe, String> {
         version: info.version.clone(),
         ping,
         name_check: info.features.iter().any(|f| f == "name-check"),
+        moved_to: moved_server(server),
     })
 }
 
@@ -1281,6 +1285,15 @@ mod tests {
 pub fn moved(cfg: &Config) -> Option<(String, String)> {
     let profile = cfg.current_profile().filter(|p| !p.server.is_empty())?;
     let from = profile.server.clone();
+    let to = moved_server(&from)?;
+    tracing::info!("{from} moved its players to {to}: the player follows");
+    Some((from, to))
+}
+
+/// Where the players of the server `from` play now, under the same rules as [`moved`]: a
+/// server of the player's own network that moved them (or another of a listed server's names).
+pub fn moved_server(from: &str) -> Option<String> {
+    let from = from.trim().to_string();
     let directory = crate::prefs::Prefs::directory().filter(|d| setup::directory::valid_coordinator(d))?;
     // Set up on another of a listed server's names (the network's matchmaking server by its
     // machine's own name, e.g. na1's): it's listed by its record, which follows it in a
@@ -1288,7 +1301,7 @@ pub fn moved(cfg: &Config) -> Option<(String, String)> {
     // matchmaking server its operator named.
     if let Ok(listed) = crate::services::rt().block_on(crate::network::server_directory(&directory)) {
         if let Some(to) = listed_elsewhere(&listed.servers, &from) {
-            return Some((from, to));
+            return Some(to);
         }
     }
     let info = setup::server_info::fetch(&from, std::time::Duration::from_secs(4))?;
@@ -1306,7 +1319,7 @@ pub fn moved(cfg: &Config) -> Option<(String, String)> {
         .servers
         .iter()
         .any(|(l, _)| l.host.eq_ignore_ascii_case(&to) || l.also.iter().any(|n| n.eq_ignore_ascii_case(&to)))
-        .then_some((from, to))
+        .then_some(to)
 }
 
 /// The host a server set up as `from` is listed by, when `from` is another of its names.

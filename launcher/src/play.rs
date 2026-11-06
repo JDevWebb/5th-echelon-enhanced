@@ -3458,9 +3458,16 @@ fn account_dialog(ctx: &egui::Context, dialog: &mut AccountDialog, current: Opti
                         });
                     });
                 });
-            let why = match &dialog.taken {
-                Some(name) => format!("Someone on this server already has the name {name} (an account from before names were kept for each player), so you need another one here. Your friends still see it's you."),
-                None => "You don't have an account here yet. Pick the name other players see. Your identity signs you in from now on: no password to remember.".to_string(),
+            // A server that moved its players (a relay of the network now): the setup goes where
+            // they play, so the dialog says that, not that an account is made here.
+            let moved_to = dialog.probe.as_ref().and_then(|p| p.as_ref().ok()).and_then(|p| p.moved_to.clone());
+            let why = match (&moved_to, &dialog.taken) {
+                (Some(to), _) => format!(
+                    "{}'s players play on {to} now (it's one of the network's relays). Connecting sets you up there, with your name and identity.",
+                    dialog.server
+                ),
+                (None, Some(name)) => format!("Someone on this server already has the name {name} (an account from before names were kept for each player), so you need another one here. Your friends still see it's you."),
+                (None, None) => "You don't have an account here yet. Pick the name other players see. Your identity signs you in from now on: no password to remember.".to_string(),
             };
             ui.label(RichText::new(why).color(theme::SOFT));
             if let Some(Err(e)) = &dialog.probe {
@@ -3513,7 +3520,7 @@ fn account_dialog(ctx: &egui::Context, dialog: &mut AccountDialog, current: Opti
                     }
                 });
             }
-            if dialog.own {
+            if dialog.own && moved_to.is_none() {
                 let leaving = match network {
                     Some(url) if crate::app::Prefs::is_community(url) => "the community network".to_string(),
                     Some(url) => crate::connect::url_host(url).to_string(),
@@ -3526,9 +3533,13 @@ fn account_dialog(ctx: &egui::Context, dialog: &mut AccountDialog, current: Opti
             let ready = !name.is_empty() && !matches!(check, Some(Ok(flow::NameCheck::Taken(_) | flow::NameCheck::NotAllowed(_))));
             ui.add_space(4.0);
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let create = if dialog.own { "Create account and connect" } else { "Create account" };
+                let create = match (&moved_to, dialog.own) {
+                    (Some(to), _) => format!("Connect to {to}"),
+                    (None, true) => "Create account and connect".to_string(),
+                    (None, false) => "Create account".to_string(),
+                };
                 let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if ui.add_enabled(ready, theme::primary(create).min_size(egui::vec2(0.0, 38.0))).clicked() || (enter && ready) {
+                if ui.add_enabled(ready, theme::primary(&create).min_size(egui::vec2(0.0, 38.0))).clicked() || (enter && ready) {
                     choice = Some(DialogChoice::Create(name.clone()));
                 }
                 let stay = match (dialog.own, current) {

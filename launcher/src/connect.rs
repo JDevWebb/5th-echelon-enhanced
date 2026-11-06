@@ -72,6 +72,16 @@ pub fn run(asked: &Asked, log: &Handle) -> Outcome {
         }
         None => false,
     };
+    // A server of the network that moved its players (a relay now: global matchmaking): set up
+    // where they play, rather than offered an account on a server nobody plays on.
+    if !via_network {
+        if let Some(to) = flow::moved_server(&plan.server) {
+            flow::say(log, format!("{} moved its players to {to}: setting you up there.", plan.server));
+            tracing::info!("{} moved its players to {to}: set up there instead", plan.server);
+            plan.server = to;
+            plan.public_only = true;
+        }
+    }
     flow::run_setup(&plan, crate::dll_utils::bundled(), log).map(|done| (done, plan.server.clone(), via_network))
 }
 
