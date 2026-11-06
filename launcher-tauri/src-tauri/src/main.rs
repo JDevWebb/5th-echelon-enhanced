@@ -135,8 +135,6 @@ fn main() {
             settings::profile_password,
             settings::act,
             settings::connection_test,
-            settings::relays,
-            settings::choose_relay,
             settings::identity,
             settings::export_identity,
             settings::import_identity,

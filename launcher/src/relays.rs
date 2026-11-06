@@ -57,10 +57,9 @@ pub fn pick_for(server: &str) -> Option<Picked> {
         None
     } else {
         let pings = crate::services::rt().block_on(ping_all(&relays));
-        // The one the player chose (Settings › Network), while the server offers it; else the
-        // nearest.
-        let chosen = crate::prefs::Prefs::relay().and_then(|id| relays.iter().position(|r| r.id == id));
-        chosen.or_else(|| nearest(&relays, &pings)).map(|i| Picked {
+        // Always the nearest: players don't choose a relay (a far one would only make their own
+        // connection worse).
+        nearest(&relays, &pings).map(|i| Picked {
             host: setup::directory::helper_host(&relays[i]),
             port: relays[i].port,
             name: if relays[i].name.is_empty() { relays[i].id.clone() } else { relays[i].name.clone() },
@@ -79,43 +78,6 @@ pub fn pick_for(server: &str) -> Option<Picked> {
 }
 
 /// A relay `server` offers, for Settings: its id, name and region, and its ping now.
-#[derive(Debug, Clone, serde::Serialize)]
-pub struct Offered {
-    pub id: String,
-    pub name: String,
-    pub region: String,
-    pub ms: Option<u32>,
-}
-
-/// The relays `server` offers, each pinged now (empty for a server that offers none); and the
-/// one the game would use.
-pub fn offered(server: &str) -> (Vec<Offered>, Option<String>) {
-    let relays = setup::server_info::fetch(server, INFO_TIMEOUT).map(|i| i.relays).unwrap_or_default();
-    if relays.is_empty() {
-        return (Vec::new(), None);
-    }
-    let pings = crate::services::rt().block_on(ping_all(&relays));
-    let chosen = crate::prefs::Prefs::relay().filter(|id| relays.iter().any(|r| &r.id == id));
-    let in_use = chosen.or_else(|| nearest(&relays, &pings).map(|i| relays[i].id.clone()));
-    let list = relays
-        .iter()
-        .zip(&pings)
-        .map(|(r, ms)| Offered {
-            id: r.id.clone(),
-            name: if r.name.is_empty() { r.id.clone() } else { r.name.clone() },
-            region: r.region.clone(),
-            ms: *ms,
-        })
-        .collect();
-    (list, in_use)
-}
-
-/// The player chose a relay (None: the nearest): the next start picks again.
-pub fn choose(relay: Option<String>) {
-    crate::prefs::Prefs::set_relay(relay);
-    kept().clear();
-}
-
 /// Each helper's round trip, probed as the game probes it (its address, its port), side by side.
 async fn ping_all(relays: &[Helper]) -> Vec<Option<u32>> {
     let probes: Vec<_> = relays

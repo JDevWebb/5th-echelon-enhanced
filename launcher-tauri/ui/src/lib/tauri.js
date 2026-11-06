@@ -226,10 +226,6 @@ const preview = {
   connection_test: () => [['Config server (port 80)', 'ok', null], ['API and account', 'ok', null], ['How players reach this PC', 'ok', 'Direct: reachable without any router set-up'], ['Internet play helper', 'warn', 'reachable; matches go through the server’s relay']],
   check_update: () => ['0.4.7', false],
   choose_match_offered: () => true,
-  relays: () => (location.search.includes('relays')
-    ? { list: [{ id: 'na1', name: 'North America', region: 'Canada', ms: 142 }, { id: 'syd', name: 'Sydney', region: 'Oceania', ms: 28 }, { id: 'eu1', name: 'Europe', region: 'Germany', ms: null }], in_use: 'syd', chosen: null }
-    : { list: [] }),
-  choose_relay: () => null,
   matches: () => (location.search.includes('nomatches')
     ? { offered: true, answered: true, rows: [], others: '' }
     : {
