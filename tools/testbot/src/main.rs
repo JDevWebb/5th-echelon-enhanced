@@ -4385,6 +4385,9 @@ async fn run() -> Result<()> {
     if args.first().map(String::as_str) == Some("lobbies") {
         return show_lobbies(server, &args[1..]).await;
     }
+    if args.first().map(String::as_str) == Some("new-match") {
+        return new_match_as(server, &args[1..]).await;
+    }
     let names: Vec<&str> = if args.is_empty() {
         SCENARIOS.to_vec()
     } else {
@@ -4706,6 +4709,26 @@ async fn show_lobbies(server: IpAddr, names: &[String]) -> Result<()> {
 /// `join ROOM NAME...`: each named player joins the public match ROOM, as the launcher's
 /// Matches tab's Join does (signed in to the API only; their games, running, take the host's
 /// invitation).
+/// `new-match on|off NAME...`: the launcher's New match for these players (their searches find
+/// nothing until they host), or taking it back (the gamebox's navigation runs).
+async fn new_match_as(server: IpAddr, args: &[String]) -> Result<()> {
+    let [on, names @ ..] = args else {
+        return Err(eyre!("new-match on|off NAME..."));
+    };
+    let on = match on.as_str() {
+        "on" => true,
+        "off" => false,
+        _ => return Err(eyre!("new-match on|off NAME...")),
+    };
+    let password = account_password()?;
+    for name in names {
+        let p = testbot::bot::ApiPlayer::sign_in(server, name, &password).await?;
+        let seconds = p.new_match(on).await.map_err(|e| eyre!("{name}: {}", e.message()))?;
+        println!("{name}: new match {} ({seconds} s)", if on { "on" } else { "off" });
+    }
+    Ok(())
+}
+
 async fn join_room_as(server: IpAddr, args: &[String]) -> Result<()> {
     let [room, names @ ..] = args else {
         return Err(eyre!("join ROOM NAME..."));

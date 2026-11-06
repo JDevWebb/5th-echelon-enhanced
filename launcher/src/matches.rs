@@ -132,18 +132,30 @@ pub fn new_match(cfg: &Config) -> Result<Duration, String> {
     crate::flow::with_api_token(cfg, |url, token| crate::services::rt().block_on(crate::network::new_match(url, &token, true)))
 }
 
-/// Asks the game about to start to host the new match by itself (`hooks_config::new_match_request`):
-/// once in the lobby its quick start starts matchmaking, so it hosts without a click. False when
-/// the request couldn't be written (the player starts matchmaking themselves).
-/// `playlist`: the Spies vs Mercs mode chosen ([`svm_modes`]); none for Co-op.
-pub fn ask_game_to_host(game_dir: &std::path::Path, playlist: Option<u32>) -> bool {
+/// Asks the game about to start to start matchmaking by itself
+/// (`hooks_config::new_match_request`): once in the lobby its quick start selects Quick match and
+/// the mode, without a click. For a new match (the server asked first) it hosts; for a quick one
+/// (`quick`) it joins an open match if there is one. `playlist`: the Spies vs Mercs mode chosen
+/// ([`svm_modes`]); none for Co-op. False when the request couldn't be written (the player starts
+/// matchmaking themselves).
+pub fn ask_game_to_matchmake(game_dir: &std::path::Path, playlist: Option<u32>, quick: bool) -> bool {
     let request = game_dir.join(hooks_config::new_match_request::FILE);
     let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-    let written = std::fs::write(&request, hooks_config::new_match_request::contents(at, playlist)).is_ok();
+    let written = std::fs::write(&request, hooks_config::new_match_request::contents(at, playlist, quick)).is_ok();
     if !written {
-        tracing::warn!("couldn't write the new match request ({})", request.display());
+        tracing::warn!("couldn't write the matchmaking request ({})", request.display());
     }
     written
+}
+
+/// What the player is told when a quick match starts the game (`by_itself`: the game was asked
+/// to start matchmaking).
+pub fn quick_match_notice(by_itself: bool) -> &'static str {
+    if by_itself {
+        "The game starts and finds you a match by itself once it's online: an open one if there is one, else it hosts."
+    } else {
+        "The game starts in the lobby: start Quick match there."
+    }
 }
 
 /// The Spies vs Mercs modes a new match can be hosted in: (playlist, name).
@@ -151,7 +163,8 @@ pub fn svm_modes() -> Vec<(u32, &'static str)> {
     server_api::game_names::svm_new_match_modes()
 }
 
-/// Takes back the game's request to host ([`ask_game_to_host`]), when it hasn't read it yet.
+/// Takes back the game's matchmaking request ([`ask_game_to_matchmake`]), when it hasn't read it
+/// yet.
 pub fn forget_game_hosting(game_dir: &std::path::Path) {
     let _ = std::fs::remove_file(game_dir.join(hooks_config::new_match_request::FILE));
 }
@@ -565,6 +578,17 @@ mod lobby_tests {
     use server_api::friends::LobbyPlayer;
 
     use super::*;
+
+    /// The game's quick start knows the mode list by its playlists: the same ones the server
+    /// names matches by, and every mode the menus offer is one of them.
+    #[test]
+    fn the_quick_start_knows_every_playlist() {
+        let names: Vec<u32> = server_api::game_names::PLAYLISTS.iter().map(|(p, _)| *p).collect();
+        assert_eq!(hooks_config::navigation::SVM_PLAYLISTS, names.as_slice());
+        for (playlist, _) in svm_modes() {
+            assert!(hooks_config::navigation::is_mode_list(&[playlist]));
+        }
+    }
 
     fn player(name: &str, host: bool, party: u32, friend: bool, team: &str) -> LobbyPlayer {
         LobbyPlayer {

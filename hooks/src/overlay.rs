@@ -466,6 +466,13 @@ impl MyRenderLoop {
         let esc = down(VK_ESCAPE.0);
         if esc && !self.esc_down && in_front && self.ui_state == UiState::Show {
             self.ui_state = UiState::Hide;
+        } else if esc && !self.esc_down && in_front && crate::quickstart::abort() {
+            // Esc while the quick start takes the game through its menus: the player takes over.
+            self.local_notice = Some(LocalNotice {
+                text: "Stopped: the game is yours. Carry on from here.".into(),
+                error: false,
+                at: Instant::now(),
+            });
         }
         self.esc_down = esc;
     }
@@ -810,7 +817,7 @@ impl MyRenderLoop {
             .position([win[0] / 2.0, self.s(28.0)], Condition::Always)
             .position_pivot([0.5, 0.0])
             .build(|| {
-                ui.text_colored(FG, "5th Echelon is taking you online: the mouse and keys are back in a moment.");
+                ui.text_colored(FG, "5th Echelon is taking you online: the mouse and keys are back in a moment. Esc: stop and take over.");
             });
     }
 
@@ -1992,7 +1999,7 @@ impl ImguiRenderLoop for MyRenderLoop {
     fn message_filter(&self, _io: &imgui::Io) -> hudhook::MessageFilter {
         // The panel takes the input; while the quick start takes the game through its menus, a
         // click or key would fight it, so the game doesn't get them either (Alt+F4 still quits).
-        if matches!(self.ui_state, UiState::Show) || crate::quickstart::navigating() {
+        if matches!(self.ui_state, UiState::Show) || crate::overlay_input::held_back() {
             hudhook::MessageFilter::InputAll
         } else {
             hudhook::MessageFilter::empty()

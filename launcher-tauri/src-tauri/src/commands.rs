@@ -1166,13 +1166,45 @@ pub fn new_match(app: tauri::AppHandle, state: tauri::State<Launcher>, mode: Pla
     let running = game_running(&mut inner);
     let minutes = holds.as_secs().div_ceil(60);
     let playlist = playlist.filter(|_| mode == PlayMode::Svm);
-    let hosts_itself = !running && launcher::matches::ask_game_to_host(&game_dir, playlist);
+    let hosts_itself = !running && launcher::matches::ask_game_to_matchmake(&game_dir, playlist, false);
     inner.notices.info(launcher::matches::new_match_notice(running, hosts_itself, minutes));
     drop(inner);
     if !running {
         play(app.clone(), state.clone(), mode);
     }
     changed(&app);
+}
+
+/// Quick match in `mode` (and the Spies vs Mercs `playlist`): the game starts and starts
+/// matchmaking by itself, joining an open match if there is one. A new match the server was
+/// still asked for is taken back first, or the game would host.
+#[tauri::command(async)]
+pub fn quick_match(app: tauri::AppHandle, state: tauri::State<Launcher>, mode: PlayMode, playlist: Option<u32>) -> bool {
+    let mut inner = state.lock();
+    if game_running(&mut inner) {
+        inner.notices.info("The game is running: use Quick match in its online menu.");
+        drop(inner);
+        changed(&app);
+        return false;
+    }
+    let Some(game) = inner.game.as_ref() else { return false };
+    let (cfg, game_dir) = ((*game.cfg).clone(), game.dir.clone());
+    let had_new_match = inner.new_match_until.take().is_some();
+    drop(inner);
+    if had_new_match {
+        if let Err(e) = launcher::task::guarded(|| launcher::matches::cancel_new_match(&cfg)) {
+            tracing::info!("quick match: the new match wasn't taken back ({e})");
+        }
+    }
+    let playlist = playlist.filter(|_| mode == PlayMode::Svm);
+    let by_itself = launcher::matches::ask_game_to_matchmake(&game_dir, playlist, true);
+    state.lock().notices.info(launcher::matches::quick_match_notice(by_itself));
+    let started = play(app.clone(), state.clone(), mode);
+    if !started {
+        launcher::matches::forget_game_hosting(&game_dir);
+    }
+    changed(&app);
+    started
 }
 
 /// A Spies vs Mercs mode a new match can be hosted in.

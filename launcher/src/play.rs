@@ -3022,16 +3022,20 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked:
         // Choosing your match, where the server offers it (matches.rs).
         if offered {
             ui.separator();
-            ui.menu_button("New SvM match", |ui| {
-                if let Some(playlist) = svm_mode_choices(ui) {
-                    picked_match = Some(MatchAction::New(crate::app::PlayMode::Svm, Some(playlist)));
+            ui.menu_button("Quick match", |ui| {
+                if let Some((mode, playlist)) = match_mode_choices(ui) {
+                    picked_match = Some(MatchAction::Quick(mode, playlist));
+                }
+            })
+            .response
+            .on_hover_text("Join an open match in the mode you choose, or host one if none is open");
+            ui.menu_button("New match", |ui| {
+                if let Some((mode, playlist)) = match_mode_choices(ui) {
+                    picked_match = Some(MatchAction::New(mode, playlist));
                 }
             })
             .response
             .on_hover_text("Host a new public match in the mode you choose, whatever is open");
-            if ui.button("New Co-op match").on_hover_text("Host a new public match, whatever is open").clicked() {
-                picked_match = Some(MatchAction::New(crate::app::PlayMode::Coop, None));
-            }
             if ui
                 .button("Choose a match...")
                 .on_hover_text("The open public matches on your server, to join one")
@@ -3053,6 +3057,10 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked:
                 play.new_mode = Some(mode);
                 play.new_playlist = playlist;
                 play.asking_new.start(ui.ctx(), move || crate::matches::new_match(&cfg));
+            }
+            MatchAction::Quick(mode, playlist) => {
+                ui.close();
+                quick_match(play, game, notices, mode, playlist);
             }
             MatchAction::Choose => {
                 play.choosing = true;
@@ -3076,7 +3084,40 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked:
 #[derive(Debug, Clone, Copy)]
 enum MatchAction {
     New(crate::app::PlayMode, Option<u32>),
+    Quick(crate::app::PlayMode, Option<u32>),
     Choose,
+}
+
+/// The modes to start matchmaking in, as menu entries: Spies vs Mercs' modes, then Co-op.
+fn match_mode_choices(ui: &mut egui::Ui) -> Option<(crate::app::PlayMode, Option<u32>)> {
+    let mut picked = svm_mode_choices(ui).map(|p| (crate::app::PlayMode::Svm, Some(p)));
+    ui.separator();
+    if ui.button("Co-op").clicked() {
+        picked = Some((crate::app::PlayMode::Coop, None));
+        ui.close();
+    }
+    picked
+}
+
+/// Quick match from the launcher, in `mode` (and the Spies vs Mercs `playlist`): the game starts
+/// and starts matchmaking by itself, joining an open match if there is one. A new match the
+/// server was still asked for is taken back first, or the game would host.
+fn quick_match(play: &mut Play, game: &mut Game, notices: &mut Notices, mode: crate::app::PlayMode, playlist: Option<u32>) {
+    if play.running.is_some() || play.game_seen {
+        notices.info("The game is running: use Quick match in its online menu.");
+        return;
+    }
+    let cfg = (*game.cfg).clone();
+    std::thread::spawn(move || {
+        if let Err(e) = crate::matches::cancel_new_match(&cfg) {
+            tracing::info!("quick match: the new match wasn't taken back ({e})");
+        }
+    });
+    let by_itself = crate::matches::ask_game_to_matchmake(&game.dir, playlist, true);
+    notices.info(crate::matches::quick_match_notice(by_itself));
+    if !launch(play, game, notices, mode) {
+        crate::matches::forget_game_hosting(&game.dir);
+    }
 }
 
 /// The Spies vs Mercs modes to host a new match in, as menu entries: the one clicked.
@@ -3566,7 +3607,7 @@ fn answer_new_match(play: &mut Play, game: &mut Game, notices: &mut Notices) {
             Ok(holds) => {
                 let minutes = holds.as_secs().div_ceil(60);
                 let playlist = play.new_playlist.take().filter(|_| mode == crate::app::PlayMode::Svm);
-                let hosts_itself = !running && crate::matches::ask_game_to_host(&game.dir, playlist);
+                let hosts_itself = !running && crate::matches::ask_game_to_matchmake(&game.dir, playlist, false);
                 notices.info(crate::matches::new_match_notice(running, hosts_itself, minutes));
                 if !running && !launch(play, game, notices, mode) {
                     crate::matches::forget_game_hosting(&game.dir);
@@ -3674,9 +3715,7 @@ pub fn show_matches(app: &mut App, ui: &mut egui::Ui) {
             play.new_playlist = playlist;
             play.asking_new.start(&ctx, move || crate::matches::new_match(&cfg));
         }
-        Some(MatchAct::Quick(mode)) => {
-            launch(play, game, notices, mode);
-        }
+        Some(MatchAct::Quick(mode, playlist)) => quick_match(play, game, notices, mode, playlist),
         Some(MatchAct::Servers) | None => {}
     }
     if matches!(act, Some(MatchAct::Servers)) {
@@ -3689,23 +3728,28 @@ pub fn show_matches(app: &mut App, ui: &mut egui::Ui) {
 enum MatchAct {
     Join(u32),
     New(crate::app::PlayMode, Option<u32>),
-    Quick(crate::app::PlayMode),
+    Quick(crate::app::PlayMode, Option<u32>),
     Servers,
 }
 
-/// A New match button on the Matches screen: Co-op hosts at once; Spies vs Mercs first asks
-/// which mode, in a menu under the button.
-fn new_match_button(button: &egui::Response, mode: crate::app::PlayMode, act: &mut Option<MatchAct>) {
+/// A Quick match (`quick`) or New match button on the Matches screen: Co-op goes at once; Spies
+/// vs Mercs first asks which mode, in a menu under the button.
+fn mode_button(button: &egui::Response, mode: crate::app::PlayMode, quick: bool, act: &mut Option<MatchAct>) {
+    let chosen = |playlist| if quick { MatchAct::Quick(mode, playlist) } else { MatchAct::New(mode, playlist) };
     if mode == crate::app::PlayMode::Coop {
         if button.clicked() {
-            *act = Some(MatchAct::New(mode, None));
+            *act = Some(chosen(None));
         }
         return;
     }
     egui::Popup::menu(button).show(|ui| {
-        ui.label(theme::muted("Host in which mode?").small());
+        ui.label(theme::muted(if quick { "Find a match in which mode?" } else { "Host in which mode?" }).small());
         if let Some(playlist) = svm_mode_choices(ui) {
-            *act = Some(MatchAct::New(crate::app::PlayMode::Svm, Some(playlist)));
+            *act = Some(if quick {
+                MatchAct::Quick(crate::app::PlayMode::Svm, Some(playlist))
+            } else {
+                MatchAct::New(crate::app::PlayMode::Svm, Some(playlist))
+            });
         }
     });
 }
@@ -3786,17 +3830,14 @@ fn matches_page(m: &mut MatchesPage, server: Option<&str>, ready: bool, act: &mu
                     // Off while the game runs (the launcher can't take it through its menus then):
                     // said on hover, not just greyed out.
                     const RUNNING: &str = "The game is running: use Quick match in its online menu, or close it first";
-                    if ui
+                    let quick = ui
                         .add_enabled(ready, theme::primary("Quick match").min_size(egui::vec2(0.0, 40.0)))
-                        .on_disabled_hover_text(RUNNING)
-                        .clicked()
-                    {
-                        *act = Some(MatchAct::Quick(quick_mode));
-                    }
+                        .on_disabled_hover_text(RUNNING);
+                    mode_button(&quick, quick_mode, true, act);
                     let new = ui
                         .add_enabled(ready, theme::secondary("New match").min_size(egui::vec2(0.0, 40.0)))
                         .on_disabled_hover_text(RUNNING);
-                    new_match_button(&new, quick_mode, act);
+                    mode_button(&new, quick_mode, false, act);
                 });
             });
         });
@@ -3904,7 +3945,7 @@ fn matches_page(m: &mut MatchesPage, server: Option<&str>, ready: bool, act: &mu
                 let wide = 300.0;
                 ui.add_space(((ui.available_width() - wide) / 2.0).max(0.0));
                 let host = ui.add_enabled(ready, theme::primary("Host a match"));
-                new_match_button(&host, quick_mode, act);
+                mode_button(&host, quick_mode, false, act);
                 if ui.add(theme::secondary("See other servers")).clicked() {
                     *act = Some(MatchAct::Servers);
                 }

@@ -1653,6 +1653,16 @@ impl ApiPlayer {
             .into_inner())
     }
 
+    /// The launcher's New match (or, `on` false, taking it back): this player's searches find
+    /// nothing until they host. The seconds it holds.
+    pub async fn new_match(&self, on: bool) -> std::result::Result<u32, tonic::Status> {
+        Ok(FriendsClient::new(self.api.clone())
+            .new_match(self.authed(server_api::friends::NewMatchRequest { on }))
+            .await?
+            .into_inner()
+            .seconds)
+    }
+
     /// The public matches as the launcher's Matches tab gets them.
     pub async fn lobbies(&self) -> Result<server_api::friends::LobbiesResponse> {
         Ok(FriendsClient::new(self.api.clone())

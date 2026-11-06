@@ -35,7 +35,7 @@
 
 use std::ffi::c_void;
 use std::sync::atomic::AtomicBool;
-use std::sync::atomic::AtomicU32;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::sync::Mutex;
@@ -44,6 +44,11 @@ use std::time::Duration;
 use std::time::Instant;
 
 use hooks_addresses::quick_start::Sites;
+use hooks_config::navigation;
+use hooks_config::navigation::Action;
+use hooks_config::navigation::Goal;
+use hooks_config::navigation::MenuView;
+use hooks_config::navigation::Navigator;
 use hooks_config::QuickStartLobby;
 use retour::static_detour;
 use tracing::info;
@@ -81,11 +86,6 @@ const COL_COUNT: usize = 0x290;
 const COL_ITEMS: usize = 0x2a4;
 const COL_ID_MAP: usize = 0x28c;
 const NODE_ID: usize = 0x40;
-/// The online list's ids (`txt_MP_QM_Ladders`): 1 multiplayer (Spies vs Mercs), 2 Co-op.
-const ITEM_SVM: u32 = 1;
-const ITEM_COOP: u32 = 2;
-/// How many ticks the entry must stand in the list before it's selected.
-const STABLE_TICKS: u32 = 30;
 /// Presence `+0x4d4`: a controller index (only valid with an invitation pending).
 const PRESENCE_CONTROLLER: usize = 0x4d4;
 /// `UI::SMI`: state, command queue and its length.
@@ -134,8 +134,6 @@ const TITLE_GIVE_UP: Duration = Duration::from_secs(30);
 const AFTER_ONLINE_DONE: Duration = Duration::from_secs(10);
 /// When this module's online startup succeeded.
 static ONLINE_DONE_AT: OnceLock<Instant> = OnceLock::new();
-/// Ticks the wanted entry has stood in the list.
-static TARGET_SEEN: AtomicU32 = AtomicU32::new(0);
 /// The online list's ids last seen (for the log).
 static LAST_IDS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 #[cfg(feature = "test-commands")]
@@ -148,48 +146,59 @@ static TEST_LAST: Mutex<Option<(u32, u32, Vec<u32>)>> = Mutex::new(None);
 /// When the command file was last looked for.
 static TEST_LOOKED: Mutex<Option<Instant>> = Mutex::new(None);
 
-/// The launcher's New match, once the lobby is reached ([`new_match_step`]).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum NewMatch {
-    /// The request file not looked for yet.
-    Unchecked,
-    /// Select Quick match (Spies vs Mercs) or Find teammate (Co-op).
-    Matchmaking,
-    /// Select the mode (Spies vs Mercs' list after Quick match): the playlist the player
-    /// chose, else the one the game has focused.
-    Mode(Option<u32>),
-    /// Nothing (more) to do.
-    Done,
-}
-static NEW_MATCH: Mutex<(NewMatch, u32, Option<Instant>)> = Mutex::new((NewMatch::Unchecked, 0, None));
+/// What's left to do in the online menus (`hooks_config::navigation`): the lobby, then the
+/// launcher's New or Quick match.
+static NAV: Mutex<Option<Navigator>> = Mutex::new(None);
+/// Steps are left in [`NAV`] (read every frame by the overlay, without the lock).
+static NAV_BUSY: AtomicBool = AtomicBool::new(false);
 /// The quick start is finding its way to the lobby (from the title until the lobby is chosen,
 /// it gives up, or its 5 minutes are over): the player's input is held back meanwhile.
 static NAVIGATING: AtomicBool = AtomicBool::new(false);
-/// A New match step is under way (the request taken, matchmaking not yet started).
-static NEW_MATCH_BUSY: AtomicBool = AtomicBool::new(false);
+/// Esc: 0 not pressed, 1 the player stopped the navigation (the title still to be let go, if
+/// it was held), 2 done.
+static ABORT: AtomicU8 = AtomicU8::new(0);
 
-/// The game is being taken through its menus for the player (to the lobby, or a New match's
-/// matchmaking): a click or key now would fight it, so the overlay holds the player's input
-/// back (`overlay_input`), and says why.
+/// The game is being taken through its menus for the player (to the lobby, or a New or Quick
+/// match's matchmaking): a click or key now would fight it, so the overlay holds the player's
+/// input back (`overlay_input`), says why, and Esc stops it ([`abort`]).
 pub fn navigating() -> bool {
-    NAVIGATING.load(Ordering::Relaxed) || NEW_MATCH_BUSY.load(Ordering::Relaxed)
+    ABORT.load(Ordering::Relaxed) == 0 && (NAVIGATING.load(Ordering::Relaxed) || NAV_BUSY.load(Ordering::Relaxed))
 }
 
-/// The playlist the launcher's New match asked for (0: none, the game's focused mode).
-static NEW_MATCH_PLAYLIST: AtomicU32 = AtomicU32::new(0);
-/// The online menu's ids for the matchmaking entries: Spies vs Mercs' Quick match and Private
-/// match, Co-op's Find teammate.
-const ITEM_QUICK_MATCH: u32 = 3;
-const ITEM_PRIVATE_MATCH: u32 = 4;
-const ITEM_FIND_TEAMMATE: u32 = 5;
-/// A New match step not done in this long is given up (the player is somewhere else).
-const NEW_MATCH_GIVE_UP: Duration = Duration::from_secs(60);
+/// The player stopped the navigation with Esc.
+pub fn aborted() -> bool {
+    ABORT.load(Ordering::Relaxed) != 0
+}
+
+/// Esc while navigating (the overlay, any thread): everything left is dropped and the game is
+/// the player's from where it is. At the title, before the online startup began, the travel to
+/// the hub held back for it is let go on the title's next tick, as if there had been no quick
+/// start; a startup under way finishes into the online menu; in the menus it stops there. The
+/// launcher's request, if not read yet, is deleted. `false`: nothing was under way.
+pub fn abort() -> bool {
+    if !navigating() {
+        return false;
+    }
+    ABORT.store(1, Ordering::Relaxed);
+    if let Ok(mut nav) = NAV.lock() {
+        if let Some(nav) = nav.as_mut() {
+            nav.abort();
+        }
+    }
+    NAV_BUSY.store(false, Ordering::Relaxed);
+    NAVIGATING.store(false, Ordering::Relaxed);
+    if let Some(path) = crate::community::folder().map(|d| d.join(hooks_config::new_match_request::FILE)) {
+        let _ = std::fs::remove_file(path);
+    }
+    info!("quickstart: +{} ms stopped by the player (Esc)", ms());
+    true
+}
 
 /// Nothing more to do: the lobby was chosen, or the quick start gave up. Every hook then only
 /// calls the game's own function, so a later return to the title (a quit, a lost connection)
 /// is the game's alone.
 fn done() -> bool {
-    MODE_CHOSEN.load(Ordering::Relaxed) || GAVE_UP.load(Ordering::Relaxed)
+    MODE_CHOSEN.load(Ordering::Relaxed) || GAVE_UP.load(Ordering::Relaxed) || aborted()
 }
 
 fn ms() -> u128 {
@@ -284,6 +293,10 @@ pub unsafe fn install(lobby: QuickStartLobby) {
     crate::hooks::hook!(MatchmakingTickHook, Some(e.mm_tick), matchmaking_tick);
 
     // Logs the states on a thread of its own (it starts after DllMain).
+    if let Ok(mut nav) = NAV.lock() {
+        *nav = Some(Navigator::to_lobby(matches!(lobby, QuickStartLobby::Coop)));
+    }
+    NAV_BUSY.store(true, Ordering::Relaxed);
     NAVIGATING.store(true, Ordering::Relaxed);
     let _ = std::thread::Builder::new().name(String::from("quickstart")).spawn(watch);
     info!("quickstart: {} on, lobby {lobby:?}", e.name);
@@ -303,6 +316,18 @@ fn join_request_waiting() -> bool {
 /// The title screen's tick (main thread): presses Start once the title is ready and online
 /// presence is up, and starts the online startup when it's been asked for.
 fn scene_start_tick(this: *mut c_void, a1: u32) {
+    if !this.is_null() && ABORT.compare_exchange(1, 2, Ordering::Relaxed, Ordering::Relaxed).is_ok() && let_title_go() {
+        // SAFETY: main thread, the live title screen the travel was held back for; the
+        // originals, unchanged.
+        unsafe {
+            if exe().dx9 {
+                HubTravelHook9.call(this);
+            } else {
+                HubTravelHook.call(this);
+            }
+            return SceneStartTickHook.call(this, a1);
+        }
+    }
     if done() {
         // SAFETY: the original, unchanged.
         return unsafe { SceneStartTickHook.call(this, a1) };
@@ -398,6 +423,18 @@ unsafe fn press_start(scene: usize) {
     info!("quickstart: +{} ms Start pressed (controller {idx})", ms());
 }
 
+/// After Esc at the title: the travel to the hub was held back for an online startup that
+/// hasn't begun (and now won't), so it's to be done after all. A startup under way is left to
+/// finish (into the online menu).
+fn let_title_go() -> bool {
+    let held = SUPPRESSED_AT.get().is_some() && !ONLINE_STARTED.load(Ordering::Relaxed) && ONLINE_DONE_AT.get().is_none();
+    ONLINE_START_PENDING.store(false, Ordering::Relaxed);
+    if held {
+        info!("quickstart: +{} ms stopped at the title -> to the hub, as without the quick start", ms());
+    }
+    held
+}
+
 /// Asks for the online startup, once.
 fn ask_online_startup() {
     if !ONLINE_ASKED.swap(true, Ordering::Relaxed) {
@@ -436,7 +473,7 @@ fn hub_travel9(this: *mut c_void) {
 /// Starts the game's online startup task (main thread) once it's asked for and the UI task
 /// runner is free.
 fn pump_online_start(smi: usize) {
-    if !ONLINE_START_PENDING.load(Ordering::Relaxed) {
+    if !ONLINE_START_PENDING.load(Ordering::Relaxed) || aborted() {
         return;
     }
     let e = exe();
@@ -504,160 +541,71 @@ fn matchmaking_tick(this: *mut c_void, dt: f32) {
         // SAFETY: main thread, live SMIMatchmaking; every pointer is checked readable.
         unsafe { test_command(this as usize) };
     }
-    if MODE_CHOSEN.load(Ordering::Relaxed) {
+    if PRESS_SENT.load(Ordering::Relaxed) && NAV_BUSY.load(Ordering::Relaxed) && !aborted() {
         // SAFETY: main thread, live SMIMatchmaking; every pointer is checked readable.
-        unsafe { new_match_step(this as usize) };
-    }
-    if PRESS_SENT.load(Ordering::Relaxed) && !done() && smi_state() == Some(SMI_STATE_ONLINE) {
-        let target = match LOBBY.get() {
-            Some(QuickStartLobby::Coop) => ITEM_COOP,
-            _ => ITEM_SVM,
-        };
-        // SAFETY: main thread, live SMIMatchmaking; every pointer is checked readable.
-        unsafe { choose_lobby(this as usize, target) };
+        unsafe { navigate(this as usize) };
     }
     // SAFETY: the original, unchanged.
     unsafe { MatchmakingTickHook.call(this, dt) }
 }
 
-/// The launcher's New match (`hooks_config::new_match_request`): once the quick start is in the
-/// lobby, matchmaking is started as the player would, Quick match and the mode the game has
-/// focused (Co-op: Find teammate). The server has the player's searches find nothing for a
-/// while, so the game hosts a new public match rather than join an open one, without a click.
-unsafe fn new_match_step(mm: usize) {
-    let Ok(mut state) = NEW_MATCH.lock() else { return };
-    let (stage, seen, since) = *state;
-    if stage == NewMatch::Done {
+/// One tick of the online menus' steps ([`NAV`]): reads the menu, and selects what the
+/// navigator says. The lobby is taken in the online menu only; once it is, the launcher's New
+/// or Quick match request (if any) adds its matchmaking steps.
+unsafe fn navigate(mm: usize) {
+    let Ok(mut guard) = NAV.lock() else { return };
+    let Some(nav) = guard.as_mut() else { return };
+    let Some(goal) = nav.current() else {
+        NAV_BUSY.store(false, Ordering::Relaxed);
+        return;
+    };
+    if matches!(goal, Goal::Lobby { .. }) && smi_state() != Some(SMI_STATE_ONLINE) {
         return;
     }
-    if stage == NewMatch::Unchecked {
-        let path = crate::community::folder().map(|d| d.join(hooks_config::new_match_request::FILE));
-        let request = path.as_ref().and_then(|p| std::fs::read(p).ok());
-        let next = match request {
-            None => NewMatch::Done,
-            Some(bytes) => {
-                if let Some(p) = &path {
-                    let _ = std::fs::remove_file(p);
-                }
-                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
-                match hooks_config::new_match_request::read(&bytes, now) {
-                    Ok(asked) => {
-                        info!(
-                            "quickstart: +{} ms the launcher's New match ({} s ago, mode {:?}): starting matchmaking",
-                            ms(),
-                            asked.age.as_secs(),
-                            asked.playlist
-                        );
-                        NEW_MATCH_PLAYLIST.store(asked.playlist.unwrap_or(0), Ordering::Relaxed);
-                        NewMatch::Matchmaking
-                    }
-                    Err(e) => {
-                        warn!("quickstart: the launcher's New match isn't taken ({e:?})");
-                        NewMatch::Done
-                    }
+    let list = read_list(mm);
+    if let (Some((_, ids, _, page)), Ok(mut last)) = (&list, LAST_IDS.lock()) {
+        if *last != *ids {
+            info!("quickstart: +{} ms menu page {page}: ids {ids:?}", ms());
+            last.clone_from(ids);
+        }
+    }
+    let view = list.as_ref().map(|(col, ids, active, page)| MenuView {
+        ids: ids.clone(),
+        active: *active == 1,
+        page: *page,
+        focus: read_u32(col + COL_FOCUS),
+    });
+    match nav.tick(Instant::now(), view.as_ref()) {
+        Action::Idle | Action::Wait => {}
+        Action::GiveUp(goal) => {
+            warn!(
+                "quickstart: +{} ms {goal:?} not reached in {} s -> given up, the game is the player's",
+                ms(),
+                navigation::STEP_GIVE_UP.as_secs()
+            );
+        }
+        Action::Select { goal, pos, id, fallback } => {
+            let Some((col, ..)) = list else { return };
+            if let Goal::Lobby { coop } = goal {
+                MODE_CHOSEN.store(true, Ordering::Relaxed);
+                if let Some(asked) = take_matchmaking_request() {
+                    nav.then_matchmaking(coop, asked.playlist);
                 }
             }
-        };
-        NEW_MATCH_BUSY.store(next != NewMatch::Done, Ordering::Relaxed);
-        *state = (next, 0, Some(Instant::now()));
-        return;
-    }
-    if since.is_some_and(|t| t.elapsed() > NEW_MATCH_GIVE_UP) {
-        warn!("quickstart: the launcher's New match given up ({stage:?} not reached in {} s)", NEW_MATCH_GIVE_UP.as_secs());
-        NEW_MATCH_BUSY.store(false, Ordering::Relaxed);
-        *state = (NewMatch::Done, 0, None);
-        return;
-    }
-    let Some((col, ids, active, _page)) = read_list(mm) else { return };
-    if active != 1 {
-        return;
-    }
-    let coop = matches!(LOBBY.get(), Some(QuickStartLobby::Coop));
-    // The entry to pick on this step, once the list has stood still a moment.
-    let pos = match stage {
-        NewMatch::Matchmaking => {
-            let target = if coop { ITEM_FIND_TEAMMATE } else { ITEM_QUICK_MATCH };
-            ids.iter().position(|&i| i == target)
-        }
-        // The mode list: not the Quick/Private match list it came from.
-        NewMatch::Mode(chosen) if ids.len() > 1 && !ids.contains(&ITEM_QUICK_MATCH) && !ids.contains(&ITEM_PRIVATE_MATCH) => {
-            let focused = || read_u32(col + COL_FOCUS).map(|f| f as usize).filter(|&f| f < ids.len()).or(Some(0));
-            match chosen {
-                Some(playlist) => ids.iter().position(|&i| i == playlist).or_else(|| {
-                    if seen == STABLE_TICKS {
-                        warn!("quickstart: New match: mode {playlist} isn't in the game's list {ids:?}; the focused one instead");
-                    }
-                    focused()
-                }),
-                None => focused(),
+            if fallback {
+                warn!("quickstart: +{} ms {goal:?}: that mode isn't in the game's list; the focused one ({id}) instead", ms());
             }
+            select_entry(mm, col, pos);
+            info!("quickstart: +{} ms {goal:?}: selected id {id} (entry {pos})", ms());
         }
-        _ => None,
-    };
-    let Some(pos) = pos else {
-        state.1 = 0;
-        return;
-    };
-    if seen < STABLE_TICKS {
-        state.1 = seen + 1;
-        return;
     }
-    *((col + COL_FOCUS) as *mut u32) = pos as u32;
-    let e = exe();
-    if e.dx9 {
-        let accept: unsafe extern "thiscall" fn(usize) = std::mem::transmute(e.mm_select);
-        accept(mm);
-    } else {
-        let accept: unsafe extern "thiscall" fn(usize, u32) = std::mem::transmute(e.mm_select);
-        accept(mm, 0);
-    }
-    let next = if stage == NewMatch::Matchmaking && !coop {
-        NewMatch::Mode(Some(NEW_MATCH_PLAYLIST.load(Ordering::Relaxed)).filter(|&p| p != 0))
-    } else {
-        NewMatch::Done
-    };
-    info!("quickstart: +{} ms New match: selected id {} ({stage:?})", ms(), ids[pos]);
-    NEW_MATCH_BUSY.store(next != NewMatch::Done, Ordering::Relaxed);
-    *state = (next, 0, Some(Instant::now()));
+    NAV_BUSY.store(nav.busy(), Ordering::Relaxed);
 }
 
-unsafe fn choose_lobby(mm: usize, target: u32) {
-    if read_u32(mm + MM_ACTIVE).map(|v| v & 0xff) != Some(1) {
-        return;
-    }
-    let Some(list) = read_u32(mm + MM_LIST).filter(|&l| l != 0).map(|l| l as usize) else {
-        return;
-    };
-    if read_u32(list + LIST_PAGE) != Some(0) {
-        return;
-    }
-    let Some(col) = read_u32(list + LIST_COLUMNS).and_then(|c| read_u32(c as usize)).filter(|&c| c != 0).map(|c| c as usize) else {
-        return;
-    };
-    let count = read_u32(col + COL_COUNT).unwrap_or(0).min(32) as usize;
-    let Some(items) = read_u32(col + COL_ITEMS).filter(|&i| i != 0).map(|i| i as usize) else {
-        return;
-    };
-    if !readable(items, count * 4) {
-        return;
-    }
-    let e = exe();
-    let ids: Vec<u32> = (0..count).map(|i| item_id(e, col, *((items + i * 4) as *const u32))).collect();
-    if let Ok(mut last) = LAST_IDS.lock() {
-        if *last != ids {
-            info!("quickstart: +{} ms online list: ids {ids:?}", ms());
-            last.clone_from(&ids);
-        }
-    }
-    let Some(pos) = ids.iter().position(|&id| id == target) else {
-        TARGET_SEEN.store(0, Ordering::Relaxed);
-        return;
-    };
-    if TARGET_SEEN.fetch_add(1, Ordering::Relaxed) + 1 < STABLE_TICKS {
-        return;
-    }
-    MODE_CHOSEN.store(true, Ordering::Relaxed);
+/// Focuses entry `pos` of the menu's column and calls the menu's own "select", as a click does.
+unsafe fn select_entry(mm: usize, col: usize, pos: usize) {
     *((col + COL_FOCUS) as *mut u32) = pos as u32;
+    let e = exe();
     if e.dx9 {
         let accept: unsafe extern "thiscall" fn(usize) = std::mem::transmute(e.mm_select);
         accept(mm);
@@ -665,11 +613,31 @@ unsafe fn choose_lobby(mm: usize, target: u32) {
         let accept: unsafe extern "thiscall" fn(usize, u32) = std::mem::transmute(e.mm_select);
         accept(mm, 0);
     }
-    info!(
-        "quickstart: +{} ms {} selected (entry {pos})",
-        ms(),
-        if target == ITEM_COOP { "Co-op" } else { "Spies vs Mercs" }
-    );
+}
+
+/// The launcher's New or Quick match request beside the game (`hooks_config::new_match_request`),
+/// read and deleted, if it's there and still good.
+fn take_matchmaking_request() -> Option<hooks_config::new_match_request::Accepted> {
+    let path = crate::community::folder()?.join(hooks_config::new_match_request::FILE);
+    let bytes = std::fs::read(&path).ok()?;
+    let _ = std::fs::remove_file(&path);
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+    match hooks_config::new_match_request::read(&bytes, now) {
+        Ok(asked) => {
+            info!(
+                "quickstart: +{} ms the launcher's {} ({} s ago, mode {:?}): starting matchmaking",
+                ms(),
+                if asked.quick { "Quick match" } else { "New match" },
+                asked.age.as_secs(),
+                asked.playlist
+            );
+            Some(asked)
+        }
+        Err(e) => {
+            warn!("quickstart: the launcher's matchmaking request isn't taken ({e:?})");
+            None
+        }
+    }
 }
 
 /// The menu's list on its current page: its column, the entries' ids, and the menu's active
@@ -844,9 +812,22 @@ fn watch() {
         std::thread::sleep(Duration::from_millis(50));
     }
     NAVIGATING.store(false, Ordering::Relaxed);
-    if MODE_CHOSEN.load(Ordering::Relaxed) {
+    let timed_out = !done();
+    if timed_out {
+        // Five minutes without the lobby: the game goes on as it is, the steps dropped.
+        GAVE_UP.store(true, Ordering::Relaxed);
+        if let Ok(mut nav) = NAV.lock() {
+            if let Some(nav) = nav.as_mut() {
+                nav.abort();
+            }
+        }
+        NAV_BUSY.store(false, Ordering::Relaxed);
+    }
+    if aborted() {
+        info!("quickstart: +{} ms stopped by the player", ms());
+    } else if MODE_CHOSEN.load(Ordering::Relaxed) {
         info!("quickstart: +{} ms done, in the lobby", ms());
-    } else if GAVE_UP.load(Ordering::Relaxed) {
+    } else if GAVE_UP.load(Ordering::Relaxed) && !timed_out {
         info!("quickstart: online play wasn't available; the game went on without the quick start");
     } else {
         warn!(

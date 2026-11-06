@@ -128,36 +128,36 @@
                 </button>
                 <template v-if="chooseOffered">
                   <span class="sep" role="separator"></span>
-                  <button
-                    type="button"
-                    :ref="(el) => (modeItems[MODES.length] = el)"
-                    role="menuitem"
-                    aria-haspopup="true"
-                    :aria-expanded="svmPick"
-                    @click.stop="svmPick = !svmPick"
-                  >
-                    <b>New SvM match <span class="caret" aria-hidden="true">{{ svmPick ? '▴' : '▾' }}</span></b><small>Skip the open ones and host, in the mode you pick</small>
-                  </button>
-                  <template v-if="svmPick">
+                  <template v-for="(kind, g) in ['quick', 'new']" :key="kind">
                     <button
-                      v-for="(m, k) in svmModes"
-                      :key="m.playlist"
                       type="button"
-                      class="mode-sub"
-                      :ref="(el) => (modeItems[MODES.length + 1 + k] = el)"
+                      :ref="(el) => (modeItems[MODES.length + g * 10] = el)"
                       role="menuitem"
-                      @click="newMatch('svm', m.playlist)"
+                      aria-haspopup="true"
+                      :aria-expanded="pick === kind"
+                      @click.stop="pick = pick === kind ? null : kind"
                     >
-                      <b>{{ m.name }}</b>
+                      <b>{{ kind === 'quick' ? 'Quick match' : 'New match' }} <span class="caret" aria-hidden="true">{{ pick === kind ? '▴' : '▾' }}</span></b>
+                      <small>{{ kind === 'quick' ? 'Join an open one in the mode you pick, or host' : 'Skip the open ones and host, in the mode you pick' }}</small>
                     </button>
+                    <template v-if="pick === kind">
+                      <button
+                        v-for="(m, k) in pickModes"
+                        :key="m.playlist ?? 'coop'"
+                        type="button"
+                        class="mode-sub"
+                        :ref="(el) => (modeItems[MODES.length + g * 10 + 1 + k] = el)"
+                        role="menuitem"
+                        @click="startMatch(kind, m)"
+                      >
+                        <b>{{ m.name }}</b>
+                      </button>
+                    </template>
                   </template>
-                  <button type="button" :ref="(el) => (modeItems[MODES.length + 10] = el)" role="menuitem" @click="newMatch('coop', null)">
-                    <b>New Co-op match</b><small>Skip the open ones and host</small>
-                  </button>
-                  <button type="button" :ref="(el) => (modeItems[MODES.length + 11] = el)" role="menuitem" @click="menuOpen = false; emit('go', 'matches')">
+                  <button type="button" :ref="(el) => (modeItems[MODES.length + 20] = el)" role="menuitem" @click="menuOpen = false; emit('go', 'matches')">
                     <b>Choose a match…</b><small>See the open ones and pick</small>
                   </button>
-                  <button v-if="info.new_match" type="button" :ref="(el) => (modeItems[MODES.length + 12] = el)" role="menuitem" @click="cancelNewMatch">
+                  <button v-if="info.new_match" type="button" :ref="(el) => (modeItems[MODES.length + 21] = el)" role="menuitem" @click="cancelNewMatch">
                     <b>Join open matches again</b><small>Take back the new match</small>
                   </button>
                 </template>
@@ -434,14 +434,16 @@ const modeItems = ref([]);
 // open ones (the Matches tab).
 const chooseOffered = ref(false);
 onMounted(async () => (chooseOffered.value = await call('choose_match_offered')));
-// New SvM match asks the mode first (its entries open under it).
-const svmPick = ref(false);
+// Quick match and New match ask the mode first (its entries open under them): Spies vs Mercs'
+// modes, then Co-op.
+const pick = ref(null);
 const svmModes = ref([]);
 onMounted(async () => (svmModes.value = (await call('svm_modes')) || []));
-function newMatch(mode, playlist) {
+const pickModes = computed(() => [...svmModes.value.map((m) => ({ ...m, mode: 'svm' })), { playlist: null, name: 'Co-op', mode: 'coop' }]);
+function startMatch(kind, m) {
   menuOpen.value = false;
-  svmPick.value = false;
-  call('new_match', { mode, playlist });
+  pick.value = null;
+  call(kind === 'quick' ? 'quick_match' : 'new_match', { mode: m.mode, playlist: m.playlist });
 }
 function cancelNewMatch() {
   menuOpen.value = false;

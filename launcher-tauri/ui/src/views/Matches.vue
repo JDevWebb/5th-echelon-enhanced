@@ -8,11 +8,11 @@
       </div>
       <div class="head-act">
         <button type="button" class="btn ghost" :disabled="!ready" :aria-expanded="picking === 'head'" @click="newMatch('head')">New match</button>
-        <button type="button" class="btn primary" :disabled="!ready" @click="quick">Quick match</button>
+        <button type="button" class="btn primary" :disabled="!ready" :aria-expanded="picking === 'quick'" @click="quick">Quick match</button>
       </div>
-      <div v-if="picking === 'head'" class="mode-pick" role="group" aria-label="Host a new match in which mode?">
-        <span class="muted small">Host in</span>
-        <button v-for="m in svmModes" :key="m.playlist" type="button" class="btn ghost small-btn" @click="host(m.playlist)">{{ m.name }}</button>
+      <div v-if="picking === 'head' || picking === 'quick'" class="mode-pick" role="group" :aria-label="picking === 'quick' ? 'Find a match in which mode?' : 'Host a new match in which mode?'">
+        <span class="muted small">{{ picking === 'quick' ? 'Find a match in' : 'Host in' }}</span>
+        <button v-for="m in svmModes" :key="m.playlist" type="button" class="btn ghost small-btn" @click="picking === 'quick' ? quickIn(m.playlist) : host(m.playlist)">{{ m.name }}</button>
         <button type="button" class="link small" @click="picking = null">Cancel</button>
       </div>
     </header>
@@ -258,8 +258,14 @@ function host(playlist) {
   call('new_match', { mode: mode.value === 'coop' ? 'coop' : 'svm', playlist });
   emit('played');
 }
-async function quick() {
-  const started = await call('play', { mode: mode.value === 'coop' ? 'coop' : 'svm' });
+// Quick match: Co-op goes at once; Spies vs Mercs first asks which mode, as New match does.
+function quick() {
+  if (mode.value === 'coop') return quickIn(null);
+  picking.value = picking.value === 'quick' ? null : 'quick';
+}
+async function quickIn(playlist) {
+  picking.value = null;
+  const started = await call('quick_match', { mode: mode.value === 'coop' ? 'coop' : 'svm', playlist });
   emit('played', started);
 }
 function watch(l) {

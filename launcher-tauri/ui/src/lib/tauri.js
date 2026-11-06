@@ -267,6 +267,7 @@ const preview = {
   join_match: () => null,
   follow_move: () => null,
   new_match: () => null,
+  quick_match: () => true,
   svm_modes: () => [
     { playlist: 4008726265, name: 'SvM Blacklist' },
     { playlist: 2165463540, name: 'SvM Classic' },

@@ -240,8 +240,15 @@ fn set_cursor_pos(x: i32, y: i32) -> BOOL {
 
 /// The game doesn't get the player's mouse and keys: the panel is open, or the quick start is
 /// taking the game through its menus.
-fn held_back() -> bool {
-    OPEN.load(Ordering::SeqCst) || crate::quickstart::navigating()
+pub(crate) fn held_back() -> bool {
+    OPEN.load(Ordering::SeqCst) || crate::quickstart::navigating() || esc_after_abort()
+}
+
+/// The Esc that stopped the quick start is still held: the game doesn't see it either (in its
+/// menus Esc goes back, at the title it can quit).
+fn esc_after_abort() -> bool {
+    crate::quickstart::aborted()
+        && unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(i32::from(windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0)) } & i16::MIN != 0
 }
 
 /// The device's state, as if nothing moved or was pressed while the panel is open.
