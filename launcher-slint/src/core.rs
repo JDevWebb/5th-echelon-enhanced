@@ -1278,11 +1278,14 @@ pub fn choose_game_dir(core: &Core, dir: &str) -> bool {
 /// the servers' news shown as text).
 pub fn open_url(url: &str) -> Result<(), String> {
     let parsed = url::Url::parse(url).map_err(|_| "Not a link the launcher opens.".to_string())?;
-    if parsed.scheme() != "https" {
+    // Only a plain web address: no credentials in it, and nothing a program handed it could take
+    // as its own options (explorer.exe reads commas as switches).
+    if parsed.scheme() != "https" || parsed.host_str().is_none() || !parsed.username().is_empty() || parsed.as_str().chars().any(|c| matches!(c, ',' | '"' | '\\' | ' ')) {
         return Err("Not a link the launcher opens.".into());
     }
+    // Windows' own handler for web addresses (the default browser), not explorer.exe's command line.
     #[cfg(target_os = "windows")]
-    let opened = std::process::Command::new("explorer").arg(parsed.as_str()).spawn();
+    let opened = std::process::Command::new("rundll32").arg("url.dll,FileProtocolHandler").arg(parsed.as_str()).spawn();
     #[cfg(not(target_os = "windows"))]
     let opened = std::process::Command::new("xdg-open").arg(parsed.as_str()).spawn();
     opened.map(|_| ()).map_err(|e| e.to_string())
