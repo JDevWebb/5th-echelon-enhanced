@@ -3895,46 +3895,49 @@ fn matches_page(m: &mut MatchesPage, server: Option<&str>, ready: bool, act: &mu
     // The filters.
     if !all.is_empty() {
         egui::Frame::new().inner_margin(egui::Margin::symmetric(32, 10)).show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
-                let svm = all.iter().filter(|l| l.kind != "coop").count();
-                let labels = [
-                    (MatchKind::All, format!("All · {}", all.len())),
-                    (MatchKind::Svm, format!("Spies vs Mercs · {svm}")),
-                    (MatchKind::Coop, format!("Co-op · {}", all.len() - svm)),
-                ];
-                let options: Vec<(MatchKind, &str)> = labels.iter().map(|(k, l)| (*k, l.as_str())).collect();
-                theme::segmented(ui, &mut m.kind, &options);
-                ui.add_space(8.0);
+            let sort = |ui: &mut egui::Ui, m: &mut MatchesPage| {
+                egui::ComboBox::from_id_salt("matches-sort")
+                    .selected_text(match m.sort {
+                        MatchSort::Nearest => "Nearest first",
+                        MatchSort::Busiest => "Most players",
+                        MatchSort::Newest => "Newest",
+                    })
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut m.sort, MatchSort::Nearest, "Nearest first");
+                        ui.selectable_value(&mut m.sort, MatchSort::Busiest, "Most players");
+                        ui.selectable_value(&mut m.sort, MatchSort::Newest, "Newest");
+                    });
+            };
+            // One row when it all fits; else the mode and the sort on the first, the checkboxes
+            // on the second (the sort had a row of its own at the window's least width, leaving
+            // the details beside the list hardly any height).
+            let svm = all.iter().filter(|l| l.kind != "coop").count();
+            let labels = [
+                (MatchKind::All, format!("All · {}", all.len())),
+                (MatchKind::Svm, format!("Spies vs Mercs · {svm}")),
+                (MatchKind::Coop, format!("Co-op · {}", all.len() - svm)),
+            ];
+            let options: Vec<(MatchKind, &str)> = labels.iter().map(|(k, l)| (*k, l.as_str())).collect();
+            let checks = |ui: &mut egui::Ui, m: &mut MatchesPage| {
                 ui.checkbox(&mut m.show_under_way, "Under way");
                 ui.checkbox(&mut m.show_full, "Full");
                 ui.checkbox(&mut m.friends_first, "Friends first");
-                // At the row's right end when there's room for it, else on the next line.
-                let sort = |ui: &mut egui::Ui, m: &mut MatchesPage| {
-                    egui::ComboBox::from_id_salt("matches-sort")
-                        .selected_text(match m.sort {
-                            MatchSort::Nearest => "Nearest first",
-                            MatchSort::Busiest => "Most players",
-                            MatchSort::Newest => "Newest",
-                        })
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut m.sort, MatchSort::Nearest, "Nearest first");
-                            ui.selectable_value(&mut m.sort, MatchSort::Busiest, "Most players");
-                            ui.selectable_value(&mut m.sort, MatchSort::Newest, "Newest");
-                        });
-                };
-                let rest = ui.available_width();
-                if rest > 230.0 {
-                    // Only the rest of the row: right-aligned in it, never over the checkboxes.
-                    ui.allocate_ui_with_layout(egui::vec2(rest, 36.0), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        sort(ui, m);
-                        ui.label(theme::muted("Sort"));
-                    });
-                } else {
-                    ui.end_row();
-                    ui.label(theme::muted("Sort"));
-                    sort(ui, m);
+            };
+            let one_row = ui.available_width() >= 960.0;
+            ui.horizontal(|ui| {
+                theme::segmented(ui, &mut m.kind, &options);
+                if one_row {
+                    ui.add_space(8.0);
+                    checks(ui, m);
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    sort(ui, m);
+                    ui.label(theme::muted("Sort"));
+                });
             });
+            if !one_row {
+                ui.horizontal(|ui| checks(ui, m));
+            }
         });
         let line = ui.available_rect_before_wrap();
         ui.painter().hline(line.x_range(), line.top(), egui::Stroke::new(1.0, theme::LINE));
