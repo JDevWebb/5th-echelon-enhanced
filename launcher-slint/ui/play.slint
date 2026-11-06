@@ -1,0 +1,1042 @@
+// The Play screen, as the Tauri launcher's Play.vue: the game's art as the stage, the server
+// card and the Play button (which says where the player stands, and is the fix while something
+// needs fixing), its modes (Quick match and New match by mode), the notice of a release or
+// maintenance, the news; beside it the Status and Squad tabs.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Type } from "theme.slint";
+import { EchelonMark } from "brand.slint";
+import { Btn, Link, Spinner, Dot, Caps, Rule } from "widgets.slint";
+import { Icon, Icons } from "chrome.slint";
+import { InfoView, PlayButton, ServerCard, ServerRow, CheckRow, FriendRow, OtherRow, ElsewhereRow, ModeItem, NoticeView } from "types.slint";
+
+// A ping, coloured by how near: green to 90 ms, plain to 180, amber beyond, muted with none.
+component Ping inherits Text {
+    in property <int> ms;
+    in property <bool> on-stage: false;
+    text: ms < 0 ? "no answer" : ms + " ms";
+    font-family: Type.mono;
+    font-size: 13px;
+    color: ms < 0 ? (on-stage ? Theme.stage-soft : Theme.muted) : ms <= 90 ? (on-stage ? Theme.stage-accent : Theme.accent) : ms <= 180 ? (on-stage ? Theme.stage-fg : Theme.fg) : Theme.warn;
+}
+
+// A small tag in the server menu: "Best for you", "Current", maintenance.
+component Tag inherits Rectangle {
+    in property <string> text;
+    in property <string> tone: "ok";
+    height: 18px;
+    width: t.preferred-width + 10px;
+    border-radius: 3px;
+    border-width: 1px;
+    border-color: tone == "warn" ? Theme.warn : tone == "muted" ? Theme.control-line : Theme.accent-soft;
+    t := Text {
+        text: root.text;
+        font-family: Type.mono;
+        font-size: 10px;
+        color: tone == "warn" ? Theme.warn : tone == "muted" ? Theme.soft : Theme.accent;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// A menu entry: a bold line and a hint under it.
+component MenuEntry inherits Rectangle {
+    in property <string> title;
+    in property <string> hint;
+    in property <bool> on: false;
+    in property <bool> sub: false;
+    callback clicked();
+    forward-focus: fs;
+    height: lay.preferred-height;
+    border-radius: 4px;
+    background: ta.has-hover || fs.has-focus ? Theme.control : on ? Theme.selected : transparent;
+    accessible-role: AccessibleRole.button;
+    accessible-label: title + (hint != "" ? ". " + hint : "");
+    accessible-checked: on;
+    accessible-action-default => { clicked(); }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
+            reject
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    if on: Rectangle { x: 0; width: 3px; background: Theme.accent; border-radius: 1.5px; }
+    lay := VerticalLayout {
+        padding-left: sub ? 28px : 12px;
+        padding-right: 12px;
+        padding-top: sub ? 7px : 9px;
+        padding-bottom: sub ? 7px : 9px;
+        spacing: 2px;
+        HorizontalLayout {
+            spacing: 6px;
+            Text { text: root.title; font-weight: 600; color: on ? Theme.accent : Theme.fg; font-size: sub ? 14px : Type.body; horizontal-stretch: 1; }
+        }
+        if hint != "": Text { text: root.hint; color: Theme.soft; font-size: 12.5px; wrap: word-wrap; }
+    }
+}
+
+export component PlayScreen inherits Rectangle {
+    in property <InfoView> info;
+    in property <PlayButton> button;
+    in property <ServerCard> card;
+    in property <[ServerRow]> servers;
+    in property <string> servers-header;
+    in property <string> servers-note;
+    in property <bool> network;
+    in property <bool> pinging;
+    in property <bool> checks-loaded;
+    in property <[CheckRow]> checks;
+    in property <string> support-status;
+    in property <string> support-title;
+    in property <string> support-why;
+    in property <bool> fixable;
+    in property <bool> checks-busy;
+    in property <bool> all-checks;
+    in property <bool> trouble;
+    in property <bool> squad-loaded;
+    in property <[FriendRow]> online;
+    in property <[OtherRow]> others;
+    in property <[ElsewhereRow]> elsewhere;
+    in property <int> offline;
+    in property <int> squad-requests;
+    in property <bool> join-offered;
+    in property <bool> squad-managed;
+    in property <bool> playing-shown;
+    in property <[string]> playing;
+    in property <string> playing-more;
+    in property <NoticeView> notice;
+    in property <[string]> news;
+    in property <image> art;
+    in property <bool> has-art;
+    in property <bool> choose-offered;
+    in property <bool> modes-allowed;
+    in property <string> server-blocked;
+    // The account's first letter, and whether it's signed in (the presence dot).
+    in property <string> initial: "?";
+    in property <bool> signed-in;
+    // How many others are online (the list has the first eight).
+    in property <int> others-total;
+
+    callback play-pressed();
+    callback choose-mode(string);
+    callback cancel-new-match();
+    callback go(string);
+    callback load-servers(bool);
+    callback switch-server(string);
+    callback fix(string);
+    callback fix-everything();
+    callback identify();
+    callback check-again();
+    callback toggle-all();
+    callback join-friend(string, string);
+    callback player-action(string, string, string);
+    callback switch-to-friend(string);
+    callback dismiss-emulator();
+    callback ask-review();
+
+    background: Theme.bg;
+
+    // The drawer's tab: Status first while something needs fixing, else Squad, until picked.
+    property <string> picked-tab;
+    property <string> tab: picked-tab != "" ? picked-tab : (trouble ? "status" : "squad");
+    property <ElsewhereRow> confirm;
+    property <bool> confirming;
+    property <int> news-at: 0;
+    property <bool> emulator-closed;
+
+    Timer {
+        interval: 8s;
+        running: root.news.length > 1;
+        triggered => { root.news-at = Math.mod(root.news-at + 1, root.news.length); }
+    }
+
+    HorizontalLayout {
+        // The stage: the game's art, always a dark scene (in the light theme too).
+        stage := Rectangle {
+            horizontal-stretch: 1;
+            clip: true;
+            background: #0a0e0f;
+            Rectangle {
+                background: @radial-gradient(circle, #9be05a1f 0%, #9be05a00 60%);
+                x: parent.width * 0.35;
+                y: -parent.height * 0.1;
+                width: parent.width * 0.8;
+                height: parent.height * 0.9;
+            }
+            if has-art: Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.art;
+                image-fit: cover;
+                opacity: 0.55;
+                accessible-role: none;
+            }
+            Rectangle { background: @linear-gradient(180deg, #0a0e0f8c 0%, #0a0e0f59 40%, #0a0e0feb 100%); }
+            Rectangle { background: @linear-gradient(90deg, #0a0e0fd9 0%, #0a0e0f00 70%); }
+
+            VerticalLayout {
+                padding-left: 36px;
+                padding-right: 36px;
+                padding-top: 22px;
+                padding-bottom: 22px;
+                spacing: 10px;
+
+                // The banners: a name the network refuses, and a Uplay emulator.
+                if info.name-not-allowed != "": Rectangle {
+                    border-radius: 6px;
+                    background: #3a1512e6;
+                    border-width: 1px;
+                    border-color: #ff7a6b;
+                    HorizontalLayout {
+                        padding: 10px;
+                        padding-left: 14px;
+                        spacing: 10px;
+                        Text {
+                            horizontal-stretch: 1;
+                            wrap: word-wrap;
+                            vertical-alignment: center;
+                            color: Theme.stage-fg;
+                            text: "Your name " + info.name-not-allowed + " breaks this network's rules (no slurs or hate). Choose another to play: friends and invites carry on.";
+                        }
+                        Btn { text: "Rename…"; small: true; clicked => { root.go("settings"); } }
+                        if info.community: Btn { text: "Ask for a review"; small: true; clicked => { root.ask-review(); } }
+                    }
+                }
+                if info.emulator-notice && !emulator-closed: Rectangle {
+                    border-radius: 6px;
+                    background: #3a2c10e6;
+                    border-width: 1px;
+                    border-color: #f0b44c;
+                    HorizontalLayout {
+                        padding: 10px;
+                        padding-left: 14px;
+                        spacing: 10px;
+                        Text {
+                            horizontal-stretch: 1;
+                            wrap: word-wrap;
+                            color: Theme.stage-fg;
+                            text: "This game's Ubisoft Connect DLL has been replaced by an emulator. That's up to you and we don't mind, but it isn't a setup we support: if something doesn't work with it, we may not be able to help.";
+                        }
+                        Btn {
+                            text: "Dismiss";
+                            small: true;
+                            clicked => {
+                                root.emulator-closed = true;
+                                root.dismiss-emulator();
+                            }
+                        }
+                    }
+                }
+
+                // The HUD: who the player is.
+                HorizontalLayout {
+                    min-height: 58px;
+                    Caps { text: "FIELD OPS"; vertical-alignment: center; color: Theme.stage-soft; }
+                    Rectangle { horizontal-stretch: 1; }
+                    Rectangle {
+                        border-radius: 6px;
+                        background: pta.has-hover ? #121a1bd9 : #0c1112b3;
+                        border-width: 1px;
+                        border-color: pta.has-hover ? #263434 : #172022;
+                        width: pl.preferred-width;
+                        accessible-role: AccessibleRole.button;
+                        accessible-label: (info.account != "" ? info.account : "No account yet") + ". Identity and friends";
+                        accessible-action-default => { root.go("settings"); }
+                        pta := TouchArea { mouse-cursor: pointer; clicked => { root.go("settings"); } }
+                        pl := HorizontalLayout {
+                            padding: 8px;
+                            padding-right: 18px;
+                            spacing: 12px;
+                            Rectangle {
+                                width: 40px;
+                                height: 40px;
+                                border-radius: 20px;
+                                border-width: 1.5px;
+                                border-color: #9be05a80;
+                                background: #101c16;
+                                Text {
+                                    text: root.initial;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    color: Theme.stage-accent;
+                                    font-weight: 600;
+                                }
+                                // Signed in: the presence dot.
+                                Rectangle {
+                                    x: 29px;
+                                    y: 29px;
+                                    width: 10px;
+                                    height: 10px;
+                                    border-radius: 5px;
+                                    border-width: 2px;
+                                    border-color: #0c1112;
+                                    background: root.signed-in ? #9be05a : #84968f;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                Text { text: info.account != "" ? info.account : "No account yet"; font-weight: 600; color: Theme.stage-fg; }
+                                Text { text: info.identity != "" ? "ID " + info.identity : "No identity yet"; font-family: Type.mono; font-size: 11px; color: #84968f; }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle { vertical-stretch: 1; }
+
+                // The hero, and the launch bar.
+                Text { text: "TOM CLANCY'S"; font-family: Type.mono; font-size: 12px; letter-spacing: 2.4px; color: Theme.stage-accent; }
+                VerticalLayout {
+                    Text {
+                        height: root.hero-size * 0.96;
+                        vertical-alignment: center;
+                        text: "SPLINTER CELL";
+                        font-family: Type.cond;
+                        font-weight: 700;
+                        font-size: root.hero-size;
+                        color: Theme.stage-fg;
+                        accessible-role: text;
+                    }
+                    Text {
+                        height: root.hero-size * 0.96;
+                        vertical-alignment: center;
+                        text: "BLACKLIST";
+                        font-family: Type.cond;
+                        font-weight: 700;
+                        font-size: root.hero-size;
+                        color: Theme.stage-accent;
+                    }
+                }
+                if !root.short: Text {
+                    text: "Co-op and Spies vs Mercs on community servers. No VPN, no port forwarding.";
+                    color: Theme.stage-soft;
+                    font-size: 16px;
+                    wrap: word-wrap;
+                }
+                Rectangle { height: 8px; }
+
+                launch := HorizontalLayout {
+                    max-width: 940px;
+                    spacing: 20px;
+                    // The server card, and its menu.
+                    server := Rectangle {
+                        min-width: 190px;
+                        max-width: 420px;
+                        horizontal-stretch: 1;
+                        height: 58px;
+                        border-radius: 4px;
+                        background: #0c1112cc;
+                        border-width: 1px;
+                        border-color: sta.has-hover || servers-open ? #9be05a : #263434;
+                        accessible-role: AccessibleRole.button;
+                        accessible-label: (card.shown ? card.caption + ": " + card.place : "No server chosen") + (server-blocked != "" ? ". " + server-blocked : ". Choose a server");
+                        accessible-action-default => { root.open-server-menu(); }
+                        sta := TouchArea { mouse-cursor: server-blocked == "" ? pointer : default; clicked => { root.open-server-menu(); } }
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 12px;
+                            spacing: 10px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                alignment: center;
+                                spacing: 2px;
+                                Caps { text: card.shown ? card.caption.to-uppercase() : "SERVER"; color: #84968f; overflow: elide; }
+                                Text { text: card.shown ? card.place : (info.server != "" ? info.server : "None chosen"); font-weight: 600; color: Theme.stage-fg; overflow: elide; }
+                            }
+                            if card.listed: VerticalLayout {
+                                alignment: center;
+                                Ping { ms: card.ping; on-stage: true; horizontal-alignment: right; }
+                                Text { text: card.players + " online"; font-size: 12px; color: #84968f; horizontal-alignment: right; }
+                            }
+                            Icon { size: 16px; y: (parent.height - self.height) / 2; commands: servers-open ? Icons.chevron-up : Icons.chevron-down; color: Theme.stage-soft; }
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    // The Play button and its modes.
+                    split := HorizontalLayout {
+                        spacing: 2px;
+                        play := Rectangle {
+                            min-width: 210px;
+                            horizontal-stretch: 0;
+                            height: 58px;
+                            border-radius: 4px;
+                            background: root.play-colour;
+                            opacity: button.disabled && !button.busy ? 0.7 : 1;
+                            animate background { duration: Theme.calm; }
+                            accessible-role: AccessibleRole.button;
+                            accessible-label: button.label + (button.sub != "" ? ". " + button.sub : "");
+                            accessible-description: button.why;
+                            accessible-enabled: !button.disabled;
+                            accessible-action-default => { if !button.disabled { root.press(); } }
+                            forward-focus: pfs;
+                            pfs := FocusScope {
+                                enabled: !button.disabled;
+                                key-pressed(e) => {
+                                    if !button.disabled && (e.text == Key.Return || e.text == " ") { root.press(); return accept; }
+                                    if e.text == Key.UpArrow && root.modes-allowed { root.open-modes(); return accept; }
+                                    reject
+                                }
+                            }
+                            pta2 := TouchArea {
+                                enabled: !button.disabled;
+                                mouse-cursor: button.disabled ? default : pointer;
+                                clicked => { root.press(); }
+                            }
+                            Rectangle {
+                                background: pta2.has-hover && !button.disabled ? #ffffff14 : transparent;
+                                border-radius: 4px;
+                            }
+                            VerticalLayout {
+                                padding-left: button.tone == "ok" ? 48px : 28px;
+                                padding-right: self.padding-left;
+                                alignment: center;
+                                spacing: 4px;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    spacing: 10px;
+                                    if button.busy: Spinner { size: 16px; y: (parent.height - self.height) / 2; }
+                                    Text {
+                                        text: button.label.to-uppercase();
+                                        font-family: Type.cond;
+                                        font-weight: 700;
+                                        font-size: button.tone == "ok" || button.tone == "warn" ? 24px : 20px;
+                                        letter-spacing: button.tone == "ok" ? 3.2px : 1.6px;
+                                        color: root.play-text;
+                                    }
+                                }
+                                if button.sub != "": Text {
+                                    text: button.sub;
+                                    horizontal-alignment: center;
+                                    overflow: elide;
+                                    font-size: 11.5px;
+                                    font-weight: 600;
+                                    color: root.play-text;
+                                    opacity: button.tone == "muted" ? 1 : 0.82;
+                                }
+                            }
+                            Rectangle {
+                                x: -3px;
+                                y: -3px;
+                                width: parent.width + 6px;
+                                height: parent.height + 6px;
+                                border-radius: 7px;
+                                border-width: pfs.has-focus ? 2px : 0px;
+                                border-color: Theme.stage-accent;
+                            }
+                        }
+                        more := Rectangle {
+                            width: 42px;
+                            horizontal-stretch: 0;
+                            height: 58px;
+                            border-radius: 4px;
+                            background: root.play-colour;
+                            opacity: root.modes-allowed ? 1 : 0.55;
+                            accessible-role: AccessibleRole.button;
+                            accessible-label: "Play Spies vs Mercs or Co-op, Quick match or New match";
+                            accessible-enabled: root.modes-allowed;
+                            accessible-action-default => { if root.modes-allowed { root.open-modes(); } }
+                            forward-focus: mfs;
+                            mfs := FocusScope {
+                                enabled: root.modes-allowed;
+                                key-pressed(e) => {
+                                    if e.text == Key.Return || e.text == " " || e.text == Key.UpArrow { root.open-modes(); return accept; }
+                                    reject
+                                }
+                            }
+                            mta := TouchArea {
+                                enabled: root.modes-allowed;
+                                mouse-cursor: root.modes-allowed ? pointer : default;
+                                clicked => { root.open-modes(); }
+                            }
+                            Rectangle { background: mta.has-hover && root.modes-allowed ? #ffffff14 : transparent; border-radius: 4px; }
+                            Path {
+                                width: 18px;
+                                height: 18px;
+                                viewbox-width: 24;
+                                viewbox-height: 24;
+                                commands: Icons.chevron-up;
+                                stroke: root.play-text;
+                                stroke-width: 2.4px;
+                                fill: transparent;
+                            }
+                            Rectangle {
+                                x: -3px;
+                                y: -3px;
+                                width: parent.width + 6px;
+                                height: parent.height + 6px;
+                                border-radius: 7px;
+                                border-width: mfs.has-focus ? 2px : 0px;
+                                border-color: Theme.stage-accent;
+                            }
+                        }
+                    }
+                }
+
+                // The notice: a release going out, or maintenance.
+                if notice.shown: Rectangle {
+                    border-radius: 6px;
+                    background: #0c1112e0;
+                    border-width: 1px;
+                    border-color: #3a3020;
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 10px;
+                        HorizontalLayout {
+                            spacing: 14px;
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 4px;
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    Text { text: notice.heading; font-weight: 600; color: Theme.stage-fg; }
+                                    Text { text: notice.eta; color: #f0b44c; font-family: Type.mono; font-size: 12px; vertical-alignment: center; }
+                                }
+                                Text { text: notice.text; color: Theme.stage-soft; wrap: word-wrap; }
+                            }
+                            VerticalLayout {
+                                alignment: center;
+                                spacing: 6px;
+                                if notice.note != "": Text { text: notice.note; color: #84968f; font-size: 12px; }
+                                if notice.play-on-host != "": Btn {
+                                    text: notice.play-on-label;
+                                    enabled: !info.connecting;
+                                    clicked => { root.switch-server(notice.play-on-host); }
+                                }
+                            }
+                        }
+                        if notice.servers.length > 0: HorizontalLayout {
+                            spacing: 8px;
+                            for r in notice.servers: Rectangle {
+                                horizontal-stretch: 1;
+                                border-radius: 4px;
+                                background: r.mine ? #101c16 : #07090a;
+                                border-width: 1px;
+                                border-color: r.mine ? #9be05a59 : #172022;
+                                VerticalLayout {
+                                    padding: 8px;
+                                    spacing: 3px;
+                                    HorizontalLayout {
+                                        Text { text: r.mine ? r.place + " · yours" : r.place; font-weight: 600; font-size: 13px; color: Theme.stage-fg; horizontal-stretch: 1; overflow: elide; }
+                                        Text { text: r.version; font-family: Type.mono; font-size: 11px; color: #84968f; }
+                                    }
+                                    Text { text: r.doing; font-size: 12px; color: r.tone == "now" ? #f0b44c : r.tone == "done" ? #9be05a : #a9bab3; overflow: elide; }
+                                    if r.meter >= 0: Rectangle {
+                                        height: 3px;
+                                        border-radius: 1.5px;
+                                        background: #172022;
+                                        Rectangle { x: 0; width: parent.width * r.meter; border-radius: 1.5px; background: #9be05a; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if info.beta > 0: Text {
+                    text: "Beta features on (" + info.beta + "): experimental, and your game's log is sent to the server's admins after each game.";
+                    color: #f0b44c;
+                    font-size: 12.5px;
+                    wrap: word-wrap;
+                }
+                if news.length > 0: HorizontalLayout {
+                    max-width: 940px;
+                    spacing: 12px;
+                    padding-top: 6px;
+                    Caps { text: "INTEL"; color: Theme.stage-accent; vertical-alignment: center; }
+                    Text {
+                        horizontal-stretch: 1;
+                        text: root.news[Math.min(root.news-at, root.news.length - 1)];
+                        color: Theme.stage-soft;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    Link { text: "All news"; tint: Theme.stage-accent; clicked => { root.go("intel"); } }
+                }
+            }
+
+        }
+
+        // The drawer: Status and Squad.
+        drawer := Rectangle {
+            width: clamp(root.width * 0.3, 300px, 380px);
+            background: Theme.surface;
+            Rectangle { x: 0; width: 1px; background: Theme.line; }
+            VerticalLayout {
+                tabs := HorizontalLayout {
+                    height: 52px;
+                    for t[i] in [
+                        { id: "status", label: root.trouble ? "STATUS · FIX" : "STATUS" },
+                        { id: "squad", label: root.online.length > 0 ? "SQUAD · " + root.online.length : "SQUAD" },
+                    ]: Rectangle {
+                        horizontal-stretch: 1;
+                        accessible-role: AccessibleRole.tab;
+                        accessible-label: t.label;
+                        accessible-checked: root.tab == t.id;
+                        accessible-action-default => { root.picked-tab = t.id; }
+                        forward-focus: tfs;
+                        tfs := FocusScope {
+                            key-pressed(e) => {
+                                if e.text == Key.Return || e.text == " " { root.picked-tab = t.id; return accept; }
+                                reject
+                            }
+                        }
+                        tta := TouchArea { mouse-cursor: pointer; clicked => { root.picked-tab = t.id; } }
+                        Caps {
+                            text: t.label;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            color: root.tab == t.id ? Theme.fg : tta.has-hover ? Theme.soft : Theme.muted;
+                        }
+                        Rectangle {
+                            y: parent.height - 2px;
+                            height: 2px;
+                            background: root.tab == t.id ? (t.id == "status" && root.trouble ? Theme.bad : Theme.accent) : transparent;
+                        }
+                        Rectangle {
+                            border-width: tfs.has-focus ? 2px : 0px;
+                            border-color: Theme.accent;
+                        }
+                    }
+                }
+                Rule {}
+                if root.tab == "status": status-view := ScrollView {
+                    vertical-stretch: 1;
+                    content-width: self.visible-width;
+                    content-height: status-col.preferred-height;
+                    status-col := VerticalLayout {
+                        width: status-view.visible-width;
+                        padding: 16px;
+                        padding-right: 18px;
+                        spacing: 4px;
+                        if !checks-loaded: HorizontalLayout {
+                            spacing: 10px;
+                            Spinner { y: (parent.height - self.height) / 2; }
+                            Text { text: "Checking…"; color: Theme.muted; }
+                        }
+                        for c in checks: Rectangle {
+                            border-radius: 6px;
+                            background: cta.has-hover ? Theme.control : transparent;
+                            cta := TouchArea {}
+                            HorizontalLayout {
+                                padding: 10px;
+                                spacing: 12px;
+                                Rectangle {
+                                    width: 10px;
+                                    VerticalLayout {
+                                        padding-top: 6px;
+                                        alignment: start;
+                                        Dot { tone: c.status; }
+                                    }
+                                }
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 3px;
+                                    Text { text: c.title; font-weight: 600; color: Theme.fg; wrap: word-wrap; }
+                                    if c.detail != "": Text { text: c.detail; font-size: 13px; color: Theme.soft; wrap: word-wrap; }
+                                    if c.fix-id != "": HorizontalLayout {
+                                        alignment: start;
+                                        Btn { text: c.fix-label; kind: "fix"; enabled: !root.checks-busy; clicked => { root.fix(c.fix-id); } }
+                                    }
+                                }
+                            }
+                        }
+                        if support-title != "": HorizontalLayout {
+                            padding: 10px;
+                            spacing: 12px;
+                            VerticalLayout { padding-top: 6px; alignment: start; Dot { tone: root.support-status; } }
+                            VerticalLayout {
+                                horizontal-stretch: 1;
+                                spacing: 3px;
+                                Text { text: root.support-title; font-weight: 600; color: Theme.fg; wrap: word-wrap; }
+                                Text { text: root.support-why; font-size: 13px; color: Theme.soft; wrap: word-wrap; }
+                                if root.support-status == "fail": HorizontalLayout {
+                                    alignment: start;
+                                    Btn { text: "Try to identify"; kind: "fix"; enabled: !root.checks-busy; clicked => { root.identify(); } }
+                                }
+                            }
+                        }
+                        if checks-loaded: VerticalLayout {
+                            padding-top: 12px;
+                            spacing: 12px;
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                Link { text: root.all-checks ? "Show less" : "All checks"; clicked => { root.toggle-all(); } }
+                                Text { text: "·"; color: Theme.muted; }
+                                if root.checks-busy: Spinner { y: (parent.height - self.height) / 2; }
+                                if !root.checks-busy: Link { text: "Check again"; clicked => { root.check-again(); } }
+                                Text { text: "·"; color: Theme.muted; }
+                                Link { text: "Connection test"; clicked => { root.go("settings"); } }
+                            }
+                            if root.fixable: Btn { text: "Fix everything"; kind: "primary"; clicked => { root.fix-everything(); } }
+                        }
+                    }
+                }
+                if root.tab == "squad": squad-view := ScrollView {
+                    vertical-stretch: 1;
+                    content-width: self.visible-width;
+                    content-height: squad-col.preferred-height;
+                    squad-col := VerticalLayout {
+                        width: squad-view.visible-width;
+                        padding: 16px;
+                        padding-right: 18px;
+                        spacing: 4px;
+                        if !squad-loaded: HorizontalLayout {
+                            spacing: 10px;
+                            Spinner { y: (parent.height - self.height) / 2; }
+                            Text { text: "Looking for your friends…"; color: Theme.muted; }
+                        }
+                        if squad-loaded && (squad-managed || (online.length == 0 && elsewhere.length == 0)): Text {
+                            text: offline > 0 ? "None of your friends are online right now." : "No friends yet: Find players in Friends.";
+                            color: Theme.soft;
+                            wrap: word-wrap;
+                        }
+                        for f in online: Rectangle {
+                            border-radius: 6px;
+                            background: fta.has-hover ? Theme.control : transparent;
+                            fta := TouchArea {}
+                            HorizontalLayout {
+                                padding: 10px;
+                                spacing: 12px;
+                                Rectangle { width: 3px; border-radius: 1.5px; background: Theme.accent; }
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    Text { text: f.name; font-weight: 600; color: Theme.fg; overflow: elide; }
+                                    Text { text: f.activity != "" ? f.activity : "Online"; font-size: 13px; color: Theme.soft; overflow: elide; }
+                                }
+                                if join-offered && f.with-me: Text { text: "You're in it"; color: Theme.soft; font-size: 12.5px; vertical-alignment: center; }
+                                if join-offered && !f.with-me: Btn {
+                                    text: "Join";
+                                    kind: "fix";
+                                    enabled: f.joinable && !info.connecting;
+                                    description: f.joinable ? "Join this friend's game" : f.activity != "" ? f.name + "'s match can't be joined now: it's a private match (you need an invitation), or it has started" : f.name + " isn't in a game right now";
+                                    clicked => { root.join-friend(f.id, f.name); }
+                                }
+                            }
+                        }
+                        for e in elsewhere: Rectangle {
+                            border-radius: 6px;
+                            HorizontalLayout {
+                                padding: 10px;
+                                spacing: 12px;
+                                Rectangle { width: 3px; border-radius: 1.5px; background: Theme.warn; }
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    Text { text: e.name; font-weight: 600; color: Theme.fg; overflow: elide; }
+                                    Text { text: "On " + e.place; font-size: 13px; color: Theme.soft; overflow: elide; }
+                                }
+                                Btn {
+                                    text: "Join";
+                                    kind: "fix";
+                                    enabled: e.public && !info.running && !info.connecting;
+                                    description: info.running ? "Quit the game first" : e.host;
+                                    clicked => {
+                                        root.confirm = e;
+                                        root.confirming = true;
+                                    }
+                                }
+                            }
+                        }
+                        if others.length > 0 && !squad-managed: Text {
+                            text: "Online now · " + root.others-total;
+                            color: Theme.soft;
+                            font-size: 13px;
+                        }
+                        for p in others: Rectangle {
+                            border-radius: 6px;
+                            background: ota2.has-hover ? Theme.control : transparent;
+                            ota2 := TouchArea {}
+                            HorizontalLayout {
+                                padding: 10px;
+                                spacing: 10px;
+                                Rectangle { width: 3px; border-radius: 1.5px; background: Theme.control-line; }
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    Text { text: p.name; font-weight: 600; color: Theme.fg; overflow: elide; }
+                                    Text { text: p.activity != "" ? p.activity : "Online"; font-size: 13px; color: Theme.soft; overflow: elide; }
+                                }
+                                if info.running: Btn { text: "Invite"; kind: "fix"; description: "To the game you're in"; clicked => { root.player-action("invite", p.id, p.name); } }
+                                Btn {
+                                    text: p.asked-us ? "Accept" : p.asked ? "Asked" : "Add friend";
+                                    kind: "fix";
+                                    enabled: !(p.asked && !p.asked-us);
+                                    clicked => { root.player-action(p.asked-us ? "accept" : "request", p.id, p.name); }
+                                }
+                            }
+                        }
+                        if others-total > others.length: Text {
+                            text: "and " + (others-total - others.length) + " more: Find players in Friends lists them all";
+                            color: Theme.muted;
+                            font-size: 12.5px;
+                            wrap: word-wrap;
+                        }
+                        if playing-shown: VerticalLayout {
+                            padding-top: 14px;
+                            spacing: 6px;
+                            Caps { text: "PLAYING NOW"; }
+                            if playing.length == 0 && playing-more == "": Text { text: "Nobody's in a match or a lobby here right now."; color: Theme.muted; font-size: 12.5px; wrap: word-wrap; }
+                            for line in playing: Text { text: line; color: Theme.fg; font-size: 13.5px; wrap: word-wrap; }
+                            if playing-more != "": Text { text: root.playing-more; color: Theme.muted; font-size: 12.5px; wrap: word-wrap; }
+                        }
+                        if squad-loaded: VerticalLayout {
+                            padding-top: 14px;
+                            spacing: 6px;
+                            if squad-requests > 0: Text {
+                                text: squad-requests + (squad-requests == 1 ? " friend request waiting" : " friend requests waiting");
+                                color: Theme.accent;
+                                font-size: 13px;
+                            }
+                            if offline > 0: Text { text: offline + " offline"; color: Theme.muted; font-size: 13px; }
+                            HorizontalLayout {
+                                alignment: start;
+                                Link { text: "Friends, requests and blocked players ›"; clicked => { root.go("friends"); } }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // A menu open: a click anywhere else closes it.
+    if root.servers-open || root.modes-open: TouchArea {
+        clicked => { root.close-menus(); }
+    }
+            // The server menu: the network's servers with this PC's ping to each.
+            if root.servers-open: Rectangle {
+                x: launch.absolute-position.x - root.absolute-position.x;
+                y: max(8px, launch.absolute-position.y - root.absolute-position.y - self.height - 8px);
+                width: min(460px, stage.width - 72px);
+                height: sm.preferred-height;
+                sm := Rectangle {
+                    border-radius: 6px;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.control-line;
+                    drop-shadow-blur: 30px;
+                    drop-shadow-color: #00000088;
+                    FocusScope {
+                        init => { self.focus(); }
+                        key-pressed(e) => {
+                            if e.text == Key.Escape { root.close-menus(); return accept; }
+                            reject
+                        }
+                    }
+                    VerticalLayout {
+                        padding: 8px;
+                        spacing: 2px;
+                        HorizontalLayout {
+                            padding: 8px;
+                            padding-top: 4px;
+                            spacing: 8px;
+                            Caps { text: root.servers-header.to-uppercase(); horizontal-stretch: 1; overflow: elide; vertical-alignment: center; }
+                            if root.pinging: Spinner {}
+                            if !root.pinging && root.network: Link { text: "Ping again"; clicked => { root.load-servers(true); } }
+                        }
+                        if servers.length == 0: Text {
+                            text: root.pinging ? "Pinging the servers…" : "This network lists no servers right now.";
+                            color: Theme.muted;
+                            x: 8px;
+                        }
+                        for r in servers: Rectangle {
+                            height: rl.preferred-height;
+                            border-radius: 4px;
+                            background: rta.has-hover ? Theme.control : r.current ? Theme.selected : transparent;
+                            accessible-role: AccessibleRole.button;
+                            accessible-label: r.place + ", " + r.name + (r.ping < 0 ? ", no answer" : ", " + r.ping + " milliseconds") + ", " + r.players + " online" + (r.current ? ", current" : "");
+                            accessible-checked: r.current;
+                            accessible-action-default => { if !r.current { root.switch-server(r.host); } root.close-menus(); }
+                            rta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    if !r.current { root.switch-server(r.host); }
+                                    root.close-menus();
+                                }
+                            }
+                            if r.current: Rectangle { x: 0; width: 3px; background: Theme.accent; }
+                            rl := HorizontalLayout {
+                                padding: 10px;
+                                padding-left: 12px;
+                                spacing: 10px;
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 2px;
+                                    Text { text: r.place; font-weight: 600; color: Theme.fg; overflow: elide; }
+                                    Text { text: r.name + " · " + r.host; font-size: 12px; color: Theme.muted; overflow: elide; }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 4px;
+                                    if r.best: Tag { text: "Best for you"; }
+                                    if !r.best && r.current: Tag { text: "Current"; tone: "muted"; }
+                                    if r.maintenance != "": Tag { text: r.maintenance; tone: "warn"; }
+                                }
+                                VerticalLayout {
+                                    min-width: 72px;
+                                    alignment: center;
+                                    Ping { ms: r.ping; horizontal-alignment: right; }
+                                    Text { text: r.players + " online"; font-size: 12px; color: Theme.muted; horizontal-alignment: right; }
+                                }
+                            }
+                        }
+                        if servers-note != "": Text { text: root.servers-note; color: Theme.muted; font-size: 12.5px; wrap: word-wrap; x: 8px; width: parent.width - 16px; }
+                        Rule {}
+                        Rectangle {
+                            height: 40px;
+                            border-radius: 4px;
+                            background: ota.has-hover ? Theme.control : transparent;
+                            accessible-role: AccessibleRole.button;
+                            accessible-label: "Servers: a server of your own, a LAN server or another network";
+                            accessible-action-default => { root.close-menus(); root.go("servers"); }
+                            ota := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.close-menus();
+                                    root.go("servers");
+                                }
+                            }
+                            HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                Text { text: "A server of your own, a LAN server or another network"; color: Theme.soft; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                                Text { text: "Servers ›"; color: Theme.accent; font-weight: 600; vertical-alignment: center; }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // The modes: what Play starts, and Quick match / New match by mode.
+            if root.modes-open: Rectangle {
+                width: 330px;
+                x: launch.absolute-position.x - root.absolute-position.x + launch.width - self.width;
+                y: max(8px, launch.absolute-position.y - root.absolute-position.y - self.height - 8px);
+                height: mm.preferred-height;
+                mm := Rectangle {
+                    border-radius: 6px;
+                    background: Theme.surface;
+                    border-width: 1px;
+                    border-color: Theme.control-line;
+                    drop-shadow-blur: 30px;
+                    drop-shadow-color: #00000088;
+                    FocusScope {
+                        init => { self.focus(); }
+                        key-pressed(e) => {
+                            if e.text == Key.Escape { root.close-menus(); return accept; }
+                            reject
+                        }
+                    }
+                    VerticalLayout {
+                        padding: 6px;
+                        spacing: 2px;
+                        MenuEntry {
+                            title: "Play";
+                            hint: "The game as it is";
+                            on: info.play-mode == "play";
+                            clicked => { root.close-menus(); root.choose-mode("play"); }
+                        }
+                        MenuEntry {
+                            title: "Play SvM";
+                            hint: "Straight into a Spies vs Mercs lobby";
+                            on: info.play-mode == "svm";
+                            clicked => { root.close-menus(); root.choose-mode("svm"); }
+                        }
+                        MenuEntry {
+                            title: "Play Co-op";
+                            hint: "Straight into a co-op lobby";
+                            on: info.play-mode == "coop";
+                            clicked => { root.close-menus(); root.choose-mode("coop"); }
+                        }
+                        if choose-offered: Rule {}
+                        // Quick match and New match by mode are on Matches.
+                        if choose-offered: MenuEntry {
+                            title: "Find or host a match…";
+                            hint: "Quick match and New match, by mode, on Matches";
+                            clicked => { root.close-menus(); root.go("matches"); }
+                        }
+                    }
+                }
+            }
+
+    // Joining a friend on another server: switch there first?
+    if confirming: Rectangle {
+        background: Theme.scrim;
+        TouchArea { clicked => { root.confirming = false; } }
+        Rectangle {
+            width: min(460px, parent.width - 48px);
+            height: dl.preferred-height;
+            border-radius: 6px;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.control-line;
+            drop-shadow-blur: 40px;
+            drop-shadow-color: #00000099;
+            accessible-role: groupbox;
+            accessible-label: "Switch to " + root.confirm.place + "?";
+            TouchArea {}
+            dl := VerticalLayout {
+                padding: 24px;
+                spacing: 10px;
+                Caps { text: "JOIN " + root.confirm.name.to-uppercase(); color: Theme.accent; }
+                Text { text: "SWITCH TO " + root.confirm.place.to-uppercase() + "?"; font-family: Type.cond; font-weight: 700; font-size: 22px; color: Theme.fg; wrap: word-wrap; }
+                Text {
+                    text: "Switch to your friend's server " + root.confirm.host + "? This signs you in there with your identity (if you have no account there, you choose a name first).";
+                    color: Theme.soft;
+                    wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 10px;
+                    Btn { text: "Cancel"; clicked => { root.confirming = false; } }
+                    Btn {
+                        text: "Switch to " + root.confirm.host;
+                        kind: "primary";
+                        clicked => {
+                            root.confirming = false;
+                            root.switch-to-friend(root.confirm.host);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    property <bool> servers-open;
+    property <bool> modes-open;
+    // The window's height (from AppWindow: the screen's own would loop through its layout).
+    in property <length> window-height: 800px;
+    out property <length> hero-size: clamp(min((root.width - clamp(root.width * 0.3, 300px, 380px)) * 0.085, window-height * 0.1), 40px, 92px);
+    // A short window: the tag line goes.
+    property <bool> short: window-height < 680px;
+    property <color> play-colour: button.tone == "ok" ? Theme.stage-accent
+        : button.tone == "warn" ? #f0b44c
+        : button.tone == "fail" ? #ff7a6b
+        : #151e1f;
+    property <color> play-text: button.tone == "ok" || button.tone == "warn" ? #071003
+        : button.tone == "fail" ? #1a0503
+        : Theme.stage-fg;
+
+    // The Play button: the Status tab when that's what it says, else the window's.
+    function press() {
+        if button.action == "status" {
+            root.picked-tab = "status";
+        } else {
+            root.play-pressed();
+        }
+    }
+
+    function open-server-menu() {
+        if server-blocked != "" { return; }
+        root.load-servers(false);
+        root.modes-open = false;
+        root.servers-open = !root.servers-open;
+    }
+    function open-modes() {
+        root.servers-open = false;
+        root.modes-open = true;
+    }
+    function close-menus() {
+        root.servers-open = false;
+        root.modes-open = false;
+    }
+}

@@ -1,0 +1,7 @@
+# The Slint launcher's screenshots and a run on a virtual screen (build.sh slint-shots): the build
+# image with an X server in memory (Xvfb), Mesa's OpenGL and the X libraries winit opens.
+FROM fes-build:local
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      xvfb xauth libgl1-mesa-dri libegl1 libgl1 libxkbcommon-x11-0 libx11-xcb1 libxcursor1 libxrandr2 libxi6 \
+      fontconfig fonts-dejavu-core \
+    && rm -rf /var/lib/apt/lists/*

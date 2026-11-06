@@ -1,0 +1,121 @@
+// 5th Echelon Enhanced's mark and name (docs/brand.md): five units stepped back on a diagonal,
+// an echelon formation, the fifth in front in the accent. Drawn here rather than loaded, so it's
+// sharp at every size, takes the theme, and its units can fill in as progress.
+
+import { Theme, Type } from "theme.slint";
+
+// The mark. `tile`: on its rounded square (the app icon, the splash); without it, the units
+// alone (the title bar, small sizes). `working`: the units fill in, one after another, then the
+// front one lights (progress the launcher can't measure); still with reduced motion.
+export component EchelonMark inherits Rectangle {
+    in property <length> size: 32px;
+    in property <bool> tile: true;
+    in property <bool> working: false;
+    // On the stage (the game's art): the dark version whatever the theme.
+    in property <bool> on-dark: Theme.dark;
+    width: size;
+    height: size;
+    accessible-role: image;
+    accessible-label: "5th Echelon Enhanced";
+
+    // How many units are lit: all five at rest; while working, 0 to 5 in turn.
+    property <int> lit: working && !Theme.reduced-motion ? Math.mod(Math.floor(animation-tick() / 170ms), 8) : 5;
+    property <color> base: on-dark ? #141c20 : #e6ebe6;
+    property <color> edge: on-dark ? #2b363c : #c4cec6;
+    property <color> off: on-dark ? #1f292e : #d3dbd5;
+    property <color> front: on-dark ? #8fd14f : #3b7a12;
+    // The four units behind, from the back: lighter as they come forward (on dark), darker on light.
+    property <[color]> units: on-dark ? [#4a5a62, #5d7079, #73878f, #93a4ad] : [#a9b6b0, #8a9a93, #6b7d75, #4f6159];
+    // Without the tile the units fill the square, centred.
+    property <float> k: tile ? 1 : 1.3;
+    property <length> ox: tile ? 0px : (50 - 51 * 1.3) * size / 100;
+    property <length> oy: tile ? 0px : (50 - 47 * 1.3) * size / 100;
+
+    if tile: Rectangle {
+        x: 4 * size / 100;
+        y: 4 * size / 100;
+        width: 92 * size / 100;
+        height: 92 * size / 100;
+        border-radius: 18 * size / 100;
+        background: base;
+        border-width: max(1px, 2 * size / 100);
+        border-color: edge;
+    }
+    for i in 4: Rectangle {
+        x: ox + (16 + 14 * i) * size / 100 * k;
+        y: oy + (68 - 14 * i) * size / 100 * k;
+        width: 14 * size / 100 * k;
+        height: 14 * size / 100 * k;
+        border-radius: 2 * size / 100 * k;
+        background: lit > i ? units[i] : off;
+        animate background { duration: Theme.quick; }
+    }
+    Rectangle {
+        x: ox + 72 * size / 100 * k;
+        y: oy + 12 * size / 100 * k;
+        width: 14 * size / 100 * k;
+        height: 14 * size / 100 * k;
+        border-radius: 2 * size / 100 * k;
+        background: lit > 4 ? front : off;
+        animate background { duration: Theme.quick; }
+    }
+}
+
+// The name beside the mark: "5TH ECHELON" in Plex Sans Condensed, "ENHANCED" in Plex Mono caps
+// under it, in the accent.
+export component Wordmark inherits VerticalLayout {
+    in property <length> size: 20px;
+    in property <color> color: Theme.fg;
+    in property <color> sub: Theme.accent;
+    spacing: 0;
+    alignment: center;
+    Text {
+        text: "5TH ECHELON";
+        font-family: Type.cond;
+        font-weight: 700;
+        font-size: size;
+        letter-spacing: 0.02 * size;
+        color: root.color;
+    }
+    Text {
+        text: "ENHANCED";
+        font-family: Type.mono;
+        font-size: max(9px, size * 0.48);
+        letter-spacing: 0.32 * size;
+        color: root.sub;
+    }
+}
+
+// The splash while the launcher reads the game, its checks and the server: the mark with its
+// units filling in, the name, and what it's doing. Never a blank window.
+export component Splash inherits Rectangle {
+    in property <string> doing: "Checking your game and server…";
+    in property <string> release;
+    background: Theme.bg;
+    VerticalLayout {
+        alignment: center;
+        spacing: 22px;
+        HorizontalLayout {
+            alignment: center;
+            EchelonMark { size: 112px; working: true; }
+        }
+        HorizontalLayout {
+            alignment: center;
+            Wordmark { size: 30px; }
+        }
+        Text {
+            text: root.doing;
+            horizontal-alignment: center;
+            color: Theme.soft;
+            font-size: Type.body;
+            accessible-role: text;
+        }
+        Text {
+            text: root.release;
+            horizontal-alignment: center;
+            color: Theme.muted;
+            font-family: Type.mono;
+            font-size: Type.caps;
+        }
+    }
+}

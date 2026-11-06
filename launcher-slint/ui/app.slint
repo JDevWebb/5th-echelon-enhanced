@@ -1,0 +1,345 @@
+// The launcher's window: its own title bar, the side menu, the screen chosen, and the activity
+// bar; the splash until the first look at the game and the server is in.
+
+import "fonts/IBMPlexSans-Regular.ttf";
+import "fonts/IBMPlexSans-SemiBold.ttf";
+import "fonts/IBMPlexSansCondensed-Bold.ttf";
+import "fonts/IBMPlexMono-Regular.ttf";
+
+import { Theme, Type, ThemeChoice } from "theme.slint";
+import { EchelonMark, Splash } from "brand.slint";
+import { Btn } from "widgets.slint";
+import { TitleBar, SideMenu, ActivityBar, ActivityView, ActionItem, NotYet } from "chrome.slint";
+import { PlayScreen } from "play.slint";
+import { MatchesScreen } from "matches.slint";
+import { InfoView, PlayButton, ServerCard, ServerRow, CheckRow, FriendRow, OtherRow, ElsewhereRow, ModeItem, NoticeView, NoticeRow, LobbyRow, PersonRow, SettingRow } from "types.slint";
+
+export { Theme, ThemeChoice, InfoView, PlayButton, ServerCard, ServerRow, CheckRow, FriendRow, OtherRow, ElsewhereRow, ModeItem, NoticeView, NoticeRow, LobbyRow, PersonRow, SettingRow, ActivityView, ActionItem }
+
+export component AppWindow inherits Window {
+    title: "5th Echelon Enhanced " + release;
+    icon: @image-url("assets/logo.svg");
+    preferred-width: 1280px;
+    preferred-height: 800px;
+    min-width: 960px;
+    min-height: 600px;
+    no-frame: !full-screen-mode;
+    background: Theme.bg;
+    default-font-family: Type.sans;
+    default-font-size: Type.body;
+
+    in property <string> release;
+    in property <bool> full-screen-mode;
+    in property <bool> maximised;
+    in-out property <string> screen: "play";
+    in property <bool> loaded;
+    in property <string> splash-doing: "Checking your game and server…";
+    in property <InfoView> info;
+    in property <ActivityView> activity;
+    // A watched match has a seat ("Ranked · Station"), or "".
+    in property <string> seat-open;
+
+    // Play.
+    in property <PlayButton> button;
+    in property <ServerCard> card;
+    in property <[ServerRow]> servers;
+    in property <string> servers-header;
+    in property <string> servers-note;
+    in property <bool> network;
+    in property <bool> pinging;
+    in property <bool> checks-loaded;
+    in property <[CheckRow]> checks;
+    in property <string> support-status;
+    in property <string> support-title;
+    in property <string> support-why;
+    in property <bool> fixable;
+    in property <bool> checks-busy;
+    in property <bool> all-checks;
+    in property <bool> trouble;
+    in property <bool> squad-loaded;
+    in property <[FriendRow]> online;
+    in property <[OtherRow]> others;
+    in property <int> others-total;
+    in property <[ElsewhereRow]> elsewhere;
+    in property <int> offline;
+    in property <int> squad-requests;
+    in property <bool> join-offered;
+    in property <bool> squad-managed;
+    in property <bool> playing-shown;
+    in property <[string]> playing;
+    in property <string> playing-more;
+    in property <NoticeView> notice;
+    in property <[string]> news;
+    in property <image> art;
+    in property <bool> has-art;
+    in property <bool> choose-offered;
+    in property <[ModeItem]> svm-modes;
+    in property <bool> modes-allowed;
+    in property <string> server-blocked;
+    in property <string> initial;
+    in property <bool> signed-in;
+
+    // Matches.
+    in property <bool> lobbies-loaded;
+    in property <string> lobbies-error;
+    in property <string> lobbies-summary;
+    in property <string> lobbies-hidden;
+    in property <int> lobbies-total;
+    in property <int> count-svm;
+    in property <int> count-coop;
+    in property <string> filter-mode: "all";
+    in property <bool> show-under-way: true;
+    in property <bool> show-full: false;
+    in property <bool> friends-first: true;
+    in property <int> sort: 0;
+    in property <[LobbyRow]> shown;
+    in property <LobbyRow> selected;
+    in property <bool> has-selected;
+    in property <bool> matches-ready;
+    in property <int> watching-room: -1;
+    in property <bool> joining;
+
+    // The window.
+    callback drag();
+    callback minimise();
+    callback maximise();
+    callback close-window();
+    callback cycle-theme();
+    callback go(string);
+    callback whats-new();
+    callback open-classic();
+    callback act(int, string);
+    callback dismiss(int);
+    callback join-watched();
+    callback dismiss-seat();
+    // Play.
+    callback play-pressed();
+    callback choose-mode(string);
+    callback cancel-new-match();
+    callback load-servers(bool);
+    callback switch-server(string);
+    callback fix(string);
+    callback fix-everything();
+    callback identify();
+    callback check-again();
+    callback toggle-all();
+    callback join-friend(string, string);
+    callback player-action(string, string, string);
+    callback switch-to-friend(string);
+    callback dismiss-emulator();
+    callback ask-review();
+    // Matches.
+    callback set-filter(string);
+    callback set-under-way(bool);
+    callback set-full(bool);
+    callback set-friends-first(bool);
+    callback set-sort(int);
+    callback pick(int);
+    callback join(int);
+    callback host(ModeItem);
+    callback quick(ModeItem);
+    callback watch(int, string);
+    callback retry-lobbies();
+    // A key the screens didn't take: the arrows move the focus (a controller's d-pad).
+    callback move-focus(bool);
+
+    forward-focus: keys;
+    keys := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.DownArrow || e.text == Key.RightArrow { root.move-focus(true); return accept; }
+            if e.text == Key.UpArrow || e.text == Key.LeftArrow { root.move-focus(false); return accept; }
+            reject
+        }
+
+    VerticalLayout {
+        TitleBar {
+            release: root.release;
+            full-screen: root.full-screen-mode;
+            maximised: root.maximised;
+            drag => { root.drag(); }
+            minimise => { root.minimise(); }
+            maximise => { root.maximise(); }
+            close => { root.close-window(); }
+            cycle-theme => { root.cycle-theme(); }
+        }
+        HorizontalLayout {
+            vertical-stretch: 1;
+            SideMenu {
+                current: root.screen;
+                compact: root.height < 720px;
+                community: root.info.community;
+                requests: root.info.requests;
+                release: root.release;
+                go(s) => { root.go(s); }
+                whats-new => { root.whats-new(); }
+            }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                Rectangle {
+                    vertical-stretch: 1;
+                    if root.screen == "play": PlayScreen {
+                        window-height: root.height;
+                        info: root.info;
+                        button: root.button;
+                        card: root.card;
+                        servers: root.servers;
+                        servers-header: root.servers-header;
+                        servers-note: root.servers-note;
+                        network: root.network;
+                        pinging: root.pinging;
+                        checks-loaded: root.checks-loaded;
+                        checks: root.checks;
+                        support-status: root.support-status;
+                        support-title: root.support-title;
+                        support-why: root.support-why;
+                        fixable: root.fixable;
+                        checks-busy: root.checks-busy;
+                        all-checks: root.all-checks;
+                        trouble: root.trouble;
+                        squad-loaded: root.squad-loaded;
+                        online: root.online;
+                        others: root.others;
+                        others-total: root.others-total;
+                        elsewhere: root.elsewhere;
+                        offline: root.offline;
+                        squad-requests: root.squad-requests;
+                        join-offered: root.join-offered;
+                        squad-managed: root.squad-managed;
+                        playing-shown: root.playing-shown;
+                        playing: root.playing;
+                        playing-more: root.playing-more;
+                        notice: root.notice;
+                        news: root.news;
+                        art: root.art;
+                        has-art: root.has-art;
+                        choose-offered: root.choose-offered;
+                        modes-allowed: root.modes-allowed;
+                        server-blocked: root.server-blocked;
+                        initial: root.initial;
+                        signed-in: root.signed-in;
+                        play-pressed => { root.play-pressed(); }
+                        choose-mode(m) => { root.choose-mode(m); }
+                        cancel-new-match => { root.cancel-new-match(); }
+                        go(s) => { root.go(s); }
+                        load-servers(f) => { root.load-servers(f); }
+                        switch-server(h) => { root.switch-server(h); }
+                        fix(f) => { root.fix(f); }
+                        fix-everything => { root.fix-everything(); }
+                        identify => { root.identify(); }
+                        check-again => { root.check-again(); }
+                        toggle-all => { root.toggle-all(); }
+                        join-friend(i, n) => { root.join-friend(i, n); }
+                        player-action(a, i, n) => { root.player-action(a, i, n); }
+                        switch-to-friend(h) => { root.switch-to-friend(h); }
+                        dismiss-emulator => { root.dismiss-emulator(); }
+                        ask-review => { root.ask-review(); }
+                    }
+                    if root.screen == "matches": MatchesScreen {
+                        server: root.info.server;
+                        setup-missing: root.info.game-dir == "" || root.info.server == "";
+                        loaded: root.lobbies-loaded;
+                        error: root.lobbies-error;
+                        summary: root.lobbies-summary;
+                        hidden: root.lobbies-hidden;
+                        total: root.lobbies-total;
+                        count-svm: root.count-svm;
+                        count-coop: root.count-coop;
+                        filter-mode: root.filter-mode;
+                        show-under-way: root.show-under-way;
+                        show-full: root.show-full;
+                        friends-first: root.friends-first;
+                        sort: root.sort;
+                        shown: root.shown;
+                        selected: root.selected;
+                        has-selected: root.has-selected;
+                        ready: root.matches-ready;
+                        watching-room: root.watching-room;
+                        joining: root.joining;
+                        modes: root.svm-modes;
+                        new-match-holds: root.info.new-match;
+                        cancel-new-match => { root.cancel-new-match(); }
+                        set-filter(m) => { root.set-filter(m); }
+                        set-under-way(b) => { root.set-under-way(b); }
+                        set-full(b) => { root.set-full(b); }
+                        set-friends-first(b) => { root.set-friends-first(b); }
+                        set-sort(i) => { root.set-sort(i); }
+                        pick(r) => { root.pick(r); }
+                        join(r) => { root.join(r); }
+                        host(m) => { root.host(m); }
+                        quick(m) => { root.quick(m); }
+                        watch(r, l) => { root.watch(r, l); }
+                        go(s) => { root.go(s); }
+                        retry => { root.retry-lobbies(); }
+                    }
+                    if root.screen != "play" && root.screen != "matches": NotYet {
+                        name: root.screen == "friends" ? "FRIENDS"
+                            : root.screen == "servers" ? "SERVERS"
+                            : root.screen == "chat" ? "CHAT"
+                            : root.screen == "intel" ? "INTEL"
+                            : root.screen == "support" ? "SUPPORT"
+                            : root.screen == "settings" ? "SETTINGS"
+                            : "WHAT'S NEW";
+                        open-classic => { root.open-classic(); }
+                    }
+
+                    // A watched match has a seat.
+                    if root.seat-open != "": Rectangle {
+                        x: parent.width - self.width - 24px;
+                        y: parent.height - self.height - 24px;
+                        width: seat.preferred-width;
+                        height: seat.preferred-height;
+                        border-radius: 6px;
+                        background: Theme.surface;
+                        border-width: 1px;
+                        border-color: Theme.accent-soft;
+                        drop-shadow-blur: 30px;
+                        drop-shadow-color: #0000008c;
+                        accessible-role: groupbox;
+                        accessible-label: "A seat opened in " + root.seat-open;
+                        seat := HorizontalLayout {
+                            padding: 12px;
+                            padding-left: 18px;
+                            spacing: 12px;
+                            Text { text: "A seat opened in " + root.seat-open + "."; color: Theme.fg; vertical-alignment: center; }
+                            Btn { text: "Join"; kind: "primary"; clicked => { root.join-watched(); } }
+                            Btn { text: "Not now"; clicked => { root.dismiss-seat(); } }
+                        }
+                    }
+                }
+                ActivityBar {
+                    a: root.activity;
+                    act(i, a) => { root.act(i, a); }
+                    dismiss(i) => { root.dismiss(i); }
+                }
+            }
+        }
+    }
+
+    // The splash, fading out once the first look is in.
+    Rectangle {
+        opacity: root.loaded ? 0 : 1;
+        visible: self.opacity > 0.01;
+        animate opacity { duration: Theme.reduced-motion ? 0ms : 380ms; easing: ease-out; }
+        Splash {
+            release: root.release;
+            doing: root.splash-doing;
+        }
+        // It takes the clicks while it's up.
+        TouchArea {}
+    }
+    }
+
+    // Copy details: through a text field the player never sees (Slint has no clipboard call).
+    clip := TextInput { x: -10px; y: -10px; width: 1px; height: 1px; opacity: 0; }
+    public function copy-text(text: string) {
+        clip.text = text;
+        clip.select-all();
+        clip.copy();
+    }
+
+    // The window's edge, when it isn't maximised or full screen.
+    if !root.maximised && !root.full-screen-mode: Rectangle {
+        border-width: 1px;
+        border-color: Theme.control-line;
+    }
+}

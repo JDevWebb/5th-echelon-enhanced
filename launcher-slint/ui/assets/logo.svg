@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" role="img" aria-label="5th Echelon Enhanced">
+  <title>5th Echelon Enhanced</title>
+  <!-- Five units stepped back on a diagonal: an echelon formation, the fifth in front. -->
+  <rect x="4" y="4" width="92" height="92" rx="18" fill="#141c20" stroke="#2b363c" stroke-width="2"/>
+  <rect x="16" y="68" width="14" height="14" rx="2" fill="#4a5a62"/>
+  <rect x="30" y="54" width="14" height="14" rx="2" fill="#5d7079"/>
+  <rect x="44" y="40" width="14" height="14" rx="2" fill="#73878f"/>
+  <rect x="58" y="26" width="14" height="14" rx="2" fill="#93a4ad"/>
+  <rect x="72" y="12" width="14" height="14" rx="2" fill="#8fd14f"/>
+</svg>

@@ -1,0 +1,57 @@
+// The launcher's look: "Field ops" (the Tauri launcher's theme.css) in two themes from one set
+// of tokens. Every colour on a screen is one of these, never a literal, so dark and light stay
+// in step; each pair is checked for contrast (docs/brand.md: text at WCAG AA in both).
+
+import { Palette } from "std-widgets.slint";
+
+export enum ThemeChoice { dark, light, system }
+
+export global Theme {
+    // The player's choice (Settings › Display), and the system's own look for "As the system".
+    in-out property <ThemeChoice> choice: ThemeChoice.system;
+    out property <bool> dark: choice == ThemeChoice.dark || (choice == ThemeChoice.system && Palette.color-scheme != ColorScheme.light);
+    // Reduced motion (the system's, or the player's): transitions and the mark's movement off.
+    in-out property <bool> reduced-motion: false;
+
+    // Surfaces, from the window's floor up.
+    out property <color> bg: dark ? #0a0e0f : #f2f4f1;
+    out property <color> rail: dark ? #07090a : #e6eae5;
+    out property <color> surface: dark ? #0c1112 : #ffffff;
+    out property <color> sunken: dark ? #07090a : #e9ede8;
+    out property <color> control: dark ? #151e1f : #eaefe9;
+    out property <color> control-hover: dark ? #1c2827 : #dde4dc;
+    out property <color> line: dark ? #172022 : #d9e0d8;
+    out property <color> control-line: dark ? #263434 : #bfcabf;
+    out property <color> selected: dark ? #101c16 : #e2efd6;
+    // Text: the body, the softer second line, the quiet labels.
+    out property <color> fg: dark ? #e3ece6 : #101713;
+    out property <color> soft: dark ? #a9bab3 : #3a4842;
+    out property <color> muted: dark ? #84968f : #56655e;
+    // The one accent (night-vision green), what sits on it, and the two warnings.
+    out property <color> accent: dark ? #9be05a : #3b7a12;
+    out property <color> on-accent: dark ? #071003 : #ffffff;
+    out property <color> accent-soft: dark ? #9be05a59 : #3b7a1259;
+    out property <color> warn: dark ? #f0b44c : #8a5600;
+    out property <color> bad: dark ? #ff7a6b : #b3261e;
+    out property <color> on-bad: dark ? #1a0503 : #ffffff;
+    // Over the game's art (the stage on Play): always a dark scene, in both themes.
+    out property <color> stage-fg: #e3ece6;
+    out property <color> stage-soft: #c3d1ca;
+    out property <color> stage-accent: #9be05a;
+    out property <color> stage-shade: #0a0e0fd9;
+    out property <color> scrim: dark ? #030506a0 : #1a221c66;
+
+    // Motion: short and eased, none with reduced motion.
+    out property <duration> quick: reduced-motion ? 0ms : 150ms;
+    out property <duration> calm: reduced-motion ? 0ms : 240ms;
+}
+
+// The type: Plex Sans for reading, Plex Sans Condensed for titles, Plex Mono for HUD labels.
+export global Type {
+    out property <string> sans: "IBM Plex Sans";
+    out property <string> cond: "IBM Plex Sans Condensed";
+    out property <string> mono: "IBM Plex Mono";
+    out property <length> body: 15px;
+    out property <length> small: 13px;
+    out property <length> caps: 11.5px;
+}

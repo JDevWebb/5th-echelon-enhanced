@@ -1,0 +1,351 @@
+// The launcher's controls, in the Field ops look: buttons, links, check boxes, segments, a
+// drop-down, the spinner and status dots. Every one works by mouse, touch, keyboard (Tab to it,
+// Enter or Space to press) and so a controller (the Deck's d-pad and A), and names itself for
+// screen readers. The focus ring shows only when it was reached by keyboard or controller.
+
+import { Theme, Type } from "theme.slint";
+
+// A focus ring round its parent, while `on`.
+component Ring inherits Rectangle {
+    in property <bool> on;
+    in property <length> radius: 4px;
+    x: -3px;
+    y: -3px;
+    border-radius: radius + 3px;
+    border-width: on ? 2px : 0px;
+    border-color: Theme.accent;
+}
+
+// The spinner: the accent turning on a dim ring.
+export component Spinner inherits Rectangle {
+    in property <length> size: 14px;
+    width: size;
+    height: size;
+    accessible-role: progress-indicator;
+    Rectangle {
+        border-radius: size / 2;
+        border-width: 2px;
+        border-color: Theme.control-line;
+    }
+    Path {
+        width: size;
+        height: size;
+        viewbox-width: 16;
+        viewbox-height: 16;
+        commands: "M 8 1 A 7 7 0 0 1 15 8";
+        stroke: Theme.accent;
+        stroke-width: 2px;
+        fill: transparent;
+        transform-rotation: Theme.reduced-motion ? 0deg : 360deg * Math.mod(animation-tick() / 800ms, 1);
+    }
+}
+
+// A button. kind: "primary" (the accent, one per view), "ghost" (accent outline), "plain",
+// "danger", "fix" (the small text button in lists).
+export component Btn inherits Rectangle {
+    in property <string> text;
+    in property <string> kind: "plain";
+    in property <bool> enabled: true;
+    in property <bool> small: false;
+    in property <bool> busy: false;
+    // A toggle's state, said to screen readers and drawn as selected.
+    in property <bool> pressed-look: false;
+    in property <string> description;
+    in property <length> font-size: small ? 13.5px : Type.body;
+    callback clicked();
+    forward-focus: fs;
+
+    min-height: small ? 30px : 38px;
+    min-width: lay.preferred-width;
+    border-radius: 4px;
+    background: kind == "primary" ? (ta.has-hover && enabled ? Theme.accent.brighter(8%) : Theme.accent)
+        : kind == "danger" ? (ta.has-hover && enabled ? Theme.bad.brighter(8%) : Theme.bad)
+        : kind == "fix" ? transparent
+        : kind == "ghost" ? ((ta.has-hover && enabled) || pressed-look ? Theme.selected : transparent)
+        : (ta.has-hover && enabled ? Theme.control-hover : Theme.control);
+    border-width: kind == "fix" ? 0px : 1px;
+    border-color: kind == "primary" ? Theme.accent
+        : kind == "danger" ? Theme.bad
+        : kind == "ghost" ? (ta.has-hover || pressed-look ? Theme.accent : Theme.accent-soft)
+        : Theme.control-line;
+    opacity: enabled ? 1 : 0.45;
+    animate background { duration: Theme.quick; }
+
+    accessible-role: button;
+    accessible-label: text;
+    accessible-description: description;
+    accessible-enabled: enabled;
+    accessible-checked: pressed-look;
+    accessible-action-default => { if enabled { clicked(); } }
+
+    fs := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => {
+            if root.enabled && (e.text == Key.Return || e.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+    ta := TouchArea {
+        enabled: root.enabled && !root.busy;
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { root.clicked(); }
+    }
+    lay := HorizontalLayout {
+        padding-left: kind == "fix" ? 0px : (small ? 12px : 16px);
+        padding-right: self.padding-left;
+        spacing: 8px;
+        alignment: center;
+        if busy: Spinner { size: 14px; y: (parent.height - self.height) / 2; }
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            overflow: elide;
+            font-size: root.font-size;
+            font-weight: kind == "primary" || kind == "ghost" || kind == "fix" ? 600 : 400;
+            color: kind == "primary" ? Theme.on-accent
+                : kind == "danger" ? Theme.on-bad
+                : kind == "ghost" || kind == "fix" ? Theme.accent
+                : Theme.fg;
+        }
+    }
+    Ring { on: fs.has-focus; width: parent.width + 6px; height: parent.height + 6px; }
+}
+
+// A link in running text: the accent, underlined on hover.
+export component Link inherits Rectangle {
+    in property <string> text;
+    // On the stage (the game's art, always dark): Theme.stage-accent.
+    in property <color> tint: Theme.accent;
+    in property <length> font-size: Type.small;
+    in property <bool> enabled: true;
+    callback clicked();
+    forward-focus: fs;
+    min-width: t.preferred-width;
+    min-height: t.preferred-height;
+    accessible-role: button;
+    accessible-label: text;
+    accessible-action-default => { clicked(); }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
+            reject
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    t := Text {
+        text: root.text;
+        color: root.tint;
+        font-size: root.font-size;
+        vertical-alignment: center;
+    }
+    Rectangle {
+        y: t.preferred-height - 1px;
+        height: 1px;
+        background: ta.has-hover ? root.tint : transparent;
+    }
+    Ring { on: fs.has-focus; radius: 2px; width: parent.width + 6px; height: parent.height + 6px; }
+}
+
+// A check box with its label inside the box, as the Matches filters have them.
+export component CheckBox inherits Rectangle {
+    in property <string> text;
+    in-out property <bool> checked;
+    callback toggled(bool);
+    forward-focus: fs;
+    height: 34px;
+    min-width: lay.preferred-width;
+    horizontal-stretch: 0;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: Theme.control-line;
+    background: ta.has-hover ? Theme.control : Theme.surface;
+    accessible-role: checkbox;
+    accessible-label: text;
+    accessible-checked: checked;
+    accessible-action-default => { toggle(); }
+    function toggle() {
+        checked = !checked;
+        toggled(checked);
+    }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if e.text == " " || e.text == Key.Return { toggle(); return accept; }
+            reject
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { toggle(); } }
+    lay := HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 12px;
+        spacing: 8px;
+        alignment: start;
+        Rectangle {
+            width: 15px;
+            height: 15px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 3px;
+            border-width: checked ? 0px : 1.5px;
+            border-color: Theme.control-line;
+            background: checked ? Theme.accent : transparent;
+            Path {
+                visible: checked;
+                width: 11px;
+                height: 11px;
+                commands: "M 2 6 L 5 9 L 10 3";
+                viewbox-width: 12;
+                viewbox-height: 12;
+                stroke: Theme.on-accent;
+                stroke-width: 2px;
+                fill: transparent;
+            }
+        }
+        Text { text: root.text; vertical-alignment: center; color: Theme.soft; font-size: Type.small; }
+    }
+    Ring { on: fs.has-focus; width: parent.width + 6px; height: parent.height + 6px; }
+}
+
+// One button of a segmented control (Matches' mode filter).
+export component Segment inherits Rectangle {
+    in property <string> text;
+    in property <bool> on;
+    in property <bool> first: false;
+    callback clicked();
+    forward-focus: fs;
+    height: 34px;
+    min-width: t.preferred-width + 28px;
+    background: on ? Theme.selected : (ta.has-hover ? Theme.control : Theme.surface);
+    accessible-role: button;
+    accessible-label: text;
+    accessible-checked: on;
+    accessible-action-default => { clicked(); }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if e.text == " " || e.text == Key.Return { root.clicked(); return accept; }
+            reject
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    if !first: Rectangle { x: 0; width: 1px; background: Theme.control-line; }
+    t := Text {
+        text: root.text;
+        color: on ? Theme.accent : Theme.soft;
+        font-weight: on ? 600 : 400;
+        font-size: Type.small;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    Ring { on: fs.has-focus; radius: 2px; width: parent.width + 6px; height: parent.height + 6px; }
+}
+
+// A status dot: ok (the accent), warn, fail, or muted.
+export component Dot inherits Rectangle {
+    in property <string> tone: "ok";
+    in property <length> size: 8px;
+    width: size;
+    height: size;
+    border-radius: size / 2;
+    background: tone == "ok" ? Theme.accent : tone == "warn" ? Theme.warn : tone == "fail" ? Theme.bad : Theme.muted;
+}
+
+// A HUD label: Plex Mono caps, spaced.
+export component Caps inherits Text {
+    color: Theme.muted;
+    font-family: Type.mono;
+    font-size: Type.caps;
+    letter-spacing: 1.6px;
+}
+
+// A drop-down of plain choices, drawn in the launcher's own look (not the system's).
+export component Choice inherits Rectangle {
+    in property <[string]> model;
+    in-out property <int> current: 0;
+    in property <string> label;
+    callback chosen(int);
+    forward-focus: fs;
+    height: 34px;
+    min-width: 168px;
+    horizontal-stretch: 0;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: Theme.control-line;
+    background: ta.has-hover ? Theme.control : Theme.surface;
+    accessible-role: combobox;
+    accessible-label: label;
+    accessible-value: model[current];
+    accessible-action-default => { menu.show(); }
+    function step(by: int) {
+        current = Math.mod(current + by + model.length, model.length);
+        chosen(current);
+    }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.DownArrow { step(1); return accept; }
+            if e.text == Key.UpArrow { step(-1); return accept; }
+            if e.text == " " || e.text == Key.Return { menu.show(); return accept; }
+            reject
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { menu.show(); } }
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        spacing: 8px;
+        Text { text: model[current]; vertical-alignment: center; color: Theme.fg; font-size: Type.small; horizontal-stretch: 1; }
+        Path {
+            width: 10px;
+            height: 6px;
+            y: (parent.height - self.height) / 2;
+            viewbox-width: 10;
+            viewbox-height: 6;
+            commands: "M 1 1 L 5 5 L 9 1";
+            stroke: Theme.soft;
+            stroke-width: 1.5px;
+            fill: transparent;
+        }
+    }
+    Ring { on: fs.has-focus; width: parent.width + 6px; height: parent.height + 6px; }
+    menu := PopupWindow {
+        x: 0;
+        y: root.height + 4px;
+        width: root.width;
+        Rectangle {
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.control-line;
+            border-radius: 4px;
+            drop-shadow-blur: 18px;
+            drop-shadow-color: #00000066;
+            VerticalLayout {
+                padding: 4px;
+                for item[i] in root.model: Rectangle {
+                    height: 32px;
+                    border-radius: 3px;
+                    background: ita.has-hover ? Theme.control-hover : (i == root.current ? Theme.selected : transparent);
+                    ita := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.current = i;
+                            root.chosen(i);
+                        }
+                    }
+                    Text {
+                        x: 8px;
+                        text: item;
+                        vertical-alignment: center;
+                        color: i == root.current ? Theme.accent : Theme.fg;
+                        font-size: Type.small;
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A thin horizontal rule.
+export component Rule inherits Rectangle {
+    height: 1px;
+    background: Theme.line;
+}

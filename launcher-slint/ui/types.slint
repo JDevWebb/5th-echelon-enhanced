@@ -1,0 +1,167 @@
+// What the Rust side hands the screens (ui.rs fills these from core.rs). Numbers that may be
+// unknown are -1 then (a ping that didn't answer, a match's seats on an old server).
+
+export struct InfoView {
+    game-dir: string,
+    server: string,
+    account: string,
+    identity: string,
+    community: bool,
+    // "play", "svm" or "coop".
+    play-mode: string,
+    managed: bool,
+    running: bool,
+    connecting: bool,
+    beta: int,
+    name-not-allowed: string,
+    emulator-notice: bool,
+    new-match: bool,
+    requests: int,
+}
+
+// The Play button: what it says, its second line, its tone ("ok", "warn", "fail", "checking",
+// "muted"), and what pressing it does (ui.rs).
+export struct PlayButton {
+    label: string,
+    sub: string,
+    tone: string,
+    disabled: bool,
+    busy: bool,
+    // Why Play can't start now, for screen readers.
+    why: string,
+    // "status": pressing it shows the Status tab (the checks to fix); anything else is ui.rs's.
+    action: string,
+}
+
+export struct ServerCard {
+    shown: bool,
+    caption: string,
+    caption-why: string,
+    place: string,
+    ping: int,
+    // The ping and players are known (a listed server).
+    listed: bool,
+    players: int,
+}
+
+export struct ServerRow {
+    host: string,
+    place: string,
+    name: string,
+    ping: int,
+    players: int,
+    playing: string,
+    current: bool,
+    best: bool,
+    maintenance: string,
+}
+
+export struct CheckRow {
+    id: string,
+    // "ok", "warn" or "fail".
+    status: string,
+    title: string,
+    detail: string,
+    fix-id: string,
+    fix-label: string,
+}
+
+export struct FriendRow {
+    id: string,
+    name: string,
+    activity: string,
+    joinable: bool,
+    with-me: bool,
+}
+
+export struct OtherRow {
+    id: string,
+    name: string,
+    activity: string,
+    asked: bool,
+    asked-us: bool,
+}
+
+export struct ElsewhereRow {
+    name: string,
+    place: string,
+    host: string,
+    public: bool,
+}
+
+// A mode to find or host a match in: a Spies vs Mercs playlist, or Co-op.
+export struct ModeItem {
+    playlist: int,
+    name: string,
+    coop: bool,
+}
+
+export struct NoticeRow {
+    place: string,
+    mine: bool,
+    version: string,
+    doing: string,
+    // 0 to 1, or below 0 for none.
+    meter: float,
+    // "waiting", "now" or "done".
+    tone: string,
+}
+
+export struct NoticeView {
+    shown: bool,
+    heading: string,
+    eta: string,
+    text: string,
+    note: string,
+    play-on-host: string,
+    play-on-label: string,
+    servers: [NoticeRow],
+}
+
+export struct PersonRow {
+    name: string,
+    // Their first letter, for the avatar.
+    initial: string,
+    host: bool,
+    party: int,
+    party-line: string,
+    friend: bool,
+    // "spy", "merc" or "".
+    team: string,
+    ping: int,
+    me: bool,
+}
+
+export struct SettingRow {
+    key: string,
+    value: string,
+}
+
+export struct LobbyRow {
+    room: int,
+    mode: string,
+    // "svm" or "coop".
+    kind: string,
+    map: string,
+    players: int,
+    seats: int,
+    made-for: int,
+    host: string,
+    status: string,
+    // "ok" (joinable) or "warn" (under way, or full).
+    tone: string,
+    under-way: bool,
+    full: bool,
+    joinable: bool,
+    open-for: string,
+    ping: int,
+    // "Hosted by Kai, your friend · Sam, your friend, is in it".
+    line: string,
+    has-friends: bool,
+    teams: bool,
+    people: [PersonRow],
+    spies: [PersonRow],
+    mercs: [PersonRow],
+    with-me: bool,
+    settings: [SettingRow],
+}

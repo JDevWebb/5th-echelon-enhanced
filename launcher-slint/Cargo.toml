@@ -1,0 +1,48 @@
+# The launcher in Slint (0.5.0, docs: the Slint plan): the Tauri launcher's design with 5th
+# Echelon Enhanced's own brand, one native window on Windows, Linux and the Steam Deck, with no
+# web view to install. The logic is the egui launcher's library (`launcher`), as launcher-tauri
+# uses it. Its own workspace for now, as launcher-tauri was, so the main workspace's tests and CI
+# don't build it until it replaces the egui launcher.
+[package]
+name = "launcher-slint"
+version = "0.0.0"
+edition = "2021"
+publish = false
+build = "build.rs"
+
+[workspace]
+
+[dependencies]
+# Slint's royalty-free licence for desktop apps (credit in About): this project's code is MIT.
+# winit for the window's own title bar (dragging, maximising); OpenGL (femtovg) with the software
+# renderer as the fallback where there's no OpenGL 2 (a virtual machine without its driver).
+slint = { version = "~1.18", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility", "unstable-winit-030"] }
+launcher = { path = "../launcher", default-features = false }
+setup = { path = "../setup" }
+identity = { path = "../identity" }
+hooks-config = { path = "../hooks/hooks-config" }
+server_api = { path = "../api", package = "api" }
+tracing = "0.1"
+rand = "0.8"
+# The screenshots (--shots, build.sh slint-shots) as PNG.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# Linux: fontconfig opened when the launcher runs (every desktop and the Deck have it), not linked
+# when it's built, so one file works on every distribution (and builds without its headers).
+[target.'cfg(target_os = "linux")'.dependencies]
+fontique = { version = "0.11", default-features = false, features = ["system", "fontconfig-dlopen"] }
+
+[build-dependencies]
+slint-build = "~1.18"
+winres = "0.1.12"
+
+[features]
+# The client DLL built in (build.sh slint sets HOOKS_DLL to dist/uplay_r1_loader.dll), as the
+# egui launcher carries it: the setup installs it.
+embed-dll = ["launcher/embed-dll"]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

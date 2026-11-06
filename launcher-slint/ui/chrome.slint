@@ -1,0 +1,374 @@
+// The window round the screens: its own title bar (the mark, the name, the release, the look,
+// the window's buttons), the side menu, and the activity bar along the foot.
+
+import { Theme, Type, ThemeChoice } from "theme.slint";
+import { EchelonMark } from "brand.slint";
+import { Spinner, Btn, Caps } from "widgets.slint";
+
+// The menu's and the bars' icons (24 by 24, stroked), as the Tauri launcher's Rail.vue has them.
+export global Icons {
+    out property <string> play: "M7 4.5v15l12-7.5z";
+    out property <string> matches: "M5 4h14a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M3 9h18 M8 13h8 M8 16h5";
+    out property <string> friends: "M12.2 8a3.2 3.2 0 1 1-6.4 0a3.2 3.2 0 1 1 6.4 0z M3 19c.6-3.2 3-5 6-5s5.4 1.8 6 5 M19.4 9a2.4 2.4 0 1 1-4.8 0a2.4 2.4 0 1 1 4.8 0z M16.5 13.6c2.4.2 4 1.8 4.5 4.4";
+    out property <string> servers: "M6 4h12a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M6 14h12a2 2 0 0 1 2 2v2a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2v-2a2 2 0 0 1 2-2z";
+    out property <string> chat: "M4 5h16v11H9l-5 4z";
+    out property <string> intel: "M6 4h12a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z M8 9h8 M8 13h8 M8 17h5";
+    out property <string> support: "M20 12a8 8 0 1 1-16 0a8 8 0 1 1 16 0z M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.6v.6 M12 17h.01";
+    out property <string> settings: "M15 12a3 3 0 1 1-6 0a3 3 0 1 1 6 0z M12 3v3 M12 18v3 M3 12h3 M18 12h3 M5.6 5.6l2.1 2.1 M16.3 16.3l2.1 2.1 M5.6 18.4l2.1-2.1 M16.3 7.7l2.1-2.1";
+    out property <string> moon: "M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z";
+    out property <string> sun: "M16 12a4 4 0 1 1-8 0a4 4 0 1 1 8 0z M12 2v2 M12 20v2 M2 12h2 M20 12h2 M4.9 4.9l1.4 1.4 M17.7 17.7l1.4 1.4 M4.9 19.1l1.4-1.4 M17.7 6.3l1.4-1.4";
+    out property <string> auto: "M20 12a8 8 0 1 1-16 0a8 8 0 1 1 16 0z M12 4v16";
+    out property <string> chevron-down: "M6 9l6 6 6-6";
+    out property <string> chevron-up: "M6 15l6-6 6 6";
+    out property <string> close: "M6 6l12 12 M18 6L6 18";
+}
+
+export component Icon inherits Path {
+    in property <length> size: 20px;
+    in property <color> color: Theme.muted;
+    width: size;
+    height: size;
+    viewbox-width: 24;
+    viewbox-height: 24;
+    stroke: color;
+    stroke-width: 1.8px;
+    stroke-line-cap: round;
+    fill: transparent;
+}
+
+// A window button in the title bar.
+component WindowButton inherits Rectangle {
+    in property <string> label;
+    in property <string> glyph;
+    in property <bool> closer: false;
+    callback clicked();
+    width: 46px;
+    background: ta.has-hover ? (closer ? Theme.bad : Theme.control-hover) : transparent;
+    accessible-role: button;
+    accessible-label: label;
+    accessible-action-default => { clicked(); }
+    ta := TouchArea { clicked => { root.clicked(); } }
+    Path {
+        width: 11px;
+        height: 11px;
+        viewbox-width: 12;
+        viewbox-height: 12;
+        commands: glyph;
+        stroke: ta.has-hover && closer ? Theme.on-bad : ta.has-hover ? Theme.fg : Theme.soft;
+        stroke-width: 1.2px;
+        fill: transparent;
+    }
+}
+
+export component TitleBar inherits Rectangle {
+    in property <string> release;
+    in property <bool> full-screen: false;
+    in property <bool> maximised: false;
+    callback drag();
+    callback minimise();
+    callback maximise();
+    callback close();
+    callback cycle-theme();
+    height: 36px;
+    background: Theme.rail;
+
+    // The bar is where the window is dragged from, and double-clicked to maximise.
+    TouchArea {
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down && e.button == PointerEventButton.left {
+                root.drag();
+            }
+        }
+        double-clicked => { root.maximise(); }
+    }
+    HorizontalLayout {
+        padding-left: 12px;
+        spacing: 10px;
+        EchelonMark { size: 18px; tile: false; y: (parent.height - self.height) / 2; }
+        Text {
+            text: "5TH ECHELON ENHANCED";
+            vertical-alignment: center;
+            font-family: Type.mono;
+            font-size: 11px;
+            letter-spacing: 1.4px;
+            color: Theme.soft;
+        }
+        Rectangle {
+            y: (parent.height - self.height) / 2;
+            height: 18px;
+            width: rel.preferred-width + 12px;
+            border-radius: 3px;
+            border-width: 1px;
+            border-color: Theme.control-line;
+            rel := Text {
+                text: root.release;
+                font-family: Type.mono;
+                font-size: 10px;
+                color: Theme.muted;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+        Rectangle { horizontal-stretch: 1; }
+        // The look: dark, light, as the system (Settings › Display, in a later phase).
+        theme := Rectangle {
+            width: 40px;
+            background: tta.has-hover ? Theme.control-hover : transparent;
+            accessible-role: button;
+            accessible-label: "Look: " + (Theme.choice == ThemeChoice.dark ? "dark" : Theme.choice == ThemeChoice.light ? "light" : "as the system") + ". Press to change";
+            accessible-action-default => { root.cycle-theme(); }
+            tta := TouchArea { clicked => { root.cycle-theme(); } }
+            Icon {
+                size: 16px;
+                commands: Theme.choice == ThemeChoice.dark ? Icons.moon : Theme.choice == ThemeChoice.light ? Icons.sun : Icons.auto;
+                color: tta.has-hover ? Theme.fg : Theme.soft;
+            }
+        }
+        if !full-screen: WindowButton { label: "Minimise"; glyph: "M1 6.5h10"; clicked => { root.minimise(); } }
+        if !full-screen: WindowButton {
+            label: maximised ? "Restore" : "Maximise";
+            glyph: maximised ? "M3.5 1.5h7v7 M1.5 3.5h7v7h-7z" : "M1.5 1.5h9v9h-9z";
+            clicked => { root.maximise(); }
+        }
+        WindowButton { label: "Close"; glyph: "M1.5 1.5l9 9 M10.5 1.5l-9 9"; closer: true; clicked => { root.close(); } }
+    }
+    Rectangle { y: parent.height - 1px; height: 1px; background: Theme.line; }
+}
+
+// One entry of the side menu: its icon and its name under it.
+component MenuItem inherits Rectangle {
+    in property <string> label;
+    in property <string> icon;
+    in property <bool> on;
+    in property <bool> dot;
+    in property <bool> compact;
+    callback clicked();
+    forward-focus: fs;
+    width: 64px;
+    height: compact ? 48px : 58px;
+    border-radius: 8px;
+    background: on ? Theme.selected : ta.has-hover ? Theme.control : transparent;
+    animate background { duration: Theme.quick; }
+    accessible-role: button;
+    accessible-label: label;
+    accessible-checked: on;
+    accessible-action-default => { clicked(); }
+    fs := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Return || e.text == " " { root.clicked(); return accept; }
+            reject
+        }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    // The current screen: the accent edge.
+    Rectangle {
+        x: 0;
+        y: 12px;
+        width: 2px;
+        height: on ? parent.height - 24px : 0px;
+        background: Theme.accent;
+        border-radius: 1px;
+        animate height { duration: Theme.calm; easing: ease-out; }
+    }
+    VerticalLayout {
+        alignment: center;
+        spacing: 4px;
+        HorizontalLayout {
+            alignment: center;
+            Icon { commands: root.icon; color: on ? Theme.accent : ta.has-hover ? Theme.fg : Theme.muted; }
+        }
+        Text {
+            text: root.label;
+            horizontal-alignment: center;
+            font-size: 10.5px;
+            color: on ? Theme.accent : ta.has-hover ? Theme.fg : Theme.muted;
+        }
+    }
+    if dot: Rectangle {
+        x: parent.width - 18px;
+        y: 8px;
+        width: 7px;
+        height: 7px;
+        border-radius: 3.5px;
+        background: Theme.accent;
+    }
+    Rectangle {
+        x: -2px;
+        y: -2px;
+        width: parent.width + 4px;
+        height: parent.height + 4px;
+        border-radius: 10px;
+        border-width: fs.has-focus ? 2px : 0px;
+        border-color: Theme.accent;
+    }
+}
+
+export component SideMenu inherits Rectangle {
+    in property <string> current;
+    in property <bool> community;
+    in property <int> requests;
+    in property <bool> unread;
+    in property <string> release;
+    callback go(string);
+    callback whats-new();
+    width: 80px;
+    background: Theme.rail;
+    // A short window: the entries closer, so the menu never runs into itself (the window's
+    // height, from AppWindow: the menu's own would loop through its layout).
+    in property <bool> compact;
+    VerticalLayout {
+        padding-top: compact ? 10px : 14px;
+        padding-bottom: 8px;
+        spacing: compact ? 2px : 6px;
+        // The mark heads the menu, as the launcher's identity; pressing it is Play.
+        HorizontalLayout {
+            alignment: center;
+            padding-bottom: compact ? 4px : 10px;
+            Rectangle {
+                width: compact ? 34px : 40px;
+                height: self.width;
+                accessible-role: button;
+                accessible-label: "5th Echelon Enhanced: Play";
+                accessible-action-default => { root.go("play"); }
+                TouchArea { mouse-cursor: pointer; clicked => { root.go("play"); } }
+                EchelonMark { size: parent.width; }
+            }
+        }
+        HorizontalLayout { alignment: center; MenuItem { compact: root.compact; label: "Play"; icon: Icons.play; on: current == "play"; clicked => { root.go("play"); } } }
+        HorizontalLayout { alignment: center; MenuItem { compact: root.compact; label: "Matches"; icon: Icons.matches; on: current == "matches"; clicked => { root.go("matches"); } } }
+        HorizontalLayout { alignment: center; MenuItem { compact: root.compact; label: "Friends"; icon: Icons.friends; on: current == "friends"; dot: requests > 0; clicked => { root.go("friends"); } } }
+        HorizontalLayout { alignment: center; MenuItem { compact: root.compact; label: "Servers"; icon: Icons.servers; on: current == "servers"; clicked => { root.go("servers"); } } }
+        if community: HorizontalLayout { alignment: center; MenuItem { compact: root.compact; label: "Chat"; icon: Icons.chat; on: current == "chat"; dot: unread; clicked => { root.go("chat"); } } }
+        HorizontalLayout { alignment: center; MenuItem { compact: root.compact; label: "Intel"; icon: Icons.intel; on: current == "intel"; clicked => { root.go("intel"); } } }
+        Rectangle { vertical-stretch: 1; min-height: 4px; }
+        if community: HorizontalLayout { alignment: center; MenuItem { compact: root.compact; label: "Support"; icon: Icons.support; on: current == "support"; clicked => { root.go("support"); } } }
+        HorizontalLayout { alignment: center; MenuItem { compact: root.compact; label: "Settings"; icon: Icons.settings; on: current == "settings"; clicked => { root.go("settings"); } } }
+        Rectangle {
+            height: 22px;
+            accessible-role: button;
+            accessible-label: "What's new in " + root.release;
+            accessible-action-default => { root.whats-new(); }
+            vta := TouchArea { mouse-cursor: pointer; clicked => { root.whats-new(); } }
+            Text {
+                text: root.release;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                font-family: Type.mono;
+                font-size: 10px;
+                color: vta.has-hover ? Theme.accent : Theme.muted;
+            }
+        }
+    }
+    Rectangle { x: parent.width - 1px; width: 1px; background: Theme.line; }
+}
+
+export struct ActionItem {
+    id: string,
+    label: string,
+}
+
+export struct ActivityView {
+    shown: bool,
+    id: int,
+    title: string,
+    step: string,
+    // "working", "done" or "failed".
+    state: string,
+    message: string,
+    // 0 to 1, or below 0 when it can't say.
+    progress: float,
+    actions: [ActionItem],
+    waiting: int,
+}
+
+// What the launcher is doing, what it just did, and what failed, one at a time.
+export component ActivityBar inherits Rectangle {
+    in property <ActivityView> a;
+    callback act(int, string);
+    callback dismiss(int);
+    height: a.shown ? max(44px, lay.preferred-height) : 0px;
+    clip: true;
+    background: Theme.sunken;
+    animate height { duration: Theme.calm; easing: ease-out; }
+    accessible-role: text;
+    accessible-label: a.title + (a.step != "" ? ", " + a.step : "") + (a.message != "" ? ", " + a.message : "");
+    Rectangle { y: 0; height: 1px; background: Theme.control-line; }
+    // The track along the top: how far along, moving when it can't say, red when it failed.
+    Rectangle {
+        y: 0;
+        height: 2px;
+        x: a.state == "working" && a.progress < 0 ? (parent.width * 1.3 * Math.mod(animation-tick() / 1400ms, 1)) - parent.width * 0.3 : 0px;
+        width: a.state == "working" ? (a.progress < 0 ? parent.width * 0.3 : parent.width * a.progress) : parent.width;
+        background: a.state == "failed" ? Theme.bad : Theme.accent;
+    }
+    lay := HorizontalLayout {
+        padding-left: 32px;
+        padding-right: 24px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 12px;
+        Rectangle {
+            width: 8px;
+            height: 8px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 4px;
+            background: a.state == "failed" ? Theme.bad : Theme.accent;
+            opacity: a.state == "working" && !Theme.reduced-motion ? 0.35 + 0.65 * Math.abs(Math.sin(animation-tick() / 1200ms * 180deg)) : 1;
+        }
+        Text {
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            overflow: elide;
+            text: a.title + (a.step != "" ? " · " + a.step : "") + (a.message != "" ? " · " + a.message : "");
+            color: Theme.fg;
+            font-size: 14px;
+        }
+        if a.waiting > 0: Caps { text: "+" + a.waiting + " MORE"; vertical-alignment: center; }
+        for item in a.actions: Btn {
+            text: item.label;
+            small: true;
+            clicked => { root.act(a.id, item.id); }
+        }
+        if a.state != "working": Rectangle {
+            width: 28px;
+            accessible-role: button;
+            accessible-label: "Dismiss";
+            accessible-action-default => { root.dismiss(a.id); }
+            xta := TouchArea { mouse-cursor: pointer; clicked => { root.dismiss(a.id); } }
+            Rectangle {
+                width: 28px;
+                height: 28px;
+                border-radius: 4px;
+                background: xta.has-hover ? Theme.control-hover : transparent;
+                Icon { size: 14px; commands: Icons.close; color: Theme.soft; }
+            }
+        }
+    }
+}
+
+// A screen the trial doesn't have yet (phase 2).
+export component NotYet inherits Rectangle {
+    in property <string> name;
+    callback open-classic();
+    background: Theme.bg;
+    VerticalLayout {
+        alignment: center;
+        spacing: 14px;
+        HorizontalLayout { alignment: center; EchelonMark { size: 64px; } }
+        Text {
+            text: root.name;
+            horizontal-alignment: center;
+            font-family: Type.cond;
+            font-weight: 700;
+            font-size: 28px;
+            color: Theme.fg;
+        }
+        Text {
+            text: "This screen comes in the next part of the Slint launcher.\nPlay and Matches are here now; the classic launcher has the rest.";
+            horizontal-alignment: center;
+            wrap: word-wrap;
+            color: Theme.soft;
+        }
+        HorizontalLayout { alignment: center; Btn { text: "Open the classic launcher"; kind: "ghost"; clicked => { root.open-classic(); } } }
+    }
+}

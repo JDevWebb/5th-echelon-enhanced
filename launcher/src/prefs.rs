@@ -196,6 +196,38 @@ pub struct Prefs {
     /// Linux: the classic (egui) interface, not the Tauri one (front_door.rs).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     classic_interface: bool,
+    /// The launcher's look: dark, light, or as the system is (Settings › Display; from the Slint
+    /// launcher, 0.5.0). The game's overlay follows it.
+    #[serde(default, skip_serializing_if = "Theme::is_default")]
+    theme: Theme,
+}
+
+/// The launcher's look (Settings › Display).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Theme {
+    Dark,
+    Light,
+    /// As the system is; also what a choice this launcher doesn't know reads as.
+    #[default]
+    #[serde(other)]
+    System,
+}
+
+impl Theme {
+    pub const ALL: [Theme; 3] = [Theme::Dark, Theme::Light, Theme::System];
+
+    pub fn is_default(&self) -> bool {
+        *self == Theme::System
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Theme::Dark => "Dark",
+            Theme::Light => "Light",
+            Theme::System => "As the system",
+        }
+    }
 }
 
 /// What the Play button starts: the game as it is, or straight into an online lobby
@@ -487,6 +519,17 @@ impl Prefs {
         prefs.save();
     }
 
+    /// The launcher's look (Settings › Display).
+    pub fn theme() -> Theme {
+        Self::load().theme
+    }
+
+    pub fn set_theme(theme: Theme) {
+        let mut prefs = Self::load();
+        prefs.theme = theme;
+        prefs.save();
+    }
+
     pub fn set_play_mode(mode: PlayMode) {
         let mut prefs = Self::load();
         prefs.play_mode = mode;
@@ -633,6 +676,17 @@ mod tests {
         assert!(PlayMode::Coop.apply(&mut cfg, false, &mut by_hand));
         assert!(!PlayMode::Play.apply(&mut cfg, true, &mut by_hand));
         assert_eq!(read(&cfg), None, "the launcher's own, cleared");
+    }
+
+    #[test]
+    fn the_theme_is_kept_and_an_unknown_one_follows_the_system() {
+        let mut prefs = Prefs::default();
+        assert!(!toml::to_string(&prefs).unwrap().contains("theme"), "as the system: not written");
+        prefs.theme = Theme::Light;
+        let back: Prefs = toml::from_str(&toml::to_string(&prefs).unwrap()).unwrap();
+        assert_eq!(back.theme, Theme::Light);
+        let newer: Prefs = toml::from_str("theme = \"high-contrast\"\nstart_through_steam = true\n").unwrap();
+        assert_eq!((newer.theme, newer.start_through_steam), (Theme::System, true), "an unknown look costs nothing else");
     }
 
     #[test]

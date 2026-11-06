@@ -10,6 +10,11 @@
 #                            map-geometry.exe -> dist/
 #   build/build.sh bots [scenario ...]
 #                            test players against a fresh local server (tools/testbot)
+#   build/build.sh slint     the Slint launcher (0.5.0) for Windows and Linux x86_64, the DLL embedded
+#                            -> dist/launcher-slint.exe, dist/launcher-slint-linux-x86_64
+#   build/build.sh slint-shots
+#                            every Slint screen in both looks at several window sizes, on made-up
+#                            data, on a virtual screen -> dist/slint-shots/*.png
 #   (not released from 0.5.0, kept for reference: one launcher, the egui one, until a Slint
 #    one replaces it)
 #   build/build.sh tauri      the Tauri launcher for Windows and Linux x86_64 -> dist
@@ -136,6 +141,33 @@ case "${1:-test}" in
       if [ $# -eq 0 ]; then FRIENDS_MODE=mutual scripts/bots.sh /target/native/debug friends-mutual &&
         REQUIRE_IDENTITY=1 scripts/bots.sh /target/native/debug identity-required &&
         MATCHMAKING=1 scripts/bots.sh /target/native/debug relay-pass; fi' bots "$@"
+    ;;
+  slint)
+    # The Slint launcher (launcher-slint, 0.5.0) for Windows and for Linux x86_64 -> dist. It
+    # carries the client DLL, as the egui launcher does. Nothing to install beside it: no web
+    # view; on Linux it opens X11 (or Wayland) and OpenGL itself, as winit does for egui.
+    [ -f dist/uplay_r1_loader.dll ] || { echo "build.sh windows first (the launcher carries its DLL)"; exit 1; }
+    run -e CARGO_TARGET_DIR=/target/launcher-slint -w /src/launcher-slint "$IMAGE" \
+      sh -c 'set -e
+        # libsodium as the windows target sets it up (the launcher library links it).
+        cargo fetch -q
+        mkdir -p /tmp/sodium
+        cp "$(ls -d /usr/local/cargo/registry/src/*/libsodium-sys-0.2.7 | head -1)/msvc/x64/Release/v142/libsodium.lib" /tmp/sodium/sodium.lib
+        SODIUM_LIB_DIR=/tmp/sodium HOOKS_DLL=/src/dist/uplay_r1_loader.dll cargo xwin build --release --features embed-dll --target x86_64-pc-windows-msvc
+        cp /target/launcher-slint/x86_64-pc-windows-msvc/release/launcher-slint.exe /src/dist/
+        # Fontconfig is opened when it runs (launcher-slint/Cargo.toml), not linked.
+        HOOKS_DLL=/src/dist/uplay_r1_loader.dll cargo build --release --features embed-dll --target x86_64-unknown-linux-gnu
+        cp /target/launcher-slint/x86_64-unknown-linux-gnu/release/launcher-slint /src/dist/launcher-slint-linux-x86_64'
+    ;;
+  slint-shots)
+    # Every screen of the Slint launcher in both looks at several window sizes -> dist/slint-shots
+    # (launcher-slint/src/shots.rs): made-up data, Slint's software renderer, on an X server in
+    # memory (build/Dockerfile.slint). Built with the network, run with none.
+    docker build -q -t fes-slint:local -f build/Dockerfile.slint build >/dev/null
+    rm -rf dist/slint-shots
+    run -e CARGO_TARGET_DIR=/target/launcher-slint -w /src/launcher-slint fes-slint:local cargo build -q
+    run --network none -e CARGO_TARGET_DIR=/target/launcher-slint -e SLINT_BACKEND=winit-software fes-slint:local \
+      xvfb-run -a -s "-screen 0 2000x1200x24" /target/launcher-slint/debug/launcher-slint --shots /src/dist/slint-shots
     ;;
   tauri)
     # The Tauri launcher (launcher-tauri, 0.5.0) for Windows and for Linux x86_64 -> dist: its

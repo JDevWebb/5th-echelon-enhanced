@@ -1,0 +1,618 @@
+// The Matches screen, as the Tauri launcher's Matches.vue: every public match on the player's
+// server in full (who's in it, its state and its settings), filtered and sorted (ui.rs does
+// both), picked to join or watched for a seat; Quick match and New match by mode.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Type } from "theme.slint";
+import { EchelonMark } from "brand.slint";
+import { Btn, Link, Spinner, Dot, Caps, Rule, CheckBox, Segment, Choice } from "widgets.slint";
+import { Icon, Icons } from "chrome.slint";
+import { LobbyRow, PersonRow, ModeItem } from "types.slint";
+
+component PingText inherits Text {
+    in property <int> ms;
+    text: ms <= 0 ? "–" : ms + " ms";
+    font-family: Type.mono;
+    font-size: 14px;
+    color: ms <= 0 ? Theme.muted : ms <= 120 ? Theme.accent : Theme.warn;
+}
+
+// A player in the details: their initial, name, and what they are to the player.
+component Person inherits Rectangle {
+    in property <PersonRow> p;
+    in property <bool> show-ping: true;
+    height: 40px;
+    border-radius: 4px;
+    background: p.friend ? Theme.selected : transparent;
+    accessible-role: text;
+    accessible-label: p.name + (p.host ? ", host" : "") + (p.me ? ", you" : "") + (p.friend ? ", your friend" : p.party-line != "" ? ", " + p.party-line : "");
+    if p.party > 0 && !p.friend: Rectangle { x: 2px; width: 2px; background: Theme.control-line; }
+    HorizontalLayout {
+        padding-left: 8px;
+        padding-right: 8px;
+        spacing: 10px;
+        Rectangle {
+            width: 28px;
+            height: 28px;
+            y: (parent.height - self.height) / 2;
+            border-radius: 14px;
+            background: p.friend ? (Theme.dark ? #1f3524 : #cfe5bd) : Theme.line;
+            Text {
+                text: p.initial;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                font-size: 12px;
+                font-weight: 600;
+                color: p.friend ? Theme.accent : Theme.fg;
+            }
+        }
+        Text { text: p.name; font-weight: 600; color: Theme.fg; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+        if p.host: Rectangle {
+            y: (parent.height - self.height) / 2;
+            height: 16px;
+            width: 40px;
+            border-radius: 3px;
+            border-width: 1px;
+            border-color: Theme.accent-soft;
+            Text { text: "HOST"; font-family: Type.mono; font-size: 10px; color: Theme.accent; horizontal-alignment: center; vertical-alignment: center; }
+        }
+        if p.me: Text { text: "you"; color: Theme.soft; font-size: 12.5px; vertical-alignment: center; }
+        if p.friend: Text { text: "friend"; color: Theme.accent; font-size: 12.5px; vertical-alignment: center; }
+        if !p.friend && p.party-line != "": Text { text: p.party-line; color: Theme.muted; font-size: 12.5px; vertical-alignment: center; overflow: elide; max-width: 140px; }
+        if show-ping: PingText { ms: p.ping; font-size: 12.5px; vertical-alignment: center; }
+    }
+}
+
+// "Host in" / "Find a match in": a row of the Spies vs Mercs modes.
+component ModePick inherits HorizontalLayout {
+    in property <string> lead;
+    in property <[ModeItem]> modes;
+    in property <bool> centred: false;
+    callback picked(ModeItem);
+    callback cancel();
+    spacing: 8px;
+    alignment: centred ? center : start;
+    Text { text: root.lead; color: Theme.muted; font-size: Type.small; vertical-alignment: center; }
+    for m in modes: Btn { text: m.name; kind: "ghost"; small: true; clicked => { root.picked(m); } }
+    // Co-op too, so every mode is here (the Co-op filter goes to it at once).
+    Btn { text: "Co-op"; kind: "ghost"; small: true; clicked => { root.picked({ playlist: 0, name: "Co-op", coop: true }); } }
+    Link { text: "Cancel"; y: (parent.height - self.height) / 2; clicked => { root.cancel(); } }
+}
+
+export component MatchesScreen inherits Rectangle {
+    in property <string> server;
+    in property <bool> setup-missing;
+    in property <bool> loaded;
+    in property <string> error;
+    in property <string> summary;
+    in property <string> hidden;
+    in property <int> total;
+    in property <int> count-svm;
+    in property <int> count-coop;
+    in property <string> filter-mode: "all";
+    in property <bool> show-under-way: true;
+    in property <bool> show-full: false;
+    in property <bool> friends-first: true;
+    in property <int> sort: 0;
+    in property <[LobbyRow]> shown;
+    in property <LobbyRow> selected;
+    in property <bool> has-selected;
+    in property <bool> ready;
+    in property <int> watching-room: -1;
+    in property <bool> joining;
+    in property <[ModeItem]> modes;
+    // A new match asked for still holds: searches skip the open ones until it's taken back.
+    in property <bool> new-match-holds;
+
+    callback set-filter(string);
+    callback cancel-new-match();
+    callback set-under-way(bool);
+    callback set-full(bool);
+    callback set-friends-first(bool);
+    callback set-sort(int);
+    callback pick(int);
+    callback join(int);
+    callback host(ModeItem);
+    callback quick(ModeItem);
+    callback watch(int, string);
+    callback go(string);
+    callback retry();
+
+    background: Theme.bg;
+
+    // Which mode row is open: under the header's New match ("head") or Quick match ("quick"),
+    // or the empty page's Host a match ("empty").
+    property <string> picking;
+    property <bool> narrow: root.width < 1040px;
+    property <bool> short: root.height < 680px;
+    property <length> side: narrow ? 22px : 32px;
+    property <ModeItem> coop: { playlist: 0, name: "Co-op", coop: true };
+
+    function new-match(where: string) {
+        if filter-mode == "coop" { root.host(coop); return; }
+        picking = picking == where ? "" : where;
+    }
+    function quick-match() {
+        if filter-mode == "coop" { root.quick(coop); return; }
+        picking = picking == "quick" ? "" : "quick";
+    }
+
+    VerticalLayout {
+        // The header: the server, the title, what's open; New match and Quick match.
+        VerticalLayout {
+            padding-left: side;
+            padding-right: side;
+            padding-top: short ? 14px : 24px;
+            padding-bottom: short ? 10px : 14px;
+            spacing: 10px;
+            HorizontalLayout {
+                spacing: 24px;
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: end;
+                    Caps { text: root.server != "" ? root.server.to-uppercase() : "NO SERVER YET"; color: Theme.accent; }
+                    Text {
+                        text: "MATCHES";
+                        font-family: Type.cond;
+                        font-weight: 700;
+                        font-size: short ? 30px : 40px;
+                        color: Theme.fg;
+                        accessible-role: text;
+                    }
+                    Text {
+                        text: root.summary != "" ? root.summary + " · updated live" : root.loaded ? "" : "Reading the open matches…";
+                        color: Theme.soft;
+                        font-size: Type.small;
+                        overflow: elide;
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    spacing: 10px;
+                    VerticalLayout {
+                        alignment: end;
+                        Btn { text: "New match"; kind: "ghost"; enabled: root.ready; min-height: short ? 40px : 44px; pressed-look: root.picking == "head"; clicked => { root.new-match("head"); } }
+                    }
+                    VerticalLayout {
+                        alignment: end;
+                        Btn { text: "Quick match"; kind: "primary"; enabled: root.ready; min-height: short ? 40px : 44px; pressed-look: root.picking == "quick"; clicked => { root.quick-match(); } }
+                    }
+                }
+            }
+            if new-match-holds: HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                Text { text: "Your new match holds: Quick match hosts instead of joining."; color: Theme.soft; font-size: Type.small; vertical-alignment: center; }
+                Link { text: "Join open matches again"; y: (parent.height - self.height) / 2; clicked => { root.cancel-new-match(); } }
+            }
+            if picking == "head" || picking == "quick": ModePick {
+                lead: picking == "quick" ? "Find a match in" : "Host in";
+                modes: root.modes;
+                picked(m) => {
+                    if root.picking == "quick" { root.quick(m); } else { root.host(m); }
+                    root.picking = "";
+                }
+                cancel => { root.picking = ""; }
+            }
+        }
+        Rule {}
+
+        if setup-missing: Text {
+            text: "Set up the game and a server first (Play).";
+            color: Theme.muted;
+            x: side;
+            height: 60px;
+            vertical-alignment: center;
+        }
+        if !setup-missing && error != "": HorizontalLayout {
+            padding-left: side;
+            padding-top: 20px;
+            spacing: 8px;
+            alignment: start;
+            height: 60px;
+            Text { text: "Couldn't read the matches: " + root.error; color: Theme.bad; font-size: Type.small; vertical-alignment: center; }
+            Link { text: "Try again"; y: (parent.height - self.height) / 2; clicked => { root.retry(); } }
+        }
+        if !setup-missing && error == "" && !loaded: HorizontalLayout {
+            padding-left: side;
+            spacing: 10px;
+            alignment: start;
+            height: 60px;
+            Spinner { y: (parent.height - self.height) / 2; }
+            Text { text: "Reading the open matches…"; color: Theme.muted; vertical-alignment: center; }
+        }
+
+        // The filters.
+        if !setup-missing && error == "" && loaded && total > 0: VerticalLayout {
+            HorizontalLayout {
+                padding-left: side;
+                padding-right: side;
+                padding-top: short ? 8px : 12px;
+                padding-bottom: short ? 8px : 12px;
+                spacing: 8px;
+                Rectangle {
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: Theme.control-line;
+                    clip: true;
+                    width: seg.preferred-width;
+                    seg := HorizontalLayout {
+                        Segment { text: "All · " + root.total; on: root.filter-mode == "all"; first: true; clicked => { root.set-filter("all"); } }
+                        Segment { text: "Spies vs Mercs · " + root.count-svm; on: root.filter-mode == "svm"; clicked => { root.set-filter("svm"); } }
+                        Segment { text: "Co-op · " + root.count-coop; on: root.filter-mode == "coop"; clicked => { root.set-filter("coop"); } }
+                    }
+                }
+                CheckBox { text: "Under way"; checked: root.show-under-way; toggled(on) => { root.set-under-way(on); } }
+                CheckBox { text: "Full"; checked: root.show-full; toggled(on) => { root.set-full(on); } }
+                CheckBox { text: "Friends first"; checked: root.friends-first; toggled(on) => { root.set-friends-first(on); } }
+                Rectangle { horizontal-stretch: 1; }
+                Text { text: "Sort"; color: Theme.muted; font-size: Type.small; vertical-alignment: center; }
+                Choice {
+                    label: "Sort the matches";
+                    model: ["Nearest first", "Most players", "Newest"];
+                    current: root.sort;
+                    chosen(i) => { root.set-sort(i); }
+                }
+            }
+            Rule {}
+        }
+
+        // Nothing to list: why, and what to do.
+        if !setup-missing && error == "" && loaded && shown.length == 0: Rectangle {
+            vertical-stretch: 1;
+            VerticalLayout {
+                alignment: center;
+                spacing: 12px;
+                padding: 24px;
+                HorizontalLayout { alignment: center; EchelonMark { size: 56px; } }
+                Text {
+                    text: root.total > 0 ? "NOTHING MATCHES THE FILTERS" : "NO PUBLIC MATCHES OPEN";
+                    horizontal-alignment: center;
+                    font-family: Type.cond;
+                    font-weight: 700;
+                    font-size: 24px;
+                    color: Theme.fg;
+                }
+                Text {
+                    text: root.total > 0 ? "Show the ones under way or full, or another mode." : "Host one and it shows here for everyone; quick match finds you one as soon as anyone opens.";
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                    color: Theme.soft;
+                }
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 10px;
+                    Btn { text: "Host a match"; kind: "primary"; enabled: root.ready; min-height: 44px; clicked => { root.new-match("empty"); } }
+                    Btn { text: "See other servers"; kind: "ghost"; min-height: 44px; clicked => { root.go("servers"); } }
+                }
+                if picking == "empty": ModePick {
+                    lead: "Host in";
+                    modes: root.modes;
+                    centred: true;
+                    picked(m) => {
+                        root.host(m);
+                        root.picking = "";
+                    }
+                    cancel => { root.picking = ""; }
+                }
+                if hidden != "": Text { text: root.hidden; horizontal-alignment: center; color: Theme.muted; font-size: Type.small; }
+            }
+        }
+
+        // The list beside the picked match's details.
+        if !setup-missing && error == "" && loaded && shown.length > 0: HorizontalLayout {
+            vertical-stretch: 1;
+            list := ScrollView {
+                horizontal-stretch: 1;
+                content-width: self.visible-width;
+                content-height: rows.preferred-height;
+                rows := VerticalLayout {
+                    width: list.visible-width;
+                    padding-top: 6px;
+                    padding-bottom: 16px;
+                    // The columns' heads.
+                    HorizontalLayout {
+                        padding-left: side;
+                        padding-right: side;
+                        padding-top: 8px;
+                        padding-bottom: 8px;
+                        spacing: 12px;
+                        Caps { text: "MATCH"; horizontal-stretch: 1.6; min-width: 0; preferred-width: 0; font-size: 11px; }
+                        Caps { text: "PLAYERS"; width: narrow ? 76px : 110px; font-size: 11px; }
+                        Caps { text: "STATUS"; horizontal-stretch: 1.2; min-width: 0; preferred-width: 0; font-size: 11px; }
+                        Caps { text: "PING"; width: narrow ? 60px : 70px; horizontal-alignment: right; font-size: 11px; }
+                    }
+                    for l[i] in shown: Rectangle {
+                        height: 64px;
+                        background: l.room == selected.room && has-selected ? Theme.selected : rta.has-hover ? Theme.control : transparent;
+                        accessible-role: button;
+                        accessible-label: l.mode + (l.map != "" ? ", " + l.map : "") + ", " + l.players + (l.seats > 0 ? " of " + l.seats : "") + " players, " + l.status + (l.ping > 0 ? ", " + l.ping + " milliseconds" : "");
+                        accessible-checked: l.room == selected.room;
+                        accessible-action-default => { root.pick(l.room); }
+                        forward-focus: rfs;
+                        rfs := FocusScope {
+                            key-pressed(e) => {
+                                if e.text == Key.Return || e.text == " " { root.pick(l.room); return accept; }
+                                reject
+                            }
+                        }
+                        rta := TouchArea { mouse-cursor: pointer; clicked => { root.pick(l.room); } }
+                        if i > 0: Rectangle { y: 0; height: 1px; background: Theme.line; }
+                        if l.room == selected.room && has-selected: Rectangle { x: 0; width: 3px; background: Theme.accent; }
+                        HorizontalLayout {
+                            padding-left: side;
+                            padding-right: side;
+                            spacing: 12px;
+                            VerticalLayout {
+                                horizontal-stretch: 1.6;
+                                min-width: 0;
+                                preferred-width: 0;
+                                alignment: center;
+                                spacing: 2px;
+                                Text { text: l.mode + (l.map != "" ? " · " + l.map : ""); font-weight: 600; color: Theme.fg; overflow: elide; }
+                                Text { text: l.line; font-size: 13px; color: l.has-friends ? Theme.accent : Theme.soft; overflow: elide; }
+                            }
+                            VerticalLayout {
+                                width: narrow ? 76px : 110px;
+                                alignment: center;
+                                spacing: 5px;
+                                HorizontalLayout {
+                                    alignment: start;
+                                    Text { text: l.players; font-weight: 600; color: Theme.fg; }
+                                    Text { text: l.seats > 0 ? "/" + l.seats : ""; color: Theme.muted; }
+                                }
+                                Rectangle {
+                                    height: 4px;
+                                    border-radius: 2px;
+                                    background: Theme.line;
+                                    Rectangle {
+                                        x: 0;
+                                        width: l.seats > 0 ? parent.width * Math.min(1, l.players / l.seats) : 0px;
+                                        border-radius: 2px;
+                                        background: l.full ? Theme.warn : Theme.accent;
+                                    }
+                                }
+                            }
+                            HorizontalLayout {
+                                horizontal-stretch: 1.2;
+                                min-width: 0;
+                                preferred-width: 0;
+                                spacing: 8px;
+                                Dot { tone: l.tone; y: (parent.height - self.height) / 2; }
+                                Text { text: l.status; color: Theme.fg; font-size: 14px; vertical-alignment: center; overflow: elide; }
+                            }
+                            PingText { ms: l.ping; width: narrow ? 60px : 70px; horizontal-alignment: right; vertical-alignment: center; }
+                        }
+                        Rectangle {
+                            border-width: rfs.has-focus ? 2px : 0px;
+                            border-color: Theme.accent;
+                        }
+                    }
+                    if hidden != "": Text {
+                        text: root.hidden + " Private matches aren't listed.";
+                        color: Theme.muted;
+                        font-size: 12.5px;
+                        x: side;
+                    }
+                }
+            }
+
+            // The picked match.
+            if has-selected: Rectangle {
+                width: narrow ? 320px : 400px;
+                background: Theme.surface;
+                Rectangle { x: 0; width: 1px; background: Theme.line; }
+                VerticalLayout {
+                    // Its band: the mode and the map, over stripes (the map's art in a later
+                    // release: docs/0.5.1-plan.md).
+                    Rectangle {
+                        height: short ? 64px : narrow ? 88px : 112px;
+                        clip: true;
+                        background: selected.kind == "coop" ? (Theme.dark ? #12192a : #dde4f2) : (Theme.dark ? #142019 : #dfeadb);
+                        Rectangle { background: @linear-gradient(180deg, Theme.surface.transparentize(100%) 20%, Theme.surface 100%); }
+                        VerticalLayout {
+                            padding-left: 22px;
+                            padding-right: 22px;
+                            padding-bottom: short ? 8px : 12px;
+                            alignment: end;
+                            Caps {
+                                text: (selected.mode + " · public" + (selected.full ? " · full" : "")).to-uppercase();
+                                color: selected.tone == "warn" ? Theme.warn : Theme.accent;
+                            }
+                            Text {
+                                text: (selected.map != "" ? selected.map : selected.mode).to-uppercase();
+                                font-family: Type.cond;
+                                font-weight: 700;
+                                font-size: short ? 22px : narrow ? 24px : 30px;
+                                color: Theme.fg;
+                                overflow: elide;
+                            }
+                        }
+                    }
+                    detail := ScrollView {
+                        vertical-stretch: 1;
+                        content-width: self.visible-width;
+                        content-height: dcol.preferred-height;
+                        dcol := VerticalLayout {
+                            width: detail.visible-width;
+                            padding-left: 22px;
+                            padding-right: 22px;
+                            padding-top: short ? 10px : 14px;
+                            padding-bottom: 14px;
+                            spacing: short ? 10px : 16px;
+                            // Its state.
+                            Rectangle {
+                                border-radius: 6px;
+                                border-width: 1px;
+                                border-color: selected.tone == "warn" ? (Theme.dark ? #3a3020 : #e3cfa6) : Theme.control-line;
+                                background: Theme.sunken;
+                                HorizontalLayout {
+                                    padding: 10px;
+                                    padding-left: 12px;
+                                    spacing: 10px;
+                                    Rectangle {
+                                        width: 18px;
+                                        Rectangle {
+                                            width: 18px;
+                                            height: 18px;
+                                            border-radius: 9px;
+                                            background: (selected.tone == "warn" ? Theme.warn : Theme.accent).transparentize(85%);
+                                        }
+                                        Dot { tone: selected.tone; size: 10px; }
+                                    }
+                                    VerticalLayout {
+                                        horizontal-stretch: 1;
+                                        Text { text: selected.status; font-weight: 600; font-size: 14px; color: Theme.fg; wrap: word-wrap; }
+                                        Text {
+                                            text: (selected.open-for != "" ? "Open " + selected.open-for : "") + (!selected.under-way && !selected.full ? (selected.open-for != "" ? " · " : "") + "joinable now" : "");
+                                            font-size: 12.5px;
+                                            color: Theme.soft;
+                                        }
+                                    }
+                                    PingText { ms: selected.ping; vertical-alignment: center; }
+                                }
+                            }
+                            // Who's in it: by side when the sides are known.
+                            // Narrow: the sides one under the other, so the names fit.
+                            if selected.teams && narrow: VerticalLayout {
+                                spacing: 2px;
+                                Caps { text: "SPIES · " + selected.spies.length; }
+                                for p in selected.spies: Person { p: p; show-ping: false; }
+                                Rectangle { height: 8px; }
+                                Caps { text: "MERCS · " + selected.mercs.length; }
+                                for p in selected.mercs: Person { p: p; show-ping: false; }
+                            }
+                            if selected.teams && !narrow: HorizontalLayout {
+                                spacing: 12px;
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 2px;
+                                    Caps { text: "SPIES · " + selected.spies.length; }
+                                    for p in selected.spies: Person { p: p; show-ping: false; }
+                                }
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    spacing: 2px;
+                                    Caps { text: "MERCS · " + selected.mercs.length; }
+                                    for p in selected.mercs: Person { p: p; show-ping: false; }
+                                }
+                            }
+                            if !selected.teams: VerticalLayout {
+                                spacing: 2px;
+                                Caps { text: "IN THIS " + (selected.under-way ? "MATCH" : "LOBBY") + " · " + selected.players + (selected.seats > 0 ? " OF " + selected.seats : ""); }
+                                for p in selected.people: Person { p: p; }
+                                if selected.seats > selected.players: HorizontalLayout {
+                                    height: 40px;
+                                    padding-left: 8px;
+                                    spacing: 10px;
+                                    Rectangle {
+                                        width: 28px;
+                                        height: 28px;
+                                        y: (parent.height - self.height) / 2;
+                                        border-radius: 14px;
+                                        border-width: 1px;
+                                        border-color: Theme.control-line;
+                                    }
+                                    Text {
+                                        text: (selected.seats - selected.players) + (selected.seats - selected.players == 1 ? " open seat" : " open seats");
+                                        color: Theme.muted;
+                                        font-size: 13px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                            if selected.settings.length > 0: VerticalLayout {
+                                spacing: 4px;
+                                Caps { text: "MATCH SETTINGS"; }
+                                for s in selected.settings: HorizontalLayout {
+                                    spacing: 8px;
+                                    Text { text: s.key; color: Theme.soft; font-size: 13px; horizontal-stretch: 1; overflow: elide; }
+                                    Text { text: s.value; color: Theme.fg; font-size: 13px; }
+                                }
+                            }
+                        }
+                    }
+                    Rule {}
+                    VerticalLayout {
+                        padding-left: 22px;
+                        padding-right: 22px;
+                        padding-top: short ? 10px : 14px;
+                        padding-bottom: short ? 12px : 18px;
+                        spacing: 8px;
+                        if selected.with-me: Text {
+                            text: "You're in this match";
+                            horizontal-alignment: center;
+                            font-weight: 600;
+                            color: Theme.accent;
+                            height: 48px;
+                            vertical-alignment: center;
+                        }
+                        if !selected.with-me: join := Rectangle {
+                            height: 48px;
+                            border-radius: 4px;
+                            background: selected.joinable ? (jta.has-hover && !joining ? Theme.accent.brighter(8%) : Theme.accent) : Theme.control;
+                            border-width: selected.joinable ? 0px : 1px;
+                            border-color: Theme.control-line;
+                            opacity: joining ? 0.7 : 1;
+                            accessible-role: button;
+                            accessible-label: selected.joinable ? "Join this match" : selected.under-way ? "Under way" : "Full";
+                            accessible-enabled: selected.joinable && !joining;
+                            accessible-action-default => { if selected.joinable && !joining { root.join(selected.room); } }
+                            forward-focus: jfs;
+                            jfs := FocusScope {
+                                enabled: selected.joinable;
+                                key-pressed(e) => {
+                                    if selected.joinable && !joining && (e.text == Key.Return || e.text == " ") { root.join(selected.room); return accept; }
+                                    reject
+                                }
+                            }
+                            jta := TouchArea {
+                                enabled: selected.joinable && !joining;
+                                mouse-cursor: selected.joinable ? pointer : not-allowed;
+                                clicked => { root.join(selected.room); }
+                            }
+                            HorizontalLayout {
+                                alignment: center;
+                                spacing: 10px;
+                                if joining: Spinner { size: 16px; y: (parent.height - self.height) / 2; }
+                                Text {
+                                    text: selected.joinable ? "JOIN THIS MATCH" : (selected.under-way ? "UNDER WAY" + (selected.full ? " · FULL" : "") : "FULL");
+                                    font-family: Type.cond;
+                                    font-weight: 700;
+                                    font-size: 18px;
+                                    letter-spacing: 2.2px;
+                                    vertical-alignment: center;
+                                    color: selected.joinable ? Theme.on-accent : Theme.muted;
+                                }
+                            }
+                            Rectangle {
+                                x: -3px;
+                                y: -3px;
+                                width: parent.width + 6px;
+                                height: parent.height + 6px;
+                                border-radius: 7px;
+                                border-width: jfs.has-focus ? 2px : 0px;
+                                border-color: Theme.accent;
+                            }
+                        }
+                        if !selected.joinable && !selected.with-me: Btn {
+                            text: root.watching-room == selected.room ? (narrow ? "Watching for a seat" : "Watching: we'll tell you when it opens") : "Tell me when a seat opens";
+                            kind: "ghost";
+                            min-width: 0;
+                            min-height: 40px;
+                            pressed-look: root.watching-room == selected.room;
+                            clicked => { root.watch(selected.room, selected.mode + (selected.map != "" ? " · " + selected.map : "")); }
+                        }
+                        if selected.joinable && !selected.with-me && !short: Text {
+                            text: "Starts the game if it isn't running, then joins " + (selected.host != "" ? selected.host + "'s" : "its host's") + (selected.under-way ? " match." : " lobby.");
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                            color: Theme.muted;
+                            font-size: 12.5px;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
