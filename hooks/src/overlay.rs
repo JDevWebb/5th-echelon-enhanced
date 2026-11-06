@@ -32,9 +32,11 @@ use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE;
 use windows::Win32::UI::Input::KeyboardAndMouse::VK_F4;
+use windows::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 use windows::Win32::UI::WindowsAndMessaging::SC_CLOSE;
 use windows::Win32::UI::WindowsAndMessaging::WM_ACTIVATEAPP;
+use windows::Win32::UI::WindowsAndMessaging::WM_KEYDOWN;
 use windows::Win32::UI::WindowsAndMessaging::WM_SYSCOMMAND;
 use windows::Win32::UI::WindowsAndMessaging::WM_SYSKEYDOWN;
 
@@ -55,6 +57,9 @@ static PROBLEM_DURATION: Duration = Duration::from_secs(15);
 /// How often the player list refreshes while the panel is open (it's every
 /// 15 s otherwise), so friends starting their game show up quickly.
 static PANEL_REFRESH: Duration = Duration::from_secs(5);
+/// Esc stopped the quick start's navigation (from the window's key message, which can't reach
+/// the overlay's state): the next frame says so.
+static ESC_STOPPED: AtomicBool = AtomicBool::new(false);
 /// The game lost focus (`WM_ACTIVATEAPP`) since the last frame: an open panel closes.
 static FOCUS_LOST: AtomicBool = AtomicBool::new(false);
 
@@ -466,8 +471,20 @@ impl MyRenderLoop {
         let esc = down(VK_ESCAPE.0);
         if esc && !self.esc_down && in_front && self.ui_state == UiState::Show {
             self.ui_state = UiState::Hide;
-        } else if esc && !self.esc_down && in_front && crate::quickstart::abort() {
-            // Esc while the quick start takes the game through its menus: the player takes over.
+        } else if esc && !self.esc_down && crate::quickstart::navigating() {
+            // Esc while navigating: the game in front, or no window in front at all (Wine
+            // without a window manager names none; Windows always does). Another program in
+            // front keeps its Esc.
+            let nothing_in_front = unsafe { GetForegroundWindow() }.0 == 0;
+            if (in_front || nothing_in_front) && crate::quickstart::abort() {
+                ESC_STOPPED.store(true, Ordering::SeqCst);
+            } else if !in_front && !nothing_in_front {
+                info!("Esc while navigating, but another program is in front: left to it");
+            }
+        }
+        // Esc while the quick start took the game through its menus (here or from the window's
+        // key message): the player takes over.
+        if ESC_STOPPED.swap(false, Ordering::SeqCst) {
             self.local_notice = Some(LocalNotice {
                 text: "Stopped: the game is yours. Carry on from here.".into(),
                 error: false,
@@ -2014,6 +2031,16 @@ impl ImguiRenderLoop for MyRenderLoop {
     fn on_wnd_proc(&self, hwnd: windows::Win32::Foundation::HWND, umsg: u32, wparam: windows::Win32::Foundation::WPARAM, lparam: windows::Win32::Foundation::LPARAM) {
         if umsg == WM_ACTIVATEAPP && wparam.0 == 0 {
             FOCUS_LOST.store(true, Ordering::SeqCst);
+        }
+        // Esc stops the quick start's navigation (as `poll_keys` does from the keyboard's state):
+        // the window's own key message, which only comes while the game has the keyboard, so it
+        // works where Windows names no window in front (Wine without a window manager). Not a
+        // repeat (bit 30), and not while the panel is open (Esc closes that).
+        if umsg == WM_KEYDOWN && wparam.0 == usize::from(VK_ESCAPE.0) && crate::quickstart::navigating() {
+            info!("Esc key message while navigating");
+        }
+        if umsg == WM_KEYDOWN && wparam.0 == usize::from(VK_ESCAPE.0) && lparam.0 & (1 << 30) == 0 && !matches!(self.ui_state, UiState::Show) && crate::quickstart::abort() {
+            ESC_STOPPED.store(true, Ordering::SeqCst);
         }
         // The panel holds the keyboard back from the game, Alt+F4 with it: still the way to
         // quit. Alt held (bit 29) and not a repeat (bit 30); posted, so it reaches the window's
