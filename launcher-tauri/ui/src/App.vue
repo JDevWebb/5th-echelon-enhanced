@@ -15,7 +15,7 @@
           <Support v-else-if="screen === 'support'" key="support" @go="go" />
           <Chat v-else-if="screen === 'chat'" key="chat" />
           <Friends v-else-if="screen === 'friends'" key="friends" :info="info" @go="go" @changed="refresh" />
-          <Settings v-else-if="screen === 'settings'" key="settings" :open="settingsAt" :size="size" @size="setSize" @fullscreen="toggleFullscreen" @changed="refresh" />
+          <Settings v-else-if="screen === 'settings'" key="settings" :open="settingsAt" :size="size" :size-max="sizeMax" @size="setSize" @fullscreen="toggleFullscreen" @changed="refresh" />
           <Host v-else-if="screen === 'host'" key="host" />
           </Transition>
         </main>
@@ -176,10 +176,14 @@ const settingsAt = ref(null);
 // The player's size (Settings › Display, Ctrl + / Ctrl − / Ctrl 0) as the page's zoom, and
 // full screen (F11).
 const size = ref(1);
+// The most this screen holds, once a bigger size was asked and didn't fit (Settings says so).
+const sizeMax = ref(null);
 async function setSize(to) {
   const want = Math.min(1.6, Math.max(0.7, Math.round(to * 10) / 10));
   // As large as asked while the full layout still fits the screen.
   size.value = await fitWindow(want);
+  if (size.value < want - 0.001) sizeMax.value = size.value;
+  else if (sizeMax.value !== null && size.value > sizeMax.value) sizeMax.value = null;
   await call('set', { key: 'size', value: size.value });
   if (inTauri) window.__TAURI__.webview.getCurrentWebview().setZoom(size.value);
 }

@@ -95,6 +95,15 @@ pub fn ready(asked: &Asked, server: &str, via_network: bool, directory: Option<&
     }
 }
 
+/// A recent server's line (Servers › Recent): "in use now" for the one the player is on (its
+/// time is from when they last connected there from Recent, hours ago maybe), else when.
+pub fn recent_when(address: &str, last_used: i64, now: i64, current: Option<&str>) -> String {
+    if current.is_some_and(|c| c.trim().eq_ignore_ascii_case(address.trim())) {
+        return "in use now".to_string();
+    }
+    format!("used {}", setup::directory::ago(now - last_used).replace("within the last hour", "just now"))
+}
+
 /// Looks for a server on this PC's networks: the ones that answered.
 pub fn find_on_network() -> Result<Vec<std::net::IpAddr>, String> {
     let adapters = setup::net::adapters();
@@ -149,5 +158,18 @@ pub fn place(s: &setup::directory::Listing) -> String {
         s.name.clone()
     } else {
         s.region.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::recent_when;
+
+    #[test]
+    fn the_server_in_use_says_so_in_recent() {
+        let now = 1_800_000_000;
+        assert_eq!(recent_when("rh-match.example.net", now - 6 * 3600, now, Some("RH-match.example.net")), "in use now");
+        assert!(recent_when("rh-match.example.net", now - 6 * 3600, now, Some("other.example.net")).starts_with("used "));
+        assert!(recent_when("rh-match.example.net", now - 60, now, None).ends_with("just now"));
     }
 }

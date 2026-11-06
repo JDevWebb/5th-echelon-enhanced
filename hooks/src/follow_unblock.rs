@@ -1,5 +1,5 @@
 //! Frees a party member's UI facade when a stale follow task blocks the host-loss exit (part of
-//! the beta "host migration", `host_migration.rs`; the DX9 and DX11 builds). Background, addresses and the
+//! host migration, `host_migration.rs`; the DX9 and DX11 builds). Background, addresses and the
 //! measurement in `docs/architecture/member-stuck-after-private-match.md` (§12.3 "R-B", §13).
 //!
 //! A second `PartyFollowLeaderTask` for a match the member is already in never gets an answer, so

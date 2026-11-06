@@ -1,4 +1,5 @@
-//! The beta "host migration" (Settings › Beta features; `[Beta] HostMigration` in `uplay.toml`):
+//! Host migration, on for every player by default (Settings › Game turns it off:
+//! `DisableHostMigration` in `uplay.toml`; it was a beta until 0.5.0):
 //! a match lobby carries on under a new host when its host leaves (`migrate_lobby`), a party's
 //! leader invited into a private match takes its party along (`party_follow`), and a member's
 //! game left waiting on a stale follow is set going again (`follow_unblock`). The server's side
@@ -17,31 +18,31 @@ use tracing::warn;
 /// tick, which `follow_unblock` then runs from).
 pub unsafe fn install() {
     let Some(image) = crate::game_image() else {
-        warn!("host-migration (beta): the game's sections weren't found -> off");
+        warn!("host-migration: the game's sections weren't found -> off");
         return;
     };
     // The tick as migration-fix hooked it, when it did: its signature is gone from memory.
     let sites = match hooks_addresses::host_migration::locate_with(&image, crate::migration_fix::hooked_tick()) {
         Ok(sites) => sites,
         Err(why) => {
-            warn!("host-migration (beta): {why} -> off (this game build isn't one it knows)");
+            warn!("host-migration: {why} -> off (this game build isn't one it knows)");
             return;
         }
     };
     if !crate::migrate_lobby::install(&sites) {
-        warn!("host-migration (beta): off");
+        warn!("host-migration: off");
         return;
     }
     if !crate::follow_unblock::install(&sites, crate::migration_fix::tick_hooked()) {
         crate::migrate_lobby::undo();
-        warn!("host-migration (beta): off");
+        warn!("host-migration: off");
         return;
     }
     if !crate::party_follow::install(&sites) {
         crate::follow_unblock::deinit();
         crate::migrate_lobby::undo();
-        warn!("host-migration (beta): off");
+        warn!("host-migration: off");
         return;
     }
-    info!("host-migration (beta): on - match lobbies carry on under a new host, and a party follows its leader into a private match");
+    info!("host-migration: on - match lobbies carry on under a new host, and a party follows its leader into a private match");
 }

@@ -1,5 +1,5 @@
 //! Lets a match lobby carry on under a new host when its host leaves, as a party does (part of
-//! the beta "host migration", `host_migration.rs`). Background in
+//! host migration, `host_migration.rs`). Background in
 //! `docs/research/host-migration.md`.
 //!
 //! Every session object (`NetSessionBase`) has a "may migrate" flag at `+0x5a9`. The game sets it
@@ -65,7 +65,7 @@ const CHECK_PATCH_PUBLIC: [u8; 19] = [
     0xCC, // int3 (padding)
 ];
 
-/// The patches made, to undo them ([`undo`]) if the rest of the beta doesn't go in.
+/// The patches made, to undo them ([`undo`]) if the rest of host migration doesn't go in.
 static PATCHED: std::sync::Mutex<Option<(usize, usize)>> = std::sync::Mutex::new(None);
 
 /// Patches the game so match lobbies migrate, at `sites`. Whether it did: a patch that doesn't

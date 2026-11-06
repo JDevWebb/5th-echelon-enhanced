@@ -275,8 +275,10 @@ pub enum PlayerAction {
     Block,
     /// Takes their request.
     Accept,
-    /// Turns their request down, or takes the player's own back.
+    /// Turns their request down.
     Decline,
+    /// Takes the player's own request back (the server's decline, worded apart).
+    Cancel,
     /// Ends the friendship.
     Remove,
     Unblock,
@@ -296,7 +298,7 @@ pub async fn player_action(api_url: String, token: &str, action: PlayerAction, i
         PlayerAction::Block => client.block(authed(target(), &token)).await.map(|_| ()),
         PlayerAction::Invite => client.invite(authed(server_api::friends::InviteRequest { id: id.to_string() }, &token)).await.map(|_| ()),
         PlayerAction::Accept => client.accept(authed(target(), &token)).await.map(|_| ()),
-        PlayerAction::Decline => client.decline(authed(target(), &token)).await.map(|_| ()),
+        PlayerAction::Decline | PlayerAction::Cancel => client.decline(authed(target(), &token)).await.map(|_| ()),
         PlayerAction::Remove => client.remove(authed(target(), &token)).await.map(|_| ()),
         PlayerAction::Unblock => client.unblock(authed(target(), &token)).await.map(|_| ()),
     };

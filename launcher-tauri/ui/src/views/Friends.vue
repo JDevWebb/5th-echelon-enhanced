@@ -97,7 +97,7 @@
                   <span class="names"><b :title="p.name">{{ p.name }}</b><small>Hasn't answered yet</small></span>
                 </span>
                 <span class="acts">
-                  <button type="button" class="btn small" :disabled="busy" @click="act('decline', p)">Cancel request</button>
+                  <button type="button" class="btn small" :disabled="busy" @click="act('cancel', p)">Cancel request</button>
                 </span>
               </li>
             </ul>

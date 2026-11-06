@@ -43,7 +43,7 @@
               <p class="muted small sub">Recent</p>
               <div v-for="r in recent" :key="r.address" class="srow">
                 <b>{{ r.label }}</b><small class="muted">{{ r.when }}</small>
-                <button type="button" class="btn small" :disabled="busy" @click="own(r.address)">Connect</button>
+                <button type="button" class="btn small" :disabled="busy || r.in_use" @click="own(r.address)">Connect</button>
               </div>
             </template>
           </section>

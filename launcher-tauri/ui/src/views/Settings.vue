@@ -310,6 +310,7 @@
                 <button type="button" class="btn" :disabled="size >= view.size_range[1] - 0.01" title="Bigger (Ctrl +)" @click="$emit('size', size + 0.1)">+</button>
                 <button v-if="Math.abs(size - 1) > 0.01" type="button" class="btn" title="Ctrl 0" @click="$emit('size', 1)">Reset</button>
               </div>
+              <p v-if="sizeMax !== null && size >= sizeMax - 0.01" class="muted small" role="status">Your screen fits the launcher at up to {{ Math.round(sizeMax * 100) }} %: bigger and part of it wouldn't show.</p>
               <button type="button" class="btn" @click="$emit('fullscreen')">Full screen (F11)</button>
             </section>
             <section v-if="view.classic !== null" class="card">
@@ -392,7 +393,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import { call, listen } from '../lib/tauri.js';
 import Switch from '../components/Switch.vue';
 
-const props = defineProps({ open: { type: String, default: null }, size: { type: Number, default: 1 } });
+const props = defineProps({ open: { type: String, default: null }, size: { type: Number, default: 1 }, sizeMax: { type: Number, default: null } });
 const emit = defineEmits(['size', 'fullscreen', 'changed']);
 
 const NAT = [['auto', 'Automatic'], ['relay', 'Always through the server'], ['off', 'LAN or VPN only']];

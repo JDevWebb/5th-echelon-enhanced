@@ -402,7 +402,8 @@ pub fn player_action(cfg: &Config, action: crate::network::PlayerAction, id: &st
         PlayerAction::Invite => format!("Invited {name} to your game."),
         PlayerAction::Block => format!("Blocked {name}: neither of you sees the other now."),
         PlayerAction::Accept => format!("You and {name} are friends now."),
-        PlayerAction::Decline => format!("No friend request between you and {name} now."),
+        PlayerAction::Decline => format!("Declined {name}'s friend request."),
+        PlayerAction::Cancel => format!("Took back your friend request to {name}."),
         PlayerAction::Remove => format!("Removed {name} from your friends."),
         PlayerAction::Unblock => format!("Unblocked {name}."),
     })

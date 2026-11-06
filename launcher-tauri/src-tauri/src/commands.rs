@@ -1252,6 +1252,7 @@ pub fn player_action(app: tauri::AppHandle, state: tauri::State<Launcher>, actio
         "block" => PlayerAction::Block,
         "accept" => PlayerAction::Accept,
         "decline" => PlayerAction::Decline,
+        "cancel" => PlayerAction::Cancel,
         "remove" => PlayerAction::Remove,
         "unblock" => PlayerAction::Unblock,
         _ => return,
@@ -1627,18 +1628,22 @@ pub fn name_suggestions(api: String, name: String) -> Vec<String> {
 pub struct RecentView {
     address: String,
     label: String,
-    /// "used 2 days ago".
+    /// "used 2 days ago", or "in use now".
     when: String,
+    /// The server the player is on: nothing to connect to.
+    in_use: bool,
 }
 
 #[tauri::command(async)]
-pub fn recent_servers() -> Vec<RecentView> {
+pub fn recent_servers(state: tauri::State<Launcher>) -> Vec<RecentView> {
     let now = identity::now();
+    let current = state.lock().game.as_ref().and_then(|g| g.cfg.current_profile().map(|p| p.server.clone()));
     Prefs::recent_servers()
         .into_iter()
         .map(|r| RecentView {
             label: hooks_config::text::clip(r.name.as_deref().unwrap_or(&r.address), 40),
-            when: format!("used {}", setup::directory::ago(now - r.last_used).replace("within the last hour", "just now")),
+            when: launcher::connect::recent_when(&r.address, r.last_used, now, current.as_deref()),
+            in_use: current.as_deref().is_some_and(|c| c.trim().eq_ignore_ascii_case(r.address.trim())),
             address: r.address,
         })
         .collect()

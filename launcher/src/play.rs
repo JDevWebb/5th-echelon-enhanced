@@ -2369,7 +2369,7 @@ fn people_page(play: &mut Play, game: &Game, ui: &mut egui::Ui) {
                     for p in &people.sent {
                         row(ui, p, &mut |ui| {
                             if ui.add_enabled(!busy, theme::secondary("Cancel request")).clicked() {
-                                act = Some((PlayerAction::Decline, p.clone()));
+                                act = Some((PlayerAction::Cancel, p.clone()));
                             }
                         });
                     }
@@ -2740,10 +2740,12 @@ fn servers_page(play: &mut Play, game: &mut Game, notices: &mut Notices, ctx: &e
                 ui.add_space(8.0);
                 ui.label(theme::muted("Recent").small());
                 let now = identity::now();
+                let current = game.cfg.current_profile().map(|p| p.server.clone());
                 for r in recent {
                     let label = r.name.clone().unwrap_or_else(|| r.address.clone());
-                    let when = format!("used {}", setup::directory::ago(now - r.last_used).replace("within the last hour", "just now"));
-                    if server_row(ui, &label, &when, !play.busy() && !playing) {
+                    let when = crate::connect::recent_when(&r.address, r.last_used, now, current.as_deref());
+                    let in_use = current.as_deref().is_some_and(|c| c.trim().eq_ignore_ascii_case(r.address.trim()));
+                    if server_row(ui, &label, &when, !play.busy() && !playing && !in_use) {
                         connect = Some(r.address.clone());
                     }
                 }
@@ -2978,17 +2980,35 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked:
     if preparing {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(250));
     }
-    let enabled = !play.busy() && blocked.is_none() && !preparing;
+    // A check that failed: the button is its fix, as in the new look (Play.vue): the one fix, all
+    // of them, or where to look; warnings keep Play.
+    let main = main_action(play, preparing);
+    let enabled = match main {
+        MainAction::Play => !play.busy() && blocked.is_none() && !preparing,
+        MainAction::Fixing => false,
+        _ => blocked.is_none(),
+    };
+    let fill = if matches!(main, MainAction::Play) { theme::ACCENT } else { theme::BAD };
     // A split button: the last choice is the button, the arrow beside it offers the others.
     let (button, arrow) = ui
         .allocate_ui_with_layout(egui::vec2(SPLIT_PLAY_WIDTH, 58.0), egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            let label = if preparing { "Checking files…" } else { mode.label() };
-            let button = ui.add_enabled(enabled, theme::play_button(label).corner_radius(egui::CornerRadius { nw: 4, sw: 4, ne: 0, se: 0 }));
-            let arrow = ui.add_enabled(
+            let label = match main {
+                MainAction::Play if preparing => "Checking files…".to_string(),
+                MainAction::Play => mode.label().to_string(),
+                MainAction::Fix(fix) => crate::checks::fix_label(fix).to_string(),
+                MainAction::FixAll(n) => format!("Fix {n} things"),
+                MainAction::SeeWhat => "See what to fix".to_string(),
+                MainAction::Fixing => "Fixing…".to_string(),
+            };
+            let button = ui.add_enabled(
                 enabled,
+                theme::play_button(&label).fill(fill).corner_radius(egui::CornerRadius { nw: 4, sw: 4, ne: 0, se: 0 }),
+            );
+            let arrow = ui.add_enabled(
+                enabled || matches!(main, MainAction::Fix(_) | MainAction::FixAll(_) | MainAction::SeeWhat) && blocked.is_none() && !play.busy(),
                 egui::Button::new("")
-                    .fill(theme::ACCENT)
+                    .fill(fill)
                     .corner_radius(egui::CornerRadius { nw: 0, sw: 0, ne: 4, se: 0 })
                     .min_size(egui::vec2(42.0, 58.0)),
             );
@@ -3090,7 +3110,54 @@ fn play_button(play: &mut Play, game: &mut Game, notices: &mut Notices, blocked:
         button
     };
     if button.clicked() {
-        launch(play, game, notices, mode);
+        match main {
+            MainAction::Play => {
+                launch(play, game, notices, mode);
+            }
+            MainAction::Fix(fix) => {
+                let ctx = ui.ctx().clone();
+                run_fix(play, game, notices, fix, &ctx);
+            }
+            MainAction::FixAll(_) => {
+                let profile = game.cfg.current_profile().cloned().unwrap_or_default();
+                play.server = profile.server;
+                let name = Some(profile.user.username).filter(|n| !n.is_empty());
+                let ctx = ui.ctx().clone();
+                start_setup(play, game, &ctx, notices, name, false);
+            }
+            MainAction::SeeWhat => play.drawer = Some(Drawer::Status),
+            MainAction::Fixing => {}
+        }
+    }
+}
+
+/// What the big button does: Play, or (a check failed) its fix, as in the new look.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MainAction {
+    Play,
+    /// The one failed check's fix.
+    Fix(Fix),
+    /// Several failed checks with fixes: Fix everything.
+    FixAll(usize),
+    /// Failed checks with no fix the launcher makes: the Status panel says what.
+    SeeWhat,
+    /// A fix (or the setup) is running.
+    Fixing,
+}
+
+fn main_action(play: &Play, preparing: bool) -> MainAction {
+    let failing: Vec<&Check> = play.checks.iter().filter(|c| c.status == Status::Fail).collect();
+    if failing.is_empty() || preparing {
+        return MainAction::Play;
+    }
+    if play.busy() {
+        return MainAction::Fixing;
+    }
+    let fixes: Vec<Fix> = failing.iter().filter_map(|c| c.fix).collect();
+    match fixes.len() {
+        1 => MainAction::Fix(fixes[0]),
+        n if n > 1 && crate::checks::fixable(&play.checks) => MainAction::FixAll(n),
+        _ => MainAction::SeeWhat,
     }
 }
 

@@ -392,12 +392,18 @@ fn display(app: &mut App, ui: &mut egui::Ui) {
     let tauri = std::env::current_exe().ok().and_then(|e| crate::updater::tauri_beside(&e)).is_some_and(|p| p.is_file());
     if tauri && !crate::scale::gamescope() {
         section(ui, "Interface", |ui| {
+            // Worded and done as the new look's own switch (Settings.vue): a button, now.
             ui.label(theme::muted(
-                "This is the classic interface. The new one (from 0.5.0) opens instead wherever this PC can run it (never in the Steam Deck's gaming mode). Settings › Display there switches back.",
+                "This is the classic interface. The new one (from 0.5.0) opens wherever this PC can run it (never in the Steam Deck's gaming mode). Settings › Display there switches back.",
             ));
-            let mut new = !Prefs::classic_interface();
-            if theme::switch(ui, &mut new, "Switch to the new interface (from the next start)").changed() {
-                Prefs::set_classic_interface(!new);
+            if ui.add(theme::secondary("Switch to the new interface")).clicked() {
+                Prefs::set_classic_interface(false);
+                // Started again, this launcher opens the new interface (front_door.rs), or this
+                // one again where the new one can't run.
+                match std::env::current_exe().map(|exe| std::process::Command::new(exe).spawn()) {
+                    Ok(Ok(_)) => ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close),
+                    _ => tracing::warn!("switching to the new interface: couldn't start the launcher again; it opens from the next start"),
+                }
             }
         });
     }
