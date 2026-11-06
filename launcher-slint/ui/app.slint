@@ -9,12 +9,13 @@ import "fonts/IBMPlexMono-Regular.ttf";
 import { Theme, Type, ThemeChoice } from "theme.slint";
 import { EchelonMark, Splash } from "brand.slint";
 import { Btn } from "widgets.slint";
-import { TitleBar, SideMenu, ActivityBar, ActivityView, ActionItem, NotYet } from "chrome.slint";
+import { TitleBar, SideMenu, ActivityBar, ActivityView, ActionItem } from "chrome.slint";
 import { PlayScreen } from "play.slint";
 import { MatchesScreen } from "matches.slint";
+import { Page, Dialog, Row, RowButton } from "rows.slint";
 import { InfoView, PlayButton, ServerCard, ServerRow, CheckRow, FriendRow, OtherRow, ElsewhereRow, ModeItem, NoticeView, NoticeRow, LobbyRow, PersonRow, SettingRow } from "types.slint";
 
-export { Theme, ThemeChoice, InfoView, PlayButton, ServerCard, ServerRow, CheckRow, FriendRow, OtherRow, ElsewhereRow, ModeItem, NoticeView, NoticeRow, LobbyRow, PersonRow, SettingRow, ActivityView, ActionItem }
+export { Row, RowButton, Theme, ThemeChoice, InfoView, PlayButton, ServerCard, ServerRow, CheckRow, FriendRow, OtherRow, ElsewhereRow, ModeItem, NoticeView, NoticeRow, LobbyRow, PersonRow, SettingRow, ActivityView, ActionItem }
 
 export component AppWindow inherits Window {
     title: "5th Echelon Enhanced " + release;
@@ -36,6 +37,8 @@ export component AppWindow inherits Window {
     in property <string> splash-doing: "Checking your game and server…";
     in property <InfoView> info;
     in property <ActivityView> activity;
+    // Chat has messages the player hasn't seen (the side menu's dot).
+    in property <bool> chat-unread;
     // A watched match has a seat ("Ranked · Station"), or "".
     in property <string> seat-open;
 
@@ -107,7 +110,6 @@ export component AppWindow inherits Window {
     callback cycle-theme();
     callback go(string);
     callback whats-new();
-    callback open-classic();
     callback act(int, string);
     callback dismiss(int);
     callback join-watched();
@@ -140,12 +142,50 @@ export component AppWindow inherits Window {
     callback quick(ModeItem);
     callback watch(int, string);
     callback retry-lobbies();
+    // The other screens, as rows (pages.rs): the one shown, and a dialog over everything.
+    in property <string> page-kicker;
+    in property <string> page-title;
+    in property <string> page-summary;
+    in property <[string]> page-sections;
+    in property <[string]> page-section-ids;
+    in property <string> page-section;
+    in property <[Row]> page-rows;
+    callback page-section-chosen(string);
+    callback page-toggled(string, bool);
+    callback page-chosen(string, int);
+    callback page-slid(string, float);
+    callback page-edited(string, string);
+    callback page-accepted(string, string);
+    callback page-pressed(string);
+    in property <bool> dialog-shown;
+    in property <string> dialog-kicker;
+    in property <string> dialog-title;
+    in property <length> dialog-width: 520px;
+    in property <[Row]> dialog-rows;
+    callback dialog-toggled(string, bool);
+    callback dialog-chosen(string, int);
+    callback dialog-slid(string, float);
+    callback dialog-edited(string, string);
+    callback dialog-accepted(string, string);
+    callback dialog-pressed(string);
+    // The update banner: its line and its button, when a newer release waits.
+    in property <string> banner;
+    in property <string> banner-button;
+    callback banner-now();
+    callback banner-later();
+
     // A key the screens didn't take: the arrows move the focus (a controller's d-pad).
     callback move-focus(bool);
+    // F11 (full screen), Ctrl + / Ctrl − / Ctrl 0 (the launcher's size).
+    callback shortcut(string);
 
     forward-focus: keys;
     keys := FocusScope {
         key-pressed(e) => {
+            if e.text == Key.F11 { root.shortcut("fullscreen"); return accept; }
+            if e.modifiers.control && (e.text == "+" || e.text == "=") { root.shortcut("bigger"); return accept; }
+            if e.modifiers.control && e.text == "-" { root.shortcut("smaller"); return accept; }
+            if e.modifiers.control && e.text == "0" { root.shortcut("size-reset"); return accept; }
             if e.text == Key.DownArrow || e.text == Key.RightArrow { root.move-focus(true); return accept; }
             if e.text == Key.UpArrow || e.text == Key.LeftArrow { root.move-focus(false); return accept; }
             reject
@@ -162,10 +202,25 @@ export component AppWindow inherits Window {
             close => { root.close-window(); }
             cycle-theme => { root.cycle-theme(); }
         }
+        if root.banner != "": Rectangle {
+            height: bl.preferred-height;
+            background: Theme.selected;
+            Rectangle { y: parent.height - 1px; height: 1px; background: Theme.accent-soft; }
+            bl := HorizontalLayout {
+                padding: 8px;
+                padding-left: 20px;
+                padding-right: 16px;
+                spacing: 12px;
+                Text { text: root.banner; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; wrap: word-wrap; }
+                Btn { text: root.banner-button; kind: "primary"; small: true; clicked => { root.banner-now(); } }
+                Btn { text: "Later"; small: true; clicked => { root.banner-later(); } }
+            }
+        }
         HorizontalLayout {
             vertical-stretch: 1;
             SideMenu {
-                current: root.screen;
+                current: root.screen == "setup" ? "play" : root.screen == "host" ? "servers" : root.screen;
+                unread: root.chat-unread;
                 compact: root.height < 720px;
                 community: root.info.community;
                 requests: root.info.requests;
@@ -271,15 +326,21 @@ export component AppWindow inherits Window {
                         go(s) => { root.go(s); }
                         retry => { root.retry-lobbies(); }
                     }
-                    if root.screen != "play" && root.screen != "matches": NotYet {
-                        name: root.screen == "friends" ? "FRIENDS"
-                            : root.screen == "servers" ? "SERVERS"
-                            : root.screen == "chat" ? "CHAT"
-                            : root.screen == "intel" ? "INTEL"
-                            : root.screen == "support" ? "SUPPORT"
-                            : root.screen == "settings" ? "SETTINGS"
-                            : "WHAT'S NEW";
-                        open-classic => { root.open-classic(); }
+                    if root.screen != "play" && root.screen != "matches": Page {
+                        kicker: root.page-kicker;
+                        title: root.page-title;
+                        summary: root.page-summary;
+                        sections: root.page-sections;
+                        section-ids: root.page-section-ids;
+                        section: root.page-section;
+                        rows: root.page-rows;
+                        go-section(s) => { root.page-section-chosen(s); }
+                        toggled(a, b) => { root.page-toggled(a, b); }
+                        chosen(a, b) => { root.page-chosen(a, b); }
+                        slid(a, b) => { root.page-slid(a, b); }
+                        edited(a, b) => { root.page-edited(a, b); }
+                        accepted(a, b) => { root.page-accepted(a, b); }
+                        pressed(a) => { root.page-pressed(a); }
                     }
 
                     // A watched match has a seat.
@@ -313,6 +374,19 @@ export component AppWindow inherits Window {
                 }
             }
         }
+    }
+
+    if root.dialog-shown: Dialog {
+        kicker: root.dialog-kicker;
+        title: root.dialog-title;
+        rows: root.dialog-rows;
+        dialog-width: root.dialog-width;
+        toggled(a, b) => { root.dialog-toggled(a, b); }
+        chosen(a, b) => { root.dialog-chosen(a, b); }
+        slid(a, b) => { root.dialog-slid(a, b); }
+        edited(a, b) => { root.dialog-edited(a, b); }
+        accepted(a, b) => { root.dialog-accepted(a, b); }
+        pressed(a) => { root.dialog-pressed(a); }
     }
 
     // The splash, fading out once the first look is in.

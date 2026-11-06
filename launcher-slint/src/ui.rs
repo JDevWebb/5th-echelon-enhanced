@@ -20,6 +20,7 @@ use slint::VecModel;
 use crate::core;
 use crate::core::Changed;
 use crate::core::Core;
+use crate::tauri::Manager;
 use crate::AppWindow;
 
 /// What the window shows and needs to remember between looks.
@@ -83,9 +84,18 @@ pub struct Ui {
     core: Arc<Core>,
     window: slint::Weak<AppWindow>,
     seen: Mutex<Seen>,
-    /// Looks running now, so a slow one isn't asked for again while it runs.
+    /// Looks running now, so a slow one isn't asked for again while it runs; and those asked
+    /// for again meanwhile (they run once more when it ends).
     running: Mutex<std::collections::HashSet<&'static str>>,
+    again: Mutex<std::collections::HashSet<&'static str>>,
     quit: AtomicBool,
+    /// The app the command modules live in (shell.rs), the pages and dialogs, and what's done
+    /// on them, in order, on one thread of its own.
+    app: std::sync::OnceLock<crate::tauri::AppHandle>,
+    pub(crate) pages: crate::shell::Pages,
+    actions: Mutex<Option<std::sync::mpsc::Sender<Box<dyn FnOnce(&Arc<Ui>) + Send>>>>,
+    /// The system's own scaling, before the player's size.
+    base_scale: Mutex<f32>,
 }
 
 impl Ui {
@@ -108,9 +118,85 @@ impl Ui {
             .ok();
     }
 
+    /// Runs `f` on a worker thread; asked for again while it runs, it runs once more after.
+    pub(crate) fn spawn_named(self: &Arc<Self>, name: &'static str, f: impl Fn(&Arc<Ui>) + Send + Sync + 'static) {
+        {
+            let mut running = self.running.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+            if running.contains(name) {
+                self.again.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(name);
+                return;
+            }
+            running.insert(name);
+        }
+        let ui = self.clone();
+        std::thread::Builder::new()
+            .name(name.into())
+            .spawn(move || loop {
+                f(&ui);
+                let mut running = ui.running.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+                if ui.again.lock().unwrap_or_else(std::sync::PoisonError::into_inner).remove(name) {
+                    continue;
+                }
+                running.remove(name);
+                break;
+            })
+            .ok();
+    }
+
+    /// Something the player did on a page or a dialog: done in order, on the actions thread.
+    pub(crate) fn act(self: &Arc<Self>, f: impl FnOnce(&Arc<Ui>) + Send + 'static) {
+        if let Some(tx) = self.actions.lock().unwrap_or_else(std::sync::PoisonError::into_inner).as_ref() {
+            let _ = tx.send(Box::new(f));
+        }
+    }
+
     /// Runs `f` on the window's thread with the window, if it's still open.
     fn show(&self, f: impl FnOnce(&AppWindow) + Send + 'static) {
         let _ = self.window.upgrade_in_event_loop(move |w| f(&w));
+    }
+
+    pub(crate) fn window(&self) -> &slint::Weak<AppWindow> {
+        &self.window
+    }
+
+    pub(crate) fn app(&self) -> crate::tauri::AppHandle {
+        self.app.get().cloned().expect("the app is made before the window runs")
+    }
+
+    pub(crate) fn screen(&self) -> String {
+        self.seen().screen.clone()
+    }
+
+    pub(crate) fn base_scale(&self) -> f32 {
+        *self.base_scale.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// To a screen ("settings:network" opens Settings at Network). Play is the guided setup
+    /// while that's needed.
+    pub(crate) fn go(self: &Arc<Self>, to: &str) {
+        let (screen, section) = to.split_once(':').unwrap_or((to, ""));
+        let mut screen = screen.to_string();
+        if screen == "play" && self.setup_shown() {
+            screen = "setup".into();
+        }
+        if !section.is_empty() {
+            let section = section.to_string();
+            self.with_page(&screen, |p| p.section(&section));
+        }
+        self.seen().screen = screen.clone();
+        let shown = screen.clone();
+        self.show(move |w| w.set_screen(s(shown)));
+        match screen.as_str() {
+            "matches" => self.load_lobbies(),
+            "play" => self.reload_play(),
+            _ => self.load_page(),
+        }
+    }
+
+    /// Whether the guided setup shows instead of Play.
+    fn setup_shown(&self) -> bool {
+        let info = self.seen().info.clone();
+        self.pages.setup.lock().unwrap_or_else(std::sync::PoisonError::into_inner).shown(&info)
     }
 }
 
@@ -284,6 +370,12 @@ impl Ui {
             let info = core::info(&ui.core);
             ui.seen().info = info;
             ui.push_info();
+            // The guided setup comes and goes with what's set up.
+            let screen = ui.screen();
+            let setup = ui.setup_shown();
+            if (screen == "play" && setup) || (screen == "setup" && !setup) {
+                ui.go("play");
+            }
         });
     }
 
@@ -318,6 +410,14 @@ impl Ui {
             let (support_status, support_title, support_why) = list.support.clone().unwrap_or_default();
             let (fixable, busy, trouble) = (list.fixable, list.busy, list.tone == Some("fail"));
             let signed_in = list.signed_in;
+            // The server refused this launcher as outdated: the update banner says so.
+            static TOLD: AtomicBool = AtomicBool::new(false);
+            let outdated = list.checks.iter().any(|c| c.fix.is_some_and(|f| f.0 == "update-launcher"));
+            if outdated && !TOLD.swap(true, Ordering::Relaxed) {
+                crate::update::outdated(&ui.app());
+            } else if !outdated {
+                TOLD.store(false, Ordering::Relaxed);
+            }
             {
                 let mut seen = ui.seen();
                 seen.checks = Some(list);
@@ -601,7 +701,7 @@ impl Ui {
     }
 
     /// Everything on Play asked again (a setup or a fix ended).
-    fn reload_play(self: &Arc<Self>) {
+    pub(crate) fn reload_play(self: &Arc<Self>) {
         self.load_info();
         self.load_checks(false);
         self.load_servers(false);
@@ -745,21 +845,6 @@ fn lobby_row(l: &launcher::matches::Lobby) -> crate::LobbyRow {
     }
 }
 
-/// The classic launcher beside this one, started on its own window.
-fn open_classic() {
-    let Ok(exe) = std::env::current_exe() else { return };
-    let dir = exe.parent().map(std::path::Path::to_path_buf).unwrap_or_default();
-    let names: &[&str] = if cfg!(windows) { &["launcher.exe"] } else { &["launcher", "launcher-linux-x86_64"] };
-    for name in names {
-        let path = dir.join(name);
-        if path.is_file() && path != exe {
-            let _ = std::process::Command::new(path).env("FE_CLASSIC", "1").spawn();
-            return;
-        }
-    }
-    tracing::info!("No classic launcher beside {}", exe.display());
-}
-
 /// Builds the window, joins it to the core and runs it until it closes.
 pub fn run() -> Result<(), slint::PlatformError> {
     let window = AppWindow::new()?;
@@ -774,34 +859,114 @@ pub fn run() -> Result<(), slint::PlatformError> {
 
     // The core tells the window what changed; the window asks again.
     let ui_slot: Arc<Mutex<Option<std::sync::Weak<Ui>>>> = Arc::new(Mutex::new(None));
-    let notify: core::Notify = {
+    let upgrade = {
         let slot = ui_slot.clone();
+        move || slot.lock().ok().and_then(|s| s.as_ref().and_then(std::sync::Weak::upgrade))
+    };
+    let notify: core::Notify = {
+        let upgrade = upgrade.clone();
         Arc::new(move |what| {
-            let Some(ui) = slot.lock().ok().and_then(|s| s.as_ref().and_then(std::sync::Weak::upgrade)) else {
-                return;
-            };
+            let Some(ui) = upgrade() else { return };
             match what {
                 Changed::Activity => ui.load_activity(),
-                Changed::Checks => ui.reload_play(),
-                Changed::NeedsName => {}
+                Changed::Checks => {
+                    ui.reload_play();
+                    if ui.screen() == "setup" {
+                        ui.load_page();
+                    }
+                }
+                Changed::NeedsName => ui.needs_name(),
             }
         })
     };
     let core = Arc::new(Core::new(notify));
+    // A first setup: no game or no server yet when the launcher starts (its options come last).
+    let info = core::info(&core);
+    let fresh = !info.managed && (info.game_dir.is_none() || info.server.is_none());
     let ui = Arc::new(Ui {
-        core,
+        core: core.clone(),
         window: window.as_weak(),
         seen: Mutex::new(Seen {
             screen: "play".into(),
             started: Some(Instant::now()),
+            info,
             ..Seen::default()
         }),
         running: Mutex::new(Default::default()),
+        again: Mutex::new(Default::default()),
         quit: AtomicBool::new(false),
+        app: std::sync::OnceLock::new(),
+        pages: crate::shell::Pages::new(fresh),
+        actions: Mutex::new(None),
+        base_scale: Mutex::new(window.window().scale_factor()),
     });
     *ui_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::downgrade(&ui));
 
+    // The app the command modules live in: their states, their events, the window.
+    let events: crate::tauri::EventSink = {
+        let upgrade = upgrade.clone();
+        Arc::new(move |name: &str| {
+            if let Some(ui) = upgrade() {
+                ui.event(name);
+            }
+        })
+    };
+    let hooks: crate::tauri::WindowHooks = {
+        let upgrade = upgrade.clone();
+        Arc::new(move |call| upgrade().is_some_and(|ui| ui.window_call(call)))
+    };
+    let app = crate::tauri::Builder::new()
+        .manage(crate::commands::Launcher(core))
+        .manage(crate::feedback::Feedback::default())
+        .manage(crate::whats_new::WhatsNew::default())
+        .manage(crate::intel::Intel::default())
+        .manage(crate::support::Support::default())
+        .manage(crate::chat::Chat::default())
+        .manage(crate::host::Host::default())
+        .manage(crate::update::Update::default())
+        .build(events, hooks);
+    let _ = ui.app.set(app.clone());
+
+    // What's done on the pages and dialogs, in order.
+    let (tx, rx) = std::sync::mpsc::channel::<Box<dyn FnOnce(&Arc<Ui>) + Send>>();
+    *ui.actions.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(tx);
+    {
+        let ui = ui.clone();
+        std::thread::Builder::new()
+            .name("actions".into())
+            .spawn(move || {
+                while let Ok(f) = rx.recv() {
+                    let _ = launcher::task::guarded(|| {
+                        f(&ui);
+                        Ok::<_, String>(())
+                    });
+                }
+            })
+            .ok();
+    }
+
     wire(&window, &ui);
+    crate::shell::wire(&window, &ui);
+    crate::feedback::start(&app);
+    crate::support::start(&app);
+    crate::chat::start(&app);
+    crate::update::start(&app);
+    told_once(&ui);
+    // The player's size for the launcher, kept from before.
+    let size = Prefs::ui_scale();
+    if (size - 1.0).abs() > 0.01 {
+        // Once the window is up with its own scale (the system's), the player's on top.
+        let ui2 = ui.clone();
+        slint::Timer::single_shot(Duration::from_millis(400), move || {
+            if let Some(w) = ui2.window().upgrade() {
+                *ui2.base_scale.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = w.window().scale_factor();
+            }
+            ui2.apply_size(size);
+        });
+    }
+    if ui.setup_shown() {
+        ui.go("play");
+    }
 
     // Gamescope (the Deck's gaming mode): full screen, no window buttons.
     if gamescope() {
@@ -817,11 +982,43 @@ pub fn run() -> Result<(), slint::PlatformError> {
     ui.load_news();
     ui.load_notice();
     ui.load_once();
+    ui.load_banner();
+    ui.check_dialogs(true);
     start_ticker(&ui);
 
     let result = window.run();
     ui.quit.store(true, Ordering::Relaxed);
+    // A server started here stops with the launcher.
+    ui.app().state::<crate::host::Host>().stop();
     result
+}
+
+/// At start, once: a player who agreed to the diagnostics before 0.4.3 is told what they now
+/// include (not asked again).
+fn told_once(ui: &Arc<Ui>) {
+    let mut inner = ui.core.lock();
+    if inner.game.as_ref().is_some_and(|g| g.cfg.hook_config.send_diagnostics) && Prefs::tell_log_excerpt() {
+        inner.notices.info(
+            "New in the game's diagnostics: when something goes wrong, the server can ask for the 15 minutes of the game's log before it (at most once an hour, never the whole log, private details hidden). Settings › Feedback turns the diagnostics off.",
+        );
+    }
+}
+
+impl Ui {
+    /// A setup stopped for a name: the setup's name step when it shows, else the account dialog.
+    fn needs_name(self: &Arc<Self>) {
+        let Some((server, suggested, taken)) = self.core.lock().needs_name.take() else { return };
+        if self.screen() == "setup" {
+            self.pages
+                .setup
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .needs_name(server, suggested, taken);
+            self.load_page();
+        } else {
+            self.open_dialog(crate::pages::dialogs::Dialog::Account(crate::pages::dialogs::Account::new(server, suggested, taken, false)));
+        }
+    }
 }
 
 /// Whether the launcher runs inside gamescope (the Steam Deck's gaming mode), as the egui
@@ -872,6 +1069,24 @@ fn start_ticker(ui: &Arc<Ui>) {
                 if screen == "matches" && tick % 10 == 0 || watching && tick % 20 == 0 {
                     ui.load_lobbies();
                 }
+                // The page shown, as often as it asks; chat's dot every few seconds.
+                let every = ui.with_page(&screen, |p| p.refresh_every()).unwrap_or(0);
+                let due = ui.pages.refreshed.lock().map(|t| t.elapsed() >= Duration::from_secs(every)).unwrap_or(false);
+                if every > 0 && due {
+                    ui.load_page();
+                }
+                if tick % 6 == 3 {
+                    ui.load_glance();
+                    ui.load_banner();
+                }
+                if tick % 2 == 1 {
+                    let ui2 = ui.clone();
+                    ui.show(move |w| {
+                        use slint::winit_030::WinitWindowAccessor as _;
+                        let focused = w.window().with_winit_window(|win| win.has_focus()).unwrap_or(true);
+                        ui2.pages.focused.store(focused, Ordering::Relaxed);
+                    });
+                }
             }
         })
         .ok();
@@ -912,7 +1127,14 @@ fn wire(w: &AppWindow, ui: &Arc<Ui>) {
     });
     w.on_close_window({
         let weak = weak.clone();
+        let ui = ui.clone();
         move || {
+            // A report still sending: wait for it, or close and send it next time.
+            let app = ui.app();
+            if crate::feedback::report_sending(app.state::<crate::feedback::Feedback>()) {
+                ui.open_dialog(crate::pages::dialogs::Dialog::Closing { waiting: false });
+                return;
+            }
             if let Some(w) = weak.upgrade() {
                 let _ = w.hide();
             }
@@ -945,26 +1167,20 @@ fn wire(w: &AppWindow, ui: &Arc<Ui>) {
     });
     w.on_go({
         let ui = ui.clone();
-        let weak = weak.clone();
-        move |screen| {
-            ui.seen().screen = screen.to_string();
-            if let Some(w) = weak.upgrade() {
-                w.set_screen(screen.clone());
-            }
-            if screen == "matches" {
-                ui.load_lobbies();
-            }
-        }
+        move |screen| ui.go(&screen)
     });
     w.on_whats_new({
-        let weak = weak.clone();
+        let ui = ui.clone();
         move || {
-            if let Some(w) = weak.upgrade() {
-                w.set_screen(s("whats-new"));
+            if let Some(view) = crate::whats_new::whats_new_again() {
+                ui.open_dialog(crate::pages::dialogs::Dialog::WhatsNew {
+                    view: crate::pages::json(&view),
+                    on_start: false,
+                    closed: false,
+                });
             }
         }
     });
-    w.on_open_classic(open_classic);
     w.on_act({
         let ui = ui.clone();
         let weak = weak.clone();
@@ -972,6 +1188,21 @@ fn wire(w: &AppWindow, ui: &Arc<Ui>) {
             let ui2 = ui.clone();
             let _ = &weak;
             std::thread::spawn(move || {
+                // A report, a suggestion or a support message that couldn't be sent: theirs.
+                let app = ui2.app();
+                let pressed = match action.as_str() {
+                    "retry" => Some(launcher::activity::Action::Retry),
+                    "without-logs" => Some(launcher::activity::Action::WithoutLogs),
+                    _ => None,
+                };
+                if let Some(pressed) = pressed {
+                    let id = id as u64;
+                    if crate::feedback::take_action(&app, id, pressed) || crate::intel::take_action(&app, id, pressed) || crate::support::take_action(&app, id, pressed) {
+                        ui2.core.lock().notices.press(id, pressed);
+                        ui2.load_activity();
+                        return;
+                    }
+                }
                 if let Some(text) = core::activity_action(&ui2.core, id as u64, &action) {
                     ui2.show(move |w| w.invoke_copy_text(s(text)));
                 }
@@ -999,22 +1230,18 @@ fn wire(w: &AppWindow, ui: &Arc<Ui>) {
                     let mode = ui.seen().info.play_mode;
                     ui.spawn("play", move |ui| {
                         core::play(&ui.core, mode);
+                        ui.check_dialogs(false);
                         ui.load_info();
                     });
                 }
-                Press::Fix(id) => ui.spawn("fix", move |ui| {
-                    if !core::fix(&ui.core, id) {
-                        say_setup(ui);
-                    }
-                }),
+                Press::Fix(id) => ui.spawn("fix", move |ui| fix_or_setup(ui, id)),
                 Press::FixEverything => ui.spawn("fix", |ui| {
                     core::fix_everything(&ui.core);
                 }),
                 Press::Setup => {
-                    ui.spawn("setup", |ui| say_setup(ui));
-                    if let Some(w) = weak.upgrade() {
-                        w.set_screen(s("servers"));
-                    }
+                    ui.pages.setup.lock().unwrap_or_else(std::sync::PoisonError::into_inner).editing = true;
+                    let _ = &weak;
+                    ui.go("play");
                 }
             }
         }
@@ -1027,6 +1254,7 @@ fn wire(w: &AppWindow, ui: &Arc<Ui>) {
             ui.spawn("play", move |ui| {
                 Prefs::set_play_mode(mode);
                 core::play(&ui.core, mode);
+                ui.check_dialogs(false);
                 ui.load_info();
             });
             ui.push_info();
@@ -1059,13 +1287,7 @@ fn wire(w: &AppWindow, ui: &Arc<Ui>) {
     });
     w.on_fix({
         let ui = ui.clone();
-        move |id| {
-            ui.spawn("fix", move |ui| {
-                if id == "update-launcher" || !core::fix(&ui.core, &id) {
-                    say_setup(ui);
-                }
-            })
-        }
+        move |id| ui.spawn("fix", move |ui| fix_or_setup(ui, &id))
     });
     w.on_fix_everything({
         let ui = ui.clone();
@@ -1101,6 +1323,7 @@ fn wire(w: &AppWindow, ui: &Arc<Ui>) {
         move |id, name| {
             ui.spawn("join", move |ui| {
                 core::join_friend(&ui.core, &id, &name);
+                ui.check_dialogs(false);
                 ui.load_info();
             })
         }
@@ -1129,13 +1352,13 @@ fn wire(w: &AppWindow, ui: &Arc<Ui>) {
     w.on_ask_review({
         let ui = ui.clone();
         move || {
-            ui.spawn("review", |ui| {
-                ui.core
-                    .lock()
-                    .notices
-                    .info("Ask for a review in Support (the classic launcher has it until Support comes here).");
-                ui.load_activity();
-            })
+            let name = ui.seen().info.name_not_allowed.clone().unwrap_or_default();
+            let app = ui.app();
+            crate::support::draft(
+                &app,
+                format!("Please review my name {name}: I was asked to choose another, and I think that's a mistake. What it means: "),
+            );
+            ui.go("support");
         }
     });
 
@@ -1177,6 +1400,7 @@ fn wire(w: &AppWindow, ui: &Arc<Ui>) {
             ui.show(|w| w.set_joining(true));
             ui.spawn("join", move |ui| {
                 core::join_match(&ui.core, room as u32);
+                ui.check_dialogs(false);
                 ui.show(|w| w.set_joining(false));
                 ui.load_info();
             })
@@ -1188,6 +1412,7 @@ fn wire(w: &AppWindow, ui: &Arc<Ui>) {
             let (mode, playlist) = if m.coop { (PlayMode::Coop, None) } else { (PlayMode::Svm, Some(m.playlist as u32)) };
             ui.spawn("play", move |ui| {
                 core::new_match(&ui.core, mode, playlist);
+                ui.check_dialogs(false);
                 ui.load_info();
             })
         }
@@ -1198,6 +1423,7 @@ fn wire(w: &AppWindow, ui: &Arc<Ui>) {
             let (mode, playlist) = if m.coop { (PlayMode::Coop, None) } else { (PlayMode::Svm, Some(m.playlist as u32)) };
             ui.spawn("play", move |ui| {
                 core::quick_match(&ui.core, mode, playlist);
+                ui.check_dialogs(false);
                 ui.load_info();
             })
         }
@@ -1227,6 +1453,7 @@ fn wire(w: &AppWindow, ui: &Arc<Ui>) {
             if let Some((room, _)) = seat {
                 ui.spawn("join", move |ui| {
                     core::join_match(&ui.core, room);
+                    ui.check_dialogs(false);
                     ui.load_info();
                 });
             }
@@ -1245,11 +1472,16 @@ fn wire(w: &AppWindow, ui: &Arc<Ui>) {
     });
 }
 
-/// The setup's steps aren't in the trial yet: where to do them.
-fn say_setup(ui: &Arc<Ui>) {
-    ui.core
-        .lock()
-        .notices
-        .info("Choosing a server and setting up an account are the setup's: this trial doesn't have it yet, so use the classic launcher for them.");
-    ui.load_activity();
+/// A check's fix: the launcher's own, the update, or the setup's server step (choosing a
+/// server, setting up the account).
+fn fix_or_setup(ui: &Arc<Ui>, id: &str) {
+    if id == "update-launcher" {
+        let app = ui.app();
+        crate::update::update_asked(app.clone(), app.state::<crate::update::Update>());
+        return;
+    }
+    if !core::fix(&ui.core, id) {
+        ui.pages.setup.lock().unwrap_or_else(std::sync::PoisonError::into_inner).editing = true;
+        ui.go("play");
+    }
 }

@@ -62,10 +62,10 @@ pub fn run(dir: PathBuf) -> Result<(), slint::PlatformError> {
             name: "matches-empty",
             set: matches_empty,
         },
-        Shot {
-            name: "friends-not-yet",
-            set: |w| w.set_screen(s("friends")),
-        },
+        Shot { name: "settings", set: settings },
+        Shot { name: "friends", set: friends },
+        Shot { name: "dialog", set: dialog },
+        Shot { name: "setup", set: setup },
     ]);
     // Every shot in each look and size, one after another on the window's own clock.
     let mut steps = Vec::new();
@@ -244,6 +244,132 @@ fn base(w: &AppWindow) {
     w.set_matches_ready(true);
     w.set_activity(crate::ActivityView::default());
     w.set_seat_open(s(""));
+    w.set_dialog_shown(false);
+}
+
+fn rows(list: Vec<crate::pages::R>) -> ModelRc<crate::Row> {
+    model(list.iter().map(crate::shell::row).collect())
+}
+
+fn settings(w: &AppWindow) {
+    use crate::pages::*;
+    w.set_screen(s("settings"));
+    let sections = [
+        ("game", "Game"),
+        ("network", "Network"),
+        ("servers", "Servers"),
+        ("identity", "Identity"),
+        ("notifications", "Notifications"),
+        ("save", "Save game"),
+        ("client", "5th Echelon client"),
+        ("advanced", "Advanced"),
+        ("display", "Display"),
+        ("feedback", "Feedback"),
+        ("about", "About"),
+    ];
+    w.set_page_kicker(s("Loadout"));
+    w.set_page_title(s("Settings"));
+    w.set_page_summary(s("Game"));
+    w.set_page_sections(model(sections.iter().map(|(_, l)| s(l)).collect()));
+    w.set_page_section_ids(model(sections.iter().map(|(i, _)| s(i)).collect()));
+    w.set_page_section(s("game"));
+    let mut r = Rows::default();
+    r.card("Game folder");
+    r.add(text("C:\\Games\\Splinter Cell Blacklist"));
+    r.add(buttons(vec![b("pick", "Choose folder…"), b("open", "Open folder")]));
+    r.card("Options");
+    r.add(segments(
+        "renderer",
+        "Renderer",
+        &[("dx11".into(), "DirectX 11 (recommended)".into()), ("dx9".into(), "DirectX 9".into())],
+        "dx11",
+    ));
+    r.add(switch("overlay", "In-game overlay", true));
+    r.add(choice("key", "Opened with", &[("F1".into(), "F1".into()), ("F2".into(), "F2".into())], "F2"));
+    r.add(note(
+        "On most laptops, and some keyboards, hold Fn and press F2. If nothing happens, pick another key here.",
+    ));
+    let mut m = switch("mouse", "Mouse moves 1:1", true)
+        .sub("The game caps how far the view can turn in one frame, so fast flicks feel like the mouse slows down. This widens that cap for a linear, 1:1 feel.");
+    m.text = "RECOMMENDED".into();
+    r.add(m);
+    r.add(switch("brighten", "Brighten the picture", true));
+    r.add(slider("brightness", "Brightness", 120.0, 50.0, 200.0, "1.20"));
+    r.add(
+        field("cmd", "Extra command line", "")
+            .placeholder("Unreal Engine options")
+            .button(b("save", "Save").enabled(false)),
+    );
+    r.card("Connection test");
+    r.add(result("Server config", "ok", ""));
+    r.add(result("Signing in to the game service", "warn", "Slow to answer (900 ms)"));
+    r.add(result("The server's helper for playing over the internet", "fail", "No answer on UDP 13000"));
+    w.set_page_rows(rows(r.done()));
+}
+
+fn friends(w: &AppWindow) {
+    use crate::pages::*;
+    w.set_screen(s("friends"));
+    w.set_page_kicker(s("Squad"));
+    w.set_page_title(s("Friends"));
+    w.set_page_summary(s(""));
+    w.set_page_sections(model(vec![]));
+    w.set_page_section_ids(model(vec![]));
+    let mut r = Rows::default();
+    r.add(segments(
+        "tab",
+        "",
+        &[
+            ("friends".into(), "Friends · 2/5".into()),
+            ("requests".into(), "Requests · 1".into()),
+            ("find".into(), "Find players".into()),
+            ("blocked".into(), "Blocked".into()),
+        ],
+        "friends",
+    ));
+    r.out();
+    r.add(item("Kestrel", "In a Spies vs Mercs lobby · K7QF-2M9D").tone("accent").buttons(vec![
+        b("join", "Join").kind("primary"),
+        b("rm", "Remove").kind("fix"),
+        b("bl", "Block").kind("fix"),
+    ]));
+    r.add(
+        item("Marlow", "Co-op · Opium Farm, under way")
+            .tone("accent")
+            .buttons(vec![b("rm", "Remove").kind("fix"), b("bl", "Block").kind("fix")]),
+    );
+    r.add(
+        item("Quillon", "Offline")
+            .tone("muted")
+            .buttons(vec![b("rm", "Remove").kind("fix"), b("bl", "Block").kind("fix")]),
+    );
+    r.card("Playing on other servers");
+    r.add(
+        item("Ravel_77", "On EU (Falkenstein, Germany): to play together, one of you joins the other's server")
+            .tone("warn")
+            .button(b("sw", "Switch server")),
+    );
+    w.set_page_rows(rows(r.done()));
+}
+
+fn dialog(w: &AppWindow) {
+    use crate::pages::*;
+    play_ready(w);
+    let mut r = Rows::default();
+    r.add(item("Singapore", "Matchmaking · community server · 5th Echelon 0.5.0").text("38 ms").tone("accent"));
+    r.add(note(
+        "You don't have an account here yet. Pick the name other players see. Your identity signs you in from now on: no password to remember.",
+    ));
+    r.add(field("name", "Your name", "Nightshade"));
+    r.add(result("Taken on this server", "fail", ""));
+    r.add(buttons(vec![b("a", "Nightshade7").kind("ghost"), b("b", "Nightshade_42").kind("ghost")]));
+    let mut row = buttons(vec![b("close", "Stay on EU"), b("create", "Create account").kind("primary").enabled(false)]);
+    row.tone = "end";
+    r.add(row);
+    w.set_dialog_title(s("Choose your name on this server"));
+    w.set_dialog_kicker(s(""));
+    w.set_dialog_rows(rows(r.done()));
+    w.set_dialog_shown(true);
 }
 
 fn check(status: &str, title: &str, detail: &str, fix_id: &str, fix_label: &str) -> crate::CheckRow {
@@ -570,4 +696,22 @@ fn matches_empty(w: &AppWindow) {
     w.set_lobbies_total(0);
     w.set_shown(model(vec![]));
     w.set_has_selected(false);
+}
+
+/// The guided setup's real page (pages/setup.rs) on this machine as it is: no game here, so its
+/// first step.
+fn setup(w: &AppWindow) {
+    use crate::pages::Screen;
+    let core = std::sync::Arc::new(crate::core::Core::new(std::sync::Arc::new(|_| {})));
+    let app = crate::tauri::Builder::new()
+        .manage(crate::commands::Launcher(core))
+        .build(std::sync::Arc::new(|_| {}), std::sync::Arc::new(|_| true));
+    let view = crate::pages::setup::SetupPage::new(true).view(&app);
+    w.set_screen(s("setup"));
+    w.set_page_kicker(s(&view.kicker));
+    w.set_page_title(s(&view.title));
+    w.set_page_summary(s(&view.summary));
+    w.set_page_sections(model(vec![]));
+    w.set_page_section_ids(model(vec![]));
+    w.set_page_rows(rows(view.rows));
 }

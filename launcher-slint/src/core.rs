@@ -43,7 +43,8 @@ pub enum Changed {
     Activity,
     /// The checklist, the servers, the squad and the news (a setup or a fix ended).
     Checks,
-    /// A setup that needs a name the player hasn't chosen (no setup screen in the trial yet).
+    /// A setup that needs a name the player hasn't chosen: the account dialog (the server, the
+    /// name to start with, and whether that one's taken).
     NeedsName,
 }
 
@@ -87,6 +88,11 @@ pub struct Inner {
     pub playing: Option<(String, Instant, Option<server_api::playing::Playing>)>,
     /// Until when the player's "new match" holds: the Play button says so.
     pub new_match_until: Option<Instant>,
+    /// A setup stopped for a name (the account dialog): the server, the name to start with,
+    /// and whether it's taken there.
+    pub needs_name: Option<(String, String, bool)>,
+    /// How the last setup ended, for the guided setup: Ok(server), or why it failed.
+    pub setup_ended: Option<Result<String, String>>,
 }
 
 impl Core {
@@ -119,6 +125,8 @@ impl Core {
                 news: None,
                 playing: None,
                 new_match_until: None,
+                needs_name: None,
+                setup_ended: None,
             }),
             notify,
         }
@@ -128,12 +136,12 @@ impl Core {
         self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
-    fn changed(&self, what: Changed) {
+    pub fn changed(&self, what: Changed) {
         (self.notify)(what);
     }
 
     /// How an activity reports back while it runs, for `Activities::start_with`.
-    fn notifier(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
+    pub fn notifier(&self) -> Option<Arc<dyn Fn() + Send + Sync>> {
         let notify = self.notify.clone();
         Some(Arc::new(move || notify(Changed::Activity)))
     }
@@ -457,20 +465,18 @@ fn start_setup(core: &Arc<Core>, asked: connect::Asked) {
                 if let Some(game) = inner.game.as_mut() {
                     game.reload();
                 }
+                inner.setup_ended = Some(Ok(server));
             }
-            Ok((launcher::flow::Done::NeedsName { server, .. }, _, _)) => {
-                // The trial has no account step yet (phase 2): said in the activity bar.
-                log.title(asked.failed.clone());
-                log.fail(
-                    format!("You have no account on {server} yet. Choose your name there in the classic launcher's setup: this trial has no setup screens yet."),
-                    &[Action::CopyDetails],
-                );
+            Ok((launcher::flow::Done::NeedsName { server, suggested, taken }, _, _)) => {
+                log.finish_quietly();
                 inner.setup_failed = None;
+                inner.needs_name = Some((server, suggested, taken));
                 needs_name = true;
             }
             Err(message) => {
                 log.title(asked.failed.clone());
-                log.fail(message, &[Action::Retry, Action::CopyDetails]);
+                log.fail(message.clone(), &[Action::Retry, Action::CopyDetails]);
+                inner.setup_ended = Some(Err(message));
             }
         }
         drop(inner);
@@ -1076,6 +1082,10 @@ pub fn player_action(core: &Core, action: &str, id: &str, name: &str) {
         "invite" => PlayerAction::Invite,
         "block" => PlayerAction::Block,
         "accept" => PlayerAction::Accept,
+        "decline" => PlayerAction::Decline,
+        "cancel" => PlayerAction::Cancel,
+        "remove" => PlayerAction::Remove,
+        "unblock" => PlayerAction::Unblock,
         _ => return,
     };
     let inner = core.lock();
@@ -1086,6 +1096,22 @@ pub fn player_action(core: &Core, action: &str, id: &str, name: &str) {
     say(core, result);
     // Asked again, so "Add friend" turns into "Asked".
     core.lock().checked = None;
+}
+
+/// The player's server's news in full, newest first: (title, text, link), the server's words as
+/// text only.
+pub fn news_items(core: &Core) -> Vec<(String, String, String)> {
+    news(core);
+    core.lock()
+        .news
+        .as_ref()
+        .map(|(_, _, items)| {
+            items
+                .iter()
+                .map(|n| (hooks_config::text::clip(&n.title, 80), hooks_config::text::clip(&n.text, 500), n.link.clone()))
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The player's server's news, newest first: the server's words, as text only.
@@ -1199,12 +1225,15 @@ pub fn dismiss_emulator_notice(core: &Core) {
     Prefs::set_uplay_emulator_told();
 }
 
-/// This PC's identity in short, read once (it's decrypted from disk).
+/// This PC's identity in short, read once it's there (it's decrypted from disk; the guided
+/// setup makes it).
 fn identity_short() -> Option<String> {
-    static SHORT: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
-    SHORT
-        .get_or_init(|| setup::player_identity::load().ok().flatten().map(|id| identity::short(&id.global_id())))
-        .clone()
+    static SHORT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+    let mut short = SHORT.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if short.is_none() {
+        *short = setup::player_identity::load().ok().flatten().map(|id| identity::short(&id.global_id()));
+    }
+    short.clone()
 }
 
 /// One of the game's loading screens for the stage, a different one each start: its pixels
@@ -1220,4 +1249,188 @@ pub fn key_art(core: &Core) -> Option<(Vec<u8>, u32, u32)> {
 /// The Spies vs Mercs modes a match can be found or hosted in: (playlist, name).
 pub fn svm_modes() -> Vec<(u32, &'static str)> {
     launcher::matches::svm_modes()
+}
+
+/// The game folders found on this PC (Steam, Ubisoft Connect, the usual places).
+pub fn find_games() -> Vec<String> {
+    setup::game::find_game_dirs().iter().map(|d| d.display().to_string()).collect()
+}
+
+/// Works on the game in `dir` (or a folder inside it) from now on. Whether it's a game folder.
+pub fn choose_game_dir(core: &Core, dir: &str) -> bool {
+    let mut inner = core.lock();
+    let Some(found) = setup::game::game_dir_in(std::path::Path::new(dir)) else {
+        inner.notices.error(format!("{dir} doesn't contain Splinter Cell: Blacklist."));
+        drop(inner);
+        core.changed(Changed::Activity);
+        return false;
+    };
+    Prefs::remember(&found);
+    inner.game = Some(Game::open_tidied(found, &mut inner.notices));
+    inner.checked = None;
+    drop(inner);
+    core.changed(Changed::Checks);
+    core.changed(Changed::Activity);
+    true
+}
+
+/// Opens a link in the player's browser: only `https://` ones (the launcher's own links, and
+/// the servers' news shown as text).
+pub fn open_url(url: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(url).map_err(|_| "Not a link the launcher opens.".to_string())?;
+    if parsed.scheme() != "https" {
+        return Err("Not a link the launcher opens.".into());
+    }
+    #[cfg(target_os = "windows")]
+    let opened = std::process::Command::new("explorer").arg(parsed.as_str()).spawn();
+    #[cfg(not(target_os = "windows"))]
+    let opened = std::process::Command::new("xdg-open").arg(parsed.as_str()).spawn();
+    opened.map(|_| ()).map_err(|e| e.to_string())
+}
+
+/// The Friends screen's lists, whether the player has an account to manage friends with, or
+/// why they couldn't be read.
+pub fn people(core: &Core) -> (Option<launcher::flow::People>, bool, Option<String>) {
+    let Some(cfg) = core.lock().game.as_ref().map(|g| (*g.cfg).clone()) else {
+        return (None, false, None);
+    };
+    let signed_in = cfg.current_profile().is_some_and(|p| !p.server.is_empty() && p.has_account());
+    match launcher::task::guarded(|| launcher::flow::people(&cfg)) {
+        Ok(people) => (Some(people), signed_in, None),
+        Err(e) => (None, signed_in, Some(e)),
+    }
+}
+
+/// Find players: by name, or who's online when `query` is empty.
+pub fn find_players(core: &Core, query: &str) -> Result<Vec<launcher::flow::Person>, String> {
+    let Some(cfg) = core.lock().game.as_ref().map(|g| (*g.cfg).clone()) else {
+        return Ok(Vec::new());
+    };
+    launcher::task::guarded(|| launcher::flow::find_players(&cfg, query))
+}
+
+/// Connects the game to `server` (as typed or picked): installs the client, signs in or makes
+/// the account (`new_name`, from the account dialog), writes the settings. Runs on; the activity
+/// bar says how it goes, and a server with no account yet asks for a name (Changed::NeedsName).
+pub fn connect(core: &Arc<Core>, server: &str, new_name: Option<String>) -> bool {
+    let inner = core.lock();
+    if inner.setup_running {
+        return false;
+    }
+    let Some(game) = inner.game.as_ref() else { return false };
+    let new_name = new_name.map(|n| n.trim().to_string()).filter(|n| !n.is_empty());
+    // The name step after a friend's server: still one the player didn't type.
+    let public_only = inner
+        .setup
+        .as_ref()
+        .is_some_and(|a| a.plan.public_only && a.plan.server.eq_ignore_ascii_case(server.trim()));
+    let asked = connect::ask(game, server, new_name, public_only, inner.directory.as_deref());
+    drop(inner);
+    start_setup(core, asked);
+    true
+}
+
+/// The account dialog's server: where and what it is, how far, and what the player leaves.
+#[derive(Debug, Clone, Default)]
+pub struct AccountServer {
+    pub place: String,
+    pub kind: String,
+    pub ping: Option<u32>,
+    /// A server of the player's own (one they typed): the dialog confirms it.
+    pub own: bool,
+    /// The server the player is on now, where they stay if they don't.
+    pub current: Option<String>,
+    /// The network a server of their own leaves ("the community network").
+    pub leaving: String,
+}
+
+pub fn account_server(core: &Core, server: &str, own: Option<bool>) -> AccountServer {
+    let inner = core.lock();
+    let own = own.unwrap_or_else(|| !inner.setup.as_ref().is_some_and(|a| a.plan.public_only));
+    let directory = inner.directory.as_deref().unwrap_or_default();
+    let listing = directory.iter().find(|(s, _)| s.host.eq_ignore_ascii_case(server));
+    let (place, kind) = match listing {
+        Some((s, _)) => (connect::place(s), format!("{} · community server", s.name)),
+        None if own => (server.to_string(), "A server of your own".to_string()),
+        None => (server.to_string(), "A friend's server".to_string()),
+    };
+    let current = inner
+        .game
+        .as_ref()
+        .and_then(|g| g.cfg.current_profile())
+        .map(|p| p.server.clone())
+        .filter(|s| !s.is_empty())
+        .map(|host| directory.iter().find(|(s, _)| s.host == host).map_or(host, |(s, _)| connect::place(s)));
+    let leaving = match Prefs::directory() {
+        Some(url) if Prefs::is_community(&url) => "the community network".to_string(),
+        Some(url) => connect::url_host(&url).to_string(),
+        None => "your network".to_string(),
+    };
+    AccountServer {
+        place,
+        kind,
+        ping: listing.and_then(|(_, ping)| *ping),
+        own,
+        current,
+        leaving,
+    }
+}
+
+/// What the server says of itself for the account dialog: its API (to check names, when it
+/// can), its release and its ping.
+pub fn account_probe(core: &Core, server: &str) -> Result<launcher::flow::Probe, String> {
+    let dir = core.lock().game.as_ref().map(|g| g.dir.clone()).ok_or("Choose the game's folder first.")?;
+    launcher::task::guarded(|| launcher::flow::probe(&dir, server))
+}
+
+/// Up to three free names like `name` on the server at `api`.
+pub fn name_suggestions(api: &str, name: &str) -> Vec<String> {
+    launcher::task::guarded(|| launcher::flow::free_suggestions(api, name.trim()))
+}
+
+/// Servers of the player's own they connected to: (address, label, "used 2 days ago" or "in
+/// use now", in use).
+pub fn recent_servers(core: &Core) -> Vec<(String, String, String, bool)> {
+    let now = identity::now();
+    let current = core.lock().game.as_ref().and_then(|g| g.cfg.current_profile().map(|p| p.server.clone()));
+    Prefs::recent_servers()
+        .into_iter()
+        .map(|r| {
+            let in_use = current.as_deref().is_some_and(|c| c.trim().eq_ignore_ascii_case(r.address.trim()));
+            (
+                r.address.clone(),
+                hooks_config::text::clip(r.name.as_deref().unwrap_or(&r.address), 40),
+                connect::recent_when(&r.address, r.last_used, now, current.as_deref()),
+                in_use,
+            )
+        })
+        .collect()
+}
+
+/// The name a new account on a server of the player's own starts with.
+pub fn usual_name(core: &Core) -> String {
+    let dir = core.lock().game.as_ref().map(|g| g.dir.clone());
+    dir.and_then(|d| launcher::flow::usual_name(&d)).unwrap_or_else(launcher::flow::windows_user)
+}
+
+/// Uses another network (its address as typed), when it answers as one.
+pub fn use_network(core: &Core, typed: &str) -> Result<(), String> {
+    let (url, count) = launcher::services::rt().block_on(launcher::network::check_network(typed))?;
+    Prefs::set_directory(Some(url.clone()));
+    let mut inner = core.lock();
+    inner.directory = None;
+    inner.directory_note = None;
+    let s = if count == 1 { "" } else { "s" };
+    inner.notices.info(format!(
+        "Using the network {}: its {count} server{s} are in the server menu on the Play screen.",
+        connect::url_host(&url)
+    ));
+    drop(inner);
+    core.changed(Changed::Activity);
+    Ok(())
+}
+
+/// The servers that answered on this PC's networks.
+pub fn find_on_network() -> Result<Vec<String>, String> {
+    connect::find_on_network().map(|ips| ips.iter().map(ToString::to_string).collect())
 }

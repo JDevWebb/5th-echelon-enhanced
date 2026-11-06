@@ -345,30 +345,3 @@ export component ActivityBar inherits Rectangle {
         }
     }
 }
-
-// A screen the trial doesn't have yet (phase 2).
-export component NotYet inherits Rectangle {
-    in property <string> name;
-    callback open-classic();
-    background: Theme.bg;
-    VerticalLayout {
-        alignment: center;
-        spacing: 14px;
-        HorizontalLayout { alignment: center; EchelonMark { size: 64px; } }
-        Text {
-            text: root.name;
-            horizontal-alignment: center;
-            font-family: Type.cond;
-            font-weight: 700;
-            font-size: 28px;
-            color: Theme.fg;
-        }
-        Text {
-            text: "This screen comes in the next part of the Slint launcher.\nPlay and Matches are here now; the classic launcher has the rest.";
-            horizontal-alignment: center;
-            wrap: word-wrap;
-            color: Theme.soft;
-        }
-        HorizontalLayout { alignment: center; Btn { text: "Open the classic launcher"; kind: "ghost"; clicked => { root.open-classic(); } } }
-    }
-}

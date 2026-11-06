@@ -4,9 +4,21 @@
 
 slint::include_modules!();
 
+mod chat;
+mod commands;
 mod core;
+mod feedback;
+mod host;
+mod intel;
+mod pages;
+mod settings;
+mod shell;
 mod shots;
+mod support;
+mod tauri;
 mod ui;
+mod update;
+mod whats_new;
 
 fn main() {
     // Every screen in both looks at several sizes, on made-up data (build.sh slint-shots).

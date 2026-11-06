@@ -1,0 +1,518 @@
+// The launcher's pages as rows (ui.rs and pages.rs build them): a card's title, a line of text,
+// a switch, a choice, a slider, a text field, buttons, an item in a list (a friend, a server, a
+// report), a test's result. One component draws any row, so every page that's a set of settings
+// or a list (Settings, Friends, Servers, Host, Intel, Support, the setup, the dialogs) looks and
+// works the same, by mouse, keyboard and controller.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme, Type } from "theme.slint";
+import { Btn, Link, Spinner, Dot, Caps, Rule, CheckBox, Segment, Choice, Field, Slide } from "widgets.slint";
+import { EchelonMark } from "brand.slint";
+
+export struct RowButton {
+    id: string,
+    label: string,
+    // "primary", "ghost", "plain", "danger", "fix" (a text button) or "link".
+    kind: string,
+    enabled: bool,
+}
+
+export struct Row {
+    // "title" (a card's title), "text", "note", "switch", "choice", "segments", "slider",
+    // "field", "area" (several lines), "buttons", "item", "result", "code", "working", "rule",
+    // "message" (a chat line), "mark" (the brand's mark and a heading, for empty pages).
+    kind: string,
+    id: string,
+    label: string,
+    text: string,
+    sub: string,
+    // "muted", "warn", "bad", "accent", "ok", "fail" or "".
+    tone: string,
+    on: bool,
+    enabled: bool,
+    options: [string],
+    current: int,
+    value: float,
+    min: float,
+    max: float,
+    placeholder: string,
+    secret: bool,
+    buttons: [RowButton],
+    // Its place in its card: 0 not in one, 1 the first, 2 inside, 3 the last, 4 the only row.
+    edge: int,
+}
+
+// One row. Its card's background, edge and corners are drawn by the row itself (first, inside,
+// last), so a page is one flat list.
+export component RowItem inherits Rectangle {
+    in property <Row> item;
+    callback toggled(string, bool);
+    callback chosen(string, int);
+    callback slid(string, float);
+    callback edited(string, string);
+    callback accepted(string, string);
+    callback pressed(string);
+
+    property <bool> carded: item.edge > 0;
+    property <bool> top: item.edge == 1 || item.edge == 4;
+    property <bool> bottom: item.edge == 3 || item.edge == 4;
+    property <length> pad-x: carded ? 20px : 0px;
+    property <color> tone-colour: item.tone == "warn" ? Theme.warn
+        : item.tone == "bad" || item.tone == "fail" ? Theme.bad
+        : item.tone == "accent" || item.tone == "ok" ? Theme.accent
+        : item.tone == "muted" ? Theme.muted
+        : Theme.fg;
+
+    min-height: lay.preferred-height;
+
+    // The card round it.
+    if carded: Rectangle {
+        y: top ? 0px : -2px;
+        height: parent.height + (top ? 0px : 2px) + (bottom ? 0px : 2px);
+        background: Theme.surface;
+        border-radius: 0;
+        Rectangle { x: 0; width: 1px; background: Theme.line; }
+        Rectangle { x: parent.width - 1px; width: 1px; background: Theme.line; }
+        if top: Rectangle { y: 0; height: 1px; background: Theme.line; }
+        if bottom: Rectangle { y: parent.height - 1px; height: 1px; background: Theme.line; }
+    }
+
+    lay := VerticalLayout {
+        padding-left: pad-x;
+        padding-right: pad-x;
+        padding-top: top ? 18px : (carded ? 5px : 4px);
+        padding-bottom: bottom ? 18px : (carded ? 5px : 4px);
+
+        if item.kind == "title": Text {
+            text: item.label;
+            font-family: Type.cond;
+            font-weight: 700;
+            font-size: 18px;
+            letter-spacing: 0.6px;
+            color: Theme.fg;
+            accessible-role: text;
+        }
+        if item.kind == "text": Text {
+            text: item.text;
+            wrap: word-wrap;
+            color: item.tone == "" ? Theme.fg : tone-colour;
+            font-weight: item.on ? 600 : 400;
+        }
+        if item.kind == "note": Text {
+            text: item.text;
+            wrap: word-wrap;
+            font-size: Type.small;
+            color: item.tone == "" ? Theme.soft : tone-colour;
+        }
+        if item.kind == "code": HorizontalLayout {
+            spacing: 10px;
+            Rectangle {
+                horizontal-stretch: 1;
+                border-radius: 4px;
+                background: Theme.sunken;
+                height: ct.preferred-height + 12px;
+                ct := Text { x: 8px; width: parent.width - 16px; text: item.text; wrap: word-wrap; font-family: Type.mono; font-size: 12.5px; color: Theme.fg; }
+            }
+            for b in item.buttons: Btn { text: b.label; small: true; enabled: b.enabled; kind: b.kind; clicked => { root.pressed(b.id); } }
+        }
+        if item.kind == "switch": sw := Rectangle {
+            height: max(36px, sl.preferred-height + 8px);
+            accessible-role: switch;
+            accessible-label: item.label;
+            accessible-description: item.sub;
+            accessible-checked: item.on;
+            accessible-enabled: item.enabled;
+            accessible-action-default => { if item.enabled { root.toggled(item.id, !item.on); } }
+            forward-focus: swf;
+            swf := FocusScope {
+                enabled: item.enabled;
+                key-pressed(e) => {
+                    if item.enabled && (e.text == " " || e.text == Key.Return) { root.toggled(item.id, !item.on); return accept; }
+                    reject
+                }
+            }
+            sta := TouchArea {
+                enabled: item.enabled;
+                mouse-cursor: item.enabled ? pointer : default;
+                clicked => { root.toggled(item.id, !item.on); }
+            }
+            sl := HorizontalLayout {
+                spacing: 12px;
+                opacity: item.enabled ? 1 : 0.5;
+                Rectangle {
+                    width: 38px;
+                    height: 22px;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: 11px;
+                    background: item.on ? Theme.accent : Theme.control;
+                    border-width: item.on ? 0px : 1px;
+                    border-color: Theme.control-line;
+                    animate background { duration: Theme.quick; }
+                    Rectangle {
+                        x: item.on ? parent.width - self.width - 3px : 3px;
+                        y: 3px;
+                        width: 16px;
+                        height: 16px;
+                        border-radius: 8px;
+                        background: item.on ? Theme.on-accent : Theme.soft;
+                        animate x { duration: Theme.quick; easing: ease-out; }
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    Text { text: item.label; wrap: word-wrap; color: Theme.fg; }
+                    if item.sub != "": Text { text: item.sub; wrap: word-wrap; font-size: 12.5px; color: Theme.muted; }
+                }
+                if item.text != "": Caps { text: item.text; color: Theme.accent; vertical-alignment: center; }
+            }
+            Rectangle {
+                x: -4px;
+                width: parent.width + 8px;
+                border-radius: 6px;
+                border-width: swf.has-focus ? 2px : 0px;
+                border-color: Theme.accent;
+            }
+        }
+        if item.kind == "choice": HorizontalLayout {
+            spacing: 12px;
+            opacity: item.enabled ? 1 : 0.5;
+            Text { text: item.label; vertical-alignment: center; color: Theme.fg; horizontal-stretch: 1; wrap: word-wrap; }
+            Choice {
+                min-width: 220px;
+                label: item.label;
+                model: item.options;
+                current: item.current;
+                chosen(i) => { root.chosen(item.id, i); }
+            }
+        }
+        if item.kind == "segments": VerticalLayout {
+            spacing: 6px;
+            if item.label != "": Caps { text: item.label.to-uppercase(); }
+            HorizontalLayout {
+                alignment: start;
+                Rectangle {
+                    border-radius: 4px;
+                    border-width: 1px;
+                    border-color: Theme.control-line;
+                    clip: true;
+                    width: segs.preferred-width;
+                    opacity: item.enabled ? 1 : 0.5;
+                    segs := HorizontalLayout {
+                        for o[i] in item.options: Segment {
+                            text: o;
+                            on: i == item.current;
+                            first: i == 0;
+                            clicked => { if item.enabled { root.chosen(item.id, i); } }
+                        }
+                    }
+                }
+            }
+        }
+        if item.kind == "slider": HorizontalLayout {
+            spacing: 12px;
+            opacity: item.enabled ? 1 : 0.5;
+            Text { text: item.label; vertical-alignment: center; color: Theme.fg; }
+            Slide {
+                horizontal-stretch: 1;
+                y: (parent.height - self.height) / 2;
+                label: item.label;
+                enabled: item.enabled;
+                minimum: item.min;
+                maximum: item.max;
+                value: item.value;
+                released(v) => { root.slid(item.id, v); }
+            }
+            Text { text: item.text; vertical-alignment: center; font-family: Type.mono; color: Theme.soft; min-width: 44px; horizontal-alignment: right; }
+        }
+        if item.kind == "field": HorizontalLayout {
+            spacing: 12px;
+            if item.label != "": Text { text: item.label; vertical-alignment: center; color: Theme.fg; min-width: 120px; }
+            Field {
+                horizontal-stretch: 1;
+                text: item.text;
+                placeholder: item.placeholder;
+                secret: item.secret;
+                enabled: item.enabled;
+                label: item.label;
+                edited(t) => { root.edited(item.id, t); }
+                accepted(t) => { root.accepted(item.id, t); }
+            }
+            for b in item.buttons: Btn {
+                text: b.label;
+                kind: b.kind;
+                enabled: b.enabled;
+                clicked => { root.pressed(b.id); }
+            }
+        }
+        if item.kind == "area": VerticalLayout {
+            spacing: 6px;
+            if item.label != "": Text { text: item.label; color: Theme.fg; }
+            Field {
+                multiline: true;
+                lines-height: max(96px, item.value * 1px);
+                text: item.text;
+                placeholder: item.placeholder;
+                enabled: item.enabled;
+                label: item.label;
+                edited(t) => { root.edited(item.id, t); }
+            }
+        }
+        if item.kind == "buttons": HorizontalLayout {
+            spacing: 10px;
+            alignment: item.tone == "end" ? end : start;
+            for b in item.buttons: Btn { text: b.label; kind: b.kind; enabled: b.enabled; clicked => { root.pressed(b.id); } }
+        }
+        if item.kind == "item": Rectangle {
+            border-radius: 6px;
+            background: ita.has-hover ? Theme.control : (item.on ? Theme.selected : transparent);
+            ita := TouchArea {}
+            HorizontalLayout {
+                padding: 10px;
+                padding-left: 12px;
+                spacing: 12px;
+                if item.tone != "": Rectangle {
+                    width: 3px;
+                    border-radius: 1.5px;
+                    background: tone-colour;
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 2px;
+                    Text { text: item.label; font-weight: 600; color: Theme.fg; wrap: word-wrap; }
+                    if item.sub != "": Text { text: item.sub; font-size: 13px; color: Theme.soft; wrap: word-wrap; }
+                    if item.text != "": Text { text: item.text; font-size: 13px; color: Theme.fg; wrap: word-wrap; }
+                }
+                for b in item.buttons: VerticalLayout {
+                    alignment: center;
+                    Btn { text: b.label; kind: b.kind; small: true; enabled: b.enabled; clicked => { root.pressed(b.id); } }
+                }
+            }
+        }
+        if item.kind == "result": HorizontalLayout {
+            spacing: 10px;
+            Dot { tone: item.tone; y: 7px; }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                Text { text: item.label; color: Theme.fg; wrap: word-wrap; }
+                if item.sub != "": Text { text: item.sub; font-size: 12.5px; color: Theme.muted; wrap: word-wrap; }
+            }
+        }
+        if item.kind == "message": HorizontalLayout {
+            spacing: 10px;
+            Text { text: item.label; font-weight: 600; color: item.on ? Theme.accent : Theme.fg; vertical-alignment: TextVerticalAlignment.top; }
+            Text { text: item.text; color: item.tone == "muted" ? Theme.muted : Theme.fg; wrap: word-wrap; horizontal-stretch: 1; }
+            Text { text: item.sub; font-size: 11.5px; color: Theme.muted; font-family: Type.mono; }
+            for b in item.buttons: Link { text: b.label; font-size: 12px; clicked => { root.pressed(b.id); } }
+        }
+        if item.kind == "working": HorizontalLayout {
+            spacing: 10px;
+            alignment: start;
+            Spinner { y: (parent.height - self.height) / 2; }
+            Text { text: item.text; color: Theme.muted; }
+        }
+        if item.kind == "rule": Rule {}
+        if item.kind == "mark": VerticalLayout {
+            spacing: 12px;
+            padding-top: 30px;
+            padding-bottom: 10px;
+            HorizontalLayout { alignment: center; EchelonMark { size: 56px; } }
+            Text { text: item.label; horizontal-alignment: center; font-family: Type.cond; font-weight: 700; font-size: 24px; color: Theme.fg; }
+            if item.text != "": Text { text: item.text; horizontal-alignment: center; wrap: word-wrap; color: Theme.soft; }
+        }
+        if item.kind == "space": Rectangle { height: 14px; }
+    }
+}
+
+// A list of rows, scrolled.
+export component RowList inherits Rectangle {
+    in property <[Row]> rows;
+    in property <length> measure: 820px;
+    in property <length> pad: 40px;
+    // The rows' own height, for a dialog that's no taller than it needs.
+    out property <length> content-height: col.preferred-height;
+    // Another page (its title): back to the top.
+    in property <string> page;
+    changed page => { sv.viewport-y = 0; }
+    callback toggled(string, bool);
+    callback chosen(string, int);
+    callback slid(string, float);
+    callback edited(string, string);
+    callback accepted(string, string);
+    callback pressed(string);
+    sv := ScrollView {
+        content-width: self.visible-width;
+        content-height: col.preferred-height;
+        col := VerticalLayout {
+            width: sv.visible-width;
+            padding-left: root.pad;
+            padding-right: root.pad;
+            padding-top: 4px;
+            padding-bottom: 32px;
+            for r in root.rows: HorizontalLayout {
+                alignment: start;
+                RowItem {
+                    width: min(root.measure, sv.visible-width - 2 * root.pad);
+                    item: r;
+                    toggled(a, b) => { root.toggled(a, b); }
+                    chosen(a, b) => { root.chosen(a, b); }
+                    slid(a, b) => { root.slid(a, b); }
+                    edited(a, b) => { root.edited(a, b); }
+                    accepted(a, b) => { root.accepted(a, b); }
+                    pressed(a) => { root.pressed(a); }
+                }
+            }
+        }
+    }
+}
+
+// A page of rows: its kicker and title, an optional menu of sections down the side.
+export component Page inherits Rectangle {
+    in property <string> kicker;
+    in property <string> title;
+    in property <string> summary;
+    in property <[string]> sections;
+    in property <[string]> section-ids;
+    in property <string> section;
+    in property <[Row]> rows;
+    callback go-section(string);
+    callback toggled(string, bool);
+    callback chosen(string, int);
+    callback slid(string, float);
+    callback edited(string, string);
+    callback accepted(string, string);
+    callback pressed(string);
+    background: Theme.bg;
+    HorizontalLayout {
+        if sections.length > 0: Rectangle {
+            width: 220px;
+            background: Theme.rail;
+            Rectangle { x: parent.width - 1px; width: 1px; background: Theme.line; }
+            VerticalLayout {
+                padding: 24px;
+                padding-right: 16px;
+                spacing: 2px;
+                alignment: start;
+                Caps { text: root.kicker.to-uppercase(); color: Theme.accent; }
+                Text { text: root.title.to-uppercase(); font-family: Type.cond; font-weight: 700; font-size: 34px; color: Theme.fg; }
+                Rectangle { height: 12px; }
+                for s[i] in sections: Rectangle {
+                    height: 36px;
+                    border-radius: 4px;
+                    background: root.section-ids[i] == root.section ? Theme.selected : nta.has-hover ? Theme.control : transparent;
+                    accessible-role: tab;
+                    accessible-label: s;
+                    accessible-checked: root.section-ids[i] == root.section;
+                    accessible-action-default => { root.go-section(root.section-ids[i]); }
+                    forward-focus: nfs;
+                    nfs := FocusScope {
+                        key-pressed(e) => {
+                            if e.text == Key.Return || e.text == " " { root.go-section(root.section-ids[i]); return accept; }
+                            reject
+                        }
+                    }
+                    nta := TouchArea { mouse-cursor: pointer; clicked => { root.go-section(root.section-ids[i]); } }
+                    if root.section-ids[i] == root.section: Rectangle { x: 0; width: 2px; height: parent.height - 12px; background: Theme.accent; }
+                    Text {
+                        x: 12px;
+                        text: s;
+                        vertical-alignment: center;
+                        color: root.section-ids[i] == root.section ? Theme.accent : Theme.soft;
+                        font-weight: root.section-ids[i] == root.section ? 600 : 400;
+                    }
+                    Rectangle { border-radius: 4px; border-width: nfs.has-focus ? 2px : 0px; border-color: Theme.accent; }
+                }
+            }
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            VerticalLayout {
+                padding-left: 40px;
+                padding-right: 40px;
+                padding-top: 24px;
+                padding-bottom: 12px;
+                if sections.length == 0: Caps { text: root.kicker.to-uppercase(); color: Theme.accent; }
+                Text {
+                    text: (sections.length > 0 ? root.summary : root.title).to-uppercase();
+                    font-family: Type.cond;
+                    font-weight: 700;
+                    font-size: sections.length > 0 ? 26px : 40px;
+                    color: Theme.fg;
+                }
+                if sections.length == 0 && root.summary != "": Text { text: root.summary; color: Theme.soft; font-size: Type.small; wrap: word-wrap; }
+            }
+            RowList {
+                vertical-stretch: 1;
+                page: root.title + "/" + root.section;
+                rows: root.rows;
+                toggled(a, b) => { root.toggled(a, b); }
+                chosen(a, b) => { root.chosen(a, b); }
+                slid(a, b) => { root.slid(a, b); }
+                edited(a, b) => { root.edited(a, b); }
+                accepted(a, b) => { root.accepted(a, b); }
+                pressed(a) => { root.pressed(a); }
+            }
+        }
+    }
+}
+
+// A dialog of rows over the window: its kicker and title, the rows, a scrim behind that it
+// keeps the clicks from.
+export component Dialog inherits Rectangle {
+    in property <string> kicker;
+    in property <string> title;
+    in property <[Row]> rows;
+    in property <length> dialog-width: 520px;
+    callback toggled(string, bool);
+    callback chosen(string, int);
+    callback slid(string, float);
+    callback edited(string, string);
+    callback accepted(string, string);
+    callback pressed(string);
+    background: Theme.scrim;
+    TouchArea {}
+    // Esc puts it away (where there's a way out: ui.rs decides); keys from its fields come
+    // here too.
+    FocusScope {
+        init => { self.focus(); }
+        key-pressed(e) => {
+            if e.text == Key.Escape { root.pressed("escape"); return accept; }
+            reject
+        }
+        Rectangle {
+            width: min(root.dialog-width, root.width - 48px);
+            height: min(box.preferred-height, root.height - 48px);
+            border-radius: 8px;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: Theme.control-line;
+            drop-shadow-blur: 50px;
+            drop-shadow-color: #00000099;
+            accessible-role: groupbox;
+            accessible-label: root.title;
+            box := VerticalLayout {
+                padding-top: 22px;
+                VerticalLayout {
+                    padding-left: 26px;
+                    padding-right: 26px;
+                    if root.kicker != "": Caps { text: root.kicker.to-uppercase(); color: Theme.accent; }
+                    Text { text: root.title.to-uppercase(); font-family: Type.cond; font-weight: 700; font-size: 24px; color: Theme.fg; wrap: word-wrap; }
+                }
+                RowList {
+                    height: min(self.content-height, root.height - 190px);
+                    pad: 26px;
+                    measure: 2000px;
+                    rows: root.rows;
+                    toggled(a, b) => { root.toggled(a, b); }
+                    chosen(a, b) => { root.chosen(a, b); }
+                    slid(a, b) => { root.slid(a, b); }
+                    edited(a, b) => { root.edited(a, b); }
+                    accepted(a, b) => { root.accepted(a, b); }
+                    pressed(a) => { root.pressed(a); }
+                }
+            }
+        }
+
+    }
+}

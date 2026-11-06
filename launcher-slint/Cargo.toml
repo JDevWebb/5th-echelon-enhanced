@@ -24,12 +24,24 @@ hooks-config = { path = "../hooks/hooks-config" }
 server_api = { path = "../api", package = "api" }
 tracing = "0.1"
 rand = "0.8"
+moderation = { path = "../moderation" }
+dedicated_server_config = { path = "../dedicated_server/config" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+url = "2"
+toml = "0.8"
+base64 = "0.22"
 # The screenshots (--shots, build.sh slint-shots) as PNG.
 image = { version = "0.25", default-features = false, features = ["png"] }
 
 # Linux: fontconfig opened when the launcher runs (every desktop and the Deck have it), not linked
 # when it's built, so one file works on every distribution (and builds without its headers).
+# The system's file picker: Windows' own, and on Linux the desktop's through its portal (no GTK).
+[target.'cfg(target_os = "windows")'.dependencies]
+rfd = "0.15"
+
 [target.'cfg(target_os = "linux")'.dependencies]
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "async-std"] }
 fontique = { version = "0.11", default-features = false, features = ["system", "fontconfig-dlopen"] }
 
 [build-dependencies]

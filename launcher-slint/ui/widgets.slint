@@ -60,10 +60,10 @@ export component Btn inherits Rectangle {
     border-radius: 4px;
     background: kind == "primary" ? (ta.has-hover && enabled ? Theme.accent.brighter(8%) : Theme.accent)
         : kind == "danger" ? (ta.has-hover && enabled ? Theme.bad.brighter(8%) : Theme.bad)
-        : kind == "fix" ? transparent
+        : kind == "fix" || kind == "link" ? transparent
         : kind == "ghost" ? ((ta.has-hover && enabled) || pressed-look ? Theme.selected : transparent)
         : (ta.has-hover && enabled ? Theme.control-hover : Theme.control);
-    border-width: kind == "fix" ? 0px : 1px;
+    border-width: kind == "fix" || kind == "link" ? 0px : 1px;
     border-color: kind == "primary" ? Theme.accent
         : kind == "danger" ? Theme.bad
         : kind == "ghost" ? (ta.has-hover || pressed-look ? Theme.accent : Theme.accent-soft)
@@ -94,7 +94,7 @@ export component Btn inherits Rectangle {
         clicked => { root.clicked(); }
     }
     lay := HorizontalLayout {
-        padding-left: kind == "fix" ? 0px : (small ? 12px : 16px);
+        padding-left: kind == "fix" || kind == "link" ? 0px : (small ? 12px : 16px);
         padding-right: self.padding-left;
         spacing: 8px;
         alignment: center;
@@ -103,11 +103,11 @@ export component Btn inherits Rectangle {
             text: root.text;
             vertical-alignment: center;
             overflow: elide;
-            font-size: root.font-size;
             font-weight: kind == "primary" || kind == "ghost" || kind == "fix" ? 600 : 400;
+            font-size: kind == "link" ? Type.small : root.font-size;
             color: kind == "primary" ? Theme.on-accent
                 : kind == "danger" ? Theme.on-bad
-                : kind == "ghost" || kind == "fix" ? Theme.accent
+                : kind == "ghost" || kind == "fix" || kind == "link" ? Theme.accent
                 : Theme.fg;
         }
     }
@@ -348,4 +348,126 @@ export component Choice inherits Rectangle {
 export component Rule inherits Rectangle {
     height: 1px;
     background: Theme.line;
+}
+
+// A text field in the launcher's look: one line, a placeholder, hidden text for a password.
+export component Field inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder;
+    in property <bool> secret: false;
+    in property <bool> enabled: true;
+    in property <bool> multiline: false;
+    in property <string> label;
+    // A text area's least height.
+    in property <length> lines-height: 96px;
+    callback edited(string);
+    callback accepted(string);
+    forward-focus: input;
+    height: multiline ? max(lines-height, input.preferred-height + 16px) : 38px;
+    border-radius: 4px;
+    background: Theme.sunken;
+    border-width: input.has-focus ? 2px : 1px;
+    border-color: input.has-focus ? Theme.accent : Theme.control-line;
+    opacity: enabled ? 1 : 0.55;
+    clip: true;
+    accessible-role: text-input;
+    accessible-label: label != "" ? label : placeholder;
+    accessible-value: secret ? "" : text;
+    TouchArea { mouse-cursor: MouseCursor.text; clicked => { input.focus(); } }
+    if text == "": Text {
+        x: 11px;
+        y: multiline ? 8px : (parent.height - self.height) / 2;
+        width: parent.width - 22px;
+        text: root.placeholder;
+        color: Theme.muted;
+        overflow: elide;
+    }
+    input := TextInput {
+        x: 11px;
+        y: multiline ? 8px : (parent.height - self.height) / 2;
+        width: parent.width - 22px;
+        height: multiline ? self.preferred-height : self.preferred-height;
+        text <=> root.text;
+        enabled: root.enabled;
+        color: Theme.fg;
+        selection-background-color: Theme.accent-soft;
+        selection-foreground-color: Theme.fg;
+        input-type: root.secret ? InputType.password : InputType.text;
+        single-line: !root.multiline;
+        wrap: root.multiline ? word-wrap : no-wrap;
+        edited => { root.edited(self.text); }
+        accepted => { root.accepted(self.text); }
+    }
+}
+
+// A slider in the launcher's look: dragged, clicked, or moved with the arrows.
+export component Slide inherits Rectangle {
+    in property <float> minimum: 0;
+    in property <float> maximum: 100;
+    in-out property <float> value;
+    in property <bool> enabled: true;
+    in property <string> label;
+    callback released(float);
+    forward-focus: fs;
+    height: 28px;
+    opacity: enabled ? 1 : 0.5;
+    accessible-role: slider;
+    accessible-label: label;
+    accessible-value: value;
+    accessible-value-minimum: minimum;
+    accessible-value-maximum: maximum;
+    property <float> share: (value - minimum) / max(0.0001, maximum - minimum);
+    function set-at(x: length) {
+        value = clamp(minimum + (maximum - minimum) * (x / self.width), minimum, maximum);
+    }
+    fs := FocusScope {
+        enabled: root.enabled;
+        key-pressed(e) => {
+            if e.text == Key.RightArrow || e.text == Key.UpArrow {
+                root.value = min(root.maximum, root.value + (root.maximum - root.minimum) / 20);
+                root.released(root.value);
+                return accept;
+            }
+            if e.text == Key.LeftArrow || e.text == Key.DownArrow {
+                root.value = max(root.minimum, root.value - (root.maximum - root.minimum) / 20);
+                root.released(root.value);
+                return accept;
+            }
+            reject
+        }
+    }
+    Rectangle {
+        y: (parent.height - 4px) / 2;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.control-line;
+        Rectangle { x: 0; width: parent.width * root.share; border-radius: 2px; background: Theme.accent; }
+    }
+    Rectangle {
+        x: root.width * root.share - 9px;
+        y: (parent.height - 18px) / 2;
+        width: 18px;
+        height: 18px;
+        border-radius: 9px;
+        background: Theme.accent;
+        border-width: fs.has-focus ? 3px : 0px;
+        border-color: Theme.fg;
+    }
+    TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        pointer-event(e) => {
+            if e.kind == PointerEventKind.down {
+                root.set-at(self.mouse-x);
+            }
+            if e.kind == PointerEventKind.up {
+                root.released(root.value);
+            }
+        }
+        moved => {
+            if self.pressed {
+                root.set-at(self.mouse-x);
+            }
+        }
+    }
 }
