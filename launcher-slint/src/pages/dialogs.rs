@@ -35,6 +35,8 @@ pub struct Account {
     api: Option<String>,
     version: String,
     ping: Option<u32>,
+    /// The server moved its players (one of the network's relays now): where they play.
+    moved_to: Option<String>,
     checks: HashMap<String, Result<launcher::flow::NameCheck, String>>,
     suggestions: Option<(String, Vec<String>)>,
     closed: bool,
@@ -214,6 +216,7 @@ impl Account {
                     self.api = p.name_check.then(|| p.api.clone());
                     self.version = p.version.clone();
                     self.ping = self.ping.or(p.ping);
+                    self.moved_to = p.moved_to.clone();
                     self.probed = Some(Ok(server));
                 }
                 Err(e) => self.probed = Some(Err(e)),
@@ -229,13 +232,20 @@ impl Account {
                 self.suggestions = Some((name.clone(), crate::core::name_suggestions(&api, &name)));
             }
         }
-        let server = match &self.probed {
+        let mut server = match &self.probed {
             Some(Ok(s)) => s.clone(),
             _ => crate::core::AccountServer {
                 place: self.server.clone(),
                 ..Default::default()
             },
         };
+        // A relay of the network (global matchmaking): the setup goes where its players play,
+        // so it isn't a server of the player's own, and nothing's left behind.
+        let moved_to = self.moved_to.clone();
+        if moved_to.is_some() {
+            server.own = false;
+            server.kind = "One of the network's relays".into();
+        }
         let taken_from_start = matches!(self.checks.values().next(), Some(Ok(launcher::flow::NameCheck::Taken(_)))) && self.checks.len() == 1;
         let mut r = Rows::default();
         let version = if self.version.is_empty() {
@@ -245,7 +255,12 @@ impl Account {
         };
         let ping = self.ping.map_or("no answer".to_string(), |p| format!("{p} ms"));
         r.add(item(server.place.clone(), format!("{}{version}", server.kind)).text(ping).tone("accent"));
-        r.add(note(if taken_from_start {
+        r.add(note(if let Some(to) = &moved_to {
+            format!(
+                "{}'s players play on {to} now (it's one of the network's relays). Connecting sets you up there, with your name and identity.",
+                self.server
+            )
+        } else if taken_from_start {
             format!("Someone on this server already has the name {name} (an account from before names were kept for each player), so you need another one here. Your friends still see it's you.")
         } else {
             "You don't have an account here yet. Pick the name other players see. Your identity signs you in from now on: no password to remember.".to_string()
@@ -293,15 +308,24 @@ impl Account {
         };
         let mut row = buttons(vec![
             super::b("close", cancel),
-            super::b("create", if server.own { "Create account and connect" } else { "Create account" })
-                .kind("primary")
-                .enabled(ready),
+            super::b(
+                "create",
+                match (&moved_to, server.own) {
+                    (Some(to), _) => format!("Connect to {to}"),
+                    (None, true) => "Create account and connect".into(),
+                    (None, false) => "Create account".into(),
+                },
+            )
+            .kind("primary")
+            .enabled(ready),
         ]);
         row.tone = "end";
         r.add(row);
         DialogView {
             page: PageView {
-                title: if server.own {
+                title: if let Some(to) = &moved_to {
+                    format!("Connect to {to}")
+                } else if server.own {
                     format!("Connect to {}", self.server)
                 } else {
                     "Choose your name on this server".into()
