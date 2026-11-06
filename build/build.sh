@@ -10,6 +10,8 @@
 #                            map-geometry.exe -> dist/
 #   build/build.sh bots [scenario ...]
 #                            test players against a fresh local server (tools/testbot)
+#   (not released from 0.5.0, kept for reference: one launcher, the egui one, until a Slint
+#    one replaces it)
 #   build/build.sh tauri      the Tauri launcher for Windows and Linux x86_64 -> dist
 #   build/build.sh tauri-shots
 #                            every screen of the Tauri launcher at several window sizes, checked

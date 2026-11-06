@@ -13,6 +13,12 @@ use std::process::Command;
 use std::time::Duration;
 use std::time::Instant;
 
+/// Whether releases have the new (Tauri) interface: not from 0.5.0's release (the user,
+/// 2026-11-06: one launcher, this one, until a Slint one replaces it). Off,
+/// this launcher neither fetches nor opens it, and Settings › Display offers no switch; the
+/// source and this front door stay for when a new interface comes back.
+pub const NEW_LOOK: bool = false;
+
 /// The exit code the Tauri interface gives when the player switched to the classic one.
 pub const SWITCH_TO_CLASSIC: i32 = 75;
 /// A Tauri interface failing within this of its start is taken for one that can't run here.
@@ -54,7 +60,7 @@ fn starts(exe: &std::path::Path) -> bool {
 /// closes, or None to open this launcher's own window (it can't run here, it failed early, or
 /// the player switched to the classic interface).
 pub fn try_tauri(gamescope: bool) -> Option<i32> {
-    if !cfg!(target_os = "linux") || gamescope || crate::prefs::Prefs::classic_interface() || std::env::var_os("FE_CLASSIC").is_some() {
+    if !NEW_LOOK || !cfg!(target_os = "linux") || gamescope || crate::prefs::Prefs::classic_interface() || std::env::var_os("FE_CLASSIC").is_some() {
         return None;
     }
     let Some(exe) = tauri_exe() else {

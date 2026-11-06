@@ -72,13 +72,6 @@ jobs:
           scripts/ops-test.sh /ci-bin
       - name: The Linux launcher builds
         run: cargo build --locked -p launcher
-      # The launcher's Tauri interface (its own workspace), against WebKitGTK 4.1 as on the
-      # Steam Deck: its page, then the program.
-      - name: The Tauri launcher builds (Linux)
-        run: |
-          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev libssl-dev libxdo-dev librsvg2-dev
-          (cd launcher-tauri/ui && npm ci --ignore-scripts --no-audit --no-fund && npm run build)
-          cd launcher-tauri/src-tauri && cargo build --locked
 
   windows:
     name: Windows builds
@@ -108,13 +101,6 @@ jobs:
         run: |
           HOOKS_DLL="$PWD/target/i686-pc-windows-msvc/debug/hooks.dll" cargo build --locked -p launcher --features embed-dll
           cargo build --locked -p dedicated_server -p testbot
-      # launcher.exe in a release: the Tauri launcher, carrying the client DLL.
-      - name: The Tauri launcher builds (Windows)
-        shell: bash
-        run: |
-          (cd launcher-tauri/ui && npm ci --ignore-scripts --no-audit --no-fund && npm run build)
-          dll="$PWD/target/i686-pc-windows-msvc/debug/hooks.dll"
-          cd launcher-tauri/src-tauri && HOOKS_DLL="$dll" cargo build --locked --features embed-dll
       # The server's Windows build is released too: the test players against it, as on Linux.
       - name: Test players against a fresh Windows server
         shell: bash

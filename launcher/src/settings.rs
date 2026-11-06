@@ -390,7 +390,7 @@ fn display(app: &mut App, ui: &mut egui::Ui) {
     });
     // Linux, with the new interface beside this launcher (front_door.rs): the way back to it.
     let tauri = std::env::current_exe().ok().and_then(|e| crate::updater::tauri_beside(&e)).is_some_and(|p| p.is_file());
-    if tauri && !crate::scale::gamescope() {
+    if crate::front_door::NEW_LOOK && tauri && !crate::scale::gamescope() {
         section(ui, "Interface", |ui| {
             // Worded and done as the new look's own switch (Settings.vue): a button, now.
             ui.label(theme::muted(

@@ -47,12 +47,12 @@ pub const RELEASES: &[Release] = &[
         new: &[
             Item {
                 title: "A new look",
-                text: "The launcher is redrawn: the Play button says whether you're ready and why not, and every page is easier to read and to use with a keyboard. On Linux and the Steam Deck the classic look stays where the new one can't run (Game Mode), and Settings switches between them.",
+                text: "The launcher is redrawn: the Play button says whether you're ready and why not (and is the fix when something needs one), and every page is easier to read and to use with a keyboard.",
                 community: false,
             },
             Item {
                 title: "The lobby carries on when its host leaves",
-                text: "When the host of a public match's lobby leaves, one of the other players takes it over and everyone stays together, instead of each landing back in their own lobby. A party's leader invited into a friend's private match brings along the members who are the host's friends, and the party comes back together after it. On unless you turn it off in Settings › Game, on DirectX 9 and 11; thanks to mpw, who wrote it.",
+                text: "When the host of a public match's lobby leaves, one of the other players takes it over and everyone stays together, instead of each landing back in their own lobby. A party's leader invited into a friend's private match brings along the members who are the host's friends, and the party comes back together after it. Part of every game, on DirectX 9 and 11; thanks to mpw, who wrote it.",
                 community: false,
             },
             Item {
