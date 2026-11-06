@@ -813,14 +813,10 @@ pub unsafe fn init(config: &Config, addr: &Addresses) {
     if config.beta.mouse_turn_per_second {
         crate::mouse_turn_fix::turn_per_second();
     }
-    // Host migration (on unless turned off): a match lobby carries on under a new host, and a
+    // Host migration, part of every game: a match lobby carries on under a new host, and a
     // party follows its leader into a private match (host_migration.rs; all three parts or none).
     #[cfg(not(feature = "patch-free"))]
-    if config.disable_host_migration {
-        tracing::info!("host migration: off (disable_host_migration)");
-    } else {
-        crate::host_migration::install();
-    }
+    crate::host_migration::install();
 
     // Opt-in: straight into the Spies vs Mercs or Co-op online lobby (see quickstart.rs).
     #[cfg(not(feature = "patch-free"))]

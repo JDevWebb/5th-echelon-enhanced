@@ -795,11 +795,6 @@ fn game_options(game: &mut Game, notices: &mut Notices, ui: &mut egui::Ui) {
     if running {
         ui.label(theme::muted("Close the game to change automatic climbing."));
     }
-    ui.add_enabled_ui(!running, |ui| {
-        let mut on = !hook.disable_host_migration;
-        theme::switch(ui, &mut on, HOST_MIGRATION.0).on_hover_text(HOST_MIGRATION.1);
-        hook.disable_host_migration = !on;
-    });
     ui.horizontal(|ui| {
         ui.label("Client log detail");
         egui::ComboBox::from_id_salt("loglevel")
@@ -832,14 +827,6 @@ pub const BETA_FEATURES: [(&str, &str); 1] = [(
     "Above 60 fps the game turns less for the same mouse movement, so turning feels slow and players cap their frame rate. \
          This scales the mouse's turn by the frame rate, so it turns as it does at 60 fps. Only the mouse: controllers are left as they are.",
 )];
-
-/// Settings › Game › Host migration's switch and hover text (on unless turned off).
-pub const HOST_MIGRATION: (&str, &str) = (
-    "Host migration",
-    "When the host of a public match lobby leaves, the lobby carries on under one of the other players instead of breaking up. \
-     A party's leader invited into a friend's private match takes along the party members who are the host's friends, and the party \
-     comes back together after the match. Players with it off leave as before. DirectX 9 and 11. Takes effect the next time the game starts.",
-);
 
 #[cfg(feature = "gui")]
 /// Settings › Game › Beta features: changes still being tried out, off unless turned on here,

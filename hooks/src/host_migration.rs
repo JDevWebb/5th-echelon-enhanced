@@ -1,5 +1,4 @@
-//! Host migration, on for every player by default (Settings › Game turns it off:
-//! `DisableHostMigration` in `uplay.toml`; it was a beta until 0.5.0):
+//! Host migration, part of every game (not a setting; it was a beta in 0.5.0's test builds):
 //! a match lobby carries on under a new host when its host leaves (`migrate_lobby`), a party's
 //! leader invited into a private match takes its party along (`party_follow`), and a member's
 //! game left waiting on a stale follow is set going again (`follow_unblock`). The server's side

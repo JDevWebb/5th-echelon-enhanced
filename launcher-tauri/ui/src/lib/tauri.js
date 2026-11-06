@@ -207,7 +207,6 @@ const preview = {
       overlay_keys: ['F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12', 'Insert', 'Home'], auto_join_invite: true, without_ubisoft_connect: false, ubisoft_connect_later: false, mouse_accel_blocked: null,
       disable_mouse_accel: true, brighten: true, brighten_hover: 'Blacklist caps its brightness low, which looks dark under Proton. This lifts the cap and sets a brighter picture by editing Blacklist.ini while the game is closed; turning it off puts the original back.', brighten_vkbasalt: false, brighten_missing: null, brightness: 140, brightness_range: [100, 220], disable_autoclimb: false, log_level: 'Info',
       log_levels: ['Error', 'Warning', 'Info', 'Debug', 'Trace'], command_line: '', running: false,
-      host_migration: ['Host migration', 'When the host of a public match lobby leaves, the lobby carries on under one of the other players.', true],
       beta_features: [['mouse_turn_per_second', 'Mouse turning the same at any frame rate', 'Above 60 fps the game turns less for the same mouse movement.', false]],
     },
     network: { nat: 'auto', port_mapping: true, adapters: [['Ethernet', '192.168.1.20'], ['Wi-Fi', '192.168.1.31']], adapter: null, require_adapter: false, automatic: 'Automatic (the one that reaches the server)' },

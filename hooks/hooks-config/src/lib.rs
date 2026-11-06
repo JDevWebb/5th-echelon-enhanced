@@ -400,13 +400,6 @@ pub struct Config {
     /// edges is only ever manual. Off by default. See `hooks::autoclimb`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disable_autoclimb: bool,
-    /// Turns host migration off (on otherwise; Settings › Game › Host migration): a match lobby
-    /// carries on under a new host when its host leaves, and a party's leader invited into a
-    /// private match takes its party along and gets it back afterwards (`hooks::migrate_lobby`,
-    /// `party_follow`, `follow_unblock`; DX9 and DX11, all or none). A beta in 0.5.0's development,
-    /// on for everyone since (the user, 2026-11-02); an old `[Beta] HostMigration` key is ignored.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub disable_host_migration: bool,
     /// Turns off the fixes for the game's own crashes and hangs (hooks' `scheme_pool_fix`, `particle_fix`, `storm_fix`,
     /// `voice_device_fix`, `tagging_device_fix`, `disruption_fix`, `umd_read_fix`, `load_order_fix`, `migration_fix`), which are on otherwise. Not shown in the launcher: for ruling them out when something goes wrong.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1399,20 +1392,17 @@ mod tests {
         assert!(back.beta.mouse_turn_per_second);
     }
 
+    /// Host migration is part of every game, not a setting (the user, 2026-11-06): the keys that
+    /// once turned it on (`[Beta] HostMigration`, 0.5.0's test builds) or off
+    /// (`DisableHostMigration`) still read, change nothing, and are gone once the file is saved.
     #[test]
-    fn host_migration_is_on_unless_turned_off_and_the_old_beta_key_is_ignored() {
-        let mut cfg = super::default();
-        assert!(!cfg.disable_host_migration, "on by default");
-        assert!(!toml::to_string(&cfg).unwrap().contains("HostMigration"), "nothing written while on");
-        cfg.disable_host_migration = true;
-        let written = toml::to_string(&cfg).unwrap();
-        assert!(written.contains("DisableHostMigration = true"), "{written}");
-        assert!(toml::from_str::<Config>(&written).unwrap().disable_host_migration);
-        // A 0.5.0 test build's beta key, on or off, still reads, and changes nothing.
-        for on in [true, false] {
-            let old = format!("{}\n[Beta]\nHostMigration = {on}\n", toml::to_string(&super::default()).unwrap());
-            let back: Config = toml::from_str(&old).unwrap();
-            assert!(!back.disable_host_migration && back.beta.is_off());
+    fn old_host_migration_keys_read_and_are_dropped() {
+        let base = toml::to_string(&super::default()).unwrap();
+        for extra in ["DisableHostMigration = true\n", "\n[Beta]\nHostMigration = false\n"] {
+            let old = if extra.starts_with('\n') { format!("{base}{extra}") } else { format!("{extra}{base}") };
+            let back: Config = toml::from_str(&old).unwrap_or_else(|e| panic!("{extra}: {e}"));
+            assert!(back.beta.is_off());
+            assert!(!toml::to_string(&back).unwrap().contains("HostMigration"), "{extra} written back");
         }
     }
 
