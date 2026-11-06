@@ -19,7 +19,11 @@ Five units stepped back on a diagonal: an echelon formation, the fifth in front 
   accent of its background (`#8fd14f` on dark, `#3b7a12` on light). The tile is `#141c20` with a
   `#2b363c` edge on dark, `#e6ebe6` with `#c4cec6` on light. Nothing else recolours it.
 - **Don't** stretch it, rotate it, add effects (glow, shadow, gradient), put it on the game's art
-  without its tile, or use more than one per view.
+  without its tile, or use more than one in a view's content (the side menu's is the window's
+  own).
+- **Where it is.** The side menu's head, the splash, the title bar, an empty page or list (with
+  what to do about it), the guided setup's welcome, What's new, the update banner; in the game,
+  the overlay panel's header and the toast when the game starts.
 
 ## The name
 
@@ -55,3 +59,13 @@ loops for decoration.
 As the launcher already speaks: plain, short, second person ("You're in this match"), the same
 word for the same thing everywhere (match, lobby, friends, Quick match, New match), no
 technical message without what to do about it.
+
+## The overlay
+
+The panel over the game follows the launcher: the same tokens in both looks (the launcher writes
+the look it has when it starts the game, dark or light, to uplay.toml as `OverlayTheme`; "As
+the system" is resolved then), the mark on its tile and the wordmark in the panel's header with
+the release in its box, titles in Plex Sans Condensed Bold (a pane's in caps), section labels in
+Plex Mono caps, the tabs as the side menu's items (the current one on its own ground with the
+accent edge and its label in the accent). The panel is a little see-through over the game; imgui
+has no blur, and no letter spacing (the wordmark's "ENHANCED" is drawn a letter at a time).

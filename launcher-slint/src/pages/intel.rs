@@ -42,7 +42,7 @@ impl Screen for IntelPage {
                 r.add(note(format!("From {server}, as the game's news screen shows it")));
                 let news = crate::core::news_items(&core);
                 if news.is_empty() {
-                    r.add(note("No news from this server."));
+                    r.add(mark("No briefings", "This server hasn't any news right now."));
                 }
                 self.open = self.open.min(news.len().saturating_sub(1));
                 if news.len() > 1 {

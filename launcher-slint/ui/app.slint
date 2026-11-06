@@ -33,6 +33,9 @@ export component AppWindow inherits Window {
     in property <bool> full-screen-mode;
     in property <bool> maximised;
     in-out property <string> screen: "play";
+    // The screen just changed: the cover's up for a frame, then fades.
+    property <bool> covering;
+    changed screen => { covering = true; }
     in property <bool> loaded;
     in property <string> splash-doing: "Checking your game and server…";
     in property <InfoView> info;
@@ -108,6 +111,10 @@ export component AppWindow inherits Window {
     callback maximise();
     callback close-window();
     callback cycle-theme();
+    // The look as it is now (the choice, or the system's): the overlay takes it when the game starts.
+    callback look-changed(bool);
+    out property <bool> looks-dark: Theme.dark;
+    changed looks-dark => { look-changed(looks-dark); }
     callback go(string);
     callback whats-new();
     callback act(int, string);
@@ -211,6 +218,8 @@ export component AppWindow inherits Window {
                 padding-left: 20px;
                 padding-right: 16px;
                 spacing: 12px;
+                // The mark (the units alone, at the banner's size) beside a new release.
+                VerticalLayout { alignment: center; EchelonMark { size: 18px; tile: false; } }
                 Text { text: root.banner; color: Theme.fg; vertical-alignment: center; horizontal-stretch: 1; wrap: word-wrap; }
                 Btn { text: root.banner-button; kind: "primary"; small: true; clicked => { root.banner-now(); } }
                 Btn { text: "Later"; small: true; clicked => { root.banner-later(); } }
@@ -341,6 +350,23 @@ export component AppWindow inherits Window {
                         edited(a, b) => { root.page-edited(a, b); }
                         accepted(a, b) => { root.page-accepted(a, b); }
                         pressed(a) => { root.page-pressed(a); }
+                    }
+
+                    // Screens cross over (docs/brand.md): a change of screen covers the old one at
+                    // once and the new one comes up through it. No layers: the cover is the
+                    // window's floor, so it costs nothing at rest.
+                    cover := Rectangle {
+                        background: Theme.bg;
+                        opacity: 0;
+                        visible: self.opacity > 0.01;
+                        states [
+                            covering when root.covering: { opacity: 1; out { animate opacity { duration: Theme.calm; easing: ease-out; } } }
+                        ]
+                    }
+                    Timer {
+                        interval: 16ms;
+                        running: root.covering;
+                        triggered => { root.covering = false; }
                     }
 
                     // A watched match has a seat.

@@ -327,7 +327,11 @@ fn whats_new(v: &Value) -> DialogView {
     };
     let skipped = releases.len() > 1;
     let from = st(v, "from");
-    r.add(note(if from.is_empty() { st(v, "to") } else { format!("{from} → {}", st(v, "to")) }).tone("accent"));
+    // The mark and the name: the launcher's identity, on the page that says what it is now.
+    r.add(mark(
+        format!("5th Echelon Enhanced {}", st(newest, "version")),
+        if from.is_empty() { st(v, "to") } else { format!("{from} → {}", st(v, "to")) },
+    ));
     let thanks = st(newest, "thanks");
     if !thanks.is_empty() {
         r.card("Thanks to your reports");

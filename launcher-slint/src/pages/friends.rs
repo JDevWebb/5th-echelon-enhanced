@@ -51,12 +51,15 @@ impl Screen for FriendsPage {
             ..Default::default()
         };
         if info.game_dir.is_none() || info.server.is_none() {
-            r.add(note("Set up the game and a server first (Play)."));
+            r.add(
+                mark("No server yet", "Set up the game and a server first: your friends are kept by your account there.")
+                    .button(super::b("go-play", "Set up on Play").kind("primary")),
+            );
             return page(r.done());
         }
         let (people, signed_in, error) = crate::core::people(&core);
         if !signed_in {
-            r.add(note("Make an account on your server first (Play): friends are kept by your account."));
+            r.add(mark("No account yet", "Make an account on your server first: friends are kept by your account.").button(super::b("go-play", "Go to Play").kind("primary")));
             return page(r.done());
         }
         let Some(p) = people else {
@@ -132,8 +135,7 @@ impl Screen for FriendsPage {
         match self.tab {
             0 => {
                 if p.friends.is_empty() {
-                    r.add(note("No friends yet. Find players to add some, or accept a request when one comes."));
-                    r.add(buttons(vec![super::b("tab:2", "Find players").kind("link")]));
+                    r.add(mark("No friends yet", "Find players to add some, or accept a request when one comes.").button(super::b("tab:2", "Find players").kind("primary")));
                 }
                 for f in &p.friends {
                     let mut acts = Vec::new();
@@ -162,7 +164,7 @@ impl Screen for FriendsPage {
             }
             1 => {
                 if p.received.is_empty() && p.sent.is_empty() {
-                    r.add(note("No friend requests either way."));
+                    r.add(mark("No requests", "Nobody's waiting for your answer, and you haven't asked anyone."));
                 }
                 if !p.received.is_empty() {
                     r.card("Waiting for your answer");
@@ -226,7 +228,7 @@ impl Screen for FriendsPage {
                     "{BLOCK_MEANS} A block of a player with a 5th Echelon identity holds on every server that shares friends, when you have one too."
                 )));
                 if p.blocked.is_empty() {
-                    r.add(note("You haven't blocked anyone."));
+                    r.add(mark("Nobody blocked", "You haven't blocked anyone."));
                 }
                 for q in &p.blocked {
                     r.add(item(q.name.clone(), q.identity.clone().unwrap_or_default()).button(super::b(format!("unblock:{}:{}", q.id, q.name), "Unblock").enabled(!busy)));
@@ -260,6 +262,9 @@ impl Screen for FriendsPage {
         let (who, name) = rest.split_once(':').unwrap_or((rest, ""));
         match action {
             "reload" => {}
+            "go-play" => {
+                app.window(WindowCall::Go("play".into()));
+            }
             "tab" => self.tab = who.parse().unwrap_or(0),
             "search" => {
                 let q = self.query.trim().to_string();

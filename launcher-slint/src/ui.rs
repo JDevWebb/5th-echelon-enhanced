@@ -856,6 +856,8 @@ pub fn run() -> Result<(), slint::PlatformError> {
     };
     window.global::<crate::Theme>().set_choice(theme);
     window.global::<crate::Theme>().set_reduced_motion(std::env::var_os("FE_REDUCED_MOTION").is_some());
+    core::set_light(!window.global::<crate::Theme>().get_dark());
+    window.on_look_changed(|dark| core::set_light(!dark));
 
     // The core tells the window what changed; the window asks again.
     let ui_slot: Arc<Mutex<Option<std::sync::Weak<Ui>>>> = Arc::new(Mutex::new(None));

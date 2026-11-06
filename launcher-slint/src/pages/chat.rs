@@ -67,7 +67,7 @@ impl Screen for ChatPage {
         };
         if state != "open" {
             r.add(match state.as_str() {
-                "no-account" => note("Set up an account on a community server first (Play)."),
+                "no-account" => mark("No account yet", "Chat is for players with an account on a community server: set one up on Play."),
                 "opening" => working("Opening chat…"),
                 _ => note(st(&v, "why")),
             });

@@ -69,9 +69,13 @@ impl Screen for SetupPage {
         let info = crate::core::info(&core);
         let step = self.step(&info);
         let mut r = Rows::default();
-        r.add(note(
-            "The launcher sets everything up and keeps the game's original files, so you can undo it any time. You need your own copy of the game.",
-        ));
+        const WHAT: &str = "The launcher sets everything up and keeps the game's original files, so you can undo it any time. You need your own copy of the game.";
+        // A first setup's first page: the mark and the name, as the launcher's welcome.
+        if self.fresh && step <= 1 && !info.connecting {
+            r.add(mark("Welcome to 5th Echelon Enhanced", WHAT));
+        } else {
+            r.add(note(WHAT));
+        }
         let steps: Vec<(String, String)> = STEPS.iter().enumerate().map(|(i, n)| (i.to_string(), format!("{}  {n}", i + 1))).collect();
         r.add(segments("steps", format!("Step {} of {}", step + 1, STEPS.len()), &steps, &step.to_string()));
         match step {

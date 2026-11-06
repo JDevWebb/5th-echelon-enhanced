@@ -1,4 +1,5 @@
-//! The in-game overlay: "5th Echelon Enhanced" in its dark Echelon theme.
+//! The in-game overlay: "5th Echelon Enhanced" in the launcher's look, dark or light as the
+//! launcher was when it started the game (docs/brand.md, "The overlay").
 //!
 //! - A toast when the game starts (how to open the overlay), one for each
 //!   invite, and a banner when the server can't be reached.
@@ -70,67 +71,200 @@ const DESIGN_HEIGHT: f32 = 1080.0;
 /// between, the fonts are scaled by less than 3%.
 const FONT_SCALE_STEP: f32 = 0.05;
 const BODY_PX: f32 = 17.0;
-const HEADING_PX: f32 = 22.0;
+const HEADING_PX: f32 = 23.0;
+const BRAND_PX: f32 = 21.0;
+const CAPS_PX: f32 = 14.0;
 
-// Echelon, dark: slate greys with night-vision green as the accent.
-const BG: [f32; 4] = rgba(0x0f1518, 0.94);
-const SURFACE: [f32; 4] = rgba(0x1c252a, 1.0);
-const SURFACE_HOVER: [f32; 4] = rgba(0x273238, 1.0);
-const LINE: [f32; 4] = [1.0, 1.0, 1.0, 0.09];
-const ROW: [f32; 4] = [1.0, 1.0, 1.0, 0.03];
-const FG: [f32; 4] = rgba(0xe6edf0, 1.0);
-const MUTED: [f32; 4] = rgba(0x93a4ad, 1.0);
-const OFFLINE: [f32; 4] = rgba(0x93a4ad, 0.5);
-const ACCENT: [f32; 4] = rgba(0x8fd14f, 1.0);
-const ACCENT_HOVER: [f32; 4] = rgba(0xa7e070, 1.0);
-const ACCENT_SOFT: [f32; 4] = rgba(0x8fd14f, 0.16);
-const ON_ACCENT: [f32; 4] = rgba(0x0b1405, 1.0);
-const OK: [f32; 4] = rgba(0x3ecf9e, 1.0);
-const BAD: [f32; 4] = rgba(0xff6b6b, 1.0);
-const WARN: [f32; 4] = rgba(0xf2b84b, 1.0);
-const DIM: [f32; 4] = [0.0, 0.02, 0.03, 0.55];
+/// The overlay's colours: the launcher's tokens (launcher-slint/ui/theme.slint), dark and light,
+/// as the launcher looked when it started the game (`OverlayTheme` in uplay.toml). The panel is
+/// a little see-through over the game; text keeps the launcher's contrast on it.
+struct Look {
+    bg: [f32; 4],
+    surface: [f32; 4],
+    surface_hover: [f32; 4],
+    line: [f32; 4],
+    row: [f32; 4],
+    /// The current tab's ground (the launcher's `selected`).
+    selected: [f32; 4],
+    fg: [f32; 4],
+    muted: [f32; 4],
+    /// HUD labels (Plex Mono caps): quieter than `muted`.
+    label: [f32; 4],
+    offline: [f32; 4],
+    accent: [f32; 4],
+    accent_hover: [f32; 4],
+    accent_soft: [f32; 4],
+    on_accent: [f32; 4],
+    /// Online, connected: the accent (one accent; the words say it too).
+    ok: [f32; 4],
+    bad: [f32; 4],
+    on_bad: [f32; 4],
+    warn: [f32; 4],
+    /// Over the game behind the panel.
+    dim: [f32; 4],
+    /// The mark (docs/brand.md): its tile and edge, the four units behind from the back, the
+    /// front one.
+    tile: [f32; 4],
+    tile_edge: [f32; 4],
+    units: [[f32; 4]; 4],
+    front: [f32; 4],
+}
+
+const DARK: Look = Look {
+    bg: rgba(0x0a0e0f, 0.95),
+    surface: rgba(0x151e1f, 1.0),
+    surface_hover: rgba(0x1c2827, 1.0),
+    line: rgba(0x263434, 1.0),
+    row: [1.0, 1.0, 1.0, 0.03],
+    selected: rgba(0x101c16, 1.0),
+    fg: rgba(0xe3ece6, 1.0),
+    muted: rgba(0xa9bab3, 1.0),
+    label: rgba(0x84968f, 1.0),
+    offline: rgba(0x84968f, 0.6),
+    accent: rgba(0x9be05a, 1.0),
+    accent_hover: rgba(0xb2ea7c, 1.0),
+    accent_soft: rgba(0x9be05a, 0.16),
+    on_accent: rgba(0x071003, 1.0),
+    ok: rgba(0x9be05a, 1.0),
+    bad: rgba(0xff7a6b, 1.0),
+    on_bad: rgba(0x1a0503, 1.0),
+    warn: rgba(0xf0b44c, 1.0),
+    dim: [0.012, 0.02, 0.024, 0.6],
+    tile: rgba(0x141c20, 1.0),
+    tile_edge: rgba(0x2b363c, 1.0),
+    units: [rgba(0x4a5a62, 1.0), rgba(0x5d7079, 1.0), rgba(0x73878f, 1.0), rgba(0x93a4ad, 1.0)],
+    front: rgba(0x8fd14f, 1.0),
+};
+
+const LIGHT: Look = Look {
+    bg: rgba(0xf2f4f1, 0.97),
+    surface: rgba(0xe3e9e2, 1.0),
+    surface_hover: rgba(0xd6dfd5, 1.0),
+    line: rgba(0xc9d3c8, 1.0),
+    row: [0.0, 0.0, 0.0, 0.035],
+    selected: rgba(0xe2efd6, 1.0),
+    fg: rgba(0x101713, 1.0),
+    muted: rgba(0x3a4842, 1.0),
+    label: rgba(0x56655e, 1.0),
+    offline: rgba(0x56655e, 0.6),
+    accent: rgba(0x3b7a12, 1.0),
+    accent_hover: rgba(0x468d18, 1.0),
+    accent_soft: rgba(0x3b7a12, 0.14),
+    on_accent: rgba(0xffffff, 1.0),
+    ok: rgba(0x3b7a12, 1.0),
+    bad: rgba(0xb3261e, 1.0),
+    on_bad: rgba(0xffffff, 1.0),
+    warn: rgba(0x8a5600, 1.0),
+    dim: [0.10, 0.13, 0.11, 0.45],
+    tile: rgba(0xe6ebe6, 1.0),
+    tile_edge: rgba(0xc4cec6, 1.0),
+    units: [rgba(0xa9b6b0, 1.0), rgba(0x8a9a93, 1.0), rgba(0x6b7d75, 1.0), rgba(0x4f6159, 1.0)],
+    front: rgba(0x3b7a12, 1.0),
+};
+
+/// The look the launcher chose for this game.
+fn pal() -> &'static Look {
+    if hooks_config::get().is_some_and(|c| c.overlay_theme == hooks_config::OverlayTheme::Light) {
+        &LIGHT
+    } else {
+        &DARK
+    }
+}
 
 #[allow(clippy::cast_precision_loss)]
 const fn rgba(hex: u32, alpha: f32) -> [f32; 4] {
     [((hex >> 16) & 0xff) as f32 / 255.0, ((hex >> 8) & 0xff) as f32 / 255.0, (hex & 0xff) as f32 / 255.0, alpha]
 }
 
+/// 5th Echelon Enhanced's mark (docs/brand.md; the launcher's `EchelonMark`): five units
+/// stepped back on a diagonal, the fifth in front in the accent, on its rounded tile or alone.
+fn draw_mark(dl: &imgui::DrawListMut<'_>, at: [f32; 2], size: f32, tile: bool) {
+    let p = pal();
+    let u = size / 100.0;
+    let (k, ox, oy) = if tile {
+        (1.0, 0.0, 0.0)
+    } else {
+        (1.3, (50.0 - 51.0 * 1.3) * u, (50.0 - 47.0 * 1.3) * u)
+    };
+    if tile {
+        let a = [at[0] + 4.0 * u, at[1] + 4.0 * u];
+        let b = [a[0] + 92.0 * u, a[1] + 92.0 * u];
+        dl.add_rect(a, b, p.tile).filled(true).rounding(18.0 * u).build();
+        dl.add_rect(a, b, p.tile_edge).rounding(18.0 * u).thickness((2.0 * u).max(1.0)).build();
+    }
+    let unit = |x: f32, y: f32, color: [f32; 4]| {
+        let a = [at[0] + ox + x * u * k, at[1] + oy + y * u * k];
+        dl.add_rect(a, [a[0] + 14.0 * u * k, a[1] + 14.0 * u * k], color).filled(true).rounding(2.0 * u * k).build();
+    };
+    #[allow(clippy::cast_precision_loss)]
+    for (i, color) in p.units.iter().enumerate() {
+        let i = i as f32;
+        unit(16.0 + 14.0 * i, 68.0 - 14.0 * i, *color);
+    }
+    unit(72.0, 12.0, p.front);
+}
+
+/// The size of `text` drawn by [`draw_spaced`].
+fn spaced_size(ui: &Ui, text: &str, gap: f32) -> [f32; 2] {
+    let mut w = 0.0;
+    let mut h: f32 = 0.0;
+    let mut buf = [0u8; 4];
+    for (i, c) in text.chars().enumerate() {
+        let t = ui.calc_text_size(c.encode_utf8(&mut buf));
+        w += t[0] + if i > 0 { gap } else { 0.0 };
+        h = h.max(t[1]);
+    }
+    [w, h]
+}
+
+/// Text with `gap` between its letters (imgui has no letter spacing): the launcher's widely
+/// spaced Plex Mono caps.
+fn draw_spaced(ui: &Ui, dl: &imgui::DrawListMut<'_>, at: [f32; 2], color: [f32; 4], text: &str, gap: f32) {
+    let mut x = at[0];
+    let mut buf = [0u8; 4];
+    for c in text.chars() {
+        let s = c.encode_utf8(&mut buf);
+        dl.add_text([x, at[1]], color, &*s);
+        x += ui.calc_text_size(&*s)[0] + gap;
+    }
+}
+
 fn theme_colors(style: &mut imgui::Style) {
     let c = &mut style.colors;
-    c[StyleColor::Text as usize] = FG;
-    c[StyleColor::TextDisabled as usize] = MUTED;
-    c[StyleColor::WindowBg as usize] = BG;
+    c[StyleColor::Text as usize] = pal().fg;
+    c[StyleColor::TextDisabled as usize] = pal().muted;
+    c[StyleColor::WindowBg as usize] = pal().bg;
     c[StyleColor::ChildBg as usize] = [0.0, 0.0, 0.0, 0.0];
-    c[StyleColor::PopupBg as usize] = BG;
-    c[StyleColor::Border as usize] = LINE;
+    c[StyleColor::PopupBg as usize] = pal().bg;
+    c[StyleColor::Border as usize] = pal().line;
     c[StyleColor::BorderShadow as usize] = [0.0, 0.0, 0.0, 0.0];
-    c[StyleColor::FrameBg as usize] = SURFACE;
-    c[StyleColor::FrameBgHovered as usize] = SURFACE_HOVER;
-    c[StyleColor::FrameBgActive as usize] = SURFACE_HOVER;
-    c[StyleColor::TitleBg as usize] = BG;
-    c[StyleColor::TitleBgActive as usize] = BG;
-    c[StyleColor::TitleBgCollapsed as usize] = BG;
+    c[StyleColor::FrameBg as usize] = pal().surface;
+    c[StyleColor::FrameBgHovered as usize] = pal().surface_hover;
+    c[StyleColor::FrameBgActive as usize] = pal().surface_hover;
+    c[StyleColor::TitleBg as usize] = pal().bg;
+    c[StyleColor::TitleBgActive as usize] = pal().bg;
+    c[StyleColor::TitleBgCollapsed as usize] = pal().bg;
     c[StyleColor::ScrollbarBg as usize] = [0.0, 0.0, 0.0, 0.0];
-    c[StyleColor::ScrollbarGrab as usize] = SURFACE;
-    c[StyleColor::ScrollbarGrabHovered as usize] = SURFACE_HOVER;
-    c[StyleColor::ScrollbarGrabActive as usize] = SURFACE_HOVER;
-    c[StyleColor::CheckMark as usize] = ACCENT;
-    c[StyleColor::SliderGrab as usize] = ACCENT;
-    c[StyleColor::SliderGrabActive as usize] = ACCENT_HOVER;
-    c[StyleColor::Button as usize] = SURFACE;
-    c[StyleColor::ButtonHovered as usize] = SURFACE_HOVER;
-    c[StyleColor::ButtonActive as usize] = SURFACE_HOVER;
-    c[StyleColor::Header as usize] = ACCENT_SOFT;
-    c[StyleColor::HeaderHovered as usize] = ACCENT_SOFT;
-    c[StyleColor::HeaderActive as usize] = ACCENT_SOFT;
-    c[StyleColor::Separator as usize] = LINE;
-    c[StyleColor::SeparatorHovered as usize] = LINE;
-    c[StyleColor::SeparatorActive as usize] = LINE;
+    c[StyleColor::ScrollbarGrab as usize] = pal().surface;
+    c[StyleColor::ScrollbarGrabHovered as usize] = pal().surface_hover;
+    c[StyleColor::ScrollbarGrabActive as usize] = pal().surface_hover;
+    c[StyleColor::CheckMark as usize] = pal().accent;
+    c[StyleColor::SliderGrab as usize] = pal().accent;
+    c[StyleColor::SliderGrabActive as usize] = pal().accent_hover;
+    c[StyleColor::Button as usize] = pal().surface;
+    c[StyleColor::ButtonHovered as usize] = pal().surface_hover;
+    c[StyleColor::ButtonActive as usize] = pal().surface_hover;
+    c[StyleColor::Header as usize] = pal().accent_soft;
+    c[StyleColor::HeaderHovered as usize] = pal().accent_soft;
+    c[StyleColor::HeaderActive as usize] = pal().accent_soft;
+    c[StyleColor::Separator as usize] = pal().line;
+    c[StyleColor::SeparatorHovered as usize] = pal().line;
+    c[StyleColor::SeparatorActive as usize] = pal().line;
     c[StyleColor::ResizeGrip as usize] = [0.0, 0.0, 0.0, 0.0];
     c[StyleColor::ResizeGripHovered as usize] = [0.0, 0.0, 0.0, 0.0];
     c[StyleColor::ResizeGripActive as usize] = [0.0, 0.0, 0.0, 0.0];
-    c[StyleColor::TextSelectedBg as usize] = ACCENT_SOFT;
-    c[StyleColor::NavHighlight as usize] = ACCENT;
+    c[StyleColor::TextSelectedBg as usize] = pal().accent_soft;
+    c[StyleColor::NavHighlight as usize] = pal().accent;
 }
 
 /// Sizes at 1080p, multiplied by `s` for the current screen.
@@ -153,7 +287,12 @@ fn theme_sizes(style: &mut imgui::Style, s: f32) {
 
 struct Fonts {
     strong: FontId,
+    /// Titles: Plex Sans Condensed Bold, in caps (the launcher's page and dialog titles).
     heading: FontId,
+    /// The wordmark's "5TH ECHELON" in the panel's header.
+    brand: FontId,
+    /// HUD labels: Plex Mono, in caps (sections, the release, "ENHANCED").
+    caps: FontId,
 }
 
 // SAFETY: a FontId is a pointer into the font atlas, which the imgui context
@@ -193,8 +332,10 @@ fn add_fonts(ctx: &mut imgui::Context, scale: f32) -> Fonts {
     // The first font added is imgui's default: body text.
     add(include_bytes!("../fonts/IBMPlexSans-Regular.ttf"), BODY_PX, "IBM Plex Sans");
     let strong = add(include_bytes!("../fonts/IBMPlexSans-SemiBold.ttf"), BODY_PX, "IBM Plex Sans SemiBold");
-    let heading = add(include_bytes!("../fonts/IBMPlexSans-SemiBold.ttf"), HEADING_PX, "IBM Plex Sans SemiBold (heading)");
-    Fonts { strong, heading }
+    let heading = add(include_bytes!("../fonts/IBMPlexSansCondensed-Bold.ttf"), HEADING_PX, "IBM Plex Sans Condensed Bold");
+    let brand = add(include_bytes!("../fonts/IBMPlexSansCondensed-Bold.ttf"), BRAND_PX, "IBM Plex Sans Condensed Bold (brand)");
+    let caps = add(include_bytes!("../fonts/IBMPlexMono-Regular.ttf"), CAPS_PX, "IBM Plex Mono");
+    Fonts { strong, heading, brand, caps }
 }
 
 #[allow(dead_code)]
@@ -576,15 +717,26 @@ impl MyRenderLoop {
                     let size = ui.window_size();
                     let h = self.s(3.0);
                     ui.get_window_draw_list()
-                        .add_rect([pos[0], pos[1] + size[1] - h], [pos[0] + size[0] * p.clamp(0.0, 1.0), pos[1] + size[1]], ACCENT)
+                        .add_rect([pos[0], pos[1] + size[1] - h], [pos[0] + size[0] * p.clamp(0.0, 1.0), pos[1] + size[1]], pal().accent)
                         .filled(true)
                         .build();
                 }
             });
     }
 
+    /// A title, in the launcher's type: Plex Sans Condensed Bold (a card's title; a pane's is in
+    /// caps, as a launcher page's is).
     fn heading(&self, ui: &Ui, text: &str) {
-        self.with_font(ui, |f| f.heading, || ui.text(text));
+        self.heading_colored(ui, pal().fg, text);
+    }
+
+    fn heading_colored(&self, ui: &Ui, color: [f32; 4], text: &str) {
+        self.with_font(ui, |f| f.heading, || ui.text_colored(color, text));
+    }
+
+    /// A HUD label: Plex Mono caps, spaced (the launcher's `Caps`).
+    fn caps(&self, ui: &Ui, color: [f32; 4], text: &str) {
+        self.with_font(ui, |f| f.caps, || ui.text_colored(color, text.to_uppercase()));
     }
 
     /// A key cap, e.g. F5, inline with the text.
@@ -593,11 +745,11 @@ impl MyRenderLoop {
         let size = ui.calc_text_size(key);
         let pos = ui.cursor_screen_pos();
         let dl = ui.get_window_draw_list();
-        dl.add_rect(pos, [pos[0] + size[0] + pad[0] * 2.0, pos[1] + size[1] + pad[1] * 2.0], ACCENT)
+        dl.add_rect(pos, [pos[0] + size[0] + pad[0] * 2.0, pos[1] + size[1] + pad[1] * 2.0], pal().accent)
             .filled(true)
             .rounding(self.s(4.0))
             .build();
-        dl.add_text([pos[0] + pad[0], pos[1] + pad[1]], ON_ACCENT, key);
+        dl.add_text([pos[0] + pad[0], pos[1] + pad[1]], pal().on_accent, key);
         ui.dummy([size[0] + pad[0] * 2.0, size[1] + pad[1] * 2.0]);
     }
 
@@ -611,6 +763,16 @@ impl MyRenderLoop {
         }
         let progress = left.as_secs_f32() / INITIAL_POPUP_DURATION.as_secs_f32();
         self.toast(ui, "##fe-start", Some(progress), || {
+            // The mark (the units alone, at a toast's size) and the name.
+            let m = self.s(24.0);
+            let at = ui.cursor_screen_pos();
+            let title_h = self.with_font(ui, |f| f.heading, || ui.text_line_height());
+            {
+                let dl = ui.get_window_draw_list();
+                draw_mark(&dl, [at[0], at[1] + (title_h - m) / 2.0], m, false);
+            }
+            ui.dummy([m, title_h]);
+            ui.same_line_with_spacing(0.0, self.s(10.0));
             self.heading(ui, PRODUCT);
             let who = crate::api::username().map_or_else(|| String::from("Connecting"), |u| format!("Signed in as {u}"));
             let sub = if self.data.loaded {
@@ -622,17 +784,17 @@ impl MyRenderLoop {
             } else {
                 who
             };
-            ui.text_colored(MUTED, sub);
+            ui.text_colored(pal().muted, sub);
             if crate::hooks::nat::is_off() {
-                ui.text_colored(WARN, "Internet play is set to LAN or VPN only: players elsewhere can't join you.");
+                ui.text_colored(pal().warn, "Internet play is set to LAN or VPN only: players elsewhere can't join you.");
             }
-            ui.text_colored(MUTED, "Press");
+            ui.text_colored(pal().muted, "Press");
             ui.same_line();
             self.key(ui, &overlay_key().0);
             ui.same_line();
-            ui.text_colored(MUTED, "for friends, invites and match settings");
+            ui.text_colored(pal().muted, "for friends, invites and match settings");
             if is_function_key() {
-                ui.text_colored(MUTED, format!("(on most laptops, hold Fn and press {})", overlay_key().0));
+                ui.text_colored(pal().muted, format!("(on most laptops, hold Fn and press {})", overlay_key().0));
             }
         });
     }
@@ -652,8 +814,8 @@ impl MyRenderLoop {
         }
         let Some((heading, text)) = self.maintenance_warning() else { return };
         self.toast(ui, "##fe-maintenance", None, || {
-            self.with_font(ui, |f| f.heading, || ui.text_colored(WARN, &heading));
-            let _c = ui.push_style_color(StyleColor::Text, MUTED);
+            self.heading_colored(ui, pal().warn, &heading);
+            let _c = ui.push_style_color(StyleColor::Text, pal().muted);
             ui.text_wrapped(&text);
         });
     }
@@ -677,17 +839,17 @@ impl MyRenderLoop {
         self.toast(ui, "##fe-invite", Some(left.as_secs_f32() / NOTIFICATION_TIMEOUT.as_secs_f32()), || {
             self.heading(ui, &format!("{user} invited you"));
             if let Some(server) = &lookalike {
-                ui.text_colored(BAD, format!("Not your friend {user} from {server}"));
+                ui.text_colored(pal().bad, format!("Not your friend {user} from {server}"));
             }
             if let Some(activity) = &activity {
-                ui.text_colored(MUTED, activity);
+                ui.text_colored(pal().muted, activity);
             }
             if pending {
                 self.key(ui, &overlay_key().0);
                 ui.same_line();
-                ui.text_colored(MUTED, format!("accept or decline  ·  {} s", left.as_secs()));
+                ui.text_colored(pal().muted, format!("accept or decline  ·  {} s", left.as_secs()));
             } else {
-                ui.text_colored(MUTED, "Joining their match...");
+                ui.text_colored(pal().muted, "Joining their match...");
             }
         });
     }
@@ -702,11 +864,11 @@ impl MyRenderLoop {
         let left = chat::TOAST_FOR.saturating_sub(toast.at.elapsed());
         self.toast(ui, "##fe-chat", Some(left.as_secs_f32() / chat::TOAST_FOR.as_secs_f32()), || {
             self.heading(ui, &toast.title);
-            let _c = ui.push_style_color(StyleColor::Text, FG);
+            let _c = ui.push_style_color(StyleColor::Text, pal().fg);
             ui.text_wrapped(&toast.text);
             self.key(ui, &overlay_key().0);
             ui.same_line();
-            ui.text_colored(MUTED, "to answer in Chat");
+            ui.text_colored(pal().muted, "to answer in Chat");
         });
     }
 
@@ -716,15 +878,15 @@ impl MyRenderLoop {
         let (title, detail, colour) = match &self.connection_error {
             Some(err) => {
                 let (title, detail) = describe_error(err);
-                (title.to_string(), detail.to_string(), BAD)
+                (title.to_string(), detail.to_string(), pal().bad)
             }
             None if crate::STARTED_OFFLINE.load(std::sync::atomic::Ordering::Relaxed) => (
                 String::from("The game was started offline"),
                 String::from("It was started with -offline, so it stays offline. Remove it from Steam's launch options (the game's Properties) and start the game again."),
-                WARN,
+                pal().warn,
             ),
             None => match crate::hooks::nat::unreachable() {
-                Some(why) => (String::from("Other players can't reach you"), describe_unreachable(why), WARN),
+                Some(why) => (String::from("Other players can't reach you"), describe_unreachable(why), pal().warn),
                 None => return,
             },
         };
@@ -747,8 +909,8 @@ impl MyRenderLoop {
                     .add_rect(pos, [pos[0] + self.s(4.0), pos[1] + size[1]], colour)
                     .filled(true)
                     .build();
-                self.with_font(ui, |f| f.heading, || ui.text_colored(colour, &title));
-                let _c = ui.push_style_color(StyleColor::Text, MUTED);
+                self.heading_colored(ui, colour, &title);
+                let _c = ui.push_style_color(StyleColor::Text, pal().muted);
                 ui.text_wrapped(detail);
             });
     }
@@ -778,14 +940,18 @@ impl MyRenderLoop {
                 let pos = ui.window_pos();
                 let size = ui.window_size();
                 let dl = ui.get_window_draw_list();
-                dl.add_rect(pos, [pos[0] + self.s(4.0), pos[1] + size[1]], WARN).filled(true).build();
+                dl.add_rect(pos, [pos[0] + self.s(4.0), pos[1] + size[1]], pal().warn).filled(true).build();
                 let h = self.s(3.0);
                 let progress = left.as_secs_f32() / PROBLEM_DURATION.as_secs_f32();
-                dl.add_rect([pos[0], pos[1] + size[1] - h], [pos[0] + size[0] * progress.clamp(0.0, 1.0), pos[1] + size[1]], ACCENT)
-                    .filled(true)
-                    .build();
-                self.with_font(ui, |f| f.heading, || ui.text_colored(WARN, &problem.title));
-                let _c = ui.push_style_color(StyleColor::Text, MUTED);
+                dl.add_rect(
+                    [pos[0], pos[1] + size[1] - h],
+                    [pos[0] + size[0] * progress.clamp(0.0, 1.0), pos[1] + size[1]],
+                    pal().accent,
+                )
+                .filled(true)
+                .build();
+                self.heading_colored(ui, pal().warn, &problem.title);
+                let _c = ui.push_style_color(StyleColor::Text, pal().muted);
                 ui.text_wrapped(&problem.text);
             });
     }
@@ -813,7 +979,7 @@ impl MyRenderLoop {
             .position([win[0] / 2.0, win[1] - self.s(48.0)], Condition::Always)
             .position_pivot([0.5, 1.0])
             .build(|| {
-                ui.text_colored(if error { BAD } else { FG }, text);
+                ui.text_colored(if error { pal().bad } else { pal().fg }, text);
             });
     }
 
@@ -834,7 +1000,10 @@ impl MyRenderLoop {
             .position([win[0] / 2.0, self.s(28.0)], Condition::Always)
             .position_pivot([0.5, 0.0])
             .build(|| {
-                ui.text_colored(FG, "5th Echelon is taking you online: the mouse and keys are back in a moment. Esc: stop and take over.");
+                ui.text_colored(
+                    pal().fg,
+                    "5th Echelon is taking you online: the mouse and keys are back in a moment. Esc: stop and take over.",
+                );
             });
     }
 
@@ -842,7 +1011,7 @@ impl MyRenderLoop {
 
     fn show_panel(&mut self, ui: &Ui) {
         let win = ui.io().display_size;
-        ui.get_background_draw_list().add_rect([0.0, 0.0], win, DIM).filled(true).build();
+        ui.get_background_draw_list().add_rect([0.0, 0.0], win, pal().dim).filled(true).build();
 
         let size = [self.s(900.0).min(win[0] - self.s(40.0)), self.s(620.0).min(win[1] - self.s(40.0))];
         let _p = ui.push_style_var(StyleVar::WindowPadding([0.0, 0.0]));
@@ -882,39 +1051,90 @@ impl MyRenderLoop {
 
     fn panel_header(&self, ui: &Ui, width: f32, h: f32) {
         let pos = ui.window_pos();
-        ui.get_window_draw_list().add_line([pos[0], pos[1] + h], [pos[0] + width, pos[1] + h], LINE).build();
+        ui.get_window_draw_list().add_line([pos[0], pos[1] + h], [pos[0] + width, pos[1] + h], pal().line).build();
         let pad = self.s(24.0);
 
-        // Name and release on the left.
-        let title_h = self.with_font(ui, |f| f.heading, || ui.calc_text_size(PRODUCT))[1];
-        ui.set_cursor_pos([pad, (h - title_h) / 2.0]);
-        self.heading(ui, PRODUCT);
-        ui.same_line();
+        // The mark on its tile, the wordmark beside it and the release in its box: the
+        // launcher's identity (docs/brand.md), as its side menu and title bar show it.
+        let mark = self.s(38.0);
+        let mut x = pos[0] + pad;
+        {
+            let dl = ui.get_window_draw_list();
+            draw_mark(&dl, [x, pos[1] + (h - mark) / 2.0], mark, true);
+        }
+        x += mark + self.s(12.0);
+        let (name_h, name_w) = self.with_font(
+            ui,
+            |f| f.brand,
+            || {
+                let t = ui.calc_text_size("5TH ECHELON");
+                (t[1], t[0])
+            },
+        );
+        let sub_gap = self.s(3.2);
+        let (sub_h, sub_w) = self.with_font(
+            ui,
+            |f| f.caps,
+            || {
+                let t = spaced_size(ui, "ENHANCED", sub_gap);
+                (t[1], t[0])
+            },
+        );
+        let top = pos[1] + (h - name_h - sub_h) / 2.0;
+        self.with_font(
+            ui,
+            |f| f.brand,
+            || {
+                ui.get_window_draw_list().add_text([x, top], pal().fg, "5TH ECHELON");
+            },
+        );
+        self.with_font(
+            ui,
+            |f| f.caps,
+            || {
+                let dl = ui.get_window_draw_list();
+                draw_spaced(ui, &dl, [x + self.s(1.0), top + name_h], pal().accent, "ENHANCED", sub_gap);
+            },
+        );
+        x += name_w.max(sub_w) + self.s(16.0);
+        self.with_font(
+            ui,
+            |f| f.caps,
+            || {
+                let t = ui.calc_text_size(RELEASE);
+                let bp = [self.s(7.0), self.s(3.0)];
+                let by = pos[1] + (h - t[1]) / 2.0 - bp[1];
+                let dl = ui.get_window_draw_list();
+                dl.add_rect([x, by], [x + t[0] + bp[0] * 2.0, by + t[1] + bp[1] * 2.0], pal().line)
+                    .rounding(self.s(4.0))
+                    .thickness(1.0)
+                    .build();
+                dl.add_text([x + bp[0], by + bp[1]], pal().label, RELEASE);
+            },
+        );
         let body_h = ui.text_line_height();
-        ui.set_cursor_pos([ui.cursor_pos()[0], (h - body_h) / 2.0]);
-        ui.text_colored(MUTED, RELEASE);
 
         // Connection on the right.
         let (dot, status) = if self.connection_error.is_some() {
-            (BAD, String::from("Not connected"))
+            (pal().bad, String::from("Not connected"))
         } else {
             let ms = self.data.response_time.map(|d| format!("{} ms", d.as_millis()));
             let parts: Vec<String> = [Some(String::from("Connected")), ms, crate::api::username()].into_iter().flatten().collect();
-            (OK, parts.join("  ·  "))
+            (pal().ok, parts.join("  ·  "))
         };
         let text_w = ui.calc_text_size(&status)[0];
         let x = width - pad - text_w;
         let r = self.s(4.5);
         ui.get_window_draw_list().add_circle([pos[0] + x - r * 3.0, pos[1] + h / 2.0], r, dot).filled(true).build();
         ui.set_cursor_pos([x, (h - body_h) / 2.0]);
-        ui.text_colored(MUTED, status);
+        ui.text_colored(pal().muted, status);
     }
 
     fn panel_nav(&mut self, ui: &Ui) {
         let pos = ui.window_pos();
         let size = ui.window_size();
         ui.get_window_draw_list()
-            .add_line([pos[0] + size[0] - 1.0, pos[1]], [pos[0] + size[0] - 1.0, pos[1] + size[1]], LINE)
+            .add_line([pos[0] + size[0] - 1.0, pos[1]], [pos[0] + size[0] - 1.0, pos[1] + size[1]], pal().line)
             .build();
         let pad = self.s(12.0);
         let item_h = self.s(44.0);
@@ -931,14 +1151,20 @@ impl MyRenderLoop {
             let hovered = ui.is_item_hovered();
             let selected = self.tab == tab;
             let dl = ui.get_window_draw_list();
+            // As the launcher's side menu: the current one on its own ground with the accent
+            // edge, the one under the mouse on a control's.
             if selected || hovered {
-                dl.add_rect(p, [p[0] + w, p[1] + item_h], if selected { ACCENT_SOFT } else { ROW })
+                dl.add_rect(p, [p[0] + w, p[1] + item_h], if selected { pal().selected } else { pal().surface })
                     .filled(true)
-                    .rounding(self.s(7.0))
+                    .rounding(self.s(8.0))
                     .build();
             }
             if selected {
-                dl.add_rect(p, [p[0] + self.s(3.0), p[1] + item_h], ACCENT).filled(true).build();
+                let inset = self.s(11.0);
+                dl.add_rect([p[0], p[1] + inset], [p[0] + self.s(2.0), p[1] + item_h - inset], pal().accent)
+                    .filled(true)
+                    .rounding(self.s(1.0))
+                    .build();
             }
             let label = tab.label();
             // Through the same `dl`: imgui-rs allows one window draw list at a
@@ -948,7 +1174,17 @@ impl MyRenderLoop {
                 |f| f.strong,
                 || {
                     let th = ui.calc_text_size(label)[1];
-                    dl.add_text([p[0] + self.s(16.0), p[1] + (item_h - th) / 2.0], if selected { FG } else { MUTED }, label);
+                    dl.add_text(
+                        [p[0] + self.s(16.0), p[1] + (item_h - th) / 2.0],
+                        if selected {
+                            pal().accent
+                        } else if hovered {
+                            pal().fg
+                        } else {
+                            pal().muted
+                        },
+                        label,
+                    );
                 },
             );
             let badge = match tab {
@@ -964,8 +1200,8 @@ impl MyRenderLoop {
                 let bh = ts[1] + self.s(4.0);
                 let bx = p[0] + w - bw - self.s(10.0);
                 let by = p[1] + (item_h - bh) / 2.0;
-                dl.add_rect([bx, by], [bx + bw, by + bh], ACCENT).filled(true).rounding(bh / 2.0).build();
-                dl.add_text([bx + self.s(6.0), by + self.s(2.0)], ON_ACCENT, &n);
+                dl.add_rect([bx, by], [bx + bw, by + bh], pal().accent).filled(true).rounding(bh / 2.0).build();
+                dl.add_text([bx + self.s(6.0), by + self.s(2.0)], pal().on_accent, &n);
             }
         }
     }
@@ -973,22 +1209,24 @@ impl MyRenderLoop {
     fn panel_footer(&self, ui: &Ui, size: [f32; 2], h: f32) {
         let pos = ui.window_pos();
         let top = size[1] - h;
-        ui.get_window_draw_list().add_line([pos[0], pos[1] + top], [pos[0] + size[0], pos[1] + top], LINE).build();
+        ui.get_window_draw_list()
+            .add_line([pos[0], pos[1] + top], [pos[0] + size[0], pos[1] + top], pal().line)
+            .build();
         let line_h = ui.text_line_height() + self.s(4.0);
         ui.set_cursor_pos([self.s(24.0), top + (h - line_h) / 2.0]);
         self.key(ui, &overlay_key().0);
         ui.same_line();
-        ui.text_colored(MUTED, "or");
+        ui.text_colored(pal().muted, "or");
         ui.same_line();
         self.key(ui, "Esc");
         ui.same_line();
-        ui.text_colored(MUTED, "closes.   The game gets no mouse or keys while this is open.");
+        ui.text_colored(pal().muted, "closes.   The game gets no mouse or keys while this is open.");
     }
 
     fn pane_title(&self, ui: &Ui, title: &str, note: &str) {
-        self.heading(ui, title);
+        self.heading(ui, &title.to_uppercase());
         if !note.is_empty() {
-            let _c = ui.push_style_color(StyleColor::Text, MUTED);
+            let _c = ui.push_style_color(StyleColor::Text, pal().muted);
             ui.text_wrapped(note);
         }
         ui.dummy([0.0, self.s(4.0)]);
@@ -998,7 +1236,7 @@ impl MyRenderLoop {
     /// `action` (buttons `action_w` wide) on the right.
     #[allow(clippy::too_many_arguments)]
     fn row(&self, ui: &Ui, i: usize, dot: Option<[f32; 4]>, title: &str, detail: &str, action_w: f32, action: impl FnOnce()) {
-        self.row_colored(ui, i, dot, title, detail, MUTED, action_w, action);
+        self.row_colored(ui, i, dot, title, detail, pal().muted, action_w, action);
     }
 
     /// [`Self::row`] with the detail line in `detail_color` (a warning).
@@ -1015,7 +1253,7 @@ impl MyRenderLoop {
         let text_x = {
             let dl = ui.get_window_draw_list();
             if i % 2 == 0 {
-                dl.add_rect(start, [start[0] + avail, start[1] + h], ROW).filled(true).rounding(self.s(7.0)).build();
+                dl.add_rect(start, [start[0] + avail, start[1] + h], pal().row).filled(true).rounding(self.s(7.0)).build();
             }
             if let Some(color) = dot {
                 let r = self.s(4.5);
@@ -1041,10 +1279,10 @@ impl MyRenderLoop {
     fn button(&self, ui: &Ui, label: &str, primary: bool) -> bool {
         let _colors = primary.then(|| {
             (
-                ui.push_style_color(StyleColor::Button, ACCENT),
-                ui.push_style_color(StyleColor::ButtonHovered, ACCENT_HOVER),
-                ui.push_style_color(StyleColor::ButtonActive, ACCENT_HOVER),
-                ui.push_style_color(StyleColor::Text, ON_ACCENT),
+                ui.push_style_color(StyleColor::Button, pal().accent),
+                ui.push_style_color(StyleColor::ButtonHovered, pal().accent_hover),
+                ui.push_style_color(StyleColor::ButtonActive, pal().accent_hover),
+                ui.push_style_color(StyleColor::Text, pal().on_accent),
             )
         });
         self.with_font(ui, |f| f.strong, || ui.button(label))
@@ -1083,12 +1321,12 @@ impl MyRenderLoop {
         let gap = self.s(8.0);
         #[allow(clippy::cast_precision_loss)]
         let w = labels.iter().map(|(l, _)| self.button_width(ui, l)).sum::<f32>() + gap * labels.len().saturating_sub(1) as f32;
-        let dot = if p.online { OK } else { OFFLINE };
+        let dot = if p.online { pal().ok } else { pal().offline };
         // Someone with a friend's name from another server, who isn't them.
         let (detail, color) = match (&p.lookalike, p.name_status) {
-            (Some(server), _) => (format!("Not your friend {} from {server}  ·  {detail}", p.name), BAD),
-            (None, community::NameStatus::Conflict) => (format!("{detail}  ·  another player has this name on other servers"), BAD),
-            _ => (detail.to_string(), MUTED),
+            (Some(server), _) => (format!("Not your friend {} from {server}  ·  {detail}", p.name), pal().bad),
+            (None, community::NameStatus::Conflict) => (format!("{detail}  ·  another player has this name on other servers"), pal().bad),
+            _ => (detail.to_string(), pal().muted),
         };
         self.row_colored(ui, i, Some(dot), &p.name, &detail, color, w, || {
             for (n, (label, action)) in labels.iter().enumerate() {
@@ -1139,13 +1377,13 @@ impl MyRenderLoop {
             ui.dummy([0.0, self.s(2.0)]);
             {
                 let _w = ui.push_text_wrap_pos_with_pos(ui.cursor_pos()[0] + self.s(340.0));
-                ui.text_colored(MUTED, text);
+                ui.text_colored(pal().muted, text);
             }
             ui.dummy([0.0, self.s(4.0)]);
             let _c = (
-                ui.push_style_color(StyleColor::Button, BAD),
-                ui.push_style_color(StyleColor::ButtonHovered, BAD),
-                ui.push_style_color(StyleColor::Text, ON_ACCENT),
+                ui.push_style_color(StyleColor::Button, pal().bad),
+                ui.push_style_color(StyleColor::ButtonHovered, pal().bad),
+                ui.push_style_color(StyleColor::Text, pal().on_bad),
             );
             if self.with_font(ui, |f| f.strong, || ui.button(format!("{yes}##fe-confirm"))) {
                 community::change(change, p.id.clone(), p.name.clone());
@@ -1163,7 +1401,7 @@ impl MyRenderLoop {
         for action in more {
             let RowAction::Change(change, text) = action else { continue };
             let label = if *change == C::Remove { "Remove friend" } else { *text };
-            let _c = (*change == C::Block).then(|| ui.push_style_color(StyleColor::Text, BAD));
+            let _c = (*change == C::Block).then(|| ui.push_style_color(StyleColor::Text, pal().bad));
             // The menu stays open: the question is asked in it. A plain selectable closed it
             // with the click, so Block and Remove asked nothing and did nothing (the gamebox,
             // 2026-11-06, at 720p).
@@ -1183,7 +1421,7 @@ impl MyRenderLoop {
 
     fn section(&self, ui: &Ui, title: &str) {
         ui.dummy([0.0, self.s(6.0)]);
-        self.with_font(ui, |f| f.strong, || ui.text_colored(MUTED, title));
+        self.caps(ui, pal().label, title);
         ui.dummy([0.0, self.s(2.0)]);
     }
 
@@ -1196,19 +1434,19 @@ impl MyRenderLoop {
         };
         self.pane_title(ui, "Friends", note);
         if !self.data.loaded {
-            ui.text_colored(MUTED, "Loading friends...");
+            ui.text_colored(pal().muted, "Loading friends...");
             return;
         }
         let join_offered = self.data.join_offered();
         if self.data.my_name_not_allowed {
-            let _c = ui.push_style_color(StyleColor::Text, BAD);
+            let _c = ui.push_style_color(StyleColor::Text, pal().bad);
             ui.text_wrapped(format!(
                 "The network's admins asked you to choose another name: this one breaks its rules. Give yourself a new one in {} (Settings, Servers and accounts, Rename).",
                 setup_tool()
             ));
             ui.dummy([0.0, self.s(4.0)]);
         } else if self.data.my_name_conflict {
-            let _c = ui.push_style_color(StyleColor::Text, BAD);
+            let _c = ui.push_style_color(StyleColor::Text, pal().bad);
             ui.text_wrapped(format!(
                 "Another player has your name on the servers that share friends with this one. Give yourself a new one in {} (Settings, Servers and accounts, Rename).",
                 setup_tool()
@@ -1236,7 +1474,7 @@ impl MyRenderLoop {
         }
         if self.data.friends.is_empty() {
             self.section(ui, "Your friends");
-            let _c = ui.push_style_color(StyleColor::Text, MUTED);
+            let _c = ui.push_style_color(StyleColor::Text, pal().muted);
             ui.text_wrapped("No friends yet. Open Find players, search for someone and add them.");
         } else {
             self.section(ui, "Your friends");
@@ -1257,7 +1495,7 @@ impl MyRenderLoop {
         if let Some(playing) = &self.data.playing {
             self.section(ui, "Playing on this server");
             if playing.is_empty() {
-                ui.text_colored(MUTED, "Nobody's in a match or a lobby right now.");
+                ui.text_colored(pal().muted, "Nobody's in a match or a lobby right now.");
             }
             for m in &playing.matches {
                 ui.text(m.line());
@@ -1268,13 +1506,13 @@ impl MyRenderLoop {
             }
             .summary();
             if !rest.is_empty() {
-                ui.text_colored(MUTED, rest);
+                ui.text_colored(pal().muted, rest);
             }
         }
         if !self.data.elsewhere.is_empty() {
             self.section(ui, "On other servers");
             {
-                let _c = ui.push_style_color(StyleColor::Text, MUTED);
+                let _c = ui.push_style_color(StyleColor::Text, pal().muted);
                 ui.text_wrapped(format!(
                     "To play together, one of you joins the other's server: {} lists them on its Play screen.",
                     setup_tool()
@@ -1283,7 +1521,7 @@ impl MyRenderLoop {
             for (name, server) in &self.data.elsewhere {
                 self.with_font(ui, |f| f.strong, || ui.text(name));
                 ui.same_line();
-                ui.text_colored(MUTED, format!("on {server}"));
+                ui.text_colored(pal().muted, format!("on {server}"));
             }
         }
         if !self.data.requests_out.is_empty() {
@@ -1311,7 +1549,7 @@ impl MyRenderLoop {
         );
         let v = self.chat.clone();
         if !v.available {
-            let _c = ui.push_style_color(StyleColor::Text, MUTED);
+            let _c = ui.push_style_color(StyleColor::Text, pal().muted);
             ui.text_wrapped(if v.why_not.is_empty() {
                 "Chat isn't open on this server (or is still starting)."
             } else {
@@ -1341,7 +1579,7 @@ impl MyRenderLoop {
             }
         }
         if v.read_only {
-            ui.text_colored(WARN, "The network can't be reached right now: you can read, not send.");
+            ui.text_colored(pal().warn, "The network can't be reached right now: you can read, not send.");
         }
         ui.dummy([0.0, self.s(4.0)]);
         let input_h = ui.text_line_height() * 2.0 + self.s(34.0);
@@ -1354,7 +1592,7 @@ impl MyRenderLoop {
             }
             Room::Lobby => {
                 if v.lobby == 0 {
-                    let _c = ui.push_style_color(StyleColor::Text, MUTED);
+                    let _c = ui.push_style_color(StyleColor::Text, pal().muted);
                     ui.text_wrapped("Join a lobby or a match: its players can talk here.");
                     return;
                 }
@@ -1371,7 +1609,7 @@ impl MyRenderLoop {
                 }
                 ui.child_window("##fe-chat-people").size([self.s(190.0), log_h + input_h - self.s(8.0)]).build(|| {
                     if people.is_empty() {
-                        let _c = ui.push_style_color(StyleColor::Text, MUTED);
+                        let _c = ui.push_style_color(StyleColor::Text, pal().muted);
                         ui.text_wrapped("No friends to message yet. Add some in Find players.");
                     }
                     for (identity, name) in &people {
@@ -1392,7 +1630,7 @@ impl MyRenderLoop {
                 ui.same_line();
                 ui.group(|| {
                     let Some(with) = self.chat_with.clone() else {
-                        ui.text_colored(MUTED, "Pick a friend.");
+                        ui.text_colored(pal().muted, "Pick a friend.");
                         return;
                     };
                     let list = v.direct.get(&with).cloned().unwrap_or_default();
@@ -1409,19 +1647,19 @@ impl MyRenderLoop {
         ui.child_window(format!("##fe-chat-log-{id}")).size([0.0, h]).build(|| {
             let at_bottom = ui.scroll_y() >= ui.scroll_max_y() - self.s(4.0);
             if list.is_empty() {
-                ui.text_colored(MUTED, "No messages yet.");
+                ui.text_colored(pal().muted, "No messages yet.");
             }
             let clock = hooks_config::clock::Clock::local();
             for m in list {
                 // When, as the PC's clock shows it (the launcher's chat does the same).
-                ui.text_colored(MUTED, clock.clock_time(m.at));
+                ui.text_colored(pal().muted, clock.clock_time(m.at));
                 ui.same_line();
                 let name_color = if m.mine {
-                    ACCENT
+                    pal().accent
                 } else if m.mentions_me {
-                    WARN
+                    pal().warn
                 } else {
-                    FG
+                    pal().fg
                 };
                 self.with_font(ui, |f| f.strong, || ui.text_colored(name_color, if m.mine { "You" } else { &m.from_name }));
                 let popup = format!("##fe-chat-menu-{}", m.id);
@@ -1432,7 +1670,7 @@ impl MyRenderLoop {
                     ui.open_popup(&popup);
                 }
                 ui.same_line();
-                let _c = ui.push_style_color(StyleColor::Text, if m.mentions_me { FG } else { MUTED });
+                let _c = ui.push_style_color(StyleColor::Text, if m.mentions_me { pal().fg } else { pal().muted });
                 ui.text_wrapped(&m.body);
                 ui.popup(&popup, || {
                     if m.mine {
@@ -1487,7 +1725,7 @@ impl MyRenderLoop {
         }
         self.chat_text = text;
         if let Some(why) = v.refused.as_ref().or(note.as_ref()) {
-            ui.text_colored(WARN, why);
+            ui.text_colored(pal().warn, why);
         }
     }
 
@@ -1516,11 +1754,11 @@ impl MyRenderLoop {
         ui.dummy([0.0, self.s(6.0)]);
 
         let Some((query, found)) = self.data.search.as_ref() else {
-            ui.text_colored(MUTED, "Searching...");
+            ui.text_colored(pal().muted, "Searching...");
             return;
         };
         if found.is_empty() {
-            let _c = ui.push_style_color(StyleColor::Text, MUTED);
+            let _c = ui.push_style_color(StyleColor::Text, pal().muted);
             ui.text_wrapped(match (query.is_empty(), self.data.everyone_mode) {
                 (true, true) => String::from("No one else is online right now."),
                 // A friends-only server shows only friends.
@@ -1530,7 +1768,7 @@ impl MyRenderLoop {
             return;
         }
         if query.is_empty() {
-            ui.text_colored(MUTED, format!("Online now · {}", found.len()));
+            ui.text_colored(pal().muted, format!("Online now · {}", found.len()));
         }
         let join_offered = self.data.join_offered();
         for (i, p) in found.iter().enumerate() {
@@ -1567,7 +1805,7 @@ impl MyRenderLoop {
     fn pane_invites(&mut self, ui: &Ui) {
         self.pane_title(ui, "Invites", "Accepting takes you straight into their match.");
         if self.active_invites.is_empty() {
-            let _c = ui.push_style_color(StyleColor::Text, MUTED);
+            let _c = ui.push_style_color(StyleColor::Text, pal().muted);
             ui.text_wrapped("No invites right now. When someone invites you, it shows up here and in the corner of the screen.");
         }
         let mut accept = None;
@@ -1588,7 +1826,7 @@ impl MyRenderLoop {
             let accept_label = format!("Accept##fe-acc-{i}");
             let decline_label = format!("Decline##fe-dec-{i}");
             let w = self.button_width(ui, &accept_label) + self.button_width(ui, &decline_label) + self.s(10.0);
-            self.row(ui, i, Some(OK), &sender.username, &detail, w, || {
+            self.row(ui, i, Some(pal().ok), &sender.username, &detail, w, || {
                 if self.button(ui, &decline_label, false) {
                     decline = Some(i);
                 }
@@ -1612,7 +1850,7 @@ impl MyRenderLoop {
         ui.dummy([0.0, self.s(8.0)]);
         let auto = hooks_config::get().is_some_and(|c| c.auto_join_invite);
         ui.text_colored(
-            MUTED,
+            pal().muted,
             if auto {
                 "Joining invites automatically is on (AutoJoinInvite in uplay.toml)."
             } else {
@@ -1629,7 +1867,7 @@ impl MyRenderLoop {
         let (Some(min), Some(max)) = (min, max) else {
             self.pane_title(ui, "Match", "Host or join a lobby to change these.");
             {
-                let _c = ui.push_style_color(StyleColor::Text, MUTED);
+                let _c = ui.push_style_color(StyleColor::Text, pal().muted);
                 ui.text_wrapped("While you're in a lobby: the players needed to start the match, and the most players allowed in it.");
             }
             self.choose_match(ui);
@@ -1645,7 +1883,7 @@ impl MyRenderLoop {
         // it was made for); allowed all the same, as hosts use it, but said.
         if let Some(size) = crate::community::match_size().filter(|size| *max > *size) {
             ui.dummy([0.0, self.s(4.0)]);
-            let _c = ui.push_style_color(StyleColor::Text, WARN);
+            let _c = ui.push_style_color(StyleColor::Text, pal().warn);
             ui.text_wrapped(format!("More than {size} players can crash or freeze the game for some players in this mode."));
         }
         self.choose_match(ui);
@@ -1668,7 +1906,7 @@ impl MyRenderLoop {
         }
         self.section(ui, "Report a player");
         if self.data.match_players.is_empty() {
-            let _c = ui.push_style_color(StyleColor::Text, MUTED);
+            let _c = ui.push_style_color(StyleColor::Text, pal().muted);
             ui.text_wrapped("Players in your match, and in your matches of the last 30 minutes, show here to report to the admins.");
             return;
         }
@@ -1682,7 +1920,7 @@ impl MyRenderLoop {
                 (false, false) => "In a match of yours lately",
             };
             let open = state.0.as_ref().is_some_and(|(o, ..)| o == id);
-            self.row_colored(ui, i, None, name, detail, MUTED, if reported || open { 0.0 } else { w }, || {
+            self.row_colored(ui, i, None, name, detail, pal().muted, if reported || open { 0.0 } else { w }, || {
                 if self.button(ui, &format!("Report##fe-report-{:016x}", ui_id(id)), false) {
                     state.0 = Some((id.clone(), name.clone(), 0, String::new()));
                 }
@@ -1703,7 +1941,7 @@ impl MyRenderLoop {
                 *text = text.chars().take(500).collect();
             }
             {
-                let _c = ui.push_style_color(StyleColor::Text, MUTED);
+                let _c = ui.push_style_color(StyleColor::Text, pal().muted);
                 ui.text_wrapped("The admins get your report with the match and the server's log of it. Reports are for the admins only; the player isn't told who reported them.");
             }
             let send = self.button(ui, "Send report##fe-report-send", true);
@@ -1742,13 +1980,13 @@ impl MyRenderLoop {
             }
         });
         let Some(playing) = &self.data.playing else {
-            let _c = ui.push_style_color(StyleColor::Text, MUTED);
+            let _c = ui.push_style_color(StyleColor::Text, pal().muted);
             ui.text_wrapped("The server hasn't said what's open.");
             return;
         };
         let open: Vec<_> = playing.matches.iter().filter(|m| m.room != 0).collect();
         if open.is_empty() {
-            let _c = ui.push_style_color(StyleColor::Text, MUTED);
+            let _c = ui.push_style_color(StyleColor::Text, pal().muted);
             ui.text_wrapped("No public matches are open right now.");
         }
         for (i, m) in open.into_iter().enumerate() {
@@ -1823,7 +2061,7 @@ impl MyRenderLoop {
         let x = ui.cursor_pos()[0];
         let label_w = self.s(170.0);
         for (label, value) in rows {
-            ui.text_colored(MUTED, label);
+            ui.text_colored(pal().muted, label);
             ui.same_line_with_pos(x + label_w);
             ui.text(value);
         }

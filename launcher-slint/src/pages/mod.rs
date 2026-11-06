@@ -227,8 +227,8 @@ pub fn rule() -> R {
 pub fn space() -> R {
     R::new("space")
 }
-/// The brand's mark over a heading and a line: an empty page.
-#[allow(dead_code)]
+/// The brand's mark over a heading and a line: an empty page (or an empty list), with what to
+/// do about it as its buttons.
 pub fn mark(heading: impl Into<String>, line: impl Into<String>) -> R {
     R {
         label: heading.into(),

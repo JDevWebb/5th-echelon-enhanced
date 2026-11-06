@@ -225,6 +225,15 @@ pub fn game_running(inner: &mut Inner) -> bool {
 
 /// Starts the game (`mode`: straight into a lobby or not). Whether it's starting; what
 /// happened shows in the activity bar.
+/// Whether the launcher looks light now (its theme, or the system's for "As the system"): the
+/// overlay takes the same look when the game starts.
+static LIGHT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The window's look, as it is now (from the UI thread when it changes).
+pub fn set_light(light: bool) {
+    LIGHT.store(light, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn play(core: &Core, mode: PlayMode) -> bool {
     let mut inner = core.lock();
     let Inner {
@@ -237,6 +246,14 @@ pub fn play(core: &Core, mode: PlayMode) -> bool {
         return false;
     };
     let mode = if game.managed.is_some() { PlayMode::Play } else { mode };
+    let theme = if LIGHT.load(std::sync::atomic::Ordering::Relaxed) {
+        hooks_config::OverlayTheme::Light
+    } else {
+        hooks_config::OverlayTheme::Dark
+    };
+    if game.managed.is_none() && game.cfg.hook_config.overlay_theme != theme {
+        game.update(notices, |c| c.hook_config.overlay_theme = theme);
+    }
     use launcher::start::Refused;
     use setup::launch::Launched;
     let refused_name = name_not_allowed(friends, game);

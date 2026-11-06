@@ -74,6 +74,24 @@ fn is_default_overlay_key(key: &String) -> bool {
     *key == default_overlay_key()
 }
 
+/// The overlay's look: the launcher's (dark or light), written by the launcher when the game
+/// starts, so the panel over the game matches the window it was started from.
+#[derive(Debug, Deserialize, Serialize, Clone, Copy, Default, PartialEq, Eq)]
+#[serde(rename_all = "PascalCase")]
+pub enum OverlayTheme {
+    Light,
+    // Last: serde's catch-all has to be.
+    #[default]
+    #[serde(other)]
+    Dark,
+}
+
+impl OverlayTheme {
+    pub fn is_default(&self) -> bool {
+        *self == Self::Dark
+    }
+}
+
 /// The keys the overlay can open with, by name, with their Windows virtual-key codes. The
 /// function keys first: on most laptops (and some keyboards) they need Fn held, which is why
 /// the key can be changed (Icky's report, eu1, 2026-10-06: "my F5 key does nothing").
@@ -349,6 +367,9 @@ pub struct Config {
     /// The key that opens the overlay's panel: a name in [`OVERLAY_KEYS`].
     #[serde(default = "default_overlay_key", skip_serializing_if = "is_default_overlay_key")]
     pub overlay_key: String,
+    /// The overlay's look, the launcher's (an unknown one reads as dark).
+    #[serde(default, skip_serializing_if = "OverlayTheme::is_default")]
+    pub overlay_theme: OverlayTheme,
     /// Shows the overlay's developer window (send test invite events). Off for
     /// players.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -1373,6 +1394,20 @@ mod tests {
         cfg.overlay_key = "F8".into();
         let back: Config = toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();
         assert_eq!(back.overlay_key, "F8");
+    }
+
+    #[test]
+    fn the_overlay_is_dark_unless_the_launcher_is_light() {
+        let mut cfg = super::default();
+        assert_eq!(cfg.overlay_theme, OverlayTheme::Dark);
+        assert!(!toml::to_string(&cfg).unwrap().contains("OverlayTheme"), "the default isn't written");
+        cfg.overlay_theme = OverlayTheme::Light;
+        let text = toml::to_string(&cfg).unwrap();
+        assert!(text.contains("OverlayTheme = \"Light\""), "{text}");
+        let back: Config = toml::from_str(&text).unwrap();
+        assert_eq!(back.overlay_theme, OverlayTheme::Light);
+        let newer: Config = toml::from_str(&text.replace("\"Light\"", "\"Sepia\"")).unwrap();
+        assert_eq!(newer.overlay_theme, OverlayTheme::Dark, "a look this release doesn't know is dark");
     }
 
     #[test]

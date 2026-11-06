@@ -318,8 +318,15 @@ export component RowItem inherits Rectangle {
             padding-top: 30px;
             padding-bottom: 10px;
             HorizontalLayout { alignment: center; EchelonMark { size: 56px; } }
-            Text { text: item.label; horizontal-alignment: center; font-family: Type.cond; font-weight: 700; font-size: 24px; color: Theme.fg; }
+            Text { text: item.label.to-uppercase(); horizontal-alignment: center; wrap: word-wrap; font-family: Type.cond; font-weight: 700; font-size: 24px; color: Theme.fg; }
             if item.text != "": Text { text: item.text; horizontal-alignment: center; wrap: word-wrap; color: Theme.soft; }
+            // What to do about it.
+            if item.buttons.length > 0: HorizontalLayout {
+                alignment: center;
+                spacing: 10px;
+                padding-top: 6px;
+                for b in item.buttons: Btn { text: b.label; kind: b.kind; enabled: b.enabled; min-height: 44px; clicked => { root.pressed(b.id); } }
+            }
         }
         if item.kind == "space": Rectangle { height: 14px; }
     }
