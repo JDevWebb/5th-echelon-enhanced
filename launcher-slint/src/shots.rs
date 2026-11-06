@@ -66,6 +66,15 @@ pub fn run(dir: PathBuf) -> Result<(), slint::PlatformError> {
         Shot { name: "friends", set: friends },
         Shot { name: "dialog", set: dialog },
         Shot { name: "setup", set: setup },
+        Shot {
+            name: "friends-empty",
+            set: friends_empty,
+        },
+        Shot {
+            name: "whats-new",
+            set: whats_new,
+        },
+        Shot { name: "banner", set: banner },
     ]);
     // Every shot in each look and size, one after another on the window's own clock.
     let mut steps = Vec::new();
@@ -245,6 +254,7 @@ fn base(w: &AppWindow) {
     w.set_activity(crate::ActivityView::default());
     w.set_seat_open(s(""));
     w.set_dialog_shown(false);
+    w.set_banner(s(""));
 }
 
 fn rows(list: Vec<crate::pages::R>) -> ModelRc<crate::Row> {
@@ -714,4 +724,63 @@ fn setup(w: &AppWindow) {
     w.set_page_sections(model(vec![]));
     w.set_page_section_ids(model(vec![]));
     w.set_page_rows(rows(view.rows));
+}
+
+/// An empty page: the mark, its heading, why, and what to do.
+fn friends_empty(w: &AppWindow) {
+    use crate::pages::*;
+    w.set_screen(s("friends"));
+    w.set_page_kicker(s("Squad"));
+    w.set_page_title(s("Friends"));
+    w.set_page_summary(s(""));
+    w.set_page_sections(model(vec![]));
+    w.set_page_section_ids(model(vec![]));
+    let mut r = Rows::default();
+    r.add(segments(
+        "tab",
+        "",
+        &[
+            ("friends".into(), "Friends".into()),
+            ("requests".into(), "Requests".into()),
+            ("find".into(), "Find players".into()),
+            ("blocked".into(), "Blocked".into()),
+        ],
+        "friends",
+    ));
+    r.out();
+    r.add(mark("No friends yet", "Find players to add some, or accept a request when one comes.").button(b("find", "Find players").kind("primary")));
+    w.set_page_rows(rows(r.done()));
+}
+
+/// What's new after an update, from the dialog's own builder.
+fn whats_new(w: &AppWindow) {
+    play_ready(w);
+    let v = serde_json::json!({
+        "from": "0.4.7",
+        "to": "0.5.0",
+        "headlines": 3,
+        "notes": ["Release notes", "https://example.org/notes"],
+        "releases": [{
+            "version": "0.5.0",
+            "thanks": "",
+            "new": [
+                {"title": "One matchmaking server for everyone", "text": "Quick match finds a match on the whole network.", "community": true},
+                {"title": "A new launcher", "text": "Faster, in dark and light, the same everywhere.", "community": false}
+            ],
+            "fixed": [["Stuck searching", ": started matches no longer show as open."]]
+        }]
+    });
+    let view = crate::pages::dialogs::whats_new(&v);
+    w.set_dialog_kicker(s(&view.page.kicker));
+    w.set_dialog_title(s(&view.page.title));
+    w.set_dialog_rows(rows(view.page.rows));
+    w.set_dialog_width(view.width);
+    w.set_dialog_shown(true);
+}
+
+/// The update banner with a newer release out.
+fn banner(w: &AppWindow) {
+    play_ready(w);
+    w.set_banner(s("Version 0.5.1 is out."));
+    w.set_banner_button(s("Update now"));
 }

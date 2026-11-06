@@ -974,6 +974,8 @@ pub fn run() -> Result<(), slint::PlatformError> {
     if gamescope() {
         window.set_full_screen_mode(true);
         window.window().set_fullscreen(true);
+    } else {
+        fit_to_screen(&window);
     }
 
     ui.load_info();
@@ -1021,6 +1023,40 @@ impl Ui {
             self.open_dialog(crate::pages::dialogs::Dialog::Account(crate::pages::dialogs::Account::new(server, suggested, taken, false)));
         }
     }
+}
+
+/// The window as it opens: no bigger than its screen leaves room for (a taskbar, a panel: 90% of
+/// its height), centred on it; maximised where even its smallest size wouldn't fit. Its first
+/// size (1280x800) ran off a 1366x768 laptop's screen, and a 720p one's, with Play under it.
+fn fit_to_screen(window: &AppWindow) {
+    let weak = window.as_weak();
+    // Once the window is up (winit makes it when it's shown).
+    slint::Timer::single_shot(Duration::from_millis(60), move || {
+        let Some(w) = weak.upgrade() else { return };
+        use slint::winit_030::WinitWindowAccessor;
+        w.window().with_winit_window(|win: &slint::winit_030::winit::window::Window| {
+            use slint::winit_030::winit::dpi::PhysicalPosition;
+            use slint::winit_030::winit::dpi::PhysicalSize;
+            let Some(screen) = win.current_monitor() else { return };
+            let (area, at, scale) = (screen.size(), screen.position(), win.scale_factor());
+            let size = win.outer_size();
+            let room = PhysicalSize::new(area.width, (f64::from(area.height) * 0.9) as u32);
+            if size.width <= room.width && size.height <= room.height {
+                return;
+            }
+            // The window's smallest size (AppWindow's min-width and min-height).
+            if f64::from(room.width) < 960.0 * scale || f64::from(room.height) < 600.0 * scale {
+                win.set_maximized(true);
+                return;
+            }
+            let fit = PhysicalSize::new(size.width.min(room.width), size.height.min(room.height));
+            let _ = win.request_inner_size(fit);
+            win.set_outer_position(PhysicalPosition::new(
+                at.x + (area.width.saturating_sub(fit.width) / 2) as i32,
+                at.y + (area.height.saturating_sub(fit.height) / 2) as i32,
+            ));
+        });
+    });
 }
 
 /// Whether the launcher runs inside gamescope (the Steam Deck's gaming mode), as the egui

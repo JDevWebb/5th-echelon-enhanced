@@ -315,7 +315,7 @@ impl Account {
     }
 }
 
-fn whats_new(v: &Value) -> DialogView {
+pub(crate) fn whats_new(v: &Value) -> DialogView {
     let mut r = Rows::default();
     let releases = arr(v, "releases");
     let Some(newest) = releases.first() else {

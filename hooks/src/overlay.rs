@@ -52,6 +52,8 @@ const RELEASE: &str = env!("FE_RELEASE");
 
 static NOTIFICATION_TIMEOUT: Duration = Duration::from_secs(30);
 static INITIAL_POPUP_DURATION: Duration = Duration::from_secs(10);
+/// The start toast shows by this long after the game started, with no key or click.
+static INITIAL_POPUP_LATEST: Duration = Duration::from_secs(60);
 static NOTICE_DURATION: Duration = Duration::from_secs(5);
 /// How long what just went wrong (a join that failed, and why) stays up.
 static PROBLEM_DURATION: Duration = Duration::from_secs(15);
@@ -445,7 +447,11 @@ struct MyRenderLoop {
     new_invites: crossbeam_channel::Receiver<Result<Option<InviteEvent>, crate::api::Error>>,
     active_invites: Vec<Invite>,
     connection_error: Option<crate::api::Error>,
-    initial_popup: Instant,
+    /// When the start toast goes: from the player's first key or click (past the game's intro
+    /// videos, at its title), or [`INITIAL_POPUP_LATEST`] after the game started; `None` until
+    /// then. Counted from the DLL's start it ran out during the intro, unseen.
+    initial_popup: Option<Instant>,
+    started: Instant,
     fonts: Option<Fonts>,
     /// Screen scale for this frame (1.0 at 1080p).
     s: f32,
@@ -753,8 +759,21 @@ impl MyRenderLoop {
         ui.dummy([size[0] + pad[0] * 2.0, size[1] + pad[1] * 2.0]);
     }
 
+    /// Starts the start toast's time at the player's first key or click (the game's intro
+    /// skipped, or its title left), or a minute after the game started.
+    fn start_initial_info(&mut self) {
+        if self.initial_popup.is_some() {
+            return;
+        }
+        // SAFETY: GetAsyncKeyState only reads the keyboard's and mouse's state.
+        let pressed = (0x01..=0xFE).any(|vk| unsafe { GetAsyncKeyState(vk) } as u16 & 0x8000 != 0);
+        if pressed || self.started.elapsed() >= INITIAL_POPUP_LATEST {
+            self.initial_popup = Some(Instant::now() + INITIAL_POPUP_DURATION);
+        }
+    }
+
     fn show_initial_info(&self, ui: &Ui) {
-        let Some(left) = self.initial_popup.checked_duration_since(Instant::now()) else {
+        let Some(left) = self.initial_popup.and_then(|until| until.checked_duration_since(Instant::now())) else {
             return;
         };
         // The same corner: a maintenance warning matters more.
@@ -2245,6 +2264,7 @@ impl ImguiRenderLoop for MyRenderLoop {
         self.show_invite_toast(ui);
         self.show_chat_toast(ui);
         self.show_maintenance(ui);
+        self.start_initial_info();
         self.show_initial_info(ui);
         self.show_problem(ui);
         self.show_notice(ui);
@@ -2317,7 +2337,8 @@ fn init_hudhook<T: hudhook::Hooks + 'static>(invites: crossbeam_channel::Receive
             new_invites: invites,
             active_invites: Vec::new(),
             connection_error: None,
-            initial_popup: Instant::now() + INITIAL_POPUP_DURATION,
+            initial_popup: None,
+            started: Instant::now(),
             fonts: None,
             s: 1.0,
             font_scale: 1.0,
