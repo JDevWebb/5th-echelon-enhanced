@@ -2045,6 +2045,8 @@ struct PeopleWindow {
     query: String,
     searching: Slot<Result<Vec<flow::Person>, String>>,
     found: Option<Result<Vec<flow::Person>, String>>,
+    /// The name the last search was for (empty: who's online).
+    searched: String,
     /// Remove or Block, waiting for the player to say yes.
     asking: Option<(crate::network::PlayerAction, flow::Person)>,
     /// A friend's server picked to switch to: the Servers screen confirms it.
@@ -2222,6 +2224,7 @@ fn people_page(play: &mut Play, game: &Game, ui: &mut egui::Ui) {
                 person_card(ui, &p.name, p.online, &line, buttons);
             };
             if w.tab == PeopleTab::Find {
+                let everyone = w.shown.as_ref().and_then(|r| r.as_ref().ok()).is_none_or(|p| p.everyone);
                 ui.horizontal(|ui| {
                     let field = ui.add(
                         egui::TextEdit::singleline(&mut w.query)
@@ -2242,13 +2245,23 @@ fn people_page(play: &mut Play, game: &Game, ui: &mut egui::Ui) {
                         ui.spinner();
                     }
                     None => {
-                        ui.label(theme::muted("Search by name, or leave it empty for who's online."));
+                        ui.label(theme::muted(if everyone {
+                            "Search by name, or leave it empty for who's online."
+                        } else {
+                            "Search by name, or leave it empty for your friends who are online."
+                        }));
                     }
                     Some(Err(e)) => {
                         ui.label(RichText::new(e).color(theme::BAD));
                     }
+                    // An empty search lists who's online: everyone on a server that shows them all,
+                    // else only friends (the "mutual" mode).
                     Some(Ok(found)) if found.is_empty() => {
-                        ui.label(theme::muted("Nobody by that name."));
+                        ui.label(theme::muted(match (w.searched.is_empty(), everyone) {
+                            (false, _) => format!("Nobody called “{}” here.", w.searched),
+                            (true, true) => "Nobody else is online right now.".to_string(),
+                            (true, false) => "None of your friends are online right now.".to_string(),
+                        }));
                     }
                     Some(Ok(found)) => {
                         for p in found {
@@ -2398,6 +2411,7 @@ fn people_page(play: &mut Play, game: &Game, ui: &mut egui::Ui) {
     }
     if search {
         let (cfg, query) = ((*game.cfg).clone(), w.query.clone());
+        w.searched = query.trim().to_string();
         w.found = None;
         w.searching.start(&ctx, move || flow::find_players(&cfg, &query));
     }

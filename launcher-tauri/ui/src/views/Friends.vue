@@ -112,9 +112,9 @@
           </form>
           <p v-if="searchError" class="bad small" role="alert">{{ searchError }}</p>
           <p v-else-if="searching" class="muted working"><i class="spin"></i>Looking…</p>
-          <p v-else-if="found && !found.length" class="empty">{{ searched ? `Nobody called “${searched}” here.` : 'Nobody else is online right now.' }}</p>
+          <p v-else-if="found && !found.length" class="empty">{{ searched ? `Nobody called “${searched}” here.` : people.everyone === false ? 'None of your friends are online right now.' : 'Nobody else is online right now.' }}</p>
           <template v-else-if="found">
-            <p class="caps sub">{{ searched ? `Players called “${searched}”` : 'Online now' }}</p>
+            <p class="caps sub">{{ searched ? `Players called “${searched}”` : people.everyone === false ? 'Friends online now' : 'Online now' }}</p>
             <ul class="rows">
               <li v-for="p in found" :key="p.id" class="person">
                 <span class="who">
