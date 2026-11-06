@@ -290,13 +290,15 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
         }
         // The rooms it answered with, to follow a search to the join or refusal after it.
         detail["rooms"] = sessions.iter().take(10).map(|s| s.session_id).collect::<Vec<_>>().into();
-        // And each one's estimated round trip to the searcher (with far rooms on): through the
-        // relays both games reached, or from where the players are.
-        let answered: Vec<serde_json::Value> = sessions
+        // And each one's estimated round trip to the searcher (with far rooms on), by room:
+        // [ms, "relays"] through the relays both games reached, or [ms, "places"] from where the
+        // players are. An object of short lists, as the coordinator keeps a detail (a list of
+        // objects comes out empty there).
+        let answered: serde_json::Map<String, serde_json::Value> = sessions
             .iter()
-            .take(10)
+            .take(8)
             .filter_map(|s| estimates.iter().find(|(id, ..)| *id == s.session_id))
-            .map(|(room, ms, by)| serde_json::json!({ "room": room, "ms": ms, "by": by }))
+            .map(|(room, ms, by)| (room.to_string(), serde_json::json!([ms, by])))
             .collect();
         if !answered.is_empty() {
             detail["estimates"] = answered.into();
