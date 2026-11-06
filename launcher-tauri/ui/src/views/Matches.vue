@@ -119,7 +119,7 @@
                   <span class="ping" :class="pingTone(p.ping_ms)">{{ p.ping_ms ? `${p.ping_ms} ms` : '' }}</span>
                 </li>
                 <li v-if="sel.seats > sel.players" class="open-seats">
-                  <span class="avatar empty" aria-hidden="true"></span>{{ sel.seats - sel.players }} open {{ sel.seats - sel.players === 1 ? 'seat' : 'seats' }}
+                  <span class="avatar seat" aria-hidden="true"></span>{{ sel.seats - sel.players }} open {{ sel.seats - sel.players === 1 ? 'seat' : 'seats' }}
                 </li>
               </ul>
             </section>
@@ -138,7 +138,7 @@
             <button v-if="!sel.joinable && !sel.with_me" type="button" class="btn ghost" :aria-pressed="watching?.room === sel.room" @click="watch(sel)">
               {{ watching?.room === sel.room ? 'Watching: we\'ll tell you when it opens' : 'Tell me when a seat opens' }}
             </button>
-            <p v-else class="muted small center">Starts the game if it isn't running, then joins {{ sel.host || 'its host' }}'s {{ sel.under_way ? 'match' : 'lobby' }}.</p>
+            <p v-else-if="!sel.with_me" class="muted small center">Starts the game if it isn't running, then joins {{ sel.host || 'its host' }}'s {{ sel.under_way ? 'match' : 'lobby' }}.</p>
           </div>
         </aside>
       </div>
@@ -351,7 +351,8 @@ onBeforeUnmount(() => clearInterval(timer));
 .people li.party { border-left: 2px solid var(--control-line); margin-left: 4px; }
 .avatar { flex: none; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; font-weight: 600; background: var(--line); }
 .people li.friend .avatar { background: #1f3524; color: var(--accent); }
-.avatar.empty { background: none; border: 1px dashed var(--control-line); }
+/* Not "empty": the empty page's .empty below would stretch it across the panel. */
+.avatar.seat { background: none; border: 1px dashed var(--control-line); }
 .who { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 6px; overflow: hidden; }
 .who b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .who small { font-size: 12.5px; white-space: nowrap; }

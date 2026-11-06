@@ -313,7 +313,13 @@ const More = defineComponent({
               if (!open) nextTick(() => button.value?.nextElementSibling?.querySelector('button')?.focus());
             },
           },
-          '⋯',
+          // Three dots drawn, not the "⋯" character: Plex hasn't got it, and a PC with no
+          // font that has (a bare Linux, the gamebox) showed an empty box.
+          h('svg', { width: 16, height: 4, viewBox: '0 0 16 4', fill: 'currentColor', 'aria-hidden': 'true' }, [
+            h('circle', { cx: 2, cy: 2, r: 1.6 }),
+            h('circle', { cx: 8, cy: 2, r: 1.6 }),
+            h('circle', { cx: 14, cy: 2, r: 1.6 }),
+          ]),
         ),
         open &&
           h(
