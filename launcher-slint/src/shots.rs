@@ -102,6 +102,10 @@ pub fn run(dir: PathBuf) -> Result<(), slint::PlatformError> {
             if i > 0 {
                 let (dark, (width, height), shot) = steps[i - 1];
                 let name = format!("{}-{}-{width}x{height}.png", shots[shot].name, if dark { "dark" } else { "light" });
+                // The screen-change cover off: on the software renderer, with the window resized
+                // between shots, it sometimes hadn't cleared, and the shot had the side menu alone
+                // (the 1920x1080 ones after Play). The launcher itself clears it.
+                w.set_covering(false);
                 match w.window().take_snapshot() {
                     Ok(px) => {
                         let img = image::RgbaImage::from_raw(px.width(), px.height(), px.as_bytes().to_vec());

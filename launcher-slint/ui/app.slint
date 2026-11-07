@@ -34,7 +34,7 @@ export component AppWindow inherits Window {
     in property <bool> maximised;
     in-out property <string> screen: "play";
     // The screen just changed: the cover's up for a frame, then fades.
-    property <bool> covering;
+    in-out property <bool> covering;
     changed screen => { covering = true; }
     in property <bool> loaded;
     in property <string> splash-doing: "Checking your game and server…";
