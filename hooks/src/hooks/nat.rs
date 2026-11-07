@@ -450,7 +450,39 @@ thread_local! {
     static WRAP: RefCell<Vec<u8>> = RefCell::new(Vec::with_capacity(2048));
 }
 
+/// The port the game binds its connection to the servers on (Quazal: sign-in, the secure
+/// service), the same on every PC.
+const SERVER_SOCKET_PORT: u16 = 3074;
+
+/// Said once: the server socket's port was left to the system.
+static SERVER_PORT_FREED: AtomicBool = AtomicBool::new(false);
+
+/// The game's server socket on a port the system picks, not 3074 (unless `FixedServerPort`):
+/// two PCs behind one router, both from 3074 to the same server, and some routers drop the
+/// second's packets rather than give it another port: its sign-in got through, its secure
+/// connection never arrived ("the service is unavailable"; the gamebox beside a Windows PC,
+/// 2026-11-07). The server answers whatever address and port its packets come from, so
+/// nothing needs 3074. Bound as asked if the system's port can't be had.
+fn bind_server_socket(s: usize, namelen: i32, addr: SocketAddrV4) -> Option<i32> {
+    if addr.port() != SERVER_SOCKET_PORT || namelen < 16 || crate::config::get().is_some_and(|c| c.networking.fixed_server_port) {
+        return None;
+    }
+    let any = sockaddr(SocketAddrV4::new(*addr.ip(), 0));
+    let res = unsafe { BindHook.call(s, any.as_ptr(), 16) };
+    if res != 0 {
+        warn!("NAT: the server socket couldn't take a port of the system's; on {addr} as the game asked");
+        return None;
+    }
+    if !SERVER_PORT_FREED.swap(true, Ordering::Relaxed) {
+        info!("NAT: the game's server socket is on a port the system picks, not {SERVER_SOCKET_PORT} (another PC behind the same router may use it)");
+    }
+    Some(res)
+}
+
 fn bind(s: usize, name: *const u8, namelen: i32) -> i32 {
+    if let Some(res) = read_addr(name).and_then(|addr| bind_server_socket(s, namelen, addr)) {
+        return res;
+    }
     let res = unsafe { BindHook.call(s, name, namelen) };
     if res == 0 {
         if let Some(addr) = read_addr(name) {

@@ -820,6 +820,13 @@ pub struct Networking {
     /// players are through the relays they share (G3), not only from where they are.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relay_pings: Vec<String>,
+    /// Keep the game's connection to the servers on port 3074, as the game binds it. Off (the
+    /// default), it's on a port the system picks: two PCs behind one router each on 3074 to the
+    /// same server can have the second's packets dropped by the router ("the service is
+    /// unavailable"; the gamebox and a Windows PC, 2026-11-07). For a router forwarded to 3074 by
+    /// hand, or a firewall that only lets 3074 out.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fixed_server_port: bool,
     /// `ip_address` was worked out at start (nothing pinned), not set by the player.
     #[serde(skip)]
     pub ip_address_automatic: bool,
@@ -846,6 +853,7 @@ impl Default for Networking {
             nat_host: None,
             relays: Vec::new(),
             relay_pings: Vec::new(),
+            fixed_server_port: false,
             ip_address_automatic: false,
         }
     }
@@ -1431,6 +1439,18 @@ mod tests {
         cfg.overlay_key = "F8".into();
         let back: Config = toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();
         assert_eq!(back.overlay_key, "F8");
+    }
+
+    #[test]
+    fn the_server_port_is_the_systems_unless_kept() {
+        let mut cfg = super::default();
+        assert!(!cfg.networking.fixed_server_port, "off by default");
+        assert!(!toml::to_string(&cfg).unwrap().contains("FixedServerPort"), "the default isn't written");
+        cfg.networking.fixed_server_port = true;
+        let text = toml::to_string(&cfg).unwrap();
+        assert!(text.contains("FixedServerPort = true"), "{text}");
+        let back: Config = toml::from_str(&text).unwrap();
+        assert!(back.networking.fixed_server_port);
     }
 
     #[test]
