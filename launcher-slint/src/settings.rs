@@ -114,6 +114,28 @@ pub struct SaveView {
     state: Option<String>,
     missing: bool,
     ubisoft: Option<String>,
+    /// When the game last wrote it ("2 hours ago").
+    saved: Option<String>,
+    /// Its progress where the save says it ("Rank 5 or above · 12,000 XP"); None in the game's
+    /// own (binary) layout, which isn't read.
+    progress: Option<String>,
+    /// Its backups: how many, and when the latest was made.
+    backups: usize,
+    last_backup: Option<String>,
+}
+
+/// How long ago `secs` (Unix seconds) was, in words: "just now", "5 minutes ago", "yesterday".
+fn ago(secs: u64) -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    let d = now.saturating_sub(secs);
+    let plural = |n: u64, one: &str| if n == 1 { format!("1 {one} ago") } else { format!("{n} {one}s ago") };
+    match d {
+        0..=59 => "just now".into(),
+        60..=3599 => plural(d / 60, "minute"),
+        3600..=86_399 => plural(d / 3600, "hour"),
+        86_400..=172_799 => "yesterday".into(),
+        _ => plural(d / 86_400, "day"),
+    }
 }
 
 #[derive(Serialize)]
@@ -254,6 +276,10 @@ pub fn settings(state: tauri::State<Launcher>) -> View {
             state: None,
             missing: true,
             ubisoft: None,
+            saved: None,
+            progress: None,
+            backups: 0,
+            last_backup: None,
         },
         Some(path) => {
             use setup::save::SaveState;
@@ -268,6 +294,18 @@ pub fn settings(state: tauri::State<Launcher>) -> View {
                     SaveState::Ok { xp } => format!("{xp} XP{}", if xp < setup::save::RANK5_XP { " (below rank 5)" } else { "" }),
                 }),
                 ubisoft: setup::save::find_ubisoft_save(Some(&g.dir)).map(|p| p.display().to_string()),
+                saved: std::fs::metadata(&path)
+                    .and_then(|m| m.modified())
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| ago(d.as_secs())),
+                progress: match state {
+                    SaveState::Ok { xp } if xp >= setup::save::RANK5_XP => Some(format!("Rank 5 or above · {xp} XP")),
+                    SaveState::Ok { xp } => Some(format!("Below rank 5 · {xp} XP: Play raises it to rank 5, which Spies vs Mercs and co-op need")),
+                    _ => None,
+                },
+                backups: setup::save::backups(&path).len(),
+                last_backup: setup::save::backups(&path).first().map(|(_, stamp)| ago(*stamp)),
             }
         }
     });

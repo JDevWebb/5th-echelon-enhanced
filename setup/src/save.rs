@@ -106,6 +106,27 @@ fn write(path: &Path, data: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The save's backups ([`backup`]'s `<name>.<timestamp>.bak` beside it), newest first, with
+/// when each was made.
+pub fn backups(path: &Path) -> Vec<(PathBuf, u64)> {
+    let (Some(dir), Some(name)) = (path.parent(), path.file_name().and_then(|n| n.to_str())) else {
+        return Vec::new();
+    };
+    let prefix = format!("{name}.");
+    let mut found: Vec<(PathBuf, u64)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let file = e.file_name().to_string_lossy().to_string();
+            let stamp = file.strip_prefix(&prefix)?.strip_suffix(".bak")?.parse().ok()?;
+            Some((e.path(), stamp))
+        })
+        .collect();
+    found.sort_by_key(|(_, stamp)| std::cmp::Reverse(*stamp));
+    found
+}
+
 /// Copies the save aside as `<name>.<timestamp>.bak`.
 pub fn backup(path: &Path) -> std::io::Result<PathBuf> {
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
@@ -276,6 +297,22 @@ fn prepare_from(path: &Path, ubisoft: Option<PathBuf>) -> std::io::Result<Prepar
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backups_newest_first() {
+        let dir = std::env::temp_dir().join(format!("fes-backups-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let save = dir.join("00000001.sav");
+        std::fs::write(&save, b"x").unwrap();
+        for stamp in [100, 300, 200] {
+            std::fs::write(dir.join(format!("00000001.sav.{stamp}.bak")), b"x").unwrap();
+        }
+        std::fs::write(dir.join("00000002.sav.400.bak"), b"x").unwrap();
+        std::fs::write(dir.join("00000001.sav.nope.bak"), b"x").unwrap();
+        let found: Vec<u64> = backups(&save).into_iter().map(|(_, s)| s).collect();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(found, vec![300, 200, 100], "this save's only, newest first");
+    }
     use crate::testutil::temp_dir;
 
     #[test]

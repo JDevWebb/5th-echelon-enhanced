@@ -75,6 +75,10 @@ pub fn run(dir: PathBuf) -> Result<(), slint::PlatformError> {
             set: whats_new,
         },
         Shot { name: "banner", set: banner },
+        Shot {
+            name: "settings-save",
+            set: settings_save,
+        },
     ]);
     // Every shot in each look and size, one after another on the window's own clock.
     let mut steps = Vec::new();
@@ -787,4 +791,20 @@ fn banner(w: &AppWindow) {
     play_ready(w);
     w.set_banner(s("Version 0.5.1 is out."));
     w.set_banner_button(s("Update now"));
+}
+
+/// Settings › Save game, from the page's own builder on a made-up save.
+fn settings_save(w: &AppWindow) {
+    use crate::pages::*;
+    settings(w);
+    w.set_page_summary(s("Save game"));
+    w.set_page_section(s("save"));
+    let v = serde_json::json!({ "save": {
+        "path": "C:\\Users\\Kai\\AppData\\Roaming\\5th-Echelon\\Saves\\00000001.sav",
+        "state": "Found.", "missing": false, "ubisoft": "C:\\Program Files (x86)\\Ubisoft\\savegames\\1.save",
+        "saved": "2 hours ago", "progress": "Rank 5 or above · 18240 XP", "backups": 3, "last_backup": "yesterday"
+    }});
+    let mut r = Rows::default();
+    crate::pages::settings::SettingsPage::default().save(&v, &mut r);
+    w.set_page_rows(rows(r.done()));
 }

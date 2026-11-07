@@ -616,7 +616,7 @@ impl SettingsPage {
         r.add(note("The servers to choose from: the community network unless you join another network. Empty: none."));
     }
 
-    fn save(&mut self, v: &Value, r: &mut Rows) {
+    pub(crate) fn save(&mut self, v: &Value, r: &mut Rows) {
         let Some(s) = v.get("save").filter(|s| !s.is_null()) else { return };
         r.card("Save game");
         let no_folder = st(s, "no_folder");
@@ -624,18 +624,45 @@ impl SettingsPage {
             r.add(note(no_folder));
             return;
         }
-        r.add(text(st(s, "path")));
-        r.add(note(st(s, "state")));
+        // What the save is: when it was saved, how far along, its backups; then what can be
+        // done with it. Bringing another in is a card of its own (five buttons in one row ran off
+        // the card).
+        if bo(s, "missing") {
+            r.add(item("No save yet", "Play makes a rank 5 one, or bring one in below."));
+        } else {
+            r.add(item("Last saved", st(s, "saved")));
+            let progress = st(s, "progress");
+            if !progress.is_empty() {
+                r.add(item("Progress", progress));
+            }
+            let backups = num(s, "backups") as u64;
+            r.add(item(
+                "Backups",
+                match backups {
+                    0 => "None yet: one's made before anything replaces it".to_string(),
+                    1 => format!("1, made {}", st(s, "last_backup")),
+                    n => format!("{n}, the latest {}", st(s, "last_backup")),
+                },
+            ));
+        }
+        r.add(note(st(s, "path")));
         let mut row = Vec::new();
         if !bo(s, "missing") {
             row.push(super::b("act:backup-save", "Back up now"));
         }
-        if !st(s, "ubisoft").is_empty() {
-            row.push(super::b("act:import-ubisoft", "Import from Ubisoft Connect"));
-        }
-        row.push(super::b("act:import-save", "Import a save file…"));
-        row.push(super::b("ask-new-save", "New rank 5 save…"));
         row.push(super::b("act:open-save-folder", "Open folder"));
+        r.add(buttons(row));
+
+        r.card("Bring in another save");
+        r.add(note(
+            "Yours from Ubisoft Connect, a save file, or a new one at rank 5. The current save is backed up first.",
+        ));
+        let mut row = Vec::new();
+        if !st(s, "ubisoft").is_empty() {
+            row.push(super::b("act:import-ubisoft", "From Ubisoft Connect"));
+        }
+        row.push(super::b("act:import-save", "A save file…"));
+        row.push(super::b("ask-new-save", "New rank 5 save…"));
         r.add(buttons(row));
         if self.confirm == Some("new-save") {
             r.add(warn("Replace your save with a new rank 5 one? The current save is backed up first."));
