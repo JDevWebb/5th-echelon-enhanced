@@ -319,37 +319,42 @@ unsafe extern "cdecl" fn UPLAY_Startup(uplay_id: usize, game_version: usize, lan
                         let mut failures = 0;
                         loop {
                             tokio::time::sleep(Duration::from_secs(1)).await;
-                            let event: Option<std::result::Result<_, _>> = crate::api::event()
-                                .await
-                                .map(|resp| {
-                                    // A friend request or an accepted one: a notice in the overlay.
-                                    if let Some(friend) = resp.friend.as_ref() {
-                                        crate::community::friend_event(friend);
-                                    }
-                                    // An answer from support: a notice too.
-                                    crate::community::support_unread(resp.support_unread);
-                                    // The mode's size, for the Match pane's warning above it.
-                                    crate::community::set_match_size(resp.match_size);
-                                    // Something that just went wrong (a join, and why): shown at once.
-                                    if let Some(notice) = resp.notice.as_ref() {
-                                        crate::community::problem(notice);
-                                    }
-                                    resp.invite
-                                })
-                                .transpose();
-                            if let Some(invite) = event {
-                                if invite.is_err() {
-                                    failures += 1;
-                                } else {
+                            let event = crate::api::event().await.map(|resp| {
+                                // A friend request or an accepted one: a notice in the overlay.
+                                if let Some(friend) = resp.friend.as_ref() {
+                                    crate::community::friend_event(friend);
+                                }
+                                // An answer from support: a notice too.
+                                crate::community::support_unread(resp.support_unread);
+                                // The mode's size, for the Match pane's warning above it.
+                                crate::community::set_match_size(resp.match_size);
+                                // Something that just went wrong (a join, and why): shown at once.
+                                if let Some(notice) = resp.notice.as_ref() {
+                                    crate::community::problem(notice);
+                                }
+                                resp.invite
+                            });
+                            match event {
+                                Ok(invite) => {
+                                    // The first answer after failures says the server is back
+                                    // (the overlay's "Not connected" goes), invite or not: before,
+                                    // only an invite (or a sign-in again after ten failures) did,
+                                    // and a short outage left it up until the next invite.
+                                    let back = failures > 0;
                                     failures = 0;
+                                    if (invite.is_some() || back) && tx.send(Ok(invite)).is_err() {
+                                        return;
+                                    }
                                 }
-                                let invite = invite.map(Some);
-                                if tx.send(invite).is_err() {
-                                    return;
-                                }
-                                if failures > 0 && failures % 10 == 0 && crate::api::relogin().await {
-                                    // signal successful relogin
-                                    let _ = tx.send(Ok(None));
+                                Err(e) => {
+                                    failures += 1;
+                                    if tx.send(Err(e)).is_err() {
+                                        return;
+                                    }
+                                    if failures % 10 == 0 && crate::api::relogin().await {
+                                        // signal successful relogin
+                                        let _ = tx.send(Ok(None));
+                                    }
                                 }
                             }
                         }
