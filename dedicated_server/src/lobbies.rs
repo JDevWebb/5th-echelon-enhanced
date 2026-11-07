@@ -111,6 +111,13 @@ fn said_of(room: u32) -> Option<Said> {
 pub struct Live<'a> {
     pub under_way: &'a dyn Fn(u32) -> Option<Duration>,
     pub ping: &'a dyn Fn(u32) -> Option<u32>,
+    /// Whether a host migration moved a room's players on to another room: the old one is
+    /// left out. Its silent host stays in it until their connection lapses (a minute), and it
+    /// was listed meanwhile beside the room its players are in, "under way" (the user,
+    /// watching Matches through a host killed mid-round, 2026-11-07).
+    pub moved_on: &'a dyn Fn(u32) -> bool,
+    /// How many wait to join a room (match_queue.rs), and the caller's place among them.
+    pub queue: &'a dyn Fn(u32) -> (usize, usize),
 }
 
 /// The public matches in `sessions` (the live rooms) as `me` sees them, with `relations` (from
@@ -123,6 +130,9 @@ pub fn list(me: u32, sessions: &[LiveSession], relations: &HashMap<u32, Relation
     out.party_players = u32::try_from(parties.iter().flat_map(|s| &s.player_ids).filter(|p| !in_matches.contains(p)).collect::<HashSet<_>>().len()).unwrap_or(u32::MAX);
     let mut lobbies: Vec<(bool, Lobby)> = Vec::new();
     for s in sessions.iter().filter(|s| is_match(s)) {
+        if (live.moved_on)(s.id) {
+            continue;
+        }
         if s.private {
             out.private_matches += 1;
             out.private_players += u32::try_from(s.players.len()).unwrap_or(u32::MAX);
@@ -150,6 +160,7 @@ pub fn list(me: u32, sessions: &[LiveSession], relations: &HashMap<u32, Relation
             }
         }
         let said = said_of(s.id).unwrap_or_default();
+        let (waiting, place) = (live.queue)(s.id);
         let under_way = (live.under_way)(s.id);
         let mut players: Vec<LobbyPlayer> = s
             .player_ids
@@ -190,6 +201,8 @@ pub fn list(me: u32, sessions: &[LiveSession], relations: &HashMap<u32, Relation
                 settings: said.settings.iter().map(|(k, v)| (k.clone(), *v)).collect(),
                 ping_ms: coarse((live.ping)(s.host_id).unwrap_or(0)),
                 players,
+                waiting: u32::try_from(waiting).unwrap_or(u32::MAX),
+                queue_place: u32::try_from(place).unwrap_or(u32::MAX),
             },
         ));
     }
@@ -261,6 +274,8 @@ mod tests {
             &Live {
                 under_way: &under_way,
                 ping: &ping,
+                moved_on: &|_| false,
+                queue: &|room| if room == 10 { (2, 1) } else { (0, 0) },
             },
             1240,
         );
@@ -283,6 +298,7 @@ mod tests {
             "a friend's ping only, in 25 ms steps"
         );
         assert_eq!((first.seats, first.open_secs, first.ping_ms, first.under_way), (8, 240, 50, false), "the host's, in steps");
+        assert_eq!((first.waiting, first.queue_place), (2, 1), "who waits for it, and the caller's place");
         let second = &r.lobbies[1];
         assert_eq!(
             (second.state.as_str(), second.round, second.under_way, second.under_way_secs),
@@ -298,9 +314,24 @@ mod tests {
             &Live {
                 under_way: &under_way,
                 ping: &ping,
+                moved_on: &|_| false,
+                queue: &|room| if room == 10 { (2, 1) } else { (0, 0) },
             },
             1240,
         );
         assert_eq!(r.lobbies[1].state, "", "an ended room's word goes with it");
+        let r = list(
+            99,
+            &sessions,
+            &relations,
+            &Live {
+                under_way: &under_way,
+                ping: &ping,
+                moved_on: &|room| room == 10,
+                queue: &|_| (0, 0),
+            },
+            1240,
+        );
+        assert_eq!(r.lobbies.iter().map(|l| l.room).collect::<Vec<_>>(), vec![11], "a room whose players moved on is left out");
     }
 }

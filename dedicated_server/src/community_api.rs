@@ -57,6 +57,8 @@ const FEATURES: &[&str] = &[
     "choose-match",
     // The public matches in full, for the launcher's Matches tab (Lobbies).
     "lobbies",
+    // QueueRoom: the line for a match under way or full (match_queue.rs).
+    "match-queue",
     // Reporting a player from the overlay's Match tab (MatchPlayers, ReportPlayer; F5).
     "report-player",
 ];

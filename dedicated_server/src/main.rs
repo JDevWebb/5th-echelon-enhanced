@@ -89,6 +89,7 @@ mod ladder;
 mod link;
 mod lobbies;
 mod locale;
+mod match_queue;
 mod match_started;
 mod metrics;
 mod nat_helper;

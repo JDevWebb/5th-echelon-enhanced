@@ -73,6 +73,7 @@ pub use rpc::name_available;
 pub use rpc::new_match;
 pub use rpc::online_players;
 pub use rpc::player_action;
+pub use rpc::queue_room;
 pub use rpc::register;
 pub use rpc::relationships;
 pub use rpc::rename;

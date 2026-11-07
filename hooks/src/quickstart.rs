@@ -729,6 +729,24 @@ fn lobby_commands() {
             continue;
         };
         let Ok(text) = std::fs::read_to_string(&file) else { continue };
+        // `seats N`: the lobby's seats, as the overlay's stepper sets them (a match with fewer
+        // free seats than players waiting for it: the queue's tests).
+        if let Some(n) = text
+            .trim()
+            .strip_prefix("seats ")
+            .and_then(|v| v.trim().parse::<i32>().ok())
+            .filter(|n| (1..=16).contains(n))
+        {
+            // SAFETY: the overlay's own accessor; null outside a lobby.
+            let Some(max) = (unsafe { crate::overlay::get_max_players_var().as_mut() }) else {
+                continue;
+            };
+            let before = *max;
+            *max = n;
+            let _ = std::fs::remove_file(&file);
+            info!("quickstart: +{} ms test: seats {before} -> {n}", ms());
+            continue;
+        }
         let Some(n) = text
             .trim()
             .strip_prefix("players ")

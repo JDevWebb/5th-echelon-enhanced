@@ -2133,7 +2133,7 @@ fn get_game_settings() -> *mut i32 {
     }
 }
 
-fn get_max_players_var() -> *mut i32 {
+pub(crate) fn get_max_players_var() -> *mut i32 {
     unsafe {
         let game_settings = get_game_settings();
         if game_settings.is_null() {

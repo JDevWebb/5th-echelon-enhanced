@@ -387,6 +387,21 @@ impl MyFriends {
     }
 }
 
+impl MyFriends {
+    /// A match's free seats: its public and private seats (attributes 3 and 4) less its players.
+    async fn free_seats(&self, room: u32) -> Result<usize, Status> {
+        let sessions = self.storage.live_sessions_async().await.map_err(internal)?;
+        Ok(sessions.iter().find(|s| s.id == room).map_or(0, |s| {
+            crate::match_queue::seated(room, &s.player_ids);
+            let seats = [3, 4]
+                .into_iter()
+                .map(|a| crate::game_session::attribute_value(&s.attributes, a).unwrap_or(0))
+                .fold(0u32, u32::saturating_add);
+            (seats as usize).saturating_sub(s.player_ids.len())
+        }))
+    }
+}
+
 #[tonic::async_trait]
 impl Friends for MyFriends {
     /// Handles friend invitation requests.
@@ -667,6 +682,12 @@ impl Friends for MyFriends {
         if crate::match_started::started(room) {
             return reply(JoinStatus::Started, "That match has started - pick another, or start a new one.");
         }
+        // Players waiting for it (match_queue.rs) go first: only the first in line, as many as
+        // it has free seats, and anyone beyond them.
+        let free = self.free_seats(room).await?;
+        if !crate::match_queue::let_in(room, me, free, std::time::Instant::now()) {
+            return reply(JoinStatus::Queued, "Players are waiting for this match: join its queue.");
+        }
         let invite = self.storage.add_join_request_async(host, None, me, session_type, room).await.map_err(|e| {
             warn!(self.logger, "JoinRoom: {me} couldn't queue the join to {host}'s session {room}: {e}");
             Status::resource_exhausted("Couldn't queue the join: answer or let some of your waiting invitations go first.")
@@ -682,6 +703,50 @@ impl Friends for MyFriends {
         }))
     }
 
+    /// The caller in line for a match that can't take them yet, kept there, or out of it
+    /// (match_queue.rs).
+    async fn queue_room(&self, request: Request<friends::QueueRoomRequest>) -> Result<Response<friends::QueueRoomResponse>, Status> {
+        use friends::queue_room_response::Status as QueueStatus;
+        let me = caller(&request)?;
+        if !crate::rate_limit::polls().check(me) {
+            return Err(Status::resource_exhausted("Too many requests; slow down"));
+        }
+        let friends::QueueRoomRequest { room, on } = request.into_inner();
+        let reply = |status: QueueStatus, place: usize, waiting: usize, detail: &str| {
+            Ok(Response::new(friends::QueueRoomResponse {
+                status: status as i32,
+                place: u32::try_from(place).unwrap_or(u32::MAX),
+                waiting: u32::try_from(waiting).unwrap_or(u32::MAX),
+                detail: detail.to_string(),
+            }))
+        };
+        let now = std::time::Instant::now();
+        if !on {
+            crate::match_queue::leave(room, me);
+            let (waiting, _) = crate::match_queue::of(room, me, now);
+            return reply(QueueStatus::Ok, 0, waiting, "");
+        }
+        // As JoinRoom: a public match the caller may join, and nobody learns they were blocked.
+        const GONE: &str = "That match isn't open any more.";
+        let Some((host, _, attributes)) = self.storage.joinable_public_room_async(room, me).await.map_err(internal)? else {
+            crate::match_queue::leave(room, me);
+            return reply(QueueStatus::NotFound, 0, 0, GONE);
+        };
+        if crate::game_session::attribute_value(&attributes, 113) != Some(0)
+            || matches!(self.storage.relation(me, host).await.map_err(internal)?, Relation::Blocked | Relation::BlockedBy)
+        {
+            crate::match_queue::leave(room, me);
+            return reply(QueueStatus::NotFound, 0, 0, GONE);
+        }
+        match crate::match_queue::wait(room, me, now) {
+            Ok((place, waiting)) => reply(QueueStatus::Ok, place, waiting, ""),
+            Err(crate::match_queue::Refused::Full) => {
+                let (waiting, _) = crate::match_queue::of(room, me, now);
+                reply(QueueStatus::Full, 0, waiting, "The queue for this match is full.")
+            }
+        }
+    }
+
     /// The public matches in full, for the launcher's Matches tab (lobbies.rs).
     async fn lobbies(&self, request: Request<friends::LobbiesRequest>) -> Result<Response<friends::LobbiesResponse>, Status> {
         let me = caller(&request)?;
@@ -691,12 +756,21 @@ impl Friends for MyFriends {
         // Where the caller is: their game's address, else this call's (the launcher's).
         let mine = crate::metrics::address_of(me).or_else(|| client_addr(&request));
         let sessions = self.storage.live_sessions_async().await.map_err(internal)?;
+        // Who's in a match is out of its line (match_queue.rs).
+        for s in &sessions {
+            crate::match_queue::seated(s.id, &s.player_ids);
+        }
         let relations = self.storage.relations_of(me).await.map_err(internal)?;
         let under_way = |room: u32| crate::match_started::under_way_for(room).or_else(|| crate::match_started::started(room).then_some(std::time::Duration::ZERO));
         let ping = |other: u32| crate::far_rooms::estimate_by_relays(me, other).or_else(|| crate::far_rooms::estimate_ms(mine?, crate::metrics::address_of(other)?));
+        let moved_on = |room: u32| crate::game_session::host_migrated_to(room).is_some();
+        let now = std::time::Instant::now();
+        let queue = |room: u32| crate::match_queue::of(room, me, now);
         let live = crate::lobbies::Live {
             under_way: &under_way,
             ping: &ping,
+            moved_on: &moved_on,
+            queue: &queue,
         };
         Ok(Response::new(crate::lobbies::list(me, &sessions, &relations, &live, identity::now())))
     }

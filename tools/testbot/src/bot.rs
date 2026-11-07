@@ -1644,6 +1644,15 @@ impl ApiPlayer {
         Ok(resp.friends.into_iter().map(|f| (f.username, f.is_online)).collect())
     }
 
+    /// In line for a match under way or full (or out of it), as the launcher's Matches does
+    /// while it waits (`QueueRoom`).
+    pub async fn queue_room(&self, room: u32, on: bool) -> std::result::Result<server_api::friends::QueueRoomResponse, tonic::Status> {
+        Ok(FriendsClient::new(self.api.clone())
+            .queue_room(self.authed(server_api::friends::QueueRoomRequest { room, on }))
+            .await?
+            .into_inner())
+    }
+
     /// Joins a public match by its room, as the launcher's Matches tab does: the server has its
     /// host invite this player's game (which takes it by itself with AutoJoinInvite).
     pub async fn join_room(&self, room: u32) -> std::result::Result<server_api::friends::JoinNowResponse, tonic::Status> {

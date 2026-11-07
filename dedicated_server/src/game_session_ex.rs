@@ -152,6 +152,24 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
             .into_iter()
             .partition(|(session, _)| invitation_search || !crate::match_started::started(session.session_id));
         let started = started.iter().filter(|(_, attrs)| answers(&req_attrs, attrs, false)).count();
+        // Nor a match whose free seats are promised to the players waiting for it
+        // (match_queue.rs): they're let in first. An invitation goes where it was asked to.
+        let now = std::time::Instant::now();
+        let scanned: Vec<_> = scanned
+            .into_iter()
+            .filter(|(session, attrs)| {
+                if invitation_search {
+                    return true;
+                }
+                if crate::match_queue::of(session.session_id, user_id, now).0 == 0 {
+                    return true;
+                }
+                let seats = [3, 4].into_iter().map(|a| attrs.get(&a).copied().unwrap_or(0)).fold(0u32, u32::saturating_add);
+                let members = self.storage.session_members(session.session_id).ok().flatten().map_or_else(Vec::new, |(_, m)| m);
+                crate::match_queue::seated(session.session_id, &members);
+                !crate::match_queue::holds_seats(session.session_id, user_id, (seats as usize).saturating_sub(members.len()), now)
+            })
+            .collect();
         // The player asked for a new match (search_steer.rs): nothing is found, so their game
         // hosts one, and none of what's open is theirs to hear about.
         let steered = !invitation_search && crate::search_steer::wants_new(user_id);
@@ -229,6 +247,8 @@ impl<CI> GameSessionExProtocolServerTrait<CI> for GameSessionExProtocolServerImp
         } else {
             rmc_err!(self.storage.with_participants(sessions, UrlsFor::AllBut(user_id)), logger, "Error reading participants")?
         };
+        // A relayed housemate's LAN address, for a player at the same public address.
+        let sessions = crate::game_session::with_house_urls(sessions, user_id, ci.address().ip());
         info!(logger, "Found {} sessions", sessions.len());
         let mut detail = serde_json::json!({ "query": request.game_session_query.query_id, "found": sessions.len() });
         if started > 0 {

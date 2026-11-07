@@ -40,6 +40,14 @@ struct Seen {
     picked: Option<u32>,
     /// The match watched for a seat, and its label.
     watching: Option<(u32, String)>,
+    /// The watched match was under way when watched: the player is in its queue, and joins by
+    /// themselves as soon as it can be joined (its round over), not asked first.
+    queued: bool,
+    /// The server keeps the player's place in the watched match's line (its "match-queue"):
+    /// asked again with every refresh while waiting, and joined by themselves when it's theirs,
+    /// full or under way. Off: a server without one, where only a match under way is joined
+    /// by itself.
+    server_queue: bool,
     seat_open: Option<(u32, String)>,
     started: Option<Instant>,
 }
@@ -591,6 +599,23 @@ impl Ui {
 
     pub fn load_lobbies(self: &Arc<Self>) {
         self.spawn("lobbies", |ui| {
+            // Waiting in a match's line: the place kept (the server lets it go after 30 s
+            // without an ask), before the list is read, so the list says where it is.
+            let waiting = {
+                let seen = ui.seen();
+                seen.watching.as_ref().filter(|_| seen.server_queue).map(|(room, label)| (*room, label.clone()))
+            };
+            if let Some((room, label)) = waiting {
+                if let Err(e) = core::queue(&ui.core, room, true) {
+                    let mut seen = ui.seen();
+                    seen.watching = None;
+                    seen.queued = false;
+                    seen.server_queue = false;
+                    drop(seen);
+                    ui.core.lock().notices.error(format!("{label}: {e}"));
+                    ui.core.changed(core::Changed::Activity);
+                }
+            }
             let got = core::lobbies(&ui.core);
             {
                 let mut seen = ui.seen();
@@ -679,11 +704,41 @@ impl Ui {
     }
 
     /// A watched match with a seat now: the line with Join, and the window asks for attention.
+    /// A match queued for (it was under way): joined at once, as soon as it can be.
     fn check_watched(self: &Arc<Self>) {
         let mut seen = self.seen();
         let Some((room, label)) = seen.watching.clone() else { return };
+        let queued = seen.queued;
         match seen.lobbies.lobbies.iter().find(|l| l.room == room) {
-            None => seen.watching = None,
+            None => {
+                seen.watching = None;
+                seen.queued = false;
+                drop(seen);
+                if queued {
+                    self.core.lock().notices.info(format!("{label} has ended: there's nothing to join now."));
+                    self.core.changed(core::Changed::Activity);
+                    self.show(|w| w.set_watching_room(-1));
+                }
+            }
+            Some(l) if l.joinable && queued => {
+                seen.watching = None;
+                seen.queued = false;
+                seen.server_queue = false;
+                drop(seen);
+                self.core.lock().notices.info(format!("{label}: the round is over, joining it now."));
+                self.core.changed(core::Changed::Activity);
+                self.show(|w| {
+                    w.set_watching_room(-1);
+                    use slint::winit_030::WinitWindowAccessor as _;
+                    w.window()
+                        .with_winit_window(|win| win.request_user_attention(Some(slint::winit_030::winit::window::UserAttentionType::Informational)));
+                });
+                self.spawn("join", move |ui| {
+                    core::join_match(&ui.core, room);
+                    ui.check_dialogs(false);
+                    ui.load_info();
+                });
+            }
             Some(l) if l.joinable => {
                 seen.watching = None;
                 seen.seat_open = Some((room, label.clone()));
@@ -832,6 +887,8 @@ fn lobby_row(l: &launcher::matches::Lobby) -> crate::LobbyRow {
         under_way: l.under_way,
         full: l.full,
         joinable: l.joinable,
+        waiting: l.waiting as i32,
+        queue_place: l.queue_place as i32,
         open_for: s(&l.open_for),
         ping: ms(l.ping_ms),
         line: s(line.join(" · ")),
@@ -1472,12 +1529,53 @@ fn wire(w: &AppWindow, ui: &Arc<Ui>) {
             {
                 let mut seen = ui.seen();
                 let room = room as u32;
-                seen.watching = if seen.watching.as_ref().is_some_and(|(r, _)| *r == room) {
-                    None
-                } else {
-                    Some((room, label.to_string()))
-                };
+                let leaving = seen.watching.as_ref().is_some_and(|(r, _)| *r == room);
+                // Under way: the queue (joined by itself when the round's over), with the game
+                // started now if it isn't, so it's ready in the short lobby between rounds.
+                let under_way = seen.lobbies.lobbies.iter().any(|l| l.room == room && l.under_way);
+                seen.watching = (!leaving).then(|| (room, label.to_string()));
+                seen.queued = !leaving && under_way;
                 seen.seat_open = None;
+                let start = seen.queued && !seen.info.running;
+                let was_in_line = std::mem::take(&mut seen.server_queue);
+                drop(seen);
+                // The server's line: a place taken (or let go). Where it keeps one, the player
+                // joins by themselves when it's theirs, full or under way.
+                let label = label.to_string();
+                ui.spawn("queue", move |ui| {
+                    if leaving {
+                        if was_in_line {
+                            let _ = core::queue(&ui.core, room, false);
+                        }
+                        return;
+                    }
+                    match core::queue(&ui.core, room, true) {
+                        Ok(Some(_)) => {
+                            let mut seen = ui.seen();
+                            if seen.watching.as_ref().is_some_and(|(r, _)| *r == room) {
+                                seen.server_queue = true;
+                                seen.queued = true;
+                            }
+                        }
+                        Ok(None) => {}
+                        Err(e) => {
+                            let mut seen = ui.seen();
+                            seen.watching = None;
+                            seen.queued = false;
+                            drop(seen);
+                            ui.core.lock().notices.error(format!("{label}: {e}"));
+                            ui.core.changed(core::Changed::Activity);
+                        }
+                    }
+                    ui.load_lobbies();
+                });
+                if start {
+                    ui.spawn("play", |ui| {
+                        core::play(&ui.core, PlayMode::Play);
+                        ui.check_dialogs(false);
+                        ui.load_info();
+                    });
+                }
             }
             ui.show(|w| w.set_seat_open(s("")));
             ui.push_lobbies();

@@ -20,6 +20,14 @@ service Friends {
     // NOT_FRIENDS when the caller blocked its host; STARTED when it's under way. Servers that
     // offer it list "choose-match" in /api/info's features.
     rpc JoinRoom (JoinRoomRequest) returns (JoinNowResponse);
+    // Puts the caller in line for a public match that can't take them yet (under way, or
+    // full), or keeps their place (the launcher asks again every few seconds while it waits; a
+    // place not asked for in 30 s goes), or takes them out (on = false). When it can take
+    // players, the first in line, as many as it has free seats, may join it (JoinRoom); anyone
+    // else's JoinRoom is QUEUED and quick-match searches leave it out until they're in. One
+    // queue at a time; eight at most. Servers that offer it list "match-queue" in /api/info's
+    // features.
+    rpc QueueRoom (QueueRoomRequest) returns (QueueRoomResponse);
     // The caller's quick match searches find nothing until they host a match (five minutes at
     // most), so their game starts a brand-new public match rather than join an open one.
     rpc NewMatch (NewMatchRequest) returns (NewMatchResponse);
@@ -253,6 +261,29 @@ message JoinRoomRequest {
     uint32 room = 1;
 }
 
+message QueueRoomRequest {
+    uint32 room = 1;
+    // False leaves the queue.
+    bool on = 2;
+}
+
+message QueueRoomResponse {
+    enum Status {
+        // In line (or left it, for on = false).
+        OK = 0;
+        // Gone, private, or not one the caller may join (JoinRoom's NOT_FOUND).
+        NOT_FOUND = 1;
+        // Eight are waiting already.
+        FULL = 2;
+    }
+    Status status = 1;
+    // The caller's place (1 = next; 0 when not in line) and how many wait.
+    uint32 place = 2;
+    uint32 waiting = 3;
+    // A short line for the player when they couldn't take a place.
+    string detail = 4;
+}
+
 message NewMatchRequest {
     // False takes the ask back: searches find matches again.
     bool on = 1;
@@ -284,6 +315,9 @@ message JoinNowResponse {
         NOT_FRIENDS_WITH_HOST = 5;
         // The friend's match has started: its host's game turns joiners away until it's over.
         STARTED = 6;
+        // Players are waiting for the match's free seats (QueueRoom): the caller joins its
+        // queue rather than go before them.
+        QUEUED = 7;
     }
     Status status = 1;
     // A short line for the player when the join can't go ahead.
@@ -330,6 +364,10 @@ message Lobby {
     // The caller's estimated round trip to its host, in ms, in 25 ms steps (0: unknown).
     uint32 ping_ms = 13;
     repeated LobbyPlayer players = 14;
+    // How many wait to join it (QueueRoom), and the caller's place among them (1 = next; 0 when
+    // not waiting).
+    uint32 waiting = 15;
+    uint32 queue_place = 16;
 }
 
 message LobbyPlayer {

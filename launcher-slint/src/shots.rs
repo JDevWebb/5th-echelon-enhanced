@@ -574,6 +574,9 @@ fn lobby(
         spies: model(spies),
         mercs: model(mercs),
         with_me: false,
+        // A match under way with two waiting to join it (the matches shot shows the queue).
+        waiting: if under_way { 2 } else { 0 },
+        queue_place: 0,
         settings: model(vec![
             crate::SettingRow {
                 key: s("Time limit"),

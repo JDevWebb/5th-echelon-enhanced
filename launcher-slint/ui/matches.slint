@@ -59,7 +59,8 @@ component Person inherits Rectangle {
         if p.me: Text { text: "you"; color: Theme.soft; font-size: 12.5px; vertical-alignment: center; }
         if p.friend: Text { text: "friend"; color: Theme.accent; font-size: 12.5px; vertical-alignment: center; }
         if !p.friend && p.party-line != "": Text { text: p.party-line; color: Theme.muted; font-size: 12.5px; vertical-alignment: center; overflow: elide; max-width: 140px; }
-        if show-ping: PingText { ms: p.ping; font-size: 12.5px; vertical-alignment: center; }
+        // Only a ping that's known (a friend's; never the player's own): a dash said nothing.
+        if show-ping && p.ping > 0: PingText { ms: p.ping; font-size: 12.5px; vertical-alignment: center; }
     }
 }
 
@@ -464,7 +465,9 @@ export component MatchesScreen inherits Rectangle {
                                         horizontal-stretch: 1;
                                         Text { text: selected.status; font-weight: 600; font-size: 14px; color: Theme.fg; wrap: word-wrap; }
                                         Text {
-                                            text: (selected.open-for != "" ? "Open " + selected.open-for : "") + (!selected.under-way && !selected.full ? (selected.open-for != "" ? " · " : "") + "joinable now" : "");
+                                            text: (selected.open-for != "" ? "Open " + selected.open-for : "")
+                                                + (selected.joinable ? (selected.open-for != "" ? " · " : "") + "joinable now" : "")
+                                                + (selected.waiting > 0 ? " · " + selected.waiting + " waiting to join" : "");
                                             font-size: 12.5px;
                                             color: Theme.soft;
                                         }
@@ -596,12 +599,35 @@ export component MatchesScreen inherits Rectangle {
                             }
                         }
                         if !selected.joinable && !selected.with-me: Btn {
-                            text: root.watching-room == selected.room ? (narrow ? "Watching for a seat" : "Watching: we'll tell you when it opens") : "Tell me when a seat opens";
+                            // Under way: a queue, joined by itself when the round's over. Full: a
+                            // seat watched for, and asked when one opens.
+                            // In line (the server's queue, or the launcher's alone on an older
+                            // server): joined by itself when it can be. The place, when the server
+                            // keeps one.
+                            text: root.watching-room == selected.room
+                                // The place, when the server keeps one (the note under it says the rest:
+                                // with it, the line ran past the button).
+                                ? (selected.queue-place > 0 ? "In the queue · " + selected.queue-place + " of " + selected.waiting
+                                    : narrow ? "In the queue" : selected.under-way ? "In the queue: you join when the round ends" : "In the queue: you join when a seat opens")
+                                : selected.waiting >= 8 ? "Queue full"
+                                : selected.under-way ? "Join when this round ends"
+                                : selected.full ? "Join when a seat opens"
+                                : "Join the queue";
+                            enabled: root.watching-room == selected.room || selected.waiting < 8;
                             kind: "ghost";
                             min-width: 0;
                             min-height: 40px;
                             pressed-look: root.watching-room == selected.room;
                             clicked => { root.watch(selected.room, selected.mode + (selected.map != "" ? " · " + selected.map : "")); }
+                        }
+                        if !selected.with-me && root.watching-room == selected.room && !short: Text {
+                            text: selected.under-way
+                                ? "The game's started now if it isn't running, so you're in the lobby before the next round. Press again to leave the queue."
+                                : "You join by yourself when a seat is yours. Press again to leave the queue.";
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                            color: Theme.muted;
+                            font-size: 12.5px;
                         }
                         if selected.joinable && !selected.with-me && !short: Text {
                             text: "Starts the game if it isn't running, then joins " + (selected.host != "" ? selected.host + "'s" : "its host's") + (selected.under-way ? " match." : " lobby.");

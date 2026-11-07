@@ -985,6 +985,14 @@ pub fn lobbies(core: &Core) -> launcher::matches::Lobbies {
     }
 }
 
+/// The player in line for `room` (a match under way or full), kept there, or out of it (`on`
+/// false), on the server's queue: their place and how many wait; `Ok(None)` where the server
+/// has none.
+pub fn queue(core: &Core, room: u32, on: bool) -> Result<Option<(u32, u32)>, String> {
+    let cfg = core.lock().game.as_ref().map(|g| (*g.cfg).clone()).ok_or("Choose the game's folder first.")?;
+    launcher::task::guarded(|| launcher::matches::queue(&cfg, room, on))
+}
+
 /// Whether the player's server lets them pick a match or start a new one ("choose-match").
 pub fn choose_match_offered(core: &Core) -> bool {
     let Some(server) = core.server() else { return false };

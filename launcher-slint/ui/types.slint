@@ -164,4 +164,8 @@ export struct LobbyRow {
     mercs: [PersonRow],
     with-me: bool,
     settings: [SettingRow],
+    // How many wait to join it (the server's queue), and this player's place (1 = next; 0: not
+    // in line).
+    waiting: int,
+    queue-place: int,
 }

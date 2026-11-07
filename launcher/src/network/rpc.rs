@@ -354,6 +354,16 @@ pub async fn join_room(api_url: String, token: &str, room: u32) -> Result<server
         .map_err(refusal)
 }
 
+/// In line for a match under way or full, kept there, or out of it (`on` false): `QueueRoom`.
+pub async fn queue_room(api_url: String, token: &str, room: u32, on: bool) -> Result<server_api::friends::QueueRoomResponse, Error> {
+    let (mut client, token) = friends_client(&api_url, token).await?;
+    client
+        .queue_room(authed(server_api::friends::QueueRoomRequest { room, on }, &token))
+        .await
+        .map(tonic::Response::into_inner)
+        .map_err(refusal)
+}
+
 /// The public matches in full, for the Matches tab (`Lobbies`).
 pub async fn lobbies(api_url: String, token: &str) -> Result<server_api::friends::LobbiesResponse, Error> {
     let (mut client, token) = friends_client(&api_url, token).await?;

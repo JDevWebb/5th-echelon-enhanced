@@ -108,6 +108,7 @@ pub fn join(cfg: &Config, game_dir: &Path, room: u32) -> Result<String, String> 
         _ if !resp.detail.is_empty() => return Err(hooks_config::text::clip(&resp.detail, 200)),
         JoinStatus::Started => return Err("That match has started - pick another, or start a new one.".into()),
         JoinStatus::NotFriends => return Err("You've blocked that match's host.".into()),
+        JoinStatus::Queued => return Err("Players are waiting for this match: join its queue.".into()),
         _ => return Err("That match isn't open any more.".into()),
     }
     // The game takes the invitation as the join asked for only from the host the request names
@@ -121,6 +122,31 @@ pub fn join(cfg: &Config, game_dir: &Path, room: u32) -> Result<String, String> 
     }
     // What happens next, in plain words.
     Ok("Joining the match: the game goes straight in once it's online.".into())
+}
+
+/// In line for a match that can't take the player yet (under way or full), kept there (asked
+/// again while waiting), or out of it (`on` false): their place (1 = next) and how many wait.
+/// `Ok(None)`: the server has no queue (before 0.5.0's): the launcher only watches.
+pub fn queue(cfg: &Config, room: u32, on: bool) -> Result<Option<(u32, u32)>, String> {
+    use server_api::friends::queue_room_response::Status as QueueStatus;
+    let server = cfg.current_profile().map(|p| p.server.clone()).unwrap_or_default();
+    if server.is_empty() || !crate::flow::offers(&server, "match-queue") {
+        return Ok(None);
+    }
+    let resp = crate::flow::with_api_token(cfg, |url, token| crate::services::rt().block_on(crate::network::queue_room(url, &token, room, on)))?;
+    match QueueStatus::try_from(resp.status).unwrap_or(QueueStatus::NotFound) {
+        QueueStatus::Ok => Ok(Some((resp.place, resp.waiting))),
+        QueueStatus::Full => Err(if resp.detail.is_empty() {
+            "The queue for this match is full.".into()
+        } else {
+            hooks_config::text::clip(&resp.detail, 200)
+        }),
+        QueueStatus::NotFound => Err(if resp.detail.is_empty() {
+            "That match isn't open any more.".into()
+        } else {
+            hooks_config::text::clip(&resp.detail, 200)
+        }),
+    }
 }
 
 /// Asks for a new match: the player's quick match searches find nothing until they host one,
@@ -236,6 +262,10 @@ pub struct Lobby {
     pub with_me: bool,
     /// The round's settings as the host's game has them: (label, value), in a set order.
     pub settings: Vec<(String, String)>,
+    /// How many wait to join it (the server's queue), and this player's place (1 = next; 0
+    /// when not waiting). Its free seats go to them first: `joinable` says so.
+    pub waiting: u32,
+    pub queue_place: u32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
@@ -369,6 +399,26 @@ pub fn from_response(resp: &server_api::friends::LobbiesResponse) -> Lobbies {
     }
 }
 
+/// Whether this player may join a match now: not under way, a seat free, and, with players
+/// waiting for it, theirs (they're among the first in line, as many as there are free seats) or
+/// beyond the queue's.
+fn joinable(under_way: bool, full: bool, seats: u32, players: usize, waiting: u32, place: u32) -> bool {
+    if under_way || full {
+        return false;
+    }
+    // Seats not said: the queue's place decides alone.
+    let free = if seats == 0 {
+        u32::MAX
+    } else {
+        seats.saturating_sub(u32::try_from(players).unwrap_or(u32::MAX))
+    };
+    if place > 0 {
+        place <= free
+    } else {
+        waiting < free
+    }
+}
+
 fn lobby(l: &server_api::friends::Lobby, clip: impl Fn(&str) -> String) -> Lobby {
     let mode = server_api::game_names::match_mode(Some(l.game_mode).filter(|m| *m != 0), &l.kind)
         .unwrap_or("A match")
@@ -402,7 +452,9 @@ fn lobby(l: &server_api::friends::Lobby, clip: impl Fn(&str) -> String) -> Lobby
         tone: if l.under_way || full { "warn" } else { "ok" },
         under_way: l.under_way,
         full,
-        joinable: !l.under_way && !full,
+        joinable: joinable(l.under_way, full, l.seats, players, l.waiting, l.queue_place),
+        waiting: l.waiting,
+        queue_place: l.queue_place,
         open_for: minutes(l.open_secs),
         open_secs: l.open_secs,
         ping_ms: (l.ping_ms > 0).then_some(l.ping_ms),
@@ -414,6 +466,24 @@ fn lobby(l: &server_api::friends::Lobby, clip: impl Fn(&str) -> String) -> Lobby
 }
 
 /// Example matches, for the screens' tests and screenshots.
+#[cfg(test)]
+mod queue_tests {
+    use super::joinable;
+
+    #[test]
+    fn the_queue_goes_first_for_the_free_seats() {
+        // 8 seats, 6 players: 2 free.
+        assert!(joinable(false, false, 8, 6, 0, 0), "nobody waiting: anyone");
+        assert!(!joinable(false, false, 8, 6, 2, 0), "two waiting take both seats");
+        assert!(joinable(false, false, 8, 6, 1, 0), "one waiting leaves a seat");
+        assert!(joinable(false, false, 8, 6, 3, 2), "second in line, two seats: in");
+        assert!(!joinable(false, false, 8, 6, 3, 3), "third in line waits");
+        assert!(!joinable(true, false, 8, 2, 0, 1), "under way: nobody, first in line or not");
+        assert!(!joinable(false, true, 8, 8, 0, 1), "full: nobody");
+        assert!(joinable(false, false, 0, 3, 2, 1), "seats not said: the place decides");
+    }
+}
+
 #[cfg(test)]
 pub fn sample() -> Lobbies {
     let person = |name: &str, host: bool, friend: bool, party: u32, ping: u32| Person {

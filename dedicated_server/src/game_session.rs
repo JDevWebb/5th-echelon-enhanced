@@ -167,7 +167,8 @@ fn note_host_migrated(from: u32, to: u32) {
     migrated.insert(from, (to, now));
 }
 
-fn host_migrated_to(from: u32) -> Option<u32> {
+/// The room a host migration moved `from`'s players on to, lately.
+pub(crate) fn host_migrated_to(from: u32) -> Option<u32> {
     host_migrated().get(&from).filter(|(_, at)| at.elapsed() < SPLIT_AFTER_LEAVING).map(|(to, _)| *to)
 }
 
@@ -761,6 +762,54 @@ pub(crate) fn is_public(ip: std::net::IpAddr) -> bool {
         }
         std::net::IpAddr::V6(v6) => !(v6.is_loopback() || v6.is_unspecified() || v6.is_multicast()),
     }
+}
+
+/// Relayed players' LAN station URLs, by account, with the public address their game connects
+/// from. What's stored for a relayed player leaves them out (`without_local_when_relayed`:
+/// strangers at one relay share its IP, and each game took the other's for a housemate's and
+/// tried their home address). A player connecting from that same public address is a housemate
+/// on the LAN, though: they get them back ([`with_house_urls`]). Without them, a housemate with
+/// internet play off (LAN only, at no relay) had only the relay's address and couldn't join
+/// (the gamebox, mx-lan-relay-and-direct, 2026-11-07).
+static HOUSE_URLS: std::sync::LazyLock<std::sync::Mutex<std::collections::HashMap<u32, (std::net::IpAddr, Vec<String>)>>> = std::sync::LazyLock::new(Default::default);
+/// The most players kept in [`HOUSE_URLS`] (a few hundred bytes each); full, it starts again.
+const MAX_HOUSE_URLS: usize = 100_000;
+
+/// Notes `user`'s LAN URLs left out of what's stored (none: forgotten), as their game
+/// registered them from `observed`.
+pub(crate) fn note_house_urls(user: u32, observed: std::net::IpAddr, local: Vec<String>) {
+    let mut map = HOUSE_URLS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if local.is_empty() {
+        map.remove(&user);
+        return;
+    }
+    if map.len() >= MAX_HOUSE_URLS && !map.contains_key(&user) {
+        map.clear();
+    }
+    map.insert(user, (observed, local));
+}
+
+/// `sessions` as `viewer`, connecting from `viewer_ip`, gets them: a relayed participant's LAN
+/// URLs added back where the viewer connects from the same public address (their housemate),
+/// to the URLs that were read for them (none read: none added).
+pub(crate) fn with_house_urls(mut sessions: Vec<crate::storage::GameSession>, viewer: u32, viewer_ip: std::net::IpAddr) -> Vec<crate::storage::GameSession> {
+    let map = HOUSE_URLS.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+    if map.is_empty() {
+        return sessions;
+    }
+    for p in sessions.iter_mut().flat_map(|s| s.participants.iter_mut()) {
+        if p.user_id == viewer || p.station_urls.is_empty() {
+            continue;
+        }
+        if let Some((_, local)) = map.get(&p.user_id).filter(|(ip, _)| *ip == viewer_ip) {
+            for url in local {
+                if !p.station_urls.contains(url) {
+                    p.station_urls.push(url.clone());
+                }
+            }
+        }
+    }
+    sessions
 }
 
 /// Station URLs other players may be sent to: a public address in them must be
@@ -1610,6 +1659,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             warn!(logger, "User {user_id} registers station URLs other players can't be sent to; left out");
         }
         let mut urls = station_urls_for_peers(allowed.clone(), ci.address().ip(), trusted);
+        let mut house = Vec::new();
         // Outside the trusted network: the address the NAT helper checked
         // (the player's public one, or the relay's), in place of the one
         // the game registered, local or public.
@@ -1621,9 +1671,13 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 name.and_then(|name| crate::nat_helper::advertised_for(&name, ci.address().ip()).or_else(|| crate::relays::remote_advertised_for(&name, ci.address().ip())));
             if let Some(advertise) = checked {
                 urls = crate::nat_helper::urls_with_public_address(urls, advertise);
+                let with_local = urls.clone();
                 urls = crate::nat_helper::without_local_when_relayed(urls, advertise, ci.address().ip());
+                house = with_local.into_iter().filter(|u| !urls.contains(u)).collect();
             }
         }
+        // A relayed player's LAN address, left out for everyone else: kept for a housemate.
+        note_house_urls(user_id, ci.address().ip(), house);
         let urls = only_reachable_addresses(urls, ci.address().ip(), &crate::relays::ranges());
         if urls != sent {
             info!(logger, "station urls {:?} -> {:?} (the address this client connected from)", sent, urls);
@@ -1773,6 +1827,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             }
         }
 
+        let sessions = with_house_urls(sessions, user_id, ci.address().ip());
         info!(logger, "Found {} sessions", sessions.len());
 
         Ok(SearchSessionsWithParticipantsResponse {
@@ -2310,6 +2365,7 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
             "error searching game sessions"
         )?;
         let sessions = rmc_err!(self.storage.with_participants(sessions, UrlsFor::Hosts), logger, "error reading participants")?;
+        let sessions = with_house_urls(sessions, user_id, ci.address().ip());
         info!(logger, "Found {} sessions", sessions.len());
 
         Ok(SearchSessionsResponse {
@@ -3233,6 +3289,41 @@ mod tests {
     use super::only_reachable_addresses;
     use super::rooms_for_friend_search;
     use super::station_urls_for_peers;
+
+    #[test]
+    fn a_relayed_players_lan_address_goes_to_their_housemates_only() {
+        use crate::storage::GameSession;
+        use crate::storage::Participant;
+        let room = |urls: &[&str]| GameSession {
+            session_type: 1,
+            session_id: 9,
+            creator_id: 7001,
+            attributes: String::new(),
+            participants: vec![Participant {
+                user_id: 7001,
+                name: "host".into(),
+                station_urls: urls.iter().map(|u| (*u).to_string()).collect(),
+            }],
+        };
+        let relayed = "prudp:/address=139.99.73.120;port=40000;type=2";
+        let lan = "prudp:/address=192.168.1.20;port=13000";
+        let home: std::net::IpAddr = "114.23.110.139".parse().unwrap();
+        super::note_house_urls(7001, home, vec![lan.into()]);
+        let seen = |viewer: u32, ip: &str, urls: &[&str]| {
+            super::with_house_urls(vec![room(urls)], viewer, ip.parse().unwrap())
+                .remove(0)
+                .participants
+                .remove(0)
+                .station_urls
+        };
+        assert_eq!(seen(7002, "114.23.110.139", &[relayed]), vec![relayed, lan], "a housemate gets the LAN address");
+        assert_eq!(seen(7003, "187.15.143.10", &[relayed]), vec![relayed], "a stranger doesn't");
+        assert_eq!(seen(7001, "114.23.110.139", &[relayed]), vec![relayed], "nor the player themselves");
+        assert!(seen(7002, "114.23.110.139", &[]).is_empty(), "no URLs read for them: none added");
+        assert_eq!(seen(7002, "114.23.110.139", &[relayed, lan]), vec![relayed, lan], "never twice");
+        super::note_house_urls(7001, home, Vec::new());
+        assert_eq!(seen(7002, "114.23.110.139", &[relayed]), vec![relayed], "not relayed any more: forgotten");
+    }
     use super::NotificationEvent;
     use super::Subnet;
     use super::NOTIFICATION_PROTOCOL_ID;

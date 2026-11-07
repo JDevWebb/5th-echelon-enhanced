@@ -4385,6 +4385,9 @@ async fn run() -> Result<()> {
     if args.first().map(String::as_str) == Some("lobbies") {
         return show_lobbies(server, &args[1..]).await;
     }
+    if args.first().map(String::as_str) == Some("queue") {
+        return queue_as(server, &args[1..]).await;
+    }
     if args.first().map(String::as_str) == Some("new-match") {
         return new_match_as(server, &args[1..]).await;
     }
@@ -4685,7 +4688,7 @@ async fn show_lobbies(server: IpAddr, names: &[String]) -> Result<()> {
             })
             .collect();
         println!(
-            "room {} {} mode {} map {} seats {}/{} open {}s state {:?}{} round {}: {}",
+            "room {} {} mode {} map {} seats {}/{} open {}s state {:?}{} round {}{}: {}",
             l.room,
             l.kind,
             l.game_mode,
@@ -4696,6 +4699,11 @@ async fn show_lobbies(server: IpAddr, names: &[String]) -> Result<()> {
             l.state,
             if l.under_way { format!(" under way {}s", l.under_way_secs) } else { String::new() },
             l.round,
+            if l.waiting > 0 {
+                format!(" waiting {} (place {})", l.waiting, l.queue_place)
+            } else {
+                String::new()
+            },
             players.join(", ")
         );
     }
@@ -4725,6 +4733,56 @@ async fn new_match_as(server: IpAddr, args: &[String]) -> Result<()> {
         let p = testbot::bot::ApiPlayer::sign_in(server, name, &password).await?;
         let seconds = p.new_match(on).await.map_err(|e| eyre!("{name}: {}", e.message()))?;
         println!("{name}: new match {} ({seconds} s)", if on { "on" } else { "off" });
+    }
+    Ok(())
+}
+
+/// `queue ROOM SECS NAME...`: the named players get in line for ROOM, in that order, and keep
+/// their places SECS seconds (asking again every 10 s, as a waiting launcher does), then leave
+/// the line; each ask's place is said. With `join` at the end of a pass, each joins as soon as
+/// the line lets them (JoinRoom), as the launcher does by itself.
+async fn queue_as(server: IpAddr, args: &[String]) -> Result<()> {
+    let [room, secs, names @ ..] = args else {
+        return Err(eyre!("queue ROOM SECS NAME... [join]"));
+    };
+    let room: u32 = room.parse().map_err(|_| eyre!("queue ROOM SECS NAME...: ROOM is a number"))?;
+    let secs: u64 = secs.parse().map_err(|_| eyre!("queue ROOM SECS NAME...: SECS is a number"))?;
+    let join = names.last().is_some_and(|n| n == "join");
+    let names: Vec<&String> = names.iter().filter(|n| *n != "join").collect();
+    let password = account_password()?;
+    let mut players = Vec::new();
+    for name in &names {
+        players.push(((*name).clone(), testbot::bot::ApiPlayer::sign_in(server, name, &password).await?));
+    }
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(secs);
+    let mut joined: Vec<String> = Vec::new();
+    loop {
+        for (name, p) in &players {
+            if joined.contains(name) {
+                continue;
+            }
+            match p.queue_room(room, true).await {
+                Ok(r) => println!("{name} in line for room {room}: status {} place {} of {} {}", r.status, r.place, r.waiting, r.detail),
+                Err(e) => println!("{name} in line for room {room}: {}", e.message()),
+            }
+            if join {
+                if let Ok(r) = p.join_room(room).await {
+                    if r.status == 0 {
+                        println!("{name} let in to room {room}");
+                        joined.push(name.clone());
+                    }
+                }
+            }
+        }
+        if std::time::Instant::now() >= end || joined.len() == players.len() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    }
+    for (name, p) in &players {
+        if !joined.contains(name) {
+            let _ = p.queue_room(room, false).await;
+        }
     }
     Ok(())
 }
