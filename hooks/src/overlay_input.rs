@@ -244,11 +244,35 @@ pub(crate) fn held_back() -> bool {
     OPEN.load(Ordering::SeqCst) || crate::quickstart::navigating() || esc_after_abort()
 }
 
+/// The Esc that stopped the quick start: 0 not seen yet, 1 still held, 2 let go (done).
+static ABORT_ESC: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
 /// The Esc that stopped the quick start is still held: the game doesn't see it either (in its
-/// menus Esc goes back, at the title it can quit).
+/// menus Esc goes back, at the title it can quit). That press only: once it's let go, Esc is
+/// the game's again. Before, every Esc held after a stop was kept from the game for the rest
+/// of the session, so Esc opened the game's menu only some of the time (whether the game
+/// looked while it was down).
 fn esc_after_abort() -> bool {
-    crate::quickstart::aborted()
-        && unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(i32::from(windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0)) } & i16::MIN != 0
+    if !crate::quickstart::aborted() {
+        return false;
+    }
+    let held = unsafe { windows::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(i32::from(windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0)) } & i16::MIN != 0;
+    esc_still_stopping(&ABORT_ESC, held)
+}
+
+/// [`esc_after_abort`]'s state, moved on by whether Esc is held now.
+fn esc_still_stopping(state: &std::sync::atomic::AtomicU8, held: bool) -> bool {
+    match (state.load(Ordering::SeqCst), held) {
+        (0 | 1, true) => {
+            state.store(1, Ordering::SeqCst);
+            true
+        }
+        (0 | 1, false) => {
+            state.store(2, Ordering::SeqCst);
+            false
+        }
+        _ => false,
+    }
 }
 
 /// The device's state, as if nothing moved or was pressed while the panel is open.
@@ -270,4 +294,17 @@ fn device_data(detour: &retour::StaticDetour<GetDeviceData>, device: *mut c_void
         unsafe { *count = 0 };
     }
     result
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_the_esc_that_stopped_the_quick_start_is_held_back() {
+        let state = std::sync::atomic::AtomicU8::new(0);
+        assert!(super::esc_still_stopping(&state, true), "the stopping press, held");
+        assert!(super::esc_still_stopping(&state, true), "still held");
+        assert!(!super::esc_still_stopping(&state, false), "let go");
+        assert!(!super::esc_still_stopping(&state, true), "a later press is the game's");
+        assert!(!super::esc_still_stopping(&state, true), "and stays the game's while held");
+    }
 }
