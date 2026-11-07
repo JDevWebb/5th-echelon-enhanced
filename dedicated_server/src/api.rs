@@ -771,6 +771,9 @@ impl Friends for MyFriends {
             crate::match_queue::seated(s.id, &s.player_ids);
         }
         let relations = self.storage.relations_of(me).await.map_err(internal)?;
+        // Everyone on the server now, for the Matches header (before the list's closures, which
+        // can't be held over an await).
+        let online = self.storage.player_counts().await.map_or(0, |(online, _)| online);
         let under_way = |room: u32| crate::match_started::under_way_for(room).or_else(|| crate::match_started::started(room).then_some(std::time::Duration::ZERO));
         let ping = |other: u32| crate::far_rooms::estimate_by_relays(me, other).or_else(|| crate::far_rooms::estimate_ms(mine?, crate::metrics::address_of(other)?));
         let moved_on = |room: u32| crate::game_session::host_migrated_to(room).is_some();
@@ -782,7 +785,9 @@ impl Friends for MyFriends {
             moved_on: &moved_on,
             queue: &queue,
         };
-        Ok(Response::new(crate::lobbies::list(me, &sessions, &relations, &live, identity::now())))
+        let mut list = crate::lobbies::list(me, &sessions, &relations, &live, identity::now());
+        list.online = online;
+        Ok(Response::new(list))
     }
 
     /// The caller's quick match searches find nothing until they host a match (search_steer.rs),

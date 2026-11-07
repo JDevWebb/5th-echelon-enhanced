@@ -266,6 +266,56 @@ pub struct Lobby {
     /// when not waiting). Its free seats go to them first: `joinable` says so.
     pub waiting: u32,
     pub queue_place: u32,
+    /// The menus' picture for it, by its name in the game's own files (`setup::key_art::named`):
+    /// the map's screenshot, else the mode's art; empty when there's none.
+    pub art: &'static str,
+}
+
+/// The game's own picture for a match ([`Lobby::art`]): the map's screenshot (the mission
+/// details' images, one for each of the six Spies vs Mercs maps the game came with, Classic or
+/// not, and one for each co-op mission), else its mode's art (Lost Bank and Presidential Complex
+/// have no screenshot). The co-op missions' pictures are named by character and number
+/// (MP_Grim3); the maps, in the game's own order, four for each (stat_boards' map table): Grim's
+/// and Kobin's checked by their pictures (the sea fort, the skull in the hackers' den, the
+/// yacht; the mountain village, the market, the mine, the wreck on the coast).
+pub fn art_for(map: u32, game_mode: u32, kind: &str) -> &'static str {
+    match map {
+        0x5752_93CC | 0x9893_1ADC => return "MP_CARTEL_512x256",
+        0x05F6_9010 | 0xA3F9_73DD => return "MP_VIRUS_512x256",
+        0xC67A_5C7C | 0x545F_5ED4 => return "MP_URANIUM_512x256",
+        0x24AD_16A7 | 0x9072_AC00 => return "MP_SILO_512x256",
+        0x9DD4_24B3 | 0xD68E_3BB8 => return "MP_HOSPITAL_512x256",
+        0x0BF3_AA83 | 0x0454_1E64 => return "MP_HADRON_512x256",
+        // Briggs (Combined Ops)
+        0x4F2E_CFAE => return "MP_Briggs1",
+        0x5742_2D32 => return "MP_Briggs2",
+        0x868F_8D40 => return "MP_Briggs3",
+        0xFB05_D5A7 => return "MP_Briggs4",
+        // Charlie (Extraction)
+        0x995C_EB02 => return "MP_Charlie1",
+        0x2780_28B7 => return "MP_Charlie2",
+        0x2E28_3083 => return "MP_Charlie3",
+        0xD108_88B4 => return "MP_Charlie4",
+        // Grim (Ghost)
+        0xD54A_0746 => return "MP_Grim1",
+        0x51F0_8114 => return "MP_Grim2",
+        0x2BAA_41A7 => return "MP_Grim3",
+        0x3E75_EB6A => return "MP_Grim4",
+        // Kobin (Hunter)
+        0x04DE_DD40 => return "MP_Kobin1",
+        0x2C35_D271 => return "MP_Kobin2",
+        0x798E_4E17 => return "MP_Kobin3",
+        0xF19E_884F => return "MP_Kobin4",
+        _ => {}
+    }
+    match (game_mode, kind) {
+        (6, _) => "MP_TDM",
+        (8, _) => "MP_SvMC",
+        (10, _) => "MP_CAPTURE",
+        (2..=5, _) | (_, "coop") => "MP_COOP",
+        (_, "svm") | (7 | 9, _) => "MP_SVM",
+        _ => "",
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize)]
@@ -380,6 +430,10 @@ pub fn from_response(resp: &server_api::friends::LobbiesResponse) -> Lobbies {
         format!("{} public", lobbies.len()),
         format!("{players} {}", if players == 1 { "player" } else { "players" }),
     ];
+    // Everyone on the server now, in a match or not (servers from 0.5.0 say).
+    if resp.online > 0 {
+        summary.insert(0, format!("{} online", resp.online));
+    }
     if resp.private_matches > 0 {
         summary.push(format!("{} private {}", resp.private_matches, plural(resp.private_matches, "match", "matches")));
     }
@@ -455,6 +509,7 @@ fn lobby(l: &server_api::friends::Lobby, clip: impl Fn(&str) -> String) -> Lobby
         joinable: joinable(l.under_way, full, l.seats, players, l.waiting, l.queue_place),
         waiting: l.waiting,
         queue_place: l.queue_place,
+        art: art_for(l.map, l.game_mode, &l.kind),
         open_for: minutes(l.open_secs),
         open_secs: l.open_secs,
         ping_ms: (l.ping_ms > 0).then_some(l.ping_ms),
@@ -466,6 +521,24 @@ fn lobby(l: &server_api::friends::Lobby, clip: impl Fn(&str) -> String) -> Lobby
 }
 
 /// Example matches, for the screens' tests and screenshots.
+#[cfg(test)]
+mod art_tests {
+    use super::art_for;
+
+    #[test]
+    fn a_maps_screenshot_else_its_modes_art() {
+        assert_eq!(art_for(0x24AD_16A7, 7, "svm"), "MP_SILO_512x256");
+        assert_eq!(art_for(0x9072_AC00, 8, "svm"), "MP_SILO_512x256", "Classic: the same map's");
+        assert_eq!(art_for(0xB3AA_421F, 8, "svm"), "MP_SvMC", "Lost Bank: the mode's");
+        assert_eq!(art_for(0xB3AA_421F, 6, "svm"), "MP_TDM");
+        assert_eq!(art_for(0xF19E_884F, 2, "coop"), "MP_Kobin4", "Dead Coast");
+        assert_eq!(art_for(0x3E75_EB6A, 3, "coop"), "MP_Grim4", "the yacht");
+        assert_eq!(art_for(0x1234_5678, 3, "coop"), "MP_COOP", "a co-op map not known: the mode's");
+        assert_eq!(art_for(0, 0, "svm"), "MP_SVM", "nothing said: Spies vs Mercs");
+        assert_eq!(art_for(0, 0, ""), "");
+    }
+}
+
 #[cfg(test)]
 mod queue_tests {
     use super::joinable;

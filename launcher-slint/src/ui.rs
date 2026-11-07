@@ -104,6 +104,9 @@ pub struct Ui {
     actions: Mutex<Option<std::sync::mpsc::Sender<Box<dyn FnOnce(&Arc<Ui>) + Send>>>>,
     /// The system's own scaling, before the player's size.
     base_scale: Mutex<f32>,
+    /// The game's own pictures for matches (Matches' band), by name, read once each from the
+    /// player's game (None: it hasn't got that one).
+    map_art: Mutex<std::collections::HashMap<&'static str, Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>>>>,
 }
 
 impl Ui {
@@ -617,6 +620,14 @@ impl Ui {
                 }
             }
             let got = core::lobbies(&ui.core);
+            // Each match's picture, read from the game once (off the window's thread).
+            for name in got.lobbies.iter().map(|l| l.art).filter(|n| !n.is_empty()) {
+                if ui.map_art.lock().unwrap_or_else(std::sync::PoisonError::into_inner).contains_key(name) {
+                    continue;
+                }
+                let art = core::map_art(&ui.core, name).map(|(rgba, width, height)| slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(&rgba, width, height));
+                ui.map_art.lock().unwrap_or_else(std::sync::PoisonError::into_inner).insert(name, art);
+            }
             {
                 let mut seen = ui.seen();
                 seen.lobbies = got;
@@ -681,6 +692,9 @@ impl Ui {
             all.len() as i32,
         );
         drop(guard);
+        let art = selected
+            .as_ref()
+            .and_then(|l| self.map_art.lock().unwrap_or_else(std::sync::PoisonError::into_inner).get(l.art).cloned().flatten());
         self.show(move |w| {
             w.set_lobbies_loaded(loaded);
             w.set_lobbies_error(s(error));
@@ -695,7 +709,18 @@ impl Ui {
             w.set_friends_first(friends);
             w.set_sort(sort);
             w.set_has_selected(selected.is_some());
-            w.set_selected(selected.as_ref().map(lobby_row).unwrap_or_default());
+            w.set_selected(
+                selected
+                    .as_ref()
+                    .map(|l| {
+                        let mut row = lobby_row(l);
+                        if let Some(art) = &art {
+                            row.art = slint::Image::from_rgba8(art.clone());
+                        }
+                        row
+                    })
+                    .unwrap_or_default(),
+            );
             let rows: Vec<crate::LobbyRow> = shown.iter().map(lobby_row).collect();
             // Rows already shown are changed in place: the list keeps its scroll and focus.
             set_rows(&w.get_shown(), rows, |rc| w.set_shown(rc));
@@ -889,6 +914,8 @@ fn lobby_row(l: &launcher::matches::Lobby) -> crate::LobbyRow {
         joinable: l.joinable,
         waiting: l.waiting as i32,
         queue_place: l.queue_place as i32,
+        // Set for the picked match only (push_lobbies), from what's been read of the game.
+        art: Default::default(),
         open_for: s(&l.open_for),
         ping: ms(l.ping_ms),
         line: s(line.join(" · ")),
@@ -958,6 +985,7 @@ pub fn run() -> Result<(), slint::PlatformError> {
         pages: crate::shell::Pages::new(fresh),
         actions: Mutex::new(None),
         base_scale: Mutex::new(window.window().scale_factor()),
+        map_art: Mutex::new(Default::default()),
     });
     *ui_slot.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(Arc::downgrade(&ui));
 

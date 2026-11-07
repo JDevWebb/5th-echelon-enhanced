@@ -338,6 +338,8 @@ message LobbiesResponse {
     uint32 private_matches = 3;
     uint32 private_players = 4;
     uint32 party_players = 5;
+    // Everyone signed in to this server's game service now, in a match or not.
+    uint32 online = 6;
 }
 
 message Lobby {

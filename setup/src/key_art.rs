@@ -35,6 +35,48 @@ pub struct Art {
     pub rgba: Vec<u8>,
 }
 
+/// How much of the end of the unpacked package holds its name table (about 310 KB in the
+/// game's own: each image's path, then where it is in the package and its size).
+const NAMES_REGION: u64 = 1 << 20;
+/// The most an image read by name may take (the menus' are 512 KiB at most).
+const MOST_NAMED: usize = 4 << 20;
+
+/// The menus' own picture for a match: the map's screenshot, or the mode's art.
+pub const MAP_ART_FOLDER: &str = "flash\\textures\\SMIMissionDetailsImgs\\";
+
+/// One of the menus' images by its file name in `folder` (e.g. "MP_SILO_512x256" in
+/// [`MAP_ART_FOLDER`]), read through the package's name table: only the chunks it's in are
+/// unpacked. The map vote's and mission details' pictures (Matches' band) are found this way;
+/// nothing from the game ships with the launcher.
+pub fn named(game_dir: &Path, folder: &str, name: &str) -> anyhow::Result<Art> {
+    let mut file = File::open(game_dir.join(PACKAGE)).with_context(|| format!("no {PACKAGE}"))?;
+    let package = Package::read(&mut file)?;
+    let (_, tail) = package.unpack_tail(&mut file, NAMES_REGION)?;
+    let key = format!("{folder}{name}.dds\0");
+    let at = tail
+        .windows(key.len())
+        .position(|w| w == key.as_bytes())
+        .with_context(|| format!("{name} isn't in {PACKAGE}'s name table"))?;
+    let entry = tail.get(at + key.len()..at + key.len() + 8).context("the name table is cut short")?;
+    let offset = u64::from(u32::from_le_bytes(entry[..4].try_into().unwrap_or_default()));
+    let size = u32::from_le_bytes(entry[4..8].try_into().unwrap_or_default()) as usize;
+    if size < DDS_HEADER || size > MOST_NAMED || offset + size as u64 > package.total {
+        bail!("{name}'s entry in {PACKAGE}'s name table doesn't fit the package");
+    }
+    let dds = package.unpack_range(&mut file, offset, size)?;
+    let u32_at = |p: usize| u32::from_le_bytes(dds[p..p + 4].try_into().unwrap_or_default()) as usize;
+    let (height, width) = (u32_at(12), u32_at(16));
+    if &dds[..4] != b"DDS " || &dds[84..88] != b"DXT5" || width == 0 || height == 0 || width % 4 != 0 || height % 4 != 0 {
+        bail!("{name} isn't a DXT5 image");
+    }
+    let blocks = dds.get(DDS_HEADER..DDS_HEADER + width * height).context("the image is cut short")?;
+    Ok(Art {
+        width,
+        height,
+        rgba: decode_bc3(blocks, width, height),
+    })
+}
+
 /// Loading screen number `pick` (counted round the ones found), cropped to
 /// its art and halved to 1024 wide.
 pub fn load(game_dir: &Path, pick: usize) -> anyhow::Result<Art> {
@@ -105,6 +147,28 @@ impl Package {
             bail!("{PACKAGE}'s chunks add up to {unpacked} bytes, not {total}");
         }
         Ok(Self { chunk_size, total, chunks })
+    }
+
+    /// `len` bytes of the unpacked package from `offset`: only the chunks they're in unpacked.
+    fn unpack_range(&self, file: &mut File, offset: u64, len: usize) -> anyhow::Result<Vec<u8>> {
+        let first = self.chunks.iter().position(|c| c.3 + self.chunk_size > offset).context("past the package's end")?;
+        let start = self.chunks[first].3;
+        let mut out = Vec::new();
+        for &(at, packed, zlib, unpacked) in &self.chunks[first..] {
+            if unpacked >= offset + len as u64 {
+                break;
+            }
+            let mut raw = vec![0u8; usize::try_from(packed)?];
+            file.seek(SeekFrom::Start(at))?;
+            file.read_exact(&mut raw)?;
+            if zlib {
+                out.extend_from_slice(&inflate(&raw, usize::try_from(self.chunk_size)?)?);
+            } else {
+                out.extend_from_slice(&raw);
+            }
+        }
+        let from = usize::try_from(offset - start)?;
+        out.get(from..from + len).map(<[u8]>::to_vec).context("the image runs past the package's end")
     }
 
     /// The last `region` bytes or so of the unpacked package (from a chunk

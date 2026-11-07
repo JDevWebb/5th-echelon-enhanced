@@ -4,8 +4,12 @@
 //! player is from the caller. Unlike `/api/playing` (anyone, no names), only for signed-in
 //! players, and a match with someone the caller blocked, or who blocked them, is left out (only
 //! the caller's own blocks counted: nobody learns who blocked them, as JoinRoom's "gone").
-//! Distances are coarse and few: the caller's to a match's host in [`PING_STEP`]s, and to each
-//! player only for their friends, so the list can't be used to find where a stranger is.
+//! Distances are coarse: the caller's to a match's host and to each player, in [`PING_STEP`]s.
+//! They were given for friends only (2026-11-04: so the list couldn't be used to find where a
+//! stranger is); the user, 2026-11-07: a public match's pings are what a player picks it by. A
+//! 25 ms step says a region of the world at best, the numbers are the server's estimates (by
+//! relays and by address), not a probe of the player's PC, and the game's own scoreboard shows
+//! everyone's.
 //!
 //! The host's game says its match's state, settings and sides with each MatchState ([`said`]);
 //! [`list`] puts the rest together from the live rooms.
@@ -175,8 +179,8 @@ pub fn list(me: u32, sessions: &[LiveSession], relations: &HashMap<u32, Relation
                     party: party_of.get(id).copied().unwrap_or(0),
                     friend,
                     team: said.sides.get(&name.to_lowercase()).cloned().unwrap_or_default(),
-                    // A friend's only, coarse: no one else's distance from the caller.
-                    ping_ms: if friend && *id != me { coarse((live.ping)(*id).unwrap_or(0)) } else { 0 },
+                    // Everyone's but the caller's own, coarse.
+                    ping_ms: if *id != me { coarse((live.ping)(*id).unwrap_or(0)) } else { 0 },
                 }
             })
             .collect();
@@ -290,12 +294,12 @@ mod tests {
         assert_eq!(
             who,
             vec![
-                ("Liara", true, 0, false, 0),
+                ("Liara", true, 0, false, 50),
                 ("Jgz24", false, 1, false, 0),
-                ("mpw", false, 1, false, 0),
+                ("mpw", false, 1, false, 50),
                 ("Tank", false, 0, true, 50)
             ],
-            "a friend's ping only, in 25 ms steps"
+            "every player's ping (bar their own), in 25 ms steps"
         );
         assert_eq!((first.seats, first.open_secs, first.ping_ms, first.under_way), (8, 240, 50, false), "the host's, in steps");
         assert_eq!((first.waiting, first.queue_place), (2, 1), "who waits for it, and the caller's place");

@@ -404,12 +404,20 @@ export component MatchesScreen inherits Rectangle {
                 background: Theme.surface;
                 Rectangle { x: 0; width: 1px; background: Theme.line; }
                 VerticalLayout {
-                    // Its band: the mode and the map, over stripes (the map's art in a later
-                    // release: docs/0.5.1-plan.md).
+                    // Its band: the mode and the map, over the game's own picture of it (the map's
+                    // screenshot, else the mode's art, from the player's game), or the mode's
+                    // colour where there's none.
                     Rectangle {
                         height: short ? 64px : narrow ? 88px : 112px;
                         clip: true;
                         background: selected.kind == "coop" ? (Theme.dark ? #12192a : #dde4f2) : (Theme.dark ? #142019 : #dfeadb);
+                        if selected.art.width > 0: Image {
+                            width: parent.width;
+                            height: parent.height;
+                            source: selected.art;
+                            image-fit: cover;
+                            accessible-role: none;
+                        }
                         Rectangle { background: @linear-gradient(180deg, Theme.surface.transparentize(100%) 20%, Theme.surface 100%); }
                         VerticalLayout {
                             padding-left: 22px;

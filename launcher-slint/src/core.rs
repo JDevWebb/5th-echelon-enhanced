@@ -1271,6 +1271,15 @@ pub fn key_art(core: &Core) -> Option<(Vec<u8>, u32, u32)> {
     Some((art.rgba, art.width as u32, art.height as u32))
 }
 
+/// One of the menus' pictures for a match (Matches' band), by name, from the player's game.
+pub fn map_art(core: &Core, name: &str) -> Option<(Vec<u8>, u32, u32)> {
+    let dir = core.lock().game.as_ref()?.dir.clone();
+    let art = setup::key_art::named(&dir, setup::key_art::MAP_ART_FOLDER, name)
+        .map_err(|e| tracing::info!("No match art {name} from the game: {e}"))
+        .ok()?;
+    Some((art.rgba, art.width as u32, art.height as u32))
+}
+
 /// The Spies vs Mercs modes a match can be found or hosted in: (playlist, name).
 pub fn svm_modes() -> Vec<(u32, &'static str)> {
     launcher::matches::svm_modes()

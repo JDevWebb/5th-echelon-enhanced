@@ -391,10 +391,15 @@ export component PlayScreen inherits Rectangle {
                                 padding-left: button.tone == "ok" ? 48px : 28px;
                                 padding-right: self.padding-left;
                                 alignment: center;
-                                spacing: 4px;
+                                // The two lines together in the middle: the label's font (Plex
+                                // Condensed at 24 px) brings a tall line height, which set them
+                                // apart, top and bottom.
+                                spacing: 1px;
                                 HorizontalLayout {
                                     alignment: center;
                                     spacing: 10px;
+                                    vertical-stretch: 0;
+                                    height: button.sub != "" ? 26px : 32px;
                                     if button.busy: Spinner { size: 16px; y: (parent.height - self.height) / 2; }
                                     Text {
                                         text: button.label.to-uppercase();
@@ -402,11 +407,14 @@ export component PlayScreen inherits Rectangle {
                                         font-weight: 700;
                                         font-size: button.tone == "ok" || button.tone == "warn" ? 24px : 20px;
                                         letter-spacing: button.tone == "ok" ? 3.2px : 1.6px;
+                                        vertical-alignment: center;
                                         color: root.play-text;
                                     }
                                 }
                                 if button.sub != "": Text {
                                     text: button.sub;
+                                    height: 15px;
+                                    vertical-alignment: center;
                                     horizontal-alignment: center;
                                     overflow: elide;
                                     font-size: 11.5px;
