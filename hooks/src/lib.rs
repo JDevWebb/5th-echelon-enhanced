@@ -435,14 +435,15 @@ fn init(hmodule: Option<HMODULE>) {
         // The characters, sampled for witness reports (F9) and match recordings (replays),
         // each on for every player unless turned off.
         let mut watchers: Vec<Box<dyn pawns::Watcher>> = Vec::new();
-        if config.witness_reports {
+        // On the community network these are always on (Config's `*_on`).
+        if config.witness_reports_on() {
             watchers.push(Box::new(witness::Witness::new(config.user.username.clone())));
         }
-        if config.replay_recording && config.net_capture {
+        if config.replay_recording_on() && config.net_capture_on() {
             net_capture::enable();
         }
-        if config.replay_recording {
-            watchers.push(Box::new(recording::Recorder::new(&game_dir, config.user.username.clone(), config.replay_upload)));
+        if config.replay_recording_on() {
+            watchers.push(Box::new(recording::Recorder::new(&game_dir, config.user.username.clone(), config.replay_upload_on())));
         }
         // Who's on which side, for the match state the host's game sends (the launcher's
         // Matches tab).

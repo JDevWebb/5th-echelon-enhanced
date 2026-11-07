@@ -392,24 +392,24 @@ pub struct Config {
     pub without_ubisoft_connect: bool,
     /// Witness reports (the 0.5.0 plan's F9): the add-on watches the other players' characters
     /// move and tells the server of speeds past what the game allows. On for every player
-    /// (all are its testers, the user decided 2026-10-31); `WitnessReports = false` turns it off.
+    /// (all are its testers, the user decided 2026-10-31); `WitnessReports = false` turns it off, but not on the community network ([`Config::witness_reports_on`]).
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub witness_reports: bool,
     /// Match recordings (the 0.5.0 plan's replay research): the add-on records where every
     /// character is, faces and shoots in each match to the game folder's `replays` (the newest
     /// 20 kept; sent to the player's server too, `replay_upload`). On for every player, as witness reports;
-    /// `ReplayRecording = false` turns it off.
+    /// `ReplayRecording = false` turns it off (not on the community network).
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub replay_recording: bool,
     /// Each finished recording (a minute or longer, two characters or more) goes to the
     /// player's server, which keeps it a week for its admins (the replay viewer). On with
-    /// recordings; `ReplayUpload = false` keeps them on this PC.
+    /// recordings; `ReplayUpload = false` keeps them on this PC (not on the community network).
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub replay_upload: bool,
     /// Match traffic captures (the replay research, way 3): while a match is recorded, the
     /// game's Storm packets (sent and received, the relay's wrapping off) go to a `.fen` beside
     /// the recording, on this PC only (the newest 10). On for every player with recordings;
-    /// `NetCapture = false` turns it off.
+    /// `NetCapture = false` turns it off (not on the community network).
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub net_capture: bool,
     /// Removes the engine's negative mouse acceleration (widens the per-frame look-delta clamp,
@@ -596,6 +596,38 @@ impl std::fmt::Debug for User {
             .field("cd_keys", &self.cd_keys.len())
             .field("account_id", &self.account_id)
             .finish()
+    }
+}
+
+/// The community network's servers (its matchmaking server, relays and the rehearsal's) are this
+/// name or under it.
+pub const COMMUNITY_DOMAIN: &str = "scbl.jdevwebb.net";
+
+impl Config {
+    /// Whether the game plays on the community network: its API server is [`COMMUNITY_DOMAIN`]
+    /// or a name under it.
+    pub fn on_community_network(&self) -> bool {
+        self.api_server
+            .host_str()
+            .map(|h| h.trim_end_matches('.').to_ascii_lowercase())
+            .is_some_and(|h| h == COMMUNITY_DOMAIN || h.ends_with(&format!(".{COMMUNITY_DOMAIN}")))
+    }
+
+    /// Fair play's watching and recording, on: always on the community network, where they're
+    /// part of playing (the user, 2026-11-07: its `WitnessReports`, `ReplayRecording`,
+    /// `ReplayUpload` and `NetCapture = false` are ignored there); elsewhere as set (a server of
+    /// the player's own).
+    pub fn witness_reports_on(&self) -> bool {
+        self.witness_reports || self.on_community_network()
+    }
+    pub fn replay_recording_on(&self) -> bool {
+        self.replay_recording || self.on_community_network()
+    }
+    pub fn replay_upload_on(&self) -> bool {
+        self.replay_upload || self.on_community_network()
+    }
+    pub fn net_capture_on(&self) -> bool {
+        self.net_capture || self.on_community_network()
     }
 }
 
@@ -1413,6 +1445,25 @@ mod tests {
         assert!(!back.without_ubisoft_connect, "turned off stays off");
         let older: Config = toml::from_str(&text.replace("WithoutUbisoftConnect = false", "WithoutUbisoftConnect = true")).unwrap();
         assert!(older.without_ubisoft_connect, "an older launcher's 'on' still reads");
+    }
+
+    #[test]
+    fn fair_play_cant_be_turned_off_on_the_community_network() {
+        let mut cfg = super::default();
+        cfg.witness_reports = false;
+        cfg.replay_recording = false;
+        cfg.replay_upload = false;
+        cfg.net_capture = false;
+        cfg.api_server = "https://rh-match.scbl.jdevwebb.net/".parse().unwrap();
+        assert!(cfg.on_community_network());
+        assert!(cfg.witness_reports_on() && cfg.replay_recording_on() && cfg.replay_upload_on() && cfg.net_capture_on());
+        cfg.api_server = "https://scbl.jdevwebb.net".parse().unwrap();
+        assert!(cfg.on_community_network());
+        cfg.api_server = "https://play.mygroup.org/".parse().unwrap();
+        assert!(!cfg.on_community_network(), "a server of the player's own");
+        assert!(!cfg.witness_reports_on() && !cfg.replay_recording_on() && !cfg.replay_upload_on() && !cfg.net_capture_on());
+        cfg.api_server = "https://notscbl.jdevwebb.net.evil.example/".parse().unwrap();
+        assert!(!cfg.on_community_network(), "only the name or under it");
     }
 
     #[test]
