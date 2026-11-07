@@ -738,6 +738,16 @@ impl Friends for MyFriends {
             crate::match_queue::leave(room, me);
             return reply(QueueStatus::NotFound, 0, 0, GONE);
         }
+        // A new place only where the match can't take them now: under way, full, or its free
+        // seats promised to the players already waiting. A line for a match anyone can join
+        // would let a player hold its seats back from everyone else.
+        let (waiting, place) = crate::match_queue::of(room, me, now);
+        if place == 0 {
+            let free = self.free_seats(room).await?;
+            if !crate::match_started::started(room) && free > waiting {
+                return reply(QueueStatus::NotFound, 0, waiting, "That match can be joined now.");
+            }
+        }
         match crate::match_queue::wait(room, me, now) {
             Ok((place, waiting)) => reply(QueueStatus::Ok, place, waiting, ""),
             Err(crate::match_queue::Refused::Full) => {

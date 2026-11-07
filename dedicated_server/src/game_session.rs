@@ -1676,7 +1676,21 @@ impl<CI> GameSessionProtocolServerTrait<CI> for GameSessionProtocolServerImpl {
                 house = with_local.into_iter().filter(|u| !urls.contains(u)).collect();
             }
         }
-        // A relayed player's LAN address, left out for everyone else: kept for a housemate.
+        // A relayed player's LAN address, left out for everyone else: kept for a housemate. Only
+        // private addresses, as the filter below lets through: a "LAN" URL naming a public
+        // address (someone else's) is never passed on to anyone sharing this player's IP.
+        let house = only_reachable_addresses(house, ci.address().ip(), &crate::relays::ranges())
+            .into_iter()
+            .filter(|u| {
+                station_url_parts(u).is_some_and(|(_, params)| {
+                    params
+                        .iter()
+                        .find(|(k, _)| *k == "address")
+                        .and_then(|(_, a)| a.parse::<std::net::Ipv4Addr>().ok())
+                        .is_some_and(nat_proto::is_private)
+                })
+            })
+            .collect();
         note_house_urls(user_id, ci.address().ip(), house);
         let urls = only_reachable_addresses(urls, ci.address().ip(), &crate::relays::ranges());
         if urls != sent {
