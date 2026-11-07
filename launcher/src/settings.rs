@@ -595,16 +595,17 @@ pub fn renderer_note(game_dir: &std::path::Path, chosen: setup::game::GameVersio
 /// offered, Some(false) where it will be once a start through Ubisoft Connect worked on this copy
 /// (so it's for the copy the player owns), None where it means nothing (Wine and Proton start
 /// without it already).
-pub fn ubisoft_connect_offer(game_dir: &std::path::Path, on: bool) -> Option<bool> {
-    if !cfg!(target_os = "windows") || hooks_config::running_under_wine() {
-        return None;
-    }
-    Some(on || hooks_config::last_run::ubisoft_connect_worked(game_dir))
+/// Whether Settings › Game shows "Start without Ubisoft Connect": on Windows (not under Wine,
+/// where the game always starts without it). On by default from 0.5.0, so it's offered
+/// whether or not a start through Ubisoft Connect worked (it was offered only then).
+pub fn ubisoft_connect_offer(_game_dir: &std::path::Path, _on: bool) -> Option<bool> {
+    (cfg!(target_os = "windows") && !hooks_config::running_under_wine()).then_some(true)
 }
 
 pub const WITHOUT_UBISOFT_CONNECT: &str = "Start without Ubisoft Connect";
-pub const WITHOUT_UBISOFT_CONNECT_ON: &str = "The game starts without opening Ubisoft Connect. Ubisoft's own overlay isn't there; everything 5th Echelon does works as before.";
-pub const WITHOUT_UBISOFT_CONNECT_LATER: &str = "Starting without Ubisoft Connect is offered here once the game has started through it and signed in on this PC.";
+pub const WITHOUT_UBISOFT_CONNECT_ON: &str = "On by default: the game starts without opening Ubisoft Connect. Ubisoft's own overlay isn't there; everything 5th Echelon does works the same. Turn it off to start through Ubisoft Connect.";
+/// Said if it's asked for where there's no choice: under Wine the game always starts without it.
+pub const WITHOUT_UBISOFT_CONNECT_LATER: &str = "On Linux and the Steam Deck the game always starts without Ubisoft Connect.";
 
 #[cfg(test)]
 mod renderer_note_tests {

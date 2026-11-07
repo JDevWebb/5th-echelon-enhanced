@@ -385,9 +385,10 @@ pub struct Config {
     #[serde(default)]
     pub auto_join_invite: bool,
     /// Start without Ubisoft Connect: the add-on answers the game's startup itself instead of
-    /// Ubisoft's DLL, which starts Ubisoft Connect (as under Wine). The launcher offers it once
-    /// a start through Ubisoft Connect worked on this copy (`last_run::ubisoft_connect_worked`).
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    /// Ubisoft's DLL, which starts Ubisoft Connect (as under Wine, always). On by default from
+    /// 0.5.0 on Windows too (the user, 2026-11-07: the same as Linux); Settings › Game turns it
+    /// off, for Ubisoft's own overlay. Only `false` is written, so a copy that never chose is on.
+    #[serde(default = "default_without_ubisoft_connect", skip_serializing_if = "is_true")]
     pub without_ubisoft_connect: bool,
     /// Witness reports (the 0.5.0 plan's F9): the add-on watches the other players' characters
     /// move and tells the server of speeds past what the game allows. On for every player
@@ -504,6 +505,10 @@ pub struct Config {
     /// `[Managed]`); never read from or written to `uplay.toml`.
     #[serde(skip)]
     pub managed: Option<Managed>,
+}
+
+const fn default_without_ubisoft_connect() -> bool {
+    true
 }
 
 const fn default_share_session_data() -> bool {
@@ -1394,6 +1399,20 @@ mod tests {
         cfg.overlay_key = "F8".into();
         let back: Config = toml::from_str(&toml::to_string(&cfg).unwrap()).unwrap();
         assert_eq!(back.overlay_key, "F8");
+    }
+
+    #[test]
+    fn the_game_starts_without_ubisoft_connect_unless_turned_off() {
+        let mut cfg = super::default();
+        assert!(cfg.without_ubisoft_connect, "on by default (as under Wine)");
+        assert!(!toml::to_string(&cfg).unwrap().contains("WithoutUbisoftConnect"), "the default isn't written");
+        cfg.without_ubisoft_connect = false;
+        let text = toml::to_string(&cfg).unwrap();
+        assert!(text.contains("WithoutUbisoftConnect = false"), "{text}");
+        let back: Config = toml::from_str(&text).unwrap();
+        assert!(!back.without_ubisoft_connect, "turned off stays off");
+        let older: Config = toml::from_str(&text.replace("WithoutUbisoftConnect = false", "WithoutUbisoftConnect = true")).unwrap();
+        assert!(older.without_ubisoft_connect, "an older launcher's 'on' still reads");
     }
 
     #[test]

@@ -381,7 +381,7 @@ impl SettingsPage {
         if let Some(on) = g.get("without_ubisoft_connect").and_then(Value::as_bool) {
             r.add(
                 switch("without_ubisoft_connect", "Start without Ubisoft Connect", on)
-                    .sub("The game starts without opening Ubisoft Connect. Ubisoft's own overlay isn't there; everything 5th Echelon does works as before."),
+                    .sub("On by default: the game starts without opening Ubisoft Connect. Ubisoft's own overlay isn't there; everything 5th Echelon does works the same. Turn it off to start through Ubisoft Connect."),
             );
         } else if bo(g, "ubisoft_connect_later") {
             r.add(note(

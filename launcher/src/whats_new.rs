@@ -82,7 +82,7 @@ pub const RELEASES: &[Release] = &[
             },
             Item {
                 title: "Without Ubisoft Connect",
-                text: "Settings › Game: once the game has started through Ubisoft Connect on this PC, it can start without it, saves and achievements as before (Ubisoft's own overlay is what you lose).",
+                text: "The game now starts without opening Ubisoft Connect on Windows, as it does on Linux; saves and achievements work as before. Ubisoft's own overlay is what you lose: Settings › Game › Start without Ubisoft Connect turns it back on.",
                 community: false,
             },
             Item {
