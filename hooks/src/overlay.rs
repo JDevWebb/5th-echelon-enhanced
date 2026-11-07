@@ -76,6 +76,8 @@ const BODY_PX: f32 = 17.0;
 const HEADING_PX: f32 = 23.0;
 const BRAND_PX: f32 = 21.0;
 const CAPS_PX: f32 = 14.0;
+/// A card's title (the launcher's card titles: Plex Sans Condensed Bold, 18 px).
+const TITLE_PX: f32 = 19.0;
 
 /// The overlay's colours: the launcher's tokens (launcher-slint/ui/theme.slint), dark and light,
 /// as the launcher looked when it started the game (`OverlayTheme` in uplay.toml). The panel is
@@ -85,9 +87,11 @@ struct Look {
     surface: [f32; 4],
     surface_hover: [f32; 4],
     line: [f32; 4],
-    row: [f32; 4],
     /// The current tab's ground (the launcher's `selected`).
     selected: [f32; 4],
+    /// A card's ground and edge (the launcher's `surface` and `line`): a pane's groups.
+    card: [f32; 4],
+    card_line: [f32; 4],
     fg: [f32; 4],
     muted: [f32; 4],
     /// HUD labels (Plex Mono caps): quieter than `muted`.
@@ -117,8 +121,9 @@ const DARK: Look = Look {
     surface: rgba(0x151e1f, 1.0),
     surface_hover: rgba(0x1c2827, 1.0),
     line: rgba(0x263434, 1.0),
-    row: [1.0, 1.0, 1.0, 0.03],
     selected: rgba(0x101c16, 1.0),
+    card: rgba(0x0f1617, 1.0),
+    card_line: rgba(0x1d2829, 1.0),
     fg: rgba(0xe3ece6, 1.0),
     muted: rgba(0xa9bab3, 1.0),
     label: rgba(0x84968f, 1.0),
@@ -143,8 +148,9 @@ const LIGHT: Look = Look {
     surface: rgba(0xe3e9e2, 1.0),
     surface_hover: rgba(0xd6dfd5, 1.0),
     line: rgba(0xc9d3c8, 1.0),
-    row: [0.0, 0.0, 0.0, 0.035],
     selected: rgba(0xe2efd6, 1.0),
+    card: rgba(0xffffff, 1.0),
+    card_line: rgba(0xd9e0d8, 1.0),
     fg: rgba(0x101713, 1.0),
     muted: rgba(0x3a4842, 1.0),
     label: rgba(0x56655e, 1.0),
@@ -231,6 +237,66 @@ fn draw_spaced(ui: &Ui, dl: &imgui::DrawListMut<'_>, at: [f32; 2], color: [f32; 
     }
 }
 
+/// A tab's icon, stroked as the launcher's (launcher-slint/ui/chrome.slint `Icons`: 24 by 24,
+/// 1.8 wide, round ends), `size` square at `at`. Friends, Chat and Match are the launcher's own;
+/// Find players a magnifier, Invites an envelope, Server the launcher's servers.
+fn draw_icon(dl: &imgui::DrawListMut<'_>, at: [f32; 2], size: f32, tab: Tab, color: [f32; 4]) {
+    let k = size / 24.0;
+    let p = |x: f32, y: f32| [at[0] + x * k, at[1] + y * k];
+    let w = (1.8 * k).max(1.0);
+    let line = |pts: &[(f32, f32)]| {
+        let pts: Vec<[f32; 2]> = pts.iter().map(|&(x, y)| p(x, y)).collect();
+        dl.add_polyline(pts, color).thickness(w).build();
+    };
+    let circle = |x: f32, y: f32, r: f32| {
+        dl.add_circle(p(x, y), r * k, color).thickness(w).num_segments(24).build();
+    };
+    let curve = |a: (f32, f32), b: (f32, f32), c: (f32, f32), d: (f32, f32)| {
+        dl.add_bezier_curve(p(a.0, a.1), p(b.0, b.1), p(c.0, c.1), p(d.0, d.1), color).thickness(w).build();
+    };
+    let boxed = |x0: f32, y0: f32, x1: f32, y1: f32| {
+        dl.add_rect(p(x0, y0), p(x1, y1), color).rounding(2.0 * k).thickness(w).build();
+    };
+    match tab {
+        Tab::Friends => {
+            circle(9.0, 8.0, 3.2);
+            curve((3.0, 19.0), (3.6, 15.8), (6.0, 14.0), (9.0, 14.0));
+            curve((9.0, 14.0), (12.0, 14.0), (14.4, 15.8), (15.0, 19.0));
+            circle(17.0, 9.0, 2.4);
+            curve((16.5, 13.6), (18.9, 13.8), (20.5, 15.4), (21.0, 18.0));
+        }
+        Tab::Chat => line(&[(4.0, 5.0), (20.0, 5.0), (20.0, 16.0), (9.0, 16.0), (4.0, 20.0), (4.0, 5.0)]),
+        Tab::Players => {
+            circle(10.5, 10.5, 6.0);
+            line(&[(15.0, 15.0), (20.0, 20.0)]);
+        }
+        Tab::Invites => {
+            boxed(3.0, 6.0, 21.0, 18.0);
+            line(&[(3.5, 7.0), (12.0, 13.0), (20.5, 7.0)]);
+        }
+        Tab::Match => {
+            boxed(3.0, 4.0, 21.0, 20.0);
+            line(&[(3.0, 9.0), (21.0, 9.0)]);
+            line(&[(8.0, 13.0), (16.0, 13.0)]);
+            line(&[(8.0, 16.0), (13.0, 16.0)]);
+        }
+        Tab::Server => {
+            boxed(4.0, 4.0, 20.0, 10.0);
+            boxed(4.0, 14.0, 20.0, 20.0);
+            line(&[(7.5, 7.0), (7.6, 7.0)]);
+            line(&[(7.5, 17.0), (7.6, 17.0)]);
+        }
+    }
+}
+
+/// How far a card's right edge sits in from the content region's (its padding), while one is
+/// drawn: rows and fields inside it take it off their width. The render thread's only.
+static CARD_INSET: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn card_inset() -> f32 {
+    f32::from_bits(CARD_INSET.load(Ordering::Relaxed))
+}
+
 fn theme_colors(style: &mut imgui::Style) {
     let c = &mut style.colors;
     c[StyleColor::Text as usize] = pal().fg;
@@ -273,7 +339,7 @@ fn theme_colors(style: &mut imgui::Style) {
 fn theme_sizes(style: &mut imgui::Style, s: f32) {
     style.window_rounding = 10.0 * s;
     style.child_rounding = 8.0 * s;
-    style.frame_rounding = 7.0 * s;
+    style.frame_rounding = 4.0 * s;
     style.popup_rounding = 8.0 * s;
     style.grab_rounding = 7.0 * s;
     style.scrollbar_rounding = 7.0 * s;
@@ -295,6 +361,8 @@ struct Fonts {
     brand: FontId,
     /// HUD labels: Plex Mono, in caps (sections, the release, "ENHANCED").
     caps: FontId,
+    /// A card's title: Plex Sans Condensed Bold, smaller than `heading`.
+    title: FontId,
 }
 
 // SAFETY: a FontId is a pointer into the font atlas, which the imgui context
@@ -337,7 +405,8 @@ fn add_fonts(ctx: &mut imgui::Context, scale: f32) -> Fonts {
     let heading = add(include_bytes!("../fonts/IBMPlexSansCondensed-Bold.ttf"), HEADING_PX, "IBM Plex Sans Condensed Bold");
     let brand = add(include_bytes!("../fonts/IBMPlexSansCondensed-Bold.ttf"), BRAND_PX, "IBM Plex Sans Condensed Bold (brand)");
     let caps = add(include_bytes!("../fonts/IBMPlexMono-Regular.ttf"), CAPS_PX, "IBM Plex Mono");
-    Fonts { strong, heading, brand, caps }
+    let title = add(include_bytes!("../fonts/IBMPlexSansCondensed-Bold.ttf"), TITLE_PX, "IBM Plex Sans Condensed Bold (title)");
+    Fonts { strong, heading, brand, caps, title }
 }
 
 #[allow(dead_code)]
@@ -738,11 +807,6 @@ impl MyRenderLoop {
 
     fn heading_colored(&self, ui: &Ui, color: [f32; 4], text: &str) {
         self.with_font(ui, |f| f.heading, || ui.text_colored(color, text));
-    }
-
-    /// A HUD label: Plex Mono caps, spaced (the launcher's `Caps`).
-    fn caps(&self, ui: &Ui, color: [f32; 4], text: &str) {
-        self.with_font(ui, |f| f.caps, || ui.text_colored(color, text.to_uppercase()));
     }
 
     /// A key cap, e.g. F5, inline with the text.
@@ -1186,6 +1250,16 @@ impl MyRenderLoop {
                     .build();
             }
             let label = tab.label();
+            let color = if selected {
+                pal().accent
+            } else if hovered {
+                pal().fg
+            } else {
+                pal().muted
+            };
+            // The tab's icon, then its name (the launcher's side menu has both).
+            let icon = self.s(20.0);
+            draw_icon(&dl, [p[0] + self.s(14.0), p[1] + (item_h - icon) / 2.0], icon, tab, color);
             // Through the same `dl`: imgui-rs allows one window draw list at a
             // time, and a second get_window_draw_list() here panics.
             self.with_font(
@@ -1193,17 +1267,7 @@ impl MyRenderLoop {
                 |f| f.strong,
                 || {
                     let th = ui.calc_text_size(label)[1];
-                    dl.add_text(
-                        [p[0] + self.s(16.0), p[1] + (item_h - th) / 2.0],
-                        if selected {
-                            pal().accent
-                        } else if hovered {
-                            pal().fg
-                        } else {
-                            pal().muted
-                        },
-                        label,
-                    );
+                    dl.add_text([p[0] + self.s(14.0) + icon + self.s(12.0), p[1] + (item_h - th) / 2.0], color, label);
                 },
             );
             let badge = match tab {
@@ -1251,17 +1315,114 @@ impl MyRenderLoop {
         ui.dummy([0.0, self.s(4.0)]);
     }
 
-    /// A striped row with a title and a muted detail line on the left, and
-    /// `action` (buttons `action_w` wide) on the right.
-    #[allow(clippy::too_many_arguments)]
-    fn row(&self, ui: &Ui, i: usize, dot: Option<[f32; 4]>, title: &str, detail: &str, action_w: f32, action: impl FnOnce()) {
-        self.row_colored(ui, i, dot, title, detail, pal().muted, action_w, action);
+    /// The width left for a row or a field: the content region's, less a card's padding.
+    fn avail_w(&self, ui: &Ui) -> f32 {
+        ui.content_region_avail()[0] - card_inset()
+    }
+
+    /// A card (the launcher's: its `surface` ground, a 1 px edge, the title in Plex Sans
+    /// Condensed): `title` (none if empty), then `body`, padded. Drawn behind the body once
+    /// its height is known (the draw list split in two: the body on top, the card under it).
+    fn card(&self, ui: &Ui, title: &str, body: impl FnOnce()) {
+        let width = self.avail_w(ui);
+        let local = ui.cursor_pos();
+        let start = ui.cursor_screen_pos();
+        let pad = self.s(18.0);
+        // SAFETY: the current window's draw list, split and merged here, on the render thread;
+        // nothing in a body splits it again (child windows and popups have their own).
+        let dl = unsafe { imgui::sys::igGetWindowDrawList() };
+        unsafe {
+            imgui::sys::ImDrawList_ChannelsSplit(dl, 2);
+            imgui::sys::ImDrawList_ChannelsSetCurrent(dl, 1);
+        }
+        let outer = card_inset();
+        CARD_INSET.store((outer + pad).to_bits(), Ordering::Relaxed);
+        ui.set_cursor_pos([local[0] + pad, local[1] + self.s(14.0)]);
+        ui.group(|| {
+            let _w = ui.push_text_wrap_pos_with_pos(local[0] + width - pad);
+            if !title.is_empty() {
+                self.with_font(ui, |f| f.title, || ui.text(title));
+                ui.dummy([0.0, 0.0]);
+            }
+            body();
+        });
+        CARD_INSET.store(outer.to_bits(), Ordering::Relaxed);
+        let bottom = ui.item_rect_max()[1] + self.s(14.0);
+        unsafe { imgui::sys::ImDrawList_ChannelsSetCurrent(dl, 0) };
+        {
+            let dl = ui.get_window_draw_list();
+            let end = [start[0] + width, bottom];
+            dl.add_rect(start, end, pal().card).filled(true).rounding(self.s(8.0)).build();
+            dl.add_rect(start, end, pal().card_line).rounding(self.s(8.0)).thickness(1.0).build();
+        }
+        unsafe { imgui::sys::ImDrawList_ChannelsMerge(dl) };
+        ui.set_cursor_screen_pos([start[0], bottom + self.s(2.0)]);
+        ui.dummy([0.0, 0.0]);
+    }
+
+    /// Muted text that wraps (a card's note, an empty list).
+    fn note(&self, ui: &Ui, text: &str) {
+        let _c = ui.push_style_color(StyleColor::Text, pal().muted);
+        ui.text_wrapped(text);
+    }
+
+    /// An empty tab (the launcher's empty pages): the mark, a title and what to do, centred.
+    fn empty(&self, ui: &Ui, title: &str, text: &str) {
+        let width = self.avail_w(ui);
+        let x = ui.cursor_pos()[0];
+        ui.dummy([0.0, self.s(40.0)]);
+        let mark = self.s(56.0);
+        let at = ui.cursor_screen_pos();
+        {
+            let dl = ui.get_window_draw_list();
+            draw_mark(&dl, [at[0] + (width - mark) / 2.0, at[1]], mark, false);
+        }
+        ui.dummy([0.0, mark + self.s(6.0)]);
+        let title = title.to_uppercase();
+        let tw = self.with_font(ui, |f| f.heading, || ui.calc_text_size(&title))[0];
+        ui.set_cursor_pos([x + ((width - tw) / 2.0).max(0.0), ui.cursor_pos()[1]]);
+        self.heading(ui, &title);
+        // Centred line by line: imgui has no centred wrapping.
+        let most = width.min(self.s(520.0));
+        let mut line = String::new();
+        let mut lines = Vec::new();
+        for word in text.split_whitespace() {
+            let next = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+            if !line.is_empty() && ui.calc_text_size(&next)[0] > most {
+                lines.push(std::mem::replace(&mut line, word.to_string()));
+            } else {
+                line = next;
+            }
+        }
+        if !line.is_empty() {
+            lines.push(line);
+        }
+        for l in lines {
+            let lw = ui.calc_text_size(&l)[0];
+            ui.set_cursor_pos([x + ((width - lw) / 2.0).max(0.0), ui.cursor_pos()[1]]);
+            ui.text_colored(pal().muted, l);
+        }
+    }
+
+    /// A fact in a card: its name, muted, and its value beside it.
+    fn fact(&self, ui: &Ui, label: &str, value: &str) {
+        let x = ui.cursor_pos()[0];
+        ui.text_colored(pal().muted, label);
+        ui.same_line_with_pos(x + self.s(190.0));
+        ui.text_wrapped(value);
+    }
+
+    /// A row in a list (the launcher's list items): a title and a muted detail line, a dot
+    /// before them if given, and `action` (buttons `action_w` wide) on the right; the ground
+    /// lights under the mouse.
+    fn row(&self, ui: &Ui, dot: Option<[f32; 4]>, title: &str, detail: &str, action_w: f32, action: impl FnOnce()) {
+        self.row_colored(ui, dot, title, detail, pal().muted, action_w, action);
     }
 
     /// [`Self::row`] with the detail line in `detail_color` (a warning).
     #[allow(clippy::too_many_arguments)]
-    fn row_colored(&self, ui: &Ui, i: usize, dot: Option<[f32; 4]>, title: &str, detail: &str, detail_color: [f32; 4], action_w: f32, action: impl FnOnce()) {
-        let avail = ui.content_region_avail()[0];
+    fn row_colored(&self, ui: &Ui, dot: Option<[f32; 4]>, title: &str, detail: &str, detail_color: [f32; 4], action_w: f32, action: impl FnOnce()) {
+        let avail = self.avail_w(ui);
         let start = ui.cursor_screen_pos();
         let local = ui.cursor_pos();
         let pad = self.s(12.0);
@@ -1271,8 +1432,9 @@ impl MyRenderLoop {
         // be held at a time.
         let text_x = {
             let dl = ui.get_window_draw_list();
-            if i % 2 == 0 {
-                dl.add_rect(start, [start[0] + avail, start[1] + h], pal().row).filled(true).rounding(self.s(7.0)).build();
+            let end = [start[0] + avail, start[1] + h];
+            if ui.is_window_hovered() && ui.is_mouse_hovering_rect(start, end) {
+                dl.add_rect(start, end, pal().surface).filled(true).rounding(self.s(6.0)).build();
             }
             if let Some(color) = dot {
                 let r = self.s(4.5);
@@ -1291,11 +1453,17 @@ impl MyRenderLoop {
             ui.set_cursor_pos([local[0] + avail - pad - action_w, local[1] + (h - button_h) / 2.0]);
             action();
         }
-        ui.set_cursor_pos([local[0], local[1] + h + self.s(2.0)]);
+        ui.set_cursor_pos([local[0], local[1] + h]);
         ui.dummy([0.0, 0.0]);
     }
 
+    /// A button as the launcher's `Btn`: plain on a control with a 1 px edge, or primary in the
+    /// accent.
     fn button(&self, ui: &Ui, label: &str, primary: bool) -> bool {
+        let _edge = (
+            ui.push_style_var(StyleVar::FrameBorderSize(1.0)),
+            ui.push_style_color(StyleColor::Border, if primary { pal().accent } else { pal().line }),
+        );
         let _colors = primary.then(|| {
             (
                 ui.push_style_color(StyleColor::Button, pal().accent),
@@ -1313,7 +1481,7 @@ impl MyRenderLoop {
     }
 
     /// Buttons on a player's row, right-aligned; runs what was clicked.
-    fn player_row(&self, ui: &Ui, i: usize, section: &str, p: &community::Player, detail: &str, actions: &[RowAction]) {
+    fn player_row(&self, ui: &Ui, section: &str, p: &community::Player, detail: &str, actions: &[RowAction]) {
         use community::FriendChange as C;
         // Block and Remove go in the row's ⋯ menu, which asks first; the rest are buttons.
         let more: Vec<RowAction> = actions.iter().copied().filter(|a| matches!(a, RowAction::Change(C::Block | C::Remove, _))).collect();
@@ -1347,7 +1515,7 @@ impl MyRenderLoop {
             (None, community::NameStatus::Conflict) => (format!("{detail}  ·  another player has this name on other servers"), pal().bad),
             _ => (detail.to_string(), pal().muted),
         };
-        self.row_colored(ui, i, Some(dot), &p.name, &detail, color, w, || {
+        self.row_colored(ui, Some(dot), &p.name, &detail, color, w, || {
             for (n, (label, action)) in labels.iter().enumerate() {
                 if n > 0 {
                     ui.same_line_with_spacing(0.0, gap);
@@ -1438,10 +1606,57 @@ impl MyRenderLoop {
         }
     }
 
-    fn section(&self, ui: &Ui, title: &str) {
-        ui.dummy([0.0, self.s(6.0)]);
-        self.caps(ui, pal().label, title);
-        ui.dummy([0.0, self.s(2.0)]);
+    /// A child window drawn as a card (its ground, edge and padding), while the tokens live.
+    fn boxed<'a>(&self, ui: &'a Ui) -> impl Sized + use<'a> {
+        (
+            ui.push_style_color(StyleColor::ChildBg, pal().card),
+            ui.push_style_color(StyleColor::Border, pal().card_line),
+            ui.push_style_var(StyleVar::ChildBorderSize(1.0)),
+            ui.push_style_var(StyleVar::ChildRounding(self.s(8.0))),
+            ui.push_style_var(StyleVar::WindowPadding([self.s(14.0), self.s(12.0)])),
+        )
+    }
+
+    /// The launcher's segmented choice: `labels` side by side in one box, `current` lit. The
+    /// one clicked, if one was.
+    fn segments(&self, ui: &Ui, id: &str, labels: &[&str], current: usize) -> Option<usize> {
+        let pad_x = self.s(16.0);
+        let h = ui.text_line_height() + self.s(16.0);
+        let widths: Vec<f32> = labels.iter().map(|l| self.with_font(ui, |f| f.strong, || ui.calc_text_size(l))[0] + pad_x * 2.0).collect();
+        let start = ui.cursor_screen_pos();
+        let total: f32 = widths.iter().sum::<f32>() + self.s(6.0);
+        let mut picked = None;
+        {
+            let dl = ui.get_window_draw_list();
+            dl.add_rect(start, [start[0] + total, start[1] + h + self.s(6.0)], pal().surface).filled(true).rounding(self.s(6.0)).build();
+            dl.add_rect(start, [start[0] + total, start[1] + h + self.s(6.0)], pal().line).rounding(self.s(6.0)).thickness(1.0).build();
+        }
+        let mut x = start[0] + self.s(3.0);
+        for (i, (label, w)) in labels.iter().zip(&widths).enumerate() {
+            let at = [x, start[1] + self.s(3.0)];
+            ui.set_cursor_screen_pos(at);
+            if ui.invisible_button(format!("##fe-seg-{id}-{i}"), [*w, h]) {
+                picked = Some(i);
+            }
+            let hovered = ui.is_item_hovered();
+            let on = i == current;
+            let dl = ui.get_window_draw_list();
+            if on || hovered {
+                dl.add_rect(at, [at[0] + w, at[1] + h], if on { pal().selected } else { pal().surface_hover })
+                    .filled(true)
+                    .rounding(self.s(4.0))
+                    .build();
+            }
+            if on {
+                dl.add_rect(at, [at[0] + w, at[1] + h], pal().accent_soft).rounding(self.s(4.0)).thickness(1.0).build();
+            }
+            let color = if on { pal().accent } else if hovered { pal().fg } else { pal().muted };
+            self.with_font(ui, |f| f.strong, || dl.add_text([at[0] + pad_x, at[1] + self.s(8.0)], color, label));
+            x += w;
+        }
+        ui.set_cursor_screen_pos([start[0], start[1] + h + self.s(6.0)]);
+        ui.dummy([total, 0.0]);
+        picked
     }
 
     fn pane_friends(&self, ui: &Ui) {
@@ -1453,109 +1668,108 @@ impl MyRenderLoop {
         };
         self.pane_title(ui, "Friends", note);
         if !self.data.loaded {
-            ui.text_colored(pal().muted, "Loading friends...");
+            self.note(ui, "Loading friends...");
             return;
         }
         let join_offered = self.data.join_offered();
-        if self.data.my_name_not_allowed {
-            let _c = ui.push_style_color(StyleColor::Text, pal().bad);
-            ui.text_wrapped(format!(
-                "The network's admins asked you to choose another name: this one breaks its rules. Give yourself a new one in {} (Settings, Servers and accounts, Rename).",
-                setup_tool()
-            ));
-            ui.dummy([0.0, self.s(4.0)]);
+        let rename = if self.data.my_name_not_allowed {
+            Some("The network's admins asked you to choose another name: this one breaks its rules.")
         } else if self.data.my_name_conflict {
-            let _c = ui.push_style_color(StyleColor::Text, pal().bad);
-            ui.text_wrapped(format!(
-                "Another player has your name on the servers that share friends with this one. Give yourself a new one in {} (Settings, Servers and accounts, Rename).",
-                setup_tool()
-            ));
-            ui.dummy([0.0, self.s(4.0)]);
-        }
-        let mut row = 0;
-        if !self.data.requests_in.is_empty() {
-            self.section(ui, "Want to be your friend");
-            for p in &self.data.requests_in {
-                self.player_row(
-                    ui,
-                    row,
-                    "in",
-                    p,
-                    &Self::status(p),
-                    &[
-                        RowAction::Change(C::Block, "Block"),
-                        RowAction::Change(C::Decline, "Decline"),
-                        RowAction::Change(C::Accept, "Accept"),
-                    ],
-                );
-                row += 1;
-            }
-        }
-        if self.data.friends.is_empty() {
-            self.section(ui, "Your friends");
-            let _c = ui.push_style_color(StyleColor::Text, pal().muted);
-            ui.text_wrapped("No friends yet. Open Find players, search for someone and add them.");
+            Some("Another player has your name on the servers that share friends with this one.")
         } else {
-            self.section(ui, "Your friends");
-            for p in &self.data.friends {
+            None
+        };
+        if let Some(why) = rename {
+            self.card(ui, "Choose another name", || {
+                let _c = ui.push_style_color(StyleColor::Text, pal().bad);
+                ui.text_wrapped(format!("{why} Give yourself a new one in {} (Settings, Servers and accounts, Rename).", setup_tool()));
+            });
+        }
+        if !self.data.requests_in.is_empty() {
+            self.card(ui, "Want to be your friend", || {
+                for p in &self.data.requests_in {
+                    self.player_row(
+                        ui,
+                        "in",
+                        p,
+                        &Self::status(p),
+                        &[
+                            RowAction::Change(C::Block, "Block"),
+                            RowAction::Change(C::Decline, "Decline"),
+                            RowAction::Change(C::Accept, "Accept"),
+                        ],
+                    );
+                }
+            });
+        }
+        let online = self.data.friends.iter().filter(|p| p.online).count();
+        let title = if self.data.friends.is_empty() {
+            String::from("Your friends")
+        } else {
+            format!("Your friends  ·  {online} online")
+        };
+        self.card(ui, &title, || {
+            if self.data.friends.is_empty() {
+                self.note(ui, "No friends yet. Open Find players, search for someone and add them.");
+            }
+            // Online first, as the launcher's Friends lists them.
+            let mut friends: Vec<&community::Player> = self.data.friends.iter().collect();
+            friends.sort_by_key(|p| !p.online);
+            for p in friends {
                 let mut actions = vec![RowAction::Change(C::Block, "Block"), RowAction::Change(C::Remove, "Remove")];
                 if p.online {
                     actions.push(RowAction::Invite);
                 }
-                // Join: only someone in a party (hosting it or in it) or a public match, on a server
-                // that offers it.
+                // Join: only someone in a party (hosting it or in it) or a public match, on a
+                // server that offers it.
                 if join_offered && Self::joinable(p) {
                     actions.push(RowAction::Join);
                 }
-                self.player_row(ui, row, "friend", p, &Self::status(p), &actions);
-                row += 1;
+                self.player_row(ui, "friend", p, &Self::status(p), &actions);
             }
-        }
+        });
         if let Some(playing) = &self.data.playing {
-            self.section(ui, "Playing on this server");
-            if playing.is_empty() {
-                ui.text_colored(pal().muted, "Nobody's in a match or a lobby right now.");
-            }
-            for m in &playing.matches {
-                ui.text(m.line());
-            }
-            let rest = server_api::playing::Playing {
-                matches: Vec::new(),
-                ..playing.clone()
-            }
-            .summary();
-            if !rest.is_empty() {
-                ui.text_colored(pal().muted, rest);
-            }
+            self.card(ui, "Playing on this server", || {
+                if playing.is_empty() {
+                    self.note(ui, "Nobody's in a match or a lobby right now.");
+                }
+                for m in &playing.matches {
+                    ui.text(m.line());
+                }
+                let rest = server_api::playing::Playing {
+                    matches: Vec::new(),
+                    ..playing.clone()
+                }
+                .summary();
+                if !rest.is_empty() {
+                    ui.text_colored(pal().muted, rest);
+                }
+            });
         }
         if !self.data.elsewhere.is_empty() {
-            self.section(ui, "On other servers");
-            {
-                let _c = ui.push_style_color(StyleColor::Text, pal().muted);
-                ui.text_wrapped(format!(
-                    "To play together, one of you joins the other's server: {} lists them on its Play screen.",
-                    setup_tool()
-                ));
-            }
-            for (name, server) in &self.data.elsewhere {
-                self.with_font(ui, |f| f.strong, || ui.text(name));
-                ui.same_line();
-                ui.text_colored(pal().muted, format!("on {server}"));
-            }
+            self.card(ui, "On other servers", || {
+                self.note(
+                    ui,
+                    &format!("To play together, one of you joins the other's server: {} lists them on its Play screen.", setup_tool()),
+                );
+                for (name, server) in &self.data.elsewhere {
+                    self.row(ui, Some(pal().offline), name, &format!("on {server}"), 0.0, || {});
+                }
+            });
         }
         if !self.data.requests_out.is_empty() {
-            self.section(ui, "Waiting for an answer");
-            for p in &self.data.requests_out {
-                self.player_row(ui, row, "out", p, "Friend request sent", &[RowAction::Change(C::Decline, "Cancel")]);
-                row += 1;
-            }
+            self.card(ui, "Waiting for an answer", || {
+                for p in &self.data.requests_out {
+                    self.player_row(ui, "out", p, "Friend request sent", &[RowAction::Change(C::Decline, "Cancel")]);
+                }
+            });
         }
         if !self.data.blocked.is_empty() {
-            self.section(ui, "Blocked");
-            for p in &self.data.blocked {
-                self.player_row(ui, row, "blocked", p, "Can't see you or invite you", &[RowAction::Change(C::Unblock, "Unblock")]);
-                row += 1;
-            }
+            self.card(ui, "Blocked", || {
+                for p in &self.data.blocked {
+                    self.player_row(ui, "blocked", p, "Can't see you or invite you", &[RowAction::Change(C::Unblock, "Unblock")]);
+                }
+            });
         }
     }
 
@@ -1568,12 +1782,15 @@ impl MyRenderLoop {
         );
         let v = self.chat.clone();
         if !v.available {
-            let _c = ui.push_style_color(StyleColor::Text, pal().muted);
-            ui.text_wrapped(if v.why_not.is_empty() {
-                "Chat isn't open on this server (or is still starting)."
-            } else {
-                &v.why_not
-            });
+            self.empty(
+                ui,
+                "No chat here",
+                if v.why_not.is_empty() {
+                    "Chat isn't open on this server (or is still starting)."
+                } else {
+                    &v.why_not
+                },
+            );
             return;
         }
         let direct_unread: u32 = v.unread.values().sum();
@@ -1589,13 +1806,10 @@ impl MyRenderLoop {
                 },
             ),
         ];
-        for (i, (room, label)) in rooms.iter().enumerate() {
-            if i > 0 {
-                ui.same_line();
-            }
-            if self.button(ui, &format!("{label}##fe-chat-room-{i}"), self.chat_room == *room) {
-                self.chat_room = *room;
-            }
+        let labels: Vec<&str> = rooms.iter().map(|(_, l)| l.as_str()).collect();
+        let current = rooms.iter().position(|(r, _)| *r == self.chat_room).unwrap_or(0);
+        if let Some(i) = self.segments(ui, "chat-room", &labels, current) {
+            self.chat_room = rooms[i].0;
         }
         if v.read_only {
             ui.text_colored(pal().warn, "The network can't be reached right now: you can read, not send.");
@@ -1611,8 +1825,7 @@ impl MyRenderLoop {
             }
             Room::Lobby => {
                 if v.lobby == 0 {
-                    let _c = ui.push_style_color(StyleColor::Text, pal().muted);
-                    ui.text_wrapped("Join a lobby or a match: its players can talk here.");
+                    self.empty(ui, "Not in a lobby", "Join a lobby or a match: its players can talk here.");
                     return;
                 }
                 self.chat_log(ui, "lobby", &v.lobby_messages, log_h);
@@ -1626,7 +1839,8 @@ impl MyRenderLoop {
                         people.push((identity.clone(), name.clone()));
                     }
                 }
-                ui.child_window("##fe-chat-people").size([self.s(190.0), log_h + input_h - self.s(8.0)]).build(|| {
+                let _boxed = self.boxed(ui);
+                ui.child_window("##fe-chat-people").size([self.s(190.0), log_h + input_h - self.s(8.0)]).always_use_window_padding(true).build(|| {
                     if people.is_empty() {
                         let _c = ui.push_style_color(StyleColor::Text, pal().muted);
                         ui.text_wrapped("No friends to message yet. Add some in Find players.");
@@ -1646,6 +1860,7 @@ impl MyRenderLoop {
                         }
                     }
                 });
+                drop(_boxed);
                 ui.same_line();
                 ui.group(|| {
                     let Some(with) = self.chat_with.clone() else {
@@ -1663,7 +1878,8 @@ impl MyRenderLoop {
     /// A room's messages, newest at the bottom (kept there while it's scrolled down); right-click
     /// a name for more.
     fn chat_log(&self, ui: &Ui, id: &str, list: &[chat::Msg], h: f32) {
-        ui.child_window(format!("##fe-chat-log-{id}")).size([0.0, h]).build(|| {
+        let _boxed = self.boxed(ui);
+        ui.child_window(format!("##fe-chat-log-{id}")).size([0.0, h]).always_use_window_padding(true).build(|| {
             let at_bottom = ui.scroll_y() >= ui.scroll_max_y() - self.s(4.0);
             if list.is_empty() {
                 ui.text_colored(pal().muted, "No messages yet.");
@@ -1757,7 +1973,7 @@ impl MyRenderLoop {
         }
         let mut text = std::mem::take(&mut self.search_text);
         let search_label = "Search##fe-search-go";
-        let field_w = ui.content_region_avail()[0] - self.button_width(ui, search_label) - self.s(10.0);
+        let field_w = self.avail_w(ui) - self.button_width(ui, search_label) - self.s(10.0);
         ui.set_next_item_width(field_w);
         let entered = ui
             .input_text("##fe-search", &mut text)
@@ -1770,27 +1986,30 @@ impl MyRenderLoop {
         }
         text.truncate(32);
         self.search_text = text;
-        ui.dummy([0.0, self.s(6.0)]);
+        ui.dummy([0.0, self.s(4.0)]);
 
         let Some((query, found)) = self.data.search.as_ref() else {
-            ui.text_colored(pal().muted, "Searching...");
+            self.note(ui, "Searching...");
             return;
         };
         if found.is_empty() {
-            let _c = ui.push_style_color(StyleColor::Text, pal().muted);
-            ui.text_wrapped(match (query.is_empty(), self.data.everyone_mode) {
+            let text = match (query.is_empty(), self.data.everyone_mode) {
                 (true, true) => String::from("No one else is online right now."),
                 // A friends-only server shows only friends.
                 (true, false) => String::from("None of your friends are online right now."),
                 (false, _) => format!("No one called \"{query}\"."),
-            });
+            };
+            self.empty(ui, if query.is_empty() { "Nobody online" } else { "Nobody found" }, &text);
             return;
         }
-        if query.is_empty() {
-            ui.text_colored(pal().muted, format!("Online now · {}", found.len()));
-        }
+        let title = if query.is_empty() {
+            format!("Online now  ·  {}", found.len())
+        } else {
+            format!("Found  ·  {}", found.len())
+        };
         let join_offered = self.data.join_offered();
-        for (i, p) in found.iter().enumerate() {
+        self.card(ui, &title, || {
+        for p in found {
             let (detail, mut actions) = match p.relation {
                 community::Relation::Friend => (format!("Friend · {}", Self::status(p)), vec![]),
                 community::Relation::RequestSent => (String::from("Friend request sent"), vec![RowAction::Change(C::Decline, "Cancel")]),
@@ -1810,8 +2029,9 @@ impl MyRenderLoop {
                     actions.push(RowAction::Join);
                 }
             }
-            self.player_row(ui, i, "found", p, &detail, &actions);
+            self.player_row(ui, "found", p, &detail, &actions);
         }
+        });
     }
 
     /// Whether to offer Join on `p`'s row: in a room a friend joins without an invitation, and
@@ -1823,38 +2043,53 @@ impl MyRenderLoop {
 
     fn pane_invites(&mut self, ui: &Ui) {
         self.pane_title(ui, "Invites", "Accepting takes you straight into their match.");
+        let auto = hooks_config::get().is_some_and(|c| c.auto_join_invite);
+        let auto_note = if auto {
+            "Joining invites automatically is on (AutoJoinInvite in uplay.toml)."
+        } else {
+            "Joining invites automatically is off (AutoJoinInvite in uplay.toml)."
+        };
         if self.active_invites.is_empty() {
-            let _c = ui.push_style_color(StyleColor::Text, pal().muted);
-            ui.text_wrapped("No invites right now. When someone invites you, it shows up here and in the corner of the screen.");
+            self.empty(ui, "No invites", "When someone invites you, it shows up here and in the corner of the screen.");
+            ui.dummy([0.0, self.s(10.0)]);
+            let w = ui.calc_text_size(auto_note)[0];
+            let x = ui.cursor_pos()[0] + ((self.avail_w(ui) - w) / 2.0).max(0.0);
+            ui.set_cursor_pos([x, ui.cursor_pos()[1]]);
+            ui.text_colored(pal().label, auto_note);
+            return;
         }
         let mut accept = None;
         let mut decline = None;
-        for (i, invite) in self.active_invites.iter().enumerate() {
-            let Some(sender) = invite.event.sender.as_ref() else {
-                continue;
-            };
-            let left = NOTIFICATION_TIMEOUT.saturating_sub(invite.received.elapsed()).as_secs();
-            let detail = match self.data.activity_of(&sender.username) {
-                Some(a) => format!("{a}  ·  {left} s left"),
-                None => format!("{left} s left"),
-            };
-            let detail = match self.data.lookalike_of(&sender.username) {
-                Some(server) => format!("Not your friend {} from {server}  ·  {detail}", sender.username),
-                None => detail,
-            };
-            let accept_label = format!("Accept##fe-acc-{i}");
-            let decline_label = format!("Decline##fe-dec-{i}");
-            let w = self.button_width(ui, &accept_label) + self.button_width(ui, &decline_label) + self.s(10.0);
-            self.row(ui, i, Some(pal().ok), &sender.username, &detail, w, || {
-                if self.button(ui, &decline_label, false) {
-                    decline = Some(i);
-                }
-                ui.same_line();
-                if self.button(ui, &accept_label, true) {
-                    accept = Some(i);
-                }
-            });
-        }
+        self.card(ui, "Waiting for you", || {
+            for (i, invite) in self.active_invites.iter().enumerate() {
+                let Some(sender) = invite.event.sender.as_ref() else {
+                    continue;
+                };
+                let left = NOTIFICATION_TIMEOUT.saturating_sub(invite.received.elapsed()).as_secs();
+                let detail = match self.data.activity_of(&sender.username) {
+                    Some(a) => format!("{a}  ·  {left} s left"),
+                    None => format!("{left} s left"),
+                };
+                let detail = match self.data.lookalike_of(&sender.username) {
+                    Some(server) => format!("Not your friend {} from {server}  ·  {detail}", sender.username),
+                    None => detail,
+                };
+                let accept_label = format!("Accept##fe-acc-{i}");
+                let decline_label = format!("Decline##fe-dec-{i}");
+                let w = self.button_width(ui, &accept_label) + self.button_width(ui, &decline_label) + self.s(10.0);
+                self.row(ui, Some(pal().ok), &sender.username, &detail, w, || {
+                    if self.button(ui, &decline_label, false) {
+                        decline = Some(i);
+                    }
+                    ui.same_line();
+                    if self.button(ui, &accept_label, true) {
+                        accept = Some(i);
+                    }
+                });
+            }
+            ui.dummy([0.0, self.s(2.0)]);
+            ui.text_colored(pal().label, auto_note);
+        });
         if let Some(i) = accept {
             if let Some(sender) = self.active_invites[i].event.sender.clone() {
                 let _ = self.tx.send(invite_accept_event(sender.id));
@@ -1866,16 +2101,6 @@ impl MyRenderLoop {
             self.active_invites.remove(i);
             self.invite_notification = None;
         }
-        ui.dummy([0.0, self.s(8.0)]);
-        let auto = hooks_config::get().is_some_and(|c| c.auto_join_invite);
-        ui.text_colored(
-            pal().muted,
-            if auto {
-                "Joining invites automatically is on (AutoJoinInvite in uplay.toml)."
-            } else {
-                "Joining invites automatically is off (AutoJoinInvite in uplay.toml)."
-            },
-        );
     }
 
     /// The lobby's player counts, which the game only has while you're in a
@@ -1883,28 +2108,34 @@ impl MyRenderLoop {
     fn pane_match(&self, ui: &Ui) {
         let min = unsafe { get_min_players_var().as_mut() };
         let max = unsafe { get_max_players_var().as_mut() };
-        let (Some(min), Some(max)) = (min, max) else {
-            self.pane_title(ui, "Match", "Host or join a lobby to change these.");
-            {
-                let _c = ui.push_style_color(StyleColor::Text, pal().muted);
-                ui.text_wrapped("While you're in a lobby: the players needed to start the match, and the most players allowed in it.");
-            }
+        // Out of a lobby the fields can be there with nothing in them (-1, as the menus have
+        // them): not a lobby's.
+        let lobby = match (min, max) {
+            (Some(min), Some(max)) if *min >= 1 && *max >= 1 => Some((min, max)),
+            _ => None,
+        };
+        let Some((min, max)) = lobby else {
+            self.pane_title(ui, "Match", "Pick a match to join, or start your own.");
+            self.card(ui, "Your lobby", || {
+                self.note(ui, "Host or join a lobby to set the players needed to start the match and the most players allowed in it.");
+            });
             self.choose_match(ui);
             self.report_players(ui);
             return;
         };
         self.pane_title(ui, "Match", "Settings for the lobby you're in. Change them before the match starts.");
-        let most = *max;
-        self.stepper(ui, 0, "Players needed to start", "The match waits for this many players", min, 1, most.max(1));
-        let least = (*min).max(1);
-        self.stepper(ui, 1, "Most players", "Spies vs Mercs classic is 2 against 2, co-op is 2", max, least, 99);
-        // Above the mode's own size some players' games can crash or freeze (more players than
-        // it was made for); allowed all the same, as hosts use it, but said.
-        if let Some(size) = crate::community::match_size().filter(|size| *max > *size) {
-            ui.dummy([0.0, self.s(4.0)]);
-            let _c = ui.push_style_color(StyleColor::Text, pal().warn);
-            ui.text_wrapped(format!("More than {size} players can crash or freeze the game for some players in this mode."));
-        }
+        self.card(ui, "Your lobby", || {
+            let most = *max;
+            self.stepper(ui, 0, "Players needed to start", "The match waits for this many players", min, 1, most.max(1));
+            let least = (*min).max(1);
+            self.stepper(ui, 1, "Most players", "Spies vs Mercs classic is 2 against 2, co-op is 2", max, least, 99);
+            // Above the mode's own size some players' games can crash or freeze (more players
+            // than it was made for); allowed all the same, as hosts use it, but said.
+            if let Some(size) = crate::community::match_size().filter(|size| *max > *size) {
+                let _c = ui.push_style_color(StyleColor::Text, pal().warn);
+                ui.text_wrapped(format!("More than {size} players can crash or freeze the game for some players in this mode."));
+            }
+        });
         self.choose_match(ui);
         self.report_players(ui);
     }
@@ -1923,15 +2154,14 @@ impl MyRenderLoop {
             state.1 = Some(Instant::now());
             community::match_players();
         }
-        self.section(ui, "Report a player");
+        self.card(ui, "Report a player", || {
         if self.data.match_players.is_empty() {
-            let _c = ui.push_style_color(StyleColor::Text, pal().muted);
-            ui.text_wrapped("Players in your match, and in your matches of the last 30 minutes, show here to report to the admins.");
+            self.note(ui, "Players in your match, and in your matches of the last 30 minutes, show here to report to the admins.");
             return;
         }
         let label = "Report##fe-report";
         let w = self.button_width(ui, label);
-        for (i, (id, name, now)) in self.data.match_players.iter().enumerate() {
+        for (id, name, now) in &self.data.match_players {
             let reported = self.data.reported.contains(id);
             let detail = match (reported, now) {
                 (true, _) => "Reported: the admins have it",
@@ -1939,7 +2169,7 @@ impl MyRenderLoop {
                 (false, false) => "In a match of yours lately",
             };
             let open = state.0.as_ref().is_some_and(|(o, ..)| o == id);
-            self.row_colored(ui, i, None, name, detail, pal().muted, if reported || open { 0.0 } else { w }, || {
+            self.row_colored(ui, None, name, detail, pal().muted, if reported || open { 0.0 } else { w }, || {
                 if self.button(ui, &format!("Report##fe-report-{:016x}", ui_id(id)), false) {
                     state.0 = Some((id.clone(), name.clone(), 0, String::new()));
                 }
@@ -1954,7 +2184,7 @@ impl MyRenderLoop {
                 }
                 ui.radio_button(format!("{shown}##fe-report-reason-{n}"), reason, n);
             }
-            ui.set_next_item_width(ui.content_region_avail()[0]);
+            ui.set_next_item_width(self.avail_w(ui));
             ui.input_text("##fe-report-text", text).hint("What happened (optional)").build();
             if text.chars().count() > 500 {
                 *text = text.chars().take(500).collect();
@@ -1974,6 +2204,7 @@ impl MyRenderLoop {
             }
             ui.dummy([0.0, self.s(6.0)]);
         }
+        });
     }
 
     /// Choosing your match (the 0.5.0 plan's L2), on servers that offer it: a new public match
@@ -1983,7 +2214,7 @@ impl MyRenderLoop {
         if !self.data.choose_offered() {
             return;
         }
-        self.section(ui, "Choose your match");
+        self.card(ui, "Choose your match", || {
         let pending = crate::community::new_match_pending();
         let new_label = if pending { "Cancel##fe-new-match" } else { "New match##fe-new-match" };
         let join_label = "Join##fe-room";
@@ -1993,22 +2224,23 @@ impl MyRenderLoop {
         } else {
             ("Start a new match", "Quick match skips every open match and you host your own")
         };
-        self.row(ui, 0, None, title, detail, w, || {
+        self.row(ui, None, title, detail, w, || {
             if self.button(ui, new_label, !pending) {
                 crate::community::new_match(!pending);
             }
         });
         let Some(playing) = &self.data.playing else {
-            let _c = ui.push_style_color(StyleColor::Text, pal().muted);
-            ui.text_wrapped("The server hasn't said what's open.");
+            self.note(ui, "The server hasn't said what's open.");
             return;
         };
         let open: Vec<_> = playing.matches.iter().filter(|m| m.room != 0).collect();
         if open.is_empty() {
-            let _c = ui.push_style_color(StyleColor::Text, pal().muted);
-            ui.text_wrapped("No public matches are open right now.");
+            // In line with the rows' text.
+            let at = ui.cursor_pos();
+            ui.set_cursor_pos([at[0] + self.s(12.0), at[1]]);
+            self.note(ui, "No public matches are open right now.");
         }
-        for (i, m) in open.into_iter().enumerate() {
+        for m in open {
             let full = m.seats > 0 && m.players >= m.seats;
             let detail = if m.started {
                 "Under way: you can join when it's over"
@@ -2018,12 +2250,14 @@ impl MyRenderLoop {
                 "Open"
             };
             let label = format!("Join##fe-room-{}", m.room);
-            self.row(ui, i + 1, None, &m.line(), detail, w, || {
+            let dot = if m.started || full { pal().warn } else { pal().ok };
+            self.row(ui, Some(dot), &m.line(), detail, w, || {
                 if !m.started && !full && self.button(ui, &label, false) {
                     crate::community::join_room(m.room, m.mode_name().to_string());
                 }
             });
         }
+        });
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2033,7 +2267,7 @@ impl MyRenderLoop {
         let num_w = self.s(44.0);
         let bw = self.button_width(ui, &plus);
         let w = bw * 2.0 + num_w + self.s(20.0);
-        self.row(ui, i, None, title, detail, w, || {
+        self.row(ui, None, title, detail, w, || {
             if self.button(ui, &minus, false) && *value > lo {
                 *value -= 1;
             }
@@ -2051,44 +2285,38 @@ impl MyRenderLoop {
     }
 
     fn pane_server(&mut self, ui: &Ui) {
-        self.pane_title(ui, "Server", "");
         let host = hooks_config::get().and_then(|c| c.api_server.host_str().map(String::from)).unwrap_or_default();
+        self.pane_title(ui, "Server", "The server you're playing on, and how the game reaches it.");
         let server = match &self.data.server {
             Some(info) if !info.revision.is_empty() => format!("{} {} ({})", info.name, info.version, info.revision),
             Some(info) => format!("{} {}", info.name, info.version),
             None => String::from("Not reported"),
         };
-        let rows = [
-            ("Address", host),
-            ("Signed in as", crate::api::username().unwrap_or_else(|| String::from("Not signed in"))),
-            (
-                "Response time",
-                self.data.response_time.map_or_else(|| String::from("No answer"), |d| format!("{} ms", d.as_millis())),
-            ),
-            ("Server", server),
-            ("Other players reach you", crate::hooks::nat::status().unwrap_or_else(|| String::from("Not started yet"))),
-            (
-                "Your identity",
-                if self.data.my_identity.is_empty() {
-                    String::from("Not linked")
-                } else {
-                    self.data.my_identity.clone()
-                },
-            ),
-            ("Game add-on", format!("{PRODUCT} {RELEASE}")),
-        ];
-        let x = ui.cursor_pos()[0];
-        let label_w = self.s(170.0);
-        for (label, value) in rows {
-            ui.text_colored(pal().muted, label);
-            ui.same_line_with_pos(x + label_w);
-            ui.text(value);
-        }
-        ui.dummy([0.0, self.s(10.0)]);
-        let busy = self.relogin.is_some();
-        let label = if busy { "Signing in...##fe-relogin" } else { "Sign in again##fe-relogin" };
+        let response = self.data.response_time.map_or_else(|| String::from("No answer"), |d| format!("{} ms", d.as_millis()));
+        let reach = crate::hooks::nat::status().unwrap_or_else(|| String::from("Not started yet"));
+        self.card(ui, "Connection", || {
+            // Whether it answers, as the header's dot says it.
+            let (dot, state) = if self.connection_error.is_some() { (pal().bad, "Not connected") } else { (pal().ok, "Connected") };
+            self.row(ui, Some(dot), &host, &format!("{state}  ·  {response}"), 0.0, || {});
+            ui.dummy([0.0, self.s(2.0)]);
+            self.fact(ui, "Server", &server);
+            self.fact(ui, "Other players reach you", &reach);
+        });
+        let identity = if self.data.my_identity.is_empty() {
+            String::from("Not linked")
+        } else {
+            self.data.my_identity.clone()
+        };
         let mut clicked = false;
-        ui.disabled(busy, || clicked = self.button(ui, label, false));
+        let busy = self.relogin.is_some();
+        self.card(ui, "You", || {
+            self.fact(ui, "Signed in as", &crate::api::username().unwrap_or_else(|| String::from("Not signed in")));
+            self.fact(ui, "Your identity", &identity);
+            self.fact(ui, "Game add-on", &format!("{PRODUCT} {RELEASE}"));
+            ui.dummy([0.0, self.s(4.0)]);
+            let label = if busy { "Signing in...##fe-relogin" } else { "Sign in again##fe-relogin" };
+            ui.disabled(busy, || clicked = self.button(ui, label, false));
+        });
         if clicked && !busy {
             self.relogin = std::thread::Builder::new()
                 .name(String::from("overlay-relogin"))
