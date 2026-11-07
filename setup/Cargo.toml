@@ -4,6 +4,12 @@ version = "0.3.0"
 edition = "2021"
 description = "Finds, installs, sets up and checks Splinter Cell: Blacklist for 5th Echelon. The launcher's logic, without its UI."
 
+[features]
+# A test network standing in for the community network (the gamebox, against the rehearsal
+# servers): the coordinator named by FE_TEST_COMMUNITY when built counts as the community's.
+# Never in a release.
+test-community = []
+
 [dependencies]
 anyhow = { workspace = true }
 base64 = "0.22"

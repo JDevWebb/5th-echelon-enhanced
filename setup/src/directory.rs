@@ -341,7 +341,7 @@ pub fn best(servers: &[(Listing, Option<u32>)]) -> Option<usize> {
 /// The community's servers, built in for when its directory doesn't answer
 /// (none for any other directory).
 pub fn built_in(coordinator: &str) -> Vec<Listing> {
-    if !is_community(coordinator) {
+    if !same_directory(coordinator, COMMUNITY) {
         return Vec::new();
     }
     let ports = crate::server_info::Ports {
@@ -389,9 +389,23 @@ pub fn same_directory(a: &str, b: &str) -> bool {
     directory_key(a) == directory_key(b)
 }
 
-/// Whether `url` is the community network's directory, by either of its names.
+/// The coordinator standing in for the community network's in a test build (feature
+/// `test-community`: FE_TEST_COMMUNITY when built, e.g. the rehearsal's); none in a release.
+#[cfg(feature = "test-community")]
+const TEST_COMMUNITY: Option<&str> = option_env!("FE_TEST_COMMUNITY");
+#[cfg(not(feature = "test-community"))]
+const TEST_COMMUNITY: Option<&str> = None;
+
+/// The community network's coordinator: [`COMMUNITY`], or in a test build the one standing in
+/// for it. Support and the roadmap are its.
+pub fn community() -> &'static str {
+    TEST_COMMUNITY.filter(|t| !t.trim().is_empty()).unwrap_or(COMMUNITY)
+}
+
+/// Whether `url` is the community network's directory, by either of its names (or, in a test
+/// build, the coordinator standing in for it).
 pub fn is_community(url: &str) -> bool {
-    same_directory(url, COMMUNITY)
+    same_directory(url, COMMUNITY) || TEST_COMMUNITY.is_some_and(|t| !t.trim().is_empty() && same_directory(url, t))
 }
 
 /// One directory's last list, as kept in [`CACHE_FILE`].
@@ -618,6 +632,10 @@ mod tests {
         assert!(is_community("HTTPS://play.scbl.jdevwebb.net/ "));
         assert!(same_directory(COMMUNITY_OLD, COMMUNITY));
         assert!(!is_community("https://scbl.example.net") && !same_directory("https://a.example", COMMUNITY));
+        // A release has no stand-in: the community's own coordinator only.
+        #[cfg(not(feature = "test-community"))]
+        assert_eq!(community(), COMMUNITY);
+        assert!(built_in("https://rh-sgp02.scbl.jdevwebb.net").is_empty(), "never the community's servers for another directory");
         assert!(!built_in(COMMUNITY_OLD).is_empty());
         // A list kept under the old name is the community's under the new one, and replaced
         // by the new name's, not kept beside it.

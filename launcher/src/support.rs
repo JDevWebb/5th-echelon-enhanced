@@ -23,7 +23,6 @@ use crate::task::Slot;
 use crate::theme;
 
 /// Where support lives: the community network's coordinator.
-const COORDINATOR: &str = setup::directory::COMMUNITY;
 /// How often the launcher looks for answers: while the screen shows, and otherwise.
 pub const LOOK_WHILE_OPEN: Duration = Duration::from_secs(60);
 pub const LOOK_EVERY: Duration = Duration::from_secs(10 * 60);
@@ -77,7 +76,7 @@ impl Default for Support {
 
 pub fn read(read: bool) -> Result<(Thread, bool), String> {
     let identity = crate::roadmap::load_identity()?;
-    let url = setup::support::mine_url(COORDINATOR, &identity, identity::now(), read);
+    let url = setup::support::mine_url(setup::directory::community(), &identity, identity::now(), read);
     crate::services::rt().block_on(async {
         let resp = crate::roadmap::client()?
             .get(url)
@@ -129,7 +128,7 @@ pub fn send(draft: &Draft) -> Result<(), String> {
         server: draft.server.as_deref(),
         launcher: env!("FE_RELEASE"),
     };
-    let json = setup::support::message_body(COORDINATOR, &identity, &sender, &draft.text, &files, identity::now());
+    let json = setup::support::message_body(setup::directory::community(), &identity, &sender, &draft.text, &files, identity::now());
     crate::services::rt().block_on(async {
         // Files take a while on a slow line: longer than a read.
         let client = reqwest::Client::builder()
@@ -138,7 +137,7 @@ pub fn send(draft: &Draft) -> Result<(), String> {
             .build()
             .map_err(|e| e.to_string())?;
         let resp = client
-            .post(format!("{COORDINATOR}/v1/support"))
+            .post(format!("{}/v1/support", setup::directory::community()))
             .header("content-type", "application/json")
             .body(json.to_string())
             .send()

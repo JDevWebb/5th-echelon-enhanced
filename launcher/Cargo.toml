@@ -19,6 +19,8 @@ required-features = ["gui"]
 default = ["gui"]
 gui = ["dep:eframe", "dep:wgpu", "dep:rfd"]
 embed-dll = ["brotli"]
+# setup's test-community: a test network as the community network (the gamebox). Never released.
+test-community = ["setup/test-community"]
 GetAdapterInfos = []
 # Headless tests of the launcher's screens (build.sh test and CI run them).
 ui-tests = ["gui", "dep:egui_kittest", "dep:egui-winit"]

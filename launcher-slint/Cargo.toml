@@ -52,6 +52,9 @@ winres = "0.1.12"
 # The client DLL built in (build.sh windows and linux set HOOKS_DLL to dist/uplay_r1_loader.dll), as the
 # egui launcher carries it: the setup installs it.
 embed-dll = ["launcher/embed-dll"]
+# A test network as the community network (the gamebox against the rehearsal; FE_TEST_COMMUNITY
+# when built). Never released.
+test-community = ["launcher/test-community"]
 
 [profile.release]
 opt-level = "s"

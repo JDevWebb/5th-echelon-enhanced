@@ -21,7 +21,6 @@ use crate::task::Slot;
 use crate::theme;
 
 /// Where the roadmap and suggestions live: the project's own coordinator.
-const COORDINATOR: &str = setup::directory::COMMUNITY;
 /// How long the roadmap is kept on screen before it's read again.
 const REFRESH_EVERY: Duration = Duration::from_secs(15 * 60);
 /// How long the project's server may take to answer.
@@ -103,7 +102,7 @@ pub fn unreachable(e: reqwest::Error) -> String {
 pub fn fetch_roadmap() -> Result<setup::roadmap::Roadmap, String> {
     let roadmap = crate::services::rt().block_on(async {
         let resp = client()?
-            .get(setup::roadmap::url(COORDINATOR))
+            .get(setup::roadmap::url(setup::directory::community()))
             .header("accept", "application/json")
             .send()
             .await
@@ -141,7 +140,7 @@ pub fn send(draft: &Draft) -> Result<(), String> {
     let json = setup::roadmap::suggestion_body(&identity, &sender, &draft.area, &draft.title, &draft.text, identity::now());
     crate::services::rt().block_on(async {
         let resp = client()?
-            .post(format!("{COORDINATOR}/v1/suggestions"))
+            .post(format!("{}/v1/suggestions", setup::directory::community()))
             .header("content-type", "application/json")
             .body(json.to_string())
             .send()
@@ -153,7 +152,7 @@ pub fn send(draft: &Draft) -> Result<(), String> {
 
 pub fn fetch_mine() -> Result<Vec<Mine>, String> {
     let identity = load_identity()?;
-    let url = setup::roadmap::mine_url(COORDINATOR, &identity, identity::now());
+    let url = setup::roadmap::mine_url(setup::directory::community(), &identity, identity::now());
     crate::services::rt().block_on(async {
         let resp = client()?.get(url).header("accept", "application/json").send().await.map_err(unreachable)?;
         let body = body(resp).await?;

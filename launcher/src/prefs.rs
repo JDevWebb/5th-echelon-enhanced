@@ -335,7 +335,7 @@ impl Prefs {
         if prefs
             .directory
             .as_deref()
-            .is_some_and(|d| Self::is_community(d) && d.trim().trim_end_matches('/') != COMMUNITY_DIRECTORY)
+            .is_some_and(|d| setup::directory::same_directory(d, COMMUNITY_DIRECTORY) && d.trim().trim_end_matches('/') != COMMUNITY_DIRECTORY)
         {
             prefs.directory = Some(COMMUNITY_DIRECTORY.to_string());
             prefs.save();
@@ -345,7 +345,8 @@ impl Prefs {
 
     /// `url` as kept: the community network by its current name, anything else as given.
     fn directory_as_kept(url: &str) -> String {
-        if Self::is_community(url) {
+        // By the community's own names only: a test build's stand-in is kept as it is.
+        if setup::directory::same_directory(url, COMMUNITY_DIRECTORY) {
             COMMUNITY_DIRECTORY.to_string()
         } else {
             url.trim().to_string()
