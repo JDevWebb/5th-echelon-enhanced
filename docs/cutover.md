@@ -69,6 +69,10 @@ only, TTL 60. Then:
    one, without each server's two sample accounts (ids 1 and 105, which aren't moved); names
    renamed (expected none); friends, requests and blocks between the same people before and
    after (none lost); uploads = distinct (person, kind) across the three (the newer kept).
+   Then `copy-links` for each merged server on the coordinator, as on the night (step 3 there),
+   and the same count check. (The 2026-11-04 rehearsal's coordinator was a new one, without
+   production's links: its 446 merged accounts had none until they were put in by hand on
+   2026-11-07.)
    **The old database's `-wal` and `-shm` matter:** left beside a database copied in under the
    same name, SQLite replays the old journal over it on open, and the merge goes into the old
    database (the 2026-11-04 rehearsal did this once: 357 accounts instead of 448).
@@ -110,7 +114,15 @@ Announce it in the launcher's news and Discord.
 3. **Merge:** copy eu1's and oceania's databases to na1 (from their snapshots, or SQLite's
    `.backup`: never a plain copy of a database in use); stop na1's game service; take a
    snapshot of na1 first; run `--merge-accounts` with both, against na1's own database in place
-   (nothing copied over it); start it again. The rehearsal's merge took a second.
+   (nothing copied over it); start it again. The rehearsal's merge took a second. **Then their
+   players' links:** on the coordinator (eu1), `sudo -u echelon-coord /opt/5th-echelon/coordinator
+   --data /var/lib/5th-echelon-coordinator copy-links <eu1's id> <na1's id>`, and the same for
+   oceania's id (it prints any left out: na1 has that identity or name linked otherwise; check each).
+   A link is the player's signed word, made once when they first link: na1 can't make them again,
+   and without them every moved player's friends fail ("that player isn't linked on this server",
+   found in the 2026-11-07 rehearsal). Check: na1's accounts with an identity
+   (`SELECT COUNT(*) FROM users WHERE global_id IS NOT NULL`) against the coordinator's links for
+   na1 (`SELECT COUNT(*) FROM links WHERE server_id = '<na1's id>'`): the same, less any left out.
 4. **Move the name:** first, on eu1, drop it from the coordinator (the installer with
    `--coordinator-alias play.scbl.jdevwebb.net` alone); then in Cloudflare, `scbl.jdevwebb.net`'s
    A record to na1, **DNS only**, TTL 60 s.

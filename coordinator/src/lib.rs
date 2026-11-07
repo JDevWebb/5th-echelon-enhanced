@@ -741,6 +741,54 @@ impl Coordinator {
         Ok(done.rows_affected())
     }
 
+    /// Copies `from`'s links to `to`: the accounts of a server merged into another
+    /// (`dedicated_server --merge-accounts`, the 0.5.0 cutover) are the other's now, and their
+    /// players' links have to say so, or the server they moved to is told "that player isn't
+    /// linked on this server" for each (no friends, no name of their own). A server only links
+    /// an identity when the player first links it, signed: a link can't be made again from
+    /// there, so the operator copies them. One `to` already has for the identity, or for the
+    /// name with another identity, is left out and listed. `from`'s own stay. For the operator
+    /// (`coordinator copy-links`). Answers how many were copied, and those left out.
+    pub async fn copy_links(&self, from: &str, to: &str) -> sqlx::Result<(u64, Vec<(String, String)>)> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let rows: Vec<(String, String, i64)> = sqlx::query_as("SELECT global_id, username, linked_at FROM links WHERE server_id = ? ORDER BY linked_at")
+            .bind(from)
+            .fetch_all(&mut *tx)
+            .await?;
+        let mut copied = 0;
+        let mut left = Vec::new();
+        for (global_id, username, linked_at) in rows {
+            let taken: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM links WHERE server_id = ? AND (global_id = ? OR username = ?)")
+                .bind(to)
+                .bind(&global_id)
+                .bind(&username)
+                .fetch_one(&mut *tx)
+                .await?;
+            if taken > 0 {
+                let same: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM links WHERE server_id = ? AND global_id = ? AND username = ?")
+                    .bind(to)
+                    .bind(&global_id)
+                    .bind(&username)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                if same == 0 {
+                    left.push((global_id, username));
+                }
+                continue;
+            }
+            sqlx::query("INSERT INTO links (global_id, server_id, username, linked_at) VALUES (?, ?, ?, ?)")
+                .bind(&global_id)
+                .bind(to)
+                .bind(&username)
+                .bind(linked_at)
+                .execute(&mut *tx)
+                .await?;
+            copied += 1;
+        }
+        tx.commit().await?;
+        Ok((copied, left))
+    }
+
     /// Removes a member server: its links, and names only it used. For the
     /// operator (`coordinator remove-server`).
     pub async fn remove_server(&self, server_id: &str) -> sqlx::Result<bool> {

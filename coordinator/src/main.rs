@@ -70,6 +70,7 @@ struct Args {
 #[argh(subcommand)]
 enum Command {
     RemoveServer(RemoveServer),
+    CopyLinks(CopyLinks),
     PurgeNames(PurgeNames),
     NewToken(NewToken),
     Admin(Admin),
@@ -146,6 +147,19 @@ struct RemoveServer {
     /// the server's id (in the directory and its server-id.txt)
     #[argh(positional)]
     id: String,
+}
+
+#[derive(argh::FromArgs)]
+#[argh(subcommand, name = "copy-links")]
+/// copy a server's links to another, after its accounts were merged into that
+/// one (dedicated_server --merge-accounts): its players are linked there too
+struct CopyLinks {
+    /// the server whose accounts were merged into the other (its id)
+    #[argh(positional)]
+    from: String,
+    /// the server they were merged into (its id)
+    #[argh(positional)]
+    to: String,
 }
 
 #[derive(argh::FromArgs)]
@@ -361,6 +375,19 @@ async fn main() -> eyre::Result<()> {
                 println!("Removed server {} with its links. Rotate the join token (new-token) if it could join again.", r.id);
             } else {
                 println!("No server {}.", r.id);
+            }
+            return Ok(());
+        }
+        Some(Command::CopyLinks(l)) => {
+            let c = coordinator::Coordinator::open(&db.to_string_lossy(), String::new()).await?;
+            let (copied, left) = c.copy_links(&l.from, &l.to).await?;
+            c.audit("console", None, "copied a server's links", &format!("{} to {}: {copied}, {} left out", l.from, l.to, left.len())).await;
+            println!("Copied {copied} links of {} to {}.", l.from, l.to);
+            if !left.is_empty() {
+                println!("Left out {} ({} has the identity or the name already, linked otherwise):", left.len(), l.to);
+                for (global_id, username) in &left {
+                    println!("  {username} ({global_id})");
+                }
             }
             return Ok(());
         }

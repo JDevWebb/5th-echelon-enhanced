@@ -1058,6 +1058,28 @@ async fn names_belong_to_one_player_across_the_group() {
 }
 
 #[tokio::test]
+async fn a_merged_servers_links_are_copied_to_the_one_it_merged_into() {
+    let t = start("copy-links").await;
+    t.join("eu").await;
+    t.join("mm").await;
+    for (g, server, name) in [("aa", "eu", "Ann"), ("bb", "eu", "Bob"), ("cc", "eu", "Cy"), ("bb", "mm", "Bob"), ("dd", "mm", "Cy")] {
+        sqlx::query("INSERT INTO links (global_id, server_id, username, linked_at) VALUES (?, ?, ?, 5)")
+            .bind(g)
+            .bind(server)
+            .bind(name)
+            .execute(&t.c.pool)
+            .await
+            .unwrap();
+    }
+    let (copied, left) = t.c.copy_links("eu", "mm").await.unwrap();
+    assert_eq!(copied, 1, "Ann: Bob was there already");
+    assert_eq!(left, vec![("cc".to_string(), "Cy".to_string())], "another identity has Cy on mm");
+    assert!(t.c.linked("mm", "aa").await.unwrap());
+    assert!(t.c.linked("eu", "aa").await.unwrap(), "eu's stay");
+    assert_eq!(t.c.copy_links("eu", "mm").await.unwrap(), (0, left), "again: nothing new");
+}
+
+#[tokio::test]
 async fn links_made_before_names_existed_reserve_theirs() {
     let dir = std::env::temp_dir().join(format!("fe-coord-backfill-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
