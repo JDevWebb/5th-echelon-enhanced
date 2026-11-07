@@ -160,11 +160,19 @@ struct State {
     /// The relay isn't the game server's own (`networking.nat_host`): its ticket comes from
     /// showing it the relay pass from signing in, not from the sign-in itself.
     use_pass: bool,
-    /// The relay pass from signing in (day, signature), and the nonce of the last time it was
-    /// shown, while the relay hasn't answered with a ticket.
+    /// The relay pass from signing in (day, signature), and the nonces of the last times it
+    /// was shown, while the relay hasn't answered with a ticket: the answer to any of them is
+    /// taken. Only the very last was, and the pass is shown every 500 ms: a relay further than
+    /// that (a round trip of 511 ms from a Toronto VPN to Sydney, the gamebox, 2026-11-07)
+    /// always answered a showing already replaced, so its ticket was thrown away until a round
+    /// trip happened to be quicker (3 to 22 s): the game, asking for its address meanwhile,
+    /// advertised one nobody reaches, and every join to its match failed.
     pass: Option<(u32, [u8; 64])>,
-    pass_nonce: u32,
+    pass_sent: [u32; PASS_NONCES],
 }
+
+/// How many showings of the relay pass an answer may be to: 4 s of them, every 500 ms.
+const PASS_NONCES: usize = 8;
 
 static STATE: Mutex<State> = Mutex::new(State {
     mode: None,
@@ -194,7 +202,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     lost_at: None,
     use_pass: false,
     pass: None,
-    pass_nonce: 0,
+    pass_sent: [0; PASS_NONCES],
 });
 
 /// The helper not answering this long (three keepalives) is worth a line: it forgets a game
@@ -675,10 +683,10 @@ fn recvfrom(s: usize, buf: *mut u8, len: i32, flags: i32, from: *mut u8, fromlen
         }
         if let Some(Message::TicketGrant { nonce, ticket }) = Message::decode(data) {
             let mut st = state();
-            // Only the answer to our own last showing of the pass, from the helper.
-            if st.use_pass && nonce != 0 && nonce == st.pass_nonce && sender.is_some() && sender == st.server {
+            // Only an answer to one of our own recent showings of the pass, from the helper.
+            if st.use_pass && nonce != 0 && st.pass_sent.contains(&nonce) && sender.is_some() && sender == st.server {
                 info!("NAT: the relay took the relay pass; registering");
-                st.pass_nonce = 0;
+                st.pass_sent = [0; PASS_NONCES];
                 st.ticket = ticket;
                 st.last_answer = Some(Instant::now());
                 st.last_probe = None;
@@ -936,16 +944,18 @@ fn worker(host: String, port: u16) {
             // first (or nothing, until signing in gives one).
             if st.use_pass && st.ticket == [0; 16] {
                 let Some((day, signature)) = st.pass else { continue };
-                st.pass_nonce = rand::random::<u32>() | 1;
+                let nonce = rand::random::<u32>() | 1;
+                st.pass_sent.rotate_right(1);
+                st.pass_sent[0] = nonce;
                 let mut present = Message::TicketPresent {
-                    nonce: st.pass_nonce,
+                    nonce,
                     name: st.name.clone(),
                     day,
                     signature,
                 }
                 .encode();
                 let key = session_key();
-                nat_proto::add_key(&mut present, &key.public_key(), &key.sign_bytes(&nat_proto::present_message(st.pass_nonce, &st.name, day)));
+                nat_proto::add_key(&mut present, &key.public_key(), &key.sign_bytes(&nat_proto::present_message(nonce, &st.name, day)));
                 vec![(present, st.server)]
             } else {
                 // Random and never 0: whoever can send as the helper (e.g. on the LAN) can't
