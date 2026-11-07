@@ -819,6 +819,9 @@ fn change_now(change: FriendChange, id: &str, identity: &str, name: &str) {
     }
 }
 
+/// The server features the overlay asks about (`Data::*_offered`).
+const LOOKED_AT: [&str; 3] = ["join-now", "choose-match", "report-player"];
+
 fn refresh_now() {
     let host = crate::config::get().and_then(|c| c.api_server.host_str().map(String::from));
     let started = Instant::now();
@@ -828,8 +831,9 @@ fn refresh_now() {
         name: clip(&i.name, MAX_TEXT),
         version: clip(&i.version, MAX_NAME),
         revision: clip(&i.revision, MAX_NAME),
-        // Only the one looked at, kept short: a server's list, like all its text.
-        features: i.features.iter().filter(|f| *f == "join-now" || *f == "choose-match").map(|f| clip(f, MAX_NAME)).collect(),
+        // Only the ones looked at (`*_offered` above), kept short: a server's list, like all its
+        // text. report-player was left out, so the Match tab never offered Report a player.
+        features: i.features.iter().filter(|f| LOOKED_AT.contains(&f.as_str())).map(|f| clip(f, MAX_NAME)).collect(),
         maintenance: i
             .maintenance
             .into_iter()
@@ -1049,6 +1053,17 @@ fn content_length(head: &str) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn every_feature_asked_about_is_kept() {
+        // Each `f == "..."` the offers check: kept from the server's list, or never offered.
+        let src = include_str!("community.rs");
+        let asked: Vec<&str> = src.split("any(|f| f == \"").skip(1).filter_map(|rest| rest.split('"').next()).collect();
+        assert!(asked.len() >= 3, "{asked:?}");
+        for feature in asked {
+            assert!(super::LOOKED_AT.contains(&feature), "{feature} is asked about but dropped from the server's list");
+        }
+    }
+
     #[test]
     fn maintenance_is_warned_ten_minutes_before() {
         use super::maintenance_warning;
