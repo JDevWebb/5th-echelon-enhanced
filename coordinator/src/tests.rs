@@ -1077,6 +1077,11 @@ async fn a_merged_servers_links_are_copied_to_the_one_it_merged_into() {
     assert!(t.c.linked("mm", "aa").await.unwrap());
     assert!(t.c.linked("eu", "aa").await.unwrap(), "eu's stay");
     assert_eq!(t.c.copy_links("eu", "mm").await.unwrap(), (0, left), "again: nothing new");
+    // A name another identity has on mm in another case is taken too.
+    sqlx::query("INSERT INTO links (global_id, server_id, username, linked_at) VALUES ('ee', 'eu', 'ANN', 5)").execute(&t.c.pool).await.unwrap();
+    assert!(t.c.copy_links("eu", "mm").await.unwrap().1.contains(&("ee".to_string(), "ANN".to_string())));
+    assert!(t.c.copy_links("eu", "nowhere").await.is_err(), "not a member");
+    assert!(t.c.copy_links("eu", "eu").await.is_err(), "the same one");
 }
 
 #[tokio::test]

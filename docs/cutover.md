@@ -118,6 +118,8 @@ Announce it in the launcher's news and Discord.
    players' links:** on the coordinator (eu1), `sudo -u echelon-coord /opt/5th-echelon/coordinator
    --data /var/lib/5th-echelon-coordinator copy-links <eu1's id> <na1's id>`, and the same for
    oceania's id (it prints any left out: na1 has that identity or name linked otherwise; check each).
+   A link keeps the name it had on eu1 or oceania: an account the merge renamed (it prints them;
+   none expected) needs its link's name put right by hand.
    A link is the player's signed word, made once when they first link: na1 can't make them again,
    and without them every moved player's friends fail ("that player isn't linked on this server",
    found in the 2026-11-07 rehearsal). Check: na1's accounts with an identity

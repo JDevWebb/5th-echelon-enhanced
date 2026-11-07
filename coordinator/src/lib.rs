@@ -751,6 +751,15 @@ impl Coordinator {
     /// (`coordinator copy-links`). Answers how many were copied, and those left out.
     pub async fn copy_links(&self, from: &str, to: &str) -> sqlx::Result<(u64, Vec<(String, String)>)> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        // Both members (a mistyped id copies nothing), and not the same one.
+        let members: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM servers WHERE id IN (?, ?)")
+            .bind(from)
+            .bind(to)
+            .fetch_one(&mut *tx)
+            .await?;
+        if from == to || members != 2 {
+            return Err(sqlx::Error::RowNotFound);
+        }
         let rows: Vec<(String, String, i64)> = sqlx::query_as("SELECT global_id, username, linked_at FROM links WHERE server_id = ? ORDER BY linked_at")
             .bind(from)
             .fetch_all(&mut *tx)
@@ -758,7 +767,8 @@ impl Coordinator {
         let mut copied = 0;
         let mut left = Vec::new();
         for (global_id, username, linked_at) in rows {
-            let taken: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM links WHERE server_id = ? AND (global_id = ? OR username = ?)")
+            // The name in any case: names are one whatever their case.
+            let taken: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM links WHERE server_id = ? AND (global_id = ? OR lower(username) = lower(?))")
                 .bind(to)
                 .bind(&global_id)
                 .bind(&username)

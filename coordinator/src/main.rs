@@ -380,7 +380,10 @@ async fn main() -> eyre::Result<()> {
         }
         Some(Command::CopyLinks(l)) => {
             let c = coordinator::Coordinator::open(&db.to_string_lossy(), String::new()).await?;
-            let (copied, left) = c.copy_links(&l.from, &l.to).await?;
+            let Ok((copied, left)) = c.copy_links(&l.from, &l.to).await else {
+                println!("Nothing copied: {} and {} must be two member servers (their ids in the directory).", l.from, l.to);
+                return Ok(());
+            };
             c.audit("console", None, "copied a server's links", &format!("{} to {}: {copied}, {} left out", l.from, l.to, left.len())).await;
             println!("Copied {copied} links of {} to {}.", l.from, l.to);
             if !left.is_empty() {
