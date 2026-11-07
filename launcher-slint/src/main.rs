@@ -7,6 +7,7 @@ slint::include_modules!();
 mod chat;
 mod commands;
 mod core;
+mod docs_shots;
 mod feedback;
 mod host;
 mod intel;
@@ -23,6 +24,15 @@ mod whats_new;
 fn main() {
     // Every screen in both looks at several sizes, on made-up data (build.sh slint-shots).
     let args: Vec<String> = std::env::args().collect();
+    // The README's and the wiki's screenshots, on made-up data (build.sh slint-docs).
+    if let Some(at) = args.iter().position(|a| a == "--shots-docs") {
+        let dir = args.get(at + 1).map_or_else(|| "docs-shots".into(), std::path::PathBuf::from);
+        if let Err(e) = docs_shots::run(dir) {
+            eprintln!("shots: {e}");
+            std::process::exit(1);
+        }
+        return;
+    }
     if let Some(at) = args.iter().position(|a| a == "--shots") {
         let dir = args.get(at + 1).map_or_else(|| "shots".into(), std::path::PathBuf::from);
         if let Err(e) = shots::run(dir) {

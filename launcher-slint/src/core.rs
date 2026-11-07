@@ -388,7 +388,7 @@ pub struct Servers {
     pub note: Option<String>,
     /// The network's directory, when the launcher has one.
     pub network: Option<String>,
-    /// The server menu's header ("Community servers · scbl.jdevwebb.net").
+    /// The server menu's header ("Community network · scbl.jdevwebb.net").
     pub header: String,
     pub card: Option<ServerCard>,
 }
@@ -1460,7 +1460,7 @@ pub fn use_network(core: &Core, typed: &str) -> Result<(), String> {
     let s = if count == 1 { "" } else { "s" };
     inner.notices.info(format!(
         "Using the network {}: its {count} server{s} are in the server menu on the Play screen.",
-        connect::url_host(&url)
+        connect::network_shown(&url)
     ));
     drop(inner);
     core.changed(Changed::Activity);

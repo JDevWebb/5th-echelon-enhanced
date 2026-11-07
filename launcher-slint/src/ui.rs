@@ -77,7 +77,7 @@ impl Default for Filter {
 
 /// What pressing the Play button does.
 #[derive(Debug, Clone, Default, PartialEq)]
-enum Press {
+pub(crate) enum Press {
     #[default]
     Nothing,
     Play,
@@ -251,7 +251,7 @@ fn mode_label(mode: PlayMode) -> &'static str {
 /// P2), as the Tauri launcher's Play.vue works it out. Its tone is said by its words too, never
 /// by the colour alone. With something to fix, the button is the fix; playing anyway stays in the
 /// modes menu.
-fn play_button(info: &core::Info, list: Option<&core::Checklist>, notice: Option<&core::NoticeView>) -> (crate::PlayButton, Press) {
+pub(crate) fn play_button(info: &core::Info, list: Option<&core::Checklist>, notice: Option<&core::NoticeView>) -> (crate::PlayButton, Press) {
     let mode = mode_label(info.play_mode);
     let button = |label: &str, sub: &str, tone: &str, disabled: bool, busy: bool| crate::PlayButton {
         label: s(label),
@@ -322,8 +322,68 @@ fn play_button(info: &core::Info, list: Option<&core::Checklist>, notice: Option
     (button(mode, &sub, "ok", false, false), Press::Play)
 }
 
+/// A check as the Status tab shows it.
+pub(crate) fn check_row(c: &core::CheckView) -> crate::CheckRow {
+    crate::CheckRow {
+        id: s(c.id),
+        status: s(c.status),
+        title: s(&c.title),
+        detail: s(&c.detail),
+        fix_id: s(c.fix.map_or("", |f| f.0)),
+        fix_label: s(c.fix.map_or("", |f| f.1)),
+    }
+}
+
+/// A server as the server menu lists it.
+pub(crate) fn server_row(r: &launcher::server_menu::Row) -> crate::ServerRow {
+    crate::ServerRow {
+        host: s(&r.host),
+        place: s(&r.place),
+        name: s(&r.name),
+        ping: ms(r.ping),
+        players: r.players as i32,
+        playing: s(&r.playing),
+        current: r.current,
+        best: r.best,
+        maintenance: s(r.maintenance.clone().unwrap_or_default()),
+    }
+}
+
+/// The card beside Play.
+pub(crate) fn server_card(card: Option<core::ServerCard>) -> crate::ServerCard {
+    card.map_or_else(crate::ServerCard::default, |c| crate::ServerCard {
+        shown: true,
+        caption: s(c.caption),
+        caption_why: s(c.caption_why.unwrap_or_default()),
+        place: s(c.place),
+        ping: ms(c.ping),
+        listed: c.players.is_some(),
+        players: c.players.unwrap_or(0) as i32,
+    })
+}
+
+/// What the window knows of the setup.
+pub(crate) fn info_view(info: &core::Info) -> crate::InfoView {
+    crate::InfoView {
+        game_dir: s(info.game_dir.clone().unwrap_or_default()),
+        server: s(info.server.clone().unwrap_or_default()),
+        account: s(info.account.clone().unwrap_or_default()),
+        identity: s(info.identity.clone().unwrap_or_default()),
+        community: info.community,
+        play_mode: s(mode_id(info.play_mode)),
+        managed: info.managed,
+        running: info.running,
+        connecting: info.connecting,
+        beta: info.beta as i32,
+        name_not_allowed: s(info.name_not_allowed.clone().unwrap_or_default()),
+        emulator_notice: info.emulator_notice,
+        new_match: info.new_match,
+        requests: info.requests as i32,
+    }
+}
+
 /// The first letter of a name, for an avatar.
-fn initial(name: &str) -> String {
+pub(crate) fn initial(name: &str) -> String {
     name.chars().next().map_or_else(|| "?".to_string(), |c| c.to_uppercase().collect())
 }
 
@@ -336,22 +396,7 @@ impl Ui {
         let info = seen.info.clone();
         let busy = seen.checks.as_ref().is_some_and(|c| c.busy);
         drop(seen);
-        let view = crate::InfoView {
-            game_dir: s(info.game_dir.clone().unwrap_or_default()),
-            server: s(info.server.clone().unwrap_or_default()),
-            account: s(info.account.clone().unwrap_or_default()),
-            identity: s(info.identity.clone().unwrap_or_default()),
-            community: info.community,
-            play_mode: s(mode_id(info.play_mode)),
-            managed: info.managed,
-            running: info.running,
-            connecting: info.connecting,
-            beta: info.beta as i32,
-            name_not_allowed: s(info.name_not_allowed.clone().unwrap_or_default()),
-            emulator_notice: info.emulator_notice,
-            new_match: info.new_match,
-            requests: info.requests as i32,
-        };
+        let view = info_view(&info);
         // Why the server can't be changed now, if it can't.
         let server_blocked = if info.running {
             "Quit the game first"
@@ -406,18 +451,7 @@ impl Ui {
         self.spawn("checks", move |ui| {
             let all = ui.seen().all_checks;
             let list = core::checks(&ui.core, fresh, all);
-            let checks: Vec<crate::CheckRow> = list
-                .checks
-                .iter()
-                .map(|c| crate::CheckRow {
-                    id: s(c.id),
-                    status: s(c.status),
-                    title: s(&c.title),
-                    detail: s(&c.detail),
-                    fix_id: s(c.fix.map_or("", |f| f.0)),
-                    fix_label: s(c.fix.map_or("", |f| f.1)),
-                })
-                .collect();
+            let checks: Vec<crate::CheckRow> = list.checks.iter().map(check_row).collect();
             let (support_status, support_title, support_why) = list.support.clone().unwrap_or_default();
             let (fixable, busy, trouble) = (list.fixable, list.busy, list.tone == Some("fail"));
             let signed_in = list.signed_in;
@@ -454,30 +488,8 @@ impl Ui {
         self.show(|w| w.set_pinging(true));
         self.spawn("servers", move |ui| {
             let got = core::servers(&ui.core, fresh);
-            let rows: Vec<crate::ServerRow> = got
-                .rows
-                .iter()
-                .map(|r| crate::ServerRow {
-                    host: s(&r.host),
-                    place: s(&r.place),
-                    name: s(&r.name),
-                    ping: ms(r.ping),
-                    players: r.players as i32,
-                    playing: s(&r.playing),
-                    current: r.current,
-                    best: r.best,
-                    maintenance: s(r.maintenance.clone().unwrap_or_default()),
-                })
-                .collect();
-            let card = got.card.map_or_else(crate::ServerCard::default, |c| crate::ServerCard {
-                shown: true,
-                caption: s(c.caption),
-                caption_why: s(c.caption_why.unwrap_or_default()),
-                place: s(c.place),
-                ping: ms(c.ping),
-                listed: c.players.is_some(),
-                players: c.players.unwrap_or(0) as i32,
-            });
+            let rows: Vec<crate::ServerRow> = got.rows.iter().map(server_row).collect();
+            let card = server_card(got.card);
             let (header, note, network) = (got.header, got.note.unwrap_or_default(), got.network.is_some());
             ui.show(move |w| {
                 w.set_servers(model(rows));

@@ -22,6 +22,9 @@ pub const COMMUNITY_PREVIOUS: &str = "https://scbl.jdevwebb.net";
 /// it over). Still the same network: launchers that saved it move to [`COMMUNITY`], and the
 /// coordinator answers to both while older launchers update.
 pub const COMMUNITY_OLD: &str = "https://play.scbl.jdevwebb.net";
+/// The community network's address as players know it: its matchmaking server's. The launcher
+/// shows the network by it, never by its coordinator's own name.
+pub const COMMUNITY_ADDRESS: &str = "scbl.jdevwebb.net";
 /// The file, in the launcher's folder, keeping each directory's last list.
 pub const CACHE_FILE: &str = "directory-cache.json";
 /// The most directories kept in the cache.
@@ -352,7 +355,7 @@ pub fn built_in(coordinator: &str) -> Vec<Listing> {
     };
     // One server since 0.5.0 (global matchmaking): every player signs in to the matchmaking
     // server, by its record, and plays through the relay nearest them.
-    [("gbkmhlwthml6pggn", "5th Echelon Community", "Beauharnois, Canada", "scbl.jdevwebb.net")]
+    [("gbkmhlwthml6pggn", "5th Echelon Community", "Beauharnois, Canada", COMMUNITY_ADDRESS)]
         .into_iter()
         .map(|(id, name, region, host)| Listing {
             id: id.into(),
@@ -635,7 +638,10 @@ mod tests {
         // A release has no stand-in: the community's own coordinator only.
         #[cfg(not(feature = "test-community"))]
         assert_eq!(community(), COMMUNITY);
-        assert!(built_in("https://rh-sgp02.scbl.jdevwebb.net").is_empty(), "never the community's servers for another directory");
+        assert!(
+            built_in("https://rh-sgp02.scbl.jdevwebb.net").is_empty(),
+            "never the community's servers for another directory"
+        );
         assert!(!built_in(COMMUNITY_OLD).is_empty());
         // A list kept under the old name is the community's under the new one, and replaced
         // by the new name's, not kept beside it.

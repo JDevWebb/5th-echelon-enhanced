@@ -14,6 +14,9 @@
 #   build/build.sh slint-shots
 #                            every screen of the launcher in both looks at several window sizes, on
 #                            made-up data, on a virtual screen -> dist/slint-shots/*.png
+#   build/build.sh slint-docs
+#                            the README's and the wiki's screenshots, the launcher's own pages on a
+#                            made-up install -> dist/slint-docs/*.png
 #   (not released from 0.5.0, kept a release as the fallback: the egui launcher)
 #   build/build.sh egui      the egui launcher for Windows and Linux x86_64, the DLL embedded
 #                            -> dist/launcher-egui.exe, dist/launcher-egui-linux-x86_64
@@ -155,6 +158,22 @@ case "${1:-test}" in
     run -e CARGO_TARGET_DIR=/target/launcher-slint -w /src/launcher-slint fes-slint:local cargo build -q
     run --network none -e CARGO_TARGET_DIR=/target/launcher-slint -e SLINT_BACKEND=winit-software fes-slint:local \
       xvfb-run -a -s "-screen 0 2000x1200x24" /target/launcher-slint/debug/launcher-slint --shots /src/dist/slint-shots
+    ;;
+  slint-docs)
+    # The README's and the wiki's screenshots -> dist/slint-docs (launcher-slint/src/docs_shots.rs):
+    # the launcher's own pages on a made-up install, in the dark look at 1280x800, named as the
+    # docs use them. Built with the network, run with none (nothing reaches a real server).
+    docker build -q -t fes-slint:local -f build/Dockerfile.slint build >/dev/null
+    rm -rf dist/slint-docs
+    # With the client DLL (build.sh windows makes it), so Settings › 5th Echelon client has one.
+    [ -f dist/uplay_r1_loader.dll ] || { echo "dist/uplay_r1_loader.dll is missing: build.sh windows first"; exit 1; }
+    run -e CARGO_TARGET_DIR=/target/launcher-slint-docs -e HOOKS_DLL=/src/dist/uplay_r1_loader.dll -w /src/launcher-slint fes-slint:local \
+      cargo build -q --features embed-dll
+    run --network none -e SLINT_BACKEND=winit-software \
+      -e XDG_CONFIG_HOME=/tmp/fe-docs -e HOME=/tmp/fe-docs-home -e DISPLAY=:99 fes-slint:local sh -c '
+        # Xvfb started here: xvfb-run can wait forever for its ready signal.
+        Xvfb :99 -screen 0 2000x1200x24 -nolisten tcp & sleep 2
+        timeout 600 /target/launcher-slint-docs/debug/launcher-slint --shots-docs /src/dist/slint-docs'
     ;;
   tauri-trial)
     # The Tauri trial (trials/tauri-play) for Windows and for Linux x86_64 (the Steam Deck) ->

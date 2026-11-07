@@ -65,6 +65,11 @@ impl SettingsPage {
         }
     }
 
+    /// The connection test's results as if it had run (the screenshots).
+    pub(crate) fn tested(&mut self, list: Vec<(String, String, String)>) {
+        self.tests = Some(Ok(list));
+    }
+
     pub fn set_size(&mut self, app: &AppHandle, size: f32) {
         self.size = launcher::prefs::clamp((size * 10.0).round() / 10.0);
         launcher::prefs::Prefs::set_ui_scale(self.size);
@@ -603,12 +608,16 @@ impl SettingsPage {
             r.add(buttons(vec![super::b("import-confirmed", "Replace it").kind("danger"), super::b("cancel", "Cancel")]));
         }
         r.add(rule());
+        // The community network's shows as the box's placeholder (players never see its
+        // coordinator's own name); another network's address as it is.
         let saved = st(v, "directory");
-        let typed = self.directory.clone().unwrap_or_else(|| saved.clone());
+        let community = launcher::prefs::Prefs::is_community(&saved);
+        let shown = if community { String::new() } else { saved.clone() };
+        let typed = self.directory.clone().unwrap_or_else(|| shown.clone());
         r.add(
             field("directory", "Server directory", typed.clone())
-                .placeholder("https://coordinator.example.com")
-                .button(super::b("save-directory", "Save").enabled(typed != saved)),
+                .placeholder(if community { "The community network" } else { "https://coordinator.example.com" })
+                .button(super::b("save-directory", "Save").enabled(typed != shown && !typed.trim().is_empty())),
         );
         if let Some(e) = &self.directory_error {
             r.add(bad(e.clone()));

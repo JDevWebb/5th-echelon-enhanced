@@ -138,6 +138,16 @@ pub fn run_by(listed: bool, loaded: bool) -> Option<(String, String)> {
     }
 }
 
+/// A network as players are shown it: the community network by its address
+/// ([`setup::directory::COMMUNITY_ADDRESS`]), another by its coordinator's host.
+pub fn network_shown(url: &str) -> &str {
+    if Prefs::is_community(url) {
+        setup::directory::COMMUNITY_ADDRESS
+    } else {
+        url_host(url)
+    }
+}
+
 /// A network's host, from its address.
 pub fn url_host(url: &str) -> &str {
     url.trim_start_matches("https://").trim_end_matches('/')
@@ -146,7 +156,7 @@ pub fn url_host(url: &str) -> &str {
 /// The server menu's header: the network its servers are from.
 pub fn menu_header(network: Option<&str>) -> String {
     match network {
-        Some(url) if Prefs::is_community(url) => format!("Community servers · {}", url_host(url)),
+        Some(url) if Prefs::is_community(url) => format!("Community network · {}", network_shown(url)),
         Some(url) => format!("Servers · {}", url_host(url)),
         None => "No network".to_string(),
     }

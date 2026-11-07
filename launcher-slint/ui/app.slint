@@ -50,6 +50,8 @@ export component AppWindow inherits Window {
     in property <ServerCard> card;
     in property <[ServerRow]> servers;
     in property <string> servers-header;
+    // The Play screen's server menu open (the screenshots open it).
+    in-out property <bool> servers-open;
     in property <string> servers-note;
     in property <bool> network;
     in property <bool> pinging;
@@ -248,6 +250,7 @@ export component AppWindow inherits Window {
                         card: root.card;
                         servers: root.servers;
                         servers-header: root.servers-header;
+                        servers-open <=> root.servers-open;
                         servers-note: root.servers-note;
                         network: root.network;
                         pinging: root.pinging;

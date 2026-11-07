@@ -55,6 +55,15 @@ impl Account {
         }
         a
     }
+
+    /// The server as if it had answered, with `name` checked free (the screenshots).
+    pub(crate) fn answered(&mut self, server: crate::core::AccountServer, version: &str, name: &str) {
+        self.ping = server.ping;
+        self.version = version.into();
+        self.probed = Some(Ok(server));
+        self.name = name.into();
+        self.checks.insert(name.into(), Ok(launcher::flow::NameCheck::Free));
+    }
 }
 
 #[derive(Default)]

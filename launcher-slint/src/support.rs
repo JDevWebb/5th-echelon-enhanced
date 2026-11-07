@@ -36,6 +36,16 @@ struct State {
 }
 
 impl Support {
+    /// The conversation as if it had been read: `thread`, with the screen showing (the
+    /// screenshots).
+    pub(crate) fn read_as(&self, thread: setup::support::Thread) {
+        let mut st = self.lock();
+        st.thread = Some(thread);
+        st.error = None;
+        st.open = true;
+        st.read_at = Some(Instant::now());
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, State> {
         self.inner.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }

@@ -15,10 +15,6 @@ pub struct ServersPage {
     lan: Option<Result<Vec<String>, String>>,
 }
 
-fn host_of(url: &str) -> String {
-    url.trim_start_matches("https://").trim_end_matches('/').to_string()
-}
-
 /// The account dialog for a server of the player's own (it's also the confirmation).
 pub fn own(app: &AppHandle, server: &str) {
     let suggested = crate::core::usual_name(&app.state::<Launcher>().0);
@@ -39,7 +35,7 @@ impl Screen for ServersPage {
         let core = app.state::<Launcher>().0.clone();
         let info = crate::core::info(&core);
         let mut r = Rows::default();
-        let summary = "Community servers are in the server menu on the Play screen. Here: a server of your own, a LAN party, or another network.";
+        let summary = "The community network is on the Play screen. Here: a server of your own, a LAN party, or another network.";
         if info.game_dir.is_none() {
             r.add(note("Find the game first (Play)."));
         } else if info.managed {
@@ -58,9 +54,12 @@ impl Screen for ServersPage {
                     };
                     let lead = if community { "The 5th Echelon community network · " } else { "" };
                     r.add(
-                        item(host_of(url), format!("{lead}{count}your friends and identity follow you between its servers"))
-                            .tone("accent")
-                            .text("In use"),
+                        item(
+                            launcher::connect::network_shown(url),
+                            format!("{lead}{count}your friends and identity follow you between its servers"),
+                        )
+                        .tone("accent")
+                        .text("In use"),
                     );
                 }
                 None => {

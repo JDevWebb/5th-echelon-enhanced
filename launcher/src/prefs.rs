@@ -628,7 +628,8 @@ impl Prefs {
         true
     }
 
-    fn forget_cached_directory() {
+    /// Reads the directory from the settings file again next time (they were written by hand: the screenshots).
+    pub fn forget_cached_directory() {
         *DIRECTORY_CACHE.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     }
 }

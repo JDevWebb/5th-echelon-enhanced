@@ -1009,7 +1009,8 @@ export component PlayScreen inherits Rectangle {
         }
     }
 
-    property <bool> servers-open;
+    // The server menu open (in-out for the screenshots, which open it).
+    in-out property <bool> servers-open;
     property <bool> modes-open;
     // The window's height (from AppWindow: the screen's own would loop through its layout).
     in property <length> window-height: 800px;

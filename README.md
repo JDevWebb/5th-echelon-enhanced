@@ -117,10 +117,10 @@ You need **Splinter Cell: Blacklist on PC** (Steam or Ubisoft Connect) and **Win
 - **Radmin VPN, Hamachi and the like** can stay installed, and don't need to be on: you don't need a VPN for the community servers.
 
 <p align="center">
-  <img src="./docs/screenshots/launcher-setup.png" width="640" alt="The launcher's first-run setup: the steps, and the servers to choose from with your ping to each, the closest picked">
+  <img src="./docs/screenshots/launcher-setup.png" width="640" alt="The launcher's first-run setup, step 2 of 5, Choose a server: the game found, the 5th Echelon Community server (Beauharnois, Canada) chosen and marked Best for you, an address box, Ping again and Find on my network">
 </p>
 <p align="center">
-  <img src="./docs/screenshots/launcher-play.png" width="640" alt="The launcher's home screen with the server menu open: the network's servers best first, each with its ping and players online, the current one ticked; beside it Ready to play and a big Play button, and cards for status, friends and the server's news">
+  <img src="./docs/screenshots/launcher-play.png" width="640" alt="The launcher's Play screen: the server card (Beauharnois, Canada, 38 ms, 87 online), the Play button with Ready to play, everything checked, the server's news, and the Squad tab with friends online, what's being played and a friend request">
 </p>
 
 **What Connect does for you:**
@@ -144,7 +144,7 @@ The **Status** card on the home screen keeps an eye on all of this. Anything tha
 **While you play,** the game sends the server it's signed in to its warnings, errors and network events, and what it's doing (the game session it's in, its checkpoint saves; a few lines a minute at most), so the server's admins can see why a join or a connection failed. The same private details are hidden first. When something goes wrong (a join that fails, your connection dropping), the server can also ask for the 15 minutes of the game's log before it, at most once an hour (never the whole log), private details hidden the same way. **Settings › Feedback › Send the game's diagnostics to the server** turns all of it off.
 
 <p align="center">
-  <img src="./docs/screenshots/launcher-servers.png" width="640" alt="The launcher's Servers screen: the network in use with a box for another network's address and a link back to the community network, a server of your own by address with two recent servers, and finding a server on your network">
+  <img src="./docs/screenshots/launcher-servers.png" width="640" alt="The launcher's Servers screen: the community network in use (scbl.jdevwebb.net), a box for another network's address, a server of your own by address with a recent one, and finding a server on your network">
 </p>
 
 > [!TIP]
@@ -386,7 +386,7 @@ Matches run **peer to peer** between players. The server's NAT helper (21128–2
 The launcher stops the server when it closes. The **Manage a server** section lists players and games, and shows the log.
 
 <p align="center">
-  <img src="./docs/screenshots/launcher-server.png" width="640" alt="The launcher's Host screen: a running server and its player list">
+  <img src="./docs/screenshots/launcher-server.png" width="640" alt="The launcher's Host screen: Run a server on this PC, with Download the server, and Manage a server, with its address and admin key">
 </p>
 
 ### On Windows: on its own
