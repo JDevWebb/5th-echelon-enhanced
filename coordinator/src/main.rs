@@ -384,7 +384,13 @@ async fn main() -> eyre::Result<()> {
                 println!("Nothing copied: {} and {} must be two member servers (their ids in the directory).", l.from, l.to);
                 return Ok(());
             };
-            c.audit("console", None, "copied a server's links", &format!("{} to {}: {copied}, {} left out", l.from, l.to, left.len())).await;
+            c.audit(
+                "console",
+                None,
+                "copied a server's links",
+                &format!("{} to {}: {copied}, {} left out", l.from, l.to, left.len()),
+            )
+            .await;
             println!("Copied {copied} links of {} to {}.", l.from, l.to);
             if !left.is_empty() {
                 println!("Left out {} ({} has the identity or the name already, linked otherwise):", left.len(), l.to);

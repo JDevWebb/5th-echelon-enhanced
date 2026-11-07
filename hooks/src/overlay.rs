@@ -406,7 +406,13 @@ fn add_fonts(ctx: &mut imgui::Context, scale: f32) -> Fonts {
     let brand = add(include_bytes!("../fonts/IBMPlexSansCondensed-Bold.ttf"), BRAND_PX, "IBM Plex Sans Condensed Bold (brand)");
     let caps = add(include_bytes!("../fonts/IBMPlexMono-Regular.ttf"), CAPS_PX, "IBM Plex Mono");
     let title = add(include_bytes!("../fonts/IBMPlexSansCondensed-Bold.ttf"), TITLE_PX, "IBM Plex Sans Condensed Bold (title)");
-    Fonts { strong, heading, brand, caps, title }
+    Fonts {
+        strong,
+        heading,
+        brand,
+        caps,
+        title,
+    }
 }
 
 #[allow(dead_code)]
@@ -1628,8 +1634,14 @@ impl MyRenderLoop {
         let mut picked = None;
         {
             let dl = ui.get_window_draw_list();
-            dl.add_rect(start, [start[0] + total, start[1] + h + self.s(6.0)], pal().surface).filled(true).rounding(self.s(6.0)).build();
-            dl.add_rect(start, [start[0] + total, start[1] + h + self.s(6.0)], pal().line).rounding(self.s(6.0)).thickness(1.0).build();
+            dl.add_rect(start, [start[0] + total, start[1] + h + self.s(6.0)], pal().surface)
+                .filled(true)
+                .rounding(self.s(6.0))
+                .build();
+            dl.add_rect(start, [start[0] + total, start[1] + h + self.s(6.0)], pal().line)
+                .rounding(self.s(6.0))
+                .thickness(1.0)
+                .build();
         }
         let mut x = start[0] + self.s(3.0);
         for (i, (label, w)) in labels.iter().zip(&widths).enumerate() {
@@ -1650,7 +1662,13 @@ impl MyRenderLoop {
             if on {
                 dl.add_rect(at, [at[0] + w, at[1] + h], pal().accent_soft).rounding(self.s(4.0)).thickness(1.0).build();
             }
-            let color = if on { pal().accent } else if hovered { pal().fg } else { pal().muted };
+            let color = if on {
+                pal().accent
+            } else if hovered {
+                pal().fg
+            } else {
+                pal().muted
+            };
             self.with_font(ui, |f| f.strong, || dl.add_text([at[0] + pad_x, at[1] + self.s(8.0)], color, label));
             x += w;
         }
@@ -1840,26 +1858,29 @@ impl MyRenderLoop {
                     }
                 }
                 let _boxed = self.boxed(ui);
-                ui.child_window("##fe-chat-people").size([self.s(190.0), log_h + input_h - self.s(8.0)]).always_use_window_padding(true).build(|| {
-                    if people.is_empty() {
-                        let _c = ui.push_style_color(StyleColor::Text, pal().muted);
-                        ui.text_wrapped("No friends to message yet. Add some in Find players.");
-                    }
-                    for (identity, name) in &people {
-                        let unread = v.unread.get(identity).copied().unwrap_or(0);
-                        let online = v.friends.iter().any(|(i, _, o)| i == identity && *o);
-                        let label = match (unread, online) {
-                            (0, true) => format!("● {name}"),
-                            (0, false) => name.clone(),
-                            (n, _) => format!("{name} ({n})"),
-                        };
-                        let chosen = self.chat_with.as_deref() == Some(identity.as_str());
-                        if ui.selectable_config(format!("{label}##fe-chat-with-{:016x}", ui_id(identity))).selected(chosen).build() {
-                            self.chat_with = Some(identity.clone());
-                            chat::open_conversation(identity.clone());
+                ui.child_window("##fe-chat-people")
+                    .size([self.s(190.0), log_h + input_h - self.s(8.0)])
+                    .always_use_window_padding(true)
+                    .build(|| {
+                        if people.is_empty() {
+                            let _c = ui.push_style_color(StyleColor::Text, pal().muted);
+                            ui.text_wrapped("No friends to message yet. Add some in Find players.");
                         }
-                    }
-                });
+                        for (identity, name) in &people {
+                            let unread = v.unread.get(identity).copied().unwrap_or(0);
+                            let online = v.friends.iter().any(|(i, _, o)| i == identity && *o);
+                            let label = match (unread, online) {
+                                (0, true) => format!("● {name}"),
+                                (0, false) => name.clone(),
+                                (n, _) => format!("{name} ({n})"),
+                            };
+                            let chosen = self.chat_with.as_deref() == Some(identity.as_str());
+                            if ui.selectable_config(format!("{label}##fe-chat-with-{:016x}", ui_id(identity))).selected(chosen).build() {
+                                self.chat_with = Some(identity.clone());
+                                chat::open_conversation(identity.clone());
+                            }
+                        }
+                    });
                 drop(_boxed);
                 ui.same_line();
                 ui.group(|| {
@@ -2009,28 +2030,28 @@ impl MyRenderLoop {
         };
         let join_offered = self.data.join_offered();
         self.card(ui, &title, || {
-        for p in found {
-            let (detail, mut actions) = match p.relation {
-                community::Relation::Friend => (format!("Friend · {}", Self::status(p)), vec![]),
-                community::Relation::RequestSent => (String::from("Friend request sent"), vec![RowAction::Change(C::Decline, "Cancel")]),
-                community::Relation::RequestReceived => (String::from("Wants to be your friend"), vec![RowAction::Change(C::Accept, "Accept")]),
-                community::Relation::Blocked => (String::from("Blocked"), vec![RowAction::Change(C::Unblock, "Unblock")]),
-                community::Relation::None => (Self::status(p), vec![RowAction::Change(C::Block, "Block"), RowAction::Change(C::Request, "Add friend")]),
-            };
-            let detail = match (p.identity.is_empty(), p.name_status) {
-                (true, _) => format!("{detail}  ·  no identity"),
-                (false, community::NameStatus::Reserved) => format!("{detail}  ·  ID {} (name reserved)", p.identity),
-                (false, _) => format!("{detail}  ·  ID {}", p.identity),
-            };
-            let can_invite = p.online && (p.relation == community::Relation::Friend || (self.data.everyone_mode && p.relation == community::Relation::None));
-            if can_invite {
-                actions.push(RowAction::Invite);
-                if join_offered && Self::joinable(p) {
-                    actions.push(RowAction::Join);
+            for p in found {
+                let (detail, mut actions) = match p.relation {
+                    community::Relation::Friend => (format!("Friend · {}", Self::status(p)), vec![]),
+                    community::Relation::RequestSent => (String::from("Friend request sent"), vec![RowAction::Change(C::Decline, "Cancel")]),
+                    community::Relation::RequestReceived => (String::from("Wants to be your friend"), vec![RowAction::Change(C::Accept, "Accept")]),
+                    community::Relation::Blocked => (String::from("Blocked"), vec![RowAction::Change(C::Unblock, "Unblock")]),
+                    community::Relation::None => (Self::status(p), vec![RowAction::Change(C::Block, "Block"), RowAction::Change(C::Request, "Add friend")]),
+                };
+                let detail = match (p.identity.is_empty(), p.name_status) {
+                    (true, _) => format!("{detail}  ·  no identity"),
+                    (false, community::NameStatus::Reserved) => format!("{detail}  ·  ID {} (name reserved)", p.identity),
+                    (false, _) => format!("{detail}  ·  ID {}", p.identity),
+                };
+                let can_invite = p.online && (p.relation == community::Relation::Friend || (self.data.everyone_mode && p.relation == community::Relation::None));
+                if can_invite {
+                    actions.push(RowAction::Invite);
+                    if join_offered && Self::joinable(p) {
+                        actions.push(RowAction::Join);
+                    }
                 }
+                self.player_row(ui, "found", p, &detail, &actions);
             }
-            self.player_row(ui, "found", p, &detail, &actions);
-        }
         });
     }
 
@@ -2155,62 +2176,64 @@ impl MyRenderLoop {
             community::match_players();
         }
         self.card(ui, "Report a player", || {
-        if self.data.match_players.is_empty() {
-            self.note(ui, "Players in your match, and in your matches of the last 30 minutes, show here to report to the admins.");
-            return;
-        }
-        let label = "Report##fe-report";
-        let w = self.button_width(ui, label);
-        for (id, name, now) in &self.data.match_players {
-            let reported = self.data.reported.contains(id);
-            let detail = match (reported, now) {
-                (true, _) => "Reported: the admins have it",
-                (false, true) => "In your match",
-                (false, false) => "In a match of yours lately",
-            };
-            let open = state.0.as_ref().is_some_and(|(o, ..)| o == id);
-            self.row_colored(ui, None, name, detail, pal().muted, if reported || open { 0.0 } else { w }, || {
-                if self.button(ui, &format!("Report##fe-report-{:016x}", ui_id(id)), false) {
-                    state.0 = Some((id.clone(), name.clone(), 0, String::new()));
+            if self.data.match_players.is_empty() {
+                self.note(ui, "Players in your match, and in your matches of the last 30 minutes, show here to report to the admins.");
+                return;
+            }
+            let label = "Report##fe-report";
+            let w = self.button_width(ui, label);
+            for (id, name, now) in &self.data.match_players {
+                let reported = self.data.reported.contains(id);
+                let detail = match (reported, now) {
+                    (true, _) => "Reported: the admins have it",
+                    (false, true) => "In your match",
+                    (false, false) => "In a match of yours lately",
+                };
+                let open = state.0.as_ref().is_some_and(|(o, ..)| o == id);
+                self.row_colored(ui, None, name, detail, pal().muted, if reported || open { 0.0 } else { w }, || {
+                    if self.button(ui, &format!("Report##fe-report-{:016x}", ui_id(id)), false) {
+                        state.0 = Some((id.clone(), name.clone(), 0, String::new()));
+                    }
+                });
+                let Some((form_id, form_name, reason, text)) = state.0.as_mut().filter(|(o, ..)| o == id) else {
+                    continue;
+                };
+                ui.text(format!("Why are you reporting {form_name}?"));
+                // The choices' circles in the edge's colour: a control's ground is barely
+                // there on a card.
+                let _radio = (
+                    ui.push_style_color(StyleColor::FrameBg, pal().line),
+                    ui.push_style_color(StyleColor::FrameBgHovered, pal().surface_hover),
+                );
+                for (n, (_, shown)) in REASONS.iter().enumerate() {
+                    if n > 0 {
+                        ui.same_line();
+                    }
+                    ui.radio_button(format!("{shown}##fe-report-reason-{n}"), reason, n);
                 }
-            });
-            let Some((form_id, form_name, reason, text)) = state.0.as_mut().filter(|(o, ..)| o == id) else {
-                continue;
-            };
-            ui.text(format!("Why are you reporting {form_name}?"));
-            // The choices' circles in the edge's colour: a control's ground is barely
-            // there on a card.
-            let _radio = (
-                ui.push_style_color(StyleColor::FrameBg, pal().line),
-                ui.push_style_color(StyleColor::FrameBgHovered, pal().surface_hover),
-            );
-            for (n, (_, shown)) in REASONS.iter().enumerate() {
-                if n > 0 {
-                    ui.same_line();
+                drop(_radio);
+                ui.set_next_item_width(self.avail_w(ui));
+                ui.input_text("##fe-report-text", text).hint("What happened (optional)").build();
+                if text.chars().count() > 500 {
+                    *text = text.chars().take(500).collect();
                 }
-                ui.radio_button(format!("{shown}##fe-report-reason-{n}"), reason, n);
+                {
+                    let _c = ui.push_style_color(StyleColor::Text, pal().muted);
+                    ui.text_wrapped(
+                        "The admins get your report with the match and the server's log of it. Reports are for the admins only; the player isn't told who reported them.",
+                    );
+                }
+                let send = self.button(ui, "Send report##fe-report-send", true);
+                ui.same_line();
+                let cancel = self.button(ui, "Cancel##fe-report-cancel", false);
+                if send {
+                    community::report_player(form_id.clone(), form_name.clone(), REASONS[*reason].0, text.trim().to_string());
+                }
+                if send || cancel {
+                    state.0 = None;
+                }
+                ui.dummy([0.0, self.s(6.0)]);
             }
-            drop(_radio);
-            ui.set_next_item_width(self.avail_w(ui));
-            ui.input_text("##fe-report-text", text).hint("What happened (optional)").build();
-            if text.chars().count() > 500 {
-                *text = text.chars().take(500).collect();
-            }
-            {
-                let _c = ui.push_style_color(StyleColor::Text, pal().muted);
-                ui.text_wrapped("The admins get your report with the match and the server's log of it. Reports are for the admins only; the player isn't told who reported them.");
-            }
-            let send = self.button(ui, "Send report##fe-report-send", true);
-            ui.same_line();
-            let cancel = self.button(ui, "Cancel##fe-report-cancel", false);
-            if send {
-                community::report_player(form_id.clone(), form_name.clone(), REASONS[*reason].0, text.trim().to_string());
-            }
-            if send || cancel {
-                state.0 = None;
-            }
-            ui.dummy([0.0, self.s(6.0)]);
-        }
         });
     }
 
@@ -2222,48 +2245,48 @@ impl MyRenderLoop {
             return;
         }
         self.card(ui, "Choose your match", || {
-        let pending = crate::community::new_match_pending();
-        let new_label = if pending { "Cancel##fe-new-match" } else { "New match##fe-new-match" };
-        let join_label = "Join##fe-room";
-        let w = self.button_width(ui, new_label).max(self.button_width(ui, join_label));
-        let (title, detail) = if pending {
-            ("New match asked for", "Start matchmaking now: you host, skipping every open match")
-        } else {
-            ("Start a new match", "Quick match skips every open match and you host your own")
-        };
-        self.row(ui, None, title, detail, w, || {
-            if self.button(ui, new_label, !pending) {
-                crate::community::new_match(!pending);
-            }
-        });
-        let Some(playing) = &self.data.playing else {
-            self.note(ui, "The server hasn't said what's open.");
-            return;
-        };
-        let open: Vec<_> = playing.matches.iter().filter(|m| m.room != 0).collect();
-        if open.is_empty() {
-            // In line with the rows' text.
-            let at = ui.cursor_pos();
-            ui.set_cursor_pos([at[0] + self.s(12.0), at[1]]);
-            self.note(ui, "No public matches are open right now.");
-        }
-        for m in open {
-            let full = m.seats > 0 && m.players >= m.seats;
-            let detail = if m.started {
-                "Under way: you can join when it's over"
-            } else if full {
-                "Full"
+            let pending = crate::community::new_match_pending();
+            let new_label = if pending { "Cancel##fe-new-match" } else { "New match##fe-new-match" };
+            let join_label = "Join##fe-room";
+            let w = self.button_width(ui, new_label).max(self.button_width(ui, join_label));
+            let (title, detail) = if pending {
+                ("New match asked for", "Start matchmaking now: you host, skipping every open match")
             } else {
-                "Open"
+                ("Start a new match", "Quick match skips every open match and you host your own")
             };
-            let label = format!("Join##fe-room-{}", m.room);
-            let dot = if m.started || full { pal().warn } else { pal().ok };
-            self.row(ui, Some(dot), &m.line(), detail, w, || {
-                if !m.started && !full && self.button(ui, &label, false) {
-                    crate::community::join_room(m.room, m.mode_name().to_string());
+            self.row(ui, None, title, detail, w, || {
+                if self.button(ui, new_label, !pending) {
+                    crate::community::new_match(!pending);
                 }
             });
-        }
+            let Some(playing) = &self.data.playing else {
+                self.note(ui, "The server hasn't said what's open.");
+                return;
+            };
+            let open: Vec<_> = playing.matches.iter().filter(|m| m.room != 0).collect();
+            if open.is_empty() {
+                // In line with the rows' text.
+                let at = ui.cursor_pos();
+                ui.set_cursor_pos([at[0] + self.s(12.0), at[1]]);
+                self.note(ui, "No public matches are open right now.");
+            }
+            for m in open {
+                let full = m.seats > 0 && m.players >= m.seats;
+                let detail = if m.started {
+                    "Under way: you can join when it's over"
+                } else if full {
+                    "Full"
+                } else {
+                    "Open"
+                };
+                let label = format!("Join##fe-room-{}", m.room);
+                let dot = if m.started || full { pal().warn } else { pal().ok };
+                self.row(ui, Some(dot), &m.line(), detail, w, || {
+                    if !m.started && !full && self.button(ui, &label, false) {
+                        crate::community::join_room(m.room, m.mode_name().to_string());
+                    }
+                });
+            }
         });
     }
 
@@ -2303,7 +2326,11 @@ impl MyRenderLoop {
         let reach = crate::hooks::nat::status().unwrap_or_else(|| String::from("Not started yet"));
         self.card(ui, "Connection", || {
             // Whether it answers, as the header's dot says it.
-            let (dot, state) = if self.connection_error.is_some() { (pal().bad, "Not connected") } else { (pal().ok, "Connected") };
+            let (dot, state) = if self.connection_error.is_some() {
+                (pal().bad, "Not connected")
+            } else {
+                (pal().ok, "Connected")
+            };
             self.row(ui, Some(dot), &host, &format!("{state}  ·  {response}"), 0.0, || {});
             ui.dummy([0.0, self.s(2.0)]);
             self.fact(ui, "Server", &server);
