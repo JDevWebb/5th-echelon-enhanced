@@ -12,7 +12,6 @@ use server_api::misc::TestP2pRequest;
 use tokio::net::UdpSocket;
 
 use super::Error;
-use super::QUAZAL_DEFAULT_LOCAL_PORT;
 
 /// Tests the Quazal login process against a server.
 ///
@@ -51,9 +50,13 @@ struct Quazal {
     sequence: u16,
 }
 
-/// Sets up a UDP socket for Quazal communication.
+/// Sets up a UDP socket for Quazal communication, on any free local port. It was the game's own
+/// (3074): with the game running it couldn't be had, and with another PC behind the same router
+/// talking to the same server from 3074 (a housemate's game; the gamebox, 2026-11-07) the router
+/// had no second mapping for it and the sign-in timed out, though the server was fine. Whether
+/// the game's own port reaches this PC is the connection test's next step.
 async fn quazal_setup(server: &str, port: u16) -> std::io::Result<UdpSocket> {
-    let socket = tokio::net::UdpSocket::bind(format!("0.0.0.0:{QUAZAL_DEFAULT_LOCAL_PORT}")).await?;
+    let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
     socket.connect(format!("{server}:{port}")).await?;
     Ok(socket)
 }

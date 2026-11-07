@@ -307,13 +307,16 @@ export component ActivityBar inherits Rectangle {
         padding-top: 8px;
         padding-bottom: 8px;
         spacing: 12px;
-        Rectangle {
-            width: 8px;
-            height: 8px;
-            y: (parent.height - self.height) / 2;
-            border-radius: 4px;
-            background: a.state == "failed" ? Theme.bad : Theme.accent;
-            opacity: a.state == "working" && !Theme.reduced-motion ? 0.35 + 0.65 * Math.abs(Math.sin(animation-tick() / 1200ms * 180deg)) : 1;
+        // Centred on the line (a layout ignores a child's own y: it sat at the row's top).
+        VerticalLayout {
+            alignment: center;
+            Rectangle {
+                width: 8px;
+                height: 8px;
+                border-radius: 4px;
+                background: a.state == "failed" ? Theme.bad : Theme.accent;
+                opacity: a.state == "working" && !Theme.reduced-motion ? 0.35 + 0.65 * Math.abs(Math.sin(animation-tick() / 1200ms * 180deg)) : 1;
+            }
         }
         Text {
             horizontal-stretch: 1;
