@@ -113,7 +113,8 @@ impl Recorder {
             recorder: self.me.clone(),
             map: map.clone(),
             mode: mode.clone(),
-            build: env!("CARGO_PKG_VERSION").to_string(),
+            // The release (0.5.0), as the overlay and the sign-in say it: not the crate's own version.
+            build: env!("FE_RELEASE").to_string(),
         };
         let file = match std::fs::File::create(&path) {
             Ok(f) => f,

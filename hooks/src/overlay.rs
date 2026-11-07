@@ -2178,12 +2178,19 @@ impl MyRenderLoop {
                 continue;
             };
             ui.text(format!("Why are you reporting {form_name}?"));
+            // The choices' circles in the edge's colour: a control's ground is barely
+            // there on a card.
+            let _radio = (
+                ui.push_style_color(StyleColor::FrameBg, pal().line),
+                ui.push_style_color(StyleColor::FrameBgHovered, pal().surface_hover),
+            );
             for (n, (_, shown)) in REASONS.iter().enumerate() {
                 if n > 0 {
                     ui.same_line();
                 }
                 ui.radio_button(format!("{shown}##fe-report-reason-{n}"), reason, n);
             }
+            drop(_radio);
             ui.set_next_item_width(self.avail_w(ui));
             ui.input_text("##fe-report-text", text).hint("What happened (optional)").build();
             if text.chars().count() > 500 {
