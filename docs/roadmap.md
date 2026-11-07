@@ -2,32 +2,19 @@
 
 What's being worked on next, roughly in order. Plans change as testing and the game's own code turn things up; the [issues](https://github.com/JDevWebb/5th-echelon-enhanced/issues) have the details, and ideas are welcome there.
 
-## In 0.5.0
+## Next
 
-### Global matchmaking
+### Fair play, round two
 
-One matchmaking server for the whole community network, relays kept near players, hosts ranked by ping: the second step of [cross-region play](#cross-region-play) below. Players on EU, North America and Oceania find each other's matches; the regional servers keep the relay and the internet-play helper close to you.
+Changed game data (the match's rules, weapons, a character's speed, names) read from each game and compared between the players in a match, reported to the admins as 0.5.0's checks are. Still report only.
 
-### Lobby browser
+### Playing where UDP is blocked
 
-Alongside global matchmaking: a list of every open public lobby on the network, with its mode, map, players and seats, in the launcher and the overlay. Joining still goes through the game's own search or an invite.
-
-### Fair play
-
-Checks on the server first: stats that can't be real flagged for the admins, bans that follow a player's identity across the network, the host's actions mid-match logged, and reporting a player from the overlay with the match attached. Then the first checks in the add-on, which only report and never kick. No kernel anti-cheat, and nothing that looks at your PC's other programs.
-
-### Matches
-
-- Host and party migration (MPW1412's pull request), once it's updated.
-- Search, the friend list and Join knowing when a match is under way, from the host's game.
-- Whether searches still hang after 0.4.6, from a week of its numbers.
-- A co-op wipe returning to the lobby: checked against how the original game behaved.
+A connection to the relay over TCP on port 443, for players on networks (some schools, workplaces and ISPs) that let no game traffic out.
 
 ### Turning speed at high frame rates
 
 0.4.6's first beta (**Settings › Beta features**) fixes the view turning slower with the mouse above 60 fps. If the beta's logs and players say it's right, it becomes a normal game option, chosen once like 0.4.5's.
-
-## Next
 
 ### Code signing for Windows
 
@@ -35,7 +22,7 @@ A signed `launcher.exe` and client DLL, so antivirus programs stop guessing (see
 
 ### Failover for the coordinator
 
-`scbl.jdevwebb.net` through Cloudflare, with standby coordinators on the other servers ready to take over ([failover](failover.md)).
+The community coordinator behind Cloudflare, with standby coordinators on the relays ready to take over ([failover](failover.md)), as the matchmaking server has from 0.5.0.
 
 ## Later
 
@@ -45,10 +32,10 @@ Screen shake off, and a wider field of view.
 
 ## Cross-region play
 
-Players on different regional servers (EU, North America, Oceania) can't join each other's matches yet: each server's ids for players and sessions are its own. The research is in [research/cross-region.md](research/cross-region.md). The plan, in three steps:
+From 0.5.0 the community network is one matchmaking server with relays near the players, so every region's players find each other. The research is in [research/cross-region.md](research/cross-region.md). The plan was three steps, the first two done:
 
-1. **Cross-server invites, with an assisted switch.** An invite from a friend on another server reaches you through the coordinator; accepting it moves you to their server and starts the game there. Both players then play on one server, with everything that already works. Small, low risk, and the first to come.
-2. **One matchmaking server for the community network**, with the regional servers kept for what needs to be close: the relay and the internet-play helper. Matches already run peer to peer, and matchmaking doesn't need a low ping, so everyone in the network could find everyone. Most of the work is splitting the relay and helper from matchmaking.
+1. **Cross-server invites, with an assisted switch** (0.4.x). An invite from a friend on another server reaches you through the coordinator; accepting it moves you to their server and starts the game there. Both players then play on one server, with everything that already works. Small, low risk, and the first to come.
+2. **One matchmaking server for the community network** (0.5.0), with the regional servers kept for what needs to be close: the relay and the internet-play helper. Matches already run peer to peer, and matchmaking doesn't need a low ping, so everyone in the network could find everyone. Most of the work is splitting the relay and helper from matchmaking.
 3. **Session sharing between independent networks**, last and only if there's a need: servers run by different people mirroring each other's sessions. The hardest and riskiest of the three.
 
 Also worth an experiment: switching servers without restarting the game.
@@ -60,7 +47,7 @@ Also worth an experiment: switching servers without restarting the game.
 ## Running servers
 
 - **The admin UI:** more reports as operators ask for them; the bandwidth, players and alerts reports are new.
-- **More regions** for the community network, as players turn up from further away.
+- **More relays** for the community network, as players turn up from further away.
 
 ## On hold
 
@@ -78,6 +65,7 @@ The fix, if players ask for it:
 
 ## Done recently
 
+- **0.5.0:** one matchmaking server for the whole community network, with relays near the players; fair play (bans that hold for the PC, report-only checks, witness reports, match recordings and replays for the admins, reporting a player from the overlay); the lobby carrying on when its host leaves; the Matches page; a new launcher, the same on Windows, Linux and the Steam Deck. See the [release notes](releases/v0.5.0.md).
 - **0.4.7:** a fix for 0.4.6: chat, friend lists and signing in answer straight away again on busy servers. See the [release notes](releases/v0.4.7.md).
 - **0.4.6:** [chat](chat.md): Global across the network, your lobby, and friends on any server, in the launcher and the overlay, with who's online on your server. Join a friend's party or public match without an invite; Play SvM and Play Coop straight into the online lobby. Searches no longer hang on a match that has started, four crashes in the game's own code patched, host migrations that give up instead of spinning for ever, and freezes that note where they stuck. Beta features in Settings. The community network moved to `scbl.jdevwebb.net`, ready for failover. See the [release notes](releases/v0.4.6.md).
 - **0.4.5:** matches no longer haunt the lists after their host has left, the game says what it crashed on, and two PCs on one home connection can join each other. Names with slurs or hate refused, Steam Input for Steam copies, an overlay that keeps out of the game's window handling, and three new game options from MPW1412 (mouse 1:1, a brighter picture, no automatic climbing). See the [release notes](releases/v0.4.5.md).

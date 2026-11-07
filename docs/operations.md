@@ -251,7 +251,7 @@ After a game session with problems (a failed join, a relayed connection, a crash
 
 **In the admin UI, under Reports:** the open reports (or resolved, or all), filtered by server or problem, or searched by player, comment, identity or report id; the badge on **Reports** counts the open ones. A report shows what the player said, why they were asked, their client, a link to their account under **Players**, the server's summary and log lines, each file (view it in the page, the first 2 MB, with a search; or download it), and the player's other reports (the same account, or the same identity on any server). **Resolve** or **Reopen** it with a note (admins only), and a **reply** the player reads in their launcher (Settings › Feedback › Your reports, and a notice when it arrives; launchers from 0.4.3 that sent an identity); **Delete** removes it and its files (it asks for your second factor again if the last was more than 10 minutes ago). All three are in the audit log.
 
-**Alerts:** with the alert webhook set (see Alerts), each new report is posted to it, e.g. "📝 Report from ijsman5530 on eu1: couldn't join, lag — "couldn't join my friend"", with a link to it. Under **Alerts › Player reports**: post the reports rated bad or with problems ticked (the default), all of them, or none. Past 5 in a minute, the rest wait and go together in one message ("7 new reports …") a minute later. A player's words can't ping anyone: mentions are broken up.
+**Alerts:** with the alert webhook set (see Alerts), each new report is posted to it, e.g. "📝 Report from Player1 on eu: couldn't join, lag — "couldn't join my friend"", with a link to it. Under **Alerts › Player reports**: post the reports rated bad or with problems ticked (the default), all of them, or none. Past 5 in a minute, the rest wait and go together in one message ("7 new reports …") a minute later. A player's words can't ping anyone: mentions are broken up.
 
 ## The admin UI
 
@@ -259,7 +259,7 @@ After a game session with problems (a failed join, a relayed connection, a crash
 
 The admin UI is served by the coordinator on its own port (127.0.0.2:8701, a loopback address the game server's sandbox can't reach), at a name of its own, and only through Cloudflare.
 
-1. **Choose a name one level below your domain**, e.g. `scbl-metrics.example.com`. Cloudflare's free edge certificate covers `example.com` and `*.example.com` only, so a name like `metrics.scbl.example.com` fails with a TLS error (unless you pay for Advanced Certificate Manager). The community network uses `scbl-metrics.jdevwebb.net`.
+1. **Choose a name one level below your domain**, e.g. `scbl-metrics.example.com`. Cloudflare's free edge certificate covers `example.com` and `*.example.com` only, so a name like `metrics.scbl.example.com` fails with a TLS error (unless you pay for Advanced Certificate Manager).
 2. **Add the DNS record, proxied.** In Cloudflare, add an A record for the name pointing at the coordinator's machine, **Proxied** (orange cloud). Under **SSL/TLS**, set the mode to **Full (strict)**.
 3. **Make an Origin CA certificate.**
    - In Cloudflare, go to **SSL/TLS › Origin Server › Create Certificate**. Keep "Generate private key and CSR with Cloudflare", add the name (or `*.example.com`), and choose PEM.

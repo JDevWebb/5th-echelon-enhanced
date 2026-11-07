@@ -25,28 +25,30 @@
 
 ## The community server
 
-**There are public 5th Echelon servers that anyone can play on, for free.** Get the launcher and press Connect: it picks the server closest to you.
+**There is a public 5th Echelon server that anyone can play on, for free.** Get the launcher and press Connect: everyone signs in to the same server, so every search finds the whole community, and your game plays through the relay nearest you.
 
 <table>
-<tr><td><b>Address</b></td><td><code>scbl.jdevwebb.net</code>: the community network, the launcher's default; it pings every server in it and sets you up on the best</td></tr>
-<tr><td><b>Servers</b></td><td>Europe: <code>eu1.scbl.jdevwebb.net</code> (Falkenstein, Germany)<br>North America: <code>na1.scbl.jdevwebb.net</code> (Beauharnois, Canada)<br>Oceania: <code>oceania.scbl.jdevwebb.net</code> (Australia)</td></tr>
+<tr><td><b>Address</b></td><td><code>scbl.jdevwebb.net</code>: the community network, the launcher's default; there's nothing to type</td></tr>
+<tr><td><b>Matchmaking</b></td><td>One matchmaking server for everyone (Beauharnois, Canada): accounts, friends, invites and every search, so players from every region find each other</td></tr>
+<tr><td><b>Relays</b></td><td>Near the players: Europe (Falkenstein, Germany), North America (Beauharnois, Canada) and Oceania (Sydney, Australia). The launcher pings each and the game uses the nearest; matches still run between the players</td></tr>
 <tr><td><b>Modes</b></td><td>Co-op and Spies vs Mercs: Find Teammate, Quick Match, lobby and private-match invites</td></tr>
-<tr><td><b>Friends</b></td><td>Friends-only lists and invites, joining a friend's game without an invite, blocking, player search; your friends follow you to every server in the community network</td></tr>
+<tr><td><b>Friends</b></td><td>Friends-only lists and invites, joining a friend's game without an invite, blocking, player search, and chat</td></tr>
 <tr><td><b>Internet play</b></td><td>No VPN or port forwarding: the server tells your game its public address, and relays matches when a router can't be reached</td></tr>
-<tr><td><b>Your account</b></td><td>No password to remember: your launcher's identity finds your account on every server, from any PC</td></tr>
-<tr><td><b>Security</b></td><td>Sign-ins never travel unencrypted; each server gets its own random password; the launcher and the servers install only releases signed with the release key, and the servers update themselves</td></tr>
+<tr><td><b>Your account</b></td><td>No password to remember: your launcher's identity finds your account, from any PC</td></tr>
+<tr><td><b>Fair play</b></td><td>Bans that hold for the PC, report-only checks on the game's clock, code and files, other players' games noticing impossible movement, and match recordings the admins can replay when you report a player</td></tr>
+<tr><td><b>Security</b></td><td>Sign-ins never travel unencrypted; your account gets its own random password; the launcher and the servers install only releases signed with the release key, and the servers update themselves</td></tr>
 </table>
 
 **To play:**
 1. Download **`launcher.exe`** (Windows) or **`launcher-linux-x86_64`** (Linux, Steam Deck) from the [latest release](https://github.com/JDevWebb/5th-echelon-enhanced/releases/latest).
-2. Run it. Under **Choose a server** it lists the community servers with your ping to each, the closest already picked.
+2. Run it. Under **Choose a server** the community server is already picked.
 3. Press **Connect** (the first time, pick the name other players will see), then **Play**. Press <kbd>F5</kbd> in the game to add friends (<kbd>Fn</kbd>+<kbd>F5</kbd> on most laptops and some keyboards, or pick another key in **Settings › Game**).
 
-The launcher pings every server in the network and sets you up on the one with the lowest ping (its steps, under **Steps** in the bar along the bottom, say which). Afterwards the server card on the Play screen lists them all with your ping to each, and picking one moves you there in one click, with the same name and friends.
+Each time the game starts, the launcher pings the network's relays and has the game use the nearest; there's nothing to choose. Played on the community network before 0.5.0, on one of its regional servers? The launcher moves you to the matchmaking server by itself, with your name, friends, stats and save.
 
 ### Run your own server
 
-The community network's servers are run by its maintainers. **Run your own** for your group, on any small Linux VPS, with one script:
+The community network is a service the project's maintainer runs with this software; everything it runs is in this repository. **Run your own** for your group, on any small Linux VPS, with one script:
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/JDevWebb/5th-echelon-enhanced/main/scripts/install-server.sh
@@ -56,6 +58,7 @@ sudo bash install-server.sh
 Then choose how it fits in:
 
 - **Start a network of your own.** Run your own coordinator: on the same machine as your server (choose "run a coordinator here too"), or on a machine of its own (`--coordinator-only`). Your community gets its own directory and its own friends, completely independent of the community network. Pass the join token to the servers you trust. You get the same automatic updates for your servers, and an admin UI of your own ([docs/operations.md](docs/operations.md)).
+- **Grow it into one matchmaking server with relays,** as the community network is: every player signs in to one server, and small relay-only servers near each region's players carry their matches when a router can't be reached ([docs/deploying.md](docs/deploying.md#one-matchmaking-server-with-relays)).
 - **Or keep it to yourselves:** a server on its own, for a group of friends or a LAN.
 
 The step-by-step guide, with DNS (Cloudflare included), firewalls, sizing and troubleshooting: **[docs/deploying.md](docs/deploying.md)**.
@@ -103,18 +106,18 @@ You need **Splinter Cell: Blacklist on PC** (Steam or Ubisoft Connect) and **Win
 1. **Download `launcher.exe`** from the [latest release](https://github.com/JDevWebb/5th-echelon-enhanced/releases/latest). It's one file; put it anywhere.
 2. **Run it.** It finds the game on its own: Steam libraries, Ubisoft Connect, and the usual folders on every drive. If it can't, choose the folder with `Blacklist_game.exe`; it remembers it.
 3. **Choose a server.** The launcher walks you through it:
-   - it lists the [community network's](#the-community-server) servers with your ping to each and picks the closest; or type the address your own community gave you (for a network, it pings its servers and picks the closest), or press **Find on my network**;
+   - the [community server](#the-community-server) is already picked; or type the address your own community gave you (for a network of several servers, it pings them and picks the closest), or press **Find on my network**;
    - press **Connect**. The launcher finds your account with your identity; if you don't have one there yet, it asks for the name other players will see and makes it.
 4. **Press Play.**
 
 **Used upstream 5th Echelon before?** Use this launcher instead of the old one; you don't need to uninstall anything first:
 - **The client:** it replaces the old 5th Echelon DLL with its own, keeping the game's original file (`uplay_r1_loader.orig.dll`) as before.
 - **Your saves** carry over: the same saves in `%APPDATA%\5th-Echelon\Saves`.
-- **Your old settings are set aside, not used.** The old launcher's `uplay.toml` (its server, accounts, network adapter and switches) is kept as `uplay.toml.old` in the game folder, and the launcher starts from its own settings with the setup screen: choose a community server and press **Connect**. The launcher makes you an account there with your new identity; old usernames and passwords from other servers aren't needed. Kept: your game version (DirectX 9 or 11) and a save folder you chose.
+- **Your old settings are set aside, not used.** The old launcher's `uplay.toml` (its server, accounts, network adapter and switches) is kept as `uplay.toml.old` in the game folder, and the launcher starts from its own settings with the setup screen: press **Connect** for the community server. The launcher makes you an account there with your new identity; old usernames and passwords from other servers aren't needed. Kept: your game version (DirectX 9 or 11) and a save folder you chose.
 - **Radmin VPN, Hamachi and the like** can stay installed, and don't need to be on: you don't need a VPN for the community servers.
 
 <p align="center">
-  <img src="./docs/screenshots/launcher-setup.png" width="640" alt="The launcher's first-run setup: the steps on the left, and the community servers with your ping to each, the closest picked">
+  <img src="./docs/screenshots/launcher-setup.png" width="640" alt="The launcher's first-run setup: the steps, and the servers to choose from with your ping to each, the closest picked">
 </p>
 <p align="center">
   <img src="./docs/screenshots/launcher-play.png" width="640" alt="The launcher's home screen with the server menu open: the network's servers best first, each with its ping and players online, the current one ticked; beside it Ready to play and a big Play button, and cards for status, friends and the server's news">
@@ -123,14 +126,14 @@ You need **Splinter Cell: Blacklist on PC** (Steam or Ubisoft Connect) and **Win
 **What Connect does for you:**
 - installs the 5th Echelon client into the game, keeping the game's own file so you can undo it;
 - checks the server answers;
-- finds your account with your identity (no username or password to remember), or creates one with a random password for that server only: with the name you choose the first time, and on the community's other servers with the same name, without asking (you're asked only if someone there already has it);
-- keeps every account linked to your identity, so friends follow you between servers and a new PC signs straight in;
+- finds your account with your identity (no username or password to remember), or creates one with a random password for that server only, with the name you choose the first time (on another server of the same network, the same name, without asking; you're asked only if someone there already has it);
+- keeps every account linked to your identity, so friends follow you between a network's servers and a new PC signs straight in;
 - leaves the network adapter to the game: each time it starts, it uses the one that reaches the server, so other players can reach you (and switching between Wi-Fi and Ethernet doesn't matter);
 - brings over your Ubisoft Connect save, or makes a rank 5 one, so co-op and Spies vs Mercs are unlocked.
 
 The **Status** card on the home screen keeps an eye on all of this. Anything that goes wrong later (a VPN that's off, an update) shows up there with a button that fixes it, and the bar beside **Play** says whether you're ready. **Friends** shows who's online and what they're playing, with **Join** for a friend's party or public match (and friends on other servers, with a button to go to their server), and **Server news** turns through the server's news; the **News** screen has all of it.
 
-**The server card** opens a menu of the network's servers, best first, with your ping and the players on each: pick one and you're switched there at once, signed in with the same name. The **Servers** screen is for the rest: a server of your own (with your recent ones), one at a LAN party, or another group's network, with one click back to the community's.
+**The server card** shows the server you're on and the players online; on a network of several servers it opens a menu of them, best first, with your ping and the players on each: pick one and you're switched there at once, signed in with the same name. The **Servers** screen is for the rest: a server of your own (with your recent ones), one at a LAN party, or another group's network, with one click back to the community's.
 
 **Along the bottom,** one bar shows whatever the launcher is doing (switching servers, with its steps; creating your account; sending a report, with how much has gone up; installing; updating) and anything that went wrong, with **Try again** and **Copy details**. **While a new release goes out** to the servers, a notice under the launch bar says when your server updates and is back, in your own time zone, and that you can keep playing until then.
 
@@ -278,7 +281,8 @@ Everything the launcher does can be done by hand:
 - **One identity, every server:** the launcher makes you an identity (a key that stays on your PC) and links every account to it. It finds your account on a server by itself, with no username or password to remember, and asks for a name only the first time. Friends made on one server show up on every other server that shares a coordinator, and friends playing on another of them are listed in the overlay and the launcher, which joins you to their server in one click. Moving PCs? Copy your identity across in **Settings**, before connecting on the new PC ([how](docs/friends.md#your-identity)).
 - **Your name is yours:** servers that share a coordinator reserve each name for one player. Elsewhere, the overlay warns when someone has a friend's name but isn't them. You can rename your account from the launcher.
 - **No slurs or hate in names:** new names and renames are checked (swearing is fine). A player whose name breaks the rules is asked to choose another before they play, with one click to ask the admins for a review if it's a mistake ([how it looks](https://github.com/JDevWebb/5th-echelon-enhanced/wiki/Your-Account-and-Identity#when-youre-asked-to-choose-another-name)).
-- **A server directory:** joining a server that shares a coordinator brings in its directory. The launcher pings every server in it, preselects the best (the lowest ping, then the busiest), and its server menu moves you to another in one click.
+- **One server for the whole network:** on a network with a matchmaking server (the community network is one), everyone signs in to it and every search finds every region's players; the launcher pings the network's relays and the game uses the nearest.
+- **A server directory:** joining a server that shares a coordinator brings in its directory. On a network of several servers the launcher pings every server in it, preselects the best (the lowest ping, then the busiest), and its server menu moves you to another in one click.
 - **Save games:**
   - a rank 5 save for new players with no save anywhere;
   - raising an existing save to rank 5 (with a backup first);
@@ -294,7 +298,7 @@ Everything the launcher does can be done by hand:
 - **Your details stay yours:**
   - the launcher and overlay use HTTPS where the server offers it, so passwords and sign-ins never travel unencrypted;
   - the server's relay carries only your game's players: those in your party or match, a public match's host you're joining, and players you invited or who invited you;
-  - a network's admin UI sees counts and cities, never your name or address; your launcher reports its ping to each server in a directory, from which only your city is noted;
+  - a network's admin UI sees counts and cities, never your address; your launcher reports its ping to each server and relay in a directory, from which only your city is noted;
   - a server directory is used only over `https://`, never replaces one you chose, and lists only public hosts, each shown by name;
   - on Windows, saved passwords and your identity key are encrypted for your Windows user.
 - **Fits your screen:** resize, maximise or go full screen (<kbd>F11</kbd>) and the launcher scales to fit; on a small or high-DPI screen it starts smaller. Make everything bigger or smaller in **Settings › Display** or with <kbd>Ctrl</kbd> + / <kbd>Ctrl</kbd> −.
@@ -305,6 +309,7 @@ Everything the launcher does can be done by hand:
 - **One server for everything:** accounts, matchmaking, invites, friends and presence, news, challenges, and the game's configuration and content.
 - **Friend lists for public servers:** friends-only lists and invites (`[friends] mode = "mutual"`), blocking, and rate limits on invites and friend requests.
 - **Friends across servers:** a **coordinator** shares friendships and blocks between servers, reserves each player's name across them, and lists them in a server directory. The Linux installer runs one next to your server, or on a machine of its own, for [a network of your own](#run-your-own-server).
+- **Global matchmaking:** one **matchmaking server** for a whole network, with **relays** (a NAT helper and relay alone, no game services) near each region's players. The matchmaking server signs a relay pass at sign-in, relays forward to each other only between players it put together, it can have a standby on each relay, and `--merge-accounts` with `copy-links` moves a network of regional servers onto it at once, accounts, friends and links included ([docs/cutover.md](docs/cutover.md), [docs/failover.md](docs/failover.md)).
 - **A network that updates itself:** the coordinator rolls out each signed release to its servers, one first, then the rest. Each server's updater checks the signature, and puts the previous release back if the new one doesn't come back healthy. Members keep up, or leave the directory.
 - **An admin UI for the network:**
   - **What it shows:**
@@ -780,7 +785,7 @@ Never commit game files or anything extracted from them. Facts learned from the 
 
 ## Community
 
-**Play on the [community server](#the-community-server)** at `scbl.jdevwebb.net`, or [run your own](#run-your-own-server). The community network's servers, and public servers run by others, are listed in [docs/community-servers.md](docs/community-servers.md). What's coming next, cross-region play among it, is in the **[roadmap](docs/roadmap.md)**.
+**Play on the [community server](#the-community-server)** at `scbl.jdevwebb.net`, or [run your own](#run-your-own-server). Public servers run by others are listed in [docs/community-servers.md](docs/community-servers.md). What's coming next is in the **[roadmap](docs/roadmap.md)**.
 
 Find other players, active servers and help:
 

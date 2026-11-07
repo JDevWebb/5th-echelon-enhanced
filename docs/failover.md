@@ -76,7 +76,7 @@ It restores the coordinator from the latest snapshot of the server it runs on, s
 
 ## Moving a coordinator to a new name
 
-From 0.4.5 a coordinator answers to more than one name, and a member server moving to a new name keeps its membership: the coordinator at the address it joined has to list the new name as its own (`/v1/info`). The community network moved from `play.scbl.jdevwebb.net` to `scbl.jdevwebb.net` this way.
+From 0.4.5 a coordinator answers to more than one name, and a member server moving to a new name keeps its membership: the coordinator at the address it joined has to list the new name as its own (`/v1/info`).
 
 1. **The new name, DNS only for now**, pointing at the coordinator's machine. Run the installer there with `--coordinator-domain <new>` and `--coordinator-alias <old>`: the coordinator answers to both (players' signed requests made for either count), each with its own Caddy site.
 2. **Each member server:** run the installer with `--coordinator https://<new>` and the join token (`--join-token-file`, from `--show-join-token` on the coordinator's machine). It checks the new name is the same coordinator's (by its address, or by asking at the old one), then joins again with the token and its secret, keeping its membership. Without the token it stays unjoined (0.4.6 and 0.4.7 ask for it even then).

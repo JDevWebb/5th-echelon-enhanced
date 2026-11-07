@@ -2,7 +2,7 @@
 
 How to put 5th Echelon servers on the internet with the Linux installer: one server on its own, a group of servers sharing friends through a coordinator, or a coordinator on a machine of its own.
 
-The examples use `play.example.com` for a game server and `coord.example.com` for a coordinator. The [community network](../README.md#the-community-server) runs a coordinator at `scbl.jdevwebb.net`, with regional servers such as `eu1.scbl.jdevwebb.net`, `na1.scbl.jdevwebb.net` and `oceania.scbl.jdevwebb.net`.
+The examples use `play.example.com` for a game server and `coord.example.com` for a coordinator. The [community network](../README.md#the-community-server) is one of these: a coordinator, one matchmaking server and relays near its players.
 
 **A game server's name is at most 27 characters** (e.g. `eu1.example.com`). The game keeps it where its own `onlineconfigservice.ubi.com` was, so it can't start with a longer one; the installer refuses it.
 
@@ -14,10 +14,11 @@ The examples use `play.example.com` for a game server and `coord.example.com` fo
 | **Server and coordinator together** | 1 | The first server of a group; others can join later |
 | **Join a group** | 1 per server | A new server in a group you run, or one whose coordinator you trust |
 | **Coordinator on its own** | 1, plus the servers | A group of servers with no "main" one |
+| **One matchmaking server with relays** | 1 coordinator, 1 matchmaking server, 1 relay per region | A network whose players should all find each other, wherever they are ([below](#one-matchmaking-server-with-relays)) |
 
 A coordinator shares friends and blocks between its servers, reserves each player's name across them, and lists them in the server directory the launcher browses. See [friends.md](friends.md) for what it knows and trusts.
 
-**Give a group one address.** Players can type a coordinator's address in the launcher as well as a server's: the launcher then pings every server in the directory and sets them up on the best. So a group can hand out its coordinator's name (say `play.example.com`) and give each server a regional one (`eu.example.com`, `oceania.example.com`). The community network does exactly this.
+**Give a group one address.** Players can type a coordinator's address in the launcher as well as a server's: the launcher then pings every server in the directory and sets them up on the best. So a group can hand out its coordinator's name (say `play.example.com`) and give each server a regional one (`eu.example.com`, `oceania.example.com`). A network with one matchmaking server hands out that server's name instead.
 
 ## What a server needs
 
@@ -112,6 +113,20 @@ shred -u token.txt
 ```
 
 Or run it without `--yes` and choose `3`; it asks for the token without showing it. The token is only needed once; the server then keeps its own credentials in `federation.key`. `--status` shows whether it has joined.
+
+## One matchmaking server with relays
+
+From 0.5.0. Every player signs in to one **matchmaking server**, so every search finds the whole network; **relays** near each region's players (a NAT helper and relay alone: no game services, never a place to play) carry matches when a router can't be reached. Matches still run between the players' games, and matchmaking doesn't need a low ping. The launcher pings the relays the matchmaking server offers and has the game use the nearest.
+
+All with the installer, on servers that share a coordinator:
+
+| Machine | Options |
+|---|---|
+| **The coordinator** | `--matchmaking-server <the matchmaking server's id>` (its `server-id.txt`, once it's installed) |
+| **The matchmaking server** | `--matchmaking`; for its standby, `--mm-record <its own DNS-only name>` and `--mm-standby <the group: itself, then the relays>` |
+| **Each relay** | `--role relay --ticket-key <the matchmaking server's relay-pass key>` (logged at its start), and the same `--mm-record` and `--mm-standby` list |
+
+The matchmaking server signs a relay pass at each sign-in, which relays take with its key; relays forward to each other only between players the matchmaking server put together. Each relay can stand by for the matchmaking server ([failover.md](failover.md)). Moving an existing network of regional servers onto one, accounts, friends and links included, in one update window: [cutover.md](cutover.md).
 
 ## A coordinator on its own
 

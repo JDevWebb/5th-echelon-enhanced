@@ -1,20 +1,20 @@
 # Community servers
 
-Servers that anyone can join. Players type the community network's address, **`scbl.jdevwebb.net`**, and the launcher sets them up on the server with the lowest ping; the Play screen lists the rest. This page also lists servers outside it.
+Servers that anyone can join. The launcher sets players up on the community network by default; this page also lists servers outside it.
 
 ## The community network
 
-Servers that share friends through the community coordinator, `https://scbl.jdevwebb.net`. Friends and names follow players between them.
+| | |
+|---|---|
+| **Address** | `scbl.jdevwebb.net` |
+| **Matchmaking** | One server for everyone: Beauharnois, Canada |
+| **Relays** | Falkenstein, Germany; Beauharnois, Canada; Sydney, Australia (the game uses the nearest) |
+| **Friend lists** | mutual |
+| **Run by** | [JDevWebb](https://github.com/JDevWebb) |
 
-| Server | Address | Region | Friend lists | Run by |
-|---|---|---|---|---|
-| 5th Echelon Community EU | `eu1.scbl.jdevwebb.net` | Falkenstein, Germany | mutual | [JDevWebb](https://github.com/JDevWebb) |
-| 5th Echelon Community North America | `na1.scbl.jdevwebb.net` | Beauharnois, Canada | mutual | [JDevWebb](https://github.com/JDevWebb) |
-| 5th Echelon Community Oceania | `oceania.scbl.jdevwebb.net` | Sydney, Australia | mutual | [JDevWebb](https://github.com/JDevWebb) |
+The community network is a service its maintainer runs with this software, and takes no outside servers.
 
-The community network's servers are run by its maintainers only.
-
-The community network has [chat](chat.md): Global for everyone on it, your lobby, and messages with friends on any of its servers, in the launcher and the game's overlay.
+The community network has [chat](chat.md): Global for everyone on it, your lobby, and messages with friends, in the launcher and the game's overlay.
 
 5th Echelon is a fan project, not affiliated with or endorsed by Ubisoft. You need your own copy of the game. The servers are a free service, provided as is: they can be down, reset or shut down at any time (see the [disclaimer](../README.md#disclaimer)).
 
