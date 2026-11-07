@@ -79,6 +79,31 @@ pub fn prefix_for(game_dir: &Path) -> Option<Prefix> {
     None
 }
 
+/// The prefix Wine itself runs a game in that isn't inside one (a game folder of its own, the
+/// prefix elsewhere): `WINEPREFIX` as the launcher was started with it, else `~/.wine`. Only
+/// one that's set up (has a `drive_c`).
+pub fn default_prefix() -> Option<Prefix> {
+    if cfg!(target_os = "windows") {
+        return None;
+    }
+    default_prefix_from(std::env::var_os("WINEPREFIX"), std::env::var_os("HOME"))
+}
+
+fn default_prefix_from(wineprefix: Option<std::ffi::OsString>, home: Option<std::ffi::OsString>) -> Option<Prefix> {
+    let root = wineprefix
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| home.map(|h| PathBuf::from(h).join(".wine")))?;
+    let prefix = Prefix { root, steam: false };
+    prefix.ready().then_some(prefix)
+}
+
+/// The prefix the game in `game_dir` keeps its save in: [`prefix_for`], else the one Wine runs it
+/// in ([`default_prefix`]).
+pub fn save_prefix_for(game_dir: &Path) -> Option<Prefix> {
+    prefix_for(game_dir).or_else(default_prefix)
+}
+
 /// Proton's prefix for the game in a library's `steamapps`.
 fn proton_prefix(steamapps: &Path) -> PathBuf {
     steamapps.join("compatdata").join(STEAM_APP_ID.to_string()).join("pfx")
@@ -170,13 +195,15 @@ fn is_executable(path: &Path) -> bool {
 
 /// Why the game's save folder can't be found, for the player.
 pub fn no_save_folder(game_dir: &Path) -> String {
-    match prefix_for(game_dir) {
+    match save_prefix_for(game_dir) {
         Some(p) if p.steam && !p.ready() => format!(
             "Proton hasn't set the game up yet: there's nothing at {}. Start the game from Steam once, quit it, then come back.",
             p.root.display()
         ),
         Some(p) if !p.ready() => format!("The game's Wine prefix has no drive_c: {}.", p.root.display()),
-        None if !cfg!(target_os = "windows") => "The game's folder isn't in a Steam library or a Wine prefix, so where it keeps its save can't be worked out.".to_string(),
+        None if !cfg!(target_os = "windows") => {
+            "The game's folder isn't in a Steam library or a Wine prefix, and there's no WINEPREFIX or ~/.wine, so where it keeps its save can't be worked out.".to_string()
+        }
         _ => "The save folder can't be found.".to_string(),
     }
 }
@@ -211,6 +238,19 @@ mod tests {
         assert_eq!(p.root, Path::new("/home/deck/.local/share/Steam/steamapps/compatdata/235600/pfx"));
         assert_eq!(p.roaming_dir(), p.root.join("drive_c/users/steamuser/AppData/Roaming"));
         assert!(!p.ready(), "Proton hasn't run the game here");
+    }
+
+    #[test]
+    fn a_game_outside_a_prefix_saves_in_wines_own() {
+        let home = temp_dir("wine-home");
+        let set = temp_dir("wine-set");
+        std::fs::create_dir_all(home.join(".wine/drive_c")).unwrap();
+        std::fs::create_dir_all(set.join("drive_c")).unwrap();
+        let from = |w: Option<&Path>, h: Option<&Path>| default_prefix_from(w.map(|p| p.as_os_str().to_owned()), h.map(|p| p.as_os_str().to_owned())).map(|p| p.root);
+        assert_eq!(from(Some(&set), Some(&home)), Some(set.clone()), "WINEPREFIX first");
+        assert_eq!(from(None, Some(&home)), Some(home.join(".wine")), "else ~/.wine");
+        assert_eq!(from(Some(Path::new("relative")), Some(&home)), Some(home.join(".wine")), "a relative WINEPREFIX isn't one");
+        assert_eq!(from(None, Some(&set)), None, "no ~/.wine set up");
     }
 
     #[test]

@@ -120,9 +120,10 @@ mod other {
             .or_else(|| home().map(|h| h.join(".config")))
     }
 
-    /// The game's `%APPDATA%`: inside the Wine prefix it runs in.
+    /// The game's `%APPDATA%`: inside the Wine prefix it runs in (the one round its folder, else
+    /// the one Wine uses: `WINEPREFIX` or `~/.wine`).
     pub fn game_roaming_dir(game_dir: &Path) -> Option<PathBuf> {
-        crate::wine::prefix_for(game_dir).filter(crate::wine::Prefix::ready).map(|p| p.roaming_dir())
+        crate::wine::save_prefix_for(game_dir).filter(crate::wine::Prefix::ready).map(|p| p.roaming_dir())
     }
 
     /// Ubisoft Connect's install folder (Windows registry only).
