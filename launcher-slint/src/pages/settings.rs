@@ -322,10 +322,13 @@ impl SettingsPage {
     fn game(&mut self, app: &AppHandle, v: &Value, r: &mut Rows) {
         let g = v.get("game").filter(|g| !g.is_null());
         r.card("Game folder");
-        r.add(text(g.map(|g| st(g, "dir")).unwrap_or_else(|| "Not found yet.".into())));
-        self.found = crate::core::find_games();
         let current = g.map(|g| st(g, "dir")).unwrap_or_default();
-        self.found.retain(|d| *d != current);
+        let shown = ::setup::game::tidy_dir(std::path::Path::new(&current)).display().to_string();
+        r.add(text(if current.is_empty() { "Not found yet.".into() } else { shown }));
+        self.found = crate::core::find_games();
+        // The same folder written another way ('/' for '\', another case) isn't another install.
+        self.found
+            .retain(|d| current.is_empty() || !::setup::game::same_dir(std::path::Path::new(d), std::path::Path::new(&current)));
         if !self.found.is_empty() {
             r.add(choice(
                 "other_install",

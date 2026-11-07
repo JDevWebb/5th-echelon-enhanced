@@ -77,7 +77,7 @@ pub fn find_game_dirs() -> Vec<PathBuf> {
             found.extend(game_dirs_under(&dir, 3));
         }
     }
-    rank(dedupe(found))
+    rank(dedupe(found.iter().map(|d| tidy_dir(d)).collect()))
 }
 
 /// Steam library folders listed in a `libraryfolders.vdf`.
@@ -240,6 +240,33 @@ pub fn game_dir_in(dir: &Path) -> Option<PathBuf> {
 }
 
 /// Drops duplicates (Windows paths compare case-insensitively).
+/// A folder as Windows writes it, '\' throughout: one saved with '/' in it ("D:/Splinter Cell
+/// Blacklist\src\SYSTEM", from an older launcher or a typed path) shows and compares the same as
+/// the one found. Elsewhere as it is.
+pub fn tidy_dir(dir: &Path) -> PathBuf {
+    if cfg!(target_os = "windows") {
+        PathBuf::from(dir.to_string_lossy().replace('/', "\\"))
+    } else {
+        dir.to_path_buf()
+    }
+}
+
+/// Whether two paths are the same folder: as the file system resolves them where it can, else
+/// tidied ([`tidy_dir`]), without a trailing separator, and on Windows in any case.
+pub fn same_dir(a: &Path, b: &Path) -> bool {
+    let key = |p: &Path| {
+        let tidy = tidy_dir(p);
+        let full = std::fs::canonicalize(&tidy).unwrap_or(tidy);
+        let text = full.to_string_lossy().trim_end_matches(['\\', '/']).to_string();
+        if cfg!(target_os = "windows") {
+            text.to_lowercase()
+        } else {
+            text
+        }
+    };
+    key(a) == key(b)
+}
+
 fn dedupe(dirs: Vec<PathBuf>) -> Vec<PathBuf> {
     let mut seen = HashSet::new();
     dirs.into_iter()
@@ -264,6 +291,23 @@ pub fn game_running() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_same_folder_written_another_way() {
+        let dir = std::env::temp_dir();
+        let with_slash = PathBuf::from(format!("{}/", dir.display()));
+        assert!(same_dir(&dir, &with_slash), "a trailing separator");
+        assert!(!same_dir(&dir, &dir.join("elsewhere")));
+        if cfg!(target_os = "windows") {
+            assert_eq!(
+                tidy_dir(Path::new("D:/Splinter Cell Blacklist\\src\\SYSTEM")),
+                PathBuf::from("D:\\Splinter Cell Blacklist\\src\\SYSTEM")
+            );
+            assert!(same_dir(Path::new("D:/Games\\SYSTEM"), Path::new("d:\\games\\system")));
+        } else {
+            assert_eq!(tidy_dir(Path::new("/games/a")), PathBuf::from("/games/a"), "as it is elsewhere");
+        }
+    }
 
     #[test]
     fn only_the_last_steam_user_is_read() {
