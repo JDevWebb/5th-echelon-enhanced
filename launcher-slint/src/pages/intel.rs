@@ -23,6 +23,9 @@ impl Screen for IntelPage {
     }
 
     fn view(&mut self, app: &AppHandle) -> PageView {
+        if crate::intel::MINE_CHANGED.swap(false, std::sync::atomic::Ordering::Relaxed) {
+            self.mine = None;
+        }
         let core = app.state::<Launcher>().0.clone();
         let info = crate::core::info(&core);
         let mut r = Rows::default();

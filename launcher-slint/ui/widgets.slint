@@ -360,6 +360,8 @@ export component Field inherits Rectangle {
     in property <string> label;
     // A text area's least height.
     in property <length> lines-height: 96px;
+    // Whether it's being typed in.
+    out property <bool> focused: input.has-focus;
     callback edited(string);
     callback accepted(string);
     forward-focus: input;

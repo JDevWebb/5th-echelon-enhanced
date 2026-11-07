@@ -142,7 +142,7 @@ impl Screen for ChatPage {
             let who = if bo(m, "mine") { "You".to_string() } else { st(m, "from_name") };
             let mut row = message(who, body, st(m, "time")).on(bo(m, "mine")).tone(if bo(m, "mentions_me") { "accent" } else { "" });
             row.buttons
-                .push(super::b(format!("pick:{id}"), if self.picked == Some(id) { "close" } else { "⋯" }).kind("link"));
+                .push(super::b(format!("pick:{id}"), if self.picked == Some(id) { "close" } else { "…" }).kind("link"));
             r.add(row);
             if let Some(link) = &link {
                 r.add(buttons(vec![super::b(format!("invite:{link}"), format!("Open the Discord invite {link}")).kind("link")]));
@@ -195,7 +195,7 @@ impl Screen for ChatPage {
                         row.buttons.push(super::b(format!("invite-game:{pid}:{name}"), "Invite to your game").kind("fix"));
                         row.buttons.push(super::b(format!("block:{pid}:{name}"), "Block").kind("fix"));
                     } else {
-                        row.buttons.push(super::b(format!("person:{pid}"), "⋯").kind("fix"));
+                        row.buttons.push(super::b(format!("person:{pid}"), "…").kind("fix"));
                     }
                 }
                 r.add(row);

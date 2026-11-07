@@ -231,6 +231,12 @@ export component RowItem inherits Rectangle {
             Field {
                 horizontal-stretch: 1;
                 text: item.text;
+                // Typing takes the text over from the row; after that the row's text still
+                // reaches the field when the page clears it (a chat message sent) or sets it while
+                // it isn't being typed in. Not while typing: the page's echo of a keystroke can lag
+                // the next one.
+                property <string> from-row: item.text;
+                changed from-row => { if (!self.focused || self.from-row == "") { self.text = self.from-row; } }
                 placeholder: item.placeholder;
                 secret: item.secret;
                 enabled: item.enabled;
@@ -252,6 +258,9 @@ export component RowItem inherits Rectangle {
                 multiline: true;
                 lines-height: max(96px, item.value * 1px);
                 text: item.text;
+                // As a one-line field's (above).
+                property <string> from-row: item.text;
+                changed from-row => { if (!self.focused || self.from-row == "") { self.text = self.from-row; } }
                 placeholder: item.placeholder;
                 enabled: item.enabled;
                 label: item.label;

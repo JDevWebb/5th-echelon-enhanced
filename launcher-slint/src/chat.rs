@@ -463,7 +463,17 @@ pub fn chat(app: tauri::AppHandle, state: tauri::State<Chat>, tab: String, with:
             asked: p.asked,
         }))
         .collect();
-    let with_name = with.as_ref().map(|w| st.rooms.names.get(w).cloned().unwrap_or_else(|| identity::short(w)));
+    // A friend not written to yet has no conversation, so no name kept for it: their name from
+    // the friends list, not their id.
+    let with_name = with.as_ref().map(|w| {
+        st.rooms
+            .names
+            .get(w)
+            .filter(|n| !n.is_empty())
+            .cloned()
+            .or_else(|| st.friends.iter().find(|f| &f.identity == w).map(|f| f.name.clone()))
+            .unwrap_or_else(|| identity::short(w))
+    });
     let status = st.status.clone().unwrap_or_default();
     ChatView {
         state: state_word,

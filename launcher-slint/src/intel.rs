@@ -121,6 +121,10 @@ pub fn suggest(app: tauri::AppHandle, area: usize, title: String, text: String) 
     Ok(())
 }
 
+/// A suggestion went since the Roadmap last read the player's own: it reads them again (the
+/// list read as Send was pressed was from before the suggestion arrived).
+pub static MINE_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 fn start_sending(app: &tauri::AppHandle, draft: r::Draft) {
     let activity = app.state::<Launcher>().lock().notices.start_with(notifier(app), "Sending your suggestion");
     activity.step(format!("\"{}\"", hooks_config::text::clip(&draft.title, 40)));
@@ -128,7 +132,10 @@ fn start_sending(app: &tauri::AppHandle, draft: r::Draft) {
     let app = app.clone();
     std::thread::spawn(move || {
         match launcher::task::guarded(|| r::send(&draft)) {
-            Ok(()) => activity.done("Thanks! Your suggestion is with the project's admins."),
+            Ok(()) => {
+                activity.done("Thanks! Your suggestion is with the project's admins.");
+                MINE_CHANGED.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             Err(e) => {
                 activity.title("Couldn't send your suggestion");
                 activity.fail(e, &[Action::Retry, Action::CopyDetails]);

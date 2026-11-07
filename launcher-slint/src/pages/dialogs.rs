@@ -354,7 +354,7 @@ pub(crate) fn whats_new(v: &Value) -> DialogView {
     // The mark and the name: the launcher's identity, on the page that says what it is now.
     r.add(mark(
         format!("5th Echelon Enhanced {}", st(newest, "version")),
-        if from.is_empty() { st(v, "to") } else { format!("{from} → {}", st(v, "to")) },
+        if from.is_empty() { st(v, "to") } else { format!("{from} to {}", st(v, "to")) },
     ));
     let thanks = st(newest, "thanks");
     if !thanks.is_empty() {
