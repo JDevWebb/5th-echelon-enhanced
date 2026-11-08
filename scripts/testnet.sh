@@ -5,6 +5,7 @@
 #   scripts/testnet.sh up rehearsal --hours 6     # coordinator, matchmaking, 2 relays
 #   scripts/testnet.sh list                        # what's running, for how long, the cost so far
 #   scripts/testnet.sh ssh mm                      # a shell on one of them
+#   scripts/testnet.sh check                       # the UDP check again
 #   scripts/testnet.sh install                     # copy new binaries and install again
 #   scripts/testnet.sh extend 2                    # 2 more hours
 #   scripts/testnet.sh firewall                    # SSH from this computer's address as it is now
@@ -317,6 +318,26 @@ udp_check() { # TO_IP FROM_IP|local
   fi
 }
 
+# Each machine takes the check from the one before it, round (or from here, with one).
+udp_ring() { # NET
+  local all roles first prev role n
+  all="$(net_instances "$1")"
+  roles="$(jq -r '.tags[] | select(startswith("fe-role-")) | ltrimstr("fe-role-")' <<<"$all")"
+  n="$(echo $roles | wc -w | tr -d ' ')"
+  [ "$n" -gt 0 ] || die "there's no network $1"
+  if [ "$n" -eq 1 ]; then
+    command -v python3 >/dev/null && udp_check "$(jq -r .ip <<<"$all")" local || say "no python3 here: UDP check skipped"
+    return
+  fi
+  first="" prev=""
+  for role in $roles; do
+    [ -n "$first" ] || first="$role"
+    [ -n "$prev" ] && udp_check "$(ip_of "$all" "$role")" "$(ip_of "$all" "$prev")"
+    prev="$role"
+  done
+  udp_check "$(ip_of "$all" "$first")" "$(ip_of "$all" "$prev")"
+}
+
 # --- Installing ----------------------------------------------------------------------------
 
 DS_BIN="$ROOT/dist/dedicated_server-linux-x86_64"
@@ -507,12 +528,12 @@ case "$cmd" in
     done
     [ "$ready" -eq "$(echo "$roles" | wc -w)" ] || die "the machines didn't start in 7 minutes (testnet.sh list; down)"
     say "the machines' addresses: $(jq -r .ip <<<"$all" | tr '\n' ' ')"
+    # A machine still booting refuses SSH: a minute's wait (for them all), then one try each 20 s.
+    say "waiting a minute for SSH"
+    sleep 60
     for role in $roles; do
       ip="$(ip_of "$all" "$role")"
       ssh-keygen -R "$ip" -f "$KNOWN_HOSTS" >/dev/null 2>&1 || true
-      # A machine still booting refuses SSH: a minute's wait, then one try each 20 s.
-      say "waiting a minute for $role's SSH"
-      sleep 60
       ok=0
       for _ in $(seq 12); do on "$ip" true 2>/dev/null && { ok=1; break; }; sleep 20; done
       [ "$ok" -eq 1 ] || die "no SSH to $role ($ip) after 5 minutes: testnet.sh firewall if this computer's address changed; down to delete it"
@@ -523,19 +544,12 @@ case "$cmd" in
         [ "$layout:$role" = rehearsal:mm ] && cf_record "$(match_name "$net")" "$ip" "$net"
       fi
     done
-    # Each machine takes the check from the next one round (or from here, with one).
-    set -- $roles
-    if [ $# -eq 1 ]; then
-      command -v python3 >/dev/null && udp_check "$(ip_of "$all" "$1")" local || say "no python3 here: UDP check skipped"
-    else
-      first="$1" prev=""
-      for role in $roles; do
-        [ -n "$prev" ] && udp_check "$(ip_of "$all" "$role")" "$(ip_of "$all" "$prev")"
-        prev="$role"
-      done
-      udp_check "$(ip_of "$all" "$first")" "$(ip_of "$all" "$prev")"
-    fi
+    udp_ring "$net"
     if [ "$install" -eq 1 ]; then install_net "$net"; else show_net "$net"; fi
+    ;;
+  check)
+    [ "${1:-}" = --name ] && net="${2:?}"
+    udp_ring "$net"
     ;;
   install)
     [ "${1:-}" = --name ] && net="${2:?}"
