@@ -41,7 +41,7 @@
 #   --name NAME       the network's name, for running more than one (default: test)
 #   --hours H         when it's deleted by itself (default: 4)
 #   --plan PLAN       the machines' size (default: TESTNET_PLAN, or vc2-1c-1gb)
-#   --region ROLE=R   where a machine goes (`testnet.sh regions`), e.g. --region mm=tor
+#   --region ROLE=R   where a machine goes (`testnet.sh regions`), e.g. --region mm=yto
 #   --no-install      only make the machines (and run the UDP check)
 #
 # Every machine is tagged fe-testnet; `down --all` deletes every one of them.
@@ -178,7 +178,7 @@ default_region() { # LAYOUT ROLE
   case "$1:$2" in
     one:s1 | pair:s1 | pair:s2) echo syd ;;
     rehearsal:coord | rehearsal:relay-a) echo fra ;;
-    rehearsal:mm) echo tor ;;
+    rehearsal:mm) echo yto ;;
     rehearsal:relay-b) echo syd ;;
   esac
 }
