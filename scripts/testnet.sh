@@ -471,7 +471,14 @@ case "$cmd" in
     for role in $roles; do
       ip="$(ip_of "$all" "$role")"
       ssh-keygen -R "$ip" -f "$KNOWN_HOSTS" >/dev/null 2>&1 || true
-      for _ in $(seq 40); do on "$ip" true 2>/dev/null && break; sleep 3; done
+      # Gently: a gateway's intrusion detection (UniFi's) takes quick repeated SSH attempts at
+      # a machine still booting for a scan, and blocks it. So a minute's wait, then one try
+      # each 20 seconds.
+      say "waiting a minute for $role's SSH"
+      sleep 60
+      ok=0
+      for _ in $(seq 12); do on "$ip" true 2>/dev/null && { ok=1; break; }; sleep 20; done
+      [ "$ok" -eq 1 ] || die "no SSH to $role ($ip) after 5 minutes: if ping reaches it, check your gateway's blocked list (testnet.sh down to delete it)"
       on "$ip" "cloud-init status --wait >/dev/null 2>&1; true"
       if [ "$use_cf" -eq 1 ]; then
         [ "$role" = coord ] || cf_record "$(game_name "$role" "$net" "$ip")" "$ip" "$net"
