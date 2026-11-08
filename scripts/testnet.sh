@@ -36,6 +36,8 @@
 #   TESTNET_PLAN=vc2-1c-1gb      the size of each machine (`testnet.sh plans`): 1 GB is plenty
 #                                (the server needs under 100 MB at 1,000 players, docs/load-testing.md)
 #   TESTNET_SSH_KEY=~/.ssh/id_ed25519.pub   default: the first key ssh-agent has
+#   TESTNET_ALLOW_PAUSE=1        print the new machines' addresses and wait for Enter before the
+#                                first SSH, for a gateway that blocks unknown addresses
 #
 # Options for `up`:
 #   --name NAME       the network's name, for running more than one (default: test)
@@ -468,6 +470,12 @@ case "$cmd" in
       sleep 5
     done
     [ "$ready" -eq "$(echo "$roles" | wc -w)" ] || die "the machines didn't start in 7 minutes (testnet.sh list; down)"
+    say "the machines' addresses: $(jq -r .ip <<<"$all" | tr '\n' ' ')"
+    # A gateway that blocks new addresses (UniFi's intrusion detection) needs them allowed
+    # before the first SSH: with TESTNET_ALLOW_PAUSE=1, wait here for that.
+    if [ "${TESTNET_ALLOW_PAUSE:-0}" = 1 ] && [ -t 0 ]; then
+      read -r -p "Allow those addresses in your gateway, then press Enter: " _
+    fi
     for role in $roles; do
       ip="$(ip_of "$all" "$role")"
       ssh-keygen -R "$ip" -f "$KNOWN_HOSTS" >/dev/null 2>&1 || true
