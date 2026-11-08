@@ -24,7 +24,8 @@
 # `build/build.sh server` in dist/. The settings are in
 # ${XDG_CONFIG_HOME:-~/.config}/5th-echelon/testnet.env (never in the repo):
 #
-#   VULTR_API_KEY=...            Vultr › Account › API (allow your own IP there)
+#   VULTR_API_KEY=...            Vultr › Account › API (allow your own IPv4 address there: the
+#                                script calls the API over IPv4 only, so one /32 is enough)
 #   # Optional: real names in a zone of yours on Cloudflare (DNS only, TTL 60), needed for the
 #   # matchmaking server's moving name (--mm-record) and the move/failover steps. Without them
 #   # the servers are named IP.sslip.io, and Let's Encrypt still gives them certificates.
@@ -81,7 +82,7 @@ fi
 vapi() { # METHOD PATH [JSON]
   local out code
   out="$(mktemp)"
-  code="$(curl -sS -o "$out" -w '%{http_code}' -X "$1" "$API$2" \
+  code="$(curl -4 -sS -o "$out" -w '%{http_code}' -X "$1" "$API$2" \
     -H "Authorization: Bearer $VULTR_API_KEY" -H 'Content-Type: application/json' \
     ${3:+--data "$3"})" || { rm -f "$out"; die "Vultr didn't answer ($1 $2)"; }
   if [ "${code:0:1}" != 2 ]; then
