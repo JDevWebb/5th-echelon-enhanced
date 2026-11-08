@@ -3166,9 +3166,12 @@ if [ "$no_caddy" -eq 0 ]; then
         notes+=("Caddy has no certificate for $domain yet (its log is above), so launchers keep using the unencrypted API (and passwords travel readable). Check the A record and that TCP 80 and 443 are open, then run this script again.")
       fi
     fi
-    # The launcher's API: gRPC over plain HTTP/2 (h2c) through Caddy.
+    # The launcher's API: gRPC over plain HTTP/2 (h2c) through Caddy. A relay alone doesn't
+    # serve it (Caddy answers 502 there), so there's nothing to check.
     grpc_ok=0
+    [ "$(checked_value role kind '^(game|relay)$')" != relay ] || grpc_ok=1
     for _ in $(seq 10); do
+      [ "$grpc_ok" -eq 0 ] || break
       if curl -fsS --max-time 3 --http2-prior-knowledge -o /dev/null -X POST -H "Host: $domain" -H "Content-Type: application/grpc" \
         http://127.0.0.1/users.Users/Login 2>/dev/null; then grpc_ok=1; break; fi
       sleep 1
