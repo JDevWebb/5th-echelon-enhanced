@@ -382,7 +382,8 @@ ticket_key() { # IP
 
 join_token_to() { # COORD_IP IP
   local tok
-  tok="$(on "$1" "cd fe && bash install-server.sh --show-join-token" | tr -d '[:space:]')"
+  # The token is the last line, under a heading.
+  tok="$(on "$1" "cd fe && bash install-server.sh --show-join-token" | tail -1 | tr -d '[:space:]')"
   [ -n "$tok" ] || die "no join token from the coordinator on $1"
   printf '%s' "$tok" | on "$2" "umask 077 && cat > fe/join-token"
 }
