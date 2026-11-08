@@ -32,13 +32,14 @@
 #   CF_ZONE_ID=...
 #   TESTNET_DOMAIN=test.example.net
 #   # Optional:
-#   TESTNET_PLAN=vc2-1c-2gb      the size of each machine (`testnet.sh plans`)
+#   TESTNET_PLAN=vc2-1c-1gb      the size of each machine (`testnet.sh plans`): 1 GB is plenty
+#                                (the server needs under 100 MB at 1,000 players, docs/load-testing.md)
 #   TESTNET_SSH_KEY=~/.ssh/id_ed25519.pub   default: the first key ssh-agent has
 #
 # Options for `up`:
 #   --name NAME       the network's name, for running more than one (default: test)
 #   --hours H         when it's deleted by itself (default: 4)
-#   --plan PLAN       the machines' size (default: TESTNET_PLAN, or vc2-1c-2gb)
+#   --plan PLAN       the machines' size (default: TESTNET_PLAN, or vc2-1c-1gb)
 #   --region ROLE=R   where a machine goes (`testnet.sh regions`), e.g. --region mm=tor
 #   --no-install      only make the machines (and run the UDP check)
 #
@@ -422,7 +423,7 @@ sweep
 case "$cmd" in
   up)
     layout="${1:?up needs a layout: one, pair or rehearsal}"; shift
-    hours=4 plan="${TESTNET_PLAN:-vc2-1c-2gb}" install=1 overrides=""
+    hours=4 plan="${TESTNET_PLAN:-vc2-1c-1gb}" install=1 overrides=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --name) net="${2:?}"; shift ;;
