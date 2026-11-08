@@ -479,9 +479,8 @@ case "$cmd" in
     for role in $roles; do
       ip="$(ip_of "$all" "$role")"
       ssh-keygen -R "$ip" -f "$KNOWN_HOSTS" >/dev/null 2>&1 || true
-      # Gently: a gateway's intrusion detection (UniFi's) takes quick repeated SSH attempts at
-      # a machine still booting for a scan, and blocks it. So a minute's wait, then one try
-      # each 20 seconds.
+      # Gently, as a machine still booting refuses SSH and a gateway's intrusion detection
+      # may take quick repeated attempts for a scan: a minute's wait, then one try each 20 s.
       say "waiting a minute for $role's SSH"
       sleep 60
       ok=0
