@@ -7,6 +7,7 @@
 #   scripts/testnet.sh ssh mm                      # a shell on one of them
 #   scripts/testnet.sh install                     # copy new binaries and install again
 #   scripts/testnet.sh extend 2                    # 2 more hours
+#   scripts/testnet.sh firewall                    # SSH from this computer's address as it is now
 #   scripts/testnet.sh down                        # delete it all
 #
 # Layouts:
@@ -36,8 +37,8 @@
 #   TESTNET_PLAN=vc2-1c-1gb      the size of each machine (`testnet.sh plans`): 1 GB is plenty
 #                                (the server needs under 100 MB at 1,000 players, docs/load-testing.md)
 #   TESTNET_SSH_KEY=~/.ssh/id_ed25519.pub   default: the first key ssh-agent has
-#   TESTNET_ALLOW_PAUSE=1        print the new machines' addresses and wait for Enter before the
-#                                first SSH, for a gateway that blocks unknown addresses
+#   TESTNET_SSH_FROM=1.2.3.4     the address SSH is allowed from (default: this computer's IPv4,
+#                                from api.ipify.org)
 #
 # Options for `up`:
 #   --name NAME       the network's name, for running more than one (default: test)
@@ -162,6 +163,40 @@ ssh_key_id() {
   if [ -z "$id" ]; then
     id="$(vapi POST /ssh-keys "$(jq -nc --arg k "$pub" '{name: "fe-testnet", ssh_key: $k}')" | jq -r .ssh_key.id)"
   fi
+  echo "$id"
+}
+
+# --- Vultr's firewall -----------------------------------------------------------------------
+
+# The test machines' own firewall group (fe-testnet), made and kept by this script: SSH only from
+# this computer's IPv4 address (as it is now; an old one is dropped), the web (certificates, the
+# launchers, the coordinator), the game's UDP ports, the UDP check's port, and ping.
+FIREWALL_NAME="fe-testnet"
+firewall_group() {
+  local id me rules want w proto port sub size rid
+  me="${TESTNET_SSH_FROM:-$(curl -4 -fsS --max-time 10 https://api.ipify.org)}" || die "can't find this computer's IPv4 address (set TESTNET_SSH_FROM)"
+  [[ "$me" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "\"$me\" isn't an IPv4 address"
+  id="$(vapi GET "/firewalls?per_page=500" | jq -r --arg d "$FIREWALL_NAME" '.firewall_groups[] | select(.description == $d) | .id' | head -1)"
+  [ -n "$id" ] || id="$(vapi POST /firewalls "{\"description\": \"$FIREWALL_NAME\"}" | jq -r .firewall_group.id)"
+  rules="$(vapi GET "/firewalls/$id/rules?per_page=500" | jq -c '.firewall_rules[]')"
+  want="tcp 22 $me 32
+tcp 80 0.0.0.0 0
+tcp 443 0.0.0.0 0
+udp 21126:21129 0.0.0.0 0
+udp $UDP_CHECK_PORT 0.0.0.0 0
+icmp - 0.0.0.0 0"
+  # An SSH rule from another address (an old one of this computer's) goes.
+  for rid in $(jq -r --arg me "$me" 'select(.protocol == "tcp" and .port == "22" and .subnet != $me) | .id' <<<"$rules"); do
+    vapi DELETE "/firewalls/$id/rules/$rid" >/dev/null
+  done
+  while read -r proto port sub size; do
+    [ "$port" = - ] && port=""
+    if [ -z "$(jq -r --arg p "$proto" --arg port "$port" --arg s "$sub" --argjson z "$size" \
+        'select(.protocol == $p and (.port // "") == $port and .subnet == $s and .subnet_size == $z) | .id' <<<"$rules")" ]; then
+      vapi POST "/firewalls/$id/rules" "$(jq -nc --arg p "$proto" --arg port "$port" --arg s "$sub" --argjson z "$size" \
+        '{ip_type: "v4", protocol: $p, subnet: $s, subnet_size: $z, notes: "fe-testnet"} + (if $port == "" then {} else {port: $port} end)')" >/dev/null
+    fi
+  done <<<"$want"
   echo "$id"
 }
 
@@ -449,14 +484,15 @@ case "$cmd" in
     os_id="$(vapi GET "/os?per_page=500" | jq -r '[.os[] | select(.name == "Ubuntu 24.04 LTS x64")] | first.id // empty')"
     [ -n "$os_id" ] || die "Vultr has no Ubuntu 24.04 x64 image"
     key_id="$(ssh_key_id)"
+    fw_id="$(firewall_group)"
     expires=$(( $(date +%s) + hours * 3600 ))
     say "making network $net ($layout, $plan), deleted by itself at $(date -r "$expires" 2>/dev/null || date -d "@$expires")"
     for role in $roles; do
       region="$(default_region "$layout" "$role")"
       for o in $overrides; do [ "${o%%=*}" = "$role" ] && region="${o#*=}"; done
       body="$(jq -nc --arg r "$region" --arg p "$plan" --argjson os "$os_id" --arg l "fe-$net-$role" \
-        --arg k "$key_id" --arg net "$net" --arg role "$role" --arg lay "$layout" --arg e "$expires" --arg tag "$TAG" \
-        '{region: $r, plan: $p, os_id: $os, label: $l, hostname: $l, sshkey_id: [$k], backups: "disabled",
+        --arg k "$key_id" --arg fw "$fw_id" --arg net "$net" --arg role "$role" --arg lay "$layout" --arg e "$expires" --arg tag "$TAG" \
+        '{region: $r, plan: $p, os_id: $os, label: $l, hostname: $l, sshkey_id: [$k], firewall_group_id: $fw, backups: "disabled",
           tags: [$tag, "fe-net-" + $net, "fe-role-" + $role, "fe-layout-" + $lay, "expires-" + $e]}')"
       id="$(vapi POST /instances "$body" | jq -r .instance.id)" || { down_net "$net"; die "couldn't make $role in $region; nothing is left running"; }
       say "$role: $id in $region"
@@ -471,21 +507,15 @@ case "$cmd" in
     done
     [ "$ready" -eq "$(echo "$roles" | wc -w)" ] || die "the machines didn't start in 7 minutes (testnet.sh list; down)"
     say "the machines' addresses: $(jq -r .ip <<<"$all" | tr '\n' ' ')"
-    # A gateway that blocks new addresses (UniFi's intrusion detection) needs them allowed
-    # before the first SSH: with TESTNET_ALLOW_PAUSE=1, wait here for that.
-    if [ "${TESTNET_ALLOW_PAUSE:-0}" = 1 ] && [ -t 0 ]; then
-      read -r -p "Allow those addresses in your gateway, then press Enter: " _
-    fi
     for role in $roles; do
       ip="$(ip_of "$all" "$role")"
       ssh-keygen -R "$ip" -f "$KNOWN_HOSTS" >/dev/null 2>&1 || true
-      # Gently, as a machine still booting refuses SSH and a gateway's intrusion detection
-      # may take quick repeated attempts for a scan: a minute's wait, then one try each 20 s.
+      # A machine still booting refuses SSH: a minute's wait, then one try each 20 s.
       say "waiting a minute for $role's SSH"
       sleep 60
       ok=0
       for _ in $(seq 12); do on "$ip" true 2>/dev/null && { ok=1; break; }; sleep 20; done
-      [ "$ok" -eq 1 ] || die "no SSH to $role ($ip) after 5 minutes: if ping reaches it, check your gateway's blocked list (testnet.sh down to delete it)"
+      [ "$ok" -eq 1 ] || die "no SSH to $role ($ip) after 5 minutes: testnet.sh firewall if this computer's address changed; down to delete it"
       on "$ip" "cloud-init status --wait >/dev/null 2>&1; true"
       if [ "$use_cf" -eq 1 ]; then
         [ "$role" = coord ] || cf_record "$(game_name "$role" "$net" "$ip")" "$ip" "$net"
@@ -544,6 +574,14 @@ case "$cmd" in
     fi
     ;;
   sweep) ;;
+  firewall)
+    # Brings the group up to date (this computer's address now) and puts the network in it.
+    [ "${1:-}" = --name ] && net="${2:?}"
+    fw_id="$(firewall_group)"
+    for id in $(net_instances "$net" | jq -r .id); do
+      vapi PATCH "/instances/$id" "{\"firewall_group_id\": \"$fw_id\"}" >/dev/null && say "$id is in firewall group $FIREWALL_NAME"
+    done
+    ;;
   regions)
     vapi GET "/regions?per_page=500" | jq -r '.regions[] | [.id, .city, .country] | @tsv' | column -t -s $'\t'
     ;;
