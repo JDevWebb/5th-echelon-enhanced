@@ -203,7 +203,7 @@
             <dt>Last 7 days</dt><dd>{{ fmt.dur(p.week_seconds) }}</dd>
             <dt>Sessions</dt><dd>{{ fmt.n(p.sessions) }}</dd>
             <dt>Last seen</dt><dd>{{ p.online ? 'now' : fmt.ago(p.last_seen) }}</dd>
-            <dt>Problems</dt><dd>{{ act5 ? `${problems.filter(x => x.level === 'bad').length} in 5 days` : '–' }}</dd>
+            <dt>Last 5 days</dt><dd>{{ act5 ? `${problems.filter(x => x.level === 'bad').length} problems · ${problems.filter(x => x.level === 'warn').length} warnings` : '–' }}</dd>
           </dl>
         </section>
         <section class="panel">
@@ -444,7 +444,7 @@ async function act(kind) {
 .kv dt { color: var(--faint); }
 .kv dd { margin: 0; }
 .accounts { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; font-size: 13px; }
-.acct { display: flex; justify-content: space-between; gap: 8px; color: var(--text); text-decoration: none; }
+.acct { display: flex; flex-direction: column; gap: 1px; color: var(--text); text-decoration: none; }
 a.acct:hover span:first-child { color: var(--accent); }
 .accounts p { margin: 0; }
 .rows { list-style: none; margin: 0; padding: 0; }

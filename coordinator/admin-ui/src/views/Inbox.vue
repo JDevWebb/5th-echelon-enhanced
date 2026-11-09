@@ -33,7 +33,7 @@
                 <span class="muted small nowrap" :title="fmt.when(i.at)">{{ fmt.ago(i.at) }}</span>
               </span>
               <span class="line">
-                <span class="title">{{ (i.kind === 'alert' ? alertText(i.title) : i.title) || '–' }}</span>
+                <span class="title">{{ titleOf(i) }}</span>
                 <span class="tags">
                   <span v-if="names.has(i.server)" class="muted small nowrap">{{ names.get(i.server) }}</span>
                   <span class="pill" :class="tone(i)">{{ pillText(i) }}</span>
@@ -106,7 +106,7 @@ import SupportThread from '../components/SupportThread.vue';
 import { api } from '../lib/api.js';
 import { confirmBox } from '../lib/dialogs.js';
 import { ensureOverview, useLoad } from '../lib/data.js';
-import { alertKind, alertText, fmt, serverName } from '../lib/fmt.js';
+import { alertKind, alertText, fmt, PROBLEMS, serverName } from '../lib/fmt.js';
 import { live } from '../lib/live.js';
 import { toast } from '../lib/ui.js';
 
@@ -148,13 +148,19 @@ function dropped() {
   reload();
 }
 
-const tone = i => ({ support: 'warn', report: 'warn', chat: 'warn', crash: i.status === 'back' ? 'bad' : 'info', alert: i.status }[i.kind] || '');
+// A report sent without a comment: the problems the player ticked.
+function titleOf(i) {
+  if (i.kind === 'alert') return alertText(i.title) || '–';
+  if (i.kind === 'report' && !i.title) return (i.problems || []).map(p => PROBLEMS[p] || p).join(', ') || 'No comment';
+  return i.title || '–';
+}
+const tone = i => ({ support: 'warn', report: i.rating === 'bad' ? 'bad' : 'warn', chat: 'warn', crash: i.status === 'back' ? 'bad' : 'info', alert: i.status }[i.kind] || '');
 function pillText(i) {
   if (i.kind === 'support') return i.unread ? `${i.unread} new` : 'open';
   if (i.kind === 'chat') return `${i.reports} report${i.reports === 1 ? '' : 's'}`;
   if (i.kind === 'crash') return i.status === 'back' ? 'back since fix' : `${i.players} player${i.players === 1 ? '' : 's'}`;
   if (i.kind === 'alert') return i.status === 'bad' ? 'down' : 'warning';
-  return i.rating || 'open';
+  return i.rating ? `rated ${i.rating}` : 'open';
 }
 
 // A reported chat message, dealt with here.
