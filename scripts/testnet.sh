@@ -16,6 +16,13 @@
 #   pair       a server with its coordinator (s1), and a second server (s2) that joins it
 #   rehearsal  global matchmaking: a coordinator on its own, the matchmaking server
 #              and two relays (as docs/cutover.md's rehearsal)
+#   regional   three regional servers as a network is before its cutover: eu with the
+#              coordinator and its admin UI, na and oceania joining it (for rehearsing the
+#              night itself: docs/cutover.md's update window)
+#
+# Which files: this checkout's (dist/ and scripts/install-server.sh), or another release's with
+# TESTNET_FILES=DIR, a folder with dedicated_server-linux-x86_64, coordinator-linux-x86_64 and
+# install-server.sh (e.g. the release production runs, to start a rehearsal where it is).
 #
 # Only deleting stops Vultr's bill: a stopped or shut-down machine is still charged. So every
 # network has an end (--hours, 4 by default): `up` leaves a watcher running on this computer that
@@ -138,6 +145,10 @@ game_name() { # ROLE NET IP
 coord_name() { # NET IP
   if [ "$use_cf" -eq 1 ]; then echo "coord-$1.$TESTNET_DOMAIN"; else echo "c.${2//./-}.sslip.io"; fi
 }
+# The coordinator's admin UI (a name of its own).
+admin_name() { # NET IP
+  if [ "$use_cf" -eq 1 ]; then echo "admin-$1.$TESTNET_DOMAIN"; else echo "a.${2//./-}.sslip.io"; fi
+}
 match_name() { # NET
   [ "$use_cf" -eq 1 ] && echo "match-$1.$TESTNET_DOMAIN" || true
 }
@@ -209,7 +220,8 @@ layout_roles() {
     one) echo "s1" ;;
     pair) echo "s1 s2" ;;
     rehearsal) echo "coord mm relay-a relay-b" ;;
-    *) die "no layout \"$1\" (one, pair, rehearsal)" ;;
+    regional) echo "eu na oceania" ;;
+    *) die "no layout \"$1\" (one, pair, rehearsal, regional)" ;;
   esac
 }
 default_region() { # LAYOUT ROLE
@@ -218,6 +230,9 @@ default_region() { # LAYOUT ROLE
     rehearsal:coord | rehearsal:relay-a) echo fra ;;
     rehearsal:mm) echo yto ;;
     rehearsal:relay-b) echo syd ;;
+    regional:eu) echo fra ;;
+    regional:na) echo yto ;;
+    regional:oceania) echo syd ;;
   esac
 }
 
@@ -340,9 +355,10 @@ udp_ring() { # NET
 
 # --- Installing ----------------------------------------------------------------------------
 
-DS_BIN="$ROOT/dist/dedicated_server-linux-x86_64"
-CO_BIN="$ROOT/dist/coordinator-linux-x86_64"
-INSTALLER="$ROOT/scripts/install-server.sh"
+FILES="${TESTNET_FILES:-}"
+DS_BIN="${FILES:-$ROOT/dist}/dedicated_server-linux-x86_64"
+CO_BIN="${FILES:-$ROOT/dist}/coordinator-linux-x86_64"
+INSTALLER="${FILES:-$ROOT/scripts}/install-server.sh"
 COMMON=(--no-auto-update --yes)
 
 copy_files() { # IP
@@ -445,6 +461,20 @@ install_net() { # NET
       say "naming the matchmaking server ($id) on the coordinator"
       run_install "$c" "${COMMON[@]}" $(co_args) --coordinator-domain "$cn" --coordinator-only --matchmaking-server "$id"
       ;;
+    regional)
+      local e en ecn ean r rip rn
+      e="$(ip_of "$all" eu)"; en="$(game_name eu "$net" "$e")"; ecn="$(coord_name "$net" "$e")"; ean="$(admin_name "$net" "$e")"
+      say "installing eu ($en) with the coordinator ($ecn) and its admin UI ($ean)"
+      run_install "$e" "${COMMON[@]}" $(ds_args) $(co_args) --domain "$en" --server-name "test-$net-eu" \
+        --region "$(region_of "$all" eu)" --coordinator-domain "$ecn" --metrics-domain "$ean"
+      for r in na oceania; do
+        rip="$(ip_of "$all" "$r")"; rn="$(game_name "$r" "$net" "$rip")"
+        join_token_to "$e" "$rip"
+        say "installing $r ($rn), joining $ecn"
+        run_install "$rip" "${COMMON[@]}" $(ds_args) --domain "$rn" --server-name "test-$net-$r" \
+          --region "$(region_of "$all" "$r")" --coordinator "https://$ecn" --join-token-file /root/fe/join-token
+      done
+      ;;
   esac
   for role in $roles; do on "$(ip_of "$all" "$role")" "rm -f fe/join-token" || true; done
   say "installed: network $net"
@@ -482,7 +512,7 @@ sweep
 
 case "$cmd" in
   up)
-    layout="${1:?up needs a layout: one, pair or rehearsal}"; shift
+    layout="${1:?up needs a layout: one, pair, rehearsal or regional}"; shift
     hours=4 plan="${TESTNET_PLAN:-vc2-1c-1gb}" install=1 overrides=""
     while [ $# -gt 0 ]; do
       case "$1" in
@@ -541,7 +571,8 @@ case "$cmd" in
       on "$ip" "cloud-init status --wait >/dev/null 2>&1; true"
       if [ "$use_cf" -eq 1 ]; then
         [ "$role" = coord ] || cf_record "$(game_name "$role" "$net" "$ip")" "$ip" "$net"
-        case "$layout:$role" in one:s1 | pair:s1 | rehearsal:coord) cf_record "$(coord_name "$net" "$ip")" "$ip" "$net" ;; esac
+        case "$layout:$role" in one:s1 | pair:s1 | rehearsal:coord | regional:eu) cf_record "$(coord_name "$net" "$ip")" "$ip" "$net" ;; esac
+        [ "$layout:$role" = regional:eu ] && cf_record "$(admin_name "$net" "$ip")" "$ip" "$net"
         [ "$layout:$role" = rehearsal:mm ] && cf_record "$(match_name "$net")" "$ip" "$net"
       fi
     done

@@ -89,6 +89,15 @@ only, TTL 60. Then:
 
 Go ahead only when every step above passed; note what it took and how long.
 
+**The rehearsal of 2026-11-10** (three Vultr machines as eu, na and oceania on 0.4.7 with
+production's databases, then this window's steps with 0.5.0; no standby or DNS move): the
+coordinator's upgrade ran its migrations on production's data in 3 s; each installer run took
+about 10 s; the merge took 2 s (508 accounts as expected, no relationship or upload lost, every
+identity on na linked under its name). It found the order of na and the relays (now steps 4 to
+6), that dropping the alias needs `--coordinator-alias -`, that a run of its own restarts eu's
+game, and that relays weren't offered for up to 6 hours after the upgrade (fixed in 0.5.0). The
+rollback took 19 s; its links are still to settle (above).
+
 ## 2. The update window
 
 Book it ([update windows](operations.md)), long enough for the merge and checks (an hour).
@@ -119,19 +128,24 @@ Announce it in the launcher's news and Discord.
    server"). Check: na's accounts with an identity
    (`SELECT COUNT(*) FROM users WHERE global_id IS NOT NULL`) against the coordinator's links for
    na (`SELECT COUNT(*) FROM links WHERE server_id = '<na's id>'`): the same, less any left out.
-4. **Move the name:** first, on eu, drop it from the coordinator (the installer without
-   `--coordinator-alias play.example.net`); then in Cloudflare, `play.example.net`'s
-   A record to na, **DNS only**, TTL 60 s.
-5. **Turn eu and oceania into relays:** the installer with `--role relay --ticket-key <na's key>
-   --mm-record play.example.net --mm-standby na=...,eu=...,oceania=...`. Their own
-   databases stay as they are (the rollback's), and their `/api/info` now says `moved_to`.
-6. **na:** the installer with `--matchmaking --mm-record play.example.net --mm-standby` (the
-   same list) `--server-name "<the network's name>"`: it's listed by `play.example.net` from
-   then on. The coordinator names it the matchmaking server: the installer on eu with
-   `--matchmaking-server <na's id>`.
+4. **na becomes the matchmaking server:** the installer with `--matchmaking --mm-record
+   play.example.net --mm-standby na=...,eu=...,oceania=... --server-name "<the network's name>"`.
+   It makes its relay-pass key as it starts and logs it ("Relay passes are signed with the key
+   ..."): the relays need it, so na goes before them.
+5. **Move the name:** in Cloudflare, `play.example.net`'s A record to na, **DNS only**, TTL 60 s.
+6. **Turn eu and oceania into relays:** the installer with `--role relay --ticket-key <na's key>
+   --mm-record play.example.net --mm-standby` (the same list). On eu the same run drops the old
+   name from the coordinator and names the matchmaking server: add `--coordinator-alias -`
+   (without it the installer keeps the alias it remembers) and `--matchmaking-server <na's id>`.
+   Do eu's in this one run: any run of the installer starts the service it installs, so a run
+   of its own to drop the alias would open eu's game to sign-ins again in the middle of the
+   window. Their own databases stay as they are (the rollback's), and their `/api/info` now
+   says `moved_to`.
 7. **Check:** test players at `play.example.net` (`testbot --server play.example.net --info`,
    and `cross-relay` through each relay); the directory lists one server, `play.example.net`,
-   with `na.example.net` in its `also`; a launcher on each old server (eu, oceania and
+   with `na.example.net` in its `also`, and its `helpers` the relays too (a relay is offered once
+   the coordinator's host check has seen it answer at its address: within minutes of the
+   upgrade); a launcher on each old server (eu, oceania and
    na's own name) moves by itself; the Sessions page shows sign-ins from every region; relays'
    `/api/info` say `matchmaking_seen`.
 
@@ -145,6 +159,10 @@ well above the usual rate for 30 minutes; the matchmaking server's CPU or memory
    databases, untouched since step 2, come back; `moved_to` goes. `play.example.net` stays on
    na: launchers that moved keep signing in there.
 3. na: restore its snapshot from before the merge (`backup.sh restore game --time <then>`).
+   **Not yet covered:** the links `copy-links` gave na stay on the coordinator: after the
+   restore, the players who came from eu and oceania are linked on na without an account there
+   (the rehearsal of 2026-11-10: 529 links for na's 268 identities). Decide how they're removed
+   before the night.
 4. Launchers that moved stay on na until their players switch back (Servers): say so in the news.
    Accounts made on na meanwhile stay there.
 
