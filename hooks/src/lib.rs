@@ -60,6 +60,7 @@ mod overlay_input;
 mod particle_fix;
 mod party_follow;
 mod pawns;
+mod perception_fix;
 mod quickstart;
 mod recording;
 mod roster;

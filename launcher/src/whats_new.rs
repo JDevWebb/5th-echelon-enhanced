@@ -107,7 +107,7 @@ pub const RELEASES: &[Release] = &[
             },
             Fix {
                 lead: "Crashes fixed",
-                rest: ": when a spy destroyed tagging devices with EMP or the overcharge suit, on the way back to the lobby after a match (most often after Play SvM), and when a player's navigation was disrupted while holding no item.",
+                rest: ": when a spy destroyed tagging devices with EMP or the overcharge suit, on the way back to the lobby after a match (most often after Play SvM), when a player's navigation was disrupted while holding no item, and in co-op a minute or two after a mission ended.",
             },
             Fix {
                 lead: "A join that can't work says why",

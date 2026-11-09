@@ -8,6 +8,7 @@ pub mod disruption;
 pub mod load_order;
 pub mod migration;
 pub mod particle;
+pub mod perception;
 pub mod scheme_pool;
 pub mod storm;
 pub mod tagging_device;
