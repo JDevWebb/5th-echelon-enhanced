@@ -431,6 +431,11 @@ pub struct Config {
     /// Not shown in the launcher.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub disable_umd_read_fix: bool,
+    /// Passes a player's chat in a match on to the other players (`hooks::chat_relay`): the game
+    /// sends it only to the host, which shows it but passes it on to nobody, so only the host's
+    /// game needs this. Team chat stays team chat. On by default; `ChatRelay = false` turns it off.
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub chat_relay: bool,
     /// Opt-in: start straight into an online lobby, `"svm"` (Spies vs Mercs) or `"coop"`
     /// (Co-op), skipping the boot videos and the title screen. Unset by default: the game starts
     /// as it always did. The launcher's Play button sets it on each start (its Play SvM / Play
@@ -1530,6 +1535,17 @@ mod tests {
             assert!(back.beta.is_off());
             assert!(!toml::to_string(&back).unwrap().contains("HostMigration"), "{extra} written back");
         }
+    }
+
+    #[test]
+    fn chat_relay_is_on_unless_turned_off() {
+        let mut cfg = super::default();
+        assert!(cfg.chat_relay, "on by default");
+        assert!(!toml::to_string(&cfg).unwrap().contains("ChatRelay"), "nothing written while on");
+        cfg.chat_relay = false;
+        let written = toml::to_string(&cfg).unwrap();
+        assert!(written.contains("ChatRelay = false"), "{written}");
+        assert!(!toml::from_str::<Config>(&written).unwrap().chat_relay);
     }
 
     #[test]
