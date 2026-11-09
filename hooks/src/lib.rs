@@ -35,6 +35,7 @@ mod addresses;
 mod api;
 mod autoclimb;
 mod chat;
+mod chat_relay;
 mod code_cave;
 mod code_check;
 mod community;

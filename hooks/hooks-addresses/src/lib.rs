@@ -19,6 +19,7 @@ use tracing::error;
 use tracing::info;
 use tracing::instrument;
 
+pub mod chat_relay;
 pub mod crash_fixes;
 pub mod engine_tables;
 pub mod host_migration;

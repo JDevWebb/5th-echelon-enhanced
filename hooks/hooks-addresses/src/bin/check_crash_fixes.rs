@@ -11,6 +11,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use hooks_addresses::chat_relay;
 use hooks_addresses::crash_fixes::disruption;
 use hooks_addresses::crash_fixes::load_order;
 use hooks_addresses::crash_fixes::migration;
@@ -117,6 +118,16 @@ fn check(path: &Path) -> bool {
     report(
         "quick-start",
         quick_start::locate(&img).map(|s| format!("{s:#x?}").split_whitespace().collect::<Vec<_>>().join(" ")),
+    );
+    // Not a crash fix either: the host passing a player's chat on to the others (ChatRelay).
+    report(
+        "chat relay",
+        chat_relay::locate(&img).map(|s| {
+            format!(
+                "display {:#010x}, unicast {:#010x}, mode {:#010x}, channel {:#010x}, release {:#010x}, session +{:#x}/+{:#x}",
+                s.display, s.unicast, s.mode, s.channel, s.release, s.own_peer, s.peers
+            )
+        }),
     );
     // Beta (Settings › Beta features): found the same way.
     report(
