@@ -70,7 +70,8 @@ message CrashRequest {
     string doing = 8;
     // The game didn't carry on after it.
     bool fatal = 9;
-    // The add-on's release that wrote it ("0.5.0").
+    // The add-on's release that wrote it ("0.5.0"). The server keeps the release it saw the
+    // game sign in with instead (the Crashes page tells a fixed crash come back by it).
     string release = 10;
 }
 message CrashResponse {}

@@ -2160,12 +2160,22 @@ impl Misc for MyMisc {
     async fn crash(&self, request: Request<misc::CrashRequest>) -> Result<Response<misc::CrashResponse>, Status> {
         let user_id = caller(&request)?;
         let r = request.into_inner();
-        if !matches!(r.kind.as_str(), "exception" | "freeze") || r.place.is_empty() {
+        if !matches!(r.kind.as_str(), "exception" | "freeze") || !crash_place(&r.place) {
             return Err(Status::invalid_argument("Not a crash"));
         }
         if !within(&CRASHES, user_id, 10, 3600) {
             return Ok(Response::new(misc::CrashResponse {}));
         }
+        // The release as the server saw the game sign in, not as the request says: the
+        // Crashes page tells a fixed crash come back by it.
+        let release = self
+            .storage
+            .last_client(user_id)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|c| c.strip_prefix("game/").map(str::to_string))
+            .unwrap_or_default();
         let place = printable(&r.place, 120);
         warn!(self.logger, "Crash from {user_id}: {} at {place}{}", r.kind, if r.fatal { " (fatal)" } else { "" });
         // The coordinator keeps strings of up to 200 characters and lists of up to 16: the
@@ -2191,7 +2201,7 @@ impl Misc for MyMisc {
                 "callers": parts(&r.callers, ", "),
                 "doing": printable(&r.doing, 190),
                 "fatal": r.fatal,
-                "release": printable(&r.release, 32),
+                "release": printable(&release, 32),
             }),
         );
         Ok(Response::new(misc::CrashResponse {}))
@@ -2871,6 +2881,32 @@ mod tests {
         super::set_rules(moderation::Rules::new(super::ALLOWED_NAMES.iter().copied(), [], true));
         // A player's name the word list flags, which the admins checked.
         assert!(check_username("Bedunga").is_ok());
+    }
+}
+
+/// A crash's place as the add-on writes it: `module+0xhex` (a module's file name), or a bare
+/// `0xhex` address outside any module. Nothing else (it names the Crashes page's groups and
+/// its alerts).
+fn crash_place(place: &str) -> bool {
+    let hex = |h: &str| (1..=8).contains(&h.len()) && h.bytes().all(|b| b.is_ascii_hexdigit());
+    match place.split_once("+0x") {
+        Some((module, offset)) => (1..=64).contains(&module.len()) && module.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-')) && hex(offset),
+        None => place.strip_prefix("0x").is_some_and(hex),
+    }
+}
+
+#[cfg(test)]
+mod crash_place_tests {
+    #[test]
+    fn only_a_module_and_offset_or_an_address() {
+        assert!(super::crash_place("Blacklist_DX11_game.exe+0x6f205a"));
+        assert!(super::crash_place("xaudio2_9.dll+0x3da72"));
+        assert!(super::crash_place("0x1e41f20"));
+        assert!(!super::crash_place(""));
+        assert!(!super::crash_place("[click](https://x.example)+0x1"));
+        assert!(!super::crash_place("a b.exe+0x1"));
+        assert!(!super::crash_place("x.exe+0x123456789"));
+        assert!(!super::crash_place("x.exe+0x12g"));
     }
 }
 

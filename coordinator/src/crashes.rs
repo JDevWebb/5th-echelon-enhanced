@@ -67,6 +67,8 @@ struct Group {
     players: BTreeSet<(String, String)>,
     names: BTreeSet<String>,
     releases: BTreeSet<String>,
+    /// The players seen on each release.
+    by_release: BTreeMap<String, BTreeSet<(String, String)>>,
     servers: BTreeSet<String>,
     /// The latest one's details.
     latest: Value,
@@ -82,6 +84,19 @@ fn joined(v: &Value, by: &str) -> String {
         _ => String::new(),
     }
 }
+
+/// A place as the game server lets it through: `module+0xhex`, or a bare `0xhex`. Others
+/// (from a server that doesn't check) are left out.
+fn valid_place(place: &str) -> bool {
+    let hex = |h: &str| (1..=8).contains(&h.len()) && h.bytes().all(|b| b.is_ascii_hexdigit());
+    match place.split_once("+0x") {
+        Some((module, offset)) => (1..=64).contains(&module.len()) && module.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-')) && hex(offset),
+        None => place.strip_prefix("0x").is_some_and(hex),
+    }
+}
+
+/// A fixed crash seen again by this many players is back (one could be anyone's say-so).
+const BACK_PLAYERS: usize = 2;
 
 /// One event's signature: where (and "freeze at" for a freeze).
 fn signature(d: &Value) -> String {
@@ -114,6 +129,9 @@ impl Coordinator {
         let mut groups: BTreeMap<String, Group> = BTreeMap::new();
         for (server, player, name, at, count, detail) in rows {
             let Ok(d) = serde_json::from_str::<Value>(&detail) else { continue };
+            if !d["place"].as_str().is_some_and(valid_place) {
+                continue;
+            }
             let g = groups.entry(signature(&d)).or_default();
             g.kind = d["kind"].as_str().unwrap_or("exception").to_string();
             g.count += count;
@@ -125,12 +143,13 @@ impl Coordinator {
             }
             g.last = g.last.max(at);
             let who = player.map_or_else(|| name.clone().unwrap_or_default(), |p| p.to_string());
-            g.players.insert((server.clone(), who));
+            g.players.insert((server.clone(), who.clone()));
             if let Some(n) = name.as_ref().filter(|n| !n.is_empty()) {
                 g.names.insert(n.clone());
             }
             if let Some(r) = d["release"].as_str().filter(|r| !r.is_empty()) {
                 g.releases.insert(r.to_string());
+                g.by_release.entry(r.to_string()).or_default().insert((server.clone(), who));
             }
             g.servers.insert(server.clone());
             if let Some(p) = player {
@@ -323,7 +342,7 @@ impl Coordinator {
                     sig.clone(),
                     "warn",
                     format!(
-                        "A new {what} at {sig} hit {} players in the last day ({} times, {} ended the game)",
+                        "A new {what} at `{sig}` hit {} players in the last day ({} times, {} ended the game)",
                         g.players.len(),
                         g.count,
                         g.fatal
@@ -331,13 +350,14 @@ impl Coordinator {
                 )),
                 Some(m) if m.status == "fixed" => {
                     let again: Vec<&String> = g.releases.iter().filter(|r| since_fix(r, &m.fixed_in)).collect();
-                    if !again.is_empty() {
+                    let players: BTreeSet<&(String, String)> = again.iter().filter_map(|r| g.by_release.get(*r)).flatten().collect();
+                    if players.len() >= BACK_PLAYERS {
                         found.push((
                             "crash".to_string(),
                             sig.clone(),
                             "bad",
                             format!(
-                                "The {what} at {sig}, fixed in {}, came back: {} times in the last day on {}",
+                                "The {what} at `{sig}`, fixed in {}, came back: {} times in the last day on {}",
                                 m.fixed_in,
                                 g.count,
                                 again.iter().map(|r| r.as_str()).collect::<Vec<_>>().join(", ")
@@ -365,6 +385,14 @@ mod tests {
         assert!(!since_fix("0.4.7", "0.5.0"));
         assert!(!since_fix("", "0.5.0"));
         assert!(!since_fix("0.5.0", "soon"));
+    }
+
+    #[test]
+    fn places_are_a_module_and_offset() {
+        assert!(valid_place("Blacklist_DX11_game.exe+0x6f205a"));
+        assert!(valid_place("0x1e41f20"));
+        assert!(!valid_place("**look** [here](https://x.example)"));
+        assert!(!valid_place("x.exe+0xzz"));
     }
 
     #[test]

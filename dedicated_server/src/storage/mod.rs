@@ -324,6 +324,14 @@ impl Storage {
         Ok(())
     }
 
+    /// The client that last signed in to the account through the API (`game/0.5.0`), if any.
+    pub async fn last_client(&self, user_id: u32) -> Result<Option<String>> {
+        Ok(sqlx::query_scalar("SELECT client FROM client_sign_ins WHERE user_id = ?")
+            .bind(user_id)
+            .fetch_optional(&self.pool)
+            .await?)
+    }
+
     /// Whether a current client signed in to the account since `since` (Unix seconds), with no
     /// outdated one trying after it.
     pub async fn has_current_client(&self, user_id: u32, since: i64) -> Result<bool> {

@@ -3204,7 +3204,8 @@ async fn crashes_are_grouped_marked_and_alerted() {
         .unwrap();
     assert!(!open.iter().any(|(k, _)| k == "crash"), "{open:?}");
     // A fixed one seen on its fix's release: back, an alert again.
-    let back = json!({ "events": [crash(6, 14, "Tama", fixed, "0.5.0", true)] });
+    // One player's say-so isn't enough: two.
+    let back = json!({ "events": [crash(6, 14, "Tama", fixed, "0.5.0", true), crash(7, 15, "Niros", fixed, "0.5.0", false)] });
     assert_eq!(t.call("POST", "/v1/events", Some(&a), Some(back)).await.0, StatusCode::OK);
     t.c.check_alerts().await.unwrap();
     let level: Option<String> = sqlx::query_scalar("SELECT level FROM alerts WHERE resolved_at IS NULL AND kind = 'crash' AND server_id = ?")
