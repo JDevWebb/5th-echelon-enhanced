@@ -94,6 +94,8 @@ pub struct SessionsQuery {
     /// Unix seconds; the last day when left out.
     pub from: Option<i64>,
     pub to: Option<i64>,
+    /// One player's (with `server`): their profile's activity.
+    pub player: Option<i64>,
 }
 
 /// One stored event.
@@ -283,38 +285,43 @@ impl Coordinator {
         let to = q.to.unwrap_or(now).min(now);
         let from = q.from.unwrap_or(to - 86_400).max(to - LONGEST_RANGE).min(to);
         let server = q.server.trim();
+        // One player only on their own server.
+        let player = q.player.filter(|_| !server.is_empty());
         let servers: Vec<(String, Option<String>)> = sqlx::query_as("SELECT id, json_extract(listing, '$.name') FROM servers ORDER BY id")
             .fetch_all(&self.pool)
             .await?;
         // A little before the range too: what a player was doing when it starts.
         let rows: Vec<(String, i64, i64, Option<i64>, Option<String>, String, String, i64)> = sqlx::query_as(
             "SELECT server_id, at, last_at, player, name, kind, detail, count FROM session_events
-             WHERE last_at >= ?1 AND at <= ?2 AND (?3 = '' OR server_id = ?3) ORDER BY at, id LIMIT ?4",
+             WHERE last_at >= ?1 AND at <= ?2 AND (?3 = '' OR server_id = ?3) AND (?5 IS NULL OR player = ?5) ORDER BY at, id LIMIT ?4",
         )
         .bind(from - 3600)
         .bind(to)
         .bind(server)
         .bind(MOST_SHOWN + 1)
+        .bind(player)
         .fetch_all(&self.pool)
         .await?;
         let cut = rows.len() as i64 > MOST_SHOWN;
         let sessions: Vec<(String, i64, i64, Option<i64>)> = sqlx::query_as(
             "SELECT server_id, player, started, ended FROM play_sessions
-             WHERE started <= ?2 AND COALESCE(ended, ?2) >= ?1 AND (?3 = '' OR server_id = ?3) ORDER BY started",
+             WHERE started <= ?2 AND COALESCE(ended, ?2) >= ?1 AND (?3 = '' OR server_id = ?3) AND (?4 IS NULL OR player = ?4) ORDER BY started",
         )
         .bind(from)
         .bind(to)
         .bind(server)
+        .bind(player)
         .fetch_all(&self.pool)
         .await?;
         let names: Vec<(String, i64, String)> = sqlx::query_as(
             "SELECT p.server_id, p.id, p.name FROM players p
              WHERE EXISTS (SELECT 1 FROM play_sessions s WHERE s.server_id = p.server_id AND s.player = p.id AND s.started <= ?2 AND COALESCE(s.ended, ?2) >= ?1)
-               AND (?3 = '' OR p.server_id = ?3)",
+               AND (?3 = '' OR p.server_id = ?3) AND (?4 IS NULL OR p.id = ?4)",
         )
         .bind(from)
         .bind(to)
         .bind(server)
+        .bind(player)
         .fetch_all(&self.pool)
         .await?;
         let alerts: Vec<(String, String, String, String, i64, Option<i64>)> = sqlx::query_as(

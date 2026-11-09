@@ -1,6 +1,6 @@
 //! The admin UI's Sessions page (see [`crate::sessions`]).
 //!
-//! * `GET /api/sessions?server=&from=&to=`: each player's timeline in the range (the last day
+//! * `GET /api/sessions?server=&from=&to=[&player=]`: each player's timeline in the range (the last day
 //!   when left out, at most a week), the problems found in it, and the servers' alerts and
 //!   unanswered pings.
 

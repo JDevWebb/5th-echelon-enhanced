@@ -1,5 +1,5 @@
 <template>
-  <div class="grid" :class="{ split: open }">
+  <div class="grid">
     <section class="panel">
       <header>
         <h2>Players <span class="muted small">{{ data ? fmt.n(data.total) : '' }}</span></h2>
@@ -30,7 +30,7 @@
             </tr>
           </thead>
           <tbody>
-            <tr v-for="p in data.players" :key="p.server + p.id" :class="{ picked: open && open.server === p.server && open.id === p.id }" tabindex="0" @click="pick(p)" @keydown.enter="pick(p)">
+            <tr v-for="p in data.players" :key="p.server + p.id" tabindex="0" @click="pick(p)" @keydown.enter="pick(p)">
               <td>
                 <span class="row" style="gap: 8px">
                   <span class="dot" :class="{ ok: p.online }" :title="p.online ? 'online' : 'offline'"></span>
@@ -57,15 +57,13 @@
         </span>
       </div>
     </section>
-    <PlayerDetail v-if="open" :server="open.server" :id="open.id" :names="names" @close="close" @changed="reload" @open="pick" />
   </div>
 </template>
 
 <script setup>
-// Every server's players, searchable; picking one opens their detail beside the list.
+// Every server's players, searchable; picking one opens their profile (#/players/<server>/<id>).
 import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
-import PlayerDetail from './PlayerDetail.vue';
 import { api } from '../lib/api.js';
 import { useLoad } from '../lib/data.js';
 import { fmt, serverName } from '../lib/fmt.js';
@@ -80,14 +78,9 @@ const online = ref(false);
 const banned = ref(false);
 const sort = ref('last_seen');
 const page = ref(0);
-const open = ref(null);
-// A player's own address (#/players/<server>/<id>, e.g. from a report) opens their detail.
 const route = useRoute();
 const router = useRouter();
 watch(() => route.query.q, v => { if (typeof v === 'string') q.value = v; });
-watch(() => [route.params.server, route.params.id], ([sv, id]) => {
-  if (sv && id && /^\d+$/.test(id)) open.value = { server: sv, id: Number(id) };
-}, { immediate: true });
 
 // Typing waits a moment before searching.
 const search = ref('');
@@ -98,19 +91,11 @@ watch([search, server, online, banned, sort], () => { page.value = 0; });
 const query = computed(() => new URLSearchParams({
   q: search.value, server: server.value, online: online.value ? '1' : '', banned: banned.value ? '1' : '', sort: sort.value, page: String(page.value),
 }).toString());
-const { data, error, reload } = useLoad(() => api('GET', `/players?${query.value}`), () => query.value);
-const pick = p => {
-  open.value = { server: p.server, id: p.id };
-  router.replace({ path: `/players/${encodeURIComponent(p.server)}/${p.id}`, query: route.query });
-};
-const close = () => {
-  open.value = null;
-  router.replace({ path: '/players', query: route.query });
-};
+const { data, error } = useLoad(() => api('GET', `/players?${query.value}`), () => query.value);
+const pick = p => router.push(`/players/${encodeURIComponent(p.server)}/${p.id}`);
 </script>
 
 <style scoped>
-.split { grid-template-columns: minmax(0, 1.35fr) minmax(360px, 1fr); }
 .filters { flex-wrap: wrap; }
 .filters input[type="search"] { width: 240px; }
 .filters select { width: auto; }
@@ -120,6 +105,4 @@ const close = () => {
 .sort[aria-pressed="true"]::after { content: " ↓"; }
 .sort:not([aria-pressed="true"]):hover { color: var(--text); }
 tbody tr { cursor: pointer; }
-tbody tr.picked td { background: var(--accent-soft); }
-@media (max-width: 1100px) { .split { grid-template-columns: 1fr; } }
 </style>

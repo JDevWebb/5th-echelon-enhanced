@@ -3142,6 +3142,13 @@ async fn session_events_are_taken_once_and_shown_with_their_problems() {
     let viper = v["players"].as_array().unwrap().iter().find(|p| p["name"] == "Viper").unwrap();
     assert_eq!(viper["rooms"][0]["with"], json!([]), "{viper}");
     assert_eq!(viper["rooms"][0]["to"].as_i64(), Some(now - 240));
+    // One player's (their profile): Viper's timeline and problems, not Renegade's.
+    let (status, v) = admin_call(&r, "GET", "/api/sessions?server=server-a&player=11", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let names: Vec<&str> = v["players"].as_array().unwrap().iter().filter_map(|p| p["name"].as_str()).collect();
+    assert_eq!(names, vec!["Viper"], "{v}");
+    assert!(v["problems"].as_array().unwrap().iter().all(|p| p["name"] == "Viper"), "{v}");
+    assert!(!v["problems"].as_array().unwrap().is_empty());
     assert_eq!(admin_call(&r, "GET", "/api/sessions", "", None).await.0, StatusCode::UNAUTHORIZED);
 }
 
