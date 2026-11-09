@@ -1,5 +1,5 @@
 <template>
-  <PageTop title="Updates" :sub="u ? `Releases from github.com/${u.repo}, signed with the release key. Servers check the signature again before installing. Book maintenance below.` : 'Signed releases, the rollout, and maintenance windows.'">
+  <PageTop title="Releases" :sub="u ? `Signed releases from github.com/${u.repo}, rolled out a server at a time; servers check the signature again before installing. Book maintenance below.` : 'Signed releases, the rollout, and maintenance windows.'">
     <template v-if="u && o" #stats>
       <Stat :value="r.target || '–'" label="Release" :sub="r.previous ? `previous ${r.previous}` : 'no previous one'" />
       <Stat :value="r.target ? (r.paused ? 'paused' : r.stage) : '–'" label="Rollout" :tone="r.stage === 'halted' ? 'bad' : r.paused ? 'warn' : r.stage === 'done' ? 'ok' : ''" />
@@ -10,37 +10,47 @@
     <button class="primary" type="button" @click="toBooking">Book maintenance</button>
   </PageTop>
   <template v-if="u && o">
-    <section class="panel">
+    <section class="panel rollout">
       <header>
-        <div><span class="label">Rollout</span><h2 class="big-title" style="margin-top: 2px">{{ r.target ? `Release ${r.target}` : 'Nothing rolled out yet' }}</h2></div>
-        <div class="row">
-          <span v-if="r.paused" class="pill warn">paused</span>
-          <span v-if="r.pinned" class="pill">pinned</span>
-          <span v-if="r.stage === 'halted'" class="pill bad">halted</span>
+        <div class="titles">
+          <div class="row" style="gap: 10px">
+            <h2 class="big-title">{{ r.target || 'Nothing rolled out yet' }}</h2>
+            <span v-if="r.target" class="pill" :class="r.stage === 'halted' ? 'bad' : r.stage === 'done' ? 'ok' : 'info'">{{ r.stage === 'halted' ? 'Halted' : r.stage === 'done' ? 'On every server' : 'Rolling out' }}</span>
+            <span v-if="r.paused" class="pill warn">Paused</span>
+            <span v-if="r.pinned" class="pill">Pinned</span>
+          </div>
+          <p v-if="r.target" class="small muted">Since {{ fmt.when(r.stage_since) }} · previous release {{ r.previous || 'none recorded' }}</p>
+        </div>
+        <div class="row actions">
+          <button v-if="r.stage !== 'halted' && r.stage !== 'done' && r.target" class="danger" type="button" @click="act('halt')">Halt the rollout</button>
+          <button v-if="r.paused" class="primary" type="button" @click="act('resume')">Resume</button>
+          <button v-else-if="r.target && !['done', 'halted'].includes(r.stage)" type="button" @click="act('pause')">Pause</button>
+          <details ref="more" class="more">
+            <summary class="btn" aria-label="More rollout actions">More</summary>
+            <div class="menu" @click="closeMore">
+              <button v-if="r.pinned" type="button" @click="act('unpin')">Unpin (follow new releases)</button>
+              <button v-else type="button" @click="act('pin')">Pin (hold this release)</button>
+              <button v-if="['canary', 'verifying', 'halted'].includes(r.stage)" type="button" @click="act('promote', ['Update every server now?', 'Every server installs the release without waiting for the canary.', 'Skip the canary'])">Skip the canary</button>
+              <button v-if="r.target && !r.anytime && !['done', 'halted'].includes(r.stage)" type="button" @click="act('now', ['Update without a window?', 'Servers install the release without waiting for an update window: each when nobody is playing on it, or within 2 hours. Players get no warning ahead. For urgent fixes.', 'Update now'])">Update now, without a window</button>
+              <button v-if="r.previous" class="danger" type="button" @click="act('rollback', [`Roll back to ${r.previous}?`, 'Every server goes back to the release before (each kept it), and the rollout is pinned there.', `Roll back to ${r.previous}`, true])">Roll back to {{ r.previous }}</button>
+            </div>
+          </details>
         </div>
       </header>
-      <div v-if="r.target" class="stages">
-        <div v-for="(st, i) in ORDER" :key="st" class="stage" :class="r.stage === 'halted' && i === Math.max(at, 0) ? 'halted' : i < at ? 'done' : i === at ? 'now' : ''">
-          <b>{{ st[0].toUpperCase() + st.slice(1) }}</b>{{ i === at ? stageText[st] : '' }}
-        </div>
-      </div>
+      <ol v-if="r.target" class="steps" aria-label="Rollout stages">
+        <li v-for="(st, i) in ORDER" :key="st" :class="stepClass(i)">
+          <span class="n">{{ i < at || r.stage === 'done' ? '✓' : i + 1 }}</span>
+          <b>{{ STEP[st][0] }}</b>
+          <span class="small faint">{{ i === at ? stageText[st] : STEP[st][1] }}</span>
+          <span class="pill" :class="{ done: 'ok', now: 'info', halted: 'bad' }[stepClass(i)] || ''">{{ { done: 'Done', now: r.paused ? 'Paused' : 'Now', halted: 'Halted' }[stepClass(i)] || 'Next' }}</span>
+        </li>
+      </ol>
       <p v-if="r.note" class="callout" :class="{ bad: r.stage === 'halted' }">{{ r.note }}</p>
       <p v-if="r.target && !['done', 'halted'].includes(r.stage)" class="small muted" style="margin-top: 8px">
         <template v-if="r.anytime">Going out without update windows: each server when it's quiet, or within 2 hours.</template>
         <template v-else-if="u.next_window">Installs in update windows only. {{ u.next_window.start <= Date.now() / 1000 ? 'One is under way' : 'The next starts' }}: {{ fmt.when(u.next_window.start) }} to {{ fmt.when(u.next_window.end) }}.</template>
         <template v-else>Installs in update windows only, and none is booked: <a href="#maintenance" @click.prevent="toBooking">book one</a> so players know when.</template>
       </p>
-      <p v-if="r.target" class="small muted" style="margin-top: 8px">Since {{ fmt.when(r.stage_since) }} · previous release {{ r.previous || 'none recorded' }}</p>
-      <div class="row" style="margin-top: 14px">
-        <button v-if="r.paused" type="button" @click="act('resume')">Resume</button>
-        <button v-else type="button" @click="act('pause')">Pause</button>
-        <button v-if="r.pinned" type="button" @click="act('unpin')">Unpin (follow new releases)</button>
-        <button v-else type="button" @click="act('pin')">Pin (hold this release)</button>
-        <button v-if="['canary', 'verifying', 'halted'].includes(r.stage)" type="button" @click="act('promote', ['Update every server now?', 'Every server installs the release without waiting for the canary.', 'Skip the canary'])">Skip the canary</button>
-        <button v-if="r.target && !r.anytime && !['done', 'halted'].includes(r.stage)" type="button" @click="act('now', ['Update without a window?', 'Servers install the release without waiting for an update window: each when nobody is playing on it, or within 2 hours. Players get no warning ahead. For urgent fixes.', 'Update now'])">Update now, without a window</button>
-        <button v-if="r.stage !== 'halted' && r.stage !== 'done' && r.target" type="button" @click="act('halt')">Halt</button>
-        <button v-if="r.previous" class="danger" type="button" @click="act('rollback', [`Roll back to ${r.previous}?`, 'Every server goes back to the release before (each kept it), and the rollout is pinned there.', `Roll back to ${r.previous}`, true])">Roll back to {{ r.previous }}</button>
-      </div>
     </section>
     <section class="panel">
       <header>
@@ -86,7 +96,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, watch } from 'vue';
+import { computed, onMounted, ref, watch } from 'vue';
 import PageTop from '../components/PageTop.vue';
 import Stat from '../components/Stat.vue';
 import Maintenance from '../components/Maintenance.vue';
@@ -114,6 +124,16 @@ function toBooking() {
   el.querySelector('input')?.focus({ preventScroll: true });
 }
 const at = computed(() => ORDER.indexOf(r.value.stage));
+const STEP = {
+  canary: ['Canary', 'one server tries it first'],
+  verifying: ['Watch', 'the canary is watched on it'],
+  rolling: ['The rest', 'every other server updates'],
+  done: ['Done', 'every server runs it'],
+};
+// Halted: at the stage it stopped (the canary's when it never started).
+const stepClass = i => (r.value.stage === 'halted' ? (i === 0 ? 'halted' : '') : r.value.stage === 'done' || i < at.value ? 'done' : i === at.value ? 'now' : '');
+const more = ref(null);
+const closeMore = () => { if (more.value) more.value.open = false; };
 const name = id => serverName(o.value?.servers.find(sv => sv.id === id) || { id });
 const stageText = computed(() => ({
   canary: r.value.canary ? `${name(r.value.canary)} installs it first` : r.value.anytime ? 'choosing a server to try it on' : 'waiting for an update window to try it on a server',
@@ -130,3 +150,21 @@ async function act(action, ask, body) {
   try { toast((await api('POST', `/updates/${action}`, body || {})).message); reload(); } catch (e) { toast(e.message, true); }
 }
 </script>
+
+<style scoped>
+.rollout header { align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.titles { display: flex; flex-direction: column; gap: 4px; }
+.titles p { margin: 0; }
+.actions { gap: 8px; flex-wrap: wrap; }
+.steps { list-style: none; margin: 14px 0 4px; padding: 0; display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.steps li { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; padding-top: 12px; border-top: 3px solid var(--line-2); }
+.steps li.done { border-top-color: var(--accent); }
+.steps li.now { border-top-color: var(--info); }
+.steps li.halted { border-top-color: var(--bad); }
+.steps .n { width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font: 600 12px var(--mono); background: var(--chip); color: var(--muted); }
+.steps li.done .n { background: var(--accent); color: var(--bg); }
+.steps li.now .n { background: var(--info); color: var(--bg); }
+.steps li.halted .n { background: var(--bad); color: var(--bg); }
+.faint { color: var(--faint); }
+@media (max-width: 700px) { .steps { grid-template-columns: 1fr 1fr; } }
+</style>

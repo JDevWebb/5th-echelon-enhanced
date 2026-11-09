@@ -418,3 +418,14 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.55); backdrop-filter: blur(2px); 
   .span-2 { grid-column: auto; }
   .stages { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
+
+/* A "More" button's menu of the rarer actions (a <details>). */
+.more { position: relative; }
+.more summary { list-style: none; cursor: pointer; }
+.more summary::-webkit-details-marker { display: none; }
+.menu {
+  position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 220px; display: flex; flex-direction: column; padding: 4px;
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+.menu button { border: none; background: none; text-align: left; justify-content: flex-start; height: auto; padding: 8px 10px; border-radius: 6px; }
+.menu button:hover { background: var(--panel-2); }

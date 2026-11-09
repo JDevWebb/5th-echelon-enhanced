@@ -74,8 +74,8 @@ A member server drops out of the server directory, and players' launchers stop o
 
 ### In the admin UI
 
-**Updates** shows:
-- the rollout's stage;
+**Releases** (under Operations) shows:
+- the rollout's stage, as steps (canary, watch, the rest, done), with **Halt the rollout** and **Pause** beside it and the rarer actions (pin, skip the canary, update without a window, roll back) under **More**;
 - each server's version, its updater's last result, and whether it's listed;
 - every signed release seen.
 
@@ -94,7 +94,7 @@ A member server drops out of the server directory, and players' launchers stop o
 
 ## Maintenance windows
 
-Admins book a time a server will be down, or the whole network, in the admin UI's **Updates** page: what it's for (an update, or other maintenance), the servers, the start in the admin's own time (with UTC beside it), how long, and a note for players ("Moving to a faster machine"; an update window without one says "Server update"). A booking is a notice for players: the rollout installs releases in update windows (above), and any other work is the admin's to do.
+Admins book a time a server will be down, or the whole network, in the admin UI's **Releases** page: what it's for (an update, or other maintenance), the servers, the start in the admin's own time (with UTC beside it), how long, and a note for players ("Moving to a faster machine"; an update window without one says "Server update"). A booking is a notice for players: the rollout installs releases in update windows (above), and any other work is the admin's to do.
 
 **Update windows** are when releases go out, so book them ahead, say a regular weekly slot in each region's quiet hours, or one for the whole network. A whole network's update window is each server's too: launchers on every server are told, and the coordinator updates in it as well. A server restarts once, for about two minutes, early in the window.
 
@@ -265,6 +265,14 @@ After a game session with problems (a failed join, a relayed connection, a crash
 **Alerts:** with the alert webhook set (see Alerts), each new report is posted to it, e.g. "📝 Report from Player1 on eu: couldn't join, lag — "couldn't join my friend"", with a link to it. Under **Alerts › Player reports**: post the reports rated bad or with problems ticked (the default), all of them, or none. Past 5 in a minute, the rest wait and go together in one message ("7 new reports …") a minute later. A player's words can't ping anyone: mentions are broken up.
 
 ## The admin UI
+
+### Finding your way
+
+The side menu groups the pages: **Inbox** and **Players** first, then **Support** (Support, Reports, Chat and names), **Network** (Overview, Servers, Live matches, Sessions, Traffic), **Game health** (Crashes) and **Operations** (Releases, Roadmap, Alerts, Admins and security). Counts beside them say what's waiting. The top bar finds a player by name, account number or identity (press `/` to jump to it), and shows who's playing, the live connection, the colours (system, light or dark) and who's signed in.
+
+**Inbox**, the first page, gathers everything waiting on an admin: support conversations whose turn is yours, open player reports, reported chat messages, crashes of the last week not marked (or seen again since their fix) and open alerts, newest first. Filter it by kind or server; `j` and `k` step through it and `o` opens the one picked on its own page. Picking one deals with it beside the list: answer the conversation, resolve or reply to the report, dismiss, delete or mark dealt with a chat message; crashes and alerts link to their pages.
+
+A player's page (from Players, the search, a report or a conversation) has their state at a glance (online and where, bans, mutes, support, fair-play flags, their accounts), the actions (message, kick, ban; rename, reset password and the rest under **More**), and tabs: **Activity** (the last 5 days as the Sessions page sees them, a row a day, and what went wrong), **Sessions**, **Moderation**, **Fair play** and **Loadouts**.
 
 ### Turning it on
 

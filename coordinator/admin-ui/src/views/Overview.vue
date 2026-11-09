@@ -7,12 +7,21 @@
         <Stat :value="fmt.n(Math.max(o.peak_24h || 0, players))" label="Peak, 24 h" sub="most online at once" />
         <Stat :value="fmt.n(sessions)" label="Sessions" :sub="pulse.now.servers ? `${fmt.n(pulse.now.matches)} matches running` : 'lobbies and matches'" />
         <Stat :value="fmt.n(online.length)" :unit="`/ ${o.servers.length}`" label="Servers up" :sub="`Coordinator ${o.coordinator.version} · ${delisted ? `${delisted} delisted` : 'all listed'}`" />
+        <RouterLink class="tile-link" to="/inbox"><Stat :value="fmt.n(waiting)" label="Needs you" :tone="waiting ? 'warn' : ''" sub="Open the Inbox →" /></RouterLink>
       </template>
-      <RouterLink class="btn primary" to="/sessions">Sessions</RouterLink>
+      <span class="pill" :class="health.tone"><i class="dot" :class="health.tone"></i> {{ health.text }}</span>
+      <RouterLink class="btn" to="/sessions">Sessions</RouterLink>
     </PageTop>
-    <RouterLink v-if="(o.alerts || []).length" to="/alerts" class="callout" :class="o.alerts.some(a => a.level === 'bad') ? 'bad' : 'warn'" style="text-decoration: none; color: inherit">
-      <b>{{ o.alerts.length === 1 ? '1 alert' : `${o.alerts.length} alerts` }}:</b> {{ o.alerts[0].detail }}{{ o.alerts.length > 1 ? ' …' : '' }}
-    </RouterLink>
+    <section v-if="(o.alerts || []).length" class="panel">
+      <header><h2>Alerts</h2><RouterLink class="small" to="/alerts">Alerts and their settings →</RouterLink></header>
+      <ul class="alerts">
+        <li v-for="a in o.alerts" :key="a.id" :class="a.level">
+          <span class="pill" :class="a.level">{{ a.level === 'bad' ? 'Down' : 'Warning' }}</span>
+          <span class="grow">{{ a.detail }}</span>
+          <span class="small muted nowrap">{{ a.server ? serverLabel(a.server) + ' · ' : '' }}since {{ fmt.ago(a.started_at) }}</span>
+        </li>
+      </ul>
+    </section>
     <div class="grid cols-2">
       <section class="panel">
         <header><h2>Players online, 24 hours</h2><div class="legend"><span v-for="s in playerLines" :key="s.name"><i :style="{ background: s.color }"></i>{{ s.name }}</span></div></header>
@@ -82,6 +91,15 @@ const players = computed(() => (pulse.value.now.servers ? pulse.value.now.player
 const inMatch = computed(() => (pulse.value.now.servers ? pulse.value.now.in_match : online.value.reduce((n, sv) => n + (sv.metrics?.players?.in_match || 0), 0)));
 const serverLabel = id => serverName(o.value?.servers.find(sv => sv.id === id) || { id });
 const sessions = computed(() => online.value.reduce((n, sv) => n + (sv.metrics?.activity || []).reduce((m, a) => m + (a.sessions || 0), 0), 0));
+// What's waiting on an admin (the side menu's Inbox count), and the network's state in a word.
+const waiting = computed(() => (o.value.support_open || 0) + (o.value.open_reports || 0) + (o.value.chat_reports || 0) + (o.value.alerts || []).length);
+const health = computed(() => {
+  const alerts = o.value.alerts || [];
+  const down = o.value.servers.length - online.value.length;
+  if (alerts.some(a => a.level === 'bad') || down) return { tone: 'bad', text: down ? `${down} server${down === 1 ? '' : 's'} down` : 'Something is down' };
+  if (alerts.length) return { tone: 'warn', text: `${alerts.length} warning${alerts.length === 1 ? '' : 's'}` };
+  return { tone: 'ok', text: 'All normal' };
+});
 const delisted = computed(() => o.value.servers.filter(sv => sv.delisted).length);
 const stage = computed(() => {
   const r = o.value.rollout;
@@ -110,4 +128,11 @@ const recent = computed(() => {
 .feed { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .feed li { display: flex; flex-direction: column; gap: 2px; padding: 8px 6px; border-bottom: 1px solid var(--line); border-radius: 6px; }
 .feed li:last-child { border-bottom: none; }
+.tile-link { display: contents; color: inherit; text-decoration: none; }
+.alerts { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.alerts li { display: flex; gap: 12px; align-items: center; padding: 10px 12px; border-radius: 8px; background: var(--panel-2); }
+.alerts li.bad { background: var(--bad-soft); }
+.alerts li.warn { background: var(--warn-soft); }
+.grow { flex: 1; min-width: 0; }
+.nowrap { white-space: nowrap; }
 </style>

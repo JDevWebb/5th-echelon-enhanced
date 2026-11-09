@@ -423,15 +423,6 @@ async function act(kind) {
 .pill .dot { width: 7px; height: 7px; }
 .faint { color: var(--faint); }
 .actbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.more { position: relative; }
-.more summary { list-style: none; cursor: pointer; }
-.more summary::-webkit-details-marker { display: none; }
-.menu {
-  position: absolute; right: 0; top: calc(100% + 4px); z-index: 20; min-width: 200px; display: flex; flex-direction: column; padding: 4px;
-  background: var(--panel); border: 1px solid var(--line-2); border-radius: 8px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
-}
-.menu button { border: none; background: none; text-align: left; justify-content: flex-start; height: auto; padding: 8px 10px; border-radius: 6px; }
-.menu button:hover { background: var(--panel-2); }
 .tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 16px; flex-wrap: wrap; }
 .tab { border: none; border-radius: 0; background: none; color: var(--muted); padding: 10px 12px; height: auto; border-bottom: 2px solid transparent; margin-bottom: -1px; font-size: 13.5px; }
 .tab:hover { color: var(--text); background: none; }
