@@ -1087,6 +1087,49 @@ async fn a_merged_servers_links_are_copied_to_the_one_it_merged_into() {
     assert!(t.c.copy_links("eu", "eu").await.is_err(), "the same one");
 }
 
+/// A merge rolled back: mm's links saved before copy-links come back as they were (the copied
+/// ones go, a player's link made on mm since the save stays, one lost comes back).
+#[tokio::test]
+async fn a_rolled_back_merges_links_are_put_back() {
+    let t = start("restore-links").await;
+    t.join("eu").await;
+    t.join("mm").await;
+    let link = |g: &'static str, server: &'static str, name: &'static str, at: i64| {
+        sqlx::query("INSERT INTO links (global_id, server_id, username, linked_at) VALUES (?, ?, ?, ?)")
+            .bind(g)
+            .bind(server)
+            .bind(name)
+            .bind(at)
+    };
+    for (g, server, name) in [("aa", "eu", "Ann"), ("bb", "eu", "Bob"), ("bb", "mm", "Bob"), ("dd", "mm", "Dee")] {
+        link(g, server, name, 5).execute(&t.c.pool).await.unwrap();
+    }
+    let saved = t.c.save_links("mm").await.unwrap().unwrap();
+    assert_eq!(saved.links.len(), 2);
+    assert!(t.c.save_links("nowhere").await.unwrap().is_none());
+    // The file round trip, as the operator keeps it.
+    let saved: SavedLinks = serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+
+    assert_eq!(t.c.copy_links("eu", "mm").await.unwrap().0, 1, "Ann");
+    // Meanwhile: a new player links on mm, and Dee's link is gone.
+    link("ff", "mm", "Fay", identity::now() + 1).execute(&t.c.pool).await.unwrap();
+    sqlx::query("DELETE FROM links WHERE server_id = 'mm' AND global_id = 'dd'")
+        .execute(&t.c.pool)
+        .await
+        .unwrap();
+
+    assert_eq!(t.c.restore_links(&saved).await.unwrap(), Some((1, 1, 1)), "Ann's copy goes, Dee's comes back, Fay's stays");
+    assert!(!t.c.linked("mm", "aa").await.unwrap());
+    assert!(t.c.linked("eu", "aa").await.unwrap(), "eu's own untouched");
+    assert!(t.c.linked("mm", "bb").await.unwrap() && t.c.linked("mm", "dd").await.unwrap() && t.c.linked("mm", "ff").await.unwrap());
+    assert_eq!(t.c.restore_links(&saved).await.unwrap(), Some((0, 0, 1)), "again: nothing to do");
+    let gone = SavedLinks {
+        server: "nowhere".into(),
+        ..saved
+    };
+    assert_eq!(t.c.restore_links(&gone).await.unwrap(), None);
+}
+
 #[tokio::test]
 async fn links_made_before_names_existed_reserve_theirs() {
     let dir = std::env::temp_dir().join(format!("fe-coord-backfill-{}", std::process::id()));

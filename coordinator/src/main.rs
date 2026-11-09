@@ -71,6 +71,8 @@ struct Args {
 enum Command {
     RemoveServer(RemoveServer),
     CopyLinks(CopyLinks),
+    SaveLinks(SaveLinks),
+    RestoreLinks(RestoreLinks),
     PurgeNames(PurgeNames),
     NewToken(NewToken),
     Admin(Admin),
@@ -160,6 +162,29 @@ struct CopyLinks {
     /// the server they were merged into (its id)
     #[argh(positional)]
     to: String,
+}
+
+#[derive(argh::FromArgs)]
+#[argh(subcommand, name = "save-links")]
+/// save a server's links to a file, before copy-links merges others' into it:
+/// restore-links undoes that copy if the merge is rolled back
+struct SaveLinks {
+    /// the server (its id)
+    #[argh(positional)]
+    server: String,
+    /// the file to write (not one that's there already)
+    #[argh(positional)]
+    file: PathBuf,
+}
+
+#[derive(argh::FromArgs)]
+#[argh(subcommand, name = "restore-links")]
+/// put a server's links back as save-links saved them: the links copy-links
+/// added go, ones made since the save stay, saved ones missing come back
+struct RestoreLinks {
+    /// the file save-links wrote (it names the server)
+    #[argh(positional)]
+    file: PathBuf,
 }
 
 #[derive(argh::FromArgs)]
@@ -398,6 +423,45 @@ async fn main() -> eyre::Result<()> {
                     println!("  {username} ({global_id})");
                 }
             }
+            return Ok(());
+        }
+        Some(Command::SaveLinks(s)) => {
+            let c = coordinator::Coordinator::open(&db.to_string_lossy(), String::new()).await?;
+            let Some(saved) = c.save_links(&s.server).await? else {
+                println!("Nothing saved: no member server {} (its id in the directory).", s.server);
+                return Ok(());
+            };
+            if s.file.exists() {
+                eyre::bail!(
+                    "{} is there already: save to a new file (an earlier save may be the one a rollback needs)",
+                    s.file.display()
+                );
+            }
+            // The links name players: the file is the operator's only.
+            write_private(&s.file, &serde_json::to_string(&saved)?)?;
+            c.audit("console", None, "saved a server's links", &format!("{}: {}", s.server, saved.links.len())).await;
+            println!("Saved {} links of {} to {}.", saved.links.len(), s.server, s.file.display());
+            return Ok(());
+        }
+        Some(Command::RestoreLinks(r)) => {
+            let saved: coordinator::SavedLinks =
+                serde_json::from_str(&std::fs::read_to_string(&r.file)?).map_err(|e| eyre::eyre!("{} isn't a file save-links wrote: {e}", r.file.display()))?;
+            let c = coordinator::Coordinator::open(&db.to_string_lossy(), String::new()).await?;
+            let Some((removed, put_back, kept)) = c.restore_links(&saved).await? else {
+                println!("Nothing restored: no member server {} any more.", saved.server);
+                return Ok(());
+            };
+            c.audit(
+                "console",
+                None,
+                "restored a server's links",
+                &format!("{}: {removed} removed, {put_back} put back, {kept} made since kept", saved.server),
+            )
+            .await;
+            println!(
+                "{}'s links are as saved: {removed} removed (copied in since the save), {put_back} put back, {kept} made since the save kept.",
+                saved.server
+            );
             return Ok(());
         }
         Some(Command::PurgeNames(p)) => {

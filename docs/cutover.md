@@ -96,7 +96,7 @@ about 10 s; the merge took 2 s (508 accounts as expected, no relationship or upl
 identity on na linked under its name). It found the order of na and the relays (now steps 4 to
 6), that dropping the alias needs `--coordinator-alias -`, that a run of its own restarts eu's
 game, and that relays weren't offered for up to 6 hours after the upgrade (fixed in 0.5.0). The
-rollback took 19 s; its links are still to settle (above).
+rollback took 19 s, and left copy-links' links on na (now `save-links` and `restore-links`).
 
 ## 2. The update window
 
@@ -118,8 +118,10 @@ Announce it in the launcher's news and Discord.
    `.backup`: never a plain copy of a database in use); stop na's game service; take a
    snapshot of na first; run `--merge-accounts` with both, against na's own database in place
    (nothing copied over it); start it again. The rehearsal's merge took a second. **Then their
-   players' links:** on the coordinator (eu), `sudo -u echelon-coord /opt/5th-echelon/coordinator
-   --data /var/lib/5th-echelon-coordinator copy-links <eu's id> <na's id>`, and the same for
+   players' links:** on the coordinator (eu), first save na's as they are, for the rollback:
+   `sudo -u echelon-coord /opt/5th-echelon/coordinator --data /var/lib/5th-echelon-coordinator
+   save-links <na's id> /var/lib/5th-echelon-coordinator/na-links-before-merge.json` (it won't
+   write over a file that's there); then `... copy-links <eu's id> <na's id>`, and the same for
    oceania's id (it prints any left out: na has that identity or name linked otherwise; check each).
    A link keeps the name it had on eu or oceania: an account the merge renamed (it prints them;
    none expected) needs its link's name put right by hand.
@@ -159,10 +161,11 @@ well above the usual rate for 30 minutes; the matchmaking server's CPU or memory
    databases, untouched since step 2, come back; `moved_to` goes. `play.example.net` stays on
    na: launchers that moved keep signing in there.
 3. na: restore its snapshot from before the merge (`backup.sh restore game --time <then>`).
-   **Not yet covered:** the links `copy-links` gave na stay on the coordinator: after the
-   restore, the players who came from eu and oceania are linked on na without an account there
-   (the rehearsal of 2026-11-10: 529 links for na's 268 identities). Decide how they're removed
-   before the night.
+   Then its links: on the coordinator, `... restore-links
+   /var/lib/5th-echelon-coordinator/na-links-before-merge.json` (the file step 3 saved). The
+   links `copy-links` gave na go (players from eu and oceania would otherwise be linked on na
+   without an account there: the rehearsal had 529 links for na's 268 identities), links made on
+   na since the save stay (players who signed up meanwhile), and it prints how many of each.
 4. Launchers that moved stay on na until their players switch back (Servers): say so in the news.
    Accounts made on na meanwhile stay there.
 

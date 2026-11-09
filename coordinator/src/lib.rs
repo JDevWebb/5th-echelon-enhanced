@@ -495,6 +495,15 @@ const MAX_ONLINE: usize = 20_000;
 /// How long a player counts as online on a server after its last report (it reports every 30 s).
 const ONLINE_FOR: i64 = 90;
 
+/// A member's links as `save-links` wrote them (a file the operator keeps for the rollback of a
+/// merge): (identity, name, linked at) each.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
+pub struct SavedLinks {
+    pub server: String,
+    pub saved_at: i64,
+    pub links: Vec<(String, String, i64)>,
+}
+
 /// One server's word that a player is online there.
 #[derive(Debug, Clone, Copy)]
 struct Seen {
@@ -798,6 +807,74 @@ impl Coordinator {
         }
         tx.commit().await?;
         Ok((copied, left))
+    }
+
+    /// A member's links as they are now, for [`Coordinator::restore_links`]: taken before a
+    /// merge's `copy-links`, so a rollback can undo it. `None`: no such member.
+    pub async fn save_links(&self, server: &str) -> sqlx::Result<Option<SavedLinks>> {
+        let member: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM servers WHERE id = ?").bind(server).fetch_one(&self.pool).await?;
+        if member == 0 {
+            return Ok(None);
+        }
+        let links: Vec<(String, String, i64)> = sqlx::query_as("SELECT global_id, username, linked_at FROM links WHERE server_id = ? ORDER BY linked_at")
+            .bind(server)
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(Some(SavedLinks {
+            server: server.to_string(),
+            saved_at: identity::now(),
+            links,
+        }))
+    }
+
+    /// Puts a member's links back as `saved` had them, undoing `copy-links` after a merge was
+    /// rolled back: links it doesn't have that are older than it go (`copy-links` keeps each
+    /// link's own time, from before the save), links made since are kept (players who signed
+    /// up meanwhile keep theirs), and saved links missing are put back. Answers (removed, put
+    /// back, kept as made since); `None`: no such member.
+    pub async fn restore_links(&self, saved: &SavedLinks) -> sqlx::Result<Option<(u64, u64, u64)>> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let member: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM servers WHERE id = ?")
+            .bind(&saved.server)
+            .fetch_one(&mut *tx)
+            .await?;
+        if member == 0 {
+            return Ok(None);
+        }
+        let had: std::collections::HashSet<&str> = saved.links.iter().map(|(g, _, _)| g.as_str()).collect();
+        let now: Vec<(String, i64)> = sqlx::query_as("SELECT global_id, linked_at FROM links WHERE server_id = ?")
+            .bind(&saved.server)
+            .fetch_all(&mut *tx)
+            .await?;
+        let (mut removed, mut kept) = (0, 0);
+        for (global_id, linked_at) in &now {
+            if had.contains(global_id.as_str()) {
+                continue;
+            }
+            if *linked_at >= saved.saved_at {
+                kept += 1;
+                continue;
+            }
+            sqlx::query("DELETE FROM links WHERE server_id = ? AND global_id = ?")
+                .bind(&saved.server)
+                .bind(global_id)
+                .execute(&mut *tx)
+                .await?;
+            removed += 1;
+        }
+        let mut put_back = 0;
+        for (global_id, username, linked_at) in &saved.links {
+            put_back += sqlx::query("INSERT OR IGNORE INTO links (global_id, server_id, username, linked_at) VALUES (?, ?, ?, ?)")
+                .bind(global_id)
+                .bind(&saved.server)
+                .bind(username)
+                .bind(linked_at)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+        }
+        tx.commit().await?;
+        Ok(Some((removed, put_back, kept)))
     }
 
     /// Removes a member server: its links, and names only it used. For the
