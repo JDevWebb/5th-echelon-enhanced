@@ -89,6 +89,10 @@ pub fn due(checked: Option<&str>, listing: &Listing, now: i64) -> bool {
     match checked.and_then(|c| serde_json::from_str::<Checked>(c).ok()) {
         None => true,
         Some(c) if c.target != target(listing) => true,
+        // Passed before the addresses that answered were kept (an older coordinator's): its
+        // relay can't be offered without them, so it's checked again soon, not in 6 hours (a
+        // network moving to global matchmaking makes its relays right after the upgrade).
+        Some(c) if c.ok && c.addrs.is_empty() => now - c.at >= RETRY,
         Some(c) => now - c.at >= if c.ok { CHECK_AGAIN } else { RETRY },
     }
 }
@@ -277,6 +281,13 @@ mod tests {
         .unwrap();
         assert!(!passed(Some(&failed), &l));
         assert!(due(Some(&failed), &l, 100 + RETRY));
+        // Passed, kept by a coordinator before the addresses were (0.4.x): still passed, and
+        // checked again soon, so its relay is offered (not in 6 hours).
+        let old = format!(r#"{{"target":"{}","ok":true,"at":100}}"#, target(&l));
+        assert!(passed(Some(&old), &l));
+        assert!(verified_addresses(Some(&old), &l).is_empty());
+        assert!(!due(Some(&old), &l, 100 + RETRY - 1));
+        assert!(due(Some(&old), &l, 100 + RETRY));
     }
 
     #[test]
