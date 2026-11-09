@@ -1,5 +1,5 @@
 <template>
-  <PageTop title="Network" :tabs="NETWORK_TABS" :sub="now ? 'Activity: what\'s being played right now, by mode and map.' : 'Activity: what was played, by mode and map (player-minutes).'">
+  <PageTop title="Traffic" :tabs="NETWORK_TABS" :sub="now ? 'Activity: what\'s being played right now, by mode and map.' : 'Activity: what was played, by mode and map (player-minutes).'">
     <template v-if="data" #stats>
       <Stat :value="fmt.n(total)" :label="now ? 'Players' : 'Player-minutes'" />
       <Stat :value="fmt.n(sessions)" :label="now ? 'Sessions' : 'Session-minutes'" />

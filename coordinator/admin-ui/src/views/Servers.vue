@@ -6,7 +6,7 @@
       <Stat :value="fmt.n(delisted)" label="Delisted" :tone="delisted ? 'warn' : ''" />
       <Stat :value="o.rollout.target || '–'" label="Release" :sub="behind ? `${behind} behind` : 'all on it'" />
     </template>
-    <RouterLink class="btn" to="/updates">Updates</RouterLink>
+    <RouterLink class="btn" to="/updates">Releases</RouterLink>
   </PageTop>
   <template v-if="o">
     <div v-if="o.servers.length" class="servers">

@@ -50,7 +50,7 @@
       {{ ACTION_LABELS[f.kind] }}: {{ f.status === 'pending' ? 'waiting for the server (it checks every 10 s)…' : f.message || f.status }}
     </p>
 
-    <nav class="tabs" aria-label="Player">
+    <nav class="ptabs" aria-label="Player">
       <button v-for="[id, label, n] in tabs" :key="id" type="button" class="tab" :aria-current="tab === id ? 'page' : null" @click="setTab(id)">
         {{ label }}<b v-if="n" class="count">{{ n }}</b>
       </button>
@@ -102,7 +102,7 @@
         <template v-else-if="tab === 'sessions'">
           <section class="panel">
             <header><h2>Time played, last 30 days</h2></header>
-            <LineChart :series="daySeries" :from="d.days[0].t" :to="d.days.at(-1).t" :format="v => `${fmt.n(v)} min`" :height="140" />
+            <LineChart :series="daySeries" :from="d.days[0].t" :to="d.days.at(-1).t" :format="v => `${fmt.n(v, v > 0 && v < 10 ? 1 : 0)} min`" :height="140" />
           </section>
           <section class="panel">
             <header><h2>Sessions</h2><span class="small muted">the last 50</span></header>
@@ -316,7 +316,15 @@ const tabs = computed(() => TABS.map(([t, label]) => [t, label, {
 
 // The timeline: a row a day, midnight to midnight in the admin's time zone.
 const mine5 = computed(() => (act5.value?.players || []).filter(x => x.player === id.value));
-const problems = computed(() => (act5.value?.problems || []).filter(x => x.player === id.value));
+// What went wrong: the Sessions report's problems, and their game's crashes and freezes (marks
+// on the timeline; the Crashes page groups them).
+const problems = computed(() => {
+  const found = (act5.value?.problems || []).filter(x => x.player === id.value);
+  const crashes = (act5.value?.players || []).filter(x => x.player === id.value).flatMap(x => x.marks)
+    .filter(m => m.kind === 'crash')
+    .map(m => ({ at: m.at, level: m.level || 'bad', title: /froze/.test(m.text) ? 'Their game froze' : 'Their game crashed', text: m.text }));
+  return [...found, ...crashes].sort((a, b) => b.at - a.at);
+});
 const days = computed(() => {
   const out = [];
   const today = new Date();
@@ -423,7 +431,7 @@ async function act(kind) {
 .pill .dot { width: 7px; height: 7px; }
 .faint { color: var(--faint); }
 .actbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
-.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 16px; flex-wrap: wrap; }
+.ptabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 16px; flex-wrap: wrap; }
 .tab { border: none; border-radius: 0; background: none; color: var(--muted); padding: 10px 12px; height: auto; border-bottom: 2px solid transparent; margin-bottom: -1px; font-size: 13.5px; }
 .tab:hover { color: var(--text); background: none; }
 .tab[aria-current="page"] { color: var(--text); border-bottom-color: var(--accent); font-weight: 500; }

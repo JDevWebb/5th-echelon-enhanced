@@ -32,7 +32,7 @@ export const NAV = [
 /** Pages shown as tabs of another page in the rail: Bandwidth and Activity under Network,
  * the audit log under Security. */
 export const PARENT = { bandwidth: 'network', activity: 'network', audit: 'security', match: 'sessions' };
-export const NETWORK_TABS = [['/network', 'Traffic'], ['/bandwidth', 'Bandwidth'], ['/activity', 'Activity']];
+export const NETWORK_TABS = [['/network', 'Live traffic'], ['/bandwidth', 'Bandwidth'], ['/activity', 'Activity']];
 export const SECURITY_TABS = [['/security', 'Sign-in and admins'], ['/audit', 'Audit log']];
 
 export const router = createRouter({

@@ -260,7 +260,7 @@ Without that, the SSH change undoes itself, so a mistake can't lock you out.
 | `--status` says "not joined yet" | The coordinator must answer at its `https://` address, and the token must be current. The line under it shows the last error |
 | "ports already in use" | Another program holds a port; stop it, or add `--force` |
 | "this release isn't signed" | Releases are signed: a missing signature can mean someone changed the release on GitHub. Pick a signed release; `--allow-unsigned` (its checksum alone, which whoever changed it could change too) only for one you know about |
-| `--status` shows the server delisted, or the updater failed | See **Updates** in the admin UI, or `cat /var/lib/5th-echelon-update/update-status.json`. The previous release is kept in `/opt/5th-echelon/previous/` |
+| `--status` shows the server delisted, or the updater failed | See **Releases** in the admin UI, or `cat /var/lib/5th-echelon-update/update-status.json`. The previous release is kept in `/opt/5th-echelon/previous/` |
 | SSH stopped answering after `harden-host.sh` | Wait 10 minutes (the change undoes itself unless confirmed), or use your provider's console. After moving SSH, connect with `-p` and the new port |
 
 Logs: `journalctl -u 5th-echelon -f`, `journalctl -u 5th-echelon-coordinator -f`, `journalctl -u caddy -f`.

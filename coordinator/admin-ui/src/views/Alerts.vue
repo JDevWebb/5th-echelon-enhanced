@@ -13,10 +13,10 @@
       <div v-if="data.active.length" class="stack">
         <div v-for="a in data.active" :key="a.id" class="callout" :class="a.level === 'bad' ? 'bad' : 'warn'">
           <div class="row" style="justify-content: space-between">
-            <b>{{ a.detail }}</b>
+            <b>{{ alertText(a.detail) }}</b>
             <span class="small muted">since {{ fmt.when(a.started_at) }} · {{ fmt.dur(now - a.started_at) }}</span>
           </div>
-          <span class="small muted">{{ KINDS[a.kind] || a.kind }}{{ a.server ? ` · ${names.get(a.server) || a.server}` : '' }}</span>
+          <span class="small muted">{{ alertKind(a.kind) }}{{ alertWhere(a, names) ? ` · ${alertWhere(a, names)}` : '' }}</span>
         </div>
       </div>
       <div v-else class="empty">All clear.</div>
@@ -28,9 +28,9 @@
           <thead><tr><th>Alert</th><th>What</th><th>Server</th><th>From</th><th>To</th><th class="r">For</th></tr></thead>
           <tbody>
             <tr v-for="a in data.recent" :key="a.id">
-              <td><span class="dot" :class="a.level === 'bad' ? 'bad' : 'warn'"></span> {{ a.detail }}</td>
-              <td class="muted">{{ KINDS[a.kind] || a.kind }}</td>
-              <td class="muted">{{ a.server ? names.get(a.server) || a.server : '–' }}</td>
+              <td><span class="dot" :class="a.level === 'bad' ? 'bad' : 'warn'"></span> {{ alertText(a.detail) }}</td>
+              <td class="muted">{{ alertKind(a.kind) }}</td>
+              <td class="muted">{{ alertWhere(a, names) || '–' }}</td>
               <td class="small muted">{{ fmt.when(a.started_at) }}</td>
               <td class="small muted">{{ fmt.when(a.resolved_at) }}</td>
               <td class="r">{{ fmt.dur(a.resolved_at - a.started_at) || '<1m' }}</td>
@@ -73,11 +73,10 @@ import PageTop from '../components/PageTop.vue';
 import Stat from '../components/Stat.vue';
 import { api } from '../lib/api.js';
 import { ensureOverview, useLoad } from '../lib/data.js';
-import { fmt, serverName } from '../lib/fmt.js';
+import { alertKind, alertText, alertWhere, fmt, serverName } from '../lib/fmt.js';
 import { live } from '../lib/live.js';
 import { toast } from '../lib/ui.js';
 
-const KINDS = { offline: 'Offline', cpu: 'CPU', memory: 'Memory', disk: 'Disk', signins: 'Refused sign-ins', allowance: 'Traffic allowance', update: 'Update', rollout: 'Rollout', crash: 'Crash' };
 onMounted(() => ensureOverview().catch(() => {}));
 const names = computed(() => new Map((live.overview?.servers || []).map(sv => [sv.id, serverName(sv)])));
 const { data, error, reload } = useLoad(() => api('GET', '/alerts'), () => null, { refresh: false });

@@ -1,5 +1,5 @@
 <template>
-  <PageTop title="Moderation" sub="Chat reports from players, mutes and the rules for chat and names. Slurs and hate are masked in chat and refused in names; links are refused but a Discord invite.">
+  <PageTop title="Chat and names" sub="Chat reports from players, mutes and the rules for chat and names. Slurs and hate are masked in chat and refused in names; links are refused but a Discord invite.">
     <template #stats>
       <Stat v-if="data?.chat" :value="fmt.n(data.reports.length)" label="Open reports" :tone="data.reports.length ? 'info' : ''" />
       <Stat v-if="data?.chat" :value="fmt.n(data.mutes.length)" label="Mutes" />

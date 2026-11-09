@@ -1,5 +1,5 @@
 <template>
-  <PageTop title="Live" sub="Every game open now, on every server: what it is, who's in it and how they're connected. Refreshes every 10 seconds.">
+  <PageTop title="Live matches" sub="Every game open now, on every server: what it is, who's in it and how they're connected. Refreshes every 10 seconds.">
     <template #stats>
       <Stat :value="fmt.n(matches.length)" label="Matches" :sub="`${fmt.n(parties.length)} parties`" />
       <Stat :value="fmt.n(inMatches)" label="In a match" :sub="`of ${fmt.n(players.length)} online`" />

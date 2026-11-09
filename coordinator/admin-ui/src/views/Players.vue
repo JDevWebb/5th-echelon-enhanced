@@ -9,7 +9,7 @@
         <Stat :value="fmt.n(t.minutes_per_player_day)" unit="min" label="Time played" sub="per player, per day played" />
         <Stat :value="fmt.n(t.peak)" label="Peak online" sub="most at once" />
       </template>
-      <template v-else>
+      <template v-else-if="tab === 'accounts'">
         <Stat :value="fmt.n(onlineNow.players)" label="Online now" :sub="`${fmt.n(onlineNow.inMatch)} in a match`" />
         <Stat :value="fmt.n(servers.length)" label="Servers" sub="each with its own accounts" />
       </template>

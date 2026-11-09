@@ -1,5 +1,5 @@
 <template>
-  <PageTop title="Network" :tabs="NETWORK_TABS" :sub="data ? `${rangeLabel} · data in and out of every server, and what went through the relay.` : 'Data in and out of every server.'">
+  <PageTop title="Traffic" :tabs="NETWORK_TABS" :sub="data ? `${rangeLabel} · data in and out of every server, and what went through the relay.` : 'Data in and out of every server.'">
     <template v-if="data" #stats>
       <Stat :value="fmt.size(total)" label="Transferred" sub="in and out" />
       <Stat :value="fmt.size(data.totals.rx)" label="In" tone="info" sub="players to the servers" />

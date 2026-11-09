@@ -83,7 +83,8 @@ const router = useRouter();
 watch(() => route.query.q, v => { if (typeof v === 'string') q.value = v; });
 
 // Typing waits a moment before searching.
-const search = ref('');
+// Starts with the search it arrived with (?q=): the wait below is for typing.
+const search = ref(q.value.trim());
 let typing;
 watch(q, v => { clearTimeout(typing); typing = setTimeout(() => { search.value = v.trim(); }, 250); });
 watch([search, server, online, banned, sort], () => { page.value = 0; });

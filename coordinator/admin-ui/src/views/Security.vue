@@ -1,5 +1,5 @@
 <template>
-  <PageTop title="Security" :tabs="SECURITY_TABS" sub="Your sign-in, the other admins, and where the admin UI may be reached from.">
+  <PageTop title="Admins and security" :tabs="SECURITY_TABS" sub="Your sign-in, the other admins, and where the admin UI may be reached from.">
     <template v-if="me && admins && rules" #stats>
       <Stat :value="fmt.n(admins.admins.length)" label="Admins" :sub="pending ? `${pending} setup pending` : 'all set up'" />
       <Stat :value="fmt.n(me.passkeys.length)" label="Your passkeys" :tone="me.passkeys.length ? '' : 'warn'" />

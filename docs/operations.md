@@ -207,7 +207,7 @@ Players' rows on **Sessions** show both as marks too.
 
 ### Live
 
-**Live** shows every room open now on every server, refreshed every 10 seconds: each match's map and game mode, public or private, its host, every player in it (with their ping to the server; blue when the relay carries them, red when their game isn't registered for online play), and how long it's been open, then the parties. Players online but in no room are listed under their server as in the menus. **Timeline** opens the match's page. Servers send these with their pulse (0.4.3 servers; older ones show nobody's rooms).
+**Live matches** shows every room open now on every server, refreshed every 10 seconds: each match's map and game mode, public or private, its host, every player in it (with their ping to the server; blue when the relay carries them, red when their game isn't registered for online play), and how long it's been open, then the parties. Players online but in no room are listed under their server as in the menus. **Timeline** opens the match's page. Servers send these with their pulse (0.4.3 servers; older ones show nobody's rooms).
 
 ### Loadouts and progress
 
@@ -325,7 +325,7 @@ The admin UI is served by the coordinator on its own port (127.0.0.2:8701, a loo
 
 **Sessions:**
 - They end after 30 minutes idle, 12 hours in all, or when the session's country changes.
-- Sessions are listed under **Security**, and any can be ended.
+- Sessions are listed under **Admins and security**, and any can be ended.
 
 **Sensitive changes ask for a second factor again** if the last was more than 10 minutes ago:
 - adding or resetting admins;
@@ -343,7 +343,7 @@ The admin UI is served by the coordinator on its own port (127.0.0.2:8701, a loo
 
 ### Where admins may sign in from
 
-Under **Security**, limit the admin UI to address ranges (e.g. your home's address) and countries.
+Under **Admins and security**, limit the admin UI to address ranges (e.g. your home's address) and countries.
 
 - Every request is checked, the sign-in page too. A request from anywhere else gets a refusal and nothing more.
 - Rules that would lock out the admin saving them are refused.

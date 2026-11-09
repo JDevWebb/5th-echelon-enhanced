@@ -1,5 +1,5 @@
 <template>
-  <PageTop title="Security" :tabs="SECURITY_TABS" sub="Audit log: sign-ins, failures and every change, newest first. Kept for 400 days.">
+  <PageTop title="Admins and security" :tabs="SECURITY_TABS" sub="Audit log: sign-ins, failures and every change, newest first. Kept for 400 days.">
     <template #stats>
       <Stat :value="fmt.n(events.length)" label="Entries shown" :sub="more ? 'older ones below' : 'all of them'" />
       <Stat :value="fmt.n(today)" label="Last 24 hours" />

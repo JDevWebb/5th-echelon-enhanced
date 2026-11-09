@@ -17,8 +17,8 @@
       <ul class="alerts">
         <li v-for="a in o.alerts" :key="a.id" :class="a.level">
           <span class="pill" :class="a.level">{{ a.level === 'bad' ? 'Down' : 'Warning' }}</span>
-          <span class="grow">{{ a.detail }}</span>
-          <span class="small muted nowrap">{{ a.server ? serverLabel(a.server) + ' · ' : '' }}since {{ fmt.ago(a.started_at) }}</span>
+          <span class="grow">{{ alertText(a.detail) }}</span>
+          <span class="small muted nowrap">{{ alertWhere(a, serverNames) ? alertWhere(a, serverNames) + ' · ' : '' }}since {{ fmt.ago(a.started_at) }}</span>
         </li>
       </ul>
     </section>
@@ -78,7 +78,7 @@ import { api } from '../lib/api.js';
 import { ensureOverview, useLoad } from '../lib/data.js';
 import Sparkline from '../components/Sparkline.vue';
 import Stat from '../components/Stat.vue';
-import { fmt, liveTotals, serverName, seriesFor, totalSeries } from '../lib/fmt.js';
+import { alertText, alertWhere, fmt, liveTotals, serverName, seriesFor, totalSeries } from '../lib/fmt.js';
 import { live } from '../lib/live.js';
 
 const error = ref('');
@@ -89,6 +89,7 @@ const online = computed(() => o.value.servers.filter(sv => sv.online));
 const pulse = computed(() => liveTotals(live.pulses));
 const players = computed(() => (pulse.value.now.servers ? pulse.value.now.players : online.value.reduce((n, sv) => n + (sv.metrics?.players?.online || 0), 0)));
 const inMatch = computed(() => (pulse.value.now.servers ? pulse.value.now.in_match : online.value.reduce((n, sv) => n + (sv.metrics?.players?.in_match || 0), 0)));
+const serverNames = computed(() => new Map((o.value?.servers || []).map(sv => [sv.id, serverName(sv)])));
 const serverLabel = id => serverName(o.value?.servers.find(sv => sv.id === id) || { id });
 const sessions = computed(() => online.value.reduce((n, sv) => n + (sv.metrics?.activity || []).reduce((m, a) => m + (a.sessions || 0), 0), 0));
 // What's waiting on an admin (the side menu's Inbox count), and the network's state in a word.

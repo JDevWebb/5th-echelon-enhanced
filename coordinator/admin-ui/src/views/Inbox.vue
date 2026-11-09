@@ -3,9 +3,9 @@
     <template #stats>
       <Stat :value="data ? fmt.n(data.counts.all) : '–'" label="Waiting" :tone="data?.counts.all ? 'warn' : ''" />
       <Stat :value="data ? fmt.n(data.counts.support) : '–'" label="Support" />
-      <Stat :value="data ? fmt.n(data.counts.report + data.counts.chat) : '–'" label="Reports" />
+      <Stat :value="data ? fmt.n(data.counts.report + data.counts.chat) : '–'" label="Reported" sub="players and chat" />
       <Stat :value="data ? fmt.n(data.counts.crash) : '–'" label="Crashes" />
-      <Stat :value="data ? fmt.n(data.counts.alert) : '–'" label="Alerts" :tone="data?.counts.alert ? 'bad' : ''" />
+      <Stat :value="data ? fmt.n(data.counts.alert) : '–'" label="Alerts" :tone="alertTone" />
     </template>
   </PageTop>
   <div class="grid split">
@@ -29,13 +29,13 @@
             <span class="kind" :class="i.kind" :title="LABEL[i.kind]" aria-hidden="true"><svg viewBox="0 0 24 24" v-html="ICON[i.kind]"></svg></span>
             <span class="body">
               <span class="line">
-                <b class="who" :class="{ mono: i.kind === 'crash' }">{{ i.who || 'someone' }}</b>
+                <b class="who" :class="{ mono: i.kind === 'crash' }">{{ i.kind === 'alert' ? alertKind(i.who) : i.who || 'someone' }}</b>
                 <span class="muted small nowrap" :title="fmt.when(i.at)">{{ fmt.ago(i.at) }}</span>
               </span>
               <span class="line">
-                <span class="title">{{ i.title || '–' }}</span>
+                <span class="title">{{ (i.kind === 'alert' ? alertText(i.title) : i.title) || '–' }}</span>
                 <span class="tags">
-                  <span v-if="i.server" class="muted small nowrap">{{ names.get(i.server) || i.server }}</span>
+                  <span v-if="names.has(i.server)" class="muted small nowrap">{{ names.get(i.server) }}</span>
                   <span class="pill" :class="tone(i)">{{ pillText(i) }}</span>
                 </span>
               </span>
@@ -80,12 +80,12 @@
     <section v-else-if="open?.kind === 'alert'" class="panel">
       <header>
         <div>
-          <h2>{{ open.who }}</h2>
-          <p class="small muted">{{ open.server ? names.get(open.server) || open.server : 'The network' }} · since {{ fmt.ago(open.at) }}</p>
+          <h2>{{ alertKind(open.who) }}</h2>
+          <p class="small muted">{{ names.get(open.server) || 'The network' }} · since {{ fmt.ago(open.at) }}</p>
         </div>
         <button class="ghost small" type="button" aria-label="Close" @click="close">✕</button>
       </header>
-      <p><span class="pill" :class="open.status">{{ open.status }}</span> {{ open.title }}</p>
+      <p><span class="pill" :class="open.status">{{ open.status === 'bad' ? 'Down' : 'Warning' }}</span> {{ alertText(open.title) }}</p>
       <p class="small muted">It closes on its own when the condition clears.</p>
       <div class="row end"><RouterLink class="btn small primary" to="/alerts">Open Alerts</RouterLink></div>
     </section>
@@ -106,7 +106,7 @@ import SupportThread from '../components/SupportThread.vue';
 import { api } from '../lib/api.js';
 import { confirmBox } from '../lib/dialogs.js';
 import { ensureOverview, useLoad } from '../lib/data.js';
-import { fmt, serverName } from '../lib/fmt.js';
+import { alertKind, alertText, fmt, serverName } from '../lib/fmt.js';
 import { live } from '../lib/live.js';
 import { toast } from '../lib/ui.js';
 
@@ -126,9 +126,10 @@ onMounted(() => ensureOverview().catch(() => {}));
 const servers = computed(() => live.overview?.servers || []);
 const names = computed(() => new Map(servers.value.map(sv => [sv.id, serverName(sv)])));
 
-const { data, error, reload } = useLoad(() => api('GET', '/inbox'), () => '', { refresh: false });
+const { data, error, reload } = useLoad(() => api('GET', '/inbox'), () => '');
 watch(() => [live.supportTick, live.reportTick, live.moderationTick, live.alertTick], () => reload());
 
+const alertTone = computed(() => { const a = (data.value?.items || []).filter(i => i.kind === 'alert'); return a.some(i => i.status === 'bad') ? 'bad' : a.length ? 'warn' : ''; });
 const kind = ref('all');
 const server = ref('');
 const id = i => `${i.kind}:${i.key}`;
@@ -152,7 +153,7 @@ function pillText(i) {
   if (i.kind === 'support') return i.unread ? `${i.unread} new` : 'open';
   if (i.kind === 'chat') return `${i.reports} report${i.reports === 1 ? '' : 's'}`;
   if (i.kind === 'crash') return i.status === 'back' ? 'back since fix' : `${i.players} player${i.players === 1 ? '' : 's'}`;
-  if (i.kind === 'alert') return i.status;
+  if (i.kind === 'alert') return i.status === 'bad' ? 'down' : 'warning';
   return i.rating || 'open';
 }
 

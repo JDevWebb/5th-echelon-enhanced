@@ -1,5 +1,5 @@
 <template>
-  <PageTop title="Network" :tabs="NETWORK_TABS" sub="Traffic: bandwidth, relayed traffic and round trips.">
+  <PageTop title="Traffic" :tabs="NETWORK_TABS" sub="Traffic: bandwidth, relayed traffic and round trips.">
     <template #stats>
       <Stat :value="pulse.now.servers ? fmt.bits(pulse.now.bps) : '–'" label="Bandwidth now" :sub="pulse.now.servers ? `${pulse.now.servers} servers reporting` : 'waiting for the servers\' pulse'" />
       <Stat :value="pulse.now.servers ? fmt.bits(pulse.now.relayed) : '–'" label="Relayed now" tone="warn" />
