@@ -22,6 +22,7 @@
 
 pub mod auth;
 mod crashes;
+mod inbox;
 mod leaderboards;
 pub mod live;
 mod moderation;
@@ -243,6 +244,7 @@ pub fn router(c: Shared) -> Router {
         .merge(moderation::routes())
         .merge(sessions::routes())
         .merge(crashes::routes())
+        .merge(inbox::routes())
         .merge(recordings::routes())
         .merge(leaderboards::routes());
     Router::new()
@@ -1665,6 +1667,8 @@ impl Coordinator {
             "open_reports": self.open_reports().await?,
             // Support conversations with a player's message no admin has read (the rail's badge).
             "support_unread": if self.has_roadmap() { self.support_unread_threads().await? } else { 0 },
+            // Support conversations waiting on the admins (the Inbox badge, with reports, chat reports and alerts).
+            "support_open": if self.has_roadmap() { self.support_open_threads().await? } else { 0 },
             // Chat messages reported and not dealt with yet (the Moderation badge).
             "chat_reports": self.open_chat_reports().await?,
             "attribution": geo::ATTRIBUTION,

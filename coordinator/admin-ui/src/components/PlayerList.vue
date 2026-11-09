@@ -73,7 +73,8 @@ import { live } from '../lib/live.js';
 
 const servers = computed(() => live.overview?.servers || []);
 const names = computed(() => new Map(servers.value.map(sv => [sv.id, serverName(sv)])));
-const q = ref('');
+// The top bar's search arrives as ?q=.
+const q = ref(typeof useRoute().query.q === 'string' ? useRoute().query.q : '');
 const server = ref('');
 const online = ref(false);
 const banned = ref(false);
@@ -83,6 +84,7 @@ const open = ref(null);
 // A player's own address (#/players/<server>/<id>, e.g. from a report) opens their detail.
 const route = useRoute();
 const router = useRouter();
+watch(() => route.query.q, v => { if (typeof v === 'string') q.value = v; });
 watch(() => [route.params.server, route.params.id], ([sv, id]) => {
   if (sv && id && /^\d+$/.test(id)) open.value = { server: sv, id: Number(id) };
 }, { immediate: true });

@@ -129,7 +129,7 @@ impl Coordinator {
     }
 
     /// The open reports, oldest first, one entry a message.
-    async fn chat_report_list(&self, now: i64) -> sqlx::Result<Vec<Value>> {
+    pub(super) async fn chat_report_list(&self, now: i64) -> sqlx::Result<Vec<Value>> {
         let rows: Vec<MessageRow> = sqlx::query_as(&format!(
             "SELECT {MESSAGE} FROM chat_messages m WHERE id IN (SELECT message_id FROM chat_reports WHERE status = 'open')
              ORDER BY (SELECT MIN(at) FROM chat_reports r WHERE r.message_id = m.id AND r.status = 'open') LIMIT ?"

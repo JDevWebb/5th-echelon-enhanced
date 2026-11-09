@@ -348,6 +348,11 @@ impl Coordinator {
         Ok(json!({ "threads": threads }))
     }
 
+    /// Conversations waiting on the admins (`open`: the player wrote last).
+    pub(crate) async fn support_open_threads(&self) -> sqlx::Result<i64> {
+        sqlx::query_scalar("SELECT COUNT(*) FROM support_threads WHERE status = 'open'").fetch_one(&self.pool).await
+    }
+
     /// Conversations with player messages the admins haven't read (the rail's badge).
     pub(crate) async fn support_unread_threads(&self) -> sqlx::Result<i64> {
         sqlx::query_scalar(

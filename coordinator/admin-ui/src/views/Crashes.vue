@@ -20,7 +20,7 @@
       </header>
       <div v-if="!shown.length" class="empty">{{ data.groups.length ? 'Nothing here with this choice.' : 'No crashes in this period.' }}</div>
       <div v-else class="stack">
-        <div v-for="g in shown" :key="g.signature" class="callout" :class="tone(g)">
+        <div v-for="g in shown" :id="`crash-${g.signature}`" :key="g.signature" class="callout" :class="[tone(g), { picked: g.signature === place }]">
           <div class="row" style="justify-content: space-between; align-items: baseline">
             <b class="mono">{{ g.signature }}</b>
             <span class="small muted">{{ fmt.n(g.players) }} players · {{ fmt.n(g.count) }} times · {{ fmt.n(g.fatal) }} ended the game · last {{ fmt.ago(g.last) }}</span>
@@ -96,8 +96,8 @@
 </template>
 
 <script setup>
-import { computed, reactive, ref, watch } from 'vue';
-import { RouterLink } from 'vue-router';
+import { computed, nextTick, reactive, ref, watch } from 'vue';
+import { RouterLink, useRoute } from 'vue-router';
 import PageTop from '../components/PageTop.vue';
 import Stat from '../components/Stat.vue';
 import { api } from '../lib/api.js';
@@ -117,6 +117,15 @@ watch(data, d => {
     edit[g.signature] = { status: g.mark?.status || '', fixed_in: g.mark?.fixed_in || '', note: g.mark?.note || '' };
   }
 });
+
+// From the Inbox (#/crashes?place=<module+0xhex>): that group, scrolled to and outlined.
+const route = useRoute();
+const place = computed(() => (typeof route.query.place === 'string' ? route.query.place : ''));
+watch([data, place], async ([d, p]) => {
+  if (!d || !p) return;
+  await nextTick();
+  document.getElementById(`crash-${p}`)?.scrollIntoView({ block: 'center' });
+}, { immediate: true });
 
 const newOnes = computed(() => (data.value?.groups || []).filter(g => !g.mark).length);
 const shown = computed(() => (data.value?.groups || []).filter(g => {
@@ -147,6 +156,7 @@ async function mark(g) {
 </script>
 
 <style scoped>
+.callout.picked { outline: 2px solid var(--accent); outline-offset: 2px; }
 code.wrap { white-space: pre-wrap; word-break: break-all; }
 .callout:not(.bad):not(.warn) { border-color: var(--line); }
 td.warn { color: var(--warn); }

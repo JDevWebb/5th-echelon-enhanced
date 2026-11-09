@@ -3218,6 +3218,20 @@ async fn crashes_are_grouped_marked_and_alerted() {
     let old = v["groups"].as_array().unwrap().iter().find(|g| g["signature"] == fixed).unwrap();
     assert_eq!(old["seen_since_fix"], json!(["0.5.0"]));
 
+    // The Inbox has the fixed one back (an alert and a crash to look at), not the marked new one.
+    let (status, v) = admin_call(&r, "GET", "/api/inbox", &cookie, None).await;
+    assert_eq!(status, StatusCode::OK, "{v}");
+    let kinds: Vec<(String, String)> = v["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| (i["kind"].as_str().unwrap().to_string(), i["key"].to_string()))
+        .collect();
+    assert!(kinds.contains(&("crash".into(), json!(fixed).to_string())), "{kinds:?}");
+    assert!(!kinds.contains(&("crash".into(), json!(new_one).to_string())), "{kinds:?}");
+    assert!(kinds.iter().any(|(k, _)| k == "alert"), "{kinds:?}");
+    assert_eq!(v["counts"]["all"].as_u64(), Some(kinds.len() as u64));
+
     let bad = json!({ "signature": new_one, "status": "fixed" });
     assert_eq!(
         admin_call(&r, "PUT", "/api/crashes/mark", &cookie, Some(bad)).await.0,
@@ -3707,6 +3721,7 @@ async fn every_admin_page_answers_a_signed_in_admin_and_no_one_else() {
         "/api/updates",
         "/api/sessions",
         "/api/crashes?days=30",
+        "/api/inbox",
         "/api/leaderboards",
         "/api/players",
         "/api/reports",
