@@ -229,6 +229,11 @@ pub(crate) fn set_server_map(map: &str) {
     *SERVER_MAP.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = map;
 }
 
+/// The server's name for the room's map (empty: none yet).
+pub(crate) fn server_map() -> String {
+    SERVER_MAP.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
+}
+
 /// The map: the level's own name, else the server's name for the room's.
 pub(crate) fn map_or_server(names: &HashMap<&'static str, u32>) -> Option<String> {
     map_name(names).or_else(|| Some(SERVER_MAP.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone()).filter(|m| !m.is_empty()))

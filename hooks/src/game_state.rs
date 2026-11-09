@@ -78,7 +78,38 @@ pub fn saved(bytes: usize) {
         return;
     }
     st.saved = Some(Instant::now());
+    drop(st);
+    crate::crash::saved();
     info!("Saved the game ({} KB): a checkpoint, or a mission's end", bytes / 1024);
+}
+
+/// What the game is doing, in a few words, for a crash's details (crash.rs keeps it for its
+/// handler): online or not, in a match, its session, the match's mode, state and map.
+pub fn summary() -> String {
+    let st = state();
+    let mut parts: Vec<String> = Vec::new();
+    match st.online {
+        Some(o) if o.in_match => parts.push("in a match".into()),
+        Some(o) if o.lobby_session.is_some() || o.match_session.is_some() => parts.push("online, in a lobby".into()),
+        Some(_) => parts.push("online, no session".into()),
+        None => parts.push("not online yet".into()),
+    }
+    if let Some((id, invite_only)) = st.session {
+        parts.push(format!("session {id}{}", if invite_only { " (invite only)" } else { "" }));
+    }
+    drop(st);
+    let (round, under_way, mode) = crate::round_state::current();
+    if !mode.is_empty() {
+        parts.push(format!("mode {mode}"));
+    }
+    if !round.is_empty() {
+        parts.push(format!("match state {round}{}", if under_way { " (under way)" } else { "" }));
+    }
+    let map = crate::round_state::server_map();
+    if !map.is_empty() {
+        parts.push(format!("map {map}"));
+    }
+    parts.join(", ")
 }
 
 /// The game's sessions as [`Online`] says; written when it changes.

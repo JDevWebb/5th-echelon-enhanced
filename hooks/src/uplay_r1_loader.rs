@@ -308,6 +308,7 @@ unsafe extern "cdecl" fn UPLAY_Startup(uplay_id: usize, game_version: usize, lan
                         error!("Couldn't initialize overlay: {err}");
                     } else {
                         info!("Overlay initialized");
+                        crate::crash::overlay_ready();
                     }
                 })
                 .unwrap();

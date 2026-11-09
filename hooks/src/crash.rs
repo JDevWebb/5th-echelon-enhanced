@@ -12,6 +12,13 @@
 //! so the handler allocates nothing and waits on nothing: it formats into a buffer on its stack
 //! and appends to the file with `CreateFileW`/`WriteFile`, the file's name worked out at start.
 //! Modules are named from their own export directory in memory, found with `VirtualQuery`.
+//!
+//! Since 0.5.0 two more lines follow each: the registers, the code bytes at the crash and
+//! what each register points to (`Crash registers:`), so a null or freed pointer shows at once;
+//! and the callers found by following the saved frame pointers, with what the game was doing
+//! (`Crash callers:`). A last-chance filter writes `The game is closing on an unhandled
+//! exception` when nothing handled it. When the game starts again, `crash_report` sends the
+//! previous run's crashes to the server (`hooks_config::crash_log` reads them).
 
 use std::ffi::c_void;
 use std::fmt::Write as _;
@@ -58,8 +65,22 @@ struct ExceptionPointers {
     context: *const u8,
 }
 
+// The x86 `CONTEXT`'s integer and control registers, by offset.
+const CONTEXT_EDI: usize = 0x9C;
+const CONTEXT_ESI: usize = 0xA0;
+const CONTEXT_EBX: usize = 0xA4;
+const CONTEXT_EDX: usize = 0xA8;
+const CONTEXT_ECX: usize = 0xAC;
+const CONTEXT_EAX: usize = 0xB0;
+const CONTEXT_EBP: usize = 0xB4;
 const CONTEXT_EIP: usize = 0xB8;
 const CONTEXT_ESP: usize = 0xC4;
+/// The most callers followed through the saved frame pointers, and how far above `esp` a
+/// frame may be.
+const MAX_CALLERS: usize = 8;
+const FRAMES_WITHIN: usize = 0x10_0000;
+/// The code bytes written from where it crashed.
+const CODE_BYTES: usize = 16;
 
 #[repr(C)]
 #[derive(Default)]
@@ -94,7 +115,11 @@ extern "system" {
     fn WriteFile(file: isize, buffer: *const u8, length: u32, written: *mut u32, overlapped: *mut c_void) -> i32;
     fn CloseHandle(handle: isize) -> i32;
     fn GetSystemTime(time: *mut SystemTime);
+    fn SetUnhandledExceptionFilter(filter: Option<unsafe extern "system" fn(*mut ExceptionPointers) -> i32>) -> Option<unsafe extern "system" fn(*mut ExceptionPointers) -> i32>;
 }
+
+/// The filter that was there before ours (the game's, or Windows' default), called after ours.
+static PREVIOUS_FILTER: AtomicUsize = AtomicUsize::new(0);
 
 /// The log's name, wide and nul-terminated.
 static LOG: OnceLock<Vec<u16>> = OnceLock::new();
@@ -120,6 +145,29 @@ pub fn install(log: &std::path::Path) {
     // game's own __try/__except: an exception it handles is still seen here.
     if unsafe { AddVectoredExceptionHandler(0, handler) }.is_null() {
         tracing::warn!("Crash details: the exception handler couldn't be added");
+    }
+    // The last chance: nothing handled it. The game may set its own filter later and take
+    // this one's place; the next start then tells a fatal crash by the log's end instead.
+    if let Some(previous) = unsafe { SetUnhandledExceptionFilter(Some(unhandled)) } {
+        PREVIOUS_FILTER.store(previous as usize, Ordering::Relaxed);
+    }
+}
+
+/// The last-chance filter: says the game is closing on it, then hands it on.
+unsafe extern "system" fn unhandled(pointers: *mut ExceptionPointers) -> i32 {
+    if let Some(record) = pointers.as_ref().and_then(|p| p.record.as_ref()) {
+        let mut line = Line::new();
+        timestamp(&mut line);
+        let _ = write!(line, " ERROR hooks::crash: The game is closing on an unhandled exception {:#010X} at ", record.code);
+        place(&mut line, record.address as usize);
+        append(line.bytes());
+    }
+    match PREVIOUS_FILTER.load(Ordering::Relaxed) {
+        0 => EXCEPTION_CONTINUE_SEARCH,
+        f => {
+            let previous: unsafe extern "system" fn(*mut ExceptionPointers) -> i32 = std::mem::transmute(f);
+            previous(pointers)
+        }
     }
 }
 
@@ -172,7 +220,139 @@ unsafe extern "system" fn handler(pointers: *mut ExceptionPointers) -> i32 {
     }
     line.push(". If the game handles it, it carries on.\n");
     append(line.bytes());
+    if record.code != STACK_OVERFLOW && !pointers.context.is_null() {
+        details(pointers.context);
+    }
     EXCEPTION_CONTINUE_SEARCH
+}
+
+/// The two lines after an exception's: its registers, the code there and what the registers
+/// point to; then its callers by frame pointers and what the game was doing.
+unsafe fn details(context: *const u8) {
+    let reg = |at: usize| std::ptr::read_unaligned(context.add(at).cast::<u32>()) as usize;
+    let regs = [
+        ("eax", reg(CONTEXT_EAX)),
+        ("ebx", reg(CONTEXT_EBX)),
+        ("ecx", reg(CONTEXT_ECX)),
+        ("edx", reg(CONTEXT_EDX)),
+        ("esi", reg(CONTEXT_ESI)),
+        ("edi", reg(CONTEXT_EDI)),
+    ];
+    let (ebp, esp, eip) = (reg(CONTEXT_EBP), reg(CONTEXT_ESP), reg(CONTEXT_EIP));
+    let mut line = Line::new();
+    timestamp(&mut line);
+    line.push(" ERROR hooks::crash: Crash registers:");
+    for (name, value) in regs {
+        let _ = write!(line, " {name}={value:08x}");
+    }
+    let _ = write!(line, " ebp={ebp:08x} esp={esp:08x}; code at eip:");
+    if readable(eip, CODE_BYTES) {
+        for i in 0..CODE_BYTES {
+            let _ = write!(line, " {:02x}", *((eip + i) as *const u8));
+        }
+    } else {
+        line.push(" unreadable");
+    }
+    line.push("; pointing to:");
+    let mut any = false;
+    for (name, value) in regs {
+        if value > 0x10000 && value % 4 == 0 && readable(value, 4) {
+            let _ = write!(line, "{} {name}->{:08x}", if any { "," } else { "" }, std::ptr::read_unaligned(value as *const u32));
+            any = true;
+        }
+    }
+    if !any {
+        line.push(" nothing readable");
+    }
+    append(line.bytes());
+
+    let mut line = Line::new();
+    timestamp(&mut line);
+    line.push(" ERROR hooks::crash: Crash callers:");
+    if callers(&mut line, ebp, esp) == 0 {
+        line.push(" none by frame pointers");
+    }
+    line.push("; the game was: ");
+    doing(&mut line);
+    append(line.bytes());
+}
+
+/// The callers found by following the saved frame pointers from `ebp`: each frame's return
+/// address, while frames go up the stack and return into code.
+unsafe fn callers(line: &mut Line, mut ebp: usize, esp: usize) -> usize {
+    let mut found = 0;
+    let mut below = esp;
+    while found < MAX_CALLERS {
+        if ebp < below || ebp > esp.saturating_add(FRAMES_WITHIN) || ebp % 4 != 0 || !readable(ebp, 8) {
+            break;
+        }
+        let next = std::ptr::read_unaligned(ebp as *const u32) as usize;
+        let ret = std::ptr::read_unaligned((ebp + 4) as *const u32) as usize;
+        if !is_code(ret) {
+            break;
+        }
+        line.push(if found == 0 { " " } else { ", " });
+        place(line, ret);
+        found += 1;
+        if next <= ebp {
+            break;
+        }
+        below = ebp + 8;
+        ebp = next;
+    }
+    found
+}
+
+// ---------- What the game was doing ----------
+//
+// Read by the handler, which may not allocate nor wait: kept as bytes in a fixed buffer,
+// written every couple of seconds by the freeze watch's thread ([`refresh_doing`]).
+
+const DOING_MAX: usize = 140;
+static DOING: [std::sync::atomic::AtomicU8; DOING_MAX] = [const { std::sync::atomic::AtomicU8::new(0) }; DOING_MAX];
+static DOING_LEN: AtomicUsize = AtomicUsize::new(0);
+/// The last save (milliseconds since [`START`]; 0: none yet).
+static LAST_SAVE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The game saved (a checkpoint, or a mission's end): crashes say how long before.
+pub fn saved() {
+    LAST_SAVE.store(since_start().max(1), Ordering::Relaxed);
+}
+
+/// What the game is doing now, as the handler writes it.
+fn refresh_doing() {
+    let text = crate::game_state::summary();
+    let mut n = text.len().min(DOING_MAX);
+    while !text.is_char_boundary(n) {
+        n -= 1;
+    }
+    DOING_LEN.store(0, Ordering::Relaxed);
+    for (slot, b) in DOING.iter().zip(&text.as_bytes()[..n]) {
+        slot.store(*b, Ordering::Relaxed);
+    }
+    DOING_LEN.store(n, Ordering::Release);
+}
+
+/// Writes what the game was doing, how long after its start and its last save.
+fn doing(line: &mut Line) {
+    let n = DOING_LEN.load(Ordering::Acquire).min(DOING_MAX);
+    let mut bytes = [0u8; DOING_MAX];
+    for (b, slot) in bytes.iter_mut().zip(&DOING[..n]) {
+        *b = slot.load(Ordering::Relaxed);
+    }
+    if n == 0 {
+        line.push("unknown");
+    } else {
+        line.push_bytes(&bytes[..n]);
+    }
+    let now = since_start();
+    let _ = write!(line, ", {} s after start", now / 1000);
+    match LAST_SAVE.load(Ordering::Relaxed) {
+        0 => line.push(", no save yet"),
+        at => {
+            let _ = write!(line, ", saved {} s before", now.saturating_sub(at) / 1000);
+        }
+    }
 }
 
 /// `module+0xoffset`, or the bare address outside any module.
@@ -384,8 +564,20 @@ fn since_start() -> u64 {
 /// The game drew a frame (the overlay's render, on the thread that draws).
 pub fn frame() {
     FRAME_THREAD.store(unsafe { GetCurrentThreadId() }, Ordering::Relaxed);
-    LAST_FRAME.store(since_start().max(1), Ordering::Relaxed);
+    if LAST_FRAME.swap(since_start().max(1), Ordering::Relaxed) == 0 {
+        tracing::info!("Overlay: its first frame drawn, {} s after the game started", since_start() / 1000);
+    }
 }
+
+/// The overlay is set up and should draw from now on (its first frame or the warning that
+/// none came say whether it does: "F5 does nothing", Jon2214 and BlueBlueS, 2026-11).
+pub fn overlay_ready() {
+    OVERLAY_READY.store(true, Ordering::Relaxed);
+}
+
+static OVERLAY_READY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// This long with the game in front and the overlay ready but no frame: it isn't drawing.
+const NO_FRAME_WARNING: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Starts watching for freezes, from the thread that loaded this DLL (the game's main one).
 pub fn watch_for_freezes() {
@@ -394,9 +586,23 @@ pub fn watch_for_freezes() {
     let spawned = std::thread::Builder::new().name(String::from("freeze-watch")).spawn(|| {
         // Set when a freeze is written, cleared when frames come again.
         let mut written = false;
+        // How long the game was in front with the overlay ready but no frame yet.
+        let mut no_frame = std::time::Duration::ZERO;
+        let mut no_frame_said = false;
         loop {
             std::thread::sleep(std::time::Duration::from_secs(2));
+            refresh_doing();
             let last = LAST_FRAME.load(Ordering::Relaxed);
+            if last == 0 && OVERLAY_READY.load(Ordering::Relaxed) && !no_frame_said && in_front() {
+                no_frame += std::time::Duration::from_secs(2);
+                if no_frame >= NO_FRAME_WARNING {
+                    no_frame_said = true;
+                    tracing::warn!(
+                        "Overlay: no frame drawn in {} s with the game in front, so its key won't open it (and freezes can't be seen). Another overlay or program may be drawing on the game first: Ubisoft Connect's, Discord, Steam, MSI Afterburner/RivaTuner, NVIDIA or AMD",
+                        no_frame.as_secs()
+                    );
+                }
+            }
             let quiet = std::time::Duration::from_millis(since_start().saturating_sub(last));
             if last == 0 || quiet < FROZEN_AFTER {
                 written = false;
@@ -411,9 +617,9 @@ pub fn watch_for_freezes() {
             }
             let (main, drawing) = (MAIN_THREAD.load(Ordering::Relaxed), FRAME_THREAD.load(Ordering::Relaxed));
             unsafe {
-                where_is(drawing, "the thread that draws", quiet);
+                where_is(drawing, "the thread that draws", quiet, true);
                 if main != drawing {
-                    where_is(main, "the main thread", quiet);
+                    where_is(main, "the main thread", quiet, false);
                 }
             }
             tracing::warn!(
@@ -438,7 +644,7 @@ fn in_front() -> bool {
 
 /// Writes where thread `id` is: suspended only while its registers and stack are read (into a
 /// line on this thread's stack: nothing is allocated, nor waited on, while it's held).
-unsafe fn where_is(id: u32, which: &str, quiet: std::time::Duration) {
+unsafe fn where_is(id: u32, which: &str, quiet: std::time::Duration, with_doing: bool) {
     if id == 0 {
         return;
     }
@@ -459,9 +665,14 @@ unsafe fn where_is(id: u32, which: &str, quiet: std::time::Duration) {
         if GetThreadContext(thread, &mut context) != 0 {
             let eip = std::ptr::read_unaligned(context.bytes.as_ptr().add(CONTEXT_EIP).cast::<u32>()) as usize;
             let esp = std::ptr::read_unaligned(context.bytes.as_ptr().add(CONTEXT_ESP).cast::<u32>()) as usize;
+            let ebp = std::ptr::read_unaligned(context.bytes.as_ptr().add(CONTEXT_EBP).cast::<u32>()) as usize;
             place(&mut line, eip);
             line.push(". On the stack:");
             stack(&mut line, esp);
+            line.push("; callers:");
+            if callers(&mut line, ebp, esp) == 0 {
+                line.push(" none by frame pointers");
+            }
         } else {
             line.push("(its registers couldn't be read)");
         }
@@ -470,6 +681,10 @@ unsafe fn where_is(id: u32, which: &str, quiet: std::time::Duration) {
         line.push("(it couldn't be suspended)");
     }
     CloseHandle(thread);
+    if with_doing {
+        line.push("; the game was: ");
+        doing(&mut line);
+    }
     append(line.bytes());
 }
 
